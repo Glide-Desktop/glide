@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/glide-compositor"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.87"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/artem/glide"
+
+[workspace.dependencies]
+smithay = { git = "https://github.com/Smithay/smithay", rev = "5fb12b87407b3680135c45d94214c5f1b1d0fbea", default-features = false }
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+bitflags = "2.2.1"
