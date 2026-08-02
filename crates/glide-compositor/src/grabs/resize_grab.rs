@@ -1,9 +1,10 @@
 //! Resize grab is the state of a composer during which the client window is being resized.
 //!
 //! eg. Usually whenever a user clicks on the app's border and starts dragging, the compositors
-//! enters a ResizeSurfaceGrab state.
+//! enters a `ResizeSurfaceGrab` state.
 
-use crate::{GlideState, state::Backend};
+use std::cell::RefCell;
+
 use smithay::{
     desktop::{Space, Window},
     input::pointer::{
@@ -19,7 +20,12 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Size},
     wayland::{compositor, shell::xdg::SurfaceCachedState},
 };
-use std::cell::RefCell;
+
+use crate::{GlideState, state::window_surface};
+
+// The button code as defined in the Linux kernel's
+// linux/input-event-codes.h header file, e.g. BTN_LEFT.
+const BTN_LEFT: u32 = 0x110;
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -40,12 +46,17 @@ bitflags::bitflags! {
 impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     #[inline]
     fn from(x: xdg_toplevel::ResizeEdge) -> Self {
-        Self::from_bits(x as u32).unwrap()
+        // wayland-server's protocol dispatch validates `x` against the
+        // xdg_toplevel::resize_edge enum's declared range before this
+        // handler ever runs, and every variant in that range maps onto some
+        // combination of our TOP|BOTTOM|LEFT|RIGHT bits.
+        Self::from_bits(x as u32)
+            .expect("xdg_toplevel::ResizeEdge is protocol-validated to a known enum variant")
     }
 }
 
-pub struct ResizeSurfaceGrab<BackendData: Backend + 'static> {
-    start_data: PointerGrabStartData<GlideState<BackendData>>,
+pub struct ResizeSurfaceGrab {
+    start_data: PointerGrabStartData<GlideState>,
     window: Window,
 
     edges: ResizeEdge,
@@ -54,16 +65,16 @@ pub struct ResizeSurfaceGrab<BackendData: Backend + 'static> {
     last_window_size: Size<i32, Logical>,
 }
 
-impl<BackendData: Backend + 'static> ResizeSurfaceGrab<BackendData> {
+impl ResizeSurfaceGrab {
     pub fn start(
-        start_data: PointerGrabStartData<GlideState<BackendData>>,
+        start_data: PointerGrabStartData<GlideState>,
         window: Window,
         edges: ResizeEdge,
         initial_window_rect: Rectangle<i32, Logical>,
     ) -> Self {
         let initial_rect = initial_window_rect;
 
-        ResizeSurfaceState::with(window.toplevel().unwrap().wl_surface(), |state| {
+        ResizeSurfaceState::with(window_surface(&window), |state| {
             *state = ResizeSurfaceState::Resizing {
                 edges,
                 initial_rect,
@@ -80,13 +91,11 @@ impl<BackendData: Backend + 'static> ResizeSurfaceGrab<BackendData> {
     }
 }
 
-impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
-    for ResizeSurfaceGrab<BackendData>
-{
+impl PointerGrab<GlideState> for ResizeSurfaceGrab {
     fn motion(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         _focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
@@ -103,7 +112,12 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
                 delta.x = -delta.x;
             }
 
-            new_window_width = (self.initial_rect.size.w as f64 + delta.x) as i32;
+            // Window dimensions are screen coordinates, always far below
+            // i32::MAX, so the round-trip through f64 never truncates.
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                new_window_width = (f64::from(self.initial_rect.size.w) + delta.x) as i32;
+            }
         }
 
         if self.edges.intersects(ResizeEdge::TOP | ResizeEdge::BOTTOM) {
@@ -111,11 +125,15 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
                 delta.y = -delta.y;
             }
 
-            new_window_height = (self.initial_rect.size.h as f64 + delta.y) as i32;
+            // See the width case above: bounded by screen coordinates.
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                new_window_height = (f64::from(self.initial_rect.size.h) + delta.y) as i32;
+            }
         }
 
         let (min_size, max_size) =
-            compositor::with_states(self.window.toplevel().unwrap().wl_surface(), |states| {
+            compositor::with_states(window_surface(&self.window), |states| {
                 let mut guard = states.cached_state.get::<SurfaceCachedState>();
                 let data = guard.current();
                 (data.min_size, data.max_size)
@@ -140,7 +158,10 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
             new_window_height.max(min_height).min(max_height),
         ));
 
-        let xdg = self.window.toplevel().unwrap();
+        let xdg = self
+            .window
+            .toplevel()
+            .expect("only Window::new_wayland_window is used, so toplevel() is always Some");
         xdg.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Resizing);
             state.size = Some(self.last_window_size);
@@ -151,8 +172,8 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
 
     fn relative_motion(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &RelativeMotionEvent,
     ) {
@@ -161,21 +182,20 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
 
     fn button(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &ButtonEvent,
     ) {
         handle.button(data, event);
-
-        // The button is a button code as defined in the
-        // Linux kernel's linux/input-event-codes.h header file, e.g. BTN_LEFT.
-        const BTN_LEFT: u32 = 0x110;
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
 
-            let xdg = self.window.toplevel().unwrap();
+            let xdg = self
+                .window
+                .toplevel()
+                .expect("only Window::new_wayland_window is used, so toplevel() is always Some");
             xdg.with_pending_state(|state| {
                 state.states.unset(xdg_toplevel::State::Resizing);
                 state.size = Some(self.last_window_size);
@@ -194,103 +214,99 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
 
     fn axis(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         details: AxisFrame,
     ) {
-        handle.axis(data, details)
+        handle.axis(data, details);
     }
 
-    fn frame(
-        &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
-    ) {
+    fn frame(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>) {
         handle.frame(data);
     }
 
     fn gesture_swipe_begin(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureSwipeBeginEvent,
     ) {
-        handle.gesture_swipe_begin(data, event)
+        handle.gesture_swipe_begin(data, event);
     }
 
     fn gesture_swipe_update(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureSwipeUpdateEvent,
     ) {
-        handle.gesture_swipe_update(data, event)
+        handle.gesture_swipe_update(data, event);
     }
 
     fn gesture_swipe_end(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureSwipeEndEvent,
     ) {
-        handle.gesture_swipe_end(data, event)
+        handle.gesture_swipe_end(data, event);
     }
 
     fn gesture_pinch_begin(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GesturePinchBeginEvent,
     ) {
-        handle.gesture_pinch_begin(data, event)
+        handle.gesture_pinch_begin(data, event);
     }
 
     fn gesture_pinch_update(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GesturePinchUpdateEvent,
     ) {
-        handle.gesture_pinch_update(data, event)
+        handle.gesture_pinch_update(data, event);
     }
 
     fn gesture_pinch_end(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GesturePinchEndEvent,
     ) {
-        handle.gesture_pinch_end(data, event)
+        handle.gesture_pinch_end(data, event);
     }
 
     fn gesture_hold_begin(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureHoldBeginEvent,
     ) {
-        handle.gesture_hold_begin(data, event)
+        handle.gesture_hold_begin(data, event);
     }
 
     fn gesture_hold_end(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureHoldEndEvent,
     ) {
-        handle.gesture_hold_end(data, event)
+        handle.gesture_hold_end(data, event);
     }
 
-    fn start_data(&self) -> &PointerGrabStartData<GlideState<BackendData>> {
+    fn start_data(&self) -> &PointerGrabStartData<GlideState> {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut GlideState<BackendData>) {}
+    fn unset(&mut self, _data: &mut GlideState) {}
 }
 
 /// State of the resize operation.
 ///
-/// It is stored inside of WlSurface,
+/// It is stored inside of `WlSurface`,
 /// and can be accessed using [`ResizeSurfaceState::with`]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 enum ResizeSurfaceState {
@@ -316,7 +332,10 @@ impl ResizeSurfaceState {
     {
         compositor::with_states(surface, |states| {
             states.data_map.insert_if_missing(RefCell::<Self>::default);
-            let state = states.data_map.get::<RefCell<Self>>().unwrap();
+            let state = states
+                .data_map
+                .get::<RefCell<Self>>()
+                .expect("inserted unconditionally on the line above");
 
             cb(&mut state.borrow_mut())
         })
@@ -346,7 +365,7 @@ impl ResizeSurfaceState {
 pub fn handle_commit(space: &mut Space<Window>, surface: &WlSurface) -> Option<()> {
     let window = space
         .elements()
-        .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+        .find(|w| window_surface(w) == surface)
         .cloned()?;
 
     let mut window_loc = space.element_location(&window)?;

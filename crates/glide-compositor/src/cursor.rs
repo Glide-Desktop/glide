@@ -4,7 +4,7 @@
 //!
 //! - the client under the pointer can supply its own cursor surface (this is
 //!   how a terminal shows an I-beam over its text area), and
-//! - otherwise we draw the default cursor from the system XCursor theme.
+//! - otherwise we draw the default cursor from the system `XCursor` theme.
 //!
 //! Both are exposed as render elements via [`PointerElement`], which is fed
 //! the current [`CursorImageStatus`] each frame.
@@ -56,7 +56,7 @@ const FALLBACK_ARROW: &[&str] = &[
     "       ##   ",
 ];
 
-/// The default cursor, loaded from the system XCursor theme.
+/// The default cursor, loaded from the system `XCursor` theme.
 pub struct Cursor {
     images: Vec<Image>,
     size: u32,
@@ -84,7 +84,13 @@ impl Cursor {
     /// Picks the image to draw for the given output scale and elapsed time,
     /// advancing through the frames of an animated cursor.
     pub fn image(&self, scale: u32, time: Duration) -> Image {
-        frame(time.as_millis() as u32, self.size * scale, &self.images)
+        // `frame` only ever uses `millis` modulo the animation's total delay
+        // (typically well under a minute), so wrapping every ~49 days of
+        // continuous uptime has no observable effect on which frame is
+        // picked.
+        #[allow(clippy::cast_possible_truncation)]
+        let millis = time.as_millis() as u32;
+        frame(millis, self.size * scale, &self.images)
     }
 }
 
@@ -110,7 +116,7 @@ fn load_theme_images(theme_name: &str) -> Result<Vec<Image>, ThemeError> {
 
 /// Rasterizes [`FALLBACK_ARROW`].
 ///
-/// Pixels are emitted in the byte order XCursor files use, which is also
+/// Pixels are emitted in the byte order `XCursor` files use, which is also
 /// what `Fourcc::Argb8888` expects in memory on a little-endian machine:
 /// B, G, R, A, with alpha premultiplied. Since every pixel here is either
 /// fully opaque or fully transparent, premultiplying is a no-op.
@@ -135,10 +141,15 @@ fn fallback_image() -> Image {
         }
     }
 
+    // FALLBACK_ARROW is a small fixed array (19x13), nowhere near u32::MAX,
+    // so these conversions can never actually fail.
+    let width = u32::try_from(width).expect("FALLBACK_ARROW is a small fixed-size array");
+    let height = u32::try_from(height).expect("FALLBACK_ARROW is a small fixed-size array");
+
     Image {
-        size: height as u32,
-        width: width as u32,
-        height: height as u32,
+        size: height,
+        width,
+        height,
         xhot: 0,
         yhot: 0,
         delay: 0,
@@ -147,13 +158,13 @@ fn fallback_image() -> Image {
     }
 }
 
-/// All images matching the size closest to `size`. An XCursor file holds
+/// All images matching the size closest to `size`. An `XCursor` file holds
 /// several resolutions, and animated cursors hold several frames per
 /// resolution; this narrows to the frames of one resolution.
 fn nearest_images(size: u32, images: &[Image]) -> impl Iterator<Item = &Image> {
     let nearest = images
         .iter()
-        .min_by_key(|image| (size as i32 - image.size as i32).abs())
+        .min_by_key(|image| (size.cast_signed() - image.size.cast_signed()).abs())
         .expect("cursor always has at least the fallback image");
 
     images
@@ -282,9 +293,10 @@ mod tests {
     fn fallback_image_is_well_formed() {
         let image = fallback_image();
 
-        let expected_width = FALLBACK_ARROW.iter().map(|r| r.len()).max().unwrap() as u32;
+        let expected_width =
+            u32::try_from(FALLBACK_ARROW.iter().map(|r| r.len()).max().unwrap()).unwrap();
         assert_eq!(image.width, expected_width);
-        assert_eq!(image.height, FALLBACK_ARROW.len() as u32);
+        assert_eq!(image.height, u32::try_from(FALLBACK_ARROW.len()).unwrap());
 
         // Four bytes per pixel; a mismatch here would be read as a shifted
         // image (or out of bounds) by the renderer.

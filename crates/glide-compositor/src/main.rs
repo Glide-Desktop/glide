@@ -9,14 +9,15 @@ mod input;
 mod logging;
 mod state;
 
-use backend::tty::TtyData;
 use smithay::{
     backend::session::libseat::LibSeatSession,
     reexports::{calloop::EventLoop, wayland_server::Display},
 };
+
+use backend::tty::TtyData;
 pub use state::GlideState;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let log_path = logging::init();
 
     tracing::info!(
@@ -28,15 +29,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(err) = run() {
         // The tty is in graphics mode at this point, so anything printed to
         // the terminal is invisible; the log file is the only place this
-        // will actually be readable.
-        tracing::error!("fatal: {err}");
+        // will actually be readable. anyhow's `{err:#}` prints the full
+        // "caused by" chain, not just the outermost message.
+        tracing::error!("fatal: {err:#}");
         return Err(err);
     }
 
     Ok(())
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> anyhow::Result<()> {
     let (session, notifier) = LibSeatSession::new()?;
 
     // Deliberately not type-annotated: `EventLoop<'l, Data>` carries an
@@ -50,7 +52,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let display = Display::new()?;
 
     let mut state = GlideState::new(
-        TtyData::new(session),
+        TtyData::new(session)?,
         event_loop.handle(),
         event_loop.get_signal(),
         display,
@@ -98,7 +100,7 @@ fn spawn_client() {
     let arg = args.next();
 
     let command = match (flag.as_deref(), arg) {
-        (Some("-c") | Some("--command"), Some(command)) => command,
+        (Some("-c" | "--command"), Some(command)) => command,
         _ => "alacritty".to_string(),
     };
 

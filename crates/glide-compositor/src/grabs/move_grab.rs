@@ -1,9 +1,8 @@
 //! Move grab is the state of a composer during which the client window is being dragged around.
 //!
 //! eg. Usually whenever a user clicks on the app's titlebar and starts dragging, the compositors
-//! enters a MoveSurfaceGrab state.
+//! enters a `MoveSurfaceGrab` state.
 
-use crate::{GlideState, state::Backend};
 use smithay::{
     desktop::Window,
     input::pointer::{
@@ -16,19 +15,23 @@ use smithay::{
     utils::{Logical, Point},
 };
 
-pub struct MoveSurfaceGrab<BackendData: Backend + 'static> {
-    pub start_data: PointerGrabStartData<GlideState<BackendData>>,
+use crate::GlideState;
+
+// The button code as defined in the Linux kernel's
+// linux/input-event-codes.h header file, e.g. BTN_LEFT.
+const BTN_LEFT: u32 = 0x110;
+
+pub struct MoveSurfaceGrab {
+    pub start_data: PointerGrabStartData<GlideState>,
     pub window: Window,
     pub initial_window_location: Point<i32, Logical>,
 }
 
-impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
-    for MoveSurfaceGrab<BackendData>
-{
+impl PointerGrab<GlideState> for MoveSurfaceGrab {
     fn motion(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         _focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
@@ -43,8 +46,8 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
 
     fn relative_motion(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &RelativeMotionEvent,
     ) {
@@ -53,15 +56,11 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
 
     fn button(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &ButtonEvent,
     ) {
         handle.button(data, event);
-
-        // The button is a button code as defined in the
-        // Linux kernel's linux/input-event-codes.h header file, e.g. BTN_LEFT.
-        const BTN_LEFT: u32 = 0x110;
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
             // No more buttons are pressed, release the grab.
@@ -71,96 +70,92 @@ impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
 
     fn axis(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         details: AxisFrame,
     ) {
-        handle.axis(data, details)
+        handle.axis(data, details);
     }
 
-    fn frame(
-        &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
-    ) {
+    fn frame(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>) {
         handle.frame(data);
     }
 
     fn gesture_swipe_begin(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureSwipeBeginEvent,
     ) {
-        handle.gesture_swipe_begin(data, event)
+        handle.gesture_swipe_begin(data, event);
     }
 
     fn gesture_swipe_update(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureSwipeUpdateEvent,
     ) {
-        handle.gesture_swipe_update(data, event)
+        handle.gesture_swipe_update(data, event);
     }
 
     fn gesture_swipe_end(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureSwipeEndEvent,
     ) {
-        handle.gesture_swipe_end(data, event)
+        handle.gesture_swipe_end(data, event);
     }
 
     fn gesture_pinch_begin(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GesturePinchBeginEvent,
     ) {
-        handle.gesture_pinch_begin(data, event)
+        handle.gesture_pinch_begin(data, event);
     }
 
     fn gesture_pinch_update(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GesturePinchUpdateEvent,
     ) {
-        handle.gesture_pinch_update(data, event)
+        handle.gesture_pinch_update(data, event);
     }
 
     fn gesture_pinch_end(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GesturePinchEndEvent,
     ) {
-        handle.gesture_pinch_end(data, event)
+        handle.gesture_pinch_end(data, event);
     }
 
     fn gesture_hold_begin(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureHoldBeginEvent,
     ) {
-        handle.gesture_hold_begin(data, event)
+        handle.gesture_hold_begin(data, event);
     }
 
     fn gesture_hold_end(
         &mut self,
-        data: &mut GlideState<BackendData>,
-        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+        data: &mut GlideState,
+        handle: &mut PointerInnerHandle<'_, GlideState>,
         event: &GestureHoldEndEvent,
     ) {
-        handle.gesture_hold_end(data, event)
+        handle.gesture_hold_end(data, event);
     }
 
-    fn start_data(&self) -> &PointerGrabStartData<GlideState<BackendData>> {
+    fn start_data(&self) -> &PointerGrabStartData<GlideState> {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut GlideState<BackendData>) {}
+    fn unset(&mut self, _data: &mut GlideState) {}
 }

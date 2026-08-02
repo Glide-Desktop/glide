@@ -1,13 +1,6 @@
 mod compositor;
 mod xdg_shell;
 
-use crate::GlideState;
-use crate::state::Backend;
-
-//
-// Wl Seat
-//
-
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::Focus;
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -20,12 +13,18 @@ use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
 };
 
-impl<BackendData: Backend + 'static> SeatHandler for GlideState<BackendData> {
+use crate::GlideState;
+
+//
+// Wl Seat
+//
+
+impl SeatHandler for GlideState {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
-    fn seat_state(&mut self) -> &mut SeatState<GlideState<BackendData>> {
+    fn seat_state(&mut self) -> &mut SeatState<GlideState> {
         &mut self.seat_state
     }
 
@@ -48,18 +47,18 @@ impl<BackendData: Backend + 'static> SeatHandler for GlideState<BackendData> {
 // Wl Data Device
 //
 
-impl<BackendData: Backend + 'static> SelectionHandler for GlideState<BackendData> {
+impl SelectionHandler for GlideState {
     type SelectionUserData = ();
 }
 
-impl<BackendData: Backend + 'static> DataDeviceHandler for GlideState<BackendData> {
+impl DataDeviceHandler for GlideState {
     fn data_device_state(&mut self) -> &mut DataDeviceState {
         &mut self.data_device_state
     }
 }
 
-impl<BackendData: Backend + 'static> DndGrabHandler for GlideState<BackendData> {}
-impl<BackendData: Backend + 'static> WaylandDndGrabHandler for GlideState<BackendData> {
+impl DndGrabHandler for GlideState {}
+impl WaylandDndGrabHandler for GlideState {
     fn dnd_requested<S: Source>(
         &mut self,
         source: S,
@@ -70,8 +69,16 @@ impl<BackendData: Backend + 'static> WaylandDndGrabHandler for GlideState<Backen
     ) {
         match type_ {
             GrabType::Pointer => {
-                let ptr = seat.get_pointer().unwrap();
-                let start_data = ptr.grab_start_data().unwrap();
+                let ptr = seat
+                    .get_pointer()
+                    .expect("a pointer was added in GlideState::new");
+                // The Wayland DnD protocol only allows starting a drag from
+                // an already-active implicit pointer grab (e.g. the client's
+                // own button-press grab on the drag source), so one must
+                // exist here.
+                let start_data = ptr
+                    .grab_start_data()
+                    .expect("dnd_requested is only called while a pointer grab is active");
 
                 // create a dnd grab to start the operation
                 let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);
@@ -89,6 +96,6 @@ impl<BackendData: Backend + 'static> WaylandDndGrabHandler for GlideState<Backen
 // Wl Output & Xdg Output
 //
 
-impl<BackendData: Backend + 'static> OutputHandler for GlideState<BackendData> {}
+impl OutputHandler for GlideState {}
 
-smithay::delegate_dispatch2!(@<BackendData: Backend + 'static> GlideState<BackendData>);
+smithay::delegate_dispatch2!(GlideState);

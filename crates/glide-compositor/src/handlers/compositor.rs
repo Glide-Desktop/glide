@@ -1,8 +1,3 @@
-use crate::{
-    GlideState,
-    grabs::resize_grab,
-    state::{Backend, ClientState},
-};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     reexports::wayland_server::{
@@ -19,15 +14,24 @@ use smithay::{
     },
 };
 
+use crate::{
+    GlideState,
+    grabs::resize_grab,
+    state::{ClientState, window_surface},
+};
+
 use super::xdg_shell;
 
-impl<BackendData: Backend + 'static> CompositorHandler for GlideState<BackendData> {
+impl CompositorHandler for GlideState {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        &client
+            .get_data::<ClientState>()
+            .expect("every client is inserted with a ClientState in state.rs")
+            .compositor_state
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -37,25 +41,21 @@ impl<BackendData: Backend + 'static> CompositorHandler for GlideState<BackendDat
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self
-                .space
-                .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
-            {
+            if let Some(window) = self.space.elements().find(|w| window_surface(w) == &root) {
                 window.on_commit();
             }
-        };
+        }
 
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
         resize_grab::handle_commit(&mut self.space, surface);
     }
 }
 
-impl<BackendData: Backend + 'static> BufferHandler for GlideState<BackendData> {
+impl BufferHandler for GlideState {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
-impl<BackendData: Backend + 'static> ShmHandler for GlideState<BackendData> {
+impl ShmHandler for GlideState {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
     }

@@ -33,22 +33,19 @@ pub fn init() -> Option<PathBuf> {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
 
-    match open_log_file() {
-        Some((path, file)) => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(file)
-                .with_ansi(false)
-                .init();
-            Some(path)
-        }
-        None => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_ansi(false)
-                .init();
-            None
-        }
+    if let Some((path, file)) = open_log_file() {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(file)
+            .with_ansi(false)
+            .init();
+        Some(path)
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .init();
+        None
     }
 }
 
@@ -58,7 +55,7 @@ pub fn init() -> Option<PathBuf> {
 /// which matters when a fix has to be judged against how the last run
 /// behaved.
 fn open_log_file() -> Option<(PathBuf, File)> {
-    let dir = log_dir()?;
+    let dir = log_dir();
     std::fs::create_dir_all(&dir).ok()?;
 
     let path = dir.join("glide.log");
@@ -70,12 +67,15 @@ fn open_log_file() -> Option<(PathBuf, File)> {
     Some((path, file))
 }
 
-fn log_dir() -> Option<PathBuf> {
+/// Directory to log into: `$XDG_STATE_HOME/glide`, falling back to
+/// `$HOME/.local/state/glide`, then `/tmp/glide`. Always returns a path;
+/// `open_log_file` is what may fail (e.g. the directory can't be created).
+fn log_dir() -> PathBuf {
     if let Some(state) = std::env::var_os("XDG_STATE_HOME").filter(|s| !s.is_empty()) {
-        return Some(PathBuf::from(state).join("glide"));
+        return PathBuf::from(state).join("glide");
     }
     if let Some(home) = std::env::var_os("HOME").filter(|s| !s.is_empty()) {
-        return Some(PathBuf::from(home).join(".local/state/glide"));
+        return PathBuf::from(home).join(".local/state/glide");
     }
-    Some(PathBuf::from("/tmp/glide"))
+    PathBuf::from("/tmp/glide")
 }

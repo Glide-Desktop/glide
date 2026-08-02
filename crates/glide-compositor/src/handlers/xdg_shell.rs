@@ -26,10 +26,10 @@ use smithay::{
 use crate::{
     GlideState,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
-    state::Backend,
+    state::window_surface,
 };
 
-impl<BackendData: Backend + 'static> XdgShellHandler for GlideState<BackendData> {
+impl XdgShellHandler for GlideState {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
     }
@@ -61,20 +61,32 @@ impl<BackendData: Backend + 'static> XdgShellHandler for GlideState<BackendData>
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let seat: Seat<GlideState<BackendData>> = Seat::from_resource(&seat).unwrap();
+        // The protocol guarantees `seat` references a live object: a client
+        // cannot reference a destroyed/foreign id, so dispatch would have
+        // rejected the request before it ever reached this handler.
+        let seat: Seat<GlideState> =
+            Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
 
         let wl_surface = surface.wl_surface();
 
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat.get_pointer().unwrap();
+            let pointer = seat
+                .get_pointer()
+                .expect("a pointer was added in GlideState::new");
 
+            // `check_grab` already confirmed this surface's client holds the
+            // current pointer grab, i.e. the window backing it is focused
+            // and therefore mapped.
             let window = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
-                .unwrap()
+                .find(|w| window_surface(w) == wl_surface)
+                .expect("check_grab confirmed this surface's window is focused, hence mapped")
                 .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
+            let initial_window_location = self
+                .space
+                .element_location(&window)
+                .expect("window was just found in space.elements(), so it has a location");
 
             let grab = MoveSurfaceGrab {
                 start_data,
@@ -93,20 +105,26 @@ impl<BackendData: Backend + 'static> XdgShellHandler for GlideState<BackendData>
         serial: Serial,
         edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat: Seat<GlideState<BackendData>> = Seat::from_resource(&seat).unwrap();
+        let seat: Seat<GlideState> =
+            Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
 
         let wl_surface = surface.wl_surface();
 
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat.get_pointer().unwrap();
+            let pointer = seat
+                .get_pointer()
+                .expect("a pointer was added in GlideState::new");
 
             let window = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
-                .unwrap()
+                .find(|w| window_surface(w) == wl_surface)
+                .expect("check_grab confirmed this surface's window is focused, hence mapped")
                 .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
+            let initial_window_location = self
+                .space
+                .element_location(&window)
+                .expect("window was just found in space.elements(), so it has a location");
             let initial_window_size = window.geometry().size;
 
             surface.with_pending_state(|state| {
@@ -127,15 +145,18 @@ impl<BackendData: Backend + 'static> XdgShellHandler for GlideState<BackendData>
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // TODO popup grabs
+        // Popup grabs (keeping a popup chain focused and closing it on
+        // outside clicks) aren't implemented yet. Out of scope until window
+        // management (M2) needs it -- right now nothing creates a popup
+        // chain deep enough to make the lack of a grab noticeable.
     }
 }
 
-fn check_grab<BackendData: Backend + 'static>(
-    seat: &Seat<GlideState<BackendData>>,
+fn check_grab(
+    seat: &Seat<GlideState>,
     surface: &WlSurface,
     serial: Serial,
-) -> Option<PointerGrabStartData<GlideState<BackendData>>> {
+) -> Option<PointerGrabStartData<GlideState>> {
     let pointer = seat.get_pointer()?;
 
     // Check that this surface has a click grab.
@@ -159,21 +180,24 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     // Handle toplevel commits.
     if let Some(window) = space
         .elements()
-        .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+        .find(|w| window_surface(w) == surface)
         .cloned()
     {
         let initial_configure_sent = with_states(surface, |states| {
             states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
-                .unwrap()
+                .expect("smithay inserts XdgToplevelSurfaceData when the toplevel is created")
                 .lock()
-                .unwrap()
+                .expect("single-threaded event loop, this mutex is never poisoned")
                 .initial_configure_sent
         });
 
         if !initial_configure_sent {
-            window.toplevel().unwrap().send_configure();
+            window
+                .toplevel()
+                .expect("only Window::new_wayland_window is used, so toplevel() is always Some")
+                .send_configure();
         }
     }
 
@@ -193,22 +217,31 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     }
 }
 
-impl<BackendData: Backend + 'static> GlideState<BackendData> {
+impl GlideState {
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let Some(window) = self
-            .space
-            .elements()
-            .find(|w| w.toplevel().unwrap().wl_surface() == &root)
-        else {
+        let Some(window) = self.space.elements().find(|w| window_surface(w) == &root) else {
             return;
         };
 
-        let output = self.space.outputs().next().unwrap();
-        let output_geo = self.space.output_geometry(output).unwrap();
-        let window_geo = self.space.element_geometry(window).unwrap();
+        // No output is mapped before the first connector is set up in
+        // device_added(), and in principle none may ever be mapped on
+        // headless hardware -- unconstraining a popup without a screen to
+        // fit it into has nothing meaningful to do, so skip it rather than
+        // panicking.
+        let Some(output) = self.space.outputs().next() else {
+            return;
+        };
+        let output_geo = self
+            .space
+            .output_geometry(output)
+            .expect("output came from space.outputs(), so it has a geometry");
+        let window_geo = self
+            .space
+            .element_geometry(window)
+            .expect("window came from space.elements(), so it has a geometry");
 
         // The target geometry for the positioner should be relative to its parent's geometry, so
         // we will compute that here.

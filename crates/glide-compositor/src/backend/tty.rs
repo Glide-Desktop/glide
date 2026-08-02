@@ -1,5 +1,29 @@
+//! The tty backend: DRM/KMS modesetting and the render loop.
+//!
+//! Glide owns the whole display pipeline here — there is no host compositor
+//! to lean on, so this module is responsible for everything from opening the
+//! GPU to putting pixels on screen.
+//!
+//! # Render loop
+//!
+//! Once [`GlideState::device_added`] has set up a [`SurfaceData`] per
+//! connected output, repaints are driven by one of two paths:
+//!
+//! - **[`DrmEvent::VBlank`] → [`GlideState::frame_finish`] → [`GlideState::render_surface`]**:
+//!   the normal path. A previous [`render_surface`](GlideState::render_surface)
+//!   call found damage, submitted a frame via `queue_frame`, and this is the
+//!   hardware confirming it was scanned out.
+//! - **[`GlideState::schedule_repaint`] (a timer)**: used when a render finds
+//!   *no* damage. `queue_frame` is skipped in that case, so no `VBlank` would
+//!   ever arrive to drive the next attempt — the timer polls again after
+//!   roughly one refresh interval instead.
+//!
+//! Both paths converge on the same `render_surface`, so there is exactly one
+//! place that decides what ends up on screen.
+
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
+use anyhow::{Context, anyhow};
 use smithay::{
     backend::{
         allocator::{
@@ -26,7 +50,10 @@ use smithay::{
         },
         udev::{all_gpus, primary_gpu},
     },
-    desktop::space::{SpaceRenderElements, space_render_elements},
+    desktop::{
+        Space, Window,
+        space::{SpaceRenderElements, space_render_elements},
+    },
     input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
@@ -40,7 +67,7 @@ use smithay::{
         wayland_server::backend::GlobalId,
     },
     render_elements,
-    utils::{DeviceFd, IsAlive, Scale, Transform},
+    utils::{DeviceFd, IsAlive, Logical, Point, Scale, Transform},
     wayland::compositor,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -48,7 +75,6 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use crate::{
     GlideState,
     cursor::{Cursor, PointerElement, PointerRenderElement},
-    state::Backend,
 };
 
 /// #295396, chosen specifically to be unmistakable from the frozen text
@@ -105,7 +131,7 @@ struct DeviceData {
     drm_scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
     gles_renderer: GlesRenderer,
-    /// The default cursor, loaded from the system XCursor theme.
+    /// The default cursor, loaded from the system `XCursor` theme.
     cursor: Cursor,
     /// Uploaded cursor images, keyed by the source image. Animated cursors
     /// cycle through a handful of frames, and re-uploading the same pixels
@@ -131,30 +157,48 @@ pub struct TtyData {
 }
 
 impl TtyData {
-    pub fn new(session: LibSeatSession) -> Self {
+    /// Finds the primary GPU for the session's seat. Fails only if udev
+    /// enumeration itself fails (e.g. `/sys` unavailable) or no GPU is
+    /// present at all — both genuine environment problems, not bugs, so they
+    /// propagate as errors rather than panicking.
+    pub fn new(session: LibSeatSession) -> anyhow::Result<Self> {
         let seat_name = session.seat();
-        let primary_gpu_path = primary_gpu(&seat_name)
-            .unwrap()
-            .or_else(|| all_gpus(&seat_name).unwrap().into_iter().next())
-            .expect("no GPU found on this seat");
-        let primary_gpu =
-            DrmNode::from_path(&primary_gpu_path).expect("primary GPU path is not a DRM node");
+        let primary_gpu_path = match primary_gpu(&seat_name)
+            .context("failed to enumerate the primary GPU via udev")?
+        {
+            Some(path) => path,
+            None => all_gpus(&seat_name)
+                .context("failed to enumerate GPUs via udev")?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("no GPU found on seat {seat_name}"))?,
+        };
+        let primary_gpu = DrmNode::from_path(&primary_gpu_path)
+            .with_context(|| format!("{} is not a DRM node", primary_gpu_path.display()))?;
 
-        Self {
+        Ok(Self {
             session,
             primary_gpu,
             primary_gpu_path,
             device: None,
-        }
+        })
     }
 }
 
-impl Backend for TtyData {
-    fn seat_name(&self) -> String {
+impl TtyData {
+    /// Name of the seat this backend is bound to, as known to logind/seatd
+    /// (e.g. `"seat0"`). Used both as the `wl_seat` name advertised to
+    /// clients and to assign libinput devices to the correct physical seat.
+    pub fn seat_name(&self) -> String {
         self.session.seat()
     }
 
-    fn change_vt(&mut self, vt: i32) {
+    /// Switch to a different virtual terminal.
+    ///
+    /// Not optional in practice: taking control of the session puts the tty
+    /// into `K_OFF`, so the kernel stops handling `Ctrl+Alt+Fn` itself. If
+    /// this is never called, a running compositor leaves no way off the tty.
+    pub fn change_vt(&mut self, vt: i32) {
         if let Err(err) = self.session.change_vt(vt) {
             tracing::error!(vt, "failed to switch vt: {}", err);
         }
@@ -164,10 +208,10 @@ impl Backend for TtyData {
 /// Set up the libinput event source and session pause/resume handling for
 /// the tty backend.
 pub fn init_tty(
-    event_loop: &mut EventLoop<GlideState<TtyData>>,
-    state: &mut GlideState<TtyData>,
+    event_loop: &mut EventLoop<GlideState>,
+    state: &mut GlideState,
     notifier: LibSeatSessionNotifier,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let seat_name = state.backend_data.seat_name();
     let session = state.backend_data.session.clone();
 
@@ -175,14 +219,16 @@ pub fn init_tty(
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.into());
     libinput_context
         .udev_assign_seat(&seat_name)
-        .map_err(|()| "failed to assign libinput seat")?;
+        .map_err(|()| anyhow!("failed to assign libinput seat {seat_name}"))?;
     let libinput_backend = LibinputInputBackend::new(libinput_context.clone());
 
     event_loop
         .handle()
-        .insert_source(libinput_backend, move |event, _, state| {
+        .insert_source(libinput_backend, move |event, (), state| {
             state.process_input_event(event);
-        })?;
+        })
+        .map_err(|e| e.error)
+        .context("failed to register the libinput event source")?;
 
     event_loop
         .handle()
@@ -222,45 +268,162 @@ pub fn init_tty(
                     state.render_surface(crtc);
                 }
             }
-        })?;
+        })
+        .map_err(|e| e.error)
+        .context("failed to register the libseat session-event source")?;
 
     Ok(())
 }
 
-impl GlideState<TtyData> {
+/// A client-provided cursor surface carries a hotspot: the offset within the
+/// image that is the actual "point" of the pointer. The image has to be
+/// drawn shifted back by it. Named shapes (the themed default) have no
+/// client-supplied hotspot, so they draw at `(0, 0)`.
+fn cursor_hotspot(status: &CursorImageStatus) -> Point<i32, Logical> {
+    match status {
+        CursorImageStatus::Surface(surface) => compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .get::<std::sync::Mutex<CursorImageAttributes>>()
+                .map(|attrs| {
+                    attrs
+                        .lock()
+                        .expect("single-threaded event loop, this mutex is never poisoned")
+                        .hotspot
+                })
+                .unwrap_or_default()
+        }),
+        _ => (0, 0).into(),
+    }
+}
+
+/// Renders (or reuses a cached render of) the themed cursor image for the
+/// given output scale and elapsed time. Animated cursors cycle through a
+/// handful of frames, so `cursor_buffers` is checked before uploading again.
+fn resolve_cursor_buffer(
+    cursor: &Cursor,
+    cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>,
+    scale: u32,
+    elapsed: Duration,
+) -> MemoryRenderBuffer {
+    let image = cursor.image(scale, elapsed);
+    if let Some((_, buffer)) = cursor_buffers.iter().find(|(cached, _)| cached == &image) {
+        return buffer.clone();
+    }
+
+    let buffer = MemoryRenderBuffer::from_slice(
+        &image.pixels_rgba,
+        Fourcc::Argb8888,
+        (image.width.cast_signed(), image.height.cast_signed()),
+        1,
+        Transform::Normal,
+        None,
+    );
+    cursor_buffers.push((image, buffer.clone()));
+    buffer
+}
+
+/// Collects everything to draw for one frame: the cursor (always on top,
+/// since `render_frame` wants elements front-to-back) followed by the
+/// windows in `space`. Returns `None` if collecting the space's render
+/// elements fails, having already logged why.
+fn build_render_elements(
+    gles_renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    pointer_element: &mut PointerElement,
+    pointer_location: Point<f64, Logical>,
+    cursor_hotspot: Point<i32, Logical>,
+    scale: Scale<f64>,
+    output: &Output,
+) -> Option<Vec<GlideRenderElements>> {
+    let mut elements: Vec<GlideRenderElements> = Vec::new();
+
+    let cursor_position = (pointer_location - cursor_hotspot.to_f64())
+        .to_physical(scale)
+        .to_i32_round();
+    elements.extend(
+        pointer_element
+            .render_elements::<PointerRenderElement<GlesRenderer>>(
+                gles_renderer,
+                cursor_position,
+                scale,
+                1.0,
+            )
+            .into_iter()
+            .map(GlideRenderElements::Pointer),
+    );
+
+    match space_render_elements(gles_renderer, [space], output, 1.0) {
+        Ok(space_elements) => {
+            elements.extend(space_elements.into_iter().map(GlideRenderElements::Space));
+            Some(elements)
+        }
+        Err(err) => {
+            tracing::error!(?err, "failed to collect render elements");
+            None
+        }
+    }
+}
+
+impl GlideState {
     /// Opens the primary GPU, sets up EGL/GLES rendering and DRM output
     /// management, and initializes whichever connectors are already
     /// plugged in. Must be called once, after [`init_tty`].
-    pub fn device_added(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary GPU cannot be opened, if EGL/GLES
+    /// initialization fails, or if scanning/initializing connectors fails —
+    /// all genuine environment problems (missing permissions, unsupported
+    /// hardware) rather than bugs.
+    pub fn device_added(&mut self) -> anyhow::Result<()> {
         let path = self.backend_data.primary_gpu_path.clone();
         let node = self.backend_data.primary_gpu;
 
         tracing::info!(?path, ?node, "opening primary gpu");
 
-        let fd = self.backend_data.session.open(
-            &path,
-            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
-        )?;
+        let fd = self
+            .backend_data
+            .session
+            .open(
+                &path,
+                OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
+            )
+            .with_context(|| format!("failed to open {}", path.display()))?;
         let fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
         // `true` requests atomic modesetting, with an internal fallback to
         // the legacy KMS API if the driver does not support it.
-        let (drm_device, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
-        let gbm_device = GbmDevice::new(fd)?;
+        let (drm_device, drm_notifier) =
+            DrmDevice::new(fd.clone(), true).context("failed to initialize the DRM device")?;
+        let gbm_device = GbmDevice::new(fd).context("failed to initialize the GBM device")?;
 
-        self.loop_handle.insert_source(
-            drm_notifier,
-            move |event, metadata, state| match event {
+        self.loop_handle
+            .insert_source(drm_notifier, move |event, metadata, state| match event {
                 DrmEvent::VBlank(crtc) => state.frame_finish(crtc, metadata),
                 DrmEvent::Error(err) => tracing::error!("drm error: {:?}", err),
-            },
-        )?;
+            })
+            .context("failed to register the DRM event source")?;
 
         // Single GPU: the same device drives both KMS (modesetting) and
         // rendering, so there is no separate render node to juggle here.
-        let egl_display = unsafe { EGLDisplay::new(gbm_device.clone())? };
-        let egl_context = EGLContext::new(&egl_display)?;
-        let gles_renderer = unsafe { GlesRenderer::new(egl_context)? };
+        //
+        // SAFETY: `EGLDisplay::new`'s contract is about *other* code also
+        // calling `eglGetPlatformDisplay` on the same native display and
+        // then tearing it down via `eglTerminate` behind smithay's back.
+        // `gbm_device` is used exclusively through this smithay-owned
+        // `EGLDisplay` for the remainder of the process, so that can't
+        // happen here.
+        let egl_display = unsafe { EGLDisplay::new(gbm_device.clone()) }
+            .context("failed to create an EGL display for the GBM device")?;
+        let egl_context =
+            EGLContext::new(&egl_display).context("failed to create an EGL context")?;
+        // SAFETY: `GlesRenderer::new`'s contract is that `egl_context` must
+        // not be active on another thread. Glide is single-threaded (one
+        // event loop, no rendering threads), and `egl_context` was just
+        // created above and has not been shared anywhere yet.
+        let gles_renderer = unsafe { GlesRenderer::new(egl_context) }
+            .context("failed to create the GLES renderer")?;
 
         let allocator = GbmAllocator::new(
             gbm_device.clone(),
@@ -299,16 +462,17 @@ impl GlideState<TtyData> {
     /// Scans for connected connectors and initializes an output for each one
     /// found. Only handles the initial state at startup; reacting to
     /// connectors being plugged/unplugged afterwards is M1.4.
-    fn scan_connectors(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn scan_connectors(&mut self) -> anyhow::Result<()> {
         let events: Vec<_> = {
             let device = self
                 .backend_data
                 .device
                 .as_mut()
-                .ok_or("device not initialized")?;
+                .expect("device_added() always sets backend_data.device before calling this");
             device
                 .drm_scanner
-                .scan_connectors(device.drm_output_manager.device())?
+                .scan_connectors(device.drm_output_manager.device())
+                .context("failed to scan DRM connectors")?
                 .into_iter()
                 .collect()
         };
@@ -320,7 +484,7 @@ impl GlideState<TtyData> {
             } = event
             {
                 tracing::info!(?crtc, interface = ?connector.interface(), "connector connected");
-                self.connector_connected(connector, crtc)?;
+                self.connector_connected(&connector, crtc)?;
             }
         }
 
@@ -329,18 +493,20 @@ impl GlideState<TtyData> {
 
     fn connector_connected(
         &mut self,
-        connector: connector::Info,
+        connector: &connector::Info,
         crtc: crtc::Handle,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         let mode_id = connector
             .modes()
             .iter()
             .position(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
             .unwrap_or(0);
-        let drm_mode = *connector
-            .modes()
-            .get(mode_id)
-            .ok_or("connector has no modes")?;
+        let drm_mode = *connector.modes().get(mode_id).ok_or_else(|| {
+            anyhow!(
+                "connector {:?} advertises no modes at all",
+                connector.interface()
+            )
+        })?;
         let wl_mode = WlMode::from(drm_mode);
 
         let output_name = format!(
@@ -353,14 +519,14 @@ impl GlideState<TtyData> {
         let output = Output::new(
             output_name,
             PhysicalProperties {
-                size: (phys_w as i32, phys_h as i32).into(),
+                size: (phys_w.cast_signed(), phys_h.cast_signed()).into(),
                 subpixel: connector.subpixel().into(),
                 make: "Unknown".into(),
                 model: "Unknown".into(),
                 serial_number: "Unknown".into(),
             },
         );
-        let global = output.create_global::<GlideState<TtyData>>(&self.display_handle);
+        let global = output.create_global::<GlideState>(&self.display_handle);
         output.set_preferred(wl_mode);
         output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
         self.space.map_output(&output, (0, 0));
@@ -369,7 +535,7 @@ impl GlideState<TtyData> {
             .backend_data
             .device
             .as_mut()
-            .ok_or("device not initialized")?;
+            .expect("device_added() always sets backend_data.device before calling this");
 
         let drm_output = device
             .drm_output_manager
@@ -382,7 +548,8 @@ impl GlideState<TtyData> {
                 None,
                 &mut device.gles_renderer,
                 &DrmOutputRenderElements::default(),
-            )?;
+            )
+            .map_err(|err| anyhow!("failed to initialize DRM output: {err}"))?;
 
         device.surfaces.insert(
             crtc,
@@ -430,35 +597,14 @@ impl GlideState<TtyData> {
             return;
         }
 
-        // A client can hand us a cursor surface and then die before we next
-        // render. Fall back to the themed cursor rather than referencing a
-        // dead surface.
-        if let CursorImageStatus::Surface(surface) = &self.cursor_status
-            && !surface.alive()
-        {
-            self.cursor_status = CursorImageStatus::default_named();
-        }
+        self.reset_dead_cursor_surface();
 
         let pointer_location = self
             .seat
             .get_pointer()
             .map(|pointer| pointer.current_location())
             .unwrap_or_default();
-
-        // A client-provided cursor surface carries a hotspot: the offset
-        // within the image that is the actual "point" of the pointer. The
-        // image has to be drawn shifted back by it.
-        let cursor_hotspot = match &self.cursor_status {
-            CursorImageStatus::Surface(surface) => compositor::with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<std::sync::Mutex<CursorImageAttributes>>()
-                    .map(|attrs| attrs.lock().unwrap().hotspot)
-                    .unwrap_or_default()
-            }),
-            _ => (0, 0).into(),
-        };
-
+        let cursor_hotspot = cursor_hotspot(&self.cursor_status);
         let cursor_status = self.cursor_status.clone();
         let elapsed = self.start_time.elapsed();
 
@@ -493,54 +639,26 @@ impl GlideState<TtyData> {
         let output = surface.output.clone();
         let scale = Scale::from(output.current_scale().fractional_scale());
 
-        // Upload (or reuse) the themed cursor image for this frame.
-        let image = cursor.image(output.current_scale().integer_scale() as u32, elapsed);
-        let buffer = match cursor_buffers.iter().find(|(cached, _)| cached == &image) {
-            Some((_, buffer)) => buffer.clone(),
-            None => {
-                let buffer = MemoryRenderBuffer::from_slice(
-                    &image.pixels_rgba,
-                    Fourcc::Argb8888,
-                    (image.width as i32, image.height as i32),
-                    1,
-                    Transform::Normal,
-                    None,
-                );
-                cursor_buffers.push((image, buffer.clone()));
-                buffer
-            }
-        };
-        pointer_element.set_buffer(buffer);
+        let cursor_buffer = resolve_cursor_buffer(
+            cursor,
+            cursor_buffers,
+            output.current_scale().integer_scale().cast_unsigned(),
+            elapsed,
+        );
+        pointer_element.set_buffer(cursor_buffer);
         pointer_element.set_status(cursor_status);
 
-        let mut elements: Vec<GlideRenderElements> = Vec::new();
-
-        // `render_frame` wants elements front-to-back, so the cursor — which
-        // is always on top — has to come first.
-        let cursor_position = (pointer_location - cursor_hotspot.to_f64())
-            .to_physical(scale)
-            .to_i32_round();
-        elements.extend(
-            pointer_element
-                .render_elements::<PointerRenderElement<GlesRenderer>>(
-                    gles_renderer,
-                    cursor_position,
-                    scale,
-                    1.0,
-                )
-                .into_iter()
-                .map(GlideRenderElements::Pointer),
-        );
-
-        match space_render_elements(gles_renderer, [&self.space], &output, 1.0) {
-            Ok(space_elements) => {
-                elements.extend(space_elements.into_iter().map(GlideRenderElements::Space))
-            }
-            Err(err) => {
-                tracing::error!(?err, "failed to collect render elements");
-                return;
-            }
-        }
+        let Some(elements) = build_render_elements(
+            gles_renderer,
+            &self.space,
+            pointer_element,
+            pointer_location,
+            cursor_hotspot,
+            scale,
+            &output,
+        ) else {
+            return;
+        };
 
         let render_result = surface.drm_output.render_frame(
             gles_renderer,
@@ -572,13 +690,13 @@ impl GlideState<TtyData> {
                         self.start_time.elapsed(),
                         Some(Duration::ZERO),
                         |_, _| Some(output.clone()),
-                    )
+                    );
                 });
             }
             Ok(_) => {
                 // No damage since the last frame: `queue_frame` was
-                // deliberately skipped, so no VBlank will arrive on its own
-                // to drive the next repaint. Poll again shortly instead.
+                // deliberately skipped, so no `VBlank` will arrive on its
+                // own to drive the next repaint. Poll again shortly instead.
                 self.schedule_repaint(crtc, &output);
             }
             Err(err) => {
@@ -588,10 +706,21 @@ impl GlideState<TtyData> {
         }
     }
 
+    /// A client can hand us a cursor surface and then die before we next
+    /// render. Falls back to the themed cursor rather than referencing a
+    /// dead surface.
+    fn reset_dead_cursor_surface(&mut self) {
+        if let CursorImageStatus::Surface(surface) = &self.cursor_status
+            && !surface.alive()
+        {
+            self.cursor_status = CursorImageStatus::default_named();
+        }
+    }
+
     /// Arms a one-shot timer to retry rendering `crtc` after approximately
     /// one refresh interval, unless one is already pending. Used when a
     /// render finds no damage (and so never calls `queue_frame`, meaning no
-    /// VBlank will arrive to drive the next attempt) or hits a transient
+    /// `VBlank` will arrive to drive the next attempt) or hits a transient
     /// error.
     fn schedule_repaint(&mut self, crtc: crtc::Handle, output: &Output) {
         let Some(device) = self.backend_data.device.as_mut() else {
@@ -606,12 +735,13 @@ impl GlideState<TtyData> {
 
         let frame_duration = output
             .current_mode()
-            .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
-            .unwrap_or(Duration::from_millis(16));
+            .map_or(Duration::from_millis(16), |mode| {
+                Duration::from_secs_f64(1_000f64 / f64::from(mode.refresh))
+            });
 
         let token = self
             .loop_handle
-            .insert_source(Timer::from_duration(frame_duration), move |_, _, state| {
+            .insert_source(Timer::from_duration(frame_duration), move |_, (), state| {
                 if let Some(device) = state.backend_data.device.as_mut() {
                     if let Some(surface) = device.surfaces.get_mut(&crtc) {
                         surface.pending_repaint = None;

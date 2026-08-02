@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "glide"
 path = "src/main.rs"
@@ -16,6 +19,7 @@ bitflags.workspace = true
 smithay-drm-extras.workspace = true
 xcursor.workspace = true
 thiserror.workspace = true
+anyhow.workspace = true
 
 [dependencies.smithay]
 workspace = true

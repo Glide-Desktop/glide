@@ -2,7 +2,11 @@ use std::{ffi::OsString, sync::Arc};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState, keyboard::Keycode, pointer::CursorImageStatus},
+    input::{
+        Seat, SeatState,
+        keyboard::{Keycode, XkbConfig},
+        pointer::CursorImageStatus,
+    },
     reexports::{
         calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -22,32 +26,10 @@ use smithay::{
     },
 };
 
-/// Implemented by a backend driving the display and input.
-///
-/// `GlideState` is generic over the backend so backend-specific data can live
-/// alongside the shared compositor state without leaking into protocol
-/// handler implementations, which are written once against `GlideState<B>`
-/// for any `B: Backend`.
-///
-/// Note that [`TtyData`](crate::backend::tty::TtyData) is currently the only
-/// implementor: the nested winit backend was removed once Glide started
-/// running exclusively from a bare tty.
-pub trait Backend {
-    /// Name of the seat this backend is bound to, as known to logind/seatd
-    /// (e.g. `"seat0"`). Used both as the `wl_seat` name advertised to
-    /// clients and to assign libinput devices to the correct physical seat.
-    fn seat_name(&self) -> String;
+use crate::backend::tty::TtyData;
 
-    /// Switch to a different virtual terminal.
-    ///
-    /// Not optional in practice: taking control of the session puts the tty
-    /// into `K_OFF`, so the kernel stops handling `Ctrl+Alt+Fn` itself. If
-    /// this does nothing, a running compositor leaves no way off the tty.
-    fn change_vt(&mut self, vt: i32);
-}
-
-pub struct GlideState<BackendData: Backend + 'static> {
-    pub backend_data: BackendData,
+pub struct GlideState {
+    pub backend_data: TtyData,
 
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
@@ -56,7 +38,7 @@ pub struct GlideState<BackendData: Backend + 'static> {
     pub space: Space<Window>,
     pub loop_signal: LoopSignal,
     /// Used by backends (currently just tty) to schedule follow-up work from
-    /// inside event source callbacks, e.g. a repaint timer after a VBlank.
+    /// inside event source callbacks, e.g. a repaint timer after a `VBlank`.
     pub loop_handle: LoopHandle<'static, Self>,
 
     // Smithay State
@@ -64,7 +46,7 @@ pub struct GlideState<BackendData: Backend + 'static> {
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
-    pub seat_state: SeatState<GlideState<BackendData>>,
+    pub seat_state: SeatState<GlideState>,
     pub data_device_state: DataDeviceState,
     pub popups: PopupManager,
 
@@ -86,7 +68,7 @@ pub struct GlideState<BackendData: Backend + 'static> {
     pub suppressed_keys: Vec<Keycode>,
 }
 
-impl<BackendData: Backend + 'static> GlideState<BackendData> {
+impl GlideState {
     /// `loop_handle` and `loop_signal` are taken already-extracted from the
     /// caller's `EventLoop` (rather than `&mut EventLoop<Self>` itself) on
     /// purpose: `EventLoop<'l, Data>` carries an explicit lifetime since
@@ -97,8 +79,16 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
     /// lets normal inference resolve the event loop's own lifetime to
     /// `'static` directly (this is also the pattern anvil's `AnvilState::init`
     /// uses).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default XKB keymap fails to compile, if a `wayland-N`
+    /// socket cannot be created in `XDG_RUNTIME_DIR`, or if either event
+    /// source fails to register with the event loop. None of these are
+    /// expected to fail under normal operation.
+    #[must_use]
     pub fn new(
-        backend_data: BackendData,
+        backend_data: TtyData,
         loop_handle: LoopHandle<'static, Self>,
         loop_signal: LoopSignal,
         display: Display<Self>,
@@ -128,9 +118,12 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, seat_name);
 
-        // Notify clients that we have a keyboard, for the sake of the example we assume that keyboard is always present.
-        // You may want to track keyboard hot-plug in real compositor.
-        seat.add_keyboard(Default::default(), 200, 25).unwrap();
+        // Notify clients that we have a keyboard. Real hardware hot-plug
+        // (adding/removing keyboards after startup) is out of scope for now;
+        // we assume one is always present, matching the libinput/DRM tty
+        // backend's own current lack of hot-plug handling.
+        seat.add_keyboard(XkbConfig::default(), 200, 25)
+            .expect("the default XKB keymap should always compile");
 
         // Notify clients that we have a pointer (mouse)
         // Here we assume that there is always pointer plugged in
@@ -174,41 +167,48 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
         loop_handle: &LoopHandle<'static, Self>,
     ) -> OsString {
         // Creates a new listening socket, automatically choosing the next available `wayland` socket name.
-        let listening_socket = ListeningSocketSource::new_auto().unwrap();
+        let listening_socket = ListeningSocketSource::new_auto()
+            .expect("failed to create a wayland-N socket in XDG_RUNTIME_DIR");
 
         // Get the name of the listening socket.
         // Clients will connect to this socket.
         let socket_name = listening_socket.socket_name().to_os_string();
 
         loop_handle
-            .insert_source(listening_socket, move |client_stream, _, state| {
+            .insert_source(listening_socket, move |client_stream, (), state| {
                 // Inside the callback, you should insert the client into the display.
                 //
                 // You may also associate some data with the client when inserting the client.
                 state
                     .display_handle
                     .insert_client(client_stream, Arc::new(ClientState::default()))
-                    .unwrap();
+                    .expect("a freshly accepted client stream is always a valid new client");
             })
-            .expect("Failed to init the wayland event source.");
+            .expect("failed to register the wayland listening socket with the event loop");
 
         // You also need to add the display itself to the event loop, so that client events will be processed by wayland-server.
         loop_handle
             .insert_source(
                 Generic::new(display, Interest::READ, Mode::Level),
                 |_, display, state| {
-                    // Safety: we don't drop the display
+                    // SAFETY: this callback owns the only reference to `display`
+                    // (moved into the closure by `Generic::new`) for the
+                    // lifetime of this event source, so it is never dropped
+                    // out from under `get_mut()`.
                     unsafe {
-                        display.get_mut().dispatch_clients(state).unwrap();
+                        display.get_mut().dispatch_clients(state).expect(
+                            "client protocol dispatch should not fail under normal operation",
+                        );
                     }
                     Ok(PostAction::Continue)
                 },
             )
-            .unwrap();
+            .expect("failed to register the wayland display with the event loop");
 
         socket_name
     }
 
+    #[must_use]
     pub fn surface_under(
         &self,
         pos: Point<f64, Logical>,
@@ -223,7 +223,21 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
     }
 }
 
-/// Data associated with a wayland client that connects to GlideState.
+/// The `wl_surface` backing a [`Window`]'s toplevel.
+///
+/// [`Window::new_wayland_window`] is the only constructor used anywhere in
+/// Glide (there is no `XWayland` support), so [`Window::toplevel`] is always
+/// `Some`. Centralized here rather than repeating `.toplevel().unwrap()` at
+/// every call site (handlers, grabs, input) so that adding a second kind of
+/// window later only needs updating this one assumption.
+pub(crate) fn window_surface(window: &Window) -> &WlSurface {
+    window
+        .toplevel()
+        .expect("only Window::new_wayland_window is used, so toplevel() is always Some")
+        .wl_surface()
+}
+
+/// Data associated with a wayland client that connects to `GlideState`.
 /// One instance of this type per client.
 #[derive(Default)]
 pub struct ClientState {
