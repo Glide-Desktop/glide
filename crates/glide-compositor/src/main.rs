@@ -27,11 +27,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
-    let mut event_loop: EventLoop<GlideState<WinitData>> = EventLoop::try_new()?;
+    // Deliberately not type-annotated: `EventLoop<'l, Data>` carries an
+    // explicit lifetime since calloop 0.14, and an explicit annotation here
+    // would elide it into a fresh (non-'static) inference variable. Letting
+    // inference flow from the `.handle()`/`.get_signal()` calls below
+    // resolves it to `'static` directly (see the comment on
+    // `GlideState::new` for why those are passed in already-extracted).
+    let mut event_loop = EventLoop::try_new()?;
 
-    let display: Display<GlideState<WinitData>> = Display::new()?;
+    let display = Display::new()?;
 
-    let mut state = GlideState::new(WinitData, &mut event_loop, display);
+    let mut state = GlideState::new(
+        WinitData,
+        event_loop.handle(),
+        event_loop.get_signal(),
+        display,
+    );
 
     // Open a Wayland/X11 window for our nested compositor
     crate::backend::winit::init_winit(&mut event_loop, &mut state)?;
@@ -53,16 +64,26 @@ fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
 fn run_tty() -> Result<(), Box<dyn std::error::Error>> {
     let (session, notifier) = LibSeatSession::new()?;
 
-    let mut event_loop: EventLoop<GlideState<TtyData>> = EventLoop::try_new()?;
+    // See the comment in `run_winit` about why this is not type-annotated.
+    let mut event_loop = EventLoop::try_new()?;
 
-    let display: Display<GlideState<TtyData>> = Display::new()?;
+    let display = Display::new()?;
 
-    let mut state = GlideState::new(TtyData::new(session), &mut event_loop, display);
+    let mut state = GlideState::new(
+        TtyData::new(session),
+        event_loop.handle(),
+        event_loop.get_signal(),
+        display,
+    );
 
-    // Set up the session, seat and libinput event sources. There is no
-    // rendering yet (see M1.2 and onward), so the tty's own text console
-    // stays visible on screen for now.
+    // Set up the session, seat and libinput event sources.
     crate::backend::tty::init_tty(&mut event_loop, &mut state, notifier)?;
+
+    // Open the primary GPU, set up rendering and initialize any already
+    // connected outputs. Until this returns, the screen still shows a
+    // frozen snapshot from before the session took control of the tty (see
+    // TtyData's docs) — not a crash, just an expected gap.
+    state.device_added()?;
 
     event_loop.run(None, &mut state, move |_| {
         // GlideState is running

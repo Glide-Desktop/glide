@@ -4,7 +4,7 @@ use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState, keyboard::Keycode},
     reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -53,6 +53,9 @@ pub struct GlideState<BackendData: Backend + 'static> {
 
     pub space: Space<Window>,
     pub loop_signal: LoopSignal,
+    /// Used by backends (currently just tty) to schedule follow-up work from
+    /// inside event source callbacks, e.g. a repaint timer after a VBlank.
+    pub loop_handle: LoopHandle<'static, Self>,
 
     // Smithay State
     pub compositor_state: CompositorState,
@@ -77,9 +80,20 @@ pub struct GlideState<BackendData: Backend + 'static> {
 }
 
 impl<BackendData: Backend + 'static> GlideState<BackendData> {
+    /// `loop_handle` and `loop_signal` are taken already-extracted from the
+    /// caller's `EventLoop` (rather than `&mut EventLoop<Self>` itself) on
+    /// purpose: `EventLoop<'l, Data>` carries an explicit lifetime since
+    /// calloop 0.14, and threading `&mut EventLoop<Self>` through here would
+    /// force this function to be generic over an arbitrary caller-supplied
+    /// `'l` that can never be proven to satisfy `LoopHandle`'s `'static`
+    /// bound. Calling `.handle()`/`.get_signal()` at the call site instead
+    /// lets normal inference resolve the event loop's own lifetime to
+    /// `'static` directly (this is also the pattern anvil's `AnvilState::init`
+    /// uses).
     pub fn new(
         backend_data: BackendData,
-        event_loop: &mut EventLoop<Self>,
+        loop_handle: LoopHandle<'static, Self>,
+        loop_signal: LoopSignal,
         display: Display<Self>,
     ) -> Self {
         let start_time = std::time::Instant::now();
@@ -122,10 +136,7 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
         let space = Space::default();
 
         // Setup a wayland socket that will be used to accept clients
-        let socket_name = Self::init_wayland_listener(display, event_loop);
-
-        // Get the loop signal, used to stop the event loop
-        let loop_signal = event_loop.get_signal();
+        let socket_name = Self::init_wayland_listener(display, &loop_handle);
 
         Self {
             backend_data,
@@ -135,6 +146,7 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
 
             space,
             loop_signal,
+            loop_handle,
             socket_name,
 
             compositor_state,
@@ -149,15 +161,16 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
         }
     }
 
-    fn init_wayland_listener(display: Display<Self>, event_loop: &mut EventLoop<Self>) -> OsString {
+    fn init_wayland_listener(
+        display: Display<Self>,
+        loop_handle: &LoopHandle<'static, Self>,
+    ) -> OsString {
         // Creates a new listening socket, automatically choosing the next available `wayland` socket name.
         let listening_socket = ListeningSocketSource::new_auto().unwrap();
 
         // Get the name of the listening socket.
         // Clients will connect to this socket.
         let socket_name = listening_socket.socket_name().to_os_string();
-
-        let loop_handle = event_loop.handle();
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, _, state| {

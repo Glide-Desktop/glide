@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Manual M1.1 verification helper. Run this ONLY after switching to a free
+# Manual M1.2a verification helper. Run this ONLY after switching to a free
 # VT (e.g. Ctrl+Alt+F3) and logging in — not from inside the GNOME session.
 #
-# IMPORTANT — the screen will appear FROZEN while this runs. That is expected:
-# taking control of the session makes logind put the tty into KD_GRAPHICS
-# (kernel stops drawing the text console) and K_OFF (kernel stops handling
-# keys, including Ctrl+Alt+Fn). Glide does not render anything yet, so what
-# you see is simply the last framebuffer contents. Rendering arrives in M1.2.
-#
-# Consequence: you are typing blind. That is fine — everything lands in the
-# log, and this script prints a summary at the end so you don't have to
-# switch back to read it.
+# IMPORTANT — the screen briefly FREEZES, then should turn solid #295396
+# blue within about a second. The freeze is the same KD_GRAPHICS/K_OFF gap
+# as M1.1 (taking the session makes logind stop the kernel from drawing the
+# text console or handling Ctrl+Alt+Fn itself); the blue fill is Glide's own
+# first DRM/KMS-driven frame. If the screen stays frozen well past a second,
+# something in modesetting failed — that is the main thing this script is
+# for.
 #
 # Safety net: the compositor is killed after TIMEOUT seconds no matter what,
 # so a stuck session can never lock you out of the tty.
 #
-# What to do while it runs (blind):
+# What to do while it runs:
+#   - watch for the screen to turn solid #295396 blue (the pass/fail signal)
 #   - type a few distinct keys (e.g. a, b, c)
 #   - move the mouse / touchpad
 #   - Ctrl+Alt+F2 to switch to GNOME, then Ctrl+Alt+F3 to come back
@@ -45,8 +44,8 @@ fi
 cat <<EOF
 Starting $binary for up to ${TIMEOUT}s.
 
-The screen is about to FREEZE — this is expected, not a crash.
-You will be typing blind. Do this, then wait:
+The screen will briefly freeze, then should turn solid #295396 blue —
+that's the pass/fail signal. Then:
 
   1. press a few keys (a, b, c)
   2. move the mouse / touchpad
@@ -71,7 +70,7 @@ else
 fi
 
 echo
-echo "=== M1.1 acceptance checks ==="
+echo "=== M1.2a acceptance checks ==="
 
 # Strip ANSI escapes defensively: even with NO_COLOR some libraries may
 # still emit them, and a stray escape must not turn a pass into a fail.
@@ -91,6 +90,20 @@ check() {
     fi
 }
 
+# Inverse of check(): passes when the pattern is *absent*, for things that
+# should never appear in a healthy run.
+check_absent() {
+    local label="$1" pattern="$2"
+    local n
+    n="$(grep -acE "$pattern" "$plain_log" 2>/dev/null || true)"
+    n="${n:-0}"
+    if [ "$n" -eq 0 ]; then
+        printf '  [ OK ]  %-34s (none)\n' "$label"
+    else
+        printf '  [FAIL]  %-34s (%s matches)\n' "$label" "$n"
+    fi
+}
+
 check "seat0 detected"            'name="seat0"'
 check "libinput devices added"    'New device'
 check "keyboard events"           'keysym='
@@ -98,6 +111,11 @@ check "relative pointer motion"   'pointer motion \(relative\)'
 check "vt switch via our handler" 'Session switch'
 check "session paused"            'session paused'
 check "session resumed"           'session resumed'
+check "primary gpu opened"        'opening primary gpu'
+check "connector connected"       'connector connected'
+check_absent "no panics"          'panicked at|RUST_BACKTRACE'
+check_absent "no render errors"   'failed to render frame|failed to queue frame'
+check_absent "no drm errors"      'drm error:'
 
 echo
 echo "Full log: $log_file"

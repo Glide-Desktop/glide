@@ -13,6 +13,7 @@ path = "src/main.rs"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 bitflags.workspace = true
+smithay-drm-extras.workspace = true
 
 [dependencies.smithay]
 workspace = true
@@ -21,6 +22,9 @@ features = [
     "backend_libinput",
     "backend_session_libseat",
     "backend_udev",
+    "backend_drm",
+    "backend_gbm",
+    "renderer_gl",
     "wayland_frontend",
     "desktop",
 ]
