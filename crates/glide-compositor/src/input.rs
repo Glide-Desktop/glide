@@ -11,9 +11,9 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 
-use crate::state::GlideState;
+use crate::state::{Backend, GlideState};
 
-impl GlideState {
+impl<BackendData: Backend + 'static> GlideState<BackendData> {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
             InputEvent::Keyboard { event, .. } => {

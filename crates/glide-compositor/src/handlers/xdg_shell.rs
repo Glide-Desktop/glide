@@ -26,9 +26,10 @@ use smithay::{
 use crate::{
     GlideState,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
+    state::Backend,
 };
 
-impl XdgShellHandler for GlideState {
+impl<BackendData: Backend + 'static> XdgShellHandler for GlideState<BackendData> {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
     }
@@ -59,7 +60,7 @@ impl XdgShellHandler for GlideState {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let seat = Seat::from_resource(&seat).unwrap();
+        let seat: Seat<GlideState<BackendData>> = Seat::from_resource(&seat).unwrap();
 
         let wl_surface = surface.wl_surface();
 
@@ -91,7 +92,7 @@ impl XdgShellHandler for GlideState {
         serial: Serial,
         edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat = Seat::from_resource(&seat).unwrap();
+        let seat: Seat<GlideState<BackendData>> = Seat::from_resource(&seat).unwrap();
 
         let wl_surface = surface.wl_surface();
 
@@ -129,11 +130,11 @@ impl XdgShellHandler for GlideState {
     }
 }
 
-fn check_grab(
-    seat: &Seat<GlideState>,
+fn check_grab<BackendData: Backend + 'static>(
+    seat: &Seat<GlideState<BackendData>>,
     surface: &WlSurface,
     serial: Serial,
-) -> Option<PointerGrabStartData<GlideState>> {
+) -> Option<PointerGrabStartData<GlideState<BackendData>>> {
     let pointer = seat.get_pointer()?;
 
     // Check that this surface has a click grab.
@@ -191,7 +192,7 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     }
 }
 
-impl GlideState {
+impl<BackendData: Backend + 'static> GlideState<BackendData> {
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;

@@ -2,6 +2,7 @@ mod compositor;
 mod xdg_shell;
 
 use crate::GlideState;
+use crate::state::Backend;
 
 //
 // Wl Seat
@@ -19,12 +20,12 @@ use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
 };
 
-impl SeatHandler for GlideState {
+impl<BackendData: Backend + 'static> SeatHandler for GlideState<BackendData> {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
-    fn seat_state(&mut self) -> &mut SeatState<GlideState> {
+    fn seat_state(&mut self) -> &mut SeatState<GlideState<BackendData>> {
         &mut self.seat_state
     }
 
@@ -46,18 +47,18 @@ impl SeatHandler for GlideState {
 // Wl Data Device
 //
 
-impl SelectionHandler for GlideState {
+impl<BackendData: Backend + 'static> SelectionHandler for GlideState<BackendData> {
     type SelectionUserData = ();
 }
 
-impl DataDeviceHandler for GlideState {
+impl<BackendData: Backend + 'static> DataDeviceHandler for GlideState<BackendData> {
     fn data_device_state(&mut self) -> &mut DataDeviceState {
         &mut self.data_device_state
     }
 }
 
-impl DndGrabHandler for GlideState {}
-impl WaylandDndGrabHandler for GlideState {
+impl<BackendData: Backend + 'static> DndGrabHandler for GlideState<BackendData> {}
+impl<BackendData: Backend + 'static> WaylandDndGrabHandler for GlideState<BackendData> {
     fn dnd_requested<S: Source>(
         &mut self,
         source: S,
@@ -87,6 +88,6 @@ impl WaylandDndGrabHandler for GlideState {
 // Wl Output & Xdg Output
 //
 
-impl OutputHandler for GlideState {}
+impl<BackendData: Backend + 'static> OutputHandler for GlideState<BackendData> {}
 
-smithay::delegate_dispatch2!(GlideState);
+smithay::delegate_dispatch2!(@<BackendData: Backend + 'static> GlideState<BackendData>);

@@ -22,7 +22,17 @@ use smithay::{
     },
 };
 
-pub struct GlideState {
+/// Implemented by each windowing backend (winit, tty/DRM, ...).
+///
+/// `GlideState` is generic over the backend so backend-specific data can live
+/// alongside the shared compositor state without leaking into protocol
+/// handler implementations, which are written once against `GlideState<B>`
+/// for any `B: Backend`.
+pub trait Backend {}
+
+pub struct GlideState<BackendData: Backend + 'static> {
+    pub backend_data: BackendData,
+
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
@@ -35,15 +45,19 @@ pub struct GlideState {
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
-    pub seat_state: SeatState<GlideState>,
+    pub seat_state: SeatState<GlideState<BackendData>>,
     pub data_device_state: DataDeviceState,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
 }
 
-impl GlideState {
-    pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>) -> Self {
+impl<BackendData: Backend + 'static> GlideState<BackendData> {
+    pub fn new(
+        backend_data: BackendData,
+        event_loop: &mut EventLoop<Self>,
+        display: Display<Self>,
+    ) -> Self {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
@@ -89,6 +103,8 @@ impl GlideState {
         let loop_signal = event_loop.get_signal();
 
         Self {
+            backend_data,
+
             start_time,
             display_handle: dh,
 
@@ -107,10 +123,7 @@ impl GlideState {
         }
     }
 
-    fn init_wayland_listener(
-        display: Display<GlideState>,
-        event_loop: &mut EventLoop<Self>,
-    ) -> OsString {
+    fn init_wayland_listener(display: Display<Self>, event_loop: &mut EventLoop<Self>) -> OsString {
         // Creates a new listening socket, automatically choosing the next available `wayland` socket name.
         let listening_socket = ListeningSocketSource::new_auto().unwrap();
 

@@ -13,11 +13,17 @@ use smithay::{
     utils::{Rectangle, Transform},
 };
 
-use crate::GlideState;
+use crate::{GlideState, state::Backend};
+
+/// Backend data for the nested (winit) compositor mode, used during development:
+/// Glide runs as an ordinary Wayland/X11 client window inside a host compositor.
+pub struct WinitData;
+
+impl Backend for WinitData {}
 
 pub fn init_winit(
-    event_loop: &mut EventLoop<GlideState>,
-    state: &mut GlideState,
+    event_loop: &mut EventLoop<GlideState<WinitData>>,
+    state: &mut GlideState<WinitData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut backend, winit) = winit::init()?;
 
@@ -36,7 +42,7 @@ pub fn init_winit(
             serial_number: "Unknown".into(),
         },
     );
-    let _global = output.create_global::<GlideState>(&state.display_handle);
+    let _global = output.create_global::<GlideState<WinitData>>(&state.display_handle);
     output.change_current_state(
         Some(mode),
         Some(Transform::Flipped180),

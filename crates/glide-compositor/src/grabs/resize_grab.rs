@@ -3,7 +3,7 @@
 //! eg. Usually whenever a user clicks on the app's border and starts dragging, the compositors
 //! enters a ResizeSurfaceGrab state.
 
-use crate::GlideState;
+use crate::{GlideState, state::Backend};
 use smithay::{
     desktop::{Space, Window},
     input::pointer::{
@@ -44,8 +44,8 @@ impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     }
 }
 
-pub struct ResizeSurfaceGrab {
-    start_data: PointerGrabStartData<GlideState>,
+pub struct ResizeSurfaceGrab<BackendData: Backend + 'static> {
+    start_data: PointerGrabStartData<GlideState<BackendData>>,
     window: Window,
 
     edges: ResizeEdge,
@@ -54,9 +54,9 @@ pub struct ResizeSurfaceGrab {
     last_window_size: Size<i32, Logical>,
 }
 
-impl ResizeSurfaceGrab {
+impl<BackendData: Backend + 'static> ResizeSurfaceGrab<BackendData> {
     pub fn start(
-        start_data: PointerGrabStartData<GlideState>,
+        start_data: PointerGrabStartData<GlideState<BackendData>>,
         window: Window,
         edges: ResizeEdge,
         initial_window_rect: Rectangle<i32, Logical>,
@@ -80,11 +80,13 @@ impl ResizeSurfaceGrab {
     }
 }
 
-impl PointerGrab<GlideState> for ResizeSurfaceGrab {
+impl<BackendData: Backend + 'static> PointerGrab<GlideState<BackendData>>
+    for ResizeSurfaceGrab<BackendData>
+{
     fn motion(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         _focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
@@ -149,8 +151,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn relative_motion(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         focus: Option<(WlSurface, Point<f64, Logical>)>,
         event: &RelativeMotionEvent,
     ) {
@@ -159,8 +161,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn button(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &ButtonEvent,
     ) {
         handle.button(data, event);
@@ -192,21 +194,25 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn axis(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         details: AxisFrame,
     ) {
         handle.axis(data, details)
     }
 
-    fn frame(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>) {
+    fn frame(
+        &mut self,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
+    ) {
         handle.frame(data);
     }
 
     fn gesture_swipe_begin(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GestureSwipeBeginEvent,
     ) {
         handle.gesture_swipe_begin(data, event)
@@ -214,8 +220,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn gesture_swipe_update(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GestureSwipeUpdateEvent,
     ) {
         handle.gesture_swipe_update(data, event)
@@ -223,8 +229,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn gesture_swipe_end(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GestureSwipeEndEvent,
     ) {
         handle.gesture_swipe_end(data, event)
@@ -232,8 +238,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn gesture_pinch_begin(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GesturePinchBeginEvent,
     ) {
         handle.gesture_pinch_begin(data, event)
@@ -241,8 +247,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn gesture_pinch_update(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GesturePinchUpdateEvent,
     ) {
         handle.gesture_pinch_update(data, event)
@@ -250,8 +256,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn gesture_pinch_end(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GesturePinchEndEvent,
     ) {
         handle.gesture_pinch_end(data, event)
@@ -259,8 +265,8 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn gesture_hold_begin(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GestureHoldBeginEvent,
     ) {
         handle.gesture_hold_begin(data, event)
@@ -268,18 +274,18 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
 
     fn gesture_hold_end(
         &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
+        data: &mut GlideState<BackendData>,
+        handle: &mut PointerInnerHandle<'_, GlideState<BackendData>>,
         event: &GestureHoldEndEvent,
     ) {
         handle.gesture_hold_end(data, event)
     }
 
-    fn start_data(&self) -> &PointerGrabStartData<GlideState> {
+    fn start_data(&self) -> &PointerGrabStartData<GlideState<BackendData>> {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut GlideState) {}
+    fn unset(&mut self, _data: &mut GlideState<BackendData>) {}
 }
 
 /// State of the resize operation.

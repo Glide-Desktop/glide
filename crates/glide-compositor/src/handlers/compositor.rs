@@ -1,4 +1,8 @@
-use crate::{GlideState, grabs::resize_grab, state::ClientState};
+use crate::{
+    GlideState,
+    grabs::resize_grab,
+    state::{Backend, ClientState},
+};
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     reexports::wayland_server::{
@@ -17,7 +21,7 @@ use smithay::{
 
 use super::xdg_shell;
 
-impl CompositorHandler for GlideState {
+impl<BackendData: Backend + 'static> CompositorHandler for GlideState<BackendData> {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
@@ -47,11 +51,11 @@ impl CompositorHandler for GlideState {
     }
 }
 
-impl BufferHandler for GlideState {
+impl<BackendData: Backend + 'static> BufferHandler for GlideState<BackendData> {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
-impl ShmHandler for GlideState {
+impl<BackendData: Backend + 'static> ShmHandler for GlideState<BackendData> {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
     }

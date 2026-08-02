@@ -7,17 +7,18 @@ mod grabs;
 mod input;
 mod state;
 
+use backend::winit::WinitData;
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 pub use state::GlideState;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    let mut event_loop: EventLoop<GlideState> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<GlideState<WinitData>> = EventLoop::try_new()?;
 
-    let display: Display<GlideState> = Display::new()?;
+    let display: Display<GlideState<WinitData>> = Display::new()?;
 
-    let mut state = GlideState::new(&mut event_loop, display);
+    let mut state = GlideState::new(WinitData, &mut event_loop, display);
 
     // Open a Wayland/X11 window for our nested compositor
     crate::backend::winit::init_winit(&mut event_loop, &mut state)?;
