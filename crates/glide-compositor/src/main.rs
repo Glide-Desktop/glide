@@ -7,13 +7,26 @@ mod grabs;
 mod input;
 mod state;
 
-use backend::winit::WinitData;
-use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+use backend::{tty::TtyData, winit::WinitData};
+use smithay::{
+    backend::session::libseat::LibSeatSession,
+    reexports::{calloop::EventLoop, wayland_server::Display},
+};
 pub use state::GlideState;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
+    // Running under an existing Wayland/X11 session means we're being
+    // developed/tested nested inside a host compositor; otherwise we assume
+    // we own the tty and should drive the display directly.
+    let nested =
+        std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
+
+    if nested { run_winit() } else { run_tty() }
+}
+
+fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<GlideState<WinitData>> = EventLoop::try_new()?;
 
     let display: Display<GlideState<WinitData>> = Display::new()?;
@@ -29,6 +42,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn a test client, that will run under GlideState
     spawn_client();
+
+    event_loop.run(None, &mut state, move |_| {
+        // GlideState is running
+    })?;
+
+    Ok(())
+}
+
+fn run_tty() -> Result<(), Box<dyn std::error::Error>> {
+    let (session, notifier) = LibSeatSession::new()?;
+
+    let mut event_loop: EventLoop<GlideState<TtyData>> = EventLoop::try_new()?;
+
+    let display: Display<GlideState<TtyData>> = Display::new()?;
+
+    let mut state = GlideState::new(TtyData::new(session), &mut event_loop, display);
+
+    // Set up the session, seat and libinput event sources. There is no
+    // rendering yet (see M1.2 and onward), so the tty's own text console
+    // stays visible on screen for now.
+    crate::backend::tty::init_tty(&mut event_loop, &mut state, notifier)?;
 
     event_loop.run(None, &mut state, move |_| {
         // GlideState is running

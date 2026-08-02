@@ -16,4 +16,11 @@ bitflags.workspace = true
 
 [dependencies.smithay]
 workspace = true
-features = ["backend_winit", "wayland_frontend", "desktop"]
+features = [
+    "backend_winit",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
+    "wayland_frontend",
+    "desktop",
+]

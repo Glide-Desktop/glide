@@ -19,7 +19,11 @@ use crate::{GlideState, state::Backend};
 /// Glide runs as an ordinary Wayland/X11 client window inside a host compositor.
 pub struct WinitData;
 
-impl Backend for WinitData {}
+impl Backend for WinitData {
+    fn seat_name(&self) -> String {
+        "winit".to_string()
+    }
+}
 
 pub fn init_winit(
     event_loop: &mut EventLoop<GlideState<WinitData>>,

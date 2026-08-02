@@ -2,7 +2,7 @@ use std::{ffi::OsString, sync::Arc};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{Seat, SeatState, keyboard::Keycode},
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -28,7 +28,21 @@ use smithay::{
 /// alongside the shared compositor state without leaking into protocol
 /// handler implementations, which are written once against `GlideState<B>`
 /// for any `B: Backend`.
-pub trait Backend {}
+pub trait Backend {
+    /// Name of the seat (as known to logind/seatd, e.g. `"seat0"`, or a
+    /// synthetic name like `"winit"` when nested) this backend is bound to.
+    /// Used both as the `wl_seat` name advertised to clients and to assign
+    /// libinput devices to the correct physical seat.
+    fn seat_name(&self) -> String;
+
+    /// Switch to a different virtual terminal, if the backend supports it.
+    ///
+    /// A no-op by default; only the tty backend can actually change VTs.
+    /// This must keep working from the very first tty-capable milestone
+    /// onward, so a compositor stuck mid-development can never trap the
+    /// user on an unusable tty.
+    fn change_vt(&mut self, _vt: i32) {}
+}
 
 pub struct GlideState<BackendData: Backend + 'static> {
     pub backend_data: BackendData,
@@ -50,6 +64,16 @@ pub struct GlideState<BackendData: Backend + 'static> {
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
+
+    /// Keys currently suppressed (not forwarded to the focused client)
+    /// because their press triggered a compositor keybinding. Tracked so the
+    /// matching release is suppressed too, avoiding "stuck key" bugs.
+    ///
+    /// Keyed by *keycode* rather than keysym on purpose: the keysym of a
+    /// release can differ from that of its own press once modifiers are
+    /// let go first (e.g. Ctrl+Alt+F2 presses as `XF86Switch_VT_2` but
+    /// releases as plain `F2`), which would leak an unpaired release.
+    pub suppressed_keys: Vec<Keycode>,
 }
 
 impl<BackendData: Backend + 'static> GlideState<BackendData> {
@@ -79,8 +103,9 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
+        let seat_name = backend_data.seat_name();
         let mut seat_state = SeatState::new();
-        let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
+        let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, seat_name);
 
         // Notify clients that we have a keyboard, for the sake of the example we assume that keyboard is always present.
         // You may want to track keyboard hot-plug in real compositor.
@@ -120,6 +145,7 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
             data_device_state,
             popups,
             seat,
+            suppressed_keys: Vec::new(),
         }
     }
 
