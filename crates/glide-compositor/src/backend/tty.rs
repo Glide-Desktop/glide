@@ -14,14 +14,20 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{element::surface::WaylandSurfaceRenderElement, gles::GlesRenderer},
+        renderer::{
+            element::{
+                AsRenderElements, memory::MemoryRenderBuffer, surface::WaylandSurfaceRenderElement,
+            },
+            gles::GlesRenderer,
+        },
         session::{
             Event as SessionEvent, Session, libseat::LibSeatSession,
             libseat::LibSeatSessionNotifier,
         },
         udev::{all_gpus, primary_gpu},
     },
-    desktop::space::space_render_elements,
+    desktop::space::{SpaceRenderElements, space_render_elements},
+    input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
@@ -33,11 +39,17 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::backend::GlobalId,
     },
-    utils::DeviceFd,
+    render_elements,
+    utils::{DeviceFd, IsAlive, Scale, Transform},
+    wayland::compositor,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
-use crate::{GlideState, state::Backend};
+use crate::{
+    GlideState,
+    cursor::{Cursor, PointerElement, PointerRenderElement},
+    state::Backend,
+};
 
 /// #295396, chosen specifically to be unmistakable from the frozen text
 /// console (see the module-level docs on [`TtyData`]).
@@ -59,6 +71,22 @@ const SUPPORTED_FORMATS: &[Fourcc] = &[
     Fourcc::Argb8888,
 ];
 
+render_elements! {
+    /// Everything that can end up on screen, in one type: `render_frame`
+    /// takes a single slice, so window contents and the cursor have to share
+    /// an element type.
+    ///
+    /// Deliberately tied to the concrete `GlesRenderer` (the `<=` form)
+    /// rather than being generic over the renderer. `ImportAll` only exists
+    /// as a blanket impl, so a generic `R: ImportAll` bound cannot be taken
+    /// as a given — the compiler tries to re-derive it from
+    /// `ImportMemWl + ImportDmaWl` at every nested use and fails. With one
+    /// renderer there is nothing to generalise over anyway.
+    pub GlideRenderElements<=GlesRenderer>;
+    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    Pointer=PointerRenderElement<GlesRenderer>,
+}
+
 struct SurfaceData {
     output: Output,
     #[allow(dead_code)] // kept alive for its Drop impl / future use (hotplug, M1.4)
@@ -77,6 +105,13 @@ struct DeviceData {
     drm_scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
     gles_renderer: GlesRenderer,
+    /// The default cursor, loaded from the system XCursor theme.
+    cursor: Cursor,
+    /// Uploaded cursor images, keyed by the source image. Animated cursors
+    /// cycle through a handful of frames, and re-uploading the same pixels
+    /// on every frame would be pure waste.
+    cursor_buffers: Vec<(xcursor::parser::Image, MemoryRenderBuffer)>,
+    pointer_element: PointerElement,
 }
 
 /// Backend data for running Glide directly on a DRM/KMS output from a tty,
@@ -253,6 +288,9 @@ impl GlideState<TtyData> {
             drm_scanner: DrmScanner::new(),
             surfaces: HashMap::new(),
             gles_renderer,
+            cursor: Cursor::load(),
+            cursor_buffers: Vec::new(),
+            pointer_element: PointerElement::default(),
         });
 
         self.scan_connectors()
@@ -336,7 +374,7 @@ impl GlideState<TtyData> {
         let drm_output = device
             .drm_output_manager
             .lock()
-            .initialize_output::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
+            .initialize_output::<_, GlideRenderElements>(
                 crtc,
                 drm_mode,
                 &[connector.handle()],
@@ -392,6 +430,38 @@ impl GlideState<TtyData> {
             return;
         }
 
+        // A client can hand us a cursor surface and then die before we next
+        // render. Fall back to the themed cursor rather than referencing a
+        // dead surface.
+        if let CursorImageStatus::Surface(surface) = &self.cursor_status
+            && !surface.alive()
+        {
+            self.cursor_status = CursorImageStatus::default_named();
+        }
+
+        let pointer_location = self
+            .seat
+            .get_pointer()
+            .map(|pointer| pointer.current_location())
+            .unwrap_or_default();
+
+        // A client-provided cursor surface carries a hotspot: the offset
+        // within the image that is the actual "point" of the pointer. The
+        // image has to be drawn shifted back by it.
+        let cursor_hotspot = match &self.cursor_status {
+            CursorImageStatus::Surface(surface) => compositor::with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<std::sync::Mutex<CursorImageAttributes>>()
+                    .map(|attrs| attrs.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            }),
+            _ => (0, 0).into(),
+        };
+
+        let cursor_status = self.cursor_status.clone();
+        let elapsed = self.start_time.elapsed();
+
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
         };
@@ -402,6 +472,9 @@ impl GlideState<TtyData> {
         let DeviceData {
             surfaces,
             gles_renderer,
+            cursor,
+            cursor_buffers,
+            pointer_element,
             ..
         } = device;
         let Some(surface) = surfaces.get_mut(&crtc) else {
@@ -418,14 +491,57 @@ impl GlideState<TtyData> {
         }
 
         let output = surface.output.clone();
+        let scale = Scale::from(output.current_scale().fractional_scale());
 
-        let elements = match space_render_elements(gles_renderer, [&self.space], &output, 1.0) {
-            Ok(elements) => elements,
+        // Upload (or reuse) the themed cursor image for this frame.
+        let image = cursor.image(output.current_scale().integer_scale() as u32, elapsed);
+        let buffer = match cursor_buffers.iter().find(|(cached, _)| cached == &image) {
+            Some((_, buffer)) => buffer.clone(),
+            None => {
+                let buffer = MemoryRenderBuffer::from_slice(
+                    &image.pixels_rgba,
+                    Fourcc::Argb8888,
+                    (image.width as i32, image.height as i32),
+                    1,
+                    Transform::Normal,
+                    None,
+                );
+                cursor_buffers.push((image, buffer.clone()));
+                buffer
+            }
+        };
+        pointer_element.set_buffer(buffer);
+        pointer_element.set_status(cursor_status);
+
+        let mut elements: Vec<GlideRenderElements> = Vec::new();
+
+        // `render_frame` wants elements front-to-back, so the cursor — which
+        // is always on top — has to come first.
+        let cursor_position = (pointer_location - cursor_hotspot.to_f64())
+            .to_physical(scale)
+            .to_i32_round();
+        elements.extend(
+            pointer_element
+                .render_elements::<PointerRenderElement<GlesRenderer>>(
+                    gles_renderer,
+                    cursor_position,
+                    scale,
+                    1.0,
+                )
+                .into_iter()
+                .map(GlideRenderElements::Pointer),
+        );
+
+        match space_render_elements(gles_renderer, [&self.space], &output, 1.0) {
+            Ok(space_elements) => {
+                elements.extend(space_elements.into_iter().map(GlideRenderElements::Space))
+            }
             Err(err) => {
                 tracing::error!(?err, "failed to collect render elements");
                 return;
             }
-        };
+        }
+
         let render_result = surface.drm_output.render_frame(
             gles_renderer,
             &elements,

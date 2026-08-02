@@ -3,6 +3,7 @@
 mod handlers;
 
 mod backend;
+mod cursor;
 mod grabs;
 mod input;
 mod logging;

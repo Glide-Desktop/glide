@@ -138,6 +138,10 @@ check "connector connected"           'connector connected'
 check "client spawned"                'spawned client'
 check "client connected"              'New client connected'
 check "window mapped"                 'new toplevel'
+# The built-in fallback cursor exists so the pointer is never invisible,
+# but hitting it means the system theme failed to load and the cursor will
+# look crude — worth knowing about rather than silently accepting.
+check_absent "xcursor theme loaded"   'using built-in fallback cursor'
 check_absent "no panics"              'panicked at|RUST_BACKTRACE'
 check_absent "no fatal errors"        'fatal:'
 check_absent "no render errors"       'failed to render frame|failed to queue frame'

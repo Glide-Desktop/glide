@@ -2,7 +2,7 @@ use std::{ffi::OsString, sync::Arc};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState, keyboard::Keycode},
+    input::{Seat, SeatState, keyboard::Keycode, pointer::CursorImageStatus},
     reexports::{
         calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -69,6 +69,11 @@ pub struct GlideState<BackendData: Backend + 'static> {
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
+
+    /// What the pointer cursor should currently look like. Clients set this
+    /// via `wl_pointer.set_cursor` when the pointer is over them; otherwise
+    /// it stays at the themed default.
+    pub cursor_status: CursorImageStatus,
 
     /// Keys currently suppressed (not forwarded to the focused client)
     /// because their press triggered a compositor keybinding. Tracked so the
@@ -159,6 +164,7 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
             data_device_state,
             popups,
             seat,
+            cursor_status: CursorImageStatus::default_named(),
             suppressed_keys: Vec::new(),
         }
     }

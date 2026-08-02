@@ -14,3 +14,5 @@ smithay-drm-extras = { git = "https://github.com/Smithay/smithay", rev = "5fb12b
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 bitflags = "2.2.1"
+xcursor = "0.3.11"
+thiserror = "2.0"
