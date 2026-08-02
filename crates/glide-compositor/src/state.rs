@@ -22,26 +22,28 @@ use smithay::{
     },
 };
 
-/// Implemented by each windowing backend (winit, tty/DRM, ...).
+/// Implemented by a backend driving the display and input.
 ///
 /// `GlideState` is generic over the backend so backend-specific data can live
 /// alongside the shared compositor state without leaking into protocol
 /// handler implementations, which are written once against `GlideState<B>`
 /// for any `B: Backend`.
+///
+/// Note that [`TtyData`](crate::backend::tty::TtyData) is currently the only
+/// implementor: the nested winit backend was removed once Glide started
+/// running exclusively from a bare tty.
 pub trait Backend {
-    /// Name of the seat (as known to logind/seatd, e.g. `"seat0"`, or a
-    /// synthetic name like `"winit"` when nested) this backend is bound to.
-    /// Used both as the `wl_seat` name advertised to clients and to assign
-    /// libinput devices to the correct physical seat.
+    /// Name of the seat this backend is bound to, as known to logind/seatd
+    /// (e.g. `"seat0"`). Used both as the `wl_seat` name advertised to
+    /// clients and to assign libinput devices to the correct physical seat.
     fn seat_name(&self) -> String;
 
-    /// Switch to a different virtual terminal, if the backend supports it.
+    /// Switch to a different virtual terminal.
     ///
-    /// A no-op by default; only the tty backend can actually change VTs.
-    /// This must keep working from the very first tty-capable milestone
-    /// onward, so a compositor stuck mid-development can never trap the
-    /// user on an unusable tty.
-    fn change_vt(&mut self, _vt: i32) {}
+    /// Not optional in practice: taking control of the session puts the tty
+    /// into `K_OFF`, so the kernel stops handling `Ctrl+Alt+Fn` itself. If
+    /// this does nothing, a running compositor leaves no way off the tty.
+    fn change_vt(&mut self, vt: i32);
 }
 
 pub struct GlideState<BackendData: Backend + 'static> {

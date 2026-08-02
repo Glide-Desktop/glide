@@ -98,14 +98,15 @@ impl<BackendData: Backend + 'static> GlideState<BackendData> {
                 }
             }
             InputEvent::PointerMotion { event, .. } => {
-                // libinput reports relative deltas; unlike the (absolute)
-                // winit backend, we have to track and clamp the pointer
-                // position ourselves.
+                // libinput reports relative deltas, so we have to track the
+                // absolute pointer position ourselves and keep it on screen.
                 let pointer = self.seat.get_pointer().unwrap();
                 let pointer_location =
                     self.clamp_coords(pointer.current_location() + event.delta());
 
-                tracing::debug!(
+                // trace, not debug: this fires for every motion event, so at
+                // debug it buries everything else in the log.
+                tracing::trace!(
                     delta = ?event.delta(),
                     location = ?pointer_location,
                     "pointer motion (relative)"

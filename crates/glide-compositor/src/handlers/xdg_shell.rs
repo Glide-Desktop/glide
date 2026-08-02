@@ -35,6 +35,7 @@ impl<BackendData: Backend + 'static> XdgShellHandler for GlideState<BackendData>
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        tracing::info!("new toplevel");
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window, (0, 0), false);
     }

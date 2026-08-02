@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use smithay::{
     backend::{
@@ -21,9 +21,13 @@ use smithay::{
         },
         udev::{all_gpus, primary_gpu},
     },
+    desktop::space::space_render_elements,
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
-        calloop::EventLoop,
+        calloop::{
+            EventLoop, RegistrationToken,
+            timer::{TimeoutAction, Timer},
+        },
         drm::control::{ModeTypeFlags, connector, crtc},
         input::Libinput,
         rustix::fs::OFlags,
@@ -56,11 +60,13 @@ const SUPPORTED_FORMATS: &[Fourcc] = &[
 ];
 
 struct SurfaceData {
-    #[allow(dead_code)] // kept alive for its Drop impl / future use (hotplug, M1.4)
     output: Output,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // kept alive for its Drop impl / future use (hotplug, M1.4)
     global: Option<GlobalId>,
     drm_output: GbmDrmOutput,
+    /// Set while a "no damage last time, try again shortly" repaint timer is
+    /// pending, so we never stack up more than one per surface.
+    pending_repaint: Option<RegistrationToken>,
 }
 
 /// Everything tied to the single GPU device we drive. Single-GPU only: there
@@ -346,6 +352,7 @@ impl GlideState<TtyData> {
                 output,
                 global: Some(global),
                 drm_output,
+                pending_repaint: None,
             },
         );
 
@@ -374,36 +381,131 @@ impl GlideState<TtyData> {
     }
 
     fn render_surface(&mut self, crtc: crtc::Handle) {
+        // While the session is paused (we're switched away to another VT)
+        // the DRM device is revoked, so every render would fail with
+        // `DeviceInactive`. Bailing out *without* rescheduling matters:
+        // the error path below re-arms the repaint timer, which would spin
+        // at the refresh rate for the entire time the user is on another
+        // VT. `ActivateSession` re-triggers rendering on the way back, so
+        // nothing is lost by stopping here.
+        if !self.backend_data.session.is_active() {
+            return;
+        }
+
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        // Split the borrow across fields up front: `render_frame` below
+        // needs `&mut gles_renderer` at the same time as `surface` (itself
+        // borrowed from `surfaces`), and those are disjoint fields of the
+        // same `DeviceData`.
+        let DeviceData {
+            surfaces,
+            gles_renderer,
+            ..
+        } = device;
+        let Some(surface) = surfaces.get_mut(&crtc) else {
+            return;
+        };
+
+        // We're rendering right now, so a "no damage last time" retry timer
+        // would be redundant — and if this render also finds no damage,
+        // it gets re-armed via `schedule_repaint` below anyway. Clearing it
+        // first also means the timer callback (which is what usually calls
+        // us) never re-enters itself here.
+        if let Some(token) = surface.pending_repaint.take() {
+            self.loop_handle.remove(token);
+        }
+
+        let output = surface.output.clone();
+
+        let elements = match space_render_elements(gles_renderer, [&self.space], &output, 1.0) {
+            Ok(elements) => elements,
+            Err(err) => {
+                tracing::error!(?err, "failed to collect render elements");
+                return;
+            }
+        };
+        let render_result = surface.drm_output.render_frame(
+            gles_renderer,
+            &elements,
+            FILL_COLOR,
+            FrameFlags::DEFAULT,
+        );
+
+        match render_result {
+            Ok(res) if !res.is_empty => {
+                if let Err(err) = surface.drm_output.queue_frame(()) {
+                    tracing::error!("failed to queue frame: {:?}", err);
+                    self.schedule_repaint(crtc, &output);
+                    return;
+                }
+
+                // Frame callbacks let clients driven by them (rather than
+                // by presentation feedback) know it's time to draw their
+                // next frame. Without this, a client renders once and then
+                // waits forever.
+                //
+                // Note that `space.refresh()`/`popups.cleanup()`/
+                // `flush_clients()` deliberately do *not* live here: they
+                // belong to servicing clients, not to rendering, and are
+                // driven once per event loop iteration in `main.rs`.
+                self.space.elements().for_each(|window| {
+                    window.send_frame(
+                        &output,
+                        self.start_time.elapsed(),
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    )
+                });
+            }
+            Ok(_) => {
+                // No damage since the last frame: `queue_frame` was
+                // deliberately skipped, so no VBlank will arrive on its own
+                // to drive the next repaint. Poll again shortly instead.
+                self.schedule_repaint(crtc, &output);
+            }
+            Err(err) => {
+                tracing::error!("failed to render frame: {:?}", err);
+                self.schedule_repaint(crtc, &output);
+            }
+        }
+    }
+
+    /// Arms a one-shot timer to retry rendering `crtc` after approximately
+    /// one refresh interval, unless one is already pending. Used when a
+    /// render finds no damage (and so never calls `queue_frame`, meaning no
+    /// VBlank will arrive to drive the next attempt) or hits a transient
+    /// error.
+    fn schedule_repaint(&mut self, crtc: crtc::Handle, output: &Output) {
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
         };
         let Some(surface) = device.surfaces.get_mut(&crtc) else {
             return;
         };
-
-        // M1.2a: an empty scene, just the clear color. Window contents are
-        // added in M1.2b via `space_render_elements`.
-        let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
-
-        match surface.drm_output.render_frame(
-            &mut device.gles_renderer,
-            &elements,
-            FILL_COLOR,
-            FrameFlags::DEFAULT,
-        ) {
-            Ok(res) if !res.is_empty => {
-                if let Err(err) = surface.drm_output.queue_frame(()) {
-                    tracing::error!("failed to queue frame: {:?}", err);
-                }
-            }
-            Ok(_) => {
-                // No damage since the last frame: nothing to submit. The
-                // screen keeps showing the last committed framebuffer, and
-                // the next repaint (if any) is driven by the next VBlank.
-            }
-            Err(err) => {
-                tracing::error!("failed to render frame: {:?}", err);
-            }
+        if surface.pending_repaint.is_some() {
+            return;
         }
+
+        let frame_duration = output
+            .current_mode()
+            .map(|mode| Duration::from_secs_f64(1_000f64 / mode.refresh as f64))
+            .unwrap_or(Duration::from_millis(16));
+
+        let token = self
+            .loop_handle
+            .insert_source(Timer::from_duration(frame_duration), move |_, _, state| {
+                if let Some(device) = state.backend_data.device.as_mut() {
+                    if let Some(surface) = device.surfaces.get_mut(&crtc) {
+                        surface.pending_repaint = None;
+                    }
+                }
+                state.render_surface(crtc);
+                TimeoutAction::Drop
+            })
+            .ok();
+
+        surface.pending_repaint = token;
     }
 }

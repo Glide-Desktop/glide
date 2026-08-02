@@ -5,9 +5,10 @@ mod handlers;
 mod backend;
 mod grabs;
 mod input;
+mod logging;
 mod state;
 
-use backend::{tty::TtyData, winit::WinitData};
+use backend::tty::TtyData;
 use smithay::{
     backend::session::libseat::LibSeatSession,
     reexports::{calloop::EventLoop, wayland_server::Display},
@@ -15,56 +16,34 @@ use smithay::{
 pub use state::GlideState;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_logging();
+    let log_path = logging::init();
 
-    // Running under an existing Wayland/X11 session means we're being
-    // developed/tested nested inside a host compositor; otherwise we assume
-    // we own the tty and should drive the display directly.
-    let nested =
-        std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        log = ?log_path,
+        "starting glide"
+    );
 
-    if nested { run_winit() } else { run_tty() }
+    if let Err(err) = run() {
+        // The tty is in graphics mode at this point, so anything printed to
+        // the terminal is invisible; the log file is the only place this
+        // will actually be readable.
+        tracing::error!("fatal: {err}");
+        return Err(err);
+    }
+
+    Ok(())
 }
 
-fn run_winit() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let (session, notifier) = LibSeatSession::new()?;
+
     // Deliberately not type-annotated: `EventLoop<'l, Data>` carries an
     // explicit lifetime since calloop 0.14, and an explicit annotation here
     // would elide it into a fresh (non-'static) inference variable. Letting
     // inference flow from the `.handle()`/`.get_signal()` calls below
     // resolves it to `'static` directly (see the comment on
     // `GlideState::new` for why those are passed in already-extracted).
-    let mut event_loop = EventLoop::try_new()?;
-
-    let display = Display::new()?;
-
-    let mut state = GlideState::new(
-        WinitData,
-        event_loop.handle(),
-        event_loop.get_signal(),
-        display,
-    );
-
-    // Open a Wayland/X11 window for our nested compositor
-    crate::backend::winit::init_winit(&mut event_loop, &mut state)?;
-
-    // Set WAYLAND_DISPLAY to our socket name, so child processes connect to GlideState rather
-    // than the host compositor
-    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
-
-    // Spawn a test client, that will run under GlideState
-    spawn_client();
-
-    event_loop.run(None, &mut state, move |_| {
-        // GlideState is running
-    })?;
-
-    Ok(())
-}
-
-fn run_tty() -> Result<(), Box<dyn std::error::Error>> {
-    let (session, notifier) = LibSeatSession::new()?;
-
-    // See the comment in `run_winit` about why this is not type-annotated.
     let mut event_loop = EventLoop::try_new()?;
 
     let display = Display::new()?;
@@ -85,19 +64,31 @@ fn run_tty() -> Result<(), Box<dyn std::error::Error>> {
     // TtyData's docs) — not a crash, just an expected gap.
     state.device_added()?;
 
-    event_loop.run(None, &mut state, move |_| {
-        // GlideState is running
+    // Set WAYLAND_DISPLAY to our socket name, so child processes connect to
+    // us. Done after device_added() so the client has an output to appear
+    // on as soon as it connects.
+    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
+
+    // Spawn a test client, that will run under GlideState
+    spawn_client();
+
+    // Servicing clients has to happen every event loop iteration, not from
+    // inside the render path: with a static scene `render_frame` reports no
+    // damage and returns early, so a flush living there would simply never
+    // run. That left queued events (wl_output state, the reply to the
+    // client's `wl_display.sync`) stuck in the outgoing buffer forever —
+    // the client blocked on that roundtrip, never created a surface, and so
+    // the scene stayed empty, which kept damage empty: a self-sustaining
+    // deadlock.
+    event_loop.run(None, &mut state, move |state| {
+        state.space.refresh();
+        state.popups.cleanup();
+        let _ = state.display_handle.flush_clients();
     })?;
 
-    Ok(())
-}
+    tracing::info!("shutting down");
 
-fn init_logging() {
-    if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    } else {
-        tracing_subscriber::fmt().init();
-    }
+    Ok(())
 }
 
 fn spawn_client() {
@@ -105,12 +96,13 @@ fn spawn_client() {
     let flag = args.next();
     let arg = args.next();
 
-    match (flag.as_deref(), arg) {
-        (Some("-c") | Some("--command"), Some(command)) => {
-            std::process::Command::new(command).spawn().ok();
-        }
-        _ => {
-            std::process::Command::new("alacritty").spawn().ok();
-        }
+    let command = match (flag.as_deref(), arg) {
+        (Some("-c") | Some("--command"), Some(command)) => command,
+        _ => "alacritty".to_string(),
+    };
+
+    match std::process::Command::new(&command).spawn() {
+        Ok(child) => tracing::info!(command, pid = child.id(), "spawned client"),
+        Err(err) => tracing::error!(command, "failed to spawn client: {err}"),
     }
 }
