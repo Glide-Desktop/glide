@@ -20,6 +20,15 @@
 //!
 //! Both paths converge on the same `render_surface`, so there is exactly one
 //! place that decides what ends up on screen.
+//!
+//! # Hot-plug
+//!
+//! Monitor hot-plug is driven by a [`UdevBackend`] event source watching the
+//! primary GPU's device node: a [`UdevEvent::Changed`] means its connectors
+//! may have changed, so [`GlideState::device_changed`] rescans them and
+//! connects/disconnects outputs accordingly. Glide is single-GPU by design
+//! (see [`DeviceData`]), so [`UdevEvent::Added`]/[`UdevEvent::Removed`] for
+//! any *other* device are just logged and otherwise ignored.
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
@@ -28,6 +37,7 @@ use smithay::{
     backend::{
         allocator::{
             Fourcc,
+            dmabuf::Dmabuf,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
         },
         drm::{
@@ -39,6 +49,7 @@ use smithay::{
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
+            ImportDma,
             element::{
                 AsRenderElements, memory::MemoryRenderBuffer, surface::WaylandSurfaceRenderElement,
             },
@@ -48,7 +59,7 @@ use smithay::{
             Event as SessionEvent, Session, libseat::LibSeatSession,
             libseat::LibSeatSessionNotifier,
         },
-        udev::{all_gpus, primary_gpu},
+        udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
     },
     desktop::{
         Space, Window,
@@ -68,7 +79,10 @@ use smithay::{
     },
     render_elements,
     utils::{DeviceFd, IsAlive, Logical, Point, Scale, Transform},
-    wayland::compositor,
+    wayland::{
+        compositor,
+        dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+    },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -115,7 +129,10 @@ render_elements! {
 
 struct SurfaceData {
     output: Output,
-    #[allow(dead_code)] // kept alive for its Drop impl / future use (hotplug, M1.4)
+    /// `None` only for the (currently unreachable) case of a connector wired
+    /// up without a `wl_output` global; every real connector gets one in
+    /// `connector_connected`. Used by `connector_disconnected` to retire the
+    /// global when the monitor is unplugged.
     global: Option<GlobalId>,
     drm_output: GbmDrmOutput,
     /// Set while a "no damage last time, try again shortly" repaint timer is
@@ -123,9 +140,11 @@ struct SurfaceData {
     pending_repaint: Option<RegistrationToken>,
 }
 
-/// Everything tied to the single GPU device we drive. Single-GPU only: there
-/// is no `GpuManager`/`MultiRenderer` here, and no hot-plug handling for
-/// additional graphics cards or connectors yet (M1.4).
+/// Everything tied to the single GPU device we drive. Single-GPU only:
+/// there is no `GpuManager`/`MultiRenderer` here, and no support for
+/// rendering to a second graphics card. Connector hot-plug *within* this
+/// device (a monitor being plugged/unplugged) is handled — see the
+/// module-level `# Hot-plug` docs.
 struct DeviceData {
     drm_output_manager: GbmDrmOutputManager,
     drm_scanner: DrmScanner,
@@ -154,6 +173,10 @@ pub struct TtyData {
     primary_gpu: DrmNode,
     primary_gpu_path: PathBuf,
     device: Option<DeviceData>,
+    /// `zwp_linux_dmabuf_v1` state. `None` until [`GlideState::device_added`]
+    /// has a renderer to report supported formats from; every real dispatch
+    /// happens well after that (see [`GlideState::dmabuf_state`]).
+    dmabuf_state: Option<(DmabufState, DmabufGlobal)>,
 }
 
 impl TtyData {
@@ -181,6 +204,7 @@ impl TtyData {
             primary_gpu,
             primary_gpu_path,
             device: None,
+            dmabuf_state: None,
         })
     }
 }
@@ -271,6 +295,63 @@ pub fn init_tty(
         })
         .map_err(|e| e.error)
         .context("failed to register the libseat session-event source")?;
+
+    Ok(())
+}
+
+/// Watches udev for monitor hot-plug on the primary GPU. See the
+/// module-level `# Hot-plug` docs. Must be called after
+/// [`GlideState::device_added`], since a `Changed` event can arrive at any
+/// point afterwards and is handled by rescanning `backend_data.device`.
+pub fn init_udev_monitor(
+    event_loop: &mut EventLoop<GlideState>,
+    state: &mut GlideState,
+) -> anyhow::Result<()> {
+    let seat_name = state.backend_data.seat_name();
+    let primary_gpu = state.backend_data.primary_gpu;
+
+    let udev_backend =
+        UdevBackend::new(&seat_name).context("failed to initialize the udev device monitor")?;
+    tracing::info!(seat = seat_name, "watching udev for monitor hot-plug");
+
+    event_loop
+        .handle()
+        .insert_source(udev_backend, move |event, _, state| match event {
+            UdevEvent::Added { device_id, path } => {
+                // Glide is single-GPU by design (see `DeviceData`): a second
+                // card appearing after startup has nowhere to render to and
+                // is not driven.
+                tracing::info!(
+                    ?device_id,
+                    ?path,
+                    "udev device added; ignored, Glide only drives the primary GPU"
+                );
+            }
+            UdevEvent::Changed { device_id } => {
+                match DrmNode::from_dev_id(device_id) {
+                    Ok(node) if node == primary_gpu => state.device_changed(),
+                    // A `Changed` event on some other device (or on a node
+                    // type of the primary GPU we don't track, e.g. its
+                    // render node) has nothing for us to rescan.
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!(?device_id, ?err, "udev change event on a non-DRM device");
+                    }
+                }
+            }
+            UdevEvent::Removed { device_id } => {
+                if DrmNode::from_dev_id(device_id).ok() == Some(primary_gpu) {
+                    // Glide has no fallback GPU to switch to and no code
+                    // path to fully tear down and rebuild `DeviceData`, so
+                    // this is effectively fatal. Logging (rather than
+                    // panicking) at least gets the reason into the log file
+                    // instead of a bare crash.
+                    tracing::error!("the primary GPU was removed; Glide cannot recover from this");
+                }
+            }
+        })
+        .map_err(|e| e.error)
+        .context("failed to register the udev device-monitor event source")?;
 
     Ok(())
 }
@@ -425,6 +506,25 @@ impl GlideState {
         let gles_renderer = unsafe { GlesRenderer::new(egl_context) }
             .context("failed to create the GLES renderer")?;
 
+        // Advertise `zwp_linux_dmabuf_v1` using whatever formats this
+        // renderer can actually import as a texture, so a client asking for
+        // the default feedback only ever hears about buffers we can use.
+        let dmabuf_formats = gles_renderer.dmabuf_formats();
+        let default_dmabuf_feedback =
+            DmabufFeedbackBuilder::new(node.dev_id(), dmabuf_formats.clone())
+                .build()
+                .context("failed to build the default dmabuf feedback")?;
+        let mut dmabuf_state = DmabufState::new();
+        let dmabuf_global = dmabuf_state.create_global_with_default_feedback::<GlideState>(
+            &self.display_handle,
+            &default_dmabuf_feedback,
+        );
+        self.backend_data.dmabuf_state = Some((dmabuf_state, dmabuf_global));
+        tracing::info!(
+            formats = dmabuf_formats.indexset().len(),
+            "dmabuf global created"
+        );
+
         let allocator = GbmAllocator::new(
             gbm_device.clone(),
             GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
@@ -460,8 +560,13 @@ impl GlideState {
     }
 
     /// Scans for connected connectors and initializes an output for each one
-    /// found. Only handles the initial state at startup; reacting to
-    /// connectors being plugged/unplugged afterwards is M1.4.
+    /// found. Called once at startup for whatever is already plugged in;
+    /// [`GlideState::device_changed`] is the hot-plug equivalent used for
+    /// everything after that (see the module-level `# Hot-plug` docs).
+    ///
+    /// Unlike `device_changed`, a scan failure here is fatal: with no
+    /// outputs yet, there is nothing for the compositor to show, so this
+    /// propagates the error instead of silently starting on a black screen.
     fn scan_connectors(&mut self) -> anyhow::Result<()> {
         let events: Vec<_> = {
             let device = self
@@ -489,6 +594,96 @@ impl GlideState {
         }
 
         Ok(())
+    }
+
+    /// Rescans the primary GPU's connectors in response to a udev `Changed`
+    /// event, connecting/disconnecting outputs as needed. See the
+    /// module-level `# Hot-plug` docs.
+    ///
+    /// Unlike the startup scan in [`GlideState::device_added`], a failure
+    /// here is logged rather than propagated: there is already a running
+    /// compositor with a (possibly empty) set of working outputs, and
+    /// failing to notice one more monitor is not worth tearing that down
+    /// for.
+    fn device_changed(&mut self) {
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+
+        let events: Vec<_> = match device
+            .drm_scanner
+            .scan_connectors(device.drm_output_manager.device())
+        {
+            Ok(result) => result.into_iter().collect(),
+            Err(err) => {
+                tracing::warn!(?err, "failed to rescan DRM connectors");
+                return;
+            }
+        };
+
+        for event in events {
+            match event {
+                DrmScanEvent::Connected {
+                    connector,
+                    crtc: Some(crtc),
+                } => {
+                    tracing::info!(?crtc, interface = ?connector.interface(), "connector connected");
+                    if let Err(err) = self.connector_connected(&connector, crtc) {
+                        tracing::error!(?err, "failed to initialize newly connected connector");
+                    }
+                }
+                DrmScanEvent::Disconnected {
+                    connector,
+                    crtc: Some(crtc),
+                } => {
+                    tracing::info!(?crtc, interface = ?connector.interface(), "connector disconnected");
+                    self.connector_disconnected(crtc);
+                }
+                // Either the connector's mode list changed while it stayed
+                // connected (M2 territory: re-evaluating an already-mapped
+                // output's mode is a window-management concern), or the
+                // scanner could not map a CRTC to it (nothing to drive it
+                // with — a real possibility on GPUs with fewer CRTCs than
+                // connectors).
+                _ => {}
+            }
+        }
+    }
+
+    /// Tears down the output for a connector that just got unplugged:
+    /// removes its `wl_output` global (giving clients a moment to notice
+    /// before the backing state is freed — see [`DisplayHandle::disable_global`])
+    /// and unmaps it from `space`, moving any windows that were on it back
+    /// into view on whatever outputs remain.
+    fn connector_disconnected(&mut self, crtc: crtc::Handle) {
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        let Some(surface) = device.surfaces.remove(&crtc) else {
+            return;
+        };
+
+        self.space.unmap_output(&surface.output);
+
+        let Some(global) = surface.global else {
+            return;
+        };
+        let global_for_removal = global.clone();
+        self.display_handle.disable_global::<GlideState>(global);
+        // A few seconds is the delay the smithay docs suggest between
+        // disabling and removing a global, so already-connected clients
+        // have a chance to notice it going away before the state backing
+        // it (and the protocol error a late bind would otherwise hit) is
+        // freed.
+        let _ = self.loop_handle.insert_source(
+            Timer::from_duration(Duration::from_secs(5)),
+            move |_, (), state| {
+                state
+                    .display_handle
+                    .remove_global::<GlideState>(global_for_removal.clone());
+                TimeoutAction::Drop
+            },
+        );
     }
 
     fn connector_connected(
@@ -753,5 +948,46 @@ impl GlideState {
             .ok();
 
         surface.pending_repaint = token;
+    }
+}
+
+impl DmabufHandler for GlideState {
+    /// # Panics
+    ///
+    /// Panics if called before [`GlideState::device_added`] has run.
+    /// `device_added` is the only place that creates the dmabuf global this
+    /// state backs, so no client can have bound it (and so no dispatch can
+    /// reach this) any earlier.
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self
+            .backend_data
+            .dmabuf_state
+            .as_mut()
+            .expect("device_added() always sets backend_data.dmabuf_state before calling this")
+            .0
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        let Some(device) = self.backend_data.device.as_mut() else {
+            notifier.failed();
+            return;
+        };
+
+        match device.gles_renderer.import_dmabuf(&dmabuf, None) {
+            Ok(_texture) => {
+                // A failure here just means the client already hung up
+                // before we could reply; nothing for us to do about that.
+                let _ = notifier.successful::<GlideState>();
+            }
+            Err(err) => {
+                tracing::warn!(?err, "failed to import client dmabuf");
+                notifier.failed();
+            }
+        }
     }
 }

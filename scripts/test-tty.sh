@@ -20,6 +20,9 @@
 #   - move the mouse / touchpad
 #   - Ctrl+Alt+F2 to switch to GNOME, then Ctrl+Alt+F3 to come back —
 #     alacritty should still be there afterwards
+#   - if a second monitor is available, plug/unplug it (or hotplug over
+#     USB-C/HDMI) and confirm it lights up/disappears without a restart —
+#     this exercises M1.4 hot-plug and can't be scripted here
 #   - Super+Q to quit early (otherwise wait for the timeout)
 #
 # Two logs are produced, and both matter:
@@ -135,6 +138,8 @@ check "session paused"                'session paused'
 check "session resumed"               'session resumed'
 check "primary gpu opened"            'opening primary gpu'
 check "connector connected"           'connector connected'
+check "udev hotplug monitor started"  'watching udev for monitor hot-plug'
+check "dmabuf global created"         'dmabuf global created'
 check "client spawned"                'spawned client'
 check "client connected"              'New client connected'
 check "window mapped"                 'new toplevel'
@@ -146,6 +151,7 @@ check_absent "no panics"              'panicked at|RUST_BACKTRACE'
 check_absent "no fatal errors"        'fatal:'
 check_absent "no render errors"       'failed to render frame|failed to queue frame'
 check_absent "no drm errors"          'drm error:'
+check_absent "no dmabuf import failures" 'failed to import client dmabuf'
 # Rendering while the session is paused fails with DeviceInactive, and the
 # error path re-arms the repaint timer — which used to spin at the refresh
 # rate for the whole time the user was away on another VT.

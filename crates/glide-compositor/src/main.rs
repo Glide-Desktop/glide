@@ -67,6 +67,9 @@ fn run() -> anyhow::Result<()> {
     // TtyData's docs) — not a crash, just an expected gap.
     state.device_added()?;
 
+    // Watch udev for monitors being plugged/unplugged after startup.
+    crate::backend::tty::init_udev_monitor(&mut event_loop, &mut state)?;
+
     // Set WAYLAND_DISPLAY to our socket name, so child processes connect to
     // us. Done after device_added() so the client has an output to appear
     // on as soon as it connects.
