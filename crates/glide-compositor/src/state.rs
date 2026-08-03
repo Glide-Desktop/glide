@@ -5,7 +5,7 @@ use std::{
 };
 
 use smithay::{
-    desktop::{PopupManager, Space, WindowSurfaceType},
+    desktop::{LayerSurface, PopupManager, Space, WindowSurfaceType, layer_map_for_output},
     input::{
         Seat, SeatState,
         keyboard::{Keycode, XkbConfig},
@@ -21,13 +21,14 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Point},
+    utils::{IsAlive, Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::kde::decoration::KdeDecorationState,
+        shell::wlr_layer::{Layer as WlrLayer, WlrLayerShellState},
         shell::xdg::{
             ToplevelState, XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState,
         },
@@ -69,6 +70,8 @@ pub struct GlideState {
     /// The KDE flavor of the same negotiation, for clients that predate (or
     /// don't speak) `xdg-decoration`.
     pub kde_decoration_state: KdeDecorationState,
+    /// `wlr-layer-shell`: panels, launchers, wallpapers, notifications.
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<GlideState>,
@@ -95,6 +98,13 @@ pub struct GlideState {
     /// via `wl_pointer.set_cursor` when the pointer is over them; otherwise
     /// it stays at the themed default.
     pub cursor_status: CursorImageStatus,
+
+    /// A layer surface currently holding keyboard focus (e.g. a launcher
+    /// the user clicked into). Checked by `apply_keyboard_focus` ahead of
+    /// the layout's focused window: layer surfaces are not windows, so the
+    /// layout knows nothing about them, and without this every reconcile
+    /// would yank the keyboard back to a window mid-typing.
+    pub layer_focus: Option<LayerSurface>,
 
     /// Keys currently suppressed (not forwarded to the focused client)
     /// because their press triggered a compositor keybinding. Tracked so the
@@ -151,6 +161,7 @@ impl GlideState {
             smithay::reexports::wayland_protocols_misc::server_decoration::server
                 ::org_kde_kwin_server_decoration_manager::Mode::Server,
         );
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
 
@@ -202,6 +213,7 @@ impl GlideState {
             cursor_shape_state,
             xdg_decoration_state,
             kde_decoration_state,
+            layer_shell_state,
             shm_state,
             output_manager_state,
             seat_state,
@@ -215,6 +227,7 @@ impl GlideState {
             keybinds: Vec::new(),
             decoration_theme: crate::config::DecorationTheme::default(),
             cursor_status: CursorImageStatus::default_named(),
+            layer_focus: None,
             suppressed_keys: Vec::new(),
         }
     }
@@ -373,13 +386,26 @@ impl GlideState {
         }
     }
 
-    /// Points the keyboard at whatever the layout says is focused.
+    /// Points the keyboard at whatever should have it: a focused layer
+    /// surface first (launchers and the like — see [`Self::layer_focus`]),
+    /// otherwise the layout's focused window.
     fn apply_keyboard_focus(&mut self) {
+        // A dead layer surface must not pin focus forever: the client may
+        // have exited without any event that would otherwise clear this.
+        if self.layer_focus.as_ref().is_some_and(|l| !l.alive()) {
+            self.layer_focus = None;
+        }
+
         let target = self
-            .layout
-            .focused_window()
-            .and_then(|id| self.window_map.get(&id))
-            .map(|window| window_surface(window).clone());
+            .layer_focus
+            .as_ref()
+            .map(|layer| layer.wl_surface().clone())
+            .or_else(|| {
+                self.layout
+                    .focused_window()
+                    .and_then(|id| self.window_map.get(&id))
+                    .map(|window| window_surface(window).clone())
+            });
 
         // Smithay no-ops when the focus is unchanged, so calling this on every
         // reconcile does not spam clients with enter/leave pairs.
@@ -462,12 +488,53 @@ impl GlideState {
             .map(|(&id, _)| id)
     }
 
+    /// The layer surface backing `surface`, if it is one, on any output.
+    #[must_use]
+    pub fn layer_for_surface(&self, surface: &WlSurface) -> Option<LayerSurface> {
+        self.space.outputs().find_map(|output| {
+            layer_map_for_output(output)
+                .layer_for_surface(surface, WindowSurfaceType::ALL)
+                .cloned()
+        })
+    }
+
+    /// A mapped `Top`/`Overlay` layer surface demanding exclusive keyboard
+    /// focus, if any. Checked per key event rather than tracked as state:
+    /// exclusivity is the layer's own (double-buffered) property and can
+    /// change on any commit, so a snapshot would inevitably go stale.
+    #[must_use]
+    pub fn exclusive_layer_surface(&self) -> Option<LayerSurface> {
+        self.space.outputs().find_map(|output| {
+            let map = layer_map_for_output(output);
+            map.layers()
+                .rev()
+                .find(|layer| {
+                    matches!(layer.layer(), WlrLayer::Top | WlrLayer::Overlay)
+                        && layer.layer_surface().with_cached_state(|state| {
+                            state.keyboard_interactivity
+                                == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive
+                        })
+                })
+                .cloned()
+        })
+    }
+
+    /// Public wrapper over [`Self::apply_keyboard_focus`] for the input
+    /// path, which needs to push a just-acquired layer focus to the seat
+    /// before dispatching the key that triggered it.
+    pub fn apply_keyboard_focus_public(&mut self) {
+        self.apply_keyboard_focus();
+    }
+
     /// Focuses a window through the layout engine and applies the result.
     ///
     /// The only sanctioned way to change focus. Setting keyboard focus
     /// directly would desync the layout, leaving keybindings acting on a
     /// different window than the one the user sees as active.
     pub fn focus_window(&mut self, id: glide_layout::WindowId) {
+        // Focusing a window is also how a layer surface *loses* the
+        // keyboard: click a window, the launcher's turn is over.
+        self.layer_focus = None;
         if self.layout.focus_window(id) {
             self.reconcile_space();
         }
@@ -489,6 +556,14 @@ impl GlideState {
             .into_iter()
             .map(|output| {
                 let geometry = self.space.output_geometry(&output).unwrap_or_default();
+
+                // What layer-shell panels have not claimed for themselves.
+                // The zone is output-relative; the layout wants it in
+                // global coordinates like everything else it sees.
+                // (Computed before `output` is consumed by the id map's
+                // `entry` below.)
+                let zone = layer_map_for_output(&output).non_exclusive_zone();
+
                 let id = *self
                     .output_ids
                     .entry(output)
@@ -500,14 +575,17 @@ impl GlideState {
                     geometry.size.w,
                     geometry.size.h,
                 );
+                let work_area = glide_layout::Rectangle::from_loc_and_size(
+                    geometry.loc.x + zone.loc.x,
+                    geometry.loc.y + zone.loc.y,
+                    zone.size.w,
+                    zone.size.h,
+                );
 
                 glide_layout::OutputInfo {
                     id,
                     geometry: rect,
-                    // No layer-shell surfaces to reserve space for yet, so
-                    // the usable area is the whole output. `arrange_layers`
-                    // (M4.6) will shrink this by each panel's exclusive zone.
-                    work_area: rect,
+                    work_area,
                 }
             })
             .collect();
@@ -604,12 +682,18 @@ impl GlideState {
     /// Routed through the layout like every other focus change, so the
     /// windows' `Activated` state is updated by the reconcile that follows.
     pub fn clear_focus(&mut self) {
+        self.layer_focus = None;
         self.layout.clear_focus();
         self.reconcile_space();
     }
 
-    /// Finds what the pointer is over at `pos`: a client surface, a window's
-    /// decoration, or nothing.
+    /// Finds what the pointer is over at `pos`: a layer surface, a client
+    /// surface, a window's decoration, or nothing.
+    ///
+    /// Stacking follows the wlr-layer-shell model: `Overlay` and `Top`
+    /// layers sit above every window, `Bottom` and `Background` below them
+    /// — matching the order `space_render_elements` draws in, so what you
+    /// click is always what you see.
     ///
     /// Returns the target together with *its own* absolute origin — not the
     /// window's — since Smithay computes the location handed to the
@@ -618,6 +702,32 @@ impl GlideState {
     /// decoration hit that means the titlebar's own top-left, which sits
     /// `header_height` above the window's content origin — see the
     /// coordinate convention documented on [`crate::window`].
+    #[must_use]
+    pub fn surface_under(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
+        let (output, output_loc) = self.space.outputs().find_map(|o| {
+            let geometry = self.space.output_geometry(o)?;
+            geometry
+                .to_f64()
+                .contains(pos)
+                .then(|| (o.clone(), geometry.loc.to_f64()))
+        })?;
+
+        let upper = Self::layer_surface_under(&output, output_loc, pos, true);
+        if upper.is_some() {
+            return upper;
+        }
+
+        if let Some(hit) = self.window_target_under(pos) {
+            return Some(hit);
+        }
+
+        Self::layer_surface_under(&output, output_loc, pos, false)
+    }
+
+    /// The window (content or decoration) under `pos`, if any.
     ///
     /// The decoration check goes through [`HeaderBar::contains`], never a
     /// bare "is y within the titlebar strip": with the chevron menu open,
@@ -626,8 +736,7 @@ impl GlideState {
     /// the client surface underneath it.
     ///
     /// [`HeaderBar::contains`]: crate::decoration::HeaderBar::contains
-    #[must_use]
-    pub fn surface_under(
+    fn window_target_under(
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
@@ -655,6 +764,38 @@ impl GlideState {
                 (
                     crate::focus::PointerFocusTarget::from(s),
                     p.to_f64() + content_origin,
+                )
+            })
+    }
+
+    /// The layer surface under `pos` in either the upper (`Overlay`+`Top`)
+    /// or lower (`Bottom`+`Background`) pair of layers.
+    fn layer_surface_under(
+        output: &Output,
+        output_loc: Point<f64, Logical>,
+        pos: Point<f64, Logical>,
+        upper: bool,
+    ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
+        let layers = layer_map_for_output(output);
+        let local = pos - output_loc;
+
+        let (first, second) = if upper {
+            (WlrLayer::Overlay, WlrLayer::Top)
+        } else {
+            (WlrLayer::Bottom, WlrLayer::Background)
+        };
+
+        let layer = layers
+            .layer_under(first, local)
+            .or_else(|| layers.layer_under(second, local))?;
+        let layer_loc = layers.layer_geometry(layer)?.loc.to_f64();
+
+        layer
+            .surface_under(local - layer_loc, WindowSurfaceType::ALL)
+            .map(|(surface, loc)| {
+                (
+                    crate::focus::PointerFocusTarget::from(surface),
+                    loc.to_f64() + layer_loc + output_loc,
                 )
             })
     }

@@ -46,6 +46,12 @@ impl CompositorHandler for GlideState {
             }
         }
 
+        // Layer surfaces are not windows: when the commit belongs to one,
+        // none of the window-commit handling below applies to it.
+        if super::layer_shell::handle_commit(self, surface) {
+            return;
+        }
+
         xdg_shell::handle_commit(self, surface);
 
         // A resize changes both size and (for top/left edges) position in

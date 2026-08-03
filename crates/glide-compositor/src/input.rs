@@ -160,6 +160,20 @@ impl GlideState {
         // in the compositor, and the bindings contain owned `String`s.
         let keybinds = std::mem::take(&mut self.keybinds);
 
+        // A Top/Overlay layer surface with exclusive keyboard interactivity
+        // (lock screens, some launchers) takes the keyboard for as long as
+        // it exists, no click required — that is what "exclusive" means.
+        let exclusive_layer = self.exclusive_layer_surface();
+        if let Some(layer) = exclusive_layer {
+            self.layer_focus = Some(layer);
+            self.apply_keyboard_focus_public();
+        }
+        let exclusive = self.layer_focus.is_some()
+            && self
+                .layer_focus
+                .as_ref()
+                .is_some_and(smithay::desktop::LayerSurface::can_receive_keyboard_focus);
+
         let keyboard = self
             .seat
             .get_keyboard()
@@ -188,6 +202,17 @@ impl GlideState {
                 if let KeyState::Pressed = key_state {
                     let action =
                         process_keyboard_shortcut(&keybinds, modifiers, &handle.raw_syms(), keysym);
+
+                    // While a layer surface holds the keyboard, compositor
+                    // shortcuts step aside — a launcher's keystrokes are its
+                    // own — with one exception that must survive anything:
+                    // VT switching is the only way off the tty.
+                    let action = if exclusive {
+                        action.filter(|a| matches!(a, KeyAction::VtSwitch(_)))
+                    } else {
+                        action
+                    };
+
                     if action.is_some() {
                         suppressed_keys.push(keycode);
                     }
@@ -357,21 +382,48 @@ impl GlideState {
         let button_state = event.state();
 
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
-            let clicked = self
-                .space
-                .element_under(pointer.current_location())
-                .map(|(window, _)| window.clone());
+            let pos = pointer.current_location();
 
-            // Focus goes through the layout engine, never straight to the
-            // keyboard: the layout owns which window is active, and setting
-            // keyboard focus behind its back would leave keybindings acting
-            // on whatever was focused before the click.
-            // Activation state is applied by `reconcile_space` from the
-            // layout's focus, so there is nothing to toggle by hand here.
-            if let Some(id) = clicked.as_ref().and_then(|window| self.window_id(window)) {
-                self.focus_window(id);
-            } else {
-                self.clear_focus();
+            // What was actually clicked, layers included — `element_under`
+            // alone would find the window *underneath* a panel and focus
+            // that, since layer surfaces are not Space elements.
+            let target = self.surface_under(pos).map(|(target, _)| target);
+
+            match target {
+                Some(crate::focus::PointerFocusTarget::Surface(surface))
+                    if self.layer_for_surface(&surface).is_some() =>
+                {
+                    let layer = self
+                        .layer_for_surface(&surface)
+                        .expect("matched Some in the guard above");
+                    // Click-to-focus for OnDemand launchers; layers that
+                    // declared no keyboard interest are left alone (a
+                    // wallpaper click should not steal the keyboard).
+                    if layer.can_receive_keyboard_focus() {
+                        self.layer_focus = Some(layer);
+                        self.apply_keyboard_focus_public();
+                    }
+                }
+                Some(crate::focus::PointerFocusTarget::Decoration(deco)) => {
+                    if let Some(id) = self.window_id(&deco.0) {
+                        self.focus_window(id);
+                    }
+                }
+                Some(crate::focus::PointerFocusTarget::Surface(_)) => {
+                    // Focus goes through the layout engine, never straight
+                    // to the keyboard: the layout owns which window is
+                    // active. Resolution still via element_under, which
+                    // (unlike a bare surface lookup) also attributes popups
+                    // and subsurfaces to their window.
+                    let clicked = self
+                        .space
+                        .element_under(pos)
+                        .map(|(window, _)| window.clone());
+                    if let Some(id) = clicked.as_ref().and_then(|window| self.window_id(window)) {
+                        self.focus_window(id);
+                    }
+                }
+                None => self.clear_focus(),
             }
         }
 

@@ -41,6 +41,15 @@
 #     below it with one entry, "Minimize" — clicking it minimizes the window
 #     exactly like Super+M; clicking anywhere else while it's open just
 #     closes the dropdown without doing anything
+#   - layer-shell: `glidectl exec waybar` — a panel appears at the screen
+#     edge WITHOUT a Glide titlebar, existing windows must not sit under it,
+#     and NEW windows and maximize must respect the reduced work area
+#     (fullscreen must still cover the panel). `glidectl exec fuzzel` — the
+#     launcher opens, receives keyboard input immediately, Escape closes it
+#     and the keyboard returns to the window that had it. `glidectl exec
+#     "swaybg -c '#336699'"` — background fills the screen behind windows.
+#     Compositor keybinds (Super+1..) must NOT fire while typing in fuzzel,
+#     but Ctrl+Alt+F2 must still switch VTs
 #   - decorations negotiate: alacritty/foot keep the server-side titlebar;
 #     a GTK app (if installed — try `TIMEOUT=120 ... glidectl exec gtk4-demo`
 #     or zenity) should show its OWN header bar with NO Glide titlebar on
