@@ -29,7 +29,7 @@ use smithay::{
     input::{
         Seat,
         pointer::{
-            AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent,
+            AxisFrame, ButtonEvent, CursorImageStatus, GestureHoldBeginEvent, GestureHoldEndEvent,
             GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
             GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData,
             MotionEvent, PointerTarget, RelativeMotionEvent,
@@ -110,6 +110,22 @@ enum HitZone {
     Drag,
 }
 
+/// What a completed titlebar interaction should do.
+///
+/// Decided by [`HeaderBar::on_button`] *while* the decoration state is
+/// borrowed, and executed by [`Decoration::button`] *after* that borrow is
+/// released. The split is not stylistic: executing directly under the
+/// borrow meant `reconcile_space` → `sync_decoration` → a second
+/// `borrow_mut()` of the same `RefCell` — a guaranteed `BorrowMutError`
+/// panic the first time anyone clicked the maximize button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecorationAction {
+    ToggleMaximize,
+    Close,
+    Run(MenuItem),
+    StartMove,
+}
+
 impl HeaderBar {
     #[must_use]
     pub const fn is_decorated(&self) -> bool {
@@ -146,8 +162,45 @@ impl HeaderBar {
         }
     }
 
+    /// Height of everything hit-testable: the titlebar strip, plus the open
+    /// dropdown extending below it.
+    fn interactive_height(&self) -> i32 {
+        let menu_rows = if self.menu_open {
+            i32::try_from(MenuItem::ALL.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        self.height * (1 + menu_rows)
+    }
+
+    /// Whether `rel` — relative to the decoration's own origin, the
+    /// titlebar's top-left — falls inside the decoration.
+    ///
+    /// This, not just "the titlebar strip", is what hit-testing must use:
+    /// the open dropdown extends *below* the strip, over the client's own
+    /// content, and treating that area as content would route clicks on the
+    /// menu straight to the client underneath it.
+    pub fn contains(&self, rel: Point<f64, Logical>) -> bool {
+        self.is_decorated()
+            && rel.x >= 0.0
+            && rel.x < f64::from(self.width)
+            && rel.y >= 0.0
+            && rel.y < f64::from(self.interactive_height())
+    }
+
+    /// Menu row index under `loc` (decoration-origin coordinates), if the
+    /// menu is open and `loc` is inside it.
+    ///
+    /// Row 0 starts *below* the titlebar strip — at `y == height`, not at
+    /// `y == 0` — hence the subtraction: without it, hovering the titlebar
+    /// itself lit up row 0 and the real row 0 counted as row 1.
     fn menu_item_at(&self, loc: Point<f64, Logical>) -> Option<usize> {
-        if !self.menu_open || loc.x < 0.0 || loc.x >= f64::from(self.width) || loc.y < 0.0 {
+        if !self.menu_open || loc.x < 0.0 || loc.x >= f64::from(self.width) {
+            return None;
+        }
+
+        let y_in_menu = loc.y - f64::from(self.height);
+        if y_in_menu < 0.0 {
             return None;
         }
 
@@ -155,7 +208,7 @@ impl HeaderBar {
         // handful of entries at most), so this narrowing never truncates in
         // a way that changes which row was clicked.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let index = (loc.y / f64::from(self.height)) as usize;
+        let index = (y_in_menu / f64::from(self.height)) as usize;
 
         (index < MenuItem::ALL.len()).then_some(index)
     }
@@ -170,57 +223,46 @@ impl HeaderBar {
         self.menu_hover = None;
     }
 
-    /// Handles a button press/release. Only release (matching how the rest
-    /// of Glide treats clicks) triggers an action; press alone starts a move
-    /// when it lands on the plain background.
-    fn clicked(
-        &mut self,
-        seat: &Seat<GlideState>,
-        state: &mut GlideState,
-        window: &GlideWindow,
-        event: &ButtonEvent,
-    ) {
-        let Some(loc) = self.pointer_loc else {
-            return;
-        };
+    /// Decides what a button press/release on the decoration should do,
+    /// mutating only the header's own state (menu open/closed).
+    ///
+    /// Deliberately has no access to `GlideState`: it runs under the
+    /// decoration `RefCell` borrow, and anything that reaches
+    /// `reconcile_space` from here would re-borrow it and panic. The caller
+    /// executes the returned action after releasing the borrow.
+    ///
+    /// Only release triggers an action (matching how the rest of Glide
+    /// treats clicks); press alone starts a move when it lands on the plain
+    /// background, since a drag by definition begins while the button is
+    /// still held.
+    fn on_button(&mut self, event: &ButtonEvent) -> Option<DecorationAction> {
+        let loc = self.pointer_loc?;
 
-        // A press in the open menu is handled entirely on release below,
-        // same as anywhere else in the titlebar — but a press on the
-        // background *starts a drag immediately*, which is why that one
-        // case is checked on ButtonState::Pressed instead.
         if event.state == ButtonState::Pressed {
+            // A press with the menu open is handled entirely on release,
+            // same as everywhere else in the titlebar.
             if self.menu_open {
-                return;
+                return None;
             }
-            if self.zone_at(loc.x) == HitZone::Drag {
-                start_move(seat, state, window, event);
-            }
-            return;
+            return (self.zone_at(loc.x) == HitZone::Drag).then_some(DecorationAction::StartMove);
         }
 
         if self.menu_open {
-            let clicked_item = self.menu_item_at(loc).and_then(|i| MenuItem::ALL.get(i));
+            let item = self.menu_item_at(loc).and_then(|i| MenuItem::ALL.get(i));
+            let action = item.map(|&item| DecorationAction::Run(item));
+            // Any release closes the menu, whether it hit an item or not.
             self.menu_open = false;
-            if let Some(&item) = clicked_item {
-                run_menu_item(state, window, item);
-            }
-            return;
+            return action;
         }
 
         match self.zone_at(loc.x) {
-            HitZone::Maximize => {
-                if let Some(id) = state.window_id(window) {
-                    state.layout.toggle_maximized(id);
-                    state.reconcile_space();
-                }
+            HitZone::Maximize => Some(DecorationAction::ToggleMaximize),
+            HitZone::Close => Some(DecorationAction::Close),
+            HitZone::Chevron => {
+                self.menu_open = true;
+                None
             }
-            HitZone::Close => {
-                if let Some(toplevel) = window.toplevel() {
-                    toplevel.send_close();
-                }
-            }
-            HitZone::Chevron => self.menu_open = true,
-            HitZone::Drag => {}
+            HitZone::Drag => None,
         }
     }
 
@@ -386,9 +428,16 @@ impl GlideWindow {
     /// with configuration reloads and focus changes despite
     /// [`smithay::backend::renderer::element::AsRenderElements`] having no
     /// access to compositor state of its own.
+    ///
+    /// Width is synced here too, not only lazily at render time: `zone_at`
+    /// measures the close button from the right edge, so hit-testing a
+    /// click that somehow arrives before the first render would otherwise
+    /// run against `width == 0` and classify most of the bar as Close.
     pub fn sync_decoration(&self, theme: &DecorationTheme, height: i32, focused: bool) {
+        let width = self.geometry().size.w;
         let mut state = self.decoration_state();
         state.header.set_height(height);
+        state.header.width = width;
         state.header.sync(theme, focused);
     }
 }
@@ -407,7 +456,13 @@ impl IsAlive for Decoration {
 }
 
 impl PointerTarget<GlideState> for Decoration {
-    fn enter(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, event: &MotionEvent) {
+    fn enter(&self, _seat: &Seat<GlideState>, data: &mut GlideState, event: &MotionEvent) {
+        // The decoration is compositor territory: whatever cursor the client
+        // last set via `wl_pointer.set_cursor` stops applying the moment the
+        // pointer crosses onto the titlebar. Without this the client's
+        // I-beam (or whatever else) lingered over our own UI.
+        data.cursor_status = CursorImageStatus::default_named();
+
         self.0
             .decoration_state()
             .header
@@ -430,10 +485,30 @@ impl PointerTarget<GlideState> for Decoration {
     }
 
     fn button(&self, seat: &Seat<GlideState>, data: &mut GlideState, event: &ButtonEvent) {
-        self.0
-            .decoration_state()
-            .header
-            .clicked(seat, data, &self.0, event);
+        // The decision is made under the decoration borrow; the temporary
+        // `RefMut` ends with this statement. That ordering is load-bearing:
+        // the actions below reach `reconcile_space`, which re-borrows this
+        // same `RefCell` via `sync_decoration`, and executing them while
+        // still borrowed panicked with `BorrowMutError` on the first
+        // maximize-button click.
+        let action = self.0.decoration_state().header.on_button(event);
+
+        match action {
+            Some(DecorationAction::ToggleMaximize) => {
+                if let Some(id) = data.window_id(&self.0) {
+                    data.layout.toggle_maximized(id);
+                    data.reconcile_space();
+                }
+            }
+            Some(DecorationAction::Close) => {
+                if let Some(toplevel) = self.0.toplevel() {
+                    toplevel.send_close();
+                }
+            }
+            Some(DecorationAction::Run(item)) => run_menu_item(data, &self.0, item),
+            Some(DecorationAction::StartMove) => start_move(seat, data, &self.0, event),
+            None => {}
+        }
     }
 
     fn axis(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _frame: AxisFrame) {}

@@ -125,11 +125,17 @@ impl SpaceElement for GlideWindow {
     }
 
     fn is_in_input_region(&self, point: &Point<f64, Logical>) -> bool {
-        let height = self.header_height();
-        // The titlebar occupies the strip directly above the content's own
-        // origin — see the module docs on the coordinate convention.
-        let in_titlebar = height > 0 && point.y < 0.0 && point.y >= -f64::from(height);
-        in_titlebar || SpaceElement::is_in_input_region(&self.0, point)
+        // `point` is relative to the content origin; the decoration's own
+        // origin sits `header_height` above it (see the module docs on the
+        // coordinate convention). Routed through `HeaderBar::contains`
+        // rather than a bare strip check so the open chevron menu — which
+        // extends *below* the strip — counts as ours too.
+        let in_decoration = {
+            let deco = self.decoration_state();
+            let rel = *point + Point::from((0.0, f64::from(deco.header.height())));
+            deco.header.contains(rel)
+        };
+        in_decoration || SpaceElement::is_in_input_region(&self.0, point)
     }
 
     fn z_index(&self) -> u8 {

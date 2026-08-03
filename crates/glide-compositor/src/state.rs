@@ -293,7 +293,17 @@ impl GlideState {
             // Keeps titlebar colors and height in sync with config reloads
             // and focus changes — see `GlideWindow::sync_decoration`'s docs
             // for why this has to happen here rather than at render time.
-            window.sync_decoration(&self.decoration_theme, state.insets.top, is_focused);
+            //
+            // Fullscreen shows no decoration at all (mirroring how
+            // `content_geometry` ignores insets for it): without forcing the
+            // height to 0 here, the titlebar would still hit-test and render
+            // in the strip above the output's top edge.
+            let decoration_height = if state.fullscreen {
+                0
+            } else {
+                state.insets.top
+            };
+            window.sync_decoration(&self.decoration_theme, decoration_height, is_focused);
         }
 
         self.apply_keyboard_focus();
@@ -548,15 +558,23 @@ impl GlideState {
     }
 
     /// Finds what the pointer is over at `pos`: a client surface, a window's
-    /// titlebar, or nothing.
+    /// decoration, or nothing.
     ///
     /// Returns the target together with *its own* absolute origin — not the
     /// window's — since Smithay computes the location handed to the
     /// target's `enter`/`motion` by subtracting exactly this from the
     /// pointer's own position (see `PointerInternal::motion`). For a
-    /// titlebar hit that means the titlebar's own top-left, which sits
+    /// decoration hit that means the titlebar's own top-left, which sits
     /// `header_height` above the window's content origin — see the
     /// coordinate convention documented on [`crate::window`].
+    ///
+    /// The decoration check goes through [`HeaderBar::contains`], never a
+    /// bare "is y within the titlebar strip": with the chevron menu open,
+    /// the decoration extends *below* the strip over the window's own
+    /// content, and a strip-only test routed clicks on the menu straight to
+    /// the client surface underneath it.
+    ///
+    /// [`HeaderBar::contains`]: crate::decoration::HeaderBar::contains
     #[must_use]
     pub fn surface_under(
         &self,
@@ -565,16 +583,19 @@ impl GlideState {
         let (window, location) = self.space.element_under(pos)?;
         let content_origin = location.to_f64();
 
-        let header_height = f64::from(window.decoration_state().header.height());
-        if header_height > 0.0 {
-            let relative_y = pos.y - content_origin.y;
-            if relative_y < 0.0 && relative_y >= -header_height {
-                let decoration_origin = content_origin - Point::from((0.0, header_height));
-                return Some((
-                    crate::focus::PointerFocusTarget::from(window.clone()),
-                    decoration_origin,
-                ));
-            }
+        let decoration_hit = {
+            let deco = window.decoration_state();
+            let header_height = f64::from(deco.header.height());
+            let decoration_origin = content_origin - Point::from((0.0, header_height));
+            deco.header
+                .contains(pos - decoration_origin)
+                .then_some(decoration_origin)
+        };
+        if let Some(decoration_origin) = decoration_hit {
+            return Some((
+                crate::focus::PointerFocusTarget::from(window.clone()),
+                decoration_origin,
+            ));
         }
 
         window
