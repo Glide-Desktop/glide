@@ -38,6 +38,37 @@ impl Size {
     }
 }
 
+/// Space a decoration claims on each side of a window's frame, between the
+/// frame (what the user sees and drags) and the content (what the client
+/// actually draws into).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct Insets {
+    pub top: i32,
+    pub left: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl Insets {
+    /// No decoration: frame and content coincide.
+    pub const NONE: Self = Self {
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+    };
+
+    #[must_use]
+    pub const fn width(&self) -> i32 {
+        self.left + self.right
+    }
+
+    #[must_use]
+    pub const fn height(&self) -> i32 {
+        self.top + self.bottom
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Rectangle {
     pub loc: Point,
@@ -76,6 +107,20 @@ impl Rectangle {
         Point {
             x: self.loc.x + self.size.width / 2,
             y: self.loc.y + self.size.height / 2,
+        }
+    }
+
+    /// Shrinks the rectangle by `insets` on each side. Used to derive a
+    /// decorated window's content area (the part the client actually draws
+    /// into) from its frame (the part the user sees and drags).
+    #[must_use]
+    pub const fn inset(&self, insets: Insets) -> Self {
+        Self {
+            loc: Point::new(self.loc.x + insets.left, self.loc.y + insets.top),
+            size: Size::new(
+                self.size.width - insets.width(),
+                self.size.height - insets.height(),
+            ),
         }
     }
 

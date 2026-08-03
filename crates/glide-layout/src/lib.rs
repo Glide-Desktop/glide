@@ -7,7 +7,7 @@ pub mod geometry;
 pub mod ids;
 pub mod layout;
 
-pub use geometry::{Point, Rectangle, Size};
+pub use geometry::{Insets, Point, Rectangle, Size};
 pub use ids::{OutputId, WindowId, WorkspaceId};
 pub use layout::{Layout, NewWindowPolicy, OutputInfo, WindowState, Workspace, WorkspaceTarget};
 
@@ -653,5 +653,104 @@ mod tests {
 
         assert_eq!(layout.focused_window(), None);
         assert_eq!(layout.visible_windows().count(), 0);
+    }
+
+    fn titlebar_insets() -> Insets {
+        // A 32px titlebar reserved at the top, nothing on the other sides —
+        // matches the fixed decoration shape (SSD-1/M4.3).
+        Insets {
+            top: 32,
+            left: 0,
+            right: 0,
+            bottom: 0,
+        }
+    }
+
+    #[test]
+    fn test_undecorated_window_has_identical_frame_and_content() {
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::ZERO);
+        layout.update_window_size(w1, Size::new(800, 600));
+
+        let state = layout.window_state(w1).unwrap();
+        assert_eq!(state.frame_geometry(), state.content_geometry());
+    }
+
+    #[test]
+    fn test_initial_placement_accounts_for_insets() {
+        // Insets must be set before the first real size arrives (see
+        // set_window_insets' docs) for the very first placement to already
+        // account for the decoration.
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::ZERO);
+        assert!(layout.set_window_insets(w1, titlebar_insets()));
+        layout.update_window_size(w1, Size::new(800, 600));
+
+        let state = layout.window_state(w1).unwrap();
+        // The 800x600 *content* plus a 32px top inset is what gets centred:
+        // frame is 800x632, so x is still (1920-800)/2 = 560, but y is
+        // (1080-632)/2 = 224, not the 240 an undecorated window would get.
+        assert_eq!(state.frame_geometry().size, Size::new(800, 632));
+        assert_eq!(state.frame_geometry().loc, Point::new(560, 224));
+    }
+
+    #[test]
+    fn test_content_geometry_is_frame_shrunk_by_insets() {
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::ZERO);
+        layout.set_window_insets(w1, titlebar_insets());
+        layout.update_window_size(w1, Size::new(800, 600));
+
+        let state = layout.window_state(w1).unwrap();
+        let frame = state.frame_geometry();
+        let content = state.content_geometry();
+
+        assert_eq!(content.size, Size::new(800, 600));
+        assert_eq!(content.loc, Point::new(frame.loc.x, frame.loc.y + 32));
+    }
+
+    #[test]
+    fn test_resize_after_placement_keeps_frame_in_sync_with_content() {
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::ZERO);
+        layout.set_window_insets(w1, titlebar_insets());
+        layout.update_window_size(w1, Size::new(800, 600));
+
+        // The client resizes itself (e.g. a terminal changing font size).
+        layout.update_window_size(w1, Size::new(1000, 700));
+
+        let state = layout.window_state(w1).unwrap();
+        assert_eq!(state.content_geometry().size, Size::new(1000, 700));
+        assert_eq!(state.frame_geometry().size, Size::new(1000, 732));
+    }
+
+    #[test]
+    fn test_fullscreen_ignores_insets_for_content_geometry() {
+        // Fullscreen hides the titlebar entirely: content should cover the
+        // whole frame, not leave a gap where a titlebar would have been.
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::ZERO);
+        layout.set_window_insets(w1, titlebar_insets());
+        layout.update_window_size(w1, Size::new(800, 600));
+
+        layout.toggle_fullscreen(w1);
+
+        let state = layout.window_state(w1).unwrap();
+        assert_eq!(state.content_geometry(), state.frame_geometry());
+        assert_eq!(
+            state.content_geometry(),
+            Rectangle::from_loc_and_size(0, 0, 1920, 1080)
+        );
+    }
+
+    #[test]
+    fn test_set_window_insets_on_nonexistent_window_fails() {
+        let mut layout = Layout::new();
+        assert!(!layout.set_window_insets(WindowId::next(), titlebar_insets()));
     }
 }

@@ -275,7 +275,12 @@ impl GlideState {
                 continue;
             };
 
-            let location = Point::from((state.geometry.loc.x, state.geometry.loc.y));
+            // Space positions the client's own surface, which is the
+            // *content* area — decorations (M4.3+) are drawn by us, offset
+            // from this by the window's insets, not part of what Space or
+            // the client itself ever sees as its location.
+            let content = state.content_geometry();
+            let location = Point::from((content.loc.x, content.loc.y));
             self.space.map_element(window.clone(), location, false);
             Self::apply_window_state(&window, state, focused == Some(state.id));
         }
@@ -290,7 +295,9 @@ impl GlideState {
     /// positions windows but does not dictate their dimensions, so sending a
     /// size here would both override the client's own choice and fight any
     /// resize it initiates. Maximized and fullscreen are the exceptions,
-    /// because there the compositor genuinely is choosing the geometry.
+    /// because there the compositor genuinely is choosing the geometry — and
+    /// what it tells the client is the *content* size, insets already
+    /// excluded, since the client only ever draws its own content area.
     fn apply_window_state(window: &GlideWindow, state: &glide_layout::WindowState, focused: bool) {
         let toplevel = window
             .toplevel()
@@ -305,9 +312,9 @@ impl GlideState {
             changed |= set_state_flag(pending, XdgState::Maximized, state.maximized);
             changed |= set_state_flag(pending, XdgState::Fullscreen, state.fullscreen);
 
-            let size = (state.maximized || state.fullscreen).then(|| {
-                smithay::utils::Size::from((state.geometry.size.width, state.geometry.size.height))
-            });
+            let content = state.content_geometry();
+            let size = (state.maximized || state.fullscreen)
+                .then(|| smithay::utils::Size::from((content.size.width, content.size.height)));
             if pending.size != size {
                 pending.size = size;
                 changed = true;
@@ -453,15 +460,29 @@ impl GlideState {
     /// (a drag has to track the pointer frame by frame), so the layout has to
     /// be told after the fact — otherwise the next reconcile would snap the
     /// window back to its pre-drag position.
-    pub fn record_window_move(&mut self, window: &GlideWindow, location: Point<i32, Logical>) {
+    ///
+    /// `content_location` is where the grab placed the window's *surface* in
+    /// `Space` — the content, not the frame (see [`Self::reconcile_space`]).
+    /// Converted back to a frame location before being stored, since that is
+    /// what [`glide_layout::WindowState::geometry`] represents.
+    pub fn record_window_move(
+        &mut self,
+        window: &GlideWindow,
+        content_location: Point<i32, Logical>,
+    ) {
         let Some(id) = self.window_id(window) else {
             return;
         };
-        let Some(mut geometry) = self.layout.window_state(id).map(|state| state.geometry) else {
+        let Some(state) = self.layout.window_state(id) else {
             return;
         };
 
-        geometry.loc = glide_layout::Point::new(location.x, location.y);
+        let insets = state.insets;
+        let mut geometry = state.geometry;
+        geometry.loc = glide_layout::Point::new(
+            content_location.x - insets.left,
+            content_location.y - insets.top,
+        );
         self.layout.set_window_geometry(id, geometry);
     }
 
@@ -470,15 +491,25 @@ impl GlideState {
         let Some(id) = self.window_id(window) else {
             return;
         };
-        let Some(location) = self.space.element_location(window) else {
+        let Some(content_location) = self.space.element_location(window) else {
+            return;
+        };
+        let Some(state) = self.layout.window_state(id) else {
             return;
         };
 
-        let size = layout_size(window);
-        self.layout.set_window_geometry(
-            id,
-            glide_layout::Rectangle::new(glide_layout::Point::new(location.x, location.y), size),
+        let insets = state.insets;
+        let content_size = layout_size(window);
+        let frame_loc = glide_layout::Point::new(
+            content_location.x - insets.left,
+            content_location.y - insets.top,
         );
+        let frame_size = glide_layout::Size::new(
+            content_size.width + insets.width(),
+            content_size.height + insets.height(),
+        );
+        self.layout
+            .set_window_geometry(id, glide_layout::Rectangle::new(frame_loc, frame_size));
     }
 
     /// Clears focus (a click on the desktop background).

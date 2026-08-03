@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    geometry::{Point, Rectangle, Size},
+    geometry::{Insets, Point, Rectangle, Size},
     ids::{OutputId, WindowId, WorkspaceId},
 };
 
@@ -57,6 +57,9 @@ pub struct OutputInfo {
 pub struct WindowState {
     pub id: WindowId,
     pub workspace_id: WorkspaceId,
+    /// The window's frame: what the user sees and drags, decorations
+    /// included. Use [`WindowState::content_geometry`] for what the client
+    /// itself should be told to draw into.
     pub geometry: Rectangle,
     pub saved_geometry: Option<Rectangle>,
     pub is_placed: bool,
@@ -67,6 +70,37 @@ pub struct WindowState {
     /// by both `visible_windows` and focus, but reappears the moment it (or
     /// its workspace) is focused again.
     pub minimized: bool,
+    /// Space a decoration claims around the content, e.g. a titlebar's
+    /// height as a top inset. `Insets::NONE` for an undecorated (CSD)
+    /// window. Set once via [`Layout::set_window_insets`], normally right
+    /// after [`Layout::add_window`] and before the first real size arrives.
+    pub insets: Insets,
+}
+
+impl WindowState {
+    /// The window's frame: position and size including decorations. Equal to
+    /// `geometry` — this exists so call sites can say what they mean instead
+    /// of relying on readers remembering what the bare field represents.
+    #[must_use]
+    pub const fn frame_geometry(&self) -> Rectangle {
+        self.geometry
+    }
+
+    /// The area the client should actually draw into: the frame minus
+    /// decoration insets.
+    ///
+    /// Fullscreen is a special case: a fullscreen window covers the output
+    /// with no decoration shown at all (there is nothing sensible to
+    /// display a titlebar over), so insets are ignored and content equals
+    /// the frame exactly.
+    #[must_use]
+    pub fn content_geometry(&self) -> Rectangle {
+        if self.fullscreen {
+            self.geometry
+        } else {
+            self.geometry.inset(self.insets)
+        }
+    }
 }
 
 /// Workspace representation.
@@ -398,8 +432,14 @@ impl Layout {
             .find(|ws| ws.id == ws_id)
             .map_or(0, |ws| ws.windows.len());
 
+        // Insets are always NONE here: they are set afterwards via
+        // `set_window_insets`, once the state below exists to hold them (see
+        // that method's docs). `initial_size` is also always empty for real
+        // windows — see `content_geometry`'s docs on deferred placement —
+        // so in practice this branch and its lack of insets are only ever
+        // exercised by tests that pass a size directly.
         let geometry = if is_placed {
-            self.calculate_centered_geometry(initial_size, index_on_ws)
+            self.calculate_centered_geometry(initial_size, Insets::NONE, index_on_ws)
         } else {
             Rectangle::new(Point::ZERO, initial_size)
         };
@@ -413,6 +453,7 @@ impl Layout {
             maximized: false,
             fullscreen: false,
             minimized: false,
+            insets: Insets::NONE,
         };
 
         self.windows.insert(w, state);
@@ -446,8 +487,9 @@ impl Layout {
             .find(|ws| ws.id == target_ws)
             .map_or(0, |ws| ws.windows.len());
 
+        // See the equivalent branch in `add_window`: insets aren't known yet.
         let geometry = if is_placed {
-            self.calculate_centered_geometry(initial_size, index_on_ws)
+            self.calculate_centered_geometry(initial_size, Insets::NONE, index_on_ws)
         } else {
             Rectangle::new(Point::ZERO, initial_size)
         };
@@ -461,6 +503,7 @@ impl Layout {
             maximized: false,
             fullscreen: false,
             minimized: false,
+            insets: Insets::NONE,
         };
 
         self.windows.insert(w, state);
@@ -583,8 +626,11 @@ impl Layout {
         self.set_minimized(w, !is_min)
     }
 
-    /// Records a window's current size, placing it the first time a real size
-    /// is known.
+    /// Records a window's current content size, placing it the first time a
+    /// real size is known.
+    ///
+    /// `size` is the *content* size — what the client itself reports, insets
+    /// excluded — matching what `content_geometry` later hands back out.
     ///
     /// Returns `true` if this call performed the initial placement, i.e. the
     /// caller needs to push a new position to the window.
@@ -600,15 +646,19 @@ impl Layout {
         };
 
         // Already positioned: track the new size in place, keeping the
-        // top-left corner where it is.
+        // top-left corner where it is. The frame grows/shrinks by the same
+        // amount as the content — insets themselves never change size.
         if state.is_placed || size.is_empty() {
+            let insets = state.insets;
             if let Some(state) = self.windows.get_mut(&w) {
-                state.geometry.size = size;
+                state.geometry.size =
+                    Size::new(size.width + insets.width(), size.height + insets.height());
             }
             return false;
         }
 
         let ws_id = state.workspace_id;
+        let insets = state.insets;
         let index_on_ws = self
             .workspaces
             .iter()
@@ -616,11 +666,27 @@ impl Layout {
             .and_then(|ws| ws.windows.iter().position(|&id| id == w))
             .unwrap_or(0);
 
-        let geometry = self.calculate_centered_geometry(size, index_on_ws);
+        let geometry = self.calculate_centered_geometry(size, insets, index_on_ws);
         if let Some(state) = self.windows.get_mut(&w) {
             state.geometry = geometry;
             state.is_placed = true;
         }
+        true
+    }
+
+    /// Sets a window's decoration insets (see [`WindowState::insets`]).
+    ///
+    /// Should be called once, right after [`Layout::add_window`] /
+    /// [`Layout::add_window_with_parent`] and before the first real size
+    /// arrives via [`Layout::update_window_size`] — that ordering is what
+    /// lets the very first placement already account for the decoration,
+    /// rather than the window jumping slightly when insets are applied
+    /// retroactively.
+    pub fn set_window_insets(&mut self, w: WindowId, insets: Insets) -> bool {
+        let Some(state) = self.windows.get_mut(&w) else {
+            return false;
+        };
+        state.insets = insets;
         true
     }
 
@@ -705,21 +771,35 @@ impl Layout {
         }
     }
 
-    /// Centres `size` in the primary output's work area, offset by a cascade
-    /// step so the n-th window on a workspace does not sit exactly on its
-    /// predecessor.
+    /// Centres a window's frame in the primary output's work area, offset by
+    /// a cascade step so the n-th window on a workspace does not sit exactly
+    /// on its predecessor.
     ///
-    /// The work area, not the full output: a newly placed window must not
-    /// appear under a panel any more than a maximized one should.
+    /// `content_size` plus `insets` is what gets centred — the whole
+    /// decorated frame, titlebar included, not just the content — and the
+    /// returned rectangle is that frame, ready to store as
+    /// [`WindowState::geometry`] directly.
+    ///
+    /// Centred in the work area, not the full output: a newly placed window
+    /// must not appear under a panel any more than a maximized one should.
     #[must_use]
-    pub fn calculate_centered_geometry(&self, size: Size, index_on_ws: usize) -> Rectangle {
+    pub fn calculate_centered_geometry(
+        &self,
+        content_size: Size,
+        insets: Insets,
+        index_on_ws: usize,
+    ) -> Rectangle {
         let work_area = self.primary_output_work_area();
+        let frame_size = Size::new(
+            content_size.width + insets.width(),
+            content_size.height + insets.height(),
+        );
 
         let offset = i32::try_from(index_on_ws).unwrap_or(i32::MAX) * CASCADE_STEP;
-        let x = work_area.loc.x + (work_area.size.width - size.width) / 2 + offset;
-        let y = work_area.loc.y + (work_area.size.height - size.height) / 2 + offset;
+        let x = work_area.loc.x + (work_area.size.width - frame_size.width) / 2 + offset;
+        let y = work_area.loc.y + (work_area.size.height - frame_size.height) / 2 + offset;
 
-        Rectangle::new(Point::new(x, y), size)
+        Rectangle::new(Point::new(x, y), frame_size)
     }
 
     // Helper functions
@@ -741,10 +821,14 @@ impl Layout {
             .collect();
 
         for id in stranded {
+            // `geometry.size` here is already the full frame (decorations
+            // included), so it goes through as-is: `Insets::NONE` leaves a
+            // size unchanged rather than adding a second helping of insets
+            // on top of what `geometry` already accounts for.
             let Some(size) = self.windows.get(&id).map(|s| s.geometry.size) else {
                 continue;
             };
-            let geometry = self.calculate_centered_geometry(size, 0);
+            let geometry = self.calculate_centered_geometry(size, Insets::NONE, 0);
             if let Some(state) = self.windows.get_mut(&id) {
                 state.geometry = geometry;
             }
