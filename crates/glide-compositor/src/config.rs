@@ -154,6 +154,11 @@ impl Config {
                 key: "f".to_string(),
                 action: KeyActionConfig::Simple("fullscreen".to_string()),
             },
+            KeybindConfig {
+                mods: vec![ModifierConfig::Super],
+                key: "m".to_string(),
+                action: KeyActionConfig::Simple("minimize".to_string()),
+            },
         ];
 
         for i in 1..=9 {
@@ -329,6 +334,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "prev-workspace" => Some(crate::input::KeyAction::PrevWorkspace),
             "maximize" => Some(crate::input::KeyAction::Maximize),
             "fullscreen" => Some(crate::input::KeyAction::Fullscreen),
+            "minimize" => Some(crate::input::KeyAction::Minimize),
             _ => {
                 tracing::warn!(action = cmd, "unknown simple key action");
                 None

@@ -216,21 +216,26 @@ fn print_response(response: &Response) {
         }
         Response::Windows { list } => {
             println!(
-                "{:<6} {:<15} {:<10} {:<25} {:<8}",
-                "ID", "APP_ID", "WS_INDEX", "TITLE", "FOCUSED"
+                "{:<6} {:<15} {:<10} {:<25} {:<8} {:<9}",
+                "ID", "APP_ID", "WS_INDEX", "TITLE", "FOCUSED", "MINIMIZED"
             );
-            println!("{}", "-".repeat(68));
+            println!("{}", "-".repeat(78));
             for w in list {
                 let app_id = w.app_id.as_deref().unwrap_or("<unknown>");
                 let title = w.title.as_deref().unwrap_or("<untitled>");
                 let focused_str = if w.focused { "*" } else { "" };
+                // There is no taskbar yet, so this listing plus `glidectl
+                // window focus <id>` is currently the only way to restore a
+                // minimized window.
+                let minimized_str = if w.minimized { "*" } else { "" };
                 println!(
-                    "{:<6} {:<15} {:<10} {:<25} {:<8}",
+                    "{:<6} {:<15} {:<10} {:<25} {:<8} {:<9}",
                     w.id,
                     app_id,
                     w.workspace_index + 1,
                     title,
-                    focused_str
+                    focused_str,
+                    minimized_str
                 );
             }
         }

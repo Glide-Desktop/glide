@@ -31,6 +31,10 @@
 #     window must still be where you dropped it, not re-centred
 #   - click between two windows on one workspace, then Super+F: the maximize
 #     must apply to the window you last clicked
+#   - Super+M minimizes the focused window; it must disappear and focus must
+#     move to whatever else is visible (or nothing, if it was the only one)
+#   - `glidectl window list` must show `*` under MINIMIZED for it; running
+#     `glidectl window focus <id>` on that id must bring it back
 #   - IPC: from another VT or via `glidectl`, run `glidectl ping`,
 #     `glidectl workspace list`, `glidectl window list`
 #   - IPC must never hang the compositor: `nc -U "$GLIDE_IPC_SOCK"` and then

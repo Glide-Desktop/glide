@@ -15,6 +15,15 @@ pub use layout::{Layout, NewWindowPolicy, OutputInfo, WindowState, Workspace, Wo
 mod tests {
     use super::*;
 
+    /// A single-output setup with no panels: `work_area == geometry`.
+    fn output(id: OutputId, geometry: Rectangle) -> OutputInfo {
+        OutputInfo {
+            id,
+            geometry,
+            work_area: geometry,
+        }
+    }
+
     #[test]
     fn test_point_operations() {
         let p = Point::new(10, 20);
@@ -135,10 +144,10 @@ mod tests {
     fn test_centering_on_custom_output() {
         let mut layout = Layout::new();
         let o1 = OutputId::next();
-        layout.outputs_changed(&[OutputInfo {
-            id: o1,
-            geometry: Rectangle::from_loc_and_size(1000, 0, 2560, 1440),
-        }]);
+        layout.outputs_changed(&[output(
+            o1,
+            Rectangle::from_loc_and_size(1000, 0, 2560, 1440),
+        )]);
 
         let w1 = WindowId::next();
         layout.add_window(w1, Size::new(1000, 800));
@@ -181,10 +190,7 @@ mod tests {
         layout.set_window_geometry(w1, dragged);
 
         let o1 = OutputId::next();
-        layout.outputs_changed(&[OutputInfo {
-            id: o1,
-            geometry: Rectangle::from_loc_and_size(0, 0, 3840, 2160),
-        }]);
+        layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 3840, 2160))]);
 
         assert_eq!(layout.window_state(w1).unwrap().geometry, dragged);
     }
@@ -199,10 +205,7 @@ mod tests {
         layout.set_window_geometry(w1, Rectangle::from_loc_and_size(5000, 5000, 800, 600));
 
         let o1 = OutputId::next();
-        layout.outputs_changed(&[OutputInfo {
-            id: o1,
-            geometry: Rectangle::from_loc_and_size(0, 0, 1920, 1080),
-        }]);
+        layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 1920, 1080))]);
 
         // Otherwise it would be unreachable: no output covers it any more.
         assert_eq!(
@@ -219,10 +222,7 @@ mod tests {
         layout.set_maximized(w1, true);
 
         let o1 = OutputId::next();
-        layout.outputs_changed(&[OutputInfo {
-            id: o1,
-            geometry: Rectangle::from_loc_and_size(0, 0, 3840, 2160),
-        }]);
+        layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 3840, 2160))]);
 
         // A maximized window tracks the output, so it must follow the change.
         assert_eq!(
@@ -554,5 +554,104 @@ mod tests {
 
         let state = layout.window_state(w1).unwrap();
         assert_eq!(state.geometry, new_geom);
+    }
+
+    fn output_with_panel(id: OutputId) -> OutputInfo {
+        // A 40px bar reserved at the top, as a layer-shell panel would claim.
+        OutputInfo {
+            id,
+            geometry: Rectangle::from_loc_and_size(0, 0, 1920, 1080),
+            work_area: Rectangle::from_loc_and_size(0, 40, 1920, 1040),
+        }
+    }
+
+    #[test]
+    fn test_new_windows_centre_in_the_work_area_not_the_full_output() {
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[output_with_panel(OutputId::next())]);
+
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+
+        // (1920-800)/2 = 560, panel top (40) + (1040-600)/2 = 260
+        assert_eq!(
+            layout.window_state(w1).unwrap().geometry.loc,
+            Point::new(560, 260)
+        );
+    }
+
+    #[test]
+    fn test_maximize_covers_the_work_area_but_fullscreen_covers_the_whole_output() {
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[output_with_panel(OutputId::next())]);
+
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+
+        assert!(layout.set_maximized(w1, true));
+        assert_eq!(
+            layout.window_state(w1).unwrap().geometry,
+            Rectangle::from_loc_and_size(0, 40, 1920, 1040),
+            "maximized must not tuck itself under the panel"
+        );
+
+        assert!(layout.toggle_fullscreen(w1));
+        assert_eq!(
+            layout.window_state(w1).unwrap().geometry,
+            Rectangle::from_loc_and_size(0, 0, 1920, 1080),
+            "fullscreen must cover the panel, unlike maximize"
+        );
+    }
+
+    #[test]
+    fn test_minimized_window_is_not_visible_and_not_focused() {
+        let mut layout = Layout::new();
+        layout.set_policy(NewWindowPolicy::ActiveWorkspace);
+
+        let w1 = WindowId::next();
+        let w2 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+        layout.add_window(w2, Size::new(800, 600));
+        assert_eq!(layout.focused_window(), Some(w2));
+
+        assert!(layout.set_minimized(w2, true));
+
+        assert!(!layout.is_visible(w2));
+        assert!(layout.is_visible(w1));
+        // Focus must move off the minimized window: keeping it focused would
+        // mean keybindings act on something no longer on screen.
+        assert_eq!(layout.focused_window(), Some(w1));
+
+        let visible: Vec<WindowId> = layout.visible_windows().map(|s| s.id).collect();
+        assert_eq!(visible, vec![w1]);
+    }
+
+    #[test]
+    fn test_focusing_a_minimized_window_restores_it() {
+        // There is no taskbar yet, so focus_window (e.g. via `glidectl window
+        // focus <id>`) is the only way to bring a minimized window back.
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+        layout.set_minimized(w1, true);
+        assert!(layout.window_state(w1).unwrap().minimized);
+
+        assert!(layout.focus_window(w1));
+
+        assert!(!layout.window_state(w1).unwrap().minimized);
+        assert!(layout.is_visible(w1));
+        assert_eq!(layout.focused_window(), Some(w1));
+    }
+
+    #[test]
+    fn test_minimizing_last_visible_window_clears_focus() {
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+
+        assert!(layout.set_minimized(w1, true));
+
+        assert_eq!(layout.focused_window(), None);
+        assert_eq!(layout.visible_windows().count(), 0);
     }
 }

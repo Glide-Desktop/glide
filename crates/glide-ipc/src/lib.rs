@@ -60,6 +60,9 @@ pub struct WindowInfo {
     pub title: Option<String>,
     pub workspace_index: usize,
     pub focused: bool,
+    /// Hidden from view but not closed. There is no taskbar yet, so
+    /// `glidectl window focus <id>` is currently the only way to restore one.
+    pub minimized: bool,
 }
 
 /// Response returned from compositor to client.
@@ -127,6 +130,7 @@ mod tests {
                     title: Some("Terminal".into()),
                     workspace_index: 0,
                     focused: true,
+                    minimized: false,
                 }],
             },
             Response::Error {

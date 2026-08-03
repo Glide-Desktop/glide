@@ -34,10 +34,25 @@ pub enum WorkspaceTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputInfo {
     pub id: OutputId,
+    /// The output's full extent. What a fullscreen window covers.
     pub geometry: Rectangle,
+    /// `geometry` minus space claimed by layer-shell surfaces (panels, bars).
+    /// What a floating window is centred in and a maximized window covers.
+    ///
+    /// Equal to `geometry` until layer-shell support exists to shrink it.
+    pub work_area: Rectangle,
 }
 
 /// State of a managed window.
+///
+/// `maximized`, `fullscreen` and `minimized` are independent on purpose, not
+/// a candidate for merging into one enum: real clients combine them (e.g. a
+/// maximized window can still be minimized, and must return to maximized —
+/// not merely restored — when un-minimized).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "maximized/fullscreen/minimized are genuinely orthogonal, see above"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowState {
     pub id: WindowId,
@@ -47,6 +62,11 @@ pub struct WindowState {
     pub is_placed: bool,
     pub maximized: bool,
     pub fullscreen: bool,
+    /// Hidden from view but not closed. Distinct from being on an inactive
+    /// workspace: a minimized window stays on its workspace and is skipped
+    /// by both `visible_windows` and focus, but reappears the moment it (or
+    /// its workspace) is focused again.
+    pub minimized: bool,
 }
 
 /// Workspace representation.
@@ -118,7 +138,8 @@ impl Layout {
         }
     }
 
-    /// Geometry of the output windows are placed against.
+    /// Full geometry of the output windows are placed against. What a
+    /// fullscreen window covers.
     ///
     /// Single-output for now: additional outputs are tracked but not yet used
     /// for placement, so a second monitor shows whatever falls within its
@@ -128,6 +149,15 @@ impl Layout {
         self.outputs
             .first()
             .map_or(FALLBACK_OUTPUT, |output| output.geometry)
+    }
+
+    /// Usable area of the output: `geometry` minus panels. What floating
+    /// windows are centred in and maximized windows cover.
+    #[must_use]
+    pub fn primary_output_work_area(&self) -> Rectangle {
+        self.outputs
+            .first()
+            .map_or(FALLBACK_OUTPUT, |output| output.work_area)
     }
 
     /// Set the policy for new window placement.
@@ -182,12 +212,12 @@ impl Layout {
         self.focused == Some(w)
     }
 
-    /// Checks if a window is on the active workspace.
+    /// Checks if a window is on the active workspace and not minimized.
     #[must_use]
     pub fn is_visible(&self, w: WindowId) -> bool {
         self.windows
             .get(&w)
-            .is_some_and(|state| state.workspace_id == self.active)
+            .is_some_and(|state| state.workspace_id == self.active && !state.minimized)
     }
 
     /// Gets state for a specific window.
@@ -196,7 +226,8 @@ impl Layout {
         self.windows.get(&w)
     }
 
-    /// Window states on the active workspace, ordered bottom-to-top.
+    /// Window states on the active workspace, ordered bottom-to-top, minus
+    /// any that are minimized.
     ///
     /// Ordering comes from the workspace's own stack rather than the window
     /// map: iterating a `HashMap` would give a different Z-order on every
@@ -208,6 +239,7 @@ impl Layout {
             .into_iter()
             .flat_map(|ws| ws.windows.iter())
             .filter_map(|id| self.windows.get(id))
+            .filter(|state| !state.minimized)
     }
 
     /// Raises a window to the top of its workspace's stack.
@@ -380,6 +412,7 @@ impl Layout {
             is_placed,
             maximized: false,
             fullscreen: false,
+            minimized: false,
         };
 
         self.windows.insert(w, state);
@@ -427,6 +460,7 @@ impl Layout {
             is_placed,
             maximized: false,
             fullscreen: false,
+            minimized: false,
         };
 
         self.windows.insert(w, state);
@@ -449,8 +483,11 @@ impl Layout {
     }
 
     /// Sets window maximized state.
+    ///
+    /// Covers the work area (`geometry` minus panels), not the full output —
+    /// a maximized window must not tuck itself under a bar.
     pub fn set_maximized(&mut self, w: WindowId, maximized: bool) -> bool {
-        let output_geom = self.primary_output_geometry();
+        let work_area = self.primary_output_work_area();
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
@@ -462,7 +499,7 @@ impl Layout {
 
         if maximized {
             state.saved_geometry = Some(state.geometry);
-            state.geometry = output_geom;
+            state.geometry = work_area;
             state.maximized = true;
         } else {
             if let Some(saved) = state.saved_geometry.take() {
@@ -474,6 +511,9 @@ impl Layout {
     }
 
     /// Sets window fullscreen state.
+    ///
+    /// Covers the full output, panels included — unlike maximize, fullscreen
+    /// is meant to take over the whole screen.
     pub fn set_fullscreen(&mut self, w: WindowId, fullscreen: bool) -> bool {
         let output_geom = self.primary_output_geometry();
 
@@ -512,6 +552,35 @@ impl Layout {
     pub fn toggle_fullscreen(&mut self, w: WindowId) -> bool {
         let is_full = self.windows.get(&w).is_some_and(|s| s.fullscreen);
         self.set_fullscreen(w, !is_full)
+    }
+
+    /// Sets a window's minimized state.
+    ///
+    /// Minimizing the focused window moves focus to whatever else is visible
+    /// on the workspace (or clears it, if nothing is left) — a minimized
+    /// window keeping focus would mean keybindings silently act on something
+    /// no longer on screen.
+    pub fn set_minimized(&mut self, w: WindowId, minimized: bool) -> bool {
+        let Some(state) = self.windows.get_mut(&w) else {
+            return false;
+        };
+
+        if state.minimized == minimized {
+            return false;
+        }
+        state.minimized = minimized;
+
+        if minimized && self.focused == Some(w) {
+            self.focused = self.pick_new_focus();
+            self.remember_focus();
+        }
+        true
+    }
+
+    /// Toggles minimized state for window.
+    pub fn toggle_minimize(&mut self, w: WindowId) -> bool {
+        let is_min = self.windows.get(&w).is_some_and(|s| s.minimized);
+        self.set_minimized(w, !is_min)
     }
 
     /// Records a window's current size, placing it the first time a real size
@@ -586,12 +655,16 @@ impl Layout {
         true
     }
 
-    /// Focuses the given window, switching to its workspace and raising it to
-    /// the top of that workspace's stack.
+    /// Focuses the given window, switching to its workspace, raising it to
+    /// the top of that workspace's stack, and un-minimizing it.
     ///
     /// This is the single entry point for focus changes; the compositor must
     /// not set keyboard focus behind the layout's back, or the two disagree
     /// about which window keybindings act on.
+    ///
+    /// Un-minimizing here (rather than requiring a separate call) is also
+    /// currently the *only* way to bring a minimized window back: there is no
+    /// taskbar yet, so `glidectl window focus <id>` doubles as "restore".
     pub fn focus_window(&mut self, w: WindowId) -> bool {
         let Some(target_ws) = self.windows.get(&w).map(|state| state.workspace_id) else {
             return false;
@@ -600,6 +673,10 @@ impl Layout {
         if self.active != target_ws {
             self.remember_focus();
             self.active = target_ws;
+        }
+
+        if let Some(state) = self.windows.get_mut(&w) {
+            state.minimized = false;
         }
 
         self.focused = Some(w);
@@ -628,15 +705,19 @@ impl Layout {
         }
     }
 
-    /// Centres `size` on the primary output, offset by a cascade step so the
-    /// n-th window on a workspace does not sit exactly on its predecessor.
+    /// Centres `size` in the primary output's work area, offset by a cascade
+    /// step so the n-th window on a workspace does not sit exactly on its
+    /// predecessor.
+    ///
+    /// The work area, not the full output: a newly placed window must not
+    /// appear under a panel any more than a maximized one should.
     #[must_use]
     pub fn calculate_centered_geometry(&self, size: Size, index_on_ws: usize) -> Rectangle {
-        let output_geom = self.primary_output_geometry();
+        let work_area = self.primary_output_work_area();
 
         let offset = i32::try_from(index_on_ws).unwrap_or(i32::MAX) * CASCADE_STEP;
-        let x = output_geom.loc.x + (output_geom.size.width - size.width) / 2 + offset;
-        let y = output_geom.loc.y + (output_geom.size.height - size.height) / 2 + offset;
+        let x = work_area.loc.x + (work_area.size.width - size.width) / 2 + offset;
+        let y = work_area.loc.y + (work_area.size.height - size.height) / 2 + offset;
 
         Rectangle::new(Point::new(x, y), size)
     }
@@ -670,11 +751,19 @@ impl Layout {
         }
 
         // Maximized and fullscreen windows track the output itself, so they
-        // must follow a resolution change even though they are never stranded.
+        // must follow a resolution change even though they are never
+        // stranded. Each tracks its own reference rect (see `set_maximized`
+        // / `set_fullscreen` for why they differ).
+        let work_area = self.primary_output_work_area();
         let output_geom = self.primary_output_geometry();
         for state in self.windows.values_mut() {
-            if state.maximized || state.fullscreen {
+            // Fullscreen wins when both are set (a maximized window can still
+            // be fullscreened without unmaximizing first) — it is meant to
+            // cover panels, maximize is not.
+            if state.fullscreen {
                 state.geometry = output_geom;
+            } else if state.maximized {
+                state.geometry = work_area;
             }
         }
     }
@@ -713,14 +802,26 @@ impl Layout {
         }
     }
 
-    /// Focus to use for the active workspace: whatever was focused there last,
-    /// falling back to the topmost window.
+    /// Focus to use for the active workspace: whatever was focused there
+    /// last, falling back to the topmost non-minimized window.
+    ///
+    /// Never returns a minimized window: picking one back up as "focused"
+    /// would immediately un-minimize it as a side effect of `focus_window`,
+    /// undoing the very thing that triggered this pick in the first place.
     fn pick_new_focus(&self) -> Option<WindowId> {
         let active_ws = self.workspaces.iter().find(|ws| ws.id == self.active)?;
+        let visible = |id: WindowId| self.windows.get(&id).is_some_and(|state| !state.minimized);
 
         active_ws
             .focused
-            .filter(|id| active_ws.windows.contains(id))
-            .or_else(|| active_ws.windows.last().copied())
+            .filter(|&id| active_ws.windows.contains(&id) && visible(id))
+            .or_else(|| {
+                active_ws
+                    .windows
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&id| visible(id))
+            })
     }
 }

@@ -425,14 +425,20 @@ impl GlideState {
                     .entry(output)
                     .or_insert_with(glide_layout::OutputId::next);
 
+                let rect = glide_layout::Rectangle::from_loc_and_size(
+                    geometry.loc.x,
+                    geometry.loc.y,
+                    geometry.size.w,
+                    geometry.size.h,
+                );
+
                 glide_layout::OutputInfo {
                     id,
-                    geometry: glide_layout::Rectangle::from_loc_and_size(
-                        geometry.loc.x,
-                        geometry.loc.y,
-                        geometry.size.w,
-                        geometry.size.h,
-                    ),
+                    geometry: rect,
+                    // No layer-shell surfaces to reserve space for yet, so
+                    // the usable area is the whole output. `arrange_layers`
+                    // (M4.6) will shrink this by each panel's exclusive zone.
+                    work_area: rect,
                 }
             })
             .collect();

@@ -380,15 +380,16 @@ fn list_windows(state: &GlideState) -> Response {
         .window_map
         .iter()
         .filter_map(|(&id, window)| {
-            let ws_id = state.layout.window_state(id)?.workspace_id;
+            let layout_state = state.layout.window_state(id)?;
             let (app_id, title) = window_identity(window);
 
             Some(WindowInfo {
                 id: id.as_u64(),
                 app_id,
                 title,
-                workspace_index: *workspace_index.get(&ws_id)?,
+                workspace_index: *workspace_index.get(&layout_state.workspace_id)?,
                 focused: focused == Some(id),
+                minimized: layout_state.minimized,
             })
         })
         .collect();

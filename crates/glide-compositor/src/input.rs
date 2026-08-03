@@ -32,6 +32,8 @@ pub enum KeyAction {
     Maximize,
     /// Toggle fullscreen for focused window.
     Fullscreen,
+    /// Toggle minimize for focused window.
+    Minimize,
     /// Execute arbitrary shell command.
     Exec(String),
     /// The key was intercepted (e.g. a suppressed release) but has no effect.
@@ -202,16 +204,23 @@ impl GlideState {
         self.suppressed_keys = suppressed_keys;
         self.keybinds = keybinds;
 
+        if let Some(action) = action {
+            self.run_key_action(action);
+        }
+    }
+
+    /// Executes a compositor-level action resolved from a keybinding.
+    fn run_key_action(&mut self, action: KeyAction) {
         match action {
-            Some(KeyAction::Quit) => self.loop_signal.stop(),
-            Some(KeyAction::VtSwitch(vt)) => self.backend_data.change_vt(vt),
-            Some(KeyAction::SwitchWorkspace(idx)) => {
+            KeyAction::Quit => self.loop_signal.stop(),
+            KeyAction::VtSwitch(vt) => self.backend_data.change_vt(vt),
+            KeyAction::SwitchWorkspace(idx) => {
                 tracing::info!(workspace_index = idx, "switching workspace");
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Index(idx));
                 self.reconcile_space();
             }
-            Some(KeyAction::MoveWindowToWorkspace(idx)) => {
+            KeyAction::MoveWindowToWorkspace(idx) => {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, workspace_index = idx, "moving window to workspace");
                     self.layout.move_window_to_workspace(
@@ -221,39 +230,46 @@ impl GlideState {
                     self.reconcile_space();
                 }
             }
-            Some(KeyAction::NextWorkspace) => {
+            KeyAction::NextWorkspace => {
                 tracing::info!("switching to next workspace");
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Next);
                 self.reconcile_space();
             }
-            Some(KeyAction::PrevWorkspace) => {
+            KeyAction::PrevWorkspace => {
                 tracing::info!("switching to prev workspace");
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Previous);
                 self.reconcile_space();
             }
-            Some(KeyAction::Maximize) => {
+            KeyAction::Maximize => {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, "toggling maximize");
                     self.layout.toggle_maximized(focused);
                     self.reconcile_space();
                 }
             }
-            Some(KeyAction::Fullscreen) => {
+            KeyAction::Fullscreen => {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, "toggling fullscreen");
                     self.layout.toggle_fullscreen(focused);
                     self.reconcile_space();
                 }
             }
-            Some(KeyAction::Exec(cmd)) => {
+            KeyAction::Minimize => {
+                if let Some(focused) = self.layout.focused_window() {
+                    tracing::info!(focused = ?focused, "minimizing");
+                    self.layout.toggle_minimize(focused);
+                    self.reconcile_space();
+                }
+            }
+            KeyAction::Exec(cmd) => {
                 tracing::info!(command = %cmd, "executing keybind command");
                 if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
                 }
             }
-            Some(KeyAction::None) | None => {}
+            KeyAction::None => {}
         }
     }
 
