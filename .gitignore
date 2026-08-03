@@ -1,1 +1,7 @@
 /target
+
+# Session/agent artifacts
+session.md
+GEMINI.md
+AGENTS.md
+.opencode/
