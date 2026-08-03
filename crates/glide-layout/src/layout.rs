@@ -676,16 +676,35 @@ impl Layout {
 
     /// Sets a window's decoration insets (see [`WindowState::insets`]).
     ///
-    /// Should be called once, right after [`Layout::add_window`] /
+    /// Normally called once, right after [`Layout::add_window`] /
     /// [`Layout::add_window_with_parent`] and before the first real size
     /// arrives via [`Layout::update_window_size`] — that ordering is what
     /// lets the very first placement already account for the decoration,
     /// rather than the window jumping slightly when insets are applied
     /// retroactively.
+    ///
+    /// It can legitimately change later too: `xdg-decoration` lets a client
+    /// negotiate its decorations away (or back) after mapping. For a placed
+    /// window the *content* stays exactly where it is and the frame is
+    /// rebuilt around it — the alternative, keeping the frame fixed, would
+    /// visibly shift the client's content by the titlebar height every time
+    /// the mode flipped.
     pub fn set_window_insets(&mut self, w: WindowId, insets: Insets) -> bool {
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
         };
+
+        if state.is_placed && !state.geometry.size.is_empty() {
+            let content = state.geometry.inset(state.insets);
+            state.geometry = Rectangle::new(
+                Point::new(content.loc.x - insets.left, content.loc.y - insets.top),
+                Size::new(
+                    content.size.width + insets.width(),
+                    content.size.height + insets.height(),
+                ),
+            );
+        }
+
         state.insets = insets;
         true
     }

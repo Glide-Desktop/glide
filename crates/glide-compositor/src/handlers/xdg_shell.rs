@@ -5,19 +5,29 @@ use smithay::{
         pointer::{Focus, GrabStartData as PointerGrabStartData},
     },
     reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_protocols::xdg::{
+            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
+            shell::server::xdg_toplevel,
+        },
+        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
+            Mode as KdeMode, OrgKdeKwinServerDecoration,
+        },
         wayland_server::{
-            Resource,
+            Resource, WEnum,
             protocol::{wl_output::WlOutput, wl_seat, wl_surface::WlSurface},
         },
     },
     utils::{Rectangle, Serial},
     wayland::{
         compositor::with_states,
-        shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData,
-            dialog::{ToplevelDialogHint, XdgDialogHandler},
+        shell::{
+            kde::decoration::{KdeDecorationHandler, KdeDecorationState},
+            xdg::{
+                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+                XdgToplevelSurfaceData,
+                decoration::XdgDecorationHandler,
+                dialog::{ToplevelDialogHint, XdgDialogHandler},
+            },
         },
     },
 };
@@ -290,6 +300,77 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
                 }
             }
             PopupKind::InputMethod(ref _input_method) => {}
+        }
+    }
+}
+
+impl XdgDecorationHandler for GlideState {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        // Advertise our preference. Everything Glide draws (titlebar,
+        // resize band) exists for server-side decorations, and windows are
+        // created decorated by default in track_window — so only the
+        // pending mode needs setting here; the initial configure will carry
+        // it to the client.
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        // Honor the client: a toolkit that insists on drawing its own
+        // decorations (GTK does) knows better than we do what its window
+        // needs, and double decorations are strictly worse than either
+        // choice alone.
+        let server_side = mode == DecorationMode::ServerSide;
+
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(if server_side {
+                DecorationMode::ServerSide
+            } else {
+                DecorationMode::ClientSide
+            });
+        });
+        toplevel.send_pending_configure();
+
+        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
+            self.set_window_decorated(id, server_side);
+        }
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        // No preference from the client means our default: decorated.
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        toplevel.send_pending_configure();
+
+        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
+            self.set_window_decorated(id, true);
+        }
+    }
+}
+
+impl KdeDecorationHandler for GlideState {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn request_mode(
+        &mut self,
+        surface: &WlSurface,
+        decoration: &OrgKdeKwinServerDecoration,
+        mode: WEnum<KdeMode>,
+    ) {
+        let WEnum::Value(mode) = mode else {
+            return;
+        };
+
+        // Same policy as the xdg flavor: honor the client, echo the mode
+        // back (the KDE protocol requires the ack).
+        decoration.mode(mode);
+
+        if let Some(id) = self.window_id_for_surface(surface) {
+            self.set_window_decorated(id, mode == KdeMode::Server);
         }
     }
 }

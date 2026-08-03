@@ -41,6 +41,10 @@
 #     below it with one entry, "Minimize" — clicking it minimizes the window
 #     exactly like Super+M; clicking anywhere else while it's open just
 #     closes the dropdown without doing anything
+#   - decorations negotiate: alacritty/foot keep the server-side titlebar;
+#     a GTK app (if installed — try `TIMEOUT=120 ... glidectl exec gtk4-demo`
+#     or zenity) should show its OWN header bar with NO Glide titlebar on
+#     top of it, and its content must not jump when that happens
 #   - resize: move the pointer to just OUTSIDE any window edge or corner
 #     (~8px band) — the cursor must change to the matching resize arrow
 #     (up-down at top/bottom, left-right at sides, diagonal at corners);

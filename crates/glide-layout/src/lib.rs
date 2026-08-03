@@ -753,4 +753,34 @@ mod tests {
         let mut layout = Layout::new();
         assert!(!layout.set_window_insets(WindowId::next(), titlebar_insets()));
     }
+
+    #[test]
+    fn test_changing_insets_after_placement_keeps_content_fixed() {
+        // xdg-decoration can negotiate decorations away after mapping. The
+        // client's content must not move when that happens — only the frame
+        // is rebuilt around it.
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        layout.add_window(w1, Size::ZERO);
+        layout.set_window_insets(w1, titlebar_insets());
+        layout.update_window_size(w1, Size::new(800, 600));
+
+        let content_before = layout.window_state(w1).unwrap().content_geometry();
+
+        // Client switches to CSD: decoration goes away.
+        layout.set_window_insets(w1, Insets::NONE);
+        let state = layout.window_state(w1).unwrap();
+        assert_eq!(state.content_geometry(), content_before);
+        assert_eq!(
+            state.frame_geometry(),
+            content_before,
+            "with no insets the frame IS the content"
+        );
+
+        // And back to SSD: content still pinned, frame regrows upward.
+        layout.set_window_insets(w1, titlebar_insets());
+        let state = layout.window_state(w1).unwrap();
+        assert_eq!(state.content_geometry(), content_before);
+        assert_eq!(state.frame_geometry().size, Size::new(800, 632));
+    }
 }

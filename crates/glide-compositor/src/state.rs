@@ -27,7 +27,10 @@ use smithay::{
         cursor_shape::CursorShapeManagerState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::{ToplevelState, XdgShellState, dialog::XdgDialogState},
+        shell::kde::decoration::KdeDecorationState,
+        shell::xdg::{
+            ToplevelState, XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState,
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -59,6 +62,13 @@ pub struct GlideState {
     /// pointer keeps one consistent look across applications and matches
     /// the shapes our own decorations use.
     pub cursor_shape_state: CursorShapeManagerState,
+    /// `xdg-decoration`: how clients negotiate who draws window decorations.
+    /// Glide prefers server-side (its whole decoration stack exists for
+    /// that), but honors a client that insists on drawing its own.
+    pub xdg_decoration_state: XdgDecorationState,
+    /// The KDE flavor of the same negotiation, for clients that predate (or
+    /// don't speak) `xdg-decoration`.
+    pub kde_decoration_state: KdeDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<GlideState>,
@@ -135,6 +145,12 @@ impl GlideState {
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let xdg_dialog_state = XdgDialogState::new::<Self>(&dh);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let kde_decoration_state = KdeDecorationState::new::<Self>(
+            &dh,
+            smithay::reexports::wayland_protocols_misc::server_decoration::server
+                ::org_kde_kwin_server_decoration_manager::Mode::Server,
+        );
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
 
@@ -184,6 +200,8 @@ impl GlideState {
             xdg_shell_state,
             xdg_dialog_state,
             cursor_shape_state,
+            xdg_decoration_state,
+            kde_decoration_state,
             shm_state,
             output_manager_state,
             seat_state,
@@ -496,6 +514,31 @@ impl GlideState {
 
         tracing::info!(outputs = infos.len(), "layout outputs synchronized");
         self.layout.outputs_changed(&infos);
+    }
+
+    /// Switches a window between server-side decorations and none, keeping
+    /// the client's content exactly where it is (the layout rebuilds the
+    /// frame around it — see [`glide_layout::Layout::set_window_insets`]).
+    ///
+    /// The single implementation behind both decoration protocols
+    /// (`xdg-decoration` and the KDE flavor): whichever one the client
+    /// speaks, the effect on the layout is identical.
+    pub fn set_window_decorated(&mut self, id: glide_layout::WindowId, decorated: bool) {
+        let insets = if decorated {
+            let height = i32::try_from(self.decoration_theme.height).unwrap_or(i32::MAX);
+            glide_layout::Insets {
+                top: height,
+                left: 0,
+                right: 0,
+                bottom: 0,
+            }
+        } else {
+            glide_layout::Insets::NONE
+        };
+
+        if self.layout.set_window_insets(id, insets) {
+            self.reconcile_space();
+        }
     }
 
     /// Records an interactive move so the layout agrees with what is on screen.
