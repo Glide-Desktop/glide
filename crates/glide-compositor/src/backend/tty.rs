@@ -62,7 +62,7 @@ use smithay::{
         udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
     },
     desktop::{
-        Space, Window,
+        Space,
         space::{SpaceRenderElements, space_render_elements},
     },
     input::pointer::{CursorImageAttributes, CursorImageStatus},
@@ -89,6 +89,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use crate::{
     GlideState,
     cursor::{Cursor, PointerElement, PointerRenderElement},
+    window::GlideWindow,
 };
 
 /// #295396, chosen specifically to be unmistakable from the frozen text
@@ -410,7 +411,7 @@ fn resolve_cursor_buffer(
 /// elements fails, having already logged why.
 fn build_render_elements(
     gles_renderer: &mut GlesRenderer,
-    space: &Space<Window>,
+    space: &Space<GlideWindow>,
     pointer_element: &mut PointerElement,
     pointer_location: Point<f64, Logical>,
     cursor_hotspot: Point<i32, Logical>,

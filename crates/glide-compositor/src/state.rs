@@ -5,7 +5,7 @@ use std::{
 };
 
 use smithay::{
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{PopupManager, Space, WindowSurfaceType},
     input::{
         Seat, SeatState,
         keyboard::{Keycode, XkbConfig},
@@ -32,7 +32,7 @@ use smithay::{
     },
 };
 
-use crate::backend::tty::TtyData;
+use crate::{backend::tty::TtyData, window::GlideWindow};
 
 pub struct GlideState {
     pub backend_data: TtyData,
@@ -41,7 +41,7 @@ pub struct GlideState {
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
 
-    pub space: Space<Window>,
+    pub space: Space<GlideWindow>,
     pub loop_signal: LoopSignal,
     /// Used by backends (currently just tty) to schedule follow-up work from
     /// inside event source callbacks, e.g. a repaint timer after a `VBlank`.
@@ -62,8 +62,8 @@ pub struct GlideState {
     pub seat: Seat<Self>,
 
     pub layout: glide_layout::Layout,
-    pub window_map: HashMap<glide_layout::WindowId, Window>,
-    pub window_to_id: HashMap<Window, glide_layout::WindowId>,
+    pub window_map: HashMap<glide_layout::WindowId, GlideWindow>,
+    pub window_to_id: HashMap<GlideWindow, glide_layout::WindowId>,
     /// Stable layout ids for outputs.
     ///
     /// Allocated once per physical output and reused, so an output keeps its
@@ -258,7 +258,7 @@ impl GlideState {
         // Drop anything the layout no longer shows. Unmapping (rather than
         // moving off-screen) makes Smithay send `wl_surface.leave`, which is
         // what stops a client on a hidden workspace from rendering.
-        let mapped: Vec<Window> = self.space.elements().cloned().collect();
+        let mapped: Vec<GlideWindow> = self.space.elements().cloned().collect();
         for window in mapped {
             let hidden = self
                 .window_to_id
@@ -291,7 +291,7 @@ impl GlideState {
     /// size here would both override the client's own choice and fight any
     /// resize it initiates. Maximized and fullscreen are the exceptions,
     /// because there the compositor genuinely is choosing the geometry.
-    fn apply_window_state(window: &Window, state: &glide_layout::WindowState, focused: bool) {
+    fn apply_window_state(window: &GlideWindow, state: &glide_layout::WindowState, focused: bool) {
         let toplevel = window
             .toplevel()
             .expect("only Window::new_wayland_window is used, so toplevel() is always Some");
@@ -340,7 +340,7 @@ impl GlideState {
     /// Registers a newly mapped toplevel with the layout engine.
     ///
     /// Returns the id the layout assigned to it.
-    pub fn track_window(&mut self, window: Window, parent: Option<glide_layout::WindowId>) {
+    pub fn track_window(&mut self, window: GlideWindow, parent: Option<glide_layout::WindowId>) {
         let id = glide_layout::WindowId::next();
         let size = layout_size(&window);
 
@@ -380,7 +380,7 @@ impl GlideState {
 
     /// Layout id for a mapped window, if it is tracked.
     #[must_use]
-    pub fn window_id(&self, window: &Window) -> Option<glide_layout::WindowId> {
+    pub fn window_id(&self, window: &GlideWindow) -> Option<glide_layout::WindowId> {
         self.window_to_id.get(window).copied()
     }
 
@@ -453,7 +453,7 @@ impl GlideState {
     /// (a drag has to track the pointer frame by frame), so the layout has to
     /// be told after the fact — otherwise the next reconcile would snap the
     /// window back to its pre-drag position.
-    pub fn record_window_move(&mut self, window: &Window, location: Point<i32, Logical>) {
+    pub fn record_window_move(&mut self, window: &GlideWindow, location: Point<i32, Logical>) {
         let Some(id) = self.window_id(window) else {
             return;
         };
@@ -466,7 +466,7 @@ impl GlideState {
     }
 
     /// Records an interactive resize. See [`Self::record_window_move`].
-    pub fn record_window_resize(&mut self, window: &Window) {
+    pub fn record_window_resize(&mut self, window: &GlideWindow) {
         let Some(id) = self.window_id(window) else {
             return;
         };
@@ -528,7 +528,7 @@ fn set_state_flag(pending: &mut ToplevelState, flag: XdgState, wanted: bool) -> 
 /// Zero until the client has attached a buffer, which is exactly what
 /// [`glide_layout::Layout`] uses to defer placement: a window cannot be
 /// centred before it has a size.
-pub(crate) fn layout_size(window: &Window) -> glide_layout::Size {
+pub(crate) fn layout_size(window: &GlideWindow) -> glide_layout::Size {
     let size = window.geometry().size;
     glide_layout::Size::new(size.w, size.h)
 }
@@ -540,7 +540,7 @@ pub(crate) fn layout_size(window: &Window) -> glide_layout::Size {
 /// `Some`. Centralized here rather than repeating `.toplevel().unwrap()` at
 /// every call site (handlers, grabs, input) so that adding a second kind of
 /// window later only needs updating this one assumption.
-pub(crate) fn window_surface(window: &Window) -> &WlSurface {
+pub(crate) fn window_surface(window: &GlideWindow) -> &WlSurface {
     window
         .toplevel()
         .expect("only Window::new_wayland_window is used, so toplevel() is always Some")

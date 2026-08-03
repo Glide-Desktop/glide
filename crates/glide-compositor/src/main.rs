@@ -10,6 +10,7 @@ mod input;
 mod ipc;
 mod logging;
 mod state;
+mod window;
 
 use smithay::{
     backend::session::libseat::LibSeatSession,

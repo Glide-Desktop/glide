@@ -4,7 +4,6 @@
 //! enters a `MoveSurfaceGrab` state.
 
 use smithay::{
-    desktop::Window,
     input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
         GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
@@ -15,7 +14,7 @@ use smithay::{
     utils::{Logical, Point},
 };
 
-use crate::GlideState;
+use crate::{GlideState, window::GlideWindow};
 
 // The button code as defined in the Linux kernel's
 // linux/input-event-codes.h header file, e.g. BTN_LEFT.
@@ -23,7 +22,7 @@ const BTN_LEFT: u32 = 0x110;
 
 pub struct MoveSurfaceGrab {
     pub start_data: PointerGrabStartData<GlideState>,
-    pub window: Window,
+    pub window: GlideWindow,
     pub initial_window_location: Point<i32, Logical>,
 }
 

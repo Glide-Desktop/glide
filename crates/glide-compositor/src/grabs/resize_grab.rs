@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 
 use smithay::{
-    desktop::{Space, Window},
+    desktop::Space,
     input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
         GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
@@ -21,7 +21,7 @@ use smithay::{
     wayland::{compositor, shell::xdg::SurfaceCachedState},
 };
 
-use crate::{GlideState, state::window_surface};
+use crate::{GlideState, state::window_surface, window::GlideWindow};
 
 // The button code as defined in the Linux kernel's
 // linux/input-event-codes.h header file, e.g. BTN_LEFT.
@@ -57,7 +57,7 @@ impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
 
 pub struct ResizeSurfaceGrab {
     start_data: PointerGrabStartData<GlideState>,
-    window: Window,
+    window: GlideWindow,
 
     edges: ResizeEdge,
 
@@ -68,7 +68,7 @@ pub struct ResizeSurfaceGrab {
 impl ResizeSurfaceGrab {
     pub fn start(
         start_data: PointerGrabStartData<GlideState>,
-        window: Window,
+        window: GlideWindow,
         edges: ResizeEdge,
         initial_window_rect: Rectangle<i32, Logical>,
     ) -> Self {
@@ -362,7 +362,7 @@ impl ResizeSurfaceState {
 }
 
 /// Should be called on `WlSurface::commit`
-pub fn handle_commit(space: &mut Space<Window>, surface: &WlSurface) -> Option<()> {
+pub fn handle_commit(space: &mut Space<GlideWindow>, surface: &WlSurface) -> Option<()> {
     let window = space
         .elements()
         .find(|w| window_surface(w) == surface)

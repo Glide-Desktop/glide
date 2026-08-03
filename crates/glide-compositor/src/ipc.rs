@@ -397,7 +397,7 @@ fn list_windows(state: &GlideState) -> Response {
 }
 
 /// Reads a window's `app_id`/`title` as last set by the client.
-fn window_identity(window: &smithay::desktop::Window) -> (Option<String>, Option<String>) {
+fn window_identity(window: &crate::window::GlideWindow) -> (Option<String>, Option<String>) {
     let Some(toplevel) = window.toplevel() else {
         return (None, None);
     };

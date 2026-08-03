@@ -37,6 +37,9 @@
 #     `glidectl window focus <id>` on that id must bring it back
 #   - IPC: from another VT or via `glidectl`, run `glidectl ping`,
 #     `glidectl workspace list`, `glidectl window list`
+#   - M4.1 note: windows are now routed through a GlideWindow wrapper before
+#     reaching Space/rendering. This should be invisible — if mapping,
+#     stacking, moving, resizing or closing regressed, it broke here.
 #   - IPC must never hang the compositor: `nc -U "$GLIDE_IPC_SOCK"` and then
 #     just sitting there must NOT freeze the screen (this used to wedge the
 #     whole session)

@@ -26,6 +26,7 @@ use crate::{
     GlideState,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
     state::{layout_size, window_surface},
+    window::GlideWindow,
 };
 
 impl XdgShellHandler for GlideState {
@@ -42,7 +43,10 @@ impl XdgShellHandler for GlideState {
             .parent()
             .and_then(|parent| self.window_id_for_surface(&parent));
 
-        self.track_window(Window::new_wayland_window(surface), parent);
+        self.track_window(
+            GlideWindow::new(Window::new_wayland_window(surface)),
+            parent,
+        );
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
