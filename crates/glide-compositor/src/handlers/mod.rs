@@ -3,6 +3,7 @@ mod xdg_shell;
 
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::Focus;
+use smithay::input::tablet::TabletSeatHandler;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -44,6 +45,15 @@ impl SeatHandler for GlideState {
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
         set_data_device_focus(dh, seat, client);
     }
+}
+
+/// Required transitively by `cursor-shape-v1`'s dispatch: the protocol also
+/// serves tablet tools, so its device dispatch is bounded on
+/// `TabletSeatHandler` even for compositors (like Glide, so far) that never
+/// create a tablet seat. The default `tablet_tool_image` no-op is exactly
+/// right for that: no tablets, nothing to update.
+impl TabletSeatHandler for GlideState {
+    type ToolFocus = WlSurface;
 }
 
 //

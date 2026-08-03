@@ -24,6 +24,7 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        cursor_shape::CursorShapeManagerState,
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::xdg::{ToplevelState, XdgShellState, dialog::XdgDialogState},
@@ -53,6 +54,11 @@ pub struct GlideState {
     /// `xdg-dialog-v1`: lets clients mark a toplevel as a (modal) dialog, so
     /// it can be kept with its parent instead of exiled to a new workspace.
     pub xdg_dialog_state: XdgDialogState,
+    /// `cursor-shape-v1`: lets clients name the cursor they want ("text",
+    /// "grab", ...) instead of uploading their own surface for it, so the
+    /// pointer keeps one consistent look across applications and matches
+    /// the shapes our own decorations use.
+    pub cursor_shape_state: CursorShapeManagerState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<GlideState>,
@@ -128,6 +134,7 @@ impl GlideState {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let xdg_dialog_state = XdgDialogState::new::<Self>(&dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
 
@@ -176,6 +183,7 @@ impl GlideState {
             compositor_state,
             xdg_shell_state,
             xdg_dialog_state,
+            cursor_shape_state,
             shm_state,
             output_manager_state,
             seat_state,

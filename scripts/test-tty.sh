@@ -41,6 +41,11 @@
 #     below it with one entry, "Minimize" — clicking it minimizes the window
 #     exactly like Super+M; clicking anywhere else while it's open just
 #     closes the dropdown without doing anything
+#   - resize: move the pointer to just OUTSIDE any window edge or corner
+#     (~8px band) — the cursor must change to the matching resize arrow
+#     (up-down at top/bottom, left-right at sides, diagonal at corners);
+#     press and drag there resizes the window from that edge. Also check
+#     the cursor goes back to the normal arrow over the titlebar/content
 #   - click between two windows on one workspace, then Super+F: the maximize
 #     must apply to the window you last clicked
 #   - Super+M minimizes the focused window; it must disappear and focus must

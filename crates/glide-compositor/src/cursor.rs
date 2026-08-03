@@ -9,7 +9,7 @@
 //! Both are exposed as render elements via [`PointerElement`], which is fed
 //! the current [`CursorImageStatus`] each frame.
 
-use std::{io::Read, time::Duration};
+use std::{collections::HashMap, io::Read, time::Duration};
 
 use smithay::{
     backend::renderer::{
@@ -20,7 +20,7 @@ use smithay::{
             surface::WaylandSurfaceRenderElement,
         },
     },
-    input::pointer::CursorImageStatus,
+    input::pointer::{CursorIcon, CursorImageStatus},
     render_elements,
     utils::{Physical, Point, Scale},
 };
@@ -56,10 +56,17 @@ const FALLBACK_ARROW: &[&str] = &[
     "       ##   ",
 ];
 
-/// The default cursor, loaded from the system `XCursor` theme.
+/// Themed cursors, loaded from the system `XCursor` theme per icon shape.
+///
+/// Shapes are loaded lazily and cached: most sessions only ever touch a
+/// handful (default plus the resize arrows), and loading all ~35 up front
+/// would mostly parse files nothing ever displays. A shape the theme is
+/// missing falls back to whatever [`CursorIcon::Default`] resolved to, so
+/// the pointer is never invisible just because a theme lacks `sw-resize`.
 pub struct Cursor {
-    images: Vec<Image>,
+    theme: CursorTheme,
     size: u32,
+    cache: HashMap<CursorIcon, Vec<Image>>,
 }
 
 impl Cursor {
@@ -70,48 +77,83 @@ impl Cursor {
             .and_then(|s| s.parse().ok())
             .unwrap_or(24);
 
-        let images = load_theme_images(&theme_name).unwrap_or_else(|err| {
-            tracing::warn!(
-                theme = theme_name,
-                "could not load xcursor theme ({err}), using built-in fallback cursor"
-            );
-            vec![fallback_image()]
-        });
+        let theme = CursorTheme::load(&theme_name);
 
-        Self { images, size }
+        let mut cursor = Self {
+            theme,
+            size,
+            cache: HashMap::new(),
+        };
+
+        // Resolve the default eagerly: it doubles as the fallback for every
+        // other shape, and if even it is missing we want the warning at
+        // startup, not on first pointer motion.
+        let default_images = cursor
+            .load_icon_images(CursorIcon::Default)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    theme = theme_name,
+                    "could not load the xcursor theme's default cursor, \
+                     using the built-in fallback"
+                );
+                vec![fallback_image()]
+            });
+        cursor.cache.insert(CursorIcon::Default, default_images);
+
+        cursor
     }
 
-    /// Picks the image to draw for the given output scale and elapsed time,
-    /// advancing through the frames of an animated cursor.
-    pub fn image(&self, scale: u32, time: Duration) -> Image {
+    /// Picks the image to draw for `icon` at the given output scale and
+    /// elapsed time, advancing through the frames of an animated cursor.
+    pub fn image(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Image {
         // `frame` only ever uses `millis` modulo the animation's total delay
         // (typically well under a minute), so wrapping every ~49 days of
         // continuous uptime has no observable effect on which frame is
         // picked.
         #[allow(clippy::cast_possible_truncation)]
         let millis = time.as_millis() as u32;
-        frame(millis, self.size * scale, &self.images)
+        let size = self.size * scale;
+        frame(millis, size, self.images_for(icon))
     }
-}
 
-#[derive(thiserror::Error, Debug)]
-enum ThemeError {
-    #[error("theme has no default cursor")]
-    NoDefaultCursor,
-    #[error("could not open cursor file: {0}")]
-    File(#[from] std::io::Error),
-    #[error("could not parse cursor file")]
-    Parse,
-}
+    /// Cached frames for `icon`, loading them on first use.
+    fn images_for(&mut self, icon: CursorIcon) -> &[Image] {
+        if !self.cache.contains_key(&icon) {
+            let images = self.load_icon_images(icon).unwrap_or_else(|| {
+                tracing::debug!(
+                    icon = icon.name(),
+                    "xcursor theme lacks this shape; substituting the default cursor"
+                );
+                self.cache
+                    .get(&CursorIcon::Default)
+                    .expect("Default is inserted unconditionally in load()")
+                    .clone()
+            });
+            self.cache.insert(icon, images);
+        }
 
-fn load_theme_images(theme_name: &str) -> Result<Vec<Image>, ThemeError> {
-    let theme = CursorTheme::load(theme_name);
-    let path = theme
-        .load_icon("default")
-        .ok_or(ThemeError::NoDefaultCursor)?;
-    let mut data = Vec::new();
-    std::fs::File::open(path)?.read_to_end(&mut data)?;
-    parse_xcursor(&data).ok_or(ThemeError::Parse)
+        self.cache
+            .get(&icon)
+            .expect("inserted above if it was missing")
+    }
+
+    /// Loads `icon` from the theme, trying its CSS name first and then the
+    /// legacy X11 aliases — themes predating the CSS naming ship files like
+    /// `top_left_corner` rather than `nw-resize`, and `alt_names` is
+    /// exactly that mapping.
+    fn load_icon_images(&self, icon: CursorIcon) -> Option<Vec<Image>> {
+        std::iter::once(icon.name())
+            .chain(icon.alt_names().iter().copied())
+            .find_map(|name| {
+                let path = self.theme.load_icon(name)?;
+                let mut data = Vec::new();
+                std::fs::File::open(path)
+                    .ok()?
+                    .read_to_end(&mut data)
+                    .ok()?;
+                parse_xcursor(&data)
+            })
+    }
 }
 
 /// Rasterizes [`FALLBACK_ARROW`].
@@ -344,8 +386,8 @@ mod tests {
         // Exercises the real theme lookup on this machine, falling back to
         // the built-in arrow if no theme is installed. Either way a cursor
         // must come out, and picking a frame must not panic.
-        let cursor = Cursor::load();
-        let image = cursor.image(1, Duration::ZERO);
+        let mut cursor = Cursor::load();
+        let image = cursor.image(CursorIcon::Default, 1, Duration::ZERO);
         assert!(image.width > 0 && image.height > 0);
         assert_eq!(
             image.pixels_rgba.len(),

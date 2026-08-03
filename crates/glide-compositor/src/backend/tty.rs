@@ -63,7 +63,7 @@ use smithay::{
         Space,
         space::{SpaceRenderElements, space_render_elements},
     },
-    input::pointer::{CursorImageAttributes, CursorImageStatus},
+    input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
@@ -378,15 +378,19 @@ fn cursor_hotspot(status: &CursorImageStatus) -> Point<i32, Logical> {
 }
 
 /// Renders (or reuses a cached render of) the themed cursor image for the
-/// given output scale and elapsed time. Animated cursors cycle through a
-/// handful of frames, so `cursor_buffers` is checked before uploading again.
+/// given icon shape, output scale and elapsed time. Animated cursors cycle
+/// through a handful of frames, so `cursor_buffers` is checked before
+/// uploading again — the cache keys on the source image, so switching
+/// between shapes (default ↔ a resize arrow at a window edge) reuses each
+/// shape's upload rather than churning.
 fn resolve_cursor_buffer(
-    cursor: &Cursor,
+    cursor: &mut Cursor,
     cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>,
+    icon: CursorIcon,
     scale: u32,
     elapsed: Duration,
 ) -> MemoryRenderBuffer {
-    let image = cursor.image(scale, elapsed);
+    let image = cursor.image(icon, scale, elapsed);
     if let Some((_, buffer)) = cursor_buffers.iter().find(|(cached, _)| cached == &image) {
         return buffer.clone();
     }
@@ -841,9 +845,17 @@ impl GlideState {
         let output = surface.output.clone();
         let scale = Scale::from(output.current_scale().fractional_scale());
 
+        // Which themed shape to draw when no client surface overrides it.
+        // Set both by clients (via cursor-shape-v1) and by our own
+        // decorations (resize arrows at window borders).
+        let icon = match &cursor_status {
+            CursorImageStatus::Named(icon) => *icon,
+            _ => CursorIcon::Default,
+        };
         let cursor_buffer = resolve_cursor_buffer(
             cursor,
             cursor_buffers,
+            icon,
             output.current_scale().integer_scale().cast_unsigned(),
             elapsed,
         );

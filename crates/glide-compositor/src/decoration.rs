@@ -29,20 +29,33 @@ use smithay::{
     input::{
         Seat,
         pointer::{
-            AxisFrame, ButtonEvent, CursorImageStatus, GestureHoldBeginEvent, GestureHoldEndEvent,
-            GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
-            GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData,
-            MotionEvent, PointerTarget, RelativeMotionEvent,
+            AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, GestureHoldBeginEvent,
+            GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
+            GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+            GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerTarget,
+            RelativeMotionEvent,
         },
     },
     utils::{IsAlive, Logical, Physical, Point, Scale, Serial},
 };
 
-use crate::{GlideState, config::DecorationTheme, grabs::MoveSurfaceGrab, window::GlideWindow};
+use crate::{
+    GlideState,
+    config::DecorationTheme,
+    grabs::{MoveSurfaceGrab, ResizeSurfaceGrab, resize_grab::ResizeEdge},
+    window::GlideWindow,
+};
 
 /// Width of the maximize/close/chevron buttons. Height is the titlebar
 /// height itself, from [`DecorationTheme::height`].
 pub const BUTTON_WIDTH: i32 = 32;
+
+/// Width of the invisible resize band around a decorated window's frame.
+///
+/// Sized for touchpads: the band is the only way to start a resize with the
+/// pointer (there is no visible border to aim for), so it errs on the
+/// generous side rather than demanding pixel-accurate aim at a window edge.
+pub const RESIZE_BORDER: i32 = 8;
 
 /// An action offered in the chevron dropdown.
 ///
@@ -77,6 +90,10 @@ pub struct HeaderBar {
     /// [`DecorationTheme::height`] when a window is created.
     height: i32,
     width: i32,
+    /// Height of the client's own content area below the titlebar. Needed
+    /// to know where the window's bottom edge — and with it the bottom
+    /// resize band — actually is.
+    content_height: i32,
     pointer_loc: Option<Point<f64, Logical>>,
     menu_open: bool,
     menu_hover: Option<usize>,
@@ -124,6 +141,23 @@ enum DecorationAction {
     Close,
     Run(MenuItem),
     StartMove,
+    StartResize(ResizeEdge),
+}
+
+/// The pointer shape to show over a resize band, so the user can see what
+/// dragging there will do before they press.
+fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
+    match edges {
+        e if e == ResizeEdge::TOP => CursorIcon::NResize,
+        e if e == ResizeEdge::BOTTOM => CursorIcon::SResize,
+        e if e == ResizeEdge::LEFT => CursorIcon::WResize,
+        e if e == ResizeEdge::RIGHT => CursorIcon::EResize,
+        e if e == ResizeEdge::TOP_LEFT => CursorIcon::NwResize,
+        e if e == ResizeEdge::TOP_RIGHT => CursorIcon::NeResize,
+        e if e == ResizeEdge::BOTTOM_LEFT => CursorIcon::SwResize,
+        e if e == ResizeEdge::BOTTOM_RIGHT => CursorIcon::SeResize,
+        _ => CursorIcon::Default,
+    }
 }
 
 impl HeaderBar {
@@ -176,16 +210,67 @@ impl HeaderBar {
     /// Whether `rel` — relative to the decoration's own origin, the
     /// titlebar's top-left — falls inside the decoration.
     ///
-    /// This, not just "the titlebar strip", is what hit-testing must use:
-    /// the open dropdown extends *below* the strip, over the client's own
-    /// content, and treating that area as content would route clicks on the
-    /// menu straight to the client underneath it.
+    /// The decoration is everything of the frame that is not the client's
+    /// content: the titlebar strip, the invisible resize band around the
+    /// whole frame, and — when open — the chevron dropdown, which extends
+    /// *below* the strip over the content. Each part matters: a strip-only
+    /// test routed clicks on the menu straight to the client underneath,
+    /// and without the band a resize could only start from a client-side
+    /// `resize_request`, which nothing without CSD ever sends.
     pub fn contains(&self, rel: Point<f64, Logical>) -> bool {
-        self.is_decorated()
-            && rel.x >= 0.0
-            && rel.x < f64::from(self.width)
-            && rel.y >= 0.0
-            && rel.y < f64::from(self.interactive_height())
+        if !self.is_decorated() {
+            return false;
+        }
+
+        let width = f64::from(self.width);
+        let frame_height = f64::from(self.height + self.content_height);
+        let band = f64::from(RESIZE_BORDER);
+
+        let in_expanded_frame =
+            rel.x >= -band && rel.x < width + band && rel.y >= -band && rel.y < frame_height + band;
+        if !in_expanded_frame {
+            return false;
+        }
+
+        // The content area belongs to the client — unless the open menu is
+        // drawn over it, in which case its rows are ours.
+        let in_content = rel.x >= 0.0
+            && rel.x < width
+            && rel.y >= f64::from(self.height)
+            && rel.y < frame_height;
+        if in_content {
+            return self.menu_open && rel.y < f64::from(self.interactive_height());
+        }
+
+        true
+    }
+
+    /// Which resize edges `rel` falls on, if it is in the resize band.
+    ///
+    /// Strict quadrants: a corner is exactly the overlap of two bands, with
+    /// no extra corner-widening. `RESIZE_BORDER` is generous enough that
+    /// the overlap square is comfortably hittable.
+    fn resize_edges_at(&self, rel: Point<f64, Logical>) -> Option<ResizeEdge> {
+        if !self.is_decorated() {
+            return None;
+        }
+
+        let width = f64::from(self.width);
+        let frame_height = f64::from(self.height + self.content_height);
+
+        let mut edges = ResizeEdge::empty();
+        if rel.x < 0.0 {
+            edges |= ResizeEdge::LEFT;
+        } else if rel.x >= width {
+            edges |= ResizeEdge::RIGHT;
+        }
+        if rel.y < 0.0 {
+            edges |= ResizeEdge::TOP;
+        } else if rel.y >= frame_height {
+            edges |= ResizeEdge::BOTTOM;
+        }
+
+        (!edges.is_empty()).then_some(edges)
     }
 
     /// Menu row index under `loc` (decoration-origin coordinates), if the
@@ -244,7 +329,15 @@ impl HeaderBar {
             if self.menu_open {
                 return None;
             }
-            return (self.zone_at(loc.x) == HitZone::Drag).then_some(DecorationAction::StartMove);
+            // The resize band wins over the titlebar zones: it extends
+            // *outside* the frame where no zone exists anyway, so the only
+            // overlap to resolve is precedence, and a press in the band
+            // unambiguously means resize.
+            if let Some(edges) = self.resize_edges_at(loc) {
+                return Some(DecorationAction::StartResize(edges));
+            }
+            return (self.in_titlebar_strip(loc) && self.zone_at(loc.x) == HitZone::Drag)
+                .then_some(DecorationAction::StartMove);
         }
 
         if self.menu_open {
@@ -253,6 +346,10 @@ impl HeaderBar {
             // Any release closes the menu, whether it hit an item or not.
             self.menu_open = false;
             return action;
+        }
+
+        if !self.in_titlebar_strip(loc) {
+            return None;
         }
 
         match self.zone_at(loc.x) {
@@ -264,6 +361,17 @@ impl HeaderBar {
             }
             HitZone::Drag => None,
         }
+    }
+
+    /// Whether `loc` is within the titlebar strip itself, as opposed to the
+    /// resize band or the open menu. The button zones (`zone_at`) only make
+    /// sense inside the strip: without this check, releasing a resize drag
+    /// that started at the top-left corner counted as a maximize click.
+    fn in_titlebar_strip(&self, loc: Point<f64, Logical>) -> bool {
+        loc.x >= 0.0
+            && loc.x < f64::from(self.width)
+            && loc.y >= 0.0
+            && loc.y < f64::from(self.height)
     }
 
     /// Redraws every buffer that needs it, from the theme/focus snapshotted
@@ -283,7 +391,13 @@ impl HeaderBar {
         };
         self.background.update((self.width, self.height), bg);
 
-        let hovered = self.pointer_loc.map(|l| self.zone_at(l.x));
+        // Only a pointer inside the strip itself highlights a button:
+        // hovering the resize band above the titlebar is not hovering
+        // whatever button happens to share its x range.
+        let hovered = self
+            .pointer_loc
+            .filter(|l| self.in_titlebar_strip(*l))
+            .map(|l| self.zone_at(l.x));
         let color_for = |zone: HitZone, normal: [f32; 4], hover: [f32; 4]| {
             if hovered == Some(zone) { hover } else { normal }
         };
@@ -396,6 +510,44 @@ fn start_move(
     });
 }
 
+/// Starts an interactive resize from the resize band, exactly as if the
+/// client had called `xdg_toplevel.resize`. Deferred via `insert_idle` for
+/// the same grab-clobbering reason as [`start_move`] — see its docs.
+fn start_resize(
+    seat: &Seat<GlideState>,
+    state: &mut GlideState,
+    window: &GlideWindow,
+    event: &ButtonEvent,
+    edges: ResizeEdge,
+) {
+    let seat = seat.clone();
+    let window = window.clone();
+    let button = event.button;
+    let serial = event.serial;
+
+    state.loop_handle.insert_idle(move |state| {
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        let Some(location) = state.space.element_location(&window) else {
+            return;
+        };
+
+        let start_data = GrabStartData {
+            focus: None,
+            button,
+            location: pointer.current_location(),
+        };
+        // The same content-area rectangle a client-initiated resize uses
+        // (see `resize_request` in handlers/xdg_shell.rs): the grab talks
+        // to the client in configure sizes, which are content sizes.
+        let initial_rect = smithay::utils::Rectangle::new(location, window.geometry().size);
+
+        let grab = ResizeSurfaceGrab::start(start_data, window.clone(), edges, initial_rect);
+        pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Clear);
+    });
+}
+
 fn run_menu_item(state: &mut GlideState, window: &GlideWindow, item: MenuItem) {
     let Some(id) = state.window_id(window) else {
         return;
@@ -434,10 +586,11 @@ impl GlideWindow {
     /// click that somehow arrives before the first render would otherwise
     /// run against `width == 0` and classify most of the bar as Close.
     pub fn sync_decoration(&self, theme: &DecorationTheme, height: i32, focused: bool) {
-        let width = self.geometry().size.w;
+        let content = self.geometry().size;
         let mut state = self.decoration_state();
         state.header.set_height(height);
-        state.header.width = width;
+        state.header.width = content.w;
+        state.header.content_height = content.h;
         state.header.sync(theme, focused);
     }
 }
@@ -455,25 +608,33 @@ impl IsAlive for Decoration {
     }
 }
 
+impl Decoration {
+    /// Shared enter/motion handling: track hover, and set the pointer shape.
+    ///
+    /// The decoration is compositor territory: whatever cursor the client
+    /// last set via `wl_pointer.set_cursor` stops applying the moment the
+    /// pointer crosses onto it. Over the resize band that shape is the
+    /// matching resize arrow, so the user can see what a drag would do
+    /// before pressing; everywhere else it is the plain default.
+    fn update_pointer(&self, data: &mut GlideState, event: &MotionEvent) {
+        let icon = {
+            let mut deco = self.0.decoration_state();
+            deco.header.pointer_enter(event.location);
+            deco.header
+                .resize_edges_at(event.location)
+                .map_or(CursorIcon::Default, resize_cursor)
+        };
+        data.cursor_status = CursorImageStatus::Named(icon);
+    }
+}
+
 impl PointerTarget<GlideState> for Decoration {
     fn enter(&self, _seat: &Seat<GlideState>, data: &mut GlideState, event: &MotionEvent) {
-        // The decoration is compositor territory: whatever cursor the client
-        // last set via `wl_pointer.set_cursor` stops applying the moment the
-        // pointer crosses onto the titlebar. Without this the client's
-        // I-beam (or whatever else) lingered over our own UI.
-        data.cursor_status = CursorImageStatus::default_named();
-
-        self.0
-            .decoration_state()
-            .header
-            .pointer_enter(event.location);
+        self.update_pointer(data, event);
     }
 
-    fn motion(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, event: &MotionEvent) {
-        self.0
-            .decoration_state()
-            .header
-            .pointer_enter(event.location);
+    fn motion(&self, _seat: &Seat<GlideState>, data: &mut GlideState, event: &MotionEvent) {
+        self.update_pointer(data, event);
     }
 
     fn relative_motion(
@@ -507,6 +668,9 @@ impl PointerTarget<GlideState> for Decoration {
             }
             Some(DecorationAction::Run(item)) => run_menu_item(data, &self.0, item),
             Some(DecorationAction::StartMove) => start_move(seat, data, &self.0, event),
+            Some(DecorationAction::StartResize(edges)) => {
+                start_resize(seat, data, &self.0, event, edges);
+            }
             None => {}
         }
     }
@@ -655,4 +819,265 @@ pub fn render_elements(
     ));
 
     elements
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::utils::SERIAL_COUNTER;
+
+    use super::*;
+
+    /// A decorated 800x600-content window with a 32px titlebar.
+    fn header() -> HeaderBar {
+        HeaderBar {
+            height: 32,
+            width: 800,
+            content_height: 600,
+            ..HeaderBar::default()
+        }
+    }
+
+    fn point(x: f64, y: f64) -> Point<f64, Logical> {
+        Point::from((x, y))
+    }
+
+    fn press() -> ButtonEvent {
+        ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 0,
+            button: 0x110,
+            state: ButtonState::Pressed,
+        }
+    }
+
+    fn release() -> ButtonEvent {
+        ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 0,
+            button: 0x110,
+            state: ButtonState::Released,
+        }
+    }
+
+    mod contains {
+        use super::*;
+
+        #[test]
+        fn titlebar_strip_is_decoration() {
+            assert!(header().contains(point(400.0, 16.0)));
+        }
+
+        #[test]
+        fn content_area_is_not_decoration() {
+            // Clicks there belong to the client, not to us.
+            assert!(!header().contains(point(400.0, 300.0)));
+        }
+
+        #[test]
+        fn resize_band_around_the_frame_is_decoration() {
+            let h = header();
+            assert!(h.contains(point(-4.0, 300.0)), "left band");
+            assert!(h.contains(point(804.0, 300.0)), "right band");
+            assert!(h.contains(point(400.0, -4.0)), "top band");
+            assert!(h.contains(point(400.0, 636.0)), "bottom band");
+        }
+
+        #[test]
+        fn beyond_the_band_is_not_decoration() {
+            let h = header();
+            assert!(!h.contains(point(-9.0, 300.0)));
+            assert!(!h.contains(point(400.0, 641.0)));
+        }
+
+        #[test]
+        fn menu_rows_count_only_while_open() {
+            let mut h = header();
+            // Row 0 lives at y in [height, 2*height) — over the content.
+            assert!(!h.contains(point(400.0, 48.0)));
+            h.menu_open = true;
+            assert!(h.contains(point(400.0, 48.0)));
+        }
+
+        #[test]
+        fn undecorated_contains_nothing() {
+            let h = HeaderBar {
+                height: 0,
+                width: 800,
+                content_height: 600,
+                ..HeaderBar::default()
+            };
+            assert!(!h.contains(point(400.0, 16.0)));
+            assert!(!h.contains(point(-4.0, 300.0)));
+        }
+    }
+
+    mod resize_edges {
+        use super::*;
+
+        #[test]
+        fn each_side_maps_to_its_edge() {
+            let h = header();
+            assert_eq!(
+                h.resize_edges_at(point(-4.0, 300.0)),
+                Some(ResizeEdge::LEFT)
+            );
+            assert_eq!(
+                h.resize_edges_at(point(804.0, 300.0)),
+                Some(ResizeEdge::RIGHT)
+            );
+            assert_eq!(h.resize_edges_at(point(400.0, -4.0)), Some(ResizeEdge::TOP));
+            assert_eq!(
+                h.resize_edges_at(point(400.0, 636.0)),
+                Some(ResizeEdge::BOTTOM)
+            );
+        }
+
+        #[test]
+        fn corners_combine_edges() {
+            let h = header();
+            assert_eq!(
+                h.resize_edges_at(point(-4.0, -4.0)),
+                Some(ResizeEdge::TOP_LEFT)
+            );
+            assert_eq!(
+                h.resize_edges_at(point(804.0, 636.0)),
+                Some(ResizeEdge::BOTTOM_RIGHT)
+            );
+        }
+
+        #[test]
+        fn inside_the_frame_is_never_a_resize() {
+            let h = header();
+            assert_eq!(h.resize_edges_at(point(400.0, 16.0)), None, "titlebar");
+            assert_eq!(h.resize_edges_at(point(400.0, 300.0)), None, "content");
+        }
+    }
+
+    mod menu {
+        use super::*;
+
+        #[test]
+        fn row_zero_starts_below_the_strip() {
+            // Regression test for the review finding: the divisor version
+            // without the height subtraction made the *strip* count as row
+            // 0 and the real row 0 count as row 1.
+            let mut h = header();
+            h.menu_open = true;
+
+            assert_eq!(h.menu_item_at(point(400.0, 16.0)), None, "titlebar strip");
+            assert_eq!(h.menu_item_at(point(400.0, 48.0)), Some(0), "first row");
+            assert_eq!(h.menu_item_at(point(400.0, 80.0)), None, "past the rows");
+        }
+
+        #[test]
+        fn closed_menu_has_no_rows() {
+            assert_eq!(header().menu_item_at(point(400.0, 48.0)), None);
+        }
+    }
+
+    mod on_button {
+        use super::*;
+
+        #[test]
+        fn press_on_the_plain_strip_starts_a_move() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+
+            assert_eq!(h.on_button(&press()), Some(DecorationAction::StartMove));
+        }
+
+        #[test]
+        fn press_on_a_button_zone_does_not_move() {
+            let mut h = header();
+            h.pointer_enter(point(16.0, 16.0)); // over maximize
+
+            assert_eq!(h.on_button(&press()), None);
+        }
+
+        #[test]
+        fn press_in_the_band_starts_a_resize() {
+            let mut h = header();
+            h.pointer_enter(point(-4.0, -4.0));
+
+            assert_eq!(
+                h.on_button(&press()),
+                Some(DecorationAction::StartResize(ResizeEdge::TOP_LEFT))
+            );
+        }
+
+        #[test]
+        fn release_on_maximize_toggles() {
+            let mut h = header();
+            h.pointer_enter(point(16.0, 16.0));
+
+            assert_eq!(
+                h.on_button(&release()),
+                Some(DecorationAction::ToggleMaximize)
+            );
+        }
+
+        #[test]
+        fn release_on_close_closes() {
+            let mut h = header();
+            h.pointer_enter(point(790.0, 16.0));
+
+            assert_eq!(h.on_button(&release()), Some(DecorationAction::Close));
+        }
+
+        #[test]
+        fn chevron_opens_the_menu_then_an_item_click_runs_it() {
+            let mut h = header();
+
+            h.pointer_enter(point(48.0, 16.0)); // over the chevron
+            assert_eq!(h.on_button(&release()), None);
+            assert!(h.menu_open);
+
+            h.pointer_enter(point(400.0, 48.0)); // over the Minimize row
+            assert_eq!(
+                h.on_button(&release()),
+                Some(DecorationAction::Run(MenuItem::Minimize))
+            );
+            assert!(!h.menu_open, "any release closes the menu");
+        }
+
+        #[test]
+        fn release_outside_the_open_menu_just_closes_it() {
+            let mut h = header();
+            h.menu_open = true;
+            h.pointer_enter(point(400.0, 16.0)); // back on the strip
+
+            assert_eq!(h.on_button(&release()), None);
+            assert!(!h.menu_open);
+        }
+
+        #[test]
+        fn release_in_the_band_after_a_resize_is_not_a_button_click() {
+            // Regression guard: zone_at only means anything inside the
+            // strip. A release at the top-left corner of the band shares
+            // its x range with the maximize button and must not toggle it.
+            let mut h = header();
+            h.pointer_enter(point(-4.0, -4.0));
+
+            assert_eq!(h.on_button(&release()), None);
+        }
+    }
+
+    mod cursors {
+        use super::*;
+
+        #[test]
+        fn every_edge_gets_a_matching_arrow() {
+            assert_eq!(resize_cursor(ResizeEdge::TOP), CursorIcon::NResize);
+            assert_eq!(resize_cursor(ResizeEdge::BOTTOM), CursorIcon::SResize);
+            assert_eq!(resize_cursor(ResizeEdge::LEFT), CursorIcon::WResize);
+            assert_eq!(resize_cursor(ResizeEdge::RIGHT), CursorIcon::EResize);
+            assert_eq!(resize_cursor(ResizeEdge::TOP_LEFT), CursorIcon::NwResize);
+            assert_eq!(resize_cursor(ResizeEdge::TOP_RIGHT), CursorIcon::NeResize);
+            assert_eq!(resize_cursor(ResizeEdge::BOTTOM_LEFT), CursorIcon::SwResize);
+            assert_eq!(
+                resize_cursor(ResizeEdge::BOTTOM_RIGHT),
+                CursorIcon::SeResize
+            );
+        }
+    }
 }

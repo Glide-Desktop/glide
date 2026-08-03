@@ -119,8 +119,17 @@ impl SpaceElement for GlideWindow {
     fn bbox(&self) -> Rectangle<i32, Logical> {
         let mut bbox = SpaceElement::bbox(&self.0);
         let height = self.header_height();
-        bbox.loc.y -= height;
-        bbox.size.h += height;
+        if height > 0 {
+            // Titlebar above the content, resize band around the whole
+            // frame. The bbox has to cover both — `Space::element_under`
+            // pre-filters on it, so anything outside the bbox can never
+            // receive input no matter what `is_in_input_region` says.
+            let band = decoration::RESIZE_BORDER;
+            bbox.loc.x -= band;
+            bbox.loc.y -= height + band;
+            bbox.size.w += band * 2;
+            bbox.size.h += height + band * 2;
+        }
         bbox
     }
 
