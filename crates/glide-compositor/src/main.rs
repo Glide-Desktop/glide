@@ -5,6 +5,8 @@ mod handlers;
 mod backend;
 mod config;
 mod cursor;
+mod decoration;
+mod focus;
 mod grabs;
 mod input;
 mod ipc;

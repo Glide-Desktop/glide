@@ -15,11 +15,99 @@ use crate::{GlideState, input::ResolvedKeybind};
 /// Every section rejects unknown keys. A typo in a config file is far more
 /// likely than a deliberate extra key, and silently ignoring it would leave
 /// the user staring at a setting that appears to do nothing.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+///
+/// Not `Eq`: `decorations` holds colors as `f32`, which isn't.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub workspaces: WorkspaceConfig,
     pub keybinds: Vec<KeybindConfig>,
+    pub decorations: DecorationTheme,
+}
+
+/// A window decoration's color scheme and size.
+///
+/// Layout is deliberately *not* configurable here, only appearance: maximize
+/// sits on the left and close on the right always, so every window in a
+/// session looks and behaves the same regardless of what an individual user
+/// put in their config. Only colors and the titlebar's height are settable.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DecorationTheme {
+    /// Titlebar height in logical pixels.
+    pub height: u32,
+    pub background: Color,
+    pub background_focused: Color,
+    pub close_button: Color,
+    pub close_button_hover: Color,
+    pub maximize_button: Color,
+    pub maximize_button_hover: Color,
+    pub chevron_button: Color,
+    pub chevron_button_hover: Color,
+    pub menu_background: Color,
+    pub menu_item_hover: Color,
+}
+
+impl Default for DecorationTheme {
+    fn default() -> Self {
+        Self {
+            height: 32,
+            background: Color::from_hex("#26262eff").unwrap(),
+            background_focused: Color::from_hex("#3b5bdbff").unwrap(),
+            close_button: Color::from_hex("#e2555aff").unwrap(),
+            close_button_hover: Color::from_hex("#ff7377ff").unwrap(),
+            maximize_button: Color::from_hex("#4a4a56ff").unwrap(),
+            maximize_button_hover: Color::from_hex("#63636fff").unwrap(),
+            chevron_button: Color::from_hex("#4a4a56ff").unwrap(),
+            chevron_button_hover: Color::from_hex("#63636fff").unwrap(),
+            menu_background: Color::from_hex("#1c1c22ff").unwrap(),
+            menu_item_hover: Color::from_hex("#3b5bdbff").unwrap(),
+        }
+    }
+}
+
+/// An RGBA color, written in config as `"#rrggbb"` or `"#rrggbbaa"`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Color(pub [f32; 4]);
+
+impl Color {
+    /// Parses `#rrggbb` (opaque) or `#rrggbbaa`. Returns `None` for anything
+    /// else — no partial parsing, a malformed color is treated the same as
+    /// a missing one.
+    // r/g/b/a is the universally understood name for color channels; naming
+    // them out in full would hurt readability rather than help it.
+    #[allow(clippy::many_single_char_names)]
+    fn from_hex(s: &str) -> Option<Self> {
+        let s = s.strip_prefix('#')?;
+        let byte = |range: std::ops::Range<usize>| u8::from_str_radix(s.get(range)?, 16).ok();
+
+        let (r, g, b, a) = match s.len() {
+            6 => (byte(0..2)?, byte(2..4)?, byte(4..6)?, 255),
+            8 => (byte(0..2)?, byte(2..4)?, byte(4..6)?, byte(6..8)?),
+            _ => return None,
+        };
+
+        Some(Self([
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            f32::from(a) / 255.0,
+        ]))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Color {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_hex(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid color {s:?}: expected \"#rrggbb\" or \"#rrggbbaa\""
+            ))
+        })
+    }
 }
 
 /// Workspaces configuration section.
@@ -217,6 +305,7 @@ impl Config {
         Self {
             workspaces: WorkspaceConfig::default(),
             keybinds: Self::default_keybinds(),
+            decorations: DecorationTheme::default(),
         }
     }
 
@@ -289,9 +378,15 @@ impl Config {
     }
 
     /// Applies configuration to `GlideState`.
+    ///
+    /// Note: a changed `[decorations]` height only takes effect for windows
+    /// mapped *after* this call (e.g. via `glidectl reload`) — insets on
+    /// already-open windows are set once at creation and are not currently
+    /// live-updated. Colors, being read at render time, do apply instantly.
     pub fn apply_to_state(&self, state: &mut GlideState) {
         state.layout.set_policy(self.workspaces.new_window.into());
         state.keybinds = self.resolve_keybinds();
+        state.decoration_theme = self.decorations.clone();
         tracing::info!(
             policy = ?self.workspaces.new_window,
             keybind_count = state.keybinds.len(),
@@ -419,6 +514,62 @@ action = "quit"
             .expect_err("a misspelled section must not parse");
 
         assert!(err.to_string().contains("workspacs"), "{err}");
+    }
+
+    // These compare exact values from an 8-bit-to-f32 conversion (0/255 and
+    // 255/255 both land on exact floats, no accumulated rounding), so exact
+    // equality is correct here — see input.rs's clamp_to_outputs tests for
+    // the same reasoning applied to clamp() output.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn color_parses_rrggbb_as_opaque() {
+        let c = Color::from_hex("#ff0000").unwrap();
+        assert_eq!(c.0, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn color_parses_rrggbbaa() {
+        let c = Color::from_hex("#00ff0080").unwrap();
+        assert_eq!(c.0[1], 1.0);
+        assert!((c.0[3] - 0.502).abs() < 0.01);
+    }
+
+    #[test]
+    fn color_rejects_malformed_hex() {
+        assert!(Color::from_hex("ff0000").is_none(), "missing #");
+        assert!(Color::from_hex("#ff00").is_none(), "wrong length");
+        assert!(Color::from_hex("#gggggg").is_none(), "not hex digits");
+    }
+
+    #[test]
+    fn decoration_theme_parses_from_toml() {
+        let toml_str = "\
+[decorations]
+height = 40
+background = \"#111111\"
+background-focused = \"#222222\"
+close-button = \"#333333\"
+close-button-hover = \"#444444\"
+maximize-button = \"#555555\"
+maximize-button-hover = \"#666666\"
+chevron-button = \"#777777\"
+chevron-button-hover = \"#888888\"
+menu-background = \"#999999\"
+menu-item-hover = \"#aaaaaa\"
+";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.decorations.height, 40);
+        assert_eq!(
+            config.decorations.background,
+            Color::from_hex("#111111").unwrap()
+        );
+    }
+
+    #[test]
+    fn decoration_theme_rejects_invalid_color() {
+        toml::from_str::<Config>("[decorations]\nbackground = \"not-a-color\"\n")
+            .expect_err("a malformed color must not silently become black or default");
     }
 
     #[test]

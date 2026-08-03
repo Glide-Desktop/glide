@@ -224,8 +224,14 @@ fn check_grab(
     let start_data = pointer.grab_start_data()?;
 
     let (focus, _) = start_data.focus.as_ref()?;
+    // A decoration has no client surface at all, so it can never be *this*
+    // client's own `xdg_toplevel.move`/resize request — those only ever
+    // originate from a real surface. (A titlebar drag is a wholly separate
+    // path: see `crate::decoration::start_move`, which bypasses
+    // `move_request`/`check_grab` entirely.)
+    let focus_surface = focus.as_surface()?;
     // If the focus was for a different surface, ignore the request.
-    if !focus.id().same_client_as(&surface.id()) {
+    if !focus_surface.id().same_client_as(&surface.id()) {
         return None;
     }
 

@@ -27,8 +27,20 @@
 #     workspace, so the first window disappears from view. Super+1 / Super+2
 #     switch between them; Super+Tab cycles. Super+Shift+2 moves the focused
 #     window to workspace 2.
-#   - drag a window by its titlebar, then press Super+1 and come back — the
-#     window must still be where you dropped it, not re-centred
+#   - every window should now have a titlebar: a plain strip with a small
+#     square on the far LEFT (maximize) and far RIGHT (close), and a second
+#     small square immediately right of the maximize square (the chevron)
+#   - drag a window by the *plain* part of its titlebar (not on any of the
+#     three squares), then press Super+1 and come back — the window must
+#     still be where you dropped it, not re-centred. This is the first time
+#     this is actually testable with alacritty: it draws no titlebar of its
+#     own, so before M4.3 there was nothing to drag by at all
+#   - click the LEFT square: toggles maximize (same effect as Super+F)
+#   - click the RIGHT square: closes the window
+#   - click the chevron (second-from-left square): a small dropdown appears
+#     below it with one entry, "Minimize" — clicking it minimizes the window
+#     exactly like Super+M; clicking anywhere else while it's open just
+#     closes the dropdown without doing anything
 #   - click between two windows on one workspace, then Super+F: the maximize
 #     must apply to the window you last clicked
 #   - Super+M minimizes the focused window; it must disappear and focus must
@@ -37,11 +49,10 @@
 #     `glidectl window focus <id>` on that id must bring it back
 #   - IPC: from another VT or via `glidectl`, run `glidectl ping`,
 #     `glidectl workspace list`, `glidectl window list`
-#   - M4.1/M4.2 note: windows are now routed through a GlideWindow wrapper,
-#     and Space positions a window's content area rather than its frame
-#     directly. Both should be invisible right now (no decoration exists yet
-#     to give a window non-zero insets) — if mapping, stacking, moving,
-#     resizing or closing regressed, it broke here.
+#   - M4.1/M4.2 note: windows are routed through a GlideWindow wrapper, and
+#     Space positions a window's content area rather than its frame
+#     directly — if mapping, stacking, moving, resizing or closing
+#     regressed even where a titlebar isn't directly involved, it broke here
 #   - IPC must never hang the compositor: `nc -U "$GLIDE_IPC_SOCK"` and then
 #     just sitting there must NOT freeze the screen (this used to wedge the
 #     whole session)

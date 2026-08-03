@@ -21,7 +21,7 @@ use smithay::{
     wayland::{compositor, shell::xdg::SurfaceCachedState},
 };
 
-use crate::{GlideState, state::window_surface, window::GlideWindow};
+use crate::{GlideState, focus::PointerFocusTarget, state::window_surface, window::GlideWindow};
 
 // The button code as defined in the Linux kernel's
 // linux/input-event-codes.h header file, e.g. BTN_LEFT.
@@ -96,7 +96,7 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
         &mut self,
         data: &mut GlideState,
         handle: &mut PointerInnerHandle<'_, GlideState>,
-        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
         // While the grab is active, no client has pointer focus
@@ -174,7 +174,7 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
         &mut self,
         data: &mut GlideState,
         handle: &mut PointerInnerHandle<'_, GlideState>,
-        focus: Option<(WlSurface, Point<f64, Logical>)>,
+        focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &RelativeMotionEvent,
     ) {
         handle.relative_motion(data, focus, event);

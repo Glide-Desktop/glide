@@ -10,11 +10,10 @@ use smithay::{
         GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData,
         MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point},
 };
 
-use crate::{GlideState, window::GlideWindow};
+use crate::{GlideState, focus::PointerFocusTarget, window::GlideWindow};
 
 // The button code as defined in the Linux kernel's
 // linux/input-event-codes.h header file, e.g. BTN_LEFT.
@@ -31,7 +30,7 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         &mut self,
         data: &mut GlideState,
         handle: &mut PointerInnerHandle<'_, GlideState>,
-        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
         // While the grab is active, no client has pointer focus
@@ -54,7 +53,7 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         &mut self,
         data: &mut GlideState,
         handle: &mut PointerInnerHandle<'_, GlideState>,
-        focus: Option<(WlSurface, Point<f64, Logical>)>,
+        focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &RelativeMotionEvent,
     ) {
         handle.relative_motion(data, focus, event);

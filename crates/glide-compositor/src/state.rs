@@ -71,6 +71,9 @@ pub struct GlideState {
     /// the layout treat one monitor as an endless series of new ones.
     pub output_ids: HashMap<Output, glide_layout::OutputId>,
     pub keybinds: Vec<crate::input::ResolvedKeybind>,
+    /// Current decoration colors/height, applied to every window mapped
+    /// after a config (re)load. See [`crate::config::Config::apply_to_state`].
+    pub decoration_theme: crate::config::DecorationTheme,
 
     /// What the pointer cursor should currently look like. Clients set this
     /// via `wl_pointer.set_cursor` when the pointer is over them; otherwise
@@ -184,6 +187,7 @@ impl GlideState {
             window_to_id: HashMap::new(),
             output_ids: HashMap::new(),
             keybinds: Vec::new(),
+            decoration_theme: crate::config::DecorationTheme::default(),
             cursor_status: CursorImageStatus::default_named(),
             suppressed_keys: Vec::new(),
         }
@@ -275,14 +279,21 @@ impl GlideState {
                 continue;
             };
 
+            let is_focused = focused == Some(state.id);
+
             // Space positions the client's own surface, which is the
-            // *content* area — decorations (M4.3+) are drawn by us, offset
-            // from this by the window's insets, not part of what Space or
-            // the client itself ever sees as its location.
+            // *content* area — decorations are drawn by us, offset from
+            // this by the window's insets, not part of what Space or the
+            // client itself ever sees as its location.
             let content = state.content_geometry();
             let location = Point::from((content.loc.x, content.loc.y));
             self.space.map_element(window.clone(), location, false);
-            Self::apply_window_state(&window, state, focused == Some(state.id));
+            Self::apply_window_state(&window, state, is_focused);
+
+            // Keeps titlebar colors and height in sync with config reloads
+            // and focus changes — see `GlideWindow::sync_decoration`'s docs
+            // for why this has to happen here rather than at render time.
+            window.sync_decoration(&self.decoration_theme, state.insets.top, is_focused);
         }
 
         self.apply_keyboard_focus();
@@ -356,6 +367,21 @@ impl GlideState {
         } else {
             self.layout.add_window(id, size);
         }
+
+        // Every window is decorated for now (respecting a client's own
+        // xdg-decoration preference is M4.5). Set before the first real size
+        // arrives — see `set_window_insets`'s docs — so the very first
+        // placement already leaves room for the titlebar.
+        let height = i32::try_from(self.decoration_theme.height).unwrap_or(i32::MAX);
+        self.layout.set_window_insets(
+            id,
+            glide_layout::Insets {
+                top: height,
+                left: 0,
+                right: 0,
+                bottom: 0,
+            },
+        );
 
         self.window_map.insert(id, window.clone());
         self.window_to_id.insert(window, id);
@@ -521,17 +547,43 @@ impl GlideState {
         self.reconcile_space();
     }
 
+    /// Finds what the pointer is over at `pos`: a client surface, a window's
+    /// titlebar, or nothing.
+    ///
+    /// Returns the target together with *its own* absolute origin — not the
+    /// window's — since Smithay computes the location handed to the
+    /// target's `enter`/`motion` by subtracting exactly this from the
+    /// pointer's own position (see `PointerInternal::motion`). For a
+    /// titlebar hit that means the titlebar's own top-left, which sits
+    /// `header_height` above the window's content origin — see the
+    /// coordinate convention documented on [`crate::window`].
     #[must_use]
     pub fn surface_under(
         &self,
         pos: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space
-            .element_under(pos)
-            .and_then(|(window, location)| {
-                window
-                    .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(s, p)| (s, (p + location).to_f64()))
+    ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
+        let (window, location) = self.space.element_under(pos)?;
+        let content_origin = location.to_f64();
+
+        let header_height = f64::from(window.decoration_state().header.height());
+        if header_height > 0.0 {
+            let relative_y = pos.y - content_origin.y;
+            if relative_y < 0.0 && relative_y >= -header_height {
+                let decoration_origin = content_origin - Point::from((0.0, header_height));
+                return Some((
+                    crate::focus::PointerFocusTarget::from(window.clone()),
+                    decoration_origin,
+                ));
+            }
+        }
+
+        window
+            .surface_under(pos - content_origin, WindowSurfaceType::ALL)
+            .map(|(s, p)| {
+                (
+                    crate::focus::PointerFocusTarget::from(s),
+                    p.to_f64() + content_origin,
+                )
             })
     }
 }

@@ -50,9 +50,7 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             ImportDma,
-            element::{
-                AsRenderElements, memory::MemoryRenderBuffer, surface::WaylandSurfaceRenderElement,
-            },
+            element::{AsRenderElements, memory::MemoryRenderBuffer},
             gles::GlesRenderer,
         },
         session::{
@@ -89,7 +87,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use crate::{
     GlideState,
     cursor::{Cursor, PointerElement, PointerRenderElement},
-    window::GlideWindow,
+    window::{GlideWindow, GlideWindowRenderElement},
 };
 
 /// #295396, chosen specifically to be unmistakable from the frozen text
@@ -124,7 +122,7 @@ render_elements! {
     /// `ImportMemWl + ImportDmaWl` at every nested use and fails. With one
     /// renderer there is nothing to generalise over anyway.
     pub GlideRenderElements<=GlesRenderer>;
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    Space=SpaceRenderElements<GlesRenderer, GlideWindowRenderElement<GlesRenderer>>,
     Pointer=PointerRenderElement<GlesRenderer>,
 }
 

@@ -13,7 +13,7 @@ use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
 };
 
-use crate::GlideState;
+use crate::{GlideState, focus::PointerFocusTarget};
 
 //
 // Wl Seat
@@ -21,7 +21,10 @@ use crate::GlideState;
 
 impl SeatHandler for GlideState {
     type KeyboardFocus = WlSurface;
-    type PointerFocus = WlSurface;
+    // Titlebars are compositor-drawn, not `WlSurface`s, and still need to
+    // receive enter/motion/button like any other pointer target — see
+    // `crate::focus` for why this is an enum rather than a bare surface.
+    type PointerFocus = PointerFocusTarget;
     type TouchFocus = WlSurface;
 
     fn seat_state(&mut self) -> &mut SeatState<GlideState> {
