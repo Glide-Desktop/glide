@@ -25,6 +25,9 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
+        fractional_scale::{
+            FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
+        },
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::kde::decoration::KdeDecorationState,
@@ -72,6 +75,15 @@ pub struct GlideState {
     pub kde_decoration_state: KdeDecorationState,
     /// `wlr-layer-shell`: panels, launchers, wallpapers, notifications.
     pub layer_shell_state: WlrLayerShellState,
+    /// `fractional-scale-v1`: lets clients render at non-integer scales.
+    /// Glide reports 1.0 for now (nothing sets another output scale yet),
+    /// but advertising the protocol keeps scale-aware clients on their
+    /// crisp path once that changes.
+    pub fractional_scale_state: FractionalScaleManagerState,
+    /// `viewporter`: lets clients crop/scale their own buffers. Fully
+    /// handled inside Smithay's renderer — no compositor code beyond the
+    /// global.
+    pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<GlideState>,
@@ -162,6 +174,8 @@ impl GlideState {
                 ::org_kde_kwin_server_decoration_manager::Mode::Server,
         );
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
+        let viewporter_state = smithay::wayland::viewporter::ViewporterState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
 
@@ -214,6 +228,8 @@ impl GlideState {
             xdg_decoration_state,
             kde_decoration_state,
             layer_shell_state,
+            fractional_scale_state,
+            viewporter_state,
             shm_state,
             output_manager_state,
             seat_state,
@@ -853,4 +869,29 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+impl FractionalScaleHandler for GlideState {
+    /// Tell every surface that asks the scale of the output it will show on.
+    ///
+    /// Single-output and integer-scale-1 today, so this is constant — but
+    /// answering (rather than leaving the default silence) is what commits
+    /// clients to the fractional-scale path, so they react correctly the
+    /// day an output reports something else.
+    fn new_fractional_scale(
+        &mut self,
+        surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) {
+        let scale = self
+            .space
+            .outputs()
+            .next()
+            .map_or(1.0, |output| output.current_scale().fractional_scale());
+
+        smithay::wayland::compositor::with_states(&surface, |states| {
+            with_fractional_scale(states, |fractional| {
+                fractional.set_preferred_scale(scale);
+            });
+        });
+    }
 }
