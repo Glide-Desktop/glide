@@ -7,37 +7,85 @@ use smithay::{
         keyboard::{FilterResult, Keysym, ModifiersState, keysyms, xkb},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
 };
 
-use crate::state::{GlideState, window_surface};
+use crate::state::GlideState;
 
 /// Outcome of a key press that was intercepted by the compositor instead of
 /// being forwarded to the focused client.
-#[derive(Debug, PartialEq, Eq)]
-enum KeyAction {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyAction {
     /// Quit the compositor (Super+Q).
     Quit,
     /// Switch to a different virtual terminal (Ctrl+Alt+F1..F12).
     VtSwitch(i32),
+    /// Switch active workspace by 0-based index (Super+1..9).
+    SwitchWorkspace(usize),
+    /// Move currently focused window to workspace by 0-based index (Super+Shift+1..9).
+    MoveWindowToWorkspace(usize),
+    /// Switch to next workspace (Super+Tab).
+    NextWorkspace,
+    /// Switch to previous workspace (Super+Shift+Tab).
+    PrevWorkspace,
+    /// Toggle maximize for focused window.
+    Maximize,
+    /// Toggle fullscreen for focused window.
+    Fullscreen,
+    /// Execute arbitrary shell command.
+    Exec(String),
     /// The key was intercepted (e.g. a suppressed release) but has no effect.
     None,
 }
 
+/// Resolved keybinding rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedKeybind {
+    pub modifiers: ModifiersState,
+    pub keysym: Keysym,
+    pub action: KeyAction,
+}
+
 /// Checks whether a pressed key (with its current modifier state) matches a
 /// compositor-level keybinding.
-fn process_keyboard_shortcut(modifiers: &ModifiersState, keysym: Keysym) -> Option<KeyAction> {
-    if modifiers.logo && keysym == Keysym::q {
-        Some(KeyAction::Quit)
-    } else if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&keysym.raw())
-    {
-        Some(KeyAction::VtSwitch(
-            (keysym.raw() - keysyms::KEY_XF86Switch_VT_1 + 1).cast_signed(),
-        ))
-    } else {
-        None
+/// Both the raw and the modified keysym are considered, because they differ
+/// exactly when a modifier is part of the binding: `Shift+Tab` arrives as
+/// `ISO_Left_Tab`, and `Shift+1` as `exclam`, so a binding written the
+/// obvious way (`Tab`, `1`) would never match on the modified symbol alone.
+///
+/// Takes slices rather than an owned `Vec` on purpose: this runs on every
+/// single key event, and there is nothing here worth allocating for.
+fn process_keyboard_shortcut(
+    keybinds: &[ResolvedKeybind],
+    modifiers: &ModifiersState,
+    raw_syms: &[Keysym],
+    modified_sym: Keysym,
+) -> Option<KeyAction> {
+    let matches_key =
+        |entry: &ResolvedKeybind| entry.keysym == modified_sym || raw_syms.contains(&entry.keysym);
+
+    // Modifiers must match exactly, so Super+Shift+1 does not also fire a
+    // plain Super+1 binding.
+    let binding = keybinds.iter().find(|entry| {
+        entry.modifiers.logo == modifiers.logo
+            && entry.modifiers.shift == modifiers.shift
+            && entry.modifiers.ctrl == modifiers.ctrl
+            && entry.modifiers.alt == modifiers.alt
+            && matches_key(entry)
+    });
+
+    if let Some(entry) = binding {
+        return Some(entry.action.clone());
     }
+
+    // VT switching is not configurable: it is the only way off the tty, so
+    // it must keep working even with an empty or broken keybind config.
+    raw_syms
+        .iter()
+        .chain(std::iter::once(&modified_sym))
+        .map(|sym| sym.raw())
+        .find(|raw| (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(raw))
+        .map(|raw| KeyAction::VtSwitch((raw - keysyms::KEY_XF86Switch_VT_1 + 1).cast_signed()))
 }
 
 /// Clamps `pos` so it stays within the union of `outputs` (outputs are
@@ -104,6 +152,11 @@ impl GlideState {
         // clone here would just be an allocation this function
         // immediately throws away in favour of its own copy.
         let mut suppressed_keys = std::mem::take(&mut self.suppressed_keys);
+        // Taken for the same reason: `keyboard.input` borrows `self` for the
+        // duration of the callback, so the bindings cannot be read from
+        // `self` inside it. Taking beats cloning — this is the hottest path
+        // in the compositor, and the bindings contain owned `String`s.
+        let keybinds = std::mem::take(&mut self.keybinds);
 
         let keyboard = self
             .seat
@@ -131,7 +184,8 @@ impl GlideState {
                 // previously suppressed, so the client never sees a
                 // release without the matching press (a "stuck key").
                 if let KeyState::Pressed = key_state {
-                    let action = process_keyboard_shortcut(modifiers, keysym);
+                    let action =
+                        process_keyboard_shortcut(&keybinds, modifiers, &handle.raw_syms(), keysym);
                     if action.is_some() {
                         suppressed_keys.push(keycode);
                     }
@@ -146,10 +200,59 @@ impl GlideState {
         );
 
         self.suppressed_keys = suppressed_keys;
+        self.keybinds = keybinds;
 
         match action {
             Some(KeyAction::Quit) => self.loop_signal.stop(),
             Some(KeyAction::VtSwitch(vt)) => self.backend_data.change_vt(vt),
+            Some(KeyAction::SwitchWorkspace(idx)) => {
+                tracing::info!(workspace_index = idx, "switching workspace");
+                self.layout
+                    .switch_to_workspace(glide_layout::WorkspaceTarget::Index(idx));
+                self.reconcile_space();
+            }
+            Some(KeyAction::MoveWindowToWorkspace(idx)) => {
+                if let Some(focused) = self.layout.focused_window() {
+                    tracing::info!(focused = ?focused, workspace_index = idx, "moving window to workspace");
+                    self.layout.move_window_to_workspace(
+                        focused,
+                        glide_layout::WorkspaceTarget::Index(idx),
+                    );
+                    self.reconcile_space();
+                }
+            }
+            Some(KeyAction::NextWorkspace) => {
+                tracing::info!("switching to next workspace");
+                self.layout
+                    .switch_to_workspace(glide_layout::WorkspaceTarget::Next);
+                self.reconcile_space();
+            }
+            Some(KeyAction::PrevWorkspace) => {
+                tracing::info!("switching to prev workspace");
+                self.layout
+                    .switch_to_workspace(glide_layout::WorkspaceTarget::Previous);
+                self.reconcile_space();
+            }
+            Some(KeyAction::Maximize) => {
+                if let Some(focused) = self.layout.focused_window() {
+                    tracing::info!(focused = ?focused, "toggling maximize");
+                    self.layout.toggle_maximized(focused);
+                    self.reconcile_space();
+                }
+            }
+            Some(KeyAction::Fullscreen) => {
+                if let Some(focused) = self.layout.focused_window() {
+                    tracing::info!(focused = ?focused, "toggling fullscreen");
+                    self.layout.toggle_fullscreen(focused);
+                    self.reconcile_space();
+                }
+            }
+            Some(KeyAction::Exec(cmd)) => {
+                tracing::info!(command = %cmd, "executing keybind command");
+                if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
+                    tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
+                }
+            }
             Some(KeyAction::None) | None => {}
         }
     }
@@ -231,11 +334,6 @@ impl GlideState {
             .seat
             .get_pointer()
             .expect("a pointer was added in GlideState::new");
-        let keyboard = self
-            .seat
-            .get_keyboard()
-            .expect("a keyboard was added in GlideState::new");
-
         let serial = SERIAL_COUNTER.next_serial();
 
         let button = event.button_code();
@@ -243,32 +341,21 @@ impl GlideState {
         let button_state = event.state();
 
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
-            if let Some((window, _loc)) = self
+            let clicked = self
                 .space
                 .element_under(pointer.current_location())
-                .map(|(w, l)| (w.clone(), l))
-            {
-                self.space.raise_element(&window, true);
-                keyboard.set_focus(self, Some(window_surface(&window).clone()), serial);
-                self.space.elements().for_each(|window| {
-                    window
-                        .toplevel()
-                        .expect(
-                            "only Window::new_wayland_window is used, so toplevel() is always Some",
-                        )
-                        .send_pending_configure();
-                });
+                .map(|(window, _)| window.clone());
+
+            // Focus goes through the layout engine, never straight to the
+            // keyboard: the layout owns which window is active, and setting
+            // keyboard focus behind its back would leave keybindings acting
+            // on whatever was focused before the click.
+            // Activation state is applied by `reconcile_space` from the
+            // layout's focus, so there is nothing to toggle by hand here.
+            if let Some(id) = clicked.as_ref().and_then(|window| self.window_id(window)) {
+                self.focus_window(id);
             } else {
-                self.space.elements().for_each(|window| {
-                    window.set_activated(false);
-                    window
-                        .toplevel()
-                        .expect(
-                            "only Window::new_wayland_window is used, so toplevel() is always Some",
-                        )
-                        .send_pending_configure();
-                });
-                keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+                self.clear_focus();
             }
         }
 
@@ -444,46 +531,134 @@ mod tests {
     mod process_keyboard_shortcut {
         use super::*;
 
+        fn default_binds() -> Vec<ResolvedKeybind> {
+            crate::config::Config::with_defaults().resolve_keybinds()
+        }
+
         #[test]
         fn super_q_quits() {
+            let binds = default_binds();
             let mut modifiers = no_modifiers();
             modifiers.logo = true;
 
-            let action = process_keyboard_shortcut(&modifiers, Keysym::q);
+            let action = process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::q);
 
             assert_eq!(action, Some(KeyAction::Quit));
         }
 
         #[test]
         fn q_alone_without_super_does_not_quit() {
-            let action = process_keyboard_shortcut(&no_modifiers(), Keysym::q);
+            let binds = default_binds();
+            let action = process_keyboard_shortcut(&binds, &no_modifiers(), &[], Keysym::q);
 
             assert_eq!(action, None);
         }
 
         #[test]
         fn xf86_switch_vt_2_switches_to_vt_2() {
+            let binds = default_binds();
             let keysym = Keysym::from(keysyms::KEY_XF86Switch_VT_2);
 
-            let action = process_keyboard_shortcut(&no_modifiers(), keysym);
+            let action = process_keyboard_shortcut(&binds, &no_modifiers(), &[], keysym);
 
             assert_eq!(action, Some(KeyAction::VtSwitch(2)));
         }
 
         #[test]
         fn xf86_switch_vt_12_switches_to_vt_12() {
+            let binds = default_binds();
             let keysym = Keysym::from(keysyms::KEY_XF86Switch_VT_12);
 
-            let action = process_keyboard_shortcut(&no_modifiers(), keysym);
+            let action = process_keyboard_shortcut(&binds, &no_modifiers(), &[], keysym);
 
             assert_eq!(action, Some(KeyAction::VtSwitch(12)));
         }
 
         #[test]
         fn unrelated_key_has_no_shortcut() {
-            let action = process_keyboard_shortcut(&no_modifiers(), Keysym::a);
+            let binds = default_binds();
+            let action = process_keyboard_shortcut(&binds, &no_modifiers(), &[], Keysym::a);
 
             assert_eq!(action, None);
+        }
+
+        #[test]
+        fn super_digits_switches_workspace() {
+            let binds = default_binds();
+            let mut modifiers = no_modifiers();
+            modifiers.logo = true;
+
+            let action =
+                process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::from(keysyms::KEY_1));
+            assert_eq!(action, Some(KeyAction::SwitchWorkspace(0)));
+
+            let action =
+                process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::from(keysyms::KEY_9));
+            assert_eq!(action, Some(KeyAction::SwitchWorkspace(8)));
+        }
+
+        #[test]
+        fn super_shift_digits_moves_window_to_workspace() {
+            let binds = default_binds();
+            let mut modifiers = no_modifiers();
+            modifiers.logo = true;
+            modifiers.shift = true;
+
+            let action =
+                process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::from(keysyms::KEY_3));
+            assert_eq!(action, Some(KeyAction::MoveWindowToWorkspace(2)));
+        }
+
+        #[test]
+        fn shifted_keys_match_on_the_raw_keysym() {
+            // With Shift held, xkb reports the *shifted* symbol: `3` arrives
+            // as `numbersign`, `Tab` as `ISO_Left_Tab`. Bindings are written
+            // against the unshifted key, so matching must consider raw syms
+            // too or every Super+Shift+N binding silently stops working.
+            let binds = default_binds();
+            let mut modifiers = no_modifiers();
+            modifiers.logo = true;
+            modifiers.shift = true;
+
+            let action = process_keyboard_shortcut(
+                &binds,
+                &modifiers,
+                &[Keysym::from(keysyms::KEY_3)],
+                Keysym::numbersign,
+            );
+            assert_eq!(action, Some(KeyAction::MoveWindowToWorkspace(2)));
+
+            let action =
+                process_keyboard_shortcut(&binds, &modifiers, &[Keysym::Tab], Keysym::ISO_Left_Tab);
+            assert_eq!(action, Some(KeyAction::PrevWorkspace));
+        }
+
+        #[test]
+        fn vt_switch_works_even_with_no_keybinds_configured() {
+            // VT switching is the only way off the tty, so it must not depend
+            // on the user's config being valid.
+            let action = process_keyboard_shortcut(
+                &[],
+                &no_modifiers(),
+                &[],
+                Keysym::from(keysyms::KEY_XF86Switch_VT_3),
+            );
+
+            assert_eq!(action, Some(KeyAction::VtSwitch(3)));
+        }
+
+        #[test]
+        fn super_tab_switches_to_next_or_prev_workspace() {
+            let binds = default_binds();
+            let mut modifiers = no_modifiers();
+            modifiers.logo = true;
+
+            let action = process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::Tab);
+            assert_eq!(action, Some(KeyAction::NextWorkspace));
+
+            modifiers.shift = true;
+            let action = process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::Tab);
+            assert_eq!(action, Some(KeyAction::PrevWorkspace));
         }
     }
 }

@@ -1,4 +1,8 @@
-use std::{ffi::OsString, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+    sync::Arc,
+};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
@@ -7,8 +11,10 @@ use smithay::{
         keyboard::{Keycode, XkbConfig},
         pointer::CursorImageStatus,
     },
+    output::Output,
     reexports::{
         calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
+        wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState,
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -20,7 +26,7 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::xdg::{ToplevelState, XdgShellState, dialog::XdgDialogState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -44,6 +50,9 @@ pub struct GlideState {
     // Smithay State
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// `xdg-dialog-v1`: lets clients mark a toplevel as a (modal) dialog, so
+    /// it can be kept with its parent instead of exiled to a new workspace.
+    pub xdg_dialog_state: XdgDialogState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<GlideState>,
@@ -51,6 +60,17 @@ pub struct GlideState {
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
+
+    pub layout: glide_layout::Layout,
+    pub window_map: HashMap<glide_layout::WindowId, Window>,
+    pub window_to_id: HashMap<Window, glide_layout::WindowId>,
+    /// Stable layout ids for outputs.
+    ///
+    /// Allocated once per physical output and reused, so an output keeps its
+    /// identity across rescans. Minting a fresh id on every sync would make
+    /// the layout treat one monitor as an endless series of new ones.
+    pub output_ids: HashMap<Output, glide_layout::OutputId>,
+    pub keybinds: Vec<crate::input::ResolvedKeybind>,
 
     /// What the pointer cursor should currently look like. Clients set this
     /// via `wl_pointer.set_cursor` when the pointer is over them; otherwise
@@ -104,6 +124,7 @@ impl GlideState {
         // Initialize protocols needed for displaying windows
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_dialog_state = XdgDialogState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
 
@@ -151,12 +172,18 @@ impl GlideState {
 
             compositor_state,
             xdg_shell_state,
+            xdg_dialog_state,
             shm_state,
             output_manager_state,
             seat_state,
             data_device_state,
             popups,
             seat,
+            layout: glide_layout::Layout::new(),
+            window_map: HashMap::new(),
+            window_to_id: HashMap::new(),
+            output_ids: HashMap::new(),
+            keybinds: Vec::new(),
             cursor_status: CursorImageStatus::default_named(),
             suppressed_keys: Vec::new(),
         }
@@ -208,6 +235,255 @@ impl GlideState {
         socket_name
     }
 
+    /// Makes Smithay's [`Space`] match what [`glide_layout::Layout`] says
+    /// should be on screen.
+    ///
+    /// The layout engine is the single source of truth; this walks its
+    /// decisions and applies them. It is deliberately idempotent, so callers
+    /// can just run it after any state change without tracking deltas.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no keyboard was added to the seat; `GlideState::new` always
+    /// adds one, so in practice this never fires.
+    pub fn reconcile_space(&mut self) {
+        // Windows on the active workspace, bottom-to-top. The order matters:
+        // `map_element` re-stacks, so applying them in this sequence is what
+        // gives the workspace its Z-order.
+        let visible: Vec<glide_layout::WindowState> =
+            self.layout.visible_windows().cloned().collect();
+        let visible_ids: HashSet<glide_layout::WindowId> =
+            visible.iter().map(|state| state.id).collect();
+
+        // Drop anything the layout no longer shows. Unmapping (rather than
+        // moving off-screen) makes Smithay send `wl_surface.leave`, which is
+        // what stops a client on a hidden workspace from rendering.
+        let mapped: Vec<Window> = self.space.elements().cloned().collect();
+        for window in mapped {
+            let hidden = self
+                .window_to_id
+                .get(&window)
+                .is_none_or(|id| !visible_ids.contains(id));
+            if hidden {
+                self.space.unmap_elem(&window);
+            }
+        }
+
+        let focused = self.layout.focused_window();
+        for state in &visible {
+            let Some(window) = self.window_map.get(&state.id).cloned() else {
+                continue;
+            };
+
+            let location = Point::from((state.geometry.loc.x, state.geometry.loc.y));
+            self.space.map_element(window.clone(), location, false);
+            Self::apply_window_state(&window, state, focused == Some(state.id));
+        }
+
+        self.apply_keyboard_focus();
+    }
+
+    /// Pushes activation and maximized/fullscreen state (and, only for those,
+    /// an explicit size) to the client.
+    ///
+    /// A plain floating window is deliberately left to size itself: Glide
+    /// positions windows but does not dictate their dimensions, so sending a
+    /// size here would both override the client's own choice and fight any
+    /// resize it initiates. Maximized and fullscreen are the exceptions,
+    /// because there the compositor genuinely is choosing the geometry.
+    fn apply_window_state(window: &Window, state: &glide_layout::WindowState, focused: bool) {
+        let toplevel = window
+            .toplevel()
+            .expect("only Window::new_wayland_window is used, so toplevel() is always Some");
+
+        let mut changed = false;
+        toplevel.with_pending_state(|pending| {
+            // Drives the client's own focused styling (active title bar,
+            // visible text cursor). Derived from the layout's focus so there
+            // is exactly one answer to "which window is active".
+            changed |= set_state_flag(pending, XdgState::Activated, focused);
+            changed |= set_state_flag(pending, XdgState::Maximized, state.maximized);
+            changed |= set_state_flag(pending, XdgState::Fullscreen, state.fullscreen);
+
+            let size = (state.maximized || state.fullscreen).then(|| {
+                smithay::utils::Size::from((state.geometry.size.width, state.geometry.size.height))
+            });
+            if pending.size != size {
+                pending.size = size;
+                changed = true;
+            }
+        });
+
+        if changed {
+            toplevel.send_pending_configure();
+        }
+    }
+
+    /// Points the keyboard at whatever the layout says is focused.
+    fn apply_keyboard_focus(&mut self) {
+        let target = self
+            .layout
+            .focused_window()
+            .and_then(|id| self.window_map.get(&id))
+            .map(|window| window_surface(window).clone());
+
+        // Smithay no-ops when the focus is unchanged, so calling this on every
+        // reconcile does not spam clients with enter/leave pairs.
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let keyboard = self
+            .seat
+            .get_keyboard()
+            .expect("a keyboard was added in GlideState::new");
+        keyboard.set_focus(self, target, serial);
+    }
+
+    /// Registers a newly mapped toplevel with the layout engine.
+    ///
+    /// Returns the id the layout assigned to it.
+    pub fn track_window(&mut self, window: Window, parent: Option<glide_layout::WindowId>) {
+        let id = glide_layout::WindowId::next();
+        let size = layout_size(&window);
+
+        if let Some(parent) = parent {
+            self.layout.add_window_with_parent(id, size, parent);
+        } else {
+            self.layout.add_window(id, size);
+        }
+
+        self.window_map.insert(id, window.clone());
+        self.window_to_id.insert(window, id);
+        self.reconcile_space();
+    }
+
+    /// Removes a window from the layout and the scene.
+    ///
+    /// Driven by `toplevel_destroyed` rather than by scanning for dead
+    /// surfaces, so a closed window's workspace is torn down immediately
+    /// instead of lingering until something else happens to reconcile.
+    pub fn untrack_window(&mut self, surface: &WlSurface) {
+        let Some((&id, window)) = self
+            .window_map
+            .iter()
+            .find(|(_, window)| window_surface(window) == surface)
+        else {
+            return;
+        };
+
+        let window = window.clone();
+        self.space.unmap_elem(&window);
+        self.window_to_id.remove(&window);
+        self.window_map.remove(&id);
+        self.layout.remove_window(id);
+
+        self.reconcile_space();
+    }
+
+    /// Layout id for a mapped window, if it is tracked.
+    #[must_use]
+    pub fn window_id(&self, window: &Window) -> Option<glide_layout::WindowId> {
+        self.window_to_id.get(window).copied()
+    }
+
+    /// Layout id for the window backing `surface`, if any.
+    #[must_use]
+    pub fn window_id_for_surface(&self, surface: &WlSurface) -> Option<glide_layout::WindowId> {
+        self.window_map
+            .iter()
+            .find(|(_, window)| window_surface(window) == surface)
+            .map(|(&id, _)| id)
+    }
+
+    /// Focuses a window through the layout engine and applies the result.
+    ///
+    /// The only sanctioned way to change focus. Setting keyboard focus
+    /// directly would desync the layout, leaving keybindings acting on a
+    /// different window than the one the user sees as active.
+    pub fn focus_window(&mut self, id: glide_layout::WindowId) {
+        if self.layout.focus_window(id) {
+            self.reconcile_space();
+        }
+    }
+
+    /// Tells the layout engine which outputs currently exist.
+    ///
+    /// Must be called after any change to the set of mapped outputs — both
+    /// connect and disconnect — because the layout uses them to place windows
+    /// and to rescue ones that a departing monitor would otherwise strand
+    /// off-screen.
+    pub fn sync_layout_outputs(&mut self) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+
+        // Forget outputs that are gone, so their ids are not held forever.
+        self.output_ids.retain(|output, _| outputs.contains(output));
+
+        let infos: Vec<glide_layout::OutputInfo> = outputs
+            .into_iter()
+            .map(|output| {
+                let geometry = self.space.output_geometry(&output).unwrap_or_default();
+                let id = *self
+                    .output_ids
+                    .entry(output)
+                    .or_insert_with(glide_layout::OutputId::next);
+
+                glide_layout::OutputInfo {
+                    id,
+                    geometry: glide_layout::Rectangle::from_loc_and_size(
+                        geometry.loc.x,
+                        geometry.loc.y,
+                        geometry.size.w,
+                        geometry.size.h,
+                    ),
+                }
+            })
+            .collect();
+
+        tracing::info!(outputs = infos.len(), "layout outputs synchronized");
+        self.layout.outputs_changed(&infos);
+    }
+
+    /// Records an interactive move so the layout agrees with what is on screen.
+    ///
+    /// Interactive move and resize write straight into [`Space`] for latency
+    /// (a drag has to track the pointer frame by frame), so the layout has to
+    /// be told after the fact — otherwise the next reconcile would snap the
+    /// window back to its pre-drag position.
+    pub fn record_window_move(&mut self, window: &Window, location: Point<i32, Logical>) {
+        let Some(id) = self.window_id(window) else {
+            return;
+        };
+        let Some(mut geometry) = self.layout.window_state(id).map(|state| state.geometry) else {
+            return;
+        };
+
+        geometry.loc = glide_layout::Point::new(location.x, location.y);
+        self.layout.set_window_geometry(id, geometry);
+    }
+
+    /// Records an interactive resize. See [`Self::record_window_move`].
+    pub fn record_window_resize(&mut self, window: &Window) {
+        let Some(id) = self.window_id(window) else {
+            return;
+        };
+        let Some(location) = self.space.element_location(window) else {
+            return;
+        };
+
+        let size = layout_size(window);
+        self.layout.set_window_geometry(
+            id,
+            glide_layout::Rectangle::new(glide_layout::Point::new(location.x, location.y), size),
+        );
+    }
+
+    /// Clears focus (a click on the desktop background).
+    ///
+    /// Routed through the layout like every other focus change, so the
+    /// windows' `Activated` state is updated by the reconcile that follows.
+    pub fn clear_focus(&mut self) {
+        self.layout.clear_focus();
+        self.reconcile_space();
+    }
+
     #[must_use]
     pub fn surface_under(
         &self,
@@ -221,6 +497,34 @@ impl GlideState {
                     .map(|(s, p)| (s, (p + location).to_f64()))
             })
     }
+}
+
+/// Sets or clears one `xdg_toplevel` state flag, reporting whether it changed.
+///
+/// Returning "did anything change" is what lets the caller send a configure
+/// only when there is something to configure; a configure per reconcile would
+/// have clients re-rendering constantly.
+fn set_state_flag(pending: &mut ToplevelState, flag: XdgState, wanted: bool) -> bool {
+    if wanted == pending.states.contains(flag) {
+        return false;
+    }
+
+    if wanted {
+        pending.states.set(flag);
+    } else {
+        pending.states.unset(flag);
+    }
+    true
+}
+
+/// A window's current size in the layout engine's own units.
+///
+/// Zero until the client has attached a buffer, which is exactly what
+/// [`glide_layout::Layout`] uses to defer placement: a window cannot be
+/// centred before it has a size.
+pub(crate) fn layout_size(window: &Window) -> glide_layout::Size {
+    let size = window.geometry().size;
+    glide_layout::Size::new(size.w, size.h)
 }
 
 /// The `wl_surface` backing a [`Window`]'s toplevel.

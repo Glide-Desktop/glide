@@ -665,6 +665,12 @@ impl GlideState {
 
         self.space.unmap_output(&surface.output);
 
+        // The layout must hear about this before anything renders again:
+        // windows that were on the departing monitor are now outside every
+        // output, and would be unreachable if not pulled back into view.
+        self.sync_layout_outputs();
+        self.reconcile_space();
+
         let Some(global) = surface.global else {
             return;
         };
@@ -725,6 +731,8 @@ impl GlideState {
         output.set_preferred(wl_mode);
         output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
         self.space.map_output(&output, (0, 0));
+
+        self.sync_layout_outputs();
 
         let device = self
             .backend_data
@@ -879,7 +887,7 @@ impl GlideState {
                 // `flush_clients()` deliberately do *not* live here: they
                 // belong to servicing clients, not to rendering, and are
                 // driven once per event loop iteration in `main.rs`.
-                self.space.elements().for_each(|window| {
+                self.space.elements_for_output(&output).for_each(|window| {
                     window.send_frame(
                         &output,
                         self.start_time.elapsed(),

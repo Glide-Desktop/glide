@@ -46,8 +46,20 @@ impl CompositorHandler for GlideState {
             }
         }
 
-        xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        xdg_shell::handle_commit(self, surface);
+
+        // A resize changes both size and (for top/left edges) position in
+        // `Space` directly, so the layout has to be re-synced from the result
+        // or the next reconcile would undo the resize.
         resize_grab::handle_commit(&mut self.space, surface);
+        let resized = self
+            .space
+            .elements()
+            .find(|w| window_surface(w) == surface)
+            .cloned();
+        if let Some(window) = resized {
+            self.record_window_resize(&window);
+        }
     }
 }
 

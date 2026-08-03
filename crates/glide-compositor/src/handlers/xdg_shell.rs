@@ -1,7 +1,5 @@
 use smithay::{
-    desktop::{
-        PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
-    },
+    desktop::{PopupKind, Window, find_popup_root_surface, get_popup_toplevel_coords},
     input::{
         Seat,
         pointer::{Focus, GrabStartData as PointerGrabStartData},
@@ -10,7 +8,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
             Resource,
-            protocol::{wl_seat, wl_surface::WlSurface},
+            protocol::{wl_output::WlOutput, wl_seat, wl_surface::WlSurface},
         },
     },
     utils::{Rectangle, Serial},
@@ -19,6 +17,7 @@ use smithay::{
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
+            dialog::{ToplevelDialogHint, XdgDialogHandler},
         },
     },
 };
@@ -26,7 +25,7 @@ use smithay::{
 use crate::{
     GlideState,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
-    state::window_surface,
+    state::{layout_size, window_surface},
 };
 
 impl XdgShellHandler for GlideState {
@@ -36,8 +35,62 @@ impl XdgShellHandler for GlideState {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         tracing::info!("new toplevel");
-        let window = Window::new_wayland_window(surface);
-        self.space.map_element(window, (0, 0), false);
+        // Read the parent before the surface is moved into the window: a
+        // toplevel with a parent is a dialog, and must land on the parent's
+        // workspace rather than being exiled to a new one.
+        let parent = surface
+            .parent()
+            .and_then(|parent| self.window_id_for_surface(&parent));
+
+        self.track_window(Window::new_wayland_window(surface), parent);
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        tracing::info!("toplevel destroyed");
+        self.untrack_window(surface.wl_surface());
+    }
+
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        // A client may set (or clear) its parent after mapping, e.g. when a
+        // window is promoted to a dialog of another. Follow the parent so the
+        // pair does not end up split across workspaces.
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        let Some(parent) = surface
+            .parent()
+            .and_then(|parent| self.window_id_for_surface(&parent))
+        else {
+            return;
+        };
+        let Some(target) = self.layout.window_state(parent).map(|s| s.workspace_id) else {
+            return;
+        };
+
+        if self
+            .layout
+            .move_window_to_workspace(id, glide_layout::WorkspaceTarget::Id(target))
+        {
+            self.reconcile_space();
+        }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.set_toplevel_maximized(&surface, true);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.set_toplevel_maximized(&surface, false);
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
+        // The requested output is ignored: Glide is single-output for now, so
+        // there is only one screen a window can go fullscreen on.
+        self.set_toplevel_fullscreen(&surface, true);
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.set_toplevel_fullscreen(&surface, false);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -176,13 +229,15 @@ fn check_grab(
 }
 
 /// Should be called on `WlSurface::commit`
-pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: &WlSurface) {
-    // Handle toplevel commits.
-    if let Some(window) = space
-        .elements()
+pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
+    let window = state
+        .window_map
+        .values()
         .find(|w| window_surface(w) == surface)
-        .cloned()
-    {
+        .cloned();
+
+    // Handle toplevel commits.
+    if let Some(window) = window {
         let initial_configure_sent = with_states(surface, |states| {
             states
                 .data_map
@@ -199,9 +254,21 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
                 .expect("only Window::new_wayland_window is used, so toplevel() is always Some")
                 .send_configure();
         }
+
+        if let Some(id) = state.window_id(&window) {
+            // Only the commit that first gives the window a real size needs a
+            // reconcile: that is when the layout finally has something to
+            // centre. Reconciling on every commit would re-apply the stored
+            // geometry constantly, undoing interactive moves mid-drag.
+            let placed = state.layout.update_window_size(id, layout_size(&window));
+            if placed {
+                state.reconcile_space();
+            }
+        }
     }
 
     // Handle popup commits.
+    let popups = &mut state.popups;
     popups.commit(surface);
     if let Some(popup) = popups.find_popup(surface) {
         match popup {
@@ -217,7 +284,55 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     }
 }
 
+impl XdgDialogHandler for GlideState {
+    /// A toplevel was marked as a dialog (or modal dialog) after mapping.
+    ///
+    /// `set_parent` is the usual way a dialog is tied to its parent, and
+    /// `parent_changed` already handles that. This covers the case where the
+    /// hint arrives *after* the window was placed — the dialog may by then be
+    /// sitting on a workspace of its own, which for a modal is actively
+    /// harmful: the parent would be unusable while its dialog is elsewhere.
+    fn dialog_hint_changed(&mut self, toplevel: ToplevelSurface, hint: ToplevelDialogHint) {
+        tracing::info!(?hint, "toplevel dialog hint changed");
+
+        if !matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal) {
+            return;
+        }
+
+        self.parent_changed(toplevel);
+    }
+}
+
 impl GlideState {
+    /// Applies a client's own maximize/unmaximize request through the layout.
+    ///
+    /// Routed via `glide-layout` rather than poked straight into the toplevel
+    /// so that the saved pre-maximize geometry, and the compositor's idea of
+    /// where the window lives, stay in one place.
+    fn set_toplevel_maximized(&mut self, surface: &ToplevelSurface, maximized: bool) {
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        if self.layout.set_maximized(id, maximized) {
+            self.reconcile_space();
+        } else {
+            // Nothing changed, but the protocol still requires an answer to
+            // the request, otherwise the client waits forever.
+            surface.send_pending_configure();
+        }
+    }
+
+    fn set_toplevel_fullscreen(&mut self, surface: &ToplevelSurface, fullscreen: bool) {
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        if self.layout.set_fullscreen(id, fullscreen) {
+            self.reconcile_space();
+        } else {
+            surface.send_pending_configure();
+        }
+    }
+
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
@@ -226,22 +341,28 @@ impl GlideState {
             return;
         };
 
-        // No output is mapped before the first connector is set up in
-        // device_added(), and in principle none may ever be mapped on
-        // headless hardware -- unconstraining a popup without a screen to
-        // fit it into has nothing meaningful to do, so skip it rather than
-        // panicking.
-        let Some(output) = self.space.outputs().next() else {
+        let window_geo = self
+            .space
+            .element_geometry(window)
+            .expect("window came from space.elements(), so it has a geometry");
+
+        let output = self
+            .space
+            .outputs()
+            .find(|o| {
+                self.space
+                    .output_geometry(o)
+                    .is_some_and(|geo| geo.contains(window_geo.loc))
+            })
+            .or_else(|| self.space.outputs().next());
+
+        let Some(output) = output else {
             return;
         };
         let output_geo = self
             .space
             .output_geometry(output)
             .expect("output came from space.outputs(), so it has a geometry");
-        let window_geo = self
-            .space
-            .element_geometry(window)
-            .expect("window came from space.elements(), so it has a geometry");
 
         // The target geometry for the positioner should be relative to its parent's geometry, so
         // we will compute that here.

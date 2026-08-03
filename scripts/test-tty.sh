@@ -23,6 +23,19 @@
 #   - if a second monitor is available, plug/unplug it (or hotplug over
 #     USB-C/HDMI) and confirm it lights up/disappears without a restart —
 #     this exercises M1.4 hot-plug and can't be scripted here
+#   - workspaces: Super+Return (or launch a second client) opens it on a NEW
+#     workspace, so the first window disappears from view. Super+1 / Super+2
+#     switch between them; Super+Tab cycles. Super+Shift+2 moves the focused
+#     window to workspace 2.
+#   - drag a window by its titlebar, then press Super+1 and come back — the
+#     window must still be where you dropped it, not re-centred
+#   - click between two windows on one workspace, then Super+F: the maximize
+#     must apply to the window you last clicked
+#   - IPC: from another VT or via `glidectl`, run `glidectl ping`,
+#     `glidectl workspace list`, `glidectl window list`
+#   - IPC must never hang the compositor: `nc -U "$GLIDE_IPC_SOCK"` and then
+#     just sitting there must NOT freeze the screen (this used to wedge the
+#     whole session)
 #   - Super+Q to quit early (otherwise wait for the timeout)
 #
 # Two logs are produced, and both matter:
@@ -35,7 +48,7 @@
 
 set -uo pipefail
 
-TIMEOUT="${TIMEOUT:-60}"
+TIMEOUT="${TIMEOUT:-0}"
 
 if [ -n "${WAYLAND_DISPLAY:-}" ] || [ -n "${DISPLAY:-}" ]; then
     echo "error: WAYLAND_DISPLAY or DISPLAY is set — this looks like a" >&2
@@ -55,8 +68,13 @@ if [ ! -x "$binary" ]; then
     exit 1
 fi
 
+if [ "$TIMEOUT" -gt 0 ]; then
+    echo "Starting $binary for up to ${TIMEOUT}s."
+else
+    echo "Starting $binary (running until exit / Super+Q)."
+fi
+
 cat <<EOF
-Starting $binary for up to ${TIMEOUT}s.
 
 The screen will briefly freeze, then turn solid #295396 blue, then an
 alacritty window should appear on top of it. Then:
@@ -69,14 +87,19 @@ alacritty window should appear on top of it. Then:
 EOF
 sleep 3
 
-timeout "$TIMEOUT" "$binary" > "$raw_log" 2>&1
-status=$?
+if [ "$TIMEOUT" -gt 0 ]; then
+    timeout "$TIMEOUT" "$binary" > "$raw_log" 2>&1
+    status=$?
+else
+    "$binary" > "$raw_log" 2>&1
+    status=$?
+fi
 
 # The console comes back once the session is released, so it is safe to
 # print the verdict here instead of making the user switch VTs to read it.
 echo
 if [ "$status" -eq 124 ]; then
-    echo "Stopped by the ${TIMEOUT}s safety timeout."
+    echo "Stopped by the safety timeout."
 else
     echo "Process exited on its own (status $status) — Super+Q likely worked."
 fi
@@ -140,6 +163,9 @@ check "primary gpu opened"            'opening primary gpu'
 check "connector connected"           'connector connected'
 check "udev hotplug monitor started"  'watching udev for monitor hot-plug'
 check "dmabuf global created"         'dmabuf global created'
+check "config loaded or defaulted"    'config loaded successfully|using default config'
+check "layout outputs synchronized"   'layout outputs synchronized'
+check "ipc server started"            'IPC server started'
 check "client spawned"                'spawned client'
 check "client connected"              'New client connected'
 check "window mapped"                 'new toplevel'
@@ -158,6 +184,12 @@ check_absent "no dmabuf import failures" 'failed to import client dmabuf'
 check_absent "no repaint spin while paused" 'DeviceInactive'
 # Client-side failures land in the raw capture, not in Glide's own log.
 check_absent "client started cleanly" 'InitializationFailed'
+# The layout engine is the source of truth for what is on screen; if it ever
+# disagrees with Space the symptoms are subtle (windows in the wrong place,
+# keybinds acting on the wrong window), so surface the loud failures here.
+check_absent "no unknown config keys" 'failed to parse config file'
+check_absent "no empty keybind actions" 'keybind action table is empty'
+check_absent "no unrecognized keys"   'unrecognized key name in config'
 
 echo
 echo "  ${pass} passed, ${fail} failed"

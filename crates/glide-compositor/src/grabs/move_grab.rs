@@ -40,8 +40,15 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
 
         let delta = event.location - self.start_data.location;
         let new_location = self.initial_window_location.to_f64() + delta;
+        let new_location = new_location.to_i32_round();
+
         data.space
-            .map_element(self.window.clone(), new_location.to_i32_round(), true);
+            .map_element(self.window.clone(), new_location, true);
+
+        // Mirror the move into the layout engine. Without this the next
+        // reconcile would re-apply the stored position and teleport the
+        // window back to where the drag started.
+        data.record_window_move(&self.window, new_location);
     }
 
     fn relative_motion(

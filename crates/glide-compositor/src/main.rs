@@ -3,9 +3,11 @@
 mod handlers;
 
 mod backend;
+mod config;
 mod cursor;
 mod grabs;
 mod input;
+mod ipc;
 mod logging;
 mod state;
 
@@ -58,6 +60,9 @@ fn run() -> anyhow::Result<()> {
         display,
     );
 
+    let config = config::Config::load_or_default();
+    config.apply_to_state(&mut state);
+
     // Set up the session, seat and libinput event sources.
     crate::backend::tty::init_tty(&mut event_loop, &mut state, notifier)?;
 
@@ -70,10 +75,22 @@ fn run() -> anyhow::Result<()> {
     // Watch udev for monitors being plugged/unplugged after startup.
     crate::backend::tty::init_udev_monitor(&mut event_loop, &mut state)?;
 
-    // Set WAYLAND_DISPLAY to our socket name, so child processes connect to
-    // us. Done after device_added() so the client has an output to appear
-    // on as soon as it connects.
-    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
+    // Start the control socket. Bound to this variable for its whole lifetime
+    // on purpose: dropping it unlinks the socket file, so it must outlive the
+    // event loop rather than being cleaned up early.
+    let ipc_server = ipc::init_ipc(&mut event_loop, &state.socket_name)?;
+
+    // Point child processes at our sockets.
+    //
+    // SAFETY: `set_var` is unsound only when another thread may be reading the
+    // environment concurrently. Glide is single-threaded at this point (the
+    // event loop has not started and nothing has been spawned yet).
+    unsafe {
+        std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
+        if let Some(server) = ipc_server.as_ref() {
+            std::env::set_var("GLIDE_IPC_SOCK", server.socket_path());
+        }
+    }
 
     // Spawn a test client, that will run under GlideState
     spawn_client();
@@ -93,6 +110,10 @@ fn run() -> anyhow::Result<()> {
     })?;
 
     tracing::info!("shutting down");
+
+    // Explicit so it is obvious the socket file is unlinked here rather than
+    // at some earlier point the borrow checker happened to allow.
+    drop(ipc_server);
 
     Ok(())
 }
