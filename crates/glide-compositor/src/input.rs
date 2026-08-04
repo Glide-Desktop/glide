@@ -409,6 +409,51 @@ impl GlideState {
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             let pos = pointer.current_location();
 
+            // ── Overview click-to-select ───────────────────────────
+            //
+            // In overview mode windows are mapped at their *real*
+            // positions (the overview is purely visual), so the normal
+            // element_under lookup would match the wrong window.
+            // Instead we check which cell the pointer falls into and
+            // focus that window, which also exits overview.
+            if self.layout.overview_active {
+                let clicked_id = self
+                    .window_map
+                    .iter()
+                    .find_map(|(&id, window)| {
+                        let ov = window.overview_state()?;
+                        let cell = ov.cell_rect;
+                        let px = pos.x as i32;
+                        let py = pos.y as i32;
+                        if px >= cell.loc.x
+                            && px < cell.loc.x + cell.size.w
+                            && py >= cell.loc.y
+                            && py < cell.loc.y + cell.size.h
+                        {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(id) = clicked_id {
+                    self.focus_window(id);
+                }
+                // Swallow the click either way — no normal focus logic
+                // should run during overview.
+                pointer.button(
+                    self,
+                    &ButtonEvent {
+                        button,
+                        state: button_state,
+                        serial,
+                        time: event.time_msec(),
+                    },
+                );
+                pointer.frame(self);
+                return;
+            }
+
             // What was actually clicked, layers included — `element_under`
             // alone would find the window *underneath* a panel and focus
             // that, since layer surfaces are not Space elements.

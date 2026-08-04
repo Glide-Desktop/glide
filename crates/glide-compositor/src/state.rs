@@ -348,65 +348,91 @@ impl GlideState {
             visible.iter().map(|state| state.id).collect();
 
         let overview_active = self.layout.overview_active;
-        let mut grid_geometries = HashMap::new();
+        let focused = self.layout.focused_window();
+
+        // ── Overview grid calculation ──────────────────────────────
+        //
+        // Purely visual: computes where each window *appears* on screen
+        // during overview.  Nothing here changes the layout's stored
+        // geometry or the position Space maps elements at.
+        use crate::window::OverviewTransform;
+        let mut overview_transforms: HashMap<glide_layout::WindowId, OverviewTransform> =
+            HashMap::new();
+
         if overview_active {
             let work_area = self.layout.primary_output_work_area();
             let n = visible.len();
             if n > 0 {
                 let cols = (n as f64).sqrt().ceil() as usize;
                 let rows = (n as f64 / cols as f64).ceil() as usize;
-                let w = work_area.size.width / cols as i32;
-                let h = work_area.size.height / rows as i32;
+                let slot_w = work_area.size.width / cols as i32;
+                let slot_h = work_area.size.height / rows as i32;
+
+                let gap = 24;
 
                 for (i, state) in visible.iter().enumerate() {
                     let r = i / cols;
                     let c = i % cols;
-                    
-                    let content_size = state.content_geometry().size;
-                    
-                    // We need the exact header height to center the window properly
-                    // Since we can't call private `header_height`, we'll approximate based on decoration state
-                    // or just use typical values (30px header, 4px border).
-                    // Wait, we can fetch it via `window.try_decoration_state()` if it was pub, but it's in window.rs.
-                    // Just use 30px for header and 4px for border if it has a header.
-                    let (header, border) = (32, 4); 
-                    
-                    let bbox_w = content_size.width + border * 2; 
-                    let bbox_h = content_size.height + header + border * 2; 
-                    
-                    let scale_x = w as f64 / bbox_w as f64;
-                    let scale_y = h as f64 / bbox_h as f64;
-                    let scale = (scale_x.min(scale_y) * 0.85).min(1.0); // 15% margin
-                    
-                    let scaled_bbox_w = (bbox_w as f64 * scale).round() as i32;
-                    let scaled_bbox_h = (bbox_h as f64 * scale).round() as i32;
-                    
-                    let cell_x = work_area.loc.x + (c as i32) * w;
-                    let cell_y = work_area.loc.y + (r as i32) * h;
-                    
-                    // Center the full BBOX within the cell
-                    let bbox_offset_x = (w - scaled_bbox_w) / 2;
-                    let bbox_offset_y = (h - scaled_bbox_h) / 2;
 
-                    // The content origin is offset inside the bbox by the top/left decorations
-                    let content_x = cell_x + bbox_offset_x + (border as f64 * scale).round() as i32;
-                    let content_y = cell_y + bbox_offset_y + ((header + border) as f64 * scale).round() as i32;
+                    // Cell rectangle (slot minus gaps).
+                    let cell_w = slot_w - gap;
+                    let cell_h = slot_h - gap;
+                    let cell_x = work_area.loc.x + (c as i32) * slot_w + gap / 2;
+                    let cell_y = work_area.loc.y + (r as i32) * slot_h + gap / 2;
+
+                    // Use the layout's frame size (includes decorations)
+                    // to calculate the down-scale factor.
+                    let frame_w = state.geometry.size.width.max(1);
+                    let frame_h = state.geometry.size.height.max(1);
+
+                    let scale_x = cell_w as f64 / frame_w as f64;
+                    let scale_y = cell_h as f64 / frame_h as f64;
+                    let wscale = scale_x.min(scale_y).min(1.0) * 0.85;
+
+                    let scaled_frame_w = (frame_w as f64 * wscale).round() as i32;
+                    let scaled_frame_h = (frame_h as f64 * wscale).round() as i32;
+
+                    // Centre the scaled frame inside the cell.
+                    let frame_off_x = (cell_w - scaled_frame_w) / 2;
+                    let frame_off_y = (cell_h - scaled_frame_h) / 2;
+
+                    let frame_x = cell_x + frame_off_x;
+                    let frame_y = cell_y + frame_off_y;
+
+                    // Content origin inside the scaled frame.
+                    let overview_content_x =
+                        frame_x + (state.insets.left as f64 * wscale).round() as i32;
+                    let overview_content_y =
+                        frame_y + (state.insets.top as f64 * wscale).round() as i32;
+
+                    let real_content = state.content_geometry();
 
                     let cell_rect = smithay::utils::Rectangle::new(
                         smithay::utils::Point::new(cell_x, cell_y),
-                        smithay::utils::Size::new(w, h)
+                        smithay::utils::Size::new(cell_w, cell_h),
                     );
-                    grid_geometries.insert(
-                        state.id, 
-                        (scale, cell_rect, smithay::utils::Point::new(content_x, content_y))
+
+                    overview_transforms.insert(
+                        state.id,
+                        OverviewTransform {
+                            scale: wscale,
+                            real_content_loc: smithay::utils::Point::from((
+                                real_content.loc.x,
+                                real_content.loc.y,
+                            )),
+                            overview_content_loc: smithay::utils::Point::from((
+                                overview_content_x,
+                                overview_content_y,
+                            )),
+                            cell_rect,
+                            focused: focused == Some(state.id),
+                        },
                     );
                 }
             }
         }
 
-        // Drop anything the layout no longer shows. Unmapping (rather than
-        // moving off-screen) makes Smithay send `wl_surface.leave`, which is
-        // what stops a client on a hidden workspace from rendering.
+        // ── Unmap hidden windows ───────────────────────────────────
         let mapped: Vec<GlideWindow> = self.space.elements().cloned().collect();
         for window in mapped {
             let hidden = self
@@ -418,27 +444,26 @@ impl GlideState {
             }
         }
 
-        let focused = self.layout.focused_window();
+        // ── Map visible windows ────────────────────────────────────
         for state in &visible {
             let Some(window) = self.window_map.get(&state.id).cloned() else {
                 continue;
             };
 
             let is_focused = focused == Some(state.id);
-            let location = if overview_active {
-                if let Some(&(scale, cell_rect, loc)) = grid_geometries.get(&state.id) {
-                    window.set_overview_state(Some((scale, cell_rect, loc)));
-                    loc
-                } else {
-                    window.set_overview_state(None);
-                    let content = state.content_geometry();
-                    Point::from((content.loc.x, content.loc.y))
-                }
+
+            // Set the overview transform for rendering (or clear it).
+            if let Some(&transform) = overview_transforms.get(&state.id) {
+                window.set_overview_state(Some(transform));
             } else {
                 window.set_overview_state(None);
-                let content = state.content_geometry();
-                Point::from((content.loc.x, content.loc.y))
-            };
+            }
+
+            // Space ALWAYS receives the real content origin — never the
+            // overview position.  The overview is purely visual, handled
+            // inside `render_elements`.
+            let content = state.content_geometry();
+            let location = Point::from((content.loc.x, content.loc.y));
 
             // Space positions the client's own surface, which is the
             // *content* area — decorations are drawn by us, offset from
@@ -461,7 +486,6 @@ impl GlideState {
                 state.insets.top
             };
             window.sync_decoration(&self.decoration_theme, decoration_height, is_focused);
-
         }
 
         self.apply_keyboard_focus();
