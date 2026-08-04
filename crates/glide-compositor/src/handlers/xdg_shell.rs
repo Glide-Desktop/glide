@@ -62,6 +62,7 @@ impl XdgShellHandler for GlideState {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         tracing::info!("toplevel destroyed");
         self.untrack_window(surface.wl_surface());
+        self.cleanup_dead_windows();
     }
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
@@ -276,6 +277,26 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
         }
 
         if let Some(id) = state.window_id(&window) {
+            let (title, app_id) = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .map(|data| {
+                        let guard = data.lock().unwrap();
+                        (
+                            guard.title.clone().unwrap_or_default(),
+                            guard.app_id.clone().unwrap_or_default(),
+                        )
+                    })
+                    .unwrap_or_default()
+            });
+
+            if let Some(handle) = state.foreign_toplevel_handles.get(&id) {
+                handle.send_title(&title);
+                handle.send_app_id(&app_id);
+                handle.send_done();
+            }
+
             // Only the commit that first gives the window a real size needs a
             // reconcile: that is when the layout finally has something to
             // centre. Reconciling on every commit would re-apply the stored
@@ -305,15 +326,11 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
 }
 
 impl XdgDecorationHandler for GlideState {
-    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        // Advertise our preference. Everything Glide draws (titlebar,
-        // resize band) exists for server-side decorations, and windows are
-        // created decorated by default in track_window — so only the
-        // pending mode needs setting here; the initial configure will carry
-        // it to the client.
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
-        });
+    fn new_decoration(&mut self, _toplevel: ToplevelSurface) {
+        // Do not force a ServerSide preference by default. The protocol dictates
+        // that clients should draw their own decorations (ClientSide) unless
+        // negotiated otherwise. Clients that want SSD (like Alacritty) will
+        // explicitly call `request_mode(ServerSide)`, which we honor.
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {

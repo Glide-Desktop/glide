@@ -42,7 +42,12 @@ use std::ops::Deref;
 use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
-        element::{AsRenderElements, surface::WaylandSurfaceRenderElement},
+        element::{
+            AsRenderElements,
+            memory::MemoryRenderBufferRenderElement,
+            solid::SolidColorRenderElement,
+            surface::WaylandSurfaceRenderElement,
+        },
     },
     desktop::{Window, space::SpaceElement},
     output::Output,
@@ -83,7 +88,8 @@ impl GlideWindow {
     /// borrow across anything else, since the borrow it takes internally is
     /// dropped before this returns.
     fn header_height(&self) -> i32 {
-        self.decoration_state().header.height()
+        self.try_decoration_state()
+            .map_or(0, |state| state.header.height())
     }
 }
 
@@ -101,6 +107,18 @@ impl IsAlive for GlideWindow {
     }
 }
 
+impl GlideWindow {
+    pub fn set_overview_state(&self, state: Option<(f64, Rectangle<i32, Logical>, Point<i32, Logical>)>) {
+        self.0.user_data().insert_if_missing(|| std::sync::Mutex::new(None::<(f64, Rectangle<i32, Logical>, Point<i32, Logical>)>));
+        let mutex = self.0.user_data().get::<std::sync::Mutex<Option<(f64, Rectangle<i32, Logical>, Point<i32, Logical>)>>>().unwrap();
+        *mutex.lock().unwrap() = state;
+    }
+
+    pub(crate) fn overview_state(&self) -> Option<(f64, Rectangle<i32, Logical>, Point<i32, Logical>)> {
+        self.0.user_data().get::<std::sync::Mutex<Option<(f64, Rectangle<i32, Logical>, Point<i32, Logical>)>>>().and_then(|m| *m.lock().unwrap())
+    }
+}
+
 impl SpaceElement for GlideWindow {
     /// Deliberately **not** extended for the titlebar, unlike `bbox` below.
     ///
@@ -113,7 +131,14 @@ impl SpaceElement for GlideWindow {
     /// `render_location`, and with it every mapped surface, by the titlebar
     /// height — content rendered `header_height` too low.
     fn geometry(&self) -> Rectangle<i32, Logical> {
-        SpaceElement::geometry(&self.0)
+        let mut geo = SpaceElement::geometry(&self.0);
+        if let Some((scale, _, _)) = self.overview_state() {
+            geo.loc.x = (geo.loc.x as f64 * scale).round() as i32;
+            geo.loc.y = (geo.loc.y as f64 * scale).round() as i32;
+            geo.size.w = (geo.size.w as f64 * scale).round() as i32;
+            geo.size.h = (geo.size.h as f64 * scale).round() as i32;
+        }
+        geo
     }
 
     fn bbox(&self) -> Rectangle<i32, Logical> {
@@ -130,6 +155,12 @@ impl SpaceElement for GlideWindow {
             bbox.size.w += band * 2;
             bbox.size.h += height + band * 2;
         }
+        if let Some((scale, _, _)) = self.overview_state() {
+            bbox.loc.x = (bbox.loc.x as f64 * scale).round() as i32;
+            bbox.loc.y = (bbox.loc.y as f64 * scale).round() as i32;
+            bbox.size.w = (bbox.size.w as f64 * scale).round() as i32;
+            bbox.size.h = (bbox.size.h as f64 * scale).round() as i32;
+        }
         bbox
     }
 
@@ -139,11 +170,10 @@ impl SpaceElement for GlideWindow {
         // coordinate convention). Routed through `HeaderBar::contains`
         // rather than a bare strip check so the open chevron menu — which
         // extends *below* the strip — counts as ours too.
-        let in_decoration = {
-            let deco = self.decoration_state();
+        let in_decoration = self.try_decoration_state().is_some_and(|deco| {
             let rel = *point + Point::from((0.0, f64::from(deco.header.height())));
             deco.header.contains(rel)
-        };
+        });
         in_decoration || SpaceElement::is_in_input_region(&self.0, point)
     }
 
@@ -169,11 +199,13 @@ impl SpaceElement for GlideWindow {
 }
 
 render_elements! {
-    /// Everything a `GlideWindow` can put on screen: its own content, plus
-    /// (when decorated) the solid-color titlebar drawn on top of it.
+    /// Everything a `GlideWindow` can put on screen: its own Wayland surface
+    /// content plus (when decorated) the titlebar elements — buttons with
+    /// icons, a title label, and (when open) the dropdown menu rows.
     pub GlideWindowRenderElement<R> where R: ImportAll + ImportMem;
     Content = WaylandSurfaceRenderElement<R>,
-    Decoration = smithay::backend::renderer::element::solid::SolidColorRenderElement,
+    Decoration = MemoryRenderBufferRenderElement<R>,
+    Background = SolidColorRenderElement,
 }
 
 impl<R: Renderer> std::fmt::Debug for GlideWindowRenderElement<R> {
@@ -181,6 +213,7 @@ impl<R: Renderer> std::fmt::Debug for GlideWindowRenderElement<R> {
         match self {
             Self::Content(e) => f.debug_tuple("Content").field(e).finish(),
             Self::Decoration(e) => f.debug_tuple("Decoration").field(e).finish(),
+            Self::Background(e) => f.debug_tuple("Background").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
     }
@@ -189,7 +222,8 @@ impl<R: Renderer> std::fmt::Debug for GlideWindowRenderElement<R> {
 impl<R> AsRenderElements<R> for GlideWindow
 where
     R: Renderer + ImportAll + ImportMem,
-    R::TextureId: Clone + 'static,
+    R::TextureId: Send + Clone + 'static,
+    R::Error: std::fmt::Debug,
 {
     type RenderElement = GlideWindowRenderElement<R>;
 
@@ -200,24 +234,96 @@ where
         scale: Scale<f64>,
         alpha: f32,
     ) -> Vec<C> {
+        let window_scale = self.overview_state().map(|(s, _, _)| s).unwrap_or(1.0);
+        let actual_scale = scale * Scale::from(window_scale);
+
         // `location` is where `Space` resolves the *content* origin to (see
         // the module docs): the window's own content renders here
         // unshifted, and the titlebar — occupying the strip directly above
         // it — is what needs the offset, upward by its height.
+        let header_height = self.header_height();
         let header_location =
-            location - Point::from((0, self.header_height())).to_physical_precise_round(scale);
+            location - Point::from((0, header_height)).to_physical_precise_round(actual_scale);
+
+        let painter = crate::paint::PAINTER.get_or_init(|| {
+            let font_px = (f64::from(header_height).max(14.0) * 0.45) as f32;
+            crate::paint::Painter::new(font_px.clamp(10.0, 18.0))
+        });
+
+        let mut elements = Vec::new();
 
         // Decorations first: `render_frame` wants elements front-to-back,
         // and the titlebar sits on top of the window's own content.
-        let mut elements: Vec<C> = decoration::render_elements(self, header_location, scale, alpha)
+        let deco_elements: Vec<C> = decoration::frame_buffers(self, painter)
             .into_iter()
+            .filter_map(|deco_buf| {
+                let physical_offset = deco_buf.offset.to_physical_precise_round(actual_scale);
+                let pos = (header_location + physical_offset).to_f64();
+                MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    pos,
+                    &deco_buf.buf,
+                    Some(alpha),
+                    None,
+                    None,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                )
+                .map_err(|e| tracing::warn!("failed to upload decoration buffer: {:?}", e))
+                .ok()
+            })
             .map(GlideWindowRenderElement::Decoration)
             .map(C::from)
             .collect();
 
+        elements.extend(deco_elements);
+
         let content_elements: Vec<GlideWindowRenderElement<R>> =
-            AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
+            AsRenderElements::render_elements(&self.0, renderer, location, actual_scale, alpha);
         elements.extend(content_elements.into_iter().map(C::from));
+
+        // If in overview, draw the cell background and a shadow behind the window.
+        // Since `render_frame` draws front-to-back, elements pushed LAST will be BEHIND.
+        if let Some((_, cell_logical_rect, window_global_loc)) = self.overview_state() {
+            // Calculate physical location of the cell relative to the window's physical location
+            let delta = cell_logical_rect.loc - window_global_loc;
+            let cell_physical_loc = location + delta.to_f64().to_physical(scale).to_i32_round();
+            let cell_physical_size = cell_logical_rect.size.to_f64().to_physical(scale).to_i32_round();
+
+            let shadow_rect = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((cell_physical_loc.x + (10.0 * scale.x).round() as i32, cell_physical_loc.y + (10.0 * scale.y).round() as i32)),
+                cell_physical_size,
+            );
+            let shadow_buf = smithay::backend::renderer::element::solid::SolidColorBuffer::new(
+                (shadow_rect.size.w, shadow_rect.size.h),
+                [0.0, 0.0, 0.0, 0.5],
+            );
+            elements.push(
+                GlideWindowRenderElement::Background(SolidColorRenderElement::from_buffer(
+                    &shadow_buf,
+                    shadow_rect.loc,
+                    Scale::from(1.0), // solid buffer is created in physical size
+                    alpha,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                ))
+                .into()
+            );
+
+            // Cell background (desktop color)
+            let cell_buf = smithay::backend::renderer::element::solid::SolidColorBuffer::new(
+                (cell_physical_size.w, cell_physical_size.h),
+                [0.160_784_3, 0.325_490_2, 0.588_235_3, 1.0], // FILL_COLOR
+            );
+            elements.push(
+                GlideWindowRenderElement::Background(SolidColorRenderElement::from_buffer(
+                    &cell_buf,
+                    cell_physical_loc,
+                    Scale::from(1.0),
+                    alpha,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                ))
+                .into()
+            );
+        }
 
         elements
     }

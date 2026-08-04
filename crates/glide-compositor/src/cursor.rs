@@ -104,16 +104,24 @@ impl Cursor {
     }
 
     /// Picks the image to draw for `icon` at the given output scale and
-    /// elapsed time, advancing through the frames of an animated cursor.
-    pub fn image(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Image {
-        // `frame` only ever uses `millis` modulo the animation's total delay
-        // (typically well under a minute), so wrapping every ~49 days of
-        // continuous uptime has no observable effect on which frame is
-        // picked.
+    /// elapsed time, returning both the frame Image and its frame index.
+    pub fn image_with_index(
+        &mut self,
+        icon: CursorIcon,
+        scale: u32,
+        time: Duration,
+    ) -> (Image, usize) {
         #[allow(clippy::cast_possible_truncation)]
         let millis = time.as_millis() as u32;
         let size = self.size * scale;
-        frame(millis, size, self.images_for(icon))
+        frame_with_index(millis, size, self.images_for(icon))
+    }
+
+    /// Picks the image to draw for `icon` at the given output scale and
+    /// elapsed time, advancing through the frames of an animated cursor.
+    #[allow(dead_code)]
+    pub fn image(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Image {
+        self.image_with_index(icon, scale, time).0
     }
 
     /// Cached frames for `icon`, loading them on first use.
@@ -214,21 +222,22 @@ fn nearest_images(size: u32, images: &[Image]) -> impl Iterator<Item = &Image> {
         .filter(move |image| image.width == nearest.width && image.height == nearest.height)
 }
 
-/// Selects the animation frame for `millis`, looping over the total duration.
-fn frame(mut millis: u32, size: u32, images: &[Image]) -> Image {
+/// Selects the animation frame and its 0-based frame index for `millis`.
+fn frame_with_index(mut millis: u32, size: u32, images: &[Image]) -> (Image, usize) {
     let total: u32 = nearest_images(size, images).map(|image| image.delay).sum();
     if total == 0 {
         // Not animated.
-        return nearest_images(size, images)
+        let img = nearest_images(size, images)
             .next()
             .expect("cursor always has at least the fallback image")
             .clone();
+        return (img, 0);
     }
 
     millis %= total;
-    for image in nearest_images(size, images) {
+    for (idx, image) in nearest_images(size, images).enumerate() {
         if millis < image.delay {
-            return image.clone();
+            return (image.clone(), idx);
         }
         millis -= image.delay;
     }
@@ -394,4 +403,63 @@ mod tests {
             (image.width * image.height * 4) as usize
         );
     }
+
+    #[test]
+    fn cursor_cache_caches_icons_and_missing_shapes() {
+        let mut cursor = Cursor::load();
+        
+        // Initial state has Default cached.
+        assert!(cursor.cache.contains_key(&CursorIcon::Default));
+        let initial_cache_count = cursor.cache.len();
+
+        // Querying Pointer icon should cache it.
+        let _ = cursor.image_with_index(CursorIcon::Pointer, 1, Duration::ZERO);
+        assert!(cursor.cache.contains_key(&CursorIcon::Pointer));
+
+        // Querying ContextMenu icon (which might be missing in fallback themes) should also cache.
+        let _ = cursor.image_with_index(CursorIcon::ContextMenu, 1, Duration::ZERO);
+        assert!(cursor.cache.contains_key(&CursorIcon::ContextMenu));
+
+        // Repeated queries for already requested icons must not increase cache size beyond number of unique icons.
+        let count_after_queries = cursor.cache.len();
+        assert!(count_after_queries >= initial_cache_count);
+
+        let _ = cursor.image_with_index(CursorIcon::Pointer, 1, Duration::from_millis(100));
+        let _ = cursor.image_with_index(CursorIcon::ContextMenu, 2, Duration::from_millis(200));
+
+        assert_eq!(cursor.cache.len(), count_after_queries);
+    }
+
+    #[test]
+    fn cursor_cache_performance_stress() {
+        let mut cursor = Cursor::load();
+        let icons = [
+            CursorIcon::Default,
+            CursorIcon::Pointer,
+            CursorIcon::Grab,
+            CursorIcon::Progress,
+            CursorIcon::Wait,
+            CursorIcon::Crosshair,
+            CursorIcon::Text,
+            CursorIcon::NotAllowed,
+            CursorIcon::NwResize,
+            CursorIcon::SeResize,
+        ];
+
+        let start = std::time::Instant::now();
+        for i in 0..50_000 {
+            let icon = icons[i % icons.len()];
+            let dur = Duration::from_millis((i as u64) * 10);
+            let (img, _idx) = cursor.image_with_index(icon, 1, dur);
+            assert!(img.width > 0 && img.height > 0);
+        }
+        let elapsed = start.elapsed();
+        // 50,000 lookups should complete in under 1s easily (usually ~5-15ms).
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "50,000 cache lookups took too long: {elapsed:?}"
+        );
+    }
 }
+
+

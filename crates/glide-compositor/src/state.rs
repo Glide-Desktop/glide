@@ -23,7 +23,7 @@ use smithay::{
     },
     utils::{IsAlive, Logical, Point},
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, with_states},
         cursor_shape::CursorShapeManagerState,
         fractional_scale::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
@@ -33,7 +33,8 @@ use smithay::{
         shell::kde::decoration::KdeDecorationState,
         shell::wlr_layer::{Layer as WlrLayer, WlrLayerShellState},
         shell::xdg::{
-            ToplevelState, XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState,
+            ToplevelState, XdgShellState, XdgToplevelSurfaceData, decoration::XdgDecorationState,
+            dialog::XdgDialogState,
         },
         shm::ShmState,
         socket::ListeningSocketSource,
@@ -127,6 +128,15 @@ pub struct GlideState {
     /// let go first (e.g. Ctrl+Alt+F2 presses as `XF86Switch_VT_2` but
     /// releases as plain `F2`), which would leak an unpaired release.
     pub suppressed_keys: Vec<Keycode>,
+
+    // M5 Protocol States
+    pub foreign_toplevel_list_state: smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    pub foreign_toplevel_handles: HashMap<glide_layout::WindowId, smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
+    pub idle_notifier_state: smithay::wayland::idle_notify::IdleNotifierState<GlideState>,
+    pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
+    pub idle_inhibited_surfaces: HashSet<WlSurface>,
+    pub wlr_output_manager_state: crate::handlers::wlr_output_management::WlrOutputManagerState,
+    pub ext_workspace_state: crate::handlers::ext_workspace::ExtWorkspaceManagerState,
 }
 
 impl GlideState {
@@ -210,6 +220,19 @@ impl GlideState {
         // Setup a wayland socket that will be used to accept clients
         let socket_name = Self::init_wayland_listener(display, &loop_handle);
 
+        // M5 Protocol Initializations
+        let foreign_toplevel_list_state =
+            smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
+        let foreign_toplevel_handles = HashMap::new();
+        let idle_notifier_state =
+            smithay::wayland::idle_notify::IdleNotifierState::new(&dh, loop_handle.clone());
+        let idle_inhibit_state =
+            smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(&dh);
+        let wlr_output_manager_state =
+            crate::handlers::wlr_output_management::WlrOutputManagerState::new::<Self>(&dh);
+        let ext_workspace_state =
+            crate::handlers::ext_workspace::ExtWorkspaceManagerState::new::<Self>(&dh);
+
         Self {
             backend_data,
 
@@ -245,6 +268,14 @@ impl GlideState {
             cursor_status: CursorImageStatus::default_named(),
             layer_focus: None,
             suppressed_keys: Vec::new(),
+
+            foreign_toplevel_list_state,
+            foreign_toplevel_handles,
+            idle_notifier_state,
+            idle_inhibit_state,
+            idle_inhibited_surfaces: HashSet::new(),
+            wlr_output_manager_state,
+            ext_workspace_state,
         }
     }
 
@@ -306,13 +337,72 @@ impl GlideState {
     /// Panics if no keyboard was added to the seat; `GlideState::new` always
     /// adds one, so in practice this never fires.
     pub fn reconcile_space(&mut self) {
+        self.cleanup_dead_windows();
+
         // Windows on the active workspace, bottom-to-top. The order matters:
         // `map_element` re-stacks, so applying them in this sequence is what
         // gives the workspace its Z-order.
         let visible: Vec<glide_layout::WindowState> =
-            self.layout.visible_windows().cloned().collect();
+            self.layout.visible_windows().collect();
         let visible_ids: HashSet<glide_layout::WindowId> =
             visible.iter().map(|state| state.id).collect();
+
+        let overview_active = self.layout.overview_active;
+        let mut grid_geometries = HashMap::new();
+        if overview_active {
+            let work_area = self.layout.primary_output_work_area();
+            let n = visible.len();
+            if n > 0 {
+                let cols = (n as f64).sqrt().ceil() as usize;
+                let rows = (n as f64 / cols as f64).ceil() as usize;
+                let w = work_area.size.width / cols as i32;
+                let h = work_area.size.height / rows as i32;
+
+                for (i, state) in visible.iter().enumerate() {
+                    let r = i / cols;
+                    let c = i % cols;
+                    
+                    let content_size = state.content_geometry().size;
+                    
+                    // We need the exact header height to center the window properly
+                    // Since we can't call private `header_height`, we'll approximate based on decoration state
+                    // or just use typical values (30px header, 4px border).
+                    // Wait, we can fetch it via `window.try_decoration_state()` if it was pub, but it's in window.rs.
+                    // Just use 30px for header and 4px for border if it has a header.
+                    let (header, border) = (32, 4); 
+                    
+                    let bbox_w = content_size.width + border * 2; 
+                    let bbox_h = content_size.height + header + border * 2; 
+                    
+                    let scale_x = w as f64 / bbox_w as f64;
+                    let scale_y = h as f64 / bbox_h as f64;
+                    let scale = (scale_x.min(scale_y) * 0.85).min(1.0); // 15% margin
+                    
+                    let scaled_bbox_w = (bbox_w as f64 * scale).round() as i32;
+                    let scaled_bbox_h = (bbox_h as f64 * scale).round() as i32;
+                    
+                    let cell_x = work_area.loc.x + (c as i32) * w;
+                    let cell_y = work_area.loc.y + (r as i32) * h;
+                    
+                    // Center the full BBOX within the cell
+                    let bbox_offset_x = (w - scaled_bbox_w) / 2;
+                    let bbox_offset_y = (h - scaled_bbox_h) / 2;
+
+                    // The content origin is offset inside the bbox by the top/left decorations
+                    let content_x = cell_x + bbox_offset_x + (border as f64 * scale).round() as i32;
+                    let content_y = cell_y + bbox_offset_y + ((header + border) as f64 * scale).round() as i32;
+
+                    let cell_rect = smithay::utils::Rectangle::new(
+                        smithay::utils::Point::new(cell_x, cell_y),
+                        smithay::utils::Size::new(w, h)
+                    );
+                    grid_geometries.insert(
+                        state.id, 
+                        (scale, cell_rect, smithay::utils::Point::new(content_x, content_y))
+                    );
+                }
+            }
+        }
 
         // Drop anything the layout no longer shows. Unmapping (rather than
         // moving off-screen) makes Smithay send `wl_surface.leave`, which is
@@ -335,13 +425,25 @@ impl GlideState {
             };
 
             let is_focused = focused == Some(state.id);
+            let location = if overview_active {
+                if let Some(&(scale, cell_rect, loc)) = grid_geometries.get(&state.id) {
+                    window.set_overview_state(Some((scale, cell_rect, loc)));
+                    loc
+                } else {
+                    window.set_overview_state(None);
+                    let content = state.content_geometry();
+                    Point::from((content.loc.x, content.loc.y))
+                }
+            } else {
+                window.set_overview_state(None);
+                let content = state.content_geometry();
+                Point::from((content.loc.x, content.loc.y))
+            };
 
             // Space positions the client's own surface, which is the
             // *content* area — decorations are drawn by us, offset from
             // this by the window's insets, not part of what Space or the
             // client itself ever sees as its location.
-            let content = state.content_geometry();
-            let location = Point::from((content.loc.x, content.loc.y));
             self.space.map_element(window.clone(), location, false);
             Self::apply_window_state(&window, state, is_focused);
 
@@ -359,9 +461,46 @@ impl GlideState {
                 state.insets.top
             };
             window.sync_decoration(&self.decoration_theme, decoration_height, is_focused);
+
         }
 
         self.apply_keyboard_focus();
+    }
+
+    /// Scans for and removes any dead window instances (e.g. from ungraceful
+    /// client socket disconnections) from `window_map`, `window_to_id`, `space`,
+    /// and `layout`.
+    pub fn cleanup_dead_windows(&mut self) {
+        let dead: Vec<(glide_layout::WindowId, GlideWindow)> = self
+            .window_map
+            .iter()
+            .filter(|(_, window)| !window.alive())
+            .map(|(&id, window)| (id, window.clone()))
+            .collect();
+
+        if dead.is_empty() {
+            return;
+        }
+
+        for (id, window) in dead {
+            self.space.unmap_elem(&window);
+            self.window_to_id.remove(&window);
+            self.window_map.remove(&id);
+            self.layout.remove_window(id);
+            if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
+                handle.send_closed();
+                self.foreign_toplevel_list_state.remove_toplevel(&handle);
+            }
+        }
+
+        self.idle_inhibited_surfaces.retain(|surface| surface.alive());
+        if self.idle_inhibited_surfaces.is_empty() {
+            self.idle_notifier_state.set_is_inhibited(false);
+        }
+
+        self.suppressed_keys.clear();
+        self.ext_workspace_state
+            .sync_workspaces(&self.display_handle, &self.layout);
     }
 
     /// Pushes activation and maximized/fullscreen state (and, only for those,
@@ -375,9 +514,9 @@ impl GlideState {
     /// what it tells the client is the *content* size, insets already
     /// excluded, since the client only ever draws its own content area.
     fn apply_window_state(window: &GlideWindow, state: &glide_layout::WindowState, focused: bool) {
-        let toplevel = window
-            .toplevel()
-            .expect("only Window::new_wayland_window is used, so toplevel() is always Some");
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
 
         let mut changed = false;
         toplevel.with_pending_state(|pending| {
@@ -430,12 +569,23 @@ impl GlideState {
             .seat
             .get_keyboard()
             .expect("a keyboard was added in GlideState::new");
+
+        let current_focus = keyboard.current_focus();
+        if current_focus != target {
+            self.suppressed_keys.clear();
+        }
+
         keyboard.set_focus(self, target, serial);
     }
 
     /// Registers a newly mapped toplevel with the layout engine.
     ///
     /// Returns the id the layout assigned to it.
+    #[expect(
+        clippy::missing_panics_doc,
+        clippy::needless_pass_by_value,
+        reason = "single-threaded event loop mutexes are never poisoned; window ownership matches track_window caller design"
+    )]
     pub fn track_window(&mut self, window: GlideWindow, parent: Option<glide_layout::WindowId>) {
         let id = glide_layout::WindowId::next();
         let size = layout_size(&window);
@@ -446,24 +596,41 @@ impl GlideState {
             self.layout.add_window(id, size);
         }
 
-        // Every window is decorated for now (respecting a client's own
-        // xdg-decoration preference is M4.5). Set before the first real size
-        // arrives — see `set_window_insets`'s docs — so the very first
-        // placement already leaves room for the titlebar.
-        let height = i32::try_from(self.decoration_theme.height).unwrap_or(i32::MAX);
-        self.layout.set_window_insets(
-            id,
-            glide_layout::Insets {
-                top: height,
-                left: 0,
-                right: 0,
-                bottom: 0,
-            },
-        );
+        // By default, Wayland clients are responsible for drawing their own
+        // decorations (ClientSide). We only decorate them if they explicitly
+        // negotiate ServerSide via the xdg-decoration protocol (handled in
+        // `request_mode`).
+        self.layout.set_window_insets(id, glide_layout::Insets::NONE);
 
         self.window_map.insert(id, window.clone());
-        self.window_to_id.insert(window, id);
+        self.window_to_id.insert(window.clone(), id);
+
+        let (title, app_id) = window.toplevel().map_or_else(
+            || (String::new(), String::new()),
+            |toplevel| {
+                with_states(toplevel.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .map(|data| {
+                            let guard = data.lock().unwrap();
+                            (
+                                guard.title.clone().unwrap_or_default(),
+                                guard.app_id.clone().unwrap_or_default(),
+                            )
+                        })
+                        .unwrap_or_default()
+                })
+            },
+        );
+        let handle = self
+            .foreign_toplevel_list_state
+            .new_toplevel::<Self>(title, app_id);
+        self.foreign_toplevel_handles.insert(id, handle);
+
         self.reconcile_space();
+        self.ext_workspace_state
+            .sync_workspaces(&self.display_handle, &self.layout);
     }
 
     /// Removes a window from the layout and the scene.
@@ -472,21 +639,28 @@ impl GlideState {
     /// surfaces, so a closed window's workspace is torn down immediately
     /// instead of lingering until something else happens to reconcile.
     pub fn untrack_window(&mut self, surface: &WlSurface) {
-        let Some((&id, window)) = self
+        let id_opt = self
             .window_map
             .iter()
             .find(|(_, window)| window_surface(window) == surface)
-        else {
-            return;
-        };
+            .map(|(&id, _)| id);
 
-        let window = window.clone();
-        self.space.unmap_elem(&window);
-        self.window_to_id.remove(&window);
-        self.window_map.remove(&id);
-        self.layout.remove_window(id);
+        if let Some(id) = id_opt {
+            if let Some(window) = self.window_map.remove(&id) {
+                self.space.unmap_elem(&window);
+                self.window_to_id.remove(&window);
+                self.layout.remove_window(id);
+                if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
+                    handle.send_closed();
+                    self.foreign_toplevel_list_state.remove_toplevel(&handle);
+                }
+            }
+        }
 
+        self.cleanup_dead_windows();
         self.reconcile_space();
+        self.ext_workspace_state
+            .sync_workspaces(&self.display_handle, &self.layout);
     }
 
     /// Layout id for a mapped window, if it is tracked.
@@ -551,7 +725,12 @@ impl GlideState {
         // Focusing a window is also how a layer surface *loses* the
         // keyboard: click a window, the launcher's turn is over.
         self.layer_focus = None;
-        if self.layout.focus_window(id) {
+        let mut changed = false;
+        if self.layout.overview_active {
+            self.layout.overview_active = false;
+            changed = true;
+        }
+        if self.layout.focus_window(id) || changed {
             self.reconcile_space();
         }
     }
@@ -608,6 +787,8 @@ impl GlideState {
 
         tracing::info!(outputs = infos.len(), "layout outputs synchronized");
         self.layout.outputs_changed(&infos);
+        self.wlr_output_manager_state
+            .sync_outputs(&self.display_handle, &self.space);
     }
 
     /// Switches a window between server-side decorations and none, keeping
@@ -651,6 +832,7 @@ impl GlideState {
         window: &GlideWindow,
         content_location: Point<i32, Logical>,
     ) {
+        if self.layout.overview_active { return; }
         let Some(id) = self.window_id(window) else {
             return;
         };
@@ -669,6 +851,7 @@ impl GlideState {
 
     /// Records an interactive resize. See [`Self::record_window_move`].
     pub fn record_window_resize(&mut self, window: &GlideWindow) {
+        if self.layout.overview_active { return; }
         let Some(id) = self.window_id(window) else {
             return;
         };
@@ -760,12 +943,15 @@ impl GlideState {
         let content_origin = location.to_f64();
 
         let decoration_hit = {
-            let deco = window.decoration_state();
-            let header_height = f64::from(deco.header.height());
-            let decoration_origin = content_origin - Point::from((0.0, header_height));
-            deco.header
-                .contains(pos - decoration_origin)
-                .then_some(decoration_origin)
+            if let Some(deco) = window.try_decoration_state() {
+                let header_height = f64::from(deco.header.height());
+                let decoration_origin = content_origin - Point::from((0.0, header_height));
+                deco.header
+                    .contains(pos - decoration_origin)
+                    .then_some(decoration_origin)
+            } else {
+                None
+            }
         };
         if let Some(decoration_origin) = decoration_hit {
             return Some((

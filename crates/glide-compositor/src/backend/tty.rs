@@ -30,7 +30,14 @@
 //! (see [`DeviceData`]), so [`UdevEvent::Added`]/[`UdevEvent::Removed`] for
 //! any *other* device are just logged and otherwise ignored.
 
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    time::Duration,
+};
+
+use smithay::backend::renderer::element::default_primary_scanout_output_compare;
+use smithay::desktop::utils::update_surface_primary_scanout_output;
 
 use anyhow::{Context, anyhow};
 use smithay::{
@@ -874,44 +881,54 @@ impl GlideState {
             return;
         };
 
+        let clear_color = if self.layout.overview_active {
+            [0.1, 0.1, 0.1, 1.0] // Dark gray
+        } else {
+            FILL_COLOR
+        };
+
         let render_result = surface.drm_output.render_frame(
             gles_renderer,
             &elements,
-            FILL_COLOR,
+            clear_color,
             FrameFlags::DEFAULT,
         );
 
         match render_result {
-            Ok(res) if !res.is_empty => {
-                if let Err(err) = surface.drm_output.queue_frame(()) {
-                    tracing::error!("failed to queue frame: {:?}", err);
-                    self.schedule_repaint(crtc, &output);
-                    return;
+            Ok(res) => {
+                if !res.is_empty {
+                    if let Err(err) = surface.drm_output.queue_frame(()) {
+                        tracing::error!("failed to queue frame: {:?}", err);
+                        self.schedule_repaint(crtc, &output);
+                        return;
+                    }
                 }
 
-                // Frame callbacks let clients driven by them (rather than
-                // by presentation feedback) know it's time to draw their
-                // next frame. Without this, a client renders once and then
-                // waits forever.
-                //
-                // Note that `space.refresh()`/`popups.cleanup()`/
-                // `flush_clients()` deliberately do *not* live here: they
-                // belong to servicing clients, not to rendering, and are
-                // driven once per event loop iteration in `main.rs`.
-                self.space.elements_for_output(&output).for_each(|window| {
-                    window.send_frame(
-                        &output,
-                        self.start_time.elapsed(),
-                        Some(Duration::ZERO),
-                        |_, _| Some(output.clone()),
-                    );
+                self.space.elements().for_each(|window| {
+                    window.with_surfaces(|s, states| {
+                        update_surface_primary_scanout_output(
+                            s,
+                            &output,
+                            states,
+                            None,
+                            &res.states,
+                            default_primary_scanout_output_compare,
+                        );
+                    });
                 });
-            }
-            Ok(_) => {
-                // No damage since the last frame: `queue_frame` was
-                // deliberately skipped, so no `VBlank` will arrive on its
-                // own to drive the next repaint. Poll again shortly instead.
-                self.schedule_repaint(crtc, &output);
+
+                if !res.is_empty {
+                    self.space.elements_for_output(&output).for_each(|window| {
+                        window.send_frame(
+                            &output,
+                            self.start_time.elapsed(),
+                            Some(Duration::ZERO),
+                            |_, _| Some(output.clone()),
+                        );
+                    });
+                } else {
+                    self.schedule_repaint(crtc, &output);
+                }
             }
             Err(err) => {
                 tracing::error!("failed to render frame: {:?}", err);

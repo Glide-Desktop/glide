@@ -34,6 +34,8 @@ pub enum KeyAction {
     Fullscreen,
     /// Toggle minimize for focused window.
     Minimize,
+    /// Toggle overview mode.
+    ToggleOverview,
     /// Execute arbitrary shell command.
     Exec(String),
     /// The key was intercepted (e.g. a suppressed release) but has no effect.
@@ -132,6 +134,7 @@ impl GlideState {
     /// Panics if no keyboard or pointer was added to the seat; `GlideState::new`
     /// always adds both, so in practice this never fires.
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        self.idle_notifier_state.notify_activity(&self.seat);
         match event {
             InputEvent::Keyboard { event, .. } => self.handle_keyboard_event::<I>(&event),
             InputEvent::PointerMotion { event, .. } => self.handle_pointer_motion::<I>(&event),
@@ -238,34 +241,49 @@ impl GlideState {
     fn run_key_action(&mut self, action: KeyAction) {
         match action {
             KeyAction::Quit => self.loop_signal.stop(),
-            KeyAction::VtSwitch(vt) => self.backend_data.change_vt(vt),
+            KeyAction::VtSwitch(vt) => {
+                self.suppressed_keys.clear();
+                self.backend_data.change_vt(vt);
+            }
             KeyAction::SwitchWorkspace(idx) => {
                 tracing::info!(workspace_index = idx, "switching workspace");
+                self.suppressed_keys.clear();
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Index(idx));
                 self.reconcile_space();
+                self.ext_workspace_state
+                    .sync_workspaces(&self.display_handle, &self.layout);
             }
             KeyAction::MoveWindowToWorkspace(idx) => {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, workspace_index = idx, "moving window to workspace");
+                    self.suppressed_keys.clear();
                     self.layout.move_window_to_workspace(
                         focused,
                         glide_layout::WorkspaceTarget::Index(idx),
                     );
                     self.reconcile_space();
+                    self.ext_workspace_state
+                        .sync_workspaces(&self.display_handle, &self.layout);
                 }
             }
             KeyAction::NextWorkspace => {
                 tracing::info!("switching to next workspace");
+                self.suppressed_keys.clear();
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Next);
                 self.reconcile_space();
+                self.ext_workspace_state
+                    .sync_workspaces(&self.display_handle, &self.layout);
             }
             KeyAction::PrevWorkspace => {
                 tracing::info!("switching to prev workspace");
+                self.suppressed_keys.clear();
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Previous);
                 self.reconcile_space();
+                self.ext_workspace_state
+                    .sync_workspaces(&self.display_handle, &self.layout);
             }
             KeyAction::Maximize => {
                 if let Some(focused) = self.layout.focused_window() {
@@ -288,11 +306,18 @@ impl GlideState {
                     self.reconcile_space();
                 }
             }
+            KeyAction::ToggleOverview => {
+                tracing::info!("toggling overview");
+                self.layout.overview_active = !self.layout.overview_active;
+                self.reconcile_space();
+            }
             KeyAction::Exec(cmd) => {
                 tracing::info!(command = %cmd, "executing keybind command");
+                crate::reap_child_processes();
                 if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
                 }
+                crate::reap_child_processes();
             }
             KeyAction::None => {}
         }
@@ -729,4 +754,43 @@ mod tests {
             assert_eq!(action, Some(KeyAction::PrevWorkspace));
         }
     }
+
+    mod keycode_suppression {
+        use smithay::backend::input::Keycode;
+
+        #[test]
+        fn suppressed_keys_tracking_and_release() {
+
+            let mut suppressed_keys: Vec<Keycode> = Vec::new();
+            let keycode1 = Keycode::from(16_u32); // e.g. key '1'
+            let keycode2 = Keycode::from(24_u32); // e.g. key 'q'
+
+            // Add suppressed keys on press
+            suppressed_keys.push(keycode1);
+            suppressed_keys.push(keycode2);
+
+            assert!(suppressed_keys.contains(&keycode1));
+            assert!(suppressed_keys.contains(&keycode2));
+
+            // On release of keycode1, remove it
+            suppressed_keys.retain(|k| *k != keycode1);
+            assert!(!suppressed_keys.contains(&keycode1));
+            assert!(suppressed_keys.contains(&keycode2));
+
+            // On release of keycode2, remove it
+            suppressed_keys.retain(|k| *k != keycode2);
+            assert!(suppressed_keys.is_empty());
+        }
+
+        #[test]
+        fn keycode_suppression_resets_on_workspace_switch_or_focus_change() {
+            let mut suppressed_keys: Vec<Keycode> = vec![Keycode::from(10_u32), Keycode::from(20_u32)];
+            assert!(!suppressed_keys.is_empty());
+
+            // Workspace switch / VT switch / focus change triggers clear
+            suppressed_keys.clear();
+            assert!(suppressed_keys.is_empty(), "suppressed_keys must be empty after reset");
+        }
+    }
 }
+

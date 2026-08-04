@@ -149,6 +149,7 @@ pub struct Layout {
     focused: Option<WindowId>,
     outputs: Vec<OutputInfo>,
     policy: NewWindowPolicy,
+    pub overview_active: bool,
 }
 
 impl Default for Layout {
@@ -169,6 +170,7 @@ impl Layout {
             focused: None,
             outputs: Vec::new(),
             policy: NewWindowPolicy::NewWorkspace,
+            overview_active: false,
         }
     }
 
@@ -266,14 +268,30 @@ impl Layout {
     /// Ordering comes from the workspace's own stack rather than the window
     /// map: iterating a `HashMap` would give a different Z-order on every
     /// call, making windows randomly swap places on screen.
-    pub fn visible_windows(&self) -> impl Iterator<Item = &WindowState> {
-        self.workspaces
-            .iter()
-            .find(|ws| ws.id == self.active)
-            .into_iter()
-            .flat_map(|ws| ws.windows.iter())
-            .filter_map(|id| self.windows.get(id))
-            .filter(|state| !state.minimized)
+    pub fn visible_windows(&self) -> impl Iterator<Item = WindowState> {
+        let mut ordered_windows = Vec::new();
+        if self.overview_active {
+            for ws in &self.workspaces {
+                for id in &ws.windows {
+                    if let Some(state) = self.windows.get(id) {
+                        if !state.minimized {
+                            ordered_windows.push(state.clone());
+                        }
+                    }
+                }
+            }
+        } else {
+            if let Some(ws) = self.workspaces.iter().find(|ws| ws.id == self.active) {
+                for id in &ws.windows {
+                    if let Some(state) = self.windows.get(id) {
+                        if !state.minimized {
+                            ordered_windows.push(state.clone());
+                        }
+                    }
+                }
+            }
+        }
+        ordered_windows.into_iter()
     }
 
     /// Raises a window to the top of its workspace's stack.
@@ -559,6 +577,7 @@ impl Layout {
     /// is meant to take over the whole screen.
     pub fn set_fullscreen(&mut self, w: WindowId, fullscreen: bool) -> bool {
         let output_geom = self.primary_output_geometry();
+        let work_area = self.primary_output_work_area();
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
@@ -575,10 +594,10 @@ impl Layout {
             state.geometry = output_geom;
             state.fullscreen = true;
         } else {
-            if !state.maximized {
-                if let Some(saved) = state.saved_geometry.take() {
-                    state.geometry = saved;
-                }
+            if state.maximized {
+                state.geometry = work_area;
+            } else if let Some(saved) = state.saved_geometry.take() {
+                state.geometry = saved;
             }
             state.fullscreen = false;
         }
@@ -814,7 +833,8 @@ impl Layout {
             content_size.height + insets.height(),
         );
 
-        let offset = i32::try_from(index_on_ws).unwrap_or(i32::MAX) * CASCADE_STEP;
+        let step = i32::try_from(index_on_ws % 8).unwrap_or(0);
+        let offset = step * CASCADE_STEP;
         let x = work_area.loc.x + (work_area.size.width - frame_size.width) / 2 + offset;
         let y = work_area.loc.y + (work_area.size.height - frame_size.height) / 2 + offset;
 

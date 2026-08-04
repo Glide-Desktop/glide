@@ -8,30 +8,64 @@ use std::{
 
 use glide_ipc::{Request, Response, WindowSelector, WorkspaceTarget};
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct CliArgs {
+    pub json_output: bool,
+    pub subcommand_args: Vec<String>,
+}
+
+pub fn parse_cli_args(args: &[String]) -> anyhow::Result<CliArgs> {
+    if args.len() < 2 {
+        anyhow::bail!("No command specified");
+    }
+
+    let mut json_output = false;
+    let mut idx = 1;
+
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg == "--json" {
+            json_output = true;
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    if idx >= args.len() {
+        anyhow::bail!("No subcommand specified");
+    }
+
+    let mut subcommand_args: Vec<String> = args[idx..].to_vec();
+
+    if subcommand_args.first().map(String::as_str) != Some("exec") {
+        if let Some(pos) = subcommand_args.iter().position(|a| a == "--json") {
+            json_output = true;
+            subcommand_args.remove(pos);
+        }
+    }
+
+    Ok(CliArgs {
+        json_output,
+        subcommand_args,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        print_usage();
-        std::process::exit(1);
-    }
+    let cli = match parse_cli_args(&args) {
+        Ok(c) => c,
+        Err(_) => {
+            print_usage();
+            std::process::exit(1);
+        }
+    };
 
-    let json_output = args.iter().any(|arg| arg == "--json");
-    let filtered_args: Vec<String> = args
-        .into_iter()
-        .skip(1)
-        .filter(|arg| arg != "--json")
-        .collect();
-
-    if filtered_args.is_empty() {
-        print_usage();
-        std::process::exit(1);
-    }
-
-    let request = parse_args(&filtered_args)?;
+    let request = parse_args(&cli.subcommand_args)?;
     let socket_path = find_socket_path()?;
     let response = send_request(&socket_path, &request)?;
 
-    if json_output {
+    if cli.json_output {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
         print_response(&response);
@@ -267,4 +301,93 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn test_parse_cli_args_flags() {
+        let args = vec!["glidectl".into(), "--json".into(), "workspace".into(), "list".into()];
+        let cli = parse_cli_args(&args).unwrap();
+        assert!(cli.json_output);
+        assert_eq!(cli.subcommand_args, vec!["workspace", "list"]);
+
+        let args2 = vec!["glidectl".into(), "workspace".into(), "list".into(), "--json".into()];
+        let cli2 = parse_cli_args(&args2).unwrap();
+        assert!(cli2.json_output);
+        assert_eq!(cli2.subcommand_args, vec!["workspace", "list"]);
+
+        let args3 = vec!["glidectl".into(), "exec".into(), "my_script".into(), "--json".into()];
+        let cli3 = parse_cli_args(&args3).unwrap();
+        assert!(!cli3.json_output);
+        assert_eq!(cli3.subcommand_args, vec!["exec", "my_script", "--json"]);
+        let req = parse_args(&cli3.subcommand_args).unwrap();
+        assert_eq!(req, Request::Exec { command: "my_script --json".into() });
+
+        let args4 = vec!["glidectl".into(), "--json".into(), "exec".into(), "my_script".into(), "--json".into()];
+        let cli4 = parse_cli_args(&args4).unwrap();
+        assert!(cli4.json_output);
+        assert_eq!(cli4.subcommand_args, vec!["exec", "my_script", "--json"]);
+        let req4 = parse_args(&cli4.subcommand_args).unwrap();
+        assert_eq!(req4, Request::Exec { command: "my_script --json".into() });
+    }
+
+    #[test]
+    fn test_adversarial_cli_edge_cases() {
+        // Missing arguments
+        assert!(parse_cli_args(&[]).is_err());
+        assert!(parse_cli_args(&["glidectl".into()]).is_err());
+        assert!(parse_cli_args(&["glidectl".into(), "--json".into()]).is_err());
+
+        // Workspace 0 (must error, 1-indexed)
+        let args_ws0 = vec!["glidectl".into(), "workspace".into(), "switch".into(), "0".into()];
+        let cli_ws0 = parse_cli_args(&args_ws0).unwrap();
+        assert!(parse_args(&cli_ws0.subcommand_args).is_err());
+
+        // Workspace prev / next / index
+        let args_prev = vec!["glidectl".into(), "workspace".into(), "switch".into(), "prev".into()];
+        let cli_prev = parse_cli_args(&args_prev).unwrap();
+        assert_eq!(
+            parse_args(&cli_prev.subcommand_args).unwrap(),
+            Request::SwitchWorkspace { target: WorkspaceTarget::Previous }
+        );
+
+        let args_next = vec!["glidectl".into(), "workspace".into(), "switch".into(), "next".into()];
+        let cli_next = parse_cli_args(&args_next).unwrap();
+        assert_eq!(
+            parse_args(&cli_next.subcommand_args).unwrap(),
+            Request::SwitchWorkspace { target: WorkspaceTarget::Next }
+        );
+
+        // Window focusfocused / window focus 42
+        let args_foc = vec!["glidectl".into(), "window".into(), "focus".into(), "focused".into()];
+        let cli_foc = parse_cli_args(&args_foc).unwrap();
+        assert_eq!(
+            parse_args(&cli_foc.subcommand_args).unwrap(),
+            Request::FocusWindow { selector: WindowSelector::Focused }
+        );
+
+        let args_id = vec!["glidectl".into(), "--json".into(), "window".into(), "focus".into(), "42".into()];
+        let cli_id = parse_cli_args(&args_id).unwrap();
+        assert!(cli_id.json_output);
+        assert_eq!(
+            parse_args(&cli_id.subcommand_args).unwrap(),
+            Request::FocusWindow { selector: WindowSelector::Id(42) }
+        );
+
+        // Window move
+        let args_mv = vec!["glidectl".into(), "window".into(), "move".into(), "3".into(), "--json".into()];
+        let cli_mv = parse_cli_args(&args_mv).unwrap();
+        assert!(cli_mv.json_output);
+        assert_eq!(
+            parse_args(&cli_mv.subcommand_args).unwrap(),
+            Request::MoveWindow {
+                window: WindowSelector::Focused,
+                target: WorkspaceTarget::Index(2),
+            }
+        );
+
+        // Unknown commands
+        let args_unk = vec!["glidectl".into(), "unknown_cmd".into()];
+        let cli_unk = parse_cli_args(&args_unk).unwrap();
+        assert!(parse_args(&cli_unk.subcommand_args).is_err());
+    }
 }
+

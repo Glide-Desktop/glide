@@ -1,0 +1,20 @@
+--- /dev/null
++++ /dev/null
+@@ -628,15 +630,15 @@
+ 
+     // Chevron button.
+     if let Some(buf) = &header.chevron_buf {
+         out.push(DecorationBuffer {
+             buf: buf.clone(),
+-            offset: Point::from((BUTTON_WIDTH, 0)),
++            offset: Point::from((header.width - BUTTON_WIDTH * 3, 0)),
+         });
+     }
+ 
+     // Maximize button.
+     if let Some(buf) = &header.maximize_buf {
+         out.push(DecorationBuffer {
+             buf: buf.clone(),
+-            offset: Point::from((0, 0)),
++            offset: Point::from((header.width - BUTTON_WIDTH * 2, 0)),
+         });

@@ -11,6 +11,7 @@ mod grabs;
 mod input;
 mod ipc;
 mod logging;
+mod paint;
 mod state;
 mod window;
 
@@ -23,6 +24,10 @@ use backend::tty::TtyData;
 pub use state::GlideState;
 
 fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "profile-with-tracy")]
+    tracy_client::Client::start();
+    profiling::register_thread!("Main");
+
     let log_path = logging::init();
 
     tracing::info!(
@@ -98,15 +103,8 @@ fn run() -> anyhow::Result<()> {
     // Spawn a test client, that will run under GlideState
     spawn_client();
 
-    // Servicing clients has to happen every event loop iteration, not from
-    // inside the render path: with a static scene `render_frame` reports no
-    // damage and returns early, so a flush living there would simply never
-    // run. That left queued events (wl_output state, the reply to the
-    // client's `wl_display.sync`) stuck in the outgoing buffer forever —
-    // the client blocked on that roundtrip, never created a surface, and so
-    // the scene stayed empty, which kept damage empty: a self-sustaining
-    // deadlock.
     event_loop.run(None, &mut state, move |state| {
+        reap_child_processes();
         state.space.refresh();
         state.popups.cleanup();
         let _ = state.display_handle.flush_clients();
@@ -135,4 +133,29 @@ fn spawn_client() {
         Ok(child) => tracing::info!(command, pid = child.id(), "spawned client"),
         Err(err) => tracing::error!(command, "failed to spawn client: {err}"),
     }
+    reap_child_processes();
 }
+
+pub fn reap_child_processes() {
+    unsafe {
+        while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reap_child_processes() {
+        // Spawn 3 short-lived child processes
+        for _ in 0..3 {
+            let _ = std::process::Command::new("true").spawn();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        reap_child_processes();
+        // Spawning again to ensure reap is idempotent and non-blocking
+        reap_child_processes();
+    }
+}
+

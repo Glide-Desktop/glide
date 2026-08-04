@@ -257,10 +257,39 @@ fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideStat
     }
 }
 
+/// Writes all bytes to a non-blocking `UnixStream`, managing `WouldBlock` retries
+/// and partial write offsets so responses are not dropped if the stream momentarily blocks.
+fn write_all_nonblocking(stream: &UnixStream, mut data: &[u8]) -> std::io::Result<()> {
+    let mut stream = stream;
+    let mut retries = 0;
+    while !data.is_empty() {
+        match stream.write(data) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::WriteZero,
+                    "failed to write response: zero bytes written",
+                ));
+            }
+            Ok(n) => {
+                data = &data[n..];
+                retries = 0;
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                if retries >= 100 {
+                    return Err(err);
+                }
+                retries += 1;
+                std::thread::yield_now();
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
 /// Parses `line`, dispatches it and writes the response back.
 fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
-    let mut stream = stream;
-
     let response = match std::str::from_utf8(line) {
         Ok(text) => match serde_json::from_str::<Request>(text.trim()) {
             Ok(request) => dispatch_request(state, request),
@@ -279,14 +308,10 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     };
     json.push('\n');
 
-    // Best-effort, non-blocking. Responses are small (a few KB for the
-    // largest listing) and comfortably fit a socket buffer, so a short write
-    // means the client is not reading — its problem, not ours. We must never
-    // block the event loop waiting for it.
-    if let Err(err) = stream.write_all(json.as_bytes()) {
+    if let Err(err) = write_all_nonblocking(stream, json.as_bytes()) {
         tracing::debug!(
             ?err,
-            "failed to write an IPC response; client likely hung up"
+            "failed to write an IPC response; client likely hung up or buffer full"
         );
     }
 }
@@ -416,6 +441,7 @@ fn window_identity(window: &crate::window::GlideWindow) -> (Option<String>, Opti
 }
 
 fn spawn_command(command: &str) -> Response {
+    crate::reap_child_processes();
     match std::process::Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -423,6 +449,7 @@ fn spawn_command(command: &str) -> Response {
     {
         Ok(child) => {
             tracing::info!(command, pid = child.id(), "ipc spawned process");
+            crate::reap_child_processes();
             Response::Ok
         }
         Err(err) => Response::Error {
@@ -462,4 +489,71 @@ mod tests {
             glide_layout::WorkspaceTarget::Previous
         );
     }
+
+    #[test]
+    fn write_all_nonblocking_handles_partial_writes() {
+        let (server_stream, client_stream) = UnixStream::pair().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+
+        let payload = vec![0xAB_u8; 64 * 1024]; // 64 KB payload
+        let payload_clone = payload.clone();
+
+        let handle = std::thread::spawn(move || {
+            let mut received = Vec::new();
+            let mut buf = [0_u8; 1024];
+            while received.len() < payload_clone.len() {
+                match (&client_stream).read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        received.extend_from_slice(&buf[..n]);
+                        std::thread::sleep(std::time::Duration::from_micros(50));
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_micros(50));
+                    }
+                    Err(e) => panic!("unexpected read error: {e:?}"),
+                }
+            }
+            received
+        });
+
+        let write_res = write_all_nonblocking(&server_stream, &payload);
+        assert!(write_res.is_ok(), "write_all_nonblocking failed: {write_res:?}");
+
+        let received = handle.join().unwrap();
+        assert_eq!(received, payload);
+    }
+
+    #[test]
+    fn write_all_nonblocking_times_out_on_full_buffer() {
+        let (server_stream, _client_stream) = UnixStream::pair().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+
+        // Fill socket buffer until write returns WouldBlock
+        let dummy = [0x55_u8; 4096];
+        #[allow(clippy::unused_io_amount)]
+        while (&server_stream).write(&dummy).is_ok_and(|n| n > 0) {}
+
+
+
+
+
+        // Now write_all_nonblocking must attempt retries and return WouldBlock error when retries exhaust
+        let res = write_all_nonblocking(&server_stream, b"test response");
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().kind(), ErrorKind::WouldBlock);
+    }
+
+
+    #[test]
+    fn write_all_nonblocking_handles_closed_socket() {
+        let (server_stream, client_stream) = UnixStream::pair().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+        drop(client_stream); // Close client side
+
+        let res = write_all_nonblocking(&server_stream, b"hello client");
+        assert!(res.is_err());
+    }
 }
+
+

@@ -18,13 +18,15 @@
 //! Every window is decorated for now; respecting a client's own
 //! `xdg-decoration` preference is M4.5.
 
-use std::cell::{RefCell, RefMut};
+use std::cell::{Ref, RefCell, RefMut};
 
 use smithay::{
-    backend::input::ButtonState,
-    backend::renderer::element::{
-        Kind,
-        solid::{SolidColorBuffer, SolidColorRenderElement},
+    backend::{
+        allocator::Fourcc,
+        input::ButtonState,
+        renderer::element::{
+            memory::MemoryRenderBuffer,
+        },
     },
     input::{
         Seat,
@@ -36,13 +38,14 @@ use smithay::{
             RelativeMotionEvent,
         },
     },
-    utils::{IsAlive, Logical, Physical, Point, Scale, Serial},
+    utils::{IsAlive, Logical, Point, Rectangle, Transform},
 };
 
 use crate::{
     GlideState,
     config::DecorationTheme,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab, resize_grab::ResizeEdge},
+    paint::Painter,
     window::GlideWindow,
 };
 
@@ -70,6 +73,12 @@ pub enum MenuItem {
 
 impl MenuItem {
     pub const ALL: &'static [Self] = &[Self::Minimize];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Minimize => "Minimize",
+        }
+    }
 }
 
 /// Per-window decoration state: hover tracking and the pixel buffers redrawn
@@ -84,6 +93,16 @@ pub struct DecorationState {
     pub header: HeaderBar,
 }
 
+/// A painted element: a pixel buffer plus its position relative to the
+/// decoration's own origin (titlebar top-left).  Returned by
+/// [`frame_buffers`] and converted to GPU-uploaded render elements in
+/// `window.rs`.
+pub struct DecorationBuffer {
+    pub buf: MemoryRenderBuffer,
+    /// Logical offset from the titlebar top-left.
+    pub offset: Point<i32, Logical>,
+}
+
 #[derive(Debug, Default)]
 pub struct HeaderBar {
     /// 0 means undecorated: no titlebar is drawn or reserved. Set once from
@@ -94,6 +113,8 @@ pub struct HeaderBar {
     /// to know where the window's bottom edge — and with it the bottom
     /// resize band — actually is.
     content_height: i32,
+    /// Window title, used for the label in the drag zone.
+    title: String,
     pointer_loc: Option<Point<f64, Logical>>,
     menu_open: bool,
     menu_hover: Option<usize>,
@@ -108,12 +129,14 @@ pub struct HeaderBar {
     theme: DecorationTheme,
     focused: bool,
 
-    background: SolidColorBuffer,
-    maximize_button: SolidColorBuffer,
-    close_button: SolidColorBuffer,
-    chevron_button: SolidColorBuffer,
-    menu_background: SolidColorBuffer,
-    menu_items: Vec<SolidColorBuffer>,
+    /// Cached pixel buffers for each titlebar element.  Rebuilt whenever
+    /// their appearance changes (hover, focus, open menu, resize).
+    titlebar_buf: Option<MemoryRenderBuffer>,
+    maximize_buf: Option<MemoryRenderBuffer>,
+    chevron_buf: Option<MemoryRenderBuffer>,
+    close_buf: Option<MemoryRenderBuffer>,
+    /// One buffer per menu row, rebuilt when the menu opens.
+    menu_row_bufs: Vec<MemoryRenderBuffer>,
 }
 
 /// What part of the titlebar a point falls in, for both hit-testing and
@@ -160,6 +183,13 @@ fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
     }
 }
 
+/// Convert `[f32; 4]` (R,G,B,A linear) to `[u8; 4]` (B,G,R,A bytes)
+/// as expected by the ARGB8888 pixel format used in `MemoryRenderBuffer`.
+fn to_argb(c: [f32; 4]) -> [u8; 4] {
+    let b = |f: f32| (f.clamp(0.0, 1.0) * 255.0) as u8;
+    [b(c[2]), b(c[1]), b(c[0]), b(c[3])]
+}
+
 impl HeaderBar {
     #[must_use]
     pub const fn is_decorated(&self) -> bool {
@@ -184,13 +214,24 @@ impl HeaderBar {
         self.focused = focused;
     }
 
+    /// Update the window title stored for rendering in the drag zone.
+    pub fn set_title(&mut self, title: String) {
+        if self.title != title {
+            self.title = title;
+            // Invalidate the titlebar buffer so it gets repainted.
+            self.titlebar_buf = None;
+        }
+    }
+
     fn zone_at(&self, x: f64) -> HitZone {
-        if x < f64::from(BUTTON_WIDTH) {
+        let w = f64::from(self.width);
+        let bw = f64::from(BUTTON_WIDTH);
+        if x < bw {
             HitZone::Maximize
-        } else if x < f64::from(BUTTON_WIDTH * 2) {
-            HitZone::Chevron
-        } else if x >= f64::from(self.width - BUTTON_WIDTH) {
+        } else if x >= w - bw {
             HitZone::Close
+        } else if x >= w - bw * 2.0 {
+            HitZone::Chevron
         } else {
             HitZone::Drag
         }
@@ -374,80 +415,144 @@ impl HeaderBar {
             && loc.y < f64::from(self.height)
     }
 
-    /// Redraws every buffer that needs it, from the theme/focus snapshotted
-    /// by [`Self::sync`] and the hover state tracked live. Cheap to call
-    /// every frame: `SolidColorBuffer::update` only bumps its damage counter
-    /// when a value actually changed.
-    fn redraw(&mut self) {
+    /// Redraws every `MemoryRenderBuffer` that needs updating.
+    ///
+    /// Buffers are only recreated when their content actually changes (hover
+    /// state, focus, open menu, window size, title) — so this is cheap to
+    /// call every frame.
+    fn redraw(&mut self, painter: &Painter) {
         if self.width == 0 || self.height == 0 {
             return;
         }
 
         let theme = &self.theme;
-        let bg = if self.focused {
+        let bg_color = if self.focused {
             theme.background_focused.0
         } else {
             theme.background.0
         };
-        self.background.update((self.width, self.height), bg);
+        let bg = to_argb(bg_color);
 
-        // Only a pointer inside the strip itself highlights a button:
-        // hovering the resize band above the titlebar is not hovering
-        // whatever button happens to share its x range.
+        // Determine which zone is hovered (strip only — not the resize band).
         let hovered = self
             .pointer_loc
             .filter(|l| self.in_titlebar_strip(*l))
             .map(|l| self.zone_at(l.x));
-        let color_for = |zone: HitZone, normal: [f32; 4], hover: [f32; 4]| {
-            if hovered == Some(zone) { hover } else { normal }
-        };
 
-        self.maximize_button.update(
-            (BUTTON_WIDTH, self.height),
-            color_for(
-                HitZone::Maximize,
-                theme.maximize_button.0,
-                theme.maximize_button_hover.0,
-            ),
-        );
-        self.chevron_button.update(
-            (BUTTON_WIDTH, self.height),
-            color_for(
-                HitZone::Chevron,
-                theme.chevron_button.0,
-                theme.chevron_button_hover.0,
-            ),
-        );
-        self.close_button.update(
-            (BUTTON_WIDTH, self.height),
-            color_for(
-                HitZone::Close,
-                theme.close_button.0,
-                theme.close_button_hover.0,
-            ),
-        );
+        // ── Titlebar background + title label ─────────────────────────────
+        // Repaint whenever width, height, focus, title, or hover changes. We
+        // always repaint here for simplicity; the damage system inside
+        // MemoryRenderBuffer will only upload the changed pixels to the GPU.
+        {
+            let w = self.width;
+            let h = self.height;
+            let buf = self.titlebar_buf.get_or_insert_with(|| {
+                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
+            });
+            // Grow if needed.
+            let mut ctx = buf.render();
+            ctx.resize((w, h));
+            let title = self.title.clone();
+            let _ = ctx.draw(|pixels| {
+                let fg = [255, 255, 255, bg[3]]; // white text, same alpha as bg
+                let x_min = BUTTON_WIDTH;
+                let x_max = w - BUTTON_WIDTH * 2;
+                painter.draw_label(pixels, w, h, x_min, x_max, &title, fg, bg);
+                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
+            });
+        }
 
+        // ── Maximize button ────────────────────────────────────────────────
+        {
+            let w = BUTTON_WIDTH;
+            let h = self.height;
+            let btn_bg = if hovered == Some(HitZone::Maximize) {
+                to_argb(theme.maximize_button_hover.0)
+            } else {
+                to_argb(theme.maximize_button.0)
+            };
+            let fg = [220, 220, 220, btn_bg[3]];
+            let buf = self.maximize_buf.get_or_insert_with(|| {
+                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
+            });
+            let mut ctx = buf.render();
+            ctx.resize((w, h));
+            let _ = ctx.draw(|pixels| {
+                Painter::draw_icon_maximize(pixels, w, h, fg, btn_bg);
+                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
+            });
+        }
+
+        // ── Chevron button ─────────────────────────────────────────────────
+        {
+            let w = BUTTON_WIDTH;
+            let h = self.height;
+            let btn_bg = if hovered == Some(HitZone::Chevron) {
+                to_argb(theme.chevron_button_hover.0)
+            } else {
+                to_argb(theme.chevron_button.0)
+            };
+            let fg = [200, 200, 200, btn_bg[3]];
+            let buf = self.chevron_buf.get_or_insert_with(|| {
+                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
+            });
+            let mut ctx = buf.render();
+            ctx.resize((w, h));
+            let _ = ctx.draw(|pixels| {
+                Painter::draw_icon_chevron(pixels, w, h, fg, btn_bg);
+                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
+            });
+        }
+
+        // ── Close button ───────────────────────────────────────────────────
+        {
+            let w = BUTTON_WIDTH;
+            let h = self.height;
+            let btn_bg = if hovered == Some(HitZone::Close) {
+                to_argb(theme.close_button_hover.0)
+            } else {
+                to_argb(theme.close_button.0)
+            };
+            let fg = [255, 255, 255, btn_bg[3]];
+            let buf = self.close_buf.get_or_insert_with(|| {
+                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
+            });
+            let mut ctx = buf.render();
+            ctx.resize((w, h));
+            let _ = ctx.draw(|pixels| {
+                Painter::draw_icon_close(pixels, w, h, fg, btn_bg);
+                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
+            });
+        }
+
+        // ── Dropdown menu ──────────────────────────────────────────────────
         if self.menu_open {
-            self.menu_background.update(
-                (
-                    self.width,
-                    self.height * i32::try_from(MenuItem::ALL.len()).unwrap_or(0),
-                ),
-                theme.menu_background.0,
-            );
-            self.menu_items
-                .resize_with(MenuItem::ALL.len(), SolidColorBuffer::default);
+            let row_h = self.height;
+            let row_w = self.width;
+            self.menu_row_bufs
+                .resize_with(MenuItem::ALL.len(), MemoryRenderBuffer::default);
             let menu_hover = self.menu_hover;
-            let menu_item_hover = theme.menu_item_hover.0;
-            let menu_background = theme.menu_background.0;
-            for (i, buf) in self.menu_items.iter_mut().enumerate() {
-                let color = if menu_hover == Some(i) {
-                    menu_item_hover
-                } else {
-                    menu_background
-                };
-                buf.update((self.width, self.height), color);
+            let menu_bg = to_argb(theme.menu_background.0);
+            let menu_hover_bg = to_argb(theme.menu_item_hover.0);
+            let font_fg = [255u8, 230, 230, 230];
+            let font_fg_hover = [255u8, 255, 255, 255];
+            for (i, buf) in self.menu_row_bufs.iter_mut().enumerate() {
+                let is_hovered = menu_hover == Some(i);
+                let bg = if is_hovered { menu_hover_bg } else { menu_bg };
+                let fg = if is_hovered { font_fg_hover } else { font_fg };
+                let label = MenuItem::ALL
+                    .get(i)
+                    .map_or("", |item| item.label())
+                    .to_owned();
+                let mut ctx = buf.render();
+                ctx.resize((row_w, row_h));
+                let _ = ctx.draw(|pixels| {
+                    painter.draw_label(pixels, row_w, row_h, 0, row_w, &label, fg, bg);
+                    Ok::<_, ()>(vec![Rectangle::from_size((row_w, row_h).into())])
+                });
             }
+        } else {
+            self.menu_row_bufs.clear();
         }
     }
 }
@@ -564,13 +669,38 @@ fn run_menu_item(state: &mut GlideState, window: &GlideWindow, item: MenuItem) {
 impl GlideWindow {
     /// Per-window decoration state, created with `height: 0` (undecorated)
     /// on first access.
-    pub fn decoration_state(&self) -> RefMut<'_, DecorationState> {
+    pub fn decoration_state(&self) -> Ref<'_, DecorationState> {
+        self.user_data()
+            .insert_if_missing(|| RefCell::new(DecorationState::default()));
+        self.user_data()
+            .get::<RefCell<DecorationState>>()
+            .expect("inserted unconditionally on the line above")
+            .borrow()
+    }
+
+    pub fn decoration_state_mut(&self) -> RefMut<'_, DecorationState> {
         self.user_data()
             .insert_if_missing(|| RefCell::new(DecorationState::default()));
         self.user_data()
             .get::<RefCell<DecorationState>>()
             .expect("inserted unconditionally on the line above")
             .borrow_mut()
+    }
+
+    pub fn try_decoration_state(&self) -> Option<Ref<'_, DecorationState>> {
+        self.user_data()
+            .insert_if_missing(|| RefCell::new(DecorationState::default()));
+        self.user_data()
+            .get::<RefCell<DecorationState>>()
+            .and_then(|cell| cell.try_borrow().ok())
+    }
+
+    pub fn try_decoration_state_mut(&self) -> Option<RefMut<'_, DecorationState>> {
+        self.user_data()
+            .insert_if_missing(|| RefCell::new(DecorationState::default()));
+        self.user_data()
+            .get::<RefCell<DecorationState>>()
+            .and_then(|cell| cell.try_borrow_mut().ok())
     }
 
     /// Sets the titlebar height (0 disables the decoration entirely) and
@@ -587,11 +717,19 @@ impl GlideWindow {
     /// run against `width == 0` and classify most of the bar as Close.
     pub fn sync_decoration(&self, theme: &DecorationTheme, height: i32, focused: bool) {
         let content = self.geometry().size;
-        let mut state = self.decoration_state();
-        state.header.set_height(height);
-        state.header.width = content.w;
-        state.header.content_height = content.h;
-        state.header.sync(theme, focused);
+        if let Some(mut state) = self.try_decoration_state_mut() {
+            state.header.set_height(height);
+            state.header.width = content.w;
+            state.header.content_height = content.h;
+            state.header.sync(theme, focused);
+        }
+    }
+
+    /// Update the window title stored for rendering in the drag zone.
+    pub fn sync_title(&self, title: String) {
+        if let Some(mut state) = self.try_decoration_state_mut() {
+            state.header.set_title(title);
+        }
     }
 }
 
@@ -618,11 +756,14 @@ impl Decoration {
     /// before pressing; everywhere else it is the plain default.
     fn update_pointer(&self, data: &mut GlideState, event: &MotionEvent) {
         let icon = {
-            let mut deco = self.0.decoration_state();
-            deco.header.pointer_enter(event.location);
-            deco.header
-                .resize_edges_at(event.location)
-                .map_or(CursorIcon::Default, resize_cursor)
+            if let Some(mut deco) = self.0.try_decoration_state_mut() {
+                deco.header.pointer_enter(event.location);
+                deco.header
+                    .resize_edges_at(event.location)
+                    .map_or(CursorIcon::Default, resize_cursor)
+            } else {
+                CursorIcon::Default
+            }
         };
         data.cursor_status = CursorImageStatus::Named(icon);
     }
@@ -652,7 +793,10 @@ impl PointerTarget<GlideState> for Decoration {
         // same `RefCell` via `sync_decoration`, and executing them while
         // still borrowed panicked with `BorrowMutError` on the first
         // maximize-button click.
-        let action = self.0.decoration_state().header.on_button(event);
+        let action = self
+            .0
+            .try_decoration_state_mut()
+            .and_then(|mut deco| deco.header.on_button(event));
 
         match action {
             Some(DecorationAction::ToggleMaximize) => {
@@ -680,7 +824,9 @@ impl PointerTarget<GlideState> for Decoration {
     fn frame(&self, _seat: &Seat<GlideState>, _data: &mut GlideState) {}
 
     fn leave(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _serial: Serial, _time: u32) {
-        self.0.decoration_state().header.pointer_leave();
+        if let Some(mut deco) = self.0.try_decoration_state_mut() {
+            deco.header.pointer_leave();
+        }
     }
 
     fn gesture_swipe_begin(
@@ -741,85 +887,99 @@ impl PointerTarget<GlideState> for Decoration {
     }
 }
 
-/// Renders the titlebar (and, if open, its dropdown) for one window, using
-/// the theme/focus [`HeaderBar::sync`] last snapshotted and the hover state
-/// tracked live from pointer motion.
+/// Returns the painted pixel buffers for one window's decoration: titlebar
+/// background (with title), maximize, chevron, close, and — when open —
+/// the dropdown rows.
 ///
-/// No renderer parameter: unlike a texture-backed element, `SolidColorBuffer`
-/// needs none.
-pub fn render_elements(
-    window: &GlideWindow,
-    location: Point<i32, Physical>,
-    scale: Scale<f64>,
-    alpha: f32,
-) -> Vec<SolidColorRenderElement> {
-    let mut state = window.decoration_state();
+/// Each entry is `(buffer, logical_offset_from_titlebar_origin)`.
+/// The caller (see `window.rs`) uploads them to the GPU and assembles them
+/// into render elements.
+///
+/// This function takes a renderer reference so that `MemoryRenderBuffer`
+/// can upload changed pixels on-demand.  The buffers themselves live in
+/// `HeaderBar` so they persist across frames for damage-tracking.
+pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationBuffer> {
+    let Some(mut state) = window.try_decoration_state_mut() else {
+        return Vec::new();
+    };
     let header = &mut state.header;
     if !header.is_decorated() {
         return Vec::new();
+    }
+
+    if let Some(wl_surface) = window.toplevel().map(|t| t.wl_surface().clone()) {
+        use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
+        let title = smithay::wayland::compositor::with_states(&wl_surface, |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .and_then(|guard| guard.title.clone())
+        });
+        if let Some(title) = title {
+            header.set_title(title);
+        }
     }
 
     let content_width = window.geometry().size.w;
     if header.width != content_width {
         header.width = content_width;
     }
-    header.redraw();
+    header.redraw(painter);
 
-    let mut elements = Vec::new();
+    let mut out: Vec<DecorationBuffer> = Vec::new();
 
-    if header.menu_open {
-        let menu_y = header.height;
-        elements.push(SolidColorRenderElement::from_buffer(
-            &header.menu_background,
-            location + Point::from((0, menu_y)).to_physical_precise_round(scale),
-            scale,
-            alpha,
-            Kind::Unspecified,
-        ));
-        for (i, buf) in header.menu_items.iter().enumerate() {
-            let y = menu_y + header.height * i32::try_from(i).unwrap_or(0);
-            elements.push(SolidColorRenderElement::from_buffer(
-                buf,
-                location + Point::from((0, y)).to_physical_precise_round(scale),
-                scale,
-                alpha,
-                Kind::Unspecified,
-            ));
-        }
+    // ── Titlebar background (behind buttons, so listed last — later in the
+    // front-to-back list means further back in z-order).
+    // We push buttons first, then the bar, mirroring the previous ordering.
+    // ──────────────────────────────────────────────────────────────────────
+
+    // Menu rows (topmost when open).
+    for (i, buf) in header.menu_row_bufs.iter().enumerate() {
+        let y = header.height * (1 + i32::try_from(i).unwrap_or(0));
+        out.push(DecorationBuffer {
+            buf: buf.clone(),
+            offset: Point::from((0, y)),
+        });
     }
 
-    let close_x = header.width - BUTTON_WIDTH;
-    elements.push(SolidColorRenderElement::from_buffer(
-        &header.close_button,
-        location + Point::from((close_x, 0)).to_physical_precise_round(scale),
-        scale,
-        alpha,
-        Kind::Unspecified,
-    ));
-    elements.push(SolidColorRenderElement::from_buffer(
-        &header.chevron_button,
-        location + Point::from((BUTTON_WIDTH, 0)).to_physical_precise_round(scale),
-        scale,
-        alpha,
-        Kind::Unspecified,
-    ));
-    elements.push(SolidColorRenderElement::from_buffer(
-        &header.maximize_button,
-        location,
-        scale,
-        alpha,
-        Kind::Unspecified,
-    ));
-    elements.push(SolidColorRenderElement::from_buffer(
-        &header.background,
-        location,
-        scale,
-        alpha,
-        Kind::Unspecified,
-    ));
+    // Close button.
+    if let Some(buf) = &header.close_buf {
+        out.push(DecorationBuffer {
+            buf: buf.clone(),
+            offset: Point::from((header.width - BUTTON_WIDTH, 0)),
+        });
+    }
 
-    elements
+    // Chevron button.
+    if let Some(buf) = &header.chevron_buf {
+        out.push(DecorationBuffer {
+            buf: buf.clone(),
+            offset: Point::from((header.width - BUTTON_WIDTH * 2, 0)),
+        });
+    }
+
+    // Maximize button.
+    if let Some(buf) = &header.maximize_buf {
+        out.push(DecorationBuffer {
+            buf: buf.clone(),
+            offset: Point::from((0, 0)),
+        });
+    }
+
+    // Titlebar background (furthest back — last in front-to-back list).
+    if let Some(buf) = &header.titlebar_buf {
+        out.push(DecorationBuffer {
+            buf: buf.clone(),
+            offset: Point::from((0, 0)),
+        });
+    }
+
+    out
 }
+
+// ── Missing import ──────────────────────────────────────────────────────────
+use smithay::utils::Serial;
 
 #[cfg(test)]
 mod tests {
@@ -1028,7 +1188,7 @@ mod tests {
         fn chevron_opens_the_menu_then_an_item_click_runs_it() {
             let mut h = header();
 
-            h.pointer_enter(point(48.0, 16.0)); // over the chevron
+            h.pointer_enter(point(750.0, 16.0)); // over the chevron
             assert_eq!(h.on_button(&release()), None);
             assert!(h.menu_open);
 
@@ -1078,6 +1238,25 @@ mod tests {
                 resize_cursor(ResizeEdge::BOTTOM_RIGHT),
                 CursorIcon::SeResize
             );
+        }
+
+        #[test]
+        fn test_refcell_try_borrow_safety() {
+            let cell = RefCell::new(DecorationState::default());
+            {
+                let mut mut_borrow = cell.borrow_mut();
+                mut_borrow.header.height = 40;
+                assert!(
+                    cell.try_borrow().is_err(),
+                    "try_borrow while mutably borrowed returns Err, avoiding panic"
+                );
+                assert!(
+                    cell.try_borrow_mut().is_err(),
+                    "try_borrow_mut while mutably borrowed returns Err, avoiding panic"
+                );
+            }
+            assert!(cell.try_borrow().is_ok());
+            assert_eq!(cell.borrow().header.height, 40);
         }
     }
 }

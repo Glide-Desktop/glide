@@ -52,16 +52,25 @@ impl Default for DecorationTheme {
     fn default() -> Self {
         Self {
             height: 32,
-            background: Color::from_hex("#26262eff").unwrap(),
-            background_focused: Color::from_hex("#3b5bdbff").unwrap(),
-            close_button: Color::from_hex("#e2555aff").unwrap(),
-            close_button_hover: Color::from_hex("#ff7377ff").unwrap(),
-            maximize_button: Color::from_hex("#4a4a56ff").unwrap(),
-            maximize_button_hover: Color::from_hex("#63636fff").unwrap(),
-            chevron_button: Color::from_hex("#4a4a56ff").unwrap(),
-            chevron_button_hover: Color::from_hex("#63636fff").unwrap(),
-            menu_background: Color::from_hex("#1c1c22ff").unwrap(),
-            menu_item_hover: Color::from_hex("#3b5bdbff").unwrap(),
+            // Titlebar background: charcoal when unfocused, electric
+            // indigo when focused — high contrast against both light and
+            // dark window content.
+            background: Color::from_hex("#1e1e26ff").unwrap(),
+            background_focused: Color::from_hex("#4c6ef5ff").unwrap(),
+            // Maximize: subtle slate, noticeably lighter on hover.
+            maximize_button: Color::from_hex("#3a3a4aff").unwrap(),
+            maximize_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
+            // Chevron: same family as maximize so the two left buttons
+            // form one visual group, distinct from the destructive close.
+            chevron_button: Color::from_hex("#3a3a4aff").unwrap(),
+            chevron_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
+            // Close: clearly destructive — warm red, brightens on hover.
+            close_button: Color::from_hex("#c0404aff").unwrap(),
+            close_button_hover: Color::from_hex("#e05560ff").unwrap(),
+            // Dropdown: slightly lighter than the bar so it reads as a
+            // separate panel; hover rows use the focused accent.
+            menu_background: Color::from_hex("#28282fff").unwrap(),
+            menu_item_hover: Color::from_hex("#4c6ef5ff").unwrap(),
         }
     }
 }
@@ -247,6 +256,11 @@ impl Config {
                 key: "m".to_string(),
                 action: KeyActionConfig::Simple("minimize".to_string()),
             },
+            KeybindConfig {
+                mods: vec![ModifierConfig::Super],
+                key: "o".to_string(),
+                action: KeyActionConfig::Simple("toggle-overview".to_string()),
+            },
         ];
 
         for i in 1..=9 {
@@ -430,6 +444,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "maximize" => Some(crate::input::KeyAction::Maximize),
             "fullscreen" => Some(crate::input::KeyAction::Fullscreen),
             "minimize" => Some(crate::input::KeyAction::Minimize),
+            "toggle-overview" => Some(crate::input::KeyAction::ToggleOverview),
             _ => {
                 tracing::warn!(action = cmd, "unknown simple key action");
                 None

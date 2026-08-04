@@ -1,5 +1,9 @@
 mod compositor;
+pub mod ext_workspace;
+pub mod foreign_toplevel_list;
+pub mod idle_notify;
 pub mod layer_shell;
+pub mod wlr_output_management;
 mod xdg_shell;
 
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};

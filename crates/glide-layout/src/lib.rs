@@ -544,6 +544,49 @@ mod tests {
     }
 
     #[test]
+    fn test_set_fullscreen_and_restore_when_maximized() {
+        let mut layout = Layout::new();
+        let w = WindowId::next();
+        let size = Size::new(800, 600);
+        layout.add_window(w, size);
+
+        assert!(layout.set_maximized(w, true));
+        let work_area = layout.primary_output_work_area();
+        assert_eq!(layout.window_state(w).unwrap().geometry, work_area);
+
+        assert!(layout.set_fullscreen(w, true));
+        let output_geom = layout.primary_output_geometry();
+        assert_eq!(layout.window_state(w).unwrap().geometry, output_geom);
+        assert!(layout.window_state(w).unwrap().fullscreen);
+        assert!(layout.window_state(w).unwrap().maximized);
+
+        assert!(layout.set_fullscreen(w, false));
+        assert!(!layout.window_state(w).unwrap().fullscreen);
+        assert!(layout.window_state(w).unwrap().maximized);
+        assert_eq!(layout.window_state(w).unwrap().geometry, work_area);
+
+        assert!(layout.set_maximized(w, false));
+        assert_eq!(layout.window_state(w).unwrap().geometry.size, size);
+    }
+
+    #[test]
+    fn test_cascade_offset_wrapping_for_many_windows() {
+        let mut layout = Layout::new();
+        let size = Size::new(400, 300);
+
+        let mut windows = Vec::new();
+        for _ in 0..9 {
+            let w = WindowId::next();
+            layout.add_window(w, size);
+            windows.push(w);
+        }
+
+        let loc0 = layout.window_state(windows[0]).unwrap().geometry.loc;
+        let loc8 = layout.window_state(windows[8]).unwrap().geometry.loc;
+        assert_eq!(loc0, loc8);
+    }
+
+    #[test]
     fn test_set_window_geometry() {
         let mut layout = Layout::new();
         let w1 = WindowId::next();
