@@ -74,6 +74,32 @@
 #   - IPC must never hang the compositor: `nc -U "$GLIDE_IPC_SOCK"` and then
 #     just sitting there must NOT freeze the screen (this used to wedge the
 #     whole session)
+#   - overview (Super+O) — open at least three windows on different
+#     workspaces first, otherwise there is nothing to look at:
+#       * previews must show the windows' ACTUAL contents, each with its
+#         own titlebar shrunk to match. A preview wearing a full-size
+#         titlebar, or showing a flat coloured rectangle, is the old bug
+#       * every workspace appears, in order, not just the current one
+#       * opening and closing are animated: previews travel from where
+#         the windows really are to their slots and back, ~200ms. An
+#         instant snap is a regression
+#       * moving the pointer over a preview highlights that one only, and
+#         the highlight must track the preview, not the window's old
+#         position
+#       * arrow keys (or hjkl) move the highlight; Escape closes with NO
+#         workspace change; Return/Space picks the highlighted one
+#       * clicking a preview switches to that window's workspace and
+#         focuses it; clicking empty space just closes the overview
+#       * middle-click on a preview closes that window, and the remaining
+#         previews re-flow to fill the gap
+#       * a layer-shell panel (`glidectl exec waybar`) stays visible and
+#         still takes clicks while the overview is up; a wallpaper stays
+#         BEHIND the previews
+#       * Ctrl+Alt+F2 must still switch VTs from inside the overview —
+#         this is the one thing that must never be swallowed
+#       * with the overview open and idle, the screen must not be
+#         redrawing continuously (this used to burn a full 60Hz repaint
+#         on a static image)
 #   - Super+Q to quit early (otherwise wait for the timeout)
 #
 # Two logs are produced, and both matter:
