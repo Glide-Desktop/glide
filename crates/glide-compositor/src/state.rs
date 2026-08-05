@@ -761,19 +761,19 @@ impl GlideState {
             return false;
         };
 
-        if let crate::overview::Tick::Finished { select } = ui.tick() {
-            self.close_overview();
-            if let Some(id) = select {
-                self.focus_window(id);
-            } else {
-                self.reconcile_space();
+        match ui.tick() {
+            crate::overview::Tick::Idle => false,
+            crate::overview::Tick::Running => true,
+            crate::overview::Tick::Finished { select } => {
+                self.close_overview();
+                if let Some(id) = select {
+                    self.focus_window(id);
+                } else {
+                    self.reconcile_space();
+                }
+                true
             }
-            return true;
         }
-
-        self.overview
-            .as_ref()
-            .is_some_and(crate::overview::OverviewUi::is_animating)
     }
 
     /// Rebuilds the overview's slots after the window set changed.

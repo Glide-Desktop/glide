@@ -268,6 +268,10 @@ impl OverviewUi {
     /// Advances the animation state machine.
     pub fn tick(&mut self) -> Tick {
         match self.phase {
+            // Settling still asks for one more frame: the last one actually
+            // drawn was at whatever progress the clock happened to be at,
+            // a little short of 1.0, so without this the previews stop just
+            // shy of their slots.
             Phase::Opening { started } if started.elapsed() >= self.duration => {
                 self.phase = Phase::Open;
                 Tick::Running
@@ -275,7 +279,8 @@ impl OverviewUi {
             Phase::Closing { started, select } if started.elapsed() >= self.duration => {
                 Tick::Finished { select }
             }
-            _ => Tick::Running,
+            Phase::Open => Tick::Idle,
+            Phase::Opening { .. } | Phase::Closing { .. } => Tick::Running,
         }
     }
 
@@ -381,8 +386,9 @@ impl OverviewUi {
 /// Outcome of one animation step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tick {
-    /// Still animating, or sitting open. Nothing for the caller to do
-    /// beyond scheduling the next frame.
+    /// Sitting open and settled. Nothing to redraw.
+    Idle,
+    /// Still animating: the caller schedules another frame.
     Running,
     /// The close animation finished: the caller tears the overview down
     /// and, if `select` is set, focuses that window.
