@@ -12,9 +12,9 @@ impl ForeignToplevelListHandler for GlideState {
 
 #[cfg(test)]
 mod tests {
+    use crate::GlideState;
     use smithay::reexports::wayland_server::Display;
     use smithay::wayland::foreign_toplevel_list::ForeignToplevelListState;
-    use crate::GlideState;
 
     #[test]
     fn test_foreign_toplevel_list_state_lifecycle() {
@@ -42,4 +42,3 @@ mod tests {
         assert!(handle.is_closed());
     }
 }
-

@@ -26,9 +26,9 @@ impl IdleInhibitHandler for GlideState {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-    use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
     use crate::state::GlideState;
+    use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    use std::collections::HashSet;
 
     struct TestIdleHandler {
         idle_notifier_state_inhibited: bool,
@@ -94,5 +94,3 @@ mod tests {
         assert!(handler.idle_inhibited_surfaces.is_empty());
     }
 }
-
-

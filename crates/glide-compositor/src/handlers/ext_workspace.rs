@@ -7,8 +7,7 @@ use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
 };
 use smithay::reexports::wayland_server::{
-    Client, DataInit, DisplayHandle, GlobalDispatch, New, Resource,
-    backend::GlobalId,
+    Client, DataInit, DisplayHandle, GlobalDispatch, New, Resource, backend::GlobalId,
 };
 use smithay::wayland::GlobalData;
 
@@ -70,23 +69,29 @@ impl ExtWorkspaceManagerState {
             };
 
             let handles = self.workspace_handles.entry(ws_id).or_default();
-            
+
             for manager in &self.instances {
-                let Some(client) = manager.client() else { continue };
+                let Some(client) = manager.client() else {
+                    continue;
+                };
                 let has_handle = handles.iter().any(|h| h.client() == Some(client.clone()));
-                
+
                 if !has_handle {
-                    if let Ok(group) = client.create_resource::<ExtWorkspaceGroupHandleV1, _, GlideState>(
-                        dh,
-                        manager.version(),
-                        (),
-                    ) {
-                        manager.workspace_group(&group);
-                        if let Ok(handle) = client.create_resource::<ExtWorkspaceHandleV1, _, GlideState>(
+                    if let Ok(group) = client
+                        .create_resource::<ExtWorkspaceGroupHandleV1, _, GlideState>(
                             dh,
                             manager.version(),
-                            ws_id,
-                        ) {
+                            (),
+                        )
+                    {
+                        manager.workspace_group(&group);
+                        if let Ok(handle) = client
+                            .create_resource::<ExtWorkspaceHandleV1, _, GlideState>(
+                                dh,
+                                manager.version(),
+                                ws_id,
+                            )
+                        {
                             group.workspace_enter(&handle);
                             handle.id(format!("{ws_id:?}"));
                             handle.name(format!("Workspace {}", idx + 1));
@@ -104,7 +109,8 @@ impl ExtWorkspaceManagerState {
         }
 
         // Clean up empty entries
-        self.workspace_handles.retain(|_, handles| !handles.is_empty());
+        self.workspace_handles
+            .retain(|_, handles| !handles.is_empty());
 
         // 3. Send done
         for manager in &self.instances {
@@ -128,7 +134,9 @@ impl GlobalDispatch<ExtWorkspaceManagerV1, GlobalData> for GlideState {
     }
 }
 
-impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceManagerV1, GlobalData> for GlideState {
+impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceManagerV1, GlobalData>
+    for GlideState
+{
     fn request(
         _state: &mut Self,
         _client: &Client,
@@ -154,7 +162,9 @@ impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceGroupHandleV1, ()>
     }
 }
 
-impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceHandleV1, WorkspaceId> for GlideState {
+impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceHandleV1, WorkspaceId>
+    for GlideState
+{
     fn request(
         state: &mut Self,
         _client: &Client,
@@ -164,16 +174,18 @@ impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceHandleV1, Workspac
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
-        match request {
-            ext_workspace_handle_v1::Request::Activate => {
-                state.layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(*data));
-                state.reconcile_space();
-                state.ext_workspace_state.sync_workspaces(&state.display_handle, &state.layout);
-            }
-            ext_workspace_handle_v1::Request::Destroy => {
-                // Workspace destroyed by client
-            }
-            _ => {}
+        // `Activate` is the only request we act on. `Destroy` needs no
+        // teardown of ours: workspaces outlive the handles clients hold on
+        // them, so the protocol object going away is not a workspace going
+        // away.
+        if matches!(request, ext_workspace_handle_v1::Request::Activate) {
+            state
+                .layout
+                .switch_to_workspace(glide_layout::WorkspaceTarget::Id(*data));
+            state.reconcile_space();
+            state
+                .ext_workspace_state
+                .sync_workspaces(&state.display_handle, &state.layout);
         }
     }
 }
@@ -229,18 +241,21 @@ mod tests {
                 }
                 3 => {
                     let target_id = ws_ids[i % ws_ids.len()];
-                    let ok = layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(target_id));
+                    let ok =
+                        layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(target_id));
                     assert!(ok);
                 }
                 4 => {
                     // Out of bounds index
-                    let ok = layout.switch_to_workspace(glide_layout::WorkspaceTarget::Index(99999));
+                    let ok =
+                        layout.switch_to_workspace(glide_layout::WorkspaceTarget::Index(99999));
                     assert!(!ok);
                 }
                 5 => {
                     // Nonexistent workspace ID
                     let bogus_id = glide_layout::WorkspaceId::next();
-                    let ok = layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(bogus_id));
+                    let ok =
+                        layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(bogus_id));
                     assert!(!ok);
                 }
                 _ => unreachable!(),
@@ -262,4 +277,3 @@ mod tests {
         assert!(manager_state.workspace_handles.is_empty());
     }
 }
-

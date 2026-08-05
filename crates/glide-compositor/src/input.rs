@@ -10,7 +10,14 @@ use smithay::{
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
 };
 
-use crate::state::GlideState;
+use crate::{
+    overview::{Direction, OverviewUi},
+    state::GlideState,
+};
+
+/// Middle mouse button, as defined in the Linux kernel's
+/// linux/input-event-codes.h (`BTN_MIDDLE`).
+const BTN_MIDDLE: u32 = 0x112;
 
 /// Outcome of a key press that was intercepted by the compositor instead of
 /// being forwarded to the focused client.
@@ -36,6 +43,12 @@ pub enum KeyAction {
     Minimize,
     /// Toggle overview mode.
     ToggleOverview,
+    /// Dismiss the overview without changing focus (Escape).
+    OverviewCancel,
+    /// Activate the highlighted preview (Enter/Space).
+    OverviewSelect,
+    /// Move the overview's highlight (arrow keys / hjkl).
+    OverviewNav(Direction),
     /// Execute arbitrary shell command.
     Exec(String),
     /// The key was intercepted (e.g. a suppressed release) but has no effect.
@@ -82,14 +95,44 @@ fn process_keyboard_shortcut(
         return Some(entry.action.clone());
     }
 
-    // VT switching is not configurable: it is the only way off the tty, so
-    // it must keep working even with an empty or broken keybind config.
+    vt_switch_shortcut(raw_syms, modified_sym)
+}
+
+/// VT switching, which is deliberately not configurable: it is the only way
+/// off the tty, so it must keep working with an empty or broken keybind
+/// config — and in every modal state the compositor can be in.
+fn vt_switch_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
     raw_syms
         .iter()
         .chain(std::iter::once(&modified_sym))
         .map(|sym| sym.raw())
         .find(|raw| (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(raw))
         .map(|raw| KeyAction::VtSwitch((raw - keysyms::KEY_XF86Switch_VT_1 + 1).cast_signed()))
+}
+
+/// The overview's own keys.
+///
+/// Fixed rather than configurable: these are the conventions every
+/// overview-style switcher uses, and rebinding them would mostly be a way
+/// to end up unable to dismiss the thing.
+fn overview_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
+    let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+
+    if matches(Keysym::Escape) {
+        Some(KeyAction::OverviewCancel)
+    } else if matches(Keysym::Return) || matches(Keysym::KP_Enter) || matches(Keysym::space) {
+        Some(KeyAction::OverviewSelect)
+    } else if matches(Keysym::Left) || matches(Keysym::h) {
+        Some(KeyAction::OverviewNav(Direction::Left))
+    } else if matches(Keysym::Right) || matches(Keysym::l) {
+        Some(KeyAction::OverviewNav(Direction::Right))
+    } else if matches(Keysym::Up) || matches(Keysym::k) {
+        Some(KeyAction::OverviewNav(Direction::Up))
+    } else if matches(Keysym::Down) || matches(Keysym::j) {
+        Some(KeyAction::OverviewNav(Direction::Down))
+    } else {
+        None
+    }
 }
 
 /// Clamps `pos` so it stays within the union of `outputs` (outputs are
@@ -163,6 +206,8 @@ impl GlideState {
         // in the compositor, and the bindings contain owned `String`s.
         let keybinds = std::mem::take(&mut self.keybinds);
 
+        let overview_active = self.layout.overview_active();
+
         // A Top/Overlay layer surface with exclusive keyboard interactivity
         // (lock screens, some launchers) takes the keyboard for as long as
         // it exists, no click required — that is what "exclusive" means.
@@ -203,8 +248,19 @@ impl GlideState {
                 // previously suppressed, so the client never sees a
                 // release without the matching press (a "stuck key").
                 if let KeyState::Pressed = key_state {
-                    let action =
-                        process_keyboard_shortcut(&keybinds, modifiers, &handle.raw_syms(), keysym);
+                    // The overview is modal: it owns the keyboard while
+                    // open, so its own keys are matched first and
+                    // everything else is swallowed rather than reaching a
+                    // client the user cannot see behind the scrim. VT
+                    // switching is the sole exception — it is the only way
+                    // off the tty and must work in every mode.
+                    let action = if overview_active {
+                        overview_shortcut(&handle.raw_syms(), keysym).or_else(|| {
+                            vt_switch_shortcut(&handle.raw_syms(), keysym).or(Some(KeyAction::None))
+                        })
+                    } else {
+                        process_keyboard_shortcut(&keybinds, modifiers, &handle.raw_syms(), keysym)
+                    };
 
                     // While a layer surface holds the keyboard, compositor
                     // shortcuts step aside — a launcher's keystrokes are its
@@ -306,10 +362,20 @@ impl GlideState {
                     self.reconcile_space();
                 }
             }
+            KeyAction::OverviewCancel => {
+                self.begin_close_overview(None);
+            }
+            KeyAction::OverviewSelect => {
+                let select = self.overview.as_ref().and_then(OverviewUi::hovered);
+                self.begin_close_overview(select);
+            }
+            KeyAction::OverviewNav(dir) => self.navigate_overview(dir),
             KeyAction::ToggleOverview => {
-                tracing::info!("toggling overview");
-                self.layout.overview_active = !self.layout.overview_active;
-                self.reconcile_space();
+                if self.layout.overview_active() {
+                    self.begin_close_overview(None);
+                } else {
+                    self.open_overview();
+                }
             }
             KeyAction::Exec(cmd) => {
                 tracing::info!(command = %cmd, "executing keybind command");
@@ -321,6 +387,51 @@ impl GlideState {
             }
             KeyAction::None => {}
         }
+    }
+
+    /// Moves the overview's selection, repainting if it moved.
+    fn navigate_overview(&mut self, dir: Direction) {
+        if self.overview.as_mut().is_some_and(|ui| ui.navigate(dir)) {
+            self.queue_redraw();
+        }
+    }
+
+    /// Pointer-focus target for a motion event, accounting for the
+    /// overview.
+    ///
+    /// While the overview is up the previews are render-only, so the real
+    /// windows underneath must not receive enter/motion — a client would
+    /// otherwise light up hover states and swap cursors for a pointer the
+    /// user cannot see over it. Layer surfaces are the exception: panels
+    /// are drawn above the overview and stay interactive.
+    ///
+    /// Also updates which preview is highlighted, and asks for a repaint
+    /// when that changes.
+    fn overview_motion(
+        &mut self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
+        if !self.layout.overview_active() {
+            return self.surface_under(pos);
+        }
+
+        let under = self.surface_under(pos);
+        let on_layer = matches!(
+            under,
+            Some((crate::focus::PointerFocusTarget::Surface(ref surface), _))
+                if self.layer_for_surface(surface).is_some()
+        );
+
+        let hovered = self.overview.as_ref().and_then(|ui| ui.preview_at(pos));
+        let changed = self
+            .overview
+            .as_mut()
+            .is_some_and(|ui| ui.set_hover(hovered));
+        if changed {
+            self.queue_redraw();
+        }
+
+        if on_layer { under } else { None }
     }
 
     fn handle_pointer_motion<I: InputBackend>(&mut self, event: &I::PointerMotionEvent) {
@@ -341,7 +452,7 @@ impl GlideState {
         );
 
         let serial = SERIAL_COUNTER.next_serial();
-        let under = self.surface_under(pointer_location);
+        let under = self.overview_motion(pointer_location);
 
         pointer.motion(
             self,
@@ -381,7 +492,7 @@ impl GlideState {
             .get_pointer()
             .expect("a pointer was added in GlideState::new");
 
-        let under = self.surface_under(pos);
+        let under = self.overview_motion(pos);
 
         pointer.motion(
             self,
@@ -409,49 +520,49 @@ impl GlideState {
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             let pos = pointer.current_location();
 
-            // ── Overview click-to-select ───────────────────────────
+            // ── Overview input ────────────────────────────────────
             //
-            // In overview mode windows are mapped at their *real*
-            // positions (the overview is purely visual), so the normal
-            // element_under lookup would match the wrong window.
-            // Instead we check which cell the pointer falls into and
-            // focus that window, which also exits overview.
-            if self.layout.overview_active {
-                let clicked_id = self
-                    .window_map
-                    .iter()
-                    .find_map(|(&id, window)| {
-                        let ov = window.overview_state()?;
-                        let cell = ov.cell_rect;
-                        let px = pos.x as i32;
-                        let py = pos.y as i32;
-                        if px >= cell.loc.x
-                            && px < cell.loc.x + cell.size.w
-                            && py >= cell.loc.y
-                            && py < cell.loc.y + cell.size.h
-                        {
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    });
-
-                if let Some(id) = clicked_id {
-                    self.focus_window(id);
-                }
-                // Swallow the click either way — no normal focus logic
-                // should run during overview.
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button,
-                        state: button_state,
-                        serial,
-                        time: event.time_msec(),
-                    },
+            // Previews are render-only: the real windows are still mapped
+            // at their real positions, so the normal `surface_under` lookup
+            // would resolve to whatever is invisibly underneath the
+            // pointer. Hit-test the previews instead.
+            //
+            // Overlay/Top layer surfaces stay clickable — a panel is drawn
+            // above the overview and should keep working, as it does in
+            // other compositors.
+            if self.layout.overview_active() {
+                let on_layer = matches!(
+                    self.surface_under(pos),
+                    Some((crate::focus::PointerFocusTarget::Surface(ref surface), _))
+                        if self.layer_for_surface(surface).is_some()
                 );
-                pointer.frame(self);
-                return;
+
+                if !on_layer {
+                    let hit = self.overview.as_ref().and_then(|ui| ui.preview_at(pos));
+
+                    match hit {
+                        // Middle click closes the window without leaving
+                        // the overview — the quickest way to tidy up.
+                        Some(id) if button == BTN_MIDDLE => {
+                            if let Some(window) = self.window_map.get(&id)
+                                && let Some(toplevel) = window.toplevel()
+                            {
+                                toplevel.send_close();
+                            }
+                        }
+                        Some(id) => {
+                            self.begin_close_overview(Some(id));
+                        }
+                        // A click on empty space dismisses without
+                        // changing focus.
+                        None => {
+                            self.begin_close_overview(None);
+                        }
+                    }
+
+                    pointer.frame(self);
+                    return;
+                }
             }
 
             // What was actually clicked, layers included — `element_under`
@@ -805,7 +916,6 @@ mod tests {
 
         #[test]
         fn suppressed_keys_tracking_and_release() {
-
             let mut suppressed_keys: Vec<Keycode> = Vec::new();
             let keycode1 = Keycode::from(16_u32); // e.g. key '1'
             let keycode2 = Keycode::from(24_u32); // e.g. key 'q'
@@ -829,13 +939,16 @@ mod tests {
 
         #[test]
         fn keycode_suppression_resets_on_workspace_switch_or_focus_change() {
-            let mut suppressed_keys: Vec<Keycode> = vec![Keycode::from(10_u32), Keycode::from(20_u32)];
+            let mut suppressed_keys: Vec<Keycode> =
+                vec![Keycode::from(10_u32), Keycode::from(20_u32)];
             assert!(!suppressed_keys.is_empty());
 
             // Workspace switch / VT switch / focus change triggers clear
             suppressed_keys.clear();
-            assert!(suppressed_keys.is_empty(), "suppressed_keys must be empty after reset");
+            assert!(
+                suppressed_keys.is_empty(),
+                "suppressed_keys must be empty after reset"
+            );
         }
     }
 }
-

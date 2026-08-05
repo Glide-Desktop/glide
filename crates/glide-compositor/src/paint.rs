@@ -8,8 +8,34 @@
 //! `fontconfig`, with a compiled-in fallback (Noto Sans) embedded as a
 //! `&'static [u8]`. That way the compositor never crashes because some
 //! theme package wasn't installed.
+//!
+//! # Lints
+//!
+//! Numeric-cast and argument-count lints are disabled module-wide rather
+//! than at each site. This is pixel-plotting code: it converts freely
+//! between buffer indices (`usize`), pixel coordinates (`i32`), glyph
+//! metrics (`f32`) and channel values (`u8`/`u16`), and every one of those
+//! conversions is bounded by a buffer that is at most a few thousand pixels
+//! across. Annotating the ~30 individual casts would bury the arithmetic
+//! without catching anything real; the bounds checks that matter are the
+//! explicit clamps against `width`/`height`.
+//!
+//! The drawing helpers likewise take a buffer, its dimensions, a bounding
+//! box and two colours — that is inherently more than seven arguments, and
+//! wrapping them in a struct would only move the same fields elsewhere.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_arguments
+)]
 
-use fontdue::{Font, FontSettings, layout::{CoordinateSystem, Layout, TextStyle}};
+use fontdue::{
+    Font, FontSettings,
+    layout::{CoordinateSystem, Layout, TextStyle},
+};
 use once_cell::sync::OnceCell;
 
 // ── Embedded fallback font ────────────────────────────────────────────────
@@ -22,9 +48,6 @@ static NOTO_SANS_BYTES: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
 /// Initialised from `window.rs::render_elements` on the first decorated
 /// frame, using the titlebar height as the font size hint.
 pub static PAINTER: OnceCell<Painter> = OnceCell::new();
-
-
-
 
 /// Shared font handle.  Created once, reused everywhere.
 ///
@@ -149,8 +172,28 @@ impl Painter {
         fill(buf, width, height, bg);
         let m = (width.min(height) / 4).max(2);
         let thickness = ((width.min(height) / 8).max(1)).max(1);
-        draw_line(buf, width, height, m, m, width - m - 1, height - m - 1, thickness, fg);
-        draw_line(buf, width, height, width - m - 1, m, m, height - m - 1, thickness, fg);
+        draw_line(
+            buf,
+            width,
+            height,
+            m,
+            m,
+            width - m - 1,
+            height - m - 1,
+            thickness,
+            fg,
+        );
+        draw_line(
+            buf,
+            width,
+            height,
+            width - m - 1,
+            m,
+            m,
+            height - m - 1,
+            thickness,
+            fg,
+        );
     }
 
     /// Draw the **chevron** icon (∨) centred in `width × height`.

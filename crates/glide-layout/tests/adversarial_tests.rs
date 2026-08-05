@@ -2,7 +2,6 @@ use glide_layout::{
     Layout, NewWindowPolicy, OutputId, OutputInfo, Point, Rectangle, Size, WindowId,
 };
 
-
 fn sample_output() -> OutputInfo {
     OutputInfo {
         id: OutputId::next(),
@@ -26,14 +25,20 @@ fn test_fullscreen_untoggle_when_maximized_normal_sequence() {
     let state_max = layout.window_state(w1).unwrap();
     assert!(state_max.maximized);
     assert!(!state_max.fullscreen);
-    assert_eq!(state_max.geometry, Rectangle::from_loc_and_size(0, 32, 1920, 1048));
+    assert_eq!(
+        state_max.geometry,
+        Rectangle::from_loc_and_size(0, 32, 1920, 1048)
+    );
 
     // 2. Fullscreen while maximized
     assert!(layout.set_fullscreen(w1, true));
     let state_full = layout.window_state(w1).unwrap();
     assert!(state_full.maximized);
     assert!(state_full.fullscreen);
-    assert_eq!(state_full.geometry, Rectangle::from_loc_and_size(0, 0, 1920, 1080));
+    assert_eq!(
+        state_full.geometry,
+        Rectangle::from_loc_and_size(0, 0, 1920, 1080)
+    );
 
     // 3. Un-fullscreen while still maximized
     assert!(layout.set_fullscreen(w1, false));
@@ -121,7 +126,6 @@ fn test_100_plus_window_cascade_wrapping() {
             "Window index {idx} offset mismatch"
         );
     }
-
 
     // Verify visible windows iterator handles 150 windows correctly
     let visible_count = layout.visible_windows().count();

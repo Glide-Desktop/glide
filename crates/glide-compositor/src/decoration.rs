@@ -22,11 +22,7 @@ use std::cell::{Ref, RefCell, RefMut};
 
 use smithay::{
     backend::{
-        allocator::Fourcc,
-        input::ButtonState,
-        renderer::element::{
-            memory::MemoryRenderBuffer,
-        },
+        allocator::Fourcc, input::ButtonState, renderer::element::memory::MemoryRenderBuffer,
     },
     input::{
         Seat,
@@ -183,9 +179,35 @@ fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
     }
 }
 
+/// Repaints one titlebar button into its cached buffer.
+///
+/// The three buttons differ only in their colours and glyph, so they share
+/// this instead of three near-identical blocks.
+fn redraw_button(
+    buf: &mut Option<MemoryRenderBuffer>,
+    height: i32,
+    bg: [u8; 4],
+    fg: [u8; 4],
+    icon: fn(&mut [u8], i32, i32, [u8; 4], [u8; 4]),
+) {
+    let w = BUTTON_WIDTH;
+    let buf = buf.get_or_insert_with(|| {
+        MemoryRenderBuffer::new(Fourcc::Argb8888, (w, height), 1, Transform::Normal, None)
+    });
+    let mut ctx = buf.render();
+    ctx.resize((w, height));
+    let _ = ctx.draw(|pixels| {
+        icon(pixels, w, height, fg, bg);
+        Ok::<_, ()>(vec![Rectangle::from_size((w, height).into())])
+    });
+}
+
 /// Convert `[f32; 4]` (R,G,B,A linear) to `[u8; 4]` (B,G,R,A bytes)
 /// as expected by the ARGB8888 pixel format used in `MemoryRenderBuffer`.
 fn to_argb(c: [f32; 4]) -> [u8; 4] {
+    // Clamped to 0.0..=1.0 first, so the product is always in 0..=255 —
+    // the truncation and sign lints have nothing to catch here.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let b = |f: f32| (f.clamp(0.0, 1.0) * 255.0) as u8;
     [b(c[2]), b(c[1]), b(c[0]), b(c[3])]
 }
@@ -426,6 +448,7 @@ impl HeaderBar {
         }
 
         let theme = &self.theme;
+        let height = self.height;
         let bg_color = if self.focused {
             theme.background_focused.0
         } else {
@@ -462,67 +485,41 @@ impl HeaderBar {
             });
         }
 
-        // ── Maximize button ────────────────────────────────────────────────
-        {
-            let w = BUTTON_WIDTH;
-            let h = self.height;
-            let btn_bg = if hovered == Some(HitZone::Maximize) {
-                to_argb(theme.maximize_button_hover.0)
+        // ── Titlebar buttons ───────────────────────────────────────────────
+        // Foregrounds differ slightly per icon: the close glyph is the one
+        // meant to stand out, the chevron the least.
+        for (buf, zone, normal, hover_bg, fg, icon) in [
+            (
+                &mut self.maximize_buf,
+                HitZone::Maximize,
+                theme.maximize_button.0,
+                theme.maximize_button_hover.0,
+                220u8,
+                Painter::draw_icon_maximize as fn(&mut [u8], i32, i32, [u8; 4], [u8; 4]),
+            ),
+            (
+                &mut self.chevron_buf,
+                HitZone::Chevron,
+                theme.chevron_button.0,
+                theme.chevron_button_hover.0,
+                200,
+                Painter::draw_icon_chevron,
+            ),
+            (
+                &mut self.close_buf,
+                HitZone::Close,
+                theme.close_button.0,
+                theme.close_button_hover.0,
+                255,
+                Painter::draw_icon_close,
+            ),
+        ] {
+            let btn_bg = to_argb(if hovered == Some(zone) {
+                hover_bg
             } else {
-                to_argb(theme.maximize_button.0)
-            };
-            let fg = [220, 220, 220, btn_bg[3]];
-            let buf = self.maximize_buf.get_or_insert_with(|| {
-                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
+                normal
             });
-            let mut ctx = buf.render();
-            ctx.resize((w, h));
-            let _ = ctx.draw(|pixels| {
-                Painter::draw_icon_maximize(pixels, w, h, fg, btn_bg);
-                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
-            });
-        }
-
-        // ── Chevron button ─────────────────────────────────────────────────
-        {
-            let w = BUTTON_WIDTH;
-            let h = self.height;
-            let btn_bg = if hovered == Some(HitZone::Chevron) {
-                to_argb(theme.chevron_button_hover.0)
-            } else {
-                to_argb(theme.chevron_button.0)
-            };
-            let fg = [200, 200, 200, btn_bg[3]];
-            let buf = self.chevron_buf.get_or_insert_with(|| {
-                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
-            });
-            let mut ctx = buf.render();
-            ctx.resize((w, h));
-            let _ = ctx.draw(|pixels| {
-                Painter::draw_icon_chevron(pixels, w, h, fg, btn_bg);
-                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
-            });
-        }
-
-        // ── Close button ───────────────────────────────────────────────────
-        {
-            let w = BUTTON_WIDTH;
-            let h = self.height;
-            let btn_bg = if hovered == Some(HitZone::Close) {
-                to_argb(theme.close_button_hover.0)
-            } else {
-                to_argb(theme.close_button.0)
-            };
-            let fg = [255, 255, 255, btn_bg[3]];
-            let buf = self.close_buf.get_or_insert_with(|| {
-                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
-            });
-            let mut ctx = buf.render();
-            ctx.resize((w, h));
-            let _ = ctx.draw(|pixels| {
-                Painter::draw_icon_close(pixels, w, h, fg, btn_bg);
-                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
-            });
+            redraw_button(buf, height, btn_bg, [fg, fg, fg, btn_bg[3]], icon);
         }
 
         // ── Dropdown menu ──────────────────────────────────────────────────

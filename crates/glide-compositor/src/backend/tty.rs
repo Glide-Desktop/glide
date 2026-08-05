@@ -30,11 +30,7 @@
 //! (see [`DeviceData`]), so [`UdevEvent::Added`]/[`UdevEvent::Removed`] for
 //! any *other* device are just logged and otherwise ignored.
 
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use smithay::backend::renderer::element::default_primary_scanout_output_compare;
 use smithay::desktop::utils::update_surface_primary_scanout_output;
@@ -57,7 +53,9 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             ImportDma,
-            element::{AsRenderElements, memory::MemoryRenderBuffer},
+            element::{
+                AsRenderElements, memory::MemoryRenderBuffer, surface::WaylandSurfaceRenderElement,
+            },
             gles::GlesRenderer,
         },
         session::{
@@ -131,6 +129,48 @@ render_elements! {
     pub GlideRenderElements<=GlesRenderer>;
     Space=SpaceRenderElements<GlesRenderer, GlideWindowRenderElement<GlesRenderer>>,
     Pointer=PointerRenderElement<GlesRenderer>,
+    Overview=crate::overview::OverviewRenderElement<GlesRenderer>,
+}
+
+/// Layer-shell surfaces of `output`, in the given half of the stack.
+///
+/// `space_render_elements` normally draws layers and windows together, but
+/// the overview needs them split: panels stay on top of the previews while
+/// wallpapers go under the scrim, so each half is collected separately.
+fn layer_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    scale: Scale<f64>,
+    upper: bool,
+) -> Vec<GlideRenderElements> {
+    use smithay::desktop::layer_map_for_output;
+    use smithay::wayland::shell::wlr_layer::Layer;
+
+    let map = layer_map_for_output(output);
+    let wanted = if upper {
+        [Layer::Overlay, Layer::Top]
+    } else {
+        [Layer::Bottom, Layer::Background]
+    };
+
+    let mut elements = Vec::new();
+    for layer in wanted {
+        for surface in map.layers_on(layer).rev() {
+            let Some(geometry) = map.layer_geometry(surface) else {
+                continue;
+            };
+            let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
+            let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                AsRenderElements::render_elements(surface, renderer, location, scale, 1.0);
+            elements.extend(
+                surface_elements
+                    .into_iter()
+                    .map(SpaceRenderElements::Surface)
+                    .map(GlideRenderElements::Space),
+            );
+        }
+    }
+    elements
 }
 
 struct SurfaceData {
@@ -412,6 +452,73 @@ fn resolve_cursor_buffer(
     );
     cursor_buffers.push((image, buffer.clone()));
     buffer
+}
+
+/// What came of one `render_frame` call.
+enum FrameOutcome {
+    /// Damage was found and the frame is on its way to the screen.
+    Queued(smithay::backend::renderer::element::RenderElementStates),
+    /// Nothing changed; the frame was skipped.
+    NoDamage(smithay::backend::renderer::element::RenderElementStates),
+    /// Rendering or queueing failed — retry later.
+    Failed,
+}
+
+/// Assembles the scene while the overview is showing.
+///
+/// The windows are still mapped in `Space` at their real positions but must
+/// not be drawn there — their previews stand in for them — so the whole
+/// frame is built by hand instead of going through `space_render_elements`:
+/// panels on top, previews and scrim in the middle, wallpapers underneath.
+///
+/// A free function rather than a method because the caller is already
+/// holding a field borrow of `GlideState` (the DRM device, for the
+/// renderer); taking the disjoint pieces explicitly is what lets both
+/// coexist.
+#[allow(clippy::too_many_arguments)]
+fn overview_elements(
+    gles_renderer: &mut GlesRenderer,
+    overview: &mut crate::overview::OverviewUi,
+    window_map: &HashMap<glide_layout::WindowId, GlideWindow>,
+    pointer_element: &mut PointerElement,
+    pointer_location: Point<f64, Logical>,
+    cursor_hotspot: Point<i32, Logical>,
+    scale: Scale<f64>,
+    output: &Output,
+    output_geometry: smithay::utils::Rectangle<i32, Logical>,
+) -> Vec<GlideRenderElements> {
+    let mut elements: Vec<GlideRenderElements> = Vec::new();
+
+    elements.extend(
+        pointer_element
+            .render_elements::<PointerRenderElement<GlesRenderer>>(
+                gles_renderer,
+                (pointer_location - cursor_hotspot.to_f64())
+                    .to_physical(scale)
+                    .to_i32_round(),
+                scale,
+                1.0,
+            )
+            .into_iter()
+            .map(GlideRenderElements::Pointer),
+    );
+
+    elements.extend(layer_elements(gles_renderer, output, scale, true));
+
+    let painter = crate::paint::PAINTER.get_or_init(|| crate::paint::Painter::new(14.0));
+    elements.extend(
+        overview
+            .render(gles_renderer, output_geometry, scale, painter, |id| {
+                window_map
+                    .get(&id)
+                    .map(|window| (window.clone(), window.display_name()))
+            })
+            .into_iter()
+            .map(GlideRenderElements::Overview),
+    );
+
+    elements.extend(layer_elements(gles_renderer, output, scale, false));
+    elements
 }
 
 /// Collects everything to draw for one frame: the cursor (always on top,
@@ -798,6 +905,22 @@ impl GlideState {
         self.render_surface(crtc);
     }
 
+    /// Requests a repaint of every surface on the next event-loop turn.
+    ///
+    /// Used by animations, which change the scene without any client having
+    /// committed anything — the ordinary damage-driven path would never
+    /// wake up for them.
+    pub fn queue_redraw(&mut self) {
+        let Some(device) = self.backend_data.device.as_ref() else {
+            return;
+        };
+        let crtcs: Vec<crtc::Handle> = device.surfaces.keys().copied().collect();
+        for crtc in crtcs {
+            self.loop_handle
+                .insert_idle(move |state| state.render_surface(crtc));
+        }
+    }
+
     fn render_surface(&mut self, crtc: crtc::Handle) {
         // While the session is paused (we're switched away to another VT)
         // the DRM device is revoked, so every render would fail with
@@ -869,23 +992,41 @@ impl GlideState {
         pointer_element.set_buffer(cursor_buffer);
         pointer_element.set_status(cursor_status);
 
-        let Some(elements) = build_render_elements(
-            gles_renderer,
-            &self.space,
-            pointer_element,
-            pointer_location,
-            cursor_hotspot,
-            scale,
-            &output,
-        ) else {
-            return;
+        // `space`, `overview` and `window_map` are fields disjoint from
+        // `backend_data`, so they stay reachable while `device` is borrowed.
+        let elements = if let Some(overview) = self.overview.as_mut() {
+            // No geometry means the output is not mapped in `Space` yet;
+            // there is nothing to draw an overview over.
+            let Some(output_geometry) = self.space.output_geometry(&output) else {
+                return;
+            };
+            overview_elements(
+                gles_renderer,
+                overview,
+                &self.window_map,
+                pointer_element,
+                pointer_location,
+                cursor_hotspot,
+                scale,
+                &output,
+                output_geometry,
+            )
+        } else {
+            let Some(elements) = build_render_elements(
+                gles_renderer,
+                &self.space,
+                pointer_element,
+                pointer_location,
+                cursor_hotspot,
+                scale,
+                &output,
+            ) else {
+                return;
+            };
+            elements
         };
 
-        let clear_color = if self.layout.overview_active {
-            [0.1, 0.1, 0.1, 1.0] // Dark gray
-        } else {
-            FILL_COLOR
-        };
+        let clear_color = FILL_COLOR;
 
         let render_result = surface.drm_output.render_frame(
             gles_renderer,
@@ -894,45 +1035,66 @@ impl GlideState {
             FrameFlags::DEFAULT,
         );
 
-        match render_result {
-            Ok(res) => {
-                if !res.is_empty {
-                    if let Err(err) = surface.drm_output.queue_frame(()) {
-                        tracing::error!("failed to queue frame: {:?}", err);
-                        self.schedule_repaint(crtc, &output);
-                        return;
-                    }
+        // Everything that still needs `surface` happens here, inside the
+        // `device` borrow; the bookkeeping afterwards needs `&mut self`, so
+        // it is deferred past the end of that borrow.
+        let outcome = match render_result {
+            Ok(res) if res.is_empty => FrameOutcome::NoDamage(res.states),
+            Ok(res) => match surface.drm_output.queue_frame(()) {
+                Ok(()) => FrameOutcome::Queued(res.states),
+                Err(err) => {
+                    tracing::error!("failed to queue frame: {:?}", err);
+                    FrameOutcome::Failed
                 }
-
-                self.space.elements().for_each(|window| {
-                    window.with_surfaces(|s, states| {
-                        update_surface_primary_scanout_output(
-                            s,
-                            &output,
-                            states,
-                            None,
-                            &res.states,
-                            default_primary_scanout_output_compare,
-                        );
-                    });
-                });
-
-                if !res.is_empty {
-                    self.space.elements_for_output(&output).for_each(|window| {
-                        window.send_frame(
-                            &output,
-                            self.start_time.elapsed(),
-                            Some(Duration::ZERO),
-                            |_, _| Some(output.clone()),
-                        );
-                    });
-                } else {
-                    self.schedule_repaint(crtc, &output);
-                }
-            }
+            },
             Err(err) => {
                 tracing::error!("failed to render frame: {:?}", err);
-                self.schedule_repaint(crtc, &output);
+                FrameOutcome::Failed
+            }
+        };
+
+        self.finish_frame(&outcome, crtc, &output);
+    }
+
+    /// Post-render bookkeeping: tells clients which output actually scanned
+    /// out their buffers, then either releases frame callbacks or re-arms a
+    /// repaint.
+    fn finish_frame(&mut self, outcome: &FrameOutcome, crtc: crtc::Handle, output: &Output) {
+        let states = match outcome {
+            FrameOutcome::Queued(states) | FrameOutcome::NoDamage(states) => Some(states),
+            FrameOutcome::Failed => None,
+        };
+
+        if let Some(states) = states {
+            self.space.elements().for_each(|window| {
+                window.with_surfaces(|s, surface_states| {
+                    update_surface_primary_scanout_output(
+                        s,
+                        output,
+                        surface_states,
+                        None,
+                        states,
+                        default_primary_scanout_output_compare,
+                    );
+                });
+            });
+        }
+
+        match outcome {
+            // Frame callbacks are what tell clients "draw your next frame".
+            // Only a frame that actually reached the screen earns them.
+            FrameOutcome::Queued(_) => {
+                self.space.elements_for_output(output).for_each(|window| {
+                    window.send_frame(
+                        output,
+                        self.start_time.elapsed(),
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                });
+            }
+            FrameOutcome::NoDamage(_) | FrameOutcome::Failed => {
+                self.schedule_repaint(crtc, output);
             }
         }
     }

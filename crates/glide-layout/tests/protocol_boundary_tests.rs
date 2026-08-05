@@ -1,6 +1,6 @@
 use glide_layout::{
-    Insets, Layout, NewWindowPolicy, OutputId, OutputInfo, Rectangle, Size, WindowId,
-    WorkspaceId, WorkspaceTarget,
+    Insets, Layout, NewWindowPolicy, OutputId, OutputInfo, Rectangle, Size, WindowId, WorkspaceId,
+    WorkspaceTarget,
 };
 use std::collections::HashSet;
 
@@ -50,7 +50,8 @@ fn test_rapid_workspace_switching_and_window_movement_stress() {
                 let _ = layout.switch_to_workspace(WorkspaceTarget::Previous);
             }
             3 => {
-                let _ = layout.switch_to_workspace(WorkspaceTarget::Id(WorkspaceId::from_u64(999_999)));
+                let _ =
+                    layout.switch_to_workspace(WorkspaceTarget::Id(WorkspaceId::from_u64(999_999)));
             }
             _ => unreachable!(),
         }
@@ -122,7 +123,10 @@ fn test_outputs_changed_boundary_conditions() {
 
     // 1. Pass empty outputs
     layout.outputs_changed(&[]);
-    assert_eq!(layout.primary_output_geometry(), glide_layout::layout::FALLBACK_OUTPUT);
+    assert_eq!(
+        layout.primary_output_geometry(),
+        glide_layout::layout::FALLBACK_OUTPUT
+    );
 
     // 2. Pass output that leaves window off-screen to trigger rescue
     let offscreen_output = sample_output(2, 5000, 5000, 1920, 1080);
@@ -198,11 +202,17 @@ fn test_multi_surface_idle_inhibit_simulation() {
     // Uninhibit 99 surfaces
     for id in 1..100 {
         tracker.uninhibit(id);
-        assert!(tracker.inhibited, "Should remain inhibited until last surface (100) uninhibits");
+        assert!(
+            tracker.inhibited,
+            "Should remain inhibited until last surface (100) uninhibits"
+        );
     }
 
     // Uninhibit final surface
     tracker.uninhibit(100);
-    assert!(!tracker.inhibited, "Should be uninhibited when surface set becomes empty");
+    assert!(
+        !tracker.inhibited,
+        "Should be uninhibited when surface set becomes empty"
+    );
     assert!(tracker.surfaces.is_empty());
 }

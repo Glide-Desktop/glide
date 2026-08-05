@@ -149,7 +149,14 @@ pub struct Layout {
     focused: Option<WindowId>,
     outputs: Vec<OutputInfo>,
     policy: NewWindowPolicy,
-    pub overview_active: bool,
+    /// Whether the overview is showing.
+    ///
+    /// Private, like `active`: the same reasoning as the workspace model —
+    /// a public field is a field every call site can desync, and the
+    /// per-output migration will change what "the overview is open" even
+    /// means. Go through [`Layout::open_overview`] /
+    /// [`Layout::close_overview`] / [`Layout::overview_active`].
+    overview_active: bool,
 }
 
 impl Default for Layout {
@@ -268,30 +275,80 @@ impl Layout {
     /// Ordering comes from the workspace's own stack rather than the window
     /// map: iterating a `HashMap` would give a different Z-order on every
     /// call, making windows randomly swap places on screen.
+    ///
+    /// Deliberately unaffected by the overview: this answers "what is on
+    /// screen normally", and `reconcile_space` still maps exactly these
+    /// windows at their real positions while the overview is open. An
+    /// earlier version silently returned *every* workspace's windows when
+    /// the overview was active, which quietly changed the meaning of every
+    /// caller — reconcile, the ext-workspace handler, the IPC listings —
+    /// none of which asked for that. Use [`Layout::overview_windows`] when
+    /// you want the overview's set.
     pub fn visible_windows(&self) -> impl Iterator<Item = WindowState> {
         let mut ordered_windows = Vec::new();
-        if self.overview_active {
-            for ws in &self.workspaces {
-                for id in &ws.windows {
-                    if let Some(state) = self.windows.get(id) {
-                        if !state.minimized {
-                            ordered_windows.push(state.clone());
-                        }
-                    }
-                }
-            }
-        } else {
-            if let Some(ws) = self.workspaces.iter().find(|ws| ws.id == self.active) {
-                for id in &ws.windows {
-                    if let Some(state) = self.windows.get(id) {
-                        if !state.minimized {
-                            ordered_windows.push(state.clone());
-                        }
+        if let Some(ws) = self.workspaces.iter().find(|ws| ws.id == self.active) {
+            for id in &ws.windows {
+                if let Some(state) = self.windows.get(id) {
+                    if !state.minimized {
+                        ordered_windows.push(state.clone());
                     }
                 }
             }
         }
         ordered_windows.into_iter()
+    }
+
+    // ── Overview ───────────────────────────────────────────────────
+
+    /// Whether the overview is currently showing.
+    #[must_use]
+    pub const fn overview_active(&self) -> bool {
+        self.overview_active
+    }
+
+    /// Opens the overview. Returns `false` if it was already open.
+    ///
+    /// Deliberately does not touch focus: the overview is a view onto the
+    /// existing state, and dismissing it with Escape has to be able to
+    /// restore exactly what was there before.
+    pub fn open_overview(&mut self) -> bool {
+        if self.overview_active {
+            return false;
+        }
+        self.overview_active = true;
+        true
+    }
+
+    /// Closes the overview. Returns `false` if it was already closed.
+    pub fn close_overview(&mut self) -> bool {
+        if !self.overview_active {
+            return false;
+        }
+        self.overview_active = false;
+        true
+    }
+
+    /// Every window the overview shows: all workspaces, minus minimized
+    /// windows.
+    ///
+    /// Ordered by workspace (in workspace order), then bottom-to-top within
+    /// each — so the arrangement is stable and groups a workspace's windows
+    /// together. With Glide's "one window per workspace" default the
+    /// overview doubles as the workspace switcher, which is why it spans
+    /// all of them rather than just the active one.
+    #[must_use]
+    pub fn overview_windows(&self) -> Vec<WindowState> {
+        let mut windows = Vec::new();
+        for ws in &self.workspaces {
+            for id in &ws.windows {
+                if let Some(state) = self.windows.get(id) {
+                    if !state.minimized {
+                        windows.push(state.clone());
+                    }
+                }
+            }
+        }
+        windows
     }
 
     /// Raises a window to the top of its workspace's stack.

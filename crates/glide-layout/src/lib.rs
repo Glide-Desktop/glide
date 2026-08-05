@@ -6,10 +6,12 @@
 pub mod geometry;
 pub mod ids;
 pub mod layout;
+pub mod overview;
 
 pub use geometry::{Insets, Point, Rectangle, Size};
 pub use ids::{OutputId, WindowId, WorkspaceId};
 pub use layout::{Layout, NewWindowPolicy, OutputInfo, WindowState, Workspace, WorkspaceTarget};
+pub use overview::{OverviewOptions, OverviewSlot, compute_overview_layout};
 
 #[cfg(test)]
 mod tests {
@@ -825,5 +827,95 @@ mod tests {
         let state = layout.window_state(w1).unwrap();
         assert_eq!(state.content_geometry(), content_before);
         assert_eq!(state.frame_geometry().size, Size::new(800, 632));
+    }
+
+    // ── Overview ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_overview_starts_closed_and_toggles() {
+        let mut layout = Layout::new();
+        assert!(!layout.overview_active());
+
+        assert!(layout.open_overview());
+        assert!(layout.overview_active());
+        assert!(!layout.open_overview(), "opening twice reports no change");
+
+        assert!(layout.close_overview());
+        assert!(!layout.overview_active());
+        assert!(!layout.close_overview(), "closing twice reports no change");
+    }
+
+    #[test]
+    fn test_opening_overview_does_not_change_focus_or_workspace() {
+        // Escape has to be able to restore exactly the previous state, so
+        // opening the overview must be a pure view change.
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        let w2 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+        layout.add_window(w2, Size::new(800, 600));
+
+        let workspace_before = layout.active_workspace();
+        let focus_before = layout.focused_window();
+
+        layout.open_overview();
+
+        assert_eq!(layout.active_workspace(), workspace_before);
+        assert_eq!(layout.focused_window(), focus_before);
+    }
+
+    #[test]
+    fn test_visible_windows_ignores_the_overview() {
+        // Regression guard: an earlier version made visible_windows() return
+        // every workspace while the overview was open, silently changing
+        // what reconcile and the IPC listings saw.
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        let w2 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+        layout.add_window(w2, Size::new(800, 600));
+
+        let before: Vec<WindowId> = layout.visible_windows().map(|s| s.id).collect();
+        layout.open_overview();
+        let during: Vec<WindowId> = layout.visible_windows().map(|s| s.id).collect();
+
+        assert_eq!(before, during);
+        assert_eq!(during.len(), 1, "only the active workspace is 'visible'");
+    }
+
+    #[test]
+    fn test_overview_windows_spans_every_workspace() {
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        let w2 = WindowId::next();
+        let w3 = WindowId::next();
+        // Default policy puts each on its own workspace.
+        layout.add_window(w1, Size::new(800, 600));
+        layout.add_window(w2, Size::new(800, 600));
+        layout.add_window(w3, Size::new(800, 600));
+        assert_eq!(layout.workspace_count(), 3);
+
+        let ids: Vec<WindowId> = layout.overview_windows().iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![w1, w2, w3], "workspace order, then stacking");
+    }
+
+    #[test]
+    fn test_overview_windows_skips_minimized() {
+        let mut layout = Layout::new();
+        let w1 = WindowId::next();
+        let w2 = WindowId::next();
+        layout.add_window(w1, Size::new(800, 600));
+        layout.add_window(w2, Size::new(800, 600));
+
+        layout.set_minimized(w1, true);
+
+        let ids: Vec<WindowId> = layout.overview_windows().iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![w2]);
+    }
+
+    #[test]
+    fn test_overview_windows_is_empty_with_no_windows() {
+        let layout = Layout::new();
+        assert!(layout.overview_windows().is_empty());
     }
 }

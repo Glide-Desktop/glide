@@ -23,6 +23,7 @@ pub struct Config {
     pub workspaces: WorkspaceConfig,
     pub keybinds: Vec<KeybindConfig>,
     pub decorations: DecorationTheme,
+    pub overview: OverviewTheme,
 }
 
 /// A window decoration's color scheme and size.
@@ -75,6 +76,69 @@ impl Default for DecorationTheme {
     }
 }
 
+/// Look and feel of the overview.
+///
+/// Sizing here is in logical pixels and applies before output scaling, the
+/// same as the decoration theme.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct OverviewTheme {
+    /// Space between previews, and between rows.
+    pub gap: i32,
+    /// Height of the strip under each preview reserved for its title.
+    pub label_height: i32,
+    /// Upper bound on how large a preview may be drawn relative to the
+    /// window. Above 1.0 previews would be scaled *up* and look blurry.
+    pub max_scale: f64,
+    /// Whether to draw window titles under previews.
+    pub label: bool,
+    pub label_color: Color,
+    /// Full-screen dim drawn behind the previews. Only the alpha channel
+    /// is animated; the colour itself is used as-is.
+    pub dim: Color,
+    /// Highlight drawn behind the hovered/selected preview.
+    pub highlight: Color,
+    /// Thickness of that highlight around the preview.
+    pub border: i32,
+    /// Open/close animation length. `0` disables the animation entirely,
+    /// which is also the escape hatch if it ever feels wrong on slow
+    /// hardware.
+    pub duration_ms: u64,
+}
+
+impl Default for OverviewTheme {
+    fn default() -> Self {
+        Self {
+            gap: 32,
+            label_height: 24,
+            max_scale: 1.0,
+            label: true,
+            label_color: Color::from_hex("#ffffffff").unwrap(),
+            dim: Color::from_hex("#0b0b0fcc").unwrap(),
+            highlight: Color::from_hex("#3b5bdbff").unwrap(),
+            border: 3,
+            duration_ms: 220,
+        }
+    }
+}
+
+impl OverviewTheme {
+    /// The subset of the theme the pure layout engine needs.
+    #[must_use]
+    pub fn options(&self) -> glide_layout::OverviewOptions {
+        glide_layout::OverviewOptions {
+            gap: self.gap,
+            label_height: if self.label { self.label_height } else { 0 },
+            max_scale: self.max_scale,
+        }
+    }
+
+    #[must_use]
+    pub const fn duration(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.duration_ms)
+    }
+}
+
 /// An RGBA color, written in config as `"#rrggbb"` or `"#rrggbbaa"`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color(pub [f32; 4]);
@@ -102,6 +166,22 @@ impl Color {
             f32::from(b) / 255.0,
             f32::from(a) / 255.0,
         ]))
+    }
+}
+
+impl Color {
+    /// The colour as `[A, R, G, B]` bytes, which is what the software
+    /// painter writes into its buffers.
+    #[must_use]
+    pub fn as_argb_bytes(&self) -> [u8; 4] {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        [
+            byte(self.0[3]),
+            byte(self.0[0]),
+            byte(self.0[1]),
+            byte(self.0[2]),
+        ]
     }
 }
 
@@ -320,6 +400,7 @@ impl Config {
             workspaces: WorkspaceConfig::default(),
             keybinds: Self::default_keybinds(),
             decorations: DecorationTheme::default(),
+            overview: OverviewTheme::default(),
         }
     }
 
@@ -401,6 +482,7 @@ impl Config {
         state.layout.set_policy(self.workspaces.new_window.into());
         state.keybinds = self.resolve_keybinds();
         state.decoration_theme = self.decorations.clone();
+        state.overview_theme = self.overview.clone();
         tracing::info!(
             policy = ?self.workspaces.new_window,
             keybind_count = state.keybinds.len(),

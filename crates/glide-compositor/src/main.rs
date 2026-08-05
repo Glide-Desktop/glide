@@ -11,6 +11,7 @@ mod grabs;
 mod input;
 mod ipc;
 mod logging;
+mod overview;
 mod paint;
 mod state;
 mod window;
@@ -107,6 +108,15 @@ fn run() -> anyhow::Result<()> {
         reap_child_processes();
         state.space.refresh();
         state.popups.cleanup();
+
+        // Drive the overview's open/close animation. While it runs the
+        // scene changes every frame, so repaints have to be requested
+        // explicitly — the damage-driven path only wakes on client
+        // activity, and a zooming preview is entirely our own doing.
+        if state.tick_overview() {
+            state.queue_redraw();
+        }
+
         let _ = state.display_handle.flush_clients();
     })?;
 
@@ -137,9 +147,7 @@ fn spawn_client() {
 }
 
 pub fn reap_child_processes() {
-    unsafe {
-        while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {}
-    }
+    unsafe { while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {} }
 }
 
 #[cfg(test)]
@@ -158,4 +166,3 @@ mod tests {
         reap_child_processes();
     }
 }
-

@@ -30,9 +30,8 @@ use std::{
 };
 
 use glide_ipc::{Request, Response, WindowInfo, WorkspaceInfo};
-use smithay::{
-    reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic},
-    wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData},
+use smithay::reexports::calloop::{
+    EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic,
 };
 
 use crate::GlideState;
@@ -406,7 +405,7 @@ fn list_windows(state: &GlideState) -> Response {
         .iter()
         .filter_map(|(&id, window)| {
             let layout_state = state.layout.window_state(id)?;
-            let (app_id, title) = window_identity(window);
+            let (app_id, title) = window.identity();
 
             Some(WindowInfo {
                 id: id.as_u64(),
@@ -422,24 +421,6 @@ fn list_windows(state: &GlideState) -> Response {
 }
 
 /// Reads a window's `app_id`/`title` as last set by the client.
-fn window_identity(window: &crate::window::GlideWindow) -> (Option<String>, Option<String>) {
-    let Some(toplevel) = window.toplevel() else {
-        return (None, None);
-    };
-
-    with_states(toplevel.wl_surface(), |states| {
-        states
-            .data_map
-            .get::<XdgToplevelSurfaceData>()
-            .map_or((None, None), |data| {
-                let guard = data
-                    .lock()
-                    .expect("single-threaded event loop, this mutex is never poisoned");
-                (guard.app_id.clone(), guard.title.clone())
-            })
-    })
-}
-
 fn spawn_command(command: &str) -> Response {
     crate::reap_child_processes();
     match std::process::Command::new("sh")
@@ -518,7 +499,10 @@ mod tests {
         });
 
         let write_res = write_all_nonblocking(&server_stream, &payload);
-        assert!(write_res.is_ok(), "write_all_nonblocking failed: {write_res:?}");
+        assert!(
+            write_res.is_ok(),
+            "write_all_nonblocking failed: {write_res:?}"
+        );
 
         let received = handle.join().unwrap();
         assert_eq!(received, payload);
@@ -534,16 +518,11 @@ mod tests {
         #[allow(clippy::unused_io_amount)]
         while (&server_stream).write(&dummy).is_ok_and(|n| n > 0) {}
 
-
-
-
-
         // Now write_all_nonblocking must attempt retries and return WouldBlock error when retries exhaust
         let res = write_all_nonblocking(&server_stream, b"test response");
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().kind(), ErrorKind::WouldBlock);
     }
-
 
     #[test]
     fn write_all_nonblocking_handles_closed_socket() {
@@ -555,5 +534,3 @@ mod tests {
         assert!(res.is_err());
     }
 }
-
-

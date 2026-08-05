@@ -21,7 +21,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{IsAlive, Logical, Point},
+    utils::{IsAlive, Logical, Point, Rectangle},
     wayland::{
         compositor::{CompositorClientState, CompositorState, with_states},
         cursor_shape::CursorShapeManagerState,
@@ -106,6 +106,9 @@ pub struct GlideState {
     /// Current decoration colors/height, applied to every window mapped
     /// after a config (re)load. See [`crate::config::Config::apply_to_state`].
     pub decoration_theme: crate::config::DecorationTheme,
+    /// Overview look and feel, refreshed on config reload alongside the
+    /// decoration theme.
+    pub overview_theme: crate::config::OverviewTheme,
 
     /// What the pointer cursor should currently look like. Clients set this
     /// via `wl_pointer.set_cursor` when the pointer is over them; otherwise
@@ -119,6 +122,15 @@ pub struct GlideState {
     /// would yank the keyboard back to a window mid-typing.
     pub layer_focus: Option<LayerSurface>,
 
+    /// Live overview state, present exactly while the overview is on
+    /// screen (including its closing animation).
+    ///
+    /// Kept beside `layout.overview_active()` rather than inside the layout
+    /// engine because it is all presentation: cached pixel buffers, an
+    /// animation clock, the hovered preview. The layout owns the *fact*
+    /// that the overview is open; this owns what that looks like.
+    pub overview: Option<crate::overview::OverviewUi>,
+
     /// Keys currently suppressed (not forwarded to the focused client)
     /// because their press triggered a compositor keybinding. Tracked so the
     /// matching release is suppressed too, avoiding "stuck key" bugs.
@@ -130,8 +142,12 @@ pub struct GlideState {
     pub suppressed_keys: Vec<Keycode>,
 
     // M5 Protocol States
-    pub foreign_toplevel_list_state: smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
-    pub foreign_toplevel_handles: HashMap<glide_layout::WindowId, smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle>,
+    pub foreign_toplevel_list_state:
+        smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    pub foreign_toplevel_handles: HashMap<
+        glide_layout::WindowId,
+        smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
+    >,
     pub idle_notifier_state: smithay::wayland::idle_notify::IdleNotifierState<GlideState>,
     pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     pub idle_inhibited_surfaces: HashSet<WlSurface>,
@@ -265,8 +281,10 @@ impl GlideState {
             output_ids: HashMap::new(),
             keybinds: Vec::new(),
             decoration_theme: crate::config::DecorationTheme::default(),
+            overview_theme: crate::config::OverviewTheme::default(),
             cursor_status: CursorImageStatus::default_named(),
             layer_focus: None,
+            overview: None,
             suppressed_keys: Vec::new(),
 
             foreign_toplevel_list_state,
@@ -339,98 +357,20 @@ impl GlideState {
     pub fn reconcile_space(&mut self) {
         self.cleanup_dead_windows();
 
+        // Keep the overview's slots in step with the window set. Cheap
+        // when it is closed (an early return), and this is the one place
+        // every window add/remove/minimise funnels through, so hooking it
+        // here beats remembering to call it from each of them.
+        self.refresh_overview();
+
         // Windows on the active workspace, bottom-to-top. The order matters:
         // `map_element` re-stacks, so applying them in this sequence is what
         // gives the workspace its Z-order.
-        let visible: Vec<glide_layout::WindowState> =
-            self.layout.visible_windows().collect();
+        let visible: Vec<glide_layout::WindowState> = self.layout.visible_windows().collect();
         let visible_ids: HashSet<glide_layout::WindowId> =
             visible.iter().map(|state| state.id).collect();
 
-        let overview_active = self.layout.overview_active;
         let focused = self.layout.focused_window();
-
-        // ── Overview grid calculation ──────────────────────────────
-        //
-        // Purely visual: computes where each window *appears* on screen
-        // during overview.  Nothing here changes the layout's stored
-        // geometry or the position Space maps elements at.
-        use crate::window::OverviewTransform;
-        let mut overview_transforms: HashMap<glide_layout::WindowId, OverviewTransform> =
-            HashMap::new();
-
-        if overview_active {
-            let work_area = self.layout.primary_output_work_area();
-            let n = visible.len();
-            if n > 0 {
-                let cols = (n as f64).sqrt().ceil() as usize;
-                let rows = (n as f64 / cols as f64).ceil() as usize;
-                let slot_w = work_area.size.width / cols as i32;
-                let slot_h = work_area.size.height / rows as i32;
-
-                let gap = 24;
-
-                for (i, state) in visible.iter().enumerate() {
-                    let r = i / cols;
-                    let c = i % cols;
-
-                    // Cell rectangle (slot minus gaps).
-                    let cell_w = slot_w - gap;
-                    let cell_h = slot_h - gap;
-                    let cell_x = work_area.loc.x + (c as i32) * slot_w + gap / 2;
-                    let cell_y = work_area.loc.y + (r as i32) * slot_h + gap / 2;
-
-                    // Use the layout's frame size (includes decorations)
-                    // to calculate the down-scale factor.
-                    let frame_w = state.geometry.size.width.max(1);
-                    let frame_h = state.geometry.size.height.max(1);
-
-                    let scale_x = cell_w as f64 / frame_w as f64;
-                    let scale_y = cell_h as f64 / frame_h as f64;
-                    let wscale = scale_x.min(scale_y).min(1.0) * 0.85;
-
-                    let scaled_frame_w = (frame_w as f64 * wscale).round() as i32;
-                    let scaled_frame_h = (frame_h as f64 * wscale).round() as i32;
-
-                    // Centre the scaled frame inside the cell.
-                    let frame_off_x = (cell_w - scaled_frame_w) / 2;
-                    let frame_off_y = (cell_h - scaled_frame_h) / 2;
-
-                    let frame_x = cell_x + frame_off_x;
-                    let frame_y = cell_y + frame_off_y;
-
-                    // Content origin inside the scaled frame.
-                    let overview_content_x =
-                        frame_x + (state.insets.left as f64 * wscale).round() as i32;
-                    let overview_content_y =
-                        frame_y + (state.insets.top as f64 * wscale).round() as i32;
-
-                    let real_content = state.content_geometry();
-
-                    let cell_rect = smithay::utils::Rectangle::new(
-                        smithay::utils::Point::new(cell_x, cell_y),
-                        smithay::utils::Size::new(cell_w, cell_h),
-                    );
-
-                    overview_transforms.insert(
-                        state.id,
-                        OverviewTransform {
-                            scale: wscale,
-                            real_content_loc: smithay::utils::Point::from((
-                                real_content.loc.x,
-                                real_content.loc.y,
-                            )),
-                            overview_content_loc: smithay::utils::Point::from((
-                                overview_content_x,
-                                overview_content_y,
-                            )),
-                            cell_rect,
-                            focused: focused == Some(state.id),
-                        },
-                    );
-                }
-            }
-        }
 
         // ── Unmap hidden windows ───────────────────────────────────
         let mapped: Vec<GlideWindow> = self.space.elements().cloned().collect();
@@ -452,16 +392,6 @@ impl GlideState {
 
             let is_focused = focused == Some(state.id);
 
-            // Set the overview transform for rendering (or clear it).
-            if let Some(&transform) = overview_transforms.get(&state.id) {
-                window.set_overview_state(Some(transform));
-            } else {
-                window.set_overview_state(None);
-            }
-
-            // Space ALWAYS receives the real content origin — never the
-            // overview position.  The overview is purely visual, handled
-            // inside `render_elements`.
             let content = state.content_geometry();
             let location = Point::from((content.loc.x, content.loc.y));
 
@@ -517,7 +447,8 @@ impl GlideState {
             }
         }
 
-        self.idle_inhibited_surfaces.retain(|surface| surface.alive());
+        self.idle_inhibited_surfaces
+            .retain(smithay::utils::IsAlive::alive);
         if self.idle_inhibited_surfaces.is_empty() {
             self.idle_notifier_state.set_is_inhibited(false);
         }
@@ -624,7 +555,8 @@ impl GlideState {
         // decorations (ClientSide). We only decorate them if they explicitly
         // negotiate ServerSide via the xdg-decoration protocol (handled in
         // `request_mode`).
-        self.layout.set_window_insets(id, glide_layout::Insets::NONE);
+        self.layout
+            .set_window_insets(id, glide_layout::Insets::NONE);
 
         self.window_map.insert(id, window.clone());
         self.window_to_id.insert(window.clone(), id);
@@ -740,6 +672,122 @@ impl GlideState {
         self.apply_keyboard_focus();
     }
 
+    // ── Overview ───────────────────────────────────────────────────
+
+    /// Frame rectangles of every window the overview shows, in overview
+    /// order — what [`crate::overview::OverviewUi`] arranges and animates
+    /// from.
+    fn overview_entries(&self) -> Vec<(glide_layout::WindowId, Rectangle<i32, Logical>)> {
+        self.layout
+            .overview_windows()
+            .into_iter()
+            .filter(|state| self.window_map.contains_key(&state.id))
+            .map(|state| {
+                let frame = state.frame_geometry();
+                (
+                    state.id,
+                    Rectangle::new(
+                        Point::from((frame.loc.x, frame.loc.y)),
+                        smithay::utils::Size::from((frame.size.width, frame.size.height)),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// The area previews are arranged in: the primary output's work area,
+    /// so panels keep their space in the overview too.
+    fn overview_area(&self) -> Rectangle<i32, Logical> {
+        let area = self.layout.primary_output_work_area();
+        Rectangle::new(
+            Point::from((area.loc.x, area.loc.y)),
+            smithay::utils::Size::from((area.size.width, area.size.height)),
+        )
+    }
+
+    /// Opens the overview. No-op if it is already showing.
+    pub fn open_overview(&mut self) {
+        if !self.layout.open_overview() {
+            return;
+        }
+
+        let entries = self.overview_entries();
+        let area = self.overview_area();
+        self.overview = Some(crate::overview::OverviewUi::new(
+            &entries,
+            area,
+            &self.overview_theme,
+            self.layout.focused_window(),
+        ));
+
+        tracing::info!(previews = entries.len(), "overview opened");
+        self.reconcile_space();
+    }
+
+    /// Starts closing the overview, focusing `select` once the animation
+    /// finishes. Returns `false` if the overview was not open.
+    ///
+    /// The teardown itself happens in [`Self::tick_overview`] so the
+    /// closing animation gets to play; callers that need the overview gone
+    /// *now* (a window vanishing out from under it) use
+    /// [`Self::close_overview`].
+    pub fn begin_close_overview(&mut self, select: Option<glide_layout::WindowId>) -> bool {
+        if !self.layout.overview_active() {
+            return false;
+        }
+        if let Some(ui) = self.overview.as_mut() {
+            ui.begin_close(select);
+            true
+        } else {
+            // No UI to animate (config disabled it, or it never built):
+            // drop straight out.
+            self.close_overview()
+        }
+    }
+
+    /// Tears the overview down immediately, skipping any animation.
+    /// Returns `true` if it was open.
+    pub fn close_overview(&mut self) -> bool {
+        self.overview = None;
+        self.layout.close_overview()
+    }
+
+    /// Drives the overview's animation. Called once per frame.
+    ///
+    /// Returns `true` if a repaint is needed — either the animation is
+    /// still running, or it just finished and the scene changed.
+    pub fn tick_overview(&mut self) -> bool {
+        let Some(ui) = self.overview.as_mut() else {
+            return false;
+        };
+
+        if let crate::overview::Tick::Finished { select } = ui.tick() {
+            self.close_overview();
+            if let Some(id) = select {
+                self.focus_window(id);
+            } else {
+                self.reconcile_space();
+            }
+            return true;
+        }
+
+        self.overview
+            .as_ref()
+            .is_some_and(crate::overview::OverviewUi::is_animating)
+    }
+
+    /// Rebuilds the overview's slots after the window set changed.
+    pub fn refresh_overview(&mut self) {
+        if self.overview.is_none() {
+            return;
+        }
+        let entries = self.overview_entries();
+        let area = self.overview_area();
+        if let Some(ui) = self.overview.as_mut() {
+            ui.relayout(&entries, area);
+        }
+    }
+
     /// Focuses a window through the layout engine and applies the result.
     ///
     /// The only sanctioned way to change focus. Setting keyboard focus
@@ -749,12 +797,9 @@ impl GlideState {
         // Focusing a window is also how a layer surface *loses* the
         // keyboard: click a window, the launcher's turn is over.
         self.layer_focus = None;
-        let mut changed = false;
-        if self.layout.overview_active {
-            self.layout.overview_active = false;
-            changed = true;
-        }
-        if self.layout.focus_window(id) || changed {
+        // Picking a window is also how the overview is dismissed.
+        let closed = self.close_overview();
+        if self.layout.focus_window(id) || closed {
             self.reconcile_space();
         }
     }
@@ -856,7 +901,12 @@ impl GlideState {
         window: &GlideWindow,
         content_location: Point<i32, Logical>,
     ) {
-        if self.layout.overview_active { return; }
+        // Nothing drags windows while the overview is up: previews are
+        // render-only and the grabs are suppressed, so a stray call here
+        // would be writing a bogus position into the layout.
+        if self.layout.overview_active() {
+            return;
+        }
         let Some(id) = self.window_id(window) else {
             return;
         };
@@ -875,7 +925,12 @@ impl GlideState {
 
     /// Records an interactive resize. See [`Self::record_window_move`].
     pub fn record_window_resize(&mut self, window: &GlideWindow) {
-        if self.layout.overview_active { return; }
+        // Nothing drags windows while the overview is up: previews are
+        // render-only and the grabs are suppressed, so a stray call here
+        // would be writing a bogus position into the layout.
+        if self.layout.overview_active() {
+            return;
+        }
         let Some(id) = self.window_id(window) else {
             return;
         };

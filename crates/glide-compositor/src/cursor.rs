@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn cursor_cache_caches_icons_and_missing_shapes() {
         let mut cursor = Cursor::load();
-        
+
         // Initial state has Default cached.
         assert!(cursor.cache.contains_key(&CursorIcon::Default));
         let initial_cache_count = cursor.cache.len();
@@ -461,5 +461,3 @@ mod tests {
         );
     }
 }
-
-

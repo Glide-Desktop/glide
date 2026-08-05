@@ -10,8 +10,7 @@ use smithay::reexports::wayland_protocols_wlr::output_management::v1::server::{
 };
 use smithay::reexports::wayland_server::protocol::wl_output::Transform as WlTransform;
 use smithay::reexports::wayland_server::{
-    Client, DataInit, DisplayHandle, GlobalDispatch, New, Resource,
-    backend::GlobalId,
+    Client, DataInit, DisplayHandle, GlobalDispatch, New, Resource, backend::GlobalId,
 };
 use smithay::utils::Transform;
 use smithay::wayland::GlobalData;
@@ -203,7 +202,10 @@ impl GlobalDispatch<ZwlrOutputManagerV1, GlobalData> for GlideState {
         data_init: &mut DataInit<'_, Self>,
     ) {
         let instance = data_init.init(resource, GlobalData);
-        state.wlr_output_manager_state.instances.push(instance.clone());
+        state
+            .wlr_output_manager_state
+            .instances
+            .push(instance.clone());
         let serial = state.wlr_output_manager_state.next_serial();
         WlrOutputManagerState::send_manager_state(&instance, dh, &state.space, serial);
     }
@@ -254,10 +256,11 @@ impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputConfigurationV1, Con
                 if let Some(c) = config.heads.iter_mut().find(|h| h.output_name == head_name) {
                     c.enabled = false;
                 } else {
-                    let mut new_head = PendingHeadConfig::default();
-                    new_head.output_name = head_name;
-                    new_head.enabled = false;
-                    config.heads.push(new_head);
+                    config.heads.push(PendingHeadConfig {
+                        output_name: head_name,
+                        enabled: false,
+                        ..PendingHeadConfig::default()
+                    });
                 }
             }
             zwlr_output_configuration_v1::Request::Apply => {
@@ -295,7 +298,11 @@ impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputConfigurationHeadV1,
         _data_init: &mut DataInit<'_, Self>,
     ) {
         let mut config = data.config.lock().unwrap();
-        let head_entry = if let Some(h) = config.heads.iter_mut().find(|h| h.output_name == data.head_name) {
+        let head_entry = if let Some(h) = config
+            .heads
+            .iter_mut()
+            .find(|h| h.output_name == data.head_name)
+        {
             h
         } else {
             config.heads.push(PendingHeadConfig {
@@ -308,10 +315,17 @@ impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputConfigurationHeadV1,
 
         match request {
             zwlr_output_configuration_head_v1::Request::SetMode { mode } => {
-                let mode_data = mode.data::<(i32, i32, i32)>().cloned().unwrap_or((1920, 1080, 60000));
+                let mode_data = mode
+                    .data::<(i32, i32, i32)>()
+                    .copied()
+                    .unwrap_or((1920, 1080, 60000));
                 head_entry.mode = Some(mode_data);
             }
-            zwlr_output_configuration_head_v1::Request::SetCustomMode { width, height, refresh } => {
+            zwlr_output_configuration_head_v1::Request::SetCustomMode {
+                width,
+                height,
+                refresh,
+            } => {
                 head_entry.mode = Some((width, height, refresh));
             }
             zwlr_output_configuration_head_v1::Request::SetPosition { x, y } => {
@@ -353,7 +367,9 @@ impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputHeadV1, String> for 
     }
 }
 
-impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputModeV1, (i32, i32, i32)> for GlideState {
+impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputModeV1, (i32, i32, i32)>
+    for GlideState
+{
     fn request(
         _state: &mut Self,
         _client: &Client,
@@ -386,7 +402,12 @@ mod tests {
             size: (w, h).into(),
             refresh: 60_000,
         };
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
         output
     }
 
@@ -433,7 +454,12 @@ mod tests {
             size: (1920, 1080).into(),
             refresh: 60_000,
         };
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
 
         let mut space = Space::<GlideWindow>::default();
         space.map_output(&output, (0, 0));
@@ -452,14 +478,22 @@ mod tests {
         // Simulating the apply logic on space and output
         let mut any_changed = false;
         for head in config.heads {
-            let found_output = space.outputs().find(|o| o.name() == head.output_name).cloned();
+            let found_output = space
+                .outputs()
+                .find(|o| o.name() == head.output_name)
+                .cloned();
             if let Some(out) = found_output {
                 if let Some((x, y)) = head.position {
                     space.map_output(&out, (x, y));
                     any_changed = true;
                 }
                 if let Some(scale) = head.scale {
-                    out.change_current_state(None, None, Some(smithay::output::Scale::Fractional(scale)), None);
+                    out.change_current_state(
+                        None,
+                        None,
+                        Some(smithay::output::Scale::Fractional(scale)),
+                        None,
+                    );
                     any_changed = true;
                 }
                 if let Some(transform) = head.transform {
@@ -467,7 +501,10 @@ mod tests {
                     any_changed = true;
                 }
                 if let Some((w, h, refresh)) = head.mode {
-                    let wl_mode = Mode { size: (w, h).into(), refresh };
+                    let wl_mode = Mode {
+                        size: (w, h).into(),
+                        refresh,
+                    };
                     out.change_current_state(Some(wl_mode), None, None, None);
                     any_changed = true;
                 }
@@ -475,7 +512,10 @@ mod tests {
         }
 
         assert!(any_changed);
-        assert_eq!(space.output_geometry(&output).unwrap().loc, (1920, 0).into());
+        assert_eq!(
+            space.output_geometry(&output).unwrap().loc,
+            (1920, 0).into()
+        );
         assert_eq!(output.current_transform(), Transform::_90);
         assert_eq!(output.current_scale().fractional_scale(), 2.0);
         assert_eq!(output.current_mode().unwrap().size, (2560, 1440).into());
@@ -498,7 +538,12 @@ mod tests {
             size: (1920, 1080).into(),
             refresh: 60_000,
         };
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
         let mut space = Space::<GlideWindow>::default();
         space.map_output(&output, (0, 0));
 
@@ -513,7 +558,10 @@ mod tests {
 
         let mut any_changed = false;
         for head in config.heads {
-            let found_output = space.outputs().find(|o| o.name() == head.output_name).cloned();
+            let found_output = space
+                .outputs()
+                .find(|o| o.name() == head.output_name)
+                .cloned();
             if let Some(out) = found_output {
                 if let Some((x, y)) = head.position {
                     space.map_output(&out, (x, y));
@@ -549,7 +597,12 @@ mod tests {
             size: (1920, 1080).into(),
             refresh: 60_000,
         };
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
 
         let mut space = Space::<GlideWindow>::default();
         space.map_output(&output, (0, 0));
@@ -584,7 +637,12 @@ mod tests {
             size: (1920, 1080).into(),
             refresh: 60_000,
         };
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
         let mut space = Space::<GlideWindow>::default();
         space.map_output(&output, (0, 0));
 
@@ -610,9 +668,9 @@ mod tests {
                 PendingHeadConfig {
                     output_name: "HDMI-A-1".to_string(),
                     enabled: true,
-                    mode: Some((0, 0, 0)), // zero size mode
+                    mode: Some((0, 0, 0)),                // zero size mode
                     position: Some((i32::MAX, i32::MAX)), // max position
-                    scale: Some(f64::NAN), // NaN scale
+                    scale: Some(f64::NAN),                // NaN scale
                     transform: Some(Transform::_180),
                 },
                 PendingHeadConfig {
@@ -629,14 +687,22 @@ mod tests {
         // Simulating the apply logic on space and output without panics
         let mut any_changed = false;
         for head in config.heads {
-            let found_output = space.outputs().find(|o| o.name() == head.output_name).cloned();
+            let found_output = space
+                .outputs()
+                .find(|o| o.name() == head.output_name)
+                .cloned();
             if let Some(out) = found_output {
                 if let Some((x, y)) = head.position {
                     space.map_output(&out, (x, y));
                     any_changed = true;
                 }
                 if let Some(scale) = head.scale {
-                    out.change_current_state(None, None, Some(smithay::output::Scale::Fractional(scale)), None);
+                    out.change_current_state(
+                        None,
+                        None,
+                        Some(smithay::output::Scale::Fractional(scale)),
+                        None,
+                    );
                     any_changed = true;
                 }
                 if let Some(transform) = head.transform {
@@ -644,7 +710,10 @@ mod tests {
                     any_changed = true;
                 }
                 if let Some((w, h, refresh)) = head.mode {
-                    let wl_mode = Mode { size: (w, h).into(), refresh };
+                    let wl_mode = Mode {
+                        size: (w, h).into(),
+                        refresh,
+                    };
                     out.change_current_state(Some(wl_mode), None, None, None);
                     any_changed = true;
                 }
@@ -686,7 +755,10 @@ mod tests {
 
         let mut any_changed = false;
         for head in config.heads {
-            let found_output = space.outputs().find(|o| o.name() == head.output_name).cloned();
+            let found_output = space
+                .outputs()
+                .find(|o| o.name() == head.output_name)
+                .cloned();
             if let Some(out) = found_output {
                 if let Some((x, y)) = head.position {
                     space.map_output(&out, (x, y));
@@ -695,7 +767,10 @@ mod tests {
             }
         }
         assert!(any_changed);
-        assert_eq!(space.output_geometry(&output).unwrap().loc, (200, 200).into());
+        assert_eq!(
+            space.output_geometry(&output).unwrap().loc,
+            (200, 200).into()
+        );
     }
 
     #[test]
@@ -719,7 +794,10 @@ mod tests {
 
         let mut any_changed = false;
         for head in config.heads {
-            let found_output = space.outputs().find(|o| o.name() == head.output_name).cloned();
+            let found_output = space
+                .outputs()
+                .find(|o| o.name() == head.output_name)
+                .cloned();
             if let Some(out) = found_output {
                 if let Some((x, y)) = head.position {
                     space.map_output(&out, (x, y));
@@ -730,7 +808,10 @@ mod tests {
 
         assert!(any_changed);
         // Final position should be from the 100th head (i=99) -> (990, 495)
-        assert_eq!(space.output_geometry(&output).unwrap().loc, (990, 495).into());
+        assert_eq!(
+            space.output_geometry(&output).unwrap().loc,
+            (990, 495).into()
+        );
     }
 
     #[test]
@@ -740,7 +821,10 @@ mod tests {
 
         let mut any_changed = false;
         for head in config.heads {
-            let found_output = empty_space.outputs().find(|o| o.name() == head.output_name).cloned();
+            let found_output = empty_space
+                .outputs()
+                .find(|o| o.name() == head.output_name)
+                .cloned();
             if let Some(out) = found_output {
                 if let Some((x, y)) = head.position {
                     empty_space.map_output(&out, (x, y));
@@ -751,6 +835,3 @@ mod tests {
         assert!(!any_changed);
     }
 }
-
-
-
