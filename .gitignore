@@ -1,7 +1,20 @@
 /target
 
-# Session/agent artifacts
-session.md
-GEMINI.md
-AGENTS.md
+# Agent/session artifacts.
+#
+# These are scratch output from AI coding sessions (transcripts, per-agent
+# briefing/handoff notes, tool configs). They are not project sources and
+# were committed by accident once already — keep them out of the tree.
+.agents/
 .opencode/
+.geminirules
+AGENTS.md
+GEMINI.md
+session.md
+session_export.json
+session_opencode.md
+
+# Scratch files from debugging sessions: one-off reproducers, stray patches.
+fix.patch
+test_*.rs
+test_*.py
