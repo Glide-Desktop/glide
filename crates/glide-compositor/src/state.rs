@@ -29,6 +29,7 @@ use smithay::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
         },
         output::OutputManagerState,
+        relative_pointer::RelativePointerManagerState,
         security_context::SecurityContextState,
         selection::{
             data_device::DataDeviceState,
@@ -76,6 +77,7 @@ pub struct Protocols {
     pub ext_workspace_state: crate::handlers::ext_workspace::ExtWorkspaceManagerState,
     pub xdg_activation_state: XdgActivationState,
     pub security_context_state: SecurityContextState,
+    pub relative_pointer_manager_state: RelativePointerManagerState,
 }
 
 impl Protocols {
@@ -125,6 +127,7 @@ impl Protocols {
                 .get_data::<ClientState>()
                 .is_none_or(|state| state.security_context.is_none())
         });
+        let relative_pointer_manager_state = RelativePointerManagerState::new::<GlideState>(dh);
 
         Self {
             compositor_state,
@@ -150,6 +153,7 @@ impl Protocols {
             ext_workspace_state,
             xdg_activation_state,
             security_context_state,
+            relative_pointer_manager_state,
         }
     }
 }

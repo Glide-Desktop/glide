@@ -5,7 +5,7 @@ use smithay::{
     },
     input::{
         keyboard::{FilterResult, Keysym, ModifiersState, keysyms, xkb},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
 };
@@ -360,6 +360,16 @@ impl GlideState {
 
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.overview_motion(pointer_location);
+
+        pointer.relative_motion(
+            self,
+            under.clone(),
+            &RelativeMotionEvent {
+                delta: event.delta(),
+                delta_unaccel: event.delta_unaccel(),
+                utime: event.time(),
+            },
+        );
 
         pointer.motion(
             self,

@@ -238,3 +238,18 @@ works. The one thing worth confirming once a sandboxed app is available:
 a client launched inside the sandbox connects and renders normally, and
 `ClientState::security_context` is `Some(..)` for it (only checkable via
 a debug log line, not present yet).
+
+## B3 (relative-pointer) — additive, needs a real client
+
+`pointer.relative_motion(...)` is now sent alongside the existing
+absolute `pointer.motion(...)` on every raw pointer-motion event, purely
+additive — existing absolute-motion behaviour must be completely
+unaffected (normal mouse movement, window dragging, resize, everything
+already covered elsewhere in this doc should show zero change).
+
+- A game or 3D application using `relative-pointer-v1` (mouselook,
+  typically) must receive motion deltas even while the cursor is
+  otherwise unconstrained. No such client is installed on this machine —
+  this needs one to actually confirm, and is genuinely blocked until
+  `pointer-constraints` (next) gives relative-pointer clients a reason to
+  also lock/confine the pointer, which is usually paired with it.
