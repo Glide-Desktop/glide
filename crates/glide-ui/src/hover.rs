@@ -34,6 +34,14 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
         true
     }
 
+    /// Reassigns the target without touching the fade's start time, for
+    /// involuntary reassignment (e.g. the previous target disappeared and
+    /// a replacement is being picked automatically) that should not read
+    /// as a fresh hover.
+    pub fn retarget_without_restarting(&mut self, target: Option<T>) {
+        self.target = target;
+    }
+
     /// Linear progress in `[0.0, 1.0]` since the target was last changed.
     /// `1.0` both when nothing is targeted and once `duration` has fully
     /// elapsed - callers apply their own easing curve on top if wanted.
@@ -126,5 +134,32 @@ mod tests {
         a.set(Some(1));
         assert!((a.progress(Duration::ZERO) - 1.0).abs() < f64::EPSILON);
         assert!(!a.is_animating(Duration::ZERO));
+    }
+
+    #[test]
+    fn retarget_without_restarting_changes_the_target_but_not_the_fade() {
+        let mut a = HoverAnimation::default();
+        a.set(Some(1));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!((a.progress(Duration::from_millis(10)) - 1.0).abs() < f64::EPSILON);
+
+        a.retarget_without_restarting(Some(2));
+        assert_eq!(a.target(), Some(2));
+        assert!(
+            (a.progress(Duration::from_millis(10)) - 1.0).abs() < f64::EPSILON,
+            "reassigning the target this way must not read as a fresh hover"
+        );
+    }
+
+    #[test]
+    fn retarget_without_restarting_to_none_clears_the_target_but_leaves_the_clock_running() {
+        let mut a = HoverAnimation::default();
+        a.set(Some(1));
+        a.retarget_without_restarting(None);
+        assert_eq!(a.target(), None);
+        assert!(
+            !a.is_animating(Duration::from_millis(100)),
+            "no target means not animating, regardless of the leftover clock"
+        );
     }
 }

@@ -77,8 +77,7 @@ impl Preview {
 #[derive(Debug)]
 pub struct OverviewUi {
     previews: Vec<Preview>,
-    hover: Option<WindowId>,
-    hover_started: Option<Instant>,
+    hover: glide_ui::HoverAnimation<WindowId>,
     phase: Phase,
     duration: Duration,
     theme: OverviewTheme,
@@ -122,10 +121,12 @@ impl OverviewUi {
             })
             .collect();
 
+        let mut hover = glide_ui::HoverAnimation::default();
+        hover.retarget_without_restarting(focused);
+
         Self {
             previews,
-            hover: focused,
-            hover_started: None,
+            hover,
             phase: Phase::Opening {
                 started: Instant::now(),
             },
@@ -181,8 +182,9 @@ impl OverviewUi {
             })
             .collect();
 
-        if self.hover.is_some_and(|id| !self.contains(id)) {
-            self.hover = self.previews.first().map(|p| p.id);
+        if self.hover.target().is_some_and(|id| !self.contains(id)) {
+            self.hover
+                .retarget_without_restarting(self.previews.first().map(|p| p.id));
         }
     }
 
@@ -249,8 +251,8 @@ impl OverviewUi {
     }
 
     #[must_use]
-    pub const fn hovered(&self) -> Option<WindowId> {
-        self.hover
+    pub fn hovered(&self) -> Option<WindowId> {
+        self.hover.target()
     }
 
     #[must_use]
@@ -263,23 +265,11 @@ impl OverviewUi {
     }
 
     pub fn set_hover(&mut self, hover: Option<WindowId>) -> bool {
-        if self.hover == hover {
-            return false;
-        }
-        self.hover = hover;
-        self.hover_started = hover.map(|_| Instant::now());
-        true
+        self.hover.set(hover)
     }
 
     fn hover_progress(&self) -> f64 {
-        let Some(started) = self.hover_started else {
-            return 1.0;
-        };
-        if HOVER_ANIM.is_zero() {
-            return 1.0;
-        }
-        let t = (started.elapsed().as_secs_f64() / HOVER_ANIM.as_secs_f64()).clamp(0.0, 1.0);
-        ease_out_cubic(t)
+        ease_out_cubic(self.hover.progress(HOVER_ANIM))
     }
 
     pub fn navigate(&mut self, dir: Direction) -> bool {
@@ -289,6 +279,7 @@ impl OverviewUi {
 
         let Some(current) = self
             .hover
+            .target()
             .and_then(|id| self.previews.iter().position(|p| p.id == id))
         else {
             return self.set_hover(self.previews.first().map(|p| p.id));
@@ -547,7 +538,7 @@ impl OverviewUi {
         let t = self.progress();
         let mut elements = Vec::new();
 
-        let hover = self.hover;
+        let hover = self.hover.target();
         let theme = self.theme.clone();
 
         let entries: Vec<(WindowId, Rectangle<i32, Logical>, bool)> = self
