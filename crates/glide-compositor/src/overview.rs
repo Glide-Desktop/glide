@@ -119,6 +119,11 @@ pub struct Preview {
     /// does: a buffer rasterized at one scale can't just be reused at
     /// another without going blurry (or, hypothetically, blocky).
     label: Option<CachedLabel>,
+    /// Drop-shadow ring strips — see [`push_shadow_rings`], used from
+    /// [`OverviewUi::render`] — persisted here like `label` rather than
+    /// rebuilt each frame, for the same `SolidColorBuffer::Id` stability
+    /// the module docs already call out for `scrim`/`highlight`.
+    shadow: Vec<SolidColorBuffer>,
 }
 
 impl Preview {
@@ -156,6 +161,14 @@ pub struct OverviewUi {
     /// ring is correct either way, because it never overlaps the preview's
     /// own pixels.
     highlight: [SolidColorBuffer; 4],
+    /// Soft outward glow bands drawn around the hovered preview, just
+    /// outside `highlight`'s own ring — see [`push_shadow_rings`], used
+    /// from [`Self::render`]. Only one preview is ever hovered at a time,
+    /// so — unlike each preview's own [`Preview::shadow`] — this lives on
+    /// `OverviewUi` itself rather than per-preview, and is simply
+    /// re-coloured/repositioned as hover moves from one preview to another
+    /// instead of every preview owning an always-empty set of its own.
+    glow: Vec<SolidColorBuffer>,
 }
 
 impl OverviewUi {
@@ -193,6 +206,7 @@ impl OverviewUi {
                     origin,
                     row: slot.row,
                     label: None,
+                    shadow: Vec::new(),
                 })
             })
             .collect();
@@ -216,6 +230,7 @@ impl OverviewUi {
             theme: theme.clone(),
             scrim: SolidColorBuffer::default(),
             highlight: std::array::from_fn(|_| SolidColorBuffer::default()),
+            glow: Vec::new(),
         }
     }
 
@@ -239,28 +254,38 @@ impl OverviewUi {
         );
         let slots = compute_overview_layout(&sizes, layout_area, &self.theme.options());
 
-        // Preserve cached labels for windows that are still around. Kept
-        // even if the width is about to turn out stale — `render_labels`'s
-        // own `needs_redraw` check (text *and* width) is what decides
-        // whether a cache hit is still valid; this is just carrying the
-        // candidate forward.
-        let mut old_labels: Vec<(WindowId, Option<CachedLabel>)> =
-            self.previews.drain(..).map(|p| (p.id, p.label)).collect();
+        // Preserve cached labels and shadow buffers for windows that are
+        // still around. Labels are kept even if the width is about to turn
+        // out stale — `render_labels`'s own `needs_redraw` check (text
+        // *and* width) is what decides whether a cache hit is still valid,
+        // this is just carrying the candidate forward. Shadow buffers have
+        // no such check to fail: `shadow_elements` just `resize_with`s
+        // them to whatever the current band count is, so carrying them
+        // forward is always safe and is what keeps their `SolidColorBuffer`
+        // `Id`s — and so damage tracking — stable across a relayout.
+        let mut old: Vec<(WindowId, Option<CachedLabel>, Vec<SolidColorBuffer>)> = self
+            .previews
+            .drain(..)
+            .map(|p| (p.id, p.label, p.shadow))
+            .collect();
 
         self.previews = slots
             .iter()
             .filter_map(|slot| {
                 let origin = windows.iter().find(|(id, _)| *id == slot.id)?.1;
-                let label = old_labels
+                let (label, shadow) = old
                     .iter_mut()
-                    .find(|(id, _)| *id == slot.id)
-                    .and_then(|(_, label)| label.take());
+                    .find(|(id, ..)| *id == slot.id)
+                    .map_or((None, Vec::new()), |(_, label, shadow)| {
+                        (label.take(), std::mem::take(shadow))
+                    });
                 Some(Preview {
                     id: slot.id,
                     target: to_smithay_rect(slot.target),
                     origin,
                     row: slot.row,
                     label,
+                    shadow,
                 })
             })
             .collect();
@@ -476,6 +501,11 @@ pub enum Direction {
 /// Point in the animation at which labels start fading in.
 const LABEL_FADE_START: f64 = 0.6;
 
+/// Horizontal padding inside a title label's pill, both sides — same
+/// value `decoration.rs`'s own dropdown menu rows use for the same "hug
+/// the text, not the slot" reasoning.
+const LABEL_PADDING: i32 = 12;
+
 /// Horizontal centre of a rectangle, for "nearest in the next row"
 /// navigation.
 fn centre_x(rect: Rectangle<i32, Logical>) -> f64 {
@@ -508,6 +538,71 @@ impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
             Self::Label(e) => f.debug_tuple("Label").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
+    }
+}
+
+/// Band count for each preview's own drop shadow — see
+/// [`push_shadow_rings`]. Kept modest (a real window's own shadow uses
+/// six): every visible preview draws a full set of these every frame,
+/// where a real window's shadow is one set per *decorated* window, so a
+/// whole grid of previews adds up faster for the same softness.
+const PREVIEW_SHADOW_BANDS: usize = 4;
+
+/// Band count for the hovered preview's outward glow — see
+/// [`push_shadow_rings`]. Only ever drawn for one preview at a time, so
+/// this can afford to be a little softer (more bands) than the per-preview
+/// shadow without meaningfully adding to the frame budget.
+const GLOW_BANDS: usize = 5;
+
+/// Pushes a set of concentric falloff-ring elements approximating a soft
+/// blur around `rect` — a drop shadow or, differently coloured and offset,
+/// a glow — into `elements`. Shared geometry with
+/// [`crate::decoration::shadow_rects`], which this is a thin wrapper
+/// around: same "several rings, shrinking alpha, no real blur kernel"
+/// approximation a window's own shadow uses (see that function's own docs
+/// on why), just for a caller that doesn't have a live `GlideWindow` to
+/// hang persisted buffers off of.
+///
+/// `buffers` is the caller's own persisted `SolidColorBuffer` set —
+/// [`Preview::shadow`] for a per-preview shadow, [`OverviewUi::glow`] for
+/// the hover glow — resized to the current band count as needed, so each
+/// strip's `SolidColorBuffer::Id` stays stable across frames the same way
+/// `scrim`/`highlight` already do (see the module docs on why that
+/// matters for damage tracking).
+#[allow(clippy::too_many_arguments)]
+fn push_shadow_rings<R>(
+    buffers: &mut Vec<SolidColorBuffer>,
+    rect: Rectangle<i32, Logical>,
+    size: i32,
+    bands: usize,
+    base_color: [f32; 4],
+    alpha_mult: f32,
+    scale: Scale<f64>,
+    elements: &mut Vec<OverviewRenderElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    let rects = crate::decoration::shadow_rects(rect.size.w, rect.size.h, size, bands);
+    if rects.is_empty() {
+        return;
+    }
+    buffers.resize_with(rects.len(), SolidColorBuffer::default);
+
+    for ((offset, rsize, ring_alpha), buf) in rects.into_iter().zip(buffers.iter_mut()) {
+        let mut color = base_color;
+        color[3] *= ring_alpha * alpha_mult;
+        buf.update((rsize.w, rsize.h), color);
+        let pos = Point::from((rect.loc.x + offset.x, rect.loc.y + offset.y));
+        elements.push(OverviewRenderElement::Solid(
+            SolidColorRenderElement::from_buffer(
+                buf,
+                pos.to_f64().to_physical(scale).to_i32_round(),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            ),
+        ));
     }
 }
 
@@ -550,8 +645,15 @@ impl OverviewUi {
                 continue;
             };
 
-            let width = rect.size.w.max(1);
             let height = theme.label_height;
+            // A pill sized to the text (plus padding), not a full-width
+            // bar — clamped to the preview's own width so a long title
+            // still can't overhang it. The same "hug the content, not the
+            // slot" idea `decoration.rs`'s dropdown menu rows use for
+            // their own width.
+            #[allow(clippy::cast_possible_truncation)]
+            let text_w = painter.text_width(&title) as i32;
+            let width = (text_w + LABEL_PADDING * 2).clamp(1, rect.size.w.max(1));
 
             // Re-rasterise only when the text, width, or scale changed —
             // titles are stable, so this is almost always a cache hit. All
@@ -574,19 +676,36 @@ impl OverviewUi {
                     continue;
                 };
                 let mut buf = vec![0u8; pixels];
-                painter.draw_label(
+                // Rounded pill background first — full stadium (radius =
+                // half the height), all four corners, since this floats
+                // free rather than tiling with anything else. Text goes
+                // on top *without* its own background fill, or it would
+                // flatten the pill right back into a rectangle — same
+                // `fill_panel_background` + `draw_label_over` pairing the
+                // chevron dropdown and titlebar both already use, so a
+                // title stays legible over any window content instead of
+                // floating bare on the scrim.
+                #[allow(clippy::cast_precision_loss)]
+                let radius = height as f32 / 2.0;
+                crate::paint::Painter::fill_panel_background(
                     &mut buf,
                     width,
                     height,
-                    0,
+                    output_scale,
+                    theme.label_background,
+                    radius,
+                    [true; 4],
+                );
+                painter.draw_label_over(
+                    &mut buf,
                     width,
+                    height,
+                    LABEL_PADDING,
+                    width - LABEL_PADDING,
                     output_scale,
                     crate::paint::TextAlign::Center,
                     &title,
                     theme.label_color.to_buffer_bytes(),
-                    // Transparent: the label floats over the scrim rather
-                    // than sitting on a plate.
-                    [0, 0, 0, 0],
                 );
                 let memory = MemoryRenderBuffer::from_slice(
                     &buf,
@@ -603,9 +722,15 @@ impl OverviewUi {
                 continue;
             };
 
-            let pos = Point::from((rect.loc.x, rect.loc.y + rect.size.h))
-                .to_f64()
-                .to_physical(scale);
+            // Centred under the preview, not flush against its left edge —
+            // a full-width label never needed centring, a compact pill
+            // does.
+            let pos = Point::from((
+                rect.loc.x + (rect.size.w - width) / 2,
+                rect.loc.y + rect.size.h,
+            ))
+            .to_f64()
+            .to_physical(scale);
             if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 pos,
@@ -624,9 +749,12 @@ impl OverviewUi {
     /// Collects the overview's render elements, front-to-back.
     ///
     /// Order is: labels and highlight (on top of previews), then the
-    /// previews themselves, then the scrim last — so it sits *behind*
-    /// everything the overview draws but *in front* of the real desktop,
-    /// dimming the wallpaper and any background layer surfaces.
+    /// previews themselves, then each preview's own drop shadow plus the
+    /// hovered one's glow, then the scrim last — so the scrim sits
+    /// *behind* everything the overview draws but *in front* of the real
+    /// desktop, dimming the wallpaper and any background layer surfaces,
+    /// while the shadows/glow still show up against it instead of being
+    /// hidden behind it.
     ///
     /// `lookup` resolves a window id to the live window; ids the caller no
     /// longer knows about are skipped rather than panicking, since a client
@@ -636,7 +764,7 @@ impl OverviewUi {
     /// fractional `scale` used for physical-pixel positioning — it's what
     /// label buffers rasterize at so their text is crisp rather than
     /// upscaled on any output whose scale isn't exactly `1`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn render<R, F>(
         &mut self,
         renderer: &mut R,
@@ -759,6 +887,63 @@ impl OverviewUi {
                 );
                 elements.push(OverviewRenderElement::Preview(placed));
             }
+        }
+
+        // ── Preview shadows + hover glow (behind every preview, in front
+        // of the scrim) ─────────────────────────────────────────────
+        // What makes the previews read as lifted cards over the dimmed
+        // desktop rather than flat cutouts. Pushed after the previews
+        // themselves (so they render further back — see the module docs
+        // on element order) but before the scrim (so the scrim doesn't
+        // hide them, the way it hides everything drawn behind it).
+        if theme.shadow {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let size = i32::try_from(theme.shadow_size).unwrap_or(0);
+            for (id, rect, _) in &entries {
+                let Some(preview) = self.previews.iter_mut().find(|p| p.id == *id) else {
+                    continue;
+                };
+                push_shadow_rings(
+                    &mut preview.shadow,
+                    *rect,
+                    size,
+                    PREVIEW_SHADOW_BANDS,
+                    theme.shadow_color.0,
+                    1.0,
+                    scale,
+                    &mut elements,
+                );
+            }
+        }
+
+        // Glow around the hovered preview specifically: starts just
+        // outside the highlight ring's own thickness — not the preview's
+        // bare edge — so it reads as light spilling from the ring rather
+        // than a second, redundant outline. Fades in/out together with
+        // the ring via the same `hover_t`.
+        if let (Some((_, rect, _)), true) = (
+            entries.iter().find(|(_, _, hovered)| *hovered),
+            hover_t > 0.0,
+        ) {
+            let outset = theme.border;
+            let expanded = Rectangle::new(
+                Point::from((rect.loc.x - outset, rect.loc.y - outset)),
+                Size::from((rect.size.w + outset * 2, rect.size.h + outset * 2)),
+            );
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let size = i32::try_from(theme.glow_size).unwrap_or(0);
+            #[allow(clippy::cast_possible_truncation)]
+            let alpha = hover_t as f32;
+            push_shadow_rings(
+                &mut self.glow,
+                expanded,
+                size,
+                GLOW_BANDS,
+                theme.highlight.0,
+                alpha,
+                scale,
+                &mut elements,
+            );
         }
 
         // ── Scrim (behind the overview, over the desktop) ──────────
@@ -889,5 +1074,65 @@ mod tests {
         ui.set_hover(None);
         ui.set_hover(Some(id));
         assert!(ui.is_animating());
+    }
+
+    #[test]
+    fn relayout_preserves_shadow_buffers_for_a_window_still_present() {
+        // Mirrors the label cache's own carry-over (see `relayout`'s
+        // docs): a window that's still around after a relayout must keep
+        // its shadow's `SolidColorBuffer`s, or every relayout (e.g. a
+        // workspace switch while the overview is open) would churn their
+        // `Id`s and force a full shadow redraw for no visible reason.
+        let (mut ui, id) = ui_with_one_window(0);
+        ui.previews[0].shadow = vec![SolidColorBuffer::default(); 4];
+
+        let windows = [(id, rect(0, 0, 800, 600))];
+        ui.relayout(&windows, rect(0, 0, 1920, 1080));
+
+        assert_eq!(ui.previews[0].shadow.len(), 4);
+    }
+
+    #[test]
+    fn relayout_gives_a_newly_appearing_window_no_stale_shadow_buffers() {
+        let (mut ui, id) = ui_with_one_window(0);
+        ui.previews[0].shadow = vec![SolidColorBuffer::default(); 4];
+
+        let new_id = WindowId::next();
+        let windows = [(id, rect(0, 0, 800, 600)), (new_id, rect(0, 0, 400, 300))];
+        ui.relayout(&windows, rect(0, 0, 1920, 1080));
+
+        let new_preview = ui
+            .previews
+            .iter()
+            .find(|p| p.id == new_id)
+            .expect("the new window must get a preview");
+        assert!(
+            new_preview.shadow.is_empty(),
+            "a brand new preview must not inherit another window's shadow buffers"
+        );
+    }
+
+    mod push_shadow_rings_geometry {
+        use super::*;
+
+        // `push_shadow_rings` is a thin wrapper around
+        // `decoration::shadow_rects` (already covered by its own tests) —
+        // these exercise just the parts specific to this wrapper: buffer
+        // resizing and the alpha multiplier, without needing a renderer to
+        // build the `OverviewRenderElement`s themselves.
+
+        #[test]
+        fn resizes_the_buffer_vec_to_match_the_band_count() {
+            let mut buffers = vec![SolidColorBuffer::default(); 2];
+            let rects = crate::decoration::shadow_rects(100, 60, 16, 3);
+            buffers.resize_with(rects.len(), SolidColorBuffer::default);
+            assert_eq!(buffers.len(), rects.len());
+        }
+
+        #[test]
+        fn zero_size_produces_no_rects_and_so_no_buffers_needed() {
+            let rects = crate::decoration::shadow_rects(100, 60, 0, 3);
+            assert!(rects.is_empty());
+        }
     }
 }

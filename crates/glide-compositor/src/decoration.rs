@@ -1413,7 +1413,7 @@ pub(crate) fn border_rects(
 }
 
 /// One shadow ring strip's offset, size, and alpha *multiplier*.
-type ShadowRect = (Point<i32, Logical>, Size<i32, Logical>, f32);
+pub(crate) type ShadowRect = (Point<i32, Logical>, Size<i32, Logical>, f32);
 
 /// Offset, size, and alpha multiplier for each strip of each of
 /// [`SHADOW_BANDS`] concentric rings approximating a soft drop shadow —
@@ -1436,7 +1436,17 @@ type ShadowRect = (Point<i32, Logical>, Size<i32, Logical>, f32);
 /// outermost band still contributes a faint trace right up to
 /// `shadow_size` instead of fading to exactly zero one band early and
 /// visibly clipping the shadow's edge.
-fn shadow_rects(width: i32, frame_height: i32, shadow_size: i32, bands: usize) -> Vec<ShadowRect> {
+///
+/// `pub(crate)`: also used by `overview.rs`, both for each preview's own
+/// drop shadow and for the hovered preview's outward glow — the same
+/// falloff-ring approximation applies to "soft blur around a rectangle"
+/// regardless of what colour or rectangle it's drawn for.
+pub(crate) fn shadow_rects(
+    width: i32,
+    frame_height: i32,
+    shadow_size: i32,
+    bands: usize,
+) -> Vec<ShadowRect> {
     if shadow_size <= 0 || bands == 0 || width <= 0 || frame_height <= 0 {
         return Vec::new();
     }

@@ -207,6 +207,10 @@ pub struct OverviewTheme {
     /// Whether to draw window titles under previews.
     pub label: bool,
     pub label_color: Color,
+    /// Background of the rounded pill each label is drawn on, so a title
+    /// stays legible over any window content instead of floating bare on
+    /// the scrim.
+    pub label_background: Color,
     /// Full-screen dim drawn behind the previews. Only the alpha channel
     /// is animated; the colour itself is used as-is.
     pub dim: Color,
@@ -214,6 +218,20 @@ pub struct OverviewTheme {
     pub highlight: Color,
     /// Thickness of that highlight around the preview.
     pub border: i32,
+    /// Whether previews cast a drop shadow, the same idea as
+    /// [`DecorationTheme::shadow`] applied to a preview instead of a real
+    /// window frame — it's what makes them read as lifted cards over the
+    /// dimmed desktop rather than flat cutouts.
+    pub shadow: bool,
+    /// How far each preview's shadow extends beyond it, in logical pixels
+    /// — see [`crate::decoration::shadow_rects`]'s docs on the same
+    /// approximation [`DecorationTheme::shadow_size`] uses.
+    pub shadow_size: u32,
+    pub shadow_color: Color,
+    /// How far the hovered preview's outward glow extends beyond its own
+    /// highlight ring, in logical pixels. `0` disables it, leaving just
+    /// the crisp ring.
+    pub glow_size: u32,
     /// Open/close animation length. `0` disables the animation entirely,
     /// which is also the escape hatch if it ever feels wrong on slow
     /// hardware.
@@ -228,9 +246,17 @@ impl Default for OverviewTheme {
             max_scale: 1.0,
             label: true,
             label_color: Color::from_hex("#ffffffff").unwrap(),
+            label_background: Color::from_hex("#141419e6").unwrap(),
             dim: Color::from_hex("#0b0b0fcc").unwrap(),
             highlight: Color::from_hex("#3b5bdbff").unwrap(),
-            border: 3,
+            // Thicker than the old default (3): easier to notice at a
+            // glance across a whole grid of previews, the "thicker accent
+            // ring" a plain 3px outline undersold.
+            border: 4,
+            shadow: true,
+            shadow_size: 20,
+            shadow_color: Color::from_hex("#00000066").unwrap(),
+            glow_size: 18,
             duration_ms: 220,
         }
     }
@@ -1034,6 +1060,61 @@ shadow-color = \"#000000aa\"
     #[test]
     fn decoration_theme_defaults_a_positive_corner_radius() {
         assert!(DecorationTheme::default().corner_radius > 0.0);
+    }
+
+    #[test]
+    fn overview_theme_defaults_shadow_and_glow_enabled() {
+        let o = OverviewTheme::default();
+        assert!(o.shadow);
+        assert!(o.shadow_size > 0);
+        assert!(o.glow_size > 0);
+        assert!(o.border > 0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // both sides are theme literals, no arithmetic involved — assert_ne, not equality
+    fn overview_theme_label_background_differs_from_the_scrim() {
+        // The whole point of the pill: a label sitting on its own plate,
+        // not one indistinguishable from (or literally reusing) the dim
+        // behind every other preview.
+        let o = OverviewTheme::default();
+        assert_ne!(o.label_background.0, o.dim.0);
+    }
+
+    #[test]
+    fn overview_theme_parses_from_toml() {
+        let toml_str = "\
+[overview]
+gap = 40
+label-height = 30
+max-scale = 0.9
+label = false
+label-color = \"#111111\"
+label-background = \"#222222\"
+dim = \"#33333380\"
+highlight = \"#444444\"
+border = 6
+shadow = false
+shadow-size = 12
+shadow-color = \"#00000080\"
+glow-size = 8
+duration-ms = 150
+";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let o = &config.overview;
+        assert_eq!(o.gap, 40);
+        assert_eq!(o.label_height, 30);
+        assert!((o.max_scale - 0.9).abs() < f64::EPSILON);
+        assert!(!o.label);
+        assert_eq!(o.label_color, Color::from_hex("#111111").unwrap());
+        assert_eq!(o.label_background, Color::from_hex("#222222").unwrap());
+        assert_eq!(o.highlight, Color::from_hex("#444444").unwrap());
+        assert_eq!(o.border, 6);
+        assert!(!o.shadow);
+        assert_eq!(o.shadow_size, 12);
+        assert_eq!(o.shadow_color, Color::from_hex("#00000080").unwrap());
+        assert_eq!(o.glow_size, 8);
+        assert_eq!(o.duration_ms, 150);
     }
 
     #[test]
