@@ -568,12 +568,13 @@ impl Config {
         resolved
     }
 
-    /// Applies configuration to `GlideState`.
+    /// Applies configuration to `GlideState`. Live: called both at startup
+    /// and on every `glidectl reload`, and a changed `[decorations] height`
+    /// now takes effect for already-open windows too, not only ones mapped
+    /// after this call — see the insets-reapplication loop below.
     ///
-    /// Note: a changed `[decorations]` height only takes effect for windows
-    /// mapped *after* this call (e.g. via `glidectl reload`) — insets on
-    /// already-open windows are set once at creation and are not currently
-    /// live-updated. Colors, being read at render time, do apply instantly.
+    /// Colors, being read at render time, always applied instantly even
+    /// before that loop existed.
     pub fn apply_to_state(&self, state: &mut GlideState) {
         state.layout.set_policy(self.workspaces.new_window.into());
         state.keybinds = self.resolve_keybinds();
@@ -593,6 +594,32 @@ impl Config {
         #[allow(clippy::cast_possible_truncation)]
         let font_px = (f64::from(self.decorations.height).max(14.0) * 0.45) as f32;
         crate::paint::init_or_replace(font_px.clamp(10.0, 18.0));
+
+        // Re-applies the (possibly changed) titlebar height's insets to
+        // every already-mapped window, not just ones created after this
+        // call. Every window is decorated for now (see `decoration.rs`'s
+        // module docs on `xdg-decoration` being M4.5 future work), so this
+        // unconditionally treats each one as decorated; that assumption
+        // will need revisiting once a client can actually opt out.
+        //
+        // Batched into a single `reconcile_space()` afterwards — which
+        // itself re-syncs every window's decoration buffers — rather than
+        // going through `GlideState::set_window_decorated` (which
+        // reconciles once *per call*) for each window in the loop.
+        if let Ok(height) = i32::try_from(self.decorations.height) {
+            let insets = glide_layout::Insets {
+                top: height,
+                left: 0,
+                right: 0,
+                bottom: 0,
+            };
+            let window_ids: Vec<glide_layout::WindowId> =
+                state.window_map.keys().copied().collect();
+            for id in window_ids {
+                state.layout.set_window_insets(id, insets);
+            }
+            state.reconcile_space();
+        }
 
         tracing::info!(
             policy = ?self.workspaces.new_window,
