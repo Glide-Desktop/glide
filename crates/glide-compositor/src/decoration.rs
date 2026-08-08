@@ -1,27 +1,29 @@
-//! Server-side window decorations: a titlebar with a fixed button cluster
+//! Server-side window decorations: a titlebar with a fixed button layout
 //! and a chevron-triggered menu for actions that don't get their own
 //! button.
 //!
-//! # Layout (cluster order fixed — see [`crate::config::DecorationTheme`])
+//! # Layout (fixed by design — see [`crate::config::DecorationTheme`])
 //!
 //! ```text
-//! ┌────────────────────────────────┬───┬───┬───┐
-//! │ (title)                        │ v │ M │ X │
-//! └────────────────────────────────┴───┴───┴───┘
+//! ┌───┬────────────────────────────┬───┬───┐
+//! │ M │ (title)                    │ v │ X │
+//! └───┴────────────────────────────┴───┴───┘
 //! ```
-//! Close (X) is always the rightmost button; maximize (M) sits immediately
-//! to its left; the chevron (v) — which opens a dropdown for actions that
-//! don't warrant their own button, currently just Minimize — sits
-//! immediately to maximize's left, so all three read as one cluster.
-//! Everything left of the cluster is drag territory, including the title
-//! itself (aligned per [`crate::config::TitleAlign`], left by default):
-//! pressing there and moving starts an interactive move, exactly as if the
-//! client itself had requested one.
+//! Maximize (M) is always leftmost, on its own — deliberately separated
+//! from close, so a slip while reaching for one can never land on the
+//! other. Close (X) is always rightmost; the chevron (v) — which opens a
+//! dropdown for actions that don't warrant their own button, currently
+//! just Minimize — sits immediately to close's left, so the two read as
+//! one cluster. Everything between maximize and the chevron is drag
+//! territory, including the title itself (aligned per
+//! [`crate::config::TitleAlign`], left by default): pressing there and
+//! moving starts an interactive move, exactly as if the client itself had
+//! requested one.
 //!
 //! The chevron's dropdown is a compact panel sized to its widest item, not
-//! a full-width strip — it hangs from the right edge of the button
-//! cluster, under the buttons it belongs to, rather than spanning content
-//! that has nothing to do with it.
+//! a full-width strip — it hangs from the right edge of the titlebar,
+//! under the chevron/close cluster it belongs to, rather than spanning
+//! content that has nothing to do with it.
 //!
 //! Every window is decorated for now; respecting a client's own
 //! `xdg-decoration` preference is M4.5.
@@ -66,8 +68,8 @@ use crate::{
 /// height itself, from [`DecorationTheme::height`].
 pub const BUTTON_WIDTH: i32 = 32;
 
-/// Total width of the three-button cluster (chevron, maximize, close).
-const CLUSTER_WIDTH: i32 = BUTTON_WIDTH * 3;
+/// Width of the right-hand cluster (chevron + close).
+const RIGHT_CLUSTER_WIDTH: i32 = BUTTON_WIDTH * 2;
 
 /// Width of the invisible resize band around a decorated window's frame.
 ///
@@ -313,17 +315,18 @@ impl HeaderBar {
         }
     }
 
-    /// Which zone `x` falls in. The button cluster — chevron, maximize,
-    /// close — sits at the frame's right edge in that left-to-right order;
-    /// everything left of it is drag territory.
+    /// Which zone `x` falls in. Maximize is on its own at the frame's left
+    /// edge — deliberately separated from close, so a slip while reaching
+    /// for one can never land on the other; chevron and close cluster at
+    /// the right edge. Everything between them is drag territory.
     fn zone_at(&self, x: f64) -> HitZone {
         let w = f64::from(self.width);
         let bw = f64::from(BUTTON_WIDTH);
-        if x >= w - bw {
+        if x < bw {
+            HitZone::Maximize
+        } else if x >= w - bw {
             HitZone::Close
         } else if x >= w - bw * 2.0 {
-            HitZone::Maximize
-        } else if x >= w - bw * 3.0 {
             HitZone::Chevron
         } else {
             HitZone::Drag
@@ -598,8 +601,10 @@ impl HeaderBar {
             };
             let _ = ctx.draw(|pixels| {
                 let fg = [255, 255, 255, bg[3]]; // white text, same alpha as bg
-                let x_min = TITLE_PADDING;
-                let x_max = w - CLUSTER_WIDTH;
+                // Clears maximize on the left, the chevron/close cluster
+                // on the right.
+                let x_min = BUTTON_WIDTH + TITLE_PADDING;
+                let x_max = w - RIGHT_CLUSTER_WIDTH;
                 painter.draw_label(pixels, w, h, x_min, x_max, align, &title, fg, bg);
                 Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
             });
@@ -619,20 +624,20 @@ impl HeaderBar {
 
         for (buf, zone, normal, hover_bg, fg, icon) in [
             (
-                &mut self.chevron_buf,
-                HitZone::Chevron,
-                theme.chevron_button,
-                theme.chevron_button_hover,
-                theme.icon,
-                Painter::draw_icon_chevron as fn(&mut [u8], i32, i32, Color, Color),
-            ),
-            (
                 &mut self.maximize_buf,
                 HitZone::Maximize,
                 theme.maximize_button,
                 theme.maximize_button_hover,
                 theme.icon,
                 maximize_icon,
+            ),
+            (
+                &mut self.chevron_buf,
+                HitZone::Chevron,
+                theme.chevron_button,
+                theme.chevron_button_hover,
+                theme.icon,
+                Painter::draw_icon_chevron as fn(&mut [u8], i32, i32, Color, Color),
             ),
             (
                 &mut self.close_buf,
@@ -1114,7 +1119,15 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         });
     }
 
-    // Button cluster, right to left: close, maximize, chevron.
+    // Maximize, alone at the left edge.
+    if let Some(buf) = &header.maximize_buf {
+        out.push(DecorationBuffer {
+            buf: buf.clone(),
+            offset: Point::from((0, 0)),
+        });
+    }
+
+    // Chevron/close cluster, right to left, at the right edge.
     if let Some(buf) = &header.close_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
@@ -1122,17 +1135,10 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         });
     }
 
-    if let Some(buf) = &header.maximize_buf {
-        out.push(DecorationBuffer {
-            buf: buf.clone(),
-            offset: Point::from((header.width - BUTTON_WIDTH * 2, 0)),
-        });
-    }
-
     if let Some(buf) = &header.chevron_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
-            offset: Point::from((header.width - BUTTON_WIDTH * 3, 0)),
+            offset: Point::from((header.width - BUTTON_WIDTH * 2, 0)),
         });
     }
 
@@ -1453,22 +1459,22 @@ mod tests {
         use super::*;
 
         #[test]
-        fn cluster_order_is_chevron_maximize_close_left_to_right() {
+        fn maximize_is_alone_on_the_left_chevron_and_close_cluster_on_the_right() {
             let h = header(); // width 800
+            assert_eq!(h.zone_at(16.0), HitZone::Maximize);
             assert_eq!(h.zone_at(400.0), HitZone::Drag);
-            assert_eq!(h.zone_at(710.0), HitZone::Chevron);
-            assert_eq!(h.zone_at(740.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(750.0), HitZone::Chevron);
             assert_eq!(h.zone_at(780.0), HitZone::Close);
         }
 
         #[test]
         fn zone_boundaries_are_exact() {
             let h = header();
-            assert_eq!(h.zone_at(703.999), HitZone::Drag);
-            assert_eq!(h.zone_at(704.0), HitZone::Chevron);
-            assert_eq!(h.zone_at(735.999), HitZone::Chevron);
-            assert_eq!(h.zone_at(736.0), HitZone::Maximize);
-            assert_eq!(h.zone_at(767.999), HitZone::Maximize);
+            assert_eq!(h.zone_at(31.999), HitZone::Maximize);
+            assert_eq!(h.zone_at(32.0), HitZone::Drag);
+            assert_eq!(h.zone_at(735.999), HitZone::Drag);
+            assert_eq!(h.zone_at(736.0), HitZone::Chevron);
+            assert_eq!(h.zone_at(767.999), HitZone::Chevron);
             assert_eq!(h.zone_at(768.0), HitZone::Close);
         }
     }
@@ -1520,7 +1526,7 @@ mod tests {
         #[test]
         fn press_on_a_button_zone_does_not_move() {
             let mut h = header();
-            h.pointer_enter(point(750.0, 16.0)); // over maximize
+            h.pointer_enter(point(16.0, 16.0)); // over maximize
 
             assert_eq!(h.on_button(&press()), None);
         }
@@ -1528,7 +1534,7 @@ mod tests {
         #[test]
         fn press_on_a_button_zone_marks_it_pressed() {
             let mut h = header();
-            h.pointer_enter(point(750.0, 16.0)); // over maximize
+            h.pointer_enter(point(16.0, 16.0)); // over maximize
 
             h.on_button(&press());
             assert_eq!(h.pressed, Some(HitZone::Maximize));
@@ -1537,7 +1543,7 @@ mod tests {
         #[test]
         fn release_clears_the_pressed_zone_regardless_of_where_it_lands() {
             let mut h = header();
-            h.pointer_enter(point(750.0, 16.0)); // over maximize
+            h.pointer_enter(point(16.0, 16.0)); // over maximize
             h.on_button(&press());
             assert_eq!(h.pressed, Some(HitZone::Maximize));
 
@@ -1571,7 +1577,7 @@ mod tests {
         #[test]
         fn release_on_maximize_toggles() {
             let mut h = header();
-            h.pointer_enter(point(750.0, 16.0));
+            h.pointer_enter(point(16.0, 16.0));
 
             assert_eq!(
                 h.on_button(&release()),
@@ -1591,7 +1597,7 @@ mod tests {
         fn chevron_opens_the_menu_then_an_item_click_runs_it() {
             let mut h = header();
 
-            h.pointer_enter(point(720.0, 16.0)); // over the chevron
+            h.pointer_enter(point(750.0, 16.0)); // over the chevron
             assert_eq!(h.on_button(&release()), None);
             assert!(h.menu_open);
 

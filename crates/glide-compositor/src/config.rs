@@ -48,18 +48,18 @@ impl Default for GeneralConfig {
 
 /// A window decoration's color scheme and size.
 ///
-/// Button *cluster order* is deliberately not configurable — chevron,
-/// maximize, close, always in that order at the frame's right edge — so
-/// every window in a session looks and behaves the same regardless of what
-/// an individual user put in their config. Colors, the titlebar's height,
-/// and the title's alignment are settable.
+/// Button placement is deliberately not configurable — maximize always
+/// alone at the left edge, chevron and close always clustered at the
+/// right — so every window in a session looks and behaves the same
+/// regardless of what an individual user put in their config. Colors, the
+/// titlebar's height, and the title's alignment are settable.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DecorationTheme {
     /// Titlebar height in logical pixels.
     pub height: u32,
-    /// Where the title text sits within the space left of the button
-    /// cluster.
+    /// Where the title text sits within the space between the maximize
+    /// button and the chevron/close cluster.
     pub title_align: TitleAlign,
     pub background: Color,
     pub background_focused: Color,
