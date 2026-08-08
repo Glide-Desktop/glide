@@ -3,6 +3,7 @@ pub mod ext_workspace;
 pub mod foreign_toplevel_list;
 pub mod idle_notify;
 pub mod layer_shell;
+mod pointer_constraints;
 mod security_context;
 mod selection;
 pub mod wlr_output_management;

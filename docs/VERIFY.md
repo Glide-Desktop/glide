@@ -285,3 +285,31 @@ regression to introduce.
   change for no protocol-correctness benefit. If frame pacing looks off
   on hardware where vblank timing is unusual, that's the first place to
   look.
+
+## B3 (pointer-constraints) — hot-path change, check ordinary mouse use first
+
+`handle_pointer_motion` runs on every single pointer-motion event in the
+session. This is the change in this whole batch most likely to affect
+you even if you never touch a game or a lock/confine client, so check
+plain mouse use before anything constraint-specific.
+
+- **Before testing anything constraint-related**: use the mouse
+  completely normally for a while — move windows, resize, hover
+  titlebar buttons, use the overview. Everything must feel exactly as
+  before. If cursor movement feels laggy, jumpy, or wrong in any way,
+  stop and report it before testing constraints at all.
+- One known, deliberate behavioural nuance from following anvil's
+  algorithm exactly: pointer-focus targeting for the `motion` event
+  uses the surface that was under the pointer *before* this event's
+  delta was applied, not after. For ordinary mouse deltas this is
+  indistinguishable in practice (sub-millisecond, and the next motion
+  event corrects it), but if window-edge crossing ever feels "one event
+  late," this is why — and it's the same behaviour anvil itself ships.
+- A game using `pointer-constraints` + `relative-pointer` (mouselook)
+  must lock the cursor in place with unconstrained relative motion
+  still flowing, and release cleanly on window close/Escape. No such
+  client is installed — blocked the same way relative-pointer's own
+  check was.
+- A client requesting pointer confinement (rarer; some remote-desktop
+  and drawing tools use it) must keep the cursor inside the confined
+  region, and release it cleanly when focus leaves that surface.

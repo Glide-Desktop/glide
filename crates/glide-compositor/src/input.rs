@@ -8,6 +8,10 @@ use smithay::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
+    wayland::{
+        pointer_constraints::{PointerConstraint, with_pointer_constraint},
+        seat::WaylandFocus,
+    },
 };
 
 use crate::{
@@ -345,21 +349,46 @@ impl GlideState {
         if on_layer { under } else { None }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ported closely from anvil's pointer-constraints reference implementation to minimize the risk of a novel bug in the pointer-motion hot path"
+    )]
     fn handle_pointer_motion<I: InputBackend>(&mut self, event: &I::PointerMotionEvent) {
         let pointer = self
             .seat
             .get_pointer()
             .expect("a pointer was added in GlideState::new");
-        let pointer_location = self.clamp_coords(pointer.current_location() + event.delta());
-
-        tracing::trace!(
-            delta = ?event.delta(),
-            location = ?pointer_location,
-            "pointer motion (relative)"
-        );
-
+        let mut pointer_location = pointer.current_location();
         let serial = SERIAL_COUNTER.next_serial();
+
         let under = self.overview_motion(pointer_location);
+
+        let mut pointer_locked = false;
+        let mut pointer_confined = false;
+        let mut confine_region = None;
+        if let Some((surface, surface_loc)) = under
+            .as_ref()
+            .and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), *loc)))
+        {
+            with_pointer_constraint(&surface, &pointer, |constraint| {
+                let Some(constraint) = constraint.filter(|c| c.is_active()) else {
+                    return;
+                };
+                let in_region = constraint.region().is_none_or(|region| {
+                    region.contains((pointer_location - surface_loc).to_i32_round())
+                });
+                if !in_region {
+                    return;
+                }
+                match &*constraint {
+                    PointerConstraint::Locked(_) => pointer_locked = true,
+                    PointerConstraint::Confined(confine) => {
+                        pointer_confined = true;
+                        confine_region = confine.region().cloned();
+                    }
+                }
+            });
+        }
 
         pointer.relative_motion(
             self,
@@ -369,6 +398,49 @@ impl GlideState {
                 delta_unaccel: event.delta_unaccel(),
                 utime: event.time(),
             },
+        );
+
+        if pointer_locked {
+            pointer.frame(self);
+            return;
+        }
+
+        let mut delta = self.clamp_coords(pointer_location + event.delta()) - pointer_location;
+
+        if pointer_confined
+            && let (Some((_, surface_loc)), Some(region)) = (&under, &confine_region)
+        {
+            if !region.contains(
+                (pointer_location + Point::from((delta.x, 0.0)) - *surface_loc).to_i32_round(),
+            ) {
+                delta.x = 0.0;
+            }
+            if !region.contains(
+                (pointer_location + Point::from((0.0, delta.y)) - *surface_loc).to_i32_round(),
+            ) {
+                delta.y = 0.0;
+            }
+        }
+
+        pointer_location += delta;
+
+        let new_under = self.overview_motion(pointer_location);
+
+        if pointer_confined
+            && let Some((surface, _)) = &under
+            && new_under
+                .as_ref()
+                .and_then(|(target, _)| target.wl_surface())
+                != surface.wl_surface()
+        {
+            pointer.frame(self);
+            return;
+        }
+
+        tracing::trace!(
+            delta = ?event.delta(),
+            location = ?pointer_location,
+            "pointer motion (relative)"
         );
 
         pointer.motion(
@@ -381,6 +453,23 @@ impl GlideState {
             },
         );
         pointer.frame(self);
+
+        if let Some((surface, surface_location)) =
+            new_under.and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), loc)))
+        {
+            with_pointer_constraint(&surface, &pointer, |constraint| {
+                let Some(constraint) = constraint.filter(|c| !c.is_active()) else {
+                    return;
+                };
+                let point = (pointer_location - surface_location).to_i32_round();
+                if constraint
+                    .region()
+                    .is_none_or(|region| region.contains(point))
+                {
+                    constraint.activate();
+                }
+            });
+        }
     }
 
     fn handle_pointer_motion_absolute<I: InputBackend>(

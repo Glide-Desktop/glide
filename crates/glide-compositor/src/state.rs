@@ -29,6 +29,7 @@ use smithay::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
         },
         output::OutputManagerState,
+        pointer_constraints::PointerConstraintsState,
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         security_context::SecurityContextState,
@@ -80,6 +81,7 @@ pub struct Protocols {
     pub security_context_state: SecurityContextState,
     pub relative_pointer_manager_state: RelativePointerManagerState,
     pub presentation_state: PresentationState,
+    pub pointer_constraints_state: PointerConstraintsState,
 }
 
 impl Protocols {
@@ -132,6 +134,7 @@ impl Protocols {
         });
         let relative_pointer_manager_state = RelativePointerManagerState::new::<GlideState>(dh);
         let presentation_state = PresentationState::new::<GlideState>(dh, clock_id);
+        let pointer_constraints_state = PointerConstraintsState::new::<GlideState>(dh);
 
         Self {
             compositor_state,
@@ -159,6 +162,7 @@ impl Protocols {
             security_context_state,
             relative_pointer_manager_state,
             presentation_state,
+            pointer_constraints_state,
         }
     }
 }
@@ -190,6 +194,7 @@ pub struct GlideState {
     pub background_color: crate::config::Color,
 
     pub cursor_status: CursorImageStatus,
+    pub cursor_position_hint: Option<(WlSurface, Point<f64, Logical>)>,
 
     pub layer_focus: Option<LayerSurface>,
 
@@ -260,6 +265,7 @@ impl GlideState {
             overview_theme: crate::config::OverviewTheme::default(),
             background_color: crate::config::GeneralConfig::default().background,
             cursor_status: CursorImageStatus::default_named(),
+            cursor_position_hint: None,
             layer_focus: None,
             overview: None,
             suppressed_keys: Vec::new(),
