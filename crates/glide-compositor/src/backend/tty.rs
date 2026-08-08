@@ -502,13 +502,21 @@ fn overview_elements(
     elements.extend(layer_elements(gles_renderer, output, scale, true));
 
     let painter = crate::paint::current();
+    let output_scale = output.current_scale().integer_scale();
     elements.extend(
         overview
-            .render(gles_renderer, output_geometry, scale, &painter, |id| {
-                window_map
-                    .get(&id)
-                    .map(|window| (window.clone(), window.display_name()))
-            })
+            .render(
+                gles_renderer,
+                output_geometry,
+                scale,
+                output_scale,
+                &painter,
+                |id| {
+                    window_map
+                        .get(&id)
+                        .map(|window| (window.clone(), window.display_name()))
+                },
+            )
             .into_iter()
             .map(GlideRenderElements::Overview),
     );

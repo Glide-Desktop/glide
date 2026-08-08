@@ -95,8 +95,9 @@ fn lerp_rect(
     )
 }
 
-/// A cached label buffer, and the `(text, width)` it was rendered from.
-type CachedLabel = (String, i32, MemoryRenderBuffer);
+/// A cached label buffer, and the `(text, width, scale)` it was rendered
+/// from.
+type CachedLabel = (String, i32, i32, MemoryRenderBuffer);
 
 /// One preview: the slot the layout engine assigned, plus where the window
 /// really is (the animation interpolates between them).
@@ -108,13 +109,15 @@ pub struct Preview {
     /// The window's real on-screen frame, where the animation starts from.
     pub origin: Rectangle<i32, Logical>,
     pub row: usize,
-    /// Cached label buffer, and the `(text, width)` it was rendered from —
-    /// so it is only re-rasterised when either actually changes. Width
-    /// matters as much as text: it's the buffer's own dimension, and a
-    /// `relayout` (e.g. a workspace switch changing the row count) can
-    /// resize a preview without touching its title at all — checking text
-    /// alone left a stale, wrong-width label glued to the wider or
-    /// narrower slot.
+    /// Cached label buffer, and the `(text, width, scale)` it was rendered
+    /// from — so it is only re-rasterised when any of the three actually
+    /// changes. Width matters as much as text: it's the buffer's own
+    /// dimension, and a `relayout` (e.g. a workspace switch changing the
+    /// row count) can resize a preview without touching its title at all —
+    /// checking text alone left a stale, wrong-width label glued to the
+    /// wider or narrower slot. Scale matters for the same reason `width`
+    /// does: a buffer rasterized at one scale can't just be reused at
+    /// another without going blurry (or, hypothetically, blocky).
     label: Option<CachedLabel>,
 }
 
@@ -519,6 +522,7 @@ impl OverviewUi {
         renderer: &mut R,
         entries: &[(WindowId, Rectangle<i32, Logical>, bool)],
         scale: Scale<f64>,
+        output_scale: i32,
         painter: &crate::paint::Painter,
         lookup: &mut F,
     ) -> Vec<OverviewRenderElement<R>>
@@ -549,21 +553,24 @@ impl OverviewUi {
             let width = rect.size.w.max(1);
             let height = theme.label_height;
 
-            // Re-rasterise only when the text or the width changed —
-            // titles are stable, so this is almost always a cache hit.
-            // Both must match: checking text alone left a stale, wrong-
+            // Re-rasterise only when the text, width, or scale changed —
+            // titles are stable, so this is almost always a cache hit. All
+            // three must match: checking text alone left a stale, wrong-
             // width buffer glued to a slot after a relayout resized it
             // without changing its title (e.g. a workspace switch that
-            // changed the row count).
-            let needs_redraw =
-                preview
-                    .label
-                    .as_ref()
-                    .is_none_or(|(cached_title, cached_width, _)| {
-                        cached_title != &title || *cached_width != width
-                    });
+            // changed the row count); scale changing (hypothetically —
+            // single output today, see `output_scale`'s caller) would
+            // leave a blurry buffer rasterized for the wrong resolution.
+            let needs_redraw = preview.label.as_ref().is_none_or(
+                |(cached_title, cached_width, cached_scale, _)| {
+                    cached_title != &title
+                        || *cached_width != width
+                        || *cached_scale != output_scale
+                },
+            );
             if needs_redraw {
-                let Ok(pixels) = usize::try_from(width * height * 4) else {
+                let (pwidth, pheight) = (width * output_scale, height * output_scale);
+                let Ok(pixels) = usize::try_from(pwidth * pheight * 4) else {
                     continue;
                 };
                 let mut buf = vec![0u8; pixels];
@@ -573,6 +580,7 @@ impl OverviewUi {
                     height,
                     0,
                     width,
+                    output_scale,
                     crate::paint::TextAlign::Center,
                     &title,
                     theme.label_color.to_buffer_bytes(),
@@ -583,15 +591,15 @@ impl OverviewUi {
                 let memory = MemoryRenderBuffer::from_slice(
                     &buf,
                     smithay::backend::allocator::Fourcc::Argb8888,
-                    (width, height),
-                    1,
+                    (pwidth, pheight),
+                    output_scale,
                     Transform::Normal,
                     None,
                 );
-                preview.label = Some((title, width, memory));
+                preview.label = Some((title, width, output_scale, memory));
             }
 
-            let Some((_, _, memory)) = preview.label.as_ref() else {
+            let Some((_, _, _, memory)) = preview.label.as_ref() else {
                 continue;
             };
 
@@ -623,11 +631,18 @@ impl OverviewUi {
     /// `lookup` resolves a window id to the live window; ids the caller no
     /// longer knows about are skipped rather than panicking, since a client
     /// can exit at any point between relayout and render.
+    ///
+    /// `output_scale` is the integer output scale, separate from the
+    /// fractional `scale` used for physical-pixel positioning — it's what
+    /// label buffers rasterize at so their text is crisp rather than
+    /// upscaled on any output whose scale isn't exactly `1`.
+    #[allow(clippy::too_many_arguments)]
     pub fn render<R, F>(
         &mut self,
         renderer: &mut R,
         output_rect: Rectangle<i32, Logical>,
         scale: Scale<f64>,
+        output_scale: i32,
         painter: &crate::paint::Painter,
         mut lookup: F,
     ) -> Vec<OverviewRenderElement<R>>
@@ -651,7 +666,14 @@ impl OverviewUi {
             .map(|p| (p.id, p.rect_at(t), hover == Some(p.id)))
             .collect();
 
-        elements.extend(self.render_labels(renderer, &entries, scale, painter, &mut lookup));
+        elements.extend(self.render_labels(
+            renderer,
+            &entries,
+            scale,
+            output_scale,
+            painter,
+            &mut lookup,
+        ));
 
         // ── Highlight ring around the hovered preview ──────────────
         // A real ring (four strips, same tiling `decoration::border_rects`

@@ -154,34 +154,39 @@ impl Painter {
         }
     }
 
-    /// Rasterizes `ch`, reusing a cached bitmap if this exact `(char,
-    /// font_size)` pair was rasterized before.
+    /// Rasterizes `ch` at `font_size`, reusing a cached bitmap if this
+    /// exact `(char, font_size)` pair was rasterized before.
+    ///
+    /// `font_size` is an explicit parameter rather than always
+    /// `self.font_size` so a `HiDPI` draw call can rasterize at
+    /// `self.font_size * scale` — the cache key already includes it, so a
+    /// higher-scale request simply lands in its own cache entries rather
+    /// than colliding with (or reusing, blurrily) the logical-scale ones.
     ///
     /// Falls back to rasterizing uncached (rather than panicking) if the
     /// cache lock is unavailable for any reason — correctness never
     /// depends on the cache, only performance does.
-    fn rasterize_cached(&self, ch: char) -> (fontdue::Metrics, Vec<u8>) {
-        let key = (ch, self.font_size.to_bits());
+    fn rasterize_cached(&self, ch: char, font_size: f32) -> (fontdue::Metrics, Vec<u8>) {
+        let key = (ch, font_size.to_bits());
         let Ok(mut cache) = self.glyph_cache.lock() else {
-            return self.font.rasterize(ch, self.font_size);
+            return self.font.rasterize(ch, font_size);
         };
         if let Some(cached) = cache.get(&key) {
             return cached.clone();
         }
-        let rasterized = self.font.rasterize(ch, self.font_size);
+        let rasterized = self.font.rasterize(ch, font_size);
         cache.insert(key, rasterized.clone());
         rasterized
     }
 
-    /// Laid-out pixel width of `text` at this painter's font size, `0.0`
-    /// for empty text.
-    fn measure_width(&self, text: &str) -> f32 {
+    /// Laid-out pixel width of `text` at `font_size`, `0.0` for empty text.
+    fn measure_width_at(&self, text: &str, font_size: f32) -> f32 {
         if text.is_empty() {
             return 0.0;
         }
         let mut layout: Layout<()> = Layout::new(CoordinateSystem::PositiveYDown);
         layout.reset(&fontdue::layout::LayoutSettings::default());
-        layout.append(&[&self.font], &TextStyle::new(text, self.font_size, 0));
+        layout.append(&[&self.font], &TextStyle::new(text, font_size, 0));
         let glyphs = layout.glyphs();
         let (Some(first), Some(last)) = (glyphs.first(), glyphs.last()) else {
             return 0.0;
@@ -190,20 +195,20 @@ impl Painter {
     }
 
     /// Shortens `text` with a trailing ellipsis so it fits within
-    /// `avail_w` pixels, if it doesn't already fit as-is.
+    /// `avail_w` pixels at `font_size`, if it doesn't already fit as-is.
     ///
     /// Character-by-character rather than a binary search: titles are
-    /// short, a handful of extra `measure_width` calls is nowhere near a
+    /// short, a handful of extra `measure_width_at` calls is nowhere near a
     /// hot path (this only runs when the label actually needs repainting —
     /// see `decoration.rs`'s dirty-checked `set_title`), and dropping one
     /// character and re-measuring is the simplest thing that is obviously
     /// correct.
-    fn fit_text(&self, text: &str, avail_w: i32) -> String {
+    fn fit_text_at(&self, text: &str, avail_w: i32, font_size: f32) -> String {
         let avail_w = avail_w as f32;
         if avail_w <= 0.0 {
             return String::new();
         }
-        if self.measure_width(text) <= avail_w {
+        if self.measure_width_at(text, font_size) <= avail_w {
             return text.to_owned();
         }
 
@@ -211,7 +216,7 @@ impl Painter {
         while !chars.is_empty() {
             chars.pop();
             let candidate: String = chars.iter().collect::<String>() + "…";
-            if self.measure_width(&candidate) <= avail_w {
+            if self.measure_width_at(&candidate, font_size) <= avail_w {
                 return candidate;
             }
         }
@@ -220,20 +225,30 @@ impl Painter {
         String::new()
     }
 
-    /// Laid-out pixel width of `text` at this painter's font size.
-    ///
-    /// Public wrapper around the same measuring logic [`Self::draw_label`]
-    /// uses internally, for callers that need to size a UI element around
-    /// a piece of text *before* drawing it — the chevron dropdown's width,
-    /// for instance.
+    /// Laid-out pixel width of `text` at this painter's *logical* font
+    /// size — deliberately not scale-aware, unlike [`Self::draw_label`]:
+    /// callers use this to size a UI element in logical pixels *before*
+    /// drawing it (the chevron dropdown's width, for instance), and
+    /// logical layout must stay scale-independent the same way the rest of
+    /// the compositor's hit-testing and geometry does.
     #[must_use]
     pub fn text_width(&self, text: &str) -> f32 {
-        self.measure_width(text)
+        self.measure_width_at(text, self.font_size)
     }
 
-    /// Render `text` inside a `width × height` ARGB8888 buffer, horizontally
-    /// positioned per `align` within `[x_min, x_max]` and centred vertically
-    /// in `height`.
+    /// Render `text` inside a buffer sized for a `width × height` *logical*
+    /// area at `scale` — i.e. `width * scale` by `height * scale` physical
+    /// pixels, which is what `buf` must actually be sized to — horizontally
+    /// positioned per `align` within logical `[x_min, x_max]` and centred
+    /// vertically.
+    ///
+    /// `scale` is what makes this HiDPI-correct: text is laid out and
+    /// rasterized at `self.font_size * scale`, not upscaled after the fact
+    /// from a logical-resolution rendering, which is what would otherwise
+    /// leave titlebar text and menu labels looking soft on any output
+    /// whose scale isn't exactly `1`. `scale = 1` reproduces the prior
+    /// (logical-only) behaviour exactly — this is not a new code path for
+    /// the common case, just a generalization of the existing one.
     ///
     /// The background is filled with `bg_argb` first; glyphs are drawn on
     /// top using `fg_argb`, alpha-blended by the font's own per-pixel
@@ -246,7 +261,8 @@ impl Painter {
     /// `Argb8888` format expects to hold.
     ///
     /// `text` is truncated with a trailing ellipsis if it doesn't fit
-    /// within `[x_min, x_max]` — see [`Self::fit_text`].
+    /// within `[x_min, x_max]` — see [`Self::fit_text_at`].
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_label(
         &self,
         buf: &mut [u8],
@@ -254,12 +270,14 @@ impl Painter {
         height: i32,
         x_min: i32,
         x_max: i32,
+        scale: i32,
         align: TextAlign,
         text: &str,
         fg_argb: [u8; 4],
         bg_argb: [u8; 4],
     ) {
-        if width <= 0 || height <= 0 || buf.len() < (width * height * 4) as usize {
+        let (pw, ph) = (width * scale, height * scale);
+        if pw <= 0 || ph <= 0 || buf.len() < (pw * ph * 4) as usize {
             return;
         }
 
@@ -267,18 +285,22 @@ impl Painter {
         // background or glyph, must agree on that convention, or the two
         // fights each other the moment either colour has alpha < 255.
         let bg_premul = premultiply(bg_argb);
-        for chunk in buf[..(width * height * 4) as usize].chunks_exact_mut(4) {
+        for chunk in buf[..(pw * ph * 4) as usize].chunks_exact_mut(4) {
             chunk.copy_from_slice(&bg_premul);
         }
 
-        self.draw_label_over(buf, width, height, x_min, x_max, align, text, fg_argb);
+        self.draw_label_over(
+            buf, width, height, x_min, x_max, scale, align, text, fg_argb,
+        );
     }
 
-    /// Draws `text` exactly as [`Self::draw_label`] does, *without* filling
-    /// the background first — for a caller that already painted its own
-    /// background (a rounded panel row, say — see
-    /// [`Self::fill_panel_background`]) and would otherwise have it
+    /// Draws `text` exactly as [`Self::draw_label`] does — including the
+    /// same `width`/`height`/`x_min`/`x_max` logical-pixels-at-`scale`
+    /// convention — *without* filling the background first, for a caller
+    /// that already painted its own background (a rounded panel row, say —
+    /// see [`Self::fill_panel_background`]) and would otherwise have it
     /// clobbered by a flat rectangular fill.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_label_over(
         &self,
         buf: &mut [u8],
@@ -286,15 +308,20 @@ impl Painter {
         height: i32,
         x_min: i32,
         x_max: i32,
+        scale: i32,
         align: TextAlign,
         text: &str,
         fg_argb: [u8; 4],
     ) {
-        if width <= 0 || height <= 0 || buf.len() < (width * height * 4) as usize {
+        let (pw, ph) = (width * scale, height * scale);
+        if pw <= 0 || ph <= 0 || buf.len() < (pw * ph * 4) as usize {
             return;
         }
+        let (px_min, px_max) = (x_min * scale, x_max * scale);
+        #[allow(clippy::cast_precision_loss)]
+        let font_size = self.font_size * scale as f32;
 
-        let text = self.fit_text(text, x_max - x_min);
+        let text = self.fit_text_at(text, px_max - px_min, font_size);
         if text.is_empty() {
             return;
         }
@@ -302,7 +329,7 @@ impl Painter {
         // Lay out the (possibly truncated) text to measure its pixel width.
         let mut layout: Layout<()> = Layout::new(CoordinateSystem::PositiveYDown);
         layout.reset(&fontdue::layout::LayoutSettings::default());
-        layout.append(&[&self.font], &TextStyle::new(&text, self.font_size, 0));
+        layout.append(&[&self.font], &TextStyle::new(&text, font_size, 0));
 
         let glyphs = layout.glyphs();
         if glyphs.is_empty() {
@@ -314,17 +341,17 @@ impl Painter {
         let last = glyphs.last().unwrap();
         let total_w = (last.x + last.width as f32 - first.x) as i32;
 
-        let avail_w = x_max - x_min;
+        let avail_w = px_max - px_min;
         let x_off = match align {
-            // Centred within [x_min, x_max].
-            TextAlign::Center => x_min + (avail_w - total_w) / 2 - first.x as i32,
-            // Flush against x_min.
-            TextAlign::Left => x_min - first.x as i32,
+            // Centred within [px_min, px_max].
+            TextAlign::Center => px_min + (avail_w - total_w) / 2 - first.x as i32,
+            // Flush against px_min.
+            TextAlign::Left => px_min - first.x as i32,
         };
-        let y_off = ((height as f32 - layout.height()) / 2.0) as i32;
+        let y_off = ((ph as f32 - layout.height()) / 2.0) as i32;
 
         for g in glyphs {
-            let (metrics, bitmap) = self.rasterize_cached(g.parent);
+            let (metrics, bitmap) = self.rasterize_cached(g.parent, font_size);
             let gx = x_off + g.x as i32;
             let gy = y_off + g.y as i32;
 
@@ -332,14 +359,14 @@ impl Painter {
                 for col in 0..metrics.width {
                     let px = gx + col as i32;
                     let py = gy + row as i32;
-                    if px < 0 || py < 0 || px >= width || py >= height {
+                    if px < 0 || py < 0 || px >= pw || py >= ph {
                         continue;
                     }
                     let coverage = bitmap[row * metrics.width + col];
                     if coverage == 0 {
                         continue;
                     }
-                    let offset = ((py * width + px) * 4) as usize;
+                    let offset = ((py * pw + px) * 4) as usize;
                     if offset + 3 >= buf.len() {
                         continue;
                     }
@@ -360,20 +387,29 @@ impl Painter {
         }
     }
 
-    /// Draw the **maximize** icon (empty square) into `buf`.
+    /// Draw the **maximize** icon (empty square) into `buf`, sized for a
+    /// `width × height` logical cell at `scale` — see [`render_icon`]'s
+    /// docs on the same convention [`Self::draw_label`] uses.
     ///
     /// `fg`/`bg` are straight colour — tiny-skia's own native input
     /// format, matching [`crate::config::Color`]'s representation exactly,
     /// so unlike [`Self::draw_label`] no premultiplication happens here:
     /// tiny-skia does it internally when it rasterizes each fill/stroke.
-    pub fn draw_icon_maximize(buf: &mut [u8], width: i32, height: i32, fg: Color, bg: Color) {
-        render_icon(buf, width, height, bg, |pixmap| {
+    pub fn draw_icon_maximize(
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        scale: i32,
+        fg: Color,
+        bg: Color,
+    ) {
+        render_icon(buf, width, height, scale, bg, |pixmap| {
             let (m, w, h) = icon_bounds(width, height);
             if let Some(rect) = tiny_skia::Rect::from_ltrb(m, m, w - m, h - m) {
                 let mut pb = tiny_skia::PathBuilder::new();
                 pb.push_rect(rect);
                 if let Some(path) = pb.finish() {
-                    stroke(pixmap, &path, fg, height);
+                    stroke(pixmap, &path, fg, height, scale);
                 }
             }
         });
@@ -383,9 +419,17 @@ impl Painter {
     /// shown on the maximize button instead of [`Self::draw_icon_maximize`]
     /// once the window actually is maximized, so the button always
     /// communicates what pressing it will do next rather than what state
-    /// the window happens to be in already.
-    pub fn draw_icon_restore(buf: &mut [u8], width: i32, height: i32, fg: Color, bg: Color) {
-        render_icon(buf, width, height, bg, |pixmap| {
+    /// the window happens to be in already. Same `width × height` at
+    /// `scale` convention as [`Self::draw_icon_maximize`].
+    pub fn draw_icon_restore(
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        scale: i32,
+        fg: Color,
+        bg: Color,
+    ) {
+        render_icon(buf, width, height, scale, bg, |pixmap| {
             let (m, w, h) = icon_bounds(width, height);
             let offset = ((h - m * 2.0) * 0.28).max(1.0);
 
@@ -394,7 +438,7 @@ impl Painter {
                 let mut pb = tiny_skia::PathBuilder::new();
                 pb.push_rect(back);
                 if let Some(path) = pb.finish() {
-                    stroke(pixmap, &path, fg, height);
+                    stroke(pixmap, &path, fg, height, scale);
                 }
             }
 
@@ -405,16 +449,24 @@ impl Painter {
                 let mut pb = tiny_skia::PathBuilder::new();
                 pb.push_rect(front);
                 if let Some(path) = pb.finish() {
-                    fill(pixmap, &path, bg);
-                    stroke(pixmap, &path, fg, height);
+                    fill(pixmap, &path, bg, scale);
+                    stroke(pixmap, &path, fg, height, scale);
                 }
             }
         });
     }
 
-    /// Draw the **close** icon (×) into `buf`.
-    pub fn draw_icon_close(buf: &mut [u8], width: i32, height: i32, fg: Color, bg: Color) {
-        render_icon(buf, width, height, bg, |pixmap| {
+    /// Draw the **close** icon (×) into `buf`. Same `width × height` at
+    /// `scale` convention as [`Self::draw_icon_maximize`].
+    pub fn draw_icon_close(
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        scale: i32,
+        fg: Color,
+        bg: Color,
+    ) {
+        render_icon(buf, width, height, scale, bg, |pixmap| {
             let (m, w, h) = icon_bounds(width, height);
             let mut pb = tiny_skia::PathBuilder::new();
             pb.move_to(m, m);
@@ -422,14 +474,22 @@ impl Painter {
             pb.move_to(w - m, m);
             pb.line_to(m, h - m);
             if let Some(path) = pb.finish() {
-                stroke(pixmap, &path, fg, height);
+                stroke(pixmap, &path, fg, height, scale);
             }
         });
     }
 
-    /// Draw the **chevron** icon (∨) into `buf`.
-    pub fn draw_icon_chevron(buf: &mut [u8], width: i32, height: i32, fg: Color, bg: Color) {
-        render_icon(buf, width, height, bg, |pixmap| {
+    /// Draw the **chevron** icon (∨) into `buf`. Same `width × height` at
+    /// `scale` convention as [`Self::draw_icon_maximize`].
+    pub fn draw_icon_chevron(
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        scale: i32,
+        fg: Color,
+        bg: Color,
+    ) {
+        render_icon(buf, width, height, scale, bg, |pixmap| {
             let (m, w, h) = icon_bounds(width, height);
             let mid_x = w / 2.0;
             let top = h / 2.0 - m / 2.0;
@@ -439,7 +499,7 @@ impl Painter {
             pb.line_to(mid_x, bot);
             pb.line_to(w - m, top);
             if let Some(path) = pb.finish() {
-                stroke(pixmap, &path, fg, height);
+                stroke(pixmap, &path, fg, height, scale);
             }
         });
     }
@@ -450,25 +510,30 @@ impl Painter {
     /// since panel rows must tile edge-to-edge with no gap between them.
     /// Used for the chevron dropdown's rows: pair with
     /// [`Self::draw_label_over`] afterward to add each row's text without
-    /// it clobbering this background with its own flat fill.
+    /// it clobbering this background with its own flat fill. Same
+    /// `width × height` at `scale` convention as
+    /// [`Self::draw_icon_maximize`].
     pub fn fill_panel_background(
         buf: &mut [u8],
         width: i32,
         height: i32,
+        scale: i32,
         bg: Color,
         radius: f32,
         corners: [bool; 4],
     ) {
-        let (Ok(w), Ok(h)) = (u32::try_from(width), u32::try_from(height)) else {
+        let (Ok(w), Ok(h)) = (u32::try_from(width * scale), u32::try_from(height * scale)) else {
             return;
         };
         let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
             return;
         };
+        // Path built in logical coordinates, same as the icons; `fill`
+        // applies the scale transform at rasterization time.
         if let Some(path) =
             rounded_rect_corners(0.0, 0.0, width as f32, height as f32, radius, corners)
         {
-            fill(&mut pixmap, &path, bg);
+            fill(&mut pixmap, &path, bg, scale);
         }
         let bytes = skia_pixmap_into_buffer_bytes(pixmap);
         let n = bytes.len().min(buf.len());
@@ -527,6 +592,15 @@ fn composite_over(dst: [u8; 4], src_rgb_straight: [u8; 3], src_alpha: u8) -> [u8
 /// button's background — then hands the pixmap to `draw_glyph` to add the
 /// icon on top, and writes the result into `buf`.
 ///
+/// `width`/`height` are *logical* pixels; the pixmap (and `buf`, which
+/// must be sized to match) is allocated at `width * scale` by
+/// `height * scale` physical pixels, with every path below built in the
+/// logical coordinate space and rasterized through a `scale` transform —
+/// see [`stroke`]/[`fill`]. That's what makes icon glyphs and pill
+/// backgrounds crisp rather than blurrily upscaled on any output whose
+/// scale isn't exactly `1`; `scale = 1` reproduces the prior behaviour
+/// exactly.
+///
 /// Everything outside the pill stays fully transparent (a fresh
 /// [`tiny_skia::Pixmap`] starts that way), which is what lets it read as a
 /// badge sitting on the titlebar rather than a hard-edged block: the
@@ -537,10 +611,11 @@ fn render_icon(
     buf: &mut [u8],
     width: i32,
     height: i32,
+    scale: i32,
     bg: Color,
     draw_glyph: impl FnOnce(&mut tiny_skia::Pixmap),
 ) {
-    let (Ok(w), Ok(h)) = (u32::try_from(width), u32::try_from(height)) else {
+    let (Ok(w), Ok(h)) = (u32::try_from(width * scale), u32::try_from(height * scale)) else {
         return;
     };
     let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
@@ -548,7 +623,7 @@ fn render_icon(
     };
 
     let margin = pill_margin(width, height);
-    fill_pill(&mut pixmap, width, height, bg, margin);
+    fill_pill(&mut pixmap, width, height, bg, margin, scale);
 
     draw_glyph(&mut pixmap);
 
@@ -588,22 +663,47 @@ fn paint_for(color: Color) -> tiny_skia::Paint<'static> {
     }
 }
 
-fn stroke(pixmap: &mut tiny_skia::Pixmap, path: &tiny_skia::Path, color: Color, height: i32) {
+/// Scale transform used to rasterize a logical-coordinate path onto a
+/// `scale`-times-larger physical pixmap. `Transform::identity()` at
+/// `scale = 1` — this is not a new code path for the common case, the
+/// same identity transform every fill/stroke used before scale-awareness
+/// existed.
+#[allow(clippy::cast_precision_loss)]
+fn scale_transform(scale: i32) -> tiny_skia::Transform {
+    let s = scale as f32;
+    tiny_skia::Transform::from_scale(s, s)
+}
+
+/// Strokes `path` (built in *logical* coordinates) with `icon_stroke`,
+/// rasterized through `scale_transform(scale)` — which is what scales the
+/// stroke width up by `scale` too, automatically: tiny-skia strokes in the
+/// path's own coordinate space and applies the transform to the resulting
+/// outline, the same as any other vector graphics transform convention.
+fn stroke(
+    pixmap: &mut tiny_skia::Pixmap,
+    path: &tiny_skia::Path,
+    color: Color,
+    height: i32,
+    scale: i32,
+) {
     pixmap.stroke_path(
         path,
         &paint_for(color),
         &icon_stroke(height),
-        tiny_skia::Transform::identity(),
+        scale_transform(scale),
         None,
     );
 }
 
-fn fill(pixmap: &mut tiny_skia::Pixmap, path: &tiny_skia::Path, color: Color) {
+/// Fills `path` (built in *logical* coordinates), rasterized through
+/// `scale_transform(scale)` — see [`stroke`]'s docs on the same
+/// convention.
+fn fill(pixmap: &mut tiny_skia::Pixmap, path: &tiny_skia::Path, color: Color, scale: i32) {
     pixmap.fill_path(
         path,
         &paint_for(color),
         tiny_skia::FillRule::Winding,
-        tiny_skia::Transform::identity(),
+        scale_transform(scale),
         None,
     );
 }
@@ -615,8 +715,17 @@ fn pill_margin(width: i32, height: i32) -> f32 {
 }
 
 /// Fills a fully-rounded ("stadium") pill inset by `margin` from the
-/// `width × height` cell, or does nothing if the inset leaves no room.
-fn fill_pill(pixmap: &mut tiny_skia::Pixmap, width: i32, height: i32, color: Color, margin: f32) {
+/// `width × height` logical cell, or does nothing if the inset leaves no
+/// room. `width`/`height`/`margin` are logical; `scale` is forwarded to
+/// [`fill`] for the rasterization transform.
+fn fill_pill(
+    pixmap: &mut tiny_skia::Pixmap,
+    width: i32,
+    height: i32,
+    color: Color,
+    margin: f32,
+    scale: i32,
+) {
     let w = width as f32 - margin * 2.0;
     let h = height as f32 - margin * 2.0;
     if w <= 0.0 || h <= 0.0 {
@@ -625,7 +734,7 @@ fn fill_pill(pixmap: &mut tiny_skia::Pixmap, width: i32, height: i32, color: Col
     let Some(path) = rounded_rect(margin, margin, w, h, h / 2.0) else {
         return;
     };
-    fill(pixmap, &path, color);
+    fill(pixmap, &path, color, scale);
 }
 
 /// The standard constant for approximating a quarter-circle arc with one
@@ -873,6 +982,7 @@ mod tests {
             &mut buf,
             100,
             32,
+            1,
             Color([0.1, 0.1, 0.15, 1.0]),
             8.0,
             [true, true, false, false],
@@ -894,6 +1004,7 @@ mod tests {
             &mut buf,
             100,
             32,
+            1,
             Color([0.1, 0.1, 0.15, 1.0]),
             8.0,
             [true, true, false, false], // bottom corners square
@@ -911,20 +1022,25 @@ mod tests {
     #[test]
     fn icon_drawing_functions_fill_the_whole_buffer_without_panicking() {
         // Smoke test: every icon function must produce exactly
-        // width*height*4 bytes and never panic, across a range of sizes
-        // including tiny/odd ones a real titlebar height could produce.
+        // (width*scale)*(height*scale)*4 bytes and never panic, across a
+        // range of logical sizes (including tiny/odd ones a real titlebar
+        // height could produce) and scales (1 = the common case today; 2
+        // exercises the HiDPI path with nothing else changed).
         for (w, h) in [(32, 32), (1, 1), (2, 3), (28, 28), (40, 26)] {
-            for icon in [
-                Painter::draw_icon_maximize,
-                Painter::draw_icon_restore,
-                Painter::draw_icon_close,
-                Painter::draw_icon_chevron,
-            ] {
-                let mut buf = vec![0u8; (w * h * 4) as usize];
-                let fg = Color([1.0, 1.0, 1.0, 1.0]);
-                let bg = Color([0.12, 0.12, 0.15, 1.0]);
-                icon(&mut buf, w, h, fg, bg);
-                assert_eq!(buf.len(), (w * h * 4) as usize, "w={w} h={h}");
+            for scale in [1, 2] {
+                for icon in [
+                    Painter::draw_icon_maximize,
+                    Painter::draw_icon_restore,
+                    Painter::draw_icon_close,
+                    Painter::draw_icon_chevron,
+                ] {
+                    let expected_len = (w * scale * h * scale * 4) as usize;
+                    let mut buf = vec![0u8; expected_len];
+                    let fg = Color([1.0, 1.0, 1.0, 1.0]);
+                    let bg = Color([0.12, 0.12, 0.15, 1.0]);
+                    icon(&mut buf, w, h, scale, fg, bg);
+                    assert_eq!(buf.len(), expected_len, "w={w} h={h} scale={scale}");
+                }
             }
         }
     }
@@ -939,6 +1055,7 @@ mod tests {
             &mut buf,
             32,
             32,
+            1,
             Color([1.0, 1.0, 1.0, 1.0]),
             Color([1.0, 0.0, 0.0, 1.0]),
         );
@@ -947,16 +1064,43 @@ mod tests {
     }
 
     #[test]
+    fn icon_at_scale_2_produces_a_physically_larger_buffer_than_scale_1() {
+        // The point of scale-awareness: a HiDPI buffer is rasterized at
+        // (width*scale, height*scale) physical pixels, not a
+        // logical-resolution buffer stretched afterward.
+        let mut buf1 = vec![0u8; 32 * 32 * 4];
+        Painter::draw_icon_close(
+            &mut buf1,
+            32,
+            32,
+            1,
+            Color([1.0, 1.0, 1.0, 1.0]),
+            Color([0.0, 0.0, 0.0, 1.0]),
+        );
+        let mut buf2 = vec![0u8; 64 * 64 * 4];
+        Painter::draw_icon_close(
+            &mut buf2,
+            32,
+            32,
+            2,
+            Color([1.0, 1.0, 1.0, 1.0]),
+            Color([0.0, 0.0, 0.0, 1.0]),
+        );
+        assert_eq!(buf1.len(), 32 * 32 * 4);
+        assert_eq!(buf2.len(), 64 * 64 * 4);
+    }
+
+    #[test]
     fn fit_text_returns_input_unchanged_when_it_already_fits() {
         let painter = Painter::new(14.0);
-        assert_eq!(painter.fit_text("ok", 1000), "ok");
+        assert_eq!(painter.fit_text_at("ok", 1000, painter.font_size), "ok");
     }
 
     #[test]
     fn fit_text_truncates_with_an_ellipsis_when_too_narrow() {
         let painter = Painter::new(14.0);
         let long = "a very long window title that will not fit";
-        let fitted = painter.fit_text(long, 40);
+        let fitted = painter.fit_text_at(long, 40, painter.font_size);
         assert!(fitted.ends_with('…'), "{fitted:?}");
         assert!(
             fitted.len() < long.len(),
@@ -967,29 +1111,43 @@ mod tests {
     #[test]
     fn fit_text_on_zero_width_is_empty() {
         let painter = Painter::new(14.0);
-        assert_eq!(painter.fit_text("anything", 0), "");
+        assert_eq!(painter.fit_text_at("anything", 0, painter.font_size), "");
     }
 
     #[test]
     fn fit_text_on_empty_input_is_empty() {
         let painter = Painter::new(14.0);
-        assert_eq!(painter.fit_text("", 1000), "");
+        assert_eq!(painter.fit_text_at("", 1000, painter.font_size), "");
     }
 
     #[test]
     fn glyph_cache_returns_identical_bitmaps_across_calls() {
         let painter = Painter::new(14.0);
-        let (m1, b1) = painter.rasterize_cached('A');
-        let (m2, b2) = painter.rasterize_cached('A');
+        let (m1, b1) = painter.rasterize_cached('A', painter.font_size);
+        let (m2, b2) = painter.rasterize_cached('A', painter.font_size);
         assert_eq!((m1.width, m1.height), (m2.width, m2.height));
         assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn glyph_cache_has_separate_entries_per_scaled_font_size() {
+        // A HiDPI draw call rasterizes at `font_size * scale`; that must
+        // land in its own cache entry, not silently reuse (or collide
+        // with) the logical-scale bitmap.
+        let painter = Painter::new(14.0);
+        let (m1, _) = painter.rasterize_cached('A', 14.0);
+        let (m2, _) = painter.rasterize_cached('A', 28.0);
+        assert!(
+            m2.width > m1.width && m2.height > m1.height,
+            "a 2x font size must rasterize a physically larger glyph"
+        );
     }
 
     #[test]
     fn painter_clone_shares_the_glyph_cache() {
         let painter = Painter::new(14.0);
         let clone = painter.clone();
-        let _ = painter.rasterize_cached('Q');
+        let _ = painter.rasterize_cached('Q', painter.font_size);
         assert!(
             clone
                 .glyph_cache
@@ -1017,6 +1175,7 @@ mod tests {
             32,
             32,
             168,
+            1,
             TextAlign::Left,
             "a title so long it must be ellipsised to fit the available space",
             [255, 255, 255, 255],
@@ -1025,6 +1184,39 @@ mod tests {
         // Background must have been painted at least (buffer isn't left
         // all-zero) — a weak but real smoke assertion that something drew.
         assert!(buf.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn draw_label_at_scale_2_produces_a_physically_larger_buffer() {
+        let painter = Painter::new(14.0);
+        let mut buf1 = vec![0u8; 200 * 32 * 4];
+        painter.draw_label(
+            &mut buf1,
+            200,
+            32,
+            32,
+            168,
+            1,
+            TextAlign::Left,
+            "Hello",
+            [255, 255, 255, 255],
+            [30, 30, 30, 255],
+        );
+        let mut buf2 = vec![0u8; 400 * 64 * 4];
+        painter.draw_label(
+            &mut buf2,
+            200,
+            32,
+            32,
+            168,
+            2,
+            TextAlign::Left,
+            "Hello",
+            [255, 255, 255, 255],
+            [30, 30, 30, 255],
+        );
+        assert!(buf1.iter().any(|&b| b != 0));
+        assert!(buf2.iter().any(|&b| b != 0));
     }
 
     #[test]
@@ -1038,6 +1230,7 @@ mod tests {
             32,
             20,
             180,
+            1,
             TextAlign::Left,
             "Hi",
             [255, 255, 255, 255],
@@ -1049,6 +1242,7 @@ mod tests {
             32,
             20,
             180,
+            1,
             TextAlign::Center,
             "Hi",
             [255, 255, 255, 255],

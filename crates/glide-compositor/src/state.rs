@@ -377,6 +377,17 @@ impl GlideState {
 
         let focused = self.layout.focused_window();
 
+        // Single output today (see `FractionalScaleHandler::new_fractional_scale`'s
+        // own comment on the same simplification), so one scale applies to
+        // every window's decoration buffers uniformly. Computed once,
+        // outside the per-window loop below, rather than re-querying
+        // `self.space.outputs()` for each one.
+        let scale = self
+            .space
+            .outputs()
+            .next()
+            .map_or(1, |output| output.current_scale().integer_scale());
+
         // ── Unmap hidden windows ───────────────────────────────────
         let mapped: Vec<GlideWindow> = self.space.elements().cloned().collect();
         for window in mapped {
@@ -426,6 +437,7 @@ impl GlideState {
                 decoration_height,
                 is_focused,
                 state.maximized,
+                scale,
             );
         }
 

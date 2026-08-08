@@ -204,6 +204,13 @@ pub struct HeaderBar {
     /// button's glyph for the restore one, same idea as `theme`/`focused`:
     /// snapshotted ahead of render for the same reason.
     maximized: bool,
+    /// The output scale to rasterize decoration buffers at, so titlebar
+    /// text and button icons stay crisp instead of being upscaled from a
+    /// logical-resolution rendering. Snapshotted the same way as
+    /// `theme`/`focused` and for the same reason. `0` (the derived
+    /// `Default`, before the first sync) is never used directly — see
+    /// [`Self::effective_scale`].
+    scale: i32,
 
     /// Cached pixel buffers for each titlebar element.  Rebuilt whenever
     /// their appearance changes (hover, focus, open menu, resize).
@@ -264,23 +271,28 @@ fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
 /// The buttons differ only in their colours and glyph, so they share this
 /// instead of a near-identical block per button. `bg`/`fg` are straight
 /// colour — see [`Painter::draw_icon_maximize`]'s docs on why no
-/// premultiplication happens at this boundary.
+/// premultiplication happens at this boundary. `height` is logical; the
+/// buffer is allocated at `scale` and sized in physical pixels
+/// accordingly, so the icon rasterizes crisp rather than upscaled on any
+/// output whose scale isn't exactly `1`.
 fn redraw_button(
     buf: &mut Option<MemoryRenderBuffer>,
     height: i32,
+    scale: i32,
     bg: Color,
     fg: Color,
-    icon: fn(&mut [u8], i32, i32, Color, Color),
+    icon: fn(&mut [u8], i32, i32, i32, Color, Color),
 ) {
     let w = BUTTON_WIDTH;
+    let (pw, ph) = (w * scale, height * scale);
     let buf = buf.get_or_insert_with(|| {
-        MemoryRenderBuffer::new(Fourcc::Argb8888, (w, height), 1, Transform::Normal, None)
+        MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
     });
     let mut ctx = buf.render();
-    ctx.resize((w, height));
+    ctx.resize((pw, ph));
     let _ = ctx.draw(|pixels| {
-        icon(pixels, w, height, fg, bg);
-        Ok::<_, ()>(vec![Rectangle::from_size((w, height).into())])
+        icon(pixels, w, height, scale, fg, bg);
+        Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
     });
 }
 
@@ -299,15 +311,38 @@ impl HeaderBar {
         self.height = height;
     }
 
-    /// Snapshots the theme, focus, and maximized state to redraw with. See
-    /// the fields' own docs for why this happens ahead of time rather than
-    /// at render.
-    fn sync(&mut self, theme: &DecorationTheme, focused: bool, maximized: bool) {
+    /// Snapshots the theme, focus, maximized, and output-scale state to
+    /// redraw with. See the fields' own docs for why this happens ahead of
+    /// time rather than at render.
+    fn sync(&mut self, theme: &DecorationTheme, focused: bool, maximized: bool, scale: i32) {
         if &self.theme != theme {
             self.theme = theme.clone();
         }
         self.focused = focused;
         self.maximized = maximized;
+        if self.scale != scale {
+            self.scale = scale;
+            // A buffer's declared scale is fixed at creation; resizing it
+            // later changes size but not that. There is only ever one
+            // output today (always scale 1), so this can't fire in
+            // practice yet, but a real scale change — an output swap,
+            // whenever multi-output exists — has to drop and recreate
+            // every cached buffer rather than just resizing them, or
+            // their declared scale and physical size would disagree.
+            self.titlebar_buf = None;
+            self.maximize_buf = None;
+            self.chevron_buf = None;
+            self.close_buf = None;
+            self.menu_row_bufs.clear();
+        }
+    }
+
+    /// The output scale to rasterize decoration buffers at — `self.scale`,
+    /// clamped to at least `1`. Never `0`, unlike the raw field's derived
+    /// `Default`, which would produce zero-sized (i.e. dropped) buffers if
+    /// ever read before the first `sync`.
+    const fn effective_scale(&self) -> i32 {
+        if self.scale < 1 { 1 } else { self.scale }
     }
 
     /// Update the window title stored for rendering in the drag zone.
@@ -567,6 +602,7 @@ impl HeaderBar {
 
         let theme = &self.theme;
         let height = self.height;
+        let scale = self.effective_scale();
         let bg_color = if self.focused {
             theme.background_focused
         } else {
@@ -592,12 +628,13 @@ impl HeaderBar {
         {
             let w = self.width;
             let h = self.height;
+            let (pw, ph) = (w * scale, h * scale);
             let buf = self.titlebar_buf.get_or_insert_with(|| {
-                MemoryRenderBuffer::new(Fourcc::Argb8888, (w, h), 1, Transform::Normal, None)
+                MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
             });
             // Grow if needed.
             let mut ctx = buf.render();
-            ctx.resize((w, h));
+            ctx.resize((pw, ph));
             let title = self.title.clone();
             let align = match theme.title_align {
                 TitleAlign::Left => TextAlign::Left,
@@ -609,8 +646,8 @@ impl HeaderBar {
                 // on the right.
                 let x_min = BUTTON_WIDTH + TITLE_PADDING;
                 let x_max = w - RIGHT_CLUSTER_WIDTH;
-                painter.draw_label(pixels, w, h, x_min, x_max, align, &title, fg, bg);
-                Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
+                painter.draw_label(pixels, w, h, x_min, x_max, scale, align, &title, fg, bg);
+                Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
         }
 
@@ -620,7 +657,7 @@ impl HeaderBar {
         // Maximize/restore are the same button showing different glyphs —
         // whichever one is current communicates what *pressing* it will do
         // next, not the window's present state.
-        let maximize_icon: fn(&mut [u8], i32, i32, Color, Color) = if self.maximized {
+        let maximize_icon: fn(&mut [u8], i32, i32, i32, Color, Color) = if self.maximized {
             Painter::draw_icon_restore
         } else {
             Painter::draw_icon_maximize
@@ -641,7 +678,7 @@ impl HeaderBar {
                 theme.chevron_button,
                 theme.chevron_button_hover,
                 theme.icon,
-                Painter::draw_icon_chevron as fn(&mut [u8], i32, i32, Color, Color),
+                Painter::draw_icon_chevron as fn(&mut [u8], i32, i32, i32, Color, Color),
             ),
             (
                 &mut self.close_buf,
@@ -659,7 +696,7 @@ impl HeaderBar {
             } else {
                 normal
             };
-            redraw_button(buf, height, btn_bg, fg, icon);
+            redraw_button(buf, height, scale, btn_bg, fg, icon);
         }
 
         // ── Dropdown menu ──────────────────────────────────────────────────
@@ -685,8 +722,21 @@ impl HeaderBar {
             self.menu_width = row_w;
             self.menu_x = (self.width - row_w).max(0);
 
-            self.menu_row_bufs
-                .resize_with(MenuItem::ALL.len(), MemoryRenderBuffer::default);
+            // Buffers created fresh here (a first-ever open, or after
+            // `sync` cleared them on a scale change) get the current
+            // scale baked in from the start; existing ones are only ever
+            // resized below, never recreated, so their already-correct
+            // declared scale is left untouched.
+            let (prow_w, prow_h) = (row_w * scale, row_h * scale);
+            self.menu_row_bufs.resize_with(MenuItem::ALL.len(), || {
+                MemoryRenderBuffer::new(
+                    Fourcc::Argb8888,
+                    (prow_w, prow_h),
+                    scale,
+                    Transform::Normal,
+                    None,
+                )
+            });
             let menu_hover = self.menu_hover;
             let menu_bg = theme.menu_background;
             let menu_hover_bg = theme.menu_item_hover;
@@ -708,7 +758,7 @@ impl HeaderBar {
                     .map_or("", |item| item.label())
                     .to_owned();
                 let mut ctx = buf.render();
-                ctx.resize((row_w, row_h));
+                ctx.resize((prow_w, prow_h));
                 let _ = ctx.draw(|pixels| {
                     // Rounded background first — only the panel's true
                     // outer corners (first row's top, last row's bottom;
@@ -721,6 +771,7 @@ impl HeaderBar {
                         pixels,
                         row_w,
                         row_h,
+                        scale,
                         bg,
                         MENU_CORNER_RADIUS,
                         row_corners(i, row_count),
@@ -731,11 +782,12 @@ impl HeaderBar {
                         row_h,
                         MENU_PADDING,
                         row_w - MENU_PADDING,
+                        scale,
                         TextAlign::Left,
                         &label,
                         fg,
                     );
-                    Ok::<_, ()>(vec![Rectangle::from_size((row_w, row_h).into())])
+                    Ok::<_, ()>(vec![Rectangle::from_size((prow_w, prow_h).into())])
                 });
             }
         } else {
@@ -904,11 +956,11 @@ impl GlideWindow {
     }
 
     /// Sets the titlebar height (0 disables the decoration entirely) and
-    /// snapshots theme/focus/maximized for the next redraw. Called from
-    /// [`crate::GlideState::reconcile_space`], once per window per
+    /// snapshots theme/focus/maximized/scale for the next redraw. Called
+    /// from [`crate::GlideState::reconcile_space`], once per window per
     /// reconcile — cheap, and it is what keeps decoration rendering in sync
-    /// with configuration reloads, focus changes, and maximize/restore
-    /// toggling despite
+    /// with configuration reloads, focus changes, maximize/restore
+    /// toggling, and output scale changes despite
     /// [`smithay::backend::renderer::element::AsRenderElements`] having no
     /// access to compositor state of its own.
     ///
@@ -922,13 +974,14 @@ impl GlideWindow {
         height: i32,
         focused: bool,
         maximized: bool,
+        scale: i32,
     ) {
         let content = self.geometry().size;
         if let Some(mut state) = self.try_decoration_state_mut() {
             state.header.set_height(height);
             state.header.width = content.w;
             state.header.content_height = content.h;
-            state.header.sync(theme, focused, maximized);
+            state.header.sync(theme, focused, maximized, scale);
         }
     }
 
@@ -1338,6 +1391,64 @@ mod tests {
             time: 0,
             button: 0x110,
             state: ButtonState::Released,
+        }
+    }
+
+    mod scale {
+        use super::*;
+
+        #[test]
+        fn effective_scale_defaults_to_one_when_never_synced() {
+            // `HeaderBar::default()`'s derived `scale` is 0 (i32's
+            // default); `effective_scale` must never hand that out, or
+            // every buffer size computed from it would be zero too.
+            let h = HeaderBar::default();
+            assert_eq!(h.effective_scale(), 1);
+        }
+
+        #[test]
+        fn effective_scale_reflects_a_synced_value() {
+            let mut h = header();
+            h.sync(&DecorationTheme::default(), false, false, 2);
+            assert_eq!(h.effective_scale(), 2);
+        }
+
+        #[test]
+        fn sync_invalidates_cached_buffers_when_scale_changes() {
+            // A buffer's declared scale is fixed at creation — see
+            // `sync`'s own docs — so a real scale change has to drop
+            // every cached buffer, not just leave stale ones around with
+            // the wrong declared scale for their (about to be resized)
+            // physical dimensions.
+            let mut h = header(); // scale field is 0 (unset)
+            h.titlebar_buf = Some(MemoryRenderBuffer::default());
+            h.maximize_buf = Some(MemoryRenderBuffer::default());
+            h.chevron_buf = Some(MemoryRenderBuffer::default());
+            h.close_buf = Some(MemoryRenderBuffer::default());
+            h.menu_row_bufs.push(MemoryRenderBuffer::default());
+
+            h.sync(&DecorationTheme::default(), false, false, 2);
+
+            assert!(h.titlebar_buf.is_none());
+            assert!(h.maximize_buf.is_none());
+            assert!(h.chevron_buf.is_none());
+            assert!(h.close_buf.is_none());
+            assert!(h.menu_row_bufs.is_empty());
+        }
+
+        #[test]
+        fn sync_keeps_cached_buffers_when_scale_is_unchanged() {
+            let mut h = header();
+            h.sync(&DecorationTheme::default(), false, false, 1);
+            h.titlebar_buf = Some(MemoryRenderBuffer::default());
+
+            // Same scale, only focus changes: must not touch the buffer.
+            h.sync(&DecorationTheme::default(), true, false, 1);
+
+            assert!(
+                h.titlebar_buf.is_some(),
+                "an unrelated sync must not drop cached buffers"
+            );
         }
     }
 
