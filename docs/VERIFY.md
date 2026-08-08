@@ -87,3 +87,63 @@ Two logs are produced by `test-tty.sh`, and both matter:
 Sections below are added as Phase A steps land — see `PROJECT.md` for the
 current phase. Each says what changed, what the automated gates already
 cover, and what needs a human.
+
+## A3.3 — text rendering (fontdue → cosmic-text)
+
+Golden tests cover deterministic ASCII/Cyrillic rendering with the
+embedded font only. They cannot cover system-font fallback or colour
+emoji, since those depend on what's actually installed.
+
+- Set a window's title to include an emoji (`printf '\033]0;тест 🔥\007'`
+  in alacritty) and confirm it renders in colour, not as a tofu box or a
+  grey glyph.
+- A CJK title will render as tofu unless a CJK font (e.g. `noto-fonts-cjk`)
+  is installed — that's expected, not a bug, until one is.
+
+## A4.1/A4.2 — decoration split, GlideState::protocols
+
+Pure refactors, but A4.1 moved hit-testing and input-handling code across
+file boundaries.
+
+- Titlebar buttons: hover each of maximize/chevron/close, click each,
+  confirm the chevron menu opens and Minimize works.
+- Drag by the plain part of the titlebar; resize from every edge and
+  corner; confirm the cursor changes appropriately at each edge.
+- `Super+F`, `Super+M` on the last-clicked window of two overlapping ones.
+
+## A5.2/A5.3 — glide-ui migration (titlebar/menu hit-testing, hover animations)
+
+All boundary math is golden-tested (`glide-ui`'s
+`matches_the_titlebar_button_cluster_geometry_exactly` and the decoration
+crate's `zone_boundaries_are_exact`), but routing pointer *events* through
+the new code isn't something a unit test can see.
+
+- Repeat the titlebar/menu checks above — this is the second time that
+  code path changed, so it's worth re-checking specifically for anything
+  A4.1's check might have missed.
+- Open the overview (`Super+O`) with 3+ windows on different workspaces,
+  hover between previews, confirm the highlight ring still fades in
+  smoothly and follows the correct preview with no lag or stale
+  highlight.
+- Close the currently-highlighted preview's window while the overview is
+  open (e.g. via `glidectl window list` + kill from another VT) and
+  reopen the overview — confirm the highlight lands on a remaining
+  preview without an unwanted fade-in (this exercises
+  `retarget_without_restarting`).
+
+## A6 — IPC event stream
+
+The one thing goldens categorically cannot check: this is live inter-
+process communication.
+
+- In one terminal: `glidectl subscribe`. In another: open a window
+  (`glidectl exec alacritty`), close it, click between two windows.
+  Confirm `window opened`, `window closed` and `focus changed` lines
+  appear promptly and correctly.
+- With a subscriber connected, run `nc -U "$GLIDE_IPC_SOCK"`, send
+  `{"type":"subscribe"}\n`, and then just sit there without reading
+  anything — the screen must stay fully responsive (this is the specific
+  failure mode `broadcast_never_blocks_on_a_subscriber_whose_buffer_is_full`
+  guards against, but only a real session proves it end to end).
+- Kill a `glidectl subscribe` process (Ctrl+C) and confirm the compositor
+  keeps running normally and later events don't error in the log.
