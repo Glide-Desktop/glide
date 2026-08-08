@@ -29,6 +29,7 @@ use smithay::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
         },
         output::OutputManagerState,
+        presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         security_context::SecurityContextState,
         selection::{
@@ -78,6 +79,7 @@ pub struct Protocols {
     pub xdg_activation_state: XdgActivationState,
     pub security_context_state: SecurityContextState,
     pub relative_pointer_manager_state: RelativePointerManagerState,
+    pub presentation_state: PresentationState,
 }
 
 impl Protocols {
@@ -85,6 +87,7 @@ impl Protocols {
         dh: &DisplayHandle,
         loop_handle: &LoopHandle<'static, GlideState>,
         seat_state: SeatState<GlideState>,
+        clock_id: u32,
     ) -> Self {
         let compositor_state = CompositorState::new::<GlideState>(dh);
         let xdg_shell_state = XdgShellState::new::<GlideState>(dh);
@@ -128,6 +131,7 @@ impl Protocols {
                 .is_none_or(|state| state.security_context.is_none())
         });
         let relative_pointer_manager_state = RelativePointerManagerState::new::<GlideState>(dh);
+        let presentation_state = PresentationState::new::<GlideState>(dh, clock_id);
 
         Self {
             compositor_state,
@@ -154,6 +158,7 @@ impl Protocols {
             xdg_activation_state,
             security_context_state,
             relative_pointer_manager_state,
+            presentation_state,
         }
     }
 }
@@ -162,6 +167,7 @@ pub struct GlideState {
     pub backend_data: TtyData,
 
     pub start_time: std::time::Instant,
+    pub clock: smithay::utils::Clock<smithay::utils::Monotonic>,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
 
@@ -208,6 +214,7 @@ impl GlideState {
         display: Display<Self>,
     ) -> Self {
         let start_time = std::time::Instant::now();
+        let clock = smithay::utils::Clock::new();
 
         let dh = display.handle();
         let popups = PopupManager::default();
@@ -225,13 +232,15 @@ impl GlideState {
 
         let socket_name = Self::init_wayland_listener(display, &loop_handle);
 
-        let protocols = Protocols::new(&dh, &loop_handle, seat_state);
+        #[allow(clippy::cast_sign_loss)]
+        let protocols = Protocols::new(&dh, &loop_handle, seat_state, clock.id() as u32);
         let foreign_toplevel_handles = HashMap::new();
 
         Self {
             backend_data,
 
             start_time,
+            clock,
             display_handle: dh,
 
             space,

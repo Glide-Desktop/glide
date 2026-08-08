@@ -253,3 +253,35 @@ already covered elsewhere in this doc should show zero change).
   this needs one to actually confirm, and is genuinely blocked until
   `pointer-constraints` (next) gives relative-pointer clients a reason to
   also lock/confine the pointer, which is usually paired with it.
+
+## B3 (presentation-time) — real render-path change, check first
+
+This is the one B3 piece that changes the actual DRM submit/completion
+path, not just adds a protocol on the side: `queue_frame`'s user-data
+type changed from `()` to `Option<OutputPresentationFeedback>`, and
+`frame_finish` (the vblank completion handler) now does real work with
+DRM event metadata it previously ignored. If something is wrong here it
+would show up as `test-tty.sh`'s existing `check_absent "no render
+errors"` (already greps for `failed to queue frame`, unchanged) or as
+visible stutter/frame drops, not a crash — the least visible kind of
+regression to introduce.
+
+- Before anything else: a completely ordinary session (open/move/resize/
+  close a few windows, drag, use the overview) must show zero difference
+  from before this change. Frame pacing must feel identical - watch for
+  any stutter that wasn't there before.
+- `check_absent "no render errors"` in `test-tty.sh`'s output must still
+  pass.
+- Feedback delivery itself needs a video player or similar client using
+  `presentation-time` to request precise frame timing - none installed.
+  If one becomes available: play video, confirm no complaints about
+  missing/incorrect presentation feedback and no dropped-frame artifacts
+  beyond what the content/hardware would cause anyway.
+- Deliberately not ported: anvil's vblank-throttling logic (a timer that
+  re-schedules frame completion if the display fires vblank faster than
+  the mode's refresh rate implies). That's a distinct frame-pacing
+  correctness feature, not required for the protocol to work, and adding
+  it now would have doubled the size of an already render-path-touching
+  change for no protocol-correctness benefit. If frame pacing looks off
+  on hardware where vblank timing is unusual, that's the first place to
+  look.

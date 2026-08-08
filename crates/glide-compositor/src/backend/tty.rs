@@ -1,7 +1,12 @@
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
-use smithay::backend::renderer::element::default_primary_scanout_output_compare;
-use smithay::desktop::utils::update_surface_primary_scanout_output;
+use smithay::backend::renderer::element::{
+    RenderElementStates, default_primary_scanout_output_compare,
+};
+use smithay::desktop::utils::{
+    OutputPresentationFeedback, surface_presentation_feedback_flags_from_states,
+    surface_primary_scanout_output, update_surface_primary_scanout_output,
+};
 
 use anyhow::{Context, anyhow};
 use smithay::{
@@ -49,7 +54,7 @@ use smithay::{
         wayland_server::backend::GlobalId,
     },
     render_elements,
-    utils::{DeviceFd, IsAlive, Logical, Point, Scale, Transform},
+    utils::{Clock, DeviceFd, IsAlive, Logical, Monotonic, Point, Scale, Transform},
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -66,11 +71,15 @@ use crate::{
 type GbmDrmOutputManager = DrmOutputManager<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
-    (),
+    Option<OutputPresentationFeedback>,
     DrmDeviceFd,
 >;
-type GbmDrmOutput =
-    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+type GbmDrmOutput = DrmOutput<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    Option<OutputPresentationFeedback>,
+    DrmDeviceFd,
+>;
 
 const SUPPORTED_FORMATS: &[Fourcc] = &[
     Fourcc::Abgr2101010,
@@ -331,6 +340,75 @@ enum FrameOutcome {
     Queued(smithay::backend::renderer::element::RenderElementStates),
     NoDamage(smithay::backend::renderer::element::RenderElementStates),
     Failed,
+}
+
+fn take_presentation_feedback(
+    output: &Output,
+    space: &Space<GlideWindow>,
+    render_element_states: &RenderElementStates,
+) -> OutputPresentationFeedback {
+    use smithay::desktop::layer_map_for_output;
+
+    let mut feedback = OutputPresentationFeedback::new(output);
+
+    for window in space.elements() {
+        if space.outputs_for_element(window).contains(output) {
+            window.take_presentation_feedback(
+                &mut feedback,
+                surface_primary_scanout_output,
+                |surface, _| {
+                    surface_presentation_feedback_flags_from_states(
+                        surface,
+                        None,
+                        render_element_states,
+                    )
+                },
+            );
+        }
+    }
+
+    for layer_surface in layer_map_for_output(output).layers() {
+        layer_surface.take_presentation_feedback(
+            &mut feedback,
+            surface_primary_scanout_output,
+            |surface, _| {
+                surface_presentation_feedback_flags_from_states(
+                    surface,
+                    None,
+                    render_element_states,
+                )
+            },
+        );
+    }
+
+    feedback
+}
+
+fn present_feedback(
+    output: &Output,
+    mut feedback: OutputPresentationFeedback,
+    metadata: Option<&DrmEventMetadata>,
+    clock: &Clock<Monotonic>,
+) {
+    use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
+    use smithay::wayland::presentation::Refresh;
+
+    let hw_time = metadata.and_then(|metadata| match metadata.time {
+        smithay::backend::drm::DrmEventTime::Monotonic(tp) => (!tp.is_zero()).then_some(tp),
+        smithay::backend::drm::DrmEventTime::Realtime(_) => None,
+    });
+    let sequence = metadata.map_or(0, |metadata| metadata.sequence);
+
+    let (time, flags): (Duration, Kind) = hw_time.map_or_else(
+        || (clock.now().into(), Kind::Vsync),
+        |tp| (tp, Kind::Vsync | Kind::HwClock | Kind::HwCompletion),
+    );
+
+    let refresh = output.current_mode().map_or(Refresh::Unknown, |mode| {
+        Refresh::fixed(Duration::from_secs_f64(1_000.0 / f64::from(mode.refresh)))
+    });
+
+    feedback.presented::<_, Monotonic>(time, refresh, u64::from(sequence), flags);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -685,7 +763,7 @@ impl GlideState {
         Ok(())
     }
 
-    fn frame_finish(&mut self, crtc: crtc::Handle, _metadata: &mut Option<DrmEventMetadata>) {
+    fn frame_finish(&mut self, crtc: crtc::Handle, metadata: &mut Option<DrmEventMetadata>) {
         {
             let Some(device) = self.backend_data.device.as_mut() else {
                 return;
@@ -693,8 +771,17 @@ impl GlideState {
             let Some(surface) = device.surfaces.get_mut(&crtc) else {
                 return;
             };
-            if let Err(err) = surface.drm_output.frame_submitted() {
-                tracing::error!("failed to mark frame submitted: {:?}", err);
+            let output = surface.output.clone();
+
+            match surface.drm_output.frame_submitted() {
+                Ok(user_data) => {
+                    if let Some(feedback) = user_data.flatten() {
+                        present_feedback(&output, feedback, metadata.as_ref(), &self.clock);
+                    }
+                }
+                Err(err) => {
+                    tracing::error!("failed to mark frame submitted: {:?}", err);
+                }
             }
         }
 
@@ -805,13 +892,16 @@ impl GlideState {
 
         let outcome = match render_result {
             Ok(res) if res.is_empty => FrameOutcome::NoDamage(res.states),
-            Ok(res) => match surface.drm_output.queue_frame(()) {
-                Ok(()) => FrameOutcome::Queued(res.states),
-                Err(err) => {
-                    tracing::error!("failed to queue frame: {:?}", err);
-                    FrameOutcome::Failed
+            Ok(res) => {
+                let feedback = take_presentation_feedback(&output, &self.space, &res.states);
+                match surface.drm_output.queue_frame(Some(feedback)) {
+                    Ok(()) => FrameOutcome::Queued(res.states),
+                    Err(err) => {
+                        tracing::error!("failed to queue frame: {:?}", err);
+                        FrameOutcome::Failed
+                    }
                 }
-            },
+            }
             Err(err) => {
                 tracing::error!("failed to render frame: {:?}", err);
                 FrameOutcome::Failed
