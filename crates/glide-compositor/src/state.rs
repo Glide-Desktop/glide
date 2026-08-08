@@ -597,6 +597,12 @@ impl GlideState {
         })
     }
 
+    pub fn refresh_painter_font(&self) {
+        #[allow(clippy::cast_possible_truncation)]
+        let font_px = (f64::from(self.decoration_theme.height).max(14.0) * 0.45) as f32;
+        crate::paint::init_or_replace(font_px.clamp(10.0, 18.0));
+    }
+
     pub fn refresh_overview(&mut self) {
         if self.overview.is_none() {
             return;

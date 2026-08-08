@@ -196,22 +196,7 @@ impl Config {
 
     #[must_use]
     pub fn default_path() -> Option<PathBuf> {
-        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            if !xdg.is_empty() {
-                return Some(PathBuf::from(xdg).join("glide").join("glide.toml"));
-            }
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            if !home.is_empty() {
-                return Some(
-                    PathBuf::from(home)
-                        .join(".config")
-                        .join("glide")
-                        .join("glide.toml"),
-                );
-            }
-        }
-        None
+        glide_config::xdg_path("glide", "glide.toml")
     }
 
     #[must_use]
@@ -307,10 +292,7 @@ impl Config {
         state.decoration_theme = self.decorations.clone();
         state.overview_theme = self.overview.clone();
         state.background_color = self.general.background;
-
-        #[allow(clippy::cast_possible_truncation)]
-        let font_px = (f64::from(self.decorations.height).max(14.0) * 0.45) as f32;
-        crate::paint::init_or_replace(font_px.clamp(10.0, 18.0));
+        state.refresh_painter_font();
 
         if let Ok(height) = i32::try_from(self.decorations.height) {
             let insets = glide_layout::Insets {

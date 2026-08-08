@@ -412,6 +412,7 @@ dependencies = [
  "anyhow",
  "bitflags",
  "fontdue",
+ "glide-config",
  "glide-ipc",
  "glide-layout",
  "glide-theme",
@@ -429,6 +430,10 @@ dependencies = [
  "tracy-client",
  "xcursor",
 ]
+
+[[package]]
+name = "glide-config"
+version = "0.1.0"
 
 [[package]]
 name = "glide-geom"
