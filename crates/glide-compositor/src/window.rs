@@ -298,6 +298,29 @@ where
 
         elements.extend(deco_elements);
 
+        // Border strips: drawn just outside the frame, in the same margin
+        // the invisible resize band already reserves — see
+        // `decoration::border_strips`'s docs. Native Smithay solid-colour
+        // elements, so no renderer upload/error path like the buffers
+        // above.
+        let border_elements: Vec<C> = decoration::border_strips(self)
+            .into_iter()
+            .map(|strip| {
+                let physical_offset = strip.offset.to_physical_precise_round(scale);
+                let pos = header_location + physical_offset;
+                SolidColorRenderElement::from_buffer(
+                    &strip.buf,
+                    pos,
+                    scale,
+                    alpha,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                )
+            })
+            .map(GlideWindowRenderElement::Background)
+            .map(C::from)
+            .collect();
+        elements.extend(border_elements);
+
         let content_elements: Vec<GlideWindowRenderElement<R>> =
             AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
         elements.extend(content_elements.into_iter().map(C::from));

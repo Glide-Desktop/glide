@@ -25,12 +25,21 @@
 //!
 //! Every window is decorated for now; respecting a client's own
 //! `xdg-decoration` preference is M4.5.
+//!
+//! # Border
+//!
+//! Every window also gets a thin outline drawn just outside its frame —
+//! see [`border_strips`] — the only focus indicator that isn't just the
+//! titlebar's own colour, which matters once an undecorated window (no
+//! titlebar at all) exists.
 
 use std::cell::{Ref, RefCell, RefMut};
 
 use smithay::{
     backend::{
-        allocator::Fourcc, input::ButtonState, renderer::element::memory::MemoryRenderBuffer,
+        allocator::Fourcc,
+        input::ButtonState,
+        renderer::element::{memory::MemoryRenderBuffer, solid::SolidColorBuffer},
     },
     input::{
         Seat,
@@ -42,7 +51,7 @@ use smithay::{
             RelativeMotionEvent,
         },
     },
-    utils::{IsAlive, Logical, Point, Rectangle, Transform},
+    utils::{IsAlive, Logical, Point, Rectangle, Size, Transform},
 };
 
 use crate::{
@@ -114,6 +123,7 @@ impl MenuItem {
 #[derive(Debug, Default)]
 pub struct DecorationState {
     pub header: HeaderBar,
+    pub border: BorderState,
 }
 
 /// A painted element: a pixel buffer plus its position relative to the
@@ -123,6 +133,27 @@ pub struct DecorationState {
 pub struct DecorationBuffer {
     pub buf: MemoryRenderBuffer,
     /// Logical offset from the titlebar top-left.
+    pub offset: Point<i32, Logical>,
+}
+
+/// The four border strips (top, bottom, left, right) framing a window's
+/// whole frame — see the module docs. Persisted per-window (like
+/// [`HeaderBar`]'s buffers) so their [`SolidColorBuffer`] `Id`s stay
+/// stable across frames for damage tracking, rather than being
+/// reallocated — and treated as new by the damage tracker — every redraw.
+#[derive(Debug, Default)]
+pub struct BorderState {
+    top: SolidColorBuffer,
+    bottom: SolidColorBuffer,
+    left: SolidColorBuffer,
+    right: SolidColorBuffer,
+}
+
+/// One border strip: a solid-colour buffer plus its position relative to
+/// the decoration's own origin (titlebar top-left) — the same convention
+/// [`DecorationBuffer::offset`] uses. Returned by [`border_strips`].
+pub struct BorderStrip {
+    pub buf: SolidColorBuffer,
     pub offset: Point<i32, Logical>,
 }
 
@@ -1116,6 +1147,107 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
     out
 }
 
+/// Offset and size of each of the four border strips (top, bottom, left,
+/// right), in decoration-origin coordinates.
+///
+/// Pure geometry, no `SolidColorBuffer`/window plumbing — kept separate
+/// from [`border_strips`] specifically so it can be unit-tested without a
+/// real [`GlideWindow`]. Top and bottom span the full outer width,
+/// including corners; left and right fill in only the height between them,
+/// so the four strips tile into a frame without overlapping at the
+/// corners.
+fn border_rects(
+    width: i32,
+    frame_height: i32,
+    border_width: i32,
+) -> [(Point<i32, Logical>, Size<i32, Logical>); 4] {
+    [
+        (
+            Point::from((-border_width, -border_width)),
+            Size::from((width + border_width * 2, border_width)),
+        ),
+        (
+            Point::from((-border_width, frame_height)),
+            Size::from((width + border_width * 2, border_width)),
+        ),
+        (
+            Point::from((-border_width, 0)),
+            Size::from((border_width, frame_height)),
+        ),
+        (
+            Point::from((width, 0)),
+            Size::from((border_width, frame_height)),
+        ),
+    ]
+}
+
+/// Returns the four border strips framing one window's whole frame
+/// (titlebar + content), or nothing if it isn't decorated or the theme's
+/// `border-width` is `0`.
+///
+/// A separate function from [`frame_buffers`], not folded into it, because
+/// border strips are [`SolidColorBuffer`]s — a native Smithay solid-colour
+/// element — rather than [`MemoryRenderBuffer`]s; there is no pixel
+/// plotting here to route through a [`Painter`] for a flat rectangle, and
+/// unlike the titlebar/buttons/menu this doesn't need one.
+pub fn border_strips(window: &GlideWindow) -> Vec<BorderStrip> {
+    let Some(mut state) = window.try_decoration_state_mut() else {
+        return Vec::new();
+    };
+    if !state.header.is_decorated() {
+        return Vec::new();
+    }
+
+    let width = state.header.width;
+    let frame_height = state.header.height + state.header.content_height;
+    // Clamped to RESIZE_BORDER: see `DecorationTheme::border_width`'s docs
+    // on why a wider value would draw outside the margin damage tracking
+    // is told to cover.
+    let border_width = i32::try_from(state.header.theme.border_width)
+        .unwrap_or(RESIZE_BORDER)
+        .clamp(0, RESIZE_BORDER);
+    if border_width == 0 || width <= 0 || frame_height <= 0 {
+        return Vec::new();
+    }
+
+    let color = if state.header.focused {
+        state.header.theme.border_focused
+    } else {
+        state.header.theme.border
+    }
+    .0;
+
+    let [top, bottom, left, right] = border_rects(width, frame_height, border_width);
+    let border = &mut state.border;
+    let mut out = Vec::with_capacity(4);
+
+    border.top.update(top.1, color);
+    out.push(BorderStrip {
+        buf: border.top.clone(),
+        offset: top.0,
+    });
+
+    border.bottom.update(bottom.1, color);
+    out.push(BorderStrip {
+        buf: border.bottom.clone(),
+        offset: bottom.0,
+    });
+
+    border.left.update(left.1, color);
+    out.push(BorderStrip {
+        buf: border.left.clone(),
+        offset: left.0,
+    });
+
+    border.right.update(right.1, color);
+    out.push(BorderStrip {
+        buf: border.right.clone(),
+        offset: right.0,
+    });
+
+    out
+}
+
 // ── Missing import ──────────────────────────────────────────────────────────
 use smithay::utils::Serial;
 
@@ -1267,6 +1399,46 @@ mod tests {
             let h = header();
             assert_eq!(h.resize_edges_at(point(400.0, 16.0)), None, "titlebar");
             assert_eq!(h.resize_edges_at(point(400.0, 300.0)), None, "content");
+        }
+    }
+
+    mod border_rects {
+        use super::*;
+
+        #[test]
+        fn strips_tile_the_frame_without_overlapping_corners() {
+            let [top, bottom, left, right] = border_rects(800, 632, 2);
+
+            // Top spans the full outer width, including corners.
+            assert_eq!(top.0, Point::from((-2, -2)));
+            assert_eq!(top.1, Size::from((804, 2)));
+
+            // Bottom mirrors it at the far edge.
+            assert_eq!(bottom.0, Point::from((-2, 632)));
+            assert_eq!(bottom.1, Size::from((804, 2)));
+
+            // Left/right fill only the height between top and bottom —
+            // not the corners, which the top/bottom strips already cover.
+            assert_eq!(left.0, Point::from((-2, 0)));
+            assert_eq!(left.1, Size::from((2, 632)));
+            assert_eq!(right.0, Point::from((800, 0)));
+            assert_eq!(right.1, Size::from((2, 632)));
+        }
+
+        #[test]
+        fn at_max_clamped_width_stays_within_the_resize_band_margin() {
+            // border_strips clamps border_width to RESIZE_BORDER precisely
+            // so this holds — see its docs on why that margin matters.
+            let [top, _bottom, left, right] = border_rects(800, 632, RESIZE_BORDER);
+            assert_eq!(top.0.y, -RESIZE_BORDER);
+            assert_eq!(left.0.x, -RESIZE_BORDER);
+            assert_eq!(right.0.x + RESIZE_BORDER, 800 + RESIZE_BORDER);
+        }
+
+        #[test]
+        fn zero_width_produces_zero_sized_strips_not_negative_ones() {
+            let [top, ..] = border_rects(800, 632, 0);
+            assert_eq!(top.1, Size::from((800, 0)));
         }
     }
 

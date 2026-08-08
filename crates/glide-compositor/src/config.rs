@@ -76,6 +76,20 @@ pub struct DecorationTheme {
     /// Glyph colour for the close (×) icon — separately settable since it
     /// is meant to stand out a little more than the other two.
     pub close_icon: Color,
+    /// Width, in logical pixels, of the outline drawn just outside the
+    /// window's frame — the only focus indicator a window has beyond the
+    /// titlebar's own colour, especially relevant for a future
+    /// client-preferred undecorated window (see the module docs on
+    /// `xdg-decoration`). `0` disables it.
+    ///
+    /// Capped in practice at [`crate::decoration::RESIZE_BORDER`]: the
+    /// border is drawn in the same invisible margin the resize band
+    /// already reserves outside the frame, so it never needs its own
+    /// hit-testing or bounding-box changes — a wider value would simply
+    /// draw outside the region damage tracking is told to cover.
+    pub border_width: u32,
+    pub border: Color,
+    pub border_focused: Color,
 }
 
 /// Where the titlebar's title text sits within the space left of the
@@ -118,6 +132,12 @@ impl Default for DecorationTheme {
             // (destructive) one out.
             icon: Color::from_hex("#dcdcdcff").unwrap(),
             close_icon: Color::from_hex("#ffffffff").unwrap(),
+            // A thin, mostly-unnoticed outline unfocused; the same accent
+            // as the focused titlebar when focused, so the whole frame —
+            // not just the bar — reads as "this one".
+            border_width: 1,
+            border: Color::from_hex("#3a3a4aff").unwrap(),
+            border_focused: Color::from_hex("#4c6ef5ff").unwrap(),
         }
     }
 }
@@ -803,6 +823,9 @@ menu-background = \"#999999\"
 menu-item-hover = \"#aaaaaa\"
 icon = \"#bbbbbb\"
 close-icon = \"#cccccc\"
+border-width = 2
+border = \"#dddddd\"
+border-focused = \"#eeeeee\"
 ";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.decorations.height, 40);
@@ -816,6 +839,15 @@ close-icon = \"#cccccc\"
             config.decorations.close_icon,
             Color::from_hex("#cccccc").unwrap()
         );
+        assert_eq!(config.decorations.border_width, 2);
+        assert_eq!(
+            config.decorations.border,
+            Color::from_hex("#dddddd").unwrap()
+        );
+        assert_eq!(
+            config.decorations.border_focused,
+            Color::from_hex("#eeeeee").unwrap()
+        );
     }
 
     #[test]
@@ -827,6 +859,11 @@ close-icon = \"#cccccc\"
     #[test]
     fn decoration_theme_defaults_title_align_left() {
         assert_eq!(DecorationTheme::default().title_align, TitleAlign::Left);
+    }
+
+    #[test]
+    fn decoration_theme_defaults_border_width_to_one() {
+        assert_eq!(DecorationTheme::default().border_width, 1);
     }
 
     #[test]
