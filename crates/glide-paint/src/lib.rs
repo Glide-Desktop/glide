@@ -27,21 +27,21 @@ pub enum TextAlign {
 
 static NOTO_SANS_BYTES: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
 
-static PAINTER: RwLock<Option<Painter>> = RwLock::new(None);
+static PAINTER: RwLock<Option<Arc<Painter>>> = RwLock::new(None);
 
 pub fn init_or_replace(font_size: f32) {
     let mut slot = PAINTER
         .write()
         .expect("single-threaded event loop, this lock is never poisoned");
-    *slot = Some(Painter::new(font_size));
+    *slot = Some(Arc::new(Painter::new(font_size)));
 }
 
 #[must_use]
-pub fn current() -> Painter {
+pub fn current() -> Arc<Painter> {
     let slot = PAINTER
         .read()
         .expect("single-threaded event loop, this lock is never poisoned");
-    slot.clone().unwrap_or_else(|| Painter::new(14.0))
+    slot.clone().unwrap_or_else(|| Arc::new(Painter::new(14.0)))
 }
 
 type GlyphCache = Arc<Mutex<HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>>>;
@@ -941,6 +941,13 @@ mod tests {
         init_or_replace(21.0);
         let painter = current();
         assert!((painter.font_size - 21.0).abs() < f32::EPSILON);
+
+        let painter_again = current();
+        assert!(
+            Arc::ptr_eq(&painter, &painter_again),
+            "repeated current() calls must share one Painter allocation, \
+             not deep-copy the embedded font on every call"
+        );
     }
 
     #[test]
