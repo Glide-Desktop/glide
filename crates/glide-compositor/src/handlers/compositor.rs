@@ -24,7 +24,7 @@ use super::xdg_shell;
 
 impl CompositorHandler for GlideState {
     fn compositor_state(&mut self) -> &mut CompositorState {
-        &mut self.compositor_state
+        &mut self.protocols.compositor_state
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
@@ -70,6 +70,6 @@ impl BufferHandler for GlideState {
 
 impl ShmHandler for GlideState {
     fn shm_state(&self) -> &ShmState {
-        &self.shm_state
+        &self.protocols.shm_state
     }
 }

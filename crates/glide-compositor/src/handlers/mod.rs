@@ -27,7 +27,7 @@ impl SeatHandler for GlideState {
     type TouchFocus = WlSurface;
 
     fn seat_state(&mut self) -> &mut SeatState<GlideState> {
-        &mut self.seat_state
+        &mut self.protocols.seat_state
     }
 
     fn cursor_image(
@@ -55,7 +55,7 @@ impl SelectionHandler for GlideState {
 
 impl DataDeviceHandler for GlideState {
     fn data_device_state(&mut self) -> &mut DataDeviceState {
-        &mut self.data_device_state
+        &mut self.protocols.data_device_state
     }
 }
 

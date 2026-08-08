@@ -6,7 +6,7 @@ use crate::GlideState;
 
 impl ForeignToplevelListHandler for GlideState {
     fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
-        &mut self.foreign_toplevel_list_state
+        &mut self.protocols.foreign_toplevel_list_state
     }
 }
 

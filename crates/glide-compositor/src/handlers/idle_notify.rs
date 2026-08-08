@@ -6,20 +6,20 @@ use crate::GlideState;
 
 impl IdleNotifierHandler for GlideState {
     fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
-        &mut self.idle_notifier_state
+        &mut self.protocols.idle_notifier_state
     }
 }
 
 impl IdleInhibitHandler for GlideState {
     fn inhibit(&mut self, surface: WlSurface) {
         self.idle_inhibited_surfaces.insert(surface);
-        self.idle_notifier_state.set_is_inhibited(true);
+        self.protocols.idle_notifier_state.set_is_inhibited(true);
     }
 
     fn uninhibit(&mut self, surface: WlSurface) {
         self.idle_inhibited_surfaces.remove(&surface);
         if self.idle_inhibited_surfaces.is_empty() {
-            self.idle_notifier_state.set_is_inhibited(false);
+            self.protocols.idle_notifier_state.set_is_inhibited(false);
         }
     }
 }

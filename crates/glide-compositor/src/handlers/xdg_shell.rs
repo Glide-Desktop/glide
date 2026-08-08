@@ -41,7 +41,7 @@ use crate::{
 
 impl XdgShellHandler for GlideState {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.xdg_shell_state
+        &mut self.protocols.xdg_shell_state
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
@@ -333,7 +333,7 @@ impl XdgDecorationHandler for GlideState {
 
 impl KdeDecorationHandler for GlideState {
     fn kde_decoration_state(&self) -> &KdeDecorationState {
-        &self.kde_decoration_state
+        &self.protocols.kde_decoration_state
     }
 
     fn request_mode(

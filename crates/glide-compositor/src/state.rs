@@ -43,17 +43,11 @@ use smithay::{
 
 use crate::{backend::tty::TtyData, window::GlideWindow};
 
-pub struct GlideState {
-    pub backend_data: TtyData,
-
-    pub start_time: std::time::Instant,
-    pub socket_name: OsString,
-    pub display_handle: DisplayHandle,
-
-    pub space: Space<GlideWindow>,
-    pub loop_signal: LoopSignal,
-    pub loop_handle: LoopHandle<'static, Self>,
-
+/// Every Wayland protocol global's server-side state, grouped so a new
+/// protocol handler adds a field here instead of growing `GlideState`
+/// itself indefinitely.
+#[allow(clippy::struct_field_names)]
+pub struct Protocols {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub xdg_dialog_state: XdgDialogState,
@@ -67,6 +61,26 @@ pub struct GlideState {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<GlideState>,
     pub data_device_state: DataDeviceState,
+    pub foreign_toplevel_list_state:
+        smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    pub idle_notifier_state: smithay::wayland::idle_notify::IdleNotifierState<GlideState>,
+    pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
+    pub wlr_output_manager_state: crate::handlers::wlr_output_management::WlrOutputManagerState,
+    pub ext_workspace_state: crate::handlers::ext_workspace::ExtWorkspaceManagerState,
+}
+
+pub struct GlideState {
+    pub backend_data: TtyData,
+
+    pub start_time: std::time::Instant,
+    pub socket_name: OsString,
+    pub display_handle: DisplayHandle,
+
+    pub space: Space<GlideWindow>,
+    pub loop_signal: LoopSignal,
+    pub loop_handle: LoopHandle<'static, Self>,
+
+    pub protocols: Protocols,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -88,17 +102,11 @@ pub struct GlideState {
 
     pub suppressed_keys: Vec<Keycode>,
 
-    pub foreign_toplevel_list_state:
-        smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub foreign_toplevel_handles: HashMap<
         glide_layout::WindowId,
         smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
     >,
-    pub idle_notifier_state: smithay::wayland::idle_notify::IdleNotifierState<GlideState>,
-    pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     pub idle_inhibited_surfaces: HashSet<WlSurface>,
-    pub wlr_output_manager_state: crate::handlers::wlr_output_management::WlrOutputManagerState,
-    pub ext_workspace_state: crate::handlers::ext_workspace::ExtWorkspaceManagerState,
 }
 
 impl GlideState {
@@ -158,17 +166,7 @@ impl GlideState {
         let ext_workspace_state =
             crate::handlers::ext_workspace::ExtWorkspaceManagerState::new::<Self>(&dh);
 
-        Self {
-            backend_data,
-
-            start_time,
-            display_handle: dh,
-
-            space,
-            loop_signal,
-            loop_handle,
-            socket_name,
-
+        let protocols = Protocols {
             compositor_state,
             xdg_shell_state,
             xdg_dialog_state,
@@ -182,6 +180,25 @@ impl GlideState {
             output_manager_state,
             seat_state,
             data_device_state,
+            foreign_toplevel_list_state,
+            idle_notifier_state,
+            idle_inhibit_state,
+            wlr_output_manager_state,
+            ext_workspace_state,
+        };
+
+        Self {
+            backend_data,
+
+            start_time,
+            display_handle: dh,
+
+            space,
+            loop_signal,
+            loop_handle,
+            socket_name,
+
+            protocols,
             popups,
             seat,
             layout: glide_layout::Layout::new(),
@@ -197,13 +214,8 @@ impl GlideState {
             overview: None,
             suppressed_keys: Vec::new(),
 
-            foreign_toplevel_list_state,
             foreign_toplevel_handles,
-            idle_notifier_state,
-            idle_inhibit_state,
             idle_inhibited_surfaces: HashSet::new(),
-            wlr_output_manager_state,
-            ext_workspace_state,
         }
     }
 
@@ -319,18 +331,21 @@ impl GlideState {
             self.layout.remove_window(id);
             if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
                 handle.send_closed();
-                self.foreign_toplevel_list_state.remove_toplevel(&handle);
+                self.protocols
+                    .foreign_toplevel_list_state
+                    .remove_toplevel(&handle);
             }
         }
 
         self.idle_inhibited_surfaces
             .retain(smithay::utils::IsAlive::alive);
         if self.idle_inhibited_surfaces.is_empty() {
-            self.idle_notifier_state.set_is_inhibited(false);
+            self.protocols.idle_notifier_state.set_is_inhibited(false);
         }
 
         self.suppressed_keys.clear();
-        self.ext_workspace_state
+        self.protocols
+            .ext_workspace_state
             .sync_workspaces(&self.display_handle, &self.layout);
     }
 
@@ -430,12 +445,14 @@ impl GlideState {
             },
         );
         let handle = self
+            .protocols
             .foreign_toplevel_list_state
             .new_toplevel::<Self>(title, app_id);
         self.foreign_toplevel_handles.insert(id, handle);
 
         self.reconcile_space();
-        self.ext_workspace_state
+        self.protocols
+            .ext_workspace_state
             .sync_workspaces(&self.display_handle, &self.layout);
     }
 
@@ -453,14 +470,17 @@ impl GlideState {
                 self.layout.remove_window(id);
                 if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
                     handle.send_closed();
-                    self.foreign_toplevel_list_state.remove_toplevel(&handle);
+                    self.protocols
+                        .foreign_toplevel_list_state
+                        .remove_toplevel(&handle);
                 }
             }
         }
 
         self.cleanup_dead_windows();
         self.reconcile_space();
-        self.ext_workspace_state
+        self.protocols
+            .ext_workspace_state
             .sync_workspaces(&self.display_handle, &self.layout);
     }
 
@@ -662,7 +682,8 @@ impl GlideState {
 
         tracing::info!(outputs = infos.len(), "layout outputs synchronized");
         self.layout.outputs_changed(&infos);
-        self.wlr_output_manager_state
+        self.protocols
+            .wlr_output_manager_state
             .sync_outputs(&self.display_handle, &self.space);
     }
 

@@ -24,7 +24,7 @@ pub trait WlrOutputManagerHandler {
 
 impl WlrOutputManagerHandler for GlideState {
     fn wlr_output_manager_state(&mut self) -> &mut WlrOutputManagerState {
-        &mut self.wlr_output_manager_state
+        &mut self.protocols.wlr_output_manager_state
     }
 
     fn apply_output_config(&mut self, config: PendingOutputConfig) -> bool {
@@ -203,10 +203,11 @@ impl GlobalDispatch<ZwlrOutputManagerV1, GlobalData> for GlideState {
     ) {
         let instance = data_init.init(resource, GlobalData);
         state
+            .protocols
             .wlr_output_manager_state
             .instances
             .push(instance.clone());
-        let serial = state.wlr_output_manager_state.next_serial();
+        let serial = state.protocols.wlr_output_manager_state.next_serial();
         WlrOutputManagerState::send_manager_state(&instance, dh, &state.space, serial);
     }
 }

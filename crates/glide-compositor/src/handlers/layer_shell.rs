@@ -12,7 +12,7 @@ use crate::GlideState;
 
 impl WlrLayerShellHandler for GlideState {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
-        &mut self.layer_shell_state
+        &mut self.protocols.layer_shell_state
     }
 
     fn new_layer_surface(

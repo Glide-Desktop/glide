@@ -19,7 +19,7 @@ pub trait ExtWorkspaceHandler {
 
 impl ExtWorkspaceHandler for GlideState {
     fn ext_workspace_state(&mut self) -> &mut ExtWorkspaceManagerState {
-        &mut self.ext_workspace_state
+        &mut self.protocols.ext_workspace_state
     }
 }
 
@@ -124,8 +124,11 @@ impl GlobalDispatch<ExtWorkspaceManagerV1, GlobalData> for GlideState {
         data_init: &mut DataInit<'_, Self>,
     ) {
         let instance = data_init.init(resource, GlobalData);
-        state.ext_workspace_state.instances.push(instance);
-        state.ext_workspace_state.sync_workspaces(dh, &state.layout);
+        state.protocols.ext_workspace_state.instances.push(instance);
+        state
+            .protocols
+            .ext_workspace_state
+            .sync_workspaces(dh, &state.layout);
     }
 }
 
@@ -175,6 +178,7 @@ impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceHandleV1, Workspac
                 .switch_to_workspace(glide_layout::WorkspaceTarget::Id(*data));
             state.reconcile_space();
             state
+                .protocols
                 .ext_workspace_state
                 .sync_workspaces(&state.display_handle, &state.layout);
         }

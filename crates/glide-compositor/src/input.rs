@@ -122,7 +122,9 @@ fn clamp_to_outputs(
 
 impl GlideState {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
-        self.idle_notifier_state.notify_activity(&self.seat);
+        self.protocols
+            .idle_notifier_state
+            .notify_activity(&self.seat);
         match event {
             InputEvent::Keyboard { event, .. } => self.handle_keyboard_event::<I>(&event),
             InputEvent::PointerMotion { event, .. } => self.handle_pointer_motion::<I>(&event),
@@ -226,7 +228,8 @@ impl GlideState {
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Index(idx));
                 self.reconcile_space();
-                self.ext_workspace_state
+                self.protocols
+                    .ext_workspace_state
                     .sync_workspaces(&self.display_handle, &self.layout);
             }
             KeyAction::MoveWindowToWorkspace(idx) => {
@@ -238,7 +241,8 @@ impl GlideState {
                         glide_layout::WorkspaceTarget::Index(idx),
                     );
                     self.reconcile_space();
-                    self.ext_workspace_state
+                    self.protocols
+                        .ext_workspace_state
                         .sync_workspaces(&self.display_handle, &self.layout);
                 }
             }
@@ -248,7 +252,8 @@ impl GlideState {
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Next);
                 self.reconcile_space();
-                self.ext_workspace_state
+                self.protocols
+                    .ext_workspace_state
                     .sync_workspaces(&self.display_handle, &self.layout);
             }
             KeyAction::PrevWorkspace => {
@@ -257,7 +262,8 @@ impl GlideState {
                 self.layout
                     .switch_to_workspace(glide_layout::WorkspaceTarget::Previous);
                 self.reconcile_space();
-                self.ext_workspace_state
+                self.protocols
+                    .ext_workspace_state
                     .sync_workspaces(&self.display_handle, &self.layout);
             }
             KeyAction::Maximize => {
