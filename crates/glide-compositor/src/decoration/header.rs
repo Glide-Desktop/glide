@@ -30,8 +30,7 @@ pub struct HeaderBar {
     pub(crate) menu_x: i32,
     pub(crate) menu_width: i32,
     pub(crate) pressed: Option<HitZone>,
-    pub(crate) button_hover: Option<HitZone>,
-    pub(crate) button_hover_started: Option<std::time::Instant>,
+    pub(crate) button_hover: glide_ui::HoverAnimation<HitZone>,
 
     pub(crate) theme: DecorationTheme,
     pub(crate) focused: bool,
@@ -124,25 +123,13 @@ impl HeaderBar {
     }
 
     pub(crate) fn button_hover_progress(&mut self, hovered: Option<HitZone>) -> f64 {
-        if self.button_hover != hovered {
-            self.button_hover = hovered;
-            self.button_hover_started = hovered.map(|_| std::time::Instant::now());
-        }
-        let Some(started) = self.button_hover_started else {
-            return 1.0;
-        };
-        if BUTTON_HOVER_ANIM.is_zero() {
-            return 1.0;
-        }
-        (started.elapsed().as_secs_f64() / BUTTON_HOVER_ANIM.as_secs_f64()).clamp(0.0, 1.0)
+        self.button_hover.set(hovered);
+        self.button_hover.progress(BUTTON_HOVER_ANIM)
     }
 
     #[must_use]
     pub fn is_hover_animating(&self) -> bool {
-        self.button_hover.is_some()
-            && self
-                .button_hover_started
-                .is_some_and(|started| started.elapsed() < BUTTON_HOVER_ANIM)
+        self.button_hover.is_animating(BUTTON_HOVER_ANIM)
     }
 
     pub fn set_title(&mut self, title: String) {
@@ -152,18 +139,25 @@ impl HeaderBar {
         }
     }
 
+    fn titlebar_row(&self) -> [(HitZone, glide_geom::Rectangle); 4] {
+        let bounds = glide_geom::Rectangle::from_loc_and_size(0, 0, self.width, self.height);
+        let tracks = [
+            glide_ui::Track::Fixed(BUTTON_WIDTH),
+            glide_ui::Track::Flex(1),
+            glide_ui::Track::Fixed(BUTTON_WIDTH),
+            glide_ui::Track::Fixed(BUTTON_WIDTH),
+        ];
+        let rects = glide_ui::layout_row(bounds, &tracks);
+        [
+            (HitZone::Maximize, rects[0]),
+            (HitZone::Drag, rects[1]),
+            (HitZone::Chevron, rects[2]),
+            (HitZone::Close, rects[3]),
+        ]
+    }
+
     pub(crate) fn zone_at(&self, x: f64) -> HitZone {
-        let w = f64::from(self.width);
-        let bw = f64::from(BUTTON_WIDTH);
-        if x < bw {
-            HitZone::Maximize
-        } else if x >= w - bw {
-            HitZone::Close
-        } else if x >= w - bw * 2.0 {
-            HitZone::Chevron
-        } else {
-            HitZone::Drag
-        }
+        glide_ui::hit_test(&self.titlebar_row(), x, 0.0).unwrap_or(HitZone::Drag)
     }
 
     fn interactive_height(&self) -> i32 {
@@ -229,22 +223,25 @@ impl HeaderBar {
         (!edges.is_empty()).then_some(edges)
     }
 
+    fn menu_rows(&self) -> Vec<(usize, glide_geom::Rectangle)> {
+        let row_count = MenuItem::ALL.len();
+        let bounds = glide_geom::Rectangle::from_loc_and_size(
+            self.menu_x,
+            self.height,
+            self.menu_width,
+            self.height * i32::try_from(row_count).unwrap_or(0),
+        );
+        let tracks = vec![glide_ui::Track::Fixed(self.height); row_count];
+        (0..row_count)
+            .zip(glide_ui::layout_column(bounds, &tracks))
+            .collect()
+    }
+
     pub(crate) fn menu_item_at(&self, loc: Point<f64, Logical>) -> Option<usize> {
-        let menu_left = f64::from(self.menu_x);
-        let menu_right = f64::from(self.menu_x + self.menu_width);
-        if !self.menu_open || loc.x < menu_left || loc.x >= menu_right {
+        if !self.menu_open {
             return None;
         }
-
-        let y_in_menu = loc.y - f64::from(self.height);
-        if y_in_menu < 0.0 {
-            return None;
-        }
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let index = (y_in_menu / f64::from(self.height)) as usize;
-
-        (index < MenuItem::ALL.len()).then_some(index)
+        glide_ui::hit_test(&self.menu_rows(), loc.x, loc.y)
     }
 
     pub fn pointer_enter(&mut self, loc: Point<f64, Logical>) {
