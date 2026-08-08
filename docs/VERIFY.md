@@ -180,3 +180,23 @@ process communication.
   guards against, but only a real session proves it end to end).
 - Kill a `glidectl subscribe` process (Ctrl+C) and confirm the compositor
   keeps running normally and later events don't error in the log.
+
+## B1 — clipboard (primary-selection, wlr-data-control, ext-data-control)
+
+Pure protocol wiring — delegation to Smithay's own state machines, no
+Glide-side logic to unit test. Needs `wl-clipboard` (see Required
+packages above).
+
+- Regular clipboard: `echo hello | wl-copy` in one alacritty, `wl-paste`
+  in another must print `hello`.
+- Primary selection: select some text in alacritty with the mouse (no
+  explicit copy), middle-click in a second alacritty — the selected text
+  must be pasted. This is the protocol `wl-copy`/`wl-paste` don't
+  exercise by default (they use the regular clipboard); it needs an
+  actual text selection.
+- `wl-paste --watch cat` in a terminal, then `wl-copy` something in
+  another — the watcher must print the new content immediately, proving
+  `data-control` (not just the regular per-client clipboard) works.
+- Copy in alacritty, close alacritty, paste in a different application —
+  content must survive the source client closing (this is what
+  `used_sources`/selection ownership handoff is for).

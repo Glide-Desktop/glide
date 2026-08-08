@@ -29,7 +29,12 @@ use smithay::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
         },
         output::OutputManagerState,
-        selection::data_device::DataDeviceState,
+        selection::{
+            data_device::DataDeviceState,
+            ext_data_control::DataControlState as ExtDataControlState,
+            primary_selection::PrimarySelectionState,
+            wlr_data_control::DataControlState as WlrDataControlState,
+        },
         shell::kde::decoration::KdeDecorationState,
         shell::wlr_layer::{Layer as WlrLayer, WlrLayerShellState},
         shell::xdg::{
@@ -58,6 +63,9 @@ pub struct Protocols {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<GlideState>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub wlr_data_control_state: WlrDataControlState,
+    pub ext_data_control_state: ExtDataControlState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub idle_notifier_state: smithay::wayland::idle_notify::IdleNotifierState<GlideState>,
@@ -138,6 +146,11 @@ impl GlideState {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
 
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let wlr_data_control_state =
+            WlrDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
+        let ext_data_control_state =
+            ExtDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
 
         let seat_name = backend_data.seat_name();
         let mut seat_state = SeatState::new();
@@ -178,6 +191,9 @@ impl GlideState {
             output_manager_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
+            wlr_data_control_state,
+            ext_data_control_state,
             foreign_toplevel_list_state,
             idle_notifier_state,
             idle_inhibit_state,

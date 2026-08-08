@@ -3,6 +3,7 @@ pub mod ext_workspace;
 pub mod foreign_toplevel_list;
 pub mod idle_notify;
 pub mod layer_shell;
+mod selection;
 pub mod wlr_output_management;
 mod xdg_shell;
 
@@ -18,6 +19,7 @@ use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
 };
+use smithay::wayland::selection::primary_selection::set_primary_focus;
 
 use crate::{GlideState, focus::PointerFocusTarget};
 
@@ -41,7 +43,8 @@ impl SeatHandler for GlideState {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(dh, seat, client);
+        set_data_device_focus(dh, seat, client.clone());
+        set_primary_focus(dh, seat, client);
     }
 }
 
