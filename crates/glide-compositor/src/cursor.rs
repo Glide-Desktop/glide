@@ -304,8 +304,13 @@ where
     ) -> Vec<E> {
         match &self.status {
             CursorImageStatus::Hidden => Vec::new(),
-            // Named shapes beyond the default aren't distinguished yet: all
-            // of them draw the theme's default cursor.
+            // `buffer` already holds the themed image for whichever named
+            // shape is current — `set_buffer` is called every frame in
+            // `backend/tty.rs` with a buffer resolved from the real
+            // `CursorImageStatus::Named` icon (via `resolve_cursor_buffer`
+            // -> `Cursor::image`), not a hardcoded default. This match arm
+            // itself has no icon to look at — the resolution already
+            // happened by the time a `PointerElement` gets here.
             CursorImageStatus::Named(_) => match self.buffer.as_ref() {
                 Some(buffer) => MemoryRenderBufferRenderElement::from_buffer(
                     renderer,

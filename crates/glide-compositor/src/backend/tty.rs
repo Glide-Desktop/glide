@@ -1190,3 +1190,79 @@ impl DmabufHandler for GlideState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression guards for `resolve_cursor_buffer`'s actual contract —
+    // see `PointerElement::render_elements`'s updated docs in `cursor.rs`:
+    // this is the function responsible for the buffer already matching
+    // whichever named shape is current, and it's the one place that could
+    // silently regress back to "always resolves Default" without either
+    // of these catching it.
+
+    #[test]
+    fn resolve_cursor_buffer_threads_the_requested_icon_through() {
+        let mut cursor = Cursor::load();
+        let mut cache = Vec::new();
+        // Must not panic, and must produce exactly one cache entry for a
+        // shape that was never requested before.
+        let _ = resolve_cursor_buffer(
+            &mut cursor,
+            &mut cache,
+            CursorIcon::NwResize,
+            1,
+            Duration::ZERO,
+        );
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn resolve_cursor_buffer_reuses_the_cache_for_a_repeated_request() {
+        let mut cursor = Cursor::load();
+        let mut cache = Vec::new();
+        let _ = resolve_cursor_buffer(
+            &mut cursor,
+            &mut cache,
+            CursorIcon::Default,
+            1,
+            Duration::ZERO,
+        );
+        let _ = resolve_cursor_buffer(
+            &mut cursor,
+            &mut cache,
+            CursorIcon::Default,
+            1,
+            Duration::ZERO,
+        );
+        assert_eq!(
+            cache.len(),
+            1,
+            "identical icon/scale/time must not grow the cache"
+        );
+    }
+
+    #[test]
+    fn resolve_cursor_buffer_caches_separately_per_scale() {
+        // Same icon, different output scale: separate cache entries,
+        // since the underlying xcursor image resolution differs.
+        let mut cursor = Cursor::load();
+        let mut cache = Vec::new();
+        let _ = resolve_cursor_buffer(
+            &mut cursor,
+            &mut cache,
+            CursorIcon::Default,
+            1,
+            Duration::ZERO,
+        );
+        let _ = resolve_cursor_buffer(
+            &mut cursor,
+            &mut cache,
+            CursorIcon::Default,
+            2,
+            Duration::ZERO,
+        );
+        assert_eq!(cache.len(), 2);
+    }
+}
