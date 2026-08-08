@@ -180,20 +180,15 @@ impl SpaceElement for GlideWindow {
     fn bbox(&self) -> Rectangle<i32, Logical> {
         let mut bbox = SpaceElement::bbox(&self.0);
         let height = self.header_height();
-        if height > 0 {
-            // Titlebar above the content, resize band around the whole
-            // frame, and the shadow beyond that if it reaches further —
-            // whichever margin is larger wins, since both need covering
-            // and `Space::element_under` pre-filters on this box, so
-            // anything outside it can never receive input no matter what
-            // `is_in_input_region` says, and anything outside it can never
-            // be *drawn* either.
-            let band = decoration::RESIZE_BORDER.max(self.shadow_margin());
-            bbox.loc.x -= band;
-            bbox.loc.y -= height + band;
-            bbox.size.w += band * 2;
-            bbox.size.h += height + band * 2;
-        }
+        let band = if height > 0 {
+            decoration::RESIZE_BORDER.max(self.shadow_margin())
+        } else {
+            decoration::RESIZE_BORDER
+        };
+        bbox.loc.x -= band;
+        bbox.loc.y -= height + band;
+        bbox.size.w += band * 2;
+        bbox.size.h += height + band * 2;
         bbox
     }
 

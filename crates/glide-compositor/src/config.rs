@@ -228,10 +228,6 @@ pub struct OverviewTheme {
     /// approximation [`DecorationTheme::shadow_size`] uses.
     pub shadow_size: u32,
     pub shadow_color: Color,
-    /// How far the hovered preview's outward glow extends beyond its own
-    /// highlight ring, in logical pixels. `0` disables it, leaving just
-    /// the crisp ring.
-    pub glow_size: u32,
     /// Open/close animation length. `0` disables the animation entirely,
     /// which is also the escape hatch if it ever feels wrong on slow
     /// hardware.
@@ -256,7 +252,6 @@ impl Default for OverviewTheme {
             shadow: true,
             shadow_size: 20,
             shadow_color: Color::from_hex("#00000066").unwrap(),
-            glow_size: 18,
             duration_ms: 220,
         }
     }
@@ -1063,11 +1058,10 @@ shadow-color = \"#000000aa\"
     }
 
     #[test]
-    fn overview_theme_defaults_shadow_and_glow_enabled() {
+    fn overview_theme_defaults_shadow_enabled() {
         let o = OverviewTheme::default();
         assert!(o.shadow);
         assert!(o.shadow_size > 0);
-        assert!(o.glow_size > 0);
         assert!(o.border > 0);
     }
 
@@ -1097,7 +1091,6 @@ border = 6
 shadow = false
 shadow-size = 12
 shadow-color = \"#00000080\"
-glow-size = 8
 duration-ms = 150
 ";
         let config: Config = toml::from_str(toml_str).unwrap();
@@ -1113,7 +1106,6 @@ duration-ms = 150
         assert!(!o.shadow);
         assert_eq!(o.shadow_size, 12);
         assert_eq!(o.shadow_color, Color::from_hex("#00000080").unwrap());
-        assert_eq!(o.glow_size, 8);
         assert_eq!(o.duration_ms, 150);
     }
 

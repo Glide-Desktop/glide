@@ -336,6 +336,11 @@ impl HeaderBar {
     }
 
     #[must_use]
+    pub const fn has_frame(&self) -> bool {
+        self.width > 0 && self.content_height > 0
+    }
+
+    #[must_use]
     pub const fn height(&self) -> i32 {
         self.height
     }
@@ -486,7 +491,7 @@ impl HeaderBar {
     /// while it's open — everywhere else in the content area still belongs
     /// to the client, exactly as when the menu is closed.
     pub fn contains(&self, rel: Point<f64, Logical>) -> bool {
-        if !self.is_decorated() {
+        if !self.has_frame() {
             return false;
         }
 
@@ -522,7 +527,7 @@ impl HeaderBar {
     /// no extra corner-widening. `RESIZE_BORDER` is generous enough that
     /// the overlap square is comfortably hittable.
     fn resize_edges_at(&self, rel: Point<f64, Logical>) -> Option<ResizeEdge> {
-        if !self.is_decorated() {
+        if !self.has_frame() {
             return None;
         }
 
@@ -1284,6 +1289,15 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         return Vec::new();
     };
     let header = &mut state.header;
+
+    let content = window.geometry().size;
+    if header.width != content.w {
+        header.width = content.w;
+    }
+    if header.content_height != content.h {
+        header.content_height = content.h;
+    }
+
     if !header.is_decorated() {
         return Vec::new();
     }
@@ -1302,22 +1316,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         }
     }
 
-    // Kept in sync with the live surface here too, not only in
-    // `sync_decoration`: a resize's final size lands via a surface commit
-    // (`resize_grab` → `Space`), which does not itself run
-    // `reconcile_space`, so relying on `sync_decoration` alone would leave
-    // the resize band, bottom border and shadow a frame behind the new
-    // edge until something unrelated (e.g. a later focus change) happened
-    // to reconcile. Both dimensions matter here, not just `width` as
-    // before: `content_height` is what the resize/shadow geometry below
-    // and `resize_edges_at`'s bottom-edge hit test are keyed on.
-    let content = window.geometry().size;
-    if header.width != content.w {
-        header.width = content.w;
-    }
-    if header.content_height != content.h {
-        header.content_height = content.h;
-    }
     header.redraw(painter);
 
     let mut out: Vec<DecorationBuffer> = Vec::new();
@@ -1864,15 +1862,33 @@ mod tests {
         }
 
         #[test]
-        fn undecorated_contains_nothing() {
+        fn undecorated_still_owns_its_resize_band() {
+            // A client drawing its own decorations (GTK and friends) gets
+            // no titlebar from us, but must still be resizable from the
+            // compositor side, so the band around its frame stays ours
+            // even though nothing is drawn there.
             let h = HeaderBar {
                 height: 0,
                 width: 800,
                 content_height: 600,
                 ..HeaderBar::default()
             };
-            assert!(!h.contains(point(400.0, 16.0)));
-            assert!(!h.contains(point(-4.0, 300.0)));
+            assert!(
+                !h.contains(point(400.0, 16.0)),
+                "content belongs to the client"
+            );
+            assert!(h.contains(point(-4.0, 300.0)), "left band");
+            assert!(h.contains(point(804.0, 300.0)), "right band");
+            assert!(h.contains(point(400.0, -4.0)), "top band");
+            assert!(h.contains(point(400.0, 604.0)), "bottom band");
+            assert!(!h.contains(point(-9.0, 300.0)), "beyond the band");
+        }
+
+        #[test]
+        fn a_window_with_no_known_frame_contains_nothing() {
+            let h = HeaderBar::default();
+            assert!(!h.contains(point(0.0, 0.0)));
+            assert!(!h.contains(point(-4.0, -4.0)));
         }
     }
 

@@ -161,14 +161,6 @@ pub struct OverviewUi {
     /// ring is correct either way, because it never overlaps the preview's
     /// own pixels.
     highlight: [SolidColorBuffer; 4],
-    /// Soft outward glow bands drawn around the hovered preview, just
-    /// outside `highlight`'s own ring — see [`push_shadow_rings`], used
-    /// from [`Self::render`]. Only one preview is ever hovered at a time,
-    /// so — unlike each preview's own [`Preview::shadow`] — this lives on
-    /// `OverviewUi` itself rather than per-preview, and is simply
-    /// re-coloured/repositioned as hover moves from one preview to another
-    /// instead of every preview owning an always-empty set of its own.
-    glow: Vec<SolidColorBuffer>,
 }
 
 impl OverviewUi {
@@ -230,7 +222,6 @@ impl OverviewUi {
             theme: theme.clone(),
             scrim: SolidColorBuffer::default(),
             highlight: std::array::from_fn(|_| SolidColorBuffer::default()),
-            glow: Vec::new(),
         }
     }
 
@@ -547,12 +538,6 @@ impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
 /// where a real window's shadow is one set per *decorated* window, so a
 /// whole grid of previews adds up faster for the same softness.
 const PREVIEW_SHADOW_BANDS: usize = 4;
-
-/// Band count for the hovered preview's outward glow — see
-/// [`push_shadow_rings`]. Only ever drawn for one preview at a time, so
-/// this can afford to be a little softer (more bands) than the per-preview
-/// shadow without meaningfully adding to the frame budget.
-const GLOW_BANDS: usize = 5;
 
 /// Pushes a set of concentric falloff-ring elements approximating a soft
 /// blur around `rect` — a drop shadow or, differently coloured and offset,
@@ -914,36 +899,6 @@ impl OverviewUi {
                     &mut elements,
                 );
             }
-        }
-
-        // Glow around the hovered preview specifically: starts just
-        // outside the highlight ring's own thickness — not the preview's
-        // bare edge — so it reads as light spilling from the ring rather
-        // than a second, redundant outline. Fades in/out together with
-        // the ring via the same `hover_t`.
-        if let (Some((_, rect, _)), true) = (
-            entries.iter().find(|(_, _, hovered)| *hovered),
-            hover_t > 0.0,
-        ) {
-            let outset = theme.border;
-            let expanded = Rectangle::new(
-                Point::from((rect.loc.x - outset, rect.loc.y - outset)),
-                Size::from((rect.size.w + outset * 2, rect.size.h + outset * 2)),
-            );
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let size = i32::try_from(theme.glow_size).unwrap_or(0);
-            #[allow(clippy::cast_possible_truncation)]
-            let alpha = hover_t as f32;
-            push_shadow_rings(
-                &mut self.glow,
-                expanded,
-                size,
-                GLOW_BANDS,
-                theme.highlight.0,
-                alpha,
-                scale,
-                &mut elements,
-            );
         }
 
         // ── Scrim (behind the overview, over the desktop) ──────────

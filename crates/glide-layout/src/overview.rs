@@ -68,33 +68,6 @@ pub struct OverviewSlot {
     pub row: usize,
 }
 
-/// Number of rows to arrange `n` windows into within `area`.
-///
-/// Derived from the area's aspect ratio so the arrangement roughly fills
-/// it: a wide screen gets fewer, longer rows; a tall one gets more.
-fn row_count(n: usize, area: Size) -> usize {
-    debug_assert!(n > 0);
-    if area.width <= 0 || area.height <= 0 {
-        return 1;
-    }
-
-    // Solve for rows such that (n / rows) / rows ≈ area_w / area_h, i.e.
-    // the grid's own aspect ratio matches the area's.
-    #[allow(clippy::cast_precision_loss)]
-    let ratio = f64::from(area.height) / f64::from(area.width);
-    #[allow(clippy::cast_precision_loss)]
-    let ideal = (n as f64 * ratio).sqrt();
-
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let rows = ideal.round().max(1.0) as usize;
-    rows.clamp(1, n)
-}
-
-/// Splits `n` windows across `rows`, front-loading the remainder.
-///
-/// Earlier rows get the extra window, so a 5-into-2 split is 3+2 rather
-/// than 2+3 — the wider row on top reads as more deliberate than a wider
-/// row at the bottom.
 fn distribute(n: usize, rows: usize) -> Vec<usize> {
     let base = n / rows;
     let remainder = n % rows;
@@ -103,51 +76,24 @@ fn distribute(n: usize, rows: usize) -> Vec<usize> {
         .collect()
 }
 
-/// Arranges `windows` (each an id and its *frame* size) into previews
-/// inside `area`.
-///
-/// Returns one [`OverviewSlot`] per input, in the same order. Windows with
-/// an empty frame size are skipped — there is nothing to scale.
-///
-/// The order of `windows` is the order they are placed, so the caller
-/// controls the arrangement's stability: feeding a consistently ordered
-/// list (as [`crate::Layout::overview_windows`] does) means adding a window
-/// never reshuffles the ones already on screen beyond what the new row
-/// distribution requires.
-#[must_use]
-pub fn compute_overview_layout(
+fn layout_in_rows(
     windows: &[(WindowId, Size)],
     area: Rectangle,
     opts: &OverviewOptions,
-) -> Vec<OverviewSlot> {
-    let windows: Vec<(WindowId, Size)> = windows
-        .iter()
-        .copied()
-        .filter(|(_, size)| !size.is_empty())
-        .collect();
-
-    if windows.is_empty() || area.size.is_empty() {
-        return Vec::new();
-    }
-
-    let rows = row_count(windows.len(), area.size);
+    rows: usize,
+) -> Option<(Vec<OverviewSlot>, i64)> {
     let counts = distribute(windows.len(), rows);
 
-    // Height budget per row, minus the gaps between rows and the strip
-    // each preview reserves for its label.
-    #[allow(clippy::cast_possible_truncation)]
     let rows_i32 = i32::try_from(rows).unwrap_or(i32::MAX);
     let total_gap = opts.gap * (rows_i32 - 1);
     let row_height = ((area.size.height - total_gap) / rows_i32) - opts.label_height;
     if row_height <= 0 {
-        // Not enough vertical room for even one row of previews. Better to
-        // draw nothing than to emit inverted or zero-sized rectangles.
-        return Vec::new();
+        return None;
     }
 
     let mut slots = Vec::with_capacity(windows.len());
+    let mut covered: i64 = 0;
     let mut index = 0usize;
-    // Height of the whole block, so it can be centred vertically.
     let block_height = rows_i32 * (row_height + opts.label_height) + total_gap;
     let mut y = area.loc.y + (area.size.height - block_height) / 2;
 
@@ -159,9 +105,6 @@ pub fn compute_overview_layout(
         let row_gaps = opts.gap * (count_i32 - 1);
         let width_budget = area.size.width - row_gaps;
 
-        // Each window is scaled to the row's height; if the resulting row
-        // is wider than the area, everything in it shrinks by one shared
-        // factor so the row still fits and relative sizes are preserved.
         let mut scales: Vec<f64> = row_windows
             .iter()
             .map(|(_, size)| {
@@ -187,14 +130,6 @@ pub fn compute_overview_layout(
             }
         }
 
-        // Actual pixel sizes, then centre the row horizontally.
-        //
-        // Truncated rather than rounded on purpose. After the shrink above,
-        // the exact widths sum to at most the budget; rounding each up
-        // could add a pixel per window and push the row past the area's
-        // right edge (three 626.67px previews rounding to 627 overflowed a
-        // 1920px screen by exactly 1px). Flooring can only ever leave the
-        // row a hair narrower, which centring absorbs invisibly.
         let sizes: Vec<Size> = row_windows
             .iter()
             .zip(&scales)
@@ -212,13 +147,15 @@ pub fn compute_overview_layout(
             .collect();
 
         let used: i32 = sizes.iter().map(|s| s.width).sum::<i32>() + row_gaps;
+        if used > area.size.width {
+            return None;
+        }
         let mut x = area.loc.x + (area.size.width - used) / 2;
 
         for ((&(id, _), &scale), &size) in row_windows.iter().zip(&scales).zip(&sizes) {
-            // Bottom-align within the row so previews of differing heights
-            // share a baseline, and their labels line up under them.
             let slot_y = y + (row_height - size.height);
 
+            covered += i64::from(size.width) * i64::from(size.height);
             slots.push(OverviewSlot {
                 id,
                 target: Rectangle::new(Point::new(x, slot_y), size),
@@ -232,7 +169,39 @@ pub fn compute_overview_layout(
         y += row_height + opts.label_height + opts.gap;
     }
 
-    slots
+    Some((slots, covered))
+}
+
+#[must_use]
+pub fn compute_overview_layout(
+    windows: &[(WindowId, Size)],
+    area: Rectangle,
+    opts: &OverviewOptions,
+) -> Vec<OverviewSlot> {
+    let windows: Vec<(WindowId, Size)> = windows
+        .iter()
+        .copied()
+        .filter(|(_, size)| !size.is_empty())
+        .collect();
+
+    if windows.is_empty() || area.size.is_empty() {
+        return Vec::new();
+    }
+
+    let mut best: Option<(Vec<OverviewSlot>, i64)> = None;
+    for rows in 1..=windows.len() {
+        let Some(candidate) = layout_in_rows(&windows, area, opts, rows) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_covered)| candidate.1 > *best_covered)
+        {
+            best = Some(candidate);
+        }
+    }
+
+    best.map(|(slots, _)| slots).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -464,21 +433,71 @@ mod tests {
         assert_eq!(distribute(1, 1), vec![1]);
     }
 
-    #[test]
-    fn row_count_follows_the_area_aspect() {
-        // A wide screen prefers fewer, longer rows than a tall one for the
-        // same window count.
-        let wide = Size::new(3840, 1080);
-        let tall = Size::new(1080, 3840);
-        assert!(row_count(8, wide) < row_count(8, tall));
+    fn rows_used(slots: &[OverviewSlot]) -> usize {
+        slots.iter().map(|s| s.row).max().map_or(0, |max| max + 1)
     }
 
     #[test]
-    fn row_count_is_clamped_to_the_window_count() {
-        // Never more rows than windows — an empty row would leave a gap.
+    fn row_count_follows_the_area_aspect() {
+        let windows: Vec<_> = (0..8).map(|_| win(800, 600)).collect();
+        let wide = compute_overview_layout(
+            &windows,
+            Rectangle::from_loc_and_size(0, 0, 3840, 1080),
+            &opts(),
+        );
+        let tall = compute_overview_layout(
+            &windows,
+            Rectangle::from_loc_and_size(0, 0, 1080, 3840),
+            &opts(),
+        );
+        assert!(rows_used(&wide) < rows_used(&tall));
+    }
+
+    #[test]
+    fn row_count_is_never_more_than_the_window_count() {
         for n in 1..=4usize {
-            let rows = row_count(n, Size::new(100, 4000));
-            assert!(rows >= 1 && rows <= n, "n={n} produced {rows} rows");
+            let windows: Vec<_> = (0..n).map(|_| win(800, 600)).collect();
+            let slots = compute_overview_layout(
+                &windows,
+                Rectangle::from_loc_and_size(0, 0, 100, 4000),
+                &opts(),
+            );
+            assert!(
+                rows_used(&slots) <= n,
+                "n={n} produced {} rows",
+                rows_used(&slots)
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_windows_use_more_than_one_row_when_that_makes_them_bigger() {
+        // Three 800x600 windows on a 1080p screen fit in one row only by
+        // shrinking hard to clear the width budget; two rows leaves each
+        // preview visibly larger, so that is what must be chosen.
+        let windows: Vec<_> = (0..3).map(|_| win(800, 600)).collect();
+        let slots = compute_overview_layout(&windows, area(), &opts());
+        assert!(rows_used(&slots) > 1, "expected more than one row");
+    }
+
+    #[test]
+    fn chosen_layout_covers_at_least_as_much_area_as_any_other_row_count() {
+        for n in 1..=9usize {
+            let windows: Vec<_> = (0..n).map(|_| win(800, 600)).collect();
+            let chosen = compute_overview_layout(&windows, area(), &opts());
+            let chosen_area: i64 = chosen
+                .iter()
+                .map(|s| i64::from(s.target.size.width) * i64::from(s.target.size.height))
+                .sum();
+
+            for rows in 1..=n {
+                if let Some((_, covered)) = layout_in_rows(&windows, area(), &opts(), rows) {
+                    assert!(
+                        chosen_area >= covered,
+                        "n={n}: {rows} rows covers {covered} > chosen {chosen_area}"
+                    );
+                }
+            }
         }
     }
 
