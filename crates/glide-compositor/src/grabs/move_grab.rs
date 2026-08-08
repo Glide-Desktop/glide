@@ -1,8 +1,3 @@
-//! Move grab is the state of a composer during which the client window is being dragged around.
-//!
-//! eg. Usually whenever a user clicks on the app's titlebar and starts dragging, the compositors
-//! enters a `MoveSurfaceGrab` state.
-
 use smithay::{
     input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
@@ -15,8 +10,6 @@ use smithay::{
 
 use crate::{GlideState, focus::PointerFocusTarget, window::GlideWindow};
 
-// The button code as defined in the Linux kernel's
-// linux/input-event-codes.h header file, e.g. BTN_LEFT.
 const BTN_LEFT: u32 = 0x110;
 
 pub struct MoveSurfaceGrab {
@@ -33,7 +26,6 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
-        // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
 
         let delta = event.location - self.start_data.location;
@@ -43,9 +35,6 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         data.space
             .map_element(self.window.clone(), new_location, true);
 
-        // Mirror the move into the layout engine. Without this the next
-        // reconcile would re-apply the stored position and teleport the
-        // window back to where the drag started.
         data.record_window_move(&self.window, new_location);
     }
 
@@ -68,7 +57,6 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         handle.button(data, event);
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
-            // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }

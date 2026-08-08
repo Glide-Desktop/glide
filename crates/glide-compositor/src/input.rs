@@ -15,47 +15,27 @@ use crate::{
     state::GlideState,
 };
 
-/// Middle mouse button, as defined in the Linux kernel's
-/// linux/input-event-codes.h (`BTN_MIDDLE`).
 const BTN_MIDDLE: u32 = 0x112;
 
-/// Outcome of a key press that was intercepted by the compositor instead of
-/// being forwarded to the focused client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyAction {
-    /// Quit the compositor (Super+Q).
     Quit,
-    /// Switch to a different virtual terminal (Ctrl+Alt+F1..F12).
     VtSwitch(i32),
-    /// Switch active workspace by 0-based index (Super+1..9).
     SwitchWorkspace(usize),
-    /// Move currently focused window to workspace by 0-based index (Super+Shift+1..9).
     MoveWindowToWorkspace(usize),
-    /// Switch to next workspace (Super+Tab).
     NextWorkspace,
-    /// Switch to previous workspace (Super+Shift+Tab).
     PrevWorkspace,
-    /// Toggle maximize for focused window.
     Maximize,
-    /// Toggle fullscreen for focused window.
     Fullscreen,
-    /// Toggle minimize for focused window.
     Minimize,
-    /// Toggle overview mode.
     ToggleOverview,
-    /// Dismiss the overview without changing focus (Escape).
     OverviewCancel,
-    /// Activate the highlighted preview (Enter/Space).
     OverviewSelect,
-    /// Move the overview's highlight (arrow keys / hjkl).
     OverviewNav(Direction),
-    /// Execute arbitrary shell command.
     Exec(String),
-    /// The key was intercepted (e.g. a suppressed release) but has no effect.
     None,
 }
 
-/// Resolved keybinding rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedKeybind {
     pub modifiers: ModifiersState,
@@ -63,15 +43,6 @@ pub struct ResolvedKeybind {
     pub action: KeyAction,
 }
 
-/// Checks whether a pressed key (with its current modifier state) matches a
-/// compositor-level keybinding.
-/// Both the raw and the modified keysym are considered, because they differ
-/// exactly when a modifier is part of the binding: `Shift+Tab` arrives as
-/// `ISO_Left_Tab`, and `Shift+1` as `exclam`, so a binding written the
-/// obvious way (`Tab`, `1`) would never match on the modified symbol alone.
-///
-/// Takes slices rather than an owned `Vec` on purpose: this runs on every
-/// single key event, and there is nothing here worth allocating for.
 fn process_keyboard_shortcut(
     keybinds: &[ResolvedKeybind],
     modifiers: &ModifiersState,
@@ -81,8 +52,6 @@ fn process_keyboard_shortcut(
     let matches_key =
         |entry: &ResolvedKeybind| entry.keysym == modified_sym || raw_syms.contains(&entry.keysym);
 
-    // Modifiers must match exactly, so Super+Shift+1 does not also fire a
-    // plain Super+1 binding.
     let binding = keybinds.iter().find(|entry| {
         entry.modifiers.logo == modifiers.logo
             && entry.modifiers.shift == modifiers.shift
@@ -98,9 +67,6 @@ fn process_keyboard_shortcut(
     vt_switch_shortcut(raw_syms, modified_sym)
 }
 
-/// VT switching, which is deliberately not configurable: it is the only way
-/// off the tty, so it must keep working with an empty or broken keybind
-/// config — and in every modal state the compositor can be in.
 fn vt_switch_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
     raw_syms
         .iter()
@@ -110,11 +76,6 @@ fn vt_switch_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAc
         .map(|raw| KeyAction::VtSwitch((raw - keysyms::KEY_XF86Switch_VT_1 + 1).cast_signed()))
 }
 
-/// The overview's own keys.
-///
-/// Fixed rather than configurable: these are the conventions every
-/// overview-style switcher uses, and rebinding them would mostly be a way
-/// to end up unable to dismiss the thing.
 fn overview_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
     let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
 
@@ -135,10 +96,6 @@ fn overview_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAct
     }
 }
 
-/// Clamps `pos` so it stays within the union of `outputs` (outputs are
-/// assumed laid out left-to-right, matching how `connector_connected` maps
-/// them). Pure geometry, deliberately decoupled from `Space`/`Output` so it
-/// can be unit tested without any Smithay/DRM machinery.
 fn clamp_to_outputs(
     pos: Point<f64, Logical>,
     outputs: &[Rectangle<i32, Logical>],
@@ -151,12 +108,6 @@ fn clamp_to_outputs(
     let max_x = outputs.iter().fold(0, |acc, r| acc + r.size.w);
     let clamped_x = pos_x.clamp(0.0, f64::from(max_x));
 
-    // Outputs are not guaranteed contiguous, so the clamped x may still land
-    // in a gap between two of them; `find` yields `None` in that case.
-    //
-    // Truncating a clamped logical coordinate back to i32 for the containment
-    // check is safe: `clamped_x` is bounded by `max_x` above, an i32-derived
-    // sum of output widths, so it can never approach f64's precision limits.
     #[allow(clippy::cast_possible_truncation)]
     let max_y = outputs
         .iter()
@@ -170,12 +121,6 @@ fn clamp_to_outputs(
 }
 
 impl GlideState {
-    /// Dispatches a raw backend input event to the appropriate handler.
-    ///
-    /// # Panics
-    ///
-    /// Panics if no keyboard or pointer was added to the seat; `GlideState::new`
-    /// always adds both, so in practice this never fires.
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         self.idle_notifier_state.notify_activity(&self.seat);
         match event {
@@ -195,22 +140,11 @@ impl GlideState {
         let time = Event::time_msec(event);
         let key_state = event.state();
         let keycode = event.key_code();
-        // Taken rather than cloned: this runs on every key event, and
-        // `suppressed_keys` is put back (unconditionally) below, so a
-        // clone here would just be an allocation this function
-        // immediately throws away in favour of its own copy.
         let mut suppressed_keys = std::mem::take(&mut self.suppressed_keys);
-        // Taken for the same reason: `keyboard.input` borrows `self` for the
-        // duration of the callback, so the bindings cannot be read from
-        // `self` inside it. Taking beats cloning — this is the hottest path
-        // in the compositor, and the bindings contain owned `String`s.
         let keybinds = std::mem::take(&mut self.keybinds);
 
         let overview_active = self.layout.overview_active();
 
-        // A Top/Overlay layer surface with exclusive keyboard interactivity
-        // (lock screens, some launchers) takes the keyboard for as long as
-        // it exists, no click required — that is what "exclusive" means.
         let exclusive_layer = self.exclusive_layer_surface();
         if let Some(layer) = exclusive_layer {
             self.layer_focus = Some(layer);
@@ -243,17 +177,7 @@ impl GlideState {
                     "key"
                 );
 
-                // Only decide on a shortcut when the key is pressed. On
-                // release we only need to know whether *this* keysym was
-                // previously suppressed, so the client never sees a
-                // release without the matching press (a "stuck key").
                 if let KeyState::Pressed = key_state {
-                    // The overview is modal: it owns the keyboard while
-                    // open, so its own keys are matched first and
-                    // everything else is swallowed rather than reaching a
-                    // client the user cannot see behind the scrim. VT
-                    // switching is the sole exception — it is the only way
-                    // off the tty and must work in every mode.
                     let action = if overview_active {
                         overview_shortcut(&handle.raw_syms(), keysym).or_else(|| {
                             vt_switch_shortcut(&handle.raw_syms(), keysym).or(Some(KeyAction::None))
@@ -262,10 +186,6 @@ impl GlideState {
                         process_keyboard_shortcut(&keybinds, modifiers, &handle.raw_syms(), keysym)
                     };
 
-                    // While a layer surface holds the keyboard, compositor
-                    // shortcuts step aside — a launcher's keystrokes are its
-                    // own — with one exception that must survive anything:
-                    // VT switching is the only way off the tty.
                     let action = if exclusive {
                         action.filter(|a| matches!(a, KeyAction::VtSwitch(_)))
                     } else {
@@ -293,7 +213,6 @@ impl GlideState {
         }
     }
 
-    /// Executes a compositor-level action resolved from a keybinding.
     fn run_key_action(&mut self, action: KeyAction) {
         match action {
             KeyAction::Quit => self.loop_signal.stop(),
@@ -387,24 +306,12 @@ impl GlideState {
         }
     }
 
-    /// Moves the overview's selection, repainting if it moved.
     fn navigate_overview(&mut self, dir: Direction) {
         if self.overview.as_mut().is_some_and(|ui| ui.navigate(dir)) {
             self.queue_redraw();
         }
     }
 
-    /// Pointer-focus target for a motion event, accounting for the
-    /// overview.
-    ///
-    /// While the overview is up the previews are render-only, so the real
-    /// windows underneath must not receive enter/motion — a client would
-    /// otherwise light up hover states and swap cursors for a pointer the
-    /// user cannot see over it. Layer surfaces are the exception: panels
-    /// are drawn above the overview and stay interactive.
-    ///
-    /// Also updates which preview is highlighted, and asks for a repaint
-    /// when that changes.
     fn overview_motion(
         &mut self,
         pos: Point<f64, Logical>,
@@ -433,16 +340,12 @@ impl GlideState {
     }
 
     fn handle_pointer_motion<I: InputBackend>(&mut self, event: &I::PointerMotionEvent) {
-        // libinput reports relative deltas, so we have to track the
-        // absolute pointer position ourselves and keep it on screen.
         let pointer = self
             .seat
             .get_pointer()
             .expect("a pointer was added in GlideState::new");
         let pointer_location = self.clamp_coords(pointer.current_location() + event.delta());
 
-        // trace, not debug: this fires for every motion event, so at
-        // debug it buries everything else in the log.
         tracing::trace!(
             delta = ?event.delta(),
             location = ?pointer_location,
@@ -468,11 +371,6 @@ impl GlideState {
         &mut self,
         event: &I::PointerMotionAbsoluteEvent,
     ) {
-        // Absolute positioning devices (touchscreens, drawing
-        // tablets) report coordinates relative to an output, so
-        // without one mapped there is nowhere to place the event.
-        // Not a bug to recover from -- just nothing to do yet, e.g.
-        // before the first connector is set up in device_added().
         let Some(output) = self.space.outputs().next() else {
             return;
         };
@@ -518,16 +416,6 @@ impl GlideState {
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             let pos = pointer.current_location();
 
-            // ── Overview input ────────────────────────────────────
-            //
-            // Previews are render-only: the real windows are still mapped
-            // at their real positions, so the normal `surface_under` lookup
-            // would resolve to whatever is invisibly underneath the
-            // pointer. Hit-test the previews instead.
-            //
-            // Overlay/Top layer surfaces stay clickable — a panel is drawn
-            // above the overview and should keep working, as it does in
-            // other compositors.
             if self.layout.overview_active() {
                 let on_layer = matches!(
                     self.surface_under(pos),
@@ -539,8 +427,6 @@ impl GlideState {
                     let hit = self.overview.as_ref().and_then(|ui| ui.preview_at(pos));
 
                     match hit {
-                        // Middle click closes the window without leaving
-                        // the overview — the quickest way to tidy up.
                         Some(id) if button == BTN_MIDDLE => {
                             if let Some(window) = self.window_map.get(&id)
                                 && let Some(toplevel) = window.toplevel()
@@ -551,8 +437,6 @@ impl GlideState {
                         Some(id) => {
                             self.begin_close_overview(Some(id));
                         }
-                        // A click on empty space dismisses without
-                        // changing focus.
                         None => {
                             self.begin_close_overview(None);
                         }
@@ -563,9 +447,6 @@ impl GlideState {
                 }
             }
 
-            // What was actually clicked, layers included — `element_under`
-            // alone would find the window *underneath* a panel and focus
-            // that, since layer surfaces are not Space elements.
             let target = self.surface_under(pos).map(|(target, _)| target);
 
             match target {
@@ -575,9 +456,6 @@ impl GlideState {
                     let layer = self
                         .layer_for_surface(&surface)
                         .expect("matched Some in the guard above");
-                    // Click-to-focus for OnDemand launchers; layers that
-                    // declared no keyboard interest are left alone (a
-                    // wallpaper click should not steal the keyboard).
                     if layer.can_receive_keyboard_focus() {
                         self.layer_focus = Some(layer);
                         self.apply_keyboard_focus_public();
@@ -589,11 +467,6 @@ impl GlideState {
                     }
                 }
                 Some(crate::focus::PointerFocusTarget::Surface(_)) => {
-                    // Focus goes through the layout engine, never straight
-                    // to the keyboard: the layout owns which window is
-                    // active. Resolution still via element_under, which
-                    // (unlike a bare surface lookup) also attributes popups
-                    // and subsurfaces to their window.
                     let clicked = self
                         .space
                         .element_under(pos)
@@ -634,9 +507,6 @@ impl GlideState {
         if horizontal_amount != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal_amount);
             if let Some(discrete) = horizontal_amount_discrete {
-                // The v120 tick count from libinput is always a small
-                // integer-valued f64 (multiples of 120), nowhere near
-                // i32::MAX, so this narrowing never truncates in practice.
                 #[allow(clippy::cast_possible_truncation)]
                 {
                     frame = frame.v120(Axis::Horizontal, discrete as i32);
@@ -646,7 +516,6 @@ impl GlideState {
         if vertical_amount != 0.0 {
             frame = frame.value(Axis::Vertical, vertical_amount);
             if let Some(discrete) = vertical_amount_discrete {
-                // See the horizontal case above: v120 ticks never approach i32::MAX.
                 #[allow(clippy::cast_possible_truncation)]
                 {
                     frame = frame.v120(Axis::Vertical, discrete as i32);
@@ -671,7 +540,6 @@ impl GlideState {
         pointer.frame(self);
     }
 
-    /// Clamp a pointer position so it never moves outside the mapped outputs.
     fn clamp_coords(&self, pos: Point<f64, Logical>) -> Point<f64, Logical> {
         let output_rects: Vec<Rectangle<i32, Logical>> = self
             .space
@@ -725,11 +593,6 @@ mod tests {
             assert_eq!(result, pos);
         }
 
-        // These tests assert exact equality against the literal bounds passed
-        // into `f64::clamp`, which `clamp` returns byte-for-byte when the
-        // input is outside range (no arithmetic that could introduce
-        // rounding). clippy::float_cmp can't see that guarantee, so it is
-        // silenced locally rather than weakening the assertions.
         #[test]
         #[allow(clippy::float_cmp)]
         fn clamps_x_to_the_left_edge() {
@@ -753,8 +616,6 @@ mod tests {
         #[test]
         #[allow(clippy::float_cmp)]
         fn clamps_y_using_the_height_of_the_output_under_the_clamped_x() {
-            // Two outputs side by side with different heights, as if a
-            // shorter external monitor sat to the right of the laptop panel.
             let outputs = [rect(0, 0, 1920, 1080), rect(1920, 0, 1280, 720)];
 
             let result = clamp_to_outputs(Point::from((2500.0, 5000.0)), &outputs);
@@ -765,8 +626,6 @@ mod tests {
         #[test]
         #[allow(clippy::float_cmp)]
         fn does_not_clamp_y_when_clamped_x_lands_in_a_gap_between_outputs() {
-            // Outputs need not be contiguous; nothing currently guarantees
-            // that, so this must not panic if clamped_x lands in a gap.
             let outputs = [rect(0, 0, 1000, 1080), rect(2000, 0, 1000, 1080)];
 
             let result = clamp_to_outputs(Point::from((1500.0, 5000.0)), &outputs);
@@ -858,10 +717,6 @@ mod tests {
 
         #[test]
         fn shifted_keys_match_on_the_raw_keysym() {
-            // With Shift held, xkb reports the *shifted* symbol: `3` arrives
-            // as `numbersign`, `Tab` as `ISO_Left_Tab`. Bindings are written
-            // against the unshifted key, so matching must consider raw syms
-            // too or every Super+Shift+N binding silently stops working.
             let binds = default_binds();
             let mut modifiers = no_modifiers();
             modifiers.logo = true;
@@ -882,8 +737,6 @@ mod tests {
 
         #[test]
         fn vt_switch_works_even_with_no_keybinds_configured() {
-            // VT switching is the only way off the tty, so it must not depend
-            // on the user's config being valid.
             let action = process_keyboard_shortcut(
                 &[],
                 &no_modifiers(),
@@ -915,22 +768,19 @@ mod tests {
         #[test]
         fn suppressed_keys_tracking_and_release() {
             let mut suppressed_keys: Vec<Keycode> = Vec::new();
-            let keycode1 = Keycode::from(16_u32); // e.g. key '1'
-            let keycode2 = Keycode::from(24_u32); // e.g. key 'q'
+            let keycode1 = Keycode::from(16_u32);
+            let keycode2 = Keycode::from(24_u32);
 
-            // Add suppressed keys on press
             suppressed_keys.push(keycode1);
             suppressed_keys.push(keycode2);
 
             assert!(suppressed_keys.contains(&keycode1));
             assert!(suppressed_keys.contains(&keycode2));
 
-            // On release of keycode1, remove it
             suppressed_keys.retain(|k| *k != keycode1);
             assert!(!suppressed_keys.contains(&keycode1));
             assert!(suppressed_keys.contains(&keycode2));
 
-            // On release of keycode2, remove it
             suppressed_keys.retain(|k| *k != keycode2);
             assert!(suppressed_keys.is_empty());
         }
@@ -941,7 +791,6 @@ mod tests {
                 vec![Keycode::from(10_u32), Keycode::from(20_u32)];
             assert!(!suppressed_keys.is_empty());
 
-            // Workspace switch / VT switch / focus change triggers clear
             suppressed_keys.clear();
             assert!(
                 suppressed_keys.is_empty(),

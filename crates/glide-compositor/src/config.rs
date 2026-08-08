@@ -1,8 +1,3 @@
-//! TOML Configuration for Glide.
-//!
-//! Config file path: `$XDG_CONFIG_HOME/glide/glide.toml` (or `~/.config/glide/glide.toml`).
-//! If missing or invalid, logs a warning and falls back to defaults.
-
 use serde::Deserialize;
 use std::{fs, path::PathBuf};
 
@@ -10,13 +5,6 @@ use smithay::input::keyboard::{Keysym, ModifiersState, keysyms, xkb};
 
 use crate::{GlideState, input::ResolvedKeybind};
 
-/// Root configuration struct.
-///
-/// Every section rejects unknown keys. A typo in a config file is far more
-/// likely than a deliberate extra key, and silently ignoring it would leave
-/// the user staring at a setting that appears to do nothing.
-///
-/// Not `Eq`: `decorations` holds colors as `f32`, which isn't.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -27,24 +15,10 @@ pub struct Config {
     pub overview: OverviewTheme,
 }
 
-/// Settings that don't belong to any one subsystem.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct GeneralConfig {
-    /// Colour the output is cleared to before anything is drawn — visible
-    /// wherever no window, layer-shell surface, or overview scrim covers
-    /// it. Was a compiled-in constant; still the same steel-blue by
-    /// default, just configurable now.
     pub background: Color,
-    /// Shell command lines run once, in order, right after the Wayland
-    /// and IPC sockets are up — each is a full command line (arguments,
-    /// pipes, whatever `sh -c` accepts), not just a bare executable name,
-    /// the same convention `exec` keybinds and `glidectl exec` use (all
-    /// three share one spawn helper — see `spawn_shell_command`).
-    ///
-    /// Defaults to a single terminal, so a freshly started session always
-    /// has *something* on screen to work from rather than an empty
-    /// output; set to `[]` to start with nothing.
     pub autostart: Vec<String>,
 }
 
@@ -57,26 +31,11 @@ impl Default for GeneralConfig {
     }
 }
 
-/// A window decoration's color scheme and size.
-///
-/// Button placement is deliberately not configurable — maximize always
-/// alone at the left edge, chevron and close always clustered at the
-/// right — so every window in a session looks and behaves the same
-/// regardless of what an individual user put in their config. Colors, the
-/// titlebar's height, and the title's alignment are settable.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DecorationTheme {
-    /// Titlebar height in logical pixels.
     pub height: u32,
-    /// Where the title text sits within the space between the maximize
-    /// button and the chevron/close cluster.
     pub title_align: TitleAlign,
-    /// Radius, in logical pixels, of the frame's top-left/top-right
-    /// corners — the titlebar's own corners, since it sits at the top of
-    /// the frame. The bottom two stay square regardless (see
-    /// [`crate::decoration::HeaderBar::redraw`]'s docs on why). `0` gives
-    /// the old hard-cornered rectangle.
     pub corner_radius: f32,
     pub background: Color,
     pub background_focused: Color,
@@ -88,42 +47,16 @@ pub struct DecorationTheme {
     pub chevron_button_hover: Color,
     pub menu_background: Color,
     pub menu_item_hover: Color,
-    /// Glyph colour for the maximize/restore and chevron icons.
     pub icon: Color,
-    /// Glyph colour for the close (×) icon — separately settable since it
-    /// is meant to stand out a little more than the other two.
     pub close_icon: Color,
-    /// Width, in logical pixels, of the outline drawn just outside the
-    /// window's frame — the only focus indicator a window has beyond the
-    /// titlebar's own colour, especially relevant for a future
-    /// client-preferred undecorated window (see the module docs on
-    /// `xdg-decoration`). `0` disables it.
-    ///
-    /// Capped in practice at [`crate::decoration::RESIZE_BORDER`]: the
-    /// border is drawn in the same invisible margin the resize band
-    /// already reserves outside the frame, so it never needs its own
-    /// hit-testing or bounding-box changes — a wider value would simply
-    /// draw outside the region damage tracking is told to cover.
     pub border_width: u32,
     pub border: Color,
     pub border_focused: Color,
-    /// Whether windows cast a drop shadow.
     pub shadow: bool,
-    /// How far the shadow extends beyond the frame, in logical pixels.
-    /// Approximated as several concentric, decreasingly-opaque rings
-    /// rather than an actual blur — see
-    /// [`crate::decoration::shadow_rects`]'s docs — so this is also
-    /// roughly how "soft" it reads: larger values spread the same falloff
-    /// over more distance, reducing banding at the cost of a more diffuse
-    /// shadow.
     pub shadow_size: u32,
-    /// Colour of the innermost (most opaque) shadow ring; each ring
-    /// further out reuses it at progressively lower alpha.
     pub shadow_color: Color,
 }
 
-/// Where the titlebar's title text sits within the space left of the
-/// button cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum TitleAlign {
@@ -137,52 +70,22 @@ impl Default for DecorationTheme {
         Self {
             height: 32,
             title_align: TitleAlign::Left,
-            // Same corner radius Windows 11 and KDE Breeze both converge
-            // on: enough to read as "rounded card" rather than a hard
-            // rectangle, without eating so much of a 32px titlebar that
-            // the title text starts butting into the curve.
             corner_radius: 8.0,
-            // Titlebar background: charcoal when unfocused, electric
-            // indigo when focused — high contrast against both light and
-            // dark window content.
             background: Color::from_hex("#1e1e26ff").unwrap(),
             background_focused: Color::from_hex("#4c6ef5ff").unwrap(),
-            // Transparent at rest — no pill, just the glyph on the bare
-            // titlebar — matching every shipping desktop's own header bar
-            // buttons (GNOME's HIG says this outright; Windows 11 and KDE
-            // Breeze both do it too). A backplate fades in only on hover,
-            // via `*_button_hover` below; see `HeaderBar::redraw`'s
-            // `button_hover_progress`.
             maximize_button: Color([0.0, 0.0, 0.0, 0.0]),
             maximize_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
-            // Chevron: same family as maximize so the two left buttons
-            // form one visual group, distinct from the destructive close.
             chevron_button: Color([0.0, 0.0, 0.0, 0.0]),
             chevron_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
-            // Close: transparent at rest like the others, but turns
-            // solidly destructive-red on hover rather than the neutral
-            // slate the other two use — the one button where "what happens
-            // if I press this" is worth calling out before the press.
             close_button: Color([0.0, 0.0, 0.0, 0.0]),
             close_button_hover: Color::from_hex("#e0455aff").unwrap(),
-            // Dropdown: slightly lighter than the bar so it reads as a
-            // separate panel; hover rows use the focused accent.
             menu_background: Color::from_hex("#28282fff").unwrap(),
             menu_item_hover: Color::from_hex("#4c6ef5ff").unwrap(),
-            // Icon glyphs: an off-white that reads clearly against every
-            // button background above without being as stark as pure
-            // white; close gets pure white so it stands out as the odd
-            // (destructive) one out.
             icon: Color::from_hex("#dcdcdcff").unwrap(),
             close_icon: Color::from_hex("#ffffffff").unwrap(),
-            // A thin, mostly-unnoticed outline unfocused; the same accent
-            // as the focused titlebar when focused, so the whole frame —
-            // not just the bar — reads as "this one".
             border_width: 1,
             border: Color::from_hex("#3a3a4aff").unwrap(),
             border_focused: Color::from_hex("#4c6ef5ff").unwrap(),
-            // A soft, unobtrusive shadow — present but not the first thing
-            // anyone notices, the way most desktop shells default it.
             shadow: true,
             shadow_size: 16,
             shadow_color: Color::from_hex("#00000066").unwrap(),
@@ -190,47 +93,21 @@ impl Default for DecorationTheme {
     }
 }
 
-/// Look and feel of the overview.
-///
-/// Sizing here is in logical pixels and applies before output scaling, the
-/// same as the decoration theme.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct OverviewTheme {
-    /// Space between previews, and between rows.
     pub gap: i32,
-    /// Height of the strip under each preview reserved for its title.
     pub label_height: i32,
-    /// Upper bound on how large a preview may be drawn relative to the
-    /// window. Above 1.0 previews would be scaled *up* and look blurry.
     pub max_scale: f64,
-    /// Whether to draw window titles under previews.
     pub label: bool,
     pub label_color: Color,
-    /// Background of the rounded pill each label is drawn on, so a title
-    /// stays legible over any window content instead of floating bare on
-    /// the scrim.
     pub label_background: Color,
-    /// Full-screen dim drawn behind the previews. Only the alpha channel
-    /// is animated; the colour itself is used as-is.
     pub dim: Color,
-    /// Highlight drawn behind the hovered/selected preview.
     pub highlight: Color,
-    /// Thickness of that highlight around the preview.
     pub border: i32,
-    /// Whether previews cast a drop shadow, the same idea as
-    /// [`DecorationTheme::shadow`] applied to a preview instead of a real
-    /// window frame — it's what makes them read as lifted cards over the
-    /// dimmed desktop rather than flat cutouts.
     pub shadow: bool,
-    /// How far each preview's shadow extends beyond it, in logical pixels
-    /// — see [`crate::decoration::shadow_rects`]'s docs on the same
-    /// approximation [`DecorationTheme::shadow_size`] uses.
     pub shadow_size: u32,
     pub shadow_color: Color,
-    /// Open/close animation length. `0` disables the animation entirely,
-    /// which is also the escape hatch if it ever feels wrong on slow
-    /// hardware.
     pub duration_ms: u64,
 }
 
@@ -245,9 +122,6 @@ impl Default for OverviewTheme {
             label_background: Color::from_hex("#141419e6").unwrap(),
             dim: Color::from_hex("#0b0b0fcc").unwrap(),
             highlight: Color::from_hex("#3b5bdbff").unwrap(),
-            // Thicker than the old default (3): easier to notice at a
-            // glance across a whole grid of previews, the "thicker accent
-            // ring" a plain 3px outline undersold.
             border: 4,
             shadow: true,
             shadow_size: 20,
@@ -258,7 +132,6 @@ impl Default for OverviewTheme {
 }
 
 impl OverviewTheme {
-    /// The subset of the theme the pure layout engine needs.
     #[must_use]
     pub fn options(&self) -> glide_layout::OverviewOptions {
         glide_layout::OverviewOptions {
@@ -274,16 +147,10 @@ impl OverviewTheme {
     }
 }
 
-/// An RGBA color, written in config as `"#rrggbb"` or `"#rrggbbaa"`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color(pub [f32; 4]);
 
 impl Color {
-    /// Parses `#rrggbb` (opaque) or `#rrggbbaa`. Returns `None` for anything
-    /// else — no partial parsing, a malformed color is treated the same as
-    /// a missing one.
-    // r/g/b/a is the universally understood name for color channels; naming
-    // them out in full would hurt readability rather than help it.
     #[allow(clippy::many_single_char_names)]
     fn from_hex(s: &str) -> Option<Self> {
         let s = s.strip_prefix('#')?;
@@ -305,38 +172,18 @@ impl Color {
 }
 
 impl Color {
-    /// The colour as straight-alpha `[B, G, R, A]` bytes — the single
-    /// canonical conversion from config colour to pixel bytes, used
-    /// everywhere `paint.rs` and `decoration.rs` write into a
-    /// [`smithay::backend::allocator::Fourcc::Argb8888`] buffer.
-    ///
-    /// `B, G, R, A` (byte order, low address first) is what `Argb8888`
-    /// actually is in memory on a little-endian machine — *not* the
-    /// `A, R, G, B` order the format's name suggests when read as a 32-bit
-    /// word. Getting this backwards silently swaps red and blue for every
-    /// non-grey colour (white/black/grey are symmetric under the swap,
-    /// which is why a wrong version of this method can ship unnoticed
-    /// against the default theme and only misrender a *custom* one).
-    ///
-    /// Straight, not premultiplied: callers writing into a buffer that
-    /// expects premultiplied alpha (every [`crate::paint::Painter`] method
-    /// does) are responsible for premultiplying at the point they draw,
-    /// not here — this method only does the channel-order conversion.
     #[must_use]
     pub fn to_buffer_bytes(self) -> [u8; 4] {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         [
-            byte(self.0[2]), // B
-            byte(self.0[1]), // G
-            byte(self.0[0]), // R
-            byte(self.0[3]), // A
+            byte(self.0[2]),
+            byte(self.0[1]),
+            byte(self.0[0]),
+            byte(self.0[3]),
         ]
     }
 
-    /// Scales the RGB channels by `factor` (alpha untouched) — used to
-    /// derive a "pressed" button shade from its hover colour rather than
-    /// requiring a dedicated theme key per button per interaction state.
     #[must_use]
     pub fn darken(self, factor: f32) -> Self {
         let [r, g, b, a] = self.0;
@@ -348,13 +195,6 @@ impl Color {
         ])
     }
 
-    /// Linearly interpolates every channel, alpha included, toward `other`
-    /// as `t` goes from `0.0` to `1.0` — clamped, so a caller passing an
-    /// eased-but-technically-out-of-range `t` can't produce an
-    /// out-of-gamut colour. Used for a titlebar button's hover fade: `self`
-    /// is transparent at rest, `other` its solid hover colour, so
-    /// interpolating alpha is exactly what makes the backplate fade in
-    /// rather than pop.
     #[must_use]
     pub fn lerp(self, other: Self, t: f32) -> Self {
         let t = t.clamp(0.0, 1.0);
@@ -380,7 +220,6 @@ impl<'de> serde::Deserialize<'de> for Color {
     }
 }
 
-/// Workspaces configuration section.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspaceConfig {
@@ -388,7 +227,6 @@ pub struct WorkspaceConfig {
     pub new_window: NewWindowPolicyConfig,
 }
 
-/// Placement policy for new windows.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NewWindowPolicyConfig {
@@ -408,7 +246,6 @@ impl From<NewWindowPolicyConfig> for glide_layout::NewWindowPolicy {
     }
 }
 
-/// Representation of key modifiers in TOML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModifierConfig {
@@ -420,7 +257,6 @@ pub enum ModifierConfig {
     Alt,
 }
 
-/// Representation of a single keybinding entry in TOML.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeybindConfig {
@@ -430,10 +266,6 @@ pub struct KeybindConfig {
     pub action: KeyActionConfig,
 }
 
-/// Configurable keybinding actions in TOML.
-///
-/// Either a bare string (`action = "quit"`) or a single-key table
-/// (`action = { exec = "alacritty" }`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum KeyActionConfig {
@@ -441,11 +273,6 @@ pub enum KeyActionConfig {
     Complex(ParameterizedAction),
 }
 
-/// Actions that take a parameter.
-///
-/// `deny_unknown_fields` matters more here than anywhere else: with every
-/// field optional, `action = { exce = "foo" }` would otherwise deserialize
-/// into an all-`None` value and the binding would vanish without a word.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParameterizedAction {
@@ -483,7 +310,6 @@ impl ParameterizedAction {
 }
 
 impl Config {
-    /// Returns default keybindings table.
     #[must_use]
     pub fn default_keybinds() -> Vec<KeybindConfig> {
         let mut keybinds = vec![
@@ -541,7 +367,6 @@ impl Config {
         keybinds
     }
 
-    /// Returns the default config path: `$XDG_CONFIG_HOME/glide/glide.toml` or `~/.config/glide/glide.toml`.
     #[must_use]
     pub fn default_path() -> Option<PathBuf> {
         if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
@@ -562,8 +387,6 @@ impl Config {
         None
     }
 
-    /// Loads config from the default location. If the file does not exist or fails to parse,
-    /// logs a warning and returns `Config::with_defaults()`.
     #[must_use]
     pub fn load_or_default() -> Self {
         let Some(path) = Self::default_path() else {
@@ -574,7 +397,6 @@ impl Config {
         Self::load_from_path(&path)
     }
 
-    /// Returns default config populated with default keybindings.
     #[must_use]
     pub fn with_defaults() -> Self {
         Self {
@@ -586,7 +408,6 @@ impl Config {
         }
     }
 
-    /// Loads config from a specific path.
     #[must_use]
     pub fn load_from_path(path: &std::path::Path) -> Self {
         if !path.exists() {
@@ -623,7 +444,6 @@ impl Config {
         }
     }
 
-    /// Resolves config keybindings into executable `ResolvedKeybind` list.
     #[must_use]
     pub fn resolve_keybinds(&self) -> Vec<ResolvedKeybind> {
         let mut resolved = Vec::new();
@@ -654,13 +474,6 @@ impl Config {
         resolved
     }
 
-    /// Applies configuration to `GlideState`. Live: called both at startup
-    /// and on every `glidectl reload`, and a changed `[decorations] height`
-    /// now takes effect for already-open windows too, not only ones mapped
-    /// after this call — see the insets-reapplication loop below.
-    ///
-    /// Colors, being read at render time, always applied instantly even
-    /// before that loop existed.
     pub fn apply_to_state(&self, state: &mut GlideState) {
         state.layout.set_policy(self.workspaces.new_window.into());
         state.keybinds = self.resolve_keybinds();
@@ -668,30 +481,10 @@ impl Config {
         state.overview_theme = self.overview.clone();
         state.background_color = self.general.background;
 
-        // Rebuilds the shared `Painter` (font + glyph cache) at a size
-        // derived from the titlebar height — the same heuristic that used
-        // to live in `window.rs`, run once here instead of racing whichever
-        // window happened to render first. See `paint::init_or_replace`'s
-        // docs: this call is what makes a changed titlebar height actually
-        // affect the font size, on both first load and `glidectl reload`.
-        //
-        // Titlebar heights are tens of pixels; the product is nowhere near
-        // f32's precision limits.
         #[allow(clippy::cast_possible_truncation)]
         let font_px = (f64::from(self.decorations.height).max(14.0) * 0.45) as f32;
         crate::paint::init_or_replace(font_px.clamp(10.0, 18.0));
 
-        // Re-applies the (possibly changed) titlebar height's insets to
-        // every already-mapped window, not just ones created after this
-        // call. Every window is decorated for now (see `decoration.rs`'s
-        // module docs on `xdg-decoration` being M4.5 future work), so this
-        // unconditionally treats each one as decorated; that assumption
-        // will need revisiting once a client can actually opt out.
-        //
-        // Batched into a single `reconcile_space()` afterwards — which
-        // itself re-syncs every window's decoration buffers — rather than
-        // going through `GlideState::set_window_decorated` (which
-        // reconciles once *per call*) for each window in the loop.
         if let Ok(height) = i32::try_from(self.decorations.height) {
             let insets = glide_layout::Insets {
                 top: height,
@@ -757,8 +550,6 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             }
         },
         KeyActionConfig::Complex(action) => {
-            // Workspace numbers are 1-based in config (matching the key you
-            // press) but 0-based internally.
             if let Some(idx) = action.switch_workspace {
                 Some(crate::input::KeyAction::SwitchWorkspace(
                     idx.saturating_sub(1),
@@ -829,18 +620,12 @@ action = "quit"
 
     #[test]
     fn unknown_top_level_key_is_rejected() {
-        // Silently ignoring a typo would leave the user tweaking a setting
-        // that never takes effect.
         let err = toml::from_str::<Config>("[workspacs]\nnew-window = \"active-workspace\"\n")
             .expect_err("a misspelled section must not parse");
 
         assert!(err.to_string().contains("workspacs"), "{err}");
     }
 
-    // These compare exact values from an 8-bit-to-f32 conversion (0/255 and
-    // 255/255 both land on exact floats, no accumulated rounding), so exact
-    // equality is correct here — see input.rs's clamp_to_outputs tests for
-    // the same reasoning applied to clamp() output.
     #[test]
     #[allow(clippy::float_cmp)]
     fn color_parses_rrggbb_as_opaque() {
@@ -863,11 +648,6 @@ action = "quit"
         assert!(Color::from_hex("#gggggg").is_none(), "not hex digits");
     }
 
-    // Regression test for the R/B channel swap: a symmetric colour (grey,
-    // black, white) can't distinguish [B,G,R,A] from [A,R,G,B], which is
-    // exactly how the bug this guards against shipped unnoticed — pure red
-    // and pure blue are the minimal pair that tells the two conventions
-    // apart.
     #[test]
     fn to_buffer_bytes_is_b_g_r_a_not_a_r_g_b() {
         let red = Color::from_hex("#ff0000ff").unwrap().to_buffer_bytes();
@@ -890,9 +670,6 @@ action = "quit"
 
     #[test]
     fn general_config_defaults_to_the_previous_hardcoded_fill_color() {
-        // #295396 was a `const FILL_COLOR` in backend/tty.rs before it
-        // became configurable; the default must not silently change the
-        // colour every existing session already renders.
         assert_eq!(
             GeneralConfig::default().background,
             Color::from_hex("#295396ff").unwrap()
@@ -1023,11 +800,8 @@ shadow-color = \"#000000aa\"
     }
 
     #[test]
-    #[allow(clippy::float_cmp)] // exact 0.0, as authored in the theme literal — see color_parses_rrggbb_as_opaque
+    #[allow(clippy::float_cmp)]
     fn decoration_theme_buttons_are_transparent_at_rest() {
-        // The whole point of the transparent-at-rest redesign: no pill
-        // behind the glyph until it's actually hovered. A regression here
-        // would silently bring back the always-visible-pill look.
         let d = DecorationTheme::default();
         assert_eq!(d.maximize_button.0[3], 0.0, "maximize must be transparent");
         assert_eq!(d.chevron_button.0[3], 0.0, "chevron must be transparent");
@@ -1036,9 +810,6 @@ shadow-color = \"#000000aa\"
 
     #[test]
     fn decoration_theme_close_hover_is_the_odd_one_out() {
-        // Close is the only button whose hover colour should read as
-        // "destructive" (red channel clearly dominant) rather than the
-        // neutral slate maximize/chevron share.
         let d = DecorationTheme::default();
         assert_eq!(
             d.maximize_button_hover, d.chevron_button_hover,
@@ -1066,11 +837,8 @@ shadow-color = \"#000000aa\"
     }
 
     #[test]
-    #[allow(clippy::float_cmp)] // both sides are theme literals, no arithmetic involved — assert_ne, not equality
+    #[allow(clippy::float_cmp)]
     fn overview_theme_label_background_differs_from_the_scrim() {
-        // The whole point of the pill: a label sitting on its own plate,
-        // not one indistinguishable from (or literally reusing) the dim
-        // behind every other preview.
         let o = OverviewTheme::default();
         assert_ne!(o.label_background.0, o.dim.0);
     }
@@ -1119,7 +887,7 @@ duration-ms = 150
     }
 
     #[test]
-    #[allow(clippy::float_cmp)] // t=0.0/1.0 is bit-exact: `from + (to - from) * t` with t at either endpoint
+    #[allow(clippy::float_cmp)]
     fn lerp_at_zero_and_one_returns_the_endpoints() {
         let from = Color([0.0, 0.0, 0.0, 0.0]);
         let to = Color([1.0, 0.5, 0.25, 1.0]);
@@ -1139,7 +907,7 @@ duration-ms = 150
     }
 
     #[test]
-    #[allow(clippy::float_cmp)] // clamp() output is bit-exact — see darken_clamps_at_zero's comment
+    #[allow(clippy::float_cmp)]
     fn lerp_clamps_an_out_of_range_t() {
         let from = Color([0.0, 0.0, 0.0, 0.0]);
         let to = Color([1.0, 1.0, 1.0, 1.0]);
@@ -1147,9 +915,6 @@ duration-ms = 150
         assert_eq!(from.lerp(to, 2.0).0, to.0);
     }
 
-    // `clamp(0.0, 1.0)` lands exactly on 0.0 for any negative input, no
-    // accumulated rounding involved, so exact equality is correct here —
-    // see `color_parses_rrggbb_as_opaque`'s comment for the same reasoning.
     #[test]
     #[allow(clippy::float_cmp)]
     fn darken_clamps_at_zero() {
@@ -1173,8 +938,6 @@ action = { exce = \"alacritty\" }
 
     #[test]
     fn invalid_config_falls_back_to_defaults() {
-        // Dying over a config typo would strand the user on a bare tty with
-        // no way to edit the file that caused it.
         let dir = std::env::temp_dir().join(format!("glide-config-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("glide.toml");

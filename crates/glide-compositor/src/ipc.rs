@@ -1,24 +1,3 @@
-//! IPC server for the Glide compositor.
-//!
-//! Listens on a Unix domain socket in `$XDG_RUNTIME_DIR`, speaking
-//! newline-delimited JSON: one [`Request`] in, one [`Response`] out, then the
-//! connection is closed.
-//!
-//! # Why everything here is non-blocking
-//!
-//! The compositor is single-threaded: every IPC callback runs on the same
-//! calloop event loop that drives rendering, input and the Wayland socket. A
-//! blocking `read`/`write` on a client connection would therefore stall the
-//! *entire session* — and on a bare tty there is no second compositor to
-//! switch to, because even `Ctrl+Alt+Fn` handling lives on that same loop.
-//! A client that connects and then sends nothing (`nc -U <socket>`) would be
-//! enough to wedge the machine.
-//!
-//! So: the listener and every accepted connection are non-blocking, each
-//! connection is its own event source with its own buffer, and a connection
-//! that misbehaves (oversized request, unreadable, or not draining its
-//! response) is dropped rather than waited on.
-
 use std::{
     collections::HashMap,
     io::{ErrorKind, Read, Write},
@@ -36,22 +15,14 @@ use smithay::reexports::calloop::{
 
 use crate::GlideState;
 
-/// Hard cap on a single request. Requests are a few hundred bytes at most;
-/// this only exists so a client streaming endless bytes without a newline
-/// cannot grow the buffer until the compositor is OOM-killed.
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
-/// Owns the listening socket's path and unlinks it on shutdown.
-///
-/// Held by [`GlideState`] rather than dropped immediately, so the socket file
-/// lives exactly as long as the compositor does.
 #[derive(Debug)]
 pub struct IpcServer {
     socket_path: PathBuf,
 }
 
 impl IpcServer {
-    /// Path of the socket this server is listening on.
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
@@ -72,36 +43,21 @@ impl Drop for IpcServer {
     }
 }
 
-/// Directory to place the IPC socket in.
-///
-/// `$XDG_RUNTIME_DIR` only. There is deliberately **no** `/tmp` fallback: a
-/// predictable path in a world-writable directory lets any other local user
-/// pre-create the socket and intercept `glidectl` traffic — which includes
-/// [`Request::Exec`], i.e. arbitrary command execution. Without a runtime dir
-/// we would rather not offer IPC at all.
 fn socket_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
 }
 
-/// Socket file name for a Wayland socket name, e.g. `glide-wayland-1.sock`.
 fn socket_file_name(socket_name: &std::ffi::OsStr) -> String {
     format!("glide-{}.sock", socket_name.to_string_lossy())
 }
 
-/// Socket path for a given Wayland socket name, e.g. `.../glide-wayland-1.sock`.
 #[must_use]
 pub fn socket_path_for(socket_name: &std::ffi::OsStr) -> Option<PathBuf> {
     Some(socket_dir()?.join(socket_file_name(socket_name)))
 }
 
-/// Maps the wire-level workspace target onto the layout engine's own.
-///
-/// Written out rather than derived via `From`: both types are foreign to this
-/// crate, so the orphan rule forbids the impl, and making `glide-ipc` depend
-/// on `glide-layout` just for this would drag the layout engine into every
-/// IPC client.
 fn to_layout_target(target: glide_ipc::WorkspaceTarget) -> glide_layout::WorkspaceTarget {
     match target {
         glide_ipc::WorkspaceTarget::Index(idx) => glide_layout::WorkspaceTarget::Index(idx),
@@ -110,15 +66,6 @@ fn to_layout_target(target: glide_ipc::WorkspaceTarget) -> glide_layout::Workspa
     }
 }
 
-/// Starts the IPC server.
-///
-/// Returns `Ok(None)` when `$XDG_RUNTIME_DIR` is unset — IPC is then simply
-/// unavailable, which is not fatal to the compositor.
-///
-/// # Errors
-///
-/// Returns an error if the socket cannot be bound or registered with the
-/// event loop.
 pub fn init_ipc(
     event_loop: &mut EventLoop<'static, GlideState>,
     socket_name: &std::ffi::OsStr,
@@ -128,11 +75,6 @@ pub fn init_ipc(
         return Ok(None);
     };
 
-    // A leftover socket from a crashed run would make bind() fail with
-    // EADDRINUSE, so clear it first. Anything else (including a *live*
-    // compositor's socket) is not distinguishable here; the socket name is
-    // derived from our own freshly-allocated wayland-N name, so a collision
-    // means a stale file, not a running peer.
     match std::fs::remove_file(&socket_path) {
         Ok(()) => tracing::debug!(path = %socket_path.display(), "removed a stale IPC socket"),
         Err(err) if err.kind() == ErrorKind::NotFound => {}
@@ -145,8 +87,6 @@ pub fn init_ipc(
     let listener = UnixListener::bind(&socket_path)?;
     listener.set_nonblocking(true)?;
 
-    // `Request::Exec` runs arbitrary shell commands, so the socket must not be
-    // reachable by other users even if XDG_RUNTIME_DIR is misconfigured.
     if let Err(err) = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
     {
         tracing::warn!(?err, "failed to restrict IPC socket permissions to 0600");
@@ -173,7 +113,6 @@ pub fn init_ipc(
     Ok(Some(server))
 }
 
-/// Drains the listener's backlog, giving each connection its own event source.
 fn accept_pending(listener: &UnixListener, loop_handle: &LoopHandle<'static, GlideState>) {
     loop {
         match listener.accept() {
@@ -182,7 +121,6 @@ fn accept_pending(listener: &UnixListener, loop_handle: &LoopHandle<'static, Gli
                     tracing::warn!(?err, "failed to register an IPC connection");
                 }
             }
-            // Backlog drained: this is the normal exit, not an error.
             Err(err) if err.kind() == ErrorKind::WouldBlock => return,
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
             Err(err) => {
@@ -211,22 +149,12 @@ fn register_connection(
     Ok(())
 }
 
-/// Reads whatever is available without blocking, and once a full line has
-/// arrived, dispatches it and answers.
-///
-/// Always returns [`PostAction::Remove`] after answering: the protocol is one
-/// request per connection, so there is nothing more to wait for.
-///
-/// Takes `&UnixStream` rather than `&mut` because calloop hands out a shared
-/// reference to the source's fd; `std` implements `Read`/`Write` for
-/// `&UnixStream` precisely for this case.
 fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideState) -> PostAction {
     let mut chunk = [0_u8; 4096];
     let mut stream = stream;
 
     loop {
         match stream.read(&mut chunk) {
-            // Peer closed without sending a complete request.
             Ok(0) => return PostAction::Remove,
             Ok(n) => {
                 buffer.extend_from_slice(&chunk[..n]);
@@ -245,7 +173,6 @@ fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideStat
                     return PostAction::Remove;
                 }
             }
-            // Nothing more to read yet; stay registered and wait for the rest.
             Err(err) if err.kind() == ErrorKind::WouldBlock => return PostAction::Continue,
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
             Err(err) => {
@@ -256,8 +183,6 @@ fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideStat
     }
 }
 
-/// Writes all bytes to a non-blocking `UnixStream`, managing `WouldBlock` retries
-/// and partial write offsets so responses are not dropped if the stream momentarily blocks.
 fn write_all_nonblocking(stream: &UnixStream, mut data: &[u8]) -> std::io::Result<()> {
     let mut stream = stream;
     let mut retries = 0;
@@ -287,7 +212,6 @@ fn write_all_nonblocking(stream: &UnixStream, mut data: &[u8]) -> std::io::Resul
     Ok(())
 }
 
-/// Parses `line`, dispatches it and writes the response back.
 fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     let response = match std::str::from_utf8(line) {
         Ok(text) => match serde_json::from_str::<Request>(text.trim()) {
@@ -315,7 +239,6 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     }
 }
 
-/// Dispatches a single IPC request against the compositor state.
 #[must_use]
 pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
     match request {
@@ -420,8 +343,6 @@ fn list_windows(state: &GlideState) -> Response {
     Response::Windows { list }
 }
 
-/// Runs `command` for a `glidectl exec` request, via the shared
-/// [`crate::spawn_shell_command`] helper.
 fn spawn_command(command: &str) -> Response {
     match crate::spawn_shell_command(command) {
         Ok(child) => {
@@ -437,10 +358,6 @@ fn spawn_command(command: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Note: these deliberately test the pure helpers rather than
-    // `socket_path_for`, which reads the environment. Tests run in parallel
-    // threads within one process, so mutating env vars here would race.
 
     #[test]
     fn socket_file_name_is_derived_from_the_wayland_socket() {
@@ -471,7 +388,7 @@ mod tests {
         let (server_stream, client_stream) = UnixStream::pair().unwrap();
         server_stream.set_nonblocking(true).unwrap();
 
-        let payload = vec![0xAB_u8; 64 * 1024]; // 64 KB payload
+        let payload = vec![0xAB_u8; 64 * 1024];
         let payload_clone = payload.clone();
 
         let handle = std::thread::spawn(move || {
@@ -508,12 +425,10 @@ mod tests {
         let (server_stream, _client_stream) = UnixStream::pair().unwrap();
         server_stream.set_nonblocking(true).unwrap();
 
-        // Fill socket buffer until write returns WouldBlock
         let dummy = [0x55_u8; 4096];
         #[allow(clippy::unused_io_amount)]
         while (&server_stream).write(&dummy).is_ok_and(|n| n > 0) {}
 
-        // Now write_all_nonblocking must attempt retries and return WouldBlock error when retries exhaust
         let res = write_all_nonblocking(&server_stream, b"test response");
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().kind(), ErrorKind::WouldBlock);
@@ -523,7 +438,7 @@ mod tests {
     fn write_all_nonblocking_handles_closed_socket() {
         let (server_stream, client_stream) = UnixStream::pair().unwrap();
         server_stream.set_nonblocking(true).unwrap();
-        drop(client_stream); // Close client side
+        drop(client_stream);
 
         let res = write_all_nonblocking(&server_stream, b"hello client");
         assert!(res.is_err());

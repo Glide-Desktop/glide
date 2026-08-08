@@ -21,15 +21,8 @@ use smithay::wayland::selection::data_device::{
 
 use crate::{GlideState, focus::PointerFocusTarget};
 
-//
-// Wl Seat
-//
-
 impl SeatHandler for GlideState {
     type KeyboardFocus = WlSurface;
-    // Titlebars are compositor-drawn, not `WlSurface`s, and still need to
-    // receive enter/motion/button like any other pointer target — see
-    // `crate::focus` for why this is an enum rather than a bare surface.
     type PointerFocus = PointerFocusTarget;
     type TouchFocus = WlSurface;
 
@@ -52,18 +45,9 @@ impl SeatHandler for GlideState {
     }
 }
 
-/// Required transitively by `cursor-shape-v1`'s dispatch: the protocol also
-/// serves tablet tools, so its device dispatch is bounded on
-/// `TabletSeatHandler` even for compositors (like Glide, so far) that never
-/// create a tablet seat. The default `tablet_tool_image` no-op is exactly
-/// right for that: no tablets, nothing to update.
 impl TabletSeatHandler for GlideState {
     type ToolFocus = WlSurface;
 }
-
-//
-// Wl Data Device
-//
 
 impl SelectionHandler for GlideState {
     type SelectionUserData = ();
@@ -90,29 +74,19 @@ impl WaylandDndGrabHandler for GlideState {
                 let ptr = seat
                     .get_pointer()
                     .expect("a pointer was added in GlideState::new");
-                // The Wayland DnD protocol only allows starting a drag from
-                // an already-active implicit pointer grab (e.g. the client's
-                // own button-press grab on the drag source), so one must
-                // exist here.
                 let start_data = ptr
                     .grab_start_data()
                     .expect("dnd_requested is only called while a pointer grab is active");
 
-                // create a dnd grab to start the operation
                 let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);
                 ptr.set_grab(self, grab, serial, Focus::Keep);
             }
             GrabType::Touch => {
-                // smallvil lacks touch handling
                 source.cancel();
             }
         }
     }
 }
-
-//
-// Wl Output & Xdg Output
-//
 
 impl OutputHandler for GlideState {}
 

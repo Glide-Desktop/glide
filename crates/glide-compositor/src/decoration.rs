@@ -1,40 +1,3 @@
-//! Server-side window decorations: a titlebar with a fixed button layout
-//! and a chevron-triggered menu for actions that don't get their own
-//! button.
-//!
-//! # Layout (fixed by design — see [`crate::config::DecorationTheme`])
-//!
-//! ```text
-//! ┌───┬────────────────────────────┬───┬───┐
-//! │ M │ (title)                    │ v │ X │
-//! └───┴────────────────────────────┴───┴───┘
-//! ```
-//! Maximize (M) is always leftmost, on its own — deliberately separated
-//! from close, so a slip while reaching for one can never land on the
-//! other. Close (X) is always rightmost; the chevron (v) — which opens a
-//! dropdown for actions that don't warrant their own button, currently
-//! just Minimize — sits immediately to close's left, so the two read as
-//! one cluster. Everything between maximize and the chevron is drag
-//! territory, including the title itself (aligned per
-//! [`crate::config::TitleAlign`], left by default): pressing there and
-//! moving starts an interactive move, exactly as if the client itself had
-//! requested one.
-//!
-//! The chevron's dropdown is a compact panel sized to its widest item, not
-//! a full-width strip — it hangs from the right edge of the titlebar,
-//! under the chevron/close cluster it belongs to, rather than spanning
-//! content that has nothing to do with it.
-//!
-//! Every window is decorated for now; respecting a client's own
-//! `xdg-decoration` preference is M4.5.
-//!
-//! # Border
-//!
-//! Every window also gets a thin outline drawn just outside its frame —
-//! see [`border_strips`] — the only focus indicator that isn't just the
-//! titlebar's own colour, which matters once an undecorated window (no
-//! titlebar at all) exists.
-
 use std::cell::{Ref, RefCell, RefMut};
 
 use smithay::{
@@ -64,60 +27,26 @@ use crate::{
     window::GlideWindow,
 };
 
-/// Width of the maximize/close/chevron buttons. Height is the titlebar
-/// height itself, from [`DecorationTheme::height`].
 pub const BUTTON_WIDTH: i32 = 32;
 
-/// Width of the right-hand cluster (chevron + close).
 const RIGHT_CLUSTER_WIDTH: i32 = BUTTON_WIDTH * 2;
 
-/// Width of the invisible resize band around a decorated window's frame.
-///
-/// Sized for touchpads: the band is the only way to start a resize with the
-/// pointer (there is no visible border to aim for), so it errs on the
-/// generous side rather than demanding pixel-accurate aim at a window edge.
 pub const RESIZE_BORDER: i32 = 8;
 
-/// Left inset for the title label, so it doesn't start flush against the
-/// frame's left edge.
 const TITLE_PADDING: i32 = 12;
 
-/// Horizontal padding inside each compact menu row, both sides.
 const MENU_PADDING: i32 = 12;
 
-/// Minimum menu width, so a single short label doesn't render a comically
-/// narrow dropdown.
 const MENU_MIN_WIDTH: i32 = 120;
 
-/// Corner radius of the dropdown panel's true outer corners — see
-/// [`row_corners`].
 const MENU_CORNER_RADIUS: f32 = 8.0;
 
-/// How much darker a button's hover colour gets while actually pressed —
-/// derived from the hover colour rather than a dedicated theme key per
-/// button per interaction state.
 const PRESSED_DARKEN: f32 = 0.8;
 
-/// How long a button's backplate takes to fade in once hovered — see
-/// [`HeaderBar::button_hover_progress`]. Deliberately shorter than the
-/// overview's own `HOVER_ANIM`: a titlebar button is a small, frequently
-/// re-crossed target, where a fade slow enough to *notice as an animation*
-/// reads as lag rather than polish.
 const BUTTON_HOVER_ANIM: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Number of concentric rings [`shadow_rects`] approximates a drop
-/// shadow's blur with. More bands trade a few extra (cheap, native
-/// solid-colour) render elements for less visible banding; six is soft
-/// enough at the shadow sizes this theme's default expects without being
-/// wasteful.
 const SHADOW_BANDS: usize = 6;
 
-/// An action offered in the chevron dropdown.
-///
-/// A single variant today (as requested: the menu exists specifically to
-/// hold Minimize), but kept as an enum with an `ALL` slice rather than a
-/// bare "minimize button" so adding a second entry later is a one-line
-/// change here rather than a new parallel mechanism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItem {
     Minimize,
@@ -133,13 +62,6 @@ impl MenuItem {
     }
 }
 
-/// Per-window decoration state: hover tracking and the pixel buffers redrawn
-/// from it. Lives in the window's own [`smithay::utils::user_data::UserDataMap`]
-/// (see [`GlideWindow::decoration_state`]) rather than as a field on
-/// `GlideWindow` itself, since that map is exactly what lets `SpaceElement`
-/// and `AsRenderElements` — both `&self` methods — mutate per-frame redraw
-/// state without `GlideWindow` needing `Send`-unfriendly interior mutability
-/// of its own.
 #[derive(Debug, Default)]
 pub struct DecorationState {
     pub header: HeaderBar,
@@ -147,21 +69,11 @@ pub struct DecorationState {
     pub shadow: ShadowState,
 }
 
-/// A painted element: a pixel buffer plus its position relative to the
-/// decoration's own origin (titlebar top-left).  Returned by
-/// [`frame_buffers`] and converted to GPU-uploaded render elements in
-/// `window.rs`.
 pub struct DecorationBuffer {
     pub buf: MemoryRenderBuffer,
-    /// Logical offset from the titlebar top-left.
     pub offset: Point<i32, Logical>,
 }
 
-/// The four border strips (top, bottom, left, right) framing a window's
-/// whole frame — see the module docs. Persisted per-window (like
-/// [`HeaderBar`]'s buffers) so their [`SolidColorBuffer`] `Id`s stay
-/// stable across frames for damage tracking, rather than being
-/// reallocated — and treated as new by the damage tracker — every redraw.
 #[derive(Debug, Default)]
 pub struct BorderState {
     top: SolidColorBuffer,
@@ -170,20 +82,11 @@ pub struct BorderState {
     right: SolidColorBuffer,
 }
 
-/// One border strip: a solid-colour buffer plus its position relative to
-/// the decoration's own origin (titlebar top-left) — the same convention
-/// [`DecorationBuffer::offset`] uses. Returned by [`border_strips`].
 pub struct BorderStrip {
     pub buf: SolidColorBuffer,
     pub offset: Point<i32, Logical>,
 }
 
-/// The `SHADOW_BANDS * 4` shadow ring strips (see [`shadow_rects`]).
-/// Persisted per-window, same reason as [`BorderState`]: stable
-/// `SolidColorBuffer` `Id`s for damage tracking. Sized to the current band
-/// count on first use — today that's always `SHADOW_BANDS`, but growing
-/// or shrinking a `Vec<SolidColorBuffer>` on a (currently impossible)
-/// theme change is cheap and avoids hard-coding the count into the type.
 #[derive(Debug, Default)]
 pub struct ShadowState {
     rings: Vec<SolidColorBuffer>,
@@ -191,89 +94,39 @@ pub struct ShadowState {
 
 #[derive(Debug, Default)]
 pub struct HeaderBar {
-    /// 0 means undecorated: no titlebar is drawn or reserved. Set once from
-    /// [`DecorationTheme::height`] when a window is created.
     height: i32,
     width: i32,
-    /// Height of the client's own content area below the titlebar. Needed
-    /// to know where the window's bottom edge — and with it the bottom
-    /// resize band — actually is.
     content_height: i32,
-    /// Window title, used for the label in the drag zone.
     title: String,
     pointer_loc: Option<Point<f64, Logical>>,
     menu_open: bool,
     menu_hover: Option<usize>,
-    /// Left edge and width of the compact dropdown panel, in decoration-
-    /// origin coordinates. Computed and cached during [`Self::redraw`]
-    /// (which has a [`Painter`] to measure label widths with) and read
-    /// back by hit-testing (`menu_item_at`, `contains`), which don't.
     menu_x: i32,
     menu_width: i32,
-    /// The button zone currently held down, if any — separate from
-    /// `menu_hover`/hover tracking, which reflect where the pointer *is*,
-    /// not whether the button is being pressed. Cleared on release
-    /// (wherever it lands, matching how the rest of the titlebar treats
-    /// clicks) and on the pointer leaving the decoration entirely.
     pressed: Option<HitZone>,
-    /// Which button zone is currently mid hover fade-in (or settled on),
-    /// and when that started — see [`Self::button_hover_progress`]. `None`
-    /// zone means nothing is fading in right now, whether because nothing
-    /// is hovered or because the hover left a button and the transition
-    /// back to transparent is instant (see that method's docs on why).
     button_hover: Option<HitZone>,
     button_hover_started: Option<std::time::Instant>,
 
-    /// Colors and focus, snapshotted here (rather than read live from
-    /// `GlideState`) because [`smithay::backend::renderer::element::AsRenderElements`],
-    /// where `redraw` ultimately gets called from, has no access to
-    /// compositor state — only to the renderer. Kept in sync by
-    /// [`crate::GlideState::reconcile_space`] via [`GlideWindow::sync_decoration`].
-    /// Hover is unaffected: that already lives entirely in this struct,
-    /// updated straight from pointer motion.
     theme: DecorationTheme,
     focused: bool,
-    /// Whether the window is currently maximized — swaps the maximize
-    /// button's glyph for the restore one, same idea as `theme`/`focused`:
-    /// snapshotted ahead of render for the same reason.
     maximized: bool,
-    /// The output scale to rasterize decoration buffers at, so titlebar
-    /// text and button icons stay crisp instead of being upscaled from a
-    /// logical-resolution rendering. Snapshotted the same way as
-    /// `theme`/`focused` and for the same reason. `0` (the derived
-    /// `Default`, before the first sync) is never used directly — see
-    /// [`Self::effective_scale`].
     scale: i32,
 
-    /// Cached pixel buffers for each titlebar element.  Rebuilt whenever
-    /// their appearance changes (hover, focus, open menu, resize).
     titlebar_buf: Option<MemoryRenderBuffer>,
     maximize_buf: Option<MemoryRenderBuffer>,
     chevron_buf: Option<MemoryRenderBuffer>,
     close_buf: Option<MemoryRenderBuffer>,
-    /// One buffer per menu row, rebuilt when the menu opens.
     menu_row_bufs: Vec<MemoryRenderBuffer>,
 }
 
-/// What part of the titlebar a point falls in, for both hit-testing and
-/// hover-highlight purposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HitZone {
     Maximize,
     Chevron,
     Close,
-    /// The plain background: dragging here moves the window.
     Drag,
 }
 
-/// What a completed titlebar interaction should do.
-///
-/// Decided by [`HeaderBar::on_button`] *while* the decoration state is
-/// borrowed, and executed by [`Decoration::button`] *after* that borrow is
-/// released. The split is not stylistic: executing directly under the
-/// borrow meant `reconcile_space` → `sync_decoration` → a second
-/// `borrow_mut()` of the same `RefCell` — a guaranteed `BorrowMutError`
-/// panic the first time anyone clicked the maximize button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecorationAction {
     ToggleMaximize,
@@ -283,8 +136,6 @@ enum DecorationAction {
     StartResize(ResizeEdge),
 }
 
-/// The pointer shape to show over a resize band, so the user can see what
-/// dragging there will do before they press.
 fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
     match edges {
         e if e == ResizeEdge::TOP => CursorIcon::NResize,
@@ -299,15 +150,6 @@ fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
     }
 }
 
-/// Repaints one titlebar button into its cached buffer.
-///
-/// The buttons differ only in their colours and glyph, so they share this
-/// instead of a near-identical block per button. `bg`/`fg` are straight
-/// colour — see [`Painter::draw_icon_maximize`]'s docs on why no
-/// premultiplication happens at this boundary. `height` is logical; the
-/// buffer is allocated at `scale` and sized in physical pixels
-/// accordingly, so the icon rasterizes crisp rather than upscaled on any
-/// output whose scale isn't exactly `1`.
 fn redraw_button(
     buf: &mut Option<MemoryRenderBuffer>,
     height: i32,
@@ -349,11 +191,6 @@ impl HeaderBar {
         self.height = height;
     }
 
-    /// How far a shadow may extend beyond the frame, in logical pixels —
-    /// `0` if shadows are disabled. Used by `window.rs`'s
-    /// `SpaceElement::bbox` to reserve enough margin for damage tracking
-    /// to actually let the shadow render, the same reason `RESIZE_BORDER`
-    /// is already baked into that margin.
     #[must_use]
     pub fn shadow_margin(&self) -> i32 {
         if self.theme.shadow {
@@ -363,9 +200,6 @@ impl HeaderBar {
         }
     }
 
-    /// Snapshots the theme, focus, maximized, and output-scale state to
-    /// redraw with. See the fields' own docs for why this happens ahead of
-    /// time rather than at render.
     fn sync(&mut self, theme: &DecorationTheme, focused: bool, maximized: bool, scale: i32) {
         if &self.theme != theme {
             self.theme = theme.clone();
@@ -374,13 +208,6 @@ impl HeaderBar {
         self.maximized = maximized;
         if self.scale != scale {
             self.scale = scale;
-            // A buffer's declared scale is fixed at creation; resizing it
-            // later changes size but not that. There is only ever one
-            // output today (always scale 1), so this can't fire in
-            // practice yet, but a real scale change — an output swap,
-            // whenever multi-output exists — has to drop and recreate
-            // every cached buffer rather than just resizing them, or
-            // their declared scale and physical size would disagree.
             self.titlebar_buf = None;
             self.maximize_buf = None;
             self.chevron_buf = None;
@@ -389,27 +216,10 @@ impl HeaderBar {
         }
     }
 
-    /// The output scale to rasterize decoration buffers at — `self.scale`,
-    /// clamped to at least `1`. Never `0`, unlike the raw field's derived
-    /// `Default`, which would produce zero-sized (i.e. dropped) buffers if
-    /// ever read before the first `sync`.
     const fn effective_scale(&self) -> i32 {
         if self.scale < 1 { 1 } else { self.scale }
     }
 
-    /// Records which button zone is hovered right now (or none), restarting
-    /// the fade-in timer whenever the target actually changes, and returns
-    /// how far into that fade the *current* target is (`1.0` once settled,
-    /// or immediately if nothing is hovered).
-    ///
-    /// Deliberately no crossfade: when hover moves to a different button
-    /// (or off every button), the previously-hovered one's backplate just
-    /// snaps back to transparent and the new target's grows in from
-    /// scratch — the same simplification [`crate::overview::OverviewUi`]'s
-    /// own hover ring makes, for the same reason (see its `set_hover`
-    /// docs): a real crossfade needs to track fading in *and* out at once,
-    /// for a transition quick and small enough that the difference is not
-    /// worth the bookkeeping.
     fn button_hover_progress(&mut self, hovered: Option<HitZone>) -> f64 {
         if self.button_hover != hovered {
             self.button_hover = hovered;
@@ -424,11 +234,6 @@ impl HeaderBar {
         (started.elapsed().as_secs_f64() / BUTTON_HOVER_ANIM.as_secs_f64()).clamp(0.0, 1.0)
     }
 
-    /// Whether a button's hover fade-in is still running, i.e. the
-    /// compositor needs to keep scheduling repaints for this window — see
-    /// [`crate::GlideState::any_button_hover_animating`], which is what
-    /// actually polls this every frame the way `main.rs` already does for
-    /// the overview's own animation.
     #[must_use]
     pub fn is_hover_animating(&self) -> bool {
         self.button_hover.is_some()
@@ -437,19 +242,13 @@ impl HeaderBar {
                 .is_some_and(|started| started.elapsed() < BUTTON_HOVER_ANIM)
     }
 
-    /// Update the window title stored for rendering in the drag zone.
     pub fn set_title(&mut self, title: String) {
         if self.title != title {
             self.title = title;
-            // Invalidate the titlebar buffer so it gets repainted.
             self.titlebar_buf = None;
         }
     }
 
-    /// Which zone `x` falls in. Maximize is on its own at the frame's left
-    /// edge — deliberately separated from close, so a slip while reaching
-    /// for one can never land on the other; chevron and close cluster at
-    /// the right edge. Everything between them is drag territory.
     fn zone_at(&self, x: f64) -> HitZone {
         let w = f64::from(self.width);
         let bw = f64::from(BUTTON_WIDTH);
@@ -464,8 +263,6 @@ impl HeaderBar {
         }
     }
 
-    /// Height of everything hit-testable: the titlebar strip, plus the open
-    /// dropdown extending below it.
     fn interactive_height(&self) -> i32 {
         let menu_rows = if self.menu_open {
             i32::try_from(MenuItem::ALL.len()).unwrap_or(0)
@@ -475,21 +272,6 @@ impl HeaderBar {
         self.height * (1 + menu_rows)
     }
 
-    /// Whether `rel` — relative to the decoration's own origin, the
-    /// titlebar's top-left — falls inside the decoration.
-    ///
-    /// The decoration is everything of the frame that is not the client's
-    /// content: the titlebar strip, the invisible resize band around the
-    /// whole frame, and — when open — the chevron dropdown, which extends
-    /// *below* the strip over the content. Each part matters: a strip-only
-    /// test routed clicks on the menu straight to the client underneath,
-    /// and without the band a resize could only start from a client-side
-    /// `resize_request`, which nothing without CSD ever sends.
-    ///
-    /// The dropdown is compact, not full-width (see the module docs), so
-    /// only its own `[menu_x, menu_x + menu_width)` column counts as ours
-    /// while it's open — everywhere else in the content area still belongs
-    /// to the client, exactly as when the menu is closed.
     pub fn contains(&self, rel: Point<f64, Logical>) -> bool {
         if !self.has_frame() {
             return false;
@@ -521,11 +303,6 @@ impl HeaderBar {
         true
     }
 
-    /// Which resize edges `rel` falls on, if it is in the resize band.
-    ///
-    /// Strict quadrants: a corner is exactly the overlap of two bands, with
-    /// no extra corner-widening. `RESIZE_BORDER` is generous enough that
-    /// the overlap square is comfortably hittable.
     fn resize_edges_at(&self, rel: Point<f64, Logical>) -> Option<ResizeEdge> {
         if !self.has_frame() {
             return None;
@@ -549,15 +326,6 @@ impl HeaderBar {
         (!edges.is_empty()).then_some(edges)
     }
 
-    /// Menu row index under `loc` (decoration-origin coordinates), if the
-    /// menu is open and `loc` is inside it.
-    ///
-    /// Row 0 starts *below* the titlebar strip — at `y == height`, not at
-    /// `y == 0` — hence the subtraction: without it, hovering the titlebar
-    /// itself lit up row 0 and the real row 0 counted as row 1.
-    ///
-    /// `x` is bounded by the compact panel's own `[menu_x, menu_x +
-    /// menu_width)`, not the full titlebar width — see `contains`'s docs.
     fn menu_item_at(&self, loc: Point<f64, Logical>) -> Option<usize> {
         let menu_left = f64::from(self.menu_x);
         let menu_right = f64::from(self.menu_x + self.menu_width);
@@ -570,9 +338,6 @@ impl HeaderBar {
             return None;
         }
 
-        // Row indices are always small (bounded by MenuItem::ALL.len(), a
-        // handful of entries at most), so this narrowing never truncates in
-        // a way that changes which row was clicked.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let index = (y_in_menu / f64::from(self.height)) as usize;
 
@@ -587,43 +352,16 @@ impl HeaderBar {
     pub fn pointer_leave(&mut self) {
         self.pointer_loc = None;
         self.menu_hover = None;
-        // Dropping the pressed-visual here (rather than only on release)
-        // matches common toolkit behaviour: holding a button and dragging
-        // off it un-highlights it, even though the eventual release —
-        // wherever it lands — is still what decides the actual action, per
-        // `on_button`'s own docs. This is a deliberate simplification: a
-        // real "drag off cancels, drag back re-arms" state machine is more
-        // than this titlebar warrants right now.
         self.pressed = None;
     }
 
-    /// Decides what a button press/release on the decoration should do,
-    /// mutating only the header's own state (menu open/closed, pressed
-    /// visual).
-    ///
-    /// Deliberately has no access to `GlideState`: it runs under the
-    /// decoration `RefCell` borrow, and anything that reaches
-    /// `reconcile_space` from here would re-borrow it and panic. The caller
-    /// executes the returned action after releasing the borrow.
-    ///
-    /// Only release triggers an action (matching how the rest of Glide
-    /// treats clicks); press alone starts a move when it lands on the plain
-    /// background, since a drag by definition begins while the button is
-    /// still held, and marks whichever button zone it landed on as
-    /// pressed, for `redraw` to shade darker.
     fn on_button(&mut self, event: &ButtonEvent) -> Option<DecorationAction> {
         let loc = self.pointer_loc?;
 
         if event.state == ButtonState::Pressed {
-            // A press with the menu open is handled entirely on release,
-            // same as everywhere else in the titlebar.
             if self.menu_open {
                 return None;
             }
-            // The resize band wins over the titlebar zones: it extends
-            // *outside* the frame where no zone exists anyway, so the only
-            // overlap to resolve is precedence, and a press in the band
-            // unambiguously means resize.
             if let Some(edges) = self.resize_edges_at(loc) {
                 return Some(DecorationAction::StartResize(edges));
             }
@@ -638,13 +376,11 @@ impl HeaderBar {
             return None;
         }
 
-        // Any release — wherever it lands — ends whatever was pressed.
         self.pressed = None;
 
         if self.menu_open {
             let item = self.menu_item_at(loc).and_then(|i| MenuItem::ALL.get(i));
             let action = item.map(|&item| DecorationAction::Run(item));
-            // Any release closes the menu, whether it hit an item or not.
             self.menu_open = false;
             return action;
         }
@@ -664,10 +400,6 @@ impl HeaderBar {
         }
     }
 
-    /// Whether `loc` is within the titlebar strip itself, as opposed to the
-    /// resize band or the open menu. The button zones (`zone_at`) only make
-    /// sense inside the strip: without this check, releasing a resize drag
-    /// that started at the top-left corner counted as a maximize click.
     fn in_titlebar_strip(&self, loc: Point<f64, Logical>) -> bool {
         loc.x >= 0.0
             && loc.x < f64::from(self.width)
@@ -675,39 +407,17 @@ impl HeaderBar {
             && loc.y < f64::from(self.height)
     }
 
-    /// Redraws every `MemoryRenderBuffer` that needs updating.
-    ///
-    /// Buffers are only recreated when their content actually changes (hover
-    /// state, focus, open menu, window size, title) — so this is cheap to
-    /// call every frame.
-    // Over pedantic's line-count threshold: this is one visual routine —
-    // titlebar background/title, the three buttons, the dropdown — sharing
-    // `painter`/`theme`/`hovered`/`pressed`. Splitting it up would mean
-    // passing all of those between the pieces instead of just reading them
-    // from the enclosing scope, for no reduction in what a reader has to
-    // hold in their head at once.
     #[allow(clippy::too_many_lines)]
     fn redraw(&mut self, painter: &Painter) {
         if self.width == 0 || self.height == 0 {
             return;
         }
 
-        // Determine which zone is hovered/pressed (strip only — not the
-        // resize band). `pressed` always implies `hovered` in practice
-        // (the pointer is still down on whatever it was pressed on, or has
-        // left and cleared `pressed` via `pointer_leave`), but each is
-        // tracked independently and read independently below.
         let hovered = self
             .pointer_loc
             .filter(|l| self.in_titlebar_strip(*l))
             .map(|l| self.zone_at(l.x));
         let pressed = self.pressed;
-        // How far into its fade-in the hovered button (if any) is — see
-        // `button_hover_progress`'s docs on why only the *current* target
-        // fades, with no crossfade for whatever was hovered before it.
-        // Computed (and, via that call, `self.button_hover*` updated)
-        // ahead of the `&self.theme` borrow just below, which would
-        // otherwise conflict with this method's `&mut self`.
         #[allow(clippy::cast_possible_truncation)]
         let hover_t = self.button_hover_progress(hovered) as f32;
 
@@ -721,10 +431,6 @@ impl HeaderBar {
         };
         let bg = bg_color.to_buffer_bytes();
 
-        // ── Titlebar background + title label ─────────────────────────────
-        // Repaint whenever width, height, focus, title, or hover changes. We
-        // always repaint here for simplicity; the damage system inside
-        // MemoryRenderBuffer will only upload the changed pixels to the GPU.
         {
             let w = self.width;
             let h = self.height;
@@ -732,7 +438,6 @@ impl HeaderBar {
             let buf = self.titlebar_buf.get_or_insert_with(|| {
                 MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
             });
-            // Grow if needed.
             let mut ctx = buf.render();
             ctx.resize((pw, ph));
             let title = self.title.clone();
@@ -741,16 +446,7 @@ impl HeaderBar {
                 TitleAlign::Center => TextAlign::Center,
             };
             let _ = ctx.draw(|pixels| {
-                let fg = [255, 255, 255, bg[3]]; // white text, same alpha as bg
-                // Rounded background first — only the frame's true top
-                // corners round off (`[true, true, false, false]`); the
-                // bottom two stay square, since they sit flush against the
-                // client's own content, which (short of a clipping shader
-                // on the client surface itself — out of scope here) is
-                // always drawn square. Text goes on top *without* its own
-                // background fill, the same `fill_panel_background` +
-                // `draw_label_over` pairing the chevron dropdown already
-                // uses, or it would flatten the corners right back out.
+                let fg = [255, 255, 255, bg[3]];
                 Painter::fill_panel_background(
                     pixels,
                     w,
@@ -760,8 +456,6 @@ impl HeaderBar {
                     theme.corner_radius,
                     [true, true, false, false],
                 );
-                // Clears maximize on the left, the chevron/close cluster
-                // on the right.
                 let x_min = BUTTON_WIDTH + TITLE_PADDING;
                 let x_max = w - RIGHT_CLUSTER_WIDTH;
                 painter.draw_label_over(pixels, w, h, x_min, x_max, scale, align, &title, fg);
@@ -769,12 +463,6 @@ impl HeaderBar {
             });
         }
 
-        // ── Titlebar buttons ───────────────────────────────────────────────
-        // Foregrounds differ slightly per icon: the close glyph is the one
-        // meant to stand out, the chevron the least.
-        // Maximize/restore are the same button showing different glyphs —
-        // whichever one is current communicates what *pressing* it will do
-        // next, not the window's present state.
         let maximize_icon: fn(&mut [u8], i32, i32, i32, Color, Color) = if self.maximized {
             Painter::draw_icon_restore
         } else {
@@ -817,17 +505,9 @@ impl HeaderBar {
             redraw_button(buf, height, scale, btn_bg, fg, icon);
         }
 
-        // ── Dropdown menu ──────────────────────────────────────────────────
         if self.menu_open {
             let row_h = self.height;
 
-            // Compact panel: sized to the widest item (plus padding), never
-            // narrower than MENU_MIN_WIDTH nor wider than the titlebar
-            // itself, and right-aligned so its right edge lines up with the
-            // button cluster's — "hanging from the chevron", per the module
-            // docs, without needing per-row width bookkeeping.
-            // Menu labels are a handful of short English words; their
-            // measured width is nowhere near i32's range.
             #[allow(clippy::cast_possible_truncation)]
             let widest = MenuItem::ALL
                 .iter()
@@ -840,11 +520,6 @@ impl HeaderBar {
             self.menu_width = row_w;
             self.menu_x = (self.width - row_w).max(0);
 
-            // Buffers created fresh here (a first-ever open, or after
-            // `sync` cleared them on a scale change) get the current
-            // scale baked in from the start; existing ones are only ever
-            // resized below, never recreated, so their already-correct
-            // declared scale is left untouched.
             let (prow_w, prow_h) = (row_w * scale, row_h * scale);
             self.menu_row_bufs.resize_with(MenuItem::ALL.len(), || {
                 MemoryRenderBuffer::new(
@@ -858,12 +533,6 @@ impl HeaderBar {
             let menu_hover = self.menu_hover;
             let menu_bg = theme.menu_background;
             let menu_hover_bg = theme.menu_item_hover;
-            // Off-white / pure-white text, opaque: B, G, R, A. (Previously
-            // written as [255, 230, 230, 230] under the mistaken belief
-            // that this function's colour bytes were [A, R, G, B] — that
-            // put 255 in the *blue* channel and made every non-hovered
-            // menu row's text render with a faint blue tint instead of
-            // neutral grey.)
             let font_fg = [230u8, 230, 230, 255];
             let font_fg_hover = [255u8, 255, 255, 255];
             let row_count = self.menu_row_bufs.len();
@@ -878,13 +547,6 @@ impl HeaderBar {
                 let mut ctx = buf.render();
                 ctx.resize((prow_w, prow_h));
                 let _ = ctx.draw(|pixels| {
-                    // Rounded background first — only the panel's true
-                    // outer corners (first row's top, last row's bottom;
-                    // both if there's only one row) round off, so a
-                    // multi-row menu reads as one piece, not a stack of
-                    // separate pills. Text goes on top *without* its own
-                    // background fill, or it would flatten the corners
-                    // right back out.
                     Painter::fill_panel_background(
                         pixels,
                         row_w,
@@ -914,44 +576,12 @@ impl HeaderBar {
     }
 }
 
-/// Which of a rounded panel row's corners are the panel's true *outer*
-/// corners, `[top_left, top_right, bottom_right, bottom_left]` — the first
-/// row rounds its top, the last row its bottom, and a single row (today's
-/// only menu) rounds all four. A row in the middle of a longer menu rounds
-/// none: its edges are internal boundaries, not the panel's silhouette.
 const fn row_corners(index: usize, total: usize) -> [bool; 4] {
     let is_first = index == 0;
-    // `total` is never 0 when this is called (menu_row_bufs is sized to
-    // MenuItem::ALL, non-empty), so `total - 1` cannot underflow.
     let is_last = index == total - 1;
     [is_first, is_first, is_last, is_last]
 }
 
-/// Starts an interactive move exactly as if the client had called
-/// `xdg_toplevel.move`, without going through that request at all: a
-/// titlebar drag is a compositor-only affordance, there is no client-side
-/// `move_request` to route through here.
-///
-/// Deferred via `insert_idle` rather than calling `pointer.set_grab`
-/// synchronously — this runs from inside `PointerTarget::button`, itself
-/// called from *within* `DefaultGrab::button()`, partway through:
-/// ```text
-/// DefaultGrab::button():
-///     handle.button(data, event)                       // <- dispatches into us
-///     if Pressed { handle.set_grab(.., click_grab) }    // <- runs *after* we return
-/// ```
-/// A grab set now would be unconditionally clobbered by that second
-/// `set_grab` a few lines later in the very same call — `PointerInternal::set_grab`
-/// replaces whatever grab is active without checking what it is. Deferring
-/// to the next event loop iteration runs after that has already happened,
-/// so our grab is the one still installed afterward. (This is also how
-/// anvil's own titlebar handles the same request.)
-///
-/// `GrabStartData` is built by hand rather than via `pointer.grab_start_data()`
-/// for the same reason: nothing has installed a grab yet at this point for
-/// it to return. `focus: None` is fine — unlike `check_grab`'s use of an
-/// existing grab's start data, nothing in `MoveSurfaceGrab` reads the
-/// `focus` field, only `location`.
 fn start_move(
     seat: &Seat<GlideState>,
     state: &mut GlideState,
@@ -985,9 +615,6 @@ fn start_move(
     });
 }
 
-/// Starts an interactive resize from the resize band, exactly as if the
-/// client had called `xdg_toplevel.resize`. Deferred via `insert_idle` for
-/// the same grab-clobbering reason as [`start_move`] — see its docs.
 fn start_resize(
     seat: &Seat<GlideState>,
     state: &mut GlideState,
@@ -1013,20 +640,11 @@ fn start_resize(
             button,
             location: pointer.current_location(),
         };
-        // The same content-area rectangle a client-initiated resize uses
-        // (see `resize_request` in handlers/xdg_shell.rs): the grab talks
-        // to the client in configure sizes, which are content sizes.
         let initial_rect = smithay::utils::Rectangle::new(location, window.geometry().size);
 
         let grab = ResizeSurfaceGrab::start(start_data, window.clone(), edges, initial_rect);
         pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Clear);
 
-        // `Focus::Clear` above synchronously leaves whatever was focused
-        // (the decoration, since that's where the drag started) and, as
-        // part of that, resets the cursor to the plain default arrow — see
-        // `PointerInternal::motion`'s `None` branch in smithay. Put the
-        // matching resize arrow back so the cursor does not visibly flick
-        // to the default shape for one frame right as the drag begins.
         state.cursor_status = CursorImageStatus::Named(resize_cursor(edges));
     });
 }
@@ -1045,8 +663,6 @@ fn run_menu_item(state: &mut GlideState, window: &GlideWindow, item: MenuItem) {
 }
 
 impl GlideWindow {
-    /// Per-window decoration state, created with `height: 0` (undecorated)
-    /// on first access.
     pub fn decoration_state(&self) -> Ref<'_, DecorationState> {
         self.user_data()
             .insert_if_missing(|| RefCell::new(DecorationState::default()));
@@ -1081,19 +697,6 @@ impl GlideWindow {
             .and_then(|cell| cell.try_borrow_mut().ok())
     }
 
-    /// Sets the titlebar height (0 disables the decoration entirely) and
-    /// snapshots theme/focus/maximized/scale for the next redraw. Called
-    /// from [`crate::GlideState::reconcile_space`], once per window per
-    /// reconcile — cheap, and it is what keeps decoration rendering in sync
-    /// with configuration reloads, focus changes, maximize/restore
-    /// toggling, and output scale changes despite
-    /// [`smithay::backend::renderer::element::AsRenderElements`] having no
-    /// access to compositor state of its own.
-    ///
-    /// Width is synced here too, not only lazily at render time: `zone_at`
-    /// measures the close button from the right edge, so hit-testing a
-    /// click that somehow arrives before the first render would otherwise
-    /// run against `width == 0` and classify most of the bar as Close.
     pub fn sync_decoration(
         &self,
         theme: &DecorationTheme,
@@ -1111,7 +714,6 @@ impl GlideWindow {
         }
     }
 
-    /// Update the window title stored for rendering in the drag zone.
     pub fn sync_title(&self, title: String) {
         if let Some(mut state) = self.try_decoration_state_mut() {
             state.header.set_title(title);
@@ -1119,10 +721,6 @@ impl GlideWindow {
     }
 }
 
-/// A pointer focus target that isn't a client surface: the decoration
-/// belonging to a window. Routed to via [`crate::focus::PointerFocusTarget`]
-/// so titlebar clicks reach `HeaderBar::clicked` through Smithay's own
-/// pointer dispatch, the same way a `WlSurface` does.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decoration(pub GlideWindow);
 
@@ -1133,13 +731,6 @@ impl IsAlive for Decoration {
 }
 
 impl Decoration {
-    /// Shared enter/motion handling: track hover, and set the pointer shape.
-    ///
-    /// The decoration is compositor territory: whatever cursor the client
-    /// last set via `wl_pointer.set_cursor` stops applying the moment the
-    /// pointer crosses onto it. Over the resize band that shape is the
-    /// matching resize arrow, so the user can see what a drag would do
-    /// before pressing; everywhere else it is the plain default.
     fn update_pointer(&self, data: &mut GlideState, event: &MotionEvent) {
         let icon = {
             if let Some(mut deco) = self.0.try_decoration_state_mut() {
@@ -1173,12 +764,6 @@ impl PointerTarget<GlideState> for Decoration {
     }
 
     fn button(&self, seat: &Seat<GlideState>, data: &mut GlideState, event: &ButtonEvent) {
-        // The decision is made under the decoration borrow; the temporary
-        // `RefMut` ends with this statement. That ordering is load-bearing:
-        // the actions below reach `reconcile_space`, which re-borrows this
-        // same `RefCell` via `sync_decoration`, and executing them while
-        // still borrowed panicked with `BorrowMutError` on the first
-        // maximize-button click.
         let action = self
             .0
             .try_decoration_state_mut()
@@ -1273,17 +858,6 @@ impl PointerTarget<GlideState> for Decoration {
     }
 }
 
-/// Returns the painted pixel buffers for one window's decoration: titlebar
-/// background (with title), maximize, chevron, close, and — when open —
-/// the dropdown rows.
-///
-/// Each entry is `(buffer, logical_offset_from_titlebar_origin)`.
-/// The caller (see `window.rs`) uploads them to the GPU and assembles them
-/// into render elements.
-///
-/// This function takes a renderer reference so that `MemoryRenderBuffer`
-/// can upload changed pixels on-demand.  The buffers themselves live in
-/// `HeaderBar` so they persist across frames for damage-tracking.
 pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationBuffer> {
     let Some(mut state) = window.try_decoration_state_mut() else {
         return Vec::new();
@@ -1320,13 +894,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
 
     let mut out: Vec<DecorationBuffer> = Vec::new();
 
-    // ── Titlebar background (behind buttons, so listed last — later in the
-    // front-to-back list means further back in z-order).
-    // We push buttons first, then the bar, mirroring the previous ordering.
-    // ──────────────────────────────────────────────────────────────────────
-
-    // Menu rows (topmost when open) — under the compact panel's own
-    // left edge (`menu_x`), not the titlebar's, per the module docs.
     for (i, buf) in header.menu_row_bufs.iter().enumerate() {
         let y = header.height * (1 + i32::try_from(i).unwrap_or(0));
         out.push(DecorationBuffer {
@@ -1335,7 +902,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         });
     }
 
-    // Maximize, alone at the left edge.
     if let Some(buf) = &header.maximize_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
@@ -1343,7 +909,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         });
     }
 
-    // Chevron/close cluster, right to left, at the right edge.
     if let Some(buf) = &header.close_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
@@ -1358,7 +923,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         });
     }
 
-    // Titlebar background (furthest back — last in front-to-back list).
     if let Some(buf) = &header.titlebar_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
@@ -1369,22 +933,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
     out
 }
 
-/// Offset and size of each of the four border strips (top, bottom, left,
-/// right) tiling a frame of `width × frame_height`, outset by
-/// `border_width` — relative to that frame's own `(0, 0)` origin, so a
-/// caller adds its own rectangle's `loc` to place them.
-///
-/// Pure geometry, no `SolidColorBuffer`/window plumbing — kept separate
-/// from [`border_strips`] specifically so it can be unit-tested without a
-/// real [`GlideWindow`]. Top and bottom span the full outer width,
-/// including corners; left and right fill in only the height between them,
-/// so the four strips tile into a frame without overlapping at the
-/// corners.
-///
-/// `pub(crate)`: also used by `overview.rs` to draw the hovered preview's
-/// highlight as a real ring instead of a solid slab the size of the whole
-/// preview — the exact same tiling problem, just around a different
-/// rectangle.
 pub(crate) fn border_rects(
     width: i32,
     frame_height: i32,
@@ -1410,35 +958,8 @@ pub(crate) fn border_rects(
     ]
 }
 
-/// One shadow ring strip's offset, size, and alpha *multiplier*.
 pub(crate) type ShadowRect = (Point<i32, Logical>, Size<i32, Logical>, f32);
 
-/// Offset, size, and alpha multiplier for each strip of each of
-/// [`SHADOW_BANDS`] concentric rings approximating a soft drop shadow —
-/// [`shadow_strips`]'s pure geometry, same split as [`border_rects`] is to
-/// [`border_strips`] and for the same reason (unit-testable without a real
-/// [`GlideWindow`]).
-///
-/// tiny-skia has no blur primitive (see `paint.rs`'s module docs on why
-/// icons went the vector-path route instead of a raster blur), and
-/// hand-rolling a real gaussian/box blur is a meaningfully bigger and
-/// harder-to-verify undertaking than this crate's other rendering code.
-/// Several native, resolution-independent [`SolidColorBuffer`] rings —
-/// the same tiling [`border_rects`] already does, just repeated outward
-/// with shrinking alpha — approximate the same soft-edged look cheaply:
-/// dense near the frame, fading out towards `shadow_size`, without an
-/// actual blur kernel. [`SHADOW_BANDS`] bands keeps the banding this
-/// necessarily has subtle rather than visibly stepped.
-///
-/// Alpha uses each band's *midpoint* distance, not its outer edge, so the
-/// outermost band still contributes a faint trace right up to
-/// `shadow_size` instead of fading to exactly zero one band early and
-/// visibly clipping the shadow's edge.
-///
-/// `pub(crate)`: also used by `overview.rs`, both for each preview's own
-/// drop shadow and for the hovered preview's outward glow — the same
-/// falloff-ring approximation applies to "soft blur around a rectangle"
-/// regardless of what colour or rectangle it's drawn for.
 pub(crate) fn shadow_rects(
     width: i32,
     frame_height: i32,
@@ -1472,15 +993,6 @@ pub(crate) fn shadow_rects(
     out
 }
 
-/// Returns the four border strips framing one window's whole frame
-/// (titlebar + content), or nothing if it isn't decorated or the theme's
-/// `border-width` is `0`.
-///
-/// A separate function from [`frame_buffers`], not folded into it, because
-/// border strips are [`SolidColorBuffer`]s — a native Smithay solid-colour
-/// element — rather than [`MemoryRenderBuffer`]s; there is no pixel
-/// plotting here to route through a [`Painter`] for a flat rectangle, and
-/// unlike the titlebar/buttons/menu this doesn't need one.
 pub fn border_strips(window: &GlideWindow) -> Vec<BorderStrip> {
     let Some(mut state) = window.try_decoration_state_mut() else {
         return Vec::new();
@@ -1491,9 +1003,6 @@ pub fn border_strips(window: &GlideWindow) -> Vec<BorderStrip> {
 
     let width = state.header.width;
     let frame_height = state.header.height + state.header.content_height;
-    // Clamped to RESIZE_BORDER: see `DecorationTheme::border_width`'s docs
-    // on why a wider value would draw outside the margin damage tracking
-    // is told to cover.
     let border_width = i32::try_from(state.header.theme.border_width)
         .unwrap_or(RESIZE_BORDER)
         .clamp(0, RESIZE_BORDER);
@@ -1539,17 +1048,6 @@ pub fn border_strips(window: &GlideWindow) -> Vec<BorderStrip> {
     out
 }
 
-/// Returns the [`SHADOW_BANDS`] `* 4` shadow ring strips framing one
-/// window's whole frame, or nothing if it isn't decorated or the theme
-/// disables shadows.
-///
-/// Reuses [`BorderStrip`] rather than a dedicated type: each ring's alpha
-/// falloff (see [`shadow_rects`]) is baked directly into its
-/// [`SolidColorBuffer`]'s own stored colour — scaling `shadow_color`'s
-/// alpha channel per ring — rather than threaded through as a separate
-/// per-strip value, so the window-fade `alpha` `window.rs` already
-/// multiplies every [`BorderStrip`] by continues to apply uniformly on
-/// top, exactly as it does for the border.
 pub fn shadow_strips(window: &GlideWindow) -> Vec<BorderStrip> {
     let Some(mut state) = window.try_decoration_state_mut() else {
         return Vec::new();
@@ -1586,7 +1084,6 @@ pub fn shadow_strips(window: &GlideWindow) -> Vec<BorderStrip> {
     out
 }
 
-// ── Missing import ──────────────────────────────────────────────────────────
 use smithay::utils::Serial;
 
 #[cfg(test)]
@@ -1595,12 +1092,6 @@ mod tests {
 
     use super::*;
 
-    /// A decorated 800x600-content window with a 32px titlebar.
-    ///
-    /// `menu_x`/`menu_width` are seeded as `redraw` (which needs a real
-    /// [`Painter`] to measure label widths and isn't exercised by these
-    /// pure hit-testing tests) would leave them after opening the menu on
-    /// an 800-wide bar: a compact panel hanging from the right edge.
     fn header() -> HeaderBar {
         HeaderBar {
             height: 32,
@@ -1639,9 +1130,6 @@ mod tests {
 
         #[test]
         fn effective_scale_defaults_to_one_when_never_synced() {
-            // `HeaderBar::default()`'s derived `scale` is 0 (i32's
-            // default); `effective_scale` must never hand that out, or
-            // every buffer size computed from it would be zero too.
             let h = HeaderBar::default();
             assert_eq!(h.effective_scale(), 1);
         }
@@ -1655,12 +1143,7 @@ mod tests {
 
         #[test]
         fn sync_invalidates_cached_buffers_when_scale_changes() {
-            // A buffer's declared scale is fixed at creation — see
-            // `sync`'s own docs — so a real scale change has to drop
-            // every cached buffer, not just leave stale ones around with
-            // the wrong declared scale for their (about to be resized)
-            // physical dimensions.
-            let mut h = header(); // scale field is 0 (unset)
+            let mut h = header();
             h.titlebar_buf = Some(MemoryRenderBuffer::default());
             h.maximize_buf = Some(MemoryRenderBuffer::default());
             h.chevron_buf = Some(MemoryRenderBuffer::default());
@@ -1682,7 +1165,6 @@ mod tests {
             h.sync(&DecorationTheme::default(), false, false, 1);
             h.titlebar_buf = Some(MemoryRenderBuffer::default());
 
-            // Same scale, only focus changes: must not touch the buffer.
             h.sync(&DecorationTheme::default(), true, false, 1);
 
             assert!(
@@ -1692,11 +1174,6 @@ mod tests {
         }
     }
 
-    // `button_hover_progress` only ever returns a bit-exact `1.0` (an
-    // early return or `.clamp(0.0, 1.0)`'s own exact upper bound) or a
-    // genuinely-computed in-between value, checked below with `contains`
-    // rather than equality — so the exact-`1.0` comparisons in this module
-    // are as safe as `darken_clamps_at_zero`'s, and get the same allow.
     #[allow(clippy::float_cmp)]
     mod hover_animation {
         use super::*;
@@ -1731,10 +1208,6 @@ mod tests {
 
         #[test]
         fn switching_the_hovered_zone_restarts_the_fade_with_no_crossfade() {
-            // Deliberate simplification (see `button_hover_progress`'s own
-            // docs): moving from one hovered button straight to another
-            // restarts progress from scratch for the new target, it does
-            // not carry over whatever progress the old one had reached.
             let mut h = header();
             h.button_hover_progress(Some(HitZone::Maximize));
             std::thread::sleep(BUTTON_HOVER_ANIM + std::time::Duration::from_millis(30));
@@ -1820,7 +1293,6 @@ mod tests {
 
         #[test]
         fn content_area_is_not_decoration() {
-            // Clicks there belong to the client, not to us.
             assert!(!header().contains(point(400.0, 300.0)));
         }
 
@@ -1843,9 +1315,6 @@ mod tests {
         #[test]
         fn menu_rows_count_only_while_open() {
             let mut h = header();
-            // Row 0 lives at y in [height, 2*height) — over the content —
-            // and x within the compact panel's own column, not anywhere
-            // across the full titlebar width.
             assert!(!h.contains(point(750.0, 48.0)));
             h.menu_open = true;
             assert!(h.contains(point(750.0, 48.0)));
@@ -1853,9 +1322,6 @@ mod tests {
 
         #[test]
         fn menu_open_does_not_claim_content_outside_the_panel_column() {
-            // The whole point of a compact (not full-width) dropdown: the
-            // rest of the content area still belongs to the client while
-            // it's open.
             let mut h = header();
             h.menu_open = true;
             assert!(!h.contains(point(400.0, 48.0)), "left of the panel");
@@ -1863,10 +1329,6 @@ mod tests {
 
         #[test]
         fn undecorated_still_owns_its_resize_band() {
-            // A client drawing its own decorations (GTK and friends) gets
-            // no titlebar from us, but must still be resizable from the
-            // compositor side, so the band around its frame stays ours
-            // even though nothing is drawn there.
             let h = HeaderBar {
                 height: 0,
                 width: 800,
@@ -1941,16 +1403,12 @@ mod tests {
         fn strips_tile_the_frame_without_overlapping_corners() {
             let [top, bottom, left, right] = border_rects(800, 632, 2);
 
-            // Top spans the full outer width, including corners.
             assert_eq!(top.0, Point::from((-2, -2)));
             assert_eq!(top.1, Size::from((804, 2)));
 
-            // Bottom mirrors it at the far edge.
             assert_eq!(bottom.0, Point::from((-2, 632)));
             assert_eq!(bottom.1, Size::from((804, 2)));
 
-            // Left/right fill only the height between top and bottom —
-            // not the corners, which the top/bottom strips already cover.
             assert_eq!(left.0, Point::from((-2, 0)));
             assert_eq!(left.1, Size::from((2, 632)));
             assert_eq!(right.0, Point::from((800, 0)));
@@ -1959,8 +1417,6 @@ mod tests {
 
         #[test]
         fn at_max_clamped_width_stays_within_the_resize_band_margin() {
-            // border_strips clamps border_width to RESIZE_BORDER precisely
-            // so this holds — see its docs on why that margin matters.
             let [top, _bottom, left, right] = border_rects(800, 632, RESIZE_BORDER);
             assert_eq!(top.0.y, -RESIZE_BORDER);
             assert_eq!(left.0.x, -RESIZE_BORDER);
@@ -1985,13 +1441,10 @@ mod tests {
 
         #[test]
         fn bands_tile_outward_from_the_frame_without_gaps_or_overlap() {
-            let rects = shadow_rects(800, 632, 18, 6); // step = 3, exact
-            // Top strip of each band, in order: consecutive bands must
-            // have contiguous y ranges, each `step` px tall, with no gap
-            // between one band's inner edge and the next band's outer one.
+            let rects = shadow_rects(800, 632, 18, 6);
             let mut top_ys: Vec<i32> = rects
                 .iter()
-                .step_by(4) // every 4th entry is a "top" strip (band order)
+                .step_by(4)
                 .map(|(offset, _, _)| offset.y)
                 .collect();
             top_ys.sort_unstable();
@@ -2002,7 +1455,6 @@ mod tests {
                     "gap or overlap between adjacent bands: {top_ys:?}"
                 );
             }
-            // Outermost edge lands exactly at -shadow_size.
             assert_eq!(*top_ys.first().unwrap(), -18);
         }
 
@@ -2020,10 +1472,6 @@ mod tests {
 
         #[test]
         fn outermost_band_alpha_is_small_but_nonzero() {
-            // Using the band's midpoint (not outer edge) for the falloff
-            // curve is what keeps this from being exactly 0 — see the
-            // function's own docs on why that matters (no visible hard
-            // clip at the shadow's edge).
             let rects = shadow_rects(800, 632, 24, SHADOW_BANDS);
             let last_alpha = rects.last().unwrap().2;
             assert!(
@@ -2055,7 +1503,7 @@ mod tests {
 
         #[test]
         fn maximize_is_alone_on_the_left_chevron_and_close_cluster_on_the_right() {
-            let h = header(); // width 800
+            let h = header();
             assert_eq!(h.zone_at(16.0), HitZone::Maximize);
             assert_eq!(h.zone_at(400.0), HitZone::Drag);
             assert_eq!(h.zone_at(750.0), HitZone::Chevron);
@@ -2079,9 +1527,6 @@ mod tests {
 
         #[test]
         fn row_zero_starts_below_the_strip() {
-            // Regression test for the review finding: the divisor version
-            // without the height subtraction made the *strip* count as row
-            // 0 and the real row 0 count as row 1.
             let mut h = header();
             h.menu_open = true;
 
@@ -2121,7 +1566,7 @@ mod tests {
         #[test]
         fn press_on_a_button_zone_does_not_move() {
             let mut h = header();
-            h.pointer_enter(point(16.0, 16.0)); // over maximize
+            h.pointer_enter(point(16.0, 16.0));
 
             assert_eq!(h.on_button(&press()), None);
         }
@@ -2129,7 +1574,7 @@ mod tests {
         #[test]
         fn press_on_a_button_zone_marks_it_pressed() {
             let mut h = header();
-            h.pointer_enter(point(16.0, 16.0)); // over maximize
+            h.pointer_enter(point(16.0, 16.0));
 
             h.on_button(&press());
             assert_eq!(h.pressed, Some(HitZone::Maximize));
@@ -2138,11 +1583,11 @@ mod tests {
         #[test]
         fn release_clears_the_pressed_zone_regardless_of_where_it_lands() {
             let mut h = header();
-            h.pointer_enter(point(16.0, 16.0)); // over maximize
+            h.pointer_enter(point(16.0, 16.0));
             h.on_button(&press());
             assert_eq!(h.pressed, Some(HitZone::Maximize));
 
-            h.pointer_enter(point(400.0, 16.0)); // released elsewhere
+            h.pointer_enter(point(400.0, 16.0));
             h.on_button(&release());
             assert_eq!(h.pressed, None);
         }
@@ -2150,7 +1595,7 @@ mod tests {
         #[test]
         fn pointer_leave_clears_the_pressed_zone() {
             let mut h = header();
-            h.pointer_enter(point(790.0, 16.0)); // over close
+            h.pointer_enter(point(790.0, 16.0));
             h.on_button(&press());
             assert_eq!(h.pressed, Some(HitZone::Close));
 
@@ -2192,11 +1637,11 @@ mod tests {
         fn chevron_opens_the_menu_then_an_item_click_runs_it() {
             let mut h = header();
 
-            h.pointer_enter(point(750.0, 16.0)); // over the chevron
+            h.pointer_enter(point(750.0, 16.0));
             assert_eq!(h.on_button(&release()), None);
             assert!(h.menu_open);
 
-            h.pointer_enter(point(750.0, 48.0)); // over the Minimize row
+            h.pointer_enter(point(750.0, 48.0));
             assert_eq!(
                 h.on_button(&release()),
                 Some(DecorationAction::Run(MenuItem::Minimize))
@@ -2208,7 +1653,7 @@ mod tests {
         fn release_outside_the_open_menu_just_closes_it() {
             let mut h = header();
             h.menu_open = true;
-            h.pointer_enter(point(400.0, 16.0)); // back on the strip
+            h.pointer_enter(point(400.0, 16.0));
 
             assert_eq!(h.on_button(&release()), None);
             assert!(!h.menu_open);
@@ -2216,11 +1661,6 @@ mod tests {
 
         #[test]
         fn release_in_the_band_after_a_resize_is_not_a_button_click() {
-            // Regression guard: `zone_at` only means anything inside the
-            // strip (`in_titlebar_strip`). A release at the frame's
-            // top-left corner is in the resize band — outside the strip on
-            // both axes — and must not be classified as landing on the
-            // background drag zone or any button.
             let mut h = header();
             h.pointer_enter(point(-4.0, -4.0));
 

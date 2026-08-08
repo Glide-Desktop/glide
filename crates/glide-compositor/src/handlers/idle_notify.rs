@@ -72,15 +72,11 @@ mod tests {
         let display = Display::<GlideState>::new().unwrap();
         let dh = display.handle();
 
-        // Create client and surfaces
         let handler = TestIdleHandler::new();
 
-        // Simulate surfaces with mock handles / pointers
-        // Note: We can create surfaces or simulate surface tracking via TestIdleHandler
         let client_res = dh.create_global::<GlideState, smithay::reexports::wayland_server::protocol::wl_compositor::WlCompositor, _>(5, smithay::wayland::GlobalData);
         assert!(!format!("{client_res:?}").is_empty());
 
-        // Verify inhibition state behavior across multiple surfaces
         assert!(!handler.idle_notifier_state_inhibited);
     }
 
@@ -88,8 +84,6 @@ mod tests {
     fn test_idle_inhibit_logic_invariants() {
         let handler = TestIdleHandler::new();
 
-        // Uninhibit on empty set (spurious uninhibit)
-        // Simulate by calling uninhibit with empty state
         assert!(!handler.idle_notifier_state_inhibited);
         assert!(handler.idle_inhibited_surfaces.is_empty());
     }

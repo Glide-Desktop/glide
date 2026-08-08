@@ -18,7 +18,6 @@ fn test_rapid_workspace_switching_and_window_movement_stress() {
     layout.set_policy(NewWindowPolicy::ActiveWorkspace);
     layout.outputs_changed(&[sample_output(1, 0, 0, 1920, 1080)]);
 
-    // Create 50 windows across multiple workspaces
     let mut windows = Vec::new();
     for _ in 0..50 {
         let w = WindowId::next();
@@ -29,16 +28,13 @@ fn test_rapid_workspace_switching_and_window_movement_stress() {
     let workspace_ids = layout.workspace_ids();
     assert!(!workspace_ids.is_empty());
 
-    // Execute 10,000 rapid workspace switches and window moves
     for i in 0..10_000 {
         let w = windows[i % windows.len()];
         let target_ws_idx = (i * 7) % 10;
         let target = WorkspaceTarget::Index(target_ws_idx);
 
-        // Move window to target workspace
         let _ = layout.move_window_to_workspace(w, target);
 
-        // Switch workspace
         match i % 4 {
             0 => {
                 let _ = layout.switch_to_workspace(WorkspaceTarget::Index(target_ws_idx));
@@ -56,7 +52,6 @@ fn test_rapid_workspace_switching_and_window_movement_stress() {
             _ => unreachable!(),
         }
 
-        // Verify focus and visible window query invariant on active workspace
         let active = layout.active_workspace();
         assert!(layout.workspace_ids().contains(&active));
         let _ = layout.focused_window();
@@ -69,13 +64,11 @@ fn test_empty_workspace_and_window_lifecycle() {
     let mut layout = Layout::new();
     layout.outputs_changed(&[sample_output(1, 0, 0, 1920, 1080)]);
 
-    // Check initial state
     assert_eq!(layout.window_count(), 0);
     assert_eq!(layout.workspace_count(), 1);
     assert_eq!(layout.focused_window(), None);
     assert_eq!(layout.visible_windows().count(), 0);
 
-    // Try resolving invalid targets
     assert_eq!(layout.resolve_target(WorkspaceTarget::Index(999)), None);
     assert_eq!(
         layout.resolve_target(WorkspaceTarget::Id(WorkspaceId::from_u64(99999))),
@@ -84,25 +77,21 @@ fn test_empty_workspace_and_window_lifecycle() {
     assert_eq!(layout.resolve_target(WorkspaceTarget::Next), None);
     assert_eq!(layout.resolve_target(WorkspaceTarget::Previous), None);
 
-    // Add and remove a window
     let w1 = WindowId::next();
     layout.add_window(w1, Size::new(400, 300));
     assert_eq!(layout.window_count(), 1);
 
-    // Minimize and focus interactions
     assert!(layout.set_minimized(w1, true));
     assert_eq!(layout.focused_window(), None);
     assert_eq!(layout.visible_windows().count(), 0);
 
-    // Unminimize via focus_window
     assert!(layout.focus_window(w1));
     assert_eq!(layout.focused_window(), Some(w1));
     assert_eq!(layout.visible_windows().count(), 1);
 
-    // Remove window
     assert!(layout.remove_window(w1));
     assert_eq!(layout.window_count(), 0);
-    assert_eq!(layout.workspace_count(), 1); // Last workspace is retained
+    assert_eq!(layout.workspace_count(), 1);
     assert_eq!(layout.focused_window(), None);
 }
 
@@ -121,22 +110,18 @@ fn test_outputs_changed_boundary_conditions() {
         },
     );
 
-    // 1. Pass empty outputs
     layout.outputs_changed(&[]);
     assert_eq!(
         layout.primary_output_geometry(),
         glide_layout::layout::FALLBACK_OUTPUT
     );
 
-    // 2. Pass output that leaves window off-screen to trigger rescue
     let offscreen_output = sample_output(2, 5000, 5000, 1920, 1080);
     layout.outputs_changed(std::slice::from_ref(&offscreen_output));
 
     let state = layout.window_state(w1).unwrap();
-    // Window should be rescued to center of the offscreen output
     assert!(offscreen_output.geometry.overlaps(state.geometry));
 
-    // 3. Maximized & Fullscreen tracking across output changes
     assert!(layout.set_maximized(w1, true));
     let new_output = sample_output(3, 0, 0, 2560, 1440);
     layout.outputs_changed(std::slice::from_ref(&new_output));
@@ -181,25 +166,21 @@ fn test_multi_surface_idle_inhibit_simulation() {
     let mut tracker = MockIdleTracker::new();
     assert!(!tracker.inhibited);
 
-    // 100 surfaces inhibiting
     for id in 1..=100 {
         tracker.inhibit(id);
         assert!(tracker.inhibited);
     }
 
-    // Duplicate inhibit calls on surface 50
     for _ in 0..10 {
         tracker.inhibit(50);
         assert!(tracker.inhibited);
     }
 
-    // Spurious uninhibit calls on surface 999
     for _ in 0..10 {
         tracker.uninhibit(999);
         assert!(tracker.inhibited);
     }
 
-    // Uninhibit 99 surfaces
     for id in 1..100 {
         tracker.uninhibit(id);
         assert!(
@@ -208,7 +189,6 @@ fn test_multi_surface_idle_inhibit_simulation() {
         );
     }
 
-    // Uninhibit final surface
     tracker.uninhibit(100);
     assert!(
         !tracker.inhibited,

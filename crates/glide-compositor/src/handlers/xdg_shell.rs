@@ -46,9 +46,6 @@ impl XdgShellHandler for GlideState {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         tracing::info!("new toplevel");
-        // Read the parent before the surface is moved into the window: a
-        // toplevel with a parent is a dialog, and must land on the parent's
-        // workspace rather than being exiled to a new one.
         let parent = surface
             .parent()
             .and_then(|parent| self.window_id_for_surface(&parent));
@@ -66,9 +63,6 @@ impl XdgShellHandler for GlideState {
     }
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
-        // A client may set (or clear) its parent after mapping, e.g. when a
-        // window is promoted to a dialog of another. Follow the parent so the
-        // pair does not end up split across workspaces.
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;
         };
@@ -99,8 +93,6 @@ impl XdgShellHandler for GlideState {
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
-        // The requested output is ignored: Glide is single-output for now, so
-        // there is only one screen a window can go fullscreen on.
         self.set_toplevel_fullscreen(&surface, true);
     }
 
@@ -129,9 +121,6 @@ impl XdgShellHandler for GlideState {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        // The protocol guarantees `seat` references a live object: a client
-        // cannot reference a destroyed/foreign id, so dispatch would have
-        // rejected the request before it ever reached this handler.
         let seat: Seat<GlideState> =
             Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
 
@@ -142,9 +131,6 @@ impl XdgShellHandler for GlideState {
                 .get_pointer()
                 .expect("a pointer was added in GlideState::new");
 
-            // `check_grab` already confirmed this surface's client holds the
-            // current pointer grab, i.e. the window backing it is focused
-            // and therefore mapped.
             let window = self
                 .space
                 .elements()
@@ -212,12 +198,7 @@ impl XdgShellHandler for GlideState {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // Popup grabs (keeping a popup chain focused and closing it on
-        // outside clicks) aren't implemented yet. Out of scope until window
-        // management (M2) needs it -- right now nothing creates a popup
-        // chain deep enough to make the lack of a grab noticeable.
-    }
+    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
 }
 
 fn check_grab(
@@ -227,7 +208,6 @@ fn check_grab(
 ) -> Option<PointerGrabStartData<GlideState>> {
     let pointer = seat.get_pointer()?;
 
-    // Check that this surface has a click grab.
     if !pointer.has_grab(serial) {
         return None;
     }
@@ -235,13 +215,7 @@ fn check_grab(
     let start_data = pointer.grab_start_data()?;
 
     let (focus, _) = start_data.focus.as_ref()?;
-    // A decoration has no client surface at all, so it can never be *this*
-    // client's own `xdg_toplevel.move`/resize request — those only ever
-    // originate from a real surface. (A titlebar drag is a wholly separate
-    // path: see `crate::decoration::start_move`, which bypasses
-    // `move_request`/`check_grab` entirely.)
     let focus_surface = focus.as_surface()?;
-    // If the focus was for a different surface, ignore the request.
     if !focus_surface.id().same_client_as(&surface.id()) {
         return None;
     }
@@ -249,7 +223,6 @@ fn check_grab(
     Some(start_data)
 }
 
-/// Should be called on `WlSurface::commit`
 pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
     let window = state
         .window_map
@@ -257,7 +230,6 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
         .find(|w| window_surface(w) == surface)
         .cloned();
 
-    // Handle toplevel commits.
     if let Some(window) = window {
         let initial_configure_sent = with_states(surface, |states| {
             states
@@ -297,10 +269,6 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
                 handle.send_done();
             }
 
-            // Only the commit that first gives the window a real size needs a
-            // reconcile: that is when the layout finally has something to
-            // centre. Reconciling on every commit would re-apply the stored
-            // geometry constantly, undoing interactive moves mid-drag.
             let placed = state.layout.update_window_size(id, layout_size(&window));
             if placed {
                 state.reconcile_space();
@@ -308,15 +276,12 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
         }
     }
 
-    // Handle popup commits.
     let popups = &mut state.popups;
     popups.commit(surface);
     if let Some(popup) = popups.find_popup(surface) {
         match popup {
             PopupKind::Xdg(ref xdg) => {
                 if !xdg.is_initial_configure_sent() {
-                    // NOTE: This should never fail as the initial configure is always
-                    // allowed.
                     xdg.send_configure().expect("initial configure failed");
                 }
             }
@@ -327,15 +292,6 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
 
 impl XdgDecorationHandler for GlideState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        // Fires as soon as the client creates the decoration object, before
-        // it has necessarily asked for any mode — and per the protocol (see
-        // `XdgDecorationHandler`'s own doc example) the compositor is
-        // expected to answer with a configure carrying its preference right
-        // here, same as `unset_mode` below. A client that only reads its
-        // *first* configure to learn what modes exist — several do — would
-        // otherwise never find out SSD is on offer and fall back to
-        // drawing its own decorations, silently losing the resize band,
-        // border and titlebar every other Glide window gets.
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(DecorationMode::ServerSide);
         });
@@ -347,10 +303,6 @@ impl XdgDecorationHandler for GlideState {
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        // Honor the client: a toolkit that insists on drawing its own
-        // decorations (GTK does) knows better than we do what its window
-        // needs, and double decorations are strictly worse than either
-        // choice alone.
         let server_side = mode == DecorationMode::ServerSide;
 
         toplevel.with_pending_state(|state| {
@@ -368,7 +320,6 @@ impl XdgDecorationHandler for GlideState {
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        // No preference from the client means our default: decorated.
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(DecorationMode::ServerSide);
         });
@@ -395,8 +346,6 @@ impl KdeDecorationHandler for GlideState {
             return;
         };
 
-        // Same policy as the xdg flavor: honor the client, echo the mode
-        // back (the KDE protocol requires the ack).
         decoration.mode(mode);
 
         if let Some(id) = self.window_id_for_surface(surface) {
@@ -406,13 +355,6 @@ impl KdeDecorationHandler for GlideState {
 }
 
 impl XdgDialogHandler for GlideState {
-    /// A toplevel was marked as a dialog (or modal dialog) after mapping.
-    ///
-    /// `set_parent` is the usual way a dialog is tied to its parent, and
-    /// `parent_changed` already handles that. This covers the case where the
-    /// hint arrives *after* the window was placed — the dialog may by then be
-    /// sitting on a workspace of its own, which for a modal is actively
-    /// harmful: the parent would be unusable while its dialog is elsewhere.
     fn dialog_hint_changed(&mut self, toplevel: ToplevelSurface, hint: ToplevelDialogHint) {
         tracing::info!(?hint, "toplevel dialog hint changed");
 
@@ -425,11 +367,6 @@ impl XdgDialogHandler for GlideState {
 }
 
 impl GlideState {
-    /// Applies a client's own maximize/unmaximize request through the layout.
-    ///
-    /// Routed via `glide-layout` rather than poked straight into the toplevel
-    /// so that the saved pre-maximize geometry, and the compositor's idea of
-    /// where the window lives, stay in one place.
     fn set_toplevel_maximized(&mut self, surface: &ToplevelSurface, maximized: bool) {
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;
@@ -437,8 +374,6 @@ impl GlideState {
         if self.layout.set_maximized(id, maximized) {
             self.reconcile_space();
         } else {
-            // Nothing changed, but the protocol still requires an answer to
-            // the request, otherwise the client waits forever.
             surface.send_pending_configure();
         }
     }
@@ -485,8 +420,6 @@ impl GlideState {
             .output_geometry(output)
             .expect("output came from space.outputs(), so it has a geometry");
 
-        // The target geometry for the positioner should be relative to its parent's geometry, so
-        // we will compute that here.
         let mut target = output_geo;
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
         target.loc -= window_geo.loc;

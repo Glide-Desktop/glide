@@ -80,7 +80,7 @@ impl WlrOutputManagerHandler for GlideState {
 pub struct PendingHeadConfig {
     pub output_name: String,
     pub enabled: bool,
-    pub mode: Option<(i32, i32, i32)>, // width, height, refresh_mhz
+    pub mode: Option<(i32, i32, i32)>,
     pub position: Option<(i32, i32)>,
     pub scale: Option<f64>,
     pub transform: Option<Transform>,
@@ -475,7 +475,6 @@ mod tests {
             }],
         };
 
-        // Simulating the apply logic on space and output
         let mut any_changed = false;
         for head in config.heads {
             let found_output = space
@@ -615,7 +614,6 @@ mod tests {
             }],
         };
 
-        // Demonstrates that enabled: false flag is present on head config but unhandled by apply_output_config
         assert!(!config.heads[0].enabled);
         assert_eq!(space.outputs().count(), 1);
     }
@@ -646,7 +644,6 @@ mod tests {
         let mut space = Space::<GlideWindow>::default();
         space.map_output(&output, (0, 0));
 
-        // Test with unknown heads, empty names, invalid/zero/negative modes, extreme scales, out-of-bounds positions
         let config = PendingOutputConfig {
             heads: vec![
                 PendingHeadConfig {
@@ -668,23 +665,22 @@ mod tests {
                 PendingHeadConfig {
                     output_name: "HDMI-A-1".to_string(),
                     enabled: true,
-                    mode: Some((0, 0, 0)),                // zero size mode
-                    position: Some((i32::MAX, i32::MAX)), // max position
-                    scale: Some(f64::NAN),                // NaN scale
+                    mode: Some((0, 0, 0)),
+                    position: Some((i32::MAX, i32::MAX)),
+                    scale: Some(f64::NAN),
                     transform: Some(Transform::_180),
                 },
                 PendingHeadConfig {
                     output_name: "HDMI-A-1".to_string(),
                     enabled: true,
-                    mode: Some((i32::MAX, i32::MAX, i32::MAX)), // extreme mode
+                    mode: Some((i32::MAX, i32::MAX, i32::MAX)),
                     position: Some((0, 0)),
-                    scale: Some(f64::INFINITY), // Infinity scale
+                    scale: Some(f64::INFINITY),
                     transform: Some(Transform::_270),
                 },
             ],
         };
 
-        // Simulating the apply logic on space and output without panics
         let mut any_changed = false;
         for head in config.heads {
             let found_output = space
@@ -721,7 +717,6 @@ mod tests {
         }
 
         assert!(any_changed);
-        // Verify final state after extreme updates is stable and space position is at max loc
         assert_eq!(space.output_geometry(&output).unwrap().loc, (0, 0).into());
         assert_eq!(output.current_transform(), Transform::_270);
     }
@@ -807,7 +802,6 @@ mod tests {
         }
 
         assert!(any_changed);
-        // Final position should be from the 100th head (i=99) -> (990, 495)
         assert_eq!(
             space.output_geometry(&output).unwrap().loc,
             (990, 495).into()

@@ -1,5 +1,3 @@
-//! `glidectl`: CLI client for controlling Glide Wayland compositor over Unix IPC socket.
-
 use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
@@ -98,12 +96,6 @@ OPTIONS:
     );
 }
 
-/// Locates the compositor's control socket.
-///
-/// Only `$XDG_RUNTIME_DIR` is searched. There is deliberately no `/tmp`
-/// fallback to match the compositor: a predictable socket path in a
-/// world-writable directory would let another local user impersonate Glide
-/// and receive our `exec` requests.
 fn find_socket_path() -> anyhow::Result<PathBuf> {
     if let Ok(path) = std::env::var("GLIDE_IPC_SOCK")
         && !path.is_empty()
@@ -258,9 +250,6 @@ fn print_response(response: &Response) {
                 let app_id = w.app_id.as_deref().unwrap_or("<unknown>");
                 let title = w.title.as_deref().unwrap_or("<untitled>");
                 let focused_str = if w.focused { "*" } else { "" };
-                // There is no taskbar yet, so this listing plus `glidectl
-                // window focus <id>` is currently the only way to restore a
-                // minimized window.
                 let minimized_str = if w.minimized { "*" } else { "" };
                 println!(
                     "{:<6} {:<15} {:<10} {:<25} {:<8} {:<9}",
@@ -362,12 +351,10 @@ mod tests {
 
     #[test]
     fn test_adversarial_cli_edge_cases() {
-        // Missing arguments
         assert!(parse_cli_args(&[]).is_err());
         assert!(parse_cli_args(&["glidectl".into()]).is_err());
         assert!(parse_cli_args(&["glidectl".into(), "--json".into()]).is_err());
 
-        // Workspace 0 (must error, 1-indexed)
         let args_ws0 = vec![
             "glidectl".into(),
             "workspace".into(),
@@ -377,7 +364,6 @@ mod tests {
         let cli_ws0 = parse_cli_args(&args_ws0).unwrap();
         assert!(parse_args(&cli_ws0.subcommand_args).is_err());
 
-        // Workspace prev / next / index
         let args_prev = vec![
             "glidectl".into(),
             "workspace".into(),
@@ -406,7 +392,6 @@ mod tests {
             }
         );
 
-        // Window focusfocused / window focus 42
         let args_foc = vec![
             "glidectl".into(),
             "window".into(),
@@ -437,7 +422,6 @@ mod tests {
             }
         );
 
-        // Window move
         let args_mv = vec![
             "glidectl".into(),
             "window".into(),
@@ -455,7 +439,6 @@ mod tests {
             }
         );
 
-        // Unknown commands
         let args_unk = vec!["glidectl".into(), "unknown_cmd".into()];
         let cli_unk = parse_cli_args(&args_unk).unwrap();
         assert!(parse_args(&cli_unk.subcommand_args).is_err());

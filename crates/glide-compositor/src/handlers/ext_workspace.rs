@@ -47,7 +47,6 @@ impl ExtWorkspaceManagerState {
         let current_ids = layout.workspace_ids();
         let active_ws = layout.active_workspace();
 
-        // 1. Remove workspaces that no longer exist
         self.workspace_handles.retain(|id, handles| {
             if current_ids.contains(id) {
                 true
@@ -59,7 +58,6 @@ impl ExtWorkspaceManagerState {
             }
         });
 
-        // 2. Create missing workspaces and update states
         for (idx, &ws_id) in current_ids.iter().enumerate() {
             let is_active = ws_id == active_ws;
             let state = if is_active {
@@ -102,17 +100,14 @@ impl ExtWorkspaceManagerState {
                 }
             }
 
-            // Update all handles
             for handle in handles {
                 handle.state(state);
             }
         }
 
-        // Clean up empty entries
         self.workspace_handles
             .retain(|_, handles| !handles.is_empty());
 
-        // 3. Send done
         for manager in &self.instances {
             manager.done();
         }
@@ -174,10 +169,6 @@ impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceHandleV1, Workspac
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
-        // `Activate` is the only request we act on. `Destroy` needs no
-        // teardown of ours: workspaces outlive the handles clients hold on
-        // them, so the protocol object going away is not a workspace going
-        // away.
         if matches!(request, ext_workspace_handle_v1::Request::Activate) {
             state
                 .layout
@@ -218,7 +209,6 @@ mod tests {
         let mut layout = glide_layout::Layout::new();
         let ws1 = layout.active_workspace();
 
-        // Create 10 workspaces
         let mut ws_ids = vec![ws1];
         for _ in 0..9 {
             let win_id = glide_layout::WindowId::next();
@@ -226,7 +216,6 @@ mod tests {
             ws_ids.push(new_ws);
         }
 
-        // Stress switch 10,000 times rapidly between targets
         for i in 0..10_000 {
             match i % 6 {
                 0 => {
@@ -246,13 +235,11 @@ mod tests {
                     assert!(ok);
                 }
                 4 => {
-                    // Out of bounds index
                     let ok =
                         layout.switch_to_workspace(glide_layout::WorkspaceTarget::Index(99999));
                     assert!(!ok);
                 }
                 5 => {
-                    // Nonexistent workspace ID
                     let bogus_id = glide_layout::WorkspaceId::next();
                     let ok =
                         layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(bogus_id));
@@ -272,7 +259,6 @@ mod tests {
         let mut manager_state = ExtWorkspaceManagerState::new::<GlideState>(&dh);
         let layout = glide_layout::Layout::new();
 
-        // Calling sync_workspaces with no instances must not panic
         manager_state.sync_workspaces(&dh, &layout);
         assert!(manager_state.workspace_handles.is_empty());
     }

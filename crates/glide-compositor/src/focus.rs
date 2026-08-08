@@ -1,15 +1,3 @@
-//! [`PointerFocusTarget`]: everything the pointer can be focused on.
-//!
-//! Before decorations existed, the pointer's focus target was always a
-//! `WlSurface` — a client's own content, nothing else. A titlebar is
-//! compositor-drawn, not a `WlSurface`, so it needs its own place in
-//! `SeatHandler::PointerFocus` to receive `enter`/`motion`/`button` the same
-//! way a surface does. This enum is that place; see [`crate::decoration`]
-//! for what actually happens when a click lands on the `Decoration` variant.
-//!
-//! Keyboard focus is unaffected and stays a bare `WlSurface`: a titlebar has
-//! no use for keyboard input, so there was nothing to route.
-
 use std::{borrow::Cow, sync::Arc};
 
 use smithay::{
@@ -37,10 +25,6 @@ pub enum PointerFocusTarget {
 }
 
 impl PointerFocusTarget {
-    /// The `WlSurface` behind this target, if it has one. A decoration has
-    /// none — it belongs to the compositor, not a client — which is exactly
-    /// why `check_grab` (validating a *client's* `xdg_toplevel.move`/resize
-    /// request) treats a `Decoration` focus as "reject", not "match".
     #[must_use]
     pub fn as_surface(&self) -> Option<&WlSurface> {
         match self {
@@ -80,9 +64,6 @@ impl WaylandFocus for PointerFocusTarget {
     }
 }
 
-/// Dispatches each `PointerTarget` method to whichever variant is active.
-/// `WlSurface` already implements `PointerTarget<D>` for any `D: SeatHandler`
-/// (Smithay provides it), so the `Surface` arm just forwards to that.
 impl PointerTarget<GlideState> for PointerFocusTarget {
     fn enter(&self, seat: &Seat<GlideState>, data: &mut GlideState, event: &MotionEvent) {
         match self {
@@ -235,12 +216,6 @@ impl PointerTarget<GlideState> for PointerFocusTarget {
     }
 }
 
-/// A titlebar is never a legitimate drag-and-drop target — there is nothing
-/// sensible for dropping a file onto a decoration to mean — so the
-/// `Decoration` arm of every method here is a no-op (`enter` returning
-/// `None`, as `WlSurface`'s own impl already does for its "no offer"
-/// case). The `Surface` arm delegates to `WlSurface`'s existing impl, which
-/// this whole trait exists to provide.
 impl DndFocus<GlideState> for PointerFocusTarget {
     type OfferData<S: Source> = WlOfferData<S>;
 

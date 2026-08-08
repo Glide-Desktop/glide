@@ -1,8 +1,3 @@
-//! `glide-layout`: Pure window management layout engine for Glide.
-//!
-//! This crate contains pure logic for managing workspaces, window geometry,
-//! focus, and output mapping. It has no dependencies on Wayland or Smithay.
-
 pub mod geometry;
 pub mod ids;
 pub mod layout;
@@ -17,7 +12,6 @@ pub use overview::{OverviewOptions, OverviewSlot, compute_overview_layout};
 mod tests {
     use super::*;
 
-    /// A single-output setup with no panels: `work_area == geometry`.
     fn output(id: OutputId, geometry: Rectangle) -> OutputInfo {
         OutputInfo {
             id,
@@ -90,7 +84,7 @@ mod tests {
 
         let ws1 = layout.add_window(w1, size);
         assert_eq!(layout.window_count(), 1);
-        assert_eq!(layout.workspace_count(), 1); // reuses initial empty workspace
+        assert_eq!(layout.workspace_count(), 1);
         assert_eq!(layout.focused_window(), Some(w1));
         assert!(layout.is_focused(w1));
         assert!(layout.is_visible(w1));
@@ -134,11 +128,9 @@ mod tests {
         assert!(!state.is_placed);
         assert_eq!(state.geometry.loc, Point::ZERO);
 
-        // Now client commits size 800x600
         assert!(layout.update_window_size(w1, Size::new(800, 600)));
         let state = layout.window_state(w1).unwrap();
         assert!(state.is_placed);
-        // Default output is 1920x1080 at (0,0), centered (1920-800)/2 = 560, (1080-600)/2 = 240
         assert_eq!(state.geometry.loc, Point::new(560, 240));
     }
 
@@ -155,8 +147,6 @@ mod tests {
         layout.add_window(w1, Size::new(1000, 800));
 
         let state = layout.window_state(w1).unwrap();
-        // 1000 + (2560 - 1000)/2 = 1000 + 780 = 1780
-        // 0 + (1440 - 800)/2 = 320
         assert_eq!(state.geometry.loc, Point::new(1780, 320));
     }
 
@@ -181,9 +171,6 @@ mod tests {
 
     #[test]
     fn test_outputs_changed_keeps_windows_that_are_still_on_screen() {
-        // A window the user dragged somewhere must stay put across an
-        // unrelated output change; re-centring everything would throw the
-        // whole desktop back to the middle on every monitor hotplug.
         let mut layout = Layout::new();
         let w1 = WindowId::next();
         layout.add_window(w1, Size::new(800, 600));
@@ -203,13 +190,11 @@ mod tests {
         let w1 = WindowId::next();
         layout.add_window(w1, Size::new(800, 600));
 
-        // Park the window where a large monitor used to be.
         layout.set_window_geometry(w1, Rectangle::from_loc_and_size(5000, 5000, 800, 600));
 
         let o1 = OutputId::next();
         layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 1920, 1080))]);
 
-        // Otherwise it would be unreachable: no output covers it any more.
         assert_eq!(
             layout.window_state(w1).unwrap().geometry.loc,
             Point::new(560, 240)
@@ -226,7 +211,6 @@ mod tests {
         let o1 = OutputId::next();
         layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 3840, 2160))]);
 
-        // A maximized window tracks the output, so it must follow the change.
         assert_eq!(
             layout.window_state(w1).unwrap().geometry,
             Rectangle::from_loc_and_size(0, 0, 3840, 2160)
@@ -235,8 +219,6 @@ mod tests {
 
     #[test]
     fn test_visible_windows_are_ordered_bottom_to_top() {
-        // Stacking order must be stable and follow the workspace's own list.
-        // Deriving it from a HashMap made windows swap Z-order at random.
         let mut layout = Layout::new();
         layout.set_policy(NewWindowPolicy::ActiveWorkspace);
 
@@ -280,7 +262,6 @@ mod tests {
         layout.add_window(w2, Size::new(400, 300));
         let ws1 = layout.active_workspace();
 
-        // Focus the lower window, then leave to a new workspace and come back.
         layout.focus_window(w1);
         layout.set_policy(NewWindowPolicy::NewWorkspace);
         let w3 = WindowId::next();
@@ -288,7 +269,6 @@ mod tests {
 
         assert!(layout.switch_to_workspace(WorkspaceTarget::Id(ws1)));
 
-        // Not w2, which merely happened to be added last.
         assert_eq!(layout.focused_window(), Some(w1));
     }
 
@@ -318,14 +298,12 @@ mod tests {
         let ws_other = layout.active_workspace();
         assert_ne!(ws_parent, ws_other);
 
-        // A background app opening a dialog must not yank the user away.
         let dialog = WindowId::next();
         layout.add_window_with_parent(dialog, Size::new(400, 300), parent);
 
         assert_eq!(layout.active_workspace(), ws_other);
         assert_eq!(layout.focused_window(), Some(other));
 
-        // ...but the dialog is waiting once you go there.
         assert!(layout.switch_to_workspace(WorkspaceTarget::Id(ws_parent)));
         assert_eq!(layout.focused_window(), Some(dialog));
     }
@@ -343,7 +321,7 @@ mod tests {
 
         assert!(layout.remove_window(w2));
         assert_eq!(layout.window_count(), 1);
-        assert!(!layout.remove_window(w2)); // non-existent
+        assert!(!layout.remove_window(w2));
     }
 
     #[test]
@@ -357,7 +335,6 @@ mod tests {
         layout.add_window(w2, size);
         assert_eq!(layout.workspace_count(), 2);
 
-        // Removing w2 empties its workspace, so workspace count drops to 1
         layout.remove_window(w2);
         assert_eq!(layout.workspace_count(), 1);
         assert_eq!(layout.focused_window(), Some(w1));
@@ -373,7 +350,7 @@ mod tests {
         assert_eq!(layout.workspace_count(), 1);
         layout.remove_window(w1);
         assert_eq!(layout.window_count(), 0);
-        assert_eq!(layout.workspace_count(), 1); // Always retains ≥1 workspace
+        assert_eq!(layout.workspace_count(), 1);
     }
 
     #[test]
@@ -408,10 +385,10 @@ mod tests {
         assert!(layout.switch_to_workspace(WorkspaceTarget::Previous));
         assert_eq!(layout.active_workspace(), ws1);
 
-        assert!(!layout.switch_to_workspace(WorkspaceTarget::Previous)); // boundary
+        assert!(!layout.switch_to_workspace(WorkspaceTarget::Previous));
         assert!(layout.switch_to_workspace(WorkspaceTarget::Next));
         assert_eq!(layout.active_workspace(), ws2);
-        assert!(!layout.switch_to_workspace(WorkspaceTarget::Next)); // boundary
+        assert!(!layout.switch_to_workspace(WorkspaceTarget::Next));
     }
 
     #[test]
@@ -424,7 +401,6 @@ mod tests {
         let ws1 = layout.add_window(w1, Size::new(800, 600));
         layout.add_window(w2, Size::new(800, 600));
 
-        // Create target workspace by setting policy to NewWorkspace and adding temp window
         layout.set_policy(NewWindowPolicy::NewWorkspace);
         let w3 = WindowId::next();
         let ws2 = layout.add_window(w3, Size::new(800, 600));
@@ -433,7 +409,6 @@ mod tests {
         assert_eq!(layout.window_state(w1).unwrap().workspace_id, ws2);
         assert!(layout.is_visible(w1));
 
-        // Move back to ws1
         assert!(layout.move_window_to_workspace(w1, WorkspaceTarget::Id(ws1)));
         assert_eq!(layout.window_state(w1).unwrap().workspace_id, ws1);
         assert!(!layout.is_visible(w1));
@@ -493,12 +468,10 @@ mod tests {
 
         let ws_parent = layout.add_window(parent, size);
 
-        // Switch workspace by adding another window
         let other = WindowId::next();
         let ws_other = layout.add_window(other, size);
         assert_ne!(ws_parent, ws_other);
 
-        // Adding child with parent should place child on parent's workspace (ws_parent)
         let ws_child = layout.add_window_with_parent(child, size, parent);
         assert_eq!(ws_child, ws_parent);
         assert_eq!(layout.window_state(child).unwrap().workspace_id, ws_parent);
@@ -602,7 +575,6 @@ mod tests {
     }
 
     fn output_with_panel(id: OutputId) -> OutputInfo {
-        // A 40px bar reserved at the top, as a layer-shell panel would claim.
         OutputInfo {
             id,
             geometry: Rectangle::from_loc_and_size(0, 0, 1920, 1080),
@@ -618,7 +590,6 @@ mod tests {
         let w1 = WindowId::next();
         layout.add_window(w1, Size::new(800, 600));
 
-        // (1920-800)/2 = 560, panel top (40) + (1040-600)/2 = 260
         assert_eq!(
             layout.window_state(w1).unwrap().geometry.loc,
             Point::new(560, 260)
@@ -663,8 +634,6 @@ mod tests {
 
         assert!(!layout.is_visible(w2));
         assert!(layout.is_visible(w1));
-        // Focus must move off the minimized window: keeping it focused would
-        // mean keybindings act on something no longer on screen.
         assert_eq!(layout.focused_window(), Some(w1));
 
         let visible: Vec<WindowId> = layout.visible_windows().map(|s| s.id).collect();
@@ -673,8 +642,6 @@ mod tests {
 
     #[test]
     fn test_focusing_a_minimized_window_restores_it() {
-        // There is no taskbar yet, so focus_window (e.g. via `glidectl window
-        // focus <id>`) is the only way to bring a minimized window back.
         let mut layout = Layout::new();
         let w1 = WindowId::next();
         layout.add_window(w1, Size::new(800, 600));
@@ -701,8 +668,6 @@ mod tests {
     }
 
     fn titlebar_insets() -> Insets {
-        // A 32px titlebar reserved at the top, nothing on the other sides —
-        // matches the fixed decoration shape (SSD-1/M4.3).
         Insets {
             top: 32,
             left: 0,
@@ -724,9 +689,6 @@ mod tests {
 
     #[test]
     fn test_initial_placement_accounts_for_insets() {
-        // Insets must be set before the first real size arrives (see
-        // set_window_insets' docs) for the very first placement to already
-        // account for the decoration.
         let mut layout = Layout::new();
         let w1 = WindowId::next();
         layout.add_window(w1, Size::ZERO);
@@ -734,9 +696,6 @@ mod tests {
         layout.update_window_size(w1, Size::new(800, 600));
 
         let state = layout.window_state(w1).unwrap();
-        // The 800x600 *content* plus a 32px top inset is what gets centred:
-        // frame is 800x632, so x is still (1920-800)/2 = 560, but y is
-        // (1080-632)/2 = 224, not the 240 an undecorated window would get.
         assert_eq!(state.frame_geometry().size, Size::new(800, 632));
         assert_eq!(state.frame_geometry().loc, Point::new(560, 224));
     }
@@ -765,7 +724,6 @@ mod tests {
         layout.set_window_insets(w1, titlebar_insets());
         layout.update_window_size(w1, Size::new(800, 600));
 
-        // The client resizes itself (e.g. a terminal changing font size).
         layout.update_window_size(w1, Size::new(1000, 700));
 
         let state = layout.window_state(w1).unwrap();
@@ -775,8 +733,6 @@ mod tests {
 
     #[test]
     fn test_fullscreen_ignores_insets_for_content_geometry() {
-        // Fullscreen hides the titlebar entirely: content should cover the
-        // whole frame, not leave a gap where a titlebar would have been.
         let mut layout = Layout::new();
         let w1 = WindowId::next();
         layout.add_window(w1, Size::ZERO);
@@ -801,9 +757,6 @@ mod tests {
 
     #[test]
     fn test_changing_insets_after_placement_keeps_content_fixed() {
-        // xdg-decoration can negotiate decorations away after mapping. The
-        // client's content must not move when that happens — only the frame
-        // is rebuilt around it.
         let mut layout = Layout::new();
         let w1 = WindowId::next();
         layout.add_window(w1, Size::ZERO);
@@ -812,7 +765,6 @@ mod tests {
 
         let content_before = layout.window_state(w1).unwrap().content_geometry();
 
-        // Client switches to CSD: decoration goes away.
         layout.set_window_insets(w1, Insets::NONE);
         let state = layout.window_state(w1).unwrap();
         assert_eq!(state.content_geometry(), content_before);
@@ -822,14 +774,11 @@ mod tests {
             "with no insets the frame IS the content"
         );
 
-        // And back to SSD: content still pinned, frame regrows upward.
         layout.set_window_insets(w1, titlebar_insets());
         let state = layout.window_state(w1).unwrap();
         assert_eq!(state.content_geometry(), content_before);
         assert_eq!(state.frame_geometry().size, Size::new(800, 632));
     }
-
-    // ── Overview ───────────────────────────────────────────────────
 
     #[test]
     fn test_overview_starts_closed_and_toggles() {
@@ -847,8 +796,6 @@ mod tests {
 
     #[test]
     fn test_opening_overview_does_not_change_focus_or_workspace() {
-        // Escape has to be able to restore exactly the previous state, so
-        // opening the overview must be a pure view change.
         let mut layout = Layout::new();
         let w1 = WindowId::next();
         let w2 = WindowId::next();
@@ -866,9 +813,6 @@ mod tests {
 
     #[test]
     fn test_visible_windows_ignores_the_overview() {
-        // Regression guard: an earlier version made visible_windows() return
-        // every workspace while the overview was open, silently changing
-        // what reconcile and the IPC listings saw.
         let mut layout = Layout::new();
         let w1 = WindowId::next();
         let w2 = WindowId::next();
@@ -889,7 +833,6 @@ mod tests {
         let w1 = WindowId::next();
         let w2 = WindowId::next();
         let w3 = WindowId::next();
-        // Default policy puts each on its own workspace.
         layout.add_window(w1, Size::new(800, 600));
         layout.add_window(w2, Size::new(800, 600));
         layout.add_window(w3, Size::new(800, 600));

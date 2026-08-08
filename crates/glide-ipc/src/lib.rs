@@ -1,8 +1,5 @@
-//! `glide-ipc`: IPC DTO types and protocol helpers for Glide Wayland compositor and glidectl CLI.
-
 use serde::{Deserialize, Serialize};
 
-/// Target for switching or moving workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 pub enum WorkspaceTarget {
@@ -11,7 +8,6 @@ pub enum WorkspaceTarget {
     Previous,
 }
 
-/// Selector for choosing a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
 pub enum WindowSelector {
@@ -19,7 +15,6 @@ pub enum WindowSelector {
     Id(u64),
 }
 
-/// Request sent from client (glidectl) to compositor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Request {
@@ -43,7 +38,6 @@ pub enum Request {
     },
 }
 
-/// Information about a workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub id: u64,
@@ -52,7 +46,6 @@ pub struct WorkspaceInfo {
     pub window_count: usize,
 }
 
-/// Information about a window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowInfo {
     pub id: u64,
@@ -60,12 +53,9 @@ pub struct WindowInfo {
     pub title: Option<String>,
     pub workspace_index: usize,
     pub focused: bool,
-    /// Hidden from view but not closed. There is no taskbar yet, so
-    /// `glidectl window focus <id>` is currently the only way to restore one.
     pub minimized: bool,
 }
 
-/// Response returned from compositor to client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Response {

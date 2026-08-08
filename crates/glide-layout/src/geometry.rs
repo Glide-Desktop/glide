@@ -1,5 +1,3 @@
-//! Custom geometric types (Point, Size, Rectangle).
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Point {
     pub x: i32,
@@ -38,9 +36,6 @@ impl Size {
     }
 }
 
-/// Space a decoration claims on each side of a window's frame, between the
-/// frame (what the user sees and drags) and the content (what the client
-/// actually draws into).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Insets {
     pub top: i32,
@@ -50,7 +45,6 @@ pub struct Insets {
 }
 
 impl Insets {
-    /// No decoration: frame and content coincide.
     pub const NONE: Self = Self {
         top: 0,
         left: 0,
@@ -110,9 +104,6 @@ impl Rectangle {
         }
     }
 
-    /// Shrinks the rectangle by `insets` on each side. Used to derive a
-    /// decorated window's content area (the part the client actually draws
-    /// into) from its frame (the part the user sees and drags).
     #[must_use]
     pub const fn inset(&self, insets: Insets) -> Self {
         Self {
@@ -124,10 +115,6 @@ impl Rectangle {
         }
     }
 
-    /// Whether any part of `other` lies inside `self`.
-    ///
-    /// Empty rectangles never overlap anything, so a zero-sized window is not
-    /// treated as being "on screen".
     #[must_use]
     pub const fn overlaps(&self, other: Self) -> bool {
         if self.size.is_empty() || other.size.is_empty() {

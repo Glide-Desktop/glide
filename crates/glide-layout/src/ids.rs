@@ -1,5 +1,3 @@
-//! Identifier types for windows, workspaces, and outputs.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

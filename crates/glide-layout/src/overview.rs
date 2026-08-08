@@ -1,43 +1,12 @@
-//! Overview layout: arranging window previews into centred rows.
-//!
-//! Pure geometry, like the rest of this crate — it takes frame sizes in and
-//! hands target rectangles back, and knows nothing about rendering,
-//! animation or input. The compositor turns a [`OverviewSlot`] into a
-//! scaled render element; nothing here is aware that happens.
-//!
-//! # Why rows rather than a grid
-//!
-//! A fixed `ceil(sqrt(n))` grid gives every window an identical cell, which
-//! forces wildly different aspect ratios into the same box — a portrait
-//! window and a wide terminal end up scaled to wildly different sizes to
-//! fit one shared cell, and half of each cell is empty. The row model used
-//! here (the same shape GNOME's overview uses) instead:
-//!
-//! - picks a row count from the area's aspect ratio, not from `n` alone,
-//! - gives every window in a row the same *height* budget and lets its
-//!   width follow its own aspect ratio,
-//! - centres each row horizontally and the block of rows vertically.
-//!
-//! The result is that previews keep their proportions and the arrangement
-//! stays visually balanced when windows differ in shape.
-
 use crate::{
     geometry::{Point, Rectangle, Size},
     ids::WindowId,
 };
 
-/// Tunables for [`compute_overview_layout`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverviewOptions {
-    /// Space between adjacent previews, and between rows.
     pub gap: i32,
-    /// Vertical space reserved under each preview for its label.
     pub label_height: i32,
-    /// Upper bound on a preview's scale.
-    ///
-    /// Without a cap, a lone small window would be blown up past its native
-    /// size and look blurry; overview previews should never be *larger*
-    /// than the window itself.
     pub max_scale: f64,
 }
 
@@ -51,20 +20,11 @@ impl Default for OverviewOptions {
     }
 }
 
-/// Where one window's preview should be drawn.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverviewSlot {
     pub id: WindowId,
-    /// Target rectangle for the preview, in the same global logical
-    /// coordinates the rest of the layout uses. Already scaled: this is
-    /// exactly where and how big the preview goes.
     pub target: Rectangle,
-    /// Scale applied to the window's frame to reach `target`. Uniform on
-    /// both axes, so the preview keeps the window's aspect ratio.
     pub scale: f64,
-    /// Which row this slot landed in, top to bottom. Used for keyboard
-    /// navigation, which moves between rows rather than through a flat
-    /// list.
     pub row: usize,
 }
 
@@ -212,7 +172,6 @@ mod tests {
         Rectangle::from_loc_and_size(0, 0, 1920, 1080)
     }
 
-    /// Options without a label strip, so expected numbers stay readable.
     fn opts() -> OverviewOptions {
         OverviewOptions {
             gap: 20,
@@ -252,7 +211,6 @@ mod tests {
 
         assert_eq!(slots.len(), 1);
         let target = slots[0].target;
-        // Horizontally centred within the area.
         let left_margin = target.loc.x - area().loc.x;
         let right_margin = (area().loc.x + area().size.width) - (target.loc.x + target.size.width);
         assert!(
@@ -263,8 +221,6 @@ mod tests {
 
     #[test]
     fn preview_never_exceeds_max_scale() {
-        // A tiny window in a huge area would otherwise be blown up and look
-        // blurry; overview previews are never larger than the window.
         let windows = [win(320, 240)];
         let slots = compute_overview_layout(&windows, area(), &opts());
 
@@ -287,8 +243,6 @@ mod tests {
 
     #[test]
     fn aspect_ratio_is_preserved() {
-        // The whole point of the row model: a preview is the window,
-        // smaller — never stretched to fill a cell.
         let windows = [win(1600, 400), win(400, 1200)];
         let slots = compute_overview_layout(&windows, area(), &opts());
 
@@ -348,9 +302,6 @@ mod tests {
 
     #[test]
     fn rows_are_horizontally_centred() {
-        // A row that does not fill the width must be centred, not
-        // left-aligned — the previous grid implementation left the last
-        // row hugging the left edge.
         let windows: Vec<_> = (0..3).map(|_| win(800, 600)).collect();
         let slots = compute_overview_layout(&windows, area(), &opts());
 
@@ -390,8 +341,6 @@ mod tests {
 
     #[test]
     fn area_offset_is_respected() {
-        // The work area does not start at the origin once a panel reserves
-        // space; slots must follow it rather than assuming (0, 0).
         let windows = [win(800, 600)];
         let offset = Rectangle::from_loc_and_size(100, 40, 1920, 1000);
         let slots = compute_overview_layout(&windows, offset, &opts());
@@ -415,8 +364,6 @@ mod tests {
         let windows: Vec<_> = (0..6).map(|_| win(800, 600)).collect();
         let slots = compute_overview_layout(&windows, area(), &opts());
 
-        // Row indices must be non-decreasing through the slot list, and a
-        // later row must sit lower on screen.
         for pair in slots.windows(2) {
             assert!(pair[0].row <= pair[1].row);
             if pair[0].row < pair[1].row {
@@ -472,9 +419,6 @@ mod tests {
 
     #[test]
     fn multiple_windows_use_more_than_one_row_when_that_makes_them_bigger() {
-        // Three 800x600 windows on a 1080p screen fit in one row only by
-        // shrinking hard to clear the width budget; two rows leaves each
-        // preview visibly larger, so that is what must be chosen.
         let windows: Vec<_> = (0..3).map(|_| win(800, 600)).collect();
         let slots = compute_overview_layout(&windows, area(), &opts());
         assert!(rows_used(&slots) > 1, "expected more than one row");
@@ -503,7 +447,6 @@ mod tests {
 
     #[test]
     fn area_too_short_for_a_row_produces_no_slots() {
-        // Better to draw nothing than to emit inverted rectangles.
         let windows = [win(800, 600)];
         let sliver = Rectangle::from_loc_and_size(0, 0, 1920, 4);
         let with_label = OverviewOptions {
@@ -515,16 +458,12 @@ mod tests {
 
     #[test]
     fn a_wide_row_shrinks_to_fit() {
-        // Eight wide windows in one row cannot all be scaled to the row
-        // height; they must shrink together, keeping relative sizes.
         let windows: Vec<_> = (0..8).map(|_| win(1600, 400)).collect();
         let slots = compute_overview_layout(&windows, area(), &opts());
 
         for slot in &slots {
             assert!(slot.scale < 1.0, "expected shrink, got {}", slot.scale);
         }
-        // All identical windows keep identical sizes after the shared
-        // shrink factor.
         let first = slots[0].target.size;
         for slot in &slots {
             assert_eq!(slot.target.size, first);
@@ -533,9 +472,6 @@ mod tests {
 
     #[test]
     fn label_height_reserves_vertical_space() {
-        // Compared with an uncapped scale so the previews are actually
-        // height-limited: at max_scale 1.0 a single 800x600 window never
-        // grows to the row height, so the label strip would not show.
         let windows = [win(800, 600)];
         let uncapped = OverviewOptions {
             max_scale: 4.0,

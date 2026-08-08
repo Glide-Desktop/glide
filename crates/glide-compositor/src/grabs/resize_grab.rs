@@ -1,8 +1,3 @@
-//! Resize grab is the state of a composer during which the client window is being resized.
-//!
-//! eg. Usually whenever a user clicks on the app's border and starts dragging, the compositors
-//! enters a `ResizeSurfaceGrab` state.
-
 use std::cell::RefCell;
 
 use smithay::{
@@ -23,8 +18,6 @@ use smithay::{
 
 use crate::{GlideState, focus::PointerFocusTarget, state::window_surface, window::GlideWindow};
 
-// The button code as defined in the Linux kernel's
-// linux/input-event-codes.h header file, e.g. BTN_LEFT.
 const BTN_LEFT: u32 = 0x110;
 
 bitflags::bitflags! {
@@ -46,10 +39,6 @@ bitflags::bitflags! {
 impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     #[inline]
     fn from(x: xdg_toplevel::ResizeEdge) -> Self {
-        // wayland-server's protocol dispatch validates `x` against the
-        // xdg_toplevel::resize_edge enum's declared range before this
-        // handler ever runs, and every variant in that range maps onto some
-        // combination of our TOP|BOTTOM|LEFT|RIGHT bits.
         Self::from_bits(x as u32)
             .expect("xdg_toplevel::ResizeEdge is protocol-validated to a known enum variant")
     }
@@ -99,7 +88,6 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &MotionEvent,
     ) {
-        // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
 
         let mut delta = event.location - self.start_data.location;
@@ -112,8 +100,6 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
                 delta.x = -delta.x;
             }
 
-            // Window dimensions are screen coordinates, always far below
-            // i32::MAX, so the round-trip through f64 never truncates.
             #[allow(clippy::cast_possible_truncation)]
             {
                 new_window_width = (f64::from(self.initial_rect.size.w) + delta.x) as i32;
@@ -125,7 +111,6 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
                 delta.y = -delta.y;
             }
 
-            // See the width case above: bounded by screen coordinates.
             #[allow(clippy::cast_possible_truncation)]
             {
                 new_window_height = (f64::from(self.initial_rect.size.h) + delta.y) as i32;
@@ -189,7 +174,6 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
         handle.button(data, event);
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
-            // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
 
             let xdg = self
@@ -304,23 +288,16 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
     fn unset(&mut self, _data: &mut GlideState) {}
 }
 
-/// State of the resize operation.
-///
-/// It is stored inside of `WlSurface`,
-/// and can be accessed using [`ResizeSurfaceState::with`]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 enum ResizeSurfaceState {
     #[default]
     Idle,
     Resizing {
         edges: ResizeEdge,
-        /// The initial window size and location.
         initial_rect: Rectangle<i32, Logical>,
     },
-    /// Resize is done, we are now waiting for last commit, to do the final move
     WaitingForLastCommit {
         edges: ResizeEdge,
-        /// The initial window size and location.
         initial_rect: Rectangle<i32, Logical>,
     },
 }
@@ -351,7 +328,6 @@ impl ResizeSurfaceState {
                 edges,
                 initial_rect,
             } => {
-                // The resize is done, let's go back to idle
                 *self = Self::Idle;
 
                 Some((edges, initial_rect))
@@ -361,7 +337,6 @@ impl ResizeSurfaceState {
     }
 }
 
-/// Should be called on `WlSurface::commit`
 pub fn handle_commit(space: &mut Space<GlideWindow>, surface: &WlSurface) -> Option<()> {
     let window = space
         .elements()
@@ -375,8 +350,6 @@ pub fn handle_commit(space: &mut Space<GlideWindow>, surface: &WlSurface) -> Opt
         state
             .commit()
             .and_then(|(edges, initial_rect)| {
-                // If the window is being resized by top or left, its location must be adjusted
-                // accordingly.
                 edges.intersects(ResizeEdge::TOP_LEFT).then(|| {
                     let new_x = edges
                         .intersects(ResizeEdge::LEFT)
@@ -400,7 +373,6 @@ pub fn handle_commit(space: &mut Space<GlideWindow>, surface: &WlSurface) -> Opt
     }
 
     if new_loc.x.is_some() || new_loc.y.is_some() {
-        // If TOP or LEFT side of the window got resized, we have to move it
         space.map_element(window, window_loc, false);
     }
 
