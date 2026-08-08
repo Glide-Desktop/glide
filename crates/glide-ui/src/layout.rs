@@ -60,8 +60,6 @@ fn layout_line(bounds: Rectangle, tracks: &[Track], horizontal: bool) -> Vec<Rec
                 if flex_weight_sum <= 0 {
                     0
                 } else if flex_seen == flex_count {
-                    // Last flex track absorbs the rounding remainder so the
-                    // tracks always tile the bounds exactly, with no gap.
                     remaining - flex_used
                 } else {
                     let length = remaining * w / flex_weight_sum;
@@ -83,10 +81,6 @@ fn layout_line(bounds: Rectangle, tracks: &[Track], horizontal: bool) -> Vec<Rec
     out
 }
 
-/// Finds the last entry (by draw order - later entries are treated as on
-/// top) whose rectangle contains `(x, y)`. Coordinates are `f64` because
-/// pointer input carries sub-pixel precision even though layout tracks are
-/// laid out on integer bounds.
 #[must_use]
 pub fn hit_test<T: Copy>(entries: &[(T, Rectangle)], x: f64, y: f64) -> Option<T> {
     entries
@@ -129,8 +123,6 @@ mod tests {
 
     #[test]
     fn matches_the_titlebar_button_cluster_geometry_exactly() {
-        // The same four zones HeaderBar::zone_at used to compute by hand:
-        // maximize [0, bw), drag [bw, w-2bw), chevron [w-2bw, w-bw), close [w-bw, w).
         let (w, h, bw) = (800, 32, 32);
         let rects = layout_row(
             rect(0, 0, w, h),

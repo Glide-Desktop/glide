@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use glide_ipc::{Request, Response, WindowInfo, WorkspaceInfo};
+use glide_ipc::{Event, Request, Response, WindowInfo, WorkspaceInfo};
 use smithay::reexports::calloop::{
     EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic,
 };
@@ -26,6 +26,38 @@ impl IpcServer {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct IpcSubscribers {
+    streams: Vec<UnixStream>,
+}
+
+impl IpcSubscribers {
+    fn add(&mut self, stream: UnixStream) {
+        self.streams.push(stream);
+        tracing::info!(
+            subscriber_count = self.streams.len(),
+            "IPC event subscriber connected"
+        );
+    }
+
+    pub fn broadcast(&mut self, event: &Event) {
+        if self.streams.is_empty() {
+            return;
+        }
+        let Ok(mut json) = serde_json::to_string(event) else {
+            tracing::error!(?event, "failed to serialize an IPC event");
+            return;
+        };
+        json.push('\n');
+        let bytes = json.as_bytes();
+
+        self.streams.retain_mut(|stream| match stream.write(bytes) {
+            Ok(n) if n == bytes.len() => true,
+            Ok(_) | Err(_) => false,
+        });
     }
 }
 
@@ -213,16 +245,16 @@ fn write_all_nonblocking(stream: &UnixStream, mut data: &[u8]) -> std::io::Resul
 }
 
 fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
-    let response = match std::str::from_utf8(line) {
-        Ok(text) => match serde_json::from_str::<Request>(text.trim()) {
-            Ok(request) => dispatch_request(state, request),
-            Err(err) => Response::Error {
-                message: format!("invalid IPC request JSON: {err}"),
-            },
-        },
-        Err(err) => Response::Error {
-            message: format!("IPC request was not valid UTF-8: {err}"),
-        },
+    let request = match std::str::from_utf8(line) {
+        Ok(text) => serde_json::from_str::<Request>(text.trim())
+            .map_err(|err| format!("invalid IPC request JSON: {err}")),
+        Err(err) => Err(format!("IPC request was not valid UTF-8: {err}")),
+    };
+
+    let subscribing = matches!(request, Ok(Request::Subscribe));
+    let response = match request {
+        Ok(request) => dispatch_request(state, request),
+        Err(message) => Response::Error { message },
     };
 
     let Ok(mut json) = serde_json::to_string(&response) else {
@@ -236,6 +268,14 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
             ?err,
             "failed to write an IPC response; client likely hung up or buffer full"
         );
+        return;
+    }
+
+    if subscribing {
+        match stream.try_clone() {
+            Ok(clone) => state.ipc_subscribers.add(clone),
+            Err(err) => tracing::warn!(?err, "failed to register an IPC event subscriber"),
+        }
     }
 }
 
@@ -276,6 +316,7 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             Response::Ok
         }
         Request::Exec { command } => spawn_command(&command),
+        Request::Subscribe => Response::Subscribed,
     }
 }
 
@@ -442,5 +483,97 @@ mod tests {
 
         let res = write_all_nonblocking(&server_stream, b"hello client");
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn broadcast_with_no_subscribers_is_a_no_op() {
+        let mut subscribers = IpcSubscribers::default();
+        subscribers.broadcast(&Event::OutputChanged);
+    }
+
+    #[test]
+    fn broadcast_delivers_the_event_as_a_newline_terminated_json_line() {
+        let (server_stream, mut client_stream) = UnixStream::pair().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+
+        let mut subscribers = IpcSubscribers::default();
+        subscribers.add(server_stream);
+        subscribers.broadcast(&Event::WindowOpened { id: 42 });
+
+        let mut buf = [0_u8; 256];
+        let n = client_stream.read(&mut buf).unwrap();
+        let line = std::str::from_utf8(&buf[..n]).unwrap();
+
+        assert!(line.ends_with('\n'), "{line:?}");
+        let parsed: Event = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(parsed, Event::WindowOpened { id: 42 });
+    }
+
+    #[test]
+    fn broadcast_never_blocks_on_a_subscriber_whose_buffer_is_full() {
+        let (server_stream, _client_stream) = UnixStream::pair().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+
+        let dummy = [0x55_u8; 4096];
+        #[allow(clippy::unused_io_amount)]
+        while (&server_stream).write(&dummy).is_ok_and(|n| n > 0) {}
+
+        let mut subscribers = IpcSubscribers::default();
+        subscribers.add(server_stream);
+
+        let start = std::time::Instant::now();
+        subscribers.broadcast(&Event::OutputChanged);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "broadcast must never block on a full subscriber buffer, took {elapsed:?}"
+        );
+        assert!(
+            subscribers.streams.is_empty(),
+            "a subscriber whose buffer is full must be dropped, not retried indefinitely"
+        );
+    }
+
+    #[test]
+    fn a_stalled_subscriber_does_not_stop_the_broadcast_reaching_others() {
+        let (stalled, _stalled_client) = UnixStream::pair().unwrap();
+        stalled.set_nonblocking(true).unwrap();
+        let dummy = [0x55_u8; 4096];
+        #[allow(clippy::unused_io_amount)]
+        while (&stalled).write(&dummy).is_ok_and(|n| n > 0) {}
+
+        let (reading, mut reading_client) = UnixStream::pair().unwrap();
+        reading.set_nonblocking(true).unwrap();
+
+        let mut subscribers = IpcSubscribers::default();
+        subscribers.add(stalled);
+        subscribers.add(reading);
+        subscribers.broadcast(&Event::OutputChanged);
+
+        assert_eq!(
+            subscribers.streams.len(),
+            1,
+            "exactly the stalled subscriber must have been dropped"
+        );
+
+        let mut buf = [0_u8; 256];
+        let n = reading_client.read(&mut buf).unwrap();
+        let parsed: Event =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        assert_eq!(parsed, Event::OutputChanged);
+    }
+
+    #[test]
+    fn broadcast_drops_a_subscriber_whose_client_hung_up() {
+        let (server_stream, client_stream) = UnixStream::pair().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+        drop(client_stream);
+
+        let mut subscribers = IpcSubscribers::default();
+        subscribers.add(server_stream);
+        subscribers.broadcast(&Event::OutputChanged);
+
+        assert!(subscribers.streams.is_empty());
     }
 }

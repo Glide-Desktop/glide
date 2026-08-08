@@ -43,9 +43,6 @@ use smithay::{
 
 use crate::{backend::tty::TtyData, window::GlideWindow};
 
-/// Every Wayland protocol global's server-side state, grouped so a new
-/// protocol handler adds a field here instead of growing `GlideState`
-/// itself indefinitely.
 #[allow(clippy::struct_field_names)]
 pub struct Protocols {
     pub compositor_state: CompositorState,
@@ -107,6 +104,7 @@ pub struct GlideState {
         smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
     >,
     pub idle_inhibited_surfaces: HashSet<WlSurface>,
+    pub ipc_subscribers: crate::ipc::IpcSubscribers,
 }
 
 impl GlideState {
@@ -216,6 +214,7 @@ impl GlideState {
 
             foreign_toplevel_handles,
             idle_inhibited_surfaces: HashSet::new(),
+            ipc_subscribers: crate::ipc::IpcSubscribers::default(),
         }
     }
 
@@ -335,6 +334,8 @@ impl GlideState {
                     .foreign_toplevel_list_state
                     .remove_toplevel(&handle);
             }
+            self.ipc_subscribers
+                .broadcast(&glide_ipc::Event::WindowClosed { id: id.as_u64() });
         }
 
         self.idle_inhibited_surfaces
@@ -400,6 +401,15 @@ impl GlideState {
         let current_focus = keyboard.current_focus();
         if current_focus != target {
             self.suppressed_keys.clear();
+            let focused_window_id = self
+                .layer_focus
+                .is_none()
+                .then(|| self.layout.focused_window())
+                .flatten();
+            self.ipc_subscribers
+                .broadcast(&glide_ipc::Event::FocusChanged {
+                    id: focused_window_id.map(glide_layout::WindowId::as_u64),
+                });
         }
 
         keyboard.set_focus(self, target, serial);
@@ -425,6 +435,8 @@ impl GlideState {
 
         self.window_map.insert(id, window.clone());
         self.window_to_id.insert(window.clone(), id);
+        self.ipc_subscribers
+            .broadcast(&glide_ipc::Event::WindowOpened { id: id.as_u64() });
 
         let (title, app_id) = window.toplevel().map_or_else(
             || (String::new(), String::new()),
@@ -474,6 +486,8 @@ impl GlideState {
                         .foreign_toplevel_list_state
                         .remove_toplevel(&handle);
                 }
+                self.ipc_subscribers
+                    .broadcast(&glide_ipc::Event::WindowClosed { id: id.as_u64() });
             }
         }
 

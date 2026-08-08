@@ -36,6 +36,7 @@ pub enum Request {
     Exec {
         command: String,
     },
+    Subscribe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +65,19 @@ pub enum Response {
     Workspaces { list: Vec<WorkspaceInfo> },
     Windows { list: Vec<WindowInfo> },
     Error { message: String },
+    Subscribed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum Event {
+    WindowOpened { id: u64 },
+    WindowClosed { id: u64 },
+    TitleChanged { id: u64, title: String },
+    AppIdChanged { id: u64, app_id: String },
+    FocusChanged { id: Option<u64> },
+    WorkspaceChanged { id: u64 },
+    OutputChanged,
 }
 
 #[cfg(test)]
@@ -91,6 +105,7 @@ mod tests {
             Request::Exec {
                 command: "alacritty".to_string(),
             },
+            Request::Subscribe,
         ];
 
         for req in requests {
@@ -126,12 +141,39 @@ mod tests {
             Response::Error {
                 message: "something went wrong".into(),
             },
+            Response::Subscribed,
         ];
 
         for resp in responses {
             let json = serde_json::to_string(&resp).expect("serialize response");
             let deserialized: Response = serde_json::from_str(&json).expect("deserialize response");
             assert_eq!(resp, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_event_roundtrip() {
+        let events = vec![
+            Event::WindowOpened { id: 1 },
+            Event::WindowClosed { id: 2 },
+            Event::TitleChanged {
+                id: 3,
+                title: "Terminal".to_string(),
+            },
+            Event::AppIdChanged {
+                id: 4,
+                app_id: "alacritty".to_string(),
+            },
+            Event::FocusChanged { id: Some(5) },
+            Event::FocusChanged { id: None },
+            Event::WorkspaceChanged { id: 6 },
+            Event::OutputChanged,
+        ];
+
+        for event in events {
+            let json = serde_json::to_string(&event).expect("serialize event");
+            let deserialized: Event = serde_json::from_str(&json).expect("deserialize event");
+            assert_eq!(event, deserialized);
         }
     }
 }

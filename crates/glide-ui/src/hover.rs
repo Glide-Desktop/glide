@@ -21,10 +21,6 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
         self.target
     }
 
-    /// Retargets the animation, restarting the fade from zero. Returns
-    /// `false` (and does nothing) if `target` is already the current
-    /// target, so repeated motion events over the same widget don't keep
-    /// resetting an in-progress fade.
     pub fn set(&mut self, target: Option<T>) -> bool {
         if self.target == target {
             return false;
@@ -34,17 +30,10 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
         true
     }
 
-    /// Reassigns the target without touching the fade's start time, for
-    /// involuntary reassignment (e.g. the previous target disappeared and
-    /// a replacement is being picked automatically) that should not read
-    /// as a fresh hover.
     pub fn retarget_without_restarting(&mut self, target: Option<T>) {
         self.target = target;
     }
 
-    /// Linear progress in `[0.0, 1.0]` since the target was last changed.
-    /// `1.0` both when nothing is targeted and once `duration` has fully
-    /// elapsed - callers apply their own easing curve on top if wanted.
     #[must_use]
     pub fn progress(&self, duration: Duration) -> f64 {
         let Some(started) = self.started else {
