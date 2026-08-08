@@ -20,6 +20,26 @@ The compositor is killed after `TIMEOUT` seconds no matter what (default:
 unlimited, `Super+Q` quits early), so a stuck session can never lock you
 out of the tty.
 
+## Required packages
+
+Some checks below need a client Glide doesn't ship and doesn't intend to
+ship (`glide-panel`/`glide-dock`/`glide-notification-center` replace
+`waybar`/`fuzzel`/`mako` — see `docs/ROADMAP.md` Phase C, not this list).
+What's actually needed to run every check that follows:
+
+```
+sudo pacman -S wl-clipboard swaylock grim slurp xwayland-satellite noto-fonts-cjk
+```
+
+- `wl-clipboard` — `primary-selection`/`data-control` checks (Phase B1)
+- `swaylock` — `ext-session-lock-v1` checks (Phase B4); not the product we ship, just the only independent client that exercises the protocol until `glide-lock` exists
+- `grim` + `slurp` — `ext-image-copy-capture-v1` checks (Phase B5)
+- `xwayland-satellite` — X11 app checks (Phase B6)
+- `noto-fonts-cjk` — closes the A3.3 CJK-tofu gap below
+
+A section is marked **BLOCKED** below if the check can't currently be
+performed at all, with the reason and what unblocks it.
+
 ## Core interaction
 
 - Watch for blue, then for alacritty to appear on top of it.
@@ -44,13 +64,26 @@ out of the tty.
 - Resize: move the pointer to just outside any window edge or corner (~8px band) — the cursor must change to the matching resize arrow (up-down at top/bottom, left-right at sides, diagonal at corners); press and drag there resizes the window from that edge. Confirm the cursor goes back to the normal arrow over the titlebar/content.
 - Click between two windows on one workspace, then `Super+F`: the maximize must apply to the window you last clicked.
 - `Super+M` minimizes the focused window; it must disappear and focus must move to whatever else is visible (or nothing, if it was the only one).
-- Decorations negotiate: alacritty/foot keep the server-side titlebar; a GTK app (if installed — try `TIMEOUT=120 ... glidectl exec gtk4-demo` or `zenity`) should show its own header bar with NO Glide titlebar on top of it, and its content must not jump when that happens.
+- Decorations negotiate: alacritty/foot keep the server-side titlebar; a GTK app (`glidectl exec nautilus`) should show its own header bar with NO Glide titlebar on top of it, and its content must not jump when that happens.
 
-## Layer-shell
+## Layer-shell — BLOCKED
 
-- `glidectl exec waybar` — a panel appears at the screen edge WITHOUT a Glide titlebar; existing windows must not sit under it; new windows and maximize must respect the reduced work area (fullscreen must still cover the panel).
-- `glidectl exec fuzzel` — the launcher opens, receives keyboard input immediately, Escape closes it and the keyboard returns to the window that had it. Compositor keybinds (`Super+1..`) must NOT fire while typing in fuzzel, but `Ctrl+Alt+F2` must still switch VTs.
-- `glidectl exec "swaybg -c '#336699'"` — background fills the screen behind windows.
+No layer-shell client is installed or intended to be (`waybar`/`fuzzel`
+are being replaced by `glide-panel`/`glide-launcher`, see
+`docs/ROADMAP.md` Phase C, not installed as test tools). Until
+`glide-panel` exists, layer-shell has **no manual check and no automated
+one** — this is a real, accepted gap, not an oversight. Re-enable this
+section once `glide-panel` lands, using it as the client. In the
+meantime the protocol is exercised only implicitly, if at all.
+
+The checks that used to live here, for when a client is available again:
+a panel appears at the screen edge WITHOUT a Glide titlebar; existing
+windows must not sit under it; new windows and maximize must respect the
+reduced work area (fullscreen must still cover the panel); a launcher
+opens and receives keyboard input immediately, Escape closes it and the
+keyboard returns to the window that had it; compositor keybinds
+(`Super+1..`) must NOT fire while typing into it, but `Ctrl+Alt+F2` must
+still switch VTs; a background client fills the screen behind windows.
 
 ## IPC
 
@@ -69,7 +102,7 @@ Open at least three windows on different workspaces first, otherwise there is no
 - Arrow keys (or hjkl) move the highlight; Escape closes with NO workspace change; Return/Space picks the highlighted one.
 - Clicking a preview switches to that window's workspace and focuses it; clicking empty space just closes the overview.
 - Middle-click on a preview closes that window, and the remaining previews re-flow to fill the gap.
-- A layer-shell panel (`glidectl exec waybar`) stays visible and still takes clicks while the overview is up; a wallpaper stays BEHIND the previews.
+- (BLOCKED until `glide-panel` exists — see Layer-shell above) a layer-shell panel stays visible and still takes clicks while the overview is up; a wallpaper stays BEHIND the previews.
 - `Ctrl+Alt+F2` must still switch VTs from inside the overview — this is the one thing that must never be swallowed.
 - With the overview open and idle, the screen must not be redrawing continuously (this used to burn a full 60Hz repaint on a static image).
 
@@ -84,7 +117,7 @@ Two logs are produced by `test-tty.sh`, and both matter:
 
 # Per-step checklists
 
-Sections below are added as Phase A steps land — see `PROJECT.md` for the
+Sections below are added as steps land — see `docs/ROADMAP.md` for the
 current phase. Each says what changed, what the automated gates already
 cover, and what needs a human.
 
