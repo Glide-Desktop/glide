@@ -414,6 +414,7 @@ dependencies = [
  "fontdue",
  "glide-ipc",
  "glide-layout",
+ "glide-theme",
  "libc",
  "profiling",
  "serde",
@@ -446,6 +447,14 @@ name = "glide-layout"
 version = "0.1.0"
 dependencies = [
  "glide-geom",
+]
+
+[[package]]
+name = "glide-theme"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]

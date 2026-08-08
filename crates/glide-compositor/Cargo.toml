@@ -29,6 +29,7 @@ toml.workspace = true
 libc = "0.2"
 glide-ipc = { path = "../glide-ipc" }
 glide-layout = { path = "../glide-layout" }
+glide-theme = { path = "../glide-theme" }
 fontdue = "0.9.4"
 tiny-skia = "0.12.0"
 profiling = { version = "1.0.18", features = ["profile-with-tracy"] }

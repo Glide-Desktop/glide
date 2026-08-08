@@ -15,7 +15,7 @@ use smithay::{
 };
 
 use crate::{
-    config::OverviewTheme,
+    config::{OverviewTheme, OverviewThemeExt},
     window::{GlideWindow, GlideWindowRenderElement},
 };
 

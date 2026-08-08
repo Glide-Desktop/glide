@@ -5,6 +5,7 @@ members = [
     "crates/glide-geom",
     "crates/glide-layout",
     "crates/glide-ipc",
+    "crates/glide-theme",
     "crates/glidectl",
 ]
 
