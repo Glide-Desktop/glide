@@ -72,6 +72,12 @@ pub struct DecorationTheme {
     /// Where the title text sits within the space between the maximize
     /// button and the chevron/close cluster.
     pub title_align: TitleAlign,
+    /// Radius, in logical pixels, of the frame's top-left/top-right
+    /// corners — the titlebar's own corners, since it sits at the top of
+    /// the frame. The bottom two stay square regardless (see
+    /// [`crate::decoration::HeaderBar::redraw`]'s docs on why). `0` gives
+    /// the old hard-cornered rectangle.
+    pub corner_radius: f32,
     pub background: Color,
     pub background_focused: Color,
     pub close_button: Color,
@@ -131,21 +137,34 @@ impl Default for DecorationTheme {
         Self {
             height: 32,
             title_align: TitleAlign::Left,
+            // Same corner radius Windows 11 and KDE Breeze both converge
+            // on: enough to read as "rounded card" rather than a hard
+            // rectangle, without eating so much of a 32px titlebar that
+            // the title text starts butting into the curve.
+            corner_radius: 8.0,
             // Titlebar background: charcoal when unfocused, electric
             // indigo when focused — high contrast against both light and
             // dark window content.
             background: Color::from_hex("#1e1e26ff").unwrap(),
             background_focused: Color::from_hex("#4c6ef5ff").unwrap(),
-            // Maximize: subtle slate, noticeably lighter on hover.
-            maximize_button: Color::from_hex("#3a3a4aff").unwrap(),
+            // Transparent at rest — no pill, just the glyph on the bare
+            // titlebar — matching every shipping desktop's own header bar
+            // buttons (GNOME's HIG says this outright; Windows 11 and KDE
+            // Breeze both do it too). A backplate fades in only on hover,
+            // via `*_button_hover` below; see `HeaderBar::redraw`'s
+            // `button_hover_progress`.
+            maximize_button: Color([0.0, 0.0, 0.0, 0.0]),
             maximize_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
             // Chevron: same family as maximize so the two left buttons
             // form one visual group, distinct from the destructive close.
-            chevron_button: Color::from_hex("#3a3a4aff").unwrap(),
+            chevron_button: Color([0.0, 0.0, 0.0, 0.0]),
             chevron_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
-            // Close: clearly destructive — warm red, brightens on hover.
-            close_button: Color::from_hex("#c0404aff").unwrap(),
-            close_button_hover: Color::from_hex("#e05560ff").unwrap(),
+            // Close: transparent at rest like the others, but turns
+            // solidly destructive-red on hover rather than the neutral
+            // slate the other two use — the one button where "what happens
+            // if I press this" is worth calling out before the press.
+            close_button: Color([0.0, 0.0, 0.0, 0.0]),
+            close_button_hover: Color::from_hex("#e0455aff").unwrap(),
             // Dropdown: slightly lighter than the bar so it reads as a
             // separate panel; hover rows use the focused accent.
             menu_background: Color::from_hex("#28282fff").unwrap(),
@@ -306,6 +325,23 @@ impl Color {
             (b * factor).clamp(0.0, 1.0),
             a,
         ])
+    }
+
+    /// Linearly interpolates every channel, alpha included, toward `other`
+    /// as `t` goes from `0.0` to `1.0` — clamped, so a caller passing an
+    /// eased-but-technically-out-of-range `t` can't produce an
+    /// out-of-gamut colour. Used for a titlebar button's hover fade: `self`
+    /// is transparent at rest, `other` its solid hover colour, so
+    /// interpolating alpha is exactly what makes the backplate fade in
+    /// rather than pop.
+    #[must_use]
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        let mut out = [0.0; 4];
+        for (o, (&from, &to)) in out.iter_mut().zip(self.0.iter().zip(other.0.iter())) {
+            *o = from + (to - from) * t;
+        }
+        Self(out)
     }
 }
 
@@ -892,6 +928,7 @@ autostart = [\"foot\", \"waybar --config /tmp/bar.json\"]
 [decorations]
 height = 40
 title-align = \"center\"
+corner-radius = 12.0
 background = \"#111111\"
 background-focused = \"#222222\"
 close-button = \"#333333\"
@@ -914,6 +951,7 @@ shadow-color = \"#000000aa\"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.decorations.height, 40);
         assert_eq!(config.decorations.title_align, TitleAlign::Center);
+        assert!((config.decorations.corner_radius - 12.0).abs() < f32::EPSILON);
         assert_eq!(
             config.decorations.background,
             Color::from_hex("#111111").unwrap()
@@ -964,12 +1002,76 @@ shadow-color = \"#000000aa\"
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // exact 0.0, as authored in the theme literal — see color_parses_rrggbb_as_opaque
+    fn decoration_theme_buttons_are_transparent_at_rest() {
+        // The whole point of the transparent-at-rest redesign: no pill
+        // behind the glyph until it's actually hovered. A regression here
+        // would silently bring back the always-visible-pill look.
+        let d = DecorationTheme::default();
+        assert_eq!(d.maximize_button.0[3], 0.0, "maximize must be transparent");
+        assert_eq!(d.chevron_button.0[3], 0.0, "chevron must be transparent");
+        assert_eq!(d.close_button.0[3], 0.0, "close must be transparent");
+    }
+
+    #[test]
+    fn decoration_theme_close_hover_is_the_odd_one_out() {
+        // Close is the only button whose hover colour should read as
+        // "destructive" (red channel clearly dominant) rather than the
+        // neutral slate maximize/chevron share.
+        let d = DecorationTheme::default();
+        assert_eq!(
+            d.maximize_button_hover, d.chevron_button_hover,
+            "maximize and chevron should read as one neutral group"
+        );
+        let [r, g, b, _] = d.close_button_hover.0;
+        assert!(
+            r > g && r > b,
+            "close hover must be red-dominant, got {:?}",
+            d.close_button_hover.0
+        );
+    }
+
+    #[test]
+    fn decoration_theme_defaults_a_positive_corner_radius() {
+        assert!(DecorationTheme::default().corner_radius > 0.0);
+    }
+
+    #[test]
     fn darken_scales_rgb_and_keeps_alpha() {
         let c = Color([0.8, 0.4, 0.2, 0.5]).darken(0.5);
         assert!((c.0[0] - 0.4).abs() < 0.001);
         assert!((c.0[1] - 0.2).abs() < 0.001);
         assert!((c.0[2] - 0.1).abs() < 0.001);
         assert!((c.0[3] - 0.5).abs() < 0.001, "alpha must be untouched");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // t=0.0/1.0 is bit-exact: `from + (to - from) * t` with t at either endpoint
+    fn lerp_at_zero_and_one_returns_the_endpoints() {
+        let from = Color([0.0, 0.0, 0.0, 0.0]);
+        let to = Color([1.0, 0.5, 0.25, 1.0]);
+        assert_eq!(from.lerp(to, 0.0).0, from.0);
+        assert_eq!(from.lerp(to, 1.0).0, to.0);
+    }
+
+    #[test]
+    fn lerp_at_half_averages_every_channel_including_alpha() {
+        let from = Color([0.0, 0.0, 0.0, 0.0]);
+        let to = Color([1.0, 0.4, 0.8, 1.0]);
+        let mid = from.lerp(to, 0.5);
+        assert!((mid.0[0] - 0.5).abs() < 0.001);
+        assert!((mid.0[1] - 0.2).abs() < 0.001);
+        assert!((mid.0[2] - 0.4).abs() < 0.001);
+        assert!((mid.0[3] - 0.5).abs() < 0.001, "alpha must interpolate too");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // clamp() output is bit-exact — see darken_clamps_at_zero's comment
+    fn lerp_clamps_an_out_of_range_t() {
+        let from = Color([0.0, 0.0, 0.0, 0.0]);
+        let to = Color([1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(from.lerp(to, -1.0).0, from.0);
+        assert_eq!(from.lerp(to, 2.0).0, to.0);
     }
 
     // `clamp(0.0, 1.0)` lands exactly on 0.0 for any negative input, no

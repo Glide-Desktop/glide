@@ -404,8 +404,8 @@ impl Painter {
         bg: Color,
     ) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
-            let (m, w, h) = icon_bounds(width, height);
-            if let Some(rect) = tiny_skia::Rect::from_ltrb(m, m, w - m, h - m) {
+            let (x0, y0, x1, y1) = glyph_bounds(width, height);
+            if let Some(rect) = tiny_skia::Rect::from_ltrb(x0, y0, x1, y1) {
                 let mut pb = tiny_skia::PathBuilder::new();
                 pb.push_rect(rect);
                 if let Some(path) = pb.finish() {
@@ -430,11 +430,11 @@ impl Painter {
         bg: Color,
     ) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
-            let (m, w, h) = icon_bounds(width, height);
-            let offset = ((h - m * 2.0) * 0.28).max(1.0);
+            let (x0, y0, x1, y1) = glyph_bounds(width, height);
+            let offset = ((x1 - x0) * 0.28).max(1.0);
 
             // Back square: shifted up-right.
-            if let Some(back) = tiny_skia::Rect::from_ltrb(m + offset, m, w, h - offset) {
+            if let Some(back) = tiny_skia::Rect::from_ltrb(x0 + offset, y0, x1, y1 - offset) {
                 let mut pb = tiny_skia::PathBuilder::new();
                 pb.push_rect(back);
                 if let Some(path) = pb.finish() {
@@ -445,7 +445,7 @@ impl Painter {
             // Front square: shifted down-left. Filled with the button's own
             // background first, so it visually cuts into the back square's
             // stroke instead of merely overlapping it, then outlined.
-            if let Some(front) = tiny_skia::Rect::from_ltrb(m, m + offset, w - offset, h) {
+            if let Some(front) = tiny_skia::Rect::from_ltrb(x0, y0 + offset, x1 - offset, y1) {
                 let mut pb = tiny_skia::PathBuilder::new();
                 pb.push_rect(front);
                 if let Some(path) = pb.finish() {
@@ -467,12 +467,12 @@ impl Painter {
         bg: Color,
     ) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
-            let (m, w, h) = icon_bounds(width, height);
+            let (x0, y0, x1, y1) = glyph_bounds(width, height);
             let mut pb = tiny_skia::PathBuilder::new();
-            pb.move_to(m, m);
-            pb.line_to(w - m, h - m);
-            pb.move_to(w - m, m);
-            pb.line_to(m, h - m);
+            pb.move_to(x0, y0);
+            pb.line_to(x1, y1);
+            pb.move_to(x1, y0);
+            pb.line_to(x0, y1);
             if let Some(path) = pb.finish() {
                 stroke(pixmap, &path, fg, height, scale);
             }
@@ -490,14 +490,16 @@ impl Painter {
         bg: Color,
     ) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
-            let (m, w, h) = icon_bounds(width, height);
-            let mid_x = w / 2.0;
-            let top = h / 2.0 - m / 2.0;
-            let bot = h / 2.0 + m / 2.0;
+            let (x0, y0, x1, y1) = glyph_bounds(width, height);
+            let mid_x = f32::midpoint(x0, x1);
+            let cy = f32::midpoint(y0, y1);
+            let half_v = (x1 - x0) / 4.0;
+            let top = cy - half_v;
+            let bot = cy + half_v;
             let mut pb = tiny_skia::PathBuilder::new();
-            pb.move_to(m, top);
+            pb.move_to(x0, top);
             pb.line_to(mid_x, bot);
-            pb.line_to(w - m, top);
+            pb.line_to(x1, top);
             if let Some(path) = pb.finish() {
                 stroke(pixmap, &path, fg, height, scale);
             }
@@ -632,12 +634,25 @@ fn render_icon(
     buf[..n].copy_from_slice(&bytes[..n]);
 }
 
-/// Inset margin, and the resulting far edge coordinates, for a glyph drawn
-/// inside a `width × height` icon buffer. Derived from `height` — per-icon
-/// callers no longer each recompute `width.min(height)` by hand.
-fn icon_bounds(width: i32, height: i32) -> (f32, f32, f32) {
-    let m = (height as f32 / 4.0).max(2.0);
-    (m, width as f32 - m, height as f32 - m)
+/// The `(x_min, y_min, x_max, y_max)` bounds of a glyph drawn inside a
+/// `width × height` icon buffer: a square, `GLYPH_RATIO` of
+/// `min(width, height)` on a side, centred exactly on the cell's centre —
+/// not merely inset from every edge by a fixed margin, which (for a
+/// non-square cell, or from a caller re-deriving the far edge instead of
+/// using the one already returned) is what previously left every glyph but
+/// [`Painter::draw_icon_restore`] centred up and to the left of where it
+/// should be, and at half the intended size. Every glyph is built from
+/// this single box so they can never end up centred on different points,
+/// or sized inconsistently with each other, again.
+fn glyph_bounds(width: i32, height: i32) -> (f32, f32, f32, f32) {
+    // Half the button, same ratio GNOME/KDE/Windows all converge on for a
+    // header-bar button's glyph (see the module's own design notes).
+    const GLYPH_RATIO: f32 = 0.5;
+
+    let side = (width.min(height) as f32).max(4.0) * GLYPH_RATIO;
+    let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
+    let half = side / 2.0;
+    (cx - half, cy - half, cx + half, cy + half)
 }
 
 /// Stroke width for icon glyphs: thin and consistent regardless of
@@ -1088,6 +1103,128 @@ mod tests {
         );
         assert_eq!(buf1.len(), 32 * 32 * 4);
         assert_eq!(buf2.len(), 64 * 64 * 4);
+    }
+
+    /// Alpha-weighted centroid of every pixel in a straight-alpha BGRA
+    /// buffer, in logical pixels (`scale` divides the physical coordinates
+    /// back out). Used below to check a glyph is actually centred in its
+    /// cell — a plain "did it draw something" smoke test would have
+    /// missed the double-margin bug entirely, since every glyph still drew
+    /// *a* shape, just off-centre and at half size.
+    fn alpha_centroid(buf: &[u8], width: i32, height: i32, scale: i32) -> (f64, f64) {
+        let (pw, ph) = (width * scale, height * scale);
+        let (mut sum_x, mut sum_y, mut sum_a) = (0.0f64, 0.0f64, 0.0f64);
+        for y in 0..ph {
+            for x in 0..pw {
+                let idx = ((y * pw + x) * 4) as usize;
+                let a = f64::from(buf[idx + 3]);
+                sum_x += f64::from(x) * a;
+                sum_y += f64::from(y) * a;
+                sum_a += a;
+            }
+        }
+        assert!(sum_a > 0.0, "glyph drew nothing");
+        (
+            sum_x / sum_a / f64::from(scale),
+            sum_y / sum_a / f64::from(scale),
+        )
+    }
+
+    #[test]
+    #[allow(clippy::similar_names)] // expected_cx/expected_cy: an x/y pair, not a typo risk
+    fn close_glyph_is_centred_on_the_cell_for_square_and_non_square_cells() {
+        // Regression test for the double-margin bug: `icon_bounds` already
+        // returned the far *edge*, but every caller but `draw_icon_restore`
+        // subtracted the margin from it a second time, centring the glyph
+        // up-and-left of the cell centre instead of on it — worst on a
+        // non-square cell, where the old margin was derived from `height`
+        // alone and so ignored `width` entirely.
+        for (w, h) in [(32, 32), (40, 26), (26, 40), (32, 44)] {
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            Painter::draw_icon_close(
+                &mut buf,
+                w,
+                h,
+                1,
+                Color([1.0, 1.0, 1.0, 1.0]),
+                Color([0.0, 0.0, 0.0, 0.0]), // transparent bg isolates the glyph
+            );
+            let (cx, cy) = alpha_centroid(&buf, w, h, 1);
+            let (expected_cx, expected_cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+            assert!(
+                (cx - expected_cx).abs() < 1.0,
+                "close glyph x-centroid off for {w}x{h}: got {cx}, expected {expected_cx}"
+            );
+            assert!(
+                (cy - expected_cy).abs() < 1.0,
+                "close glyph y-centroid off for {w}x{h}: got {cy}, expected {expected_cy}"
+            );
+        }
+    }
+
+    #[test]
+    fn maximize_glyph_is_centred_and_scale_independent() {
+        // Same centring check as the close glyph, plus: the centroid in
+        // *logical* pixels must land in the same place at scale 1 and
+        // scale 2, since `alpha_centroid` already divides the physical
+        // coordinates back down — if it didn't, a HiDPI titlebar would be
+        // rendering its glyphs off-centre even after the scale-1 fix.
+        for scale in [1, 2] {
+            let (w, h) = (32, 32);
+            let mut buf = vec![0u8; (w * scale * h * scale * 4) as usize];
+            Painter::draw_icon_maximize(
+                &mut buf,
+                w,
+                h,
+                scale,
+                Color([1.0, 1.0, 1.0, 1.0]),
+                Color([0.0, 0.0, 0.0, 0.0]),
+            );
+            let (cx, cy) = alpha_centroid(&buf, w, h, scale);
+            assert!(
+                (cx - f64::from(w) / 2.0).abs() < 1.0,
+                "scale {scale}: got cx={cx}"
+            );
+            assert!(
+                (cy - f64::from(h) / 2.0).abs() < 1.0,
+                "scale {scale}: got cy={cy}"
+            );
+        }
+    }
+
+    #[test]
+    fn glyph_spans_half_the_minimum_cell_dimension() {
+        // Pins the 50% ratio every shipping desktop's header-bar buttons
+        // converge on (see this module's design notes) — and would have
+        // caught the old bug's *other* half: even where a glyph happened
+        // to be reachable, it was drawn at half the intended size.
+        let (w, h) = (32, 32);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        Painter::draw_icon_maximize(
+            &mut buf,
+            w,
+            h,
+            1,
+            Color([1.0, 1.0, 1.0, 1.0]),
+            Color([0.0, 0.0, 0.0, 0.0]),
+        );
+        let mut min_x = w;
+        let mut max_x = 0;
+        for y in 0..h {
+            for x in 0..w {
+                let idx = ((y * w + x) * 4) as usize;
+                if buf[idx + 3] > 10 {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                }
+            }
+        }
+        let span = max_x - min_x;
+        let expected = (f64::from(w.min(h)) * 0.5) as i32;
+        assert!(
+            (span - expected).abs() <= 3,
+            "expected glyph span ~{expected}, got {span}"
+        );
     }
 
     #[test]

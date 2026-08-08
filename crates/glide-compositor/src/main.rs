@@ -108,11 +108,12 @@ fn run() -> anyhow::Result<()> {
         state.space.refresh();
         state.popups.cleanup();
 
-        // Drive the overview's open/close animation. While it runs the
-        // scene changes every frame, so repaints have to be requested
-        // explicitly — the damage-driven path only wakes on client
-        // activity, and a zooming preview is entirely our own doing.
-        if state.tick_overview() {
+        // Drive the overview's open/close animation, and any titlebar
+        // button's hover fade-in. Both change the scene every frame on
+        // their own, so repaints have to be requested explicitly — the
+        // damage-driven path only wakes on client activity, and neither of
+        // these is that.
+        if state.tick_overview() | state.any_button_hover_animating() {
             state.queue_redraw();
         }
 

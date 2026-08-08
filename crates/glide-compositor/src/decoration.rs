@@ -98,6 +98,13 @@ const MENU_CORNER_RADIUS: f32 = 8.0;
 /// button per interaction state.
 const PRESSED_DARKEN: f32 = 0.8;
 
+/// How long a button's backplate takes to fade in once hovered — see
+/// [`HeaderBar::button_hover_progress`]. Deliberately shorter than the
+/// overview's own `HOVER_ANIM`: a titlebar button is a small, frequently
+/// re-crossed target, where a fade slow enough to *notice as an animation*
+/// reads as lag rather than polish.
+const BUTTON_HOVER_ANIM: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Number of concentric rings [`shadow_rects`] approximates a drop
 /// shadow's blur with. More bands trade a few extra (cheap, native
 /// solid-colour) render elements for less visible banding; six is soft
@@ -209,6 +216,13 @@ pub struct HeaderBar {
     /// (wherever it lands, matching how the rest of the titlebar treats
     /// clicks) and on the pointer leaving the decoration entirely.
     pressed: Option<HitZone>,
+    /// Which button zone is currently mid hover fade-in (or settled on),
+    /// and when that started — see [`Self::button_hover_progress`]. `None`
+    /// zone means nothing is fading in right now, whether because nothing
+    /// is hovered or because the hover left a button and the transition
+    /// back to transparent is instant (see that method's docs on why).
+    button_hover: Option<HitZone>,
+    button_hover_started: Option<std::time::Instant>,
 
     /// Colors and focus, snapshotted here (rather than read live from
     /// `GlideState`) because [`smithay::backend::renderer::element::AsRenderElements`],
@@ -376,6 +390,46 @@ impl HeaderBar {
     /// ever read before the first `sync`.
     const fn effective_scale(&self) -> i32 {
         if self.scale < 1 { 1 } else { self.scale }
+    }
+
+    /// Records which button zone is hovered right now (or none), restarting
+    /// the fade-in timer whenever the target actually changes, and returns
+    /// how far into that fade the *current* target is (`1.0` once settled,
+    /// or immediately if nothing is hovered).
+    ///
+    /// Deliberately no crossfade: when hover moves to a different button
+    /// (or off every button), the previously-hovered one's backplate just
+    /// snaps back to transparent and the new target's grows in from
+    /// scratch — the same simplification [`crate::overview::OverviewUi`]'s
+    /// own hover ring makes, for the same reason (see its `set_hover`
+    /// docs): a real crossfade needs to track fading in *and* out at once,
+    /// for a transition quick and small enough that the difference is not
+    /// worth the bookkeeping.
+    fn button_hover_progress(&mut self, hovered: Option<HitZone>) -> f64 {
+        if self.button_hover != hovered {
+            self.button_hover = hovered;
+            self.button_hover_started = hovered.map(|_| std::time::Instant::now());
+        }
+        let Some(started) = self.button_hover_started else {
+            return 1.0;
+        };
+        if BUTTON_HOVER_ANIM.is_zero() {
+            return 1.0;
+        }
+        (started.elapsed().as_secs_f64() / BUTTON_HOVER_ANIM.as_secs_f64()).clamp(0.0, 1.0)
+    }
+
+    /// Whether a button's hover fade-in is still running, i.e. the
+    /// compositor needs to keep scheduling repaints for this window — see
+    /// [`crate::GlideState::any_button_hover_animating`], which is what
+    /// actually polls this every frame the way `main.rs` already does for
+    /// the overview's own animation.
+    #[must_use]
+    pub fn is_hover_animating(&self) -> bool {
+        self.button_hover.is_some()
+            && self
+                .button_hover_started
+                .is_some_and(|started| started.elapsed() < BUTTON_HOVER_ANIM)
     }
 
     /// Update the window title stored for rendering in the drag zone.
@@ -633,16 +687,6 @@ impl HeaderBar {
             return;
         }
 
-        let theme = &self.theme;
-        let height = self.height;
-        let scale = self.effective_scale();
-        let bg_color = if self.focused {
-            theme.background_focused
-        } else {
-            theme.background
-        };
-        let bg = bg_color.to_buffer_bytes();
-
         // Determine which zone is hovered/pressed (strip only — not the
         // resize band). `pressed` always implies `hovered` in practice
         // (the pointer is still down on whatever it was pressed on, or has
@@ -653,6 +697,24 @@ impl HeaderBar {
             .filter(|l| self.in_titlebar_strip(*l))
             .map(|l| self.zone_at(l.x));
         let pressed = self.pressed;
+        // How far into its fade-in the hovered button (if any) is — see
+        // `button_hover_progress`'s docs on why only the *current* target
+        // fades, with no crossfade for whatever was hovered before it.
+        // Computed (and, via that call, `self.button_hover*` updated)
+        // ahead of the `&self.theme` borrow just below, which would
+        // otherwise conflict with this method's `&mut self`.
+        #[allow(clippy::cast_possible_truncation)]
+        let hover_t = self.button_hover_progress(hovered) as f32;
+
+        let theme = &self.theme;
+        let height = self.height;
+        let scale = self.effective_scale();
+        let bg_color = if self.focused {
+            theme.background_focused
+        } else {
+            theme.background
+        };
+        let bg = bg_color.to_buffer_bytes();
 
         // ── Titlebar background + title label ─────────────────────────────
         // Repaint whenever width, height, focus, title, or hover changes. We
@@ -675,11 +737,29 @@ impl HeaderBar {
             };
             let _ = ctx.draw(|pixels| {
                 let fg = [255, 255, 255, bg[3]]; // white text, same alpha as bg
+                // Rounded background first — only the frame's true top
+                // corners round off (`[true, true, false, false]`); the
+                // bottom two stay square, since they sit flush against the
+                // client's own content, which (short of a clipping shader
+                // on the client surface itself — out of scope here) is
+                // always drawn square. Text goes on top *without* its own
+                // background fill, the same `fill_panel_background` +
+                // `draw_label_over` pairing the chevron dropdown already
+                // uses, or it would flatten the corners right back out.
+                Painter::fill_panel_background(
+                    pixels,
+                    w,
+                    h,
+                    scale,
+                    bg_color,
+                    theme.corner_radius,
+                    [true, true, false, false],
+                );
                 // Clears maximize on the left, the chevron/close cluster
                 // on the right.
                 let x_min = BUTTON_WIDTH + TITLE_PADDING;
                 let x_max = w - RIGHT_CLUSTER_WIDTH;
-                painter.draw_label(pixels, w, h, x_min, x_max, scale, align, &title, fg, bg);
+                painter.draw_label_over(pixels, w, h, x_min, x_max, scale, align, &title, fg);
                 Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
         }
@@ -725,7 +805,7 @@ impl HeaderBar {
             let btn_bg = if pressed == Some(zone) {
                 hover_bg.darken(PRESSED_DARKEN)
             } else if hovered == Some(zone) {
-                hover_bg
+                normal.lerp(hover_bg, hover_t)
             } else {
                 normal
             };
@@ -1601,6 +1681,72 @@ mod tests {
                 h.titlebar_buf.is_some(),
                 "an unrelated sync must not drop cached buffers"
             );
+        }
+    }
+
+    // `button_hover_progress` only ever returns a bit-exact `1.0` (an
+    // early return or `.clamp(0.0, 1.0)`'s own exact upper bound) or a
+    // genuinely-computed in-between value, checked below with `contains`
+    // rather than equality — so the exact-`1.0` comparisons in this module
+    // are as safe as `darken_clamps_at_zero`'s, and get the same allow.
+    #[allow(clippy::float_cmp)]
+    mod hover_animation {
+        use super::*;
+
+        #[test]
+        fn nothing_hovered_is_always_settled() {
+            let mut h = header();
+            assert!(!h.is_hover_animating());
+            assert_eq!(h.button_hover_progress(None), 1.0);
+            assert!(!h.is_hover_animating());
+        }
+
+        #[test]
+        fn hovering_a_zone_starts_the_fade_in_below_full_progress() {
+            let mut h = header();
+            let t = h.button_hover_progress(Some(HitZone::Maximize));
+            assert!(
+                (0.0..1.0).contains(&t),
+                "expected a fresh hover to be mid fade-in, got {t}"
+            );
+            assert!(h.is_hover_animating());
+        }
+
+        #[test]
+        fn progress_settles_to_one_after_the_animation_duration() {
+            let mut h = header();
+            h.button_hover_progress(Some(HitZone::Close));
+            std::thread::sleep(BUTTON_HOVER_ANIM + std::time::Duration::from_millis(30));
+            assert_eq!(h.button_hover_progress(Some(HitZone::Close)), 1.0);
+            assert!(!h.is_hover_animating());
+        }
+
+        #[test]
+        fn switching_the_hovered_zone_restarts_the_fade_with_no_crossfade() {
+            // Deliberate simplification (see `button_hover_progress`'s own
+            // docs): moving from one hovered button straight to another
+            // restarts progress from scratch for the new target, it does
+            // not carry over whatever progress the old one had reached.
+            let mut h = header();
+            h.button_hover_progress(Some(HitZone::Maximize));
+            std::thread::sleep(BUTTON_HOVER_ANIM + std::time::Duration::from_millis(30));
+            assert_eq!(h.button_hover_progress(Some(HitZone::Maximize)), 1.0);
+
+            let t = h.button_hover_progress(Some(HitZone::Close));
+            assert!(
+                (0.0..1.0).contains(&t),
+                "a different target must restart the fade, got {t}"
+            );
+        }
+
+        #[test]
+        fn hover_leaving_every_button_stops_the_animation_immediately() {
+            let mut h = header();
+            h.button_hover_progress(Some(HitZone::Chevron));
+            assert!(h.is_hover_animating());
+
+            assert_eq!(h.button_hover_progress(None), 1.0);
+            assert!(!h.is_hover_animating());
         }
     }
 

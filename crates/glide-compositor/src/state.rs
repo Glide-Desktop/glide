@@ -809,6 +809,21 @@ impl GlideState {
         }
     }
 
+    /// Whether any window's titlebar has a button hover fade-in still
+    /// running — see [`crate::decoration::HeaderBar::is_hover_animating`].
+    /// Polled once per frame in `main.rs`, the same way [`Self::tick_overview`]
+    /// is: a button's redraw only actually runs the next time something
+    /// renders it, and the damage-driven render path has no reason to wake
+    /// up on its own for an animation that isn't a client's doing.
+    #[must_use]
+    pub fn any_button_hover_animating(&self) -> bool {
+        self.window_map.values().any(|window| {
+            window
+                .try_decoration_state()
+                .is_some_and(|state| state.header.is_hover_animating())
+        })
+    }
+
     /// Rebuilds the overview's slots after the window set changed.
     pub fn refresh_overview(&mut self) {
         if self.overview.is_none() {
