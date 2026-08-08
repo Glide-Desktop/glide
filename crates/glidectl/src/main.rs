@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use glide_ipc::{Request, Response, WindowSelector, WorkspaceTarget};
+use glide_ipc::{Event, Request, Response, WindowSelector, WorkspaceTarget};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CliArgs {
@@ -61,6 +61,11 @@ fn main() -> anyhow::Result<()> {
 
     let request = parse_args(&cli.subcommand_args)?;
     let socket_path = find_socket_path()?;
+
+    if matches!(request, Request::Subscribe) {
+        return run_subscribe(&socket_path, cli.json_output);
+    }
+
     let response = send_request(&socket_path, &request)?;
 
     if cli.json_output {
@@ -70,6 +75,64 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn run_subscribe(socket_path: &PathBuf, json_output: bool) -> anyhow::Result<()> {
+    let stream = UnixStream::connect(socket_path)?;
+    let mut json = serde_json::to_string(&Request::Subscribe)?;
+    json.push('\n');
+
+    let mut reader = BufReader::new(stream);
+    reader.get_mut().write_all(json.as_bytes())?;
+    reader.get_mut().flush()?;
+
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let response: Response = serde_json::from_str(&line)?;
+    if !matches!(response, Response::Subscribed) {
+        anyhow::bail!("subscribe request was not accepted: {response:?}");
+    }
+
+    if !json_output {
+        eprintln!("Subscribed. Waiting for events (Ctrl+C to stop)...");
+    }
+
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            if !json_output {
+                eprintln!("Connection closed by the compositor.");
+            }
+            return Ok(());
+        }
+
+        let event: Event = match serde_json::from_str(line.trim()) {
+            Ok(event) => event,
+            Err(err) => {
+                eprintln!("warning: could not parse an event line: {err}");
+                continue;
+            }
+        };
+
+        if json_output {
+            println!("{}", serde_json::to_string(&event)?);
+        } else {
+            println!("{}", format_event(&event));
+        }
+    }
+}
+
+fn format_event(event: &Event) -> String {
+    match event {
+        Event::WindowOpened { id } => format!("window opened: {id}"),
+        Event::WindowClosed { id } => format!("window closed: {id}"),
+        Event::TitleChanged { id, title } => format!("window {id} title changed: {title:?}"),
+        Event::AppIdChanged { id, app_id } => format!("window {id} app-id changed: {app_id:?}"),
+        Event::FocusChanged { id: Some(id) } => format!("focus changed: window {id}"),
+        Event::FocusChanged { id: None } => "focus changed: none".to_string(),
+        Event::WorkspaceChanged { id } => format!("workspace changed: {id}"),
+        Event::OutputChanged => "output changed".to_string(),
+    }
 }
 
 fn print_usage() {
@@ -89,6 +152,7 @@ COMMANDS:
     window move <N|next|prev>  Move focused window to workspace
     reload                     Reload configuration from glide.toml
     exec <command...>          Execute shell command
+    subscribe                  Stream window/focus/workspace events until Ctrl+C
 
 OPTIONS:
     --json                     Output response as raw JSON
@@ -141,6 +205,7 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
         "ping" => Ok(Request::Ping),
         "quit" => Ok(Request::Quit),
         "reload" => Ok(Request::Reload),
+        "subscribe" | "sub" => Ok(Request::Subscribe),
         "exec" => {
             if args.len() < 2 {
                 anyhow::bail!("Usage: glidectl exec <command>");
@@ -223,6 +288,7 @@ fn print_response(response: &Response) {
         Response::Ok => println!("OK"),
         Response::Pong => println!("PONG"),
         Response::Error { message } => eprintln!("Error: {message}"),
+        Response::Subscribed => println!("Subscribed"),
         Response::Workspaces { list } => {
             println!(
                 "{:<5} {:<10} {:<8} {:<10}",
@@ -289,6 +355,34 @@ mod tests {
                 command: "alacritty".into()
             }
         );
+        assert_eq!(
+            parse_args(&["subscribe".into()]).unwrap(),
+            Request::Subscribe
+        );
+        assert_eq!(parse_args(&["sub".into()]).unwrap(), Request::Subscribe);
+    }
+
+    #[test]
+    fn format_event_covers_every_variant_without_panicking() {
+        let events = [
+            Event::WindowOpened { id: 1 },
+            Event::WindowClosed { id: 2 },
+            Event::TitleChanged {
+                id: 3,
+                title: "Terminal".to_string(),
+            },
+            Event::AppIdChanged {
+                id: 4,
+                app_id: "alacritty".to_string(),
+            },
+            Event::FocusChanged { id: Some(5) },
+            Event::FocusChanged { id: None },
+            Event::WorkspaceChanged { id: 6 },
+            Event::OutputChanged,
+        ];
+        for event in events {
+            assert!(!format_event(&event).is_empty());
+        }
     }
 
     #[test]
