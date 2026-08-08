@@ -935,6 +935,14 @@ fn start_resize(
 
         let grab = ResizeSurfaceGrab::start(start_data, window.clone(), edges, initial_rect);
         pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Clear);
+
+        // `Focus::Clear` above synchronously leaves whatever was focused
+        // (the decoration, since that's where the drag started) and, as
+        // part of that, resets the cursor to the plain default arrow — see
+        // `PointerInternal::motion`'s `None` branch in smithay. Put the
+        // matching resize arrow back so the cursor does not visibly flick
+        // to the default shape for one frame right as the drag begins.
+        state.cursor_status = CursorImageStatus::Named(resize_cursor(edges));
     });
 }
 
@@ -1214,9 +1222,21 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         }
     }
 
-    let content_width = window.geometry().size.w;
-    if header.width != content_width {
-        header.width = content_width;
+    // Kept in sync with the live surface here too, not only in
+    // `sync_decoration`: a resize's final size lands via a surface commit
+    // (`resize_grab` → `Space`), which does not itself run
+    // `reconcile_space`, so relying on `sync_decoration` alone would leave
+    // the resize band, bottom border and shadow a frame behind the new
+    // edge until something unrelated (e.g. a later focus change) happened
+    // to reconcile. Both dimensions matter here, not just `width` as
+    // before: `content_height` is what the resize/shadow geometry below
+    // and `resize_edges_at`'s bottom-edge hit test are keyed on.
+    let content = window.geometry().size;
+    if header.width != content.w {
+        header.width = content.w;
+    }
+    if header.content_height != content.h {
+        header.content_height = content.h;
     }
     header.redraw(painter);
 

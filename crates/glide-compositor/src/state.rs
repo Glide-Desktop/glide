@@ -481,16 +481,25 @@ impl GlideState {
             .sync_workspaces(&self.display_handle, &self.layout);
     }
 
-    /// Pushes activation and maximized/fullscreen state (and, only for those,
-    /// an explicit size) to the client.
+    /// Pushes activation and maximized/fullscreen state, and an explicit
+    /// size, to the client.
     ///
-    /// A plain floating window is deliberately left to size itself: Glide
-    /// positions windows but does not dictate their dimensions, so sending a
-    /// size here would both override the client's own choice and fight any
-    /// resize it initiates. Maximized and fullscreen are the exceptions,
-    /// because there the compositor genuinely is choosing the geometry — and
-    /// what it tells the client is the *content* size, insets already
-    /// excluded, since the client only ever draws its own content area.
+    /// Only a window that has never been placed (still `!is_placed`, i.e.
+    /// its very first configure) is left to size itself: Glide positions
+    /// windows but does not dictate their *initial* dimensions, so sending a
+    /// size before the client has ever chosen one would just be a guess.
+    /// Every other case — plain floating, maximized, fullscreen — sends the
+    /// layout's own idea of the geometry back. For a floating window that is
+    /// simply the size [`Self::record_window_resize`] /
+    /// [`Self::record_window_move`] last recorded, so this call, which runs
+    /// on every [`Self::reconcile_space`], *replays* the layout's state
+    /// instead of overriding it — without it, the next reconcile after an
+    /// interactive resize (e.g. any decoration click, which calls
+    /// `focus_window` → `reconcile_space`) would send a bare
+    /// `size = None` configure, telling the client its size is up to it and
+    /// undoing the resize the moment the client redraws. What it tells the
+    /// client is always the *content* size, insets already excluded, since
+    /// the client only ever draws its own content area.
     fn apply_window_state(window: &GlideWindow, state: &glide_layout::WindowState, focused: bool) {
         let Some(toplevel) = window.toplevel() else {
             return;
@@ -506,7 +515,8 @@ impl GlideState {
             changed |= set_state_flag(pending, XdgState::Fullscreen, state.fullscreen);
 
             let content = state.content_geometry();
-            let size = (state.maximized || state.fullscreen)
+            let size = state
+                .is_placed
                 .then(|| smithay::utils::Size::from((content.size.width, content.size.height)));
             if pending.size != size {
                 pending.size = size;

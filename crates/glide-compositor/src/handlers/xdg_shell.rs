@@ -326,11 +326,24 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
 }
 
 impl XdgDecorationHandler for GlideState {
-    fn new_decoration(&mut self, _toplevel: ToplevelSurface) {
-        // Do not force a ServerSide preference by default. The protocol dictates
-        // that clients should draw their own decorations (ClientSide) unless
-        // negotiated otherwise. Clients that want SSD (like Alacritty) will
-        // explicitly call `request_mode(ServerSide)`, which we honor.
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        // Fires as soon as the client creates the decoration object, before
+        // it has necessarily asked for any mode — and per the protocol (see
+        // `XdgDecorationHandler`'s own doc example) the compositor is
+        // expected to answer with a configure carrying its preference right
+        // here, same as `unset_mode` below. A client that only reads its
+        // *first* configure to learn what modes exist — several do — would
+        // otherwise never find out SSD is on offer and fall back to
+        // drawing its own decorations, silently losing the resize band,
+        // border and titlebar every other Glide window gets.
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        toplevel.send_pending_configure();
+
+        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
+            self.set_window_decorated(id, true);
+        }
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
