@@ -70,11 +70,10 @@ fn run() -> anyhow::Result<()> {
 
     let ipc_server = ipc::init_ipc(&mut event_loop, &state.socket_name)?;
 
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
-        if let Some(server) = ipc_server.as_ref() {
-            std::env::set_var("GLIDE_IPC_SOCK", server.socket_path());
-        }
+    warn_about_a_foreign_session();
+    apply_session_environment(&state.socket_name);
+    if let Some(server) = ipc_server.as_ref() {
+        unsafe { std::env::set_var("GLIDE_IPC_SOCK", server.socket_path()) };
     }
 
     spawn_autostart(&config.general.autostart);
@@ -96,6 +95,52 @@ fn run() -> anyhow::Result<()> {
     drop(ipc_server);
 
     Ok(())
+}
+
+const STALE_SESSION_VARS: &[&str] = &[
+    "DISPLAY",
+    "XAUTHORITY",
+    "GNOME_SETUP_DISPLAY",
+    "WAYLAND_SOCKET",
+];
+
+fn session_environment(socket_name: &std::ffi::OsStr) -> Vec<(&'static str, std::ffi::OsString)> {
+    vec![
+        ("WAYLAND_DISPLAY", socket_name.to_os_string()),
+        ("XDG_SESSION_TYPE", "wayland".into()),
+        ("XDG_CURRENT_DESKTOP", "Glide".into()),
+        ("XDG_SESSION_DESKTOP", "glide".into()),
+    ]
+}
+
+fn apply_session_environment(socket_name: &std::ffi::OsStr) {
+    unsafe {
+        for (key, value) in session_environment(socket_name) {
+            std::env::set_var(key, value);
+        }
+        for key in STALE_SESSION_VARS {
+            std::env::remove_var(key);
+        }
+    }
+}
+
+fn warn_about_a_foreign_session() {
+    let Ok(desktop) = std::env::var("XDG_CURRENT_DESKTOP") else {
+        return;
+    };
+    if desktop.is_empty() || desktop.eq_ignore_ascii_case("glide") {
+        return;
+    }
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+        return;
+    }
+    tracing::warn!(
+        foreign_desktop = %desktop,
+        "sharing a D-Bus session bus with another desktop: single-instance apps \
+         (kgx, nautilus, ...) already running there will open their windows there \
+         instead of in Glide. Start Glide with `dbus-run-session -- glide` to \
+         isolate it."
+    );
 }
 
 fn spawn_autostart(commands: &[String]) {
@@ -124,6 +169,49 @@ pub fn reap_child_processes() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_environment_points_clients_at_our_socket() {
+        let vars = session_environment(std::ffi::OsStr::new("wayland-7"));
+        let display = vars
+            .iter()
+            .find(|(key, _)| *key == "WAYLAND_DISPLAY")
+            .expect("WAYLAND_DISPLAY must be set");
+        assert_eq!(display.1, std::ffi::OsString::from("wayland-7"));
+    }
+
+    #[test]
+    fn session_environment_identifies_the_desktop_as_glide() {
+        let vars = session_environment(std::ffi::OsStr::new("wayland-0"));
+        for (key, want) in [
+            ("XDG_CURRENT_DESKTOP", "Glide"),
+            ("XDG_SESSION_DESKTOP", "glide"),
+            ("XDG_SESSION_TYPE", "wayland"),
+        ] {
+            let got = vars
+                .iter()
+                .find(|(k, _)| *k == key)
+                .unwrap_or_else(|| panic!("{key} must be set"));
+            assert_eq!(got.1, std::ffi::OsString::from(want));
+        }
+    }
+
+    #[test]
+    fn stale_session_vars_drop_a_foreign_x_server() {
+        assert!(STALE_SESSION_VARS.contains(&"DISPLAY"));
+        assert!(STALE_SESSION_VARS.contains(&"XAUTHORITY"));
+    }
+
+    #[test]
+    fn session_environment_never_clears_what_it_sets() {
+        let vars = session_environment(std::ffi::OsStr::new("wayland-0"));
+        for (key, _) in &vars {
+            assert!(
+                !STALE_SESSION_VARS.contains(key),
+                "{key} is both set and cleared"
+            );
+        }
+    }
 
     #[test]
     fn test_reap_child_processes() {
