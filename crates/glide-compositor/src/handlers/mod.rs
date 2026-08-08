@@ -5,6 +5,7 @@ pub mod idle_notify;
 pub mod layer_shell;
 mod selection;
 pub mod wlr_output_management;
+mod xdg_activation;
 mod xdg_shell;
 
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};

@@ -200,3 +200,22 @@ packages above).
 - Copy in alacritty, close alacritty, paste in a different application —
   content must survive the source client closing (this is what
   `used_sources`/selection ownership handoff is for).
+
+## B2 — xdg-activation-v1
+
+The policy (`token_serial_is_fresh`, `token_is_fresh_enough`) is unit
+tested; what a unit test can't see is the actual raise-and-focus
+happening in a live session, or a stale/foreign token correctly being a
+no-op instead of erroring.
+
+- Open two windows on two different workspaces. From one, trigger an
+  action that requests activation of the other (exact trigger depends on
+  the client — GTK apps typically do this via `gtk_window_present()`, for
+  instance from a second `nautilus` invocation asking to raise an
+  existing window). The target window's workspace must switch to and
+  focus it, not just reorder it in place.
+- An activation request using a token older than 10 seconds must be
+  silently ignored — the target window must not raise or steal focus.
+- Nothing in the log should error or warn for an activation request that
+  gets rejected (stale token, wrong seat) — rejection is a normal,
+  silent no-op, not a failure.

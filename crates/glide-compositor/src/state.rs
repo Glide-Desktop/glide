@@ -43,6 +43,7 @@ use smithay::{
         },
         shm::ShmState,
         socket::ListeningSocketSource,
+        xdg_activation::XdgActivationState,
     },
 };
 
@@ -72,6 +73,7 @@ pub struct Protocols {
     pub idle_inhibit_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
     pub wlr_output_manager_state: crate::handlers::wlr_output_management::WlrOutputManagerState,
     pub ext_workspace_state: crate::handlers::ext_workspace::ExtWorkspaceManagerState,
+    pub xdg_activation_state: XdgActivationState,
 }
 
 pub struct GlideState {
@@ -176,6 +178,7 @@ impl GlideState {
             crate::handlers::wlr_output_management::WlrOutputManagerState::new::<Self>(&dh);
         let ext_workspace_state =
             crate::handlers::ext_workspace::ExtWorkspaceManagerState::new::<Self>(&dh);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
 
         let protocols = Protocols {
             compositor_state,
@@ -199,6 +202,7 @@ impl GlideState {
             idle_inhibit_state,
             wlr_output_manager_state,
             ext_workspace_state,
+            xdg_activation_state,
         };
 
         Self {
