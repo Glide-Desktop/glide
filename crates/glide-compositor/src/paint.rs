@@ -1030,3 +1030,157 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod golden_tests {
+    use super::*;
+
+    fn goldens_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/goldens/chrome")
+    }
+
+    fn bgra_premul_to_rgba_premul(buf: &[u8]) -> Vec<u8> {
+        let mut out = buf.to_vec();
+        for px in out.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        out
+    }
+
+    #[must_use]
+    fn check_golden_rgba_premul(
+        name: &str,
+        width: u32,
+        height: u32,
+        rgba_premul: &[u8],
+    ) -> Option<String> {
+        let mut pixmap = tiny_skia::Pixmap::new(width, height)
+            .unwrap_or_else(|| panic!("golden {name}: {width}x{height} must be nonzero"));
+        let len = pixmap.data().len();
+        pixmap.data_mut().copy_from_slice(&rgba_premul[..len]);
+        let png = pixmap
+            .encode_png()
+            .unwrap_or_else(|e| panic!("golden {name}: failed to encode png: {e}"));
+
+        let dir = goldens_dir();
+        let path = dir.join(format!("{name}.png"));
+        if let Ok(existing) = std::fs::read(&path) {
+            if existing == png {
+                return None;
+            }
+            let actual_path = dir.join(format!("{name}.actual.png"));
+            std::fs::write(&actual_path, &png)
+                .unwrap_or_else(|e| panic!("golden {name}: failed to write actual: {e}"));
+            return Some(format!(
+                "golden mismatch for {name}: wrote {actual_path:?} for review; \
+                 if the change is intentional, replace {path:?} with it"
+            ));
+        }
+        std::fs::create_dir_all(&dir)
+            .unwrap_or_else(|e| panic!("golden {name}: failed to create dir: {e}"));
+        std::fs::write(&path, &png)
+            .unwrap_or_else(|e| panic!("golden {name}: failed to write baseline: {e}"));
+        Some(format!(
+            "golden {name} did not exist; created a new baseline at {path:?} — \
+             review it, then re-run tests and commit it"
+        ))
+    }
+
+    fn assert_all_goldens(failures: &[String]) {
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    fn corner_name(corners: [bool; 4]) -> String {
+        let bit = |b: bool| i32::from(b);
+        format!(
+            "tl{}_tr{}_br{}_bl{}",
+            bit(corners[0]),
+            bit(corners[1]),
+            bit(corners[2]),
+            bit(corners[3])
+        )
+    }
+
+    #[test]
+    fn fill_panel_background_every_corner_combination() {
+        let (width, height) = (64, 24);
+        let mut failures = Vec::new();
+        for tl in [false, true] {
+            for tr in [false, true] {
+                for br in [false, true] {
+                    for bl in [false, true] {
+                        let corners = [tl, tr, br, bl];
+                        let mut buf = vec![0u8; (width * height * 4) as usize];
+                        Painter::fill_panel_background(
+                            &mut buf,
+                            width,
+                            height,
+                            1,
+                            Color([0.14, 0.16, 0.22, 1.0]),
+                            8.0,
+                            corners,
+                        );
+                        let rgba = bgra_premul_to_rgba_premul(&buf);
+                        failures.extend(check_golden_rgba_premul(
+                            &format!("fill_panel_background_{}", corner_name(corners)),
+                            width as u32,
+                            height as u32,
+                            &rgba,
+                        ));
+                    }
+                }
+            }
+        }
+        assert_all_goldens(&failures);
+    }
+
+    #[test]
+    fn fill_pill_square_and_non_square() {
+        let mut failures = Vec::new();
+        for (name, w, h) in [("fill_pill_32x32", 32, 32), ("fill_pill_40x26", 40, 26)] {
+            let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+            let margin = pill_margin(w as i32, h as i32);
+            fill_pill(
+                &mut pixmap,
+                w as i32,
+                h as i32,
+                Color([0.9, 0.9, 0.9, 1.0]),
+                margin,
+                1,
+            );
+            let bytes = pixmap.data().to_vec();
+            failures.extend(check_golden_rgba_premul(name, w, h, &bytes));
+        }
+        assert_all_goldens(&failures);
+    }
+
+    type IconFn = fn(&mut [u8], i32, i32, i32, Color, Color);
+
+    #[test]
+    fn icons_at_scale_1_and_2() {
+        let fg = Color([1.0, 1.0, 1.0, 1.0]);
+        let bg = Color([0.12, 0.12, 0.15, 1.0]);
+        let icons: [(&str, IconFn); 4] = [
+            ("maximize", Painter::draw_icon_maximize),
+            ("restore", Painter::draw_icon_restore),
+            ("close", Painter::draw_icon_close),
+            ("chevron", Painter::draw_icon_chevron),
+        ];
+        let mut failures = Vec::new();
+        for (label, icon) in icons {
+            for scale in [1, 2] {
+                let (w, h) = (32, 32);
+                let mut buf = vec![0u8; (w * scale * h * scale * 4) as usize];
+                icon(&mut buf, w, h, scale, fg, bg);
+                let rgba = bgra_premul_to_rgba_premul(&buf);
+                failures.extend(check_golden_rgba_premul(
+                    &format!("icon_{label}_scale{scale}"),
+                    (w * scale) as u32,
+                    (h * scale) as u32,
+                    &rgba,
+                ));
+            }
+        }
+        assert_all_goldens(&failures);
+    }
+}

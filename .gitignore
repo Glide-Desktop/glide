@@ -20,3 +20,6 @@ test_*.rs
 test_*.py
 *.orig
 *.rej
+
+# Golden-image test scratch output: the failing image, not the reference.
+*.actual.png
