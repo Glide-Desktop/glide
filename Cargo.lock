@@ -411,10 +411,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitflags",
- "fontdue",
  "glide-config",
  "glide-ipc",
  "glide-layout",
+ "glide-paint",
  "glide-theme",
  "libc",
  "profiling",
@@ -423,7 +423,6 @@ dependencies = [
  "smithay",
  "smithay-drm-extras",
  "thiserror",
- "tiny-skia",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
@@ -452,6 +451,15 @@ name = "glide-layout"
 version = "0.1.0"
 dependencies = [
  "glide-geom",
+]
+
+[[package]]
+name = "glide-paint"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "glide-theme",
+ "tiny-skia",
 ]
 
 [[package]]
