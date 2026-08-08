@@ -420,17 +420,12 @@ fn list_windows(state: &GlideState) -> Response {
     Response::Windows { list }
 }
 
-/// Reads a window's `app_id`/`title` as last set by the client.
+/// Runs `command` for a `glidectl exec` request, via the shared
+/// [`crate::spawn_shell_command`] helper.
 fn spawn_command(command: &str) -> Response {
-    crate::reap_child_processes();
-    match std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .spawn()
-    {
+    match crate::spawn_shell_command(command) {
         Ok(child) => {
             tracing::info!(command, pid = child.id(), "ipc spawned process");
-            crate::reap_child_processes();
             Response::Ok
         }
         Err(err) => Response::Error {

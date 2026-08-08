@@ -36,12 +36,23 @@ pub struct GeneralConfig {
     /// it. Was a compiled-in constant; still the same steel-blue by
     /// default, just configurable now.
     pub background: Color,
+    /// Shell command lines run once, in order, right after the Wayland
+    /// and IPC sockets are up — each is a full command line (arguments,
+    /// pipes, whatever `sh -c` accepts), not just a bare executable name,
+    /// the same convention `exec` keybinds and `glidectl exec` use (all
+    /// three share one spawn helper — see `spawn_shell_command`).
+    ///
+    /// Defaults to a single terminal, so a freshly started session always
+    /// has *something* on screen to work from rather than an empty
+    /// output; set to `[]` to start with nothing.
+    pub autostart: Vec<String>,
 }
 
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             background: Color::from_hex("#295396ff").unwrap(),
+            autostart: vec!["alacritty".to_string()],
         }
     }
 }
@@ -848,6 +859,31 @@ background = \"#101020\"
     fn unknown_general_key_is_rejected() {
         toml::from_str::<Config>("[general]\nbackgroud = \"#101020\"\n")
             .expect_err("a misspelled key must not silently vanish");
+    }
+
+    #[test]
+    fn autostart_defaults_to_a_single_terminal() {
+        assert_eq!(GeneralConfig::default().autostart, vec!["alacritty"]);
+    }
+
+    #[test]
+    fn autostart_parses_a_list_of_command_lines_from_toml() {
+        let toml_str = "\
+[general]
+autostart = [\"foot\", \"waybar --config /tmp/bar.json\"]
+";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.general.autostart,
+            vec!["foot", "waybar --config /tmp/bar.json"]
+        );
+    }
+
+    #[test]
+    fn autostart_can_be_emptied_to_start_nothing() {
+        let toml_str = "[general]\nautostart = []\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.general.autostart.is_empty());
     }
 
     #[test]

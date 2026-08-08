@@ -101,8 +101,7 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    // Spawn a test client, that will run under GlideState
-    spawn_client();
+    spawn_autostart(&config.general.autostart);
 
     event_loop.run(None, &mut state, move |state| {
         reap_child_processes();
@@ -129,21 +128,39 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_client() {
-    let mut args = std::env::args().skip(1);
-    let flag = args.next();
-    let arg = args.next();
-
-    let command = match (flag.as_deref(), arg) {
-        (Some("-c" | "--command"), Some(command)) => command,
-        _ => "alacritty".to_string(),
-    };
-
-    match std::process::Command::new(&command).spawn() {
-        Ok(child) => tracing::info!(command, pid = child.id(), "spawned client"),
-        Err(err) => tracing::error!(command, "failed to spawn client: {err}"),
+/// Spawns every command in `commands`, in order, right after the sockets
+/// autostart clients need are ready — see `GeneralConfig::autostart`'s
+/// docs. Each is a full shell command line, not just a bare executable
+/// name, via [`spawn_shell_command`].
+fn spawn_autostart(commands: &[String]) {
+    for command in commands {
+        match spawn_shell_command(command) {
+            Ok(child) => tracing::info!(command, pid = child.id(), "spawned autostart command"),
+            Err(err) => tracing::error!(command, "failed to spawn autostart command: {err}"),
+        }
     }
+}
+
+/// Spawns `command` through `sh -c`, so it can be a full shell command
+/// line — arguments, pipes, whatever `sh -c` accepts — not just a bare
+/// executable name. The one place that actually runs a process for
+/// [`spawn_autostart`], the `exec` keybind action, and the `glidectl exec`
+/// IPC command, all of which used to duplicate this same three lines.
+///
+/// # Errors
+///
+/// Returns whatever [`std::process::Command::spawn`] does — i.e. `sh`
+/// itself failed to launch. `command`'s own success or failure inside that
+/// shell doesn't show up here at all, only in the spawned child's
+/// eventual exit status.
+pub fn spawn_shell_command(command: &str) -> std::io::Result<std::process::Child> {
     reap_child_processes();
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .spawn();
+    reap_child_processes();
+    result
 }
 
 pub fn reap_child_processes() {
@@ -164,5 +181,54 @@ mod tests {
         reap_child_processes();
         // Spawning again to ensure reap is idempotent and non-blocking
         reap_child_processes();
+    }
+
+    #[test]
+    fn spawn_shell_command_runs_through_a_shell() {
+        // "true; true" only succeeds if the command actually goes through
+        // `sh -c` (a bare exec of that string as a program name would
+        // fail) — the whole point of this helper over a plain
+        // `Command::new(command)`.
+        let mut child = spawn_shell_command("true; true").expect("sh must exist");
+        let status = child.wait().expect("child must be waitable");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn spawn_shell_command_reports_a_command_sh_itself_cannot_run() {
+        // `sh` always exists and always spawns; failure shows up in the
+        // *exit status*, not as an `Err` from `spawn()` — this just
+        // documents that spawn_shell_command's `Result` is about whether
+        // `sh` itself launched, not whether the command inside it worked.
+        let mut child =
+            spawn_shell_command("definitely-not-a-real-command-xyz").expect("sh must exist");
+        let status = child.wait().expect("child must be waitable");
+        assert!(!status.success());
+    }
+
+    #[test]
+    fn spawn_autostart_does_not_panic_on_an_empty_list() {
+        spawn_autostart(&[]);
+    }
+
+    #[test]
+    fn spawn_autostart_runs_every_command_in_the_list() {
+        let dir = std::env::temp_dir().join(format!("glide-autostart-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let marker_a = dir.join("a");
+        let marker_b = dir.join("b");
+
+        spawn_autostart(&[
+            format!("touch {}", marker_a.display()),
+            format!("touch {}", marker_b.display()),
+        ]);
+        // Autostart commands run async (spawn, not wait); give them a
+        // moment, then reap so this doesn't leak zombie test processes.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        reap_child_processes();
+
+        assert!(marker_a.exists(), "first autostart command did not run");
+        assert!(marker_b.exists(), "second autostart command did not run");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

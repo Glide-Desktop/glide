@@ -379,11 +379,9 @@ impl GlideState {
             }
             KeyAction::Exec(cmd) => {
                 tracing::info!(command = %cmd, "executing keybind command");
-                crate::reap_child_processes();
-                if let Err(err) = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn() {
+                if let Err(err) = crate::spawn_shell_command(&cmd) {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
                 }
-                crate::reap_child_processes();
             }
             KeyAction::None => {}
         }
