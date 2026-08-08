@@ -219,3 +219,22 @@ no-op instead of erroring.
 - Nothing in the log should error or warn for an activation request that
   gets rejected (stale token, wrong seat) — rejection is a normal,
   silent no-op, not a failure.
+
+## B3 (security-context) — no client to test with yet
+
+`security-context-v1` lets a sandboxing engine (Flatpak's `bwrap`, most
+notably) create an isolated listener socket and tag every client that
+connects through it with sandbox metadata (`sandbox_engine`, `app_id`,
+`instance_id`), which the compositor could use to scope what a sandboxed
+app is allowed to do. Nothing currently reads that metadata to enforce
+anything — it's plumbing for a policy that doesn't exist yet, exactly
+like `ext-foreign-toplevel-list-v1` was plumbing for the dock before the
+dock existed.
+
+No manual check is possible without a sandboxing engine actually
+creating a security context, which needs a real Flatpak app — not
+installed, and not worth installing just to prove one filter check
+works. The one thing worth confirming once a sandboxed app is available:
+a client launched inside the sandbox connects and renders normally, and
+`ClientState::security_context` is `Some(..)` for it (only checkable via
+a debug log line, not present yet).

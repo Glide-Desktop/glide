@@ -29,6 +29,7 @@ use smithay::{
             FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
         },
         output::OutputManagerState,
+        security_context::SecurityContextState,
         selection::{
             data_device::DataDeviceState,
             ext_data_control::DataControlState as ExtDataControlState,
@@ -74,6 +75,83 @@ pub struct Protocols {
     pub wlr_output_manager_state: crate::handlers::wlr_output_management::WlrOutputManagerState,
     pub ext_workspace_state: crate::handlers::ext_workspace::ExtWorkspaceManagerState,
     pub xdg_activation_state: XdgActivationState,
+    pub security_context_state: SecurityContextState,
+}
+
+impl Protocols {
+    fn new(
+        dh: &DisplayHandle,
+        loop_handle: &LoopHandle<'static, GlideState>,
+        seat_state: SeatState<GlideState>,
+    ) -> Self {
+        let compositor_state = CompositorState::new::<GlideState>(dh);
+        let xdg_shell_state = XdgShellState::new::<GlideState>(dh);
+        let xdg_dialog_state = XdgDialogState::new::<GlideState>(dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<GlideState>(dh);
+        let xdg_decoration_state = XdgDecorationState::new::<GlideState>(dh);
+        let kde_decoration_state = KdeDecorationState::new::<GlideState>(
+            dh,
+            smithay::reexports::wayland_protocols_misc::server_decoration::server
+                ::org_kde_kwin_server_decoration_manager::Mode::Server,
+        );
+        let layer_shell_state = WlrLayerShellState::new::<GlideState>(dh);
+        let fractional_scale_state = FractionalScaleManagerState::new::<GlideState>(dh);
+        let viewporter_state = smithay::wayland::viewporter::ViewporterState::new::<GlideState>(dh);
+        let shm_state = ShmState::new::<GlideState>(dh, vec![]);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<GlideState>(dh);
+
+        let data_device_state = DataDeviceState::new::<GlideState>(dh);
+        let primary_selection_state = PrimarySelectionState::new::<GlideState>(dh);
+        let wlr_data_control_state =
+            WlrDataControlState::new::<GlideState, _>(dh, Some(&primary_selection_state), |_| true);
+        let ext_data_control_state =
+            ExtDataControlState::new::<GlideState, _>(dh, Some(&primary_selection_state), |_| true);
+
+        let foreign_toplevel_list_state =
+            smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<GlideState>(
+                dh,
+            );
+        let idle_notifier_state =
+            smithay::wayland::idle_notify::IdleNotifierState::new(dh, loop_handle.clone());
+        let idle_inhibit_state =
+            smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<GlideState>(dh);
+        let wlr_output_manager_state =
+            crate::handlers::wlr_output_management::WlrOutputManagerState::new::<GlideState>(dh);
+        let ext_workspace_state =
+            crate::handlers::ext_workspace::ExtWorkspaceManagerState::new::<GlideState>(dh);
+        let xdg_activation_state = XdgActivationState::new::<GlideState>(dh);
+        let security_context_state = SecurityContextState::new::<GlideState, _>(dh, |client| {
+            client
+                .get_data::<ClientState>()
+                .is_none_or(|state| state.security_context.is_none())
+        });
+
+        Self {
+            compositor_state,
+            xdg_shell_state,
+            xdg_dialog_state,
+            cursor_shape_state,
+            xdg_decoration_state,
+            kde_decoration_state,
+            layer_shell_state,
+            fractional_scale_state,
+            viewporter_state,
+            shm_state,
+            output_manager_state,
+            seat_state,
+            data_device_state,
+            primary_selection_state,
+            wlr_data_control_state,
+            ext_data_control_state,
+            foreign_toplevel_list_state,
+            idle_notifier_state,
+            idle_inhibit_state,
+            wlr_output_manager_state,
+            ext_workspace_state,
+            xdg_activation_state,
+            security_context_state,
+        }
+    }
 }
 
 pub struct GlideState {
@@ -128,31 +206,7 @@ impl GlideState {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
-
-        let compositor_state = CompositorState::new::<Self>(&dh);
-        let xdg_shell_state = XdgShellState::new::<Self>(&dh);
-        let xdg_dialog_state = XdgDialogState::new::<Self>(&dh);
-        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
-        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
-        let kde_decoration_state = KdeDecorationState::new::<Self>(
-            &dh,
-            smithay::reexports::wayland_protocols_misc::server_decoration::server
-                ::org_kde_kwin_server_decoration_manager::Mode::Server,
-        );
-        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
-        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
-        let viewporter_state = smithay::wayland::viewporter::ViewporterState::new::<Self>(&dh);
-        let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
-
-        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
-
-        let data_device_state = DataDeviceState::new::<Self>(&dh);
-        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
-        let wlr_data_control_state =
-            WlrDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
-        let ext_data_control_state =
-            ExtDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
 
         let seat_name = backend_data.seat_name();
         let mut seat_state = SeatState::new();
@@ -167,43 +221,8 @@ impl GlideState {
 
         let socket_name = Self::init_wayland_listener(display, &loop_handle);
 
-        let foreign_toplevel_list_state =
-            smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
+        let protocols = Protocols::new(&dh, &loop_handle, seat_state);
         let foreign_toplevel_handles = HashMap::new();
-        let idle_notifier_state =
-            smithay::wayland::idle_notify::IdleNotifierState::new(&dh, loop_handle.clone());
-        let idle_inhibit_state =
-            smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(&dh);
-        let wlr_output_manager_state =
-            crate::handlers::wlr_output_management::WlrOutputManagerState::new::<Self>(&dh);
-        let ext_workspace_state =
-            crate::handlers::ext_workspace::ExtWorkspaceManagerState::new::<Self>(&dh);
-        let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
-
-        let protocols = Protocols {
-            compositor_state,
-            xdg_shell_state,
-            xdg_dialog_state,
-            cursor_shape_state,
-            xdg_decoration_state,
-            kde_decoration_state,
-            layer_shell_state,
-            fractional_scale_state,
-            viewporter_state,
-            shm_state,
-            output_manager_state,
-            seat_state,
-            data_device_state,
-            primary_selection_state,
-            wlr_data_control_state,
-            ext_data_control_state,
-            foreign_toplevel_list_state,
-            idle_notifier_state,
-            idle_inhibit_state,
-            wlr_output_manager_state,
-            ext_workspace_state,
-            xdg_activation_state,
-        };
 
         Self {
             backend_data,
@@ -916,6 +935,7 @@ pub(crate) fn window_surface(window: &GlideWindow) -> &WlSurface {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
 }
 
 impl ClientData for ClientState {
