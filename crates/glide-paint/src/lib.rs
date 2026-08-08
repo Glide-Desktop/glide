@@ -7,14 +7,11 @@
     clippy::too_many_arguments
 )]
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
-};
+use std::sync::{Arc, Mutex, RwLock};
 
-use fontdue::{
-    Font, FontSettings,
-    layout::{CoordinateSystem, Layout, TextStyle},
+use cosmic_text::{
+    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap,
+    fontdb,
 };
 
 use glide_theme::Color;
@@ -26,6 +23,8 @@ pub enum TextAlign {
 }
 
 static NOTO_SANS_BYTES: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
+
+const DEFAULT_FAMILY: &str = "Adwaita Sans";
 
 static PAINTER: RwLock<Option<Arc<Painter>>> = RwLock::new(None);
 
@@ -44,52 +43,83 @@ pub fn current() -> Arc<Painter> {
     slot.clone().unwrap_or_else(|| Arc::new(Painter::new(14.0)))
 }
 
-type GlyphCache = Arc<Mutex<HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>>>;
-
-#[derive(Clone)]
 pub struct Painter {
-    font: Font,
+    font_system: Mutex<FontSystem>,
+    swash_cache: Mutex<SwashCache>,
     font_size: f32,
-    glyph_cache: GlyphCache,
+    family: String,
+}
+
+struct LineMetrics {
+    width: f32,
+    baseline_y: f32,
+    max_ascent: f32,
+    max_descent: f32,
 }
 
 impl Painter {
     #[must_use]
     pub fn new(font_size: f32) -> Self {
-        let font = Font::from_bytes(NOTO_SANS_BYTES, FontSettings::default())
-            .expect("embedded NotoSans-Regular.ttf is always valid");
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        db.load_font_data(NOTO_SANS_BYTES.to_vec());
+        Self::from_db(db, font_size)
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    fn with_embedded_font_only(font_size: f32) -> Self {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(NOTO_SANS_BYTES.to_vec());
+        Self::from_db(db, font_size)
+    }
+
+    fn from_db(db: fontdb::Database, font_size: f32) -> Self {
+        let font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
         Self {
-            font,
+            font_system: Mutex::new(font_system),
+            swash_cache: Mutex::new(SwashCache::new()),
             font_size,
-            glyph_cache: Arc::new(Mutex::new(HashMap::new())),
+            family: DEFAULT_FAMILY.to_string(),
         }
     }
 
-    fn rasterize_cached(&self, ch: char, font_size: f32) -> (fontdue::Metrics, Vec<u8>) {
-        let key = (ch, font_size.to_bits());
-        let Ok(mut cache) = self.glyph_cache.lock() else {
-            return self.font.rasterize(ch, font_size);
-        };
-        if let Some(cached) = cache.get(&key) {
-            return cached.clone();
+    fn shape(&self, font_system: &mut FontSystem, text: &str, font_size: f32) -> Buffer {
+        let metrics = Metrics::new(font_size, font_size * 1.2);
+        let mut buffer = Buffer::new(font_system, metrics);
+        buffer.set_wrap(Wrap::None);
+        let attrs = Attrs::new().family(Family::Name(&self.family));
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(font_system, false);
+        buffer
+    }
+
+    fn line_metrics(font_system: &mut FontSystem, buffer: &mut Buffer) -> LineMetrics {
+        let (width, max_ascent, max_descent) = buffer
+            .line_layout(font_system, 0)
+            .and_then(|lines| lines.first())
+            .map_or((0.0, 0.0, 0.0), |line| {
+                (line.w, line.max_ascent, line.max_descent)
+            });
+        let baseline_y = buffer.layout_runs().next().map_or(0.0, |run| run.line_y);
+        LineMetrics {
+            width,
+            baseline_y,
+            max_ascent,
+            max_descent,
         }
-        let rasterized = self.font.rasterize(ch, font_size);
-        cache.insert(key, rasterized.clone());
-        rasterized
     }
 
     fn measure_width_at(&self, text: &str, font_size: f32) -> f32 {
         if text.is_empty() {
             return 0.0;
         }
-        let mut layout: Layout<()> = Layout::new(CoordinateSystem::PositiveYDown);
-        layout.reset(&fontdue::layout::LayoutSettings::default());
-        layout.append(&[&self.font], &TextStyle::new(text, font_size, 0));
-        let glyphs = layout.glyphs();
-        let (Some(first), Some(last)) = (glyphs.first(), glyphs.last()) else {
-            return 0.0;
-        };
-        last.x + last.width as f32 - first.x
+        let mut font_system = self
+            .font_system
+            .lock()
+            .expect("single-threaded event loop, this lock is never poisoned");
+        let mut buffer = self.shape(&mut font_system, text, font_size);
+        Self::line_metrics(&mut font_system, &mut buffer).width
     }
 
     fn fit_text_at(&self, text: &str, avail_w: i32, font_size: f32) -> String {
@@ -172,54 +202,59 @@ impl Painter {
             return;
         }
 
-        let mut layout: Layout<()> = Layout::new(CoordinateSystem::PositiveYDown);
-        layout.reset(&fontdue::layout::LayoutSettings::default());
-        layout.append(&[&self.font], &TextStyle::new(&text, font_size, 0));
+        let mut font_system = self
+            .font_system
+            .lock()
+            .expect("single-threaded event loop, this lock is never poisoned");
+        let mut swash_cache = self
+            .swash_cache
+            .lock()
+            .expect("single-threaded event loop, this lock is never poisoned");
 
-        let glyphs = layout.glyphs();
-        if glyphs.is_empty() {
+        let mut buffer = self.shape(&mut font_system, &text, font_size);
+        let metrics = Self::line_metrics(&mut font_system, &mut buffer);
+        if metrics.width <= 0.0 {
             return;
         }
-
-        let first = glyphs.first().unwrap();
-        let last = glyphs.last().unwrap();
-        let total_w = (last.x + last.width as f32 - first.x) as i32;
+        let total_w = metrics.width as i32;
 
         let avail_w = px_max - px_min;
         let x_off = match align {
-            TextAlign::Center => px_min + (avail_w - total_w) / 2 - first.x as i32,
-            TextAlign::Left => px_min - first.x as i32,
+            TextAlign::Center => px_min + (avail_w - total_w) / 2,
+            TextAlign::Left => px_min,
         };
-        let y_off = ((ph as f32 - layout.height()) / 2.0) as i32;
+        let content_h = metrics.max_ascent + metrics.max_descent;
+        let y_off =
+            ((ph as f32 - content_h) / 2.0 - metrics.baseline_y + metrics.max_ascent) as i32;
 
-        for g in glyphs {
-            let (metrics, bitmap) = self.rasterize_cached(g.parent, font_size);
-            let gx = x_off + g.x as i32;
-            let gy = y_off + g.y as i32;
-
-            for row in 0..metrics.height {
-                for col in 0..metrics.width {
-                    let px = gx + col as i32;
-                    let py = gy + row as i32;
-                    if px < 0 || py < 0 || px >= pw || py >= ph {
-                        continue;
-                    }
-                    let coverage = bitmap[row * metrics.width + col];
-                    if coverage == 0 {
-                        continue;
-                    }
-                    let offset = ((py * pw + px) * 4) as usize;
-                    if offset + 3 >= buf.len() {
-                        continue;
-                    }
-                    let src_alpha =
-                        ((u32::from(coverage) * u32::from(fg_argb[3]) + 127) / 255) as u8;
-                    let dst: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
-                    let out = composite_over(dst, [fg_argb[0], fg_argb[1], fg_argb[2]], src_alpha);
-                    buf[offset..offset + 4].copy_from_slice(&out);
+        let fg = TextColor::rgba(fg_argb[0], fg_argb[1], fg_argb[2], fg_argb[3]);
+        buffer.draw(
+            &mut font_system,
+            &mut swash_cache,
+            fg,
+            |x, y, gw, gh, color| {
+                let (r, g, b, a) = color.as_rgba_tuple();
+                if a == 0 {
+                    return;
                 }
-            }
-        }
+                for row in 0..gh as i32 {
+                    for col in 0..gw as i32 {
+                        let px = x_off + x + col;
+                        let py = y_off + y + row;
+                        if px < 0 || py < 0 || px >= pw || py >= ph {
+                            continue;
+                        }
+                        let offset = ((py * pw + px) * 4) as usize;
+                        if offset + 3 >= buf.len() {
+                            continue;
+                        }
+                        let dst: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
+                        let out = composite_over(dst, [r, g, b], a);
+                        buf[offset..offset + 4].copy_from_slice(&out);
+                    }
+                }
+            },
+        );
     }
 
     pub fn draw_icon_maximize(
@@ -873,13 +908,13 @@ mod tests {
 
     #[test]
     fn fit_text_returns_input_unchanged_when_it_already_fits() {
-        let painter = Painter::new(14.0);
+        let painter = Painter::with_embedded_font_only(14.0);
         assert_eq!(painter.fit_text_at("ok", 1000, painter.font_size), "ok");
     }
 
     #[test]
     fn fit_text_truncates_with_an_ellipsis_when_too_narrow() {
-        let painter = Painter::new(14.0);
+        let painter = Painter::with_embedded_font_only(14.0);
         let long = "a very long window title that will not fit";
         let fitted = painter.fit_text_at(long, 40, painter.font_size);
         assert!(fitted.ends_with('…'), "{fitted:?}");
@@ -891,48 +926,49 @@ mod tests {
 
     #[test]
     fn fit_text_on_zero_width_is_empty() {
-        let painter = Painter::new(14.0);
+        let painter = Painter::with_embedded_font_only(14.0);
         assert_eq!(painter.fit_text_at("anything", 0, painter.font_size), "");
     }
 
     #[test]
     fn fit_text_on_empty_input_is_empty() {
-        let painter = Painter::new(14.0);
+        let painter = Painter::with_embedded_font_only(14.0);
         assert_eq!(painter.fit_text_at("", 1000, painter.font_size), "");
     }
 
     #[test]
-    fn glyph_cache_returns_identical_bitmaps_across_calls() {
-        let painter = Painter::new(14.0);
-        let (m1, b1) = painter.rasterize_cached('A', painter.font_size);
-        let (m2, b2) = painter.rasterize_cached('A', painter.font_size);
-        assert_eq!((m1.width, m1.height), (m2.width, m2.height));
-        assert_eq!(b1, b2);
-    }
-
-    #[test]
-    fn glyph_cache_has_separate_entries_per_scaled_font_size() {
-        let painter = Painter::new(14.0);
-        let (m1, _) = painter.rasterize_cached('A', 14.0);
-        let (m2, _) = painter.rasterize_cached('A', 28.0);
+    fn measure_width_grows_with_a_larger_font_size() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let small = painter.measure_width_at("Hello", 14.0);
+        let large = painter.measure_width_at("Hello", 28.0);
         assert!(
-            m2.width > m1.width && m2.height > m1.height,
-            "a 2x font size must rasterize a physically larger glyph"
+            large > small,
+            "a 2x font size must measure a wider line, got small={small} large={large}"
         );
     }
 
     #[test]
-    fn painter_clone_shares_the_glyph_cache() {
-        let painter = Painter::new(14.0);
-        let clone = painter.clone();
-        let _ = painter.rasterize_cached('Q', painter.font_size);
-        assert!(
-            clone
-                .glyph_cache
-                .lock()
-                .unwrap()
-                .contains_key(&('Q', 14.0f32.to_bits())),
-            "a clone must share the cache, not start a fresh empty one"
+    fn draw_label_over_is_deterministic_across_repeated_calls() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let render = || {
+            let mut buf = vec![0u8; 200 * 32 * 4];
+            painter.draw_label_over(
+                &mut buf,
+                200,
+                32,
+                32,
+                168,
+                1,
+                TextAlign::Left,
+                "Hello",
+                [255, 255, 255, 255],
+            );
+            buf
+        };
+        assert_eq!(
+            render(),
+            render(),
+            "shaping and rasterising the same text twice must produce identical pixels"
         );
     }
 
@@ -952,7 +988,7 @@ mod tests {
 
     #[test]
     fn draw_label_does_not_panic_on_overflowing_text() {
-        let painter = Painter::new(14.0);
+        let painter = Painter::with_embedded_font_only(14.0);
         let mut buf = vec![0u8; 200 * 32 * 4];
         painter.draw_label(
             &mut buf,
@@ -971,7 +1007,7 @@ mod tests {
 
     #[test]
     fn draw_label_at_scale_2_produces_a_physically_larger_buffer() {
-        let painter = Painter::new(14.0);
+        let painter = Painter::with_embedded_font_only(14.0);
         let mut buf1 = vec![0u8; 200 * 32 * 4];
         painter.draw_label(
             &mut buf1,
@@ -1004,7 +1040,7 @@ mod tests {
 
     #[test]
     fn left_align_and_center_align_place_glyphs_differently() {
-        let painter = Painter::new(14.0);
+        let painter = Painter::with_embedded_font_only(14.0);
         let mut left_buf = vec![0u8; 200 * 32 * 4];
         let mut center_buf = vec![0u8; 200 * 32 * 4];
         painter.draw_label(
@@ -1042,8 +1078,10 @@ mod tests {
 mod golden_tests {
     use super::*;
 
-    fn goldens_dir() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/goldens/chrome")
+    fn goldens_dir(category: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/goldens")
+            .join(category)
     }
 
     fn bgra_premul_to_rgba_premul(buf: &[u8]) -> Vec<u8> {
@@ -1056,6 +1094,7 @@ mod golden_tests {
 
     #[must_use]
     fn check_golden_rgba_premul(
+        category: &str,
         name: &str,
         width: u32,
         height: u32,
@@ -1069,7 +1108,7 @@ mod golden_tests {
             .encode_png()
             .unwrap_or_else(|e| panic!("golden {name}: failed to encode png: {e}"));
 
-        let dir = goldens_dir();
+        let dir = goldens_dir(category);
         let path = dir.join(format!("{name}.png"));
         if let Ok(existing) = std::fs::read(&path) {
             if existing == png {
@@ -1129,6 +1168,7 @@ mod golden_tests {
                         );
                         let rgba = bgra_premul_to_rgba_premul(&buf);
                         failures.extend(check_golden_rgba_premul(
+                            "chrome",
                             &format!("fill_panel_background_{}", corner_name(corners)),
                             width as u32,
                             height as u32,
@@ -1156,7 +1196,7 @@ mod golden_tests {
                 1,
             );
             let bytes = pixmap.data().to_vec();
-            failures.extend(check_golden_rgba_premul(name, w, h, &bytes));
+            failures.extend(check_golden_rgba_premul("chrome", name, w, h, &bytes));
         }
         assert_all_goldens(&failures);
     }
@@ -1181,12 +1221,45 @@ mod golden_tests {
                 icon(&mut buf, w, h, scale, fg, bg);
                 let rgba = bgra_premul_to_rgba_premul(&buf);
                 failures.extend(check_golden_rgba_premul(
+                    "chrome",
                     &format!("icon_{label}_scale{scale}"),
                     (w * scale) as u32,
                     (h * scale) as u32,
                     &rgba,
                 ));
             }
+        }
+        assert_all_goldens(&failures);
+    }
+
+    #[test]
+    fn draw_label_over_ascii_and_cyrillic() {
+        let painter = Painter::with_embedded_font_only(16.0);
+        let (width, height) = (120, 32);
+        let mut failures = Vec::new();
+        for (name, text) in [
+            ("draw_label_over_ascii", "Hello world"),
+            ("draw_label_over_cyrillic", "Привіт світ"),
+        ] {
+            let mut buf = vec![0u8; (width * height * 4) as usize];
+            painter.draw_label_over(
+                &mut buf,
+                width,
+                height,
+                4,
+                width - 4,
+                1,
+                TextAlign::Left,
+                text,
+                [255, 255, 255, 255],
+            );
+            failures.extend(check_golden_rgba_premul(
+                "text",
+                name,
+                width as u32,
+                height as u32,
+                &buf,
+            ));
         }
         assert_all_goldens(&failures);
     }
