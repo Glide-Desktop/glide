@@ -109,6 +109,10 @@ pub struct GlideState {
     /// Overview look and feel, refreshed on config reload alongside the
     /// decoration theme.
     pub overview_theme: crate::config::OverviewTheme,
+    /// Colour the output is cleared to before anything is drawn, refreshed
+    /// on config reload alongside the other themes. Read by
+    /// [`crate::backend::tty`]'s render pass.
+    pub background_color: crate::config::Color,
 
     /// What the pointer cursor should currently look like. Clients set this
     /// via `wl_pointer.set_cursor` when the pointer is over them; otherwise
@@ -282,6 +286,7 @@ impl GlideState {
             keybinds: Vec::new(),
             decoration_theme: crate::config::DecorationTheme::default(),
             overview_theme: crate::config::OverviewTheme::default(),
+            background_color: crate::config::GeneralConfig::default().background,
             cursor_status: CursorImageStatus::default_named(),
             layer_focus: None,
             overview: None,
@@ -402,9 +407,10 @@ impl GlideState {
             self.space.map_element(window.clone(), location, false);
             Self::apply_window_state(&window, state, is_focused);
 
-            // Keeps titlebar colors and height in sync with config reloads
-            // and focus changes — see `GlideWindow::sync_decoration`'s docs
-            // for why this has to happen here rather than at render time.
+            // Keeps titlebar colors, height, and maximized glyph in sync
+            // with config reloads, focus changes, and maximize/restore —
+            // see `GlideWindow::sync_decoration`'s docs for why this has to
+            // happen here rather than at render time.
             //
             // Fullscreen shows no decoration at all (mirroring how
             // `content_geometry` ignores insets for it): without forcing the
@@ -415,7 +421,12 @@ impl GlideState {
             } else {
                 state.insets.top
             };
-            window.sync_decoration(&self.decoration_theme, decoration_height, is_focused);
+            window.sync_decoration(
+                &self.decoration_theme,
+                decoration_height,
+                is_focused,
+                state.maximized,
+            );
         }
 
         self.apply_keyboard_focus();

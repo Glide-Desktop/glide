@@ -38,8 +38,6 @@ pub struct OutputInfo {
     pub geometry: Rectangle,
     /// `geometry` minus space claimed by layer-shell surfaces (panels, bars).
     /// What a floating window is centred in and a maximized window covers.
-    ///
-    /// Equal to `geometry` until layer-shell support exists to shrink it.
     pub work_area: Rectangle,
 }
 

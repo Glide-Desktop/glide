@@ -20,10 +20,30 @@ use crate::{GlideState, input::ResolvedKeybind};
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub general: GeneralConfig,
     pub workspaces: WorkspaceConfig,
     pub keybinds: Vec<KeybindConfig>,
     pub decorations: DecorationTheme,
     pub overview: OverviewTheme,
+}
+
+/// Settings that don't belong to any one subsystem.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GeneralConfig {
+    /// Colour the output is cleared to before anything is drawn — visible
+    /// wherever no window, layer-shell surface, or overview scrim covers
+    /// it. Was a compiled-in constant; still the same steel-blue by
+    /// default, just configurable now.
+    pub background: Color,
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            background: Color::from_hex("#295396ff").unwrap(),
+        }
+    }
 }
 
 /// A window decoration's color scheme and size.
@@ -47,6 +67,11 @@ pub struct DecorationTheme {
     pub chevron_button_hover: Color,
     pub menu_background: Color,
     pub menu_item_hover: Color,
+    /// Glyph colour for the maximize/restore and chevron icons.
+    pub icon: Color,
+    /// Glyph colour for the close (×) icon — separately settable since it
+    /// is meant to stand out a little more than the other two.
+    pub close_icon: Color,
 }
 
 impl Default for DecorationTheme {
@@ -72,6 +97,12 @@ impl Default for DecorationTheme {
             // separate panel; hover rows use the focused accent.
             menu_background: Color::from_hex("#28282fff").unwrap(),
             menu_item_hover: Color::from_hex("#4c6ef5ff").unwrap(),
+            // Icon glyphs: an off-white that reads clearly against every
+            // button background above without being as stark as pure
+            // white; close gets pure white so it stands out as the odd
+            // (destructive) one out.
+            icon: Color::from_hex("#dcdcdcff").unwrap(),
+            close_icon: Color::from_hex("#ffffffff").unwrap(),
         }
     }
 }
@@ -170,17 +201,32 @@ impl Color {
 }
 
 impl Color {
-    /// The colour as `[A, R, G, B]` bytes, which is what the software
-    /// painter writes into its buffers.
+    /// The colour as straight-alpha `[B, G, R, A]` bytes — the single
+    /// canonical conversion from config colour to pixel bytes, used
+    /// everywhere `paint.rs` and `decoration.rs` write into a
+    /// [`smithay::backend::allocator::Fourcc::Argb8888`] buffer.
+    ///
+    /// `B, G, R, A` (byte order, low address first) is what `Argb8888`
+    /// actually is in memory on a little-endian machine — *not* the
+    /// `A, R, G, B` order the format's name suggests when read as a 32-bit
+    /// word. Getting this backwards silently swaps red and blue for every
+    /// non-grey colour (white/black/grey are symmetric under the swap,
+    /// which is why a wrong version of this method can ship unnoticed
+    /// against the default theme and only misrender a *custom* one).
+    ///
+    /// Straight, not premultiplied: callers writing into a buffer that
+    /// expects premultiplied alpha (every [`crate::paint::Painter`] method
+    /// does) are responsible for premultiplying at the point they draw,
+    /// not here — this method only does the channel-order conversion.
     #[must_use]
-    pub fn as_argb_bytes(&self) -> [u8; 4] {
+    pub fn to_buffer_bytes(self) -> [u8; 4] {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         [
-            byte(self.0[3]),
-            byte(self.0[0]),
-            byte(self.0[1]),
-            byte(self.0[2]),
+            byte(self.0[2]), // B
+            byte(self.0[1]), // G
+            byte(self.0[0]), // R
+            byte(self.0[3]), // A
         ]
     }
 }
@@ -397,6 +443,7 @@ impl Config {
     #[must_use]
     pub fn with_defaults() -> Self {
         Self {
+            general: GeneralConfig::default(),
             workspaces: WorkspaceConfig::default(),
             keybinds: Self::default_keybinds(),
             decorations: DecorationTheme::default(),
@@ -483,6 +530,21 @@ impl Config {
         state.keybinds = self.resolve_keybinds();
         state.decoration_theme = self.decorations.clone();
         state.overview_theme = self.overview.clone();
+        state.background_color = self.general.background;
+
+        // Rebuilds the shared `Painter` (font + glyph cache) at a size
+        // derived from the titlebar height — the same heuristic that used
+        // to live in `window.rs`, run once here instead of racing whichever
+        // window happened to render first. See `paint::init_or_replace`'s
+        // docs: this call is what makes a changed titlebar height actually
+        // affect the font size, on both first load and `glidectl reload`.
+        //
+        // Titlebar heights are tens of pixels; the product is nowhere near
+        // f32's precision limits.
+        #[allow(clippy::cast_possible_truncation)]
+        let font_px = (f64::from(self.decorations.height).max(14.0) * 0.45) as f32;
+        crate::paint::init_or_replace(font_px.clamp(10.0, 18.0));
+
         tracing::info!(
             policy = ?self.workspaces.new_window,
             keybind_count = state.keybinds.len(),
@@ -639,6 +701,61 @@ action = "quit"
         assert!(Color::from_hex("#gggggg").is_none(), "not hex digits");
     }
 
+    // Regression test for the R/B channel swap: a symmetric colour (grey,
+    // black, white) can't distinguish [B,G,R,A] from [A,R,G,B], which is
+    // exactly how the bug this guards against shipped unnoticed — pure red
+    // and pure blue are the minimal pair that tells the two conventions
+    // apart.
+    #[test]
+    fn to_buffer_bytes_is_b_g_r_a_not_a_r_g_b() {
+        let red = Color::from_hex("#ff0000ff").unwrap().to_buffer_bytes();
+        assert_eq!(red, [0, 0, 255, 255], "opaque red must store R in byte 2");
+
+        let blue = Color::from_hex("#0000ffff").unwrap().to_buffer_bytes();
+        assert_eq!(blue, [255, 0, 0, 255], "opaque blue must store B in byte 0");
+
+        let translucent_green = Color::from_hex("#00ff0080").unwrap().to_buffer_bytes();
+        assert_eq!(translucent_green[0], 0, "B");
+        assert_eq!(translucent_green[1], 255, "G");
+        assert_eq!(translucent_green[2], 0, "R");
+        assert!(
+            (i16::from(translucent_green[3]) - 0x80).abs() <= 1,
+            "A byte 3, ~{:#x}, got {:#x}",
+            0x80,
+            translucent_green[3]
+        );
+    }
+
+    #[test]
+    fn general_config_defaults_to_the_previous_hardcoded_fill_color() {
+        // #295396 was a `const FILL_COLOR` in backend/tty.rs before it
+        // became configurable; the default must not silently change the
+        // colour every existing session already renders.
+        assert_eq!(
+            GeneralConfig::default().background,
+            Color::from_hex("#295396ff").unwrap()
+        );
+    }
+
+    #[test]
+    fn general_background_parses_from_toml() {
+        let toml_str = "\
+[general]
+background = \"#101020\"
+";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.general.background,
+            Color::from_hex("#101020").unwrap()
+        );
+    }
+
+    #[test]
+    fn unknown_general_key_is_rejected() {
+        toml::from_str::<Config>("[general]\nbackgroud = \"#101020\"\n")
+            .expect_err("a misspelled key must not silently vanish");
+    }
+
     #[test]
     fn decoration_theme_parses_from_toml() {
         let toml_str = "\
@@ -654,12 +771,19 @@ chevron-button = \"#777777\"
 chevron-button-hover = \"#888888\"
 menu-background = \"#999999\"
 menu-item-hover = \"#aaaaaa\"
+icon = \"#bbbbbb\"
+close-icon = \"#cccccc\"
 ";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.decorations.height, 40);
         assert_eq!(
             config.decorations.background,
             Color::from_hex("#111111").unwrap()
+        );
+        assert_eq!(config.decorations.icon, Color::from_hex("#bbbbbb").unwrap());
+        assert_eq!(
+            config.decorations.close_icon,
+            Color::from_hex("#cccccc").unwrap()
         );
     }
 

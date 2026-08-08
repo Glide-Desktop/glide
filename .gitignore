@@ -18,3 +18,5 @@ session_opencode.md
 fix.patch
 test_*.rs
 test_*.py
+*.orig
+*.rej

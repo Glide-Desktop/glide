@@ -258,14 +258,14 @@ where
         scale: Scale<f64>,
         alpha: f32,
     ) -> Vec<C> {
-        let painter = crate::paint::PAINTER.get_or_init(|| {
-            let h = self.header_height();
-            // Titlebar heights are tens of pixels; the product is nowhere
-            // near f32's precision limits.
-            #[allow(clippy::cast_possible_truncation)]
-            let font_px = (f64::from(h).max(14.0) * 0.45) as f32;
-            crate::paint::Painter::new(font_px.clamp(10.0, 18.0))
-        });
+        // The shared `Painter` — see `paint::current`'s docs: it is built
+        // from the configured titlebar height once, centrally, by
+        // `Config::apply_to_state`, not lazily here (there used to be a
+        // font-size-from-`self.header_height()` calculation in this exact
+        // spot; centralizing it is what makes a config-reloaded titlebar
+        // height actually change the font size instead of only ever using
+        // whichever window rendered its first decorated frame first).
+        let painter = crate::paint::current();
 
         let header_height = self.header_height();
         let header_location =
@@ -275,7 +275,7 @@ where
 
         // Decorations first: `render_frame` wants elements front-to-back,
         // and the titlebar sits on top of the window's own content.
-        let deco_elements: Vec<C> = decoration::frame_buffers(self, painter)
+        let deco_elements: Vec<C> = decoration::frame_buffers(self, &painter)
             .into_iter()
             .filter_map(|deco_buf| {
                 let physical_offset = deco_buf.offset.to_physical_precise_round(scale);

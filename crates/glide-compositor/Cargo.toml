@@ -31,7 +31,6 @@ glide-ipc = { path = "../glide-ipc" }
 glide-layout = { path = "../glide-layout" }
 fontdue = "0.9.4"
 tiny-skia = "0.12.0"
-once_cell = "1.21.4"
 profiling = { version = "1.0.18", features = ["profile-with-tracy"] }
 tracy-client = "0.18.4"
 

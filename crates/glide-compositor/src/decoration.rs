@@ -4,16 +4,17 @@
 //! # Layout (not configurable — see [`crate::config::DecorationTheme`])
 //!
 //! ```text
-//! ┌───┬───┬─────────────────────────────────┬───┐
-//! │ M │ v │            (title)              │ X │
-//! └───┴───┴─────────────────────────────────┴───┘
+//! ┌───┬─────────────────────────────────┬───┬───┐
+//! │ M │            (title)              │ v │ X │
+//! └───┴─────────────────────────────────┴───┴───┘
 //! ```
 //! Maximize (M) is always leftmost, close (X) always rightmost, and the
 //! chevron (v) — which opens a dropdown for actions that don't warrant their
-//! own button, currently just Minimize — sits immediately to its right.
-//! Everything between the chevron and the close button is drag territory:
-//! pressing there and moving starts an interactive move, exactly as if the
-//! client itself had requested one.
+//! own button, currently just Minimize — sits immediately to its left, so
+//! the two right-hand buttons read as one cluster. Everything between the
+//! maximize button and the chevron is drag territory: pressing there and
+//! moving starts an interactive move, exactly as if the client itself had
+//! requested one.
 //!
 //! Every window is decorated for now; respecting a client's own
 //! `xdg-decoration` preference is M4.5.
@@ -39,7 +40,7 @@ use smithay::{
 
 use crate::{
     GlideState,
-    config::DecorationTheme,
+    config::{Color, DecorationTheme},
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab, resize_grab::ResizeEdge},
     paint::Painter,
     window::GlideWindow,
@@ -124,6 +125,10 @@ pub struct HeaderBar {
     /// updated straight from pointer motion.
     theme: DecorationTheme,
     focused: bool,
+    /// Whether the window is currently maximized — swaps the maximize
+    /// button's glyph for the restore one, same idea as `theme`/`focused`:
+    /// snapshotted ahead of render for the same reason.
+    maximized: bool,
 
     /// Cached pixel buffers for each titlebar element.  Rebuilt whenever
     /// their appearance changes (hover, focus, open menu, resize).
@@ -181,14 +186,16 @@ fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
 
 /// Repaints one titlebar button into its cached buffer.
 ///
-/// The three buttons differ only in their colours and glyph, so they share
-/// this instead of three near-identical blocks.
+/// The buttons differ only in their colours and glyph, so they share this
+/// instead of a near-identical block per button. `bg`/`fg` are straight
+/// colour — see [`Painter::draw_icon_maximize`]'s docs on why no
+/// premultiplication happens at this boundary.
 fn redraw_button(
     buf: &mut Option<MemoryRenderBuffer>,
     height: i32,
-    bg: [u8; 4],
-    fg: [u8; 4],
-    icon: fn(&mut [u8], i32, i32, [u8; 4], [u8; 4]),
+    bg: Color,
+    fg: Color,
+    icon: fn(&mut [u8], i32, i32, Color, Color),
 ) {
     let w = BUTTON_WIDTH;
     let buf = buf.get_or_insert_with(|| {
@@ -200,16 +207,6 @@ fn redraw_button(
         icon(pixels, w, height, fg, bg);
         Ok::<_, ()>(vec![Rectangle::from_size((w, height).into())])
     });
-}
-
-/// Convert `[f32; 4]` (R,G,B,A linear) to `[u8; 4]` (B,G,R,A bytes)
-/// as expected by the ARGB8888 pixel format used in `MemoryRenderBuffer`.
-fn to_argb(c: [f32; 4]) -> [u8; 4] {
-    // Clamped to 0.0..=1.0 first, so the product is always in 0..=255 —
-    // the truncation and sign lints have nothing to catch here.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let b = |f: f32| (f.clamp(0.0, 1.0) * 255.0) as u8;
-    [b(c[2]), b(c[1]), b(c[0]), b(c[3])]
 }
 
 impl HeaderBar {
@@ -227,13 +224,15 @@ impl HeaderBar {
         self.height = height;
     }
 
-    /// Snapshots the theme and focus state to redraw with. See the fields'
-    /// own docs for why this happens ahead of time rather than at render.
-    fn sync(&mut self, theme: &DecorationTheme, focused: bool) {
+    /// Snapshots the theme, focus, and maximized state to redraw with. See
+    /// the fields' own docs for why this happens ahead of time rather than
+    /// at render.
+    fn sync(&mut self, theme: &DecorationTheme, focused: bool, maximized: bool) {
         if &self.theme != theme {
             self.theme = theme.clone();
         }
         self.focused = focused;
+        self.maximized = maximized;
     }
 
     /// Update the window title stored for rendering in the drag zone.
@@ -450,11 +449,11 @@ impl HeaderBar {
         let theme = &self.theme;
         let height = self.height;
         let bg_color = if self.focused {
-            theme.background_focused.0
+            theme.background_focused
         } else {
-            theme.background.0
+            theme.background
         };
-        let bg = to_argb(bg_color);
+        let bg = bg_color.to_buffer_bytes();
 
         // Determine which zone is hovered (strip only — not the resize band).
         let hovered = self
@@ -488,38 +487,47 @@ impl HeaderBar {
         // ── Titlebar buttons ───────────────────────────────────────────────
         // Foregrounds differ slightly per icon: the close glyph is the one
         // meant to stand out, the chevron the least.
+        // Maximize/restore are the same button showing different glyphs —
+        // whichever one is current communicates what *pressing* it will do
+        // next, not the window's present state.
+        let maximize_icon: fn(&mut [u8], i32, i32, Color, Color) = if self.maximized {
+            Painter::draw_icon_restore
+        } else {
+            Painter::draw_icon_maximize
+        };
+
         for (buf, zone, normal, hover_bg, fg, icon) in [
             (
                 &mut self.maximize_buf,
                 HitZone::Maximize,
-                theme.maximize_button.0,
-                theme.maximize_button_hover.0,
-                220u8,
-                Painter::draw_icon_maximize as fn(&mut [u8], i32, i32, [u8; 4], [u8; 4]),
+                theme.maximize_button,
+                theme.maximize_button_hover,
+                theme.icon,
+                maximize_icon,
             ),
             (
                 &mut self.chevron_buf,
                 HitZone::Chevron,
-                theme.chevron_button.0,
-                theme.chevron_button_hover.0,
-                200,
-                Painter::draw_icon_chevron,
+                theme.chevron_button,
+                theme.chevron_button_hover,
+                theme.icon,
+                Painter::draw_icon_chevron as fn(&mut [u8], i32, i32, Color, Color),
             ),
             (
                 &mut self.close_buf,
                 HitZone::Close,
-                theme.close_button.0,
-                theme.close_button_hover.0,
-                255,
+                theme.close_button,
+                theme.close_button_hover,
+                theme.close_icon,
                 Painter::draw_icon_close,
             ),
         ] {
-            let btn_bg = to_argb(if hovered == Some(zone) {
+            let btn_bg = if hovered == Some(zone) {
                 hover_bg
             } else {
                 normal
-            });
-            redraw_button(buf, height, btn_bg, [fg, fg, fg, btn_bg[3]], icon);
+            };
+            redraw_button(buf, height, btn_bg, fg, icon);
         }
 
         // ── Dropdown menu ──────────────────────────────────────────────────
@@ -529,9 +537,15 @@ impl HeaderBar {
             self.menu_row_bufs
                 .resize_with(MenuItem::ALL.len(), MemoryRenderBuffer::default);
             let menu_hover = self.menu_hover;
-            let menu_bg = to_argb(theme.menu_background.0);
-            let menu_hover_bg = to_argb(theme.menu_item_hover.0);
-            let font_fg = [255u8, 230, 230, 230];
+            let menu_bg = theme.menu_background.to_buffer_bytes();
+            let menu_hover_bg = theme.menu_item_hover.to_buffer_bytes();
+            // Off-white / pure-white text, opaque: B, G, R, A. (Previously
+            // written as [255, 230, 230, 230] under the mistaken belief
+            // that this function's colour bytes were [A, R, G, B] — that
+            // put 255 in the *blue* channel and made every non-hovered
+            // menu row's text render with a faint blue tint instead of
+            // neutral grey.)
+            let font_fg = [230u8, 230, 230, 255];
             let font_fg_hover = [255u8, 255, 255, 255];
             for (i, buf) in self.menu_row_bufs.iter_mut().enumerate() {
                 let is_hovered = menu_hover == Some(i);
@@ -701,10 +715,11 @@ impl GlideWindow {
     }
 
     /// Sets the titlebar height (0 disables the decoration entirely) and
-    /// snapshots theme/focus for the next redraw. Called from
+    /// snapshots theme/focus/maximized for the next redraw. Called from
     /// [`crate::GlideState::reconcile_space`], once per window per
     /// reconcile — cheap, and it is what keeps decoration rendering in sync
-    /// with configuration reloads and focus changes despite
+    /// with configuration reloads, focus changes, and maximize/restore
+    /// toggling despite
     /// [`smithay::backend::renderer::element::AsRenderElements`] having no
     /// access to compositor state of its own.
     ///
@@ -712,13 +727,19 @@ impl GlideWindow {
     /// measures the close button from the right edge, so hit-testing a
     /// click that somehow arrives before the first render would otherwise
     /// run against `width == 0` and classify most of the bar as Close.
-    pub fn sync_decoration(&self, theme: &DecorationTheme, height: i32, focused: bool) {
+    pub fn sync_decoration(
+        &self,
+        theme: &DecorationTheme,
+        height: i32,
+        focused: bool,
+        maximized: bool,
+    ) {
         let content = self.geometry().size;
         if let Some(mut state) = self.try_decoration_state_mut() {
             state.header.set_height(height);
             state.header.width = content.w;
             state.header.content_height = content.h;
-            state.header.sync(theme, focused);
+            state.header.sync(theme, focused, maximized);
         }
     }
 

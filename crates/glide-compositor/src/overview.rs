@@ -501,7 +501,7 @@ impl OverviewUi {
                     0,
                     width,
                     &title,
-                    theme.label_color.as_argb_bytes(),
+                    theme.label_color.to_buffer_bytes(),
                     // Transparent: the label floats over the scrim rather
                     // than sitting on a plate.
                     [0, 0, 0, 0],

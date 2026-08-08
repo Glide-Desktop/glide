@@ -95,10 +95,6 @@ use crate::{
     window::{GlideWindow, GlideWindowRenderElement},
 };
 
-/// #295396, chosen specifically to be unmistakable from the frozen text
-/// console (see the module-level docs on [`TtyData`]).
-const FILL_COLOR: [f32; 4] = [0.160_784_3, 0.325_490_2, 0.588_235_3, 1.0];
-
 type GbmDrmOutputManager = DrmOutputManager<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
@@ -505,10 +501,10 @@ fn overview_elements(
 
     elements.extend(layer_elements(gles_renderer, output, scale, true));
 
-    let painter = crate::paint::PAINTER.get_or_init(|| crate::paint::Painter::new(14.0));
+    let painter = crate::paint::current();
     elements.extend(
         overview
-            .render(gles_renderer, output_geometry, scale, painter, |id| {
+            .render(gles_renderer, output_geometry, scale, &painter, |id| {
                 window_map
                     .get(&id)
                     .map(|window| (window.clone(), window.display_name()))
@@ -1026,7 +1022,12 @@ impl GlideState {
             elements
         };
 
-        let clear_color = FILL_COLOR;
+        // Configurable via `[general] background` (see
+        // `config::GeneralConfig`); the shipped default, #295396, was
+        // chosen specifically to be unmistakable from the frozen text
+        // console (see the module-level docs on `TtyData`) — a custom
+        // colour trades that guarantee away deliberately.
+        let clear_color = self.background_color.0;
 
         let render_result = surface.drm_output.render_frame(
             gles_renderer,

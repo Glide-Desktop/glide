@@ -415,7 +415,6 @@ dependencies = [
  "glide-ipc",
  "glide-layout",
  "libc",
- "once_cell",
  "profiling",
  "serde",
  "serde_json",

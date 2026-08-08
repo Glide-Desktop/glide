@@ -3,7 +3,7 @@
 ## Architecture
 - Workspace crates:
   - `crates/glide-compositor`: Core Wayland compositor built on Smithay (winit/DRM backends, xdg-shell, layer-shell, M5 protocol integration).
-  - `crates/glide-layout`: Pure window management layout engine (SlotMap based, workspace & floating logic, zero Smithay dependencies).
+  - `crates/glide-layout`: Pure window management layout engine (`HashMap`-based window/workspace storage, workspace & floating logic, zero Smithay dependencies).
   - `crates/glide-ipc`: Common request/response IPC types between compositor and `glidectl`.
   - `crates/glidectl`: CLI client for controlling the compositor.
 - Protocol Integration (M5):
