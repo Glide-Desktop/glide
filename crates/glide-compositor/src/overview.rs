@@ -71,6 +71,12 @@ fn ease_out_cubic(t: f64) -> f64 {
     1.0 - inv * inv * inv
 }
 
+/// How long the hover ring takes to grow in and fade to full opacity after
+/// the hovered preview changes. Short and snappy — this fires on every
+/// mouse move or arrow key, unlike the open/close animation, so anything
+/// longer would feel laggy rather than polished.
+const HOVER_ANIM: Duration = Duration::from_millis(120);
+
 /// Linear interpolation between two rectangles.
 fn lerp_rect(
     from: Rectangle<i32, Logical>,
@@ -127,6 +133,10 @@ pub struct OverviewUi {
     previews: Vec<Preview>,
     /// Preview under the pointer, or selected with the arrow keys.
     hover: Option<WindowId>,
+    /// When `hover` was last changed *to* `Some` value, driving the ring's
+    /// short grow/fade-in animation (see [`Self::hover_progress`]). `None`
+    /// while nothing is hovered — there is no ring to animate then.
+    hover_started: Option<Instant>,
     phase: Phase,
     duration: Duration,
     theme: OverviewTheme,
@@ -190,6 +200,12 @@ impl OverviewUi {
             // overview and pressing Enter is a no-op rather than a
             // surprise.
             hover: focused,
+            // No pop-in for the *initial* hover: the whole overview is
+            // already animating open, and stacking a second animation on
+            // top of that would read as busy rather than polished. Only
+            // hover changes made *after* opening (a mouse move, an arrow
+            // key) get the grow/fade-in.
+            hover_started: None,
             phase: Phase::Opening {
                 started: Instant::now(),
             },
@@ -274,15 +290,17 @@ impl OverviewUi {
     }
 
     /// Whether an animation is still running, i.e. the compositor needs to
-    /// keep scheduling repaints.
+    /// keep scheduling repaints. Includes the hover ring's grow/fade-in,
+    /// not just the open/close phase.
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        match self.phase {
+        let phase_animating = match self.phase {
             Phase::Open => false,
             Phase::Opening { started } | Phase::Closing { started, .. } => {
                 started.elapsed() < self.duration
             }
-        }
+        };
+        phase_animating || self.hover_progress() < 1.0
     }
 
     /// Advances the animation state machine.
@@ -299,6 +317,13 @@ impl OverviewUi {
             Phase::Closing { started, select } if started.elapsed() >= self.duration => {
                 Tick::Finished { select }
             }
+            // Settled open: still `Running` while the hover ring is
+            // mid grow/fade-in, so `tick_overview` keeps scheduling
+            // repaints for it exactly as it does for the open/close
+            // animation — otherwise the ring would only ever reach its
+            // final size on whatever frame something *else* happened to
+            // trigger a repaint.
+            Phase::Open if self.hover_progress() < 1.0 => Tick::Running,
             Phase::Open => Tick::Idle,
             Phase::Opening { .. } | Phase::Closing { .. } => Tick::Running,
         }
@@ -343,7 +368,28 @@ impl OverviewUi {
             return false;
         }
         self.hover = hover;
+        // Restarts the ring's grow/fade-in from scratch on every change,
+        // including hover -> a *different* preview: the old ring simply
+        // vanishes (no crossfade) and the new one grows in. `None` means
+        // nothing is hovered right now, so there is nothing to animate.
+        self.hover_started = hover.map(|_| Instant::now());
         true
+    }
+
+    /// Eased 0..1 progress of the current hover's ring grow/fade-in.
+    /// `1.0` (fully settled, drawn at full size and opacity) once
+    /// [`HOVER_ANIM`] has elapsed, or immediately if nothing is animating
+    /// — including whenever nothing is hovered at all, since a ring that
+    /// isn't drawn has nothing to animate.
+    fn hover_progress(&self) -> f64 {
+        let Some(started) = self.hover_started else {
+            return 1.0;
+        };
+        if HOVER_ANIM.is_zero() {
+            return 1.0;
+        }
+        let t = (started.elapsed().as_secs_f64() / HOVER_ANIM.as_secs_f64()).clamp(0.0, 1.0);
+        ease_out_cubic(t)
     }
 
     /// Moves the selection one step in a direction, for arrow-key
@@ -612,20 +658,36 @@ impl OverviewUi {
         // gives a window's own border), not a solid rectangle: see the
         // `highlight` field's docs on why a filled slab doesn't work here
         // regardless of z-order.
-        if let Some((_, rect, _)) = entries.iter().find(|(_, _, hovered)| *hovered) {
-            let strips = crate::decoration::border_rects(rect.size.w, rect.size.h, theme.border);
-            for (buf, (offset, size)) in self.highlight.iter_mut().zip(strips) {
-                buf.update((size.w, size.h), theme.highlight.0);
-                let pos = Point::from((rect.loc.x + offset.x, rect.loc.y + offset.y));
-                elements.push(OverviewRenderElement::Solid(
-                    SolidColorRenderElement::from_buffer(
-                        buf,
-                        pos.to_f64().to_physical(scale).to_i32_round(),
-                        scale,
-                        1.0,
-                        Kind::Unspecified,
-                    ),
-                ));
+        //
+        // Grows from 0 to the full `theme.border` thickness and fades in
+        // to full opacity together, over `HOVER_ANIM`, whenever the hover
+        // target just changed — see `hover_progress`'s docs. A ring that
+        // simply snaps to size on every mouse move reads as flickery next
+        // to the previews' own eased open/close motion; this matches it.
+        let hover_t = self.hover_progress();
+        if let (Some((_, rect, _)), true) = (
+            entries.iter().find(|(_, _, hovered)| *hovered),
+            hover_t > 0.0,
+        ) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let border = (f64::from(theme.border) * hover_t).round() as i32;
+            if border > 0 {
+                let strips = crate::decoration::border_rects(rect.size.w, rect.size.h, border);
+                #[allow(clippy::cast_possible_truncation)]
+                let alpha = hover_t as f32;
+                for (buf, (offset, size)) in self.highlight.iter_mut().zip(strips) {
+                    buf.update((size.w, size.h), theme.highlight.0);
+                    let pos = Point::from((rect.loc.x + offset.x, rect.loc.y + offset.y));
+                    elements.push(OverviewRenderElement::Solid(
+                        SolidColorRenderElement::from_buffer(
+                            buf,
+                            pos.to_f64().to_physical(scale).to_i32_round(),
+                            scale,
+                            alpha,
+                            Kind::Unspecified,
+                        ),
+                    ));
+                }
             }
         }
 
@@ -695,5 +757,115 @@ impl OverviewUi {
         ));
 
         elements
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn theme_with_duration(ms: u64) -> OverviewTheme {
+        OverviewTheme {
+            duration_ms: ms,
+            ..OverviewTheme::default()
+        }
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    /// A single-window overview, focused on that window (so `hover`
+    /// starts `Some`), at the given open/close animation duration —
+    /// `0` isolates the hover-ring animation in tests that need `tick`/
+    /// `is_animating` to reflect *only* the hover animation, by settling
+    /// the open phase on the very first `tick()` call.
+    fn ui_with_one_window(duration_ms: u64) -> (OverviewUi, WindowId) {
+        let id = WindowId::next();
+        let windows = [(id, rect(0, 0, 800, 600))];
+        let area = rect(0, 0, 1920, 1080);
+        let ui = OverviewUi::new(&windows, area, &theme_with_duration(duration_ms), Some(id));
+        (ui, id)
+    }
+
+    #[test]
+    fn initial_hover_has_no_pop_in_animation() {
+        // hover_started is None from construction even though `hover` is
+        // already Some(focused) — see OverviewUi::new's docs on why
+        // stacking a pop-in on top of the whole overview opening would
+        // read as busy rather than polished.
+        let (ui, _id) = ui_with_one_window(220);
+        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn set_hover_to_the_same_target_is_a_no_op() {
+        let (mut ui, id) = ui_with_one_window(220);
+        assert!(!ui.set_hover(Some(id)));
+    }
+
+    #[test]
+    fn set_hover_to_a_new_target_restarts_the_animation() {
+        let (mut ui, id) = ui_with_one_window(220);
+        ui.set_hover(None);
+        assert!(ui.set_hover(Some(id)));
+        assert!(
+            ui.hover_progress() < 1.0,
+            "freshly (re)hovered target must not read as already settled"
+        );
+    }
+
+    #[test]
+    fn hover_progress_settles_to_one_after_the_animation_duration() {
+        let (mut ui, id) = ui_with_one_window(220);
+        ui.set_hover(None);
+        ui.set_hover(Some(id));
+        std::thread::sleep(HOVER_ANIM + Duration::from_millis(30));
+        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn hover_progress_is_settled_when_nothing_is_hovered() {
+        let (mut ui, _id) = ui_with_one_window(220);
+        ui.set_hover(None);
+        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn tick_keeps_running_while_the_hover_ring_is_animating() {
+        let (mut ui, id) = ui_with_one_window(0);
+        assert_eq!(ui.tick(), Tick::Running, "settling the open phase");
+        assert_eq!(ui.tick(), Tick::Idle, "settled, nothing changed since");
+
+        ui.set_hover(None);
+        ui.set_hover(Some(id));
+        assert_eq!(
+            ui.tick(),
+            Tick::Running,
+            "hover ring must keep scheduling repaints while it grows/fades in"
+        );
+    }
+
+    #[test]
+    fn tick_goes_idle_once_the_hover_animation_settles() {
+        let (mut ui, id) = ui_with_one_window(0);
+        let _ = ui.tick(); // settle the open phase
+
+        ui.set_hover(None);
+        ui.set_hover(Some(id));
+        std::thread::sleep(HOVER_ANIM + Duration::from_millis(30));
+
+        assert_eq!(ui.tick(), Tick::Idle);
+    }
+
+    #[test]
+    fn is_animating_reflects_the_hover_ring_too() {
+        let (mut ui, id) = ui_with_one_window(0);
+        let _ = ui.tick(); // settle the open phase
+        assert!(!ui.is_animating());
+
+        ui.set_hover(None);
+        ui.set_hover(Some(id));
+        assert!(ui.is_animating());
     }
 }
