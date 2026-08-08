@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/glide-compositor",
+    "crates/glide-geom",
     "crates/glide-layout",
     "crates/glide-ipc",
     "crates/glidectl",

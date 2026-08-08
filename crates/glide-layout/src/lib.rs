@@ -1,9 +1,8 @@
-pub mod geometry;
 pub mod ids;
 pub mod layout;
 pub mod overview;
 
-pub use geometry::{Insets, Point, Rectangle, Size};
+pub use glide_geom::{Insets, Point, Rectangle, Size};
 pub use ids::{OutputId, WindowId, WorkspaceId};
 pub use layout::{Layout, NewWindowPolicy, OutputInfo, WindowState, Workspace, WorkspaceTarget};
 pub use overview::{OverviewOptions, OverviewSlot, compute_overview_layout};

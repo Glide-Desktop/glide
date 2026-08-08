@@ -1,7 +1,5 @@
-use crate::{
-    geometry::{Point, Rectangle, Size},
-    ids::WindowId,
-};
+use crate::ids::WindowId;
+use glide_geom::{Point, Rectangle, Size};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverviewOptions {

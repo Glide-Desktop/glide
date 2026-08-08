@@ -430,6 +430,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "glide-geom"
+version = "0.1.0"
+
+[[package]]
 name = "glide-ipc"
 version = "0.1.0"
 dependencies = [
@@ -440,6 +444,9 @@ dependencies = [
 [[package]]
 name = "glide-layout"
 version = "0.1.0"
+dependencies = [
+ "glide-geom",
+]
 
 [[package]]
 name = "glidectl"

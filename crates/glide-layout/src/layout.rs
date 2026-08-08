@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use crate::{
-    geometry::{Insets, Point, Rectangle, Size},
-    ids::{OutputId, WindowId, WorkspaceId},
-};
+use crate::ids::{OutputId, WindowId, WorkspaceId};
+use glide_geom::{Insets, Point, Rectangle, Size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NewWindowPolicy {
