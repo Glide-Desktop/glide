@@ -8,6 +8,7 @@ members = [
     "crates/glide-ipc",
     "crates/glide-paint",
     "crates/glide-theme",
+    "crates/glide-ui",
     "crates/glidectl",
 ]
 
