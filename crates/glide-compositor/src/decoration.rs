@@ -1148,7 +1148,9 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
 }
 
 /// Offset and size of each of the four border strips (top, bottom, left,
-/// right), in decoration-origin coordinates.
+/// right) tiling a frame of `width × frame_height`, outset by
+/// `border_width` — relative to that frame's own `(0, 0)` origin, so a
+/// caller adds its own rectangle's `loc` to place them.
 ///
 /// Pure geometry, no `SolidColorBuffer`/window plumbing — kept separate
 /// from [`border_strips`] specifically so it can be unit-tested without a
@@ -1156,7 +1158,12 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
 /// including corners; left and right fill in only the height between them,
 /// so the four strips tile into a frame without overlapping at the
 /// corners.
-fn border_rects(
+///
+/// `pub(crate)`: also used by `overview.rs` to draw the hovered preview's
+/// highlight as a real ring instead of a solid slab the size of the whole
+/// preview — the exact same tiling problem, just around a different
+/// rectangle.
+pub(crate) fn border_rects(
     width: i32,
     frame_height: i32,
     border_width: i32,

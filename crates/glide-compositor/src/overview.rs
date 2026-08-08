@@ -89,6 +89,9 @@ fn lerp_rect(
     )
 }
 
+/// A cached label buffer, and the `(text, width)` it was rendered from.
+type CachedLabel = (String, i32, MemoryRenderBuffer);
+
 /// One preview: the slot the layout engine assigned, plus where the window
 /// really is (the animation interpolates between them).
 #[derive(Debug, Clone)]
@@ -99,9 +102,14 @@ pub struct Preview {
     /// The window's real on-screen frame, where the animation starts from.
     pub origin: Rectangle<i32, Logical>,
     pub row: usize,
-    /// Cached label buffer, and the text it was rendered from — so it is
-    /// only re-rasterised when the title actually changes.
-    label: Option<(String, MemoryRenderBuffer)>,
+    /// Cached label buffer, and the `(text, width)` it was rendered from —
+    /// so it is only re-rasterised when either actually changes. Width
+    /// matters as much as text: it's the buffer's own dimension, and a
+    /// `relayout` (e.g. a workspace switch changing the row count) can
+    /// resize a preview without touching its title at all — checking text
+    /// alone left a stale, wrong-width label glued to the wider or
+    /// narrower slot.
+    label: Option<CachedLabel>,
 }
 
 impl Preview {
@@ -126,7 +134,15 @@ pub struct OverviewUi {
     // Cached chrome. Resized/recoloured in place; never reallocated per
     // frame — see the module docs on why that matters.
     scrim: SolidColorBuffer,
-    highlight: SolidColorBuffer,
+    /// Four strips (top, bottom, left, right) tiling a ring around the
+    /// hovered preview — see [`crate::decoration::border_rects`], which
+    /// this shares its tiling geometry with. A single solid-filled
+    /// rectangle here would either hide the preview it's meant to
+    /// highlight (if drawn in front) or do nothing visible at all (if
+    /// drawn behind, since the preview is opaque and the same size); a
+    /// ring is correct either way, because it never overlaps the preview's
+    /// own pixels.
+    highlight: [SolidColorBuffer; 4],
 }
 
 impl OverviewUi {
@@ -180,7 +196,7 @@ impl OverviewUi {
             duration: theme.duration(),
             theme: theme.clone(),
             scrim: SolidColorBuffer::default(),
-            highlight: SolidColorBuffer::default(),
+            highlight: std::array::from_fn(|_| SolidColorBuffer::default()),
         }
     }
 
@@ -204,8 +220,12 @@ impl OverviewUi {
         );
         let slots = compute_overview_layout(&sizes, layout_area, &self.theme.options());
 
-        // Preserve cached labels for windows that are still around.
-        let mut old_labels: Vec<(WindowId, Option<(String, MemoryRenderBuffer)>)> =
+        // Preserve cached labels for windows that are still around. Kept
+        // even if the width is about to turn out stale — `render_labels`'s
+        // own `needs_redraw` check (text *and* width) is what decides
+        // whether a cache hit is still valid; this is just carrying the
+        // candidate forward.
+        let mut old_labels: Vec<(WindowId, Option<CachedLabel>)> =
             self.previews.drain(..).map(|p| (p.id, p.label)).collect();
 
         self.previews = slots
@@ -485,10 +505,17 @@ impl OverviewUi {
 
             // Re-rasterise only when the text or the width changed —
             // titles are stable, so this is almost always a cache hit.
-            let needs_redraw = preview
-                .label
-                .as_ref()
-                .is_none_or(|(cached, _)| cached != &title);
+            // Both must match: checking text alone left a stale, wrong-
+            // width buffer glued to a slot after a relayout resized it
+            // without changing its title (e.g. a workspace switch that
+            // changed the row count).
+            let needs_redraw =
+                preview
+                    .label
+                    .as_ref()
+                    .is_none_or(|(cached_title, cached_width, _)| {
+                        cached_title != &title || *cached_width != width
+                    });
             if needs_redraw {
                 let Ok(pixels) = usize::try_from(width * height * 4) else {
                     continue;
@@ -515,10 +542,10 @@ impl OverviewUi {
                     Transform::Normal,
                     None,
                 );
-                preview.label = Some((title, memory));
+                preview.label = Some((title, width, memory));
             }
 
-            let Some((_, memory)) = preview.label.as_ref() else {
+            let Some((_, _, memory)) = preview.label.as_ref() else {
                 continue;
             };
 
@@ -580,24 +607,26 @@ impl OverviewUi {
 
         elements.extend(self.render_labels(renderer, &entries, scale, painter, &mut lookup));
 
-        // ── Highlight ring behind the hovered preview ──────────────
+        // ── Highlight ring around the hovered preview ──────────────
+        // A real ring (four strips, same tiling `decoration::border_rects`
+        // gives a window's own border), not a solid rectangle: see the
+        // `highlight` field's docs on why a filled slab doesn't work here
+        // regardless of z-order.
         if let Some((_, rect, _)) = entries.iter().find(|(_, _, hovered)| *hovered) {
-            let border = theme.border;
-            let ring = Rectangle::new(
-                Point::from((rect.loc.x - border, rect.loc.y - border)),
-                Size::from((rect.size.w + border * 2, rect.size.h + border * 2)),
-            );
-            self.highlight
-                .update((ring.size.w, ring.size.h), theme.highlight.0);
-            elements.push(OverviewRenderElement::Solid(
-                SolidColorRenderElement::from_buffer(
-                    &self.highlight,
-                    ring.loc.to_f64().to_physical(scale).to_i32_round(),
-                    scale,
-                    1.0,
-                    Kind::Unspecified,
-                ),
-            ));
+            let strips = crate::decoration::border_rects(rect.size.w, rect.size.h, theme.border);
+            for (buf, (offset, size)) in self.highlight.iter_mut().zip(strips) {
+                buf.update((size.w, size.h), theme.highlight.0);
+                let pos = Point::from((rect.loc.x + offset.x, rect.loc.y + offset.y));
+                elements.push(OverviewRenderElement::Solid(
+                    SolidColorRenderElement::from_buffer(
+                        buf,
+                        pos.to_f64().to_physical(scale).to_i32_round(),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    ),
+                ));
+            }
         }
 
         // ── Previews ───────────────────────────────────────────────
