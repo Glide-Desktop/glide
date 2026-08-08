@@ -89,6 +89,10 @@ const MENU_PADDING: i32 = 12;
 /// narrow dropdown.
 const MENU_MIN_WIDTH: i32 = 120;
 
+/// Corner radius of the dropdown panel's true outer corners — see
+/// [`row_corners`].
+const MENU_CORNER_RADIUS: f32 = 8.0;
+
 /// How much darker a button's hover colour gets while actually pressed —
 /// derived from the hover colour rather than a dedicated theme key per
 /// button per interaction state.
@@ -684,8 +688,8 @@ impl HeaderBar {
             self.menu_row_bufs
                 .resize_with(MenuItem::ALL.len(), MemoryRenderBuffer::default);
             let menu_hover = self.menu_hover;
-            let menu_bg = theme.menu_background.to_buffer_bytes();
-            let menu_hover_bg = theme.menu_item_hover.to_buffer_bytes();
+            let menu_bg = theme.menu_background;
+            let menu_hover_bg = theme.menu_item_hover;
             // Off-white / pure-white text, opaque: B, G, R, A. (Previously
             // written as [255, 230, 230, 230] under the mistaken belief
             // that this function's colour bytes were [A, R, G, B] — that
@@ -694,6 +698,7 @@ impl HeaderBar {
             // neutral grey.)
             let font_fg = [230u8, 230, 230, 255];
             let font_fg_hover = [255u8, 255, 255, 255];
+            let row_count = self.menu_row_bufs.len();
             for (i, buf) in self.menu_row_bufs.iter_mut().enumerate() {
                 let is_hovered = menu_hover == Some(i);
                 let bg = if is_hovered { menu_hover_bg } else { menu_bg };
@@ -705,7 +710,22 @@ impl HeaderBar {
                 let mut ctx = buf.render();
                 ctx.resize((row_w, row_h));
                 let _ = ctx.draw(|pixels| {
-                    painter.draw_label(
+                    // Rounded background first — only the panel's true
+                    // outer corners (first row's top, last row's bottom;
+                    // both if there's only one row) round off, so a
+                    // multi-row menu reads as one piece, not a stack of
+                    // separate pills. Text goes on top *without* its own
+                    // background fill, or it would flatten the corners
+                    // right back out.
+                    Painter::fill_panel_background(
+                        pixels,
+                        row_w,
+                        row_h,
+                        bg,
+                        MENU_CORNER_RADIUS,
+                        row_corners(i, row_count),
+                    );
+                    painter.draw_label_over(
                         pixels,
                         row_w,
                         row_h,
@@ -714,7 +734,6 @@ impl HeaderBar {
                         TextAlign::Left,
                         &label,
                         fg,
-                        bg,
                     );
                     Ok::<_, ()>(vec![Rectangle::from_size((row_w, row_h).into())])
                 });
@@ -723,6 +742,19 @@ impl HeaderBar {
             self.menu_row_bufs.clear();
         }
     }
+}
+
+/// Which of a rounded panel row's corners are the panel's true *outer*
+/// corners, `[top_left, top_right, bottom_right, bottom_left]` — the first
+/// row rounds its top, the last row its bottom, and a single row (today's
+/// only menu) rounds all four. A row in the middle of a longer menu rounds
+/// none: its edges are internal boundaries, not the panel's silhouette.
+const fn row_corners(index: usize, total: usize) -> [bool; 4] {
+    let is_first = index == 0;
+    // `total` is never 0 when this is called (menu_row_bufs is sized to
+    // MenuItem::ALL, non-empty), so `total - 1` cannot underflow.
+    let is_last = index == total - 1;
+    [is_first, is_first, is_last, is_last]
 }
 
 /// Starts an interactive move exactly as if the client had called
@@ -1306,6 +1338,30 @@ mod tests {
             time: 0,
             button: 0x110,
             state: ButtonState::Released,
+        }
+    }
+
+    mod row_corners_tests {
+        use super::*;
+
+        #[test]
+        fn single_row_rounds_all_four_corners() {
+            assert_eq!(row_corners(0, 1), [true, true, true, true]);
+        }
+
+        #[test]
+        fn first_row_of_many_rounds_only_the_top() {
+            assert_eq!(row_corners(0, 3), [true, true, false, false]);
+        }
+
+        #[test]
+        fn last_row_of_many_rounds_only_the_bottom() {
+            assert_eq!(row_corners(2, 3), [false, false, true, true]);
+        }
+
+        #[test]
+        fn middle_row_rounds_nothing() {
+            assert_eq!(row_corners(1, 3), [false, false, false, false]);
         }
     }
 

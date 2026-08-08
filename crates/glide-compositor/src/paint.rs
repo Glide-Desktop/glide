@@ -271,6 +271,29 @@ impl Painter {
             chunk.copy_from_slice(&bg_premul);
         }
 
+        self.draw_label_over(buf, width, height, x_min, x_max, align, text, fg_argb);
+    }
+
+    /// Draws `text` exactly as [`Self::draw_label`] does, *without* filling
+    /// the background first — for a caller that already painted its own
+    /// background (a rounded panel row, say — see
+    /// [`Self::fill_panel_background`]) and would otherwise have it
+    /// clobbered by a flat rectangular fill.
+    pub fn draw_label_over(
+        &self,
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        x_min: i32,
+        x_max: i32,
+        align: TextAlign,
+        text: &str,
+        fg_argb: [u8; 4],
+    ) {
+        if width <= 0 || height <= 0 || buf.len() < (width * height * 4) as usize {
+            return;
+        }
+
         let text = self.fit_text(text, x_max - x_min);
         if text.is_empty() {
             return;
@@ -419,6 +442,37 @@ impl Painter {
                 stroke(pixmap, &path, fg, height);
             }
         });
+    }
+
+    /// Fills `buf` with `bg`, rounded at whichever corners `corners` marks
+    /// (`[top_left, top_right, bottom_right, bottom_left]`) — spans the
+    /// *entire* buffer, unlike [`Self::draw_icon_maximize`]'s inset pill,
+    /// since panel rows must tile edge-to-edge with no gap between them.
+    /// Used for the chevron dropdown's rows: pair with
+    /// [`Self::draw_label_over`] afterward to add each row's text without
+    /// it clobbering this background with its own flat fill.
+    pub fn fill_panel_background(
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        bg: Color,
+        radius: f32,
+        corners: [bool; 4],
+    ) {
+        let (Ok(w), Ok(h)) = (u32::try_from(width), u32::try_from(height)) else {
+            return;
+        };
+        let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+            return;
+        };
+        if let Some(path) =
+            rounded_rect_corners(0.0, 0.0, width as f32, height as f32, radius, corners)
+        {
+            fill(&mut pixmap, &path, bg);
+        }
+        let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+        let n = bytes.len().min(buf.len());
+        buf[..n].copy_from_slice(&bytes[..n]);
     }
 }
 
@@ -579,32 +633,76 @@ fn fill_pill(pixmap: &mut tiny_skia::Pixmap, width: i32, height: i32, color: Col
 /// control points by `r * KAPPA` along the tangent.
 const KAPPA: f32 = 0.552_284_8;
 
-/// Builds a rounded-rectangle path via cubic-Bézier corners. `radius` is
-/// clamped so it can never exceed half of whichever of `w`/`h` is smaller,
-/// which would otherwise self-intersect.
-#[allow(clippy::many_single_char_names)]
+/// Builds a rounded-rectangle path via cubic-Bézier corners, all four
+/// rounded. `radius` is clamped so it can never exceed half of whichever
+/// of `w`/`h` is smaller, which would otherwise self-intersect.
 fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<tiny_skia::Path> {
+    rounded_rect_corners(x, y, w, h, radius, [true; 4])
+}
+
+/// Builds a rectangle path with a per-corner choice of rounded vs. square,
+/// `corners = [top_left, top_right, bottom_right, bottom_left]`.
+///
+/// Used for panels tiled from multiple rows stacked edge-to-edge (the
+/// chevron dropdown) — only the panel's true outer corners should read as
+/// rounded; a boundary between two rows must stay a hard edge, or the
+/// panel would look like a stack of separate pills instead of one piece.
+#[allow(clippy::many_single_char_names)]
+fn rounded_rect_corners(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    corners: [bool; 4],
+) -> Option<tiny_skia::Path> {
     if w <= 0.0 || h <= 0.0 {
         return None;
     }
     let r = radius.max(0.0).min(w.min(h) / 2.0);
     let mut pb = tiny_skia::PathBuilder::new();
-    if r <= 0.0 {
+    if r <= 0.0 || corners == [false; 4] {
         pb.push_rect(tiny_skia::Rect::from_xywh(x, y, w, h)?);
         return pb.finish();
     }
 
     let k = r * KAPPA;
+    let [top_left, top_right, bottom_right, bottom_left] = corners;
 
-    pb.move_to(x + r, y);
-    pb.line_to(x + w - r, y);
-    pb.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r);
-    pb.line_to(x + w, y + h - r);
-    pb.cubic_to(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h);
-    pb.line_to(x + r, y + h);
-    pb.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
-    pb.line_to(x, y + r);
-    pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
+    if top_left {
+        pb.move_to(x + r, y);
+    } else {
+        pb.move_to(x, y);
+    }
+
+    if top_right {
+        pb.line_to(x + w - r, y);
+        pb.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r);
+    } else {
+        pb.line_to(x + w, y);
+    }
+
+    if bottom_right {
+        pb.line_to(x + w, y + h - r);
+        pb.cubic_to(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h);
+    } else {
+        pb.line_to(x + w, y + h);
+    }
+
+    if bottom_left {
+        pb.line_to(x + r, y + h);
+        pb.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
+    } else {
+        pb.line_to(x, y + h);
+    }
+
+    if top_left {
+        pb.line_to(x, y + r);
+        pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
+    } else {
+        pb.line_to(x, y);
+    }
+
     pb.close();
     pb.finish()
 }
@@ -743,6 +841,71 @@ mod tests {
     fn rounded_rect_rejects_degenerate_size() {
         assert!(rounded_rect(0.0, 0.0, 0.0, 10.0, 4.0).is_none());
         assert!(rounded_rect(0.0, 0.0, 10.0, -1.0, 4.0).is_none());
+    }
+
+    #[test]
+    fn rounded_rect_corners_with_all_square_matches_a_plain_rect() {
+        let path = rounded_rect_corners(0.0, 0.0, 100.0, 50.0, 8.0, [false; 4]).unwrap();
+        let bounds = path.bounds();
+        assert!((bounds.width() - 100.0).abs() < 0.01);
+        assert!((bounds.height() - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn rounded_rect_corners_bounds_are_unaffected_by_which_corners_round() {
+        // Rounding only cuts *into* the corners; the bounding box (the
+        // straight edges' extent) is identical regardless of which corners
+        // are selected.
+        let all = rounded_rect_corners(0.0, 0.0, 100.0, 50.0, 8.0, [true; 4])
+            .unwrap()
+            .bounds();
+        let top_only = rounded_rect_corners(0.0, 0.0, 100.0, 50.0, 8.0, [true, true, false, false])
+            .unwrap()
+            .bounds();
+        assert!((all.width() - top_only.width()).abs() < 0.01);
+        assert!((all.height() - top_only.height()).abs() < 0.01);
+    }
+
+    #[test]
+    fn fill_panel_background_produces_a_full_size_buffer() {
+        let mut buf = vec![0u8; 100 * 32 * 4];
+        Painter::fill_panel_background(
+            &mut buf,
+            100,
+            32,
+            Color([0.1, 0.1, 0.15, 1.0]),
+            8.0,
+            [true, true, false, false],
+        );
+        assert_eq!(buf.len(), 100 * 32 * 4);
+        // Centre of the top edge is inside the panel regardless of corner
+        // rounding (only the corners themselves are cut away) — must be
+        // opaque, not left transparent like an icon's pill margin.
+        let centre_top_offset = (50usize) * 4;
+        assert_eq!(buf[centre_top_offset + 3], 255, "centre-top must be opaque");
+        // A true corner pixel, on a rounded corner, must stay transparent.
+        assert_eq!(buf[3], 0, "top-left corner pixel must be cut away");
+    }
+
+    #[test]
+    fn fill_panel_background_square_corner_is_opaque_at_the_pixel_edge() {
+        let mut buf = vec![0u8; 100 * 32 * 4];
+        Painter::fill_panel_background(
+            &mut buf,
+            100,
+            32,
+            Color([0.1, 0.1, 0.15, 1.0]),
+            8.0,
+            [true, true, false, false], // bottom corners square
+        );
+        // Bottom-left corner, unrounded: must be opaque, unlike the
+        // rounded top-left tested above.
+        let bottom_left_offset = (31 * 100) * 4;
+        assert_eq!(
+            buf[bottom_left_offset + 3],
+            255,
+            "square bottom-left corner must stay opaque"
+        );
     }
 
     #[test]
