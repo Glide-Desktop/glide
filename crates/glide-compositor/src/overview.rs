@@ -500,6 +500,7 @@ impl OverviewUi {
                     height,
                     0,
                     width,
+                    crate::paint::TextAlign::Center,
                     &title,
                     theme.label_color.to_buffer_bytes(),
                     // Transparent: the label floats over the scrim rather

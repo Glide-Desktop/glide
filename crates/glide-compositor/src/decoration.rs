@@ -1,20 +1,27 @@
-//! Server-side window decorations: a titlebar with a fixed button layout and
-//! a chevron-triggered menu for actions that don't get their own button.
+//! Server-side window decorations: a titlebar with a fixed button cluster
+//! and a chevron-triggered menu for actions that don't get their own
+//! button.
 //!
-//! # Layout (not configurable — see [`crate::config::DecorationTheme`])
+//! # Layout (cluster order fixed — see [`crate::config::DecorationTheme`])
 //!
 //! ```text
-//! ┌───┬─────────────────────────────────┬───┬───┐
-//! │ M │            (title)              │ v │ X │
-//! └───┴─────────────────────────────────┴───┴───┘
+//! ┌────────────────────────────────┬───┬───┬───┐
+//! │ (title)                        │ v │ M │ X │
+//! └────────────────────────────────┴───┴───┴───┘
 //! ```
-//! Maximize (M) is always leftmost, close (X) always rightmost, and the
-//! chevron (v) — which opens a dropdown for actions that don't warrant their
-//! own button, currently just Minimize — sits immediately to its left, so
-//! the two right-hand buttons read as one cluster. Everything between the
-//! maximize button and the chevron is drag territory: pressing there and
-//! moving starts an interactive move, exactly as if the client itself had
-//! requested one.
+//! Close (X) is always the rightmost button; maximize (M) sits immediately
+//! to its left; the chevron (v) — which opens a dropdown for actions that
+//! don't warrant their own button, currently just Minimize — sits
+//! immediately to maximize's left, so all three read as one cluster.
+//! Everything left of the cluster is drag territory, including the title
+//! itself (aligned per [`crate::config::TitleAlign`], left by default):
+//! pressing there and moving starts an interactive move, exactly as if the
+//! client itself had requested one.
+//!
+//! The chevron's dropdown is a compact panel sized to its widest item, not
+//! a full-width strip — it hangs from the right edge of the button
+//! cluster, under the buttons it belongs to, rather than spanning content
+//! that has nothing to do with it.
 //!
 //! Every window is decorated for now; respecting a client's own
 //! `xdg-decoration` preference is M4.5.
@@ -40,9 +47,9 @@ use smithay::{
 
 use crate::{
     GlideState,
-    config::{Color, DecorationTheme},
+    config::{Color, DecorationTheme, TitleAlign},
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab, resize_grab::ResizeEdge},
-    paint::Painter,
+    paint::{Painter, TextAlign},
     window::GlideWindow,
 };
 
@@ -50,12 +57,31 @@ use crate::{
 /// height itself, from [`DecorationTheme::height`].
 pub const BUTTON_WIDTH: i32 = 32;
 
+/// Total width of the three-button cluster (chevron, maximize, close).
+const CLUSTER_WIDTH: i32 = BUTTON_WIDTH * 3;
+
 /// Width of the invisible resize band around a decorated window's frame.
 ///
 /// Sized for touchpads: the band is the only way to start a resize with the
 /// pointer (there is no visible border to aim for), so it errs on the
 /// generous side rather than demanding pixel-accurate aim at a window edge.
 pub const RESIZE_BORDER: i32 = 8;
+
+/// Left inset for the title label, so it doesn't start flush against the
+/// frame's left edge.
+const TITLE_PADDING: i32 = 12;
+
+/// Horizontal padding inside each compact menu row, both sides.
+const MENU_PADDING: i32 = 12;
+
+/// Minimum menu width, so a single short label doesn't render a comically
+/// narrow dropdown.
+const MENU_MIN_WIDTH: i32 = 120;
+
+/// How much darker a button's hover colour gets while actually pressed —
+/// derived from the hover colour rather than a dedicated theme key per
+/// button per interaction state.
+const PRESSED_DARKEN: f32 = 0.8;
 
 /// An action offered in the chevron dropdown.
 ///
@@ -115,6 +141,18 @@ pub struct HeaderBar {
     pointer_loc: Option<Point<f64, Logical>>,
     menu_open: bool,
     menu_hover: Option<usize>,
+    /// Left edge and width of the compact dropdown panel, in decoration-
+    /// origin coordinates. Computed and cached during [`Self::redraw`]
+    /// (which has a [`Painter`] to measure label widths with) and read
+    /// back by hit-testing (`menu_item_at`, `contains`), which don't.
+    menu_x: i32,
+    menu_width: i32,
+    /// The button zone currently held down, if any — separate from
+    /// `menu_hover`/hover tracking, which reflect where the pointer *is*,
+    /// not whether the button is being pressed. Cleared on release
+    /// (wherever it lands, matching how the rest of the titlebar treats
+    /// clicks) and on the pointer leaving the decoration entirely.
+    pressed: Option<HitZone>,
 
     /// Colors and focus, snapshotted here (rather than read live from
     /// `GlideState`) because [`smithay::backend::renderer::element::AsRenderElements`],
@@ -244,14 +282,17 @@ impl HeaderBar {
         }
     }
 
+    /// Which zone `x` falls in. The button cluster — chevron, maximize,
+    /// close — sits at the frame's right edge in that left-to-right order;
+    /// everything left of it is drag territory.
     fn zone_at(&self, x: f64) -> HitZone {
         let w = f64::from(self.width);
         let bw = f64::from(BUTTON_WIDTH);
-        if x < bw {
-            HitZone::Maximize
-        } else if x >= w - bw {
+        if x >= w - bw {
             HitZone::Close
         } else if x >= w - bw * 2.0 {
+            HitZone::Maximize
+        } else if x >= w - bw * 3.0 {
             HitZone::Chevron
         } else {
             HitZone::Drag
@@ -279,6 +320,11 @@ impl HeaderBar {
     /// test routed clicks on the menu straight to the client underneath,
     /// and without the band a resize could only start from a client-side
     /// `resize_request`, which nothing without CSD ever sends.
+    ///
+    /// The dropdown is compact, not full-width (see the module docs), so
+    /// only its own `[menu_x, menu_x + menu_width)` column counts as ours
+    /// while it's open — everywhere else in the content area still belongs
+    /// to the client, exactly as when the menu is closed.
     pub fn contains(&self, rel: Point<f64, Logical>) -> bool {
         if !self.is_decorated() {
             return false;
@@ -294,14 +340,17 @@ impl HeaderBar {
             return false;
         }
 
-        // The content area belongs to the client — unless the open menu is
-        // drawn over it, in which case its rows are ours.
         let in_content = rel.x >= 0.0
             && rel.x < width
             && rel.y >= f64::from(self.height)
             && rel.y < frame_height;
         if in_content {
-            return self.menu_open && rel.y < f64::from(self.interactive_height());
+            if !self.menu_open || rel.y >= f64::from(self.interactive_height()) {
+                return false;
+            }
+            let menu_left = f64::from(self.menu_x);
+            let menu_right = f64::from(self.menu_x + self.menu_width);
+            return rel.x >= menu_left && rel.x < menu_right;
         }
 
         true
@@ -341,8 +390,13 @@ impl HeaderBar {
     /// Row 0 starts *below* the titlebar strip — at `y == height`, not at
     /// `y == 0` — hence the subtraction: without it, hovering the titlebar
     /// itself lit up row 0 and the real row 0 counted as row 1.
+    ///
+    /// `x` is bounded by the compact panel's own `[menu_x, menu_x +
+    /// menu_width)`, not the full titlebar width — see `contains`'s docs.
     fn menu_item_at(&self, loc: Point<f64, Logical>) -> Option<usize> {
-        if !self.menu_open || loc.x < 0.0 || loc.x >= f64::from(self.width) {
+        let menu_left = f64::from(self.menu_x);
+        let menu_right = f64::from(self.menu_x + self.menu_width);
+        if !self.menu_open || loc.x < menu_left || loc.x >= menu_right {
             return None;
         }
 
@@ -368,10 +422,19 @@ impl HeaderBar {
     pub fn pointer_leave(&mut self) {
         self.pointer_loc = None;
         self.menu_hover = None;
+        // Dropping the pressed-visual here (rather than only on release)
+        // matches common toolkit behaviour: holding a button and dragging
+        // off it un-highlights it, even though the eventual release —
+        // wherever it lands — is still what decides the actual action, per
+        // `on_button`'s own docs. This is a deliberate simplification: a
+        // real "drag off cancels, drag back re-arms" state machine is more
+        // than this titlebar warrants right now.
+        self.pressed = None;
     }
 
     /// Decides what a button press/release on the decoration should do,
-    /// mutating only the header's own state (menu open/closed).
+    /// mutating only the header's own state (menu open/closed, pressed
+    /// visual).
     ///
     /// Deliberately has no access to `GlideState`: it runs under the
     /// decoration `RefCell` borrow, and anything that reaches
@@ -381,7 +444,8 @@ impl HeaderBar {
     /// Only release triggers an action (matching how the rest of Glide
     /// treats clicks); press alone starts a move when it lands on the plain
     /// background, since a drag by definition begins while the button is
-    /// still held.
+    /// still held, and marks whichever button zone it landed on as
+    /// pressed, for `redraw` to shade darker.
     fn on_button(&mut self, event: &ButtonEvent) -> Option<DecorationAction> {
         let loc = self.pointer_loc?;
 
@@ -398,9 +462,19 @@ impl HeaderBar {
             if let Some(edges) = self.resize_edges_at(loc) {
                 return Some(DecorationAction::StartResize(edges));
             }
-            return (self.in_titlebar_strip(loc) && self.zone_at(loc.x) == HitZone::Drag)
-                .then_some(DecorationAction::StartMove);
+            if !self.in_titlebar_strip(loc) {
+                return None;
+            }
+            let zone = self.zone_at(loc.x);
+            if zone == HitZone::Drag {
+                return Some(DecorationAction::StartMove);
+            }
+            self.pressed = Some(zone);
+            return None;
         }
+
+        // Any release — wherever it lands — ends whatever was pressed.
+        self.pressed = None;
 
         if self.menu_open {
             let item = self.menu_item_at(loc).and_then(|i| MenuItem::ALL.get(i));
@@ -441,6 +515,13 @@ impl HeaderBar {
     /// Buffers are only recreated when their content actually changes (hover
     /// state, focus, open menu, window size, title) — so this is cheap to
     /// call every frame.
+    // Over pedantic's line-count threshold: this is one visual routine —
+    // titlebar background/title, the three buttons, the dropdown — sharing
+    // `painter`/`theme`/`hovered`/`pressed`. Splitting it up would mean
+    // passing all of those between the pieces instead of just reading them
+    // from the enclosing scope, for no reduction in what a reader has to
+    // hold in their head at once.
+    #[allow(clippy::too_many_lines)]
     fn redraw(&mut self, painter: &Painter) {
         if self.width == 0 || self.height == 0 {
             return;
@@ -455,11 +536,16 @@ impl HeaderBar {
         };
         let bg = bg_color.to_buffer_bytes();
 
-        // Determine which zone is hovered (strip only — not the resize band).
+        // Determine which zone is hovered/pressed (strip only — not the
+        // resize band). `pressed` always implies `hovered` in practice
+        // (the pointer is still down on whatever it was pressed on, or has
+        // left and cleared `pressed` via `pointer_leave`), but each is
+        // tracked independently and read independently below.
         let hovered = self
             .pointer_loc
             .filter(|l| self.in_titlebar_strip(*l))
             .map(|l| self.zone_at(l.x));
+        let pressed = self.pressed;
 
         // ── Titlebar background + title label ─────────────────────────────
         // Repaint whenever width, height, focus, title, or hover changes. We
@@ -475,11 +561,15 @@ impl HeaderBar {
             let mut ctx = buf.render();
             ctx.resize((w, h));
             let title = self.title.clone();
+            let align = match theme.title_align {
+                TitleAlign::Left => TextAlign::Left,
+                TitleAlign::Center => TextAlign::Center,
+            };
             let _ = ctx.draw(|pixels| {
                 let fg = [255, 255, 255, bg[3]]; // white text, same alpha as bg
-                let x_min = BUTTON_WIDTH;
-                let x_max = w - BUTTON_WIDTH * 2;
-                painter.draw_label(pixels, w, h, x_min, x_max, &title, fg, bg);
+                let x_min = TITLE_PADDING;
+                let x_max = w - CLUSTER_WIDTH;
+                painter.draw_label(pixels, w, h, x_min, x_max, align, &title, fg, bg);
                 Ok::<_, ()>(vec![Rectangle::from_size((w, h).into())])
             });
         }
@@ -498,20 +588,20 @@ impl HeaderBar {
 
         for (buf, zone, normal, hover_bg, fg, icon) in [
             (
-                &mut self.maximize_buf,
-                HitZone::Maximize,
-                theme.maximize_button,
-                theme.maximize_button_hover,
-                theme.icon,
-                maximize_icon,
-            ),
-            (
                 &mut self.chevron_buf,
                 HitZone::Chevron,
                 theme.chevron_button,
                 theme.chevron_button_hover,
                 theme.icon,
                 Painter::draw_icon_chevron as fn(&mut [u8], i32, i32, Color, Color),
+            ),
+            (
+                &mut self.maximize_buf,
+                HitZone::Maximize,
+                theme.maximize_button,
+                theme.maximize_button_hover,
+                theme.icon,
+                maximize_icon,
             ),
             (
                 &mut self.close_buf,
@@ -522,7 +612,9 @@ impl HeaderBar {
                 Painter::draw_icon_close,
             ),
         ] {
-            let btn_bg = if hovered == Some(zone) {
+            let btn_bg = if pressed == Some(zone) {
+                hover_bg.darken(PRESSED_DARKEN)
+            } else if hovered == Some(zone) {
                 hover_bg
             } else {
                 normal
@@ -533,7 +625,26 @@ impl HeaderBar {
         // ── Dropdown menu ──────────────────────────────────────────────────
         if self.menu_open {
             let row_h = self.height;
-            let row_w = self.width;
+
+            // Compact panel: sized to the widest item (plus padding), never
+            // narrower than MENU_MIN_WIDTH nor wider than the titlebar
+            // itself, and right-aligned so its right edge lines up with the
+            // button cluster's — "hanging from the chevron", per the module
+            // docs, without needing per-row width bookkeeping.
+            // Menu labels are a handful of short English words; their
+            // measured width is nowhere near i32's range.
+            #[allow(clippy::cast_possible_truncation)]
+            let widest = MenuItem::ALL
+                .iter()
+                .map(|item| painter.text_width(item.label()) as i32)
+                .max()
+                .unwrap_or(0);
+            let row_w = (widest + MENU_PADDING * 2)
+                .max(MENU_MIN_WIDTH)
+                .min(self.width);
+            self.menu_width = row_w;
+            self.menu_x = (self.width - row_w).max(0);
+
             self.menu_row_bufs
                 .resize_with(MenuItem::ALL.len(), MemoryRenderBuffer::default);
             let menu_hover = self.menu_hover;
@@ -558,7 +669,17 @@ impl HeaderBar {
                 let mut ctx = buf.render();
                 ctx.resize((row_w, row_h));
                 let _ = ctx.draw(|pixels| {
-                    painter.draw_label(pixels, row_w, row_h, 0, row_w, &label, fg, bg);
+                    painter.draw_label(
+                        pixels,
+                        row_w,
+                        row_h,
+                        MENU_PADDING,
+                        row_w - MENU_PADDING,
+                        TextAlign::Left,
+                        &label,
+                        fg,
+                        bg,
+                    );
                     Ok::<_, ()>(vec![Rectangle::from_size((row_w, row_h).into())])
                 });
             }
@@ -952,16 +1073,17 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
     // We push buttons first, then the bar, mirroring the previous ordering.
     // ──────────────────────────────────────────────────────────────────────
 
-    // Menu rows (topmost when open).
+    // Menu rows (topmost when open) — under the compact panel's own
+    // left edge (`menu_x`), not the titlebar's, per the module docs.
     for (i, buf) in header.menu_row_bufs.iter().enumerate() {
         let y = header.height * (1 + i32::try_from(i).unwrap_or(0));
         out.push(DecorationBuffer {
             buf: buf.clone(),
-            offset: Point::from((0, y)),
+            offset: Point::from((header.menu_x, y)),
         });
     }
 
-    // Close button.
+    // Button cluster, right to left: close, maximize, chevron.
     if let Some(buf) = &header.close_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
@@ -969,19 +1091,17 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
         });
     }
 
-    // Chevron button.
-    if let Some(buf) = &header.chevron_buf {
+    if let Some(buf) = &header.maximize_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
             offset: Point::from((header.width - BUTTON_WIDTH * 2, 0)),
         });
     }
 
-    // Maximize button.
-    if let Some(buf) = &header.maximize_buf {
+    if let Some(buf) = &header.chevron_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
-            offset: Point::from((0, 0)),
+            offset: Point::from((header.width - BUTTON_WIDTH * 3, 0)),
         });
     }
 
@@ -1006,11 +1126,18 @@ mod tests {
     use super::*;
 
     /// A decorated 800x600-content window with a 32px titlebar.
+    ///
+    /// `menu_x`/`menu_width` are seeded as `redraw` (which needs a real
+    /// [`Painter`] to measure label widths and isn't exercised by these
+    /// pure hit-testing tests) would leave them after opening the menu on
+    /// an 800-wide bar: a compact panel hanging from the right edge.
     fn header() -> HeaderBar {
         HeaderBar {
             height: 32,
             width: 800,
             content_height: 600,
+            menu_x: 700,
+            menu_width: 100,
             ..HeaderBar::default()
         }
     }
@@ -1070,10 +1197,22 @@ mod tests {
         #[test]
         fn menu_rows_count_only_while_open() {
             let mut h = header();
-            // Row 0 lives at y in [height, 2*height) — over the content.
-            assert!(!h.contains(point(400.0, 48.0)));
+            // Row 0 lives at y in [height, 2*height) — over the content —
+            // and x within the compact panel's own column, not anywhere
+            // across the full titlebar width.
+            assert!(!h.contains(point(750.0, 48.0)));
             h.menu_open = true;
-            assert!(h.contains(point(400.0, 48.0)));
+            assert!(h.contains(point(750.0, 48.0)));
+        }
+
+        #[test]
+        fn menu_open_does_not_claim_content_outside_the_panel_column() {
+            // The whole point of a compact (not full-width) dropdown: the
+            // rest of the content area still belongs to the client while
+            // it's open.
+            let mut h = header();
+            h.menu_open = true;
+            assert!(!h.contains(point(400.0, 48.0)), "left of the panel");
         }
 
         #[test]
@@ -1131,6 +1270,30 @@ mod tests {
         }
     }
 
+    mod zone_at {
+        use super::*;
+
+        #[test]
+        fn cluster_order_is_chevron_maximize_close_left_to_right() {
+            let h = header(); // width 800
+            assert_eq!(h.zone_at(400.0), HitZone::Drag);
+            assert_eq!(h.zone_at(710.0), HitZone::Chevron);
+            assert_eq!(h.zone_at(740.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(780.0), HitZone::Close);
+        }
+
+        #[test]
+        fn zone_boundaries_are_exact() {
+            let h = header();
+            assert_eq!(h.zone_at(703.999), HitZone::Drag);
+            assert_eq!(h.zone_at(704.0), HitZone::Chevron);
+            assert_eq!(h.zone_at(735.999), HitZone::Chevron);
+            assert_eq!(h.zone_at(736.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(767.999), HitZone::Maximize);
+            assert_eq!(h.zone_at(768.0), HitZone::Close);
+        }
+    }
+
     mod menu {
         use super::*;
 
@@ -1142,14 +1305,25 @@ mod tests {
             let mut h = header();
             h.menu_open = true;
 
-            assert_eq!(h.menu_item_at(point(400.0, 16.0)), None, "titlebar strip");
-            assert_eq!(h.menu_item_at(point(400.0, 48.0)), Some(0), "first row");
-            assert_eq!(h.menu_item_at(point(400.0, 80.0)), None, "past the rows");
+            assert_eq!(h.menu_item_at(point(750.0, 16.0)), None, "titlebar strip");
+            assert_eq!(h.menu_item_at(point(750.0, 48.0)), Some(0), "first row");
+            assert_eq!(h.menu_item_at(point(750.0, 80.0)), None, "past the rows");
         }
 
         #[test]
         fn closed_menu_has_no_rows() {
-            assert_eq!(header().menu_item_at(point(400.0, 48.0)), None);
+            assert_eq!(header().menu_item_at(point(750.0, 48.0)), None);
+        }
+
+        #[test]
+        fn x_outside_the_panel_column_is_never_a_row() {
+            let mut h = header();
+            h.menu_open = true;
+            assert_eq!(
+                h.menu_item_at(point(400.0, 48.0)),
+                None,
+                "left of the compact panel"
+            );
         }
     }
 
@@ -1167,9 +1341,41 @@ mod tests {
         #[test]
         fn press_on_a_button_zone_does_not_move() {
             let mut h = header();
-            h.pointer_enter(point(16.0, 16.0)); // over maximize
+            h.pointer_enter(point(750.0, 16.0)); // over maximize
 
             assert_eq!(h.on_button(&press()), None);
+        }
+
+        #[test]
+        fn press_on_a_button_zone_marks_it_pressed() {
+            let mut h = header();
+            h.pointer_enter(point(750.0, 16.0)); // over maximize
+
+            h.on_button(&press());
+            assert_eq!(h.pressed, Some(HitZone::Maximize));
+        }
+
+        #[test]
+        fn release_clears_the_pressed_zone_regardless_of_where_it_lands() {
+            let mut h = header();
+            h.pointer_enter(point(750.0, 16.0)); // over maximize
+            h.on_button(&press());
+            assert_eq!(h.pressed, Some(HitZone::Maximize));
+
+            h.pointer_enter(point(400.0, 16.0)); // released elsewhere
+            h.on_button(&release());
+            assert_eq!(h.pressed, None);
+        }
+
+        #[test]
+        fn pointer_leave_clears_the_pressed_zone() {
+            let mut h = header();
+            h.pointer_enter(point(790.0, 16.0)); // over close
+            h.on_button(&press());
+            assert_eq!(h.pressed, Some(HitZone::Close));
+
+            h.pointer_leave();
+            assert_eq!(h.pressed, None);
         }
 
         #[test]
@@ -1186,7 +1392,7 @@ mod tests {
         #[test]
         fn release_on_maximize_toggles() {
             let mut h = header();
-            h.pointer_enter(point(16.0, 16.0));
+            h.pointer_enter(point(750.0, 16.0));
 
             assert_eq!(
                 h.on_button(&release()),
@@ -1206,11 +1412,11 @@ mod tests {
         fn chevron_opens_the_menu_then_an_item_click_runs_it() {
             let mut h = header();
 
-            h.pointer_enter(point(750.0, 16.0)); // over the chevron
+            h.pointer_enter(point(720.0, 16.0)); // over the chevron
             assert_eq!(h.on_button(&release()), None);
             assert!(h.menu_open);
 
-            h.pointer_enter(point(400.0, 48.0)); // over the Minimize row
+            h.pointer_enter(point(750.0, 48.0)); // over the Minimize row
             assert_eq!(
                 h.on_button(&release()),
                 Some(DecorationAction::Run(MenuItem::Minimize))
@@ -1230,9 +1436,11 @@ mod tests {
 
         #[test]
         fn release_in_the_band_after_a_resize_is_not_a_button_click() {
-            // Regression guard: zone_at only means anything inside the
-            // strip. A release at the top-left corner of the band shares
-            // its x range with the maximize button and must not toggle it.
+            // Regression guard: `zone_at` only means anything inside the
+            // strip (`in_titlebar_strip`). A release at the frame's
+            // top-left corner is in the resize band — outside the strip on
+            // both axes — and must not be classified as landing on the
+            // background drag zone or any button.
             let mut h = header();
             h.pointer_enter(point(-4.0, -4.0));
 

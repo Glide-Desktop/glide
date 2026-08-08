@@ -48,15 +48,19 @@ impl Default for GeneralConfig {
 
 /// A window decoration's color scheme and size.
 ///
-/// Layout is deliberately *not* configurable here, only appearance: maximize
-/// sits on the left and close on the right always, so every window in a
-/// session looks and behaves the same regardless of what an individual user
-/// put in their config. Only colors and the titlebar's height are settable.
+/// Button *cluster order* is deliberately not configurable — chevron,
+/// maximize, close, always in that order at the frame's right edge — so
+/// every window in a session looks and behaves the same regardless of what
+/// an individual user put in their config. Colors, the titlebar's height,
+/// and the title's alignment are settable.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DecorationTheme {
     /// Titlebar height in logical pixels.
     pub height: u32,
+    /// Where the title text sits within the space left of the button
+    /// cluster.
+    pub title_align: TitleAlign,
     pub background: Color,
     pub background_focused: Color,
     pub close_button: Color,
@@ -74,10 +78,21 @@ pub struct DecorationTheme {
     pub close_icon: Color,
 }
 
+/// Where the titlebar's title text sits within the space left of the
+/// button cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TitleAlign {
+    #[default]
+    Left,
+    Center,
+}
+
 impl Default for DecorationTheme {
     fn default() -> Self {
         Self {
             height: 32,
+            title_align: TitleAlign::Left,
             // Titlebar background: charcoal when unfocused, electric
             // indigo when focused — high contrast against both light and
             // dark window content.
@@ -228,6 +243,20 @@ impl Color {
             byte(self.0[0]), // R
             byte(self.0[3]), // A
         ]
+    }
+
+    /// Scales the RGB channels by `factor` (alpha untouched) — used to
+    /// derive a "pressed" button shade from its hover colour rather than
+    /// requiring a dedicated theme key per button per interaction state.
+    #[must_use]
+    pub fn darken(self, factor: f32) -> Self {
+        let [r, g, b, a] = self.0;
+        Self([
+            (r * factor).clamp(0.0, 1.0),
+            (g * factor).clamp(0.0, 1.0),
+            (b * factor).clamp(0.0, 1.0),
+            a,
+        ])
     }
 }
 
@@ -761,6 +790,7 @@ background = \"#101020\"
         let toml_str = "\
 [decorations]
 height = 40
+title-align = \"center\"
 background = \"#111111\"
 background-focused = \"#222222\"
 close-button = \"#333333\"
@@ -776,6 +806,7 @@ close-icon = \"#cccccc\"
 ";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.decorations.height, 40);
+        assert_eq!(config.decorations.title_align, TitleAlign::Center);
         assert_eq!(
             config.decorations.background,
             Color::from_hex("#111111").unwrap()
@@ -791,6 +822,31 @@ close-icon = \"#cccccc\"
     fn decoration_theme_rejects_invalid_color() {
         toml::from_str::<Config>("[decorations]\nbackground = \"not-a-color\"\n")
             .expect_err("a malformed color must not silently become black or default");
+    }
+
+    #[test]
+    fn decoration_theme_defaults_title_align_left() {
+        assert_eq!(DecorationTheme::default().title_align, TitleAlign::Left);
+    }
+
+    #[test]
+    fn darken_scales_rgb_and_keeps_alpha() {
+        let c = Color([0.8, 0.4, 0.2, 0.5]).darken(0.5);
+        assert!((c.0[0] - 0.4).abs() < 0.001);
+        assert!((c.0[1] - 0.2).abs() < 0.001);
+        assert!((c.0[2] - 0.1).abs() < 0.001);
+        assert!((c.0[3] - 0.5).abs() < 0.001, "alpha must be untouched");
+    }
+
+    // `clamp(0.0, 1.0)` lands exactly on 0.0 for any negative input, no
+    // accumulated rounding involved, so exact equality is correct here —
+    // see `color_parses_rrggbb_as_opaque`'s comment for the same reasoning.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn darken_clamps_at_zero() {
+        let c = Color([0.2, 0.0, 1.0, 1.0]).darken(-1.0);
+        assert_eq!(c.0[0], 0.0);
+        assert_eq!(c.0[2], 0.0);
     }
 
     #[test]

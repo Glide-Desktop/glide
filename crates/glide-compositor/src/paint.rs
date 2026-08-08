@@ -61,6 +61,13 @@ use fontdue::{
 
 use crate::config::Color;
 
+/// Horizontal positioning for [`Painter::draw_label`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextAlign {
+    Left,
+    Center,
+}
+
 // ── Embedded fallback font ────────────────────────────────────────────────
 // Noto Sans Regular, bundled so the compositor never crashes because a
 // system font package was not installed.
@@ -213,7 +220,20 @@ impl Painter {
         String::new()
     }
 
-    /// Render `text` centred inside a `width × height` ARGB8888 buffer.
+    /// Laid-out pixel width of `text` at this painter's font size.
+    ///
+    /// Public wrapper around the same measuring logic [`Self::draw_label`]
+    /// uses internally, for callers that need to size a UI element around
+    /// a piece of text *before* drawing it — the chevron dropdown's width,
+    /// for instance.
+    #[must_use]
+    pub fn text_width(&self, text: &str) -> f32 {
+        self.measure_width(text)
+    }
+
+    /// Render `text` inside a `width × height` ARGB8888 buffer, horizontally
+    /// positioned per `align` within `[x_min, x_max]` and centred vertically
+    /// in `height`.
     ///
     /// The background is filled with `bg_argb` first; glyphs are drawn on
     /// top using `fg_argb`, alpha-blended by the font's own per-pixel
@@ -234,6 +254,7 @@ impl Painter {
         height: i32,
         x_min: i32,
         x_max: i32,
+        align: TextAlign,
         text: &str,
         fg_argb: [u8; 4],
         bg_argb: [u8; 4],
@@ -270,9 +291,13 @@ impl Painter {
         let last = glyphs.last().unwrap();
         let total_w = (last.x + last.width as f32 - first.x) as i32;
 
-        // Centre horizontally within [x_min, x_max], and vertically in `height`.
         let avail_w = x_max - x_min;
-        let x_off = x_min + (avail_w - total_w) / 2 - first.x as i32;
+        let x_off = match align {
+            // Centred within [x_min, x_max].
+            TextAlign::Center => x_min + (avail_w - total_w) / 2 - first.x as i32,
+            // Flush against x_min.
+            TextAlign::Left => x_min - first.x as i32,
+        };
         let y_off = ((height as f32 - layout.height()) / 2.0) as i32;
 
         for g in glyphs {
@@ -829,6 +854,7 @@ mod tests {
             32,
             32,
             168,
+            TextAlign::Left,
             "a title so long it must be ellipsised to fit the available space",
             [255, 255, 255, 255],
             [30, 30, 30, 255],
@@ -836,5 +862,38 @@ mod tests {
         // Background must have been painted at least (buffer isn't left
         // all-zero) — a weak but real smoke assertion that something drew.
         assert!(buf.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn left_align_and_center_align_place_glyphs_differently() {
+        let painter = Painter::new(14.0);
+        let mut left_buf = vec![0u8; 200 * 32 * 4];
+        let mut center_buf = vec![0u8; 200 * 32 * 4];
+        painter.draw_label(
+            &mut left_buf,
+            200,
+            32,
+            20,
+            180,
+            TextAlign::Left,
+            "Hi",
+            [255, 255, 255, 255],
+            [0, 0, 0, 255],
+        );
+        painter.draw_label(
+            &mut center_buf,
+            200,
+            32,
+            20,
+            180,
+            TextAlign::Center,
+            "Hi",
+            [255, 255, 255, 255],
+            [0, 0, 0, 255],
+        );
+        assert_ne!(
+            left_buf, center_buf,
+            "left- and centre-aligned short text must land in different pixels"
+        );
     }
 }
