@@ -90,6 +90,14 @@ impl GlideWindow {
             .map_or(0, |state| state.header.height())
     }
 
+    /// How far a shadow may extend beyond the frame, `0` if shadows are
+    /// disabled or the window isn't decorated. Same small, self-contained
+    /// `RefCell` read as [`Self::header_height`], for the same reason.
+    pub(crate) fn shadow_margin(&self) -> i32 {
+        self.try_decoration_state()
+            .map_or(0, |state| state.header.shadow_margin())
+    }
+
     /// The window's `app_id` and `title`, as last set by the client.
     ///
     /// Shared by the IPC listings and the overview's labels so both name a
@@ -165,7 +173,7 @@ impl SpaceElement for GlideWindow {
         SpaceElement::geometry(&self.0)
     }
 
-    /// The visual bounding box: content + titlebar + resize border.
+    /// The visual bounding box: content + titlebar + resize border + shadow.
     ///
     /// This must cover every pixel the element can paint so Smithay's
     /// damage tracker invalidates the right regions.
@@ -174,10 +182,13 @@ impl SpaceElement for GlideWindow {
         let height = self.header_height();
         if height > 0 {
             // Titlebar above the content, resize band around the whole
-            // frame. The bbox has to cover both — `Space::element_under`
-            // pre-filters on it, so anything outside the bbox can never
-            // receive input no matter what `is_in_input_region` says.
-            let band = decoration::RESIZE_BORDER;
+            // frame, and the shadow beyond that if it reaches further —
+            // whichever margin is larger wins, since both need covering
+            // and `Space::element_under` pre-filters on this box, so
+            // anything outside it can never receive input no matter what
+            // `is_in_input_region` says, and anything outside it can never
+            // be *drawn* either.
+            let band = decoration::RESIZE_BORDER.max(self.shadow_margin());
             bbox.loc.x -= band;
             bbox.loc.y -= height + band;
             bbox.size.w += band * 2;
@@ -324,6 +335,33 @@ where
         let content_elements: Vec<GlideWindowRenderElement<R>> =
             AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
         elements.extend(content_elements.into_iter().map(C::from));
+
+        // Shadow last: conceptually behind everything else the window
+        // draws (though since it lives entirely outside the frame it
+        // never actually overlaps content or the border, so — like
+        // border_elements above — this ordering is about intent more than
+        // a correctness requirement). Each ring's own falloff alpha is
+        // already baked into its buffer's colour (see
+        // `decoration::shadow_strips`'s docs); `alpha` here is only the
+        // window's own fade, applied uniformly on top the same way it is
+        // for the border.
+        let shadow_elements: Vec<C> = decoration::shadow_strips(self)
+            .into_iter()
+            .map(|strip| {
+                let physical_offset = strip.offset.to_physical_precise_round(scale);
+                let pos = header_location + physical_offset;
+                SolidColorRenderElement::from_buffer(
+                    &strip.buf,
+                    pos,
+                    scale,
+                    alpha,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                )
+            })
+            .map(GlideWindowRenderElement::Background)
+            .map(C::from)
+            .collect();
+        elements.extend(shadow_elements);
 
         elements
     }

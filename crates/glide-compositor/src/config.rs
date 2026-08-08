@@ -90,6 +90,19 @@ pub struct DecorationTheme {
     pub border_width: u32,
     pub border: Color,
     pub border_focused: Color,
+    /// Whether windows cast a drop shadow.
+    pub shadow: bool,
+    /// How far the shadow extends beyond the frame, in logical pixels.
+    /// Approximated as several concentric, decreasingly-opaque rings
+    /// rather than an actual blur — see
+    /// [`crate::decoration::shadow_rects`]'s docs — so this is also
+    /// roughly how "soft" it reads: larger values spread the same falloff
+    /// over more distance, reducing banding at the cost of a more diffuse
+    /// shadow.
+    pub shadow_size: u32,
+    /// Colour of the innermost (most opaque) shadow ring; each ring
+    /// further out reuses it at progressively lower alpha.
+    pub shadow_color: Color,
 }
 
 /// Where the titlebar's title text sits within the space left of the
@@ -138,6 +151,11 @@ impl Default for DecorationTheme {
             border_width: 1,
             border: Color::from_hex("#3a3a4aff").unwrap(),
             border_focused: Color::from_hex("#4c6ef5ff").unwrap(),
+            // A soft, unobtrusive shadow — present but not the first thing
+            // anyone notices, the way most desktop shells default it.
+            shadow: true,
+            shadow_size: 16,
+            shadow_color: Color::from_hex("#00000066").unwrap(),
         }
     }
 }
@@ -853,6 +871,9 @@ close-icon = \"#cccccc\"
 border-width = 2
 border = \"#dddddd\"
 border-focused = \"#eeeeee\"
+shadow = false
+shadow-size = 24
+shadow-color = \"#000000aa\"
 ";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.decorations.height, 40);
@@ -875,6 +896,12 @@ border-focused = \"#eeeeee\"
             config.decorations.border_focused,
             Color::from_hex("#eeeeee").unwrap()
         );
+        assert!(!config.decorations.shadow);
+        assert_eq!(config.decorations.shadow_size, 24);
+        assert_eq!(
+            config.decorations.shadow_color,
+            Color::from_hex("#000000aa").unwrap()
+        );
     }
 
     #[test]
@@ -891,6 +918,13 @@ border-focused = \"#eeeeee\"
     #[test]
     fn decoration_theme_defaults_border_width_to_one() {
         assert_eq!(DecorationTheme::default().border_width, 1);
+    }
+
+    #[test]
+    fn decoration_theme_defaults_shadow_enabled() {
+        let d = DecorationTheme::default();
+        assert!(d.shadow);
+        assert!(d.shadow_size > 0);
     }
 
     #[test]

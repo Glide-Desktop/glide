@@ -98,6 +98,13 @@ const MENU_CORNER_RADIUS: f32 = 8.0;
 /// button per interaction state.
 const PRESSED_DARKEN: f32 = 0.8;
 
+/// Number of concentric rings [`shadow_rects`] approximates a drop
+/// shadow's blur with. More bands trade a few extra (cheap, native
+/// solid-colour) render elements for less visible banding; six is soft
+/// enough at the shadow sizes this theme's default expects without being
+/// wasteful.
+const SHADOW_BANDS: usize = 6;
+
 /// An action offered in the chevron dropdown.
 ///
 /// A single variant today (as requested: the menu exists specifically to
@@ -130,6 +137,7 @@ impl MenuItem {
 pub struct DecorationState {
     pub header: HeaderBar,
     pub border: BorderState,
+    pub shadow: ShadowState,
 }
 
 /// A painted element: a pixel buffer plus its position relative to the
@@ -161,6 +169,17 @@ pub struct BorderState {
 pub struct BorderStrip {
     pub buf: SolidColorBuffer,
     pub offset: Point<i32, Logical>,
+}
+
+/// The `SHADOW_BANDS * 4` shadow ring strips (see [`shadow_rects`]).
+/// Persisted per-window, same reason as [`BorderState`]: stable
+/// `SolidColorBuffer` `Id`s for damage tracking. Sized to the current band
+/// count on first use — today that's always `SHADOW_BANDS`, but growing
+/// or shrinking a `Vec<SolidColorBuffer>` on a (currently impossible)
+/// theme change is cheap and avoids hard-coding the count into the type.
+#[derive(Debug, Default)]
+pub struct ShadowState {
+    rings: Vec<SolidColorBuffer>,
 }
 
 #[derive(Debug, Default)]
@@ -309,6 +328,20 @@ impl HeaderBar {
 
     pub const fn set_height(&mut self, height: i32) {
         self.height = height;
+    }
+
+    /// How far a shadow may extend beyond the frame, in logical pixels —
+    /// `0` if shadows are disabled. Used by `window.rs`'s
+    /// `SpaceElement::bbox` to reserve enough margin for damage tracking
+    /// to actually let the shadow render, the same reason `RESIZE_BORDER`
+    /// is already baked into that margin.
+    #[must_use]
+    pub fn shadow_margin(&self) -> i32 {
+        if self.theme.shadow {
+            i32::try_from(self.theme.shadow_size).unwrap_or(i32::MAX)
+        } else {
+            0
+        }
     }
 
     /// Snapshots the theme, focus, maximized, and output-scale state to
@@ -1279,6 +1312,58 @@ pub(crate) fn border_rects(
     ]
 }
 
+/// One shadow ring strip's offset, size, and alpha *multiplier*.
+type ShadowRect = (Point<i32, Logical>, Size<i32, Logical>, f32);
+
+/// Offset, size, and alpha multiplier for each strip of each of
+/// [`SHADOW_BANDS`] concentric rings approximating a soft drop shadow —
+/// [`shadow_strips`]'s pure geometry, same split as [`border_rects`] is to
+/// [`border_strips`] and for the same reason (unit-testable without a real
+/// [`GlideWindow`]).
+///
+/// tiny-skia has no blur primitive (see `paint.rs`'s module docs on why
+/// icons went the vector-path route instead of a raster blur), and
+/// hand-rolling a real gaussian/box blur is a meaningfully bigger and
+/// harder-to-verify undertaking than this crate's other rendering code.
+/// Several native, resolution-independent [`SolidColorBuffer`] rings —
+/// the same tiling [`border_rects`] already does, just repeated outward
+/// with shrinking alpha — approximate the same soft-edged look cheaply:
+/// dense near the frame, fading out towards `shadow_size`, without an
+/// actual blur kernel. [`SHADOW_BANDS`] bands keeps the banding this
+/// necessarily has subtle rather than visibly stepped.
+///
+/// Alpha uses each band's *midpoint* distance, not its outer edge, so the
+/// outermost band still contributes a faint trace right up to
+/// `shadow_size` instead of fading to exactly zero one band early and
+/// visibly clipping the shadow's edge.
+fn shadow_rects(width: i32, frame_height: i32, shadow_size: i32, bands: usize) -> Vec<ShadowRect> {
+    if shadow_size <= 0 || bands == 0 || width <= 0 || frame_height <= 0 {
+        return Vec::new();
+    }
+
+    let bands_i32 = i32::try_from(bands).unwrap_or(1).max(1);
+    let step = (shadow_size / bands_i32).max(1);
+
+    let mut out = Vec::with_capacity(bands * 4);
+    let mut outset = 0;
+    for i in 0..bands {
+        #[allow(clippy::cast_precision_loss)]
+        let t = (i as f64 + 0.5) / bands as f64;
+        let falloff = 1.0 - t;
+        #[allow(clippy::cast_possible_truncation)]
+        let alpha = (falloff * falloff) as f32;
+
+        let cur_w = width + outset * 2;
+        let cur_h = frame_height + outset * 2;
+        for (offset, size) in border_rects(cur_w, cur_h, step) {
+            let adjusted = Point::from((offset.x - outset, offset.y - outset));
+            out.push((adjusted, size, alpha));
+        }
+        outset += step;
+    }
+    out
+}
+
 /// Returns the four border strips framing one window's whole frame
 /// (titlebar + content), or nothing if it isn't decorated or the theme's
 /// `border-width` is `0`.
@@ -1342,6 +1427,53 @@ pub fn border_strips(window: &GlideWindow) -> Vec<BorderStrip> {
         buf: border.right.clone(),
         offset: right.0,
     });
+
+    out
+}
+
+/// Returns the [`SHADOW_BANDS`] `* 4` shadow ring strips framing one
+/// window's whole frame, or nothing if it isn't decorated or the theme
+/// disables shadows.
+///
+/// Reuses [`BorderStrip`] rather than a dedicated type: each ring's alpha
+/// falloff (see [`shadow_rects`]) is baked directly into its
+/// [`SolidColorBuffer`]'s own stored colour — scaling `shadow_color`'s
+/// alpha channel per ring — rather than threaded through as a separate
+/// per-strip value, so the window-fade `alpha` `window.rs` already
+/// multiplies every [`BorderStrip`] by continues to apply uniformly on
+/// top, exactly as it does for the border.
+pub fn shadow_strips(window: &GlideWindow) -> Vec<BorderStrip> {
+    let Some(mut state) = window.try_decoration_state_mut() else {
+        return Vec::new();
+    };
+    if !state.header.is_decorated() || !state.header.theme.shadow {
+        return Vec::new();
+    }
+
+    let width = state.header.width;
+    let frame_height = state.header.height + state.header.content_height;
+    let shadow_size = i32::try_from(state.header.theme.shadow_size).unwrap_or(0);
+    let rects = shadow_rects(width, frame_height, shadow_size, SHADOW_BANDS);
+    if rects.is_empty() {
+        return Vec::new();
+    }
+
+    let base_color = state.header.theme.shadow_color.0;
+    state
+        .shadow
+        .rings
+        .resize_with(rects.len(), SolidColorBuffer::default);
+
+    let mut out = Vec::with_capacity(rects.len());
+    for ((offset, size, ring_alpha), buf) in rects.into_iter().zip(state.shadow.rings.iter_mut()) {
+        let mut color = base_color;
+        color[3] *= ring_alpha;
+        buf.update(size, color);
+        out.push(BorderStrip {
+            buf: buf.clone(),
+            offset,
+        });
+    }
 
     out
 }
@@ -1449,6 +1581,34 @@ mod tests {
                 h.titlebar_buf.is_some(),
                 "an unrelated sync must not drop cached buffers"
             );
+        }
+    }
+
+    mod shadow_margin_tests {
+        use super::*;
+
+        #[test]
+        fn matches_the_theme_shadow_size_when_enabled() {
+            let mut h = header();
+            let theme = DecorationTheme {
+                shadow: true,
+                shadow_size: 20,
+                ..DecorationTheme::default()
+            };
+            h.sync(&theme, false, false, 1);
+            assert_eq!(h.shadow_margin(), 20);
+        }
+
+        #[test]
+        fn is_zero_when_shadows_are_disabled() {
+            let mut h = header();
+            let theme = DecorationTheme {
+                shadow: false,
+                shadow_size: 20,
+                ..DecorationTheme::default()
+            };
+            h.sync(&theme, false, false, 1);
+            assert_eq!(h.shadow_margin(), 0);
         }
     }
 
@@ -1619,6 +1779,82 @@ mod tests {
         fn zero_width_produces_zero_sized_strips_not_negative_ones() {
             let [top, ..] = border_rects(800, 632, 0);
             assert_eq!(top.1, Size::from((800, 0)));
+        }
+    }
+
+    mod shadow_rects_tests {
+        use super::*;
+
+        #[test]
+        fn produces_four_strips_per_band() {
+            let rects = shadow_rects(800, 632, 16, SHADOW_BANDS);
+            assert_eq!(rects.len(), SHADOW_BANDS * 4);
+        }
+
+        #[test]
+        fn bands_tile_outward_from_the_frame_without_gaps_or_overlap() {
+            let rects = shadow_rects(800, 632, 18, 6); // step = 3, exact
+            // Top strip of each band, in order: consecutive bands must
+            // have contiguous y ranges, each `step` px tall, with no gap
+            // between one band's inner edge and the next band's outer one.
+            let mut top_ys: Vec<i32> = rects
+                .iter()
+                .step_by(4) // every 4th entry is a "top" strip (band order)
+                .map(|(offset, _, _)| offset.y)
+                .collect();
+            top_ys.sort_unstable();
+            for pair in top_ys.windows(2) {
+                assert_eq!(
+                    pair[0] + 3,
+                    pair[1],
+                    "gap or overlap between adjacent bands: {top_ys:?}"
+                );
+            }
+            // Outermost edge lands exactly at -shadow_size.
+            assert_eq!(*top_ys.first().unwrap(), -18);
+        }
+
+        #[test]
+        fn alpha_decreases_monotonically_from_the_frame_outward() {
+            let rects = shadow_rects(800, 632, 24, SHADOW_BANDS);
+            let alphas: Vec<f32> = rects.iter().step_by(4).map(|(_, _, a)| *a).collect();
+            for pair in alphas.windows(2) {
+                assert!(
+                    pair[0] > pair[1],
+                    "alpha must strictly decrease band by band: {alphas:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn outermost_band_alpha_is_small_but_nonzero() {
+            // Using the band's midpoint (not outer edge) for the falloff
+            // curve is what keeps this from being exactly 0 — see the
+            // function's own docs on why that matters (no visible hard
+            // clip at the shadow's edge).
+            let rects = shadow_rects(800, 632, 24, SHADOW_BANDS);
+            let last_alpha = rects.last().unwrap().2;
+            assert!(
+                last_alpha > 0.0,
+                "outermost band must not be fully invisible"
+            );
+            assert!(last_alpha < 0.1, "outermost band must be faint");
+        }
+
+        #[test]
+        fn zero_shadow_size_produces_no_strips() {
+            assert!(shadow_rects(800, 632, 0, SHADOW_BANDS).is_empty());
+        }
+
+        #[test]
+        fn zero_bands_produces_no_strips() {
+            assert!(shadow_rects(800, 632, 16, 0).is_empty());
+        }
+
+        #[test]
+        fn degenerate_frame_size_produces_no_strips() {
+            assert!(shadow_rects(0, 632, 16, SHADOW_BANDS).is_empty());
+            assert!(shadow_rects(800, 0, 16, SHADOW_BANDS).is_empty());
         }
     }
 
