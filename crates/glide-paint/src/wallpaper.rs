@@ -1,9 +1,142 @@
+use std::sync::{Arc, RwLock};
+
 use tiny_skia::{
-    BlendMode, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point, RadialGradient,
-    Rect, Shader, SpreadMode, Stroke, Transform,
+    BlendMode, FilterQuality, GradientStop, LinearGradient, Paint, PathBuilder, Pattern, Pixmap,
+    Point, RadialGradient, Rect, Shader, SpreadMode, Stroke, Transform,
 };
 
+use glide_theme::WallpaperFit;
+
 use crate::{Color, skia_pixmap_into_buffer_bytes, to_skia_color};
+
+static EMBEDDED_WALLPAPER_BYTES: &[u8] = include_bytes!("../assets/wallpaper.png");
+
+#[must_use]
+pub fn embedded_wallpaper_bytes() -> &'static [u8] {
+    EMBEDDED_WALLPAPER_BYTES
+}
+
+#[must_use]
+pub fn decode_wallpaper(png_bytes: &[u8]) -> Option<Pixmap> {
+    Pixmap::decode_png(png_bytes).ok()
+}
+
+static WALLPAPER_SOURCE: RwLock<Option<Arc<Pixmap>>> = RwLock::new(None);
+
+pub fn init_wallpaper(override_bytes: Option<&[u8]>) {
+    let decoded = override_bytes
+        .and_then(decode_wallpaper)
+        .or_else(|| decode_wallpaper(embedded_wallpaper_bytes()));
+    let mut slot = WALLPAPER_SOURCE
+        .write()
+        .expect("single-threaded event loop, this lock is never poisoned");
+    *slot = decoded.map(Arc::new);
+}
+
+pub fn draw_wallpaper_into(buf: &mut [u8], out_w: i32, out_h: i32, fit: WallpaperFit) {
+    let source = WALLPAPER_SOURCE
+        .read()
+        .expect("single-threaded event loop, this lock is never poisoned")
+        .clone();
+    if let Some(source) = source {
+        compose_wallpaper(buf, out_w, out_h, &source, fit);
+    } else {
+        draw_wallpaper(buf, out_w, out_h);
+    }
+}
+
+#[must_use]
+pub fn fit_transform(
+    fit: WallpaperFit,
+    src_w: f32,
+    src_h: f32,
+    out_w: f32,
+    out_h: f32,
+) -> (f32, f32, f32) {
+    if src_w <= 0.0 || src_h <= 0.0 || out_w <= 0.0 || out_h <= 0.0 {
+        return (1.0, 0.0, 0.0);
+    }
+
+    let scale = match fit {
+        WallpaperFit::Cover => (out_w / src_w).max(out_h / src_h),
+        WallpaperFit::Contain => (out_w / src_w).min(out_h / src_h),
+        WallpaperFit::Center | WallpaperFit::Tile => 1.0,
+    };
+
+    let offset_x = (out_w - src_w * scale) / 2.0;
+    let offset_y = (out_h - src_h * scale) / 2.0;
+    (scale, offset_x, offset_y)
+}
+
+pub fn compose_wallpaper(
+    buf: &mut [u8],
+    out_w: i32,
+    out_h: i32,
+    source: &Pixmap,
+    fit: WallpaperFit,
+) {
+    let (Ok(w), Ok(h)) = (u32::try_from(out_w), u32::try_from(out_h)) else {
+        return;
+    };
+    let Some(mut pixmap) = Pixmap::new(w, h) else {
+        return;
+    };
+
+    let output_rect = Rect::from_xywh(0.0, 0.0, out_w as f32, out_h as f32);
+
+    let (fill_rect, transform, spread) = match fit {
+        WallpaperFit::Tile => (output_rect, Transform::identity(), SpreadMode::Repeat),
+        WallpaperFit::Cover => {
+            let (scale, offset_x, offset_y) = fit_transform(
+                fit,
+                source.width() as f32,
+                source.height() as f32,
+                out_w as f32,
+                out_h as f32,
+            );
+            (
+                output_rect,
+                Transform::from_translate(offset_x, offset_y).pre_scale(scale, scale),
+                SpreadMode::Pad,
+            )
+        }
+        WallpaperFit::Contain | WallpaperFit::Center => {
+            let (scale, offset_x, offset_y) = fit_transform(
+                fit,
+                source.width() as f32,
+                source.height() as f32,
+                out_w as f32,
+                out_h as f32,
+            );
+            let scaled_w = source.width() as f32 * scale;
+            let scaled_h = source.height() as f32 * scale;
+            (
+                Rect::from_xywh(offset_x, offset_y, scaled_w, scaled_h),
+                Transform::from_translate(offset_x, offset_y).pre_scale(scale, scale),
+                SpreadMode::Pad,
+            )
+        }
+    };
+    let Some(fill_rect) = fill_rect else {
+        return;
+    };
+
+    let paint = Paint {
+        shader: Pattern::new(
+            source.as_ref(),
+            spread,
+            FilterQuality::Bilinear,
+            1.0,
+            transform,
+        ),
+        ..Paint::default()
+    };
+    pixmap.fill_rect(fill_rect, &paint, Transform::identity(), None);
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    buf[..n].copy_from_slice(&bytes[..n]);
+}
 
 fn draw_radial(
     pixmap: &mut Pixmap,
@@ -51,6 +184,7 @@ fn draw_ring(pixmap: &mut Pixmap, paint: &Paint, stroke: &Stroke, cx: f32, cy: f
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn draw_wallpaper(buf: &mut [u8], width: i32, height: i32) {
     let (Ok(w), Ok(h)) = (u32::try_from(width), u32::try_from(height)) else {
         return;
@@ -162,4 +296,176 @@ pub fn draw_wallpaper(buf: &mut [u8], width: i32, height: i32) {
     let bytes = skia_pixmap_into_buffer_bytes(pixmap);
     let n = bytes.len().min(buf.len());
     buf[..n].copy_from_slice(&bytes[..n]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_wallpaper_decodes() {
+        let pixmap = decode_wallpaper(embedded_wallpaper_bytes()).expect("must decode");
+        assert!(pixmap.width() > 0);
+        assert!(pixmap.height() > 0);
+    }
+
+    #[test]
+    fn decode_wallpaper_rejects_garbage() {
+        assert!(decode_wallpaper(b"not a png").is_none());
+    }
+
+    #[test]
+    fn cover_never_leaves_the_output_uncovered() {
+        for (src_w, src_h, out_w, out_h) in [
+            (2560.0, 1503.0, 1920.0, 1080.0),
+            (2560.0, 1503.0, 3440.0, 1440.0),
+            (2560.0, 1503.0, 1080.0, 1920.0),
+            (100.0, 100.0, 4000.0, 200.0),
+        ] {
+            let (scale, ox, oy) = fit_transform(WallpaperFit::Cover, src_w, src_h, out_w, out_h);
+            assert!(
+                src_w * scale >= out_w - 0.01,
+                "scaled width {} must cover output width {out_w}",
+                src_w * scale
+            );
+            assert!(
+                src_h * scale >= out_h - 0.01,
+                "scaled height {} must cover output height {out_h}",
+                src_h * scale
+            );
+            assert!(
+                ox <= 0.01,
+                "cover crops horizontally, offset must be <= 0, got {ox}"
+            );
+            assert!(
+                oy <= 0.01,
+                "cover crops vertically, offset must be <= 0, got {oy}"
+            );
+        }
+    }
+
+    #[test]
+    fn contain_never_crops_the_source() {
+        for (src_w, src_h, out_w, out_h) in [
+            (2560.0, 1503.0, 1920.0, 1080.0),
+            (2560.0, 1503.0, 3440.0, 1440.0),
+            (2560.0, 1503.0, 1080.0, 1920.0),
+        ] {
+            let (scale, ox, oy) = fit_transform(WallpaperFit::Contain, src_w, src_h, out_w, out_h);
+            assert!(src_w * scale <= out_w + 0.01);
+            assert!(src_h * scale <= out_h + 0.01);
+            assert!(
+                ox >= -0.01,
+                "contain never crops, offset must be >= 0, got {ox}"
+            );
+            assert!(
+                oy >= -0.01,
+                "contain never crops, offset must be >= 0, got {oy}"
+            );
+        }
+    }
+
+    #[test]
+    fn center_and_tile_use_native_scale() {
+        for fit in [WallpaperFit::Center, WallpaperFit::Tile] {
+            let (scale, _, _) = fit_transform(fit, 2560.0, 1503.0, 1920.0, 1080.0);
+            assert!((scale - 1.0).abs() < f32::EPSILON, "{fit:?}");
+        }
+    }
+
+    #[test]
+    fn cover_centers_the_crop() {
+        let (scale, ox, oy) = fit_transform(WallpaperFit::Cover, 2560.0, 1503.0, 1920.0, 1080.0);
+        let scaled_w = 2560.0 * scale;
+        let scaled_h = 1503.0 * scale;
+        assert!((ox - (1920.0 - scaled_w) / 2.0).abs() < 0.01);
+        assert!((oy - (1080.0 - scaled_h) / 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn degenerate_dimensions_never_panic_and_return_identity() {
+        for (src_w, src_h, out_w, out_h) in [
+            (0.0, 100.0, 100.0, 100.0),
+            (100.0, 0.0, 100.0, 100.0),
+            (100.0, 100.0, 0.0, 100.0),
+            (100.0, 100.0, 100.0, 0.0),
+            (-1.0, 100.0, 100.0, 100.0),
+        ] {
+            let (scale, ox, oy) = fit_transform(WallpaperFit::Cover, src_w, src_h, out_w, out_h);
+            assert!((scale - 1.0).abs() < f32::EPSILON);
+            assert!(ox.abs() < f32::EPSILON);
+            assert!(oy.abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn compose_wallpaper_fills_the_whole_buffer_for_every_fit_mode() {
+        let mut source = Pixmap::new(4, 4).unwrap();
+        source.fill(tiny_skia::Color::from_rgba8(200, 100, 50, 255));
+
+        for fit in [
+            WallpaperFit::Cover,
+            WallpaperFit::Contain,
+            WallpaperFit::Center,
+            WallpaperFit::Tile,
+        ] {
+            let (out_w, out_h) = (16, 12);
+            let mut buf = vec![0u8; (out_w * out_h * 4) as usize];
+            compose_wallpaper(&mut buf, out_w, out_h, &source, fit);
+            assert_eq!(buf.len(), (out_w * out_h * 4) as usize, "{fit:?}");
+        }
+    }
+
+    #[test]
+    fn compose_wallpaper_cover_paints_every_pixel_opaque() {
+        let mut source = Pixmap::new(4, 4).unwrap();
+        source.fill(tiny_skia::Color::from_rgba8(200, 100, 50, 255));
+
+        let (out_w, out_h) = (16, 12);
+        let mut buf = vec![0u8; (out_w * out_h * 4) as usize];
+        compose_wallpaper(&mut buf, out_w, out_h, &source, WallpaperFit::Cover);
+
+        for px in buf.chunks_exact(4) {
+            assert_eq!(px[3], 255, "cover must leave no transparent pixel");
+        }
+    }
+
+    #[test]
+    fn compose_wallpaper_center_can_leave_transparent_letterboxing() {
+        let mut source = Pixmap::new(4, 4).unwrap();
+        source.fill(tiny_skia::Color::from_rgba8(200, 100, 50, 255));
+
+        let (out_w, out_h) = (16, 12);
+        let mut buf = vec![0u8; (out_w * out_h * 4) as usize];
+        compose_wallpaper(&mut buf, out_w, out_h, &source, WallpaperFit::Center);
+
+        let top_left_alpha = buf[3];
+        assert_eq!(
+            top_left_alpha, 0,
+            "a 4x4 source centered in a 16x12 output must leave the corners transparent"
+        );
+    }
+
+    #[test]
+    fn init_wallpaper_with_no_override_falls_back_to_the_embedded_image() {
+        init_wallpaper(None);
+        let mut buf = vec![0u8; 8 * 8 * 4];
+        draw_wallpaper_into(&mut buf, 8, 8, WallpaperFit::Cover);
+        for px in buf.chunks_exact(4) {
+            assert_eq!(px[3], 255, "cover must leave no transparent pixel");
+        }
+    }
+
+    #[test]
+    fn init_wallpaper_with_a_garbage_override_still_falls_back_to_the_embedded_image() {
+        init_wallpaper(Some(b"not a png"));
+        let mut buf = vec![0u8; 8 * 8 * 4];
+        draw_wallpaper_into(&mut buf, 8, 8, WallpaperFit::Cover);
+        for px in buf.chunks_exact(4) {
+            assert_eq!(
+                px[3], 255,
+                "must still fall back to a fully opaque wallpaper"
+            );
+        }
+    }
 }

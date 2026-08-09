@@ -7,10 +7,12 @@ pub mod shape;
 pub mod spacing;
 mod tokens;
 mod typography;
+mod wallpaper;
 
 pub use palette::Accent;
 pub use tokens::{Appearance, Tokens};
 pub use typography::TextStyle;
+pub use wallpaper::WallpaperFit;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color(pub [f32; 4]);

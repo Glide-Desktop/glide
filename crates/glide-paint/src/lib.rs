@@ -24,7 +24,10 @@ pub enum TextAlign {
 }
 
 mod wallpaper;
-pub use wallpaper::draw_wallpaper;
+pub use wallpaper::{
+    compose_wallpaper, decode_wallpaper, draw_wallpaper, draw_wallpaper_into,
+    embedded_wallpaper_bytes, fit_transform, init_wallpaper,
+};
 
 mod border;
 pub use border::{draw_inset_border, draw_outset_shadow_and_border};

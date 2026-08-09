@@ -5,7 +5,7 @@ use smithay::input::keyboard::{Keysym, ModifiersState, keysyms, xkb};
 
 use crate::{GlideState, input::ResolvedKeybind};
 
-pub use glide_theme::{Color, DecorationTheme, OverviewTheme, TitleAlign};
+pub use glide_theme::{Color, DecorationTheme, OverviewTheme, TitleAlign, WallpaperFit};
 
 pub trait OverviewThemeExt {
     fn options(&self) -> glide_layout::OverviewOptions;
@@ -36,6 +36,8 @@ pub struct Config {
 pub struct GeneralConfig {
     pub background: Color,
     pub autostart: Vec<String>,
+    pub wallpaper: Option<PathBuf>,
+    pub wallpaper_fit: WallpaperFit,
 }
 
 impl Default for GeneralConfig {
@@ -43,6 +45,8 @@ impl Default for GeneralConfig {
         Self {
             background: Color::from_hex("#222c3cff").unwrap(),
             autostart: vec!["alacritty".to_string()],
+            wallpaper: None,
+            wallpaper_fit: WallpaperFit::default(),
         }
     }
 }
@@ -292,7 +296,17 @@ impl Config {
         state.decoration_theme = self.decorations.clone();
         state.overview_theme = self.overview.clone();
         state.background_color = self.general.background;
+        state.wallpaper_fit = self.general.wallpaper_fit;
         state.refresh_painter_font();
+
+        let wallpaper_bytes = self.general.wallpaper.as_ref().and_then(|path| {
+            fs::read(path)
+                .inspect_err(|err| {
+                    tracing::warn!(path = %path.display(), "failed to read wallpaper: {err}");
+                })
+                .ok()
+        });
+        glide_paint::init_wallpaper(wallpaper_bytes.as_deref());
 
         if let Ok(height) = i32::try_from(self.decorations.height) {
             let insets = glide_layout::Insets {
@@ -485,6 +499,34 @@ autostart = [\"foot\", \"waybar --config /tmp/bar.json\"]
         let toml_str = "[general]\nautostart = []\n";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.general.autostart.is_empty());
+    }
+
+    #[test]
+    fn wallpaper_defaults_to_none_with_cover_fit() {
+        let general = GeneralConfig::default();
+        assert_eq!(general.wallpaper, None);
+        assert_eq!(general.wallpaper_fit, WallpaperFit::Cover);
+    }
+
+    #[test]
+    fn wallpaper_path_and_fit_parse_from_toml() {
+        let toml_str = "\
+[general]
+wallpaper = \"/home/user/Pictures/wall.png\"
+wallpaper-fit = \"contain\"
+";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.general.wallpaper,
+            Some(PathBuf::from("/home/user/Pictures/wall.png"))
+        );
+        assert_eq!(config.general.wallpaper_fit, WallpaperFit::Contain);
+    }
+
+    #[test]
+    fn wallpaper_fit_rejects_an_unknown_value() {
+        let toml_str = "[general]\nwallpaper-fit = \"stretch\"\n";
+        toml::from_str::<Config>(toml_str).expect_err("\"stretch\" is not a valid fit mode");
     }
 
     #[test]

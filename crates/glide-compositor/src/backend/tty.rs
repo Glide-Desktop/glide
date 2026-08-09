@@ -54,7 +54,9 @@ use smithay::{
         wayland_server::backend::GlobalId,
     },
     render_elements,
-    utils::{Clock, DeviceFd, IsAlive, Logical, Monotonic, Point, Scale, Transform},
+    utils::{
+        Buffer, Clock, DeviceFd, IsAlive, Logical, Monotonic, Point, Rectangle, Scale, Transform,
+    },
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -139,6 +141,7 @@ struct SurfaceData {
     pending_repaint: Option<RegistrationToken>,
     redraw_queued: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
+    wallpaper_key: Option<(i32, i32, crate::config::WallpaperFit)>,
 }
 
 struct DeviceData {
@@ -759,6 +762,7 @@ impl GlideState {
                 pending_repaint: None,
                 redraw_queued: false,
                 wallpaper_buf: None,
+                wallpaper_key: None,
             },
         );
 
@@ -874,18 +878,28 @@ impl GlideState {
             .map(|m| (m.size.w, m.size.h))
             .unwrap_or((1920, 1080));
         let (phys_w, phys_h) = output_mode;
-        let wp_buf = surface.wallpaper_buf.get_or_insert_with(|| {
+        let wallpaper_fit = self.wallpaper_fit;
+        let wallpaper_key = (phys_w, phys_h, wallpaper_fit);
+        if surface.wallpaper_key != Some(wallpaper_key) {
             let mut buf = vec![0; (phys_w * phys_h * 4) as usize];
-            glide_paint::draw_wallpaper(&mut buf, phys_w, phys_h);
-            MemoryRenderBuffer::from_slice(
+            glide_paint::draw_wallpaper_into(&mut buf, phys_w, phys_h, wallpaper_fit);
+            let opaque_regions = wallpaper_fit
+                .always_covers_the_output()
+                .then(|| vec![Rectangle::<i32, Buffer>::from_size((phys_w, phys_h).into())]);
+            surface.wallpaper_buf = Some(MemoryRenderBuffer::from_slice(
                 &buf,
                 Fourcc::Argb8888,
                 (phys_w, phys_h),
                 1,
                 Transform::Normal,
-                None,
-            )
-        });
+                opaque_regions,
+            ));
+            surface.wallpaper_key = Some(wallpaper_key);
+        }
+        let wp_buf = surface
+            .wallpaper_buf
+            .as_mut()
+            .expect("just populated above");
 
         let mut elements = Vec::new();
         if let Some(overview) = self.overview.as_mut() {
@@ -916,7 +930,7 @@ impl GlideState {
                 return;
             };
             elements.extend(space_elements);
-        };
+        }
 
         if let Ok(wp_element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
             gles_renderer,

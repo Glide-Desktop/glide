@@ -192,6 +192,7 @@ pub struct GlideState {
     pub decoration_theme: crate::config::DecorationTheme,
     pub overview_theme: crate::config::OverviewTheme,
     pub background_color: crate::config::Color,
+    pub wallpaper_fit: crate::config::WallpaperFit,
 
     pub cursor_status: CursorImageStatus,
     pub cursor_position_hint: Option<(WlSurface, Point<f64, Logical>)>,
@@ -264,6 +265,7 @@ impl GlideState {
             decoration_theme: crate::config::DecorationTheme::default(),
             overview_theme: crate::config::OverviewTheme::default(),
             background_color: crate::config::GeneralConfig::default().background,
+            wallpaper_fit: crate::config::WallpaperFit::default(),
             cursor_status: CursorImageStatus::default_named(),
             cursor_position_hint: None,
             layer_focus: None,
