@@ -357,7 +357,13 @@ fn render_icon(
         return;
     };
 
-    if let Some(path) = rounded_rect(0.0, 0.0, width as f32, height as f32, 6.0) {
+    if let Some(path) = rounded_rect(
+        0.0,
+        0.0,
+        width as f32,
+        height as f32,
+        glide_theme::shape::BUTTON_RADIUS,
+    ) {
         fill(&mut pixmap, &path, bg, scale);
     }
 

@@ -30,22 +30,22 @@ use menu::MenuItem;
 use render::border_rects;
 
 pub const BUTTON_SIZE: i32 = 26;
-pub const BUTTON_PAD_X: i32 = 8;
+pub const BUTTON_PAD_X: i32 = glide_theme::spacing::SP2;
 pub const BUTTON_PAD_Y: i32 = 11;
 
 pub const RESIZE_BORDER: i32 = 8;
 
-const TITLE_PADDING: i32 = 12;
+const TITLE_PADDING: i32 = glide_theme::spacing::SP3;
 
-const MENU_PADDING: i32 = 12;
+const MENU_PADDING: i32 = glide_theme::spacing::SP3;
 
 const MENU_MIN_WIDTH: i32 = 120;
 
-const MENU_CORNER_RADIUS: f32 = 8.0;
+const MENU_CORNER_RADIUS: f32 = glide_theme::shape::R2;
 
 const PRESSED_DARKEN: f32 = 0.8;
 
-const BUTTON_HOVER_ANIM: std::time::Duration = std::time::Duration::from_millis(100);
+const BUTTON_HOVER_ANIM: std::time::Duration = glide_theme::motion::T1;
 
 const SHADOW_BANDS: usize = 64;
 

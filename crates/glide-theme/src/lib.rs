@@ -1,5 +1,15 @@
 use serde::Deserialize;
 
+pub mod elevation;
+pub mod motion;
+mod palette;
+pub mod shape;
+pub mod spacing;
+mod tokens;
+
+pub use palette::Accent;
+pub use tokens::{Appearance, Tokens};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color(pub [f32; 4]);
 
@@ -58,6 +68,22 @@ impl Color {
         }
         Self(out)
     }
+
+    #[must_use]
+    pub fn with_alpha(self, alpha: f32) -> Self {
+        let [r, g, b, _] = self.0;
+        Self([r, g, b, alpha.clamp(0.0, 1.0)])
+    }
+
+    #[must_use]
+    pub fn from_rgb8(r: u8, g: u8, b: u8, alpha: f32) -> Self {
+        Self([
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            alpha.clamp(0.0, 1.0),
+        ])
+    }
 }
 
 impl<'de> serde::Deserialize<'de> for Color {
@@ -110,23 +136,24 @@ pub struct DecorationTheme {
 
 impl Default for DecorationTheme {
     fn default() -> Self {
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
         Self {
             height: 48,
             title_align: TitleAlign::Left,
-            corner_radius: 12.0,
-            background: Color::from_hex("#222126ff").unwrap(),
-            background_focused: Color::from_hex("#29282dff").unwrap(),
-            maximize_button: Color::from_hex("#ffffff12").unwrap(),
-            maximize_button_hover: Color::from_hex("#2f6fd0ff").unwrap(),
-            close_button: Color::from_hex("#ffffff12").unwrap(),
-            close_button_hover: Color::from_hex("#f0796fff").unwrap(),
-            menu_background: Color::from_hex("#2f2e34ff").unwrap(),
-            menu_item_hover: Color::from_hex("#ffffff12").unwrap(),
-            icon: Color::from_hex("#f2f0edad").unwrap(),
-            close_icon: Color::from_hex("#f2f0edad").unwrap(),
+            corner_radius: shape::R3,
+            background: t.bar_bg_idle,
+            background_focused: t.bar_bg,
+            maximize_button: t.fill_1,
+            maximize_button_hover: t.acc_bg,
+            close_button: t.fill_1,
+            close_button_hover: t.danger,
+            menu_background: t.popover_bg,
+            menu_item_hover: t.fill_1,
+            icon: t.fg_2,
+            close_icon: t.fg_2,
             border_width: 1,
-            border: Color::from_hex("#ffffff0d").unwrap(),
-            border_focused: Color::from_hex("#ffffff1a").unwrap(),
+            border: t.line,
+            border_focused: t.line_2,
             shadow: true,
             shadow_size: 32,
             shadow_size_focused: 68,
@@ -156,20 +183,21 @@ pub struct OverviewTheme {
 
 impl Default for OverviewTheme {
     fn default() -> Self {
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
         Self {
             gap: 48,
             label_height: 28,
             max_scale: 1.0,
             label: true,
-            label_color: Color::from_hex("#f2f0edff").unwrap(),
-            label_background: Color::from_hex("#2f2e34ff").unwrap(),
+            label_color: t.fg_1,
+            label_background: t.popover_bg,
             dim: Color::from_hex("#100f0e66").unwrap(),
-            highlight: Color::from_hex("#2f6fd0ff").unwrap(),
+            highlight: t.acc_bg,
             border: 3,
             shadow: true,
             shadow_size: 44,
             shadow_color: Color::from_hex("#0000004d").unwrap(),
-            duration_ms: 420,
+            duration_ms: u64::try_from(motion::T4.as_millis()).unwrap_or(u64::MAX),
         }
     }
 }
@@ -312,6 +340,48 @@ mod tests {
             r > g && r > b,
             "close hover must be red-dominant, got {:?}",
             d.close_button_hover.0
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn decoration_theme_defaults_are_derived_from_meridian_dark_blue_tokens() {
+        let d = DecorationTheme::default();
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+
+        assert_eq!(d.corner_radius, shape::R3, "titlebar radius is --r-3");
+        assert_eq!(d.background, t.bar_bg_idle);
+        assert_eq!(d.background_focused, t.bar_bg);
+        assert_eq!(d.maximize_button, t.fill_1);
+        assert_eq!(d.maximize_button_hover, t.acc_bg);
+        assert_eq!(d.close_button_hover, t.danger);
+        assert_eq!(d.menu_background, t.popover_bg);
+        assert_eq!(d.icon, t.fg_2);
+    }
+
+    #[test]
+    fn decoration_theme_border_alpha_matches_the_line_tokens_not_a_hand_picked_value() {
+        let d = DecorationTheme::default();
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+
+        assert_eq!(d.border, t.line, "unfocused border is --line, 9% not 5%");
+        assert_eq!(
+            d.border_focused, t.line_2,
+            "focused border is --line-2, 15% not 10%"
+        );
+    }
+
+    #[test]
+    fn overview_theme_defaults_are_derived_from_meridian_dark_blue_tokens() {
+        let o = OverviewTheme::default();
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+
+        assert_eq!(o.label_color, t.fg_1);
+        assert_eq!(o.label_background, t.popover_bg);
+        assert_eq!(o.highlight, t.acc_bg);
+        assert_eq!(
+            o.duration_ms,
+            u64::try_from(motion::T4.as_millis()).unwrap()
         );
     }
 
