@@ -120,6 +120,8 @@ pub struct DecorationTheme {
     pub corner_radius: f32,
     pub background: Color,
     pub background_focused: Color,
+    pub title: Color,
+    pub title_focused: Color,
     pub close_button: Color,
     pub close_button_hover: Color,
     pub maximize_button: Color,
@@ -147,6 +149,8 @@ impl Default for DecorationTheme {
             corner_radius: shape::R3,
             background: t.bar_bg_idle,
             background_focused: t.bar_bg,
+            title: t.fg_3,
+            title_focused: t.fg_1,
             maximize_button: t.fill_1,
             maximize_button_hover: t.acc_bg,
             close_button: t.fill_1,
@@ -364,6 +368,25 @@ mod tests {
     }
 
     #[test]
+    fn decoration_theme_title_is_tertiary_idle_and_primary_focused() {
+        let d = DecorationTheme::default();
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+
+        assert_eq!(
+            d.title, t.fg_3,
+            "idle titlebar text reads as third-tier per spec section 12.2"
+        );
+        assert_eq!(
+            d.title_focused, t.fg_1,
+            "focused titlebar text is full-strength fg-1"
+        );
+        assert!(
+            d.title_focused.0[3] > d.title.0[3],
+            "focused title must be more opaque than idle"
+        );
+    }
+
+    #[test]
     fn decoration_theme_border_alpha_matches_the_line_tokens_not_a_hand_picked_value() {
         let d = DecorationTheme::default();
         let t = Tokens::new(Appearance::Dark, Accent::Blue);
@@ -402,6 +425,8 @@ title-align = \"center\"
 corner-radius = 12.0
 background = \"#111111\"
 background-focused = \"#222222\"
+title = \"#123456\"
+title-focused = \"#654321\"
 close-button = \"#333333\"
 close-button-hover = \"#444444\"
 maximize-button = \"#555555\"
@@ -423,6 +448,8 @@ shadow-color-focused = \"#000000bb\"
         assert_eq!(theme.height, 40);
         assert_eq!(theme.title_align, TitleAlign::Center);
         assert!((theme.corner_radius - 12.0).abs() < f32::EPSILON);
+        assert_eq!(theme.title, Color::from_hex("#123456").unwrap());
+        assert_eq!(theme.title_focused, Color::from_hex("#654321").unwrap());
         assert_eq!(theme.border_width, 2);
         assert!(!theme.shadow);
         assert_eq!(theme.shadow_size, 24);

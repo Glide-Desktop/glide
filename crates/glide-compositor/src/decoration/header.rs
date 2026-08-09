@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    BUTTON_HOVER_ANIM, BUTTON_PAD_X, BUTTON_PAD_Y, BUTTON_SIZE, MENU_CORNER_RADIUS, MENU_MIN_WIDTH,
-    MENU_PADDING, PRESSED_DARKEN, RESIZE_BORDER, TITLE_PADDING, menu::MenuItem,
+    BUTTON_HIT_WIDTH, BUTTON_HOVER_ANIM, BUTTON_PAD_X, BUTTON_SIZE, IDLE_BUTTON_OPACITY,
+    MENU_CORNER_RADIUS, MENU_MIN_WIDTH, MENU_PADDING, RESIZE_BORDER, TITLE_PADDING, menu::MenuItem,
     render::redraw_button,
 };
 
@@ -82,6 +82,47 @@ pub(crate) const fn row_corners(index: usize, total: usize) -> [bool; 4] {
     let is_first = index == 0;
     let is_last = index + 1 == total;
     [is_first, is_first, is_last, is_last]
+}
+
+/// One window-control button's (background, foreground) for this frame.
+///
+/// Order of operations matters and mirrors spec §1.2/§8: hover is a color
+/// *blend* toward `hover_bg`/`fg_hover` (0..1 via `hover_t`); press is a
+/// *state layer* on top of that — `currentColor` (here, white, since both
+/// buttons' foregrounds are white) overlaid at `--st-press` (13%), not a
+/// separate darkened color — so a press mid-hover-fade still shows the
+/// hover color underneath. Idle dimming (`--st`-independent — spec
+/// §12.2/12.3's 45% opacity) is applied last, uniformly, to both channels,
+/// so a pressed or hovered idle button is still visibly dimmer than the
+/// same state focused.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn button_colors(
+    normal: Color,
+    hover_bg: Color,
+    fg: Color,
+    fg_hover: Color,
+    hover_t: f32,
+    is_hovered: bool,
+    is_pressed: bool,
+    focused: bool,
+) -> (Color, Color) {
+    let (mut bg, mut fg) = if is_hovered {
+        (normal.lerp(hover_bg, hover_t), fg.lerp(fg_hover, hover_t))
+    } else {
+        (normal, fg)
+    };
+
+    if is_pressed {
+        let press_overlay = Color([1.0, 1.0, 1.0, 1.0]);
+        bg = bg.lerp(press_overlay, glide_theme::motion::ST_PRESS);
+    }
+
+    if !focused {
+        bg = bg.with_alpha(bg.0[3] * IDLE_BUTTON_OPACITY);
+        fg = fg.with_alpha(fg.0[3] * IDLE_BUTTON_OPACITY);
+    }
+
+    (bg, fg)
 }
 
 impl HeaderBar {
@@ -158,18 +199,18 @@ impl HeaderBar {
         }
     }
 
+    // The clickable area is deliberately larger than the painted button
+    // (BUTTON_SIZE, positioned by BUTTON_PAD_X/Y in render.rs): it spans
+    // the titlebar's full height and reaches the strip's own edge, not
+    // just the icon's small pill. See `BUTTON_HIT_WIDTH`'s doc comment.
     fn titlebar_row(&self) -> [(HitZone, glide_geom::Rectangle); 3] {
-        let max_rect = glide_geom::Rectangle::from_loc_and_size(
-            BUTTON_PAD_X,
-            BUTTON_PAD_Y,
-            BUTTON_SIZE,
-            BUTTON_SIZE,
-        );
+        let max_rect =
+            glide_geom::Rectangle::from_loc_and_size(0, 0, BUTTON_HIT_WIDTH, self.height);
         let close_rect = glide_geom::Rectangle::from_loc_and_size(
-            self.width - BUTTON_PAD_X - BUTTON_SIZE,
-            BUTTON_PAD_Y,
-            BUTTON_SIZE,
-            BUTTON_SIZE,
+            self.width - BUTTON_HIT_WIDTH,
+            0,
+            BUTTON_HIT_WIDTH,
+            self.height,
         );
         let drag_rect = glide_geom::Rectangle::from_loc_and_size(0, 0, self.width, self.height);
 
@@ -375,7 +416,16 @@ impl HeaderBar {
         } else {
             theme.background
         };
-        let bg = bg_color.to_buffer_bytes();
+        let title_color = if self.focused {
+            theme.title_focused
+        } else {
+            theme.title
+        };
+        let corner_radius = if self.maximized {
+            0.0
+        } else {
+            theme.corner_radius
+        };
 
         {
             let w = self.width;
@@ -392,19 +442,30 @@ impl HeaderBar {
                 TitleAlign::Center => TextAlign::Center,
             };
             let _ = ctx.draw(|pixels| {
-                let fg = [255, 255, 255, bg[3]];
+                let fg = title_color.to_buffer_bytes();
                 Painter::fill_panel_background(
                     pixels,
                     w,
                     h,
                     scale,
                     bg_color,
-                    theme.corner_radius,
+                    corner_radius,
                     [true, true, false, false],
                 );
                 let x_min = BUTTON_PAD_X + BUTTON_SIZE + TITLE_PADDING;
                 let x_max = w - BUTTON_PAD_X - BUTTON_SIZE - TITLE_PADDING;
-                painter.draw_label_over(pixels, w, h, x_min, x_max, scale, align, &title, fg);
+                painter.draw_label_over_styled(
+                    pixels,
+                    w,
+                    h,
+                    x_min,
+                    x_max,
+                    scale,
+                    align,
+                    &title,
+                    fg,
+                    &glide_theme::TextStyle::WIN_TITLE,
+                );
                 Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
         }
@@ -435,13 +496,18 @@ impl HeaderBar {
                 Painter::draw_icon_close,
             ),
         ] {
-            let (btn_bg, btn_fg) = if pressed == Some(*zone) {
-                (hover_bg.darken(PRESSED_DARKEN), *fg_hover)
-            } else if hovered == Some(*zone) {
-                (normal.lerp(*hover_bg, hover_t), fg.lerp(*fg_hover, hover_t))
-            } else {
-                (*normal, *fg)
-            };
+            let is_hovered = hovered == Some(*zone);
+            let is_pressed = pressed == Some(*zone);
+            let (btn_bg, btn_fg) = button_colors(
+                *normal,
+                *hover_bg,
+                *fg,
+                *fg_hover,
+                hover_t,
+                is_hovered,
+                is_pressed,
+                self.focused,
+            );
             redraw_button(buf, scale, btn_bg, btn_fg, *icon);
         }
 

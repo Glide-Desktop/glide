@@ -21,7 +21,7 @@ pub(crate) use render::shadow_rects;
 #[cfg(test)]
 use crate::grabs::resize_grab::ResizeEdge;
 #[cfg(test)]
-use header::{DecorationAction, HitZone, row_corners};
+use header::{DecorationAction, HitZone, button_colors, row_corners};
 #[cfg(test)]
 use input::resize_cursor;
 #[cfg(test)]
@@ -33,6 +33,13 @@ pub const BUTTON_SIZE: i32 = 26;
 pub const BUTTON_PAD_X: i32 = glide_theme::spacing::SP2;
 pub const BUTTON_PAD_Y: i32 = 11;
 
+/// Width of the maximize/close *hit* zones, distinct from `BUTTON_SIZE`
+/// (their *painted* size). Spans the whole titlebar height and reaches the
+/// strip's own left/right edge, per spec §16's 28x28 minimum pointer
+/// target — Fitts's-law-friendly, matches how every mainstream desktop
+/// treats its corner window controls.
+pub const BUTTON_HIT_WIDTH: i32 = 34;
+
 pub const RESIZE_BORDER: i32 = 8;
 
 const TITLE_PADDING: i32 = glide_theme::spacing::SP3;
@@ -43,10 +50,13 @@ const MENU_MIN_WIDTH: i32 = 120;
 
 const MENU_CORNER_RADIUS: f32 = glide_theme::shape::R2;
 
-const PRESSED_DARKEN: f32 = 0.8;
+/// Idle (unfocused) window controls read as this fraction of their normal
+/// opacity — spec §12.2/12.3: `.win.idle .wctl button { opacity: .45 }`.
+const IDLE_BUTTON_OPACITY: f32 = 0.45;
 
 const BUTTON_HOVER_ANIM: std::time::Duration = glide_theme::motion::T1;
 
+#[cfg(test)]
 const SHADOW_BANDS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +65,7 @@ pub(crate) struct BoxDecoKey {
     pub(crate) height: i32,
     pub(crate) scale: i32,
     pub(crate) focused: bool,
+    pub(crate) maximized: bool,
     pub(crate) theme_rev: u32,
 }
 
@@ -343,6 +354,183 @@ mod tests {
         }
     }
 
+    #[allow(clippy::float_cmp)]
+    mod button_colors_tests {
+        use super::*;
+        use crate::config::Color;
+
+        fn normal() -> Color {
+            Color([0.1, 0.1, 0.1, 0.07])
+        }
+        fn hover_bg() -> Color {
+            Color([0.2, 0.4, 0.8, 1.0])
+        }
+        fn fg() -> Color {
+            Color([0.9, 0.9, 0.9, 0.68])
+        }
+        fn fg_hover() -> Color {
+            Color([1.0, 1.0, 1.0, 1.0])
+        }
+
+        #[test]
+        fn rest_focused_returns_the_colors_unchanged() {
+            let (bg, f) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.0,
+                false,
+                false,
+                true,
+            );
+            assert_eq!(bg, normal());
+            assert_eq!(f, fg());
+        }
+
+        #[test]
+        fn full_hover_reaches_exactly_the_hover_color_when_focused() {
+            let (bg, f) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                1.0,
+                true,
+                false,
+                true,
+            );
+            assert_eq!(bg, hover_bg());
+            assert_eq!(f, fg_hover());
+        }
+
+        #[test]
+        fn partial_hover_lies_strictly_between_normal_and_hover() {
+            let (bg, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.5,
+                true,
+                false,
+                true,
+            );
+            assert!(bg.0[0] > normal().0[0] && bg.0[0] < hover_bg().0[0]);
+        }
+
+        #[test]
+        fn press_lightens_toward_white_on_top_of_the_resting_color_not_a_separate_darken() {
+            let (rest_bg, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.0,
+                false,
+                false,
+                true,
+            );
+            let (pressed_bg, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.0,
+                false,
+                true,
+                true,
+            );
+            assert!(
+                pressed_bg.0[0] > rest_bg.0[0],
+                "pressing must lighten toward white (a state layer), not darken"
+            );
+            let expected = rest_bg.lerp(Color([1.0, 1.0, 1.0, 1.0]), glide_theme::motion::ST_PRESS);
+            assert_eq!(pressed_bg, expected);
+        }
+
+        #[test]
+        fn press_during_an_active_hover_layers_on_top_of_the_hover_color() {
+            let (hover_only, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.7,
+                true,
+                false,
+                true,
+            );
+            let (hover_and_press, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.7,
+                true,
+                true,
+                true,
+            );
+            assert_ne!(
+                hover_only, hover_and_press,
+                "a press mid-hover must still show the hover color underneath the state layer"
+            );
+        }
+
+        #[test]
+        fn idle_dims_both_background_and_foreground_alpha_by_forty_five_percent() {
+            let (bg, f) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.0,
+                false,
+                false,
+                false,
+            );
+            assert!((bg.0[3] - normal().0[3] * 0.45).abs() < 0.001);
+            assert!((f.0[3] - fg().0[3] * 0.45).abs() < 0.001);
+            assert_eq!(
+                [bg.0[0], bg.0[1], bg.0[2]],
+                [normal().0[0], normal().0[1], normal().0[2]]
+            );
+        }
+
+        #[test]
+        fn idle_dimming_applies_after_hover_and_press_not_instead_of_them() {
+            let (focused_hover, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                1.0,
+                true,
+                false,
+                true,
+            );
+            let (idle_hover, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                1.0,
+                true,
+                false,
+                false,
+            );
+            assert!(
+                idle_hover.0[3] < focused_hover.0[3],
+                "an idle hovered button must still be dimmer than a focused hovered one"
+            );
+            assert_eq!(
+                [idle_hover.0[0], idle_hover.0[1], idle_hover.0[2]],
+                [focused_hover.0[0], focused_hover.0[1], focused_hover.0[2]],
+                "dimming must not shift hue, only alpha"
+            );
+        }
+    }
+
     mod contains {
         use super::*;
 
@@ -571,22 +759,43 @@ mod tests {
 
         #[test]
         fn zone_boundaries_are_exact() {
+            // The hit zone (BUTTON_HIT_WIDTH = 34) is wider than the painted
+            // button (BUTTON_SIZE = 26) and reaches the strip's own edge —
+            // see `BUTTON_HIT_WIDTH`'s doc comment in mod.rs.
             let h = header();
-            assert_eq!(h.zone_at(7.999, 16.0), HitZone::Drag);
-            assert_eq!(h.zone_at(8.0, 16.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(0.0, 16.0), HitZone::Maximize);
             assert_eq!(h.zone_at(33.999, 16.0), HitZone::Maximize);
             assert_eq!(h.zone_at(34.0, 16.0), HitZone::Drag);
             assert_eq!(h.zone_at(765.999, 16.0), HitZone::Drag);
             assert_eq!(h.zone_at(766.0, 16.0), HitZone::Close);
-            assert_eq!(h.zone_at(791.999, 16.0), HitZone::Close);
-            assert_eq!(h.zone_at(792.0, 16.0), HitZone::Drag);
+            assert_eq!(h.zone_at(799.999, 16.0), HitZone::Close);
         }
 
         #[test]
-        fn outside_the_vertical_button_band_is_always_drag() {
+        fn button_hit_zones_span_the_full_titlebar_height() {
+            // Unlike the painted button (vertically centred via
+            // BUTTON_PAD_Y), the hit zone covers the whole strip height —
+            // there is no dead vertical band above or below it to fall
+            // through to Drag.
             let h = header();
-            assert_eq!(h.zone_at(16.0, 5.0), HitZone::Drag, "above the band");
-            assert_eq!(h.zone_at(16.0, 37.0), HitZone::Drag, "below the band");
+            assert_eq!(h.zone_at(16.0, 0.0), HitZone::Maximize, "top of the strip");
+            assert_eq!(
+                h.zone_at(16.0, f64::from(h.height) - 0.001),
+                HitZone::Maximize,
+                "bottom of the strip"
+            );
+        }
+
+        #[test]
+        fn outside_the_titlebar_height_is_not_a_button_zone() {
+            let h = header();
+            assert_eq!(
+                h.zone_at(16.0, f64::from(h.height)),
+                HitZone::Drag,
+                "nothing matches at or past the strip's own bottom edge; zone_at falls back to \
+                 Drag by default rather than a button — see the `contains` tests for what \
+                 actually happens outside the frame"
+            );
         }
     }
 

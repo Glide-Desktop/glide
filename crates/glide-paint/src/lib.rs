@@ -29,8 +29,10 @@ pub use wallpaper::{
     embedded_wallpaper_bytes, fit_transform, init_wallpaper,
 };
 
+mod blur;
+
 mod border;
-pub use border::{draw_inset_border, draw_outset_shadow_and_border};
+pub use border::{ShadowLayerSpec, draw_inset_border, draw_outset_shadow_and_border};
 
 static NOTO_SANS_BYTES: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
 
@@ -1446,6 +1448,72 @@ mod golden_tests {
                 width as u32,
                 height as u32,
                 &buf,
+            ));
+        }
+        assert_all_goldens(&failures);
+    }
+
+    #[test]
+    fn window_shadow_and_border_focused_and_idle() {
+        let (buf_w, buf_h) = (220, 160);
+        let (window_w, window_h) = (140, 80);
+        let mut failures = Vec::new();
+
+        for (name, layers, border_width, border_color) in [
+            (
+                "window_shadow_idle",
+                [
+                    ShadowLayerSpec {
+                        dy: 3.30,
+                        blur: 7.68,
+                        color: Color([0.0, 0.0, 0.0, 0.26]),
+                    },
+                    ShadowLayerSpec {
+                        dy: 13.76,
+                        blur: 32.0,
+                        color: Color([0.0, 0.0, 0.0, 0.4]),
+                    },
+                ],
+                1.0,
+                Color([1.0, 1.0, 1.0, 0.05]),
+            ),
+            (
+                "window_shadow_focused",
+                [
+                    ShadowLayerSpec {
+                        dy: 7.02,
+                        blur: 16.32,
+                        color: Color([0.0, 0.0, 0.0, 0.39]),
+                    },
+                    ShadowLayerSpec {
+                        dy: 29.24,
+                        blur: 68.0,
+                        color: Color([0.0, 0.0, 0.0, 0.6]),
+                    },
+                ],
+                1.0,
+                Color([1.0, 1.0, 1.0, 0.10]),
+            ),
+        ] {
+            let mut buf = vec![0u8; (buf_w * buf_h * 4) as usize];
+            draw_outset_shadow_and_border(
+                &mut buf,
+                buf_w,
+                buf_h,
+                window_w as f32,
+                window_h as f32,
+                &layers,
+                border_width,
+                border_color,
+                12.0,
+            );
+            let rgba = bgra_premul_to_rgba_premul(&buf);
+            failures.extend(check_golden_rgba_premul(
+                "chrome",
+                name,
+                buf_w as u32,
+                buf_h as u32,
+                &rgba,
             ));
         }
         assert_all_goldens(&failures);
