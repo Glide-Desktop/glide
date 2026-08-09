@@ -49,11 +49,10 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
 
     let mut out: Vec<DecorationBuffer> = Vec::new();
 
-    for (i, buf) in header.menu_row_bufs.iter().enumerate() {
-        let y = header.height * (1 + i32::try_from(i).unwrap_or(0));
+    if let Some(buf) = &header.menu_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
-            offset: Point::from((header.menu_x, y)),
+            offset: Point::from((header.menu_x, header.height)),
         });
     }
 

@@ -278,6 +278,8 @@ impl Painter {
             height,
             x_min,
             x_max,
+            0,
+            height,
             scale,
             align,
             text,
@@ -311,6 +313,8 @@ impl Painter {
             height,
             x_min,
             x_max,
+            0,
+            height,
             scale,
             align,
             &text,
@@ -321,7 +325,49 @@ impl Painter {
         );
     }
 
+    /// Like `draw_label_over_styled`, but vertically centred within
+    /// `[y_min, y_max)` instead of the whole `(0, height)` canvas — for
+    /// placing more than one line of text into a single shared buffer (a
+    /// popover menu's rows, say), where each line needs to land in its own
+    /// band rather than all collapsing onto the buffer's own centre.
     #[allow(clippy::too_many_arguments)]
+    pub fn draw_label_over_styled_in_band(
+        &self,
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        x_min: i32,
+        x_max: i32,
+        y_min: i32,
+        y_max: i32,
+        scale: i32,
+        align: TextAlign,
+        text: &str,
+        fg_argb: [u8; 4],
+        style: &TextStyle,
+    ) {
+        let text = Self::apply_case(text, style);
+        #[allow(clippy::cast_precision_loss)]
+        let font_size = style.size_px * scale as f32;
+        self.draw_label_at(
+            buf,
+            width,
+            height,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+            scale,
+            align,
+            &text,
+            fg_argb,
+            font_size,
+            style.weight,
+            style.tracking_em,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::similar_names)]
     fn draw_label_at(
         &self,
         buf: &mut [u8],
@@ -329,6 +375,8 @@ impl Painter {
         height: i32,
         x_min: i32,
         x_max: i32,
+        y_min: i32,
+        y_max: i32,
         scale: i32,
         align: TextAlign,
         text: &str,
@@ -342,6 +390,7 @@ impl Painter {
             return;
         }
         let (px_min, px_max) = (x_min * scale, x_max * scale);
+        let (py_min, py_max) = (y_min * scale, y_max * scale);
 
         let text = self.fit_text_at(text, px_max - px_min, font_size, weight, tracking_em);
         if text.is_empty() {
@@ -370,8 +419,9 @@ impl Painter {
             TextAlign::Left => px_min,
         };
         let content_h = metrics.max_ascent + metrics.max_descent;
+        let band_h = (py_max - py_min) as f32;
         let y_off =
-            ((ph as f32 - content_h) / 2.0 - metrics.baseline_y + metrics.max_ascent) as i32;
+            py_min + ((band_h - content_h) / 2.0 - metrics.baseline_y + metrics.max_ascent) as i32;
 
         let fg = TextColor::rgba(fg_argb[0], fg_argb[1], fg_argb[2], fg_argb[3]);
         buffer.draw(
@@ -494,6 +544,71 @@ impl Painter {
         let bytes = skia_pixmap_into_buffer_bytes(pixmap);
         let n = bytes.len().min(buf.len());
         buf[..n].copy_from_slice(&bytes[..n]);
+    }
+
+    /// Fills a rounded rect *within* an already-populated buffer, blended
+    /// over whatever is already there — unlike `fill_panel_background`,
+    /// which always owns the whole `(0, 0, width, height)` canvas and
+    /// overwrites it outright. This is what lets a single combined buffer
+    /// (the popover panel) hold its own background *and* a per-row hover
+    /// highlight painted on top of it, instead of one buffer per row.
+    pub fn fill_rounded_rect_over(
+        buf: &mut [u8],
+        canvas_width: i32,
+        canvas_height: i32,
+        rect_x: i32,
+        rect_y: i32,
+        rect_width: i32,
+        rect_height: i32,
+        scale: i32,
+        color: Color,
+        radius: f32,
+    ) {
+        let (Ok(cw), Ok(ch)) = (
+            u32::try_from(canvas_width * scale),
+            u32::try_from(canvas_height * scale),
+        ) else {
+            return;
+        };
+        let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(buf, cw, ch) else {
+            return;
+        };
+        let Some(path) = rounded_rect(
+            (rect_x * scale) as f32,
+            (rect_y * scale) as f32,
+            (rect_width * scale) as f32,
+            (rect_height * scale) as f32,
+            radius * scale as f32,
+        ) else {
+            return;
+        };
+        // `buf` is already in this crate's BGRA output order (the swap
+        // normally happens once, in `skia_pixmap_into_buffer_bytes`, when a
+        // *fresh* tiny-skia Pixmap is exported) — wrapping it directly with
+        // `PixmapMut` skips that whole allocate/export/copy cycle for a
+        // solid fill, but means the fill color itself needs its R/B
+        // channels swapped going in, so what tiny-skia writes as "RGBA"
+        // lands correctly as BGRA in memory.
+        let [r, g, b, a] = color.0;
+        let bgra_color = tiny_skia::Color::from_rgba(
+            b.clamp(0.0, 1.0),
+            g.clamp(0.0, 1.0),
+            r.clamp(0.0, 1.0),
+            a.clamp(0.0, 1.0),
+        )
+        .unwrap_or(tiny_skia::Color::TRANSPARENT);
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(bgra_color),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            tiny_skia::Transform::identity(),
+            None,
+        );
     }
 }
 
@@ -798,6 +913,81 @@ mod tests {
         let centre_top_offset = (50usize) * 4;
         assert_eq!(buf[centre_top_offset + 3], 255, "centre-top must be opaque");
         assert_eq!(buf[3], 0, "top-left corner pixel must be cut away");
+    }
+
+    #[test]
+    fn fill_rounded_rect_over_preserves_bgra_byte_order() {
+        let (w, h) = (20, 20);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        let red = Color([1.0, 0.0, 0.0, 1.0]);
+        Painter::fill_rounded_rect_over(&mut buf, w, h, 0, 0, w, h, 1, red, 0.0);
+        let center = ((h / 2 * w + w / 2) * 4) as usize;
+        assert_eq!(
+            &buf[center..center + 4],
+            &[0, 0, 255, 255],
+            "opaque red must store R in byte 2, matching Color::to_buffer_bytes' BGRA order"
+        );
+    }
+
+    #[test]
+    fn fill_rounded_rect_over_only_touches_the_rect_it_covers() {
+        let (w, h) = (40, 20);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        Painter::fill_rounded_rect_over(
+            &mut buf,
+            w,
+            h,
+            20,
+            0,
+            20,
+            h,
+            1,
+            Color([1.0, 1.0, 1.0, 1.0]),
+            0.0,
+        );
+        let left_untouched = ((h / 2 * w + 5) * 4) as usize;
+        let right_filled = ((h / 2 * w + 30) * 4) as usize;
+        assert_eq!(buf[left_untouched + 3], 0, "left half must stay untouched");
+        assert_eq!(
+            buf[right_filled + 3],
+            255,
+            "right half (the rect) must be filled"
+        );
+    }
+
+    #[test]
+    fn fill_rounded_rect_over_blends_over_existing_content_not_replacing_the_canvas() {
+        let (w, h) = (20, 20);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        Painter::fill_panel_background(
+            &mut buf,
+            w,
+            h,
+            1,
+            Color([0.0, 0.0, 1.0, 1.0]),
+            0.0,
+            [true; 4],
+        );
+        let before = buf.clone();
+        Painter::fill_rounded_rect_over(
+            &mut buf,
+            w,
+            h,
+            0,
+            0,
+            w / 2,
+            h,
+            1,
+            Color([1.0, 0.0, 0.0, 0.5]),
+            0.0,
+        );
+        assert_ne!(buf, before, "the overlay must have changed something");
+        let right_half_untouched = ((h / 2 * w + 3 * w / 4) * 4) as usize;
+        assert_eq!(
+            &buf[right_half_untouched..right_half_untouched + 4],
+            &before[right_half_untouched..right_half_untouched + 4],
+            "the right half, outside the overlay rect, must be exactly what fill_panel_background left"
+        );
     }
 
     #[test]

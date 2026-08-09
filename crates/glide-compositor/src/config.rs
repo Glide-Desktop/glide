@@ -179,6 +179,16 @@ impl Config {
                 key: "o".to_string(),
                 action: KeyActionConfig::Simple("toggle-overview".to_string()),
             },
+            KeybindConfig {
+                mods: vec![ModifierConfig::Alt],
+                key: "F4".to_string(),
+                action: KeyActionConfig::Simple("close-window".to_string()),
+            },
+            KeybindConfig {
+                mods: vec![ModifierConfig::Alt],
+                key: "space".to_string(),
+                action: KeyActionConfig::Simple("open-window-menu".to_string()),
+            },
         ];
 
         for i in 1..=9 {
@@ -366,6 +376,8 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "maximize" => Some(crate::input::KeyAction::Maximize),
             "fullscreen" => Some(crate::input::KeyAction::Fullscreen),
             "minimize" => Some(crate::input::KeyAction::Minimize),
+            "close-window" => Some(crate::input::KeyAction::CloseFocused),
+            "open-window-menu" => Some(crate::input::KeyAction::OpenWindowMenu),
             "toggle-overview" => Some(crate::input::KeyAction::ToggleOverview),
             _ => {
                 tracing::warn!(action = cmd, "unknown simple key action");

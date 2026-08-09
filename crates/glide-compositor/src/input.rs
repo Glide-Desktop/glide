@@ -32,6 +32,8 @@ pub enum KeyAction {
     Maximize,
     Fullscreen,
     Minimize,
+    CloseFocused,
+    OpenWindowMenu,
     ToggleOverview,
     OverviewCancel,
     OverviewSelect,
@@ -290,6 +292,25 @@ impl GlideState {
                     self.layout.toggle_minimize(focused);
                     self.reconcile_space();
                 }
+            }
+            KeyAction::CloseFocused => {
+                if let Some(focused) = self.layout.focused_window()
+                    && let Some(window) = self.window_map.get(&focused)
+                    && let Some(toplevel) = window.toplevel()
+                {
+                    tracing::info!(focused = ?focused, "closing via keybind");
+                    toplevel.send_close();
+                }
+            }
+            KeyAction::OpenWindowMenu => {
+                if let Some(focused) = self.layout.focused_window()
+                    && let Some(window) = self.window_map.get(&focused)
+                    && let Some(mut deco) = window.try_decoration_state_mut()
+                {
+                    tracing::info!(focused = ?focused, "opening titlebar menu via keybind");
+                    deco.header.open_menu_at_default_position();
+                }
+                self.queue_redraw();
             }
             KeyAction::OverviewCancel => {
                 self.begin_close_overview(None);
@@ -761,6 +782,25 @@ mod tests {
         fn q_alone_without_super_does_not_quit() {
             let binds = default_binds();
             let action = process_keyboard_shortcut(&binds, &no_modifiers(), &[], Keysym::q);
+
+            assert_eq!(action, None);
+        }
+
+        #[test]
+        fn alt_f4_closes_the_focused_window() {
+            let binds = default_binds();
+            let mut modifiers = no_modifiers();
+            modifiers.alt = true;
+
+            let action = process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::F4);
+
+            assert_eq!(action, Some(KeyAction::CloseFocused));
+        }
+
+        #[test]
+        fn f4_alone_without_alt_does_not_close() {
+            let binds = default_binds();
+            let action = process_keyboard_shortcut(&binds, &no_modifiers(), &[], Keysym::F4);
 
             assert_eq!(action, None);
         }

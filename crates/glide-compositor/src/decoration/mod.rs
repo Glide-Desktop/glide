@@ -21,7 +21,7 @@ pub(crate) use render::shadow_rects;
 #[cfg(test)]
 use crate::grabs::resize_grab::ResizeEdge;
 #[cfg(test)]
-use header::{DecorationAction, HitZone, button_colors, row_corners};
+use header::{DecorationAction, HitZone, button_colors};
 #[cfg(test)]
 use input::resize_cursor;
 #[cfg(test)]
@@ -44,11 +44,32 @@ pub const RESIZE_BORDER: i32 = 8;
 
 const TITLE_PADDING: i32 = glide_theme::spacing::SP3;
 
+/// Fixed popover width — spec §12.1's mockup (`.win-context-menu { width:
+/// 224px }`). Computed once at open time, not from content, so the menu
+/// never has to guess its own size from text it hasn't shaped yet (the
+/// bug that used to leave the very first right-click landing flush right
+/// regardless of cursor position — see `open_menu_at` in header.rs).
+const MENU_WIDTH: i32 = 224;
+
+/// Padding between the popover's own edge and its row stack — spec
+/// §11.6/12.1: `.menu { padding: 6px }`.
+const MENU_CONTAINER_PADDING: i32 = 6;
+
+/// Row height — spec's mockup renders `.win-context-menu .menu-item` at
+/// the compositor's titlebar height today only by coincidence; the design
+/// system's own menu rows (`.menu-item`) are 34px, not 48.
+const MENU_ROW_HEIGHT: i32 = 34;
+
 const MENU_PADDING: i32 = glide_theme::spacing::SP3;
 
-const MENU_MIN_WIDTH: i32 = 120;
-
+/// Row radius — spec §7: `--r-2`, the "control" step (the same as a
+/// button or input), distinct from the popover's own `--r-3` container
+/// radius.
 const MENU_CORNER_RADIUS: f32 = glide_theme::shape::R2;
+
+/// Popover container radius — spec §7: `--r-3`, the "container" step
+/// (card, menu, window).
+const MENU_CONTAINER_RADIUS: f32 = glide_theme::shape::R3;
 
 /// Idle (unfocused) window controls read as this fraction of their normal
 /// opacity — spec §12.2/12.3: `.win.idle .wctl button { opacity: .45 }`.
@@ -213,14 +234,14 @@ mod tests {
             h.titlebar_buf = Some(MemoryRenderBuffer::default());
             h.maximize_buf = Some(MemoryRenderBuffer::default());
             h.close_buf = Some(MemoryRenderBuffer::default());
-            h.menu_row_bufs.push(MemoryRenderBuffer::default());
+            h.menu_buf = Some(MemoryRenderBuffer::default());
 
             h.sync(&DecorationTheme::default(), false, false, 2);
 
             assert!(h.titlebar_buf.is_none());
             assert!(h.maximize_buf.is_none());
             assert!(h.close_buf.is_none());
-            assert!(h.menu_row_bufs.is_empty());
+            assert!(h.menu_buf.is_none());
         }
 
         #[test]
@@ -322,35 +343,6 @@ mod tests {
             };
             h.sync(&theme, false, false, 1);
             assert_eq!(h.shadow_margin(), 0);
-        }
-    }
-
-    mod row_corners_tests {
-        use super::*;
-
-        #[test]
-        fn single_row_rounds_all_four_corners() {
-            assert_eq!(row_corners(0, 1), [true, true, true, true]);
-        }
-
-        #[test]
-        fn first_row_of_many_rounds_only_the_top() {
-            assert_eq!(row_corners(0, 3), [true, true, false, false]);
-        }
-
-        #[test]
-        fn last_row_of_many_rounds_only_the_bottom() {
-            assert_eq!(row_corners(2, 3), [false, false, true, true]);
-        }
-
-        #[test]
-        fn middle_row_rounds_nothing() {
-            assert_eq!(row_corners(1, 3), [false, false, false, false]);
-        }
-
-        #[test]
-        fn zero_total_does_not_panic() {
-            assert_eq!(row_corners(0, 0), [true, true, false, false]);
         }
     }
 
@@ -804,12 +796,18 @@ mod tests {
 
         #[test]
         fn row_zero_starts_below_the_strip() {
+            // header() fixture: height=32, menu_x=700, menu_width=100.
+            // Rows start at height + MENU_CONTAINER_PADDING (32+6=38) and
+            // are MENU_ROW_HEIGHT (34) tall each: row0 [38,72), row1
+            // [72,106), row2 [106,140), then nothing.
             let mut h = header();
             h.menu_open = true;
 
             assert_eq!(h.menu_item_at(point(750.0, 16.0)), None, "titlebar strip");
-            assert_eq!(h.menu_item_at(point(750.0, 48.0)), Some(0), "first row");
-            assert_eq!(h.menu_item_at(point(750.0, 80.0)), None, "past the rows");
+            assert_eq!(h.menu_item_at(point(750.0, 40.0)), Some(0), "first row");
+            assert_eq!(h.menu_item_at(point(750.0, 80.0)), Some(1), "second row");
+            assert_eq!(h.menu_item_at(point(750.0, 120.0)), Some(2), "third row");
+            assert_eq!(h.menu_item_at(point(750.0, 145.0)), None, "past the rows");
         }
 
         #[test]

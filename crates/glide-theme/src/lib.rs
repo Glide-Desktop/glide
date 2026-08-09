@@ -127,7 +127,11 @@ pub struct DecorationTheme {
     pub maximize_button: Color,
     pub maximize_button_hover: Color,
     pub menu_background: Color,
+    pub menu_border: Color,
     pub menu_item_hover: Color,
+    pub menu_text: Color,
+    pub menu_text_danger: Color,
+    pub menu_accel_text: Color,
     pub icon: Color,
     pub close_icon: Color,
     pub border_width: u32,
@@ -156,7 +160,11 @@ impl Default for DecorationTheme {
             close_button: t.fill_1,
             close_button_hover: t.danger,
             menu_background: t.popover_bg,
+            menu_border: t.line,
             menu_item_hover: t.fill_1,
+            menu_text: t.fg_1,
+            menu_text_danger: t.danger,
+            menu_accel_text: t.fg_3,
             icon: t.fg_2,
             close_icon: t.fg_2,
             border_width: 1,
@@ -387,6 +395,21 @@ mod tests {
     }
 
     #[test]
+    fn decoration_theme_menu_colors_are_derived_from_tokens() {
+        let d = DecorationTheme::default();
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+
+        assert_eq!(d.menu_border, t.line);
+        assert_eq!(d.menu_text, t.fg_1);
+        assert_eq!(d.menu_text_danger, t.danger);
+        assert_eq!(d.menu_accel_text, t.fg_3);
+        assert_ne!(
+            d.menu_text, d.menu_text_danger,
+            "the destructive item's label must read differently from the rest"
+        );
+    }
+
+    #[test]
     fn decoration_theme_border_alpha_matches_the_line_tokens_not_a_hand_picked_value() {
         let d = DecorationTheme::default();
         let t = Tokens::new(Appearance::Dark, Accent::Blue);
@@ -432,7 +455,11 @@ close-button-hover = \"#444444\"
 maximize-button = \"#555555\"
 maximize-button-hover = \"#666666\"
 menu-background = \"#999999\"
+menu-border = \"#977766\"
 menu-item-hover = \"#aaaaaa\"
+menu-text = \"#a1a1a1\"
+menu-text-danger = \"#b2b2b2\"
+menu-accel-text = \"#c3c3c3\"
 icon = \"#bbbbbb\"
 close-icon = \"#cccccc\"
 border-width = 2
@@ -450,6 +477,10 @@ shadow-color-focused = \"#000000bb\"
         assert!((theme.corner_radius - 12.0).abs() < f32::EPSILON);
         assert_eq!(theme.title, Color::from_hex("#123456").unwrap());
         assert_eq!(theme.title_focused, Color::from_hex("#654321").unwrap());
+        assert_eq!(theme.menu_border, Color::from_hex("#977766").unwrap());
+        assert_eq!(theme.menu_text, Color::from_hex("#a1a1a1").unwrap());
+        assert_eq!(theme.menu_text_danger, Color::from_hex("#b2b2b2").unwrap());
+        assert_eq!(theme.menu_accel_text, Color::from_hex("#c3c3c3").unwrap());
         assert_eq!(theme.border_width, 2);
         assert!(!theme.shadow);
         assert_eq!(theme.shadow_size, 24);

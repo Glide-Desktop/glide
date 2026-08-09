@@ -93,6 +93,16 @@ impl TextStyle {
         tracking_em: 0.0,
         uppercase: false,
     };
+    /// `.menu-item`/`.btn` control text — 13.5px at body weight (400), not
+    /// `WinTitle`'s 640: menu rows and buttons read as regular text, only
+    /// the titlebar's own label is semi-bold.
+    pub const MENU_ITEM: Self = Self {
+        size_px: 13.5,
+        line_height_px: 20.0,
+        weight: 400,
+        tracking_em: -0.008,
+        uppercase: false,
+    };
 
     pub const ALL: &'static [Self] = &[
         Self::DISPLAY,
@@ -105,12 +115,14 @@ impl TextStyle {
         Self::CAP,
         Self::MICRO,
         Self::NUM,
+        Self::MENU_ITEM,
         Self::WIN_TITLE,
         Self::OV_LABEL,
     ];
 }
 
 #[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
 
@@ -118,7 +130,7 @@ mod tests {
     fn italic_is_never_expressed_here_by_design() {
         assert_eq!(
             TextStyle::ALL.len(),
-            12,
+            13,
             "no style role carries a slant field"
         );
     }
@@ -189,6 +201,13 @@ mod tests {
         assert!((TextStyle::WIN_TITLE.size_px - 13.5).abs() < f32::EPSILON);
         assert_eq!(TextStyle::WIN_TITLE.weight, 640);
         assert!((TextStyle::WIN_TITLE.tracking_em - (-0.012)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn menu_item_is_the_same_size_as_win_title_but_regular_weight() {
+        assert!((TextStyle::MENU_ITEM.size_px - TextStyle::WIN_TITLE.size_px).abs() < f32::EPSILON);
+        assert_eq!(TextStyle::MENU_ITEM.weight, 400);
+        assert!(TextStyle::MENU_ITEM.weight < TextStyle::WIN_TITLE.weight);
     }
 
     #[test]
