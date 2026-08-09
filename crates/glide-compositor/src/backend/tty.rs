@@ -93,6 +93,7 @@ render_elements! {
     Space=SpaceRenderElements<GlesRenderer, GlideWindowRenderElement<GlesRenderer>>,
     Pointer=PointerRenderElement<GlesRenderer>,
     Overview=crate::overview::OverviewRenderElement<GlesRenderer>,
+    Wallpaper=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
 fn layer_elements(
@@ -136,6 +137,7 @@ struct SurfaceData {
     global: Option<GlobalId>,
     drm_output: GbmDrmOutput,
     pending_repaint: Option<RegistrationToken>,
+    wallpaper_buf: Option<MemoryRenderBuffer>,
 }
 
 struct DeviceData {
@@ -754,6 +756,7 @@ impl GlideState {
                 global: Some(global),
                 drm_output,
                 pending_repaint: None,
+                wallpaper_buf: None,
             },
         );
 
@@ -799,6 +802,7 @@ impl GlideState {
         }
     }
 
+    #[profiling::function]
     fn render_surface(&mut self, crtc: crtc::Handle) {
         if !self.backend_data.session.is_active() {
             return;
@@ -851,11 +855,30 @@ impl GlideState {
         pointer_element.set_buffer(cursor_buffer);
         pointer_element.set_status(cursor_status);
 
-        let elements = if let Some(overview) = self.overview.as_mut() {
+        let output_mode = output
+            .current_mode()
+            .map(|m| (m.size.w, m.size.h))
+            .unwrap_or((1920, 1080));
+        let (phys_w, phys_h) = output_mode;
+        let wp_buf = surface.wallpaper_buf.get_or_insert_with(|| {
+            let mut buf = vec![0; (phys_w * phys_h * 4) as usize];
+            glide_paint::draw_wallpaper(&mut buf, phys_w, phys_h);
+            MemoryRenderBuffer::from_slice(
+                &buf,
+                Fourcc::Argb8888,
+                (phys_w, phys_h),
+                1,
+                Transform::Normal,
+                None,
+            )
+        });
+
+        let mut elements = Vec::new();
+        if let Some(overview) = self.overview.as_mut() {
             let Some(output_geometry) = self.space.output_geometry(&output) else {
                 return;
             };
-            overview_elements(
+            elements.extend(overview_elements(
                 gles_renderer,
                 overview,
                 &self.window_map,
@@ -865,9 +888,9 @@ impl GlideState {
                 scale,
                 &output,
                 output_geometry,
-            )
+            ));
         } else {
-            let Some(elements) = build_render_elements(
+            let Some(space_elements) = build_render_elements(
                 gles_renderer,
                 &self.space,
                 pointer_element,
@@ -878,8 +901,20 @@ impl GlideState {
             ) else {
                 return;
             };
-            elements
+            elements.extend(space_elements);
         };
+
+        if let Ok(wp_element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+            gles_renderer,
+            (0.0, 0.0),
+            wp_buf,
+            Some(1.0),
+            None,
+            None,
+            smithay::backend::renderer::element::Kind::Unspecified,
+        ) {
+            elements.push(GlideRenderElements::Wallpaper(wp_element));
+        }
 
         let clear_color = self.background_color.0;
 

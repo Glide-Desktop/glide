@@ -22,6 +22,12 @@ pub enum TextAlign {
     Center,
 }
 
+mod wallpaper;
+pub use wallpaper::draw_wallpaper;
+
+mod border;
+pub use border::{draw_inset_border, draw_outset_shadow_and_border};
+
 static NOTO_SANS_BYTES: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
 
 const DEFAULT_FAMILY: &str = "Adwaita Sans";
@@ -148,35 +154,6 @@ impl Painter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_label(
-        &self,
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        x_min: i32,
-        x_max: i32,
-        scale: i32,
-        align: TextAlign,
-        text: &str,
-        fg_argb: [u8; 4],
-        bg_argb: [u8; 4],
-    ) {
-        let (pw, ph) = (width * scale, height * scale);
-        if pw <= 0 || ph <= 0 || buf.len() < (pw * ph * 4) as usize {
-            return;
-        }
-
-        let bg_premul = premultiply(bg_argb);
-        for chunk in buf[..(pw * ph * 4) as usize].chunks_exact_mut(4) {
-            chunk.copy_from_slice(&bg_premul);
-        }
-
-        self.draw_label_over(
-            buf, width, height, x_min, x_max, scale, align, text, fg_argb,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_label_over(
         &self,
         buf: &mut [u8],
@@ -267,12 +244,11 @@ impl Painter {
     ) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
             let (x0, y0, x1, y1) = glyph_bounds(width, height);
-            if let Some(rect) = tiny_skia::Rect::from_ltrb(x0, y0, x1, y1) {
-                let mut pb = tiny_skia::PathBuilder::new();
-                pb.push_rect(rect);
-                if let Some(path) = pb.finish() {
-                    stroke(pixmap, &path, fg, height, scale);
-                }
+            let w = x1 - x0;
+            let h = y1 - y0;
+            let rx = (w * (1.6 / 7.6)).max(1.0); // 1.6 out of 7.6 width
+            if let Some(path) = rounded_rect(x0, y0, w, h, rx) {
+                stroke(pixmap, &path, fg, height, scale);
             }
         });
     }
@@ -288,22 +264,19 @@ impl Painter {
         render_icon(buf, width, height, scale, bg, |pixmap| {
             let (x0, y0, x1, y1) = glyph_bounds(width, height);
             let offset = ((x1 - x0) * 0.28).max(1.0);
+            let rx = ((x1 - offset - x0) * (1.6 / 7.6)).max(1.0);
 
-            if let Some(back) = tiny_skia::Rect::from_ltrb(x0 + offset, y0, x1, y1 - offset) {
-                let mut pb = tiny_skia::PathBuilder::new();
-                pb.push_rect(back);
-                if let Some(path) = pb.finish() {
-                    stroke(pixmap, &path, fg, height, scale);
-                }
+            if let Some(path) =
+                rounded_rect(x0 + offset, y0, x1 - offset - x0, y1 - offset - y0, rx)
+            {
+                stroke(pixmap, &path, fg, height, scale);
             }
 
-            if let Some(front) = tiny_skia::Rect::from_ltrb(x0, y0 + offset, x1 - offset, y1) {
-                let mut pb = tiny_skia::PathBuilder::new();
-                pb.push_rect(front);
-                if let Some(path) = pb.finish() {
-                    fill(pixmap, &path, bg, scale);
-                    stroke(pixmap, &path, fg, height, scale);
-                }
+            if let Some(path) =
+                rounded_rect(x0, y0 + offset, x1 - offset - x0, y1 - offset - y0, rx)
+            {
+                fill(pixmap, &path, bg, scale);
+                stroke(pixmap, &path, fg, height, scale);
             }
         });
     }
@@ -323,31 +296,6 @@ impl Painter {
             pb.line_to(x1, y1);
             pb.move_to(x1, y0);
             pb.line_to(x0, y1);
-            if let Some(path) = pb.finish() {
-                stroke(pixmap, &path, fg, height, scale);
-            }
-        });
-    }
-
-    pub fn draw_icon_chevron(
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        scale: i32,
-        fg: Color,
-        bg: Color,
-    ) {
-        render_icon(buf, width, height, scale, bg, |pixmap| {
-            let (x0, y0, x1, y1) = glyph_bounds(width, height);
-            let mid_x = f32::midpoint(x0, x1);
-            let cy = f32::midpoint(y0, y1);
-            let half_v = (x1 - x0) / 4.0;
-            let top = cy - half_v;
-            let bot = cy + half_v;
-            let mut pb = tiny_skia::PathBuilder::new();
-            pb.move_to(x0, top);
-            pb.line_to(mid_x, bot);
-            pb.line_to(x1, top);
             if let Some(path) = pb.finish() {
                 stroke(pixmap, &path, fg, height, scale);
             }
@@ -380,17 +328,6 @@ impl Painter {
     }
 }
 
-fn premultiply(straight: [u8; 4]) -> [u8; 4] {
-    let a = u32::from(straight[3]);
-    let mul = |c: u8| ((u32::from(c) * a + 127) / 255) as u8;
-    [
-        mul(straight[0]),
-        mul(straight[1]),
-        mul(straight[2]),
-        straight[3],
-    ]
-}
-
 fn composite_over(dst: [u8; 4], src_rgb_straight: [u8; 3], src_alpha: u8) -> [u8; 4] {
     let sa = u32::from(src_alpha);
     let inv = 255 - sa;
@@ -420,8 +357,9 @@ fn render_icon(
         return;
     };
 
-    let margin = pill_margin(width, height);
-    fill_pill(&mut pixmap, width, height, bg, margin, scale);
+    if let Some(path) = rounded_rect(0.0, 0.0, width as f32, height as f32, 6.0) {
+        fill(&mut pixmap, &path, bg, scale);
+    }
 
     draw_glyph(&mut pixmap);
 
@@ -487,29 +425,6 @@ fn fill(pixmap: &mut tiny_skia::Pixmap, path: &tiny_skia::Path, color: Color, sc
         scale_transform(scale),
         None,
     );
-}
-
-fn pill_margin(width: i32, height: i32) -> f32 {
-    (width.min(height) as f32 * 0.125).max(2.0)
-}
-
-fn fill_pill(
-    pixmap: &mut tiny_skia::Pixmap,
-    width: i32,
-    height: i32,
-    color: Color,
-    margin: f32,
-    scale: i32,
-) {
-    let w = width as f32 - margin * 2.0;
-    let h = height as f32 - margin * 2.0;
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let Some(path) = rounded_rect(margin, margin, w, h, h / 2.0) else {
-        return;
-    };
-    fill(pixmap, &path, color, scale);
 }
 
 const KAPPA: f32 = 0.552_284_8;
@@ -603,21 +518,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn premultiply_leaves_opaque_colour_unchanged() {
-        assert_eq!(premultiply([10, 20, 30, 255]), [10, 20, 30, 255]);
-    }
-
-    #[test]
-    fn premultiply_scales_by_alpha() {
-        assert_eq!(premultiply([200, 100, 50, 128]), [100, 50, 25, 128]);
-    }
-
-    #[test]
-    fn premultiply_fully_transparent_is_all_zero_colour() {
-        assert_eq!(premultiply([255, 255, 255, 0]), [0, 0, 0, 0]);
-    }
-
-    #[test]
     fn composite_fully_opaque_source_replaces_destination() {
         let dst = [10, 20, 30, 255];
         let out = composite_over(dst, [200, 100, 50], 255);
@@ -645,7 +545,7 @@ mod tests {
 
     #[test]
     fn composite_over_is_order_correct_source_over() {
-        let dst = premultiply([0, 0, 0, 255]);
+        let dst = [0, 0, 0, 255];
         let out = composite_over(dst, [255, 255, 255], 128);
         assert_eq!(out[3], 255, "compositing over opaque stays opaque");
         assert!(
@@ -753,7 +653,6 @@ mod tests {
                     Painter::draw_icon_maximize,
                     Painter::draw_icon_restore,
                     Painter::draw_icon_close,
-                    Painter::draw_icon_chevron,
                 ] {
                     let expected_len = (w * scale * h * scale * 4) as usize;
                     let mut buf = vec![0u8; expected_len];
@@ -987,10 +886,10 @@ mod tests {
     }
 
     #[test]
-    fn draw_label_does_not_panic_on_overflowing_text() {
+    fn draw_label_over_does_not_panic_on_overflowing_text() {
         let painter = Painter::with_embedded_font_only(14.0);
         let mut buf = vec![0u8; 200 * 32 * 4];
-        painter.draw_label(
+        painter.draw_label_over(
             &mut buf,
             200,
             32,
@@ -1000,16 +899,15 @@ mod tests {
             TextAlign::Left,
             "a title so long it must be ellipsised to fit the available space",
             [255, 255, 255, 255],
-            [30, 30, 30, 255],
         );
         assert!(buf.iter().any(|&b| b != 0));
     }
 
     #[test]
-    fn draw_label_at_scale_2_produces_a_physically_larger_buffer() {
+    fn draw_label_over_at_scale_2_produces_a_physically_larger_buffer() {
         let painter = Painter::with_embedded_font_only(14.0);
         let mut buf1 = vec![0u8; 200 * 32 * 4];
-        painter.draw_label(
+        painter.draw_label_over(
             &mut buf1,
             200,
             32,
@@ -1019,10 +917,9 @@ mod tests {
             TextAlign::Left,
             "Hello",
             [255, 255, 255, 255],
-            [30, 30, 30, 255],
         );
         let mut buf2 = vec![0u8; 400 * 64 * 4];
-        painter.draw_label(
+        painter.draw_label_over(
             &mut buf2,
             200,
             32,
@@ -1032,7 +929,6 @@ mod tests {
             TextAlign::Left,
             "Hello",
             [255, 255, 255, 255],
-            [30, 30, 30, 255],
         );
         assert!(buf1.iter().any(|&b| b != 0));
         assert!(buf2.iter().any(|&b| b != 0));
@@ -1043,7 +939,7 @@ mod tests {
         let painter = Painter::with_embedded_font_only(14.0);
         let mut left_buf = vec![0u8; 200 * 32 * 4];
         let mut center_buf = vec![0u8; 200 * 32 * 4];
-        painter.draw_label(
+        painter.draw_label_over(
             &mut left_buf,
             200,
             32,
@@ -1053,9 +949,8 @@ mod tests {
             TextAlign::Left,
             "Hi",
             [255, 255, 255, 255],
-            [0, 0, 0, 255],
         );
-        painter.draw_label(
+        painter.draw_label_over(
             &mut center_buf,
             200,
             32,
@@ -1065,7 +960,6 @@ mod tests {
             TextAlign::Center,
             "Hi",
             [255, 255, 255, 255],
-            [0, 0, 0, 255],
         );
         assert_ne!(
             left_buf, center_buf,
@@ -1181,37 +1075,16 @@ mod golden_tests {
         assert_all_goldens(&failures);
     }
 
-    #[test]
-    fn fill_pill_square_and_non_square() {
-        let mut failures = Vec::new();
-        for (name, w, h) in [("fill_pill_32x32", 32, 32), ("fill_pill_40x26", 40, 26)] {
-            let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
-            let margin = pill_margin(w as i32, h as i32);
-            fill_pill(
-                &mut pixmap,
-                w as i32,
-                h as i32,
-                Color([0.9, 0.9, 0.9, 1.0]),
-                margin,
-                1,
-            );
-            let bytes = pixmap.data().to_vec();
-            failures.extend(check_golden_rgba_premul("chrome", name, w, h, &bytes));
-        }
-        assert_all_goldens(&failures);
-    }
-
     type IconFn = fn(&mut [u8], i32, i32, i32, Color, Color);
 
     #[test]
     fn icons_at_scale_1_and_2() {
         let fg = Color([1.0, 1.0, 1.0, 1.0]);
         let bg = Color([0.12, 0.12, 0.15, 1.0]);
-        let icons: [(&str, IconFn); 4] = [
+        let icons: [(&str, IconFn); 3] = [
             ("maximize", Painter::draw_icon_maximize),
             ("restore", Painter::draw_icon_restore),
             ("close", Painter::draw_icon_close),
-            ("chevron", Painter::draw_icon_chevron),
         ];
         let mut failures = Vec::new();
         for (label, icon) in icons {

@@ -56,11 +56,11 @@ performed at all, with the reason and what unblocks it.
 
 ## Titlebar and decorations
 
-- Every window has a titlebar: a plain strip with a small square on the far LEFT (maximize) and far RIGHT (close), and a second small square immediately right of the maximize square (the chevron).
-- Drag a window by the *plain* part of its titlebar (not on any of the three squares), then press `Super+1` and come back — the window must still be where you dropped it, not re-centred.
+- Every window has a titlebar: a plain strip with a small square on the far LEFT (maximize) and far RIGHT (close). There is no third button — minimize lives only in the right-click menu.
+- Drag a window by the *plain* part of its titlebar (not on either square), then press `Super+1` and come back — the window must still be where you dropped it, not re-centred.
 - Click the LEFT square: toggles maximize (same effect as `Super+F`).
 - Click the RIGHT square: closes the window.
-- Click the chevron (second-from-left square): a dropdown appears below it with one entry, "Minimize" — clicking it minimizes the window exactly like `Super+M`; clicking anywhere else while it's open just closes the dropdown without doing anything.
+- Right-click anywhere on the plain part of the titlebar: a dropdown appears with one entry, "Minimize" — clicking it minimizes the window exactly like `Super+M`; clicking anywhere else while it's open just closes the dropdown without doing anything.
 - Resize: move the pointer to just outside any window edge or corner (~8px band) — the cursor must change to the matching resize arrow (up-down at top/bottom, left-right at sides, diagonal at corners); press and drag there resizes the window from that edge. Confirm the cursor goes back to the normal arrow over the titlebar/content.
 - Click between two windows on one workspace, then `Super+F`: the maximize must apply to the window you last clicked.
 - `Super+M` minimizes the focused window; it must disappear and focus must move to whatever else is visible (or nothing, if it was the only one).
@@ -138,8 +138,8 @@ emoji, since those depend on what's actually installed.
 Pure refactors, but A4.1 moved hit-testing and input-handling code across
 file boundaries.
 
-- Titlebar buttons: hover each of maximize/chevron/close, click each,
-  confirm the chevron menu opens and Minimize works.
+- Titlebar buttons: hover each of maximize/close, click each; right-click
+  the plain strip and confirm the menu opens and Minimize works.
 - Drag by the plain part of the titlebar; resize from every edge and
   corner; confirm the cursor changes appropriately at each edge.
 - `Super+F`, `Super+M` on the last-clicked window of two overlapping ones.

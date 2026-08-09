@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    BUTTON_HOVER_ANIM, BUTTON_WIDTH, MENU_CORNER_RADIUS, MENU_MIN_WIDTH, MENU_PADDING,
-    PRESSED_DARKEN, RESIZE_BORDER, RIGHT_CLUSTER_WIDTH, TITLE_PADDING, menu::MenuItem,
+    BUTTON_HOVER_ANIM, BUTTON_PAD_X, BUTTON_PAD_Y, BUTTON_SIZE, MENU_CORNER_RADIUS, MENU_MIN_WIDTH,
+    MENU_PADDING, PRESSED_DARKEN, RESIZE_BORDER, TITLE_PADDING, menu::MenuItem,
     render::redraw_button,
 };
 
@@ -39,7 +39,6 @@ pub struct HeaderBar {
 
     pub(crate) titlebar_buf: Option<MemoryRenderBuffer>,
     pub(crate) maximize_buf: Option<MemoryRenderBuffer>,
-    pub(crate) chevron_buf: Option<MemoryRenderBuffer>,
     pub(crate) close_buf: Option<MemoryRenderBuffer>,
     pub(crate) menu_row_bufs: Vec<MemoryRenderBuffer>,
 }
@@ -47,7 +46,6 @@ pub struct HeaderBar {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HitZone {
     Maximize,
-    Chevron,
     Close,
     Drag,
 }
@@ -63,7 +61,7 @@ pub(crate) enum DecorationAction {
 
 pub(crate) const fn row_corners(index: usize, total: usize) -> [bool; 4] {
     let is_first = index == 0;
-    let is_last = index == total - 1;
+    let is_last = index + 1 == total;
     [is_first, is_first, is_last, is_last]
 }
 
@@ -90,7 +88,9 @@ impl HeaderBar {
     #[must_use]
     pub fn shadow_margin(&self) -> i32 {
         if self.theme.shadow {
-            i32::try_from(self.theme.shadow_size).unwrap_or(i32::MAX)
+            let s1 = i32::try_from(self.theme.shadow_size).unwrap_or(i32::MAX);
+            let s2 = i32::try_from(self.theme.shadow_size_focused).unwrap_or(i32::MAX);
+            s1.max(s2)
         } else {
             0
         }
@@ -112,7 +112,6 @@ impl HeaderBar {
             self.scale = scale;
             self.titlebar_buf = None;
             self.maximize_buf = None;
-            self.chevron_buf = None;
             self.close_buf = None;
             self.menu_row_bufs.clear();
         }
@@ -139,25 +138,30 @@ impl HeaderBar {
         }
     }
 
-    fn titlebar_row(&self) -> [(HitZone, glide_geom::Rectangle); 4] {
-        let bounds = glide_geom::Rectangle::from_loc_and_size(0, 0, self.width, self.height);
-        let tracks = [
-            glide_ui::Track::Fixed(BUTTON_WIDTH),
-            glide_ui::Track::Flex(1),
-            glide_ui::Track::Fixed(BUTTON_WIDTH),
-            glide_ui::Track::Fixed(BUTTON_WIDTH),
-        ];
-        let rects = glide_ui::layout_row(bounds, &tracks);
+    fn titlebar_row(&self) -> [(HitZone, glide_geom::Rectangle); 3] {
+        let max_rect = glide_geom::Rectangle::from_loc_and_size(
+            BUTTON_PAD_X,
+            BUTTON_PAD_Y,
+            BUTTON_SIZE,
+            BUTTON_SIZE,
+        );
+        let close_rect = glide_geom::Rectangle::from_loc_and_size(
+            self.width - BUTTON_PAD_X - BUTTON_SIZE,
+            BUTTON_PAD_Y,
+            BUTTON_SIZE,
+            BUTTON_SIZE,
+        );
+        let drag_rect = glide_geom::Rectangle::from_loc_and_size(0, 0, self.width, self.height);
+
         [
-            (HitZone::Maximize, rects[0]),
-            (HitZone::Drag, rects[1]),
-            (HitZone::Chevron, rects[2]),
-            (HitZone::Close, rects[3]),
+            (HitZone::Drag, drag_rect),
+            (HitZone::Maximize, max_rect),
+            (HitZone::Close, close_rect),
         ]
     }
 
-    pub(crate) fn zone_at(&self, x: f64) -> HitZone {
-        glide_ui::hit_test(&self.titlebar_row(), x, 0.0).unwrap_or(HitZone::Drag)
+    pub(crate) fn zone_at(&self, x: f64, y: f64) -> HitZone {
+        glide_ui::hit_test(&self.titlebar_row(), x, y).unwrap_or(HitZone::Drag)
     }
 
     fn interactive_height(&self) -> i32 {
@@ -268,7 +272,14 @@ impl HeaderBar {
             if !self.in_titlebar_strip(loc) {
                 return None;
             }
-            let zone = self.zone_at(loc.x);
+            if event.button == 0x111 {
+                self.menu_open = true;
+                self.menu_x =
+                    (loc.x as i32 - self.menu_width / 2).clamp(0, self.width - self.menu_width);
+                return None;
+            }
+
+            let zone = self.zone_at(loc.x, loc.y);
             if zone == HitZone::Drag {
                 return Some(DecorationAction::StartMove);
             }
@@ -289,13 +300,9 @@ impl HeaderBar {
             return None;
         }
 
-        match self.zone_at(loc.x) {
+        match self.zone_at(loc.x, loc.y) {
             HitZone::Maximize => Some(DecorationAction::ToggleMaximize),
             HitZone::Close => Some(DecorationAction::Close),
-            HitZone::Chevron => {
-                self.menu_open = true;
-                None
-            }
             HitZone::Drag => None,
         }
     }
@@ -308,6 +315,7 @@ impl HeaderBar {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[profiling::function]
     pub(crate) fn redraw(&mut self, painter: &Painter) {
         if self.width == 0 || self.height == 0 {
             return;
@@ -316,13 +324,12 @@ impl HeaderBar {
         let hovered = self
             .pointer_loc
             .filter(|l| self.in_titlebar_strip(*l))
-            .map(|l| self.zone_at(l.x));
+            .map(|l| self.zone_at(l.x, l.y));
         let pressed = self.pressed;
         #[allow(clippy::cast_possible_truncation)]
         let hover_t = self.button_hover_progress(hovered) as f32;
 
         let theme = &self.theme;
-        let height = self.height;
         let scale = self.effective_scale();
         let bg_color = if self.focused {
             theme.background_focused
@@ -356,8 +363,8 @@ impl HeaderBar {
                     theme.corner_radius,
                     [true, true, false, false],
                 );
-                let x_min = BUTTON_WIDTH + TITLE_PADDING;
-                let x_max = w - RIGHT_CLUSTER_WIDTH;
+                let x_min = BUTTON_PAD_X + BUTTON_SIZE + TITLE_PADDING;
+                let x_max = w - BUTTON_PAD_X - BUTTON_SIZE - TITLE_PADDING;
                 painter.draw_label_over(pixels, w, h, x_min, x_max, scale, align, &title, fg);
                 Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
@@ -369,22 +376,15 @@ impl HeaderBar {
             Painter::draw_icon_maximize
         };
 
-        for (buf, zone, normal, hover_bg, fg, icon) in [
+        for (buf, zone, normal, hover_bg, fg, fg_hover, icon) in &mut [
             (
                 &mut self.maximize_buf,
                 HitZone::Maximize,
                 theme.maximize_button,
                 theme.maximize_button_hover,
                 theme.icon,
+                crate::config::Color([1.0, 1.0, 1.0, 1.0]), // --acc-fg (#ffffff)
                 maximize_icon,
-            ),
-            (
-                &mut self.chevron_buf,
-                HitZone::Chevron,
-                theme.chevron_button,
-                theme.chevron_button_hover,
-                theme.icon,
-                Painter::draw_icon_chevron as fn(&mut [u8], i32, i32, i32, Color, Color),
             ),
             (
                 &mut self.close_buf,
@@ -392,17 +392,18 @@ impl HeaderBar {
                 theme.close_button,
                 theme.close_button_hover,
                 theme.close_icon,
+                crate::config::Color([1.0, 1.0, 1.0, 1.0]), // #fff
                 Painter::draw_icon_close,
             ),
         ] {
-            let btn_bg = if pressed == Some(zone) {
-                hover_bg.darken(PRESSED_DARKEN)
-            } else if hovered == Some(zone) {
-                normal.lerp(hover_bg, hover_t)
+            let (btn_bg, btn_fg) = if pressed == Some(*zone) {
+                (hover_bg.darken(PRESSED_DARKEN), *fg_hover)
+            } else if hovered == Some(*zone) {
+                (normal.lerp(*hover_bg, hover_t), fg.lerp(*fg_hover, hover_t))
             } else {
-                normal
+                (*normal, *fg)
             };
-            redraw_button(buf, height, scale, btn_bg, fg, icon);
+            redraw_button(buf, scale, btn_bg, btn_fg, *icon);
         }
 
         if self.menu_open {

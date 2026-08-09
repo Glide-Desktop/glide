@@ -5,7 +5,7 @@ use smithay::{
         ImportAll, ImportMem, Renderer,
         element::{
             AsRenderElements, memory::MemoryRenderBufferRenderElement,
-            solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement,
+            surface::WaylandSurfaceRenderElement,
         },
     },
     desktop::{Window, space::SpaceElement},
@@ -139,7 +139,6 @@ render_elements! {
     pub GlideWindowRenderElement<R> where R: ImportAll + ImportMem;
     Content = WaylandSurfaceRenderElement<R>,
     Decoration = MemoryRenderBufferRenderElement<R>,
-    Background = SolidColorRenderElement,
 }
 
 impl<R: Renderer> std::fmt::Debug for GlideWindowRenderElement<R> {
@@ -147,7 +146,6 @@ impl<R: Renderer> std::fmt::Debug for GlideWindowRenderElement<R> {
         match self {
             Self::Content(e) => f.debug_tuple("Content").field(e).finish(),
             Self::Decoration(e) => f.debug_tuple("Decoration").field(e).finish(),
-            Self::Background(e) => f.debug_tuple("Background").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
     }
@@ -199,45 +197,26 @@ where
 
         elements.extend(deco_elements);
 
-        let border_elements: Vec<C> = decoration::border_strips(self)
-            .into_iter()
-            .map(|strip| {
-                let physical_offset = strip.offset.to_physical_precise_round(scale);
-                let pos = header_location + physical_offset;
-                SolidColorRenderElement::from_buffer(
-                    &strip.buf,
-                    pos,
-                    scale,
-                    alpha,
-                    smithay::backend::renderer::element::Kind::Unspecified,
-                )
-            })
-            .map(GlideWindowRenderElement::Background)
-            .map(C::from)
-            .collect();
-        elements.extend(border_elements);
+        let int_scale = (scale.x.round() as i32).max(1);
+        if let Some(deco_buf) = decoration::shadow_and_border_buffer(self, int_scale) {
+            let physical_offset = deco_buf.offset.to_physical_precise_round(scale);
+            let pos = (header_location + physical_offset).to_f64();
+            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                pos,
+                &deco_buf.buf,
+                Some(alpha),
+                None,
+                None,
+                smithay::backend::renderer::element::Kind::Unspecified,
+            ) {
+                elements.push(C::from(GlideWindowRenderElement::Decoration(element)));
+            }
+        }
 
         let content_elements: Vec<GlideWindowRenderElement<R>> =
             AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
         elements.extend(content_elements.into_iter().map(C::from));
-
-        let shadow_elements: Vec<C> = decoration::shadow_strips(self)
-            .into_iter()
-            .map(|strip| {
-                let physical_offset = strip.offset.to_physical_precise_round(scale);
-                let pos = header_location + physical_offset;
-                SolidColorRenderElement::from_buffer(
-                    &strip.buf,
-                    pos,
-                    scale,
-                    alpha,
-                    smithay::backend::renderer::element::Kind::Unspecified,
-                )
-            })
-            .map(GlideWindowRenderElement::Background)
-            .map(C::from)
-            .collect();
-        elements.extend(shadow_elements);
 
         elements
     }

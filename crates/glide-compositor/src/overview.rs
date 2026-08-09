@@ -56,6 +56,13 @@ fn lerp_rect(
 }
 
 type CachedLabel = (String, i32, i32, MemoryRenderBuffer);
+type CachedHighlight = (i32, i32, i32, MemoryRenderBuffer);
+type SalvagedPreview = (
+    WindowId,
+    Option<CachedLabel>,
+    Option<CachedHighlight>,
+    Vec<SolidColorBuffer>,
+);
 
 #[derive(Debug, Clone)]
 pub struct Preview {
@@ -64,6 +71,7 @@ pub struct Preview {
     pub origin: Rectangle<i32, Logical>,
     pub row: usize,
     label: Option<CachedLabel>,
+    highlight: Option<CachedHighlight>,
     shadow: Vec<SolidColorBuffer>,
 }
 
@@ -83,7 +91,6 @@ pub struct OverviewUi {
     theme: OverviewTheme,
 
     scrim: SolidColorBuffer,
-    highlight: [SolidColorBuffer; 4],
 }
 
 impl OverviewUi {
@@ -116,6 +123,7 @@ impl OverviewUi {
                     origin,
                     row: slot.row,
                     label: None,
+                    highlight: None,
                     shadow: Vec::new(),
                 })
             })
@@ -133,7 +141,6 @@ impl OverviewUi {
             duration: theme.duration(),
             theme: theme.clone(),
             scrim: SolidColorBuffer::default(),
-            highlight: std::array::from_fn(|_| SolidColorBuffer::default()),
         }
     }
 
@@ -155,21 +162,21 @@ impl OverviewUi {
         );
         let slots = compute_overview_layout(&sizes, layout_area, &self.theme.options());
 
-        let mut old: Vec<(WindowId, Option<CachedLabel>, Vec<SolidColorBuffer>)> = self
+        let mut old: Vec<SalvagedPreview> = self
             .previews
             .drain(..)
-            .map(|p| (p.id, p.label, p.shadow))
+            .map(|p| (p.id, p.label, p.highlight, p.shadow))
             .collect();
 
         self.previews = slots
             .iter()
             .filter_map(|slot| {
                 let origin = windows.iter().find(|(id, _)| *id == slot.id)?.1;
-                let (label, shadow) = old
+                let (label, highlight, shadow) = old
                     .iter_mut()
                     .find(|(id, ..)| *id == slot.id)
-                    .map_or((None, Vec::new()), |(_, label, shadow)| {
-                        (label.take(), std::mem::take(shadow))
+                    .map_or((None, None, Vec::new()), |(_, label, highlight, shadow)| {
+                        (label.take(), highlight.take(), std::mem::take(shadow))
                     });
                 Some(Preview {
                     id: slot.id,
@@ -177,6 +184,7 @@ impl OverviewUi {
                     origin,
                     row: slot.row,
                     label,
+                    highlight,
                     shadow,
                 })
             })
@@ -356,7 +364,7 @@ smithay::render_elements! {
     pub OverviewRenderElement<R> where R: ImportAll + ImportMem;
     Preview = RelocateRenderElement<RescaleRenderElement<GlideWindowRenderElement<R>>>,
     Solid = SolidColorRenderElement,
-    Label = MemoryRenderBufferRenderElement<R>,
+    Buffer = MemoryRenderBufferRenderElement<R>,
 }
 
 impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
@@ -364,13 +372,13 @@ impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
         match self {
             Self::Preview(e) => f.debug_tuple("Preview").field(e).finish(),
             Self::Solid(e) => f.debug_tuple("Solid").field(e).finish(),
-            Self::Label(e) => f.debug_tuple("Label").field(e).finish(),
+            Self::Buffer(e) => f.debug_tuple("Buffer").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
     }
 }
 
-const PREVIEW_SHADOW_BANDS: usize = 4;
+const PREVIEW_SHADOW_BANDS: usize = 32;
 
 #[allow(clippy::too_many_arguments)]
 fn push_shadow_rings<R>(
@@ -513,13 +521,14 @@ impl OverviewUi {
                 None,
                 Kind::Unspecified,
             ) {
-                elements.push(OverviewRenderElement::Label(element));
+                elements.push(OverviewRenderElement::Buffer(element));
             }
         }
         elements
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[profiling::function]
     pub fn render<R, F>(
         &mut self,
         renderer: &mut R,
@@ -557,28 +566,60 @@ impl OverviewUi {
         ));
 
         let hover_t = self.hover_progress();
-        if let (Some((_, rect, _)), true) = (
-            entries.iter().find(|(_, _, hovered)| *hovered),
-            hover_t > 0.0,
-        ) {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let border = (f64::from(theme.border) * hover_t).round() as i32;
-            if border > 0 {
-                let strips = crate::decoration::border_rects(rect.size.w, rect.size.h, border);
-                #[allow(clippy::cast_possible_truncation)]
-                let alpha = hover_t as f32;
-                for (buf, (offset, size)) in self.highlight.iter_mut().zip(strips) {
-                    buf.update((size.w, size.h), theme.highlight.0);
-                    let pos = Point::from((rect.loc.x + offset.x, rect.loc.y + offset.y));
-                    elements.push(OverviewRenderElement::Solid(
-                        SolidColorRenderElement::from_buffer(
-                            buf,
-                            pos.to_f64().to_physical(scale).to_i32_round(),
-                            scale,
-                            alpha,
+        if hover_t > 0.0 {
+            if let Some(hover_id) = hover {
+                if let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id) {
+                    let rect = preview.rect_at(t);
+                    let (w, h) = (rect.size.w, rect.size.h);
+                    let needs_redraw = preview.highlight.as_ref().is_none_or(
+                        |(cached_w, cached_h, cached_scale, _)| {
+                            *cached_w != w || *cached_h != h || *cached_scale != output_scale
+                        },
+                    );
+
+                    if needs_redraw {
+                        let (pw, ph) = (w * output_scale, h * output_scale);
+                        if let Ok(pixels) = usize::try_from(pw * ph * 4) {
+                            let mut buf = vec![0u8; pixels];
+                            #[allow(clippy::cast_precision_loss)]
+                            let radius = 12.0 * output_scale as f32; // --r-3 is 12px
+                            let border_width = theme.border as f32 * output_scale as f32;
+                            crate::paint::draw_inset_border(
+                                &mut buf,
+                                pw,
+                                ph,
+                                border_width,
+                                radius,
+                                theme.highlight,
+                            );
+                            let memory = MemoryRenderBuffer::from_slice(
+                                &buf,
+                                smithay::backend::allocator::Fourcc::Argb8888,
+                                (pw, ph),
+                                output_scale,
+                                Transform::Normal,
+                                None,
+                            );
+                            preview.highlight = Some((w, h, output_scale, memory));
+                        }
+                    }
+
+                    if let Some((_, _, _, memory)) = preview.highlight.as_ref() {
+                        let pos = rect.loc.to_f64().to_physical(scale);
+                        #[allow(clippy::cast_possible_truncation)]
+                        let alpha = hover_t as f32;
+                        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                            renderer,
+                            pos,
+                            memory,
+                            Some(alpha),
+                            None,
+                            None,
                             Kind::Unspecified,
-                        ),
-                    ));
+                        ) {
+                            elements.push(OverviewRenderElement::Buffer(element));
+                        }
+                    }
                 }
             }
         }

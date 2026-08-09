@@ -41,7 +41,7 @@ pub struct GeneralConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            background: Color::from_hex("#295396ff").unwrap(),
+            background: Color::from_hex("#222c3cff").unwrap(),
             autostart: vec!["alacritty".to_string()],
         }
     }
@@ -436,10 +436,10 @@ action = "quit"
     }
 
     #[test]
-    fn general_config_defaults_to_the_previous_hardcoded_fill_color() {
+    fn general_config_defaults_to_meridian_dark_theme_wallpaper_color() {
         assert_eq!(
             GeneralConfig::default().background,
-            Color::from_hex("#295396ff").unwrap()
+            Color::from_hex("#222c3cff").unwrap()
         );
     }
 
@@ -500,8 +500,6 @@ close-button = \"#333333\"
 close-button-hover = \"#444444\"
 maximize-button = \"#555555\"
 maximize-button-hover = \"#666666\"
-chevron-button = \"#777777\"
-chevron-button-hover = \"#888888\"
 menu-background = \"#999999\"
 menu-item-hover = \"#aaaaaa\"
 icon = \"#bbbbbb\"

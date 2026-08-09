@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn matches_the_titlebar_button_cluster_geometry_exactly() {
-        let (w, h, bw) = (800, 32, 32);
+        let (w, h, bw) = (800, 48, 48);
         let rects = layout_row(
             rect(0, 0, w, h),
             &[
@@ -135,7 +135,7 @@ mod tests {
         );
         assert_eq!(rects[0], rect(0, 0, bw, h), "maximize");
         assert_eq!(rects[1], rect(bw, 0, w - 3 * bw, h), "drag");
-        assert_eq!(rects[2], rect(w - 2 * bw, 0, bw, h), "chevron");
+        assert_eq!(rects[2], rect(w - 2 * bw, 0, bw, h), "third fixed track");
         assert_eq!(rects[3], rect(w - bw, 0, bw, h), "close");
     }
 

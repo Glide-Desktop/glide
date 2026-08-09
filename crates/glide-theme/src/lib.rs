@@ -94,8 +94,6 @@ pub struct DecorationTheme {
     pub close_button_hover: Color,
     pub maximize_button: Color,
     pub maximize_button_hover: Color,
-    pub chevron_button: Color,
-    pub chevron_button_hover: Color,
     pub menu_background: Color,
     pub menu_item_hover: Color,
     pub icon: Color,
@@ -105,33 +103,35 @@ pub struct DecorationTheme {
     pub border_focused: Color,
     pub shadow: bool,
     pub shadow_size: u32,
+    pub shadow_size_focused: u32,
     pub shadow_color: Color,
+    pub shadow_color_focused: Color,
 }
 
 impl Default for DecorationTheme {
     fn default() -> Self {
         Self {
-            height: 32,
+            height: 48,
             title_align: TitleAlign::Left,
-            corner_radius: 8.0,
-            background: Color::from_hex("#1e1e26ff").unwrap(),
-            background_focused: Color::from_hex("#4c6ef5ff").unwrap(),
-            maximize_button: Color([0.0, 0.0, 0.0, 0.0]),
-            maximize_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
-            chevron_button: Color([0.0, 0.0, 0.0, 0.0]),
-            chevron_button_hover: Color::from_hex("#5a5a72ff").unwrap(),
-            close_button: Color([0.0, 0.0, 0.0, 0.0]),
-            close_button_hover: Color::from_hex("#e0455aff").unwrap(),
-            menu_background: Color::from_hex("#28282fff").unwrap(),
-            menu_item_hover: Color::from_hex("#4c6ef5ff").unwrap(),
-            icon: Color::from_hex("#dcdcdcff").unwrap(),
-            close_icon: Color::from_hex("#ffffffff").unwrap(),
+            corner_radius: 12.0,
+            background: Color::from_hex("#222126ff").unwrap(),
+            background_focused: Color::from_hex("#29282dff").unwrap(),
+            maximize_button: Color::from_hex("#ffffff12").unwrap(),
+            maximize_button_hover: Color::from_hex("#2f6fd0ff").unwrap(),
+            close_button: Color::from_hex("#ffffff12").unwrap(),
+            close_button_hover: Color::from_hex("#f0796fff").unwrap(),
+            menu_background: Color::from_hex("#2f2e34ff").unwrap(),
+            menu_item_hover: Color::from_hex("#ffffff12").unwrap(),
+            icon: Color::from_hex("#f2f0edad").unwrap(),
+            close_icon: Color::from_hex("#f2f0edad").unwrap(),
             border_width: 1,
-            border: Color::from_hex("#3a3a4aff").unwrap(),
-            border_focused: Color::from_hex("#4c6ef5ff").unwrap(),
+            border: Color::from_hex("#ffffff0d").unwrap(),
+            border_focused: Color::from_hex("#ffffff1a").unwrap(),
             shadow: true,
-            shadow_size: 16,
+            shadow_size: 32,
+            shadow_size_focused: 68,
             shadow_color: Color::from_hex("#00000066").unwrap(),
+            shadow_color_focused: Color::from_hex("#00000099").unwrap(),
         }
     }
 }
@@ -157,19 +157,19 @@ pub struct OverviewTheme {
 impl Default for OverviewTheme {
     fn default() -> Self {
         Self {
-            gap: 32,
-            label_height: 24,
+            gap: 48,
+            label_height: 28,
             max_scale: 1.0,
             label: true,
-            label_color: Color::from_hex("#ffffffff").unwrap(),
-            label_background: Color::from_hex("#141419e6").unwrap(),
-            dim: Color::from_hex("#0b0b0fcc").unwrap(),
-            highlight: Color::from_hex("#3b5bdbff").unwrap(),
-            border: 4,
+            label_color: Color::from_hex("#f2f0edff").unwrap(),
+            label_background: Color::from_hex("#2f2e34ff").unwrap(),
+            dim: Color::from_hex("#100f0e66").unwrap(),
+            highlight: Color::from_hex("#2f6fd0ff").unwrap(),
+            border: 3,
             shadow: true,
-            shadow_size: 20,
-            shadow_color: Color::from_hex("#00000066").unwrap(),
-            duration_ms: 220,
+            shadow_size: 44,
+            shadow_color: Color::from_hex("#0000004d").unwrap(),
+            duration_ms: 420,
         }
     }
 }
@@ -292,20 +292,21 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn decoration_theme_buttons_are_transparent_at_rest() {
+    fn decoration_theme_buttons_are_subtle_at_rest() {
         let d = DecorationTheme::default();
-        assert_eq!(d.maximize_button.0[3], 0.0, "maximize must be transparent");
-        assert_eq!(d.chevron_button.0[3], 0.0, "chevron must be transparent");
-        assert_eq!(d.close_button.0[3], 0.0, "close must be transparent");
+        assert!(
+            (d.maximize_button.0[3] - 0.07).abs() < 0.01,
+            "maximize must be subtle"
+        );
+        assert!(
+            (d.close_button.0[3] - 0.07).abs() < 0.01,
+            "close must be subtle"
+        );
     }
 
     #[test]
     fn decoration_theme_close_hover_is_the_odd_one_out() {
         let d = DecorationTheme::default();
-        assert_eq!(
-            d.maximize_button_hover, d.chevron_button_hover,
-            "maximize and chevron should read as one neutral group"
-        );
         let [r, g, b, _] = d.close_button_hover.0;
         assert!(
             r > g && r > b,
@@ -331,8 +332,6 @@ close-button = \"#333333\"
 close-button-hover = \"#444444\"
 maximize-button = \"#555555\"
 maximize-button-hover = \"#666666\"
-chevron-button = \"#777777\"
-chevron-button-hover = \"#888888\"
 menu-background = \"#999999\"
 menu-item-hover = \"#aaaaaa\"
 icon = \"#bbbbbb\"
@@ -342,7 +341,9 @@ border = \"#dddddd\"
 border-focused = \"#eeeeee\"
 shadow = false
 shadow-size = 24
+shadow-size-focused = 36
 shadow-color = \"#000000aa\"
+shadow-color-focused = \"#000000bb\"
 ";
         let theme: DecorationTheme = toml::from_str(toml_str).unwrap();
         assert_eq!(theme.height, 40);
@@ -351,6 +352,12 @@ shadow-color = \"#000000aa\"
         assert_eq!(theme.border_width, 2);
         assert!(!theme.shadow);
         assert_eq!(theme.shadow_size, 24);
+        assert_eq!(theme.shadow_size_focused, 36);
+        assert_eq!(theme.shadow_color, Color::from_hex("#000000aa").unwrap());
+        assert_eq!(
+            theme.shadow_color_focused,
+            Color::from_hex("#000000bb").unwrap()
+        );
     }
 
     #[test]

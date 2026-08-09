@@ -13,7 +13,7 @@ name = "glide"
 path = "src/main.rs"
 
 [features]
-profile-with-tracy = ["profiling/profile-with-tracy"]
+profile-with-tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
 
 [dependencies]
 tracing.workspace = true
@@ -34,8 +34,8 @@ glide-layout = { path = "../glide-layout" }
 glide-paint = { path = "../glide-paint" }
 glide-theme = { path = "../glide-theme" }
 glide-ui = { path = "../glide-ui" }
-profiling = { version = "1.0.18", features = ["profile-with-tracy"] }
-tracy-client = "0.18.4"
+profiling = "1.0.18"
+tracy-client = { version = "0.18.4", optional = true }
 
 [dependencies.smithay]
 workspace = true

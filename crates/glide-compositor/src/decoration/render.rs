@@ -1,36 +1,32 @@
 use smithay::{
-    backend::{
-        allocator::Fourcc,
-        renderer::element::{memory::MemoryRenderBuffer, solid::SolidColorBuffer},
-    },
+    backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::{Logical, Point, Rectangle, Size, Transform},
 };
 
 use crate::{config::Color, paint::Painter, window::GlideWindow};
 
-use super::{BUTTON_WIDTH, BorderStrip, DecorationBuffer, RESIZE_BORDER};
+use super::{BUTTON_PAD_X, BUTTON_PAD_Y, BUTTON_SIZE, DecorationBuffer};
 
 pub(crate) fn redraw_button(
     buf: &mut Option<MemoryRenderBuffer>,
-    height: i32,
     scale: i32,
     bg: Color,
     fg: Color,
     icon: fn(&mut [u8], i32, i32, i32, Color, Color),
 ) {
-    let w = BUTTON_WIDTH;
-    let (pw, ph) = (w * scale, height * scale);
+    let (pw, ph) = (BUTTON_SIZE * scale, BUTTON_SIZE * scale);
     let buf = buf.get_or_insert_with(|| {
         MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
     });
     let mut ctx = buf.render();
     ctx.resize((pw, ph));
     let _ = ctx.draw(|pixels| {
-        icon(pixels, w, height, scale, fg, bg);
+        icon(pixels, BUTTON_SIZE, BUTTON_SIZE, scale, fg, bg);
         Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
     });
 }
 
+#[profiling::function]
 pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationBuffer> {
     let Some(mut state) = window.try_decoration_state_mut() else {
         return Vec::new();
@@ -78,21 +74,14 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
     if let Some(buf) = &header.maximize_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
-            offset: Point::from((0, 0)),
+            offset: Point::from((BUTTON_PAD_X, BUTTON_PAD_Y)),
         });
     }
 
     if let Some(buf) = &header.close_buf {
         out.push(DecorationBuffer {
             buf: buf.clone(),
-            offset: Point::from((header.width - BUTTON_WIDTH, 0)),
-        });
-    }
-
-    if let Some(buf) = &header.chevron_buf {
-        out.push(DecorationBuffer {
-            buf: buf.clone(),
-            offset: Point::from((header.width - BUTTON_WIDTH * 2, 0)),
+            offset: Point::from((header.width - BUTTON_PAD_X - BUTTON_SIZE, BUTTON_PAD_Y)),
         });
     }
 
@@ -166,93 +155,102 @@ pub(crate) fn shadow_rects(
     out
 }
 
-pub fn border_strips(window: &GlideWindow) -> Vec<BorderStrip> {
-    let Some(mut state) = window.try_decoration_state_mut() else {
-        return Vec::new();
-    };
+pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<DecorationBuffer> {
+    let mut state = window.try_decoration_state_mut()?;
     if !state.header.is_decorated() {
-        return Vec::new();
+        return None;
     }
 
     let width = state.header.width;
     let frame_height = state.header.height + state.header.content_height;
-    let border_width = i32::try_from(state.header.theme.border_width)
-        .unwrap_or(RESIZE_BORDER)
-        .clamp(0, RESIZE_BORDER);
-    if border_width == 0 || width <= 0 || frame_height <= 0 {
-        return Vec::new();
+    if width <= 0 || frame_height <= 0 {
+        return None;
     }
 
-    let color = if state.header.focused {
-        state.header.theme.border_focused
+    let is_focused = state.header.focused;
+    let theme = &state.header.theme;
+
+    let border_width = i32::try_from(theme.border_width)
+        .unwrap_or(super::RESIZE_BORDER)
+        .clamp(0, super::RESIZE_BORDER);
+
+    let border_color = if is_focused {
+        theme.border_focused
     } else {
-        state.header.theme.border
-    }
-    .0;
-
-    let [top, bottom, left, right] = border_rects(width, frame_height, border_width);
-    let border = &mut state.border;
-    let mut out = Vec::with_capacity(4);
-
-    border.top.update(top.1, color);
-    out.push(BorderStrip {
-        buf: border.top.clone(),
-        offset: top.0,
-    });
-
-    border.bottom.update(bottom.1, color);
-    out.push(BorderStrip {
-        buf: border.bottom.clone(),
-        offset: bottom.0,
-    });
-
-    border.left.update(left.1, color);
-    out.push(BorderStrip {
-        buf: border.left.clone(),
-        offset: left.0,
-    });
-
-    border.right.update(right.1, color);
-    out.push(BorderStrip {
-        buf: border.right.clone(),
-        offset: right.0,
-    });
-
-    out
-}
-
-pub fn shadow_strips(window: &GlideWindow) -> Vec<BorderStrip> {
-    let Some(mut state) = window.try_decoration_state_mut() else {
-        return Vec::new();
+        theme.border
     };
-    if !state.header.is_decorated() || !state.header.theme.shadow {
-        return Vec::new();
+
+    let (shadow_size, shadow_color) = if theme.shadow {
+        if is_focused {
+            (
+                i32::try_from(theme.shadow_size_focused).unwrap_or(0),
+                theme.shadow_color_focused,
+            )
+        } else {
+            (
+                i32::try_from(theme.shadow_size).unwrap_or(0),
+                theme.shadow_color,
+            )
+        }
+    } else {
+        (0, crate::config::Color([0.0, 0.0, 0.0, 0.0]))
+    };
+
+    let margin = shadow_size + border_width;
+    if margin <= 0 {
+        return None;
     }
 
-    let width = state.header.width;
-    let frame_height = state.header.height + state.header.content_height;
-    let shadow_size = i32::try_from(state.header.theme.shadow_size).unwrap_or(0);
-    let rects = shadow_rects(width, frame_height, shadow_size, super::SHADOW_BANDS);
-    if rects.is_empty() {
-        return Vec::new();
+    let w = width;
+    let h = frame_height;
+
+    let needs_redraw = state
+        .box_deco
+        .as_ref()
+        .is_none_or(|(cw, ch, cscale, _)| *cw != w || *ch != h || *cscale != scale);
+
+    if needs_redraw {
+        let physical_w = w * scale;
+        let physical_h = h * scale;
+        let physical_margin = margin * scale;
+        let buf_w = physical_w + physical_margin * 2;
+        let buf_h = physical_h + physical_margin * 2;
+
+        if let Ok(pixels) = usize::try_from(buf_w * buf_h * 4) {
+            let mut buf = vec![0u8; pixels];
+
+            crate::paint::draw_outset_shadow_and_border(
+                &mut buf,
+                buf_w,
+                buf_h,
+                physical_w as f32,
+                physical_h as f32,
+                (shadow_size * scale) as f32,
+                super::SHADOW_BANDS,
+                shadow_color,
+                (border_width * scale) as f32,
+                border_color,
+                super::MENU_CORNER_RADIUS * scale as f32, // Window radius is same as menu
+            );
+
+            let memory = MemoryRenderBuffer::from_slice(
+                &buf,
+                Fourcc::Argb8888,
+                (buf_w, buf_h),
+                scale,
+                Transform::Normal,
+                None,
+            );
+            state.box_deco = Some((w, h, scale, memory));
+        }
     }
 
-    let base_color = state.header.theme.shadow_color.0;
-    state
-        .shadow
-        .rings
-        .resize_with(rects.len(), SolidColorBuffer::default);
-
-    let mut out = Vec::with_capacity(rects.len());
-    for ((offset, size, ring_alpha), buf) in rects.into_iter().zip(state.shadow.rings.iter_mut()) {
-        let mut color = base_color;
-        color[3] *= ring_alpha;
-        buf.update(size, color);
-        out.push(BorderStrip {
-            buf: buf.clone(),
-            offset,
-        });
+    if let Some((_, _, _, memory)) = state.box_deco.as_ref() {
+        Some(DecorationBuffer {
+            buf: memory.clone(),
+            offset: Point::from((-margin, -margin)),
+        })
+    } else {
+        None
     }
-
-    out
 }

@@ -6,7 +6,7 @@ mod render;
 use std::cell::{Ref, RefCell, RefMut};
 
 use smithay::{
-    backend::renderer::element::{memory::MemoryRenderBuffer, solid::SolidColorBuffer},
+    backend::renderer::element::memory::MemoryRenderBuffer,
     utils::{Logical, Point},
 };
 
@@ -14,9 +14,9 @@ use crate::{config::DecorationTheme, window::GlideWindow};
 
 pub use header::HeaderBar;
 pub use input::Decoration;
-pub use render::{border_strips, frame_buffers, shadow_strips};
+pub use render::{frame_buffers, shadow_and_border_buffer};
 
-pub(crate) use render::{border_rects, shadow_rects};
+pub(crate) use render::shadow_rects;
 
 #[cfg(test)]
 use crate::grabs::resize_grab::ResizeEdge;
@@ -26,10 +26,12 @@ use header::{DecorationAction, HitZone, row_corners};
 use input::resize_cursor;
 #[cfg(test)]
 use menu::MenuItem;
+#[cfg(test)]
+use render::border_rects;
 
-pub const BUTTON_WIDTH: i32 = 32;
-
-const RIGHT_CLUSTER_WIDTH: i32 = BUTTON_WIDTH * 2;
+pub const BUTTON_SIZE: i32 = 26;
+pub const BUTTON_PAD_X: i32 = 8;
+pub const BUTTON_PAD_Y: i32 = 11;
 
 pub const RESIZE_BORDER: i32 = 8;
 
@@ -45,36 +47,17 @@ const PRESSED_DARKEN: f32 = 0.8;
 
 const BUTTON_HOVER_ANIM: std::time::Duration = std::time::Duration::from_millis(100);
 
-const SHADOW_BANDS: usize = 6;
+const SHADOW_BANDS: usize = 64;
 
 #[derive(Debug, Default)]
 pub struct DecorationState {
     pub header: HeaderBar,
-    pub border: BorderState,
-    pub shadow: ShadowState,
+    pub box_deco: Option<(i32, i32, i32, MemoryRenderBuffer)>,
 }
 
 pub struct DecorationBuffer {
     pub buf: MemoryRenderBuffer,
     pub offset: Point<i32, Logical>,
-}
-
-#[derive(Debug, Default)]
-pub struct BorderState {
-    pub(crate) top: SolidColorBuffer,
-    pub(crate) bottom: SolidColorBuffer,
-    pub(crate) left: SolidColorBuffer,
-    pub(crate) right: SolidColorBuffer,
-}
-
-pub struct BorderStrip {
-    pub buf: SolidColorBuffer,
-    pub offset: Point<i32, Logical>,
-}
-
-#[derive(Debug, Default)]
-pub struct ShadowState {
-    pub(crate) rings: Vec<SolidColorBuffer>,
 }
 
 impl GlideWindow {
@@ -128,12 +111,6 @@ impl GlideWindow {
             state.header.sync(theme, focused, maximized, scale);
         }
     }
-
-    pub fn sync_title(&self, title: String) {
-        if let Some(mut state) = self.try_decoration_state_mut() {
-            state.header.set_title(title);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -179,6 +156,15 @@ mod tests {
         }
     }
 
+    fn right_press() -> ButtonEvent {
+        ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 0,
+            button: 0x111,
+            state: ButtonState::Pressed,
+        }
+    }
+
     mod scale {
         use super::*;
 
@@ -200,7 +186,6 @@ mod tests {
             let mut h = header();
             h.titlebar_buf = Some(MemoryRenderBuffer::default());
             h.maximize_buf = Some(MemoryRenderBuffer::default());
-            h.chevron_buf = Some(MemoryRenderBuffer::default());
             h.close_buf = Some(MemoryRenderBuffer::default());
             h.menu_row_bufs.push(MemoryRenderBuffer::default());
 
@@ -208,7 +193,6 @@ mod tests {
 
             assert!(h.titlebar_buf.is_none());
             assert!(h.maximize_buf.is_none());
-            assert!(h.chevron_buf.is_none());
             assert!(h.close_buf.is_none());
             assert!(h.menu_row_bufs.is_empty());
         }
@@ -277,7 +261,7 @@ mod tests {
         #[test]
         fn hover_leaving_every_button_stops_the_animation_immediately() {
             let mut h = header();
-            h.button_hover_progress(Some(HitZone::Chevron));
+            h.button_hover_progress(Some(HitZone::Maximize));
             assert!(h.is_hover_animating());
 
             assert_eq!(h.button_hover_progress(None), 1.0);
@@ -289,15 +273,16 @@ mod tests {
         use super::*;
 
         #[test]
-        fn matches_the_theme_shadow_size_when_enabled() {
+        fn matches_the_larger_of_the_two_theme_shadow_sizes_when_enabled() {
             let mut h = header();
             let theme = DecorationTheme {
                 shadow: true,
                 shadow_size: 20,
+                shadow_size_focused: 50,
                 ..DecorationTheme::default()
             };
             h.sync(&theme, false, false, 1);
-            assert_eq!(h.shadow_margin(), 20);
+            assert_eq!(h.shadow_margin(), 50);
         }
 
         #[test]
@@ -306,6 +291,7 @@ mod tests {
             let theme = DecorationTheme {
                 shadow: false,
                 shadow_size: 20,
+                shadow_size_focused: 50,
                 ..DecorationTheme::default()
             };
             h.sync(&theme, false, false, 1);
@@ -334,6 +320,11 @@ mod tests {
         #[test]
         fn middle_row_rounds_nothing() {
             assert_eq!(row_corners(1, 3), [false, false, false, false]);
+        }
+
+        #[test]
+        fn zero_total_does_not_panic() {
+            assert_eq!(row_corners(0, 0), [true, true, false, false]);
         }
     }
 
@@ -556,23 +547,31 @@ mod tests {
         use super::*;
 
         #[test]
-        fn maximize_is_alone_on_the_left_chevron_and_close_cluster_on_the_right() {
+        fn maximize_is_far_left_and_close_is_far_right() {
             let h = header();
-            assert_eq!(h.zone_at(16.0), HitZone::Maximize);
-            assert_eq!(h.zone_at(400.0), HitZone::Drag);
-            assert_eq!(h.zone_at(750.0), HitZone::Chevron);
-            assert_eq!(h.zone_at(780.0), HitZone::Close);
+            assert_eq!(h.zone_at(16.0, 16.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(400.0, 16.0), HitZone::Drag);
+            assert_eq!(h.zone_at(780.0, 16.0), HitZone::Close);
         }
 
         #[test]
         fn zone_boundaries_are_exact() {
             let h = header();
-            assert_eq!(h.zone_at(31.999), HitZone::Maximize);
-            assert_eq!(h.zone_at(32.0), HitZone::Drag);
-            assert_eq!(h.zone_at(735.999), HitZone::Drag);
-            assert_eq!(h.zone_at(736.0), HitZone::Chevron);
-            assert_eq!(h.zone_at(767.999), HitZone::Chevron);
-            assert_eq!(h.zone_at(768.0), HitZone::Close);
+            assert_eq!(h.zone_at(7.999, 16.0), HitZone::Drag);
+            assert_eq!(h.zone_at(8.0, 16.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(33.999, 16.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(34.0, 16.0), HitZone::Drag);
+            assert_eq!(h.zone_at(765.999, 16.0), HitZone::Drag);
+            assert_eq!(h.zone_at(766.0, 16.0), HitZone::Close);
+            assert_eq!(h.zone_at(791.999, 16.0), HitZone::Close);
+            assert_eq!(h.zone_at(792.0, 16.0), HitZone::Drag);
+        }
+
+        #[test]
+        fn outside_the_vertical_button_band_is_always_drag() {
+            let h = header();
+            assert_eq!(h.zone_at(16.0, 5.0), HitZone::Drag, "above the band");
+            assert_eq!(h.zone_at(16.0, 37.0), HitZone::Drag, "below the band");
         }
     }
 
@@ -688,19 +687,28 @@ mod tests {
         }
 
         #[test]
-        fn chevron_opens_the_menu_then_an_item_click_runs_it() {
+        fn right_click_on_the_strip_opens_the_menu_then_a_row_release_runs_it() {
             let mut h = header();
 
-            h.pointer_enter(point(750.0, 16.0));
-            assert_eq!(h.on_button(&release()), None);
+            h.pointer_enter(point(400.0, 16.0));
+            assert_eq!(h.on_button(&right_press()), None);
             assert!(h.menu_open);
 
-            h.pointer_enter(point(750.0, 48.0));
+            h.pointer_enter(point(400.0, 48.0));
             assert_eq!(
                 h.on_button(&release()),
                 Some(DecorationAction::Run(MenuItem::Minimize))
             );
             assert!(!h.menu_open, "any release closes the menu");
+        }
+
+        #[test]
+        fn a_second_press_while_the_menu_is_open_is_ignored() {
+            let mut h = header();
+            h.menu_open = true;
+            h.pointer_enter(point(400.0, 16.0));
+
+            assert_eq!(h.on_button(&press()), None);
         }
 
         #[test]

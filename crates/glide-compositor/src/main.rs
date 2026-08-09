@@ -83,7 +83,7 @@ fn run() -> anyhow::Result<()> {
         state.space.refresh();
         state.popups.cleanup();
 
-        if state.tick_overview() | state.any_button_hover_animating() {
+        if state.tick_overview() || state.any_button_hover_animating() {
             state.queue_redraw();
         }
 
