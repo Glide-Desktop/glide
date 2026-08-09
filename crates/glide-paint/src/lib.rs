@@ -7,14 +7,15 @@
     clippy::too_many_arguments
 )]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use cosmic_text::{
-    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap,
-    fontdb,
+    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
+    Wrap, fontdb,
 };
 
-use glide_theme::Color;
+use glide_theme::{Color, TextStyle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAlign {
@@ -49,9 +50,21 @@ pub fn current() -> Arc<Painter> {
     slot.clone().unwrap_or_else(|| Arc::new(Painter::new(14.0)))
 }
 
+const DEFAULT_WEIGHT: u16 = Weight::NORMAL.0;
+const DEFAULT_TRACKING_EM: f32 = 0.0;
+
+const MAX_CACHED_TEXTS_PER_STYLE: usize = 512;
+
+type StyleKey = (u32, u16, u32);
+
+fn style_key(font_size: f32, weight: u16, tracking_em: f32) -> StyleKey {
+    (font_size.to_bits(), weight, tracking_em.to_bits())
+}
+
 pub struct Painter {
     font_system: Mutex<FontSystem>,
     swash_cache: Mutex<SwashCache>,
+    width_cache: Mutex<HashMap<StyleKey, HashMap<String, f32>>>,
     font_size: f32,
     family: String,
 }
@@ -85,16 +98,29 @@ impl Painter {
         Self {
             font_system: Mutex::new(font_system),
             swash_cache: Mutex::new(SwashCache::new()),
+            width_cache: Mutex::new(HashMap::new()),
             font_size,
             family: DEFAULT_FAMILY.to_string(),
         }
     }
 
-    fn shape(&self, font_system: &mut FontSystem, text: &str, font_size: f32) -> Buffer {
+    fn shape(
+        &self,
+        font_system: &mut FontSystem,
+        text: &str,
+        font_size: f32,
+        weight: u16,
+        tracking_em: f32,
+    ) -> Buffer {
         let metrics = Metrics::new(font_size, font_size * 1.2);
         let mut buffer = Buffer::new(font_system, metrics);
         buffer.set_wrap(Wrap::None);
-        let attrs = Attrs::new().family(Family::Name(&self.family));
+        let mut attrs = Attrs::new()
+            .family(Family::Name(&self.family))
+            .weight(Weight(weight));
+        if tracking_em != DEFAULT_TRACKING_EM {
+            attrs = attrs.letter_spacing(tracking_em);
+        }
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(font_system, false);
         buffer
@@ -116,41 +142,114 @@ impl Painter {
         }
     }
 
-    fn measure_width_at(&self, text: &str, font_size: f32) -> f32 {
-        if text.is_empty() {
-            return 0.0;
-        }
+    fn measure_width_uncached(
+        &self,
+        text: &str,
+        font_size: f32,
+        weight: u16,
+        tracking_em: f32,
+    ) -> f32 {
         let mut font_system = self
             .font_system
             .lock()
             .expect("single-threaded event loop, this lock is never poisoned");
-        let mut buffer = self.shape(&mut font_system, text, font_size);
+        let mut buffer = self.shape(&mut font_system, text, font_size, weight, tracking_em);
         Self::line_metrics(&mut font_system, &mut buffer).width
     }
 
-    fn fit_text_at(&self, text: &str, avail_w: i32, font_size: f32) -> String {
+    fn measure_width_cached(
+        &self,
+        text: &str,
+        font_size: f32,
+        weight: u16,
+        tracking_em: f32,
+    ) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let key = style_key(font_size, weight, tracking_em);
+
+        if let Some(width) = self
+            .width_cache
+            .lock()
+            .expect("single-threaded event loop, this lock is never poisoned")
+            .get(&key)
+            .and_then(|by_text| by_text.get(text))
+        {
+            return *width;
+        }
+
+        let width = self.measure_width_uncached(text, font_size, weight, tracking_em);
+
+        let mut cache = self
+            .width_cache
+            .lock()
+            .expect("single-threaded event loop, this lock is never poisoned");
+        let by_text = cache.entry(key).or_default();
+        if by_text.len() >= MAX_CACHED_TEXTS_PER_STYLE {
+            by_text.clear();
+        }
+        by_text.insert(text.to_owned(), width);
+
+        width
+    }
+
+    fn fit_text_at(
+        &self,
+        text: &str,
+        avail_w: i32,
+        font_size: f32,
+        weight: u16,
+        tracking_em: f32,
+    ) -> String {
         let avail_w = avail_w as f32;
         if avail_w <= 0.0 {
             return String::new();
         }
-        if self.measure_width_at(text, font_size) <= avail_w {
+        if self.measure_width_cached(text, font_size, weight, tracking_em) <= avail_w {
             return text.to_owned();
         }
 
-        let mut chars: Vec<char> = text.chars().collect();
-        while !chars.is_empty() {
-            chars.pop();
-            let candidate: String = chars.iter().collect::<String>() + "…";
-            if self.measure_width_at(&candidate, font_size) <= avail_w {
-                return candidate;
+        let chars: Vec<char> = text.chars().collect();
+        let candidate_at = |k: usize| -> String { chars[..k].iter().collect::<String>() + "…" };
+        let fits = |k: usize| -> bool {
+            self.measure_width_cached(&candidate_at(k), font_size, weight, tracking_em) <= avail_w
+        };
+
+        if chars.is_empty() || !fits(0) {
+            return String::new();
+        }
+
+        let mut lo = 0usize;
+        let mut hi = chars.len() - 1;
+        while lo < hi {
+            let mid = lo + (hi - lo).div_ceil(2);
+            if fits(mid) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
             }
         }
-        String::new()
+        candidate_at(lo)
     }
 
     #[must_use]
     pub fn text_width(&self, text: &str) -> f32 {
-        self.measure_width_at(text, self.font_size)
+        self.measure_width_cached(text, self.font_size, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM)
+    }
+
+    #[must_use]
+    pub fn text_width_styled(&self, text: &str, style: &TextStyle) -> f32 {
+        let text = Self::apply_case(text, style);
+        self.measure_width_cached(&text, style.size_px, style.weight, style.tracking_em)
+    }
+
+    fn apply_case<'a>(text: &'a str, style: &TextStyle) -> std::borrow::Cow<'a, str> {
+        if style.uppercase {
+            std::borrow::Cow::Owned(text.to_uppercase())
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -166,15 +265,80 @@ impl Painter {
         text: &str,
         fg_argb: [u8; 4],
     ) {
+        #[allow(clippy::cast_precision_loss)]
+        let font_size = self.font_size * scale as f32;
+        self.draw_label_at(
+            buf,
+            width,
+            height,
+            x_min,
+            x_max,
+            scale,
+            align,
+            text,
+            fg_argb,
+            font_size,
+            DEFAULT_WEIGHT,
+            DEFAULT_TRACKING_EM,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_label_over_styled(
+        &self,
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        x_min: i32,
+        x_max: i32,
+        scale: i32,
+        align: TextAlign,
+        text: &str,
+        fg_argb: [u8; 4],
+        style: &TextStyle,
+    ) {
+        let text = Self::apply_case(text, style);
+        #[allow(clippy::cast_precision_loss)]
+        let font_size = style.size_px * scale as f32;
+        self.draw_label_at(
+            buf,
+            width,
+            height,
+            x_min,
+            x_max,
+            scale,
+            align,
+            &text,
+            fg_argb,
+            font_size,
+            style.weight,
+            style.tracking_em,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_label_at(
+        &self,
+        buf: &mut [u8],
+        width: i32,
+        height: i32,
+        x_min: i32,
+        x_max: i32,
+        scale: i32,
+        align: TextAlign,
+        text: &str,
+        fg_argb: [u8; 4],
+        font_size: f32,
+        weight: u16,
+        tracking_em: f32,
+    ) {
         let (pw, ph) = (width * scale, height * scale);
         if pw <= 0 || ph <= 0 || buf.len() < (pw * ph * 4) as usize {
             return;
         }
         let (px_min, px_max) = (x_min * scale, x_max * scale);
-        #[allow(clippy::cast_precision_loss)]
-        let font_size = self.font_size * scale as f32;
 
-        let text = self.fit_text_at(text, px_max - px_min, font_size);
+        let text = self.fit_text_at(text, px_max - px_min, font_size, weight, tracking_em);
         if text.is_empty() {
             return;
         }
@@ -188,7 +352,7 @@ impl Painter {
             .lock()
             .expect("single-threaded event loop, this lock is never poisoned");
 
-        let mut buffer = self.shape(&mut font_system, &text, font_size);
+        let mut buffer = self.shape(&mut font_system, &text, font_size, weight, tracking_em);
         let metrics = Self::line_metrics(&mut font_system, &mut buffer);
         if metrics.width <= 0.0 {
             return;
@@ -814,14 +978,29 @@ mod tests {
     #[test]
     fn fit_text_returns_input_unchanged_when_it_already_fits() {
         let painter = Painter::with_embedded_font_only(14.0);
-        assert_eq!(painter.fit_text_at("ok", 1000, painter.font_size), "ok");
+        assert_eq!(
+            painter.fit_text_at(
+                "ok",
+                1000,
+                painter.font_size,
+                DEFAULT_WEIGHT,
+                DEFAULT_TRACKING_EM
+            ),
+            "ok"
+        );
     }
 
     #[test]
     fn fit_text_truncates_with_an_ellipsis_when_too_narrow() {
         let painter = Painter::with_embedded_font_only(14.0);
         let long = "a very long window title that will not fit";
-        let fitted = painter.fit_text_at(long, 40, painter.font_size);
+        let fitted = painter.fit_text_at(
+            long,
+            40,
+            painter.font_size,
+            DEFAULT_WEIGHT,
+            DEFAULT_TRACKING_EM,
+        );
         assert!(fitted.ends_with('…'), "{fitted:?}");
         assert!(
             fitted.len() < long.len(),
@@ -830,25 +1009,151 @@ mod tests {
     }
 
     #[test]
+    fn fit_text_truncation_matches_a_naive_linear_search() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let long = "a very long window title that will not fit in the available space";
+        for avail_w in [10, 30, 60, 100, 200] {
+            let binary = painter.fit_text_at(
+                long,
+                avail_w,
+                painter.font_size,
+                DEFAULT_WEIGHT,
+                DEFAULT_TRACKING_EM,
+            );
+
+            let chars: Vec<char> = long.chars().collect();
+            let mut linear = String::new();
+            let mut probe = chars.clone();
+            while !probe.is_empty() {
+                probe.pop();
+                let candidate: String = probe.iter().collect::<String>() + "…";
+                if painter.measure_width_cached(
+                    &candidate,
+                    painter.font_size,
+                    DEFAULT_WEIGHT,
+                    DEFAULT_TRACKING_EM,
+                ) <= avail_w as f32
+                {
+                    linear = candidate;
+                    break;
+                }
+            }
+            assert_eq!(binary, linear, "avail_w={avail_w}");
+        }
+    }
+
+    #[test]
     fn fit_text_on_zero_width_is_empty() {
         let painter = Painter::with_embedded_font_only(14.0);
-        assert_eq!(painter.fit_text_at("anything", 0, painter.font_size), "");
+        assert_eq!(
+            painter.fit_text_at(
+                "anything",
+                0,
+                painter.font_size,
+                DEFAULT_WEIGHT,
+                DEFAULT_TRACKING_EM
+            ),
+            ""
+        );
     }
 
     #[test]
     fn fit_text_on_empty_input_is_empty() {
         let painter = Painter::with_embedded_font_only(14.0);
-        assert_eq!(painter.fit_text_at("", 1000, painter.font_size), "");
+        assert_eq!(
+            painter.fit_text_at(
+                "",
+                1000,
+                painter.font_size,
+                DEFAULT_WEIGHT,
+                DEFAULT_TRACKING_EM
+            ),
+            ""
+        );
     }
 
     #[test]
     fn measure_width_grows_with_a_larger_font_size() {
         let painter = Painter::with_embedded_font_only(14.0);
-        let small = painter.measure_width_at("Hello", 14.0);
-        let large = painter.measure_width_at("Hello", 28.0);
+        let small =
+            painter.measure_width_cached("Hello", 14.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
+        let large =
+            painter.measure_width_cached("Hello", 28.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
         assert!(
             large > small,
             "a 2x font size must measure a wider line, got small={small} large={large}"
+        );
+    }
+
+    #[test]
+    fn measure_width_cache_returns_the_same_value_as_an_uncached_measurement() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let cached =
+            painter.measure_width_cached("Hello, world", 14.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
+        let again =
+            painter.measure_width_cached("Hello, world", 14.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
+        let uncached = painter.measure_width_uncached(
+            "Hello, world",
+            14.0,
+            DEFAULT_WEIGHT,
+            DEFAULT_TRACKING_EM,
+        );
+        assert!((cached - uncached).abs() < f32::EPSILON);
+        assert!(
+            (cached - again).abs() < f32::EPSILON,
+            "a cache hit must not drift"
+        );
+    }
+
+    #[test]
+    fn style_key_is_distinct_per_weight_and_tracking() {
+        let base = style_key(14.0, 400, 0.0);
+        assert_ne!(
+            base,
+            style_key(14.0, 700, 0.0),
+            "weight must change the key"
+        );
+        assert_ne!(
+            base,
+            style_key(14.0, 400, 0.1),
+            "tracking must change the key"
+        );
+        assert_ne!(base, style_key(15.0, 400, 0.0), "size must change the key");
+        assert_eq!(
+            base,
+            style_key(14.0, 400, 0.0),
+            "identical inputs must collide"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn measure_width_cache_is_isolated_by_tracking() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let regular = painter.measure_width_cached("Hello, world", 14.0, 400, 0.0);
+        let tracked = painter.measure_width_cached("Hello, world", 14.0, 400, 0.3);
+        assert_ne!(regular, tracked, "letter-spacing must measure differently");
+    }
+
+    #[test]
+    fn text_width_styled_uppercases_when_the_style_asks_for_it() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let lower = painter.text_width_styled("micro", &TextStyle::MICRO);
+        let upper = painter.text_width_styled("MICRO", &TextStyle::MICRO);
+        assert!(
+            (lower - upper).abs() < 0.01,
+            "MICRO must uppercase its input before measuring, so both spellings measure the same"
+        );
+    }
+
+    #[test]
+    fn text_width_styled_reflects_the_roles_own_size_not_the_painters_default() {
+        let painter = Painter::with_embedded_font_only(16.0);
+        let small = painter.text_width_styled("Overview", &TextStyle::CAP);
+        let large = painter.text_width_styled("Overview", &TextStyle::DISPLAY);
+        assert!(
+            large > small,
+            "DISPLAY (36px) must measure wider than CAP (12px), got small={small} large={large}"
         );
     }
 

@@ -6,9 +6,11 @@ mod palette;
 pub mod shape;
 pub mod spacing;
 mod tokens;
+mod typography;
 
 pub use palette::Accent;
 pub use tokens::{Appearance, Tokens};
+pub use typography::TextStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color(pub [f32; 4]);
