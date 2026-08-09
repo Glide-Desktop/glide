@@ -62,6 +62,28 @@ impl XdgShellHandler for GlideState {
         self.cleanup_dead_windows();
     }
 
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        let Some(window) = self.window_map.get(&id) else {
+            return;
+        };
+        let title = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .and_then(|guard| guard.title.clone())
+        });
+        if let Some(title) = title
+            && let Some(mut deco) = window.try_decoration_state_mut()
+        {
+            deco.header.set_title(title);
+        }
+        self.queue_redraw();
+    }
+
     fn parent_changed(&mut self, surface: ToplevelSurface) {
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;

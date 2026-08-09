@@ -33,6 +33,7 @@ pub struct HeaderBar {
     pub(crate) button_hover: glide_ui::HoverAnimation<HitZone>,
 
     pub(crate) theme: DecorationTheme,
+    pub(crate) theme_rev: u32,
     pub(crate) focused: bool,
     pub(crate) maximized: bool,
     pub(crate) scale: i32,
@@ -41,6 +42,24 @@ pub struct HeaderBar {
     pub(crate) maximize_buf: Option<MemoryRenderBuffer>,
     pub(crate) close_buf: Option<MemoryRenderBuffer>,
     pub(crate) menu_row_bufs: Vec<MemoryRenderBuffer>,
+
+    pub(crate) last_redraw: Option<RedrawSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RedrawSnapshot {
+    width: i32,
+    height: i32,
+    scale: i32,
+    focused: bool,
+    maximized: bool,
+    theme_rev: u32,
+    title: String,
+    hovered: Option<HitZone>,
+    hover_t_bits: u32,
+    pressed: Option<HitZone>,
+    menu_open: bool,
+    menu_hover: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +124,7 @@ impl HeaderBar {
     ) {
         if &self.theme != theme {
             self.theme = theme.clone();
+            self.theme_rev = self.theme_rev.wrapping_add(1);
         }
         self.focused = focused;
         self.maximized = maximized;
@@ -316,9 +336,9 @@ impl HeaderBar {
 
     #[allow(clippy::too_many_lines)]
     #[profiling::function]
-    pub(crate) fn redraw(&mut self, painter: &Painter) {
+    pub(crate) fn redraw(&mut self, painter: &Painter) -> bool {
         if self.width == 0 || self.height == 0 {
-            return;
+            return false;
         }
 
         let hovered = self
@@ -328,6 +348,25 @@ impl HeaderBar {
         let pressed = self.pressed;
         #[allow(clippy::cast_possible_truncation)]
         let hover_t = self.button_hover_progress(hovered) as f32;
+
+        let snapshot = RedrawSnapshot {
+            width: self.width,
+            height: self.height,
+            scale: self.effective_scale(),
+            focused: self.focused,
+            maximized: self.maximized,
+            theme_rev: self.theme_rev,
+            title: self.title.clone(),
+            hovered,
+            hover_t_bits: hover_t.to_bits(),
+            pressed,
+            menu_open: self.menu_open,
+            menu_hover: self.menu_hover,
+        };
+        if self.last_redraw.as_ref() == Some(&snapshot) {
+            return false;
+        }
+        self.last_redraw = Some(snapshot);
 
         let theme = &self.theme;
         let scale = self.effective_scale();
@@ -474,5 +513,7 @@ impl HeaderBar {
         } else {
             self.menu_row_bufs.clear();
         }
+
+        true
     }
 }

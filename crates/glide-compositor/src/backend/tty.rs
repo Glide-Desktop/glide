@@ -137,6 +137,7 @@ struct SurfaceData {
     global: Option<GlobalId>,
     drm_output: GbmDrmOutput,
     pending_repaint: Option<RegistrationToken>,
+    redraw_queued: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
 }
 
@@ -756,6 +757,7 @@ impl GlideState {
                 global: Some(global),
                 drm_output,
                 pending_repaint: None,
+                redraw_queued: false,
                 wallpaper_buf: None,
             },
         );
@@ -792,10 +794,21 @@ impl GlideState {
     }
 
     pub fn queue_redraw(&mut self) {
-        let Some(device) = self.backend_data.device.as_ref() else {
+        let Some(device) = self.backend_data.device.as_mut() else {
             return;
         };
-        let crtcs: Vec<crtc::Handle> = device.surfaces.keys().copied().collect();
+        let crtcs: Vec<crtc::Handle> = device
+            .surfaces
+            .iter_mut()
+            .filter_map(|(&crtc, surface)| {
+                if surface.redraw_queued {
+                    None
+                } else {
+                    surface.redraw_queued = true;
+                    Some(crtc)
+                }
+            })
+            .collect();
         for crtc in crtcs {
             self.loop_handle
                 .insert_idle(move |state| state.render_surface(crtc));
@@ -833,6 +846,7 @@ impl GlideState {
         let Some(surface) = surfaces.get_mut(&crtc) else {
             return;
         };
+        surface.redraw_queued = false;
 
         if let Some(token) = surface.pending_repaint.take() {
             self.loop_handle.remove(token);

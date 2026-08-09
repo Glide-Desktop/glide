@@ -5,7 +5,7 @@ use smithay::{
 
 use crate::{config::Color, paint::Painter, window::GlideWindow};
 
-use super::{BUTTON_PAD_X, BUTTON_PAD_Y, BUTTON_SIZE, DecorationBuffer};
+use super::{BUTTON_PAD_X, BUTTON_PAD_Y, BUTTON_SIZE, BoxDecoCache, BoxDecoKey, DecorationBuffer};
 
 pub(crate) fn redraw_button(
     buf: &mut Option<MemoryRenderBuffer>,
@@ -43,20 +43,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
 
     if !header.is_decorated() {
         return Vec::new();
-    }
-
-    if let Some(wl_surface) = window.toplevel().map(|t| t.wl_surface().clone()) {
-        use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
-        let title = smithay::wayland::compositor::with_states(&wl_surface, |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|data| data.lock().ok())
-                .and_then(|guard| guard.title.clone())
-        });
-        if let Some(title) = title {
-            header.set_title(title);
-        }
     }
 
     header.redraw(painter);
@@ -201,17 +187,19 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
         return None;
     }
 
-    let w = width;
-    let h = frame_height;
+    let key = BoxDecoKey {
+        width,
+        height: frame_height,
+        scale,
+        focused: is_focused,
+        theme_rev: state.header.theme_rev,
+    };
 
-    let needs_redraw = state
-        .box_deco
-        .as_ref()
-        .is_none_or(|(cw, ch, cscale, _)| *cw != w || *ch != h || *cscale != scale);
+    let needs_redraw = state.box_deco.as_ref().is_none_or(|cache| cache.key != key);
 
     if needs_redraw {
-        let physical_w = w * scale;
-        let physical_h = h * scale;
+        let physical_w = width * scale;
+        let physical_h = frame_height * scale;
         let physical_margin = margin * scale;
         let buf_w = physical_w + physical_margin * 2;
         let buf_h = physical_h + physical_margin * 2;
@@ -230,7 +218,7 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
                 shadow_color,
                 (border_width * scale) as f32,
                 border_color,
-                super::MENU_CORNER_RADIUS * scale as f32, // Window radius is same as menu
+                theme.corner_radius * scale as f32,
             );
 
             let memory = MemoryRenderBuffer::from_slice(
@@ -241,16 +229,12 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
                 Transform::Normal,
                 None,
             );
-            state.box_deco = Some((w, h, scale, memory));
+            state.box_deco = Some(BoxDecoCache { key, buf: memory });
         }
     }
 
-    if let Some((_, _, _, memory)) = state.box_deco.as_ref() {
-        Some(DecorationBuffer {
-            buf: memory.clone(),
-            offset: Point::from((-margin, -margin)),
-        })
-    } else {
-        None
-    }
+    state.box_deco.as_ref().map(|cache| DecorationBuffer {
+        buf: cache.buf.clone(),
+        offset: Point::from((-margin, -margin)),
+    })
 }

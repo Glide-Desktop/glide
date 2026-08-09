@@ -49,10 +49,25 @@ const BUTTON_HOVER_ANIM: std::time::Duration = glide_theme::motion::T1;
 
 const SHADOW_BANDS: usize = 64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BoxDecoKey {
+    pub(crate) width: i32,
+    pub(crate) height: i32,
+    pub(crate) scale: i32,
+    pub(crate) focused: bool,
+    pub(crate) theme_rev: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct BoxDecoCache {
+    pub(crate) key: BoxDecoKey,
+    pub(crate) buf: MemoryRenderBuffer,
+}
+
 #[derive(Debug, Default)]
 pub struct DecorationState {
     pub header: HeaderBar,
-    pub box_deco: Option<(i32, i32, i32, MemoryRenderBuffer)>,
+    pub(crate) box_deco: Option<BoxDecoCache>,
 }
 
 pub struct DecorationBuffer {
@@ -765,6 +780,132 @@ mod tests {
             }
             assert!(cell.try_borrow().is_ok());
             assert_eq!(cell.borrow().header.height, 40);
+        }
+    }
+
+    mod redraw_dirty_tracking {
+        use super::*;
+        use crate::paint::Painter;
+
+        fn painter() -> Painter {
+            Painter::new(14.0)
+        }
+
+        #[test]
+        fn first_redraw_is_dirty_and_a_repeat_with_no_changes_is_not() {
+            let mut h = header();
+            let p = painter();
+            assert!(h.redraw(&p), "the first draw must always happen");
+            assert!(
+                !h.redraw(&p),
+                "nothing changed since the last draw, must skip re-rasterizing"
+            );
+        }
+
+        #[test]
+        fn a_zero_sized_header_never_reports_dirty() {
+            let mut h = HeaderBar {
+                width: 0,
+                height: 0,
+                ..HeaderBar::default()
+            };
+            let p = painter();
+            assert!(!h.redraw(&p));
+            assert!(!h.redraw(&p));
+        }
+
+        #[test]
+        fn changing_the_title_marks_it_dirty_again() {
+            let mut h = header();
+            let p = painter();
+            assert!(h.redraw(&p));
+            assert!(!h.redraw(&p));
+
+            h.set_title("A different title".to_owned());
+            assert!(h.redraw(&p), "a changed title must trigger a redraw");
+            assert!(!h.redraw(&p));
+        }
+
+        #[test]
+        fn setting_the_same_title_again_does_not_dirty_it() {
+            let mut h = header();
+            let p = painter();
+            assert!(h.redraw(&p));
+            h.set_title(String::new());
+            assert!(
+                !h.redraw(&p),
+                "the title was already empty; re-setting it to the same value is a no-op"
+            );
+        }
+
+        #[test]
+        fn focus_change_marks_it_dirty_again() {
+            let mut h = header();
+            let p = painter();
+            assert!(h.redraw(&p));
+            assert!(!h.redraw(&p));
+
+            h.sync(&DecorationTheme::default(), true, false, h.scale.max(1));
+            assert!(h.redraw(&p), "focus flipped, must redraw");
+        }
+
+        #[test]
+        fn maximized_change_marks_it_dirty_again() {
+            let mut h = header();
+            let p = painter();
+            assert!(h.redraw(&p));
+
+            h.sync(&DecorationTheme::default(), h.focused, true, h.scale.max(1));
+            assert!(h.redraw(&p), "maximize toggled, must redraw");
+        }
+
+        #[test]
+        fn a_changed_theme_marks_it_dirty_again() {
+            let mut h = header();
+            let p = painter();
+            assert!(h.redraw(&p));
+            assert!(!h.redraw(&p));
+
+            let theme = DecorationTheme {
+                background: crate::config::Color([1.0, 0.0, 0.0, 1.0]),
+                ..DecorationTheme::default()
+            };
+            h.sync(&theme, h.focused, h.maximized, h.scale.max(1));
+            assert!(h.redraw(&p), "a theme change must trigger a redraw");
+        }
+
+        #[test]
+        fn hover_animation_stays_dirty_until_it_settles_then_stops() {
+            let mut h = header();
+            let p = painter();
+            h.pointer_enter(point(16.0, 16.0));
+
+            assert!(h.redraw(&p), "first draw with a fresh hover fade-in");
+
+            std::thread::sleep(BUTTON_HOVER_ANIM + std::time::Duration::from_millis(30));
+            assert!(
+                h.redraw(&p),
+                "the fade progressed since the last draw, must redraw once more"
+            );
+            assert!(
+                !h.redraw(&p),
+                "the hover animation has settled at 1.0, nothing left to draw"
+            );
+        }
+
+        #[test]
+        fn opening_the_menu_marks_it_dirty_and_so_does_closing_it() {
+            let mut h = header();
+            let p = painter();
+            assert!(h.redraw(&p));
+            assert!(!h.redraw(&p));
+
+            h.menu_open = true;
+            assert!(h.redraw(&p), "opening the menu must redraw");
+            assert!(!h.redraw(&p));
+
+            h.menu_open = false;
+            assert!(h.redraw(&p), "closing the menu must redraw");
         }
     }
 }
