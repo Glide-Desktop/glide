@@ -5,7 +5,7 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            AsRenderElements, Kind,
+            Kind,
             memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             solid::{SolidColorBuffer, SolidColorRenderElement},
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
@@ -15,9 +15,21 @@ use smithay::{
 };
 
 use crate::{
+    clip::ClipCapableRenderer,
     config::{OverviewTheme, OverviewThemeExt},
     window::{GlideWindow, GlideWindowRenderElement},
 };
+
+/// Per-preview data for a single render pass: the window id, its
+/// interpolated overview rect, whether it's currently hovered, and the
+/// window/title resolved from the caller's `lookup` closure (resolved once
+/// per frame and reused across the label and content passes).
+type OverviewEntry = (
+    WindowId,
+    Rectangle<i32, Logical>,
+    bool,
+    Option<(GlideWindow, String)>,
+);
 
 #[derive(Debug, Clone, Copy)]
 enum Phase {
@@ -31,12 +43,9 @@ enum Phase {
     },
 }
 
-fn ease_out_cubic(t: f64) -> f64 {
-    let inv = 1.0 - t.clamp(0.0, 1.0);
-    1.0 - inv * inv * inv
-}
-
-const HOVER_ANIM: Duration = Duration::from_millis(120);
+/// Hover ring fade. Spec §10.3 puts `border-color` changes on `--t-2`,
+/// and the design's `.dwin::after` ring uses exactly that.
+const HOVER_ANIM: Duration = glide_theme::motion::T2;
 
 fn lerp_rect(
     from: Rectangle<i32, Logical>,
@@ -57,11 +66,16 @@ fn lerp_rect(
 
 type CachedLabel = (String, i32, i32, MemoryRenderBuffer);
 type CachedHighlight = (i32, i32, i32, MemoryRenderBuffer);
+type CachedShadow = (i32, i32, i32, MemoryRenderBuffer);
+/// `(hovered, output scale, buffer)` — the button is a fixed size, so
+/// those two are the whole cache key.
+type CachedClose = (bool, i32, MemoryRenderBuffer);
 type SalvagedPreview = (
     WindowId,
     Option<CachedLabel>,
     Option<CachedHighlight>,
-    Vec<SolidColorBuffer>,
+    Option<CachedShadow>,
+    Option<CachedClose>,
 );
 
 #[derive(Debug, Clone)]
@@ -72,7 +86,8 @@ pub struct Preview {
     pub row: usize,
     label: Option<CachedLabel>,
     highlight: Option<CachedHighlight>,
-    shadow: Vec<SolidColorBuffer>,
+    shadow: Option<CachedShadow>,
+    close: Option<CachedClose>,
 }
 
 impl Preview {
@@ -86,9 +101,17 @@ impl Preview {
 pub struct OverviewUi {
     previews: Vec<Preview>,
     hover: glide_ui::HoverAnimation<WindowId>,
+    /// Hover state of the per-preview close buttons, animated separately
+    /// from the preview ring so aiming at the X pops only the button.
+    close_hover: glide_ui::HoverAnimation<WindowId>,
     phase: Phase,
     duration: Duration,
     theme: OverviewTheme,
+    /// The layout area the current `previews` were computed against —
+    /// kept so `relayout` can cheaply skip recomputing everything when
+    /// called with identical inputs (it runs on every surface commit
+    /// while the overview is open; see `GlideState::refresh_overview`).
+    area: Rectangle<i32, Logical>,
 
     scrim: SolidColorBuffer,
 }
@@ -124,7 +147,8 @@ impl OverviewUi {
                     row: slot.row,
                     label: None,
                     highlight: None,
-                    shadow: Vec::new(),
+                    shadow: None,
+                    close: None,
                 })
             })
             .collect();
@@ -135,13 +159,32 @@ impl OverviewUi {
         Self {
             previews,
             hover,
+            close_hover: glide_ui::HoverAnimation::default(),
             phase: Phase::Opening {
                 started: Instant::now(),
             },
             duration: theme.duration(),
             theme: theme.clone(),
+            area,
             scrim: SolidColorBuffer::default(),
         }
+    }
+
+    /// True when `windows`/`area` describe exactly the state the current
+    /// previews were already computed from, in the same order — i.e. a
+    /// `relayout` call would be a no-op.
+    fn matches_current_layout(
+        &self,
+        windows: &[(WindowId, Rectangle<i32, Logical>)],
+        area: Rectangle<i32, Logical>,
+    ) -> bool {
+        self.area == area
+            && self.previews.len() == windows.len()
+            && self
+                .previews
+                .iter()
+                .zip(windows)
+                .all(|(preview, (id, origin))| preview.id == *id && preview.origin == *origin)
     }
 
     pub fn relayout(
@@ -149,6 +192,11 @@ impl OverviewUi {
         windows: &[(WindowId, Rectangle<i32, Logical>)],
         area: Rectangle<i32, Logical>,
     ) {
+        if self.matches_current_layout(windows, area) {
+            return;
+        }
+        self.area = area;
+
         let sizes: Vec<(WindowId, glide_layout::Size)> = windows
             .iter()
             .map(|(id, rect)| (*id, glide_layout::Size::new(rect.size.w, rect.size.h)))
@@ -165,19 +213,20 @@ impl OverviewUi {
         let mut old: Vec<SalvagedPreview> = self
             .previews
             .drain(..)
-            .map(|p| (p.id, p.label, p.highlight, p.shadow))
+            .map(|p| (p.id, p.label, p.highlight, p.shadow, p.close))
             .collect();
 
         self.previews = slots
             .iter()
             .filter_map(|slot| {
                 let origin = windows.iter().find(|(id, _)| *id == slot.id)?.1;
-                let (label, highlight, shadow) = old
-                    .iter_mut()
-                    .find(|(id, ..)| *id == slot.id)
-                    .map_or((None, None, Vec::new()), |(_, label, highlight, shadow)| {
-                        (label.take(), highlight.take(), std::mem::take(shadow))
-                    });
+                let (label, highlight, shadow, close) =
+                    old.iter_mut().find(|(id, ..)| *id == slot.id).map_or(
+                        (None, None, None, None),
+                        |(_, label, highlight, shadow, close)| {
+                            (label.take(), highlight.take(), shadow.take(), close.take())
+                        },
+                    );
                 Some(Preview {
                     id: slot.id,
                     target: to_smithay_rect(slot.target),
@@ -186,6 +235,7 @@ impl OverviewUi {
                     label,
                     highlight,
                     shadow,
+                    close,
                 })
             })
             .collect();
@@ -194,15 +244,23 @@ impl OverviewUi {
             self.hover
                 .retarget_without_restarting(self.previews.first().map(|p| p.id));
         }
+        if self
+            .close_hover
+            .target()
+            .is_some_and(|id| !self.contains(id))
+        {
+            self.close_hover.retarget_without_restarting(None);
+        }
     }
 
     fn contains(&self, id: WindowId) -> bool {
         self.previews.iter().any(|p| p.id == id)
     }
 
-    #[must_use]
-    pub fn progress(&self) -> f64 {
-        let raw = |started: Instant| {
+    /// Linear 0→1 scene progress, before any easing. 1.0 whenever the
+    /// overview is fully open.
+    fn raw_progress(&self) -> f64 {
+        let elapsed_fraction = |started: Instant| {
             if self.duration.is_zero() {
                 return 1.0;
             }
@@ -211,10 +269,27 @@ impl OverviewUi {
         };
 
         match self.phase {
-            Phase::Opening { started } => ease_out_cubic(raw(started)),
+            Phase::Opening { started } => elapsed_fraction(started),
             Phase::Open => 1.0,
-            Phase::Closing { started, .. } => 1.0 - ease_out_cubic(raw(started)),
+            Phase::Closing { started, .. } => 1.0 - elapsed_fraction(started),
         }
+    }
+
+    /// Scene progress on the design's primary curve (`--e-out`): a sharp
+    /// start with a long settle. Drives preview geometry and labels.
+    #[must_use]
+    pub fn progress(&self) -> f64 {
+        glide_theme::motion::E_OUT.ease_f64(self.raw_progress())
+    }
+
+    /// Scene progress on the symmetric curve (`--e-io`), which the design
+    /// reserves for background properties — the scrim and the wallpaper
+    /// push-back. Keeping these off `--e-out` is deliberate: the backdrop
+    /// settles more gently than the previews flying into place, instead of
+    /// the whole scene moving as one rigid block.
+    #[must_use]
+    pub fn backdrop_progress(&self) -> f64 {
+        glide_theme::motion::E_IO.ease_f64(self.raw_progress())
     }
 
     #[must_use]
@@ -225,7 +300,7 @@ impl OverviewUi {
                 started.elapsed() < self.duration
             }
         };
-        phase_animating || self.hover_progress() < 1.0
+        phase_animating || self.hover_progress() < 1.0 || self.close_hover_progress() < 1.0
     }
 
     pub fn tick(&mut self) -> Tick {
@@ -237,7 +312,9 @@ impl OverviewUi {
             Phase::Closing { started, select } if started.elapsed() >= self.duration => {
                 Tick::Finished { select }
             }
-            Phase::Open if self.hover_progress() < 1.0 => Tick::Running,
+            Phase::Open if self.hover_progress() < 1.0 || self.close_hover_progress() < 1.0 => {
+                Tick::Running
+            }
             Phase::Open => Tick::Idle,
             Phase::Opening { .. } | Phase::Closing { .. } => Tick::Running,
         }
@@ -277,7 +354,30 @@ impl OverviewUi {
     }
 
     fn hover_progress(&self) -> f64 {
-        ease_out_cubic(self.hover.progress(HOVER_ANIM))
+        glide_theme::motion::E_OUT.ease_f64(self.hover.progress(HOVER_ANIM))
+    }
+
+    fn close_hover_progress(&self) -> f64 {
+        glide_theme::motion::E_OVER.ease_f64(self.close_hover.progress(OV_CLOSE_HOVER_ANIM))
+    }
+
+    /// The preview whose close button covers `pos`, if any.
+    #[must_use]
+    pub fn close_button_at(&self, pos: Point<f64, Logical>) -> Option<WindowId> {
+        let t = self.progress();
+        // Only clickable once the scene has essentially arrived; the button
+        // is still flying in (and mostly transparent) before that.
+        if t < 1.0 {
+            return None;
+        }
+        self.previews
+            .iter()
+            .find(|p| close_button_rect(p.rect_at(t)).to_f64().contains(pos))
+            .map(|p| p.id)
+    }
+
+    pub fn set_close_hover(&mut self, hover: Option<WindowId>) -> bool {
+        self.close_hover.set(hover)
     }
 
     pub fn navigate(&mut self, dir: Direction) -> bool {
@@ -345,9 +445,99 @@ pub enum Direction {
     Down,
 }
 
-const LABEL_FADE_START: f64 = 0.6;
-
 const LABEL_PADDING: i32 = 12;
+
+/// How far below its settled position a label pill starts, in logical px.
+///
+/// The design's `.ov-label` rests at `translateY(4px)` with `opacity: 0`
+/// and animates to `translateY(0)` / `opacity: 1` over the full scene
+/// duration, so the pill drifts up as it fades in rather than simply
+/// appearing in place.
+const LABEL_RISE: f64 = 4.0;
+
+/// Diameter of a preview's close button, per the design's `.ov-close`.
+const OV_CLOSE_SIZE: i32 = 26;
+
+/// How far the button hangs outside the preview's top-right corner — the
+/// design pins it at `top: -10px; right: -10px`.
+const OV_CLOSE_OUTSET: i32 = 10;
+
+/// `.ov-close:hover { transform: scale(1.12) }`.
+const OV_CLOSE_HOVER_SCALE: f64 = 1.12;
+
+/// `transform var(--t-2) var(--e-over)` — the overshoot curve is what gives
+/// the button its little pop.
+const OV_CLOSE_HOVER_ANIM: Duration = glide_theme::motion::T2;
+
+/// Extent of the close cross, in logical px.
+///
+/// The design draws it as an 11px SVG on a 12-unit viewBox with the path
+/// spanning 6 units — `6 × 11/12 = 5.5px` inside a 26px button. Notably
+/// this is an *absolute* size, not a fraction of the button the way
+/// `Painter::draw_icon_close`'s glyph is (that one would come out 13px,
+/// well over twice as large, filling the circle).
+const OV_CLOSE_GLYPH: f32 = 5.5;
+
+/// `stroke-width="1.8"` through the same 11/12 viewBox scale.
+const OV_CLOSE_GLYPH_STROKE: f32 = 1.65;
+
+/// `border: 1px solid` on the button.
+const OV_CLOSE_BORDER: f32 = 1.0;
+
+/// The button's `box-shadow: var(--el-2)`, converted to the paint layer's
+/// representation. Dark appearance, matching every other default token.
+fn close_shadow_layers() -> Vec<crate::paint::ShadowLayerSpec> {
+    glide_theme::elevation::layers(
+        glide_theme::elevation::Level::El2,
+        glide_theme::Appearance::Dark,
+    )
+    .into_iter()
+    .map(|layer| crate::paint::ShadowLayerSpec {
+        dy: layer.dy,
+        blur: layer.blur,
+        color: layer.color,
+    })
+    .collect()
+}
+
+/// Padding the button's buffer needs so its `--el-2` shadow can fade out
+/// instead of being clipped at the buffer edge.
+fn close_shadow_margin() -> i32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let widest = close_shadow_layers()
+        .iter()
+        .map(|layer| layer.blur)
+        .fold(0.0_f32, f32::max)
+        .ceil() as i32;
+    crate::paint::shadow_fade_margin(widest)
+}
+
+/// Where a preview's close button sits, in logical coordinates.
+fn close_button_rect(preview: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        Point::from((
+            preview.loc.x + preview.size.w + OV_CLOSE_OUTSET - OV_CLOSE_SIZE,
+            preview.loc.y - OV_CLOSE_OUTSET,
+        )),
+        Size::from((OV_CLOSE_SIZE, OV_CLOSE_SIZE)),
+    )
+}
+
+/// Offset from a preview's bottom edge to the top of its label pill.
+///
+/// Negative by design: the spec's mockup rides the pill *up onto* the
+/// preview (`bottom: -28px` against a 28px-tall pill), so it straddles
+/// the bottom edge with half its height overlapping the window and half
+/// hanging below. Labels are pushed as the frontmost elements in
+/// `render`, so the overlapping half draws on top of the window content.
+///
+/// `pub(crate)` — `config.rs`'s `OverviewThemeExt::options()` feeds this
+/// into `glide_layout::OverviewOptions::label_offset` so the row-packing
+/// budget and this render-time offset can never drift apart (they used
+/// to be two independent numbers that only almost agreed).
+pub(crate) const fn label_offset(label_height: i32) -> i32 {
+    -(label_height / 2)
+}
 
 fn centre_x(rect: Rectangle<i32, Logical>) -> f64 {
     f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0
@@ -361,7 +551,7 @@ fn to_smithay_rect(rect: glide_layout::Rectangle) -> Rectangle<i32, Logical> {
 }
 
 smithay::render_elements! {
-    pub OverviewRenderElement<R> where R: ImportAll + ImportMem;
+    pub OverviewRenderElement<R> where R: ImportAll + ImportMem + ClipCapableRenderer;
     Preview = RelocateRenderElement<RescaleRenderElement<GlideWindowRenderElement<R>>>,
     Solid = SolidColorRenderElement,
     Buffer = MemoryRenderBufferRenderElement<R>,
@@ -378,73 +568,350 @@ impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
     }
 }
 
-const PREVIEW_SHADOW_BANDS: usize = 32;
+/// Same `dy ≈ 0.43 * blur` relationship `decoration::render::
+/// derive_shadow_layers` uses for a window's own shadow — see that
+/// function's doc comment for where the ratio comes from. `OverviewTheme`
+/// only has one shadow size/color (previews don't have a focused/idle
+/// split the way windows do), so this is a single layer, not two.
+#[allow(clippy::cast_precision_loss)]
+fn preview_shadow_layer(theme: &OverviewTheme, scale: i32) -> crate::paint::ShadowLayerSpec {
+    let size = theme.shadow_size as f32 * scale as f32;
+    crate::paint::ShadowLayerSpec {
+        dy: size * crate::paint::SHADOW_DY_RATIO,
+        blur: size,
+        color: theme.shadow_color,
+    }
+}
 
-#[allow(clippy::too_many_arguments)]
-fn push_shadow_rings<R>(
-    buffers: &mut Vec<SolidColorBuffer>,
+/// Pushes one pre-rendered, cached, real (blurred, not banded) shadow
+/// element for a single preview rect — replacing what used to be
+/// `PREVIEW_SHADOW_BANDS` (32) `* 4` = 128 solid-color quads per preview,
+/// every frame, regardless of whether the rect had actually changed size
+/// since the last frame.
+fn push_preview_shadow<R>(
+    renderer: &mut R,
+    preview: &mut Preview,
     rect: Rectangle<i32, Logical>,
-    size: i32,
-    bands: usize,
-    base_color: [f32; 4],
-    alpha_mult: f32,
+    theme: &OverviewTheme,
     scale: Scale<f64>,
+    output_scale: i32,
     elements: &mut Vec<OverviewRenderElement<R>>,
 ) where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
     R::TextureId: Send + Clone + 'static,
 {
-    let rects = crate::decoration::shadow_rects(rect.size.w, rect.size.h, size, bands);
-    if rects.is_empty() {
-        return;
-    }
-    buffers.resize_with(rects.len(), SolidColorBuffer::default);
+    // The buffer is always rendered for the preview's *settled* (target)
+    // size, never the in-flight animated `rect` size — `rect_at(t)`
+    // changes every frame during the open/close animation, and keying the
+    // cache on it would re-run the (comparatively expensive) CPU blur for
+    // every preview on every animation frame. While animating, the cached
+    // buffer is simply displayed scaled to the current rect instead —
+    // a briefly-stretched blur is imperceptible at these durations, and
+    // once settled (`rect == target`) the mapping is exact.
+    let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
+    let key = (w, h, output_scale);
+    // See `shadow_fade_margin`'s doc comment: the layer below is offset
+    // downward, so a plain `shadow_size` margin isn't enough room for the
+    // blur to fade before hitting the buffer edge.
+    let margin =
+        crate::paint::shadow_fade_margin(i32::try_from(theme.shadow_size).unwrap_or(0)).max(1);
 
-    for ((offset, rsize, ring_alpha), buf) in rects.into_iter().zip(buffers.iter_mut()) {
-        let mut color = base_color;
-        color[3] *= ring_alpha * alpha_mult;
-        buf.update((rsize.w, rsize.h), color);
-        let pos = Point::from((rect.loc.x + offset.x, rect.loc.y + offset.y));
-        elements.push(OverviewRenderElement::Solid(
-            SolidColorRenderElement::from_buffer(
-                buf,
-                pos.to_f64().to_physical(scale).to_i32_round(),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            ),
-        ));
+    let needs_redraw = preview
+        .shadow
+        .as_ref()
+        .is_none_or(|(cw, ch, cs, _)| (*cw, *ch, *cs) != key);
+
+    if needs_redraw {
+        let physical_w = w * output_scale;
+        let physical_h = h * output_scale;
+        let physical_margin = margin * output_scale;
+        let buf_w = physical_w + physical_margin * 2;
+        let buf_h = physical_h + physical_margin * 2;
+
+        if let Ok(pixels) = usize::try_from(buf_w * buf_h * 4) {
+            let mut buf = vec![0u8; pixels];
+            let layer = preview_shadow_layer(theme, output_scale);
+            #[allow(clippy::cast_precision_loss)]
+            crate::paint::draw_outset_shadow_and_border(
+                &mut buf,
+                buf_w,
+                buf_h,
+                physical_w as f32,
+                physical_h as f32,
+                &[layer],
+                0.0,
+                crate::config::Color([0.0, 0.0, 0.0, 0.0]),
+                theme.corner_radius * output_scale as f32,
+                // Square punch (radius 0): a preview shows arbitrary client
+                // content whose own corner radius we can't know (GTK CSD
+                // corners are client-drawn), so clear the *entire* slot
+                // footprint — otherwise the shadow's dark fill shows
+                // through the client's transparent rounded corners and
+                // makes them read as square.
+                Some(0.0),
+            );
+            let memory = MemoryRenderBuffer::from_slice(
+                &buf,
+                smithay::backend::allocator::Fourcc::Argb8888,
+                (buf_w, buf_h),
+                output_scale,
+                Transform::Normal,
+                None,
+            );
+            preview.shadow = Some((w, h, output_scale, memory));
+        }
+    }
+
+    let Some((_, _, _, memory)) = preview.shadow.as_ref() else {
+        return;
+    };
+
+    // Scale the margin along with the rect so the shadow hugs the preview
+    // at every point of the animation (factor is 1.0 once settled).
+    let factor_x = f64::from(rect.size.w) / f64::from(w);
+    let factor_y = f64::from(rect.size.h) / f64::from(h);
+    #[allow(clippy::cast_possible_truncation)]
+    let display_margin_x = (f64::from(margin) * factor_x).round() as i32;
+    #[allow(clippy::cast_possible_truncation)]
+    let display_margin_y = (f64::from(margin) * factor_y).round() as i32;
+    let display_size: smithay::utils::Size<i32, Logical> = (
+        rect.size.w + display_margin_x * 2,
+        rect.size.h + display_margin_y * 2,
+    )
+        .into();
+
+    let pos = Point::from((rect.loc.x - display_margin_x, rect.loc.y - display_margin_y))
+        .to_f64()
+        .to_physical(scale);
+    if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        pos,
+        memory,
+        Some(1.0),
+        None,
+        Some(display_size),
+        Kind::Unspecified,
+    ) {
+        elements.push(OverviewRenderElement::Buffer(element));
+    }
+}
+
+/// Rasterises one close button: `--el-2` drop shadow, the pill, its
+/// hairline ring and the cross, all into a single buffer whose margin
+/// leaves the shadow room to fade.
+fn draw_close_button(
+    theme: &OverviewTheme,
+    is_hovered: bool,
+    output_scale: i32,
+) -> Option<MemoryRenderBuffer> {
+    let margin = close_shadow_margin();
+    let canvas = OV_CLOSE_SIZE + margin * 2;
+    let (pw, ph) = (canvas * output_scale, canvas * output_scale);
+    let Ok(pixels) = usize::try_from(pw * ph * 4) else {
+        return None;
+    };
+    let mut buf = vec![0u8; pixels];
+
+    let (bg, fg) = if is_hovered {
+        (theme.close_hover_background, theme.close_hover_foreground)
+    } else {
+        (theme.close_background, theme.close_foreground)
+    };
+    // Hover recolours the border to match the fill, per
+    // `.ov-close:hover { border-color: var(--danger) }`.
+    let border = if is_hovered {
+        theme.close_hover_background
+    } else {
+        theme.close_border
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let radius = OV_CLOSE_SIZE as f32 / 2.0;
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = output_scale as f32;
+
+    let layers: Vec<_> = close_shadow_layers()
+        .into_iter()
+        .map(|layer| crate::paint::ShadowLayerSpec {
+            dy: layer.dy * scale_f,
+            blur: layer.blur * scale_f,
+            color: layer.color,
+        })
+        .collect();
+    #[allow(clippy::cast_precision_loss)]
+    crate::paint::draw_outset_shadow_and_border(
+        &mut buf,
+        pw,
+        ph,
+        OV_CLOSE_SIZE as f32 * scale_f,
+        OV_CLOSE_SIZE as f32 * scale_f,
+        &layers,
+        0.0,
+        crate::config::Color([0.0, 0.0, 0.0, 0.0]),
+        radius * scale_f,
+        // Clear behind the pill: it is about to be filled opaquely,
+        // and leaving shadow under a translucent hover colour would
+        // muddy it.
+        Some(radius * scale_f),
+    );
+
+    crate::paint::Painter::fill_rounded_rect_over(
+        &mut buf,
+        canvas,
+        canvas,
+        margin,
+        margin,
+        OV_CLOSE_SIZE,
+        OV_CLOSE_SIZE,
+        output_scale,
+        bg,
+        radius,
+    );
+    crate::paint::stroke_rounded_rect_over(
+        &mut buf,
+        canvas,
+        canvas,
+        margin,
+        margin,
+        OV_CLOSE_SIZE,
+        OV_CLOSE_SIZE,
+        output_scale,
+        OV_CLOSE_BORDER,
+        radius,
+        border,
+    );
+    crate::paint::draw_close_glyph_over(
+        &mut buf,
+        canvas,
+        canvas,
+        OV_CLOSE_GLYPH,
+        OV_CLOSE_GLYPH_STROKE,
+        output_scale,
+        fg,
+    );
+
+    Some(MemoryRenderBuffer::from_slice(
+        &buf,
+        smithay::backend::allocator::Fourcc::Argb8888,
+        (pw, ph),
+        output_scale,
+        Transform::Normal,
+        None,
+    ))
+}
+
+/// Draws each preview's close button.
+///
+/// Fades in with the scene like the labels do, and pops on hover using the
+/// overshoot curve (`--e-over`) the design specifies. The pop is applied as
+/// a display-size change around the button's centre rather than a redraw,
+/// so a hover costs no CPU rasterisation.
+#[allow(clippy::too_many_arguments)]
+fn push_close_buttons<R>(
+    renderer: &mut R,
+    previews: &mut [Preview],
+    entries: &[OverviewEntry],
+    theme: &OverviewTheme,
+    hovered: Option<WindowId>,
+    hover_t: f64,
+    alpha: f32,
+    scale: Scale<f64>,
+    output_scale: i32,
+    elements: &mut Vec<OverviewRenderElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
+    R::TextureId: Send + Clone + 'static,
+{
+    for (id, rect, _, resolved) in entries {
+        if resolved.is_none() {
+            continue;
+        }
+        let Some(preview) = previews.iter_mut().find(|p| p.id == *id) else {
+            continue;
+        };
+
+        let is_hovered = hovered == Some(*id);
+        let needs_redraw = preview
+            .close
+            .as_ref()
+            .is_none_or(|(cached_hover, cached_scale, _)| {
+                *cached_hover != is_hovered || *cached_scale != output_scale
+            });
+
+        if needs_redraw {
+            if let Some(memory) = draw_close_button(theme, is_hovered, output_scale) {
+                preview.close = Some((is_hovered, output_scale, memory));
+            }
+        }
+
+        let Some((_, _, memory)) = preview.close.as_ref() else {
+            continue;
+        };
+
+        let button = close_button_rect(*rect);
+        let margin = close_shadow_margin();
+        let canvas = OV_CLOSE_SIZE + margin * 2;
+        let pop = if is_hovered {
+            1.0 + (OV_CLOSE_HOVER_SCALE - 1.0) * hover_t
+        } else {
+            1.0
+        };
+        // Scale the whole buffer, shadow included — the same thing CSS
+        // `transform: scale()` does to a box-shadow.
+        #[allow(clippy::cast_possible_truncation)]
+        let side = (f64::from(canvas) * pop).round() as i32;
+        // Grow around the centre so the pop does not drag the button.
+        let inset = (side - canvas) / 2;
+        let pos = Point::from((button.loc.x - margin - inset, button.loc.y - margin - inset))
+            .to_f64()
+            .to_physical(scale);
+
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            pos,
+            memory,
+            Some(alpha),
+            None,
+            Some(Size::from((side, side))),
+            Kind::Unspecified,
+        ) {
+            elements.push(OverviewRenderElement::Buffer(element));
+        }
     }
 }
 
 impl OverviewUi {
-    fn render_labels<R, F>(
+    fn render_labels<R>(
         &mut self,
         renderer: &mut R,
-        entries: &[(WindowId, Rectangle<i32, Logical>, bool)],
+        entries: &[OverviewEntry],
         scale: Scale<f64>,
         output_scale: i32,
         painter: &crate::paint::Painter,
-        lookup: &mut F,
     ) -> Vec<OverviewRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem,
+        R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
         R::TextureId: Send + Clone + 'static,
         R::Error: std::fmt::Debug,
-        F: FnMut(WindowId) -> Option<(GlideWindow, String)>,
     {
         let t = self.progress();
         let theme = self.theme.clone();
-        if !theme.label || t <= LABEL_FADE_START {
+        if !theme.label || t <= 0.0 {
             return Vec::new();
         }
 
+        // Opacity and the rise both run the whole scene on `--e-out`, as
+        // the design has them. This used to hold the labels back until the
+        // scene was 60% eased-through and then rush them in over what was
+        // left, which read as them popping in after the fact.
         #[allow(clippy::cast_possible_truncation)]
-        let alpha = (((t - LABEL_FADE_START) / (1.0 - LABEL_FADE_START)).clamp(0.0, 1.0)) as f32;
+        let alpha = t.clamp(0.0, 1.0) as f32;
+        #[allow(clippy::cast_possible_truncation)]
+        let rise = ((1.0 - t) * LABEL_RISE).round() as i32;
 
         let mut elements = Vec::new();
-        for (id, rect, _) in entries {
-            let Some((_, title)) = lookup(*id) else {
+        for (id, rect, _, resolved) in entries {
+            let Some((_, title)) = resolved else {
                 continue;
             };
             let Some(preview) = self.previews.iter_mut().find(|p| p.id == *id) else {
@@ -453,14 +920,13 @@ impl OverviewUi {
 
             let height = theme.label_height;
             #[allow(clippy::cast_possible_truncation)]
-            let text_w = painter.text_width(&title) as i32;
+            let text_w =
+                painter.text_width_styled(title.as_str(), &glide_theme::TextStyle::OV_LABEL) as i32;
             let width = (text_w + LABEL_PADDING * 2).clamp(1, rect.size.w.max(1));
 
             let needs_redraw = preview.label.as_ref().is_none_or(
                 |(cached_title, cached_width, cached_scale, _)| {
-                    cached_title != &title
-                        || *cached_width != width
-                        || *cached_scale != output_scale
+                    cached_title != title || *cached_width != width || *cached_scale != output_scale
                 },
             );
             if needs_redraw {
@@ -480,7 +946,16 @@ impl OverviewUi {
                     radius,
                     [true; 4],
                 );
-                painter.draw_label_over(
+                #[allow(clippy::cast_precision_loss)]
+                crate::paint::draw_inset_border(
+                    &mut buf,
+                    pwidth,
+                    pheight,
+                    output_scale as f32,
+                    radius * output_scale as f32,
+                    theme.label_border,
+                );
+                painter.draw_label_over_styled(
                     &mut buf,
                     width,
                     height,
@@ -488,8 +963,9 @@ impl OverviewUi {
                     width - LABEL_PADDING,
                     output_scale,
                     crate::paint::TextAlign::Center,
-                    &title,
+                    title.as_str(),
                     theme.label_color.to_buffer_bytes(),
+                    &glide_theme::TextStyle::OV_LABEL,
                 );
                 let memory = MemoryRenderBuffer::from_slice(
                     &buf,
@@ -499,7 +975,7 @@ impl OverviewUi {
                     Transform::Normal,
                     None,
                 );
-                preview.label = Some((title, width, output_scale, memory));
+                preview.label = Some((title.clone(), width, output_scale, memory));
             }
 
             let Some((_, _, _, memory)) = preview.label.as_ref() else {
@@ -508,7 +984,7 @@ impl OverviewUi {
 
             let pos = Point::from((
                 rect.loc.x + (rect.size.w - width) / 2,
-                rect.loc.y + rect.size.h,
+                rect.loc.y + rect.size.h + label_offset(height) + rise,
             ))
             .to_f64()
             .to_physical(scale);
@@ -539,7 +1015,7 @@ impl OverviewUi {
         mut lookup: F,
     ) -> Vec<OverviewRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem,
+        R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
         R::TextureId: Send + Clone + 'static,
         R::Error: std::fmt::Debug,
         F: FnMut(WindowId) -> Option<(GlideWindow, String)>,
@@ -550,27 +1026,49 @@ impl OverviewUi {
         let hover = self.hover.target();
         let theme = self.theme.clone();
 
-        let entries: Vec<(WindowId, Rectangle<i32, Logical>, bool)> = self
+        // Resolve each preview's window/title exactly once per frame. `lookup`
+        // is a caller-supplied closure that clones a `GlideWindow` and formats
+        // its `display_name()`; calling it a second time per preview (once
+        // for labels, once for preview content) was pure wasted work, so its
+        // result is cached here and reused below.
+        let entries: Vec<OverviewEntry> = self
             .previews
             .iter()
-            .map(|p| (p.id, p.rect_at(t), hover == Some(p.id)))
+            .map(|p| (p.id, p.rect_at(t), hover == Some(p.id), lookup(p.id)))
             .collect();
 
-        elements.extend(self.render_labels(
-            renderer,
-            &entries,
-            scale,
-            output_scale,
-            painter,
-            &mut lookup,
-        ));
+        elements.extend(self.render_labels(renderer, &entries, scale, output_scale, painter));
+
+        if t > 0.0 {
+            #[allow(clippy::cast_possible_truncation)]
+            let button_alpha = t.clamp(0.0, 1.0) as f32;
+            let close_hovered = self.close_hover.target();
+            let close_t = self.close_hover_progress();
+            push_close_buttons(
+                renderer,
+                &mut self.previews,
+                &entries,
+                &theme,
+                close_hovered,
+                close_t,
+                button_alpha,
+                scale,
+                output_scale,
+                &mut elements,
+            );
+        }
 
         let hover_t = self.hover_progress();
         if hover_t > 0.0 {
             if let Some(hover_id) = hover {
                 if let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id) {
                     let rect = preview.rect_at(t);
-                    let (w, h) = (rect.size.w, rect.size.h);
+                    // Cached at the settled (target) size and displayed
+                    // scaled while the open/close animation is in flight —
+                    // same reasoning as `push_preview_shadow`: `rect_at(t)`
+                    // changes every animation frame, and keying the cache
+                    // on it would redraw + reupload the ring per frame.
+                    let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
                     let needs_redraw = preview.highlight.as_ref().is_none_or(
                         |(cached_w, cached_h, cached_scale, _)| {
                             *cached_w != w || *cached_h != h || *cached_scale != output_scale
@@ -582,7 +1080,8 @@ impl OverviewUi {
                         if let Ok(pixels) = usize::try_from(pw * ph * 4) {
                             let mut buf = vec![0u8; pixels];
                             #[allow(clippy::cast_precision_loss)]
-                            let radius = 12.0 * output_scale as f32; // --r-3 is 12px
+                            let radius = theme.corner_radius * output_scale as f32;
+                            #[allow(clippy::cast_precision_loss)]
                             let border_width = theme.border as f32 * output_scale as f32;
                             crate::paint::draw_inset_border(
                                 &mut buf,
@@ -614,7 +1113,7 @@ impl OverviewUi {
                             memory,
                             Some(alpha),
                             None,
-                            None,
+                            Some(rect.size),
                             Kind::Unspecified,
                         ) {
                             elements.push(OverviewRenderElement::Buffer(element));
@@ -624,8 +1123,8 @@ impl OverviewUi {
             }
         }
 
-        for (id, rect, _) in &entries {
-            let Some((window, _)) = lookup(*id) else {
+        for (id, rect, _, resolved) in &entries {
+            let Some((window, _)) = resolved else {
                 continue;
             };
             let Some(preview) = self.previews.iter().find(|p| p.id == *id) else {
@@ -635,9 +1134,19 @@ impl OverviewUi {
             #[allow(clippy::cast_precision_loss)]
             let window_scale = f64::from(rect.size.w) / f64::from(preview.origin.size.w.max(1));
 
+            // Same convention as smithay's `Space::render_location()`: the
+            // element location handed to `render_elements` is the *buffer*
+            // origin, which sits `geometry().loc` up-left of the client's
+            // visible frame (CSD clients like GTK bake invisible shadow
+            // margins into their buffers and report the visible region via
+            // `xdg_surface.set_window_geometry`). Without this subtraction
+            // a CSD preview's visible content lands shifted down-right
+            // inside its slot, so the hover hit-test rect and highlight
+            // ring no longer line up with what's actually on screen.
+            let buffer_offset = window.geometry().loc;
             let content_origin = Point::from((
-                preview.origin.loc.x + GlideWindow::insets_left(),
-                preview.origin.loc.y + window.header_height(),
+                preview.origin.loc.x + GlideWindow::insets_left() - buffer_offset.x,
+                preview.origin.loc.y + window.header_height() - buffer_offset.y,
             ));
             let real_physical = content_origin.to_f64().to_physical(scale).to_i32_round();
             let frame_physical = preview
@@ -649,7 +1158,7 @@ impl OverviewUi {
             let target_physical = rect.loc.to_f64().to_physical(scale).to_i32_round();
 
             let raw: Vec<GlideWindowRenderElement<R>> =
-                AsRenderElements::render_elements(&window, renderer, real_physical, scale, 1.0);
+                window.preview_render_elements(renderer, real_physical, scale, 1.0);
 
             for element in raw {
                 let scaled =
@@ -664,27 +1173,34 @@ impl OverviewUi {
         }
 
         if theme.shadow {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let size = i32::try_from(theme.shadow_size).unwrap_or(0);
-            for (id, rect, _) in &entries {
+            for (id, rect, _, resolved) in &entries {
+                // No shadow for a preview whose window is already gone —
+                // its label and content are skipped above, so a shadow
+                // would just float there on its own.
+                if resolved.is_none() {
+                    continue;
+                }
                 let Some(preview) = self.previews.iter_mut().find(|p| p.id == *id) else {
                     continue;
                 };
-                push_shadow_rings(
-                    &mut preview.shadow,
+                push_preview_shadow(
+                    renderer,
+                    preview,
                     *rect,
-                    size,
-                    PREVIEW_SHADOW_BANDS,
-                    theme.shadow_color.0,
-                    1.0,
+                    &theme,
                     scale,
+                    output_scale,
                     &mut elements,
                 );
             }
         }
 
         #[allow(clippy::cast_possible_truncation)]
-        let dim = (theme.dim.0[3] * t as f32).clamp(0.0, 1.0);
+        // `--e-io`, per the design's `.screen::after` transition — the
+        // scrim is a background property, not part of the preview motion.
+        #[allow(clippy::cast_possible_truncation)]
+        let backdrop_t = self.backdrop_progress() as f32;
+        let dim = (theme.dim.0[3] * backdrop_t).clamp(0.0, 1.0);
         let mut scrim_color = theme.dim.0;
         scrim_color[3] = dim;
         self.scrim
@@ -726,10 +1242,361 @@ mod tests {
         (ui, id)
     }
 
+    mod scene_easing {
+        use super::*;
+
+        #[test]
+        fn a_settled_overview_is_fully_progressed_on_both_curves() {
+            let (ui, _id) = ui_with_one_window(0);
+            assert!((ui.progress() - 1.0).abs() < f64::EPSILON);
+            assert!((ui.backdrop_progress() - 1.0).abs() < f64::EPSILON);
+        }
+
+        /// The previews run on `--e-out` and the backdrop on `--e-io`, so
+        /// mid-transition they must *not* be at the same point — that
+        /// separation is what stops the scene moving as one rigid block.
+        #[test]
+        fn previews_lead_the_backdrop_mid_transition() {
+            let (mut ui, _id) = ui_with_one_window(400);
+            ui.phase = Phase::Opening {
+                started: Instant::now()
+                    .checked_sub(Duration::from_millis(80))
+                    .expect("the process has been up for longer than 80ms"),
+            };
+
+            let previews = ui.progress();
+            let backdrop = ui.backdrop_progress();
+            assert!(
+                previews > backdrop,
+                "previews ({previews}) must lead the backdrop ({backdrop})"
+            );
+            assert!((0.0..1.0).contains(&backdrop), "backdrop: {backdrop}");
+        }
+
+        #[test]
+        fn closing_runs_both_curves_back_towards_zero() {
+            let (mut ui, _id) = ui_with_one_window(400);
+            ui.begin_close(None);
+            ui.phase = Phase::Closing {
+                started: Instant::now()
+                    .checked_sub(Duration::from_millis(320))
+                    .expect("the process has been up for longer than 320ms"),
+                select: None,
+            };
+            assert!(ui.progress() < 0.5);
+            assert!(ui.backdrop_progress() < 0.5);
+        }
+    }
+
+    mod label_rise {
+        use super::*;
+
+        /// Labels used to be held back until the scene was 60% eased
+        /// through, then rushed in — they read as popping in afterwards.
+        /// They now fade across the whole scene.
+        #[test]
+        fn labels_are_already_partly_visible_early_in_the_transition() {
+            let (mut ui, _id) = ui_with_one_window(400);
+            ui.phase = Phase::Opening {
+                started: Instant::now()
+                    .checked_sub(Duration::from_millis(40))
+                    .expect("the process has been up for longer than 40ms"),
+            };
+            let t = ui.progress();
+            assert!(
+                t > 0.0 && t < 1.0,
+                "expected a mid-transition progress, got {t}"
+            );
+        }
+
+        #[test]
+        fn the_rise_starts_at_four_pixels_and_lands_at_zero() {
+            #[allow(clippy::cast_possible_truncation)]
+            let settled = ((1.0 - 1.0) * LABEL_RISE).round() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let start = ((1.0 - 0.0) * LABEL_RISE).round() as i32;
+            assert_eq!(settled, 0, "a settled label must sit at its anchor");
+            assert_eq!(start, 4, "spec's .ov-label starts at translateY(4px)");
+        }
+    }
+
+    mod close_button {
+        use super::*;
+
+        #[test]
+        fn it_straddles_the_previews_top_right_corner() {
+            let preview = rect(100, 200, 400, 300);
+            let button = close_button_rect(preview);
+
+            // `top: -10px; right: -10px` against a 26px button.
+            assert_eq!(button.size, Size::from((OV_CLOSE_SIZE, OV_CLOSE_SIZE)));
+            assert_eq!(
+                button.loc.y,
+                preview.loc.y - OV_CLOSE_OUTSET,
+                "top edge must hang above the preview"
+            );
+            assert_eq!(
+                button.loc.x + button.size.w,
+                preview.loc.x + preview.size.w + OV_CLOSE_OUTSET,
+                "right edge must hang past the preview"
+            );
+        }
+
+        #[test]
+        fn it_overlaps_the_preview_rather_than_floating_away() {
+            let preview = rect(0, 100, 400, 300);
+            let button = close_button_rect(preview);
+            assert!(
+                button.loc.x < preview.loc.x + preview.size.w,
+                "the button must still overlap the preview horizontally"
+            );
+            assert!(
+                button.loc.y + button.size.h > preview.loc.y,
+                "the button must still overlap the preview vertically"
+            );
+        }
+
+        #[test]
+        fn a_settled_overview_reports_a_hit_inside_the_button() {
+            let (ui, id) = ui_with_one_window(0);
+            let button = close_button_rect(ui.previews[0].rect_at(1.0));
+            let centre = Point::from((
+                f64::from(button.loc.x) + f64::from(button.size.w) / 2.0,
+                f64::from(button.loc.y) + f64::from(button.size.h) / 2.0,
+            ));
+            assert_eq!(ui.close_button_at(centre), Some(id));
+        }
+
+        #[test]
+        fn a_point_away_from_the_button_is_not_a_hit() {
+            let (ui, _id) = ui_with_one_window(0);
+            let preview = ui.previews[0].rect_at(1.0);
+            let middle = Point::from((
+                f64::from(preview.loc.x) + f64::from(preview.size.w) / 2.0,
+                f64::from(preview.loc.y) + f64::from(preview.size.h) / 2.0,
+            ));
+            assert_eq!(ui.close_button_at(middle), None);
+        }
+
+        /// Mid-transition the button is still flying in and mostly
+        /// transparent, so it must not swallow clicks meant for the
+        /// preview underneath.
+        #[test]
+        fn it_is_not_clickable_while_the_scene_is_still_animating() {
+            let (mut ui, _id) = ui_with_one_window(400);
+            ui.phase = Phase::Opening {
+                started: Instant::now()
+                    .checked_sub(Duration::from_millis(40))
+                    .expect("the process has been up for longer than 40ms"),
+            };
+            let button = close_button_rect(ui.previews[0].rect_at(ui.progress()));
+            let centre = Point::from((
+                f64::from(button.loc.x) + f64::from(button.size.w) / 2.0,
+                f64::from(button.loc.y) + f64::from(button.size.h) / 2.0,
+            ));
+            assert_eq!(ui.close_button_at(centre), None);
+        }
+
+        /// The design pins the cross to an absolute 5.5px, not to a
+        /// fraction of the button — `Painter::draw_icon_close`'s built-in
+        /// glyph would be 13px and fill the whole circle.
+        #[test]
+        fn the_cross_matches_the_designs_absolute_size() {
+            #[allow(clippy::cast_precision_loss)]
+            let from_svg = 6.0 * 11.0 / 12.0;
+            assert!(
+                (OV_CLOSE_GLYPH - from_svg).abs() < 0.01,
+                "expected {from_svg}, got {OV_CLOSE_GLYPH}"
+            );
+            assert!(
+                (OV_CLOSE_GLYPH_STROKE - 1.8 * 11.0 / 12.0).abs() < 0.01,
+                "stroke width drifted from the design"
+            );
+        }
+
+        #[test]
+        fn the_cross_is_a_small_part_of_the_button_not_most_of_it() {
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = OV_CLOSE_GLYPH / OV_CLOSE_SIZE as f32;
+            assert!(
+                (0.15..0.28).contains(&ratio),
+                "the cross should read as a small mark inside the pill, got {ratio}"
+            );
+        }
+
+        /// `box-shadow: var(--el-2)` needs room in the buffer or it gets
+        /// clipped into a hard-edged square halo.
+        #[test]
+        fn the_buffer_reserves_room_for_the_elevation_shadow() {
+            let margin = close_shadow_margin();
+            let widest = close_shadow_layers()
+                .iter()
+                .map(|layer| layer.blur)
+                .fold(0.0_f32, f32::max);
+            assert!(margin > 0, "no shadow margin reserved");
+            #[allow(clippy::cast_precision_loss)]
+            let margin_f = margin as f32;
+            assert!(
+                margin_f >= widest,
+                "margin {margin} is tighter than the widest blur {widest}"
+            );
+        }
+
+        #[test]
+        fn the_shadow_is_the_two_layer_elevation_two_token() {
+            let layers = close_shadow_layers();
+            assert_eq!(layers.len(), 2, "--el-2 is a two-layer shadow");
+            assert!(
+                layers[0].blur < layers[1].blur,
+                "the tighter layer must come first"
+            );
+            assert!(
+                layers.iter().all(|layer| layer.color.0[3] > 0.0),
+                "an invisible shadow layer is pointless"
+            );
+        }
+
+        #[test]
+        fn hovering_the_button_is_tracked_separately_from_the_ring() {
+            let (mut ui, id) = ui_with_one_window(0);
+            assert!(ui.set_close_hover(Some(id)), "a new target must animate");
+            assert!(!ui.set_close_hover(Some(id)), "the same target is a no-op");
+            assert!(ui.set_close_hover(None));
+        }
+
+        #[test]
+        fn a_button_hover_keeps_the_ui_animating() {
+            let (mut ui, id) = ui_with_one_window(0);
+            ui.set_close_hover(None);
+            ui.set_close_hover(Some(id));
+            assert!(
+                ui.is_animating(),
+                "the pop must keep frames coming until it settles"
+            );
+        }
+
+        #[test]
+        fn relayout_drops_a_button_hover_for_a_window_that_vanished() {
+            let (mut ui, id) = ui_with_one_window(0);
+            ui.set_close_hover(Some(id));
+
+            let other = WindowId::next();
+            ui.relayout(&[(other, rect(0, 0, 800, 600))], rect(0, 0, 1920, 1080));
+
+            assert_eq!(
+                ui.close_hover.target(),
+                None,
+                "a hover on a gone window must be cleared, not moved"
+            );
+        }
+
+        #[test]
+        fn relayout_keeps_the_cached_button_for_a_window_still_present() {
+            let (mut ui, id) = ui_with_one_window(0);
+            ui.previews[0].close = Some((false, 1, MemoryRenderBuffer::default()));
+
+            ui.relayout(&[(id, rect(0, 0, 800, 600))], rect(0, 0, 1920, 1080));
+
+            assert!(ui.previews[0].close.is_some());
+        }
+
+        #[test]
+        fn a_brand_new_preview_gets_no_inherited_button_buffer() {
+            let (mut ui, id) = ui_with_one_window(0);
+            ui.previews[0].close = Some((true, 1, MemoryRenderBuffer::default()));
+
+            let new_id = WindowId::next();
+            ui.relayout(
+                &[(id, rect(0, 0, 800, 600)), (new_id, rect(0, 0, 400, 300))],
+                rect(0, 0, 1920, 1080),
+            );
+
+            let fresh = ui
+                .previews
+                .iter()
+                .find(|p| p.id == new_id)
+                .expect("the new window must get a preview");
+            assert!(fresh.close.is_none());
+        }
+    }
+
+    mod label_offset_tests {
+        use super::*;
+
+        #[test]
+        fn the_pill_overlaps_the_preview_by_half_its_height() {
+            // Spec: the pill straddles the preview's bottom edge, half on
+            // the window and half below it.
+            assert_eq!(label_offset(28), -14);
+            assert_eq!(label_offset(40), -20);
+        }
+
+        #[test]
+        fn the_offset_is_never_positive_so_the_pill_never_floats_below() {
+            for height in 0..=64 {
+                assert!(
+                    label_offset(height) <= 0,
+                    "height {height} pushed the pill below the preview"
+                );
+            }
+        }
+
+        /// What the layout budget ends up reserving below each row.
+        /// Must stay non-negative and strictly less than the pill height,
+        /// or `compute_overview_layout` and the renderer disagree.
+        #[test]
+        fn the_space_consumed_below_a_row_is_half_the_pill() {
+            for height in [0, 24, 28, 40] {
+                let consumed = height + label_offset(height);
+                assert!(consumed >= 0, "height {height} consumed {consumed}");
+                assert_eq!(consumed, height - height / 2);
+            }
+        }
+    }
+
     #[test]
     fn initial_hover_has_no_pop_in_animation() {
         let (ui, _id) = ui_with_one_window(220);
         assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
+    }
+
+    /// `relayout` runs on every surface commit while overview is open
+    /// (see `GlideState::refresh_overview`), so identical inputs must be
+    /// a cheap no-op rather than a full recompute-and-rebuild.
+    #[test]
+    fn relayout_with_identical_inputs_is_skipped_entirely() {
+        let (mut ui, id) = ui_with_one_window(0);
+        let windows = [(id, rect(0, 0, 800, 600))];
+        let area = rect(0, 0, 1920, 1080);
+
+        // Poke a value the real layout would never produce; if relayout
+        // actually recomputes, this gets overwritten.
+        ui.previews[0].row = 99;
+
+        ui.relayout(&windows, area);
+        assert_eq!(
+            ui.previews[0].row, 99,
+            "identical inputs must leave the previews untouched"
+        );
+
+        // A genuinely different input must still trigger the recompute.
+        ui.relayout(&windows, rect(0, 0, 1280, 720));
+        assert_eq!(ui.previews[0].row, 0);
+    }
+
+    /// A window resizing while overview is open (same id, new origin) is
+    /// exactly the case `refresh_overview` exists for — it must not be
+    /// mistaken for "identical inputs".
+    #[test]
+    fn relayout_recomputes_when_a_windows_origin_changes() {
+        let (mut ui, id) = ui_with_one_window(0);
+        ui.previews[0].row = 99;
+
+        let resized = [(id, rect(0, 0, 400, 300))];
+        ui.relayout(&resized, rect(0, 0, 1920, 1080));
+
+        assert_eq!(ui.previews[0].row, 0, "a resized origin must relayout");
+        assert_eq!(ui.previews[0].origin, rect(0, 0, 400, 300));
     }
 
     #[test]
@@ -804,20 +1671,20 @@ mod tests {
     }
 
     #[test]
-    fn relayout_preserves_shadow_buffers_for_a_window_still_present() {
+    fn relayout_preserves_the_shadow_buffer_for_a_window_still_present() {
         let (mut ui, id) = ui_with_one_window(0);
-        ui.previews[0].shadow = vec![SolidColorBuffer::default(); 4];
+        ui.previews[0].shadow = Some((10, 10, 1, MemoryRenderBuffer::default()));
 
         let windows = [(id, rect(0, 0, 800, 600))];
         ui.relayout(&windows, rect(0, 0, 1920, 1080));
 
-        assert_eq!(ui.previews[0].shadow.len(), 4);
+        assert!(ui.previews[0].shadow.is_some());
     }
 
     #[test]
-    fn relayout_gives_a_newly_appearing_window_no_stale_shadow_buffers() {
+    fn relayout_gives_a_newly_appearing_window_no_stale_shadow_buffer() {
         let (mut ui, id) = ui_with_one_window(0);
-        ui.previews[0].shadow = vec![SolidColorBuffer::default(); 4];
+        ui.previews[0].shadow = Some((10, 10, 1, MemoryRenderBuffer::default()));
 
         let new_id = WindowId::next();
         let windows = [(id, rect(0, 0, 800, 600)), (new_id, rect(0, 0, 400, 300))];
@@ -829,26 +1696,41 @@ mod tests {
             .find(|p| p.id == new_id)
             .expect("the new window must get a preview");
         assert!(
-            new_preview.shadow.is_empty(),
-            "a brand new preview must not inherit another window's shadow buffers"
+            new_preview.shadow.is_none(),
+            "a brand new preview must not inherit another window's shadow buffer"
         );
     }
 
-    mod push_shadow_rings_geometry {
+    mod preview_shadow_layer_tests {
         use super::*;
 
         #[test]
-        fn resizes_the_buffer_vec_to_match_the_band_count() {
-            let mut buffers = vec![SolidColorBuffer::default(); 2];
-            let rects = crate::decoration::shadow_rects(100, 60, 16, 3);
-            buffers.resize_with(rects.len(), SolidColorBuffer::default);
-            assert_eq!(buffers.len(), rects.len());
+        fn dy_to_blur_ratio_matches_the_window_shadows_convention() {
+            let theme = OverviewTheme {
+                shadow_size: 44,
+                ..OverviewTheme::default()
+            };
+            let layer = preview_shadow_layer(&theme, 1);
+            assert!((layer.dy / layer.blur - 0.43).abs() < 0.001);
         }
 
         #[test]
-        fn zero_size_produces_no_rects_and_so_no_buffers_needed() {
-            let rects = crate::decoration::shadow_rects(100, 60, 0, 3);
-            assert!(rects.is_empty());
+        fn blur_scales_with_the_configured_shadow_size_and_output_scale() {
+            let theme = OverviewTheme {
+                shadow_size: 20,
+                ..OverviewTheme::default()
+            };
+            let at_1x = preview_shadow_layer(&theme, 1);
+            let at_2x = preview_shadow_layer(&theme, 2);
+            assert!((at_1x.blur - 20.0).abs() < 0.01);
+            assert!((at_2x.blur - 40.0).abs() < 0.01);
+        }
+
+        #[test]
+        fn color_passes_through_the_theme_unchanged() {
+            let theme = OverviewTheme::default();
+            let layer = preview_shadow_layer(&theme, 1);
+            assert_eq!(layer.color, theme.shadow_color);
         }
     }
 }

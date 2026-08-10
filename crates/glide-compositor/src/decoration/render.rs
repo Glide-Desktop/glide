@@ -1,6 +1,6 @@
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
-    utils::{Logical, Point, Rectangle, Size, Transform},
+    utils::{Point, Rectangle, Transform},
 };
 
 use crate::{config::Color, paint::Painter, window::GlideWindow};
@@ -80,66 +80,6 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
     out
 }
 
-pub(crate) fn border_rects(
-    width: i32,
-    frame_height: i32,
-    border_width: i32,
-) -> [(Point<i32, Logical>, Size<i32, Logical>); 4] {
-    [
-        (
-            Point::from((-border_width, -border_width)),
-            Size::from((width + border_width * 2, border_width)),
-        ),
-        (
-            Point::from((-border_width, frame_height)),
-            Size::from((width + border_width * 2, border_width)),
-        ),
-        (
-            Point::from((-border_width, 0)),
-            Size::from((border_width, frame_height)),
-        ),
-        (
-            Point::from((width, 0)),
-            Size::from((border_width, frame_height)),
-        ),
-    ]
-}
-
-pub(crate) type ShadowRect = (Point<i32, Logical>, Size<i32, Logical>, f32);
-
-pub(crate) fn shadow_rects(
-    width: i32,
-    frame_height: i32,
-    shadow_size: i32,
-    bands: usize,
-) -> Vec<ShadowRect> {
-    if shadow_size <= 0 || bands == 0 || width <= 0 || frame_height <= 0 {
-        return Vec::new();
-    }
-
-    let bands_i32 = i32::try_from(bands).unwrap_or(1).max(1);
-    let step = (shadow_size / bands_i32).max(1);
-
-    let mut out = Vec::with_capacity(bands * 4);
-    let mut outset = 0;
-    for i in 0..bands {
-        #[allow(clippy::cast_precision_loss)]
-        let t = (i as f64 + 0.5) / bands as f64;
-        let falloff = 1.0 - t;
-        #[allow(clippy::cast_possible_truncation)]
-        let alpha = (falloff * falloff) as f32;
-
-        let cur_w = width + outset * 2;
-        let cur_h = frame_height + outset * 2;
-        for (offset, size) in border_rects(cur_w, cur_h, step) {
-            let adjusted = Point::from((offset.x - outset, offset.y - outset));
-            out.push((adjusted, size, alpha));
-        }
-        outset += step;
-    }
-    out
-}
-
 /// `DecorationTheme` only exposes one shadow size and one shadow color per
 /// focus state (a deliberate choice — see Stage 1's commit message on why
 /// the config schema wasn't broken open to a full elevation layer list).
@@ -155,18 +95,18 @@ fn derive_shadow_layers(
     shadow_size: f32,
     shadow_color: Color,
 ) -> [crate::paint::ShadowLayerSpec; 2] {
-    const OUTER_DY_RATIO: f32 = 0.43;
+    use crate::paint::SHADOW_DY_RATIO;
     const INNER_SIZE_RATIO: f32 = 0.24;
     const INNER_ALPHA_RATIO: f32 = 0.65;
 
     let outer = crate::paint::ShadowLayerSpec {
-        dy: shadow_size * OUTER_DY_RATIO,
+        dy: shadow_size * SHADOW_DY_RATIO,
         blur: shadow_size,
         color: shadow_color,
     };
     let inner_size = shadow_size * INNER_SIZE_RATIO;
     let inner = crate::paint::ShadowLayerSpec {
-        dy: inner_size * OUTER_DY_RATIO,
+        dy: inner_size * SHADOW_DY_RATIO,
         blur: inner_size,
         color: shadow_color.with_alpha(shadow_color.0[3] * INNER_ALPHA_RATIO),
     };
@@ -214,7 +154,13 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
         (0, crate::config::Color([0.0, 0.0, 0.0, 0.0]))
     };
 
-    let margin = shadow_size + border_width;
+    // `shadow_fade_margin`, not `shadow_size`, on purpose — the shadow is
+    // drawn offset downward (see `derive_shadow_layers`), so the buffer
+    // needs extra room on every side or the blur gets hard-clipped right
+    // as it approaches zero alpha, which reads as a dense, sharp-edged
+    // halo instead of a soft fade (and can visibly square off a corner
+    // right where the clip lands).
+    let margin = crate::paint::shadow_fade_margin(shadow_size) + border_width;
     if margin <= 0 {
         return None;
     }
@@ -241,12 +187,15 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
         if let Ok(pixels) = usize::try_from(buf_w * buf_h * 4) {
             let mut buf = vec![0u8; pixels];
 
+            // Pixel dimensions comfortably fit an f32 mantissa.
+            #[allow(clippy::cast_precision_loss)]
             let shadow_layers = derive_shadow_layers((shadow_size * scale) as f32, shadow_color);
             let window_radius = if is_maximized {
                 0.0
             } else {
                 theme.corner_radius
             };
+            #[allow(clippy::cast_precision_loss)]
             crate::paint::draw_outset_shadow_and_border(
                 &mut buf,
                 buf_w,
@@ -257,6 +206,10 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
                 (border_width * scale) as f32,
                 border_color,
                 window_radius * scale as f32,
+                // Nothing behind the window's own rounded footprint — the
+                // shadow fill would otherwise bleed through any pixels the
+                // client renders transparent (e.g. translucent terminals).
+                Some(window_radius * scale as f32),
             );
 
             let memory = MemoryRenderBuffer::from_slice(

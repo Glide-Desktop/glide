@@ -25,14 +25,17 @@ pub enum TextAlign {
 
 mod wallpaper;
 pub use wallpaper::{
-    compose_wallpaper, decode_wallpaper, draw_wallpaper, draw_wallpaper_into,
+    compose_wallpaper, decode_wallpaper, desaturate_in_place, draw_wallpaper, draw_wallpaper_into,
     embedded_wallpaper_bytes, fit_transform, init_wallpaper,
 };
 
 mod blur;
 
 mod border;
-pub use border::{ShadowLayerSpec, draw_inset_border, draw_outset_shadow_and_border};
+pub use border::{
+    SHADOW_DY_RATIO, ShadowLayerSpec, draw_inset_border, draw_outset_shadow_and_border,
+    shadow_fade_margin,
+};
 
 static NOTO_SANS_BYTES: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
 
@@ -624,6 +627,144 @@ fn composite_over(dst: [u8; 4], src_rgb_straight: [u8; 3], src_alpha: u8) -> [u8
         mix(src_premul(src_rgb_straight[2]), dst[2]),
         (sa + (u32::from(dst[3]) * inv + 127) / 255).min(255) as u8,
     ]
+}
+
+/// Draws just the close glyph — an X of `glyph_side` logical px, stroked
+/// `stroke_width` logical px thick — centred on an already-populated
+/// buffer, blended over whatever is there.
+///
+/// [`Painter::draw_icon_close`] cannot be used for a round button: it
+/// paints its own `BUTTON_RADIUS` background and overwrites the buffer, so
+/// it would erase the pill underneath. Its glyph is also sized as a fixed
+/// fraction of the button, whereas the design pins the close cross to an
+/// absolute size regardless of how much padding surrounds it.
+pub fn draw_close_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    glyph_side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if glyph_side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let (cx, cy) = (
+        canvas_width as f32 * scale_f / 2.0,
+        canvas_height as f32 * scale_f / 2.0,
+    );
+    let half = glyph_side * scale_f / 2.0;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(cx - half, cy - half);
+    pb.line_to(cx + half, cy + half);
+    pb.move_to(cx + half, cy - half);
+    pb.line_to(cx - half, cy + half);
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+/// Strokes a rounded-rect outline *within* an already-populated buffer,
+/// blended over what is there.
+///
+/// [`draw_inset_border`] always hugs the buffer's own edges, which is no
+/// use when the shape being outlined sits inset inside a larger canvas —
+/// e.g. a button whose buffer carries a drop-shadow margin around it.
+#[allow(clippy::too_many_arguments)]
+pub fn stroke_rounded_rect_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    rect_x: i32,
+    rect_y: i32,
+    rect_width: i32,
+    rect_height: i32,
+    scale: i32,
+    stroke_width: f32,
+    radius: f32,
+    color: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    let inset = stroke_width * scale_f / 2.0;
+    #[allow(clippy::cast_precision_loss)]
+    let path = rounded_rect(
+        rect_x as f32 * scale_f + inset,
+        rect_y as f32 * scale_f + inset,
+        rect_width as f32 * scale_f - inset * 2.0,
+        rect_height as f32 * scale_f - inset * 2.0,
+        (radius * scale_f - inset).max(0.0),
+    );
+    if let Some(path) = path {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
 }
 
 fn render_icon(
@@ -1696,6 +1837,7 @@ mod golden_tests {
                 border_width,
                 border_color,
                 12.0,
+                None,
             );
             let rgba = bgra_premul_to_rgba_premul(&buf);
             failures.extend(check_golden_rgba_premul(

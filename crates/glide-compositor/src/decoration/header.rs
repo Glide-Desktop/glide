@@ -141,13 +141,25 @@ impl HeaderBar {
     }
 
     #[must_use]
+    /// The widest band around the window frame that decoration pixels
+    /// (shadow + border) can occupy, in logical px. Feeds
+    /// `SpaceElement::bbox`, so it must be at least as large as the
+    /// actual `shadow_and_border_buffer` overhang — which is
+    /// `shadow_fade_margin(size) + border_width`, *not* the raw
+    /// configured size (the blur needs extra room to fade past the
+    /// downward `dy` offset; see `shadow_fade_margin`). Undershooting
+    /// this leaves the outer shadow ring outside the reported bounding
+    /// box and produces stale-shadow damage-tracking artifacts.
     pub fn shadow_margin(&self) -> i32 {
+        let border = i32::try_from(self.theme.border_width)
+            .unwrap_or(super::RESIZE_BORDER)
+            .clamp(0, super::RESIZE_BORDER);
         if self.theme.shadow {
             let s1 = i32::try_from(self.theme.shadow_size).unwrap_or(i32::MAX);
             let s2 = i32::try_from(self.theme.shadow_size_focused).unwrap_or(i32::MAX);
-            s1.max(s2)
+            crate::paint::shadow_fade_margin(s1.max(s2)).saturating_add(border)
         } else {
-            0
+            border
         }
     }
 

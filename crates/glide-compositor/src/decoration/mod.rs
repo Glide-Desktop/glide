@@ -16,8 +16,6 @@ pub use header::HeaderBar;
 pub use input::Decoration;
 pub use render::{frame_buffers, shadow_and_border_buffer};
 
-pub(crate) use render::shadow_rects;
-
 #[cfg(test)]
 use crate::grabs::resize_grab::ResizeEdge;
 #[cfg(test)]
@@ -26,8 +24,6 @@ use header::{DecorationAction, HitZone, button_colors};
 use input::resize_cursor;
 #[cfg(test)]
 use menu::MenuItem;
-#[cfg(test)]
-use render::border_rects;
 
 pub const BUTTON_SIZE: i32 = 26;
 pub const BUTTON_PAD_X: i32 = glide_theme::spacing::SP2;
@@ -76,9 +72,6 @@ const MENU_CONTAINER_RADIUS: f32 = glide_theme::shape::R3;
 const IDLE_BUTTON_OPACITY: f32 = 0.45;
 
 const BUTTON_HOVER_ANIM: std::time::Duration = glide_theme::motion::T1;
-
-#[cfg(test)]
-const SHADOW_BANDS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BoxDecoKey {
@@ -165,7 +158,7 @@ mod tests {
     use smithay::{
         backend::input::ButtonState,
         input::pointer::{ButtonEvent, CursorIcon},
-        utils::{SERIAL_COUNTER, Size},
+        utils::SERIAL_COUNTER,
     };
 
     use super::*;
@@ -319,30 +312,41 @@ mod tests {
     mod shadow_margin_tests {
         use super::*;
 
+        /// `shadow_margin` must cover the *actual* overhang of the
+        /// shadow+border buffer — `shadow_fade_margin(size) + border` —
+        /// not just the raw configured size, or `SpaceElement::bbox`
+        /// under-reports the decorated footprint and moving a window
+        /// leaves stale shadow pixels behind.
         #[test]
-        fn matches_the_larger_of_the_two_theme_shadow_sizes_when_enabled() {
+        fn covers_the_fade_margin_of_the_larger_shadow_size_plus_the_border() {
             let mut h = header();
             let theme = DecorationTheme {
                 shadow: true,
                 shadow_size: 20,
                 shadow_size_focused: 50,
+                border_width: 1,
                 ..DecorationTheme::default()
             };
             h.sync(&theme, false, false, 1);
-            assert_eq!(h.shadow_margin(), 50);
+            assert_eq!(h.shadow_margin(), crate::paint::shadow_fade_margin(50) + 1);
+            assert!(
+                h.shadow_margin() > 50,
+                "must exceed the raw configured size — the blur needs room to fade"
+            );
         }
 
         #[test]
-        fn is_zero_when_shadows_are_disabled() {
+        fn only_the_border_remains_when_shadows_are_disabled() {
             let mut h = header();
             let theme = DecorationTheme {
                 shadow: false,
                 shadow_size: 20,
                 shadow_size_focused: 50,
+                border_width: 2,
                 ..DecorationTheme::default()
             };
             h.sync(&theme, false, false, 1);
-            assert_eq!(h.shadow_margin(), 0);
+            assert_eq!(h.shadow_margin(), 2);
         }
     }
 
@@ -633,108 +637,6 @@ mod tests {
             let h = header();
             assert_eq!(h.resize_edges_at(point(400.0, 16.0)), None, "titlebar");
             assert_eq!(h.resize_edges_at(point(400.0, 300.0)), None, "content");
-        }
-    }
-
-    mod border_rects_tests {
-        use super::*;
-
-        #[test]
-        fn strips_tile_the_frame_without_overlapping_corners() {
-            let [top, bottom, left, right] = border_rects(800, 632, 2);
-
-            assert_eq!(top.0, Point::from((-2, -2)));
-            assert_eq!(top.1, Size::from((804, 2)));
-
-            assert_eq!(bottom.0, Point::from((-2, 632)));
-            assert_eq!(bottom.1, Size::from((804, 2)));
-
-            assert_eq!(left.0, Point::from((-2, 0)));
-            assert_eq!(left.1, Size::from((2, 632)));
-            assert_eq!(right.0, Point::from((800, 0)));
-            assert_eq!(right.1, Size::from((2, 632)));
-        }
-
-        #[test]
-        fn at_max_clamped_width_stays_within_the_resize_band_margin() {
-            let [top, _bottom, left, right] = border_rects(800, 632, RESIZE_BORDER);
-            assert_eq!(top.0.y, -RESIZE_BORDER);
-            assert_eq!(left.0.x, -RESIZE_BORDER);
-            assert_eq!(right.0.x + RESIZE_BORDER, 800 + RESIZE_BORDER);
-        }
-
-        #[test]
-        fn zero_width_produces_zero_sized_strips_not_negative_ones() {
-            let [top, ..] = border_rects(800, 632, 0);
-            assert_eq!(top.1, Size::from((800, 0)));
-        }
-    }
-
-    mod shadow_rects_tests {
-        use super::*;
-
-        #[test]
-        fn produces_four_strips_per_band() {
-            let rects = shadow_rects(800, 632, 16, SHADOW_BANDS);
-            assert_eq!(rects.len(), SHADOW_BANDS * 4);
-        }
-
-        #[test]
-        fn bands_tile_outward_from_the_frame_without_gaps_or_overlap() {
-            let rects = shadow_rects(800, 632, 18, 6);
-            let mut top_ys: Vec<i32> = rects
-                .iter()
-                .step_by(4)
-                .map(|(offset, _, _)| offset.y)
-                .collect();
-            top_ys.sort_unstable();
-            for pair in top_ys.windows(2) {
-                assert_eq!(
-                    pair[0] + 3,
-                    pair[1],
-                    "gap or overlap between adjacent bands: {top_ys:?}"
-                );
-            }
-            assert_eq!(*top_ys.first().unwrap(), -18);
-        }
-
-        #[test]
-        fn alpha_decreases_monotonically_from_the_frame_outward() {
-            let rects = shadow_rects(800, 632, 24, SHADOW_BANDS);
-            let alphas: Vec<f32> = rects.iter().step_by(4).map(|(_, _, a)| *a).collect();
-            for pair in alphas.windows(2) {
-                assert!(
-                    pair[0] > pair[1],
-                    "alpha must strictly decrease band by band: {alphas:?}"
-                );
-            }
-        }
-
-        #[test]
-        fn outermost_band_alpha_is_small_but_nonzero() {
-            let rects = shadow_rects(800, 632, 24, SHADOW_BANDS);
-            let last_alpha = rects.last().unwrap().2;
-            assert!(
-                last_alpha > 0.0,
-                "outermost band must not be fully invisible"
-            );
-            assert!(last_alpha < 0.1, "outermost band must be faint");
-        }
-
-        #[test]
-        fn zero_shadow_size_produces_no_strips() {
-            assert!(shadow_rects(800, 632, 0, SHADOW_BANDS).is_empty());
-        }
-
-        #[test]
-        fn zero_bands_produces_no_strips() {
-            assert!(shadow_rects(800, 632, 16, 0).is_empty());
-        }
-
-        #[test]
-        fn degenerate_frame_size_produces_no_strips() {
-            assert!(shadow_rects(0, 632, 16, SHADOW_BANDS).is_empty());
-            assert!(shadow_rects(800, 0, 16, SHADOW_BANDS).is_empty());
         }
     }
 

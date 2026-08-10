@@ -15,7 +15,16 @@ impl OverviewThemeExt for OverviewTheme {
     fn options(&self) -> glide_layout::OverviewOptions {
         glide_layout::OverviewOptions {
             gap: self.gap,
+            padding: self.padding,
             label_height: if self.label { self.label_height } else { 0 },
+            // Must track `overview::label_offset` — that's where the
+            // renderer actually places the pill relative to the preview's
+            // bottom edge. See `OverviewOptions::label_offset`'s docs.
+            label_offset: if self.label {
+                crate::overview::label_offset(self.label_height)
+            } else {
+                0
+            },
             max_scale: self.max_scale,
         }
     }
@@ -188,6 +197,11 @@ impl Config {
                 mods: vec![ModifierConfig::Alt],
                 key: "space".to_string(),
                 action: KeyActionConfig::Simple("open-window-menu".to_string()),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "Print".to_string(),
+                action: KeyActionConfig::Simple("screenshot".to_string()),
             },
         ];
 
@@ -379,6 +393,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "close-window" => Some(crate::input::KeyAction::CloseFocused),
             "open-window-menu" => Some(crate::input::KeyAction::OpenWindowMenu),
             "toggle-overview" => Some(crate::input::KeyAction::ToggleOverview),
+            "screenshot" => Some(crate::input::KeyAction::Screenshot),
             _ => {
                 tracing::warn!(action = cmd, "unknown simple key action");
                 None
@@ -606,14 +621,22 @@ shadow-color = \"#000000aa\"
         let toml_str = "\
 [overview]
 gap = 40
+padding = 72
 label-height = 30
 max-scale = 0.9
 label = false
 label-color = \"#111111\"
 label-background = \"#222222\"
+label-border = \"#555555\"
+close-background = \"#0a0a0a\"
+close-foreground = \"#0b0b0b\"
+close-border = \"#0c0c0c\"
+close-hover-background = \"#0d0d0d\"
+close-hover-foreground = \"#0e0e0e\"
 dim = \"#33333380\"
 highlight = \"#444444\"
 border = 6
+corner-radius = 10.0
 shadow = false
 shadow-size = 12
 shadow-color = \"#00000080\"
@@ -622,13 +645,27 @@ duration-ms = 150
         let config: Config = toml::from_str(toml_str).unwrap();
         let o = &config.overview;
         assert_eq!(o.gap, 40);
+        assert_eq!(o.padding, 72);
         assert_eq!(o.label_height, 30);
         assert!((o.max_scale - 0.9).abs() < f64::EPSILON);
         assert!(!o.label);
         assert_eq!(o.label_color, Color::from_hex("#111111").unwrap());
         assert_eq!(o.label_background, Color::from_hex("#222222").unwrap());
+        assert_eq!(o.label_border, Color::from_hex("#555555").unwrap());
+        assert_eq!(o.close_background, Color::from_hex("#0a0a0a").unwrap());
+        assert_eq!(o.close_foreground, Color::from_hex("#0b0b0b").unwrap());
+        assert_eq!(o.close_border, Color::from_hex("#0c0c0c").unwrap());
+        assert_eq!(
+            o.close_hover_background,
+            Color::from_hex("#0d0d0d").unwrap()
+        );
+        assert_eq!(
+            o.close_hover_foreground,
+            Color::from_hex("#0e0e0e").unwrap()
+        );
         assert_eq!(o.highlight, Color::from_hex("#444444").unwrap());
         assert_eq!(o.border, 6);
+        assert!((o.corner_radius - 10.0).abs() < f32::EPSILON);
         assert!(!o.shadow);
         assert_eq!(o.shadow_size, 12);
         assert_eq!(o.shadow_color, Color::from_hex("#00000080").unwrap());

@@ -3,6 +3,7 @@
 mod handlers;
 
 mod backend;
+mod clip;
 mod config;
 mod cursor;
 mod decoration;

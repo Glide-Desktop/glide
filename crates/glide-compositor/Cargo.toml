@@ -27,6 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 libc = "0.2"
+png = "0.18"
 glide-config = { path = "../glide-config" }
 glide-geom = { path = "../glide-geom" }
 glide-ipc = { path = "../glide-ipc" }

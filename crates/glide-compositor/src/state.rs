@@ -209,6 +209,15 @@ pub struct GlideState {
     >,
     pub idle_inhibited_surfaces: HashSet<WlSurface>,
     pub ipc_subscribers: crate::ipc::IpcSubscribers,
+
+    /// Set by `KeyAction::Screenshot`, consumed by the very next
+    /// `render_surface` call (whichever output redraws first), which
+    /// captures that output's just-built render elements to a PNG. A
+    /// bare bool rather than a per-output request queue — good enough
+    /// for a single-monitor debug capture, not meant as a real
+    /// multi-output screenshot tool (that's `ext-image-copy-capture-v1`,
+    /// see `docs/ROADMAP.md`).
+    pub pending_screenshot: bool,
 }
 
 impl GlideState {
@@ -275,6 +284,7 @@ impl GlideState {
             foreign_toplevel_handles,
             idle_inhibited_surfaces: HashSet::new(),
             ipc_subscribers: crate::ipc::IpcSubscribers::default(),
+            pending_screenshot: false,
         }
     }
 

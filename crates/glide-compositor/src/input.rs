@@ -39,6 +39,7 @@ pub enum KeyAction {
     OverviewSelect,
     OverviewNav(Direction),
     Exec(String),
+    Screenshot,
     None,
 }
 
@@ -80,6 +81,39 @@ fn vt_switch_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAc
         .map(|sym| sym.raw())
         .find(|raw| (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(raw))
         .map(|raw| KeyAction::VtSwitch((raw - keysyms::KEY_XF86Switch_VT_1 + 1).cast_signed()))
+}
+
+/// Configured keybinds that must keep firing even while overview mode has
+/// taken over key dispatch (see `overview_active_shortcut`) — actions that
+/// don't touch window/workspace state the way overview's own navigation
+/// assumes exclusive control over, so they're safe to let through
+/// regardless of what's on screen.
+fn is_global_shortcut(action: &KeyAction) -> bool {
+    matches!(action, KeyAction::Screenshot)
+}
+
+/// Resolves a key press while overview mode is open. Overview's own
+/// navigation shortcuts take priority, then VT-switching (always
+/// available, same as outside overview), then — unlike outside overview —
+/// only the subset of configured keybinds `is_global_shortcut` allows
+/// through, so e.g. the screenshot key still works without overview's
+/// dedicated arrow/enter/escape handling having to know about every
+/// possible user keybind. Anything left over resolves to `KeyAction::None`
+/// (still *intercepted*, i.e. not forwarded to a client — overview owns
+/// the keyboard while it's open — just a no-op).
+fn overview_active_shortcut(
+    keybinds: &[ResolvedKeybind],
+    modifiers: &ModifiersState,
+    raw_syms: &[Keysym],
+    modified_sym: Keysym,
+) -> KeyAction {
+    overview_shortcut(raw_syms, modified_sym)
+        .or_else(|| vt_switch_shortcut(raw_syms, modified_sym))
+        .or_else(|| {
+            process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
+                .filter(is_global_shortcut)
+        })
+        .unwrap_or(KeyAction::None)
 }
 
 fn overview_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
@@ -187,9 +221,12 @@ impl GlideState {
 
                 if let KeyState::Pressed = key_state {
                     let action = if overview_active {
-                        overview_shortcut(&handle.raw_syms(), keysym).or_else(|| {
-                            vt_switch_shortcut(&handle.raw_syms(), keysym).or(Some(KeyAction::None))
-                        })
+                        Some(overview_active_shortcut(
+                            &keybinds,
+                            modifiers,
+                            &handle.raw_syms(),
+                            keysym,
+                        ))
                     } else {
                         process_keyboard_shortcut(&keybinds, modifiers, &handle.raw_syms(), keysym)
                     };
@@ -221,6 +258,9 @@ impl GlideState {
         }
     }
 
+    // A flat dispatcher — one arm per action; splitting it up would just
+    // scatter the dispatch table.
+    #[allow(clippy::too_many_lines)]
     fn run_key_action(&mut self, action: KeyAction) {
         match action {
             KeyAction::Quit => self.loop_signal.stop(),
@@ -333,6 +373,11 @@ impl GlideState {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
                 }
             }
+            KeyAction::Screenshot => {
+                tracing::info!("screenshot requested");
+                self.pending_screenshot = true;
+                self.queue_redraw();
+            }
             KeyAction::None => {}
         }
     }
@@ -358,11 +403,23 @@ impl GlideState {
                 if self.layer_for_surface(surface).is_some()
         );
 
-        let hovered = self.overview.as_ref().and_then(|ui| ui.preview_at(pos));
-        let changed = self
+        let on_close = self
             .overview
-            .as_mut()
-            .is_some_and(|ui| ui.set_hover(hovered));
+            .as_ref()
+            .and_then(|ui| ui.close_button_at(pos));
+        // The button hangs outside the preview, but in the design it is a
+        // child of the window, so pointing at it keeps the ring lit.
+        let hovered = self
+            .overview
+            .as_ref()
+            .and_then(|ui| ui.preview_at(pos))
+            .or(on_close);
+
+        let changed = self.overview.as_mut().is_some_and(|ui| {
+            let ring = ui.set_hover(hovered);
+            let button = ui.set_close_hover(on_close);
+            ring || button
+        });
         if changed {
             self.queue_redraw();
         }
@@ -550,6 +607,23 @@ impl GlideState {
                 );
 
                 if !on_layer {
+                    // The close button takes precedence over selecting the
+                    // window it belongs to.
+                    if let Some(id) = self
+                        .overview
+                        .as_ref()
+                        .and_then(|ui| ui.close_button_at(pos))
+                    {
+                        if let Some(window) = self.window_map.get(&id)
+                            && let Some(toplevel) = window.toplevel()
+                        {
+                            tracing::info!(window = ?id, "closing from the overview");
+                            toplevel.send_close();
+                        }
+                        pointer.frame(self);
+                        return;
+                    }
+
                     let hit = self.overview.as_ref().and_then(|ui| ui.preview_at(pos));
 
                     match hit {
@@ -904,6 +978,62 @@ mod tests {
             modifiers.shift = true;
             let action = process_keyboard_shortcut(&binds, &modifiers, &[], Keysym::Tab);
             assert_eq!(action, Some(KeyAction::PrevWorkspace));
+        }
+    }
+
+    mod overview_active_shortcut_tests {
+        use super::*;
+
+        fn default_binds() -> Vec<ResolvedKeybind> {
+            crate::config::Config::with_defaults().resolve_keybinds()
+        }
+
+        #[test]
+        fn overviews_own_navigation_keys_still_work() {
+            let action = overview_active_shortcut(&[], &no_modifiers(), &[], Keysym::Escape);
+            assert_eq!(action, KeyAction::OverviewCancel);
+        }
+
+        #[test]
+        fn vt_switch_still_works_during_overview() {
+            let action = overview_active_shortcut(
+                &[],
+                &no_modifiers(),
+                &[],
+                Keysym::from(keysyms::KEY_XF86Switch_VT_4),
+            );
+            assert_eq!(action, KeyAction::VtSwitch(4));
+        }
+
+        /// Regression test: the screenshot keybind used to be silently
+        /// swallowed into `KeyAction::None` while overview mode was open,
+        /// because the overview-active branch never consulted the
+        /// configured keybinds table at all — see `is_global_shortcut`.
+        #[test]
+        fn the_configured_screenshot_keybind_still_fires_during_overview() {
+            let binds = default_binds();
+            let action = overview_active_shortcut(&binds, &no_modifiers(), &[], Keysym::Print);
+            assert_eq!(action, KeyAction::Screenshot);
+        }
+
+        #[test]
+        fn an_ordinary_configured_keybind_does_not_leak_through_during_overview() {
+            let binds = default_binds();
+            let mut modifiers = no_modifiers();
+            modifiers.logo = true;
+
+            // Super+Q (quit) is a real, configured keybind, but it isn't
+            // one of overview's own shortcuts and isn't in
+            // `is_global_shortcut` — overview must own the keyboard for
+            // everything else while it's open.
+            let action = overview_active_shortcut(&binds, &modifiers, &[], Keysym::q);
+            assert_eq!(action, KeyAction::None);
+        }
+
+        #[test]
+        fn an_unrelated_key_resolves_to_a_no_op_not_a_missing_action() {
+            let action = overview_active_shortcut(&[], &no_modifiers(), &[], Keysym::a);
+            assert_eq!(action, KeyAction::None);
         }
     }
 

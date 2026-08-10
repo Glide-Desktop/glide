@@ -294,6 +294,21 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
             let placed = state.layout.update_window_size(id, layout_size(&window));
             if placed {
                 state.reconcile_space();
+            } else {
+                // `update_window_size` already kept `WindowState.geometry`
+                // in sync with this commit's live buffer size above
+                // (that happens regardless of `placed`) — but for an
+                // already-mapped window resizing in place, nothing else
+                // re-derives from that new size. In particular, overview
+                // mode's cached preview rects are a snapshot taken when it
+                // was last (re)laid out, so a window resizing while
+                // overview is open would otherwise leave its highlight
+                // ring and label sized/positioned for its old dimensions
+                // until something unrelated happened to trigger a full
+                // `reconcile_space()`. `refresh_overview()` is a no-op
+                // whenever overview isn't actually open, so this is cheap
+                // the rest of the time.
+                state.refresh_overview();
             }
         }
     }

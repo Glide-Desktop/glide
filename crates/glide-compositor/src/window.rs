@@ -4,17 +4,20 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            AsRenderElements, memory::MemoryRenderBufferRenderElement,
+            AsRenderElements, Element, memory::MemoryRenderBufferRenderElement,
             surface::WaylandSurfaceRenderElement,
         },
     },
     desktop::{Window, space::SpaceElement},
     output::Output,
     render_elements,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
 };
 
-use crate::decoration;
+use crate::{
+    clip::{ClipCapableRenderer, ClippedSurfaceElement, RoundedClip},
+    decoration,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GlideWindow(Window);
@@ -136,8 +139,9 @@ impl SpaceElement for GlideWindow {
 }
 
 render_elements! {
-    pub GlideWindowRenderElement<R> where R: ImportAll + ImportMem;
+    pub GlideWindowRenderElement<R> where R: ImportAll + ImportMem + ClipCapableRenderer;
     Content = WaylandSurfaceRenderElement<R>,
+    ClippedContent = ClippedSurfaceElement<R>,
     Decoration = MemoryRenderBufferRenderElement<R>,
 }
 
@@ -145,27 +149,68 @@ impl<R: Renderer> std::fmt::Debug for GlideWindowRenderElement<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Content(e) => f.debug_tuple("Content").field(e).finish(),
+            Self::ClippedContent(e) => f.debug_tuple("ClippedContent").field(e).finish(),
             Self::Decoration(e) => f.debug_tuple("Decoration").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
     }
 }
 
-impl<R> AsRenderElements<R> for GlideWindow
-where
-    R: Renderer + ImportAll + ImportMem,
-    R::TextureId: Send + Clone + 'static,
-    R::Error: std::fmt::Debug,
-{
-    type RenderElement = GlideWindowRenderElement<R>;
+impl GlideWindow {
+    /// The rounded outline this window's client content has to be cut
+    /// against, in physical px, or `None` when it needs no cutting.
+    ///
+    /// The rect is the **whole frame**, titlebar included, so the two top
+    /// corners of the rounding fall on the titlebar buffer — which already
+    /// draws its own rounded top and covers them — and only the bottom two
+    /// actually bite into client pixels. Maximised and undecorated windows
+    /// opt out: the former is square by design, and the latter draws its
+    /// own corners client-side, so clipping would round them twice.
+    fn content_clip_frame(
+        &self,
+        frame_location: Point<i32, Physical>,
+        scale: Scale<f64>,
+    ) -> Option<(Rectangle<i32, Physical>, f32)> {
+        let state = self.try_decoration_state()?;
+        if !state.header.is_decorated() || state.header.maximized {
+            return None;
+        }
+        let radius = state.header.theme.corner_radius;
+        if radius <= 0.0 {
+            return None;
+        }
+        drop(state);
 
-    fn render_elements<C: From<Self::RenderElement>>(
+        let content = self.geometry().size;
+        let frame_logical = Size::from((content.w, content.h + self.header_height()));
+        #[allow(clippy::cast_possible_truncation)]
+        let radius_physical = (f64::from(radius) * scale.y) as f32;
+
+        Some((
+            Rectangle::new(
+                frame_location,
+                frame_logical.to_physical_precise_round(scale),
+            ),
+            radius_physical,
+        ))
+    }
+}
+
+impl GlideWindow {
+    fn render_elements_impl<R, C>(
         &self,
         renderer: &mut R,
         location: Point<i32, Physical>,
         scale: Scale<f64>,
         alpha: f32,
-    ) -> Vec<C> {
+        include_box_deco: bool,
+    ) -> Vec<C>
+    where
+        R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
+        R::TextureId: Send + Clone + 'static,
+        R::Error: std::fmt::Debug,
+        C: From<GlideWindowRenderElement<R>>,
+    {
         let painter = crate::paint::current();
 
         let header_height = self.header_height();
@@ -197,27 +242,98 @@ where
 
         elements.extend(deco_elements);
 
-        let int_scale = (scale.x.round() as i32).max(1);
-        if let Some(deco_buf) = decoration::shadow_and_border_buffer(self, int_scale) {
-            let physical_offset = deco_buf.offset.to_physical_precise_round(scale);
-            let pos = (header_location + physical_offset).to_f64();
-            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                pos,
-                &deco_buf.buf,
-                Some(alpha),
-                None,
-                None,
-                smithay::backend::renderer::element::Kind::Unspecified,
-            ) {
-                elements.push(C::from(GlideWindowRenderElement::Decoration(element)));
+        if include_box_deco {
+            // Rounded first, and real-world output scales are tiny integers.
+            #[allow(clippy::cast_possible_truncation)]
+            let int_scale = (scale.x.round() as i32).max(1);
+            if let Some(deco_buf) = decoration::shadow_and_border_buffer(self, int_scale) {
+                let physical_offset = deco_buf.offset.to_physical_precise_round(scale);
+                let pos = (header_location + physical_offset).to_f64();
+                if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    pos,
+                    &deco_buf.buf,
+                    Some(alpha),
+                    None,
+                    None,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                ) {
+                    elements.push(C::from(GlideWindowRenderElement::Decoration(element)));
+                }
             }
         }
 
-        let content_elements: Vec<GlideWindowRenderElement<R>> =
+        // Client content last (i.e. furthest back of this window's own
+        // layers), with its corners cut to the frame outline when the
+        // renderer can do it.
+        let clip_frame = self
+            .content_clip_frame(header_location, scale)
+            .filter(|_| renderer.prepare_rounded_clip());
+
+        let content_elements: Vec<WaylandSurfaceRenderElement<R>> =
             AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
-        elements.extend(content_elements.into_iter().map(C::from));
+
+        for element in content_elements {
+            // Built per element: a surface's own destination is the frame
+            // of reference the clip has to be expressed in, and a window's
+            // subsurfaces each have their own.
+            let clip = clip_frame.and_then(|(frame, radius)| {
+                let dst = element.geometry(scale);
+                crate::clip::clip_applies(element.transform(), dst)
+                    .then(|| RoundedClip::from_frame(dst, frame, radius))
+                    .flatten()
+                    .filter(RoundedClip::is_visible)
+            });
+
+            let element = match clip {
+                Some(clip) => GlideWindowRenderElement::ClippedContent(ClippedSurfaceElement::new(
+                    element, clip,
+                )),
+                None => GlideWindowRenderElement::Content(element),
+            };
+            elements.push(C::from(element));
+        }
 
         elements
+    }
+
+    /// Render elements for an overview preview: content + titlebar, but
+    /// *without* the window's own drop-shadow/border buffer. A preview is
+    /// rescaled wholesale, so including that buffer would draw a second,
+    /// denser (scaled-down) shadow on top of the overview's own per-preview
+    /// shadow, and its blur margin would leak far outside the preview's
+    /// slot into neighbouring previews and labels.
+    pub(crate) fn preview_render_elements<R>(
+        &self,
+        renderer: &mut R,
+        location: Point<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+    ) -> Vec<GlideWindowRenderElement<R>>
+    where
+        R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
+        R::TextureId: Send + Clone + 'static,
+        R::Error: std::fmt::Debug,
+    {
+        self.render_elements_impl(renderer, location, scale, alpha, false)
+    }
+}
+
+impl<R> AsRenderElements<R> for GlideWindow
+where
+    R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
+    R::TextureId: Send + Clone + 'static,
+    R::Error: std::fmt::Debug,
+{
+    type RenderElement = GlideWindowRenderElement<R>;
+
+    fn render_elements<C: From<Self::RenderElement>>(
+        &self,
+        renderer: &mut R,
+        location: Point<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+    ) -> Vec<C> {
+        self.render_elements_impl(renderer, location, scale, alpha, true)
     }
 }

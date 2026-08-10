@@ -33,6 +33,36 @@ pub fn init_wallpaper(override_bytes: Option<&[u8]>) {
     *slot = decoded.map(Arc::new);
 }
 
+/// Scales every pixel's saturation towards grey by `factor`, in place.
+///
+/// `1.0` is a no-op; the overview backdrop uses `0.9`, matching the
+/// design's `filter: saturate(.9)`. Operates on premultiplied BGRA, so
+/// the luma mix is applied to the premultiplied channels directly — that
+/// is equivalent to desaturating the straight colour and re-multiplying,
+/// because the mix is linear and alpha is untouched.
+pub fn desaturate_in_place(buf: &mut [u8], factor: f32) {
+    // Rec. 601 luma weights, in buffer (BGRA) channel order.
+    const W_B: f32 = 0.114;
+    const W_G: f32 = 0.587;
+    const W_R: f32 = 0.299;
+
+    if (factor - 1.0).abs() < f32::EPSILON {
+        return;
+    }
+    let factor = factor.clamp(0.0, 1.0);
+
+    for px in buf.chunks_exact_mut(4) {
+        let (b, g, r) = (f32::from(px[0]), f32::from(px[1]), f32::from(px[2]));
+        let luma = r * W_R + g * W_G + b * W_B;
+        for (channel, value) in px.iter_mut().take(3).zip([b, g, r]) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                *channel = (luma + (value - luma) * factor).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
 pub fn draw_wallpaper_into(buf: &mut [u8], out_w: i32, out_h: i32, fit: WallpaperFit) {
     let source = WALLPAPER_SOURCE
         .read()
@@ -301,6 +331,78 @@ pub fn draw_wallpaper(buf: &mut [u8], width: i32, height: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod desaturation {
+        use super::*;
+
+        /// Spread between the most and least intense colour channel — a
+        /// direct proxy for saturation.
+        fn spread(px: &[u8]) -> i32 {
+            let channels = [i32::from(px[0]), i32::from(px[1]), i32::from(px[2])];
+            channels.iter().max().unwrap() - channels.iter().min().unwrap()
+        }
+
+        #[test]
+        fn a_factor_of_one_changes_nothing() {
+            let original = vec![200u8, 40, 90, 255, 10, 220, 60, 255];
+            let mut buf = original.clone();
+            desaturate_in_place(&mut buf, 1.0);
+            assert_eq!(buf, original);
+        }
+
+        #[test]
+        fn a_partial_factor_pulls_channels_towards_each_other() {
+            let mut buf = vec![200u8, 40, 90, 255];
+            let before = spread(&buf);
+            desaturate_in_place(&mut buf, 0.9);
+            let after = spread(&buf);
+            assert!(
+                after < before,
+                "saturation did not drop: {before} -> {after}"
+            );
+            // 10% is a subtle nudge, not a wash-out.
+            assert!(
+                after > before / 2,
+                "0.9 should barely mute the colour, got {before} -> {after}"
+            );
+        }
+
+        #[test]
+        fn a_factor_of_zero_produces_pure_grey() {
+            let mut buf = vec![200u8, 40, 90, 255];
+            desaturate_in_place(&mut buf, 0.0);
+            assert_eq!(spread(&buf), 0, "expected all channels equal: {buf:?}");
+        }
+
+        #[test]
+        fn alpha_is_never_touched() {
+            let mut buf = vec![200u8, 40, 90, 123, 1, 2, 3, 0];
+            desaturate_in_place(&mut buf, 0.5);
+            assert_eq!(buf[3], 123);
+            assert_eq!(buf[7], 0);
+        }
+
+        #[test]
+        fn grey_input_survives_untouched_at_any_factor() {
+            for factor in [0.0, 0.5, 0.9] {
+                let mut buf = vec![128u8, 128, 128, 255];
+                desaturate_in_place(&mut buf, factor);
+                assert_eq!(spread(&buf), 0);
+                // Luma of a grey pixel is that grey, so it must not drift.
+                assert!(
+                    buf[..3].iter().all(|&c| c.abs_diff(128) <= 1),
+                    "grey drifted at factor {factor}: {buf:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_ragged_buffer_tail_is_ignored_without_panicking() {
+            let mut buf = vec![200u8, 40, 90, 255, 7, 7];
+            desaturate_in_place(&mut buf, 0.5);
+            assert_eq!(&buf[4..], &[7, 7], "the partial pixel must be left alone");
+        }
+    }
 
     #[test]
     fn embedded_wallpaper_decodes() {

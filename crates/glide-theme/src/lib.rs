@@ -150,6 +150,13 @@ impl Default for DecorationTheme {
         Self {
             height: 48,
             title_align: TitleAlign::Left,
+            // Spec's `--r-3`. Note that only the titlebar fill and the
+            // border stroke are actually rounded — the client's own
+            // content is an unclipped rectangle, so its square corners
+            // poke ~0.29×radius past the border curve at the two bottom
+            // corners (the titlebar hides the top two). Making the
+            // content itself round needs a GLES fragment-shader clip on
+            // the surface texture, which isn't implemented yet.
             corner_radius: shape::R3,
             background: t.bar_bg_idle,
             background_focused: t.bar_bg,
@@ -183,14 +190,27 @@ impl Default for DecorationTheme {
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct OverviewTheme {
     pub gap: i32,
+    /// Minimum distance the block of previews keeps from every screen
+    /// edge. Distinct from `gap`, which only separates previews from each
+    /// other.
+    pub padding: i32,
     pub label_height: i32,
     pub max_scale: f64,
     pub label: bool,
     pub label_color: Color,
     pub label_background: Color,
+    pub label_border: Color,
+    /// Per-preview close button (`.ov-close`). Idle state shares the
+    /// popover chrome with the label pill; hovering turns it destructive.
+    pub close_background: Color,
+    pub close_foreground: Color,
+    pub close_border: Color,
+    pub close_hover_background: Color,
+    pub close_hover_foreground: Color,
     pub dim: Color,
     pub highlight: Color,
     pub border: i32,
+    pub corner_radius: f32,
     pub shadow: bool,
     pub shadow_size: u32,
     pub shadow_color: Color,
@@ -201,15 +221,29 @@ impl Default for OverviewTheme {
     fn default() -> Self {
         let t = Tokens::new(Appearance::Dark, Accent::Blue);
         Self {
-            gap: 48,
+            gap: spacing::SP7,
+            padding: spacing::SP8,
             label_height: 28,
-            max_scale: 1.0,
+            // Design caps a preview at 0.92 of the window's real size, so
+            // even a lone window visibly *steps back* when the overview
+            // opens instead of sitting there at 1:1 filling the screen.
+            max_scale: 0.92,
             label: true,
             label_color: t.fg_1,
             label_background: t.popover_bg,
+            label_border: t.line,
+            close_background: t.popover_bg,
+            close_foreground: t.fg_1,
+            close_border: t.line,
+            close_hover_background: t.danger,
+            close_hover_foreground: t.view_bg,
             dim: Color::from_hex("#100f0e66").unwrap(),
             highlight: t.acc_bg,
             border: 3,
+            // Matches `DecorationTheme::corner_radius` so a preview's
+            // hover-highlight ring traces the same curve the window's own
+            // border does. Same unclipped-content caveat applies.
+            corner_radius: shape::R3,
             shadow: true,
             shadow_size: 44,
             shadow_color: Color::from_hex("#0000004d").unwrap(),
@@ -365,7 +399,7 @@ mod tests {
         let d = DecorationTheme::default();
         let t = Tokens::new(Appearance::Dark, Accent::Blue);
 
-        assert_eq!(d.corner_radius, shape::R3, "titlebar radius is --r-3");
+        assert_eq!(d.corner_radius, shape::R3, "window radius is --r-3");
         assert_eq!(d.background, t.bar_bg_idle);
         assert_eq!(d.background_focused, t.bar_bg);
         assert_eq!(d.maximize_button, t.fill_1);
@@ -429,10 +463,26 @@ mod tests {
         assert_eq!(o.label_color, t.fg_1);
         assert_eq!(o.label_background, t.popover_bg);
         assert_eq!(o.highlight, t.acc_bg);
+        assert_eq!(o.close_background, t.popover_bg);
+        assert_eq!(o.close_foreground, t.fg_1);
+        assert_eq!(o.close_border, t.line);
+        assert_eq!(o.close_hover_background, t.danger);
+        assert_eq!(o.close_hover_foreground, t.view_bg);
+        assert_eq!(o.gap, spacing::SP7, "preview gap is --sp-7");
+        assert_eq!(o.padding, spacing::SP8, "screen-edge padding is --sp-8");
         assert_eq!(
             o.duration_ms,
             u64::try_from(motion::T4.as_millis()).unwrap()
         );
+    }
+
+    /// Edge padding has to be at least as generous as the gap between
+    /// previews, or the block reads as crowding the screen edges even
+    /// though the previews themselves are comfortably spaced.
+    #[test]
+    fn overview_edge_padding_is_not_tighter_than_the_gap_between_previews() {
+        let o = OverviewTheme::default();
+        assert!(o.padding >= o.gap, "{} < {}", o.padding, o.gap);
     }
 
     #[test]
@@ -505,6 +555,31 @@ shadow-color-focused = \"#000000bb\"
     fn overview_theme_label_background_differs_from_the_scrim() {
         let o = OverviewTheme::default();
         assert_ne!(o.label_background.0, o.dim.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn overview_theme_corner_radius_matches_the_container_shape_step() {
+        assert_eq!(OverviewTheme::default().corner_radius, shape::R3);
+    }
+
+    /// A preview's hover ring has to trace the same curve as the window's
+    /// own border, or the two read as different shapes when the overview
+    /// animates a window in and out.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn overview_and_window_corner_radii_agree() {
+        assert_eq!(
+            OverviewTheme::default().corner_radius,
+            DecorationTheme::default().corner_radius
+        );
+    }
+
+    #[test]
+    fn overview_theme_label_border_is_derived_from_the_line_token() {
+        let o = OverviewTheme::default();
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+        assert_eq!(o.label_border, t.line);
     }
 
     #[test]

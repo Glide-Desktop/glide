@@ -462,6 +462,7 @@ dependencies = [
  "glide-theme",
  "glide-ui",
  "libc",
+ "png",
  "profiling",
  "serde",
  "serde_json",

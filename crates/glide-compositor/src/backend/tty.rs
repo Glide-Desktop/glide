@@ -141,6 +141,10 @@ struct SurfaceData {
     pending_repaint: Option<RegistrationToken>,
     redraw_queued: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
+    /// The same wallpaper desaturated to [`OVERVIEW_WALLPAPER_SATURATION`],
+    /// crossfaded in as the overview opens. Built lazily — outputs that
+    /// never show an overview never pay for it.
+    wallpaper_muted_buf: Option<MemoryRenderBuffer>,
     wallpaper_key: Option<(i32, i32, crate::config::WallpaperFit)>,
 }
 
@@ -415,6 +419,82 @@ fn present_feedback(
     });
 
     feedback.presented::<_, Monotonic>(time, refresh, u64::from(sequence), flags);
+}
+
+/// How much the wallpaper grows while the overview is open, matching the
+/// design's `wall { transform: scale(1.06) }`.
+const OVERVIEW_WALLPAPER_ZOOM: f64 = 1.06;
+
+/// The design's `filter: saturate(.9)` on the overview wallpaper.
+const OVERVIEW_WALLPAPER_SATURATION: f32 = 0.9;
+
+/// Pushes the wallpaper, pushed back behind the overview.
+///
+/// The design animates the wallpaper itself — `scale(1.06)` plus
+/// `saturate(.9)` — so the backdrop recedes as the previews fly forward.
+/// Without it the overview reads as flat: previews shrink against a
+/// completely static background, and the only depth cue is the scrim.
+///
+/// Zoom is done by handing the element an enlarged destination size and
+/// pulling its origin back by half the overflow, which keeps the centre
+/// of the image fixed. Saturation is a crossfade onto a pre-desaturated
+/// copy of the same buffer, since a `MemoryRenderBuffer` has no colour
+/// filter of its own — a 10% shift is far too subtle for the difference
+/// between that and a true per-frame filter to be visible.
+fn push_wallpaper_elements(
+    gles_renderer: &mut GlesRenderer,
+    surface: &mut SurfaceData,
+    output_size: (i32, i32),
+    backdrop_t: f64,
+    elements: &mut Vec<GlideRenderElements>,
+) {
+    use smithay::backend::renderer::element::{Kind, memory::MemoryRenderBufferRenderElement};
+
+    let (phys_w, phys_h) = output_size;
+    let zoom = 1.0 + (OVERVIEW_WALLPAPER_ZOOM - 1.0) * backdrop_t.clamp(0.0, 1.0);
+
+    #[allow(clippy::cast_possible_truncation)]
+    let zoomed_w = (f64::from(phys_w) * zoom).round() as i32;
+    #[allow(clippy::cast_possible_truncation)]
+    let zoomed_h = (f64::from(phys_h) * zoom).round() as i32;
+    let origin = (
+        f64::from(phys_w - zoomed_w) / 2.0,
+        f64::from(phys_h - zoomed_h) / 2.0,
+    );
+    let size: Option<smithay::utils::Size<i32, Logical>> = Some((zoomed_w, zoomed_h).into());
+
+    // Muted copy on top, faded in over the untouched one below it.
+    #[allow(clippy::cast_possible_truncation)]
+    let muted_alpha = backdrop_t.clamp(0.0, 1.0) as f32;
+    if muted_alpha > 0.0 {
+        if let Some(buffer) = surface.wallpaper_muted_buf.as_mut() {
+            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                gles_renderer,
+                origin,
+                buffer,
+                Some(muted_alpha),
+                None,
+                size,
+                Kind::Unspecified,
+            ) {
+                elements.push(GlideRenderElements::Wallpaper(element));
+            }
+        }
+    }
+
+    if let Some(buffer) = surface.wallpaper_buf.as_mut() {
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            gles_renderer,
+            origin,
+            buffer,
+            Some(1.0),
+            None,
+            size,
+            Kind::Unspecified,
+        ) {
+            elements.push(GlideRenderElements::Wallpaper(element));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -762,6 +842,7 @@ impl GlideState {
                 pending_repaint: None,
                 redraw_queued: false,
                 wallpaper_buf: None,
+                wallpaper_muted_buf: None,
                 wallpaper_key: None,
             },
         );
@@ -875,31 +956,39 @@ impl GlideState {
 
         let output_mode = output
             .current_mode()
-            .map(|m| (m.size.w, m.size.h))
-            .unwrap_or((1920, 1080));
+            .map_or((1920, 1080), |m| (m.size.w, m.size.h));
         let (phys_w, phys_h) = output_mode;
         let wallpaper_fit = self.wallpaper_fit;
         let wallpaper_key = (phys_w, phys_h, wallpaper_fit);
         if surface.wallpaper_key != Some(wallpaper_key) {
-            let mut buf = vec![0; (phys_w * phys_h * 4) as usize];
+            let mut buf = vec![0; usize::try_from(phys_w * phys_h * 4).unwrap_or_default()];
             glide_paint::draw_wallpaper_into(&mut buf, phys_w, phys_h, wallpaper_fit);
             let opaque_regions = wallpaper_fit
                 .always_covers_the_output()
                 .then(|| vec![Rectangle::<i32, Buffer>::from_size((phys_w, phys_h).into())]);
-            surface.wallpaper_buf = Some(MemoryRenderBuffer::from_slice(
-                &buf,
-                Fourcc::Argb8888,
-                (phys_w, phys_h),
-                1,
-                Transform::Normal,
-                opaque_regions,
-            ));
+            let make_buffer = |bytes: &[u8]| {
+                MemoryRenderBuffer::from_slice(
+                    bytes,
+                    Fourcc::Argb8888,
+                    (phys_w, phys_h),
+                    1,
+                    Transform::Normal,
+                    opaque_regions.clone(),
+                )
+            };
+            surface.wallpaper_buf = Some(make_buffer(&buf));
+            glide_paint::desaturate_in_place(&mut buf, OVERVIEW_WALLPAPER_SATURATION);
+            surface.wallpaper_muted_buf = Some(make_buffer(&buf));
             surface.wallpaper_key = Some(wallpaper_key);
         }
-        let wp_buf = surface
-            .wallpaper_buf
-            .as_mut()
-            .expect("just populated above");
+
+        // How far into the overview the *backdrop* is, on `--e-io`. Zero
+        // whenever the overview is closed, so the wallpaper is untouched
+        // in normal use.
+        let backdrop_t = self
+            .overview
+            .as_ref()
+            .map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
 
         let mut elements = Vec::new();
         if let Some(overview) = self.overview.as_mut() {
@@ -932,16 +1021,26 @@ impl GlideState {
             elements.extend(space_elements);
         }
 
-        if let Ok(wp_element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+        push_wallpaper_elements(
             gles_renderer,
-            (0.0, 0.0),
-            wp_buf,
-            Some(1.0),
-            None,
-            None,
-            smithay::backend::renderer::element::Kind::Unspecified,
-        ) {
-            elements.push(GlideRenderElements::Wallpaper(wp_element));
+            surface,
+            (phys_w, phys_h),
+            backdrop_t,
+            &mut elements,
+        );
+
+        if self.pending_screenshot {
+            self.pending_screenshot = false;
+            match super::screenshot::capture_screenshot(
+                gles_renderer,
+                &elements,
+                output_mode,
+                output.current_scale().fractional_scale(),
+                output.current_transform(),
+            ) {
+                Ok(path) => tracing::info!(path = %path.display(), "screenshot saved"),
+                Err(err) => tracing::error!(?err, "failed to capture screenshot"),
+            }
         }
 
         let clear_color = self.background_color.0;
