@@ -210,6 +210,13 @@ impl OverviewUi {
         );
         let slots = compute_overview_layout(&sizes, layout_area, &self.theme.options());
 
+        // Remember where the hovered window sat before rebuilding the
+        // previews, so we can fall back to a nearby neighbor rather than
+        // jumping to the first preview if that window vanishes.
+        let old_hover_index = self.hover.target().and_then(|id| {
+            self.previews.iter().position(|p| p.id == id)
+        });
+
         let mut old: Vec<SalvagedPreview> = self
             .previews
             .drain(..)
@@ -241,8 +248,16 @@ impl OverviewUi {
             .collect();
 
         if self.hover.target().is_some_and(|id| !self.contains(id)) {
+            // Pick the neighbor at the same index the old hover occupied,
+            // clamped to the new list — so closing window 5 of 8 moves
+            // focus to the preview now at position 5, not all the way back
+            // to the first preview.
+            let neighbor = old_hover_index.and_then(|idx| {
+                let clamped = idx.min(self.previews.len().saturating_sub(1));
+                self.previews.get(clamped).map(|p| p.id)
+            });
             self.hover
-                .retarget_without_restarting(self.previews.first().map(|p| p.id));
+                .retarget_without_restarting(neighbor);
         }
         if self
             .close_hover
@@ -390,7 +405,14 @@ impl OverviewUi {
             .target()
             .and_then(|id| self.previews.iter().position(|p| p.id == id))
         else {
-            return self.set_hover(self.previews.first().map(|p| p.id));
+            // No current hover: pick a direction-sensitive default so
+            // pressing Left/Up highlights the bottom-right (last) preview
+            // instead of always jumping to the top-left.
+            let default = match dir {
+                Direction::Left | Direction::Up => self.previews.last(),
+                Direction::Right | Direction::Down => self.previews.first(),
+            };
+            return self.set_hover(default.map(|p| p.id));
         };
 
         let next = match dir {
@@ -1603,6 +1625,68 @@ mod tests {
     fn set_hover_to_the_same_target_is_a_no_op() {
         let (mut ui, id) = ui_with_one_window(220);
         assert!(!ui.set_hover(Some(id)));
+    }
+
+    /// When a middle window is closed and relayout runs, the hover should
+    /// move to the preview now occupying that slot — not jump back to the
+    /// very first preview. This matters when a user closes windows with the
+    /// keyboard: they expect focus to stay in the neighbourhood, not fly off
+    /// to the top-left corner.
+    #[test]
+    fn relayout_moves_hover_to_the_adjacent_neighbor_not_first() {
+        let a = WindowId::next();
+        let b = WindowId::next();
+        let c = WindowId::next();
+        let windows = [
+            (a, rect(0, 0, 800, 600)),
+            (b, rect(0, 0, 800, 600)),
+            (c, rect(0, 0, 800, 600)),
+        ];
+        let area = rect(0, 0, 1920, 1080);
+        let theme = theme_with_duration(0);
+
+        let mut ui = OverviewUi::new(&windows, area, &theme, Some(b));
+
+        // `b` is hovered (index 1); now close it.
+        let remaining = [
+            (a, rect(0, 0, 800, 600)),
+            (c, rect(0, 0, 800, 600)),
+        ];
+        ui.relayout(&remaining, area);
+
+        // Hover should be on `c` (the preview now at index 1, where `b`
+        // used to be), not on `a` (index 0 / first()).
+        assert_eq!(
+            ui.hovered(),
+            Some(c),
+            "hover should move to the neighbor at the same index, not to first()"
+        );
+    }
+
+    /// Pressing Left or Up with no hover should select the *last* preview
+    /// (bottom-right), while Right or Down should select the *first*
+    /// (top-left). The old behaviour always picked first() regardless of
+    /// direction, which made Left feel broken.
+    #[test]
+    fn navigate_without_hover_respects_direction() {
+        let a = WindowId::next();
+        let b = WindowId::next();
+        let windows = [
+            (a, rect(0, 0, 800, 600)),
+            (b, rect(0, 0, 800, 600)),
+        ];
+        let area = rect(0, 0, 1920, 1080);
+        let theme = theme_with_duration(0);
+
+        let mut ui = OverviewUi::new(&windows, area, &theme, None);
+        ui.set_hover(None);
+
+        ui.navigate(Direction::Right);
+        assert_eq!(ui.hovered(), Some(a), "Right should pick the first preview");
+
+        ui.set_hover(None);
+        ui.navigate(Direction::Left);
+        assert_eq!(ui.hovered(), Some(b), "Left should pick the last preview");
     }
 
     #[test]
