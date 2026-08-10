@@ -879,12 +879,31 @@ fn push_close_buttons<R>(
             1.0
         };
         // Scale the whole buffer, shadow included — the same thing CSS
-        // `transform: scale()` does to a box-shadow.
+        // `transform: scale()` does to a box-shadow.  The growth must be
+        // centred on the **button's visual centre**, not on the buffer's
+        // centre — the shadow margin makes the buffer much larger than the
+        // pill, and growing around the buffer centre shifts the visible
+        // pill sideways (the "flies away on hover" bug).
         #[allow(clippy::cast_possible_truncation)]
-        let side = (f64::from(canvas) * pop).round() as i32;
-        // Grow around the centre so the pop does not drag the button.
-        let inset = (side - canvas) / 2;
-        let pos = Point::from((button.loc.x - margin - inset, button.loc.y - margin - inset))
+        let display_w = (f64::from(canvas) * pop).round() as i32;
+        #[allow(clippy::cast_possible_truncation)]
+        let display_h = (f64::from(canvas) * pop).round() as i32;
+        // At pop=1.0 the buffer's top-left is at (button.x - margin,
+        // button.y - margin).  When the display size grows, we need the
+        // button centre to stay fixed.  The button centre inside the
+        // buffer is at (margin + OV_CLOSE_SIZE/2).  After scaling, that
+        // same fractional position maps to (margin + OV_CLOSE_SIZE/2) *
+        // pop — the delta between the two is how far to shift back.
+        #[allow(clippy::cast_possible_truncation)]
+        let btn_cx = f64::from(margin) + f64::from(OV_CLOSE_SIZE) / 2.0;
+        #[allow(clippy::cast_possible_truncation)]
+        let btn_cy = btn_cx; // square buffer, button centred
+        let shift_x = (btn_cx * pop - btn_cx).round() as i32;
+        let shift_y = (btn_cy * pop - btn_cy).round() as i32;
+        let pos = Point::from((
+            button.loc.x - margin - shift_x,
+            button.loc.y - margin - shift_y,
+        ))
             .to_f64()
             .to_physical(scale);
 
@@ -894,7 +913,7 @@ fn push_close_buttons<R>(
             memory,
             Some(alpha),
             None,
-            Some(Size::from((side, side))),
+            Some(Size::from((display_w, display_h))),
             Kind::Unspecified,
         ) {
             elements.push(OverviewRenderElement::Buffer(element));
