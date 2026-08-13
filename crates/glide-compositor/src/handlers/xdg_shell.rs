@@ -81,7 +81,40 @@ impl XdgShellHandler for GlideState {
         {
             deco.header.set_title(title);
         }
+        // A window with no `app_id` falls back to its title as the dock's
+        // grouping key, so a title change can reshape the dock too.
+        self.refresh_dock();
         self.queue_redraw();
+    }
+
+    /// The dock groups windows by `app_id`, so it has to be rebuilt when
+    /// one arrives or changes.
+    ///
+    /// Clients send `set_app_id` on their own schedule — often, but not
+    /// always, before the first buffer. Without this hook the dock only
+    /// learned about a window when something else happened to call
+    /// `reconcile_space`, so a freshly launched app was missing from it
+    /// until the next workspace switch.
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+
+        let app_id = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .and_then(|guard| guard.app_id.clone())
+        });
+        if let Some(handle) = self.foreign_toplevel_handles.get(&id) {
+            handle.send_app_id(&app_id.unwrap_or_default());
+            handle.send_done();
+        }
+
+        if self.refresh_dock() {
+            self.queue_redraw();
+        }
     }
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
@@ -159,6 +192,11 @@ impl XdgShellHandler for GlideState {
                 .find(|w| window_surface(w) == wl_surface)
                 .expect("check_grab confirmed this surface's window is focused, hence mapped")
                 .clone();
+
+            // Same restore-on-drag as Glide's own titlebar drag; clients
+            // start moves from their own headerbars too.
+            self.restore_for_move(&window, pointer.current_location());
+
             let initial_window_location = self
                 .space
                 .element_location(&window)
@@ -202,6 +240,14 @@ impl XdgShellHandler for GlideState {
                 .element_location(&window)
                 .expect("window was just found in space.elements(), so it has a location");
             let initial_window_size = window.geometry().size;
+
+            // A maximized or fullscreen window is sized by the compositor;
+            // see `GlideState::is_size_locked`. Clients drive interactive
+            // resizes from their own edge handles too, so the request has
+            // to be declined here as well as in Glide's border drag.
+            if self.is_size_locked(&window) {
+                return;
+            }
 
             surface.with_pending_state(|state| {
                 state.states.set(xdg_toplevel::State::Resizing);
@@ -293,6 +339,15 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
 
             let placed = state.layout.update_window_size(id, layout_size(&window));
             if placed {
+                // First commit that carries a real buffer — this is the
+                // moment the window actually appears, so the grow starts
+                // here rather than at `new_toplevel`. A toplevel is created
+                // as soon as the client asks for one, long before it has
+                // configured, allocated and drawn anything: a cold-starting
+                // terminal easily burns the whole 420ms before its first
+                // frame, and the animation was over by the time there was
+                // something to animate.
+                window.begin_open_animation();
                 state.reconcile_space();
             } else {
                 // `update_window_size` already kept `WindowState.geometry`

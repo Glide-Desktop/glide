@@ -7,13 +7,17 @@ mod clip;
 mod config;
 mod cursor;
 mod decoration;
+mod dock;
 mod focus;
 mod grabs;
+mod icon;
 mod input;
 mod ipc;
 mod logging;
 mod overview;
 mod paint;
+mod screencopy;
+mod snapshot;
 mod state;
 mod window;
 
@@ -84,7 +88,12 @@ fn run() -> anyhow::Result<()> {
         state.space.refresh();
         state.popups.cleanup();
 
-        if state.tick_overview() || state.any_button_hover_animating() {
+        if state.tick_overview()
+            || state.any_button_hover_animating()
+            || state.any_window_open_animating()
+            || state.snapshots.tick()
+            || state.dock.is_animating()
+        {
             state.queue_redraw();
         }
 

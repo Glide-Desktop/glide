@@ -388,10 +388,35 @@ impl GlideState {
         }
     }
 
+    /// Tracks the pointer over the dock. Returns whether the dock swallows
+    /// this position, so it is not also handed to a window underneath.
+    fn dock_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        if !self.dock.is_enabled() || self.layout.overview_active() {
+            if self.dock.set_hover(None) {
+                self.queue_redraw();
+            }
+            return false;
+        }
+        let area = self.dock_area();
+        let over = self.dock.contains(area, pos);
+        let item = if over {
+            self.dock.item_at(area, pos)
+        } else {
+            None
+        };
+        if self.dock.set_hover(item) {
+            self.queue_redraw();
+        }
+        over
+    }
+
     fn overview_motion(
         &mut self,
         pos: Point<f64, Logical>,
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
+        if self.dock_motion(pos) {
+            return None;
+        }
         if !self.layout.overview_active() {
             return self.surface_under(pos);
         }
@@ -598,6 +623,19 @@ impl GlideState {
 
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             let pos = pointer.current_location();
+
+            // The dock is compositor chrome and sits above every window,
+            // so it gets first refusal on a click.
+            if self.dock.is_enabled() && !self.layout.overview_active() {
+                let area = self.dock_area();
+                if self.dock.contains(area, pos) {
+                    if let Some(index) = self.dock.item_at(area, pos) {
+                        self.activate_dock_item(index);
+                    }
+                    pointer.frame(self);
+                    return;
+                }
+            }
 
             if self.layout.overview_active() {
                 let on_layer = matches!(

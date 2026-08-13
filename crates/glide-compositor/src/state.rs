@@ -208,6 +208,13 @@ pub struct GlideState {
         smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
     >,
     pub idle_inhibited_surfaces: HashSet<WlSurface>,
+    /// Captured window pictures being animated — closing windows fading
+    /// away, and windows morphing out of maximized. See `crate::snapshot`.
+    pub snapshots: crate::snapshot::Snapshots,
+    /// The bottom dock.
+    pub dock: crate::dock::Dock,
+    /// Screen captures clients are waiting on. See `crate::screencopy`.
+    pub screencopy: crate::screencopy::ScreencopyState,
     pub ipc_subscribers: crate::ipc::IpcSubscribers,
 
     /// Set by `KeyAction::Screenshot`, consumed by the very next
@@ -248,6 +255,7 @@ impl GlideState {
         let socket_name = Self::init_wayland_listener(display, &loop_handle);
 
         #[allow(clippy::cast_sign_loss)]
+        let screencopy = crate::screencopy::ScreencopyState::new::<Self>(&dh);
         let protocols = Protocols::new(&dh, &loop_handle, seat_state, clock.id() as u32);
         let foreign_toplevel_handles = HashMap::new();
 
@@ -283,6 +291,9 @@ impl GlideState {
 
             foreign_toplevel_handles,
             idle_inhibited_surfaces: HashSet::new(),
+            snapshots: crate::snapshot::Snapshots::default(),
+            dock: crate::dock::Dock::new(&crate::config::DockConfig::default()),
+            screencopy,
             ipc_subscribers: crate::ipc::IpcSubscribers::default(),
             pending_screenshot: false,
         }
@@ -327,6 +338,7 @@ impl GlideState {
         self.cleanup_dead_windows();
 
         self.refresh_overview();
+        self.refresh_dock();
 
         let visible: Vec<glide_layout::WindowState> = self.layout.visible_windows().collect();
         let visible_ids: HashSet<glide_layout::WindowId> =
@@ -547,6 +559,7 @@ impl GlideState {
 
         if let Some(id) = id_opt {
             if let Some(window) = self.window_map.remove(&id) {
+                self.capture_closing_window(id, &window);
                 self.space.unmap_elem(&window);
                 self.window_to_id.remove(&window);
                 self.layout.remove_window(id);
@@ -571,6 +584,23 @@ impl GlideState {
     #[must_use]
     pub fn window_id(&self, window: &GlideWindow) -> Option<glide_layout::WindowId> {
         self.window_to_id.get(window).copied()
+    }
+
+    /// Whether a window's size is currently owned by the compositor and so
+    /// must not be changed by dragging.
+    ///
+    /// A maximized or fullscreen window is sized by Glide, and the client
+    /// is told as much through its `xdg_toplevel` states. Resizing it
+    /// without first leaving that state produces a window of arbitrary
+    /// size that still believes it is maximized — and clients act on that
+    /// belief: GTK stops rounding its corners and drops the shadow it
+    /// reserves for floating windows, so the result renders with hard
+    /// square edges no matter what size it ends up.
+    #[must_use]
+    pub fn is_size_locked(&self, window: &GlideWindow) -> bool {
+        self.window_id(window)
+            .and_then(|id| self.layout.window_state(id))
+            .is_some_and(|state| state.maximized || state.fullscreen)
     }
 
     #[must_use]
@@ -701,6 +731,225 @@ impl GlideState {
         })
     }
 
+    /// Captures a window on its way out so it can fade instead of
+    /// blinking away.
+    ///
+    /// Has to run before the window is unmapped and its surfaces torn
+    /// down — the capture renders from live surface state.
+    fn capture_closing_window(&mut self, id: glide_layout::WindowId, window: &GlideWindow) {
+        // In the overview the window is on screen at its preview slot, not
+        // at its real geometry, so that is where the fade has to start.
+        let overview_rect = self.overview.as_ref().and_then(|ui| ui.preview_rect(id));
+
+        let target_frame = if let Some(rect) = overview_rect {
+            rect
+        } else {
+            let Some(state) = self.layout.window_state(id) else {
+                return;
+            };
+            let frame = state.frame_geometry();
+            Rectangle::new(
+                Point::from((frame.loc.x, frame.loc.y)),
+                smithay::utils::Size::from((frame.size.width, frame.size.height)),
+            )
+        };
+
+        let Some(output) = self.space.outputs().next().cloned() else {
+            return;
+        };
+        let scale = smithay::utils::Scale::from(output.current_scale().fractional_scale());
+        let output_scale = output.current_scale().integer_scale();
+
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        self.snapshots.push_close(
+            &mut device.gles_renderer,
+            window,
+            target_frame,
+            scale,
+            output_scale,
+        );
+    }
+
+    /// Takes a window out of maximized or fullscreen so it can be dragged,
+    /// re-anchoring it under the pointer and morphing it into place.
+    ///
+    /// Returns whether anything changed. Dragging a window whose size the
+    /// compositor owns has to restore it first — otherwise the client goes
+    /// on believing it is maximized, and clients render differently when
+    /// they do (GTK squares its corners and drops its shadow).
+    ///
+    /// The restored window is placed so the pointer keeps the same
+    /// proportional grip on its titlebar: grab a maximized window near its
+    /// right edge and the smaller window lands under your cursor rather
+    /// than leaping away to wherever it last floated.
+    pub fn restore_for_move(&mut self, window: &GlideWindow, pointer: Point<f64, Logical>) -> bool {
+        if !self.is_size_locked(window) {
+            return false;
+        }
+        let Some(id) = self.window_id(window) else {
+            return false;
+        };
+        let Some(state) = self.layout.window_state(id) else {
+            return false;
+        };
+        let before = state.frame_geometry();
+        let from = Rectangle::new(
+            Point::from((before.loc.x, before.loc.y)),
+            smithay::utils::Size::from((before.size.width, before.size.height)),
+        );
+
+        let output_scales = self.output_scales();
+
+        self.layout.set_fullscreen(id, false);
+        self.layout.set_maximized(id, false);
+
+        let Some(restored) = self
+            .layout
+            .window_state(id)
+            .map(glide_layout::WindowState::frame_geometry)
+        else {
+            return false;
+        };
+
+        // Keep the pointer at the same fraction across the titlebar.
+        let grip = if from.size.w > 0 {
+            (pointer.x - f64::from(from.loc.x)) / f64::from(from.size.w)
+        } else {
+            0.5
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let new_x = (pointer.x - grip * f64::from(restored.size.width)).round() as i32;
+        let new_y = from.loc.y;
+
+        self.layout.set_window_geometry(
+            id,
+            glide_layout::Rectangle::new(glide_layout::Point::new(new_x, new_y), restored.size),
+        );
+        self.reconcile_space();
+
+        // The client resizes on its own schedule, so its buffer is still
+        // the maximized one at this point — exactly the picture the morph
+        // needs to start from.
+        if let Some((scale, output_scale)) = output_scales {
+            let to = self.layout.window_state(id).map_or(from, |state| {
+                let frame = state.frame_geometry();
+                Rectangle::new(
+                    Point::from((frame.loc.x, frame.loc.y)),
+                    smithay::utils::Size::from((frame.size.width, frame.size.height)),
+                )
+            });
+            if let Some(device) = self.backend_data.device.as_mut() {
+                self.snapshots.push_morph(
+                    &mut device.gles_renderer,
+                    window,
+                    from,
+                    to,
+                    scale,
+                    output_scale,
+                );
+            }
+        }
+
+        true
+    }
+
+    /// The rect the dock lays itself out in.
+    #[must_use]
+    pub fn dock_area(&self) -> Rectangle<i32, Logical> {
+        let area = self.layout.primary_output_work_area();
+        Rectangle::new(
+            Point::from((area.loc.x, area.loc.y)),
+            smithay::utils::Size::from((area.size.width, area.size.height)),
+        )
+    }
+
+    /// Rebuilds the dock from the current window list. Returns whether
+    /// anything changed.
+    pub fn refresh_dock(&mut self) -> bool {
+        let focused = self.layout.focused_window();
+
+        // Group windows by app, so three terminals share one tile.
+        let mut apps: Vec<crate::dock::RunningApp> = Vec::new();
+        for (id, window) in &self.window_map {
+            let (app_id, title) = window.identity();
+            // Windows without an app id cannot be grouped or matched
+            // against a pinned tile; fall back to the title so they still
+            // get somewhere to appear.
+            let key = app_id
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+                .or_else(|| title.clone().filter(|t| !t.trim().is_empty()));
+            let Some(key) = key else {
+                continue;
+            };
+            let is_focused = focused == Some(*id);
+
+            if let Some(existing) = apps
+                .iter_mut()
+                .find(|app| app.app_id.eq_ignore_ascii_case(&key))
+            {
+                existing.focused |= is_focused;
+            } else {
+                apps.push(crate::dock::RunningApp {
+                    name: app_id.unwrap_or_else(|| key.clone()),
+                    app_id: key,
+                    focused: is_focused,
+                });
+            }
+        }
+
+        // Stable order, so tiles do not shuffle as the window map's
+        // iteration order changes.
+        apps.sort_by_key(|app| app.app_id.to_lowercase());
+
+        self.dock.set_running(&apps)
+    }
+
+    /// Handles a click on a dock tile: focus the app if it is already
+    /// running, otherwise launch it.
+    pub fn activate_dock_item(&mut self, index: usize) {
+        let Some(item) = self.dock.items().get(index).cloned() else {
+            return;
+        };
+
+        let existing = self.window_map.iter().find_map(|(id, window)| {
+            let (app_id, _) = window.identity();
+            app_id
+                .as_deref()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(&item.app_id))
+                .then_some(*id)
+        });
+
+        if let Some(id) = existing {
+            self.focus_window(id);
+        } else if item.command.trim().is_empty() {
+            // A tile that only exists because the app is running has no
+            // command to fall back on.
+            tracing::debug!(app_id = %item.app_id, "dock tile has no window and no command");
+        } else if let Err(err) = crate::spawn_shell_command(&item.command) {
+            tracing::error!(command = %item.command, ?err, "failed to launch from the dock");
+        }
+    }
+
+    /// Fractional and integer scale of the output being rendered to.
+    fn output_scales(&self) -> Option<(smithay::utils::Scale<f64>, i32)> {
+        let output = self.space.outputs().next()?;
+        Some((
+            smithay::utils::Scale::from(output.current_scale().fractional_scale()),
+            output.current_scale().integer_scale(),
+        ))
+    }
+
+    /// Whether any window still owes frames to its appear animation.
+    #[must_use]
+    pub fn any_window_open_animating(&self) -> bool {
+        self.window_map
+            .values()
+            .any(crate::window::GlideWindow::is_open_animating)
+    }
+
     pub fn refresh_painter_font(&self) {
         #[allow(clippy::cast_possible_truncation)]
         let font_px = (f64::from(self.decoration_theme.height).max(14.0) * 0.45) as f32;
@@ -712,6 +961,16 @@ impl GlideState {
             return;
         }
         let entries = self.overview_entries();
+
+        // Nothing left to show. Staying in the overview would strand the
+        // user on an empty scrim with no window to click and no preview to
+        // navigate to — closing the last window has to bow out of the mode
+        // as well.
+        if entries.is_empty() {
+            self.begin_close_overview(None);
+            return;
+        }
+
         let area = self.overview_area();
         if let Some(ui) = self.overview.as_mut() {
             ui.relayout(&entries, area);

@@ -38,6 +38,26 @@ pub(super) fn capture_screenshot(
     transform: Transform,
 ) -> anyhow::Result<PathBuf> {
     let (width, height) = size;
+    let pixels = capture_frame(renderer, elements, size, scale, transform)?;
+
+    let path = screenshot_path().context("failed to determine where to save the screenshot")?;
+    write_png(&path, width, height, &pixels).context("failed to write the screenshot to disk")?;
+    Ok(path)
+}
+
+/// Renders `elements` into a throwaway offscreen buffer and reads it back.
+///
+/// Returns the frame as `Argb8888` in this crate's buffer order — the same
+/// bytes a screenshot is written from and a screencopy client is handed,
+/// so both see exactly what was composited.
+pub(super) fn capture_frame(
+    renderer: &mut GlesRenderer,
+    elements: &[GlideRenderElements],
+    size: (i32, i32),
+    scale: f64,
+    transform: Transform,
+) -> anyhow::Result<Vec<u8>> {
+    let (width, height) = size;
     if width <= 0 || height <= 0 {
         return Err(anyhow!(
             "output has no usable size ({width}x{height}), nothing to capture"
@@ -56,19 +76,17 @@ pub(super) fn capture_screenshot(
     // (not incremental) damage; there's no previous frame to diff against.
     tracker
         .render_output(renderer, &mut target, 0, elements, [0.0, 0.0, 0.0, 1.0])
-        .map_err(|err| anyhow!("failed to render the screenshot: {err:?}"))?;
+        .map_err(|err| anyhow!("failed to render the frame: {err:?}"))?;
 
     let region = Rectangle::<i32, Buffer>::from_size((width, height).into());
     let mapping = renderer
-        .copy_framebuffer(&target, region, Fourcc::Abgr8888)
+        .copy_framebuffer(&target, region, Fourcc::Argb8888)
         .context("failed to read back the offscreen capture buffer")?;
     let data = renderer
         .map_texture(&mapping)
         .context("failed to map the offscreen capture buffer")?;
 
-    let path = screenshot_path().context("failed to determine where to save the screenshot")?;
-    write_png(&path, width, height, data).context("failed to write the screenshot to disk")?;
-    Ok(path)
+    Ok(data.to_vec())
 }
 
 /// Picks a directory to save into, preferring an explicit

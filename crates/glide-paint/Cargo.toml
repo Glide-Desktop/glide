@@ -10,6 +10,7 @@ repository.workspace = true
 glide-theme = { path = "../glide-theme" }
 cosmic-text = "0.19"
 tiny-skia = "0.12.0"
+resvg = { version = "0.48.1", default-features = false }
 
 [lints]
 workspace = true

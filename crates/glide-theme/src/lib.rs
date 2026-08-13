@@ -186,6 +186,64 @@ impl Default for DecorationTheme {
     }
 }
 
+/// The bottom dock (`.dash`), spec §13.4.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DockTheme {
+    pub enabled: bool,
+    /// Icon theme searched for app icons. Whatever it inherits is searched
+    /// after it, and `hicolor` last, per the freedesktop spec.
+    pub icon_theme: Option<String>,
+    /// Gap between the dock and the bottom edge of the work area.
+    pub bottom_margin: i32,
+    /// Side of one square app tile.
+    pub item_size: i32,
+    /// Space between tiles.
+    pub item_gap: i32,
+    pub padding_x: i32,
+    pub padding_y: i32,
+    /// Corner radius of the dock shell (`--r-4`).
+    pub radius: f32,
+    /// Corner radius of a tile (`--r-3`).
+    pub item_radius: f32,
+    pub background: Color,
+    pub border: Color,
+    pub separator: Color,
+    pub icon: Color,
+    /// Dot shown under a running app, and the wider bar for the focused
+    /// one.
+    pub running_color: Color,
+    pub focused_color: Color,
+    /// How far a hovered tile lifts.
+    pub hover_lift: i32,
+    pub hover_scale: f64,
+}
+
+impl Default for DockTheme {
+    fn default() -> Self {
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+        Self {
+            enabled: true,
+            icon_theme: None,
+            bottom_margin: 12,
+            item_size: 42,
+            item_gap: 6,
+            padding_x: 9,
+            padding_y: 7,
+            radius: shape::R4,
+            item_radius: shape::R3,
+            background: t.shell_bg,
+            border: t.shell_line,
+            separator: t.line_2,
+            icon: Color::from_hex("#ffffff").unwrap(),
+            running_color: t.fg_1,
+            focused_color: t.acc_bg,
+            hover_lift: 6,
+            hover_scale: 1.05,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct OverviewTheme {
@@ -211,9 +269,6 @@ pub struct OverviewTheme {
     pub highlight: Color,
     pub border: i32,
     pub corner_radius: f32,
-    pub shadow: bool,
-    pub shadow_size: u32,
-    pub shadow_color: Color,
     pub duration_ms: u64,
 }
 
@@ -244,9 +299,6 @@ impl Default for OverviewTheme {
             // hover-highlight ring traces the same curve the window's own
             // border does. Same unclipped-content caveat applies.
             corner_radius: shape::R3,
-            shadow: true,
-            shadow_size: 44,
-            shadow_color: Color::from_hex("#0000004d").unwrap(),
             duration_ms: u64::try_from(motion::T4.as_millis()).unwrap_or(u64::MAX),
         }
     }
@@ -543,11 +595,8 @@ shadow-color-focused = \"#000000bb\"
     }
 
     #[test]
-    fn overview_theme_defaults_shadow_enabled() {
-        let o = OverviewTheme::default();
-        assert!(o.shadow);
-        assert!(o.shadow_size > 0);
-        assert!(o.border > 0);
+    fn overview_theme_defaults_a_visible_hover_ring() {
+        assert!(OverviewTheme::default().border > 0);
     }
 
     #[test]

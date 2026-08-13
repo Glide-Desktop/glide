@@ -699,6 +699,321 @@ pub fn draw_close_glyph_over(
     crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
 }
 
+/// Rasterises an SVG into a `side × side` premultiplied BGRA buffer, in
+/// this crate's channel order.
+///
+/// The image is fitted to the square and centred, preserving its aspect
+/// ratio — icon themes are nominally square but a few entries are not, and
+/// stretching them looks worse than letterboxing.
+///
+/// Text is deliberately not supported (`resvg` is built without its text
+/// feature): app icons are shape artwork, and font handling would pull a
+/// whole font stack into the compositor for no benefit.
+#[must_use]
+pub fn render_svg(data: &[u8], side: i32) -> Option<Vec<u8>> {
+    let side_u32 = u32::try_from(side).ok()?;
+    if side_u32 == 0 {
+        return None;
+    }
+
+    let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
+    let intrinsic = tree.size();
+    if intrinsic.width() <= 0.0 || intrinsic.height() <= 0.0 {
+        return None;
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let target = side as f32;
+    let scale = (target / intrinsic.width()).min(target / intrinsic.height());
+    let (dx, dy) = (
+        (target - intrinsic.width() * scale) / 2.0,
+        (target - intrinsic.height() * scale) / 2.0,
+    );
+
+    let mut pixmap = tiny_skia::Pixmap::new(side_u32, side_u32)?;
+    let transform = tiny_skia::Transform::from_translate(dx, dy).pre_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    Some(skia_pixmap_into_buffer_bytes(pixmap))
+}
+
+/// Decodes a PNG into a `side × side` premultiplied BGRA buffer.
+///
+/// Themes still ship raster icons at fixed sizes, so the decoded image is
+/// scaled to the requested square the same way [`render_svg`] fits an SVG.
+#[must_use]
+pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
+    let side_u32 = u32::try_from(side).ok()?;
+    if side_u32 == 0 {
+        return None;
+    }
+
+    let source = tiny_skia::Pixmap::decode_png(data).ok()?;
+    #[allow(clippy::cast_precision_loss)]
+    let target = side as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let scale = (target / source.width() as f32).min(target / source.height() as f32);
+    #[allow(clippy::cast_precision_loss)]
+    let (dx, dy) = (
+        (target - source.width() as f32 * scale) / 2.0,
+        (target - source.height() as f32 * scale) / 2.0,
+    );
+
+    let mut pixmap = tiny_skia::Pixmap::new(side_u32, side_u32)?;
+    pixmap.draw_pixmap(
+        0,
+        0,
+        source.as_ref(),
+        &tiny_skia::PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bilinear,
+            ..tiny_skia::PixmapPaint::default()
+        },
+        tiny_skia::Transform::from_translate(dx, dy).pre_scale(scale, scale),
+        None,
+    );
+
+    Some(skia_pixmap_into_buffer_bytes(pixmap))
+}
+
+/// Artwork for a dock tile.
+///
+/// These reproduce the design's stroked 20×20 glyph set. Real
+/// `.desktop`/icon-theme lookup is a subsystem of its own; until it
+/// exists, a pinned app names one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockGlyph {
+    Terminal,
+    Files,
+    Settings,
+    Music,
+    Mail,
+    Generic,
+}
+
+/// Draws a dock glyph centred on an already-filled tile.
+///
+/// Paths are authored on the design's 20-unit viewBox and scaled to the
+/// tile, so a bigger tile keeps the same proportions.
+// One arm per glyph; splitting it up would just scatter the artwork.
+#[allow(clippy::too_many_lines)]
+pub fn draw_dock_glyph(
+    buf: &mut [u8],
+    width: i32,
+    height: i32,
+    scale: i32,
+    glyph: DockGlyph,
+    color: Color,
+) {
+    let (Ok(pixel_width), Ok(pixel_height)) =
+        (u32::try_from(width * scale), u32::try_from(height * scale))
+    else {
+        return;
+    };
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(pixel_width, pixel_height) else {
+        return;
+    };
+
+    // The design draws a 21px glyph on a 42px tile: half the tile, on a
+    // 20-unit grid.
+    #[allow(clippy::cast_precision_loss)]
+    let unit = (width.min(height) as f32 * scale as f32) / 2.0 / 20.0;
+    #[allow(clippy::cast_precision_loss)]
+    let origin_x = (width as f32 * scale as f32 - 20.0 * unit) / 2.0;
+    #[allow(clippy::cast_precision_loss)]
+    let origin_y = (height as f32 * scale as f32 - 20.0 * unit) / 2.0;
+    let p = |x: f32, y: f32| (origin_x + x * unit, origin_y + y * unit);
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    match glyph {
+        DockGlyph::Terminal => {
+            let (x, y) = p(2.5, 3.5);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 15.0 * unit, 13.0 * unit) {
+                pb.push_rect(rect);
+            }
+            let (mx, my) = p(6.0, 8.0);
+            pb.move_to(mx, my);
+            let (lx, ly) = p(8.5, 10.0);
+            pb.line_to(lx, ly);
+            let (ex, ey) = p(6.0, 12.0);
+            pb.line_to(ex, ey);
+            let (ux, uy) = p(10.5, 12.5);
+            pb.move_to(ux, uy);
+            let (vx, vy) = p(14.5, 12.5);
+            pb.line_to(vx, vy);
+        }
+        DockGlyph::Files => {
+            let (sx, sy) = p(2.5, 5.0);
+            pb.move_to(sx, sy);
+            let (ax, ay) = p(7.5, 5.0);
+            pb.line_to(ax, ay);
+            let (bx, by) = p(9.0, 7.0);
+            pb.line_to(bx, by);
+            let (cx, cy) = p(17.5, 7.0);
+            pb.line_to(cx, cy);
+            let (dx, dy) = p(17.5, 15.5);
+            pb.line_to(dx, dy);
+            let (ex, ey) = p(2.5, 15.5);
+            pb.line_to(ex, ey);
+            pb.close();
+        }
+        DockGlyph::Settings => {
+            let (cx, cy) = p(10.0, 10.0);
+            pb.push_circle(cx, cy, 2.8 * unit);
+            for (x1, y1, x2, y2) in [
+                (10.0, 2.0, 10.0, 4.2),
+                (10.0, 15.8, 10.0, 18.0),
+                (18.0, 10.0, 15.8, 10.0),
+                (4.2, 10.0, 2.0, 10.0),
+            ] {
+                let (ax, ay) = p(x1, y1);
+                let (bx, by) = p(x2, y2);
+                pb.move_to(ax, ay);
+                pb.line_to(bx, by);
+            }
+        }
+        DockGlyph::Music => {
+            let (sx, sy) = p(7.5, 14.0);
+            pb.move_to(sx, sy);
+            let (ax, ay) = p(7.5, 5.0);
+            pb.line_to(ax, ay);
+            let (bx, by) = p(14.5, 3.5);
+            pb.line_to(bx, by);
+            let (cx, cy) = p(14.5, 13.0);
+            pb.line_to(cx, cy);
+            let (d1x, d1y) = p(5.8, 14.2);
+            pb.push_circle(d1x, d1y, 1.8 * unit);
+            let (d2x, d2y) = p(12.8, 12.7);
+            pb.push_circle(d2x, d2y, 1.8 * unit);
+        }
+        DockGlyph::Mail => {
+            let (x, y) = p(2.5, 4.5);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 15.0 * unit, 11.0 * unit) {
+                pb.push_rect(rect);
+            }
+            let (ax, ay) = p(2.5, 6.5);
+            pb.move_to(ax, ay);
+            let (bx, by) = p(10.0, 11.0);
+            pb.line_to(bx, by);
+            let (cx, cy) = p(17.5, 6.5);
+            pb.line_to(cx, cy);
+        }
+        DockGlyph::Generic => {
+            let (x, y) = p(4.0, 4.0);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 12.0 * unit, 12.0 * unit) {
+                pb.push_rect(rect);
+            }
+        }
+    }
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: 1.5 * unit,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+/// Fills a rounded rect with a linear gradient, blended over whatever is
+/// already in `buf`.
+///
+/// The dock's app tiles are gradient-filled in the design
+/// (`linear-gradient(150deg, …)`), and a flat fill reads noticeably
+/// cheaper next to them. The angle is fixed at the design's 150°.
+#[allow(clippy::too_many_arguments)]
+pub fn fill_rounded_rect_gradient_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    rect_x: i32,
+    rect_y: i32,
+    rect_width: i32,
+    rect_height: i32,
+    scale: i32,
+    from: Color,
+    to: Color,
+    radius: f32,
+) {
+    let (Ok(pixel_width), Ok(pixel_height)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(pixel_width, pixel_height) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let (x, y, rw, rh) = (
+        rect_x as f32 * scale_f,
+        rect_y as f32 * scale_f,
+        rect_width as f32 * scale_f,
+        rect_height as f32 * scale_f,
+    );
+
+    let Some(path) = rounded_rect(x, y, rw, rh, radius * scale_f) else {
+        return;
+    };
+
+    // 150° measured the CSS way: 0deg points up, angles run clockwise.
+    let angle = 150.0_f32.to_radians();
+    let (dx, dy) = (angle.sin(), -angle.cos());
+    let half = (rw.hypot(rh)) / 2.0;
+    let (cx, cy) = (x + rw / 2.0, y + rh / 2.0);
+    let start = tiny_skia::Point::from_xy(cx - dx * half, cy - dy * half);
+    let end = tiny_skia::Point::from_xy(cx + dx * half, cy + dy * half);
+
+    let Some(shader) = tiny_skia::LinearGradient::new(
+        start,
+        end,
+        vec![
+            tiny_skia::GradientStop::new(0.0, to_skia_color(from)),
+            tiny_skia::GradientStop::new(1.0, to_skia_color(to)),
+        ],
+        tiny_skia::SpreadMode::Pad,
+        tiny_skia::Transform::identity(),
+    ) else {
+        return;
+    };
+
+    let paint = tiny_skia::Paint {
+        shader,
+        anti_alias: true,
+        ..tiny_skia::Paint::default()
+    };
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
 /// Strokes a rounded-rect outline *within* an already-populated buffer,
 /// blended over what is there.
 ///

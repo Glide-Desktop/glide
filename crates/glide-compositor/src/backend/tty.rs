@@ -95,7 +95,11 @@ render_elements! {
     Space=SpaceRenderElements<GlesRenderer, GlideWindowRenderElement<GlesRenderer>>,
     Pointer=PointerRenderElement<GlesRenderer>,
     Overview=crate::overview::OverviewRenderElement<GlesRenderer>,
-    Wallpaper=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
+    /// Anything drawn from a CPU-rasterised buffer: the wallpaper and the
+    /// dock. One variant because the macro derives `From` per variant type
+    /// and these share one.
+    Memory=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
+    Snapshot=crate::snapshot::SnapshotRenderElement,
 }
 
 fn layer_elements(
@@ -148,11 +152,11 @@ struct SurfaceData {
     wallpaper_key: Option<(i32, i32, crate::config::WallpaperFit)>,
 }
 
-struct DeviceData {
+pub(crate) struct DeviceData {
     drm_output_manager: GbmDrmOutputManager,
     drm_scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, SurfaceData>,
-    gles_renderer: GlesRenderer,
+    pub(crate) gles_renderer: GlesRenderer,
     cursor: Cursor,
     cursor_buffers: Vec<(xcursor::parser::Image, MemoryRenderBuffer)>,
     pointer_element: PointerElement,
@@ -162,7 +166,7 @@ pub struct TtyData {
     session: LibSeatSession,
     primary_gpu: DrmNode,
     primary_gpu_path: PathBuf,
-    device: Option<DeviceData>,
+    pub(crate) device: Option<DeviceData>,
     dmabuf_state: Option<(DmabufState, DmabufGlobal)>,
 }
 
@@ -462,6 +466,12 @@ fn push_wallpaper_elements(
         f64::from(phys_h - zoomed_h) / 2.0,
     );
     let size: Option<smithay::utils::Size<i32, Logical>> = Some((zoomed_w, zoomed_h).into());
+    // Must be spelled out: with `src` left as `None`, smithay sets it to
+    // `size`, which enlarges the sampled region instead of scaling the
+    // buffer — the wallpaper would slide rather than zoom.
+    let src = Some(smithay::utils::Rectangle::from_size(
+        smithay::utils::Size::<f64, Logical>::from((f64::from(phys_w), f64::from(phys_h))),
+    ));
 
     // Muted copy on top, faded in over the untouched one below it.
     #[allow(clippy::cast_possible_truncation)]
@@ -473,11 +483,11 @@ fn push_wallpaper_elements(
                 origin,
                 buffer,
                 Some(muted_alpha),
-                None,
+                src,
                 size,
                 Kind::Unspecified,
             ) {
-                elements.push(GlideRenderElements::Wallpaper(element));
+                elements.push(GlideRenderElements::Memory(element));
             }
         }
     }
@@ -488,11 +498,11 @@ fn push_wallpaper_elements(
             origin,
             buffer,
             Some(1.0),
-            None,
+            src,
             size,
             Kind::Unspecified,
         ) {
-            elements.push(GlideRenderElements::Wallpaper(element));
+            elements.push(GlideRenderElements::Memory(element));
         }
     }
 }
@@ -916,6 +926,8 @@ impl GlideState {
         let cursor_hotspot = cursor_hotspot(&self.cursor_status);
         let cursor_status = self.cursor_status.clone();
         let elapsed = self.start_time.elapsed();
+        // Read before the renderer is borrowed mutably below.
+        let dock_area = self.dock_area();
 
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
@@ -1019,6 +1031,35 @@ impl GlideState {
                 return;
             };
             elements.extend(space_elements);
+
+            // The dock is shell chrome: above every window, below the
+            // pointer. Hidden in the overview, which owns the screen.
+            let dock = crate::dock::render(
+                &mut self.dock,
+                gles_renderer,
+                dock_area,
+                scale,
+                output.current_scale().integer_scale(),
+            );
+            let mut ordered: Vec<GlideRenderElements> =
+                dock.into_iter().map(GlideRenderElements::Memory).collect();
+            ordered.append(&mut elements);
+            elements = ordered;
+        }
+
+        // Fading windows sit above everything else: they were on top when
+        // they were closed and nothing should appear to jump in front of
+        // them on the way out. Elements are front-to-back, so "above"
+        // means ahead of the rest. Applies in the overview too — a window
+        // closed from a preview fades out in its slot.
+        if self.snapshots.is_animating() {
+            let snapshots = self.snapshots.render_elements(gles_renderer, scale);
+            let mut ordered: Vec<GlideRenderElements> = snapshots
+                .into_iter()
+                .map(GlideRenderElements::Snapshot)
+                .collect();
+            ordered.append(&mut elements);
+            elements = ordered;
         }
 
         push_wallpaper_elements(
@@ -1042,6 +1083,21 @@ impl GlideState {
                 Err(err) => tracing::error!(?err, "failed to capture screenshot"),
             }
         }
+
+        // Screen capture, for `grim`, `wf-recorder`, portals and the like.
+        // Rendered off-screen from the same element list the display gets,
+        // so a client receives exactly the composited frame. The pixels are
+        // only read here — handing them to clients needs `&mut self`, which
+        // the renderer borrow rules out until further down.
+        let captured = self.screencopy.has_pending().then(|| {
+            super::screenshot::capture_frame(
+                gles_renderer,
+                &elements,
+                output_mode,
+                output.current_scale().fractional_scale(),
+                output.current_transform(),
+            )
+        });
 
         let clear_color = self.background_color.0;
 
@@ -1069,6 +1125,23 @@ impl GlideState {
                 FrameOutcome::Failed
             }
         };
+
+        // The renderer borrow is done, so waiting clients can be served.
+        match captured {
+            Some(Ok(pixels)) => {
+                let presented = self.clock.now().into();
+                self.serve_screencopy(&output, &pixels, output_mode.into(), presented);
+            }
+            Some(Err(err)) => {
+                tracing::error!(?err, "screen capture failed");
+                // Tell every waiting client, rather than leaving it
+                // blocked on a frame that will never arrive.
+                for capture in self.screencopy.take_for(&output) {
+                    capture.frame.failed();
+                }
+            }
+            None => {}
+        }
 
         self.finish_frame(&outcome, crtc, &output);
     }

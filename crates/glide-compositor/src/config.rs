@@ -5,7 +5,7 @@ use smithay::input::keyboard::{Keysym, ModifiersState, keysyms, xkb};
 
 use crate::{GlideState, input::ResolvedKeybind};
 
-pub use glide_theme::{Color, DecorationTheme, OverviewTheme, TitleAlign, WallpaperFit};
+pub use glide_theme::{Color, DecorationTheme, DockTheme, OverviewTheme, TitleAlign, WallpaperFit};
 
 pub trait OverviewThemeExt {
     fn options(&self) -> glide_layout::OverviewOptions;
@@ -38,6 +38,67 @@ pub struct Config {
     pub keybinds: Vec<KeybindConfig>,
     pub decorations: DecorationTheme,
     pub overview: OverviewTheme,
+    pub dock: DockConfig,
+}
+
+/// The bottom dock: its look plus the apps pinned to it.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DockConfig {
+    #[serde(flatten)]
+    pub theme: DockTheme,
+    /// Pinned apps, left to right. A `separator` entry draws a divider
+    /// instead of a tile.
+    pub items: Vec<DockItemConfig>,
+}
+
+impl Default for DockConfig {
+    fn default() -> Self {
+        Self {
+            theme: DockTheme::default(),
+            items: DockItemConfig::defaults(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DockItemConfig {
+    /// Shown as the tooltip and used to match running windows when
+    /// `app-id` is absent.
+    pub name: String,
+    /// Shell command run on click.
+    pub command: String,
+    /// Which built-in glyph to draw. See `dock::Glyph`.
+    #[serde(default)]
+    pub icon: String,
+    /// `app_id` of the windows this tile represents, for the running dot.
+    /// Defaults to the lowercased name.
+    #[serde(default)]
+    pub app_id: Option<String>,
+    /// Tile gradient.
+    #[serde(default)]
+    pub color_from: Option<Color>,
+    #[serde(default)]
+    pub color_to: Option<Color>,
+    /// Draw a separator *before* this item.
+    #[serde(default)]
+    pub separator_before: bool,
+}
+
+impl DockItemConfig {
+    /// A dock that is useful out of the box on a fresh install.
+    fn defaults() -> Vec<Self> {
+        vec![Self {
+            name: "Terminal".to_string(),
+            command: "alacritty".to_string(),
+            icon: "terminal".to_string(),
+            app_id: Some("Alacritty".to_string()),
+            color_from: Color::from_hex("#4a4640"),
+            color_to: Color::from_hex("#23201c"),
+            separator_before: false,
+        }]
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -245,6 +306,7 @@ impl Config {
             keybinds: Self::default_keybinds(),
             decorations: DecorationTheme::default(),
             overview: OverviewTheme::default(),
+            dock: DockConfig::default(),
         }
     }
 
@@ -319,6 +381,8 @@ impl Config {
         state.keybinds = self.resolve_keybinds();
         state.decoration_theme = self.decorations.clone();
         state.overview_theme = self.overview.clone();
+        state.dock.reconfigure(&self.dock);
+        state.refresh_dock();
         state.background_color = self.general.background;
         state.wallpaper_fit = self.general.wallpaper_fit;
         state.refresh_painter_font();
@@ -637,9 +701,6 @@ dim = \"#33333380\"
 highlight = \"#444444\"
 border = 6
 corner-radius = 10.0
-shadow = false
-shadow-size = 12
-shadow-color = \"#00000080\"
 duration-ms = 150
 ";
         let config: Config = toml::from_str(toml_str).unwrap();
@@ -666,9 +727,6 @@ duration-ms = 150
         assert_eq!(o.highlight, Color::from_hex("#444444").unwrap());
         assert_eq!(o.border, 6);
         assert!((o.corner_radius - 10.0).abs() < f32::EPSILON);
-        assert!(!o.shadow);
-        assert_eq!(o.shadow_size, 12);
-        assert_eq!(o.shadow_color, Color::from_hex("#00000080").unwrap());
         assert_eq!(o.duration_ms, 150);
     }
 

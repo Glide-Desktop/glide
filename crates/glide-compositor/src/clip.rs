@@ -353,14 +353,23 @@ pub struct ClippedSurfaceElement<R: Renderer> {
     id: Id,
 }
 
-impl<R: Renderer> ClippedSurfaceElement<R> {
+impl<R> ClippedSurfaceElement<R>
+where
+    R: Renderer + smithay::backend::renderer::ImportAll,
+    R::TextureId: Texture + 'static,
+{
     pub fn new(inner: WaylandSurfaceRenderElement<R>, clip: RoundedClip) -> Self {
         Self {
+            // Reuse the wrapped surface's id rather than minting a fresh
+            // one. These elements are rebuilt every frame, so `Id::new()`
+            // here handed the damage tracker a brand-new element each time:
+            // it saw the old one vanish and a new one appear, damaged both
+            // rects in full, and could never track anything incrementally.
+            // The bare and clipped variants are never emitted together for
+            // the same surface, so sharing the id is unambiguous.
+            id: inner.id().clone(),
             inner,
             clip,
-            // A distinct id: this element samples differently from the bare
-            // surface, so it must not share damage history with it.
-            id: Id::new(),
         }
     }
 }

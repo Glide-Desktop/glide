@@ -49,6 +49,12 @@ pub(crate) fn start_move(
         let Some(pointer) = seat.get_pointer() else {
             return;
         };
+
+        // Dragging a maximized or fullscreen window restores it first, so
+        // it follows the cursor as an ordinary floating window — and, just
+        // as importantly, so the client stops being told it is maximized.
+        state.restore_for_move(&window, pointer.current_location());
+
         let Some(initial_window_location) = state.space.element_location(&window) else {
             return;
         };
@@ -74,6 +80,12 @@ pub(crate) fn start_resize(
     event: &ButtonEvent,
     edges: ResizeEdge,
 ) {
+    // A maximized or fullscreen window is sized by the compositor; see
+    // `GlideState::is_size_locked`.
+    if state.is_size_locked(window) {
+        return;
+    }
+
     let seat = seat.clone();
     let window = window.clone();
     let button = event.button;
@@ -83,6 +95,11 @@ pub(crate) fn start_resize(
         let Some(pointer) = seat.get_pointer() else {
             return;
         };
+        // Re-checked on the idle tick: the state may have changed between
+        // the button press and this running.
+        if state.is_size_locked(&window) {
+            return;
+        }
         let Some(location) = state.space.element_location(&window) else {
             return;
         };
@@ -112,11 +129,15 @@ impl IsAlive for Decoration {
 
 impl Decoration {
     fn update_pointer(&self, data: &mut GlideState, event: &MotionEvent) {
+        // Don't offer a resize cursor where a resize would be refused —
+        // see `GlideState::is_size_locked`.
+        let resizable = !data.is_size_locked(&self.0);
         let icon = {
             if let Some(mut deco) = self.0.try_decoration_state_mut() {
                 deco.header.pointer_enter(event.location);
                 deco.header
                     .resize_edges_at(event.location)
+                    .filter(|_| resizable)
                     .map_or(CursorIcon::Default, resize_cursor)
             } else {
                 CursorIcon::Default

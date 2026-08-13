@@ -498,6 +498,36 @@ mod tests {
         assert_eq!(layout.window_state(w).unwrap().geometry.size, size);
     }
 
+    /// The compositor refuses drag-resizes while a window is maximized or
+    /// fullscreen (`GlideState::is_size_locked`). This pins the state those
+    /// checks read: a window must report the flag for exactly as long as it
+    /// is in that mode, so a resize can never land on a window that still
+    /// believes it is maximized — clients draw themselves differently when
+    /// they do (GTK squares its corners and drops its shadow).
+    #[test]
+    fn maximized_and_fullscreen_are_reported_for_exactly_their_duration() {
+        let mut layout = Layout::new();
+        let w = WindowId::next();
+        layout.add_window(w, Size::new(800, 600));
+
+        let locked = |layout: &Layout| {
+            let state = layout.window_state(w).unwrap();
+            state.maximized || state.fullscreen
+        };
+
+        assert!(!locked(&layout), "a fresh window is freely resizable");
+
+        layout.set_maximized(w, true);
+        assert!(locked(&layout));
+        layout.set_maximized(w, false);
+        assert!(!locked(&layout), "unmaximizing must unlock the size again");
+
+        layout.set_fullscreen(w, true);
+        assert!(locked(&layout));
+        layout.set_fullscreen(w, false);
+        assert!(!locked(&layout), "leaving fullscreen must unlock too");
+    }
+
     #[test]
     fn test_set_fullscreen_and_restore() {
         let mut layout = Layout::new();

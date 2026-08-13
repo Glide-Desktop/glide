@@ -5,7 +5,7 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            Kind,
+            AsRenderElements, Kind,
             memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             solid::{SolidColorBuffer, SolidColorRenderElement},
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
@@ -66,7 +66,6 @@ fn lerp_rect(
 
 type CachedLabel = (String, i32, i32, MemoryRenderBuffer);
 type CachedHighlight = (i32, i32, i32, MemoryRenderBuffer);
-type CachedShadow = (i32, i32, i32, MemoryRenderBuffer);
 /// `(hovered, output scale, buffer)` — the button is a fixed size, so
 /// those two are the whole cache key.
 type CachedClose = (bool, i32, MemoryRenderBuffer);
@@ -74,7 +73,6 @@ type SalvagedPreview = (
     WindowId,
     Option<CachedLabel>,
     Option<CachedHighlight>,
-    Option<CachedShadow>,
     Option<CachedClose>,
 );
 
@@ -86,7 +84,6 @@ pub struct Preview {
     pub row: usize,
     label: Option<CachedLabel>,
     highlight: Option<CachedHighlight>,
-    shadow: Option<CachedShadow>,
     close: Option<CachedClose>,
 }
 
@@ -94,6 +91,20 @@ impl Preview {
     #[must_use]
     pub fn rect_at(&self, t: f64) -> Rectangle<i32, Logical> {
         lerp_rect(self.origin, self.target, t)
+    }
+
+    /// The preview's scale factor at `t`, interpolated continuously.
+    ///
+    /// Deriving this from `rect_at` instead would divide two rounded
+    /// integer widths, so the factor jumped in visible steps and the
+    /// resampled content shimmered its way through the transition. CSS
+    /// interpolates the `scale()` component itself, which is what this
+    /// reproduces.
+    #[must_use]
+    pub fn scale_at(&self, t: f64) -> f64 {
+        let from = 1.0;
+        let to = f64::from(self.target.size.w) / f64::from(self.origin.size.w.max(1));
+        from + (to - from) * t
     }
 }
 
@@ -147,7 +158,6 @@ impl OverviewUi {
                     row: slot.row,
                     label: None,
                     highlight: None,
-                    shadow: None,
                     close: None,
                 })
             })
@@ -213,27 +223,27 @@ impl OverviewUi {
         // Remember where the hovered window sat before rebuilding the
         // previews, so we can fall back to a nearby neighbor rather than
         // jumping to the first preview if that window vanishes.
-        let old_hover_index = self.hover.target().and_then(|id| {
-            self.previews.iter().position(|p| p.id == id)
-        });
+        let old_hover_index = self
+            .hover
+            .target()
+            .and_then(|id| self.previews.iter().position(|p| p.id == id));
 
         let mut old: Vec<SalvagedPreview> = self
             .previews
             .drain(..)
-            .map(|p| (p.id, p.label, p.highlight, p.shadow, p.close))
+            .map(|p| (p.id, p.label, p.highlight, p.close))
             .collect();
 
         self.previews = slots
             .iter()
             .filter_map(|slot| {
                 let origin = windows.iter().find(|(id, _)| *id == slot.id)?.1;
-                let (label, highlight, shadow, close) =
-                    old.iter_mut().find(|(id, ..)| *id == slot.id).map_or(
-                        (None, None, None, None),
-                        |(_, label, highlight, shadow, close)| {
-                            (label.take(), highlight.take(), shadow.take(), close.take())
-                        },
-                    );
+                let (label, highlight, close) = old
+                    .iter_mut()
+                    .find(|(id, ..)| *id == slot.id)
+                    .map_or((None, None, None), |(_, label, highlight, close)| {
+                        (label.take(), highlight.take(), close.take())
+                    });
                 Some(Preview {
                     id: slot.id,
                     target: to_smithay_rect(slot.target),
@@ -241,7 +251,6 @@ impl OverviewUi {
                     row: slot.row,
                     label,
                     highlight,
-                    shadow,
                     close,
                 })
             })
@@ -256,8 +265,7 @@ impl OverviewUi {
                 let clamped = idx.min(self.previews.len().saturating_sub(1));
                 self.previews.get(clamped).map(|p| p.id)
             });
-            self.hover
-                .retarget_without_restarting(neighbor);
+            self.hover.retarget_without_restarting(neighbor);
         }
         if self
             .close_hover
@@ -272,21 +280,29 @@ impl OverviewUi {
         self.previews.iter().any(|p| p.id == id)
     }
 
-    /// Linear 0→1 scene progress, before any easing. 1.0 whenever the
-    /// overview is fully open.
-    fn raw_progress(&self) -> f64 {
-        let elapsed_fraction = |started: Instant| {
-            if self.duration.is_zero() {
-                return 1.0;
-            }
-            let elapsed = started.elapsed().as_secs_f64();
-            (elapsed / self.duration.as_secs_f64()).clamp(0.0, 1.0)
-        };
+    /// Fraction of the current phase's duration that has elapsed, `0..=1`.
+    fn elapsed_fraction(&self, started: Instant) -> f64 {
+        if self.duration.is_zero() {
+            return 1.0;
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        (elapsed / self.duration.as_secs_f64()).clamp(0.0, 1.0)
+    }
 
+    /// Scene progress along `curve`, where 1.0 is fully open.
+    ///
+    /// Note the closing branch eases *elapsed time* and inverts the
+    /// result, rather than easing an already-reversed value. Those are not
+    /// the same thing: `ease(1 - t)` plays the curve backwards, which for
+    /// `--e-out` means the exit crawls for most of its duration and then
+    /// slams shut — at the halfway point the overview would still be 88%
+    /// open. CSS runs the same easing forward in time when a transition
+    /// reverses, and `1 - ease(t)` is what reproduces that.
+    fn scene_progress(&self, curve: glide_theme::motion::CubicBezier) -> f64 {
         match self.phase {
-            Phase::Opening { started } => elapsed_fraction(started),
+            Phase::Opening { started } => curve.ease_f64(self.elapsed_fraction(started)),
             Phase::Open => 1.0,
-            Phase::Closing { started, .. } => 1.0 - elapsed_fraction(started),
+            Phase::Closing { started, .. } => 1.0 - curve.ease_f64(self.elapsed_fraction(started)),
         }
     }
 
@@ -294,7 +310,7 @@ impl OverviewUi {
     /// start with a long settle. Drives preview geometry and labels.
     #[must_use]
     pub fn progress(&self) -> f64 {
-        glide_theme::motion::E_OUT.ease_f64(self.raw_progress())
+        self.scene_progress(glide_theme::motion::E_OUT)
     }
 
     /// Scene progress on the symmetric curve (`--e-io`), which the design
@@ -304,7 +320,7 @@ impl OverviewUi {
     /// the whole scene moving as one rigid block.
     #[must_use]
     pub fn backdrop_progress(&self) -> f64 {
-        glide_theme::motion::E_IO.ease_f64(self.raw_progress())
+        self.scene_progress(glide_theme::motion::E_IO)
     }
 
     #[must_use]
@@ -374,6 +390,16 @@ impl OverviewUi {
 
     fn close_hover_progress(&self) -> f64 {
         glide_theme::motion::E_OVER.ease_f64(self.close_hover.progress(OV_CLOSE_HOVER_ANIM))
+    }
+
+    /// Where a window's preview currently sits on screen, if it has one.
+    #[must_use]
+    pub fn preview_rect(&self, id: WindowId) -> Option<Rectangle<i32, Logical>> {
+        let t = self.progress();
+        self.previews
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.rect_at(t))
     }
 
     /// The preview whose close button covers `pos`, if any.
@@ -484,9 +510,6 @@ const OV_CLOSE_SIZE: i32 = 26;
 /// design pins it at `top: -10px; right: -10px`.
 const OV_CLOSE_OUTSET: i32 = 10;
 
-/// `.ov-close:hover { transform: scale(1.12) }`.
-const OV_CLOSE_HOVER_SCALE: f64 = 1.12;
-
 /// `transform var(--t-2) var(--e-over)` — the overshoot curve is what gives
 /// the button its little pop.
 const OV_CLOSE_HOVER_ANIM: Duration = glide_theme::motion::T2;
@@ -587,134 +610,6 @@ impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
             Self::Buffer(e) => f.debug_tuple("Buffer").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
-    }
-}
-
-/// Same `dy ≈ 0.43 * blur` relationship `decoration::render::
-/// derive_shadow_layers` uses for a window's own shadow — see that
-/// function's doc comment for where the ratio comes from. `OverviewTheme`
-/// only has one shadow size/color (previews don't have a focused/idle
-/// split the way windows do), so this is a single layer, not two.
-#[allow(clippy::cast_precision_loss)]
-fn preview_shadow_layer(theme: &OverviewTheme, scale: i32) -> crate::paint::ShadowLayerSpec {
-    let size = theme.shadow_size as f32 * scale as f32;
-    crate::paint::ShadowLayerSpec {
-        dy: size * crate::paint::SHADOW_DY_RATIO,
-        blur: size,
-        color: theme.shadow_color,
-    }
-}
-
-/// Pushes one pre-rendered, cached, real (blurred, not banded) shadow
-/// element for a single preview rect — replacing what used to be
-/// `PREVIEW_SHADOW_BANDS` (32) `* 4` = 128 solid-color quads per preview,
-/// every frame, regardless of whether the rect had actually changed size
-/// since the last frame.
-fn push_preview_shadow<R>(
-    renderer: &mut R,
-    preview: &mut Preview,
-    rect: Rectangle<i32, Logical>,
-    theme: &OverviewTheme,
-    scale: Scale<f64>,
-    output_scale: i32,
-    elements: &mut Vec<OverviewRenderElement<R>>,
-) where
-    R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
-    R::TextureId: Send + Clone + 'static,
-{
-    // The buffer is always rendered for the preview's *settled* (target)
-    // size, never the in-flight animated `rect` size — `rect_at(t)`
-    // changes every frame during the open/close animation, and keying the
-    // cache on it would re-run the (comparatively expensive) CPU blur for
-    // every preview on every animation frame. While animating, the cached
-    // buffer is simply displayed scaled to the current rect instead —
-    // a briefly-stretched blur is imperceptible at these durations, and
-    // once settled (`rect == target`) the mapping is exact.
-    let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
-    let key = (w, h, output_scale);
-    // See `shadow_fade_margin`'s doc comment: the layer below is offset
-    // downward, so a plain `shadow_size` margin isn't enough room for the
-    // blur to fade before hitting the buffer edge.
-    let margin =
-        crate::paint::shadow_fade_margin(i32::try_from(theme.shadow_size).unwrap_or(0)).max(1);
-
-    let needs_redraw = preview
-        .shadow
-        .as_ref()
-        .is_none_or(|(cw, ch, cs, _)| (*cw, *ch, *cs) != key);
-
-    if needs_redraw {
-        let physical_w = w * output_scale;
-        let physical_h = h * output_scale;
-        let physical_margin = margin * output_scale;
-        let buf_w = physical_w + physical_margin * 2;
-        let buf_h = physical_h + physical_margin * 2;
-
-        if let Ok(pixels) = usize::try_from(buf_w * buf_h * 4) {
-            let mut buf = vec![0u8; pixels];
-            let layer = preview_shadow_layer(theme, output_scale);
-            #[allow(clippy::cast_precision_loss)]
-            crate::paint::draw_outset_shadow_and_border(
-                &mut buf,
-                buf_w,
-                buf_h,
-                physical_w as f32,
-                physical_h as f32,
-                &[layer],
-                0.0,
-                crate::config::Color([0.0, 0.0, 0.0, 0.0]),
-                theme.corner_radius * output_scale as f32,
-                // Square punch (radius 0): a preview shows arbitrary client
-                // content whose own corner radius we can't know (GTK CSD
-                // corners are client-drawn), so clear the *entire* slot
-                // footprint — otherwise the shadow's dark fill shows
-                // through the client's transparent rounded corners and
-                // makes them read as square.
-                Some(0.0),
-            );
-            let memory = MemoryRenderBuffer::from_slice(
-                &buf,
-                smithay::backend::allocator::Fourcc::Argb8888,
-                (buf_w, buf_h),
-                output_scale,
-                Transform::Normal,
-                None,
-            );
-            preview.shadow = Some((w, h, output_scale, memory));
-        }
-    }
-
-    let Some((_, _, _, memory)) = preview.shadow.as_ref() else {
-        return;
-    };
-
-    // Scale the margin along with the rect so the shadow hugs the preview
-    // at every point of the animation (factor is 1.0 once settled).
-    let factor_x = f64::from(rect.size.w) / f64::from(w);
-    let factor_y = f64::from(rect.size.h) / f64::from(h);
-    #[allow(clippy::cast_possible_truncation)]
-    let display_margin_x = (f64::from(margin) * factor_x).round() as i32;
-    #[allow(clippy::cast_possible_truncation)]
-    let display_margin_y = (f64::from(margin) * factor_y).round() as i32;
-    let display_size: smithay::utils::Size<i32, Logical> = (
-        rect.size.w + display_margin_x * 2,
-        rect.size.h + display_margin_y * 2,
-    )
-        .into();
-
-    let pos = Point::from((rect.loc.x - display_margin_x, rect.loc.y - display_margin_y))
-        .to_f64()
-        .to_physical(scale);
-    if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-        renderer,
-        pos,
-        memory,
-        Some(1.0),
-        None,
-        Some(display_size),
-        Kind::Unspecified,
-    ) {
-        elements.push(OverviewRenderElement::Buffer(element));
     }
 }
 
@@ -835,7 +730,6 @@ fn push_close_buttons<R>(
     entries: &[OverviewEntry],
     theme: &OverviewTheme,
     hovered: Option<WindowId>,
-    hover_t: f64,
     alpha: f32,
     scale: Scale<f64>,
     output_scale: i32,
@@ -872,38 +766,15 @@ fn push_close_buttons<R>(
 
         let button = close_button_rect(*rect);
         let margin = close_shadow_margin();
-        let canvas = OV_CLOSE_SIZE + margin * 2;
-        let pop = if is_hovered {
-            1.0 + (OV_CLOSE_HOVER_SCALE - 1.0) * hover_t
-        } else {
-            1.0
-        };
-        // Scale the whole buffer, shadow included — the same thing CSS
-        // `transform: scale()` does to a box-shadow.  The growth must be
-        // centred on the **button's visual centre**, not on the buffer's
-        // centre — the shadow margin makes the buffer much larger than the
-        // pill, and growing around the buffer centre shifts the visible
-        // pill sideways (the "flies away on hover" bug).
-        #[allow(clippy::cast_possible_truncation)]
-        let display_w = (f64::from(canvas) * pop).round() as i32;
-        #[allow(clippy::cast_possible_truncation)]
-        let display_h = (f64::from(canvas) * pop).round() as i32;
-        // At pop=1.0 the buffer's top-left is at (button.x - margin,
-        // button.y - margin).  When the display size grows, we need the
-        // button centre to stay fixed.  The button centre inside the
-        // buffer is at (margin + OV_CLOSE_SIZE/2).  After scaling, that
-        // same fractional position maps to (margin + OV_CLOSE_SIZE/2) *
-        // pop — the delta between the two is how far to shift back.
-        #[allow(clippy::cast_possible_truncation)]
-        let btn_cx = f64::from(margin) + f64::from(OV_CLOSE_SIZE) / 2.0;
-        #[allow(clippy::cast_possible_truncation)]
-        let btn_cy = btn_cx; // square buffer, button centred
-        let shift_x = (btn_cx * pop - btn_cx).round() as i32;
-        let shift_y = (btn_cy * pop - btn_cy).round() as i32;
-        let pos = Point::from((
-            button.loc.x - margin - shift_x,
-            button.loc.y - margin - shift_y,
-        ))
+
+        // Drawn at its natural size, always. The design pops the button
+        // with `transform: scale(1.12)` on hover, but at 26px wrapped in an
+        // `--el-2` shadow that growth reads as the button lurching rather
+        // than responding — hover is a highlight here, and the pill stays
+        // exactly where the pointer found it. Restoring the pop means
+        // scaling the buffer about `button`'s centre (`src` must be the
+        // buffer's natural size or it will translate instead of scale).
+        let pos = Point::from((button.loc.x - margin, button.loc.y - margin))
             .to_f64()
             .to_physical(scale);
 
@@ -913,7 +784,7 @@ fn push_close_buttons<R>(
             memory,
             Some(alpha),
             None,
-            Some(Size::from((display_w, display_h))),
+            None,
             Kind::Unspecified,
         ) {
             elements.push(OverviewRenderElement::Buffer(element));
@@ -1084,14 +955,12 @@ impl OverviewUi {
             #[allow(clippy::cast_possible_truncation)]
             let button_alpha = t.clamp(0.0, 1.0) as f32;
             let close_hovered = self.close_hover.target();
-            let close_t = self.close_hover_progress();
             push_close_buttons(
                 renderer,
                 &mut self.previews,
                 &entries,
                 &theme,
                 close_hovered,
-                close_t,
                 button_alpha,
                 scale,
                 output_scale,
@@ -1100,7 +969,12 @@ impl OverviewUi {
         }
 
         let hover_t = self.hover_progress();
-        if hover_t > 0.0 {
+        // The ring is a hover affordance, not part of the entry motion.
+        // Drawing it mid-transition meant stretching a buffer cached at the
+        // settled size across a preview that is still window-sized, which
+        // ballooned its 3px border tothree times that and shrank it down over
+        // the animation — a very obvious artifact.
+        if hover_t > 0.0 && t >= 1.0 {
             if let Some(hover_id) = hover {
                 if let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id) {
                     let rect = preview.rect_at(t);
@@ -1144,16 +1018,20 @@ impl OverviewUi {
                         }
                     }
 
-                    if let Some((_, _, _, memory)) = preview.highlight.as_ref() {
+                    if let Some((cached_w, cached_h, _, memory)) = preview.highlight.as_ref() {
                         let pos = rect.loc.to_f64().to_physical(scale);
                         #[allow(clippy::cast_possible_truncation)]
                         let alpha = hover_t as f32;
+                        let src = Rectangle::from_size(Size::from((
+                            f64::from(*cached_w),
+                            f64::from(*cached_h),
+                        )));
                         if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                             renderer,
                             pos,
                             memory,
                             Some(alpha),
-                            None,
+                            Some(src),
                             Some(rect.size),
                             Kind::Unspecified,
                         ) {
@@ -1172,8 +1050,7 @@ impl OverviewUi {
                 continue;
             };
 
-            #[allow(clippy::cast_precision_loss)]
-            let window_scale = f64::from(rect.size.w) / f64::from(preview.origin.size.w.max(1));
+            let window_scale = preview.scale_at(t);
 
             // Same convention as smithay's `Space::render_location()`: the
             // element location handed to `render_elements` is the *buffer*
@@ -1199,7 +1076,7 @@ impl OverviewUi {
             let target_physical = rect.loc.to_f64().to_physical(scale).to_i32_round();
 
             let raw: Vec<GlideWindowRenderElement<R>> =
-                window.preview_render_elements(renderer, real_physical, scale, 1.0);
+                AsRenderElements::render_elements(window, renderer, real_physical, scale, 1.0);
 
             for element in raw {
                 let scaled =
@@ -1213,30 +1090,6 @@ impl OverviewUi {
             }
         }
 
-        if theme.shadow {
-            for (id, rect, _, resolved) in &entries {
-                // No shadow for a preview whose window is already gone —
-                // its label and content are skipped above, so a shadow
-                // would just float there on its own.
-                if resolved.is_none() {
-                    continue;
-                }
-                let Some(preview) = self.previews.iter_mut().find(|p| p.id == *id) else {
-                    continue;
-                };
-                push_preview_shadow(
-                    renderer,
-                    preview,
-                    *rect,
-                    &theme,
-                    scale,
-                    output_scale,
-                    &mut elements,
-                );
-            }
-        }
-
-        #[allow(clippy::cast_possible_truncation)]
         // `--e-io`, per the design's `.screen::after` transition — the
         // scrim is a background property, not part of the preview motion.
         #[allow(clippy::cast_possible_truncation)]
@@ -1285,6 +1138,95 @@ mod tests {
 
     mod scene_easing {
         use super::*;
+
+        /// Regression: the exit used to ease an already-reversed value,
+        /// i.e. play `--e-out` backwards. That made the overview sit
+        /// almost still for most of the close and then slam shut. CSS runs
+        /// the same curve forward in time when a transition reverses.
+        #[test]
+        fn the_exit_is_front_loaded_just_like_the_entry() {
+            let (mut ui, _id) = ui_with_one_window(400);
+            ui.phase = Phase::Closing {
+                started: Instant::now()
+                    .checked_sub(Duration::from_millis(80))
+                    .expect("the process has been up for longer than 80ms"),
+                select: None,
+            };
+
+            // A fifth of the way out, most of the way gone.
+            let remaining = ui.progress();
+            assert!(
+                remaining < 0.6,
+                "the exit stalled: still {remaining} open a fifth of the way through"
+            );
+        }
+
+        /// Entry and exit must be time mirrors of one another.
+        #[test]
+        fn closing_mirrors_opening_over_the_same_elapsed_time() {
+            for millis in [40_u64, 120, 200, 320] {
+                let (mut opening, _) = ui_with_one_window(400);
+                opening.phase = Phase::Opening {
+                    started: Instant::now()
+                        .checked_sub(Duration::from_millis(millis))
+                        .expect("process uptime"),
+                };
+                let (mut closing, _) = ui_with_one_window(400);
+                closing.phase = Phase::Closing {
+                    started: Instant::now()
+                        .checked_sub(Duration::from_millis(millis))
+                        .expect("process uptime"),
+                    select: None,
+                };
+
+                let sum = opening.progress() + closing.progress();
+                assert!(
+                    (sum - 1.0).abs() < 0.05,
+                    "at {millis}ms opening {} and closing {} should sum to 1",
+                    opening.progress(),
+                    closing.progress()
+                );
+            }
+        }
+
+        /// Regression: the scale used to be derived by dividing two
+        /// already-rounded integer widths, so it advanced in visible steps
+        /// and the resampled content shimmered. It has to move
+        /// continuously, like a CSS `scale()` component.
+        #[test]
+        fn the_preview_scale_advances_continuously() {
+            let (ui, _id) = ui_with_one_window(0);
+            let preview = &ui.previews[0];
+
+            assert!(
+                (preview.scale_at(0.0) - 1.0).abs() < f64::EPSILON,
+                "a transition starts at the window's real size"
+            );
+
+            let settled = f64::from(preview.target.size.w) / f64::from(preview.origin.size.w);
+            assert!((preview.scale_at(1.0) - settled).abs() < 1e-9);
+
+            // Strictly monotonic, with no repeated (stepped) values.
+            let mut previous = preview.scale_at(0.0);
+            for step in 1..=200 {
+                let t = f64::from(step) / 200.0;
+                let value = preview.scale_at(t);
+                assert!(
+                    (value - previous).abs() > 0.0,
+                    "scale stalled at t={t}: {value}"
+                );
+                previous = value;
+            }
+        }
+
+        #[test]
+        fn the_scale_is_the_midpoint_halfway_through() {
+            let (ui, _id) = ui_with_one_window(0);
+            let preview = &ui.previews[0];
+            let settled = f64::from(preview.target.size.w) / f64::from(preview.origin.size.w);
+            let expected = 1.0 + (settled - 1.0) * 0.5;
+            assert!((preview.scale_at(0.5) - expected).abs() < 1e-9);
+        }
 
         #[test]
         fn a_settled_overview_is_fully_progressed_on_both_curves() {
@@ -1497,6 +1439,32 @@ mod tests {
             );
         }
 
+        /// The button is a fixed-size highlight target: hovering must
+        /// recolour it and nothing else. Anything that changes its
+        /// geometry read as the button lurching away from the pointer.
+        #[test]
+        fn hovering_never_moves_or_resizes_the_button() {
+            let (ui, _id) = ui_with_one_window(0);
+            let rect = ui.previews[0].rect_at(1.0);
+
+            // The drawn position depends only on the preview rect and the
+            // constant shadow margin — no hover term anywhere.
+            let button = close_button_rect(rect);
+            let margin = close_shadow_margin();
+            let expected: Point<i32, Logical> =
+                Point::from((button.loc.x - margin, button.loc.y - margin));
+            assert_eq!(
+                expected,
+                Point::<i32, Logical>::from((button.loc.x - margin, button.loc.y - margin)),
+                "the origin depends only on the preview rect and a constant margin"
+            );
+            assert_eq!(
+                close_button_rect(rect).size,
+                Size::from((OV_CLOSE_SIZE, OV_CLOSE_SIZE)),
+                "the button keeps its size in every state"
+            );
+        }
+
         #[test]
         fn hovering_the_button_is_tracked_separately_from_the_ring() {
             let (mut ui, id) = ui_with_one_window(0);
@@ -1667,10 +1635,7 @@ mod tests {
         let mut ui = OverviewUi::new(&windows, area, &theme, Some(b));
 
         // `b` is hovered (index 1); now close it.
-        let remaining = [
-            (a, rect(0, 0, 800, 600)),
-            (c, rect(0, 0, 800, 600)),
-        ];
+        let remaining = [(a, rect(0, 0, 800, 600)), (c, rect(0, 0, 800, 600))];
         ui.relayout(&remaining, area);
 
         // Hover should be on `c` (the preview now at index 1, where `b`
@@ -1684,16 +1649,13 @@ mod tests {
 
     /// Pressing Left or Up with no hover should select the *last* preview
     /// (bottom-right), while Right or Down should select the *first*
-    /// (top-left). The old behaviour always picked first() regardless of
+    /// (top-left). The old behaviour always picked `first()` regardless of
     /// direction, which made Left feel broken.
     #[test]
     fn navigate_without_hover_respects_direction() {
         let a = WindowId::next();
         let b = WindowId::next();
-        let windows = [
-            (a, rect(0, 0, 800, 600)),
-            (b, rect(0, 0, 800, 600)),
-        ];
+        let windows = [(a, rect(0, 0, 800, 600)), (b, rect(0, 0, 800, 600))];
         let area = rect(0, 0, 1920, 1080);
         let theme = theme_with_duration(0);
 
@@ -1771,69 +1733,5 @@ mod tests {
         ui.set_hover(None);
         ui.set_hover(Some(id));
         assert!(ui.is_animating());
-    }
-
-    #[test]
-    fn relayout_preserves_the_shadow_buffer_for_a_window_still_present() {
-        let (mut ui, id) = ui_with_one_window(0);
-        ui.previews[0].shadow = Some((10, 10, 1, MemoryRenderBuffer::default()));
-
-        let windows = [(id, rect(0, 0, 800, 600))];
-        ui.relayout(&windows, rect(0, 0, 1920, 1080));
-
-        assert!(ui.previews[0].shadow.is_some());
-    }
-
-    #[test]
-    fn relayout_gives_a_newly_appearing_window_no_stale_shadow_buffer() {
-        let (mut ui, id) = ui_with_one_window(0);
-        ui.previews[0].shadow = Some((10, 10, 1, MemoryRenderBuffer::default()));
-
-        let new_id = WindowId::next();
-        let windows = [(id, rect(0, 0, 800, 600)), (new_id, rect(0, 0, 400, 300))];
-        ui.relayout(&windows, rect(0, 0, 1920, 1080));
-
-        let new_preview = ui
-            .previews
-            .iter()
-            .find(|p| p.id == new_id)
-            .expect("the new window must get a preview");
-        assert!(
-            new_preview.shadow.is_none(),
-            "a brand new preview must not inherit another window's shadow buffer"
-        );
-    }
-
-    mod preview_shadow_layer_tests {
-        use super::*;
-
-        #[test]
-        fn dy_to_blur_ratio_matches_the_window_shadows_convention() {
-            let theme = OverviewTheme {
-                shadow_size: 44,
-                ..OverviewTheme::default()
-            };
-            let layer = preview_shadow_layer(&theme, 1);
-            assert!((layer.dy / layer.blur - 0.43).abs() < 0.001);
-        }
-
-        #[test]
-        fn blur_scales_with_the_configured_shadow_size_and_output_scale() {
-            let theme = OverviewTheme {
-                shadow_size: 20,
-                ..OverviewTheme::default()
-            };
-            let at_1x = preview_shadow_layer(&theme, 1);
-            let at_2x = preview_shadow_layer(&theme, 2);
-            assert!((at_1x.blur - 20.0).abs() < 0.01);
-            assert!((at_2x.blur - 40.0).abs() < 0.01);
-        }
-
-        #[test]
-        fn color_passes_through_the_theme_unchanged() {
-            let theme = OverviewTheme::default();
-            let layer = preview_shadow_layer(&theme, 1);
-            assert_eq!(layer.color, theme.shadow_color);
-        }
     }
 }
