@@ -176,11 +176,13 @@ impl GlideWindow {
         if duration.is_zero() || elapsed >= duration {
             return None;
         }
+        let live_size = self.geometry().size;
         Some(GeometryProgress::at(
             elapsed,
             duration,
             animation.from,
             animation.to,
+            live_size,
         ))
     }
 
@@ -222,6 +224,7 @@ impl GeometryProgress {
         duration: Duration,
         from: Rectangle<i32, Logical>,
         to: Rectangle<i32, Logical>,
+        live_size: Size<i32, Logical>,
     ) -> Self {
         let fraction = (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0);
         let t = glide_theme::motion::E_OUT.ease_f64(fraction);
@@ -235,8 +238,8 @@ impl GeometryProgress {
 
         Self {
             scale: Scale::from((
-                f64::from(current_w) / f64::from(to.size.w.max(1)),
-                f64::from(current_h) / f64::from(to.size.h.max(1)),
+                f64::from(current_w) / f64::from(live_size.w.max(1)),
+                f64::from(current_h) / f64::from(live_size.h.max(1)),
             )),
             offset: Point::from((
                 mix(from.loc.x, to.loc.x) - to.loc.x,
