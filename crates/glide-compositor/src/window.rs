@@ -783,7 +783,7 @@ mod geometry_animation_tests {
     #[test]
     fn it_begins_exactly_on_the_old_rect() {
         let (from, to) = maximize();
-        let start = GeometryProgress::at(Duration::ZERO, Duration::from_millis(320), from, to);
+        let start = GeometryProgress::at(Duration::ZERO, Duration::from_millis(320), from, to, to.size);
 
         assert!((start.scale.x - 800.0 / 1920.0).abs() < 1e-9);
         assert!((start.scale.y - 600.0 / 1080.0).abs() < 1e-9);
@@ -798,7 +798,7 @@ mod geometry_animation_tests {
     fn it_lands_exactly_on_the_new_rect() {
         let (from, to) = maximize();
         let duration = Duration::from_millis(320);
-        let settled = GeometryProgress::at(duration, duration, from, to);
+        let settled = GeometryProgress::at(duration, duration, from, to, to.size);
 
         assert!((settled.scale.x - 1.0).abs() < 1e-9);
         assert!((settled.scale.y - 1.0).abs() < 1e-9);
@@ -810,7 +810,7 @@ mod geometry_animation_tests {
         let from = rect(0, 0, 400, 600);
         let to = rect(0, 0, 1200, 600);
         let duration = Duration::from_millis(320);
-        let mid = GeometryProgress::at(duration.mul_f64(0.5), duration, from, to);
+        let mid = GeometryProgress::at(duration.mul_f64(0.5), duration, from, to, to.size);
 
         assert!(mid.scale.x < 1.0, "still widening");
         assert!(
@@ -827,7 +827,7 @@ mod geometry_animation_tests {
         let mut previous = 0.0;
         for step in 0..=100 {
             let elapsed = duration.mul_f64(f64::from(step) / 100.0);
-            let progress = GeometryProgress::at(elapsed, duration, from, to);
+            let progress = GeometryProgress::at(elapsed, duration, from, to, to.size);
             assert!(
                 progress.scale.x >= previous - 1e-9,
                 "scale went backwards at step {step}"
@@ -845,7 +845,7 @@ mod geometry_animation_tests {
     fn it_rides_the_same_front_loaded_curve_as_the_ghost_it_dissolves_with() {
         let (from, to) = maximize();
         let duration = Duration::from_millis(320);
-        let quarter = GeometryProgress::at(duration.mul_f64(0.25), duration, from, to);
+        let quarter = GeometryProgress::at(duration.mul_f64(0.25), duration, from, to, to.size);
 
         let start_scale = 800.0 / 1920.0;
         let travelled = (quarter.scale.x - start_scale) / (1.0 - start_scale);
@@ -860,14 +860,14 @@ mod geometry_animation_tests {
     fn a_shrink_is_handled_as_readily_as_a_grow() {
         let (to, from) = maximize();
         let duration = Duration::from_millis(320);
-        let start = GeometryProgress::at(Duration::ZERO, duration, from, to);
+        let start = GeometryProgress::at(Duration::ZERO, duration, from, to, to.size);
 
         assert!(
             start.scale.x > 1.0,
             "un-maximizing starts larger than the target: {}",
             start.scale.x
         );
-        let settled = GeometryProgress::at(duration, duration, from, to);
+        let settled = GeometryProgress::at(duration, duration, from, to, to.size);
         assert!((settled.scale.x - 1.0).abs() < 1e-9);
     }
 }

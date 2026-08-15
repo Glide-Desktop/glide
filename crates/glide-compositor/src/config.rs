@@ -191,7 +191,7 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             background: Color::from_hex("#222c3cff").unwrap(),
-            autostart: vec!["alacritty".to_string()],
+            autostart: vec![],
             wallpaper: None,
             wallpaper_fit: WallpaperFit::default(),
             font_family: None,
@@ -839,8 +839,8 @@ background = \"#101020\"
     }
 
     #[test]
-    fn autostart_defaults_to_a_single_terminal() {
-        assert_eq!(GeneralConfig::default().autostart, vec!["alacritty"]);
+    fn autostart_defaults_to_empty() {
+        assert!(GeneralConfig::default().autostart.is_empty());
     }
 
     #[test]
