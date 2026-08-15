@@ -536,8 +536,7 @@ fn close_button_rect(preview: Rectangle<i32, Logical>) -> Rectangle<i32, Logical
 }
 
 pub(crate) const fn label_offset(label_height: i32) -> i32 {
-    let _ = label_height;
-    0
+    -label_height / 2
 }
 
 fn centre_x(rect: Rectangle<i32, Logical>) -> f64 {
@@ -1454,17 +1453,17 @@ mod tests {
         use super::*;
 
         #[test]
-        fn the_pill_hangs_flush_below_the_preview() {
-            assert_eq!(label_offset(28), 0);
-            assert_eq!(label_offset(40), 0);
+        fn the_pill_hangs_halfway_over_the_preview() {
+            assert_eq!(label_offset(28), -14);
+            assert_eq!(label_offset(40), -20);
         }
 
         #[test]
-        fn the_space_consumed_below_a_row_is_the_whole_pill() {
+        fn the_space_consumed_below_a_row_is_half_the_pill() {
             for height in [0, 24, 28, 40] {
                 let consumed = height + label_offset(height);
                 assert!(consumed >= 0, "height {height} consumed {consumed}");
-                assert_eq!(consumed, height);
+                assert_eq!(consumed, height - height / 2);
             }
         }
     }

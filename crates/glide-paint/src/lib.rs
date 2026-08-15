@@ -897,9 +897,7 @@ pub fn draw_dock_glyph(
             for row in 0..3_u8 {
                 for column in 0..3_u8 {
                     let (x, y) = p(2.0 + f32::from(column) * 6.0, 2.0 + f32::from(row) * 6.0);
-                    if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 4.0 * unit, 4.0 * unit) {
-                        pb.push_rect(rect);
-                    }
+                    pb.push_circle(x + 2.0 * unit, y + 2.0 * unit, 2.0 * unit);
                 }
             }
         }

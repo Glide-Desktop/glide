@@ -212,7 +212,7 @@ impl Default for DockTheme {
             item_gap: 8,
             padding_x: 12,
             padding_y: 10,
-            radius: shape::R_ROUND,
+            radius: shape::R4,
             item_radius: shape::R4,
             background: t.shell_bg,
             border: t.shell_line,

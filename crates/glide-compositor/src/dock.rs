@@ -512,7 +512,9 @@ where
     let mut elements = Vec::new();
 
     for (index, rect) in item_rects.iter().enumerate() {
-        let hover = HoverGeometry::for_tile(&theme, *rect, hovered == Some(index), hover_t);
+        let is_hovered = hovered == Some(index);
+        let is_launcher = dock.items[index].action == DockAction::OpenLauncher;
+        let hover = HoverGeometry::for_tile(&theme, *rect, is_hovered && !is_launcher, hover_t);
         push_tile(
             dock,
             renderer,
