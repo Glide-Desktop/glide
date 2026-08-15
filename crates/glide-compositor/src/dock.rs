@@ -1,12 +1,4 @@
-//! The bottom dock (`.dash`), spec §13.4.
-//!
-//! A compositor-drawn shell element: a rounded, translucent bar centred on
-//! the bottom of the work area holding one square tile per pinned app,
-//! each with a running indicator underneath. It is not a Wayland surface,
-//! so it is laid out, rasterised and hit-tested here rather than by a
-//! client.
-
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::{
     backend::renderer::{
@@ -21,25 +13,28 @@ use smithay::{
 
 use crate::config::{Color, DockConfig, DockItemConfig, DockTheme};
 
-/// `.dash-item` hover runs on `--t-2` with the overshoot curve.
-const HOVER_ANIM: Duration = glide_theme::motion::T2;
+fn hover_anim() -> Duration {
+    glide_theme::motion::t2()
+}
 
-/// `.dash-item .run` — 4px dot, 16px bar when focused.
 const RUN_DOT: i32 = 4;
 const RUN_BAR: i32 = 16;
-/// `bottom: -5px` relative to the tile.
+fn run_anim() -> Duration {
+    glide_theme::motion::t3()
+}
 const RUN_OFFSET: i32 = 5;
 const RUN_THICKNESS: i32 = 4;
 
-/// Width of the `.dash-sep` divider plus the margin either side.
 const SEPARATOR_WIDTH: i32 = 1;
 const SEPARATOR_MARGIN: i32 = 3;
 
-/// Built-in tile artwork.
-///
-/// Real `.desktop`/icon-theme lookup is a subsystem of its own; the design
-/// draws simple stroked glyphs on gradient tiles, and these reproduce
-/// exactly that set.
+fn raster_revision(theme: &DockTheme) -> u64 {
+    glide_theme::Revision::new()
+        .u64(theme.revision())
+        .u64(crate::paint::painter_generation())
+        .finish()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Glyph {
     Terminal,
@@ -48,6 +43,7 @@ pub enum Glyph {
     Music,
     Mail,
     Generic,
+    Grid,
 }
 
 impl Glyph {
@@ -63,7 +59,12 @@ impl Glyph {
     }
 }
 
-/// One pinned app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockAction {
+    Activate,
+    OpenLauncher,
+}
+
 #[derive(Debug, Clone)]
 pub struct DockItem {
     pub name: String,
@@ -73,11 +74,27 @@ pub struct DockItem {
     pub color_from: Color,
     pub color_to: Color,
     pub separator_before: bool,
+    pub action: DockAction,
 }
 
 impl DockItem {
-    /// A tile for a running app that is not pinned. It carries no command
-    /// — clicking it focuses the window it stands for.
+    fn launcher() -> Self {
+        let tokens =
+            glide_theme::Tokens::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        Self {
+            name: "Applications".to_string(),
+            command: String::new(),
+            app_id: String::new(),
+            glyph: Glyph::Grid,
+            color_from: tokens.fill_1,
+            color_to: tokens.fill_1,
+            separator_before: true,
+            action: DockAction::OpenLauncher,
+        }
+    }
+}
+
+impl DockItem {
     fn dynamic(app: &RunningApp) -> Self {
         let (color_from, color_to) = dynamic_colors(&app.app_id);
         Self {
@@ -88,6 +105,7 @@ impl DockItem {
             color_from,
             color_to,
             separator_before: false,
+            action: DockAction::Activate,
         }
     }
 
@@ -105,31 +123,24 @@ impl DockItem {
             color_from: config.color_from.unwrap_or(fallback_from),
             color_to: config.color_to.unwrap_or(fallback_to),
             separator_before: config.separator_before,
+            action: DockAction::Activate,
         }
     }
 }
 
-/// Whether an app currently has windows, and whether one of them is
-/// focused — drives the running indicator.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RunState {
     pub running: bool,
     pub focused: bool,
 }
 
-/// An app with at least one open window, as reported by the compositor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningApp {
     pub app_id: String,
-    /// Human-readable name for a tile that is not pinned.
     pub name: String,
     pub focused: bool,
 }
 
-/// Gradient pairs handed out to running apps that are not pinned.
-///
-/// Picked deterministically from the app id so a given app keeps the same
-/// tile across restarts, and so two apps side by side rarely collide.
 const DYNAMIC_PALETTE: [(&str, &str); 6] = [
     ("#5b7fa8", "#2f4b6b"),
     ("#7fae94", "#2f7a56"),
@@ -140,8 +151,6 @@ const DYNAMIC_PALETTE: [(&str, &str); 6] = [
 ];
 
 fn dynamic_colors(app_id: &str) -> (Color, Color) {
-    // FNV-1a: tiny, stable, and good enough to spread ids across six
-    // buckets.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in app_id.as_bytes() {
         hash ^= u64::from(*byte);
@@ -156,50 +165,64 @@ fn dynamic_colors(app_id: &str) -> (Color, Color) {
     )
 }
 
-/// The dock's layout and interaction state.
 #[derive(Debug)]
 pub struct Dock {
     theme: DockTheme,
-    /// Apps pinned in the config; always leftmost, always present.
     pinned: Vec<DockItem>,
-    /// `pinned` followed by a tile for every running app that is not
-    /// pinned, so an open window always has somewhere to show up.
     items: Vec<DockItem>,
     run: Vec<RunState>,
+    run_changed: Vec<Instant>,
     hover: glide_ui::HoverAnimation<usize>,
     icons: crate::icon::IconLoader,
 
-    /// Cached shell background, keyed by its size and the output scale.
-    shell: Option<(i32, i32, i32, MemoryRenderBuffer)>,
-    /// Cached tiles, one per item, keyed by output scale.
-    tiles: Vec<Option<(i32, MemoryRenderBuffer)>>,
-    /// Cached running indicators, keyed by (width, focused, scale).
-    runs: Vec<Option<(i32, bool, i32, MemoryRenderBuffer)>>,
+    shell: std::collections::HashMap<(i32, i32, i32), MemoryRenderBuffer>,
+    shadow: std::collections::HashMap<(i32, i32, i32), MemoryRenderBuffer>,
+    tiles: Vec<std::collections::HashMap<i32, MemoryRenderBuffer>>,
+    runs: std::collections::HashMap<(i32, bool, i32), MemoryRenderBuffer>,
+    shell_backdrop_key: Option<(u64, i32, i32)>,
+    raster_rev: u64,
 }
 
 impl Dock {
     #[must_use]
     pub fn new(config: &DockConfig) -> Self {
         let pinned: Vec<DockItem> = config.items.iter().map(DockItem::from_config).collect();
-        let items = pinned.clone();
+        let mut items = pinned.clone();
+        items.push(DockItem::launcher());
         let count = items.len();
         Self {
             theme: config.theme.clone(),
             pinned,
             items,
             run: vec![RunState::default(); count],
+            run_changed: vec![Instant::now(); count],
             hover: glide_ui::HoverAnimation::default(),
             icons: crate::icon::IconLoader::new(config.theme.icon_theme.clone()),
-            shell: None,
-            tiles: vec![None; count],
-            runs: vec![None; count],
+            shell: std::collections::HashMap::new(),
+            shadow: std::collections::HashMap::new(),
+            tiles: vec![std::collections::HashMap::new(); count],
+            runs: std::collections::HashMap::new(),
+            shell_backdrop_key: None,
+            raster_rev: raster_revision(&config.theme),
         }
     }
 
-    /// Rebuilds from a (possibly reloaded) config, dropping caches — the
-    /// icon theme may have changed along with everything else.
     pub fn reconfigure(&mut self, config: &DockConfig) {
         *self = Self::new(config);
+    }
+
+    fn invalidate_stale_buffers(&mut self) {
+        let current = raster_revision(&self.theme);
+        if current == self.raster_rev {
+            return;
+        }
+        self.raster_rev = current;
+        self.shell.clear();
+        self.shadow.clear();
+        self.runs.clear();
+        for tile in &mut self.tiles {
+            tile.clear();
+        }
     }
 
     #[must_use]
@@ -207,11 +230,24 @@ impl Dock {
         self.theme.enabled && !self.items.is_empty()
     }
 
-    /// Whether the tile at `index` came from the config rather than from a
-    /// running window.
     #[must_use]
     pub fn is_pinned(&self, index: usize) -> bool {
         index < self.pinned.len()
+    }
+
+    #[must_use]
+    pub fn action(&self, index: usize) -> Option<DockAction> {
+        self.items.get(index).map(|item| item.action)
+    }
+
+    #[must_use]
+    pub fn icon_theme(&self) -> Option<String> {
+        self.theme.icon_theme.clone()
+    }
+
+    #[must_use]
+    pub fn bottom_margin(&self) -> i32 {
+        self.theme.bottom_margin
     }
 
     #[must_use]
@@ -219,12 +255,6 @@ impl Dock {
         &self.items
     }
 
-    /// Rebuilds the dock from the apps that currently have windows.
-    ///
-    /// Pinned tiles keep their place and gain a running dot; anything else
-    /// with an open window is appended so a new window always appears
-    /// somewhere. Returns whether anything changed, so the caller can skip
-    /// a redraw.
     pub fn set_running(&mut self, running: &[RunningApp]) -> bool {
         let mut items = self.pinned.clone();
         let mut extras = 0;
@@ -237,12 +267,12 @@ impl Dock {
                 continue;
             }
             let mut item = DockItem::dynamic(app);
-            // Divide the pinned block from the running-only one, as the
-            // design separates its groups.
             item.separator_before = extras == 0 && !self.pinned.is_empty();
             items.push(item);
             extras += 1;
         }
+
+        items.push(DockItem::launcher());
 
         let run: Vec<RunState> = items
             .iter()
@@ -267,17 +297,45 @@ impl Dock {
             return false;
         }
 
+        let now = Instant::now();
+        let settled = now
+            .checked_sub(run_anim().max(glide_theme::motion::T3))
+            .unwrap_or(now);
+        let changed_at: Vec<Instant> = items
+            .iter()
+            .zip(&run)
+            .map(|(item, new_run)| {
+                let old_index = self
+                    .items
+                    .iter()
+                    .position(|old| old.app_id.eq_ignore_ascii_case(&item.app_id));
+                match old_index {
+                    Some(old_index)
+                        if self
+                            .run
+                            .get(old_index)
+                            .is_some_and(|old| old.focused == new_run.focused) =>
+                    {
+                        self.run_changed.get(old_index).copied().unwrap_or(settled)
+                    }
+                    Some(_) => now,
+                    None => settled,
+                }
+            })
+            .collect();
+        self.run_changed = changed_at;
+
         if layout_changed {
-            // Caches are indexed by position, so a changed line-up
-            // invalidates all of them.
-            self.tiles = vec![None; items.len()];
-            self.runs = vec![None; items.len()];
-            self.shell = None;
-            if self
-                .hover
-                .target()
-                .is_some_and(|index| index >= items.len())
-            {
+            self.tiles = vec![std::collections::HashMap::new(); items.len()];
+            self.shell.clear();
+            self.shadow.clear();
+            let hover_moved = self.hover.target().is_some_and(|index| {
+                match (self.items.get(index), items.get(index)) {
+                    (Some(old), Some(new)) => old.app_id != new.app_id,
+                    _ => true,
+                }
+            });
+            if hover_moved {
                 self.hover.retarget_without_restarting(None);
             }
         }
@@ -293,14 +351,37 @@ impl Dock {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        self.hover.is_animating(HOVER_ANIM)
+        let run = run_anim();
+        self.hover.is_animating(hover_anim())
+            || (!run.is_zero() && self.run_changed.iter().any(|stamp| stamp.elapsed() < run))
+    }
+
+    fn run_width(&self, index: usize) -> i32 {
+        let focused = self.run.get(index).is_some_and(|state| state.focused);
+        let (from, to) = if focused {
+            (RUN_DOT, RUN_BAR)
+        } else {
+            (RUN_BAR, RUN_DOT)
+        };
+        let duration = run_anim();
+        let elapsed = self
+            .run_changed
+            .get(index)
+            .map_or(duration, Instant::elapsed);
+        if duration.is_zero() || elapsed >= duration {
+            return to;
+        }
+        let t = glide_theme::motion::E_OUT.ease_f64(elapsed.as_secs_f64() / duration.as_secs_f64());
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            (f64::from(from) + f64::from(to - from) * t).round() as i32
+        }
     }
 
     fn hover_progress(&self) -> f64 {
-        glide_theme::motion::E_OVER.ease_f64(self.hover.progress(HOVER_ANIM))
+        glide_theme::motion::E_OVER.ease_f64(self.hover.progress(hover_anim()))
     }
 
-    /// Total size of the dock shell.
     #[must_use]
     pub fn size(&self) -> Size<i32, Logical> {
         let theme = &self.theme;
@@ -325,7 +406,6 @@ impl Dock {
         Size::from((width, theme.padding_y * 2 + theme.item_size))
     }
 
-    /// Where the dock sits inside `area`, centred on its bottom edge.
     #[must_use]
     pub fn rect(&self, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
         let size = self.size();
@@ -334,7 +414,6 @@ impl Dock {
         Rectangle::new(Point::from((x, y)), size)
     }
 
-    /// Resting rect of every tile, in the same space as `rect`.
     #[must_use]
     pub fn item_rects(&self, area: Rectangle<i32, Logical>) -> Vec<Rectangle<i32, Logical>> {
         let shell = self.rect(area);
@@ -362,11 +441,19 @@ impl Dock {
             .collect()
     }
 
-    /// The tile under `pos`, if any.
-    ///
-    /// Tests the *resting* rects rather than the lifted ones: a tile that
-    /// moved out from under the pointer because it was hovered would
-    /// otherwise immediately un-hover and drop back, flickering.
+    #[must_use]
+    pub fn tile_rect_for_app(
+        &self,
+        area: Rectangle<i32, Logical>,
+        app_id: &str,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let index = self
+            .items
+            .iter()
+            .position(|item| item.app_id.eq_ignore_ascii_case(app_id))?;
+        self.item_rects(area).into_iter().nth(index)
+    }
+
     #[must_use]
     pub fn item_at(
         &self,
@@ -378,38 +465,52 @@ impl Dock {
             .position(|rect| rect.to_f64().contains(pos))
     }
 
-    /// Whether `pos` is anywhere over the dock, tile or not.
     #[must_use]
     pub fn contains(&self, area: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
-        self.rect(area).to_f64().contains(pos)
+        self.is_enabled() && self.rect(area).to_f64().contains(pos)
     }
 }
 
-/// Render elements for the dock, front-to-back.
 pub fn render<R>(
     dock: &mut Dock,
     renderer: &mut R,
     area: Rectangle<i32, Logical>,
     scale: Scale<f64>,
     output_scale: i32,
+    hidden: f64,
+    backdrop: Option<&Backdrop<'_>>,
 ) -> Vec<MemoryRenderBufferRenderElement<R>>
 where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Send + Clone + 'static,
 {
-    if !dock.is_enabled() {
+    let hidden = hidden.clamp(0.0, 1.0);
+    if !dock.is_enabled() || hidden >= 1.0 {
         return Vec::new();
     }
 
-    let shell = dock.rect(area);
-    let item_rects = dock.item_rects(area);
+    dock.invalidate_stale_buffers();
+
+    let mut shell = dock.rect(area);
+    #[allow(clippy::cast_possible_truncation)]
+    let slide = (f64::from(shell.size.h + dock.theme.bottom_margin) * hidden).round() as i32;
+    shell.loc.y += slide;
+    #[allow(clippy::cast_possible_truncation)]
+    let opacity = (1.0 - hidden) as f32;
+    let item_rects: Vec<Rectangle<i32, Logical>> = dock
+        .item_rects(area)
+        .into_iter()
+        .map(|mut rect| {
+            rect.loc.y += slide;
+            rect
+        })
+        .collect();
     let hovered = dock.hover.target();
     let hover_t = dock.hover_progress();
     let theme = dock.theme.clone();
 
     let mut elements = Vec::new();
 
-    // Tiles and their indicators sit in front of the shell.
     for (index, rect) in item_rects.iter().enumerate() {
         let hover = HoverGeometry::for_tile(&theme, *rect, hovered == Some(index), hover_t);
         push_tile(
@@ -420,6 +521,7 @@ where
             &hover,
             scale,
             output_scale,
+            opacity,
             &mut elements,
         );
         push_run_indicator(
@@ -430,25 +532,67 @@ where
             *rect,
             scale,
             output_scale,
+            opacity,
             &mut elements,
         );
     }
 
-    // Shell background last, so it lands behind the tiles.
-    let needs_shell = dock.shell.as_ref().is_none_or(|(w, h, cached_scale, _)| {
-        *w != shell.size.w || *h != shell.size.h || *cached_scale != output_scale
-    });
-    if needs_shell {
-        if let Some(buffer) = draw_shell(&theme, &dock.items, &item_rects, shell, output_scale) {
-            dock.shell = Some((shell.size.w, shell.size.h, output_scale, buffer));
+    push_shell(
+        dock,
+        renderer,
+        &theme,
+        &item_rects,
+        shell,
+        scale,
+        output_scale,
+        opacity,
+        backdrop,
+        &mut elements,
+    );
+
+    elements
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_shell<R>(
+    dock: &mut Dock,
+    renderer: &mut R,
+    theme: &DockTheme,
+    item_rects: &[Rectangle<i32, Logical>],
+    shell: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    output_scale: i32,
+    opacity: f32,
+    backdrop: Option<&Backdrop<'_>>,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Send + Clone + 'static,
+{
+    let shell_key = (shell.size.w, shell.size.h, output_scale);
+    let backdrop_key = backdrop.map(|b| (b.generation, shell.loc.x, shell.loc.y));
+    if dock.shell_backdrop_key != backdrop_key {
+        dock.shell_backdrop_key = backdrop_key;
+        dock.shell.clear();
+    }
+    if let std::collections::hash_map::Entry::Vacant(entry) = dock.shell.entry(shell_key) {
+        if let Some(buffer) = draw_shell(
+            theme,
+            &dock.items,
+            item_rects,
+            shell,
+            output_scale,
+            backdrop,
+        ) {
+            entry.insert(buffer);
         }
     }
-    if let Some((_, _, _, buffer)) = dock.shell.as_ref() {
+    if let Some(buffer) = dock.shell.get(&shell_key) {
         if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             shell.loc.to_f64().to_physical(scale),
             buffer,
-            Some(1.0),
+            Some(opacity),
             None,
             None,
             Kind::Unspecified,
@@ -457,14 +601,100 @@ where
         }
     }
 
-    elements
+    if let std::collections::hash_map::Entry::Vacant(entry) = dock.shadow.entry(shell_key) {
+        if let Some(buffer) = draw_shell_shadow(theme, shell, output_scale) {
+            entry.insert(buffer);
+        }
+    }
+    if let Some(buffer) = dock.shadow.get(&shell_key) {
+        let margin = shell_shadow_margin();
+        let pos = Point::from((shell.loc.x - margin, shell.loc.y - margin))
+            .to_f64()
+            .to_physical(scale);
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            pos,
+            buffer,
+            Some(opacity),
+            None,
+            None,
+            Kind::Unspecified,
+        ) {
+            elements.push(element);
+        }
+    }
 }
 
-/// Where a tile is drawn once the hover lift and swell are applied.
+fn shell_shadow_margin() -> i32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let widest = shell_shadow_layers()
+        .iter()
+        .map(|layer| layer.blur)
+        .fold(0.0_f32, f32::max)
+        .ceil() as i32;
+    crate::paint::shadow_fade_margin(widest)
+}
+
+fn shell_shadow_layers() -> Vec<crate::paint::ShadowLayerSpec> {
+    glide_theme::elevation::layers(
+        glide_theme::elevation::Level::El2,
+        glide_theme::Appearance::Dark,
+    )
+    .into_iter()
+    .map(|layer| crate::paint::ShadowLayerSpec {
+        dy: layer.dy,
+        blur: layer.blur,
+        color: layer.color,
+    })
+    .collect()
+}
+
+fn draw_shell_shadow(
+    theme: &DockTheme,
+    shell: Rectangle<i32, Logical>,
+    output_scale: i32,
+) -> Option<MemoryRenderBuffer> {
+    let margin = shell_shadow_margin();
+    let (w, h) = (shell.size.w + margin * 2, shell.size.h + margin * 2);
+    let (pw, ph) = (w * output_scale, h * output_scale);
+    let mut buf = vec![0u8; usize::try_from(pw * ph * 4).ok()?];
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = output_scale as f32;
+    let layers: Vec<_> = shell_shadow_layers()
+        .into_iter()
+        .map(|layer| crate::paint::ShadowLayerSpec {
+            dy: layer.dy * scale_f,
+            blur: layer.blur * scale_f,
+            color: layer.color,
+        })
+        .collect();
+    #[allow(clippy::cast_precision_loss)]
+    crate::paint::draw_outset_shadow_and_border(
+        &mut buf,
+        pw,
+        ph,
+        shell.size.w as f32 * scale_f,
+        shell.size.h as f32 * scale_f,
+        &layers,
+        0.0,
+        crate::config::Color([0.0, 0.0, 0.0, 0.0]),
+        theme.radius * scale_f,
+        Some(theme.radius * scale_f),
+    );
+
+    Some(MemoryRenderBuffer::from_slice(
+        &buf,
+        smithay::backend::allocator::Fourcc::Argb8888,
+        (pw, ph),
+        output_scale,
+        Transform::Normal,
+        None,
+    ))
+}
+
 struct HoverGeometry {
-    /// Top-left in logical px, already lifted and centred on the growth.
     position: Point<f64, Logical>,
-    /// Side length after the swell.
     side: i32,
 }
 
@@ -488,8 +718,6 @@ impl HoverGeometry {
         let side = (f64::from(theme.item_size) * (1.0 + (theme.hover_scale - 1.0) * hover_t))
             .round() as i32;
 
-        // Grow about the tile's centre so it swells in place rather than
-        // creeping toward one corner.
         let inset = f64::from(side - theme.item_size) / 2.0;
         Self {
             position: Point::from((
@@ -510,17 +738,13 @@ fn push_tile<R>(
     hover: &HoverGeometry,
     scale: Scale<f64>,
     output_scale: i32,
+    opacity: f32,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
 ) where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Send + Clone + 'static,
 {
-    if dock.tiles[index]
-        .as_ref()
-        .is_none_or(|(cached, _)| *cached != output_scale)
-    {
-        // The icon is looked up here rather than inside `draw_tile` so the
-        // loader's cache is borrowed separately from the item list.
+    if !dock.tiles[index].contains_key(&output_scale) {
         let icon = {
             let item = &dock.items[index];
             let glyph_side = theme.item_size * scale_or_one(output_scale);
@@ -529,16 +753,13 @@ fn push_tile<R>(
                 .map(<[u8]>::to_vec)
         };
         if let Some(buffer) = draw_tile(theme, &dock.items[index], icon.as_deref(), output_scale) {
-            dock.tiles[index] = Some((output_scale, buffer));
+            dock.tiles[index].insert(output_scale, buffer);
         }
     }
-    let Some((_, buffer)) = dock.tiles[index].as_ref() else {
+    let Some(buffer) = dock.tiles[index].get(&output_scale) else {
         return;
     };
 
-    // `src` must be stated explicitly: left as `None` smithay derives it
-    // from the destination size, which samples a larger region instead of
-    // scaling the tile.
     let src = Rectangle::from_size(Size::from((
         f64::from(theme.item_size),
         f64::from(theme.item_size),
@@ -547,7 +768,7 @@ fn push_tile<R>(
         renderer,
         hover.position.to_physical(scale),
         buffer,
-        Some(1.0),
+        Some(opacity),
         Some(src),
         Some(Size::from((hover.side, hover.side))),
         Kind::Unspecified,
@@ -556,11 +777,6 @@ fn push_tile<R>(
     }
 }
 
-/// The dot (or bar) under a running app.
-///
-/// Pinned to the tile's *resting* rect, so it stays put while the tile
-/// lifts away from it on hover — as it does in the design, where `.run` is
-/// positioned against the button rather than riding its transform.
 #[allow(clippy::too_many_arguments)]
 fn push_run_indicator<R>(
     dock: &mut Dock,
@@ -570,6 +786,7 @@ fn push_run_indicator<R>(
     rect: Rectangle<i32, Logical>,
     scale: Scale<f64>,
     output_scale: i32,
+    opacity: f32,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
 ) where
     R: Renderer + ImportAll + ImportMem,
@@ -579,19 +796,15 @@ fn push_run_indicator<R>(
     if !state.running {
         return;
     }
-    let width = if state.focused { RUN_BAR } else { RUN_DOT };
+    let width = dock.run_width(index);
 
-    if dock.runs[index]
-        .as_ref()
-        .is_none_or(|(cached_w, cached_focus, cached_scale, _)| {
-            *cached_w != width || *cached_focus != state.focused || *cached_scale != output_scale
-        })
-    {
+    let key = (width, state.focused, output_scale);
+    if let std::collections::hash_map::Entry::Vacant(entry) = dock.runs.entry(key) {
         if let Some(buffer) = draw_run_indicator(theme, width, state.focused, output_scale) {
-            dock.runs[index] = Some((width, state.focused, output_scale, buffer));
+            entry.insert(buffer);
         }
     }
-    let Some((_, _, _, buffer)) = dock.runs[index].as_ref() else {
+    let Some(buffer) = dock.runs.get(&key) else {
         return;
     };
 
@@ -603,7 +816,7 @@ fn push_run_indicator<R>(
         renderer,
         pos.to_f64().to_physical(scale),
         buffer,
-        Some(1.0),
+        Some(opacity),
         None,
         None,
         Kind::Unspecified,
@@ -623,27 +836,52 @@ fn buffer_from(buf: &[u8], width: i32, height: i32, scale: i32) -> MemoryRenderB
     )
 }
 
-/// The translucent bar plus its hairline and any dividers.
 fn draw_shell(
     theme: &DockTheme,
     items: &[DockItem],
     item_rects: &[Rectangle<i32, Logical>],
     shell: Rectangle<i32, Logical>,
     scale: i32,
+    backdrop: Option<&Backdrop<'_>>,
 ) -> Option<MemoryRenderBuffer> {
     let (w, h) = (shell.size.w, shell.size.h);
     let pixels = usize::try_from(w * scale * h * scale * 4).ok()?;
     let mut buf = vec![0u8; pixels];
 
-    crate::paint::Painter::fill_panel_background(
-        &mut buf,
-        w,
-        h,
-        scale,
-        theme.background,
-        theme.radius,
-        [true; 4],
-    );
+    let has_backdrop = backdrop.is_some_and(|source| {
+        source.blit_into(
+            &mut buf,
+            w * scale,
+            h * scale,
+            theme.radius * scale_f(scale),
+            shell,
+        )
+    });
+
+    if has_backdrop {
+        crate::paint::Painter::fill_rounded_rect_over(
+            &mut buf,
+            w,
+            h,
+            0,
+            0,
+            w,
+            h,
+            scale,
+            theme.background,
+            theme.radius,
+        );
+    } else {
+        crate::paint::Painter::fill_panel_background(
+            &mut buf,
+            w,
+            h,
+            scale,
+            theme.background,
+            theme.radius,
+            [true; 4],
+        );
+    }
     #[allow(clippy::cast_precision_loss)]
     crate::paint::draw_inset_border(
         &mut buf,
@@ -654,7 +892,6 @@ fn draw_shell(
         theme.border,
     );
 
-    // Dividers sit in the gap before the item that asked for one.
     for (index, item) in items.iter().enumerate() {
         if index == 0 || !item.separator_before {
             continue;
@@ -684,12 +921,48 @@ fn scale_or_one(scale: i32) -> i32 {
     scale.max(1)
 }
 
-/// One app tile.
-///
-/// A real themed icon is drawn on its own, the way a desktop icon is meant
-/// to look. Only when none was found does the tile fall back to the
-/// design's gradient plate with a built-in glyph, so an app without an
-/// installed icon still reads as a proper tile rather than a blank.
+#[allow(clippy::cast_precision_loss)]
+fn scale_f(scale: i32) -> f32 {
+    scale as f32
+}
+
+pub struct Backdrop<'a> {
+    pub pixels: &'a [u8],
+    pub width: i32,
+    pub height: i32,
+    pub fractional_scale: f64,
+    pub generation: u64,
+}
+
+impl Backdrop<'_> {
+    fn blit_into(
+        &self,
+        dst: &mut [u8],
+        dst_w: i32,
+        dst_h: i32,
+        radius: f32,
+        rect: Rectangle<i32, Logical>,
+    ) -> bool {
+        #[allow(clippy::cast_possible_truncation)]
+        let to_src = |v: i32| (f64::from(v) * self.fractional_scale).round() as i32;
+        glide_paint::blit_rounded_backdrop(
+            dst,
+            dst_w,
+            dst_h,
+            radius,
+            self.pixels,
+            self.width,
+            self.height,
+            (
+                to_src(rect.loc.x),
+                to_src(rect.loc.y),
+                to_src(rect.size.w).max(1),
+                to_src(rect.size.h).max(1),
+            ),
+        )
+    }
+}
+
 fn draw_tile(
     theme: &DockTheme,
     item: &DockItem,
@@ -725,7 +998,6 @@ fn draw_tile(
     Some(buffer_from(&buf, side, side, scale))
 }
 
-/// The dot (or bar, when focused) under a running app.
 fn draw_run_indicator(
     theme: &DockTheme,
     width: i32,
@@ -739,7 +1011,6 @@ fn draw_run_indicator(
     let color = if focused {
         theme.focused_color
     } else {
-        // `.dash-item.running .run { opacity: .8 }`
         let [r, g, b, a] = theme.running_color.0;
         Color([r, g, b, a * 0.8])
     };
@@ -769,6 +1040,7 @@ impl From<Glyph> for crate::paint::DockGlyph {
             Glyph::Music => Self::Music,
             Glyph::Mail => Self::Mail,
             Glyph::Generic => Self::Generic,
+            Glyph::Grid => Self::Grid,
         }
     }
 }
@@ -799,10 +1071,21 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_dock_is_disabled() {
+    fn a_dock_with_nothing_pinned_still_offers_the_launcher() {
         let dock = Dock::new(&config(0));
-        assert!(!dock.is_enabled());
-        assert_eq!(dock.size(), Size::from((0, 0)));
+        assert!(dock.is_enabled());
+        assert_eq!(dock.items().len(), 1);
+        assert_eq!(dock.action(0), Some(DockAction::OpenLauncher));
+    }
+
+    #[test]
+    fn the_launcher_button_is_always_last() {
+        let dock = Dock::new(&config(3));
+        let last = dock.items().len() - 1;
+        assert_eq!(dock.action(last), Some(DockAction::OpenLauncher));
+        for index in 0..last {
+            assert_eq!(dock.action(index), Some(DockAction::Activate));
+        }
     }
 
     #[test]
@@ -826,10 +1109,10 @@ mod tests {
         let dock = Dock::new(&config(4));
         let shell = dock.rect(area());
         let rects = dock.item_rects(area());
-        assert_eq!(rects.len(), 4);
+        assert_eq!(rects.len(), 5, "four pinned apps plus the launcher");
 
         let theme = DockTheme::default();
-        for pair in rects.windows(2) {
+        for pair in rects[..4].windows(2) {
             assert_eq!(
                 pair[1].loc.x - (pair[0].loc.x + pair[0].size.w),
                 theme.item_gap
@@ -860,6 +1143,50 @@ mod tests {
         let mut leading = config(3);
         leading.items[0].separator_before = true;
         assert_eq!(Dock::new(&leading).size(), Dock::new(&config(3)).size());
+    }
+
+    mod minimize_target {
+        use super::*;
+
+        #[test]
+        fn a_pinned_app_resolves_to_its_own_tile() {
+            let mut config = config(3);
+            config.items[1].app_id = Some("org.example.Editor".to_string());
+            let dock = Dock::new(&config);
+
+            let tile = dock
+                .tile_rect_for_app(area(), "org.example.Editor")
+                .expect("the app is pinned, so it has a tile");
+            assert_eq!(tile, dock.item_rects(area())[1]);
+        }
+
+        #[test]
+        fn the_lookup_ignores_case() {
+            let mut config = config(1);
+            config.items[0].app_id = Some("Alacritty".to_string());
+            let dock = Dock::new(&config);
+            assert!(dock.tile_rect_for_app(area(), "alacritty").is_some());
+        }
+
+        #[test]
+        fn an_app_with_no_tile_resolves_to_nothing() {
+            let dock = Dock::new(&config(2));
+            assert_eq!(dock.tile_rect_for_app(area(), "org.example.Absent"), None);
+        }
+
+        #[test]
+        fn a_running_only_app_still_gets_a_tile_to_fly_to() {
+            let mut dock = Dock::new(&config(1));
+            dock.set_running(&[RunningApp {
+                app_id: "org.example.Editor".to_string(),
+                name: "Editor".to_string(),
+                focused: true,
+            }]);
+            assert!(
+                dock.tile_rect_for_app(area(), "org.example.Editor")
+                    .is_some()
+            );
+        }
     }
 
     mod hit_testing {
@@ -914,19 +1241,21 @@ mod tests {
             let pinned_id = dock.items()[0].app_id.clone();
 
             assert!(dock.set_running(&[app(&pinned_id, true)]));
-            assert_eq!(dock.items().len(), 2, "no tile should be appended");
+            assert_eq!(dock.items().len(), 3, "pinned pair plus the launcher");
             assert!(dock.run[0].running && dock.run[0].focused);
             assert!(!dock.run[1].running);
         }
 
-        /// The reported bug: a window from an app nobody pinned had
-        /// nowhere to appear.
         #[test]
         fn an_unpinned_running_app_gets_its_own_tile() {
             let mut dock = Dock::new(&config(1));
             assert!(dock.set_running(&[app("org.example.Editor", true)]));
 
-            assert_eq!(dock.items().len(), 2);
+            assert_eq!(
+                dock.items().len(),
+                3,
+                "pinned, the new app, then the launcher"
+            );
             let added = &dock.items()[1];
             assert_eq!(added.app_id, "org.example.Editor");
             assert!(added.separator_before, "it must start a new group");
@@ -939,10 +1268,10 @@ mod tests {
         fn closing_the_last_window_removes_a_dynamic_tile_again() {
             let mut dock = Dock::new(&config(1));
             dock.set_running(&[app("org.example.Editor", true)]);
-            assert_eq!(dock.items().len(), 2);
+            assert_eq!(dock.items().len(), 3);
 
             assert!(dock.set_running(&[]));
-            assert_eq!(dock.items().len(), 1, "the tile must go with the window");
+            assert_eq!(dock.items().len(), 2, "the tile must go with the window");
         }
 
         #[test]
@@ -952,7 +1281,7 @@ mod tests {
             let mut dock = Dock::new(&config);
 
             dock.set_running(&[app("alacritty", false)]);
-            assert_eq!(dock.items().len(), 1, "it is the same app");
+            assert_eq!(dock.items().len(), 2, "it is the same app");
             assert!(dock.run[0].running);
         }
 
@@ -967,11 +1296,10 @@ mod tests {
         #[test]
         fn a_dock_with_no_pins_still_shows_running_apps() {
             let mut dock = Dock::new(&config(0));
-            assert!(!dock.is_enabled(), "an empty dock stays hidden");
 
             dock.set_running(&[app("org.example.Editor", true)]);
-            assert!(dock.is_enabled(), "a running app should bring it back");
-            assert_eq!(dock.items().len(), 1);
+            assert_eq!(dock.items().len(), 2, "the app, then the launcher");
+            assert_eq!(dock.items()[0].app_id, "org.example.Editor");
             assert!(
                 !dock.items()[0].separator_before,
                 "nothing to separate it from"
@@ -990,7 +1318,7 @@ mod tests {
         fn a_hover_on_a_vanished_tile_is_dropped() {
             let mut dock = Dock::new(&config(1));
             dock.set_running(&[app("org.example.Editor", false)]);
-            dock.set_hover(Some(1));
+            dock.set_hover(Some(dock.items().len() - 2));
 
             dock.set_running(&[]);
             assert_eq!(

@@ -14,7 +14,7 @@ use crate::{config::DecorationTheme, window::GlideWindow};
 
 pub use header::HeaderBar;
 pub use input::Decoration;
-pub use render::{frame_buffers, shadow_and_border_buffer};
+pub use render::{frame_buffers, shadow_and_border_buffer, shadow_and_border_fade};
 
 #[cfg(test)]
 use crate::grabs::resize_grab::ResizeEdge;
@@ -29,49 +29,32 @@ pub const BUTTON_SIZE: i32 = 26;
 pub const BUTTON_PAD_X: i32 = glide_theme::spacing::SP2;
 pub const BUTTON_PAD_Y: i32 = 11;
 
-/// Width of the maximize/close *hit* zones, distinct from `BUTTON_SIZE`
-/// (their *painted* size). Spans the whole titlebar height and reaches the
-/// strip's own left/right edge, per spec §16's 28x28 minimum pointer
-/// target — Fitts's-law-friendly, matches how every mainstream desktop
-/// treats its corner window controls.
 pub const BUTTON_HIT_WIDTH: i32 = 34;
 
 pub const RESIZE_BORDER: i32 = 8;
 
 const TITLE_PADDING: i32 = glide_theme::spacing::SP3;
 
-/// Fixed popover width — spec §12.1's mockup (`.win-context-menu { width:
-/// 224px }`). Computed once at open time, not from content, so the menu
-/// never has to guess its own size from text it hasn't shaped yet (the
-/// bug that used to leave the very first right-click landing flush right
-/// regardless of cursor position — see `open_menu_at` in header.rs).
 const MENU_WIDTH: i32 = 224;
 
-/// Padding between the popover's own edge and its row stack — spec
-/// §11.6/12.1: `.menu { padding: 6px }`.
 const MENU_CONTAINER_PADDING: i32 = 6;
 
-/// Row height — spec's mockup renders `.win-context-menu .menu-item` at
-/// the compositor's titlebar height today only by coincidence; the design
-/// system's own menu rows (`.menu-item`) are 34px, not 48.
 const MENU_ROW_HEIGHT: i32 = 34;
 
 const MENU_PADDING: i32 = glide_theme::spacing::SP3;
 
-/// Row radius — spec §7: `--r-2`, the "control" step (the same as a
-/// button or input), distinct from the popover's own `--r-3` container
-/// radius.
 const MENU_CORNER_RADIUS: f32 = glide_theme::shape::R2;
 
-/// Popover container radius — spec §7: `--r-3`, the "container" step
-/// (card, menu, window).
 const MENU_CONTAINER_RADIUS: f32 = glide_theme::shape::R3;
 
-/// Idle (unfocused) window controls read as this fraction of their normal
-/// opacity — spec §12.2/12.3: `.win.idle .wctl button { opacity: .45 }`.
 const IDLE_BUTTON_OPACITY: f32 = 0.45;
 
-const BUTTON_HOVER_ANIM: std::time::Duration = glide_theme::motion::T1;
+pub(crate) const DOUBLE_CLICK_MS: u32 = 400;
+pub(crate) const DOUBLE_CLICK_SLOP: f64 = 6.0;
+
+fn button_hover_anim() -> std::time::Duration {
+    glide_theme::motion::t2()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BoxDecoKey {
@@ -89,16 +72,60 @@ pub(crate) struct BoxDecoCache {
     pub(crate) buf: MemoryRenderBuffer,
 }
 
+#[derive(Debug)]
+pub(crate) struct BoxDecoFade {
+    pub(crate) buf: MemoryRenderBuffer,
+    pub(crate) started: std::time::Instant,
+}
+
+pub(crate) fn focus_fade() -> std::time::Duration {
+    glide_theme::motion::t3()
+}
+
+impl BoxDecoFade {
+    pub(crate) fn alpha(&self) -> Option<f32> {
+        let duration = focus_fade();
+        let elapsed = self.started.elapsed();
+        if duration.is_zero() || elapsed >= duration {
+            return None;
+        }
+        let t = glide_theme::motion::E_IO.ease_f64(elapsed.as_secs_f64() / duration.as_secs_f64());
+        #[allow(clippy::cast_possible_truncation)]
+        Some((1.0 - t) as f32)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DecorationState {
     pub header: HeaderBar,
     pub(crate) box_deco: Option<BoxDecoCache>,
+    pub(crate) box_deco_fade: Option<BoxDecoFade>,
 }
 
 pub struct DecorationBuffer {
     pub buf: MemoryRenderBuffer,
     pub offset: Point<i32, Logical>,
+    pub alpha: f32,
+    pub scale: Option<f64>,
 }
+
+impl DecorationBuffer {
+    fn plain(buf: MemoryRenderBuffer, offset: Point<i32, Logical>) -> Self {
+        Self {
+            buf,
+            offset,
+            alpha: 1.0,
+            scale: None,
+        }
+    }
+}
+
+pub(crate) fn menu_open_anim() -> std::time::Duration {
+    glide_theme::motion::t2()
+}
+
+pub(crate) const MENU_OPEN_SCALE: f64 = 0.94;
+pub(crate) const MENU_OPEN_RISE: f64 = -6.0;
 
 impl GlideWindow {
     pub fn decoration_state(&self) -> Ref<'_, DecorationState> {
@@ -133,6 +160,12 @@ impl GlideWindow {
         self.user_data()
             .get::<RefCell<DecorationState>>()
             .and_then(|cell| cell.try_borrow_mut().ok())
+    }
+
+    pub fn set_dragging(&self, dragging: bool) {
+        if let Some(mut state) = self.try_decoration_state_mut() {
+            state.header.dragging = dragging;
+        }
     }
 
     pub fn sync_decoration(
@@ -256,18 +289,27 @@ mod tests {
     mod hover_animation {
         use super::*;
 
+        const ON_MAXIMIZE: (f64, f64) = (16.0, 16.0);
+        const ON_CLOSE: (f64, f64) = (790.0, 16.0);
+        const ON_DRAG: (f64, f64) = (400.0, 16.0);
+
+        fn settle() {
+            std::thread::sleep(button_hover_anim() + std::time::Duration::from_millis(30));
+        }
+
         #[test]
         fn nothing_hovered_is_always_settled() {
             let mut h = header();
             assert!(!h.is_hover_animating());
-            assert_eq!(h.button_hover_progress(None), 1.0);
+            assert_eq!(h.button_hover_progress(), 1.0);
             assert!(!h.is_hover_animating());
         }
 
         #[test]
         fn hovering_a_zone_starts_the_fade_in_below_full_progress() {
             let mut h = header();
-            let t = h.button_hover_progress(Some(HitZone::Maximize));
+            h.pointer_enter(point(ON_MAXIMIZE.0, ON_MAXIMIZE.1));
+            let t = h.button_hover_progress();
             assert!(
                 (0.0..1.0).contains(&t),
                 "expected a fresh hover to be mid fade-in, got {t}"
@@ -278,20 +320,21 @@ mod tests {
         #[test]
         fn progress_settles_to_one_after_the_animation_duration() {
             let mut h = header();
-            h.button_hover_progress(Some(HitZone::Close));
-            std::thread::sleep(BUTTON_HOVER_ANIM + std::time::Duration::from_millis(30));
-            assert_eq!(h.button_hover_progress(Some(HitZone::Close)), 1.0);
+            h.pointer_enter(point(ON_CLOSE.0, ON_CLOSE.1));
+            settle();
+            assert_eq!(h.button_hover_progress(), 1.0);
             assert!(!h.is_hover_animating());
         }
 
         #[test]
         fn switching_the_hovered_zone_restarts_the_fade_with_no_crossfade() {
             let mut h = header();
-            h.button_hover_progress(Some(HitZone::Maximize));
-            std::thread::sleep(BUTTON_HOVER_ANIM + std::time::Duration::from_millis(30));
-            assert_eq!(h.button_hover_progress(Some(HitZone::Maximize)), 1.0);
+            h.pointer_enter(point(ON_MAXIMIZE.0, ON_MAXIMIZE.1));
+            settle();
+            assert_eq!(h.button_hover_progress(), 1.0);
 
-            let t = h.button_hover_progress(Some(HitZone::Close));
+            h.pointer_enter(point(ON_CLOSE.0, ON_CLOSE.1));
+            let t = h.button_hover_progress();
             assert!(
                 (0.0..1.0).contains(&t),
                 "a different target must restart the fade, got {t}"
@@ -301,22 +344,228 @@ mod tests {
         #[test]
         fn hover_leaving_every_button_stops_the_animation_immediately() {
             let mut h = header();
-            h.button_hover_progress(Some(HitZone::Maximize));
+            h.pointer_enter(point(ON_MAXIMIZE.0, ON_MAXIMIZE.1));
             assert!(h.is_hover_animating());
 
-            assert_eq!(h.button_hover_progress(None), 1.0);
+            h.pointer_leave();
+            assert_eq!(h.button_hover_progress(), 1.0);
             assert!(!h.is_hover_animating());
+        }
+
+        #[test]
+        fn the_drag_strip_is_not_a_hover_target() {
+            let mut h = header();
+            h.pointer_enter(point(ON_DRAG.0, ON_DRAG.1));
+            assert_eq!(h.hovered_zone(), None);
+            assert!(
+                !h.is_hover_animating(),
+                "sweeping the drag strip must not arm a button fade — that would \
+                 spend the whole animation repainting for no visible change"
+            );
+        }
+
+        #[test]
+        fn the_hover_target_is_armed_by_input_not_by_drawing() {
+            let mut h = header();
+            let p = crate::paint::Painter::new(14.0, None);
+            h.redraw(&p);
+            assert!(
+                !h.is_hover_animating(),
+                "drawing must never start an animation on its own"
+            );
+
+            h.pointer_enter(point(ON_MAXIMIZE.0, ON_MAXIMIZE.1));
+            assert!(h.is_hover_animating());
+        }
+    }
+
+    mod menu_open_animation {
+        use super::*;
+
+        #[test]
+        fn a_closed_menu_reports_settled() {
+            let h = header();
+            assert!((h.menu_open_progress() - 1.0).abs() < f64::EPSILON);
+            assert!(!h.is_menu_animating());
+        }
+
+        #[test]
+        fn opening_the_menu_starts_it_partway_and_keeps_the_frame_pump_alive() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&right_press());
+
+            assert!(h.menu_open);
+            let t = h.menu_open_progress();
+            assert!(
+                (0.0..1.0).contains(&t),
+                "a freshly opened menu must be mid-transition, got {t}"
+            );
+            assert!(h.is_menu_animating());
+            assert!(
+                h.is_hover_animating(),
+                "the menu transition has to keep scheduling repaints, or it \
+                 would stall at whatever frame happened to be drawn first"
+            );
+        }
+
+        #[test]
+        fn it_settles_after_the_animation_duration() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&right_press());
+
+            std::thread::sleep(menu_open_anim() + std::time::Duration::from_millis(30));
+            assert!((h.menu_open_progress() - 1.0).abs() < f64::EPSILON);
+            assert!(!h.is_menu_animating());
+        }
+
+        #[test]
+        fn closing_the_menu_clears_the_transition_so_reopening_replays_it() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&right_press());
+            std::thread::sleep(menu_open_anim() + std::time::Duration::from_millis(30));
+
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&release());
+            assert!(!h.menu_open);
+            assert_eq!(h.menu_opened_at, None);
+
+            h.on_button(&right_press());
+            assert!(
+                h.menu_open_progress() < 1.0,
+                "a second open must animate too"
+            );
+        }
+
+        #[test]
+        #[allow(clippy::assertions_on_constants)]
+        fn the_opening_menu_starts_smaller_and_higher_than_it_lands() {
+            assert!(MENU_OPEN_SCALE < 1.0);
+            assert!(MENU_OPEN_RISE < 0.0, "the panel drops into place");
+        }
+    }
+
+    mod titlebar_double_click {
+        use super::*;
+
+        fn press_at(time: u32) -> ButtonEvent {
+            ButtonEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                button: 0x110,
+                state: ButtonState::Pressed,
+            }
+        }
+
+        #[test]
+        fn a_second_press_on_the_strip_toggles_maximize() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+
+            assert_eq!(h.on_button(&press_at(0)), Some(DecorationAction::StartMove));
+            assert_eq!(
+                h.on_button(&press_at(180)),
+                Some(DecorationAction::ToggleMaximize)
+            );
+        }
+
+        #[test]
+        fn a_slow_second_press_is_just_another_drag() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+
+            h.on_button(&press_at(0));
+            assert_eq!(
+                h.on_button(&press_at(DOUBLE_CLICK_MS + 1)),
+                Some(DecorationAction::StartMove)
+            );
+        }
+
+        #[test]
+        fn a_second_press_somewhere_else_is_just_another_drag() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&press_at(0));
+
+            h.pointer_enter(point(400.0 + DOUBLE_CLICK_SLOP + 2.0, 16.0));
+            assert_eq!(
+                h.on_button(&press_at(100)),
+                Some(DecorationAction::StartMove)
+            );
+        }
+
+        #[test]
+        fn a_third_press_does_not_toggle_again_without_a_fresh_pair() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+
+            h.on_button(&press_at(0));
+            assert_eq!(
+                h.on_button(&press_at(100)),
+                Some(DecorationAction::ToggleMaximize)
+            );
+            assert_eq!(
+                h.on_button(&press_at(200)),
+                Some(DecorationAction::StartMove),
+                "the pair was consumed; this press starts a new one"
+            );
+        }
+
+        #[test]
+        fn a_button_press_between_the_two_breaks_the_pair() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&press_at(0));
+
+            h.pointer_enter(point(16.0, 16.0));
+            h.on_button(&press_at(50));
+
+            h.pointer_enter(point(400.0, 16.0));
+            assert_eq!(
+                h.on_button(&press_at(100)),
+                Some(DecorationAction::StartMove)
+            );
+        }
+
+        #[test]
+        fn a_timestamp_that_goes_backwards_is_not_a_double_click() {
+            let mut h = header();
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&press_at(1000));
+            assert_eq!(
+                h.on_button(&press_at(10)),
+                Some(DecorationAction::StartMove),
+                "a wrapped or reordered timestamp must not read as an instant second click"
+            );
+        }
+    }
+
+    mod drag_state_layer {
+        use super::*;
+
+        #[test]
+        fn a_drag_lightens_the_titlebar_and_releasing_restores_it() {
+            let mut h = header();
+            let p = crate::paint::Painter::new(14.0, None);
+            assert!(h.redraw(&p));
+            assert!(!h.redraw(&p));
+
+            h.dragging = true;
+            assert!(
+                h.redraw(&p),
+                "the drag state layer has to actually change what is drawn"
+            );
+
+            h.dragging = false;
+            assert!(h.redraw(&p), "and releasing has to undo it");
         }
     }
 
     mod shadow_margin_tests {
         use super::*;
 
-        /// `shadow_margin` must cover the *actual* overhang of the
-        /// shadow+border buffer — `shadow_fade_margin(size) + border` —
-        /// not just the raw configured size, or `SpaceElement::bbox`
-        /// under-reports the decorated footprint and moving a window
-        /// leaves stale shadow pixels behind.
         #[test]
         fn covers_the_fade_margin_of_the_larger_shadow_size_plus_the_border() {
             let mut h = header();
@@ -653,9 +902,6 @@ mod tests {
 
         #[test]
         fn zone_boundaries_are_exact() {
-            // The hit zone (BUTTON_HIT_WIDTH = 34) is wider than the painted
-            // button (BUTTON_SIZE = 26) and reaches the strip's own edge —
-            // see `BUTTON_HIT_WIDTH`'s doc comment in mod.rs.
             let h = header();
             assert_eq!(h.zone_at(0.0, 16.0), HitZone::Maximize);
             assert_eq!(h.zone_at(33.999, 16.0), HitZone::Maximize);
@@ -667,10 +913,6 @@ mod tests {
 
         #[test]
         fn button_hit_zones_span_the_full_titlebar_height() {
-            // Unlike the painted button (vertically centred via
-            // BUTTON_PAD_Y), the hit zone covers the whole strip height —
-            // there is no dead vertical band above or below it to fall
-            // through to Drag.
             let h = header();
             assert_eq!(h.zone_at(16.0, 0.0), HitZone::Maximize, "top of the strip");
             assert_eq!(
@@ -698,10 +940,6 @@ mod tests {
 
         #[test]
         fn row_zero_starts_below_the_strip() {
-            // header() fixture: height=32, menu_x=700, menu_width=100.
-            // Rows start at height + MENU_CONTAINER_PADDING (32+6=38) and
-            // are MENU_ROW_HEIGHT (34) tall each: row0 [38,72), row1
-            // [72,106), row2 [106,140), then nothing.
             let mut h = header();
             h.menu_open = true;
 
@@ -897,7 +1135,7 @@ mod tests {
         use crate::paint::Painter;
 
         fn painter() -> Painter {
-            Painter::new(14.0)
+            Painter::new(14.0, None)
         }
 
         #[test]
@@ -991,7 +1229,7 @@ mod tests {
 
             assert!(h.redraw(&p), "first draw with a fresh hover fade-in");
 
-            std::thread::sleep(BUTTON_HOVER_ANIM + std::time::Duration::from_millis(30));
+            std::thread::sleep(button_hover_anim() + std::time::Duration::from_millis(30));
             assert!(
                 h.redraw(&p),
                 "the fade progressed since the last draw, must redraw once more"

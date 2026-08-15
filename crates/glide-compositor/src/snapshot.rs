@@ -1,20 +1,3 @@
-//! Animations that play out on a captured picture of a window.
-//!
-//! Two things need this. A **closing** window has to keep being drawn
-//! after its `wl_surface` is gone, and by then there is nothing left to
-//! draw from: Glide, like every smithay compositor, rebuilds its render
-//! elements each frame out of live surface state rather than keeping a
-//! retained scene graph the way Mutter's Clutter actors or `KWin`'s
-//! ref-counted `deleted` windows do. An **un-maximizing** window has the
-//! opposite problem — it is still very much alive, but the client resizes
-//! asynchronously, so there is no moment at which the compositor can
-//! interpolate its real geometry smoothly.
-//!
-//! Both are solved the same way: capture the window as it looks right
-//! now, then animate that still picture from where it was to where it is
-//! going while the live window takes over underneath. This is the
-//! approach niri and Hyprland take, for the same reasons.
-
 use std::time::{Duration, Instant};
 
 use smithay::{
@@ -34,40 +17,36 @@ use glide_theme::motion::CubicBezier;
 
 use crate::window::GlideWindow;
 
-/// `.dwin.anim-fast` — the design closes a window over `--t-2`.
-const CLOSE_DURATION: Duration = glide_theme::motion::T2;
+fn close_duration() -> Duration {
+    glide_theme::motion::t2()
+}
 
-/// `closeWin()` animates to `transform: scale(.94)`.
 const CLOSE_END_SCALE: f64 = 0.94;
 
-/// `.dwin.anim-geo` — geometry changes run over `--t-3`.
-const MORPH_DURATION: Duration = glide_theme::motion::T3;
+fn morph_duration() -> Duration {
+    glide_theme::motion::t3()
+}
 
-/// Upper bound on simultaneously animating snapshots.
-///
-/// Each pins an offscreen texture for the length of its animation, so a
-/// burst could otherwise spike video memory. Beyond this the oldest is
-/// dropped, which just means it finishes instantly — the behaviour
-/// everything had before any of this existed.
-const MAX_CONCURRENT: usize = 8;
+fn flight_duration() -> Duration {
+    glide_theme::motion::t4()
+}
 
-/// The element type a snapshot contributes.
+pub fn workspace_duration() -> Duration {
+    glide_theme::motion::t4()
+}
+
+const MAX_CONCURRENT: usize = 24;
+
 pub type SnapshotRenderElement = TextureRenderElement<GlesTexture>;
 
-/// One captured window being animated from one rect to another.
 #[derive(Debug)]
 struct Snapshot {
     id: Id,
     texture: GlesTexture,
-    /// What the texture covers, in logical px: the window's frame plus
-    /// `margin` of padding on every side for its shadow.
     natural: Size<i32, Logical>,
-    /// Padding baked into `natural` around the frame.
     margin: i32,
-    /// Scale the texture was captured at.
     buffer_scale: i32,
 
-    /// Frame rect at the start and end of the animation.
     from: Rectangle<i32, Logical>,
     to: Rectangle<i32, Logical>,
     from_alpha: f32,
@@ -92,7 +71,6 @@ impl Snapshot {
         self.started.elapsed() >= self.duration
     }
 
-    /// Where the frame sits, and how opaque it is, right now.
     fn sample(&self) -> (Rectangle<i32, Logical>, f32) {
         let t = self.eased();
         (
@@ -102,8 +80,6 @@ impl Snapshot {
     }
 }
 
-/// Interpolates a frame rect. Split out so the geometry can be tested
-/// without a GL context to build a texture from.
 fn lerp_rect(
     from: Rectangle<i32, Logical>,
     to: Rectangle<i32, Logical>,
@@ -127,8 +103,6 @@ fn lerp_alpha(from: f32, to: f32, t: f64) -> f32 {
     alpha.clamp(0.0, 1.0)
 }
 
-/// Where a closing window's frame ends up: 94% of its size, anchored at
-/// the top-left corner because `.dwin` sets `transform-origin: top left`.
 fn close_target(from: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     #[allow(clippy::cast_possible_truncation)]
     let shrunk = Size::from((
@@ -138,22 +112,12 @@ fn close_target(from: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     Rectangle::new(from.loc, shrunk)
 }
 
-/// Every snapshot currently animating.
 #[derive(Debug, Default)]
 pub struct Snapshots {
     entries: Vec<Snapshot>,
 }
 
 impl Snapshots {
-    /// Captures `window` and shrinks it away, per the design's `closeWin`.
-    ///
-    /// `target_frame` is where the window's frame sits on screen right
-    /// now — normally its real geometry, but the preview slot when it is
-    /// closed from the overview.
-    ///
-    /// Must be called while the window's surfaces are still alive. Returns
-    /// whether a capture was taken; on failure the caller should drop the
-    /// window as it always did.
     pub fn push_close(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -169,19 +133,13 @@ impl Snapshots {
             close_target(target_frame),
             1.0,
             0.0,
-            CLOSE_DURATION,
+            close_duration(),
             glide_theme::motion::E_IO,
             scale,
             output_scale,
         )
     }
 
-    /// Captures `window` as it looks now and morphs that picture into
-    /// `to`, fading out as the live window settles into place underneath.
-    ///
-    /// Used when a window leaves maximized or fullscreen: the client
-    /// resizes on its own schedule, so its real geometry cannot be
-    /// interpolated — the snapshot covers the gap.
     pub fn push_morph(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -198,8 +156,54 @@ impl Snapshots {
             to,
             1.0,
             0.0,
-            MORPH_DURATION,
+            morph_duration(),
             glide_theme::motion::E_OUT,
+            scale,
+            output_scale,
+        )
+    }
+
+    pub fn push_slide(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &GlideWindow,
+        from: Rectangle<i32, Logical>,
+        to: Rectangle<i32, Logical>,
+        scale: Scale<f64>,
+        output_scale: i32,
+    ) -> bool {
+        self.push(
+            renderer,
+            window,
+            from,
+            to,
+            1.0,
+            1.0,
+            workspace_duration(),
+            glide_theme::motion::E_OUT,
+            scale,
+            output_scale,
+        )
+    }
+
+    pub fn push_flight(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &GlideWindow,
+        from: Rectangle<i32, Logical>,
+        to: Rectangle<i32, Logical>,
+        scale: Scale<f64>,
+        output_scale: i32,
+    ) -> bool {
+        self.push(
+            renderer,
+            window,
+            from,
+            to,
+            1.0,
+            0.0,
+            flight_duration(),
+            glide_theme::motion::E_IO,
             scale,
             output_scale,
         )
@@ -244,8 +248,6 @@ impl Snapshots {
         true
     }
 
-    /// Drops snapshots whose animation has run its course. Returns whether
-    /// any are still going.
     pub fn tick(&mut self) -> bool {
         self.entries.retain(|entry| !entry.is_finished());
         !self.entries.is_empty()
@@ -256,12 +258,10 @@ impl Snapshots {
         self.entries.iter().any(|entry| !entry.is_finished())
     }
 
-    /// Forgets every capture, so no texture outlives its GL context.
     pub fn clear(&mut self) {
         self.entries.clear();
     }
 
-    /// Elements for the animating snapshots, front-to-back.
     #[must_use]
     pub fn render_elements(
         &self,
@@ -273,31 +273,31 @@ impl Snapshots {
             .map(|entry| {
                 let (frame, alpha) = entry.sample();
 
-                // The capture is `frame + margin` on every side, so the
-                // padding has to shrink by the same factor as the frame.
                 let captured_frame_width = entry.natural.w - entry.margin * 2;
-                let factor = if captured_frame_width > 0 {
+                let captured_frame_height = entry.natural.h - entry.margin * 2;
+                let factor_x = if captured_frame_width > 0 {
                     f64::from(frame.size.w) / f64::from(captured_frame_width)
                 } else {
                     1.0
                 };
+                let factor_y = if captured_frame_height > 0 {
+                    f64::from(frame.size.h) / f64::from(captured_frame_height)
+                } else {
+                    1.0
+                };
                 #[allow(clippy::cast_possible_truncation)]
-                let scaled_margin = (f64::from(entry.margin) * factor).round() as i32;
+                let margin_x = (f64::from(entry.margin) * factor_x).round() as i32;
+                #[allow(clippy::cast_possible_truncation)]
+                let margin_y = (f64::from(entry.margin) * factor_y).round() as i32;
                 #[allow(clippy::cast_possible_truncation)]
                 let display = Size::from((
-                    (f64::from(entry.natural.w) * factor).round() as i32,
-                    (f64::from(entry.natural.h) * factor).round() as i32,
+                    (f64::from(entry.natural.w) * factor_x).round() as i32,
+                    (f64::from(entry.natural.h) * factor_y).round() as i32,
                 ));
-                let location =
-                    Point::from((frame.loc.x - scaled_margin, frame.loc.y - scaled_margin))
-                        .to_f64()
-                        .to_physical(scale);
+                let location = Point::from((frame.loc.x - margin_x, frame.loc.y - margin_y))
+                    .to_f64()
+                    .to_physical(scale);
 
-                // `src` must be spelled out. Left as `None` it defaults to
-                // the *destination* size, which makes the element sample a
-                // larger region instead of scaling the texture — the same
-                // smithay footgun that made the wallpaper slide instead of
-                // zooming.
                 let src = Rectangle::from_size(Size::from((
                     f64::from(entry.natural.w),
                     f64::from(entry.natural.h),
@@ -313,7 +313,6 @@ impl Snapshots {
                     Some(alpha),
                     Some(src),
                     Some(display),
-                    // Translucent throughout, so it never occludes.
                     None,
                     Kind::Unspecified,
                 )
@@ -322,15 +321,12 @@ impl Snapshots {
     }
 }
 
-/// A captured window, plus the margin left around its frame so the shadow
-/// made it into the texture.
 struct Capture {
     texture: GlesTexture,
     size: Size<i32, Logical>,
     margin: i32,
 }
 
-/// Renders `window` — chrome, shadow and content — into a fresh texture.
 fn capture_window(
     renderer: &mut GlesRenderer,
     window: &GlideWindow,
@@ -354,8 +350,6 @@ fn capture_window(
         .ok()?;
     let mut target = renderer.bind(&mut texture).ok()?;
 
-    // `render_elements` is handed the *content* origin; it derives the
-    // frame origin from that by stepping back over the titlebar.
     let content_origin = Point::from((margin, margin + header)).to_physical_precise_round(scale);
     let elements: Vec<crate::window::GlideWindowRenderElement<GlesRenderer>> =
         smithay::backend::renderer::element::AsRenderElements::render_elements(
@@ -405,8 +399,6 @@ mod tests {
             assert_eq!(lerp_rect(from, to, 1.0), to);
         }
 
-        /// Leaving maximized moves *and* resizes, so both corners of the
-        /// rect have to travel — not just its size.
         #[test]
         fn position_and_size_interpolate_together() {
             let from = rect(0, 0, 1920, 1080);
@@ -435,7 +427,6 @@ mod tests {
     mod close {
         use super::*;
 
-        /// `closeWin()` shrinks to 94% about the top-left corner.
         #[test]
         fn it_shrinks_about_the_top_left_corner() {
             let from = rect(40, 60, 200, 100);
@@ -448,15 +439,13 @@ mod tests {
 
         #[test]
         fn closing_is_quicker_than_a_geometry_morph() {
-            assert!(CLOSE_DURATION < MORPH_DURATION);
+            assert!(close_duration() < morph_duration());
         }
     }
 
     mod morph {
         use super::*;
 
-        /// The morph rides `--e-out`, which is front-loaded: most of the
-        /// travel is over early and the tail is a settle.
         #[test]
         fn the_morph_is_front_loaded() {
             let travelled = glide_theme::motion::E_OUT.ease_f64(0.25);
@@ -466,9 +455,6 @@ mod tests {
             );
         }
 
-        /// A window leaving maximized has to end up exactly where the
-        /// layout put it, or the live window would visibly jump when the
-        /// snapshot finishes.
         #[test]
         fn a_morph_lands_exactly_on_the_layouts_rect() {
             let to = rect(400, 300, 800, 600);
@@ -476,9 +462,6 @@ mod tests {
         }
     }
 
-    /// Where a restored window lands under the pointer. Mirrors the maths
-    /// in `GlideState::restore_for_move`, which cannot be exercised
-    /// directly without a full compositor.
     mod grip {
         use super::*;
 
@@ -501,18 +484,13 @@ mod tests {
         fn grabbing_near_an_edge_keeps_the_pointer_near_that_edge() {
             let maximized = rect(0, 0, 1920, 1080);
 
-            // 10% in from the left: the restored window's left edge should
-            // sit just left of the pointer, not leap across the screen.
             let left = restored_x(maximized, 192.0, 800);
             assert_eq!(left, 192 - 80);
 
-            // 90% across: the pointer stays near the right edge.
             let right = restored_x(maximized, 1728.0, 800);
             assert_eq!(right, 1728 - 720);
         }
 
-        /// The pointer must always end up somewhere over the restored
-        /// window, whichever part of a maximized titlebar was grabbed.
         #[test]
         fn the_pointer_always_lands_on_the_restored_window() {
             let maximized = rect(0, 0, 1920, 1080);

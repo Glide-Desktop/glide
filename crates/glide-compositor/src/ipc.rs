@@ -313,10 +313,28 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
         },
         Request::Reload => {
             crate::config::Config::load_or_default().apply_to_state(state);
+            state.queue_redraw();
             Response::Ok
         }
         Request::Exec { command } => spawn_command(&command),
         Request::Subscribe => Response::Subscribed,
+        Request::SetDpms { on } => {
+            state.set_outputs_blanked(!on);
+            Response::Ok
+        }
+        Request::CycleLayout => {
+            state.cycle_keyboard_layout();
+            match state.active_layout() {
+                Some((index, name)) => Response::Layout { index, name },
+                None => Response::Ok,
+            }
+        }
+        Request::GetLayout => match state.active_layout() {
+            Some((index, name)) => Response::Layout { index, name },
+            None => Response::Error {
+                message: "no keyboard".to_string(),
+            },
+        },
     }
 }
 

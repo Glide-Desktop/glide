@@ -1,16 +1,3 @@
-//! `wlr-screencopy-unstable-v1` — letting clients copy the screen.
-//!
-//! This is what `grim`, `wf-recorder`, `wl-screenrec` and
-//! `xdg-desktop-portal-wlr` speak, so implementing it is what turns on
-//! screenshots, screen recording and screen sharing at once. Smithay ships
-//! the newer `ext-image-copy-capture-v1` but not this one, so the protocol
-//! is wired up by hand here.
-//!
-//! A capture cannot be served the moment a client asks for it: the frame
-//! has to be composited first. Requests are therefore queued per output
-//! and drained by the renderer right after it draws, in
-//! [`GlideState::serve_screencopy`].
-
 use std::time::Duration;
 
 use smithay::{
@@ -30,34 +17,21 @@ use smithay::{
 
 use crate::state::GlideState;
 
-/// Protocol version advertised. 3 adds `buffer_done`/`linux_dmabuf`; we
-/// announce only shm formats, which clients handle fine.
 const VERSION: u32 = 3;
 
-/// A capture a client has asked for and paid for with a buffer, waiting
-/// for the next composited frame.
 #[derive(Debug)]
 pub struct PendingCapture {
     pub frame: ZwlrScreencopyFrameV1,
     pub buffer: WlBuffer,
     pub output: Output,
-    /// Region of the output to copy, in physical px.
     pub region: Rectangle<i32, Physical>,
-    /// Whether the client asked for damage tracking (`copy_with_damage`).
     pub with_damage: bool,
 }
 
-/// Per-frame state stored on the protocol object.
-///
-/// `output` is `None` for a frame we already failed — the protocol still
-/// requires a live object the client can destroy, so it gets one that
-/// refuses to copy.
 #[derive(Debug)]
 pub struct FrameState {
     output: Option<Output>,
     region: Rectangle<i32, Physical>,
-    /// Set once `copy` has been called, so a second copy is a protocol
-    /// error rather than a silent double capture.
     used: std::sync::atomic::AtomicBool,
 }
 
@@ -88,7 +62,6 @@ impl ScreencopyState {
         }
     }
 
-    /// Takes every capture queued for `output`.
     pub fn take_for(&mut self, output: &Output) -> Vec<PendingCapture> {
         let mut taken = Vec::new();
         let mut index = 0;
@@ -138,8 +111,6 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for GlideState {
                 output,
             } => {
                 let Some(output) = state.output_for_resource(&output) else {
-                    // Nothing sensible to capture; hand the client a frame
-                    // object it can destroy rather than killing it.
                     let frame = data_init.init(frame, FrameState::orphan());
                     frame.failed();
                     return;
@@ -163,7 +134,6 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for GlideState {
                 };
                 let full = output_rect(&output);
                 let requested = Rectangle::new((x, y).into(), (width, height).into());
-                // Clamp: a client may ask for more than exists.
                 let Some(region) = full.intersection(requested) else {
                     let frame = data_init.init(frame, FrameState::orphan());
                     frame.failed();
@@ -171,8 +141,6 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for GlideState {
                 };
                 (frame, output, region)
             }
-            // `Destroy` needs nothing beyond the object going away, and
-            // the protocol is versioned so unknown requests are ignored.
             _ => return,
         };
 
@@ -191,8 +159,6 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for GlideState {
             },
         );
 
-        // Advertise what we can fill. Argb8888 matches the renderer's
-        // readback format, so no conversion is needed on our side.
         #[allow(clippy::cast_sign_loss)]
         let stride = (region.size.w * 4) as u32;
         #[allow(clippy::cast_sign_loss)]
@@ -252,8 +218,6 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameState> for GlideState {
             return;
         }
 
-        // Queued rather than served now: the frame has to be composited
-        // before there is anything to copy.
         state.screencopy.pending.push(PendingCapture {
             frame: frame.clone(),
             buffer,
@@ -277,7 +241,6 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameState> for GlideState {
     }
 }
 
-/// The output's full area in physical px.
 fn output_rect(output: &Output) -> Rectangle<i32, Physical> {
     let size = output
         .current_mode()
@@ -285,7 +248,6 @@ fn output_rect(output: &Output) -> Rectangle<i32, Physical> {
     Rectangle::new((0, 0).into(), size)
 }
 
-/// Whether a client's buffer can actually receive the capture.
 fn buffer_is_suitable(buffer: &WlBuffer, region: Rectangle<i32, Physical>) -> bool {
     smithay::wayland::shm::with_buffer_contents(buffer, |_ptr, len, data| {
         let expected_stride = region.size.w * 4;
@@ -304,19 +266,12 @@ fn buffer_is_suitable(buffer: &WlBuffer, region: Rectangle<i32, Physical>) -> bo
 
 impl GlideState {
     fn output_for_resource(&self, resource: &WlOutput) -> Option<Output> {
-        // `Output::owns` matches a `wl_output` resource back to the output
-        // that created it, across every client that bound it.
         self.space
             .outputs()
             .find(|output| output.owns(resource))
             .cloned()
     }
 
-    /// Fills every queued capture for `output` from `pixels`, the
-    /// just-composited frame in Argb8888 at `size`.
-    ///
-    /// Called by the renderer immediately after it reads the frame back,
-    /// so clients receive exactly what was put on screen.
     pub fn serve_screencopy(
         &mut self,
         output: &Output,
@@ -362,8 +317,6 @@ impl GlideState {
     }
 }
 
-/// Copies `region` out of a full-frame Argb8888 buffer into the client's
-/// shm buffer. Returns whether it succeeded.
 fn copy_region(
     capture: &PendingCapture,
     pixels: &[u8],
@@ -378,7 +331,6 @@ fn copy_region(
         return false;
     }
 
-    // Bounds were just checked, so every value below is non-negative.
     let to_usize = |value: i32| usize::try_from(value).unwrap_or(0);
     let source_stride = to_usize(frame_size.w) * 4;
 
@@ -393,9 +345,6 @@ fn copy_region(
             if source_offset + row_bytes > pixels.len() || dest_offset + row_bytes > len {
                 return false;
             }
-            // SAFETY: the shm pool is mapped for `len` bytes and the
-            // bounds are checked immediately above; the pointer is only
-            // written within that range.
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     pixels.as_ptr().add(source_offset),
@@ -423,8 +372,6 @@ mod tests {
         assert_eq!(region.size.w * 4, 7680);
     }
 
-    /// A region capture must stay inside the frame that was rendered, or
-    /// the copy would read past the end of the readback buffer.
     #[test]
     fn a_region_outside_the_frame_is_rejected() {
         let frame_size: smithay::utils::Size<i32, Physical> = (100, 100).into();

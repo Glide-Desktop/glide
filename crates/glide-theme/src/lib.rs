@@ -150,13 +150,6 @@ impl Default for DecorationTheme {
         Self {
             height: 48,
             title_align: TitleAlign::Left,
-            // Spec's `--r-3`. Note that only the titlebar fill and the
-            // border stroke are actually rounded — the client's own
-            // content is an unclipped rectangle, so its square corners
-            // poke ~0.29×radius past the border curve at the two bottom
-            // corners (the titlebar hides the top two). Making the
-            // content itself round needs a GLES fragment-shader clip on
-            // the surface texture, which isn't implemented yet.
             corner_radius: shape::R3,
             background: t.bar_bg_idle,
             background_focused: t.bar_bg,
@@ -186,35 +179,24 @@ impl Default for DecorationTheme {
     }
 }
 
-/// The bottom dock (`.dash`), spec §13.4.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DockTheme {
     pub enabled: bool,
-    /// Icon theme searched for app icons. Whatever it inherits is searched
-    /// after it, and `hicolor` last, per the freedesktop spec.
     pub icon_theme: Option<String>,
-    /// Gap between the dock and the bottom edge of the work area.
     pub bottom_margin: i32,
-    /// Side of one square app tile.
     pub item_size: i32,
-    /// Space between tiles.
     pub item_gap: i32,
     pub padding_x: i32,
     pub padding_y: i32,
-    /// Corner radius of the dock shell (`--r-4`).
     pub radius: f32,
-    /// Corner radius of a tile (`--r-3`).
     pub item_radius: f32,
     pub background: Color,
     pub border: Color,
     pub separator: Color,
     pub icon: Color,
-    /// Dot shown under a running app, and the wider bar for the focused
-    /// one.
     pub running_color: Color,
     pub focused_color: Color,
-    /// How far a hovered tile lifts.
     pub hover_lift: i32,
     pub hover_scale: f64,
 }
@@ -248,9 +230,6 @@ impl Default for DockTheme {
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct OverviewTheme {
     pub gap: i32,
-    /// Minimum distance the block of previews keeps from every screen
-    /// edge. Distinct from `gap`, which only separates previews from each
-    /// other.
     pub padding: i32,
     pub label_height: i32,
     pub max_scale: f64,
@@ -258,8 +237,6 @@ pub struct OverviewTheme {
     pub label_color: Color,
     pub label_background: Color,
     pub label_border: Color,
-    /// Per-preview close button (`.ov-close`). Idle state shares the
-    /// popover chrome with the label pill; hovering turns it destructive.
     pub close_background: Color,
     pub close_foreground: Color,
     pub close_border: Color,
@@ -276,12 +253,9 @@ impl Default for OverviewTheme {
     fn default() -> Self {
         let t = Tokens::new(Appearance::Dark, Accent::Blue);
         Self {
-            gap: spacing::SP7,
+            gap: 30,
             padding: spacing::SP8,
             label_height: 28,
-            // Design caps a preview at 0.92 of the window's real size, so
-            // even a lone window visibly *steps back* when the overview
-            // opens instead of sitting there at 1:1 filling the screen.
             max_scale: 0.92,
             label: true,
             label_color: t.fg_1,
@@ -295,9 +269,6 @@ impl Default for OverviewTheme {
             dim: Color::from_hex("#100f0e66").unwrap(),
             highlight: t.acc_bg,
             border: 3,
-            // Matches `DecorationTheme::corner_radius` so a preview's
-            // hover-highlight ring traces the same curve the window's own
-            // border does. Same unclipped-content caveat applies.
             corner_radius: shape::R3,
             duration_ms: u64::try_from(motion::T4.as_millis()).unwrap_or(u64::MAX),
         }
@@ -306,8 +277,138 @@ impl Default for OverviewTheme {
 
 impl OverviewTheme {
     #[must_use]
-    pub const fn duration(&self) -> std::time::Duration {
+    pub fn duration(&self) -> std::time::Duration {
+        motion::scaled(std::time::Duration::from_millis(self.duration_ms))
+    }
+
+    #[must_use]
+    pub const fn base_duration(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.duration_ms)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Revision(u64);
+
+impl Default for Revision {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Revision {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Self::OFFSET)
+    }
+
+    #[must_use]
+    pub const fn u64(mut self, value: u64) -> Self {
+        let mut i = 0;
+        while i < 8 {
+            #[allow(clippy::cast_possible_truncation)]
+            let byte = (value >> (i * 8)) as u8;
+            self.0 ^= byte as u64;
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+            i += 1;
+        }
+        self
+    }
+
+    #[must_use]
+    pub const fn i32(self, value: i32) -> Self {
+        self.u64(value.cast_unsigned() as u64)
+    }
+
+    #[must_use]
+    pub fn f32(self, value: f32) -> Self {
+        self.u64(u64::from(value.to_bits()))
+    }
+
+    #[must_use]
+    pub fn f64(self, value: f64) -> Self {
+        self.u64(value.to_bits())
+    }
+
+    #[must_use]
+    pub const fn bool(self, value: bool) -> Self {
+        self.u64(value as u64)
+    }
+
+    #[must_use]
+    pub fn color(self, value: Color) -> Self {
+        let mut this = self;
+        for channel in value.0 {
+            this = this.f32(channel);
+        }
+        this
+    }
+
+    #[must_use]
+    pub fn str(self, value: &str) -> Self {
+        let mut this = self;
+        for byte in value.as_bytes() {
+            this = this.u64(u64::from(*byte));
+        }
+        this
+    }
+
+    #[must_use]
+    pub const fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+impl OverviewTheme {
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        Revision::new()
+            .i32(self.gap)
+            .i32(self.padding)
+            .i32(self.label_height)
+            .f64(self.max_scale)
+            .bool(self.label)
+            .color(self.label_color)
+            .color(self.label_background)
+            .color(self.label_border)
+            .color(self.close_background)
+            .color(self.close_foreground)
+            .color(self.close_border)
+            .color(self.close_hover_background)
+            .color(self.close_hover_foreground)
+            .color(self.dim)
+            .color(self.highlight)
+            .i32(self.border)
+            .f32(self.corner_radius)
+            .finish()
+    }
+}
+
+impl DockTheme {
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        Revision::new()
+            .bool(self.enabled)
+            .str(self.icon_theme.as_deref().unwrap_or(""))
+            .i32(self.bottom_margin)
+            .i32(self.item_size)
+            .i32(self.item_gap)
+            .i32(self.padding_x)
+            .i32(self.padding_y)
+            .f32(self.radius)
+            .f32(self.item_radius)
+            .color(self.background)
+            .color(self.border)
+            .color(self.separator)
+            .color(self.icon)
+            .color(self.running_color)
+            .color(self.focused_color)
+            .i32(self.hover_lift)
+            .f64(self.hover_scale)
+            .finish()
     }
 }
 
@@ -520,7 +621,10 @@ mod tests {
         assert_eq!(o.close_border, t.line);
         assert_eq!(o.close_hover_background, t.danger);
         assert_eq!(o.close_hover_foreground, t.view_bg);
-        assert_eq!(o.gap, spacing::SP7, "preview gap is --sp-7");
+        assert_eq!(
+            o.gap, 30,
+            "preview gap matches the design's layoutOverview()"
+        );
         assert_eq!(o.padding, spacing::SP8, "screen-edge padding is --sp-8");
         assert_eq!(
             o.duration_ms,
@@ -528,9 +632,6 @@ mod tests {
         );
     }
 
-    /// Edge padding has to be at least as generous as the gap between
-    /// previews, or the block reads as crowding the screen edges even
-    /// though the previews themselves are comfortably spaced.
     #[test]
     fn overview_edge_padding_is_not_tighter_than_the_gap_between_previews() {
         let o = OverviewTheme::default();
@@ -612,9 +713,6 @@ shadow-color-focused = \"#000000bb\"
         assert_eq!(OverviewTheme::default().corner_radius, shape::R3);
     }
 
-    /// A preview's hover ring has to trace the same curve as the window's
-    /// own border, or the two read as different shapes when the overview
-    /// animates a window in and out.
     #[test]
     #[allow(clippy::float_cmp)]
     fn overview_and_window_corner_radii_agree() {

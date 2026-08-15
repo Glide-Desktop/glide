@@ -94,6 +94,18 @@ impl Cursor {
         self.image_with_index(icon, scale, time).0
     }
 
+    pub fn time_to_next_frame(
+        &mut self,
+        icon: CursorIcon,
+        scale: u32,
+        time: Duration,
+    ) -> Option<Duration> {
+        #[allow(clippy::cast_possible_truncation)]
+        let millis = time.as_millis() as u32;
+        let size = self.size * scale;
+        time_to_next_frame(millis, size, self.images_for(icon))
+    }
+
     fn images_for(&mut self, icon: CursorIcon) -> &[Image] {
         if !self.cache.contains_key(&icon) {
             let images = self.load_icon_images(icon).unwrap_or_else(|| {
@@ -174,6 +186,23 @@ fn nearest_images(size: u32, images: &[Image]) -> impl Iterator<Item = &Image> {
     images
         .iter()
         .filter(move |image| image.width == nearest.width && image.height == nearest.height)
+}
+
+fn time_to_next_frame(mut millis: u32, size: u32, images: &[Image]) -> Option<Duration> {
+    let total: u32 = nearest_images(size, images).map(|image| image.delay).sum();
+    if total == 0 || nearest_images(size, images).count() < 2 {
+        return None;
+    }
+
+    millis %= total;
+    for image in nearest_images(size, images) {
+        if millis < image.delay {
+            return Some(Duration::from_millis(u64::from(image.delay - millis)));
+        }
+        millis -= image.delay;
+    }
+
+    unreachable!("millis was reduced below the total delay above")
 }
 
 fn frame_with_index(mut millis: u32, size: u32, images: &[Image]) -> (Image, usize) {

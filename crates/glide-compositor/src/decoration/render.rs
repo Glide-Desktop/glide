@@ -7,11 +7,14 @@ use crate::{config::Color, paint::Painter, window::GlideWindow};
 
 use super::{BUTTON_PAD_X, BUTTON_PAD_Y, BUTTON_SIZE, BoxDecoCache, BoxDecoKey, DecorationBuffer};
 
+const PRESS_SCALE: f64 = 0.9;
+
 pub(crate) fn redraw_button(
     buf: &mut Option<MemoryRenderBuffer>,
     scale: i32,
     bg: Color,
     fg: Color,
+    pressed: bool,
     icon: fn(&mut [u8], i32, i32, i32, Color, Color),
 ) {
     let (pw, ph) = (BUTTON_SIZE * scale, BUTTON_SIZE * scale);
@@ -21,7 +24,27 @@ pub(crate) fn redraw_button(
     let mut ctx = buf.render();
     ctx.resize((pw, ph));
     let _ = ctx.draw(|pixels| {
-        icon(pixels, BUTTON_SIZE, BUTTON_SIZE, scale, fg, bg);
+        if pressed {
+            #[allow(clippy::cast_possible_truncation)]
+            let side = ((f64::from(BUTTON_SIZE) * PRESS_SCALE).round() as i32).max(1);
+            let (spw, sph) = (side * scale, side * scale);
+            let mut small = vec![0u8; usize::try_from(spw * sph * 4).unwrap_or_default()];
+            icon(&mut small, side, side, scale, fg, bg);
+
+            pixels.fill(0);
+            let (ox, oy) = ((pw - spw) / 2, (ph - sph) / 2);
+            let src_stride = usize::try_from(spw * 4).unwrap_or_default();
+            let dst_stride = usize::try_from(pw * 4).unwrap_or_default();
+            for row in 0..usize::try_from(sph).unwrap_or_default() {
+                let src_start = row * src_stride;
+                let dst_start = (row + usize::try_from(oy).unwrap_or_default()) * dst_stride
+                    + usize::try_from(ox * 4).unwrap_or_default();
+                pixels[dst_start..dst_start + src_stride]
+                    .copy_from_slice(&small[src_start..src_start + src_stride]);
+            }
+        } else {
+            icon(pixels, BUTTON_SIZE, BUTTON_SIZE, scale, fg, bg);
+        }
         Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
     });
 }
@@ -50,47 +73,40 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter) -> Vec<DecorationB
     let mut out: Vec<DecorationBuffer> = Vec::new();
 
     if let Some(buf) = &header.menu_buf {
+        let t = header.menu_open_progress();
+        #[allow(clippy::cast_possible_truncation)]
+        let rise = (super::MENU_OPEN_RISE * (1.0 - t)).round() as i32;
+        let scale = super::MENU_OPEN_SCALE + (1.0 - super::MENU_OPEN_SCALE) * t;
+        #[allow(clippy::cast_possible_truncation)]
         out.push(DecorationBuffer {
             buf: buf.clone(),
-            offset: Point::from((header.menu_x, header.height)),
+            offset: Point::from((header.menu_x, header.height + rise)),
+            alpha: t as f32,
+            scale: (t < 1.0).then_some(scale),
         });
     }
 
     if let Some(buf) = &header.maximize_buf {
-        out.push(DecorationBuffer {
-            buf: buf.clone(),
-            offset: Point::from((BUTTON_PAD_X, BUTTON_PAD_Y)),
-        });
+        out.push(DecorationBuffer::plain(
+            buf.clone(),
+            Point::from((BUTTON_PAD_X, BUTTON_PAD_Y)),
+        ));
     }
 
     if let Some(buf) = &header.close_buf {
-        out.push(DecorationBuffer {
-            buf: buf.clone(),
-            offset: Point::from((header.width - BUTTON_PAD_X - BUTTON_SIZE, BUTTON_PAD_Y)),
-        });
+        out.push(DecorationBuffer::plain(
+            buf.clone(),
+            Point::from((header.width - BUTTON_PAD_X - BUTTON_SIZE, BUTTON_PAD_Y)),
+        ));
     }
 
     if let Some(buf) = &header.titlebar_buf {
-        out.push(DecorationBuffer {
-            buf: buf.clone(),
-            offset: Point::from((0, 0)),
-        });
+        out.push(DecorationBuffer::plain(buf.clone(), Point::from((0, 0))));
     }
 
     out
 }
 
-/// `DecorationTheme` only exposes one shadow size and one shadow color per
-/// focus state (a deliberate choice — see Stage 1's commit message on why
-/// the config schema wasn't broken open to a full elevation layer list).
-/// The design spec's actual `--el-win`/`--el-win-idle` tokens (see
-/// `glide_theme::elevation`) are each a blurred pair: a tighter, slightly
-/// less opaque layer close to the window, and a softer, fuller-opacity
-/// layer further out — `blur == shadow_size` for the outer layer in every
-/// one of the spec's four size/appearance combinations, with `dy` running
-/// close to `0.43 * blur` in each. This reconstructs that two-layer shape
-/// from the one configured size/color instead of the flat single-band
-/// halo the compositor drew before.
 fn derive_shadow_layers(
     shadow_size: f32,
     shadow_color: Color,
@@ -126,7 +142,7 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
     }
 
     let is_focused = state.header.focused;
-    let theme = &state.header.theme;
+    let theme = state.header.theme.clone();
 
     let border_width = i32::try_from(theme.border_width)
         .unwrap_or(super::RESIZE_BORDER)
@@ -154,12 +170,6 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
         (0, crate::config::Color([0.0, 0.0, 0.0, 0.0]))
     };
 
-    // `shadow_fade_margin`, not `shadow_size`, on purpose — the shadow is
-    // drawn offset downward (see `derive_shadow_layers`), so the buffer
-    // needs extra room on every side or the blur gets hard-clipped right
-    // as it approaches zero alpha, which reads as a dense, sharp-edged
-    // halo instead of a soft fade (and can visibly square off a corner
-    // right where the clip lands).
     let margin = crate::paint::shadow_fade_margin(shadow_size) + border_width;
     if margin <= 0 {
         return None;
@@ -178,6 +188,10 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
     let needs_redraw = state.box_deco.as_ref().is_none_or(|cache| cache.key != key);
 
     if needs_redraw {
+        state.box_deco_fade = outgoing_fade(state.box_deco.as_ref(), key);
+    }
+
+    if needs_redraw {
         let physical_w = width * scale;
         let physical_h = frame_height * scale;
         let physical_margin = margin * scale;
@@ -187,7 +201,6 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
         if let Ok(pixels) = usize::try_from(buf_w * buf_h * 4) {
             let mut buf = vec![0u8; pixels];
 
-            // Pixel dimensions comfortably fit an f32 mantissa.
             #[allow(clippy::cast_precision_loss)]
             let shadow_layers = derive_shadow_layers((shadow_size * scale) as f32, shadow_color);
             let window_radius = if is_maximized {
@@ -206,9 +219,6 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
                 (border_width * scale) as f32,
                 border_color,
                 window_radius * scale as f32,
-                // Nothing behind the window's own rounded footprint — the
-                // shadow fill would otherwise bleed through any pixels the
-                // client renders transparent (e.g. translucent terminals).
                 Some(window_radius * scale as f32),
             );
 
@@ -224,10 +234,48 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
         }
     }
 
-    state.box_deco.as_ref().map(|cache| DecorationBuffer {
+    state
+        .box_deco
+        .as_ref()
+        .map(|cache| DecorationBuffer::plain(cache.buf.clone(), Point::from((-margin, -margin))))
+}
+
+fn outgoing_fade(current: Option<&BoxDecoCache>, next: BoxDecoKey) -> Option<super::BoxDecoFade> {
+    let cache = current?;
+    let focus_only = cache.key.focused != next.focused
+        && cache.key.width == next.width
+        && cache.key.height == next.height
+        && cache.key.scale == next.scale
+        && cache.key.maximized == next.maximized
+        && cache.key.theme_rev == next.theme_rev;
+
+    focus_only.then(|| super::BoxDecoFade {
         buf: cache.buf.clone(),
-        offset: Point::from((-margin, -margin)),
+        started: std::time::Instant::now(),
     })
+}
+
+pub fn shadow_and_border_fade(window: &GlideWindow) -> Option<(DecorationBuffer, f32)> {
+    let mut state = window.try_decoration_state_mut()?;
+    let alpha = state
+        .box_deco_fade
+        .as_ref()
+        .and_then(super::BoxDecoFade::alpha);
+    let Some(alpha) = alpha else {
+        state.box_deco_fade = None;
+        return None;
+    };
+
+    let fade = state.box_deco_fade.as_ref()?;
+    let margin = shadow_margin_for(&state.header);
+    Some((
+        DecorationBuffer::plain(fade.buf.clone(), Point::from((-margin, -margin))),
+        alpha,
+    ))
+}
+
+fn shadow_margin_for(header: &super::HeaderBar) -> i32 {
+    header.shadow_margin()
 }
 
 #[cfg(test)]

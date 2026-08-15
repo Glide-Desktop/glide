@@ -533,6 +533,7 @@ dependencies = [
  "cosmic-text",
  "glide-theme",
  "resvg",
+ "sys-locale",
  "tiny-skia",
 ]
 

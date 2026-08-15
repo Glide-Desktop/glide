@@ -456,12 +456,17 @@ impl Layout {
         }
 
         if maximized {
-            state.saved_geometry = Some(state.geometry);
+            if work_area.size.is_empty() {
+                return false;
+            }
+            state.saved_geometry = state.is_placed.then_some(state.geometry);
             state.geometry = work_area;
             state.maximized = true;
+            state.is_placed = true;
         } else {
-            if let Some(saved) = state.saved_geometry.take() {
-                state.geometry = saved;
+            match state.saved_geometry.take() {
+                Some(saved) => state.geometry = saved,
+                None => state.is_placed = false,
             }
             state.maximized = false;
         }
@@ -481,16 +486,23 @@ impl Layout {
         }
 
         if fullscreen {
+            if output_geom.size.is_empty() {
+                return false;
+            }
             if !state.maximized && state.saved_geometry.is_none() {
-                state.saved_geometry = Some(state.geometry);
+                state.saved_geometry = state.is_placed.then_some(state.geometry);
             }
             state.geometry = output_geom;
             state.fullscreen = true;
+            state.is_placed = true;
         } else {
             if state.maximized {
                 state.geometry = work_area;
-            } else if let Some(saved) = state.saved_geometry.take() {
-                state.geometry = saved;
+            } else {
+                match state.saved_geometry.take() {
+                    Some(saved) => state.geometry = saved,
+                    None => state.is_placed = false,
+                }
             }
             state.fullscreen = false;
         }
@@ -534,6 +546,10 @@ impl Layout {
             return false;
         };
 
+        if state.maximized || state.fullscreen {
+            return false;
+        }
+
         if state.is_placed || size.is_empty() {
             let insets = state.insets;
             if let Some(state) = self.windows.get_mut(&w) {
@@ -561,11 +577,18 @@ impl Layout {
     }
 
     pub fn set_window_insets(&mut self, w: WindowId, insets: Insets) -> bool {
+        let work_area = self.primary_output_work_area();
+        let output_geom = self.primary_output_geometry();
+
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
         };
 
-        if state.is_placed && !state.geometry.size.is_empty() {
+        if state.fullscreen {
+            state.geometry = output_geom;
+        } else if state.maximized {
+            state.geometry = work_area;
+        } else if state.is_placed && !state.geometry.size.is_empty() {
             let content = state.geometry.inset(state.insets);
             state.geometry = Rectangle::new(
                 Point::new(content.loc.x - insets.left, content.loc.y - insets.top),
@@ -574,6 +597,17 @@ impl Layout {
                     content.size.height + insets.height(),
                 ),
             );
+        }
+
+        if let Some(saved) = state.saved_geometry {
+            let content = saved.inset(state.insets);
+            state.saved_geometry = Some(Rectangle::new(
+                Point::new(content.loc.x - insets.left, content.loc.y - insets.top),
+                Size::new(
+                    content.size.width + insets.width(),
+                    content.size.height + insets.height(),
+                ),
+            ));
         }
 
         state.insets = insets;

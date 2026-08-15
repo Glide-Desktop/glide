@@ -17,9 +17,6 @@ impl OverviewThemeExt for OverviewTheme {
             gap: self.gap,
             padding: self.padding,
             label_height: if self.label { self.label_height } else { 0 },
-            // Must track `overview::label_offset` — that's where the
-            // renderer actually places the pill relative to the preview's
-            // bottom edge. See `OverviewOptions::label_offset`'s docs.
             label_offset: if self.label {
                 crate::overview::label_offset(self.label_height)
             } else {
@@ -39,16 +36,103 @@ pub struct Config {
     pub decorations: DecorationTheme,
     pub overview: OverviewTheme,
     pub dock: DockConfig,
+    pub input: InputConfig,
+    pub animations: AnimationConfig,
+    #[serde(rename = "output")]
+    pub outputs: Vec<OutputConfig>,
 }
 
-/// The bottom dock: its look plus the apps pinned to it.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct AnimationConfig {
+    pub enabled: bool,
+    pub speed: f32,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            speed: 1.0,
+        }
+    }
+}
+
+impl AnimationConfig {
+    #[must_use]
+    pub const fn motion_scale(self) -> f32 {
+        if self.enabled { self.speed } else { 0.0 }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct InputConfig {
+    pub xkb_layout: String,
+    pub xkb_variant: String,
+    pub xkb_options: Option<String>,
+    pub xkb_model: String,
+    pub xkb_rules: String,
+    pub repeat_delay: i32,
+    pub repeat_rate: i32,
+    pub tap_to_click: bool,
+    pub natural_scroll: bool,
+    pub accel_profile: AccelProfileConfig,
+    pub accel_speed: f64,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self {
+            xkb_layout: "us,ua".to_string(),
+            xkb_variant: String::new(),
+            xkb_options: Some("grp:win_space_toggle".to_string()),
+            xkb_model: String::new(),
+            xkb_rules: String::new(),
+            repeat_delay: 200,
+            repeat_rate: 25,
+            tap_to_click: true,
+            natural_scroll: false,
+            accel_profile: AccelProfileConfig::default(),
+            accel_speed: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccelProfileConfig {
+    #[default]
+    Adaptive,
+    Flat,
+}
+
+impl InputConfig {
+    #[must_use]
+    pub fn xkb(&self) -> smithay::input::keyboard::XkbConfig<'_> {
+        smithay::input::keyboard::XkbConfig {
+            rules: &self.xkb_rules,
+            model: &self.xkb_model,
+            layout: &self.xkb_layout,
+            variant: &self.xkb_variant,
+            options: self.xkb_options.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct OutputConfig {
+    pub name: String,
+    pub position: Option<[i32; 2]>,
+    pub scale: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct DockConfig {
     #[serde(flatten)]
     pub theme: DockTheme,
-    /// Pinned apps, left to right. A `separator` entry draws a divider
-    /// instead of a tile.
     pub items: Vec<DockItemConfig>,
 }
 
@@ -64,30 +148,21 @@ impl Default for DockConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DockItemConfig {
-    /// Shown as the tooltip and used to match running windows when
-    /// `app-id` is absent.
     pub name: String,
-    /// Shell command run on click.
     pub command: String,
-    /// Which built-in glyph to draw. See `dock::Glyph`.
     #[serde(default)]
     pub icon: String,
-    /// `app_id` of the windows this tile represents, for the running dot.
-    /// Defaults to the lowercased name.
     #[serde(default)]
     pub app_id: Option<String>,
-    /// Tile gradient.
     #[serde(default)]
     pub color_from: Option<Color>,
     #[serde(default)]
     pub color_to: Option<Color>,
-    /// Draw a separator *before* this item.
     #[serde(default)]
     pub separator_before: bool,
 }
 
 impl DockItemConfig {
-    /// A dock that is useful out of the box on a fresh install.
     fn defaults() -> Vec<Self> {
         vec![Self {
             name: "Terminal".to_string(),
@@ -108,6 +183,8 @@ pub struct GeneralConfig {
     pub autostart: Vec<String>,
     pub wallpaper: Option<PathBuf>,
     pub wallpaper_fit: WallpaperFit,
+    pub font_family: Option<String>,
+    pub blank_after_seconds: u64,
 }
 
 impl Default for GeneralConfig {
@@ -117,6 +194,8 @@ impl Default for GeneralConfig {
             autostart: vec!["alacritty".to_string()],
             wallpaper: None,
             wallpaper_fit: WallpaperFit::default(),
+            font_family: None,
+            blank_after_seconds: 600,
         }
     }
 }
@@ -212,6 +291,7 @@ impl ParameterizedAction {
 
 impl Config {
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn default_keybinds() -> Vec<KeybindConfig> {
         let mut keybinds = vec![
             KeybindConfig {
@@ -264,6 +344,91 @@ impl Config {
                 key: "Print".to_string(),
                 action: KeyActionConfig::Simple("screenshot".to_string()),
             },
+            KeybindConfig {
+                mods: vec![ModifierConfig::Super],
+                key: "a".to_string(),
+                action: KeyActionConfig::Simple("toggle-launcher".to_string()),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86AudioRaiseVolume".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86AudioLowerVolume".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86AudioMute".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86AudioMicMute".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86MonBrightnessUp".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("brightnessctl set +5%".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86MonBrightnessDown".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("brightnessctl set 5%-".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86AudioPlay".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("playerctl play-pause".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86AudioNext".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("playerctl next".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![],
+                key: "XF86AudioPrev".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("playerctl previous".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
+            KeybindConfig {
+                mods: vec![ModifierConfig::Super],
+                key: "l".to_string(),
+                action: KeyActionConfig::Complex(ParameterizedAction {
+                    exec: Some("loginctl lock-session".to_string()),
+                    ..ParameterizedAction::empty()
+                }),
+            },
         ];
 
         for i in 1..=9 {
@@ -307,6 +472,9 @@ impl Config {
             decorations: DecorationTheme::default(),
             overview: OverviewTheme::default(),
             dock: DockConfig::default(),
+            input: InputConfig::default(),
+            animations: AnimationConfig::default(),
+            outputs: Vec::new(),
         }
     }
 
@@ -377,14 +545,24 @@ impl Config {
     }
 
     pub fn apply_to_state(&self, state: &mut GlideState) {
+        glide_theme::motion::set_scale(self.animations.motion_scale());
         state.layout.set_policy(self.workspaces.new_window.into());
         state.keybinds = self.resolve_keybinds();
         state.decoration_theme = self.decorations.clone();
         state.overview_theme = self.overview.clone();
         state.dock.reconfigure(&self.dock);
         state.refresh_dock();
+        state.launcher_theme = crate::launcher::LauncherTheme::from_dock(&self.dock.theme);
+        state.launcher_icons = crate::icon::IconLoader::new(self.dock.theme.icon_theme.clone());
         state.background_color = self.general.background;
         state.wallpaper_fit = self.general.wallpaper_fit;
+        state.font_family.clone_from(&self.general.font_family);
+        state.blank_after = (self.general.blank_after_seconds > 0)
+            .then(|| std::time::Duration::from_secs(self.general.blank_after_seconds));
+        state.input_config.clone_from(&self.input);
+        state.output_configs.clone_from(&self.outputs);
+        state.apply_input_config();
+        state.apply_output_configs();
         state.refresh_painter_font();
 
         let wallpaper_bytes = self.general.wallpaper.as_ref().and_then(|path| {
@@ -458,6 +636,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "open-window-menu" => Some(crate::input::KeyAction::OpenWindowMenu),
             "toggle-overview" => Some(crate::input::KeyAction::ToggleOverview),
             "screenshot" => Some(crate::input::KeyAction::Screenshot),
+            "toggle-launcher" => Some(crate::input::KeyAction::ToggleLauncher),
             _ => {
                 tracing::warn!(action = cmd, "unknown simple key action");
                 None
@@ -530,6 +709,98 @@ action = "quit"
                 ..ParameterizedAction::empty()
             })
         );
+    }
+
+    mod animations_section {
+        use super::*;
+
+        #[test]
+        fn it_defaults_to_the_spec_timing() {
+            let config = Config::with_defaults();
+            assert!(config.animations.enabled);
+            assert!((config.animations.motion_scale() - 1.0).abs() < f32::EPSILON);
+        }
+
+        #[test]
+        fn it_parses_both_keys() {
+            let config: Config =
+                toml::from_str("[animations]\nenabled = true\nspeed = 0.5\n").unwrap();
+            assert!((config.animations.motion_scale() - 0.5).abs() < f32::EPSILON);
+        }
+
+        #[test]
+        fn disabling_wins_over_any_configured_speed() {
+            let config: Config =
+                toml::from_str("[animations]\nenabled = false\nspeed = 3.0\n").unwrap();
+            assert!(
+                config.animations.motion_scale().abs() < f32::EPSILON,
+                "reduced motion must be absolute, not merely faster"
+            );
+        }
+
+        #[test]
+        fn an_unknown_key_is_rejected_rather_than_silently_ignored() {
+            let err = toml::from_str::<Config>("[animations]\nspeeed = 2.0\n")
+                .expect_err("a typo in a config key must not be swallowed");
+            assert!(err.to_string().contains("speeed"), "{err}");
+        }
+    }
+
+    #[test]
+    fn input_section_parses_and_defaults_are_sane() {
+        let toml_str = r#"
+[input]
+xkb-layout = "us,ua"
+xkb-options = "grp:alt_shift_toggle"
+repeat-rate = 40
+natural-scroll = true
+accel-profile = "flat"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.input.xkb_layout, "us,ua");
+        assert_eq!(
+            config.input.xkb_options.as_deref(),
+            Some("grp:alt_shift_toggle")
+        );
+        assert_eq!(config.input.repeat_rate, 40);
+        assert_eq!(config.input.repeat_delay, 200);
+        assert!(config.input.natural_scroll);
+        assert!(config.input.tap_to_click);
+        assert_eq!(config.input.accel_profile, AccelProfileConfig::Flat);
+
+        let defaults = InputConfig::default();
+        assert!(defaults.tap_to_click);
+        assert!(!defaults.natural_scroll);
+        assert_eq!(defaults.xkb_layout, "us,ua");
+        assert_eq!(
+            defaults.xkb_options.as_deref(),
+            Some("grp:win_space_toggle")
+        );
+    }
+
+    #[test]
+    fn output_sections_parse() {
+        let toml_str = r#"
+[[output]]
+name = "eDP-1"
+scale = 2.0
+
+[[output]]
+name = "DP-3"
+position = [2560, 0]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.outputs.len(), 2);
+        assert_eq!(config.outputs[0].name, "eDP-1");
+        assert_eq!(config.outputs[0].scale, Some(2.0));
+        assert_eq!(config.outputs[0].position, None);
+        assert_eq!(config.outputs[1].position, Some([2560, 0]));
+    }
+
+    #[test]
+    fn unknown_input_key_is_rejected() {
+        let err = toml::from_str::<Config>("[input]\ntap-to-clik = true\n").unwrap_err();
+        assert!(err.to_string().contains("tap-to-clik"));
     }
 
     #[test]

@@ -50,11 +50,6 @@ pub(crate) fn start_move(
             return;
         };
 
-        // Dragging a maximized or fullscreen window restores it first, so
-        // it follows the cursor as an ordinary floating window — and, just
-        // as importantly, so the client stops being told it is maximized.
-        state.restore_for_move(&window, pointer.current_location());
-
         let Some(initial_window_location) = state.space.element_location(&window) else {
             return;
         };
@@ -68,8 +63,11 @@ pub(crate) fn start_move(
             start_data,
             window: window.clone(),
             initial_window_location,
+            pending_restore: state.is_size_locked(&window),
         };
+        window.set_dragging(true);
         pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Clear);
+        state.queue_redraw();
     });
 }
 
@@ -80,8 +78,6 @@ pub(crate) fn start_resize(
     event: &ButtonEvent,
     edges: ResizeEdge,
 ) {
-    // A maximized or fullscreen window is sized by the compositor; see
-    // `GlideState::is_size_locked`.
     if state.is_size_locked(window) {
         return;
     }
@@ -95,8 +91,6 @@ pub(crate) fn start_resize(
         let Some(pointer) = seat.get_pointer() else {
             return;
         };
-        // Re-checked on the idle tick: the state may have changed between
-        // the button press and this running.
         if state.is_size_locked(&window) {
             return;
         }
@@ -129,8 +123,6 @@ impl IsAlive for Decoration {
 
 impl Decoration {
     fn update_pointer(&self, data: &mut GlideState, event: &MotionEvent) {
-        // Don't offer a resize cursor where a resize would be refused —
-        // see `GlideState::is_size_locked`.
         let resizable = !data.is_size_locked(&self.0);
         let icon = {
             if let Some(mut deco) = self.0.try_decoration_state_mut() {
@@ -173,8 +165,9 @@ impl PointerTarget<GlideState> for Decoration {
         match action {
             Some(DecorationAction::ToggleMaximize) => {
                 if let Some(id) = data.window_id(&self.0) {
-                    data.layout.toggle_maximized(id);
-                    data.reconcile_space();
+                    data.morph_geometry(id, |state| {
+                        state.layout.toggle_maximized(id);
+                    });
                 }
             }
             Some(DecorationAction::Close) => {

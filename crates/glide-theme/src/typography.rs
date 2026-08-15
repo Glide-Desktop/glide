@@ -93,9 +93,13 @@ impl TextStyle {
         tracking_em: 0.0,
         uppercase: false,
     };
-    /// `.menu-item`/`.btn` control text — 13.5px at body weight (400), not
-    /// `WinTitle`'s 640: menu rows and buttons read as regular text, only
-    /// the titlebar's own label is semi-bold.
+    pub const LAUNCHER_CAPTION: Self = Self {
+        size_px: 11.0,
+        line_height_px: 14.0,
+        weight: 480,
+        tracking_em: 0.0,
+        uppercase: false,
+    };
     pub const MENU_ITEM: Self = Self {
         size_px: 13.5,
         line_height_px: 20.0,
@@ -118,6 +122,7 @@ impl TextStyle {
         Self::MENU_ITEM,
         Self::WIN_TITLE,
         Self::OV_LABEL,
+        Self::LAUNCHER_CAPTION,
     ];
 }
 
@@ -130,7 +135,7 @@ mod tests {
     fn italic_is_never_expressed_here_by_design() {
         assert_eq!(
             TextStyle::ALL.len(),
-            13,
+            14,
             "no style role carries a slant field"
         );
     }

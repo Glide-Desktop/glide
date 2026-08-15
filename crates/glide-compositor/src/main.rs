@@ -13,6 +13,7 @@ mod grabs;
 mod icon;
 mod input;
 mod ipc;
+mod launcher;
 mod logging;
 mod overview;
 mod paint;
@@ -81,6 +82,8 @@ fn run() -> anyhow::Result<()> {
         unsafe { std::env::set_var("GLIDE_IPC_SOCK", server.socket_path()) };
     }
 
+    spawn_xwayland_satellite();
+    update_session_managers_environment();
     spawn_autostart(&config.general.autostart);
 
     event_loop.run(None, &mut state, move |state| {
@@ -88,13 +91,33 @@ fn run() -> anyhow::Result<()> {
         state.space.refresh();
         state.popups.cleanup();
 
-        if state.tick_overview()
-            || state.any_button_hover_animating()
-            || state.any_window_open_animating()
-            || state.snapshots.tick()
-            || state.dock.is_animating()
+        let overview_animating = state.tick_overview();
+        let hover_animating = state.any_button_hover_animating();
+        let open_animating = state.any_window_open_animating();
+        let geometry_animating = state.any_window_geometry_animating();
+        let snapshots_animating = state.snapshots.tick();
+        let dock_animating = state.dock.is_animating();
+        let launcher_animating = state.tick_launcher();
+        let cursor_animating = state.is_cursor_animating();
+
+        if overview_animating
+            || hover_animating
+            || open_animating
+            || geometry_animating
+            || snapshots_animating
+            || dock_animating
+            || launcher_animating
+            || cursor_animating
         {
-            state.queue_redraw();
+            state.queue_animation_redraw();
+        }
+
+        if let Some(blank_after) = state.blank_after {
+            let idle = state.last_activity.elapsed() >= blank_after;
+            if idle && !state.outputs_blanked && !state.is_idle_inhibited() {
+                tracing::info!("idle timeout reached; blanking outputs");
+                state.set_outputs_blanked(true);
+            }
         }
 
         let _ = state.display_handle.flush_clients();
@@ -115,12 +138,19 @@ const STALE_SESSION_VARS: &[&str] = &[
 ];
 
 fn session_environment(socket_name: &std::ffi::OsStr) -> Vec<(&'static str, std::ffi::OsString)> {
-    vec![
+    let mut vars: Vec<(&'static str, std::ffi::OsString)> = vec![
         ("WAYLAND_DISPLAY", socket_name.to_os_string()),
         ("XDG_SESSION_TYPE", "wayland".into()),
         ("XDG_CURRENT_DESKTOP", "Glide".into()),
         ("XDG_SESSION_DESKTOP", "glide".into()),
-    ]
+    ];
+    if std::env::var_os("XCURSOR_THEME").is_none() {
+        vars.push(("XCURSOR_THEME", "default".into()));
+    }
+    if std::env::var_os("XCURSOR_SIZE").is_none() {
+        vars.push(("XCURSOR_SIZE", "24".into()));
+    }
+    vars
 }
 
 fn apply_session_environment(socket_name: &std::ffi::OsStr) {
@@ -151,6 +181,82 @@ fn warn_about_a_foreign_session() {
          instead of in Glide. Start Glide with `dbus-run-session -- glide` to \
          isolate it."
     );
+}
+
+const SESSION_ENV_VARS: &[&str] = &[
+    "WAYLAND_DISPLAY",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_DESKTOP",
+    "DISPLAY",
+    "GLIDE_IPC_SOCK",
+    "XCURSOR_THEME",
+    "XCURSOR_SIZE",
+];
+
+fn update_session_managers_environment() {
+    let vars: Vec<String> = SESSION_ENV_VARS
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .map(ToString::to_string)
+        .collect();
+
+    let dbus = std::process::Command::new("dbus-update-activation-environment")
+        .arg("--systemd")
+        .args(&vars)
+        .spawn();
+    match dbus {
+        Ok(mut child) => {
+            let _ = child.wait();
+        }
+        Err(err) => tracing::info!("dbus-update-activation-environment unavailable: {err}"),
+    }
+
+    let systemd = std::process::Command::new("systemctl")
+        .args(["--user", "import-environment"])
+        .args(&vars)
+        .spawn();
+    match systemd {
+        Ok(mut child) => {
+            let _ = child.wait();
+        }
+        Err(err) => tracing::info!("systemctl import-environment unavailable: {err}"),
+    }
+}
+
+fn pick_x11_display() -> Option<u32> {
+    (10..64).find(|number| {
+        let lock = std::path::Path::new("/tmp").join(format!(".X{number}-lock"));
+        let socket = std::path::Path::new("/tmp/.X11-unix").join(format!("X{number}"));
+        !lock.exists() && !socket.exists()
+    })
+}
+
+fn spawn_xwayland_satellite() {
+    let Some(display_number) = pick_x11_display() else {
+        tracing::warn!("no free X11 display number; XWayland support disabled");
+        return;
+    };
+    let x11_display = format!(":{display_number}");
+    match std::process::Command::new("xwayland-satellite")
+        .arg(&x11_display)
+        .spawn()
+    {
+        Ok(child) => {
+            unsafe { std::env::set_var("DISPLAY", &x11_display) };
+            tracing::info!(
+                pid = child.id(),
+                x11_display = x11_display.as_str(),
+                "spawned xwayland-satellite; X11 apps land on this display"
+            );
+        }
+        Err(err) => {
+            tracing::info!(
+                "xwayland-satellite not available ({err}); X11 apps will not run. \
+                 Install xwayland-satellite to enable them."
+            );
+        }
+    }
 }
 
 fn spawn_autostart(commands: &[String]) {

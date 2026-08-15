@@ -22,6 +22,7 @@ pub fn decode_wallpaper(png_bytes: &[u8]) -> Option<Pixmap> {
 }
 
 static WALLPAPER_SOURCE: RwLock<Option<Arc<Pixmap>>> = RwLock::new(None);
+static WALLPAPER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn init_wallpaper(override_bytes: Option<&[u8]>) {
     let decoded = override_bytes
@@ -31,17 +32,15 @@ pub fn init_wallpaper(override_bytes: Option<&[u8]>) {
         .write()
         .expect("single-threaded event loop, this lock is never poisoned");
     *slot = decoded.map(Arc::new);
+    WALLPAPER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Scales every pixel's saturation towards grey by `factor`, in place.
-///
-/// `1.0` is a no-op; the overview backdrop uses `0.9`, matching the
-/// design's `filter: saturate(.9)`. Operates on premultiplied BGRA, so
-/// the luma mix is applied to the premultiplied channels directly — that
-/// is equivalent to desaturating the straight colour and re-multiplying,
-/// because the mix is linear and alpha is untouched.
+#[must_use]
+pub fn wallpaper_generation() -> u64 {
+    WALLPAPER_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn desaturate_in_place(buf: &mut [u8], factor: f32) {
-    // Rec. 601 luma weights, in buffer (BGRA) channel order.
     const W_B: f32 = 0.114;
     const W_G: f32 = 0.587;
     const W_R: f32 = 0.299;
@@ -335,8 +334,6 @@ mod tests {
     mod desaturation {
         use super::*;
 
-        /// Spread between the most and least intense colour channel — a
-        /// direct proxy for saturation.
         fn spread(px: &[u8]) -> i32 {
             let channels = [i32::from(px[0]), i32::from(px[1]), i32::from(px[2])];
             channels.iter().max().unwrap() - channels.iter().min().unwrap()
@@ -360,7 +357,6 @@ mod tests {
                 after < before,
                 "saturation did not drop: {before} -> {after}"
             );
-            // 10% is a subtle nudge, not a wash-out.
             assert!(
                 after > before / 2,
                 "0.9 should barely mute the colour, got {before} -> {after}"
@@ -388,7 +384,6 @@ mod tests {
                 let mut buf = vec![128u8, 128, 128, 255];
                 desaturate_in_place(&mut buf, factor);
                 assert_eq!(spread(&buf), 0);
-                // Luma of a grey pixel is that grey, so it must not drift.
                 assert!(
                     buf[..3].iter().all(|&c| c.abs_diff(128) <= 1),
                     "grey drifted at factor {factor}: {buf:?}"

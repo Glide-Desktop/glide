@@ -15,7 +15,7 @@ the project's ambition grew from "compositor" to "desktop environment."
 | M3 | Config (TOML), keybinds, IPC (unix socket + JSON), `glidectl` | Done |
 | M4 | `wlr-layer-shell`, `xdg-decoration` (SSD), spawn `xwayland-satellite`, `cursor-shape-v1`, `fractional-scale-v1`, `viewporter` | 5/7 — missing `ext-session-lock-v1`, `xwayland-satellite` |
 | M5 | `wlr-output-management`, `ext-workspace-v1`, `ext-foreign-toplevel-list-v1`, `ext-idle-notify-v1` | Done (plus `idle-inhibit`, not originally scoped) |
-| M6 | Damage-driven rendering, direct scanout, VRR, animations, overview | ~65% — damage/scanout done via `DrmOutput::render_frame`; overview and titlebar/hover animations done; VRR and multi-GPU/NVIDIA not started |
+| M6 | Damage-driven rendering, direct scanout, VRR, animations, overview | ~80% — damage/scanout done via `DrmOutput::render_frame`; animations reworked (see below); VRR and multi-GPU/NVIDIA not started |
 | M7 | Shell (GTK4 + `gtk4-layer-shell`, or a custom toolkit), `xdg-desktop-portal` backend, settings daemon | Not started — this is what Phase A–D build toward |
 
 Gaps M0–M7 never covered, needed regardless of M6/M7 status: `text-input-v3` + `input-method-v2` + `virtual-keyboard-v1` (IME), `primary-selection` + `wlr-data-control` (middle-click paste, clipboard managers), `xdg-activation-v1`, `wlr-foreign-toplevel-management-v1` (Smithay doesn't implement this one — would need writing by hand), `ext-image-copy-capture-v1` (screenshots/screencast), `security-context-v1`, `pointer-constraints-v1` + `relative-pointer-v1`, `presentation-time`.

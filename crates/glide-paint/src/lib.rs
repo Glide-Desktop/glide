@@ -26,36 +26,76 @@ pub enum TextAlign {
 mod wallpaper;
 pub use wallpaper::{
     compose_wallpaper, decode_wallpaper, desaturate_in_place, draw_wallpaper, draw_wallpaper_into,
-    embedded_wallpaper_bytes, fit_transform, init_wallpaper,
+    embedded_wallpaper_bytes, fit_transform, init_wallpaper, wallpaper_generation,
 };
 
 mod blur;
+pub use blur::box_blur_rgba;
 
 mod border;
 pub use border::{
-    SHADOW_DY_RATIO, ShadowLayerSpec, draw_inset_border, draw_outset_shadow_and_border,
-    shadow_fade_margin,
+    SHADOW_DY_RATIO, ShadowLayerSpec, blit_rounded_backdrop, draw_inset_border,
+    draw_outset_shadow_and_border, shadow_fade_margin,
 };
 
-static NOTO_SANS_BYTES: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
+static EMBEDDED_FONT_BYTES: &[u8] = include_bytes!("fonts/LiberationSans-Regular.ttf");
 
 const DEFAULT_FAMILY: &str = "Adwaita Sans";
 
 static PAINTER: RwLock<Option<Arc<Painter>>> = RwLock::new(None);
+static PAINTER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SYSTEM_FONTS: RwLock<Option<Arc<fontdb::Database>>> = RwLock::new(None);
 
-pub fn init_or_replace(font_size: f32) {
+fn system_font_database() -> Arc<fontdb::Database> {
+    if let Some(db) = SYSTEM_FONTS
+        .read()
+        .expect("single-threaded event loop, this lock is never poisoned")
+        .clone()
+    {
+        return db;
+    }
+
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    db.load_font_data(EMBEDDED_FONT_BYTES.to_vec());
+    let db = Arc::new(db);
+
+    let mut slot = SYSTEM_FONTS
+        .write()
+        .expect("single-threaded event loop, this lock is never poisoned");
+    *slot = Some(Arc::clone(&db));
+    db
+}
+
+pub fn init_or_replace(font_size: f32, family: Option<&str>) {
+    let painter = Arc::new(Painter::new(font_size, family));
     let mut slot = PAINTER
         .write()
         .expect("single-threaded event loop, this lock is never poisoned");
-    *slot = Some(Arc::new(Painter::new(font_size)));
+    *slot = Some(painter);
+    PAINTER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[must_use]
+pub fn painter_generation() -> u64 {
+    PAINTER_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[must_use]
 pub fn current() -> Arc<Painter> {
-    let slot = PAINTER
+    if let Some(painter) = PAINTER
         .read()
-        .expect("single-threaded event loop, this lock is never poisoned");
-    slot.clone().unwrap_or_else(|| Arc::new(Painter::new(14.0)))
+        .expect("single-threaded event loop, this lock is never poisoned")
+        .clone()
+    {
+        return painter;
+    }
+    init_or_replace(14.0, None);
+    PAINTER
+        .read()
+        .expect("single-threaded event loop, this lock is never poisoned")
+        .clone()
+        .expect("init_or_replace just populated the slot")
 }
 
 const DEFAULT_WEIGHT: u16 = Weight::NORMAL.0;
@@ -86,29 +126,31 @@ struct LineMetrics {
 
 impl Painter {
     #[must_use]
-    pub fn new(font_size: f32) -> Self {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        db.load_font_data(NOTO_SANS_BYTES.to_vec());
-        Self::from_db(db, font_size)
+    pub fn new(font_size: f32, family: Option<&str>) -> Self {
+        let shared = system_font_database();
+        Self::from_db((*shared).clone(), font_size, family)
     }
 
     #[cfg(test)]
     #[must_use]
     fn with_embedded_font_only(font_size: f32) -> Self {
         let mut db = fontdb::Database::new();
-        db.load_font_data(NOTO_SANS_BYTES.to_vec());
-        Self::from_db(db, font_size)
+        db.load_font_data(EMBEDDED_FONT_BYTES.to_vec());
+        Self::from_db(db, font_size, None)
     }
 
-    fn from_db(db: fontdb::Database, font_size: f32) -> Self {
-        let font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+    fn from_db(db: fontdb::Database, font_size: f32, family: Option<&str>) -> Self {
+        let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string());
+        let font_system = FontSystem::new_with_locale_and_db(locale, db);
         Self {
             font_system: Mutex::new(font_system),
             swash_cache: Mutex::new(SwashCache::new()),
             width_cache: Mutex::new(HashMap::new()),
             font_size,
-            family: DEFAULT_FAMILY.to_string(),
+            family: family
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(DEFAULT_FAMILY)
+                .to_string(),
         }
     }
 
@@ -328,11 +370,6 @@ impl Painter {
         );
     }
 
-    /// Like `draw_label_over_styled`, but vertically centred within
-    /// `[y_min, y_max)` instead of the whole `(0, height)` canvas — for
-    /// placing more than one line of text into a single shared buffer (a
-    /// popover menu's rows, say), where each line needs to land in its own
-    /// band rather than all collapsing onto the buffer's own centre.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_label_over_styled_in_band(
         &self,
@@ -468,7 +505,7 @@ impl Painter {
             let (x0, y0, x1, y1) = glyph_bounds(width, height);
             let w = x1 - x0;
             let h = y1 - y0;
-            let rx = (w * (1.6 / 7.6)).max(1.0); // 1.6 out of 7.6 width
+            let rx = (w * (1.6 / 7.6)).max(1.0);
             if let Some(path) = rounded_rect(x0, y0, w, h, rx) {
                 stroke(pixmap, &path, fg, height, scale);
             }
@@ -549,12 +586,6 @@ impl Painter {
         buf[..n].copy_from_slice(&bytes[..n]);
     }
 
-    /// Fills a rounded rect *within* an already-populated buffer, blended
-    /// over whatever is already there — unlike `fill_panel_background`,
-    /// which always owns the whole `(0, 0, width, height)` canvas and
-    /// overwrites it outright. This is what lets a single combined buffer
-    /// (the popover panel) hold its own background *and* a per-row hover
-    /// highlight painted on top of it, instead of one buffer per row.
     pub fn fill_rounded_rect_over(
         buf: &mut [u8],
         canvas_width: i32,
@@ -585,13 +616,6 @@ impl Painter {
         ) else {
             return;
         };
-        // `buf` is already in this crate's BGRA output order (the swap
-        // normally happens once, in `skia_pixmap_into_buffer_bytes`, when a
-        // *fresh* tiny-skia Pixmap is exported) — wrapping it directly with
-        // `PixmapMut` skips that whole allocate/export/copy cycle for a
-        // solid fill, but means the fill color itself needs its R/B
-        // channels swapped going in, so what tiny-skia writes as "RGBA"
-        // lands correctly as BGRA in memory.
         let [r, g, b, a] = color.0;
         let bgra_color = tiny_skia::Color::from_rgba(
             b.clamp(0.0, 1.0),
@@ -629,15 +653,6 @@ fn composite_over(dst: [u8; 4], src_rgb_straight: [u8; 3], src_alpha: u8) -> [u8
     ]
 }
 
-/// Draws just the close glyph — an X of `glyph_side` logical px, stroked
-/// `stroke_width` logical px thick — centred on an already-populated
-/// buffer, blended over whatever is there.
-///
-/// [`Painter::draw_icon_close`] cannot be used for a round button: it
-/// paints its own `BUTTON_RADIUS` background and overwrites the buffer, so
-/// it would erase the pill underneath. Its glyph is also sized as a fixed
-/// fraction of the button, whereas the design pins the close cross to an
-/// absolute size regardless of how much padding surrounds it.
 pub fn draw_close_glyph_over(
     buf: &mut [u8],
     canvas_width: i32,
@@ -699,16 +714,6 @@ pub fn draw_close_glyph_over(
     crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
 }
 
-/// Rasterises an SVG into a `side × side` premultiplied BGRA buffer, in
-/// this crate's channel order.
-///
-/// The image is fitted to the square and centred, preserving its aspect
-/// ratio — icon themes are nominally square but a few entries are not, and
-/// stretching them looks worse than letterboxing.
-///
-/// Text is deliberately not supported (`resvg` is built without its text
-/// feature): app icons are shape artwork, and font handling would pull a
-/// whole font stack into the compositor for no benefit.
 #[must_use]
 pub fn render_svg(data: &[u8], side: i32) -> Option<Vec<u8>> {
     let side_u32 = u32::try_from(side).ok()?;
@@ -737,10 +742,6 @@ pub fn render_svg(data: &[u8], side: i32) -> Option<Vec<u8>> {
     Some(skia_pixmap_into_buffer_bytes(pixmap))
 }
 
-/// Decodes a PNG into a `side × side` premultiplied BGRA buffer.
-///
-/// Themes still ship raster icons at fixed sizes, so the decoded image is
-/// scaled to the requested square the same way [`render_svg`] fits an SVG.
 #[must_use]
 pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
     let side_u32 = u32::try_from(side).ok()?;
@@ -775,11 +776,6 @@ pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
     Some(skia_pixmap_into_buffer_bytes(pixmap))
 }
 
-/// Artwork for a dock tile.
-///
-/// These reproduce the design's stroked 20×20 glyph set. Real
-/// `.desktop`/icon-theme lookup is a subsystem of its own; until it
-/// exists, a pinned app names one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockGlyph {
     Terminal,
@@ -788,13 +784,9 @@ pub enum DockGlyph {
     Music,
     Mail,
     Generic,
+    Grid,
 }
 
-/// Draws a dock glyph centred on an already-filled tile.
-///
-/// Paths are authored on the design's 20-unit viewBox and scaled to the
-/// tile, so a bigger tile keeps the same proportions.
-// One arm per glyph; splitting it up would just scatter the artwork.
 #[allow(clippy::too_many_lines)]
 pub fn draw_dock_glyph(
     buf: &mut [u8],
@@ -813,8 +805,6 @@ pub fn draw_dock_glyph(
         return;
     };
 
-    // The design draws a 21px glyph on a 42px tile: half the tile, on a
-    // 20-unit grid.
     #[allow(clippy::cast_precision_loss)]
     let unit = (width.min(height) as f32 * scale as f32) / 2.0 / 20.0;
     #[allow(clippy::cast_precision_loss)]
@@ -903,6 +893,16 @@ pub fn draw_dock_glyph(
                 pb.push_rect(rect);
             }
         }
+        DockGlyph::Grid => {
+            for row in 0..3_u8 {
+                for column in 0..3_u8 {
+                    let (x, y) = p(2.0 + f32::from(column) * 6.0, 2.0 + f32::from(row) * 6.0);
+                    if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 4.0 * unit, 4.0 * unit) {
+                        pb.push_rect(rect);
+                    }
+                }
+            }
+        }
     }
 
     if let Some(path) = pb.finish() {
@@ -931,12 +931,6 @@ pub fn draw_dock_glyph(
     crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
 }
 
-/// Fills a rounded rect with a linear gradient, blended over whatever is
-/// already in `buf`.
-///
-/// The dock's app tiles are gradient-filled in the design
-/// (`linear-gradient(150deg, …)`), and a flat fill reads noticeably
-/// cheaper next to them. The angle is fixed at the design's 150°.
 #[allow(clippy::too_many_arguments)]
 pub fn fill_rounded_rect_gradient_over(
     buf: &mut [u8],
@@ -975,7 +969,6 @@ pub fn fill_rounded_rect_gradient_over(
         return;
     };
 
-    // 150° measured the CSS way: 0deg points up, angles run clockwise.
     let angle = 150.0_f32.to_radians();
     let (dx, dy) = (angle.sin(), -angle.cos());
     let half = (rw.hypot(rh)) / 2.0;
@@ -1014,12 +1007,6 @@ pub fn fill_rounded_rect_gradient_over(
     crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
 }
 
-/// Strokes a rounded-rect outline *within* an already-populated buffer,
-/// blended over what is there.
-///
-/// [`draw_inset_border`] always hugs the buffer's own edges, which is no
-/// use when the shape being outlined sits inset inside a larger canvas —
-/// e.g. a button whose buffer carries a drop-shadow margin around it.
 #[allow(clippy::too_many_arguments)]
 pub fn stroke_rounded_rect_over(
     buf: &mut [u8],
@@ -1835,7 +1822,7 @@ mod tests {
 
     #[test]
     fn init_or_replace_and_current_round_trip() {
-        init_or_replace(21.0);
+        init_or_replace(21.0, None);
         let painter = current();
         assert!((painter.font_size - 21.0).abs() < f32::EPSILON);
 

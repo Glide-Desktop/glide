@@ -82,9 +82,19 @@ pub struct Protocols {
     pub relative_pointer_manager_state: RelativePointerManagerState,
     pub presentation_state: PresentationState,
     pub pointer_constraints_state: PointerConstraintsState,
+    pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
+    pub text_input_state: smithay::wayland::text_input::TextInputManagerState,
+    pub input_method_state: smithay::wayland::input_method::InputMethodManagerState,
+    pub virtual_keyboard_state: smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState,
+    pub keyboard_shortcuts_inhibit_state:
+        smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
+    pub pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
+    pub wlr_output_power_state: crate::handlers::wlr_output_power::WlrOutputPowerState,
+    pub wlr_gamma_control_state: crate::handlers::wlr_gamma_control::WlrGammaControlState,
 }
 
 impl Protocols {
+    #[allow(clippy::too_many_lines)]
     fn new(
         dh: &DisplayHandle,
         loop_handle: &LoopHandle<'static, GlideState>,
@@ -135,6 +145,31 @@ impl Protocols {
         let relative_pointer_manager_state = RelativePointerManagerState::new::<GlideState>(dh);
         let presentation_state = PresentationState::new::<GlideState>(dh, clock_id);
         let pointer_constraints_state = PointerConstraintsState::new::<GlideState>(dh);
+        let text_input_state =
+            smithay::wayland::text_input::TextInputManagerState::new::<GlideState>(dh);
+        let input_method_state = smithay::wayland::input_method::InputMethodManagerState::new::<
+            GlideState,
+            _,
+        >(dh, |_| true);
+        let virtual_keyboard_state =
+            smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState::new::<GlideState, _>(
+                dh,
+                |_| true,
+            );
+        let keyboard_shortcuts_inhibit_state =
+            smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<
+                GlideState,
+            >(dh);
+        let pointer_gestures_state =
+            smithay::wayland::pointer_gestures::PointerGesturesState::new::<GlideState>(dh);
+        let wlr_output_power_state =
+            crate::handlers::wlr_output_power::WlrOutputPowerState::new::<GlideState>(dh);
+        let wlr_gamma_control_state =
+            crate::handlers::wlr_gamma_control::WlrGammaControlState::new::<GlideState>(dh);
+        let session_lock_state = smithay::wayland::session_lock::SessionLockManagerState::new::<
+            GlideState,
+            _,
+        >(dh, |_| true);
 
         Self {
             compositor_state,
@@ -163,8 +198,20 @@ impl Protocols {
             relative_pointer_manager_state,
             presentation_state,
             pointer_constraints_state,
+            session_lock_state,
+            text_input_state,
+            input_method_state,
+            virtual_keyboard_state,
+            keyboard_shortcuts_inhibit_state,
+            pointer_gestures_state,
+            wlr_output_power_state,
+            wlr_gamma_control_state,
         }
     }
+}
+
+pub struct SessionLock {
+    pub surfaces: HashMap<Output, smithay::wayland::session_lock::LockSurface>,
 }
 
 pub struct GlideState {
@@ -208,23 +255,25 @@ pub struct GlideState {
         smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle,
     >,
     pub idle_inhibited_surfaces: HashSet<WlSurface>,
-    /// Captured window pictures being animated — closing windows fading
-    /// away, and windows morphing out of maximized. See `crate::snapshot`.
+    pub windows_awaiting_open_animation: HashSet<glide_layout::WindowId>,
     pub snapshots: crate::snapshot::Snapshots,
-    /// The bottom dock.
     pub dock: crate::dock::Dock,
-    /// Screen captures clients are waiting on. See `crate::screencopy`.
     pub screencopy: crate::screencopy::ScreencopyState,
+    pub launcher: Option<crate::launcher::Launcher>,
+    pub launcher_theme: crate::launcher::LauncherTheme,
+    pub launcher_icons: crate::icon::IconLoader,
     pub ipc_subscribers: crate::ipc::IpcSubscribers,
 
-    /// Set by `KeyAction::Screenshot`, consumed by the very next
-    /// `render_surface` call (whichever output redraws first), which
-    /// captures that output's just-built render elements to a PNG. A
-    /// bare bool rather than a per-output request queue — good enough
-    /// for a single-monitor debug capture, not meant as a real
-    /// multi-output screenshot tool (that's `ext-image-copy-capture-v1`,
-    /// see `docs/ROADMAP.md`).
     pub pending_screenshot: bool,
+
+    pub font_family: Option<String>,
+    pub outputs_blanked: bool,
+    pub blank_after: Option<std::time::Duration>,
+    pub last_activity: std::time::Instant,
+    pub input_config: crate::config::InputConfig,
+    pub input_devices: Vec<smithay::reexports::input::Device>,
+    pub output_configs: Vec<crate::config::OutputConfig>,
+    pub session_lock: Option<SessionLock>,
 }
 
 impl GlideState {
@@ -249,6 +298,7 @@ impl GlideState {
             .expect("the default XKB keymap should always compile");
 
         seat.add_pointer();
+        seat.add_touch();
 
         let space = Space::default();
 
@@ -291,11 +341,23 @@ impl GlideState {
 
             foreign_toplevel_handles,
             idle_inhibited_surfaces: HashSet::new(),
+            windows_awaiting_open_animation: HashSet::new(),
             snapshots: crate::snapshot::Snapshots::default(),
             dock: crate::dock::Dock::new(&crate::config::DockConfig::default()),
             screencopy,
+            launcher: None,
+            launcher_theme: crate::launcher::LauncherTheme::default(),
+            launcher_icons: crate::icon::IconLoader::default(),
             ipc_subscribers: crate::ipc::IpcSubscribers::default(),
             pending_screenshot: false,
+            font_family: None,
+            outputs_blanked: false,
+            blank_after: Some(std::time::Duration::from_secs(600)),
+            last_activity: std::time::Instant::now(),
+            input_config: crate::config::InputConfig::default(),
+            input_devices: Vec::new(),
+            output_configs: Vec::new(),
+            session_lock: None,
         }
     }
 
@@ -409,6 +471,7 @@ impl GlideState {
             self.space.unmap_elem(&window);
             self.window_to_id.remove(&window);
             self.window_map.remove(&id);
+            self.windows_awaiting_open_animation.remove(&id);
             self.layout.remove_window(id);
             if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
                 handle.send_closed();
@@ -458,7 +521,32 @@ impl GlideState {
         }
     }
 
+    pub fn focus_lock_surface(&mut self) {
+        let target = self
+            .session_lock
+            .as_ref()
+            .and_then(|lock| {
+                let output = self.space.outputs().next()?;
+                lock.surfaces.get(output)
+            })
+            .map(|surface| surface.wl_surface().clone());
+        let Some(target) = target else {
+            return;
+        };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        if keyboard.current_focus().as_ref() != Some(&target) {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, Some(target), serial);
+        }
+    }
+
     fn apply_keyboard_focus(&mut self) {
+        if self.session_lock.is_some() {
+            self.focus_lock_surface();
+            return;
+        }
         if self.layer_focus.as_ref().is_some_and(|l| !l.alive()) {
             self.layer_focus = None;
         }
@@ -517,6 +605,7 @@ impl GlideState {
 
         self.window_map.insert(id, window.clone());
         self.window_to_id.insert(window.clone(), id);
+        self.windows_awaiting_open_animation.insert(id);
         self.ipc_subscribers
             .broadcast(&glide_ipc::Event::WindowOpened { id: id.as_u64() });
 
@@ -562,6 +651,7 @@ impl GlideState {
                 self.capture_closing_window(id, &window);
                 self.space.unmap_elem(&window);
                 self.window_to_id.remove(&window);
+                self.windows_awaiting_open_animation.remove(&id);
                 self.layout.remove_window(id);
                 if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
                     handle.send_closed();
@@ -586,16 +676,6 @@ impl GlideState {
         self.window_to_id.get(window).copied()
     }
 
-    /// Whether a window's size is currently owned by the compositor and so
-    /// must not be changed by dragging.
-    ///
-    /// A maximized or fullscreen window is sized by Glide, and the client
-    /// is told as much through its `xdg_toplevel` states. Resizing it
-    /// without first leaving that state produces a window of arbitrary
-    /// size that still believes it is maximized — and clients act on that
-    /// belief: GTK stops rounding its corners and drops the shadow it
-    /// reserves for floating windows, so the result renders with hard
-    /// square edges no matter what size it ends up.
     #[must_use]
     pub fn is_size_locked(&self, window: &GlideWindow) -> bool {
         self.window_id(window)
@@ -668,6 +748,9 @@ impl GlideState {
     }
 
     pub fn open_overview(&mut self) {
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher.begin_close();
+        }
         if !self.layout.open_overview() {
             return;
         }
@@ -722,23 +805,134 @@ impl GlideState {
         }
     }
 
+    pub fn apply_output_configs(&mut self) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        let mut next_x = 0;
+        for output in outputs {
+            let config = self
+                .output_configs
+                .iter()
+                .find(|config| config.name == output.name())
+                .cloned();
+            if let Some(scale) = config.as_ref().and_then(|config| config.scale) {
+                if scale > 0.0 {
+                    output.change_current_state(
+                        None,
+                        None,
+                        Some(smithay::output::Scale::Fractional(scale)),
+                        None,
+                    );
+                }
+            }
+            let position: Point<i32, Logical> = config
+                .as_ref()
+                .and_then(|config| config.position)
+                .map_or_else(|| Point::from((next_x, 0)), |p| Point::from((p[0], p[1])));
+            output.change_current_state(None, None, None, Some(position));
+            self.space.map_output(&output, position);
+
+            let logical_width = output.current_mode().map_or(0, |mode| {
+                let fractional = output.current_scale().fractional_scale();
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    (f64::from(mode.size.w) / fractional).round() as i32
+                }
+            });
+            next_x = next_x.max(position.x + logical_width);
+        }
+        self.snapshots.clear();
+        self.sync_layout_outputs();
+        self.reconcile_space();
+        self.queue_redraw();
+    }
+
+    #[must_use]
+    pub fn is_idle_inhibited(&self) -> bool {
+        self.idle_inhibited_surfaces
+            .iter()
+            .any(smithay::utils::IsAlive::alive)
+    }
+
+    #[must_use]
+    pub fn active_layout(&mut self) -> Option<(usize, String)> {
+        let keyboard = self.seat.get_keyboard()?;
+        Some(keyboard.with_xkb_state(self, |context| {
+            let xkb = context
+                .xkb()
+                .lock()
+                .expect("single-threaded event loop, this lock is never poisoned");
+            let layout = xkb.active_layout();
+            (layout.0 as usize, xkb.layout_name(layout).to_string())
+        }))
+    }
+
+    pub fn cycle_keyboard_layout(&mut self) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        keyboard.with_xkb_state(self, |mut context| context.cycle_next_layout());
+        self.broadcast_layout();
+    }
+
+    pub fn broadcast_layout(&mut self) {
+        let Some((index, name)) = self.active_layout() else {
+            return;
+        };
+        self.ipc_subscribers
+            .broadcast(&glide_ipc::Event::LayoutChanged { index, name });
+    }
+
+    pub fn apply_input_config(&mut self) {
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            if let Err(err) = keyboard.set_xkb_config(self, self.input_config.clone().xkb()) {
+                tracing::error!(?err, "failed to apply the xkb config");
+            }
+            keyboard.change_repeat_info(
+                self.input_config.repeat_rate,
+                self.input_config.repeat_delay,
+            );
+        }
+        let mut devices = std::mem::take(&mut self.input_devices);
+        for device in &mut devices {
+            self.configure_input_device(device);
+        }
+        self.input_devices = devices;
+    }
+
+    pub fn configure_input_device(&self, device: &mut smithay::reexports::input::Device) {
+        use smithay::reexports::input::AccelProfile;
+
+        let config = &self.input_config;
+        if device.config_tap_finger_count() > 0 {
+            let _ = device.config_tap_set_enabled(config.tap_to_click);
+        }
+        if device.config_scroll_has_natural_scroll() {
+            let _ = device.config_scroll_set_natural_scroll_enabled(config.natural_scroll);
+        }
+        if device.config_accel_is_available() {
+            let profile = match config.accel_profile {
+                crate::config::AccelProfileConfig::Adaptive => AccelProfile::Adaptive,
+                crate::config::AccelProfileConfig::Flat => AccelProfile::Flat,
+            };
+            let _ = device.config_accel_set_profile(profile);
+            let _ = device.config_accel_set_speed(config.accel_speed.clamp(-1.0, 1.0));
+        }
+    }
+
     #[must_use]
     pub fn any_button_hover_animating(&self) -> bool {
         self.window_map.values().any(|window| {
-            window
-                .try_decoration_state()
-                .is_some_and(|state| state.header.is_hover_animating())
+            window.try_decoration_state().is_some_and(|state| {
+                state.header.is_hover_animating()
+                    || state
+                        .box_deco_fade
+                        .as_ref()
+                        .is_some_and(|fade| fade.alpha().is_some())
+            })
         })
     }
 
-    /// Captures a window on its way out so it can fade instead of
-    /// blinking away.
-    ///
-    /// Has to run before the window is unmapped and its surfaces torn
-    /// down — the capture renders from live surface state.
     fn capture_closing_window(&mut self, id: glide_layout::WindowId, window: &GlideWindow) {
-        // In the overview the window is on screen at its preview slot, not
-        // at its real geometry, so that is where the fade has to start.
         let overview_rect = self.overview.as_ref().and_then(|ui| ui.preview_rect(id));
 
         let target_frame = if let Some(rect) = overview_rect {
@@ -772,18 +966,6 @@ impl GlideState {
         );
     }
 
-    /// Takes a window out of maximized or fullscreen so it can be dragged,
-    /// re-anchoring it under the pointer and morphing it into place.
-    ///
-    /// Returns whether anything changed. Dragging a window whose size the
-    /// compositor owns has to restore it first — otherwise the client goes
-    /// on believing it is maximized, and clients render differently when
-    /// they do (GTK squares its corners and drops its shadow).
-    ///
-    /// The restored window is placed so the pointer keeps the same
-    /// proportional grip on its titlebar: grab a maximized window near its
-    /// right edge and the smaller window lands under your cursor rather
-    /// than leaping away to wherever it last floated.
     pub fn restore_for_move(&mut self, window: &GlideWindow, pointer: Point<f64, Logical>) -> bool {
         if !self.is_size_locked(window) {
             return false;
@@ -813,7 +995,6 @@ impl GlideState {
             return false;
         };
 
-        // Keep the pointer at the same fraction across the titlebar.
         let grip = if from.size.w > 0 {
             (pointer.x - f64::from(from.loc.x)) / f64::from(from.size.w)
         } else {
@@ -829,9 +1010,6 @@ impl GlideState {
         );
         self.reconcile_space();
 
-        // The client resizes on its own schedule, so its buffer is still
-        // the maximized one at this point — exactly the picture the morph
-        // needs to start from.
         if let Some((scale, output_scale)) = output_scales {
             let to = self.layout.window_state(id).map_or(from, |state| {
                 let frame = state.frame_geometry();
@@ -855,7 +1033,99 @@ impl GlideState {
         true
     }
 
-    /// The rect the dock lays itself out in.
+    pub fn toggle_launcher(&mut self) {
+        match self.launcher.as_mut() {
+            Some(launcher) if !launcher.is_closing() => launcher.begin_close(),
+            Some(launcher) => launcher.reopen(),
+            None => {
+                self.begin_close_overview(None);
+                let area = self.launcher_area();
+                self.launcher = Some(crate::launcher::Launcher::new(Vec::new(), area));
+                self.spawn_launcher_loader();
+            }
+        }
+        self.queue_redraw();
+    }
+
+    fn spawn_launcher_loader(&mut self) {
+        let icon_theme = self.dock.icon_theme();
+        let output_scale = self
+            .space
+            .outputs()
+            .next()
+            .map_or(1, |output| output.current_scale().integer_scale());
+
+        let (sender, receiver) = smithay::reexports::calloop::channel::channel();
+        std::thread::spawn(move || {
+            let apps = crate::icon::list_applications();
+            let mut loader = crate::icon::IconLoader::new(icon_theme);
+            let side = crate::launcher::icon_side() * output_scale.max(1);
+            let pixels: Vec<Option<Vec<u8>>> = apps
+                .iter()
+                .map(|app| loader.load_named(&app.icon, side).map(<[u8]>::to_vec))
+                .collect();
+            let _ = sender.send((apps, pixels, output_scale));
+        });
+
+        let result = self
+            .loop_handle
+            .insert_source(receiver, |event, (), state| {
+                if let smithay::reexports::calloop::channel::Event::Msg((apps, pixels, scale)) =
+                    event
+                {
+                    tracing::info!(count = apps.len(), "launcher apps loaded");
+                    if let Some(launcher) = state.launcher.as_mut() {
+                        launcher.set_apps(apps, &pixels, scale);
+                    }
+                    state.queue_redraw();
+                }
+            });
+        if let Err(err) = result {
+            tracing::error!(?err, "failed to register the launcher loader");
+        }
+    }
+
+    pub fn tick_launcher(&mut self) -> bool {
+        let Some(launcher) = self.launcher.as_mut() else {
+            return false;
+        };
+        if !launcher.tick() {
+            self.launcher = None;
+            return true;
+        }
+        launcher.is_animating()
+    }
+
+    pub fn activate_launcher_app(&mut self, index: usize) {
+        let command = self
+            .launcher
+            .as_ref()
+            .and_then(|launcher| launcher.apps().get(index))
+            .map(|app| app.command.clone());
+        let Some(command) = command else {
+            return;
+        };
+
+        if let Err(err) = crate::spawn_shell_command(&command) {
+            tracing::error!(%command, ?err, "failed to launch from the grid");
+        }
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher.begin_close();
+        }
+        self.queue_redraw();
+    }
+
+    #[must_use]
+    pub fn launcher_area(&self) -> Rectangle<i32, Logical> {
+        let area = self.dock_area();
+        if !self.dock.is_enabled() {
+            return area;
+        }
+        let reserved = self.dock.rect(area).size.h + self.dock.bottom_margin() * 2;
+        let height = (area.size.h - reserved).max(1);
+        Rectangle::new(area.loc, smithay::utils::Size::from((area.size.w, height)))
+    }
+
     #[must_use]
     pub fn dock_area(&self) -> Rectangle<i32, Logical> {
         let area = self.layout.primary_output_work_area();
@@ -865,18 +1135,12 @@ impl GlideState {
         )
     }
 
-    /// Rebuilds the dock from the current window list. Returns whether
-    /// anything changed.
     pub fn refresh_dock(&mut self) -> bool {
         let focused = self.layout.focused_window();
 
-        // Group windows by app, so three terminals share one tile.
         let mut apps: Vec<crate::dock::RunningApp> = Vec::new();
         for (id, window) in &self.window_map {
             let (app_id, title) = window.identity();
-            // Windows without an app id cannot be grouped or matched
-            // against a pinned tile; fall back to the title so they still
-            // get somewhere to appear.
             let key = app_id
                 .clone()
                 .filter(|id| !id.trim().is_empty())
@@ -892,49 +1156,290 @@ impl GlideState {
             {
                 existing.focused |= is_focused;
             } else {
+                let name = title
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| key.clone());
                 apps.push(crate::dock::RunningApp {
-                    name: app_id.unwrap_or_else(|| key.clone()),
+                    name,
                     app_id: key,
                     focused: is_focused,
                 });
             }
         }
 
-        // Stable order, so tiles do not shuffle as the window map's
-        // iteration order changes.
         apps.sort_by_key(|app| app.app_id.to_lowercase());
 
         self.dock.set_running(&apps)
     }
 
-    /// Handles a click on a dock tile: focus the app if it is already
-    /// running, otherwise launch it.
     pub fn activate_dock_item(&mut self, index: usize) {
         let Some(item) = self.dock.items().get(index).cloned() else {
             return;
         };
 
-        let existing = self.window_map.iter().find_map(|(id, window)| {
-            let (app_id, _) = window.identity();
-            app_id
-                .as_deref()
-                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(&item.app_id))
-                .then_some(*id)
-        });
+        let mut existing: Vec<_> = self
+            .window_map
+            .iter()
+            .filter_map(|(id, window)| {
+                let (app_id, title) = window.identity();
+                let key = app_id
+                    .filter(|candidate| !candidate.trim().is_empty())
+                    .or_else(|| title.filter(|t| !t.trim().is_empty()));
+                key.is_some_and(|candidate| candidate.eq_ignore_ascii_case(&item.app_id))
+                    .then_some(*id)
+            })
+            .collect();
+        existing.sort();
 
-        if let Some(id) = existing {
-            self.focus_window(id);
+        if !existing.is_empty() {
+            let mut target = existing[0];
+            if let Some(focused) = self.layout.focused_window() {
+                if let Some(pos) = existing.iter().position(|&id| id == focused) {
+                    target = existing[(pos + 1) % existing.len()];
+                }
+            }
+            self.focus_window(target);
         } else if item.command.trim().is_empty() {
-            // A tile that only exists because the app is running has no
-            // command to fall back on.
             tracing::debug!(app_id = %item.app_id, "dock tile has no window and no command");
         } else if let Err(err) = crate::spawn_shell_command(&item.command) {
             tracing::error!(command = %item.command, ?err, "failed to launch from the dock");
         }
     }
 
-    /// Fractional and integer scale of the output being rendered to.
-    fn output_scales(&self) -> Option<(smithay::utils::Scale<f64>, i32)> {
+    pub fn begin_window_open_animation(&self, id: glide_layout::WindowId, window: &GlideWindow) {
+        if self
+            .layout
+            .window_state(id)
+            .is_some_and(|s| s.maximized || s.fullscreen)
+        {
+            return;
+        }
+        let Some(frame) = self.frame_rect(id) else {
+            return;
+        };
+        let origin = window
+            .identity()
+            .0
+            .and_then(|app_id| self.dock.tile_rect_for_app(self.dock_area(), &app_id));
+        window.begin_open_animation(origin, frame);
+    }
+
+    fn frame_rect(&self, id: glide_layout::WindowId) -> Option<Rectangle<i32, Logical>> {
+        let frame = self.layout.window_state(id)?.frame_geometry();
+        Some(Rectangle::new(
+            Point::from((frame.loc.x, frame.loc.y)),
+            smithay::utils::Size::from((frame.size.width, frame.size.height)),
+        ))
+    }
+
+    fn push_morph(
+        &mut self,
+        window: &GlideWindow,
+        from: Rectangle<i32, Logical>,
+        to: Rectangle<i32, Logical>,
+    ) {
+        window.begin_geometry_animation(from, to);
+
+        let Some((scale, output_scale)) = self.output_scales() else {
+            return;
+        };
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        self.snapshots.push_morph(
+            &mut device.gles_renderer,
+            window,
+            from,
+            to,
+            scale,
+            output_scale,
+        );
+    }
+
+    pub fn morph_geometry<F>(&mut self, id: glide_layout::WindowId, mutate: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        let before = self.frame_rect(id);
+        let window = self.window_map.get(&id).cloned();
+
+        mutate(self);
+        self.reconcile_space();
+
+        let (Some(window), Some(from), Some(to)) = (window, before, self.frame_rect(id)) else {
+            return;
+        };
+        if to != from {
+            self.push_morph(&window, from, to);
+        }
+    }
+
+    #[must_use]
+    pub fn any_window_geometry_animating(&self) -> bool {
+        self.window_map
+            .values()
+            .any(crate::window::GlideWindow::is_geometry_animating)
+    }
+
+    pub fn switch_workspace_animated(&mut self, target: glide_layout::WorkspaceTarget) {
+        let before_index = self.active_workspace_index();
+        let before: Vec<(glide_layout::WindowId, Rectangle<i32, Logical>)> = self
+            .layout
+            .visible_windows()
+            .filter_map(|state| Some((state.id, self.frame_rect(state.id)?)))
+            .collect();
+
+        self.layout.switch_to_workspace(target);
+        self.reconcile_space();
+
+        let after_index = self.active_workspace_index();
+        if after_index == before_index {
+            return;
+        }
+
+        let Some(travel) = self.workspace_travel(before_index, after_index) else {
+            return;
+        };
+
+        let after: Vec<(glide_layout::WindowId, Rectangle<i32, Logical>)> = self
+            .layout
+            .visible_windows()
+            .filter_map(|state| Some((state.id, self.frame_rect(state.id)?)))
+            .collect();
+
+        for (id, rect) in &after {
+            let Some(window) = self.window_map.get(id).cloned() else {
+                continue;
+            };
+            let mut from = *rect;
+            from.loc.x -= travel;
+            window.begin_geometry_animation(from, *rect);
+        }
+
+        let arriving: HashSet<glide_layout::WindowId> = after.iter().map(|(id, _)| *id).collect();
+        for (id, rect) in before {
+            if arriving.contains(&id) {
+                continue;
+            }
+            let Some(window) = self.window_map.get(&id).cloned() else {
+                continue;
+            };
+            let mut to = rect;
+            to.loc.x += travel;
+            self.push_workspace_slide(&window, rect, to);
+        }
+    }
+
+    fn active_workspace_index(&self) -> Option<usize> {
+        let active = self.layout.active_workspace();
+        self.layout
+            .workspaces()
+            .position(|workspace| workspace.id == active)
+    }
+
+    fn workspace_travel(&self, before: Option<usize>, after: Option<usize>) -> Option<i32> {
+        let (before, after) = (before?, after?);
+        let width = self
+            .space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .map(|geometry| geometry.size.w)
+            .max()?;
+        if width <= 0 {
+            return None;
+        }
+        Some(if after > before { -width } else { width })
+    }
+
+    fn push_workspace_slide(
+        &mut self,
+        window: &GlideWindow,
+        from: Rectangle<i32, Logical>,
+        to: Rectangle<i32, Logical>,
+    ) {
+        let Some((scale, output_scale)) = self.output_scales() else {
+            return;
+        };
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        self.snapshots.push_slide(
+            &mut device.gles_renderer,
+            window,
+            from,
+            to,
+            scale,
+            output_scale,
+        );
+    }
+
+    pub fn minimize_with_flight(&mut self, id: glide_layout::WindowId) {
+        let restoring = self
+            .layout
+            .window_state(id)
+            .is_some_and(|state| state.minimized);
+        if restoring {
+            let origin = self.minimize_target(id);
+            self.layout.toggle_minimize(id);
+            self.reconcile_space();
+
+            if let (Some(origin), Some(frame), Some(window)) = (
+                origin,
+                self.frame_rect(id),
+                self.window_map.get(&id).cloned(),
+            ) {
+                window.begin_open_animation(Some(origin), frame);
+            }
+            return;
+        }
+
+        if let (Some(from), Some(window), Some(to)) = (
+            self.frame_rect(id),
+            self.window_map.get(&id).cloned(),
+            self.minimize_target(id),
+        ) {
+            if let Some((scale, output_scale)) = self.output_scales() {
+                if let Some(device) = self.backend_data.device.as_mut() {
+                    self.snapshots.push_flight(
+                        &mut device.gles_renderer,
+                        &window,
+                        from,
+                        to,
+                        scale,
+                        output_scale,
+                    );
+                }
+            }
+        }
+
+        self.layout.toggle_minimize(id);
+        self.reconcile_space();
+    }
+
+    fn minimize_target(&self, id: glide_layout::WindowId) -> Option<Rectangle<i32, Logical>> {
+        let area = self.dock_area();
+        if !self.dock.is_enabled() {
+            return None;
+        }
+
+        let tile = self
+            .window_map
+            .get(&id)
+            .and_then(|window| window.identity().0)
+            .and_then(|app_id| self.dock.tile_rect_for_app(area, &app_id));
+        if tile.is_some() {
+            return tile;
+        }
+
+        let dock = self.dock.rect(area);
+        let side = dock.size.h.max(1);
+        Some(Rectangle::new(
+            Point::from((dock.loc.x + (dock.size.w - side) / 2, dock.loc.y)),
+            smithay::utils::Size::from((side, side)),
+        ))
+    }
+
+    pub(crate) fn output_scales(&self) -> Option<(smithay::utils::Scale<f64>, i32)> {
         let output = self.space.outputs().next()?;
         Some((
             smithay::utils::Scale::from(output.current_scale().fractional_scale()),
@@ -942,7 +1447,6 @@ impl GlideState {
         ))
     }
 
-    /// Whether any window still owes frames to its appear animation.
     #[must_use]
     pub fn any_window_open_animating(&self) -> bool {
         self.window_map
@@ -953,7 +1457,7 @@ impl GlideState {
     pub fn refresh_painter_font(&self) {
         #[allow(clippy::cast_possible_truncation)]
         let font_px = (f64::from(self.decoration_theme.height).max(14.0) * 0.45) as f32;
-        crate::paint::init_or_replace(font_px.clamp(10.0, 18.0));
+        crate::paint::init_or_replace(font_px.clamp(10.0, 18.0), self.font_family.as_deref());
     }
 
     pub fn refresh_overview(&mut self) {
@@ -962,10 +1466,6 @@ impl GlideState {
         }
         let entries = self.overview_entries();
 
-        // Nothing left to show. Staying in the overview would strand the
-        // user on an empty scrim with no window to click and no preview to
-        // navigate to — closing the last window has to bow out of the mode
-        // as well.
         if entries.is_empty() {
             self.begin_close_overview(None);
             return;
@@ -1118,6 +1618,14 @@ impl GlideState {
                 .contains(pos)
                 .then(|| (o.clone(), geometry.loc.to_f64()))
         })?;
+
+        if let Some(lock) = self.session_lock.as_ref() {
+            let surface = lock.surfaces.get(&output)?;
+            return Some((
+                crate::focus::PointerFocusTarget::from(surface.wl_surface().clone()),
+                output_loc,
+            ));
+        }
 
         let upper = Self::layer_surface_under(&output, output_loc, pos, true);
         if upper.is_some() {

@@ -2,10 +2,12 @@ use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
         KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        TouchEvent as BackendTouchEvent,
     },
     input::{
         keyboard::{FilterResult, Keysym, ModifiersState, keysyms, xkb},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
+        touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
     wayland::{
@@ -40,6 +42,8 @@ pub enum KeyAction {
     OverviewNav(Direction),
     Exec(String),
     Screenshot,
+    ToggleLauncher,
+    LauncherPage(bool),
     None,
 }
 
@@ -83,31 +87,47 @@ fn vt_switch_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAc
         .map(|raw| KeyAction::VtSwitch((raw - keysyms::KEY_XF86Switch_VT_1 + 1).cast_signed()))
 }
 
-/// Configured keybinds that must keep firing even while overview mode has
-/// taken over key dispatch (see `overview_active_shortcut`) — actions that
-/// don't touch window/workspace state the way overview's own navigation
-/// assumes exclusive control over, so they're safe to let through
-/// regardless of what's on screen.
 fn is_global_shortcut(action: &KeyAction) -> bool {
     matches!(action, KeyAction::Screenshot)
 }
 
-/// Resolves a key press while overview mode is open. Overview's own
-/// navigation shortcuts take priority, then VT-switching (always
-/// available, same as outside overview), then — unlike outside overview —
-/// only the subset of configured keybinds `is_global_shortcut` allows
-/// through, so e.g. the screenshot key still works without overview's
-/// dedicated arrow/enter/escape handling having to know about every
-/// possible user keybind. Anything left over resolves to `KeyAction::None`
-/// (still *intercepted*, i.e. not forwarded to a client — overview owns
-/// the keyboard while it's open — just a no-op).
+fn launcher_active_shortcut(
+    keybinds: &[ResolvedKeybind],
+    modifiers: &ModifiersState,
+    raw_syms: &[Keysym],
+    modified_sym: Keysym,
+) -> KeyAction {
+    launcher_shortcut(raw_syms, modified_sym)
+        .or_else(|| vt_switch_shortcut(raw_syms, modified_sym))
+        .or_else(|| {
+            process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym).filter(
+                |action| is_global_shortcut(action) || matches!(action, KeyAction::ToggleLauncher),
+            )
+        })
+        .unwrap_or(KeyAction::None)
+}
+
+fn launcher_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
+    let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+
+    if matches(Keysym::Escape) {
+        Some(KeyAction::ToggleLauncher)
+    } else if matches(Keysym::Left) || matches(Keysym::Page_Up) {
+        Some(KeyAction::LauncherPage(false))
+    } else if matches(Keysym::Right) || matches(Keysym::Page_Down) {
+        Some(KeyAction::LauncherPage(true))
+    } else {
+        None
+    }
+}
+
 fn overview_active_shortcut(
     keybinds: &[ResolvedKeybind],
     modifiers: &ModifiersState,
     raw_syms: &[Keysym],
     modified_sym: Keysym,
 ) -> KeyAction {
-    overview_shortcut(raw_syms, modified_sym)
+    overview_shortcut(modifiers, raw_syms, modified_sym)
         .or_else(|| vt_switch_shortcut(raw_syms, modified_sym))
         .or_else(|| {
             process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
@@ -116,12 +136,21 @@ fn overview_active_shortcut(
         .unwrap_or(KeyAction::None)
 }
 
-fn overview_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
+fn overview_shortcut(
+    modifiers: &ModifiersState,
+    raw_syms: &[Keysym],
+    modified_sym: Keysym,
+) -> Option<KeyAction> {
     let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+
+    // Space selects, but not while a modifier is held: the default layout
+    // switch is Super+Space, and it must not also pick a window.
+    let plain_space =
+        matches(Keysym::space) && !modifiers.logo && !modifiers.ctrl && !modifiers.alt;
 
     if matches(Keysym::Escape) {
         Some(KeyAction::OverviewCancel)
-    } else if matches(Keysym::Return) || matches(Keysym::KP_Enter) || matches(Keysym::space) {
+    } else if matches(Keysym::Return) || matches(Keysym::KP_Enter) || plain_space {
         Some(KeyAction::OverviewSelect)
     } else if matches(Keysym::Left) || matches(Keysym::h) {
         Some(KeyAction::OverviewNav(Direction::Left))
@@ -145,19 +174,28 @@ fn clamp_to_outputs(
     }
 
     let (pos_x, pos_y) = pos.into();
-    let max_x = outputs.iter().fold(0, |acc, r| acc + r.size.w);
-    let clamped_x = pos_x.clamp(0.0, f64::from(max_x));
 
-    #[allow(clippy::cast_possible_truncation)]
-    let max_y = outputs
-        .iter()
-        .find(|r| r.contains((clamped_x as i32, 0)))
-        .map(|r| r.size.h);
+    let mut best: Option<(f64, Point<f64, Logical>)> = None;
+    for rect in outputs {
+        let left = f64::from(rect.loc.x);
+        let top = f64::from(rect.loc.y);
+        let right = f64::from(rect.loc.x + rect.size.w);
+        let bottom = f64::from(rect.loc.y + rect.size.h);
 
-    match max_y {
-        Some(max_y) => (clamped_x, pos_y.clamp(0.0, f64::from(max_y))).into(),
-        None => (clamped_x, pos_y).into(),
+        let clamped: Point<f64, Logical> =
+            (pos_x.clamp(left, right), pos_y.clamp(top, bottom)).into();
+        let (dx, dy) = (clamped.x - pos_x, clamped.y - pos_y);
+        let distance = dx * dx + dy * dy;
+
+        if distance == 0.0 {
+            return pos;
+        }
+        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best = Some((distance, clamped));
+        }
     }
+
+    best.map_or(pos, |(_, clamped)| clamped)
 }
 
 impl GlideState {
@@ -165,6 +203,10 @@ impl GlideState {
         self.protocols
             .idle_notifier_state
             .notify_activity(&self.seat);
+        self.last_activity = std::time::Instant::now();
+        if self.outputs_blanked {
+            self.set_outputs_blanked(false);
+        }
         match event {
             InputEvent::Keyboard { event, .. } => self.handle_keyboard_event::<I>(&event),
             InputEvent::PointerMotion { event, .. } => self.handle_pointer_motion::<I>(&event),
@@ -173,10 +215,98 @@ impl GlideState {
             }
             InputEvent::PointerButton { event, .. } => self.handle_pointer_button::<I>(&event),
             InputEvent::PointerAxis { event, .. } => self.handle_pointer_axis::<I>(&event),
+            InputEvent::TouchDown { event } => self.handle_touch_down::<I>(&event),
+            InputEvent::TouchUp { event } => self.handle_touch_up::<I>(&event),
+            InputEvent::TouchMotion { event } => self.handle_touch_motion::<I>(&event),
+            InputEvent::TouchFrame { .. } => self.handle_touch_frame(),
+            InputEvent::TouchCancel { .. } => self.handle_touch_cancel(),
             _ => {}
         }
     }
 
+    fn touch_position<I: InputBackend>(
+        &self,
+        event: &impl AbsolutePositionEvent<I>,
+    ) -> Option<Point<f64, Logical>> {
+        let output = self.space.outputs().next()?;
+        let geometry = self.space.output_geometry(output)?;
+        Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
+    }
+
+    fn handle_touch_down<I: InputBackend>(&mut self, event: &I::TouchDownEvent) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        let Some(position) = self.touch_position::<I>(event) else {
+            return;
+        };
+        self.queue_redraw();
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self
+            .surface_under(position)
+            .and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), loc.to_f64())));
+        touch.down(
+            self,
+            under,
+            &DownEvent {
+                slot: event.slot(),
+                location: position,
+                serial,
+                time: event.time_msec(),
+            },
+        );
+    }
+
+    fn handle_touch_up<I: InputBackend>(&mut self, event: &I::TouchUpEvent) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        touch.up(
+            self,
+            &UpEvent {
+                slot: event.slot(),
+                serial,
+                time: event.time_msec(),
+            },
+        );
+    }
+
+    fn handle_touch_motion<I: InputBackend>(&mut self, event: &I::TouchMotionEvent) {
+        let Some(touch) = self.seat.get_touch() else {
+            return;
+        };
+        let Some(position) = self.touch_position::<I>(event) else {
+            return;
+        };
+        self.queue_redraw();
+        let under = self
+            .surface_under(position)
+            .and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), loc.to_f64())));
+        touch.motion(
+            self,
+            under,
+            &TouchMotionEvent {
+                slot: event.slot(),
+                location: position,
+                time: event.time_msec(),
+            },
+        );
+    }
+
+    fn handle_touch_frame(&mut self) {
+        if let Some(touch) = self.seat.get_touch() {
+            touch.frame(self);
+        }
+    }
+
+    fn handle_touch_cancel(&mut self) {
+        if let Some(touch) = self.seat.get_touch() {
+            touch.cancel(self);
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn handle_keyboard_event<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent) {
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time_msec(event);
@@ -186,6 +316,14 @@ impl GlideState {
         let keybinds = std::mem::take(&mut self.keybinds);
 
         let overview_active = self.layout.overview_active();
+        let launcher_open = self
+            .launcher
+            .as_ref()
+            .is_some_and(|launcher| !launcher.is_closing());
+        let locked = self.session_lock.is_some();
+        if locked {
+            self.focus_lock_surface();
+        }
 
         let exclusive_layer = self.exclusive_layer_surface();
         if let Some(layer) = exclusive_layer {
@@ -197,6 +335,11 @@ impl GlideState {
                 .layer_focus
                 .as_ref()
                 .is_some_and(smithay::desktop::LayerSurface::can_receive_keyboard_focus);
+
+        let shortcuts_inhibited = {
+            use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
+            self.seat.keyboard_shortcuts_inhibited()
+        };
 
         let keyboard = self
             .seat
@@ -210,6 +353,12 @@ impl GlideState {
             time,
             |_, modifiers, handle| {
                 let keysym = handle.modified_sym();
+                let mut binding_syms = handle.raw_syms();
+                if let Some(latin) = handle.raw_latin_sym_or_raw_current_sym() {
+                    if !binding_syms.contains(&latin) {
+                        binding_syms.push(latin);
+                    }
+                }
 
                 tracing::debug!(
                     ?keycode,
@@ -220,18 +369,33 @@ impl GlideState {
                 );
 
                 if let KeyState::Pressed = key_state {
-                    let action = if overview_active {
+                    if locked {
+                        let action = vt_switch_shortcut(&binding_syms, keysym);
+                        if let Some(action) = action {
+                            suppressed_keys.push(keycode);
+                            return FilterResult::Intercept(action);
+                        }
+                        return FilterResult::Forward;
+                    }
+                    let action = if launcher_open && !exclusive {
+                        Some(launcher_active_shortcut(
+                            &keybinds,
+                            modifiers,
+                            &binding_syms,
+                            keysym,
+                        ))
+                    } else if overview_active {
                         Some(overview_active_shortcut(
                             &keybinds,
                             modifiers,
-                            &handle.raw_syms(),
+                            &binding_syms,
                             keysym,
                         ))
                     } else {
-                        process_keyboard_shortcut(&keybinds, modifiers, &handle.raw_syms(), keysym)
+                        process_keyboard_shortcut(&keybinds, modifiers, &binding_syms, keysym)
                     };
 
-                    let action = if exclusive {
+                    let action = if exclusive || shortcuts_inhibited {
                         action.filter(|a| matches!(a, KeyAction::VtSwitch(_)))
                     } else {
                         action
@@ -258,8 +422,6 @@ impl GlideState {
         }
     }
 
-    // A flat dispatcher — one arm per action; splitting it up would just
-    // scatter the dispatch table.
     #[allow(clippy::too_many_lines)]
     fn run_key_action(&mut self, action: KeyAction) {
         match action {
@@ -271,9 +433,7 @@ impl GlideState {
             KeyAction::SwitchWorkspace(idx) => {
                 tracing::info!(workspace_index = idx, "switching workspace");
                 self.suppressed_keys.clear();
-                self.layout
-                    .switch_to_workspace(glide_layout::WorkspaceTarget::Index(idx));
-                self.reconcile_space();
+                self.switch_workspace_animated(glide_layout::WorkspaceTarget::Index(idx));
                 self.protocols
                     .ext_workspace_state
                     .sync_workspaces(&self.display_handle, &self.layout);
@@ -295,9 +455,7 @@ impl GlideState {
             KeyAction::NextWorkspace => {
                 tracing::info!("switching to next workspace");
                 self.suppressed_keys.clear();
-                self.layout
-                    .switch_to_workspace(glide_layout::WorkspaceTarget::Next);
-                self.reconcile_space();
+                self.switch_workspace_animated(glide_layout::WorkspaceTarget::Next);
                 self.protocols
                     .ext_workspace_state
                     .sync_workspaces(&self.display_handle, &self.layout);
@@ -305,9 +463,7 @@ impl GlideState {
             KeyAction::PrevWorkspace => {
                 tracing::info!("switching to prev workspace");
                 self.suppressed_keys.clear();
-                self.layout
-                    .switch_to_workspace(glide_layout::WorkspaceTarget::Previous);
-                self.reconcile_space();
+                self.switch_workspace_animated(glide_layout::WorkspaceTarget::Previous);
                 self.protocols
                     .ext_workspace_state
                     .sync_workspaces(&self.display_handle, &self.layout);
@@ -315,22 +471,23 @@ impl GlideState {
             KeyAction::Maximize => {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, "toggling maximize");
-                    self.layout.toggle_maximized(focused);
-                    self.reconcile_space();
+                    self.morph_geometry(focused, |state| {
+                        state.layout.toggle_maximized(focused);
+                    });
                 }
             }
             KeyAction::Fullscreen => {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, "toggling fullscreen");
-                    self.layout.toggle_fullscreen(focused);
-                    self.reconcile_space();
+                    self.morph_geometry(focused, |state| {
+                        state.layout.toggle_fullscreen(focused);
+                    });
                 }
             }
             KeyAction::Minimize => {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, "minimizing");
-                    self.layout.toggle_minimize(focused);
-                    self.reconcile_space();
+                    self.minimize_with_flight(focused);
                 }
             }
             KeyAction::CloseFocused => {
@@ -373,6 +530,14 @@ impl GlideState {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
                 }
             }
+            KeyAction::ToggleLauncher => self.toggle_launcher(),
+            KeyAction::LauncherPage(forward) => {
+                if let Some(launcher) = self.launcher.as_mut() {
+                    if launcher.turn_page(forward) {
+                        self.queue_redraw();
+                    }
+                }
+            }
             KeyAction::Screenshot => {
                 tracing::info!("screenshot requested");
                 self.pending_screenshot = true;
@@ -388,9 +553,33 @@ impl GlideState {
         }
     }
 
-    /// Tracks the pointer over the dock. Returns whether the dock swallows
-    /// this position, so it is not also handed to a window underneath.
+    fn launcher_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        let open = self
+            .launcher
+            .as_ref()
+            .is_some_and(|launcher| !launcher.is_closing());
+        if !open {
+            return false;
+        }
+        let area = self.launcher_area();
+        let hit = self
+            .launcher
+            .as_ref()
+            .and_then(|launcher| launcher.app_at(area, pos));
+        if self
+            .launcher
+            .as_mut()
+            .is_some_and(|launcher| launcher.set_hover(hit))
+        {
+            self.queue_redraw();
+        }
+        !self.dock.contains(self.dock_area(), pos)
+    }
+
     fn dock_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        if self.session_lock.is_some() {
+            return false;
+        }
         if !self.dock.is_enabled() || self.layout.overview_active() {
             if self.dock.set_hover(None) {
                 self.queue_redraw();
@@ -414,7 +603,8 @@ impl GlideState {
         &mut self,
         pos: Point<f64, Logical>,
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
-        if self.dock_motion(pos) {
+        let over_launcher = self.launcher_motion(pos);
+        if self.dock_motion(pos) || over_launcher {
             return None;
         }
         if !self.layout.overview_active() {
@@ -432,8 +622,6 @@ impl GlideState {
             .overview
             .as_ref()
             .and_then(|ui| ui.close_button_at(pos));
-        // The button hangs outside the preview, but in the design it is a
-        // child of the window, so pointing at it keeps the ring lit.
         let hovered = self
             .overview
             .as_ref()
@@ -457,6 +645,7 @@ impl GlideState {
         reason = "ported closely from anvil's pointer-constraints reference implementation to minimize the risk of a novel bug in the pointer-motion hot path"
     )]
     fn handle_pointer_motion<I: InputBackend>(&mut self, event: &I::PointerMotionEvent) {
+        self.queue_redraw();
         let pointer = self
             .seat
             .get_pointer()
@@ -579,6 +768,7 @@ impl GlideState {
         &mut self,
         event: &I::PointerMotionAbsoluteEvent,
     ) {
+        self.queue_redraw();
         let Some(output) = self.space.outputs().next() else {
             return;
         };
@@ -610,6 +800,7 @@ impl GlideState {
         pointer.frame(self);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_pointer_button<I: InputBackend>(&mut self, event: &I::PointerButtonEvent) {
         let pointer = self
             .seat
@@ -624,13 +815,57 @@ impl GlideState {
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             let pos = pointer.current_location();
 
-            // The dock is compositor chrome and sits above every window,
-            // so it gets first refusal on a click.
+            if self.session_lock.is_some() {
+                self.focus_lock_surface();
+                pointer.button(
+                    self,
+                    &ButtonEvent {
+                        button,
+                        state: button_state,
+                        serial,
+                        time: event.time_msec(),
+                    },
+                );
+                pointer.frame(self);
+                return;
+            }
+
+            if self
+                .launcher
+                .as_ref()
+                .is_some_and(|launcher| !launcher.is_closing())
+            {
+                let area = self.launcher_area();
+                let hit = self
+                    .launcher
+                    .as_ref()
+                    .and_then(|launcher| launcher.app_at(area, pos));
+                match hit {
+                    Some(index) => self.activate_launcher_app(index),
+                    None if !self.dock.contains(self.dock_area(), pos) => {
+                        if let Some(launcher) = self.launcher.as_mut() {
+                            launcher.begin_close();
+                        }
+                        self.queue_redraw();
+                    }
+                    None => {}
+                }
+                if hit.is_some() || !self.dock.contains(self.dock_area(), pos) {
+                    pointer.frame(self);
+                    return;
+                }
+            }
+
             if self.dock.is_enabled() && !self.layout.overview_active() {
                 let area = self.dock_area();
                 if self.dock.contains(area, pos) {
                     if let Some(index) = self.dock.item_at(area, pos) {
-                        self.activate_dock_item(index);
+                        match self.dock.action(index) {
+                            Some(crate::dock::DockAction::OpenLauncher) => {
+                                self.toggle_launcher();
+                            }
+                            _ => self.activate_dock_item(index),
+                        }
                     }
                     pointer.frame(self);
                     return;
@@ -645,8 +880,6 @@ impl GlideState {
                 );
 
                 if !on_layer {
-                    // The close button takes precedence over selecting the
-                    // window it belongs to.
                     if let Some(id) = self
                         .overview
                         .as_ref()
@@ -730,6 +963,32 @@ impl GlideState {
     }
 
     fn handle_pointer_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
+        if self
+            .launcher
+            .as_ref()
+            .is_some_and(|launcher| !launcher.is_closing())
+        {
+            let vertical = event
+                .amount(Axis::Vertical)
+                .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0);
+            let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
+                event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0
+            });
+            let amount = if vertical == 0.0 {
+                horizontal
+            } else {
+                vertical
+            };
+            if amount != 0.0 {
+                if let Some(launcher) = self.launcher.as_mut() {
+                    if launcher.scroll_by(amount) {
+                        self.queue_redraw();
+                    }
+                }
+            }
+            return;
+        }
+
         let source = event.source();
 
         let horizontal_amount = event
@@ -852,23 +1111,49 @@ mod tests {
         }
 
         #[test]
-        #[allow(clippy::float_cmp)]
-        fn clamps_y_using_the_height_of_the_output_under_the_clamped_x() {
+        fn snaps_to_the_nearest_output_point_below_mixed_heights() {
             let outputs = [rect(0, 0, 1920, 1080), rect(1920, 0, 1280, 720)];
 
             let result = clamp_to_outputs(Point::from((2500.0, 5000.0)), &outputs);
 
-            assert_eq!(result.y, 720.0);
+            assert!(
+                (result.x - 1920.0).abs() < f64::EPSILON
+                    && (result.y - 1080.0).abs() < f64::EPSILON,
+                "expected the taller output's corner, got ({}, {})",
+                result.x,
+                result.y
+            );
         }
 
         #[test]
-        #[allow(clippy::float_cmp)]
-        fn does_not_clamp_y_when_clamped_x_lands_in_a_gap_between_outputs() {
+        fn a_position_in_a_gap_is_pulled_into_an_output() {
             let outputs = [rect(0, 0, 1000, 1080), rect(2000, 0, 1000, 1080)];
 
             let result = clamp_to_outputs(Point::from((1500.0, 5000.0)), &outputs);
 
-            assert_eq!(result.y, 5000.0);
+            let nudged: Point<f64, Logical> = Point::from((result.x - 0.5, result.y - 0.5));
+            let inside = outputs
+                .iter()
+                .any(|r| r.to_f64().contains(result) || r.to_f64().contains(nudged));
+            assert!(
+                inside,
+                "({}, {}) is still outside every output",
+                result.x, result.y
+            );
+        }
+
+        #[test]
+        fn respects_output_origins_when_stacked_vertically() {
+            let outputs = [rect(0, 0, 1920, 1080), rect(0, 1080, 1920, 1080)];
+
+            let result = clamp_to_outputs(Point::from((500.0, 1500.0)), &outputs);
+
+            assert!(
+                (result.x - 500.0).abs() < f64::EPSILON && (result.y - 1500.0).abs() < f64::EPSILON,
+                "a position inside the lower output moved to ({}, {})",
+                result.x,
+                result.y
+            );
         }
     }
 
@@ -1043,10 +1328,6 @@ mod tests {
             assert_eq!(action, KeyAction::VtSwitch(4));
         }
 
-        /// Regression test: the screenshot keybind used to be silently
-        /// swallowed into `KeyAction::None` while overview mode was open,
-        /// because the overview-active branch never consulted the
-        /// configured keybinds table at all — see `is_global_shortcut`.
         #[test]
         fn the_configured_screenshot_keybind_still_fires_during_overview() {
             let binds = default_binds();
@@ -1060,11 +1341,24 @@ mod tests {
             let mut modifiers = no_modifiers();
             modifiers.logo = true;
 
-            // Super+Q (quit) is a real, configured keybind, but it isn't
-            // one of overview's own shortcuts and isn't in
-            // `is_global_shortcut` — overview must own the keyboard for
-            // everything else while it's open.
             let action = overview_active_shortcut(&binds, &modifiers, &[], Keysym::q);
+            assert_eq!(action, KeyAction::None);
+        }
+
+        #[test]
+        fn plain_space_selects_the_hovered_preview() {
+            let action = overview_active_shortcut(&[], &no_modifiers(), &[], Keysym::space);
+            assert_eq!(action, KeyAction::OverviewSelect);
+        }
+
+        /// The default layout switch is Super+Space. Inside the overview it
+        /// must only change the keyboard layout, not also pick a window.
+        #[test]
+        fn super_space_does_not_select_a_preview() {
+            let mut modifiers = no_modifiers();
+            modifiers.logo = true;
+
+            let action = overview_active_shortcut(&[], &modifiers, &[], Keysym::space);
             assert_eq!(action, KeyAction::None);
         }
 

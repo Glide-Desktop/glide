@@ -5,7 +5,7 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            AsRenderElements, Kind,
+            Kind,
             memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             solid::{SolidColorBuffer, SolidColorRenderElement},
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
@@ -20,10 +20,6 @@ use crate::{
     window::{GlideWindow, GlideWindowRenderElement},
 };
 
-/// Per-preview data for a single render pass: the window id, its
-/// interpolated overview rect, whether it's currently hovered, and the
-/// window/title resolved from the caller's `lookup` closure (resolved once
-/// per frame and reused across the label and content passes).
 type OverviewEntry = (
     WindowId,
     Rectangle<i32, Logical>,
@@ -40,12 +36,19 @@ enum Phase {
     Closing {
         started: Instant,
         select: Option<WindowId>,
+        from: SceneFrom,
     },
 }
 
-/// Hover ring fade. Spec §10.3 puts `border-color` changes on `--t-2`,
-/// and the design's `.dwin::after` ring uses exactly that.
-const HOVER_ANIM: Duration = glide_theme::motion::T2;
+#[derive(Debug, Clone, Copy)]
+struct SceneFrom {
+    primary: f64,
+    backdrop: f64,
+}
+
+fn hover_anim() -> Duration {
+    glide_theme::motion::t2()
+}
 
 fn lerp_rect(
     from: Rectangle<i32, Logical>,
@@ -64,11 +67,26 @@ fn lerp_rect(
     )
 }
 
-type CachedLabel = (String, i32, i32, MemoryRenderBuffer);
-type CachedHighlight = (i32, i32, i32, MemoryRenderBuffer);
-/// `(hovered, output scale, buffer)` — the button is a fixed size, so
-/// those two are the whole cache key.
-type CachedClose = (bool, i32, MemoryRenderBuffer);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RasterKey {
+    output_scale: i32,
+    theme_rev: u64,
+    painter_gen: u64,
+}
+
+impl RasterKey {
+    fn new(theme: &OverviewTheme, output_scale: i32) -> Self {
+        Self {
+            output_scale,
+            theme_rev: theme.revision(),
+            painter_gen: crate::paint::painter_generation(),
+        }
+    }
+}
+
+type CachedLabel = (String, i32, RasterKey, MemoryRenderBuffer);
+type CachedHighlight = (i32, i32, RasterKey, MemoryRenderBuffer);
+type CachedClose = (u8, RasterKey, MemoryRenderBuffer);
 type SalvagedPreview = (
     WindowId,
     Option<CachedLabel>,
@@ -93,13 +111,6 @@ impl Preview {
         lerp_rect(self.origin, self.target, t)
     }
 
-    /// The preview's scale factor at `t`, interpolated continuously.
-    ///
-    /// Deriving this from `rect_at` instead would divide two rounded
-    /// integer widths, so the factor jumped in visible steps and the
-    /// resampled content shimmered its way through the transition. CSS
-    /// interpolates the `scale()` component itself, which is what this
-    /// reproduces.
     #[must_use]
     pub fn scale_at(&self, t: f64) -> f64 {
         let from = 1.0;
@@ -112,16 +123,10 @@ impl Preview {
 pub struct OverviewUi {
     previews: Vec<Preview>,
     hover: glide_ui::HoverAnimation<WindowId>,
-    /// Hover state of the per-preview close buttons, animated separately
-    /// from the preview ring so aiming at the X pops only the button.
     close_hover: glide_ui::HoverAnimation<WindowId>,
     phase: Phase,
     duration: Duration,
     theme: OverviewTheme,
-    /// The layout area the current `previews` were computed against —
-    /// kept so `relayout` can cheaply skip recomputing everything when
-    /// called with identical inputs (it runs on every surface commit
-    /// while the overview is open; see `GlideState::refresh_overview`).
     area: Rectangle<i32, Logical>,
 
     scrim: SolidColorBuffer,
@@ -180,9 +185,6 @@ impl OverviewUi {
         }
     }
 
-    /// True when `windows`/`area` describe exactly the state the current
-    /// previews were already computed from, in the same order — i.e. a
-    /// `relayout` call would be a no-op.
     fn matches_current_layout(
         &self,
         windows: &[(WindowId, Rectangle<i32, Logical>)],
@@ -220,9 +222,6 @@ impl OverviewUi {
         );
         let slots = compute_overview_layout(&sizes, layout_area, &self.theme.options());
 
-        // Remember where the hovered window sat before rebuilding the
-        // previews, so we can fall back to a nearby neighbor rather than
-        // jumping to the first preview if that window vanishes.
         let old_hover_index = self
             .hover
             .target()
@@ -257,10 +256,6 @@ impl OverviewUi {
             .collect();
 
         if self.hover.target().is_some_and(|id| !self.contains(id)) {
-            // Pick the neighbor at the same index the old hover occupied,
-            // clamped to the new list — so closing window 5 of 8 moves
-            // focus to the preview now at position 5, not all the way back
-            // to the first preview.
             let neighbor = old_hover_index.and_then(|idx| {
                 let clamped = idx.min(self.previews.len().saturating_sub(1));
                 self.previews.get(clamped).map(|p| p.id)
@@ -280,7 +275,6 @@ impl OverviewUi {
         self.previews.iter().any(|p| p.id == id)
     }
 
-    /// Fraction of the current phase's duration that has elapsed, `0..=1`.
     fn elapsed_fraction(&self, started: Instant) -> f64 {
         if self.duration.is_zero() {
             return 1.0;
@@ -289,38 +283,29 @@ impl OverviewUi {
         (elapsed / self.duration.as_secs_f64()).clamp(0.0, 1.0)
     }
 
-    /// Scene progress along `curve`, where 1.0 is fully open.
-    ///
-    /// Note the closing branch eases *elapsed time* and inverts the
-    /// result, rather than easing an already-reversed value. Those are not
-    /// the same thing: `ease(1 - t)` plays the curve backwards, which for
-    /// `--e-out` means the exit crawls for most of its duration and then
-    /// slams shut — at the halfway point the overview would still be 88%
-    /// open. CSS runs the same easing forward in time when a transition
-    /// reverses, and `1 - ease(t)` is what reproduces that.
-    fn scene_progress(&self, curve: glide_theme::motion::CubicBezier) -> f64 {
+    fn scene_progress(&self, curve: glide_theme::motion::CubicBezier, backdrop: bool) -> f64 {
         match self.phase {
             Phase::Opening { started } => curve.ease_f64(self.elapsed_fraction(started)),
             Phase::Open => 1.0,
-            Phase::Closing { started, .. } => 1.0 - curve.ease_f64(self.elapsed_fraction(started)),
+            Phase::Closing { started, from, .. } => {
+                let from = if backdrop {
+                    from.backdrop
+                } else {
+                    from.primary
+                };
+                from * (1.0 - curve.ease_f64(self.elapsed_fraction(started)))
+            }
         }
     }
 
-    /// Scene progress on the design's primary curve (`--e-out`): a sharp
-    /// start with a long settle. Drives preview geometry and labels.
     #[must_use]
     pub fn progress(&self) -> f64 {
-        self.scene_progress(glide_theme::motion::E_OUT)
+        self.scene_progress(glide_theme::motion::E_OUT, false)
     }
 
-    /// Scene progress on the symmetric curve (`--e-io`), which the design
-    /// reserves for background properties — the scrim and the wallpaper
-    /// push-back. Keeping these off `--e-out` is deliberate: the backdrop
-    /// settles more gently than the previews flying into place, instead of
-    /// the whole scene moving as one rigid block.
     #[must_use]
     pub fn backdrop_progress(&self) -> f64 {
-        self.scene_progress(glide_theme::motion::E_IO)
+        self.scene_progress(glide_theme::motion::E_IO, true)
     }
 
     #[must_use]
@@ -331,7 +316,9 @@ impl OverviewUi {
                 started.elapsed() < self.duration
             }
         };
-        phase_animating || self.hover_progress() < 1.0 || self.close_hover_progress() < 1.0
+        phase_animating
+            || self.hover.progress(hover_anim()) < 1.0
+            || self.close_hover.progress(ov_close_hover_anim()) < 1.0
     }
 
     pub fn tick(&mut self) -> Tick {
@@ -340,10 +327,13 @@ impl OverviewUi {
                 self.phase = Phase::Open;
                 Tick::Running
             }
-            Phase::Closing { started, select } if started.elapsed() >= self.duration => {
-                Tick::Finished { select }
-            }
-            Phase::Open if self.hover_progress() < 1.0 || self.close_hover_progress() < 1.0 => {
+            Phase::Closing {
+                started, select, ..
+            } if started.elapsed() >= self.duration => Tick::Finished { select },
+            Phase::Open
+                if self.hover.progress(hover_anim()) < 1.0
+                    || self.close_hover.progress(ov_close_hover_anim()) < 1.0 =>
+            {
                 Tick::Running
             }
             Phase::Open => Tick::Idle,
@@ -355,9 +345,14 @@ impl OverviewUi {
         if matches!(self.phase, Phase::Closing { .. }) {
             return;
         }
+        let from = SceneFrom {
+            primary: self.progress(),
+            backdrop: self.backdrop_progress(),
+        };
         self.phase = Phase::Closing {
             started: Instant::now(),
             select,
+            from,
         };
     }
 
@@ -385,14 +380,13 @@ impl OverviewUi {
     }
 
     fn hover_progress(&self) -> f64 {
-        glide_theme::motion::E_OUT.ease_f64(self.hover.progress(HOVER_ANIM))
+        glide_theme::motion::E_OUT.ease_f64(self.hover.progress(hover_anim()))
     }
 
     fn close_hover_progress(&self) -> f64 {
-        glide_theme::motion::E_OVER.ease_f64(self.close_hover.progress(OV_CLOSE_HOVER_ANIM))
+        glide_theme::motion::E_OVER.ease_f64(self.close_hover.progress(ov_close_hover_anim()))
     }
 
-    /// Where a window's preview currently sits on screen, if it has one.
     #[must_use]
     pub fn preview_rect(&self, id: WindowId) -> Option<Rectangle<i32, Logical>> {
         let t = self.progress();
@@ -402,12 +396,9 @@ impl OverviewUi {
             .map(|p| p.rect_at(t))
     }
 
-    /// The preview whose close button covers `pos`, if any.
     #[must_use]
     pub fn close_button_at(&self, pos: Point<f64, Logical>) -> Option<WindowId> {
         let t = self.progress();
-        // Only clickable once the scene has essentially arrived; the button
-        // is still flying in (and mostly transparent) before that.
         if t < 1.0 {
             return None;
         }
@@ -431,9 +422,6 @@ impl OverviewUi {
             .target()
             .and_then(|id| self.previews.iter().position(|p| p.id == id))
         else {
-            // No current hover: pick a direction-sensitive default so
-            // pressing Left/Up highlights the bottom-right (last) preview
-            // instead of always jumping to the top-left.
             let default = match dir {
                 Direction::Left | Direction::Up => self.previews.last(),
                 Direction::Right | Direction::Down => self.previews.first(),
@@ -495,42 +483,24 @@ pub enum Direction {
 
 const LABEL_PADDING: i32 = 12;
 
-/// How far below its settled position a label pill starts, in logical px.
-///
-/// The design's `.ov-label` rests at `translateY(4px)` with `opacity: 0`
-/// and animates to `translateY(0)` / `opacity: 1` over the full scene
-/// duration, so the pill drifts up as it fades in rather than simply
-/// appearing in place.
 const LABEL_RISE: f64 = 4.0;
 
-/// Diameter of a preview's close button, per the design's `.ov-close`.
 const OV_CLOSE_SIZE: i32 = 26;
 
-/// How far the button hangs outside the preview's top-right corner — the
-/// design pins it at `top: -10px; right: -10px`.
 const OV_CLOSE_OUTSET: i32 = 10;
 
-/// `transform var(--t-2) var(--e-over)` — the overshoot curve is what gives
-/// the button its little pop.
-const OV_CLOSE_HOVER_ANIM: Duration = glide_theme::motion::T2;
+fn ov_close_hover_anim() -> Duration {
+    glide_theme::motion::t2()
+}
 
-/// Extent of the close cross, in logical px.
-///
-/// The design draws it as an 11px SVG on a 12-unit viewBox with the path
-/// spanning 6 units — `6 × 11/12 = 5.5px` inside a 26px button. Notably
-/// this is an *absolute* size, not a fraction of the button the way
-/// `Painter::draw_icon_close`'s glyph is (that one would come out 13px,
-/// well over twice as large, filling the circle).
+const OV_CLOSE_HOVER_SCALE: f64 = 1.12;
+
 const OV_CLOSE_GLYPH: f32 = 5.5;
 
-/// `stroke-width="1.8"` through the same 11/12 viewBox scale.
 const OV_CLOSE_GLYPH_STROKE: f32 = 1.65;
 
-/// `border: 1px solid` on the button.
 const OV_CLOSE_BORDER: f32 = 1.0;
 
-/// The button's `box-shadow: var(--el-2)`, converted to the paint layer's
-/// representation. Dark appearance, matching every other default token.
 fn close_shadow_layers() -> Vec<crate::paint::ShadowLayerSpec> {
     glide_theme::elevation::layers(
         glide_theme::elevation::Level::El2,
@@ -545,8 +515,6 @@ fn close_shadow_layers() -> Vec<crate::paint::ShadowLayerSpec> {
     .collect()
 }
 
-/// Padding the button's buffer needs so its `--el-2` shadow can fade out
-/// instead of being clipped at the buffer edge.
 fn close_shadow_margin() -> i32 {
     #[allow(clippy::cast_possible_truncation)]
     let widest = close_shadow_layers()
@@ -557,7 +525,6 @@ fn close_shadow_margin() -> i32 {
     crate::paint::shadow_fade_margin(widest)
 }
 
-/// Where a preview's close button sits, in logical coordinates.
 fn close_button_rect(preview: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     Rectangle::new(
         Point::from((
@@ -568,20 +535,9 @@ fn close_button_rect(preview: Rectangle<i32, Logical>) -> Rectangle<i32, Logical
     )
 }
 
-/// Offset from a preview's bottom edge to the top of its label pill.
-///
-/// Negative by design: the spec's mockup rides the pill *up onto* the
-/// preview (`bottom: -28px` against a 28px-tall pill), so it straddles
-/// the bottom edge with half its height overlapping the window and half
-/// hanging below. Labels are pushed as the frontmost elements in
-/// `render`, so the overlapping half draws on top of the window content.
-///
-/// `pub(crate)` — `config.rs`'s `OverviewThemeExt::options()` feeds this
-/// into `glide_layout::OverviewOptions::label_offset` so the row-packing
-/// budget and this render-time offset can never drift apart (they used
-/// to be two independent numbers that only almost agreed).
 pub(crate) const fn label_offset(label_height: i32) -> i32 {
-    -(label_height / 2)
+    let _ = label_height;
+    0
 }
 
 fn centre_x(rect: Rectangle<i32, Logical>) -> f64 {
@@ -600,6 +556,7 @@ smithay::render_elements! {
     Preview = RelocateRenderElement<RescaleRenderElement<GlideWindowRenderElement<R>>>,
     Solid = SolidColorRenderElement,
     Buffer = MemoryRenderBufferRenderElement<R>,
+    ScaledBuffer = RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
 }
 
 impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
@@ -608,17 +565,21 @@ impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
             Self::Preview(e) => f.debug_tuple("Preview").field(e).finish(),
             Self::Solid(e) => f.debug_tuple("Solid").field(e).finish(),
             Self::Buffer(e) => f.debug_tuple("Buffer").field(e).finish(),
+            Self::ScaledBuffer(e) => f.debug_tuple("ScaledBuffer").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
     }
 }
 
-/// Rasterises one close button: `--el-2` drop shadow, the pill, its
-/// hairline ring and the cross, all into a single buffer whose margin
-/// leaves the shadow room to fade.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn hover_bucket(t: f32) -> u8 {
+    (t.clamp(0.0, 1.0) * 20.0).round() as u8
+}
+
+#[allow(clippy::needless_pass_by_value)]
 fn draw_close_button(
     theme: &OverviewTheme,
-    is_hovered: bool,
+    hover_t: f32,
     output_scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let margin = close_shadow_margin();
@@ -629,18 +590,15 @@ fn draw_close_button(
     };
     let mut buf = vec![0u8; pixels];
 
-    let (bg, fg) = if is_hovered {
-        (theme.close_hover_background, theme.close_hover_foreground)
-    } else {
-        (theme.close_background, theme.close_foreground)
-    };
-    // Hover recolours the border to match the fill, per
-    // `.ov-close:hover { border-color: var(--danger) }`.
-    let border = if is_hovered {
-        theme.close_hover_background
-    } else {
-        theme.close_border
-    };
+    let bg = theme
+        .close_background
+        .lerp(theme.close_hover_background, hover_t);
+    let fg = theme
+        .close_foreground
+        .lerp(theme.close_hover_foreground, hover_t);
+    let border = theme
+        .close_border
+        .lerp(theme.close_hover_background, hover_t);
 
     #[allow(clippy::cast_precision_loss)]
     let radius = OV_CLOSE_SIZE as f32 / 2.0;
@@ -666,9 +624,6 @@ fn draw_close_button(
         0.0,
         crate::config::Color([0.0, 0.0, 0.0, 0.0]),
         radius * scale_f,
-        // Clear behind the pill: it is about to be filled opaquely,
-        // and leaving shadow under a translucent hover colour would
-        // muddy it.
         Some(radius * scale_f),
     );
 
@@ -717,12 +672,6 @@ fn draw_close_button(
     ))
 }
 
-/// Draws each preview's close button.
-///
-/// Fades in with the scene like the labels do, and pops on hover using the
-/// overshoot curve (`--e-over`) the design specifies. The pop is applied as
-/// a display-size change around the button's centre rather than a redraw,
-/// so a hover costs no CPU rasterisation.
 #[allow(clippy::too_many_arguments)]
 fn push_close_buttons<R>(
     renderer: &mut R,
@@ -730,6 +679,7 @@ fn push_close_buttons<R>(
     entries: &[OverviewEntry],
     theme: &OverviewTheme,
     hovered: Option<WindowId>,
+    hover_t: f32,
     alpha: f32,
     scale: Scale<f64>,
     output_scale: i32,
@@ -746,17 +696,20 @@ fn push_close_buttons<R>(
             continue;
         };
 
-        let is_hovered = hovered == Some(*id);
+        let t = if hovered == Some(*id) { hover_t } else { 0.0 };
+        let bucket = hover_bucket(t);
+        let key = RasterKey::new(theme, output_scale);
         let needs_redraw = preview
             .close
             .as_ref()
-            .is_none_or(|(cached_hover, cached_scale, _)| {
-                *cached_hover != is_hovered || *cached_scale != output_scale
+            .is_none_or(|(cached_bucket, cached_key, _)| {
+                *cached_bucket != bucket || *cached_key != key
             });
 
         if needs_redraw {
-            if let Some(memory) = draw_close_button(theme, is_hovered, output_scale) {
-                preview.close = Some((is_hovered, output_scale, memory));
+            let quantized = f32::from(bucket) / 20.0;
+            if let Some(memory) = draw_close_button(theme, quantized, output_scale) {
+                preview.close = Some((bucket, key, memory));
             }
         }
 
@@ -767,18 +720,11 @@ fn push_close_buttons<R>(
         let button = close_button_rect(*rect);
         let margin = close_shadow_margin();
 
-        // Drawn at its natural size, always. The design pops the button
-        // with `transform: scale(1.12)` on hover, but at 26px wrapped in an
-        // `--el-2` shadow that growth reads as the button lurching rather
-        // than responding — hover is a highlight here, and the pill stays
-        // exactly where the pointer found it. Restoring the pop means
-        // scaling the buffer about `button`'s centre (`src` must be the
-        // buffer's natural size or it will translate instead of scale).
         let pos = Point::from((button.loc.x - margin, button.loc.y - margin))
             .to_f64()
             .to_physical(scale);
 
-        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+        let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             pos,
             memory,
@@ -786,8 +732,22 @@ fn push_close_buttons<R>(
             None,
             None,
             Kind::Unspecified,
-        ) {
+        ) else {
+            continue;
+        };
+
+        let grow = 1.0 + f64::from(t) * (OV_CLOSE_HOVER_SCALE - 1.0);
+        if (grow - 1.0).abs() < f64::EPSILON {
             elements.push(OverviewRenderElement::Buffer(element));
+        } else {
+            let centre = Point::from((
+                button.loc.x + OV_CLOSE_SIZE / 2,
+                button.loc.y + OV_CLOSE_SIZE / 2,
+            ))
+            .to_physical_precise_round(scale);
+            elements.push(OverviewRenderElement::ScaledBuffer(
+                RescaleRenderElement::from_element(element, centre, grow),
+            ));
         }
     }
 }
@@ -812,10 +772,6 @@ impl OverviewUi {
             return Vec::new();
         }
 
-        // Opacity and the rise both run the whole scene on `--e-out`, as
-        // the design has them. This used to hold the labels back until the
-        // scene was 60% eased-through and then rush them in over what was
-        // left, which read as them popping in after the fact.
         #[allow(clippy::cast_possible_truncation)]
         let alpha = t.clamp(0.0, 1.0) as f32;
         #[allow(clippy::cast_possible_truncation)]
@@ -836,11 +792,14 @@ impl OverviewUi {
                 painter.text_width_styled(title.as_str(), &glide_theme::TextStyle::OV_LABEL) as i32;
             let width = (text_w + LABEL_PADDING * 2).clamp(1, rect.size.w.max(1));
 
-            let needs_redraw = preview.label.as_ref().is_none_or(
-                |(cached_title, cached_width, cached_scale, _)| {
-                    cached_title != title || *cached_width != width || *cached_scale != output_scale
-                },
-            );
+            let key = RasterKey::new(&theme, output_scale);
+            let needs_redraw =
+                preview
+                    .label
+                    .as_ref()
+                    .is_none_or(|(cached_title, cached_width, cached_key, _)| {
+                        cached_title != title || *cached_width != width || *cached_key != key
+                    });
             if needs_redraw {
                 let (pwidth, pheight) = (width * output_scale, height * output_scale);
                 let Ok(pixels) = usize::try_from(pwidth * pheight * 4) else {
@@ -887,7 +846,7 @@ impl OverviewUi {
                     Transform::Normal,
                     None,
                 );
-                preview.label = Some((title.clone(), width, output_scale, memory));
+                preview.label = Some((title.clone(), width, key, memory));
             }
 
             let Some((_, _, _, memory)) = preview.label.as_ref() else {
@@ -938,11 +897,6 @@ impl OverviewUi {
         let hover = self.hover.target();
         let theme = self.theme.clone();
 
-        // Resolve each preview's window/title exactly once per frame. `lookup`
-        // is a caller-supplied closure that clones a `GlideWindow` and formats
-        // its `display_name()`; calling it a second time per preview (once
-        // for labels, once for preview content) was pure wasted work, so its
-        // result is cached here and reused below.
         let entries: Vec<OverviewEntry> = self
             .previews
             .iter()
@@ -955,12 +909,15 @@ impl OverviewUi {
             #[allow(clippy::cast_possible_truncation)]
             let button_alpha = t.clamp(0.0, 1.0) as f32;
             let close_hovered = self.close_hover.target();
+            #[allow(clippy::cast_possible_truncation)]
+            let close_hover_t = self.close_hover_progress().clamp(0.0, 1.0) as f32;
             push_close_buttons(
                 renderer,
                 &mut self.previews,
                 &entries,
                 &theme,
                 close_hovered,
+                close_hover_t,
                 button_alpha,
                 scale,
                 output_scale,
@@ -968,25 +925,16 @@ impl OverviewUi {
             );
         }
 
-        let hover_t = self.hover_progress();
-        // The ring is a hover affordance, not part of the entry motion.
-        // Drawing it mid-transition meant stretching a buffer cached at the
-        // settled size across a preview that is still window-sized, which
-        // ballooned its 3px border tothree times that and shrank it down over
-        // the animation — a very obvious artifact.
-        if hover_t > 0.0 && t >= 1.0 {
+        let hover_t = self.hover_progress() * t.clamp(0.0, 1.0);
+        if hover_t > 0.0 {
             if let Some(hover_id) = hover {
                 if let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id) {
                     let rect = preview.rect_at(t);
-                    // Cached at the settled (target) size and displayed
-                    // scaled while the open/close animation is in flight —
-                    // same reasoning as `push_preview_shadow`: `rect_at(t)`
-                    // changes every animation frame, and keying the cache
-                    // on it would redraw + reupload the ring per frame.
                     let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
+                    let key = RasterKey::new(&theme, output_scale);
                     let needs_redraw = preview.highlight.as_ref().is_none_or(
-                        |(cached_w, cached_h, cached_scale, _)| {
-                            *cached_w != w || *cached_h != h || *cached_scale != output_scale
+                        |(cached_w, cached_h, cached_key, _)| {
+                            *cached_w != w || *cached_h != h || *cached_key != key
                         },
                     );
 
@@ -1014,7 +962,7 @@ impl OverviewUi {
                                 Transform::Normal,
                                 None,
                             );
-                            preview.highlight = Some((w, h, output_scale, memory));
+                            preview.highlight = Some((w, h, key, memory));
                         }
                     }
 
@@ -1052,15 +1000,6 @@ impl OverviewUi {
 
             let window_scale = preview.scale_at(t);
 
-            // Same convention as smithay's `Space::render_location()`: the
-            // element location handed to `render_elements` is the *buffer*
-            // origin, which sits `geometry().loc` up-left of the client's
-            // visible frame (CSD clients like GTK bake invisible shadow
-            // margins into their buffers and report the visible region via
-            // `xdg_surface.set_window_geometry`). Without this subtraction
-            // a CSD preview's visible content lands shifted down-right
-            // inside its slot, so the hover hit-test rect and highlight
-            // ring no longer line up with what's actually on screen.
             let buffer_offset = window.geometry().loc;
             let content_origin = Point::from((
                 preview.origin.loc.x + GlideWindow::insets_left() - buffer_offset.x,
@@ -1076,7 +1015,7 @@ impl OverviewUi {
             let target_physical = rect.loc.to_f64().to_physical(scale).to_i32_round();
 
             let raw: Vec<GlideWindowRenderElement<R>> =
-                AsRenderElements::render_elements(window, renderer, real_physical, scale, 1.0);
+                window.preview_render_elements(renderer, real_physical, scale, 1.0);
 
             for element in raw {
                 let scaled =
@@ -1090,13 +1029,12 @@ impl OverviewUi {
             }
         }
 
-        // `--e-io`, per the design's `.screen::after` transition — the
-        // scrim is a background property, not part of the preview motion.
         #[allow(clippy::cast_possible_truncation)]
         let backdrop_t = self.backdrop_progress() as f32;
-        let dim = (theme.dim.0[3] * backdrop_t).clamp(0.0, 1.0);
         let mut scrim_color = theme.dim.0;
-        scrim_color[3] = dim;
+        for channel in &mut scrim_color {
+            *channel = (*channel * backdrop_t).clamp(0.0, 1.0);
+        }
         self.scrim
             .update((output_rect.size.w, output_rect.size.h), scrim_color);
         elements.push(OverviewRenderElement::Solid(
@@ -1139,10 +1077,6 @@ mod tests {
     mod scene_easing {
         use super::*;
 
-        /// Regression: the exit used to ease an already-reversed value,
-        /// i.e. play `--e-out` backwards. That made the overview sit
-        /// almost still for most of the close and then slam shut. CSS runs
-        /// the same curve forward in time when a transition reverses.
         #[test]
         fn the_exit_is_front_loaded_just_like_the_entry() {
             let (mut ui, _id) = ui_with_one_window(400);
@@ -1151,9 +1085,12 @@ mod tests {
                     .checked_sub(Duration::from_millis(80))
                     .expect("the process has been up for longer than 80ms"),
                 select: None,
+                from: SceneFrom {
+                    primary: 1.0,
+                    backdrop: 1.0,
+                },
             };
 
-            // A fifth of the way out, most of the way gone.
             let remaining = ui.progress();
             assert!(
                 remaining < 0.6,
@@ -1161,7 +1098,6 @@ mod tests {
             );
         }
 
-        /// Entry and exit must be time mirrors of one another.
         #[test]
         fn closing_mirrors_opening_over_the_same_elapsed_time() {
             for millis in [40_u64, 120, 200, 320] {
@@ -1177,6 +1113,10 @@ mod tests {
                         .checked_sub(Duration::from_millis(millis))
                         .expect("process uptime"),
                     select: None,
+                    from: SceneFrom {
+                        primary: 1.0,
+                        backdrop: 1.0,
+                    },
                 };
 
                 let sum = opening.progress() + closing.progress();
@@ -1189,10 +1129,6 @@ mod tests {
             }
         }
 
-        /// Regression: the scale used to be derived by dividing two
-        /// already-rounded integer widths, so it advanced in visible steps
-        /// and the resampled content shimmered. It has to move
-        /// continuously, like a CSS `scale()` component.
         #[test]
         fn the_preview_scale_advances_continuously() {
             let (ui, _id) = ui_with_one_window(0);
@@ -1206,7 +1142,6 @@ mod tests {
             let settled = f64::from(preview.target.size.w) / f64::from(preview.origin.size.w);
             assert!((preview.scale_at(1.0) - settled).abs() < 1e-9);
 
-            // Strictly monotonic, with no repeated (stepped) values.
             let mut previous = preview.scale_at(0.0);
             for step in 1..=200 {
                 let t = f64::from(step) / 200.0;
@@ -1235,9 +1170,6 @@ mod tests {
             assert!((ui.backdrop_progress() - 1.0).abs() < f64::EPSILON);
         }
 
-        /// The previews run on `--e-out` and the backdrop on `--e-io`, so
-        /// mid-transition they must *not* be at the same point — that
-        /// separation is what stops the scene moving as one rigid block.
         #[test]
         fn previews_lead_the_backdrop_mid_transition() {
             let (mut ui, _id) = ui_with_one_window(400);
@@ -1265,6 +1197,10 @@ mod tests {
                     .checked_sub(Duration::from_millis(320))
                     .expect("the process has been up for longer than 320ms"),
                 select: None,
+                from: SceneFrom {
+                    primary: 1.0,
+                    backdrop: 1.0,
+                },
             };
             assert!(ui.progress() < 0.5);
             assert!(ui.backdrop_progress() < 0.5);
@@ -1274,9 +1210,6 @@ mod tests {
     mod label_rise {
         use super::*;
 
-        /// Labels used to be held back until the scene was 60% eased
-        /// through, then rushed in — they read as popping in afterwards.
-        /// They now fade across the whole scene.
         #[test]
         fn labels_are_already_partly_visible_early_in_the_transition() {
             let (mut ui, _id) = ui_with_one_window(400);
@@ -1311,7 +1244,6 @@ mod tests {
             let preview = rect(100, 200, 400, 300);
             let button = close_button_rect(preview);
 
-            // `top: -10px; right: -10px` against a 26px button.
             assert_eq!(button.size, Size::from((OV_CLOSE_SIZE, OV_CLOSE_SIZE)));
             assert_eq!(
                 button.loc.y,
@@ -1361,9 +1293,6 @@ mod tests {
             assert_eq!(ui.close_button_at(middle), None);
         }
 
-        /// Mid-transition the button is still flying in and mostly
-        /// transparent, so it must not swallow clicks meant for the
-        /// preview underneath.
         #[test]
         fn it_is_not_clickable_while_the_scene_is_still_animating() {
             let (mut ui, _id) = ui_with_one_window(400);
@@ -1380,9 +1309,6 @@ mod tests {
             assert_eq!(ui.close_button_at(centre), None);
         }
 
-        /// The design pins the cross to an absolute 5.5px, not to a
-        /// fraction of the button — `Painter::draw_icon_close`'s built-in
-        /// glyph would be 13px and fill the whole circle.
         #[test]
         fn the_cross_matches_the_designs_absolute_size() {
             #[allow(clippy::cast_precision_loss)]
@@ -1407,8 +1333,6 @@ mod tests {
             );
         }
 
-        /// `box-shadow: var(--el-2)` needs room in the buffer or it gets
-        /// clipped into a hard-edged square halo.
         #[test]
         fn the_buffer_reserves_room_for_the_elevation_shadow() {
             let margin = close_shadow_margin();
@@ -1439,16 +1363,11 @@ mod tests {
             );
         }
 
-        /// The button is a fixed-size highlight target: hovering must
-        /// recolour it and nothing else. Anything that changes its
-        /// geometry read as the button lurching away from the pointer.
         #[test]
         fn hovering_never_moves_or_resizes_the_button() {
             let (ui, _id) = ui_with_one_window(0);
             let rect = ui.previews[0].rect_at(1.0);
 
-            // The drawn position depends only on the preview rect and the
-            // constant shadow margin — no hover term anywhere.
             let button = close_button_rect(rect);
             let margin = close_shadow_margin();
             let expected: Point<i32, Logical> =
@@ -1502,7 +1421,8 @@ mod tests {
         #[test]
         fn relayout_keeps_the_cached_button_for_a_window_still_present() {
             let (mut ui, id) = ui_with_one_window(0);
-            ui.previews[0].close = Some((false, 1, MemoryRenderBuffer::default()));
+            let key = RasterKey::new(&ui.theme, 1);
+            ui.previews[0].close = Some((0, key, MemoryRenderBuffer::default()));
 
             ui.relayout(&[(id, rect(0, 0, 800, 600))], rect(0, 0, 1920, 1080));
 
@@ -1512,7 +1432,8 @@ mod tests {
         #[test]
         fn a_brand_new_preview_gets_no_inherited_button_buffer() {
             let (mut ui, id) = ui_with_one_window(0);
-            ui.previews[0].close = Some((true, 1, MemoryRenderBuffer::default()));
+            let key = RasterKey::new(&ui.theme, 1);
+            ui.previews[0].close = Some((20, key, MemoryRenderBuffer::default()));
 
             let new_id = WindowId::next();
             ui.relayout(
@@ -1533,32 +1454,17 @@ mod tests {
         use super::*;
 
         #[test]
-        fn the_pill_overlaps_the_preview_by_half_its_height() {
-            // Spec: the pill straddles the preview's bottom edge, half on
-            // the window and half below it.
-            assert_eq!(label_offset(28), -14);
-            assert_eq!(label_offset(40), -20);
+        fn the_pill_hangs_flush_below_the_preview() {
+            assert_eq!(label_offset(28), 0);
+            assert_eq!(label_offset(40), 0);
         }
 
         #[test]
-        fn the_offset_is_never_positive_so_the_pill_never_floats_below() {
-            for height in 0..=64 {
-                assert!(
-                    label_offset(height) <= 0,
-                    "height {height} pushed the pill below the preview"
-                );
-            }
-        }
-
-        /// What the layout budget ends up reserving below each row.
-        /// Must stay non-negative and strictly less than the pill height,
-        /// or `compute_overview_layout` and the renderer disagree.
-        #[test]
-        fn the_space_consumed_below_a_row_is_half_the_pill() {
+        fn the_space_consumed_below_a_row_is_the_whole_pill() {
             for height in [0, 24, 28, 40] {
                 let consumed = height + label_offset(height);
                 assert!(consumed >= 0, "height {height} consumed {consumed}");
-                assert_eq!(consumed, height - height / 2);
+                assert_eq!(consumed, height);
             }
         }
     }
@@ -1569,17 +1475,12 @@ mod tests {
         assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
     }
 
-    /// `relayout` runs on every surface commit while overview is open
-    /// (see `GlideState::refresh_overview`), so identical inputs must be
-    /// a cheap no-op rather than a full recompute-and-rebuild.
     #[test]
     fn relayout_with_identical_inputs_is_skipped_entirely() {
         let (mut ui, id) = ui_with_one_window(0);
         let windows = [(id, rect(0, 0, 800, 600))];
         let area = rect(0, 0, 1920, 1080);
 
-        // Poke a value the real layout would never produce; if relayout
-        // actually recomputes, this gets overwritten.
         ui.previews[0].row = 99;
 
         ui.relayout(&windows, area);
@@ -1588,14 +1489,10 @@ mod tests {
             "identical inputs must leave the previews untouched"
         );
 
-        // A genuinely different input must still trigger the recompute.
         ui.relayout(&windows, rect(0, 0, 1280, 720));
         assert_eq!(ui.previews[0].row, 0);
     }
 
-    /// A window resizing while overview is open (same id, new origin) is
-    /// exactly the case `refresh_overview` exists for — it must not be
-    /// mistaken for "identical inputs".
     #[test]
     fn relayout_recomputes_when_a_windows_origin_changes() {
         let (mut ui, id) = ui_with_one_window(0);
@@ -1614,11 +1511,6 @@ mod tests {
         assert!(!ui.set_hover(Some(id)));
     }
 
-    /// When a middle window is closed and relayout runs, the hover should
-    /// move to the preview now occupying that slot — not jump back to the
-    /// very first preview. This matters when a user closes windows with the
-    /// keyboard: they expect focus to stay in the neighbourhood, not fly off
-    /// to the top-left corner.
     #[test]
     fn relayout_moves_hover_to_the_adjacent_neighbor_not_first() {
         let a = WindowId::next();
@@ -1634,12 +1526,9 @@ mod tests {
 
         let mut ui = OverviewUi::new(&windows, area, &theme, Some(b));
 
-        // `b` is hovered (index 1); now close it.
         let remaining = [(a, rect(0, 0, 800, 600)), (c, rect(0, 0, 800, 600))];
         ui.relayout(&remaining, area);
 
-        // Hover should be on `c` (the preview now at index 1, where `b`
-        // used to be), not on `a` (index 0 / first()).
         assert_eq!(
             ui.hovered(),
             Some(c),
@@ -1647,10 +1536,6 @@ mod tests {
         );
     }
 
-    /// Pressing Left or Up with no hover should select the *last* preview
-    /// (bottom-right), while Right or Down should select the *first*
-    /// (top-left). The old behaviour always picked `first()` regardless of
-    /// direction, which made Left feel broken.
     #[test]
     fn navigate_without_hover_respects_direction() {
         let a = WindowId::next();
@@ -1686,7 +1571,7 @@ mod tests {
         let (mut ui, id) = ui_with_one_window(220);
         ui.set_hover(None);
         ui.set_hover(Some(id));
-        std::thread::sleep(HOVER_ANIM + Duration::from_millis(30));
+        std::thread::sleep(hover_anim() + Duration::from_millis(30));
         assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
     }
 
@@ -1719,7 +1604,7 @@ mod tests {
 
         ui.set_hover(None);
         ui.set_hover(Some(id));
-        std::thread::sleep(HOVER_ANIM + Duration::from_millis(30));
+        std::thread::sleep(hover_anim() + Duration::from_millis(30));
 
         assert_eq!(ui.tick(), Tick::Idle);
     }

@@ -27,7 +27,10 @@ use smithay::{
         renderer::{
             ImportDma,
             element::{
-                AsRenderElements, memory::MemoryRenderBuffer, surface::WaylandSurfaceRenderElement,
+                AsRenderElements, Kind,
+                memory::MemoryRenderBuffer,
+                solid::{SolidColorBuffer, SolidColorRenderElement},
+                surface::WaylandSurfaceRenderElement,
             },
             gles::GlesRenderer,
         },
@@ -95,11 +98,11 @@ render_elements! {
     Space=SpaceRenderElements<GlesRenderer, GlideWindowRenderElement<GlesRenderer>>,
     Pointer=PointerRenderElement<GlesRenderer>,
     Overview=crate::overview::OverviewRenderElement<GlesRenderer>,
-    /// Anything drawn from a CPU-rasterised buffer: the wallpaper and the
-    /// dock. One variant because the macro derives `From` per variant type
-    /// and these share one.
     Memory=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
     Snapshot=crate::snapshot::SnapshotRenderElement,
+    Launcher=crate::launcher::LauncherRenderElement<GlesRenderer>,
+    LockSurface=WaylandSurfaceRenderElement<GlesRenderer>,
+    LockBackdrop=SolidColorRenderElement,
 }
 
 fn layer_elements(
@@ -145,11 +148,11 @@ struct SurfaceData {
     pending_repaint: Option<RegistrationToken>,
     redraw_queued: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
-    /// The same wallpaper desaturated to [`OVERVIEW_WALLPAPER_SATURATION`],
-    /// crossfaded in as the overview opens. Built lazily — outputs that
-    /// never show an overview never pay for it.
     wallpaper_muted_buf: Option<MemoryRenderBuffer>,
-    wallpaper_key: Option<(i32, i32, crate::config::WallpaperFit)>,
+    wallpaper_blur_buf: Option<MemoryRenderBuffer>,
+    wallpaper_blur_rgba: Option<std::sync::Arc<Vec<u8>>>,
+    wallpaper_key: Option<(i32, i32, crate::config::WallpaperFit, u64)>,
+    lock_backdrop: SolidColorBuffer,
 }
 
 pub(crate) struct DeviceData {
@@ -225,7 +228,18 @@ pub fn init_tty(
 
     event_loop
         .handle()
-        .insert_source(libinput_backend, move |event, (), state| {
+        .insert_source(libinput_backend, move |mut event, (), state| {
+            use smithay::backend::input::InputEvent;
+            match &mut event {
+                InputEvent::DeviceAdded { device } => {
+                    state.configure_input_device(device);
+                    state.input_devices.push(device.clone());
+                }
+                InputEvent::DeviceRemoved { device } => {
+                    state.input_devices.retain(|known| known != device);
+                }
+                _ => {}
+            }
             state.process_input_event(event);
         })
         .map_err(|e| e.error)
@@ -342,7 +356,7 @@ fn resolve_cursor_buffer(
         &image.pixels_rgba,
         Fourcc::Argb8888,
         (image.width.cast_signed(), image.height.cast_signed()),
-        1,
+        scale.cast_signed().max(1),
         Transform::Normal,
         None,
     );
@@ -425,55 +439,39 @@ fn present_feedback(
     feedback.presented::<_, Monotonic>(time, refresh, u64::from(sequence), flags);
 }
 
-/// How much the wallpaper grows while the overview is open, matching the
-/// design's `wall { transform: scale(1.06) }`.
 const OVERVIEW_WALLPAPER_ZOOM: f64 = 1.06;
 
-/// The design's `filter: saturate(.9)` on the overview wallpaper.
 const OVERVIEW_WALLPAPER_SATURATION: f32 = 0.9;
 
-/// Pushes the wallpaper, pushed back behind the overview.
-///
-/// The design animates the wallpaper itself — `scale(1.06)` plus
-/// `saturate(.9)` — so the backdrop recedes as the previews fly forward.
-/// Without it the overview reads as flat: previews shrink against a
-/// completely static background, and the only depth cue is the scrim.
-///
-/// Zoom is done by handing the element an enlarged destination size and
-/// pulling its origin back by half the overflow, which keeps the centre
-/// of the image fixed. Saturation is a crossfade onto a pre-desaturated
-/// copy of the same buffer, since a `MemoryRenderBuffer` has no colour
-/// filter of its own — a 10% shift is far too subtle for the difference
-/// between that and a true per-frame filter to be visible.
+const BACKDROP_BLUR_RADIUS: i32 = 26;
+
 fn push_wallpaper_elements(
     gles_renderer: &mut GlesRenderer,
     surface: &mut SurfaceData,
-    output_size: (i32, i32),
+    buffer_size: (i32, i32),
+    logical_size: (i32, i32),
     backdrop_t: f64,
     elements: &mut Vec<GlideRenderElements>,
 ) {
     use smithay::backend::renderer::element::{Kind, memory::MemoryRenderBufferRenderElement};
 
-    let (phys_w, phys_h) = output_size;
+    let (buf_w, buf_h) = buffer_size;
+    let (log_w, log_h) = logical_size;
     let zoom = 1.0 + (OVERVIEW_WALLPAPER_ZOOM - 1.0) * backdrop_t.clamp(0.0, 1.0);
 
     #[allow(clippy::cast_possible_truncation)]
-    let zoomed_w = (f64::from(phys_w) * zoom).round() as i32;
+    let zoomed_w = (f64::from(log_w) * zoom).round() as i32;
     #[allow(clippy::cast_possible_truncation)]
-    let zoomed_h = (f64::from(phys_h) * zoom).round() as i32;
+    let zoomed_h = (f64::from(log_h) * zoom).round() as i32;
     let origin = (
-        f64::from(phys_w - zoomed_w) / 2.0,
-        f64::from(phys_h - zoomed_h) / 2.0,
+        f64::from(log_w - zoomed_w) / 2.0,
+        f64::from(log_h - zoomed_h) / 2.0,
     );
     let size: Option<smithay::utils::Size<i32, Logical>> = Some((zoomed_w, zoomed_h).into());
-    // Must be spelled out: with `src` left as `None`, smithay sets it to
-    // `size`, which enlarges the sampled region instead of scaling the
-    // buffer — the wallpaper would slide rather than zoom.
     let src = Some(smithay::utils::Rectangle::from_size(
-        smithay::utils::Size::<f64, Logical>::from((f64::from(phys_w), f64::from(phys_h))),
+        smithay::utils::Size::<f64, Logical>::from((f64::from(buf_w), f64::from(buf_h))),
     ));
 
-    // Muted copy on top, faded in over the untouched one below it.
     #[allow(clippy::cast_possible_truncation)]
     let muted_alpha = backdrop_t.clamp(0.0, 1.0) as f32;
     if muted_alpha > 0.0 {
@@ -507,33 +505,15 @@ fn push_wallpaper_elements(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn overview_elements(
     gles_renderer: &mut GlesRenderer,
     overview: &mut crate::overview::OverviewUi,
     window_map: &HashMap<glide_layout::WindowId, GlideWindow>,
-    pointer_element: &mut PointerElement,
-    pointer_location: Point<f64, Logical>,
-    cursor_hotspot: Point<i32, Logical>,
     scale: Scale<f64>,
     output: &Output,
     output_geometry: smithay::utils::Rectangle<i32, Logical>,
 ) -> Vec<GlideRenderElements> {
     let mut elements: Vec<GlideRenderElements> = Vec::new();
-
-    elements.extend(
-        pointer_element
-            .render_elements::<PointerRenderElement<GlesRenderer>>(
-                gles_renderer,
-                (pointer_location - cursor_hotspot.to_f64())
-                    .to_physical(scale)
-                    .to_i32_round(),
-                scale,
-                1.0,
-            )
-            .into_iter()
-            .map(GlideRenderElements::Pointer),
-    );
 
     elements.extend(layer_elements(gles_renderer, output, scale, true));
 
@@ -564,39 +544,37 @@ fn overview_elements(
 fn build_render_elements(
     gles_renderer: &mut GlesRenderer,
     space: &Space<GlideWindow>,
-    pointer_element: &mut PointerElement,
-    pointer_location: Point<f64, Logical>,
-    cursor_hotspot: Point<i32, Logical>,
-    scale: Scale<f64>,
     output: &Output,
 ) -> Option<Vec<GlideRenderElements>> {
-    let mut elements: Vec<GlideRenderElements> = Vec::new();
-
-    let cursor_position = (pointer_location - cursor_hotspot.to_f64())
-        .to_physical(scale)
-        .to_i32_round();
-    elements.extend(
-        pointer_element
-            .render_elements::<PointerRenderElement<GlesRenderer>>(
-                gles_renderer,
-                cursor_position,
-                scale,
-                1.0,
-            )
-            .into_iter()
-            .map(GlideRenderElements::Pointer),
-    );
-
     match space_render_elements(gles_renderer, [space], output, 1.0) {
-        Ok(space_elements) => {
-            elements.extend(space_elements.into_iter().map(GlideRenderElements::Space));
-            Some(elements)
-        }
+        Ok(space_elements) => Some(
+            space_elements
+                .into_iter()
+                .map(GlideRenderElements::Space)
+                .collect(),
+        ),
         Err(err) => {
             tracing::error!(?err, "failed to collect render elements");
             None
         }
     }
+}
+
+fn cursor_elements(
+    gles_renderer: &mut GlesRenderer,
+    pointer_element: &mut PointerElement,
+    pointer_location: Point<f64, Logical>,
+    cursor_hotspot: Point<i32, Logical>,
+    scale: Scale<f64>,
+) -> Vec<GlideRenderElements> {
+    let position = (pointer_location - cursor_hotspot.to_f64())
+        .to_physical(scale)
+        .to_i32_round();
+    pointer_element
+        .render_elements::<PointerRenderElement<GlesRenderer>>(gles_renderer, position, scale, 1.0)
+        .into_iter()
+        .map(GlideRenderElements::Pointer)
+        .collect()
 }
 
 impl GlideState {
@@ -806,14 +784,36 @@ impl GlideState {
         );
         let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
 
+        let display_info = self.backend_data.device.as_ref().and_then(|device| {
+            smithay_drm_extras::display_info::for_connector(
+                device.drm_output_manager.device(),
+                connector.handle(),
+            )
+        });
+        #[allow(clippy::redundant_closure_for_method_calls)]
+        let (make, model, serial_number) = (
+            display_info
+                .as_ref()
+                .and_then(|info| info.make())
+                .unwrap_or_else(|| "Unknown".into()),
+            display_info
+                .as_ref()
+                .and_then(|info| info.model())
+                .unwrap_or_else(|| "Unknown".into()),
+            display_info
+                .as_ref()
+                .and_then(|info| info.serial())
+                .unwrap_or_else(|| "Unknown".into()),
+        );
+
         let output = Output::new(
             output_name,
             PhysicalProperties {
                 size: (phys_w.cast_signed(), phys_h.cast_signed()).into(),
                 subpixel: connector.subpixel().into(),
-                make: "Unknown".into(),
-                model: "Unknown".into(),
-                serial_number: "Unknown".into(),
+                make,
+                model,
+                serial_number,
             },
         );
         let global = output.create_global::<GlideState>(&self.display_handle);
@@ -853,9 +853,14 @@ impl GlideState {
                 redraw_queued: false,
                 wallpaper_buf: None,
                 wallpaper_muted_buf: None,
+                wallpaper_blur_buf: None,
+                wallpaper_blur_rgba: None,
                 wallpaper_key: None,
+                lock_backdrop: SolidColorBuffer::default(),
             },
         );
+
+        self.apply_output_configs();
 
         self.loop_handle
             .insert_idle(move |state| state.render_surface(crtc));
@@ -888,7 +893,107 @@ impl GlideState {
         self.render_surface(crtc);
     }
 
+    #[must_use]
+    pub fn gamma_size(&self, output: &Output) -> Option<u32> {
+        use smithay::reexports::drm::control::Device as ControlDevice;
+        let device = self.backend_data.device.as_ref()?;
+        let crtc = self.crtc_for_output(output)?;
+        let info = device.drm_output_manager.device().get_crtc(crtc).ok()?;
+        Some(info.gamma_length())
+    }
+
+    fn crtc_for_output(&self, output: &Output) -> Option<crtc::Handle> {
+        let device = self.backend_data.device.as_ref()?;
+        device
+            .surfaces
+            .iter()
+            .find(|(_, surface)| &surface.output == output)
+            .map(|(crtc, _)| *crtc)
+    }
+
+    pub fn apply_gamma(&mut self, output: &Output, ramp: &[u16]) -> bool {
+        use smithay::reexports::drm::control::Device as ControlDevice;
+        let Some(crtc) = self.crtc_for_output(output) else {
+            return false;
+        };
+        let Some(device) = self.backend_data.device.as_ref() else {
+            return false;
+        };
+        let size = ramp.len() / 3;
+        let (red, rest) = ramp.split_at(size);
+        let (green, blue) = rest.split_at(size);
+        match device
+            .drm_output_manager
+            .device()
+            .set_gamma(crtc, red, green, blue)
+        {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(?err, "failed to set the gamma ramp");
+                false
+            }
+        }
+    }
+
+    pub fn reset_gamma(&mut self, output: &Output) {
+        let Some(size) = self.gamma_size(output).map(|size| size as usize) else {
+            return;
+        };
+        if size < 2 {
+            return;
+        }
+        let mut ramp = vec![0u16; size * 3];
+        for index in 0..size {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_precision_loss,
+                clippy::cast_sign_loss
+            )]
+            let value = ((index as f64 / (size as f64 - 1.0)) * f64::from(u16::MAX)).round() as u16;
+            ramp[index] = value;
+            ramp[size + index] = value;
+            ramp[size * 2 + index] = value;
+        }
+        self.apply_gamma(output, &ramp);
+    }
+
+    pub fn set_outputs_blanked(&mut self, blanked: bool) {
+        if self.outputs_blanked == blanked {
+            return;
+        }
+        self.outputs_blanked = blanked;
+        self.protocols
+            .wlr_output_power_state
+            .broadcast_mode(blanked);
+
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        if blanked {
+            for surface in device.surfaces.values_mut() {
+                if let Err(err) = surface
+                    .drm_output
+                    .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+                {
+                    tracing::error!(?err, "failed to blank an output");
+                }
+                if let Some(token) = surface.pending_repaint.take() {
+                    self.loop_handle.remove(token);
+                }
+                surface.redraw_queued = false;
+            }
+        } else {
+            let crtcs: Vec<crtc::Handle> = device.surfaces.keys().copied().collect();
+            for crtc in crtcs {
+                self.render_surface(crtc);
+            }
+        }
+    }
+
     pub fn queue_redraw(&mut self) {
+        if self.outputs_blanked {
+            return;
+        }
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
         };
@@ -926,8 +1031,8 @@ impl GlideState {
         let cursor_hotspot = cursor_hotspot(&self.cursor_status);
         let cursor_status = self.cursor_status.clone();
         let elapsed = self.start_time.elapsed();
-        // Read before the renderer is borrowed mutably below.
         let dock_area = self.dock_area();
+        let launcher_area = self.launcher_area();
 
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
@@ -971,7 +1076,12 @@ impl GlideState {
             .map_or((1920, 1080), |m| (m.size.w, m.size.h));
         let (phys_w, phys_h) = output_mode;
         let wallpaper_fit = self.wallpaper_fit;
-        let wallpaper_key = (phys_w, phys_h, wallpaper_fit);
+        let wallpaper_key = (
+            phys_w,
+            phys_h,
+            wallpaper_fit,
+            glide_paint::wallpaper_generation(),
+        );
         if surface.wallpaper_key != Some(wallpaper_key) {
             let mut buf = vec![0; usize::try_from(phys_w * phys_h * 4).unwrap_or_default()];
             glide_paint::draw_wallpaper_into(&mut buf, phys_w, phys_h, wallpaper_fit);
@@ -989,21 +1099,63 @@ impl GlideState {
                 )
             };
             surface.wallpaper_buf = Some(make_buffer(&buf));
+            let mut blurred = buf.clone();
+            glide_paint::box_blur_rgba(
+                &mut blurred,
+                phys_w,
+                phys_h,
+                BACKDROP_BLUR_RADIUS * output.current_scale().integer_scale().max(1),
+            );
+            surface.wallpaper_blur_buf = Some(make_buffer(&blurred));
+            surface.wallpaper_blur_rgba = Some(std::sync::Arc::new(blurred));
             glide_paint::desaturate_in_place(&mut buf, OVERVIEW_WALLPAPER_SATURATION);
             surface.wallpaper_muted_buf = Some(make_buffer(&buf));
             surface.wallpaper_key = Some(wallpaper_key);
         }
 
-        // How far into the overview the *backdrop* is, on `--e-io`. Zero
-        // whenever the overview is closed, so the wallpaper is untouched
-        // in normal use.
+        let logical_size = {
+            let fractional = output.current_scale().fractional_scale();
+            #[allow(clippy::cast_possible_truncation)]
+            let w = (f64::from(phys_w) / fractional).round() as i32;
+            #[allow(clippy::cast_possible_truncation)]
+            let h = (f64::from(phys_h) / fractional).round() as i32;
+            (w, h)
+        };
+
         let backdrop_t = self
             .overview
             .as_ref()
             .map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
 
         let mut elements = Vec::new();
-        if let Some(overview) = self.overview.as_mut() {
+        if let Some(lock) = self.session_lock.as_ref() {
+            if let Some(surface) = lock.surfaces.get(&output) {
+                elements.extend(
+                    smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                        gles_renderer,
+                        surface.wl_surface(),
+                        (0, 0),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    )
+                    .into_iter()
+                    .map(GlideRenderElements::LockSurface),
+                );
+            }
+            surface
+                .lock_backdrop
+                .update((logical_size.0, logical_size.1), [0.0, 0.0, 0.0, 1.0]);
+            elements.push(GlideRenderElements::LockBackdrop(
+                SolidColorRenderElement::from_buffer(
+                    &surface.lock_backdrop,
+                    (0, 0),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                ),
+            ));
+        } else if let Some(overview) = self.overview.as_mut() {
             let Some(output_geometry) = self.space.output_geometry(&output) else {
                 return;
             };
@@ -1011,48 +1163,100 @@ impl GlideState {
                 gles_renderer,
                 overview,
                 &self.window_map,
-                pointer_element,
-                pointer_location,
-                cursor_hotspot,
                 scale,
                 &output,
                 output_geometry,
             ));
         } else {
-            let Some(space_elements) = build_render_elements(
-                gles_renderer,
-                &self.space,
-                pointer_element,
-                pointer_location,
-                cursor_hotspot,
-                scale,
-                &output,
-            ) else {
+            let Some(space_elements) = build_render_elements(gles_renderer, &self.space, &output)
+            else {
                 return;
             };
             elements.extend(space_elements);
+        }
 
-            // The dock is shell chrome: above every window, below the
-            // pointer. Hidden in the overview, which owns the screen.
-            let dock = crate::dock::render(
+        let locked = self.session_lock.is_some();
+        let launcher_openness = self
+            .launcher
+            .as_ref()
+            .map_or(0.0, crate::launcher::Launcher::openness);
+        if let Some(launcher) = self.launcher.as_mut().filter(|_| !locked) {
+            let grid = crate::launcher::render(
+                launcher,
+                gles_renderer,
+                &mut self.launcher_icons,
+                &crate::paint::current(),
+                &self.launcher_theme,
+                launcher_area,
+                scale,
+                output.current_scale().integer_scale(),
+            );
+            let mut ordered: Vec<GlideRenderElements> = grid
+                .into_iter()
+                .map(GlideRenderElements::Launcher)
+                .collect();
+            if let Some(buffer) = surface
+                .wallpaper_blur_buf
+                .as_mut()
+                .filter(|_| launcher_openness > 0.0)
+            {
+                use smithay::backend::renderer::element::{
+                    Kind, memory::MemoryRenderBufferRenderElement,
+                };
+                #[allow(clippy::cast_possible_truncation)]
+                let alpha = launcher_openness.clamp(0.0, 1.0) as f32;
+                let src = smithay::utils::Rectangle::from_size(
+                    smithay::utils::Size::<f64, Logical>::from((
+                        f64::from(phys_w),
+                        f64::from(phys_h),
+                    )),
+                );
+                let size: smithay::utils::Size<i32, Logical> = logical_size.into();
+                if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                    gles_renderer,
+                    (0.0, 0.0),
+                    buffer,
+                    Some(alpha),
+                    Some(src),
+                    Some(size),
+                    Kind::Unspecified,
+                ) {
+                    ordered.push(GlideRenderElements::Memory(element));
+                }
+            }
+            ordered.append(&mut elements);
+            elements = ordered;
+        }
+
+        let blur_pixels = surface.wallpaper_blur_rgba.clone();
+        let dock_backdrop = blur_pixels.as_ref().map(|pixels| crate::dock::Backdrop {
+            pixels: pixels.as_slice(),
+            width: phys_w,
+            height: phys_h,
+            fractional_scale: output.current_scale().fractional_scale(),
+            generation: glide_paint::wallpaper_generation(),
+        });
+        let dock = if locked {
+            Vec::new()
+        } else {
+            crate::dock::render(
                 &mut self.dock,
                 gles_renderer,
                 dock_area,
                 scale,
                 output.current_scale().integer_scale(),
-            );
+                backdrop_t,
+                dock_backdrop.as_ref(),
+            )
+        };
+        if !dock.is_empty() {
             let mut ordered: Vec<GlideRenderElements> =
                 dock.into_iter().map(GlideRenderElements::Memory).collect();
             ordered.append(&mut elements);
             elements = ordered;
         }
 
-        // Fading windows sit above everything else: they were on top when
-        // they were closed and nothing should appear to jump in front of
-        // them on the way out. Elements are front-to-back, so "above"
-        // means ahead of the rest. Applies in the overview too — a window
-        // closed from a preview fades out in its slot.
-        if self.snapshots.is_animating() {
+        if self.snapshots.is_animating() && !locked {
             let snapshots = self.snapshots.render_elements(gles_renderer, scale);
             let mut ordered: Vec<GlideRenderElements> = snapshots
                 .into_iter()
@@ -1062,10 +1266,21 @@ impl GlideState {
             elements = ordered;
         }
 
+        let mut ordered = cursor_elements(
+            gles_renderer,
+            pointer_element,
+            pointer_location,
+            cursor_hotspot,
+            scale,
+        );
+        ordered.append(&mut elements);
+        elements = ordered;
+
         push_wallpaper_elements(
             gles_renderer,
             surface,
             (phys_w, phys_h),
+            logical_size,
             backdrop_t,
             &mut elements,
         );
@@ -1084,11 +1299,6 @@ impl GlideState {
             }
         }
 
-        // Screen capture, for `grim`, `wf-recorder`, portals and the like.
-        // Rendered off-screen from the same element list the display gets,
-        // so a client receives exactly the composited frame. The pixels are
-        // only read here — handing them to clients needs `&mut self`, which
-        // the renderer borrow rules out until further down.
         let captured = self.screencopy.has_pending().then(|| {
             super::screenshot::capture_frame(
                 gles_renderer,
@@ -1126,7 +1336,6 @@ impl GlideState {
             }
         };
 
-        // The renderer borrow is done, so waiting clients can be served.
         match captured {
             Some(Ok(pixels)) => {
                 let presented = self.clock.now().into();
@@ -1134,8 +1343,6 @@ impl GlideState {
             }
             Some(Err(err)) => {
                 tracing::error!(?err, "screen capture failed");
-                // Tell every waiting client, rather than leaving it
-                // blocked on a frame that will never arrive.
                 for capture in self.screencopy.take_for(&output) {
                     capture.frame.failed();
                 }
@@ -1168,7 +1375,7 @@ impl GlideState {
         }
 
         match outcome {
-            FrameOutcome::Queued(_) => {
+            FrameOutcome::Queued(_) | FrameOutcome::NoDamage(_) => {
                 self.space.elements_for_output(output).for_each(|window| {
                     window.send_frame(
                         output,
@@ -1178,10 +1385,52 @@ impl GlideState {
                     );
                 });
             }
-            FrameOutcome::NoDamage(_) | FrameOutcome::Failed => {
+            FrameOutcome::Failed => {
                 self.schedule_repaint(crtc, output);
             }
         }
+    }
+
+    pub fn queue_animation_redraw(&mut self) {
+        if self.outputs_blanked {
+            return;
+        }
+        let Some(device) = self.backend_data.device.as_ref() else {
+            return;
+        };
+        let pending: Vec<(crtc::Handle, Output)> = device
+            .surfaces
+            .iter()
+            .filter(|(_, surface)| surface.pending_repaint.is_none() && !surface.redraw_queued)
+            .map(|(&crtc, surface)| (crtc, surface.output.clone()))
+            .collect();
+        for (crtc, output) in pending {
+            self.schedule_repaint(crtc, &output);
+        }
+    }
+
+    pub fn is_cursor_animating(&mut self) -> bool {
+        if self.outputs_blanked {
+            return false;
+        }
+        let icon = match &self.cursor_status {
+            CursorImageStatus::Named(icon) => *icon,
+            _ => return false,
+        };
+        let elapsed = self.start_time.elapsed();
+        let scale = self
+            .space
+            .outputs()
+            .map(|output| output.current_scale().integer_scale().cast_unsigned())
+            .max()
+            .unwrap_or(1);
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return false;
+        };
+        device
+            .cursor
+            .time_to_next_frame(icon, scale, elapsed)
+            .is_some()
     }
 
     fn reset_dead_cursor_surface(&mut self) {

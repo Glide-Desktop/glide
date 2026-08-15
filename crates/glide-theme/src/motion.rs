@@ -1,9 +1,63 @@
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 pub const T1: Duration = Duration::from_millis(120);
 pub const T2: Duration = Duration::from_millis(200);
 pub const T3: Duration = Duration::from_millis(320);
 pub const T4: Duration = Duration::from_millis(420);
+
+static MOTION_SCALE: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
+
+pub fn set_scale(scale: f32) {
+    let clamped = if scale.is_finite() {
+        scale.clamp(0.0, 10.0)
+    } else {
+        1.0
+    };
+    MOTION_SCALE.store(clamped.to_bits(), Ordering::Relaxed);
+}
+
+#[must_use]
+pub fn scale() -> f32 {
+    f32::from_bits(MOTION_SCALE.load(Ordering::Relaxed))
+}
+
+#[must_use]
+pub fn is_disabled() -> bool {
+    scale() <= 0.0
+}
+
+#[must_use]
+pub fn scaled(base: Duration) -> Duration {
+    let factor = scale();
+    if factor <= 0.0 {
+        return Duration::ZERO;
+    }
+    if (factor - 1.0).abs() < f32::EPSILON {
+        return base;
+    }
+    base.mul_f32(factor)
+}
+
+#[must_use]
+pub fn t1() -> Duration {
+    scaled(T1)
+}
+
+#[must_use]
+pub fn t2() -> Duration {
+    scaled(T2)
+}
+
+#[must_use]
+pub fn t3() -> Duration {
+    scaled(T3)
+}
+
+#[must_use]
+pub fn t4() -> Duration {
+    scaled(T4)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CubicBezier {
@@ -14,9 +68,6 @@ pub struct CubicBezier {
 }
 
 impl CubicBezier {
-    /// Polynomial coefficients of one axis of the curve, in the form
-    /// `a·u³ + b·u² + c·u` (the `P0 = 0`, `P3 = 1` endpoints make the
-    /// constant term vanish).
     const fn coefficients(p1: f32, p2: f32) -> (f32, f32, f32) {
         let c = 3.0 * p1;
         let b = 3.0 * p2 - 6.0 * p1;
@@ -34,14 +85,6 @@ impl CubicBezier {
         (3.0 * a * u + 2.0 * b) * u + c
     }
 
-    /// Solves `x(u) = x` for the curve parameter `u`.
-    ///
-    /// CSS timing functions are defined as a parametric curve, not as
-    /// `y = f(x)`, so evaluating one at a given progress means first
-    /// recovering `u` from the horizontal (time) axis. Newton–Raphson
-    /// converges in a handful of steps for the shapes used here; bisection
-    /// is the fallback for the flat-derivative regions where Newton can
-    /// stall or overshoot.
     fn solve_for_x(self, x: f32) -> f32 {
         const NEWTON_ITERATIONS: usize = 8;
         const BISECTION_ITERATIONS: usize = 24;
@@ -81,11 +124,6 @@ impl CubicBezier {
         u
     }
 
-    /// Eases `progress` (linear, `0.0..=1.0`) through the curve.
-    ///
-    /// The return value is **not** clamped: overshoot curves such as
-    /// [`E_OVER`] deliberately exceed `1.0` partway through, which is the
-    /// whole point of them.
     #[must_use]
     pub fn ease(self, progress: f32) -> f32 {
         if progress <= 0.0 {
@@ -98,7 +136,6 @@ impl CubicBezier {
         Self::axis_at(self.y1, self.y2, u)
     }
 
-    /// [`Self::ease`] for callers working in `f64`.
     #[must_use]
     pub fn ease_f64(self, progress: f64) -> f64 {
         #[allow(clippy::cast_possible_truncation)]
@@ -165,6 +202,56 @@ mod tests {
         assert!(ST_PRESS < ST_DRAG);
     }
 
+    mod motion_scale {
+        use super::*;
+
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        fn with_scale<F: FnOnce()>(value: f32, body: F) {
+            let _lock = GUARD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            set_scale(value);
+            body();
+            set_scale(1.0);
+        }
+
+        #[test]
+        fn the_default_scale_leaves_tokens_at_their_spec_values() {
+            with_scale(1.0, || {
+                assert_eq!(t1(), T1);
+                assert_eq!(t2(), T2);
+                assert_eq!(t3(), T3);
+                assert_eq!(t4(), T4);
+            });
+        }
+
+        #[test]
+        fn a_zero_scale_collapses_every_token_to_nothing() {
+            with_scale(0.0, || {
+                assert!(is_disabled());
+                for token in [t1(), t2(), t3(), t4()] {
+                    assert_eq!(token, Duration::ZERO);
+                }
+            });
+        }
+
+        #[test]
+        fn a_fractional_scale_shortens_proportionally() {
+            with_scale(0.5, || {
+                assert_eq!(t2(), Duration::from_millis(100));
+                assert_eq!(t4(), Duration::from_millis(210));
+            });
+        }
+
+        #[test]
+        fn absurd_and_non_finite_scales_are_clamped_rather_than_honoured() {
+            with_scale(1e9, || assert!((scale() - 10.0).abs() < f32::EPSILON));
+            with_scale(-4.0, || assert!(scale().abs() < f32::EPSILON));
+            with_scale(f32::NAN, || assert!((scale() - 1.0).abs() < f32::EPSILON));
+        }
+    }
+
     mod easing {
         use super::*;
 
@@ -184,8 +271,6 @@ mod tests {
             }
         }
 
-        /// `--e-out` and `--e-io` are plain ease curves: they must rise
-        /// monotonically and never leave the unit range.
         #[test]
         fn plain_curves_rise_monotonically_within_the_unit_range() {
             for curve in [E_OUT, E_IO] {
@@ -207,10 +292,6 @@ mod tests {
             }
         }
 
-        /// Solving the parametric curve has to actually invert the x axis,
-        /// not just return the input. `--e-out`'s defining trait is that a
-        /// fifth of the way through the time budget it is already half
-        /// finished — that's the "різкий старт, довгий довід" character.
         #[test]
         fn e_out_is_already_half_done_a_fifth_of_the_way_through() {
             let y = E_OUT.ease(0.2);
@@ -222,7 +303,6 @@ mod tests {
 
         #[test]
         fn e_out_front_loads_more_than_e_io() {
-            // The symmetric curve must lag the snappy one in the first half.
             for step in 1..50 {
                 #[allow(clippy::cast_precision_loss)]
                 let progress = step as f32 / 100.0;

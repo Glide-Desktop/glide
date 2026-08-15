@@ -2,11 +2,15 @@ mod compositor;
 pub mod ext_workspace;
 pub mod foreign_toplevel_list;
 pub mod idle_notify;
+mod input_method;
 pub mod layer_shell;
 mod pointer_constraints;
 mod security_context;
 mod selection;
+mod session_lock;
+pub mod wlr_gamma_control;
 pub mod wlr_output_management;
+pub mod wlr_output_power;
 mod xdg_activation;
 mod xdg_shell;
 

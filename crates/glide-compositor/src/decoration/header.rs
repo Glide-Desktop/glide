@@ -13,12 +13,18 @@ use crate::{
 };
 
 use super::{
-    BUTTON_HIT_WIDTH, BUTTON_HOVER_ANIM, BUTTON_PAD_X, BUTTON_SIZE, IDLE_BUTTON_OPACITY,
-    MENU_CONTAINER_PADDING, MENU_CONTAINER_RADIUS, MENU_CORNER_RADIUS, MENU_PADDING,
-    MENU_ROW_HEIGHT, MENU_WIDTH, RESIZE_BORDER, TITLE_PADDING, menu::MenuItem,
-    render::redraw_button,
+    BUTTON_HIT_WIDTH, BUTTON_PAD_X, BUTTON_SIZE, DOUBLE_CLICK_MS, DOUBLE_CLICK_SLOP,
+    IDLE_BUTTON_OPACITY, MENU_CONTAINER_PADDING, MENU_CONTAINER_RADIUS, MENU_CORNER_RADIUS,
+    MENU_PADDING, MENU_ROW_HEIGHT, MENU_WIDTH, RESIZE_BORDER, TITLE_PADDING, button_hover_anim,
+    menu::MenuItem, render::redraw_button,
 };
 
+// `focused`, `maximized`, `menu_open` and `dragging` are four genuinely
+// orthogonal UI states that can hold in any combination — a focused, maximized
+// window can be dragged with its menu open. The lint exists to catch flags that
+// should have been one enum; collapsing these would lose information rather
+// than express it better.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default)]
 pub struct HeaderBar {
     pub(crate) height: i32,
@@ -27,15 +33,19 @@ pub struct HeaderBar {
     pub(crate) title: String,
     pub(crate) pointer_loc: Option<Point<f64, Logical>>,
     pub(crate) menu_open: bool,
+    pub(crate) menu_opened_at: Option<std::time::Instant>,
     pub(crate) menu_hover: Option<usize>,
     pub(crate) menu_x: i32,
     pub(crate) menu_width: i32,
     pub(crate) pressed: Option<HitZone>,
+    pub(crate) dragging: bool,
+    pub(crate) last_drag_press: Option<(u32, Point<f64, Logical>)>,
     pub(crate) button_hover: glide_ui::HoverAnimation<HitZone>,
 
     pub(crate) theme: DecorationTheme,
     pub(crate) theme_rev: u32,
     pub(crate) focused: bool,
+    pub(crate) focus_fade_started: Option<std::time::Instant>,
     pub(crate) maximized: bool,
     pub(crate) scale: i32,
 
@@ -47,6 +57,8 @@ pub struct HeaderBar {
     pub(crate) last_redraw: Option<RedrawSnapshot>,
 }
 
+// Mirrors `HeaderBar`'s orthogonal flags; see the note there.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RedrawSnapshot {
     width: i32,
@@ -55,12 +67,17 @@ pub(crate) struct RedrawSnapshot {
     focused: bool,
     maximized: bool,
     theme_rev: u32,
+    painter_gen: u64,
     title: String,
     hovered: Option<HitZone>,
     hover_t_bits: u32,
+    focus_fade_bits: u32,
     pressed: Option<HitZone>,
+    dragging: bool,
     menu_open: bool,
+    menu_width: i32,
     menu_hover: Option<usize>,
+    menu_open_bits: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,17 +96,6 @@ pub(crate) enum DecorationAction {
     StartResize(ResizeEdge),
 }
 
-/// One window-control button's (background, foreground) for this frame.
-///
-/// Order of operations matters and mirrors spec §1.2/§8: hover is a color
-/// *blend* toward `hover_bg`/`fg_hover` (0..1 via `hover_t`); press is a
-/// *state layer* on top of that — `currentColor` (here, white, since both
-/// buttons' foregrounds are white) overlaid at `--st-press` (13%), not a
-/// separate darkened color — so a press mid-hover-fade still shows the
-/// hover color underneath. Idle dimming (`--st`-independent — spec
-/// §12.2/12.3's 45% opacity) is applied last, uniformly, to both channels,
-/// so a pressed or hovered idle button is still visibly dimmer than the
-/// same state focused.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn button_colors(
     normal: Color,
@@ -141,15 +147,6 @@ impl HeaderBar {
     }
 
     #[must_use]
-    /// The widest band around the window frame that decoration pixels
-    /// (shadow + border) can occupy, in logical px. Feeds
-    /// `SpaceElement::bbox`, so it must be at least as large as the
-    /// actual `shadow_and_border_buffer` overhang — which is
-    /// `shadow_fade_margin(size) + border_width`, *not* the raw
-    /// configured size (the blur needs extra room to fade past the
-    /// downward `dy` offset; see `shadow_fade_margin`). Undershooting
-    /// this leaves the outer shadow ring outside the reported bounding
-    /// box and produces stale-shadow damage-tracking artifacts.
     pub fn shadow_margin(&self) -> i32 {
         let border = i32::try_from(self.theme.border_width)
             .unwrap_or(super::RESIZE_BORDER)
@@ -174,6 +171,9 @@ impl HeaderBar {
             self.theme = theme.clone();
             self.theme_rev = self.theme_rev.wrapping_add(1);
         }
+        if self.focused != focused {
+            self.focus_fade_started = Some(std::time::Instant::now());
+        }
         self.focused = focused;
         self.maximized = maximized;
         if self.scale != scale {
@@ -189,14 +189,54 @@ impl HeaderBar {
         if self.scale < 1 { 1 } else { self.scale }
     }
 
-    pub(crate) fn button_hover_progress(&mut self, hovered: Option<HitZone>) -> f64 {
-        self.button_hover.set(hovered);
-        self.button_hover.progress(BUTTON_HOVER_ANIM)
+    pub(crate) fn button_hover_progress(&mut self) -> f64 {
+        glide_theme::motion::E_OUT.ease_f64(self.button_hover.progress(button_hover_anim()))
+    }
+
+    #[must_use]
+    pub(crate) fn hovered_zone(&self) -> Option<HitZone> {
+        self.pointer_loc
+            .filter(|l| self.in_titlebar_strip(*l))
+            .map(|l| self.zone_at(l.x, l.y))
+            .filter(|zone| !matches!(zone, HitZone::Drag))
+    }
+
+    pub(crate) fn sync_button_hover(&mut self) -> bool {
+        let zone = self.hovered_zone();
+        self.button_hover.set(zone)
     }
 
     #[must_use]
     pub fn is_hover_animating(&self) -> bool {
-        self.button_hover.is_animating(BUTTON_HOVER_ANIM)
+        self.button_hover.is_animating(button_hover_anim())
+            || self.is_focus_fading()
+            || self.is_menu_animating()
+    }
+
+    #[must_use]
+    pub fn is_focus_fading(&self) -> bool {
+        let duration = super::focus_fade();
+        !duration.is_zero()
+            && self
+                .focus_fade_started
+                .is_some_and(|started| started.elapsed() < duration)
+    }
+
+    fn focus_fade_t(&mut self) -> f32 {
+        let Some(started) = self.focus_fade_started else {
+            return 1.0;
+        };
+        let duration = super::focus_fade();
+        let elapsed = started.elapsed();
+        if duration.is_zero() || elapsed >= duration {
+            self.focus_fade_started = None;
+            return 1.0;
+        }
+        let t = elapsed.as_secs_f64() / duration.as_secs_f64();
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            glide_theme::motion::E_IO.ease_f64(t) as f32
+        }
     }
 
     pub fn set_title(&mut self, title: String) {
@@ -206,10 +246,6 @@ impl HeaderBar {
         }
     }
 
-    // The clickable area is deliberately larger than the painted button
-    // (BUTTON_SIZE, positioned by BUTTON_PAD_X/Y in render.rs): it spans
-    // the titlebar's full height and reaches the strip's own edge, not
-    // just the icon's small pill. See `BUTTON_HIT_WIDTH`'s doc comment.
     fn titlebar_row(&self) -> [(HitZone, glide_geom::Rectangle); 3] {
         let max_rect =
             glide_geom::Rectangle::from_loc_and_size(0, 0, BUTTON_HIT_WIDTH, self.height);
@@ -324,33 +360,60 @@ impl HeaderBar {
     pub fn pointer_enter(&mut self, loc: Point<f64, Logical>) {
         self.pointer_loc = Some(loc);
         self.menu_hover = self.menu_item_at(loc);
+        self.sync_button_hover();
     }
 
     pub fn pointer_leave(&mut self) {
         self.pointer_loc = None;
         self.menu_hover = None;
         self.pressed = None;
+        self.sync_button_hover();
     }
 
-    /// Opens the context menu centred under `at_x`, clamped so it never
-    /// runs past either edge of the titlebar. The width is fixed
-    /// (`MENU_WIDTH`), so — unlike the content-sized layout this replaced —
-    /// this is the *only* place `menu_x`/`menu_width` ever get set; a
-    /// redraw no longer recomputes (and silently re-right-aligns) them.
     fn open_menu_at(&mut self, at_x: i32) {
+        if !self.menu_open {
+            self.menu_opened_at = Some(std::time::Instant::now());
+        }
         self.menu_open = true;
-        self.menu_width = MENU_WIDTH;
-        self.menu_x = (at_x - MENU_WIDTH / 2).clamp(0, (self.width - MENU_WIDTH).max(0));
+        self.menu_width = MENU_WIDTH.min(self.width);
+        self.menu_x = (at_x - self.menu_width / 2).clamp(0, (self.width - self.menu_width).max(0));
     }
 
-    /// Opens the context menu without a pointer position to anchor on —
-    /// `Alt+Space`, spec §12.1's keyboard path. Lands near the left end of
-    /// the titlebar, roughly where a system menu button would sit.
+    #[must_use]
+    pub(crate) fn menu_open_progress(&self) -> f64 {
+        let Some(started) = self.menu_opened_at else {
+            return 1.0;
+        };
+        let duration = super::menu_open_anim();
+        let elapsed = started.elapsed();
+        if duration.is_zero() || elapsed >= duration {
+            return 1.0;
+        }
+        glide_theme::motion::E_OUT.ease_f64(elapsed.as_secs_f64() / duration.as_secs_f64())
+    }
+
+    #[must_use]
+    pub(crate) fn is_menu_animating(&self) -> bool {
+        self.menu_open && self.menu_open_progress() < 1.0
+    }
+
     pub fn open_menu_at_default_position(&mut self) {
         if !self.is_decorated() {
             return;
         }
         self.open_menu_at(BUTTON_HIT_WIDTH);
+    }
+
+    fn is_double_click(&self, time: u32, loc: Point<f64, Logical>) -> bool {
+        let Some((previous, at)) = self.last_drag_press else {
+            return false;
+        };
+        let Some(elapsed) = time.checked_sub(previous) else {
+            return false;
+        };
+        elapsed <= DOUBLE_CLICK_MS
+            && (loc.x - at.x).abs() <= DOUBLE_CLICK_SLOP
+            && (loc.y - at.y).abs() <= DOUBLE_CLICK_SLOP
     }
 
     pub(crate) fn on_button(&mut self, event: &ButtonEvent) -> Option<DecorationAction> {
@@ -374,8 +437,14 @@ impl HeaderBar {
 
             let zone = self.zone_at(loc.x, loc.y);
             if zone == HitZone::Drag {
+                if self.is_double_click(event.time, loc) {
+                    self.last_drag_press = None;
+                    return Some(DecorationAction::ToggleMaximize);
+                }
+                self.last_drag_press = Some((event.time, loc));
                 return Some(DecorationAction::StartMove);
             }
+            self.last_drag_press = None;
             self.pressed = Some(zone);
             return None;
         }
@@ -386,6 +455,7 @@ impl HeaderBar {
             let item = self.menu_item_at(loc).and_then(|i| MenuItem::ALL.get(i));
             let action = item.map(|&item| DecorationAction::Run(item));
             self.menu_open = false;
+            self.menu_opened_at = None;
             return action;
         }
 
@@ -414,13 +484,14 @@ impl HeaderBar {
             return false;
         }
 
-        let hovered = self
-            .pointer_loc
-            .filter(|l| self.in_titlebar_strip(*l))
-            .map(|l| self.zone_at(l.x, l.y));
+        let hovered = self.hovered_zone();
         let pressed = self.pressed;
         #[allow(clippy::cast_possible_truncation)]
-        let hover_t = self.button_hover_progress(hovered) as f32;
+        let hover_t = self.button_hover_progress() as f32;
+        let focus_fade_t = self.focus_fade_t();
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let menu_open_bits = (self.menu_open_progress().clamp(0.0, 1.0) * 8.0).round() as u32;
 
         let snapshot = RedrawSnapshot {
             width: self.width,
@@ -429,12 +500,17 @@ impl HeaderBar {
             focused: self.focused,
             maximized: self.maximized,
             theme_rev: self.theme_rev,
+            painter_gen: crate::paint::painter_generation(),
             title: self.title.clone(),
             hovered,
             hover_t_bits: hover_t.to_bits(),
+            focus_fade_bits: focus_fade_t.to_bits(),
             pressed,
+            dragging: self.dragging,
             menu_open: self.menu_open,
+            menu_width: self.menu_width,
             menu_hover: self.menu_hover,
+            menu_open_bits,
         };
         if self.last_redraw.as_ref() == Some(&snapshot) {
             return false;
@@ -443,16 +519,34 @@ impl HeaderBar {
 
         let theme = &self.theme;
         let scale = self.effective_scale();
-        let bg_color = if self.focused {
-            theme.background_focused
-        } else {
-            theme.background
+        let mix = |from: crate::config::Color, to: crate::config::Color| {
+            let mut out = from;
+            for (channel, target) in out.0.iter_mut().zip(to.0) {
+                *channel += (target - *channel) * focus_fade_t;
+            }
+            out
         };
-        let title_color = if self.focused {
-            theme.title_focused
+        let (bg_color, title_color) = if self.focused {
+            (
+                mix(theme.background, theme.background_focused),
+                mix(theme.title, theme.title_focused),
+            )
         } else {
-            theme.title
+            (
+                mix(theme.background_focused, theme.background),
+                mix(theme.title_focused, theme.title),
+            )
         };
+
+        let bg_color = if self.dragging {
+            bg_color.lerp(
+                crate::config::Color([1.0, 1.0, 1.0, bg_color.0[3]]),
+                glide_theme::motion::ST_DRAG,
+            )
+        } else {
+            bg_color
+        };
+
         let corner_radius = if self.maximized {
             0.0
         } else {
@@ -515,7 +609,7 @@ impl HeaderBar {
                 theme.maximize_button,
                 theme.maximize_button_hover,
                 theme.icon,
-                crate::config::Color([1.0, 1.0, 1.0, 1.0]), // --acc-fg (#ffffff)
+                crate::config::Color([1.0, 1.0, 1.0, 1.0]),
                 maximize_icon,
             ),
             (
@@ -524,7 +618,7 @@ impl HeaderBar {
                 theme.close_button,
                 theme.close_button_hover,
                 theme.close_icon,
-                crate::config::Color([1.0, 1.0, 1.0, 1.0]), // #fff
+                crate::config::Color([1.0, 1.0, 1.0, 1.0]),
                 Painter::draw_icon_close,
             ),
         ] {
@@ -540,7 +634,7 @@ impl HeaderBar {
                 is_pressed,
                 self.focused,
             );
-            redraw_button(buf, scale, btn_bg, btn_fg, *icon);
+            redraw_button(buf, scale, btn_bg, btn_fg, is_pressed, *icon);
         }
 
         if self.menu_open {

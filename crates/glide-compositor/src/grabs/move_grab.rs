@@ -12,10 +12,13 @@ use crate::{GlideState, focus::PointerFocusTarget, window::GlideWindow};
 
 const BTN_LEFT: u32 = 0x110;
 
+const RESTORE_THRESHOLD: f64 = 4.0;
+
 pub struct MoveSurfaceGrab {
     pub start_data: PointerGrabStartData<GlideState>,
     pub window: GlideWindow,
     pub initial_window_location: Point<i32, Logical>,
+    pub pending_restore: bool,
 }
 
 impl PointerGrab<GlideState> for MoveSurfaceGrab {
@@ -29,6 +32,21 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         handle.motion(data, None, event);
 
         let delta = event.location - self.start_data.location;
+
+        if self.pending_restore {
+            if delta.x.abs() < RESTORE_THRESHOLD && delta.y.abs() < RESTORE_THRESHOLD {
+                return;
+            }
+            self.pending_restore = false;
+            data.restore_for_move(&self.window, event.location);
+            self.start_data.location = event.location;
+            let Some(restored) = data.space.element_location(&self.window) else {
+                return;
+            };
+            self.initial_window_location = restored;
+            return;
+        }
+
         let new_location = self.initial_window_location.to_f64() + delta;
         let new_location = new_location.to_i32_round();
 
@@ -57,6 +75,8 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         handle.button(data, event);
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
+            self.window.set_dragging(false);
+            data.queue_redraw();
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }

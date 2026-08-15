@@ -37,6 +37,11 @@ pub enum Request {
         command: String,
     },
     Subscribe,
+    SetDpms {
+        on: bool,
+    },
+    CycleLayout,
+    GetLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +71,7 @@ pub enum Response {
     Windows { list: Vec<WindowInfo> },
     Error { message: String },
     Subscribed,
+    Layout { index: usize, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +84,7 @@ pub enum Event {
     FocusChanged { id: Option<u64> },
     WorkspaceChanged { id: u64 },
     OutputChanged,
+    LayoutChanged { index: usize, name: String },
 }
 
 #[cfg(test)]

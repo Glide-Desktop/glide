@@ -1,14 +1,3 @@
-//! A minimal, self-contained "press a key, get a PNG" screenshot capture.
-//!
-//! This deliberately does **not** implement `ext-image-copy-capture-v1`
-//! (see `docs/ROADMAP.md`, phase B4) — that's the real, client-facing
-//! protocol `grim`/`grimshot` and friends speak, and wiring it up properly
-//! (session negotiation, buffer constraints, cursor toggling, etc.) is a
-//! whole phase of work on its own. This is a much smaller escape hatch: a
-//! single internal keybind (`KeyAction::Screenshot`) that re-renders the
-//! output's already-built frame elements into an offscreen GL texture,
-//! reads it back, and writes it straight to disk.
-
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
@@ -25,11 +14,6 @@ use smithay::{
 
 use super::tty::GlideRenderElements;
 
-/// Renders `elements` (already built for this output, in front-to-back
-/// order, in physical pixels at `scale`) into a throwaway offscreen
-/// buffer, reads it back, and writes it to a timestamped PNG file.
-///
-/// Returns the path written to.
 pub(super) fn capture_screenshot(
     renderer: &mut GlesRenderer,
     elements: &[GlideRenderElements],
@@ -45,11 +29,6 @@ pub(super) fn capture_screenshot(
     Ok(path)
 }
 
-/// Renders `elements` into a throwaway offscreen buffer and reads it back.
-///
-/// Returns the frame as `Argb8888` in this crate's buffer order — the same
-/// bytes a screenshot is written from and a screencopy client is handed,
-/// so both see exactly what was composited.
 pub(super) fn capture_frame(
     renderer: &mut GlesRenderer,
     elements: &[GlideRenderElements],
@@ -72,8 +51,6 @@ pub(super) fn capture_frame(
         .context("failed to bind the offscreen capture buffer")?;
 
     let mut tracker = OutputDamageTracker::new((width, height), scale, transform);
-    // `age: 0` — a fresh tracker every call, so this always forces full
-    // (not incremental) damage; there's no previous frame to diff against.
     tracker
         .render_output(renderer, &mut target, 0, elements, [0.0, 0.0, 0.0, 1.0])
         .map_err(|err| anyhow!("failed to render the frame: {err:?}"))?;
@@ -89,11 +66,6 @@ pub(super) fn capture_frame(
     Ok(data.to_vec())
 }
 
-/// Picks a directory to save into, preferring an explicit
-/// `$XDG_PICTURES_DIR` (or plain `~/Pictures`) if it actually exists, and
-/// falling back to `home` otherwise (e.g. a fresh account with no
-/// `xdg-user-dirs` setup yet still gets a screenshot saved *somewhere*
-/// instead of the request silently failing).
 fn pick_screenshot_dir(home: &Path, pictures_override: Option<&Path>) -> PathBuf {
     let pictures = pictures_override.map_or_else(|| home.join("Pictures"), Path::to_path_buf);
     if pictures.is_dir() {
@@ -113,17 +85,12 @@ fn screenshot_dir() -> anyhow::Result<PathBuf> {
 
 fn screenshot_path() -> anyhow::Result<PathBuf> {
     let dir = screenshot_dir()?;
-    // Millisecond precision so two captures within the same second (easy
-    // to do by pressing Print twice) don't overwrite each other.
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
     Ok(dir.join(format!("glide-screenshot-{timestamp}.png")))
 }
 
-/// `rgba` must be exactly `width * height * 4` bytes of straight
-/// (non-premultiplied is fine — every scanned-out pixel is opaque)
-/// RGBA8, row-major, top-to-bottom.
 fn write_png(path: &Path, width: i32, height: i32, rgba: &[u8]) -> anyhow::Result<()> {
     let width = u32::try_from(width).context("screenshot width does not fit in a u32")?;
     let height = u32::try_from(height).context("screenshot height does not fit in a u32")?;

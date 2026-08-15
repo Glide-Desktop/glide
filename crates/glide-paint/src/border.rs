@@ -9,29 +9,8 @@ pub struct ShadowLayerSpec {
     pub color: Color,
 }
 
-/// Ratio between a shadow layer's downward offset (`dy`) and its blur
-/// radius, mirroring the relationship baked into every
-/// `glide_theme::elevation` entry (its `ShadowLayer::dy`/`blur` pairs all
-/// sit close to this ratio). Callers that derive a `dy` from a single
-/// configured size — instead of a full elevation-token layer list — use
-/// this so the shadow reads as a downward-cast drop shadow rather than a
-/// halo that hugs the window symmetrically on every side.
 pub const SHADOW_DY_RATIO: f32 = 0.43;
 
-/// How much padding a buffer needs on every side so a shadow layer of the
-/// given (unscaled) `size` can fully fade out before `box_blur_alpha`'s
-/// support region reaches the buffer edge.
-///
-/// A `size`-blur, 3-pass box blur needs roughly `size` px of room to fade
-/// to (near-)zero — that's why the old, non-offset renderer used
-/// `margin = shadow_size` and it worked. Once the shadow is shifted
-/// downward by `SHADOW_DY_RATIO * size` (see [`SHADOW_DY_RATIO`]), the
-/// *bottom* edge needs that much extra room too, or the blur gets
-/// hard-clipped by the buffer boundary instead of fading out — which
-/// reads as a dense, sharp-edged halo hugging the window rather than a
-/// soft shadow, and can visibly square off what should be a rounded
-/// corner right where the clip happens. Sizing the (symmetric) margin for
-/// the worst case keeps every side generous enough.
 #[must_use]
 pub fn shadow_fade_margin(size: i32) -> i32 {
     if size <= 0 {
@@ -45,9 +24,6 @@ pub fn shadow_fade_margin(size: i32) -> i32 {
     }
 }
 
-/// Source-over blend of `src` onto `dst`, both premultiplied BGRA8.
-///
-/// `dst = src + dst * (1 - src_alpha)`
 pub(crate) fn composite_premul_over(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
         let src_a = s[3];
@@ -68,13 +44,6 @@ pub(crate) fn composite_premul_over(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// Strokes a rounded-rect border just inside the `width × height` canvas,
-/// **blended over** whatever `buf` already holds.
-///
-/// Compositing (rather than replacing) matters: callers routinely paint a
-/// panel background first and then outline it — overwriting would erase
-/// that background and leave a hollow, see-through panel with nothing but
-/// an outline.
 pub fn draw_inset_border(
     buf: &mut [u8],
     width: i32,
@@ -206,16 +175,67 @@ fn composite_solid_mask_over(
     }
 }
 
-/// Erases (multiplies out) everything inside the window's own footprint —
-/// a rounded rect of `punch_radius` at `(rect_x, rect_y)` — from the
-/// already-composited shadow pixels.
-///
-/// The shadow layers are *filled* blurred shapes, so without this the
-/// area behind the window is painted too. That's invisible behind opaque
-/// content, but shows straight through anything the client leaves
-/// transparent — most notably the rounded-off corners of CSD windows
-/// (GTK etc.), which then read as dark, square corners instead of showing
-/// whatever actually sits behind the window.
+#[allow(clippy::too_many_arguments)]
+pub fn blit_rounded_backdrop(
+    dst: &mut [u8],
+    dst_w: i32,
+    dst_h: i32,
+    radius: f32,
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_rect: (i32, i32, i32, i32),
+) -> bool {
+    let (Ok(dw), Ok(dh)) = (usize::try_from(dst_w), usize::try_from(dst_h)) else {
+        return false;
+    };
+    if dw == 0 || dh == 0 || dst.len() < dw * dh * 4 {
+        return false;
+    }
+    let (Ok(sw), Ok(sh)) = (usize::try_from(src_w), usize::try_from(src_h)) else {
+        return false;
+    };
+    if sw == 0 || sh == 0 || src.len() < sw * sh * 4 {
+        return false;
+    }
+
+    let (rx, ry, rw, rh) = src_rect;
+    if rw <= 0 || rh <= 0 {
+        return false;
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let Some(mask) =
+        rasterize_rounded_rect_alpha(dst_w, dst_h, 0.0, 0.0, dst_w as f32, dst_h as f32, radius)
+    else {
+        return false;
+    };
+
+    for y in 0..dh {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let sy = (ry + (y as i32 * rh) / dst_h).clamp(0, src_h - 1) as usize;
+        for x in 0..dw {
+            let m = mask[y * dw + x];
+            if m == 0 {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            let sx = (rx + (x as i32 * rw) / dst_w).clamp(0, src_w - 1) as usize;
+
+            let s = (sy * sw + sx) * 4;
+            let d = (y * dw + x) * 4;
+            let coverage = f32::from(m) / 255.0;
+            for channel in 0..4 {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    dst[d + channel] = (f32::from(src[s + channel]) * coverage).round() as u8;
+                }
+            }
+        }
+    }
+    true
+}
+
 fn punch_out_window(
     data: &mut [u8],
     buf_width: i32,
@@ -242,8 +262,6 @@ fn punch_out_window(
             continue;
         }
         let keep = f32::from(255 - m) / 255.0;
-        // Premultiplied pixels — scaling all four channels uniformly is a
-        // correct alpha-fade.
         for channel in px.iter_mut() {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             {
@@ -341,6 +359,112 @@ mod tests {
         Color([color.0[0], color.0[1], color.0[2], 1.0])
     }
 
+    mod rounded_backdrop {
+        use super::*;
+
+        fn source(w: i32, h: i32, value: u8) -> Vec<u8> {
+            vec![value; (w * h * 4) as usize]
+        }
+
+        fn alpha_at(buf: &[u8], w: i32, x: i32, y: i32) -> u8 {
+            buf[((y * w + x) * 4 + 3) as usize]
+        }
+
+        #[test]
+        fn the_interior_is_filled_from_the_requested_crop() {
+            let src = source(64, 64, 200);
+            let mut dst = vec![0u8; 32 * 32 * 4];
+            assert!(blit_rounded_backdrop(
+                &mut dst,
+                32,
+                32,
+                8.0,
+                &src,
+                64,
+                64,
+                (16, 16, 32, 32)
+            ));
+            assert_eq!(alpha_at(&dst, 32, 16, 16), 200, "centre must be opaque");
+        }
+
+        #[test]
+        fn the_corners_stay_transparent() {
+            let src = source(64, 64, 255);
+            let mut dst = vec![0u8; 32 * 32 * 4];
+            blit_rounded_backdrop(&mut dst, 32, 32, 12.0, &src, 64, 64, (0, 0, 64, 64));
+
+            for (x, y) in [(0, 0), (31, 0), (0, 31), (31, 31)] {
+                assert_eq!(
+                    alpha_at(&dst, 32, x, y),
+                    0,
+                    "corner ({x},{y}) must not be painted"
+                );
+            }
+        }
+
+        #[test]
+        fn a_zero_radius_keeps_the_corners() {
+            let src = source(64, 64, 255);
+            let mut dst = vec![0u8; 32 * 32 * 4];
+            blit_rounded_backdrop(&mut dst, 32, 32, 0.0, &src, 64, 64, (0, 0, 64, 64));
+            assert_eq!(alpha_at(&dst, 32, 0, 0), 255);
+        }
+
+        #[test]
+        fn a_crop_reaching_past_the_source_is_clamped_not_wrapped() {
+            let src = source(64, 64, 128);
+            let mut dst = vec![0u8; 32 * 32 * 4];
+            assert!(blit_rounded_backdrop(
+                &mut dst,
+                32,
+                32,
+                0.0,
+                &src,
+                64,
+                64,
+                (48, 48, 64, 64)
+            ));
+            assert_eq!(alpha_at(&dst, 32, 31, 31), 128);
+        }
+
+        #[test]
+        fn malformed_inputs_are_refused() {
+            let src = source(8, 8, 255);
+            let mut dst = vec![0u8; 8 * 8 * 4];
+            assert!(!blit_rounded_backdrop(
+                &mut dst,
+                8,
+                8,
+                2.0,
+                &src,
+                8,
+                8,
+                (0, 0, 0, 8)
+            ));
+            assert!(!blit_rounded_backdrop(
+                &mut dst,
+                0,
+                8,
+                2.0,
+                &src,
+                8,
+                8,
+                (0, 0, 8, 8)
+            ));
+            let short = vec![0u8; 4];
+            assert!(!blit_rounded_backdrop(
+                &mut dst,
+                8,
+                8,
+                2.0,
+                &short,
+                8,
+                8,
+                (0, 0, 8, 8)
+            ));
+        }
+    }
+
     fn pixel(buf: &[u8], buf_w: i32, x: i32, y: i32) -> [u8; 4] {
         let off = ((y * buf_w + x) * 4) as usize;
         buf[off..off + 4].try_into().unwrap()
@@ -412,9 +536,6 @@ mod tests {
             None,
         );
 
-        // The window's left edge sits at (buf_w - 40) / 2 = 10; the 2px
-        // border straddles it, so a point just left of that edge must show
-        // the (BGRA) border color.
         let px = pixel(&buf, buf_w, 9, 30);
         assert_eq!(px[3], 255, "border pixel must be opaque");
         assert!(
@@ -538,11 +659,6 @@ mod tests {
         );
     }
 
-    /// The shadow layers are filled shapes — without a punch the area
-    /// behind the window is painted too, and that fill shows through any
-    /// transparent client pixels (CSD rounded corners, translucent
-    /// terminals). Punching must clear the interior while leaving the
-    /// outside ring intact.
     #[test]
     fn punching_clears_the_interior_but_keeps_the_outside_ring() {
         let (buf_w, buf_h) = (120, 120);
@@ -584,9 +700,6 @@ mod tests {
             "the punched interior must be fully transparent"
         );
 
-        // A corner of the window rect (inside the square punch, outside
-        // the shadow shape's rounded outline) must be cleared too — this
-        // is exactly where CSD clients leave their corners transparent.
         let win_left = (buf_w - 60) / 2;
         let win_top = (buf_h - 60) / 2;
         assert_eq!(
@@ -595,7 +708,6 @@ mod tests {
             "window-rect corners must be cleared by a square punch"
         );
 
-        // Just outside the window rect the blurred ring must survive.
         let outside = pixel(&punched, buf_w, win_left - 4, buf_h / 2)[3];
         assert!(
             outside > 0,
@@ -603,8 +715,6 @@ mod tests {
         );
     }
 
-    /// The border stroke is drawn *after* the punch, so a rounded punch
-    /// must never eat the border's corner arcs.
     #[test]
     fn a_rounded_punch_leaves_the_border_ring_intact() {
         let (buf_w, buf_h) = (100, 100);
@@ -624,7 +734,6 @@ mod tests {
             Some(radius),
         );
 
-        // Mid-edge border pixel, just outside the window's left edge.
         let win_left = (buf_w - 60) / 2;
         let px = pixel(&buf, buf_w, win_left - 1, buf_h / 2);
         assert!(
@@ -633,15 +742,9 @@ mod tests {
         );
     }
 
-    /// Regression test: `draw_inset_border` used to `copy_from_slice` a
-    /// fresh, mostly-transparent pixmap over the whole buffer, wiping any
-    /// background painted beforehand. Every caller that outlines a filled
-    /// panel (the overview label pill, the titlebar context menu) came out
-    /// hollow and see-through as a result.
     #[test]
     fn drawing_a_border_preserves_the_background_underneath() {
         let (w, h) = (60, 30);
-        // Pre-fill the whole buffer with an opaque background.
         let bg = [40u8, 30, 20, 255];
         let mut buf: Vec<u8> = bg
             .iter()
@@ -652,13 +755,11 @@ mod tests {
 
         draw_inset_border(&mut buf, w, h, 2.0, 6.0, Color([1.0, 0.0, 0.0, 1.0]));
 
-        // Dead centre is far from the stroke and must be untouched.
         assert_eq!(
             pixel(&buf, w, w / 2, h / 2),
             bg,
             "the border wiped out the panel background"
         );
-        // Every pixel must still be opaque — no holes anywhere.
         for (i, px) in buf.chunks_exact(4).enumerate() {
             assert_eq!(
                 px[3],
@@ -668,7 +769,6 @@ mod tests {
                 i as i32 / w
             );
         }
-        // And the stroke itself must actually be there, on the edge.
         let edge = pixel(&buf, w, 1, h / 2);
         assert!(
             edge[2] > bg[2],
@@ -695,17 +795,9 @@ mod tests {
         assert_eq!(shadow_fade_margin(0), 0);
         assert_eq!(shadow_fade_margin(-5), 0);
         assert!(shadow_fade_margin(68) > shadow_fade_margin(32));
-        // Bigger than the plain size — that's the whole point (room for
-        // the `dy` offset too).
         assert!(shadow_fade_margin(68) > 68);
     }
 
-    /// Reproduces the "glowing halo" / "square corner" bug: a `dy`-offset
-    /// shadow layer sized to fit in a plain `size`-px margin gets
-    /// hard-clipped by the buffer edge on the side it's offset towards,
-    /// instead of fading to (near-)zero alpha like it does on every other
-    /// side. `shadow_fade_margin` must give it enough room to actually
-    /// finish fading on the offset side too.
     #[test]
     fn a_dy_offset_shadow_layer_fully_fades_within_shadow_fade_margin_but_not_within_plain_size() {
         let size = 68.0_f32;
@@ -732,8 +824,6 @@ mod tests {
                 0.0,
                 None,
             );
-            // The bottom-center row of the buffer, right at its edge — the
-            // side the shadow is offset towards.
             let cx = buf_w / 2;
             pixel(&buf, buf_w, cx, buf_h - 1)[3]
         };

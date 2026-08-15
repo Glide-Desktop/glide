@@ -25,10 +25,6 @@ impl MenuItem {
         }
     }
 
-    /// `Option` is deliberate here, not a mistake the current three
-    /// variants all happening to return `Some` — a future item without a
-    /// bound key (a snap/always-on-top toggle, say) needs to render with
-    /// no accelerator column at all, not an empty one.
     #[must_use]
     #[allow(clippy::unnecessary_wraps)]
     pub const fn accel(self) -> Option<&'static str> {
@@ -52,20 +48,22 @@ pub(crate) fn run_menu_item(state: &mut GlideState, window: &GlideWindow, item: 
     match item {
         MenuItem::Minimize => {
             tracing::info!(?id, "minimizing via titlebar menu");
-            state.layout.set_minimized(id, true);
+            state.minimize_with_flight(id);
         }
         MenuItem::ToggleMaximize => {
             tracing::info!(?id, "toggling maximize via titlebar menu");
-            state.layout.toggle_maximized(id);
+            state.morph_geometry(id, |state| {
+                state.layout.toggle_maximized(id);
+            });
         }
         MenuItem::Close => {
             tracing::info!(?id, "closing via titlebar menu");
             if let Some(toplevel) = window.toplevel() {
                 toplevel.send_close();
             }
+            state.reconcile_space();
         }
     }
-    state.reconcile_space();
 }
 
 #[cfg(test)]
@@ -87,9 +85,6 @@ mod tests {
 
     #[test]
     fn every_accelerator_matches_a_real_default_keybind() {
-        // These are asserted against literal strings, not resolved through
-        // config.rs, deliberately: a menu hint that quietly drifts from the
-        // keybind it claims to mirror is worse than no hint at all.
         assert_eq!(MenuItem::Minimize.accel(), Some("Super+M"));
         assert_eq!(MenuItem::ToggleMaximize.accel(), Some("Super+F"));
         assert_eq!(MenuItem::Close.accel(), Some("Alt+F4"));

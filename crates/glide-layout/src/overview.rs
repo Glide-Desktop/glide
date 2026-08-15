@@ -5,23 +5,7 @@ use glide_geom::{Point, Rectangle, Size};
 pub struct OverviewOptions {
     pub gap: i32,
     pub label_height: i32,
-    /// Signed offset from a preview's bottom edge to the top edge of its
-    /// label pill. **Normally negative**: per the design spec the pill
-    /// rides up *onto* the preview rather than hanging below it, so only
-    /// `label_height + label_offset` of vertical space is actually
-    /// consumed underneath each row.
-    ///
-    /// Must match whatever offset the renderer actually draws the label
-    /// at (see `glide-compositor`'s `overview::label_offset`), or the
-    /// packed layout will disagree with what's on screen and a
-    /// bottom-row pill can spill past the edge of the layout area.
     pub label_offset: i32,
-    /// Minimum breathing room between the packed block of previews and
-    /// every edge of the layout area, in logical px. Without it a block
-    /// that happens to consume the full available height (easy to hit —
-    /// the row-height budget is derived *from* that height) ends up
-    /// flush against the screen edges, with the top row's titlebar and
-    /// the bottom row's label pill touching them.
     pub padding: i32,
     pub max_scale: f64,
 }
@@ -54,15 +38,10 @@ fn distribute(n: usize, rows: usize) -> Vec<usize> {
         .collect()
 }
 
-/// One row's sized-but-not-yet-positioned previews, produced by
-/// `layout_in_rows`' first pass.
 struct RowPlan {
     scales: Vec<f64>,
     sizes: Vec<Size>,
-    /// Tallest preview in the row — the row's real height, which is
-    /// generally less than the row-height *budget*.
     height: i32,
-    /// Total width including inter-preview gaps.
     used_width: i32,
 }
 
@@ -74,10 +53,6 @@ fn layout_in_rows(
 ) -> Option<(Vec<OverviewSlot>, i64)> {
     let counts = distribute(windows.len(), rows);
 
-    // Vertical space a row's label actually consumes *below* the preview:
-    // the pill's height minus however much of it overlaps back onto the
-    // preview (`label_offset` is normally negative — see its doc comment).
-    // Clamped at zero: a pill fully inside the preview costs nothing extra.
     let label_strip = (opts.label_height + opts.label_offset).max(0);
 
     let rows_i32 = i32::try_from(rows).unwrap_or(i32::MAX);
@@ -87,13 +62,6 @@ fn layout_in_rows(
         return None;
     }
 
-    // ---- Pass 1: size every row, without committing to any position ----
-    //
-    // Positions can't be assigned yet: a row's *actual* height is the
-    // tallest preview in it, which is generally less than the `row_height`
-    // budget (previews are capped by `max_scale` and by the row's width).
-    // Centring against the budget instead of the real height is what used
-    // to leave the whole block hugging one edge of the screen.
     let mut plans: Vec<RowPlan> = Vec::with_capacity(rows);
     let mut index = 0usize;
 
@@ -160,7 +128,6 @@ fn layout_in_rows(
         });
     }
 
-    // ---- Pass 2: centre the block, then centre within each row ----
     let block_height: i32 = plans
         .iter()
         .map(|plan| plan.height + label_strip)
@@ -179,8 +146,6 @@ fn layout_in_rows(
         let mut x = area.loc.x + (area.size.width - plan.used_width) / 2;
 
         for ((&(id, _), &scale), &size) in row_windows.iter().zip(&plan.scales).zip(&plan.sizes) {
-            // Centred against the row's real height, so a short preview
-            // sits mid-row rather than being pinned to its bottom edge.
             let slot_y = y + (plan.height - size.height) / 2;
 
             covered += i64::from(size.width) * i64::from(size.height);
@@ -200,15 +165,8 @@ fn layout_in_rows(
     Some((slots, covered))
 }
 
-/// Below this many windows the overview always uses a single row: one or
-/// two previews sharing the full width, vertically centred. Wrapping only
-/// starts once there are enough previews for a second row to actually buy
-/// meaningful size back.
 const MIN_WINDOWS_FOR_MULTIPLE_ROWS: usize = 3;
 
-/// Shrinks `area` by `padding` on every side, refusing to eat more than a
-/// quarter of either dimension so an oversized configured value degrades
-/// gracefully on small outputs instead of collapsing the area to nothing.
 fn apply_padding(area: Rectangle, padding: i32) -> Rectangle {
     let padding = padding.max(0);
     let pad_x = padding.min(area.size.width / 4);
@@ -221,7 +179,6 @@ fn apply_padding(area: Rectangle, padding: i32) -> Rectangle {
     })
 }
 
-/// The most rows worth considering for `count` windows.
 fn max_rows_for(count: usize) -> usize {
     if count < MIN_WINDOWS_FOR_MULTIPLE_ROWS {
         1
@@ -280,8 +237,6 @@ mod tests {
             gap: 20,
             label_height: 0,
             label_offset: 0,
-            // Most geometry tests assert exact edge-to-edge centring, so
-            // they opt out of the outer padding; it gets its own tests.
             padding: 0,
             max_scale: 1.0,
         }
@@ -426,7 +381,6 @@ mod tests {
         }
     }
 
-    /// Vertical margins above and below the whole block of previews.
     fn vertical_margins(
         slots: &[OverviewSlot],
         area: Rectangle,
@@ -438,8 +392,6 @@ mod tests {
             .map(|s| s.target.loc.y + s.target.size.height)
             .max()
             .unwrap();
-        // The label strip hangs below the bottom row and is part of the
-        // centred block, so it counts against the lower margin.
         let label_strip = (opts.label_height + opts.label_offset).max(0);
         (
             top - area.loc.y,
@@ -459,10 +411,6 @@ mod tests {
         );
     }
 
-    /// Regression test for the real-world bug: with a single row the row
-    /// budget spans the entire area, and previews used to be pinned to the
-    /// *bottom* of that budget — so a lone window sat at the very bottom of
-    /// the screen with all the slack above it.
     #[test]
     fn a_single_row_is_vertically_centred_not_bottom_aligned() {
         for n in 1..=2usize {
@@ -481,10 +429,8 @@ mod tests {
         }
     }
 
-    /// Previews shorter than their row must sit mid-row, not on its floor.
     #[test]
     fn previews_are_centred_within_their_row() {
-        // A short window beside a tall one: same row, different heights.
         let short = win(400, 200);
         let tall = win(400, 800);
         let windows = [short, tall];
@@ -505,19 +451,12 @@ mod tests {
     fn fewer_than_three_windows_always_use_a_single_row() {
         for n in 1..MIN_WINDOWS_FOR_MULTIPLE_ROWS {
             let windows: Vec<_> = (0..n).map(|_| win(800, 600)).collect();
-            // Even on a tall, narrow area where wrapping would otherwise
-            // win on coverage.
             let tall = Rectangle::from_loc_and_size(0, 0, 900, 2400);
             let slots = compute_overview_layout(&windows, tall, &opts());
             assert_eq!(rows_used(&slots), 1, "n={n} should stay on one row");
         }
     }
 
-    /// Regression test: the row-height budget is derived from the area
-    /// height, so a packed block routinely consumes *all* of it — leaving
-    /// the top row's titlebar and the bottom row's label pill flush
-    /// against the screen edges. `padding` must guarantee breathing room
-    /// on every side.
     #[test]
     fn padding_keeps_the_block_clear_of_every_edge() {
         let pad = 64;
@@ -528,8 +467,6 @@ mod tests {
             ..opts()
         };
 
-        // Several counts, so both the single-row and the wrapped cases are
-        // covered — three windows is what reproduced this on screen.
         for n in 1..=5usize {
             let windows: Vec<_> = (0..n).map(|_| win(800, 600)).collect();
             let slots = compute_overview_layout(&windows, area(), &padded);
@@ -604,7 +541,6 @@ mod tests {
             "an absurd padding must still lay the window out somewhere"
         );
 
-        // Clamped to a quarter per side, i.e. half the area survives.
         let t = slots[0].target;
         assert!(t.size.width > 0 && t.size.height > 0);
         assert!(t.loc.x >= area().size.width / 4);
@@ -730,9 +666,6 @@ mod tests {
                 .map(|s| i64::from(s.target.size.width) * i64::from(s.target.size.height))
                 .sum();
 
-            // Only among the row counts the layout is actually allowed to
-            // pick from — under `MIN_WINDOWS_FOR_MULTIPLE_ROWS` a single
-            // row is mandated even if wrapping would cover more.
             for rows in 1..=max_rows_for(n) {
                 if let Some((_, covered)) = layout_in_rows(&windows, area(), &opts(), rows) {
                     assert!(
@@ -790,11 +723,6 @@ mod tests {
         );
     }
 
-    /// Regression test: `label_offset` used to have no counterpart at all
-    /// in the layout budget — only `label_height` was reserved — so a
-    /// bottom-row preview's label pill could spill past the bottom of the
-    /// layout area whenever the block's natural centring margin was
-    /// smaller than the renderer's actual offset.
     #[test]
     fn a_positive_label_offset_reserves_space_on_top_of_label_height() {
         let windows = [win(800, 600)];
@@ -816,9 +744,6 @@ mod tests {
         );
     }
 
-    /// The design case: a negative offset overlaps the pill back onto the
-    /// preview, so it consumes *less* room below the row than its full
-    /// height — previews get correspondingly larger.
     #[test]
     fn a_negative_label_offset_gives_the_row_height_back() {
         let windows = [win(800, 600)];
@@ -842,8 +767,6 @@ mod tests {
         );
     }
 
-    /// A pill fully inside the preview costs no extra vertical space —
-    /// and must never be counted as *negative* space either.
     #[test]
     fn an_offset_that_fully_overlaps_the_pill_costs_no_extra_space() {
         let windows = [win(800, 600)];

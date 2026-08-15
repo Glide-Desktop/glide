@@ -1,3 +1,26 @@
+pub fn box_blur_rgba(buf: &mut [u8], width: i32, height: i32, radius: i32) {
+    if radius <= 0 || width <= 0 || height <= 0 {
+        return;
+    }
+    let Ok(len) = usize::try_from(width * height) else {
+        return;
+    };
+    if buf.len() < len * 4 {
+        return;
+    }
+
+    let mut plane = vec![0u8; len];
+    for channel in 0..4 {
+        for (i, px) in plane.iter_mut().enumerate() {
+            *px = buf[i * 4 + channel];
+        }
+        box_blur_alpha(&mut plane, width, height, radius);
+        for (i, px) in plane.iter().enumerate() {
+            buf[i * 4 + channel] = *px;
+        }
+    }
+}
+
 pub(crate) fn box_blur_alpha(alpha: &mut [u8], width: i32, height: i32, radius: i32) {
     if radius <= 0 || width <= 0 || height <= 0 {
         return;
@@ -16,12 +39,6 @@ pub(crate) fn box_blur_alpha(alpha: &mut [u8], width: i32, height: i32, radius: 
     }
 }
 
-// Normalizes by the number of samples actually inside the window at each
-// position, rather than a fixed `2*radius+1`. Otherwise pixels near the
-// buffer's own edge would be pulled toward black just from missing
-// out-of-bounds samples, independent of the shape being blurred — the
-// canvas-edge fade should only come from deliberate margin, not from a
-// division bug.
 fn box_blur_pass(
     src: &[u8],
     dst: &mut [u8],
@@ -147,12 +164,6 @@ mod tests {
 
     #[test]
     fn larger_radius_spreads_further() {
-        // A single-pixel spike underflows to zero almost immediately under
-        // integer box blur at a large radius (dividing 255 by a ~600-pixel
-        // 2D window truncates to 0 after the first pass) — not representative
-        // of what this ever actually blurs (a filled rounded-rect silhouette
-        // hundreds of pixels across), so this uses the same filled-half-plane
-        // shape as the hard-edge test instead of a point source.
         let (w, h) = (120, 120);
         let half_plane = |radius: i32| -> u8 {
             let mut alpha = vec![0u8; (w * h) as usize];

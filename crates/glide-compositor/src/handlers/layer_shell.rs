@@ -35,11 +35,17 @@ impl WlrLayerShellHandler for GlideState {
         };
 
         tracing::info!(namespace, "new layer surface");
-        if let Err(err) =
-            layer_map_for_output(&output).map_layer(&LayerSurface::new(surface, namespace))
-        {
+        let layer = LayerSurface::new(surface, namespace);
+        if let Err(err) = layer_map_for_output(&output).map_layer(&layer) {
             tracing::warn!(?err, "failed to map layer surface");
+            return;
         }
+
+        if layer.can_receive_keyboard_focus() {
+            self.layer_focus = Some(layer);
+            self.apply_keyboard_focus_public();
+        }
+        self.queue_redraw();
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
@@ -53,6 +59,11 @@ impl WlrLayerShellHandler for GlideState {
 
         if let Some((layer, output)) = layer_and_output {
             layer_map_for_output(&output).unmap_layer(&layer);
+
+            if self.layer_focus.as_ref() == Some(&layer) {
+                self.layer_focus = None;
+                self.apply_keyboard_focus_public();
+            }
 
             self.sync_layout_outputs();
             self.reconcile_space();

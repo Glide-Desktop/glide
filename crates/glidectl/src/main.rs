@@ -132,6 +132,7 @@ fn format_event(event: &Event) -> String {
         Event::FocusChanged { id: None } => "focus changed: none".to_string(),
         Event::WorkspaceChanged { id } => format!("workspace changed: {id}"),
         Event::OutputChanged => "output changed".to_string(),
+        Event::LayoutChanged { index, name } => format!("layout changed: {index} ({name})"),
     }
 }
 
@@ -153,6 +154,8 @@ COMMANDS:
     reload                     Reload configuration from glide.toml
     exec <command...>          Execute shell command
     subscribe                  Stream window/focus/workspace events until Ctrl+C
+    dpms <on|off>              Turn the outputs on or blank them
+    layout [get|next]          Read or cycle the active keyboard layout
 
 OPTIONS:
     --json                     Output response as raw JSON
@@ -206,6 +209,16 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
         "quit" => Ok(Request::Quit),
         "reload" => Ok(Request::Reload),
         "subscribe" | "sub" => Ok(Request::Subscribe),
+        "dpms" => match args.get(1).map(String::as_str) {
+            Some("on") => Ok(Request::SetDpms { on: true }),
+            Some("off") => Ok(Request::SetDpms { on: false }),
+            _ => anyhow::bail!("Usage: glidectl dpms <on|off>"),
+        },
+        "layout" => match args.get(1).map(String::as_str) {
+            Some("next") | Some("cycle") => Ok(Request::CycleLayout),
+            Some("get") | None => Ok(Request::GetLayout),
+            _ => anyhow::bail!("Usage: glidectl layout <get|next>"),
+        },
         "exec" => {
             if args.len() < 2 {
                 anyhow::bail!("Usage: glidectl exec <command>");
@@ -289,6 +302,7 @@ fn print_response(response: &Response) {
         Response::Pong => println!("PONG"),
         Response::Error { message } => eprintln!("Error: {message}"),
         Response::Subscribed => println!("Subscribed"),
+        Response::Layout { index, name } => println!("{index} {name}"),
         Response::Workspaces { list } => {
             println!(
                 "{:<5} {:<10} {:<8} {:<10}",

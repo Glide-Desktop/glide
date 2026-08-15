@@ -133,6 +133,197 @@ mod tests {
         assert_eq!(state.geometry.loc, Point::new(560, 240));
     }
 
+    mod maximized_before_first_commit {
+        use super::*;
+
+        fn layout_with_output() -> (Layout, WindowId) {
+            let mut layout = Layout::new();
+            let o1 = OutputId::next();
+            layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 1920, 1080))]);
+            let w = WindowId::next();
+            layout.add_window(w, Size::ZERO);
+            (layout, w)
+        }
+
+        #[test]
+        fn maximizing_an_unplaced_window_marks_it_placed() {
+            let (mut layout, w) = layout_with_output();
+            assert!(!layout.window_state(w).unwrap().is_placed);
+
+            assert!(layout.set_maximized(w, true));
+
+            let state = layout.window_state(w).unwrap();
+            assert!(
+                state.is_placed,
+                "without this the configure carries no size, so the client picks \
+                 its own default and maps tiny"
+            );
+            assert_eq!(state.geometry, layout.primary_output_work_area());
+        }
+
+        #[test]
+        fn a_committed_size_does_not_shrink_a_maximized_window() {
+            let (mut layout, w) = layout_with_output();
+            layout.set_maximized(w, true);
+            let maximized = layout.window_state(w).unwrap().geometry;
+
+            assert!(!layout.update_window_size(w, Size::new(500, 120)));
+
+            assert_eq!(
+                layout.window_state(w).unwrap().geometry,
+                maximized,
+                "the compositor owns a maximized window's geometry"
+            );
+        }
+
+        #[test]
+        fn fullscreen_before_placement_behaves_the_same() {
+            let (mut layout, w) = layout_with_output();
+            assert!(layout.set_fullscreen(w, true));
+
+            let state = layout.window_state(w).unwrap();
+            assert!(state.is_placed);
+            assert_eq!(state.geometry, layout.primary_output_geometry());
+
+            assert!(!layout.update_window_size(w, Size::new(500, 120)));
+            assert_eq!(
+                layout.window_state(w).unwrap().geometry,
+                layout.primary_output_geometry()
+            );
+        }
+
+        #[test]
+        fn unmaximizing_a_never_placed_window_returns_it_to_delayed_placement() {
+            let (mut layout, w) = layout_with_output();
+            layout.set_maximized(w, true);
+            layout.set_maximized(w, false);
+
+            let state = layout.window_state(w).unwrap();
+            assert!(
+                !state.is_placed,
+                "it never had a natural geometry to restore, so it must be \
+                 centred from the size it eventually commits"
+            );
+
+            assert!(layout.update_window_size(w, Size::new(800, 600)));
+            assert_eq!(
+                layout.window_state(w).unwrap().geometry.size,
+                Size::new(800, 600)
+            );
+        }
+
+        #[test]
+        fn unmaximizing_a_placed_window_restores_its_saved_geometry() {
+            let mut layout = Layout::new();
+            let o1 = OutputId::next();
+            layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 1920, 1080))]);
+            let w = WindowId::next();
+            layout.add_window(w, Size::new(800, 600));
+            let natural = layout.window_state(w).unwrap().geometry;
+
+            layout.set_maximized(w, true);
+            layout.set_maximized(w, false);
+
+            assert_eq!(layout.window_state(w).unwrap().geometry, natural);
+        }
+
+        #[test]
+        fn adding_a_titlebar_keeps_a_maximized_window_on_the_work_area() {
+            let (mut layout, w) = layout_with_output();
+            layout.set_maximized(w, true);
+            let work_area = layout.primary_output_work_area();
+
+            layout.set_window_insets(
+                w,
+                Insets {
+                    top: 48,
+                    ..Insets::NONE
+                },
+            );
+
+            assert_eq!(layout.window_state(w).unwrap().geometry, work_area);
+        }
+
+        #[test]
+        fn adding_a_titlebar_keeps_a_fullscreen_window_on_the_output() {
+            let (mut layout, w) = layout_with_output();
+            layout.set_fullscreen(w, true);
+            let output = layout.primary_output_geometry();
+
+            layout.set_window_insets(
+                w,
+                Insets {
+                    top: 48,
+                    ..Insets::NONE
+                },
+            );
+
+            assert_eq!(layout.window_state(w).unwrap().geometry, output);
+        }
+
+        #[test]
+        fn a_titlebar_added_while_maximized_still_applies_on_restore() {
+            let mut layout = Layout::new();
+            let o1 = OutputId::next();
+            layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 1920, 1080))]);
+            let w = WindowId::next();
+            layout.add_window(w, Size::new(800, 600));
+            let natural = layout.window_state(w).unwrap().geometry;
+
+            layout.set_maximized(w, true);
+            layout.set_window_insets(
+                w,
+                Insets {
+                    top: 48,
+                    ..Insets::NONE
+                },
+            );
+            layout.set_maximized(w, false);
+
+            let restored = layout.window_state(w).unwrap().geometry;
+            assert_eq!(
+                restored.size,
+                Size::new(natural.size.width, natural.size.height + 48),
+                "the restored frame has to make room for the titlebar it gained"
+            );
+        }
+
+        #[test]
+        fn a_floating_window_still_grows_to_fit_a_new_titlebar() {
+            let mut layout = Layout::new();
+            let o1 = OutputId::next();
+            layout.outputs_changed(&[output(o1, Rectangle::from_loc_and_size(0, 0, 1920, 1080))]);
+            let w = WindowId::next();
+            layout.add_window(w, Size::new(800, 600));
+            let before = layout.window_state(w).unwrap().geometry;
+
+            layout.set_window_insets(
+                w,
+                Insets {
+                    top: 48,
+                    ..Insets::NONE
+                },
+            );
+
+            let after = layout.window_state(w).unwrap().geometry;
+            assert_eq!(after.size.height, before.size.height + 48);
+            assert_eq!(after.loc.y, before.loc.y - 48);
+        }
+
+        #[test]
+        fn maximizing_with_no_output_is_refused_rather_than_collapsing_to_zero() {
+            let mut layout = Layout::new();
+            layout.outputs_changed(&[]);
+            let w = WindowId::next();
+            layout.add_window(w, Size::ZERO);
+
+            if layout.primary_output_work_area().size.is_empty() {
+                assert!(!layout.set_maximized(w, true));
+                assert!(!layout.window_state(w).unwrap().maximized);
+            }
+        }
+    }
+
     #[test]
     fn test_centering_on_custom_output() {
         let mut layout = Layout::new();
@@ -498,12 +689,6 @@ mod tests {
         assert_eq!(layout.window_state(w).unwrap().geometry.size, size);
     }
 
-    /// The compositor refuses drag-resizes while a window is maximized or
-    /// fullscreen (`GlideState::is_size_locked`). This pins the state those
-    /// checks read: a window must report the flag for exactly as long as it
-    /// is in that mode, so a resize can never land on a window that still
-    /// believes it is maximized — clients draw themselves differently when
-    /// they do (GTK squares its corners and drops its shadow).
     #[test]
     fn maximized_and_fullscreen_are_reported_for_exactly_their_duration() {
         let mut layout = Layout::new();

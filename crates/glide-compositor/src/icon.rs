@@ -1,33 +1,15 @@
-//! Finding an app's icon on disk.
-//!
-//! Two lookups chained together, both defined by freedesktop specs:
-//!
-//! 1. `app_id` → a `.desktop` entry → its `Icon=` key.
-//! 2. That icon name → an actual file, by walking the configured icon
-//!    theme, the themes it inherits, and finally `hicolor` and the legacy
-//!    pixmap directory.
-//!
-//! Everything here touches the filesystem, so results are cached: a dock
-//! tile is rasterised once and then reused until the dock is rebuilt.
-
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
 
-/// Theme searched first. Its `index.theme` names what it inherits, and
-/// `hicolor` is always the last resort per the icon theme spec.
 const DEFAULT_THEME: &str = "Papirus";
 
-/// Fallback chain used when a theme's `index.theme` cannot be read.
 const FALLBACK_THEMES: [&str; 1] = ["hicolor"];
 
-/// Resolves and rasterises app icons, remembering what it has already
-/// looked up — including the misses, which are the expensive case.
 #[derive(Debug, Default)]
 pub struct IconLoader {
     theme: Option<String>,
-    /// `app_id` (lowercased) → rendered BGRA buffer at the cached size.
     rendered: HashMap<(String, i32), Option<Vec<u8>>>,
 }
 
@@ -44,8 +26,16 @@ impl IconLoader {
         self.theme.as_deref().unwrap_or(DEFAULT_THEME)
     }
 
-    /// A `side × side` premultiplied BGRA image for `app_id`, or `None`
-    /// when nothing suitable was found.
+    pub fn load_named(&mut self, icon: &str, side: i32) -> Option<&[u8]> {
+        let key = (format!("icon:{}", icon.to_lowercase()), side);
+        if !self.rendered.contains_key(&key) {
+            let theme = self.theme_name().to_string();
+            let rendered = find_in_themes(icon, &theme).and_then(|path| render(&path, side));
+            self.rendered.insert(key.clone(), rendered);
+        }
+        self.rendered.get(&key)?.as_deref()
+    }
+
     pub fn load(&mut self, app_id: &str, side: i32) -> Option<&[u8]> {
         let key = (app_id.to_lowercase(), side);
         if !self.rendered.contains_key(&key) {
@@ -60,7 +50,134 @@ impl IconLoader {
     }
 }
 
-/// Directories that hold icon themes, most specific first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopApp {
+    pub name: String,
+    pub command: String,
+    pub icon: String,
+    pub category: AppCategory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppCategory {
+    Utilities,
+    Office,
+    Internet,
+    Media,
+    System,
+    Other,
+}
+
+impl AppCategory {
+    fn from_desktop(categories: &str) -> Self {
+        for entry in categories.split(';') {
+            match entry.trim() {
+                "Network" | "WebBrowser" | "Email" => return Self::Internet,
+                "Office" | "TextEditor" | "Spreadsheet" | "Presentation" => return Self::Office,
+                "AudioVideo" | "Audio" | "Video" | "Graphics" | "Player" => return Self::Media,
+                "System" | "Settings" | "Security" => return Self::System,
+                "Utility" | "Accessories" | "TerminalEmulator" => return Self::Utilities,
+                _ => {}
+            }
+        }
+        Self::Other
+    }
+}
+
+#[must_use]
+pub fn list_applications() -> Vec<DesktopApp> {
+    let mut seen: HashMap<String, Option<DesktopApp>> = HashMap::new();
+
+    for dir in data_dirs() {
+        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "desktop") {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if seen.contains_key(id) {
+                continue;
+            }
+            seen.insert(id.to_string(), read_desktop_app(&path));
+        }
+    }
+
+    let mut apps: Vec<DesktopApp> = seen.into_values().flatten().collect();
+    apps.sort_by_key(|app| app.name.to_lowercase());
+    apps
+}
+
+fn read_desktop_app(path: &Path) -> Option<DesktopApp> {
+    let contents = std::fs::read_to_string(path).ok()?;
+
+    let mut in_entry = false;
+    let (mut name, mut exec, mut icon, mut categories) = (
+        None::<String>,
+        None::<String>,
+        None::<String>,
+        String::new(),
+    );
+    let (mut no_display, mut hidden, mut is_app) = (false, false, true);
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            if in_entry {
+                break;
+            }
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "Name" => name = Some(value.trim().to_string()),
+            "Exec" => exec = Some(value.trim().to_string()),
+            "Icon" => icon = Some(value.trim().to_string()),
+            "Categories" => categories = value.trim().to_string(),
+            "NoDisplay" => no_display = value.trim().eq_ignore_ascii_case("true"),
+            "Hidden" => hidden = value.trim().eq_ignore_ascii_case("true"),
+            "Type" => is_app = value.trim() == "Application",
+            _ => {}
+        }
+    }
+
+    if no_display || hidden || !is_app {
+        return None;
+    }
+
+    Some(DesktopApp {
+        name: name?,
+        command: strip_field_codes(&exec?),
+        icon: icon.unwrap_or_default(),
+        category: AppCategory::from_desktop(&categories),
+    })
+}
+
+fn strip_field_codes(exec: &str) -> String {
+    let mut out = String::with_capacity(exec.len());
+    let mut chars = exec.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        if chars.next() == Some('%') {
+            out.push('%');
+        }
+    }
+    out.trim().to_string()
+}
+
 fn icon_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -74,7 +191,6 @@ fn icon_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// `$XDG_DATA_HOME` plus `$XDG_DATA_DIRS`, with the spec's defaults.
 fn data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = std::env::var_os("XDG_DATA_HOME") {
@@ -89,11 +205,7 @@ fn data_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Finds the `Icon=` value for an app id by locating its desktop entry.
 fn desktop_icon_name(app_id: &str) -> Option<String> {
-    // Clients report ids with varying case and, for some toolkits, without
-    // the reverse-DNS prefix the file uses. Try the obvious spellings
-    // before falling back to scanning.
     let candidates = [
         app_id.to_string(),
         format!("{app_id}.desktop"),
@@ -114,8 +226,6 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
             }
         }
 
-        // Last resort: a case-insensitive scan of the directory. Desktop
-        // file names do not have to match the app id at all.
         let Ok(entries) = std::fs::read_dir(&apps) else {
             continue;
         };
@@ -138,7 +248,6 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
     None
 }
 
-/// Reads the `Icon=` key out of the `[Desktop Entry]` group.
 fn read_icon_key(path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
     let mut in_entry = false;
@@ -161,8 +270,6 @@ fn read_icon_key(path: &Path) -> Option<String> {
     None
 }
 
-/// The themes to search, in order: the configured one, whatever it
-/// inherits, then the spec-mandated `hicolor`.
 fn theme_chain(theme: &str) -> Vec<String> {
     let mut chain = vec![theme.to_string()];
 
@@ -194,11 +301,7 @@ fn theme_chain(theme: &str) -> Vec<String> {
     chain
 }
 
-/// Locates an icon file for `app_id`.
 fn resolve(app_id: &str, theme: &str) -> Option<PathBuf> {
-    // The `Icon=` key is authoritative; the app id itself is a common
-    // enough icon name to be worth trying too, and some apps ship an icon
-    // without a matching desktop entry.
     let mut names = Vec::new();
     if let Some(from_desktop) = desktop_icon_name(app_id) {
         names.push(from_desktop);
@@ -207,7 +310,6 @@ fn resolve(app_id: &str, theme: &str) -> Option<PathBuf> {
     names.push(app_id.to_lowercase());
 
     for name in &names {
-        // An absolute path is allowed in `Icon=`.
         let direct = Path::new(name);
         if direct.is_absolute() && direct.is_file() {
             return Some(direct.to_path_buf());
@@ -233,7 +335,6 @@ fn find_in_themes(name: &str, theme: &str) -> Option<PathBuf> {
         }
     }
 
-    // Legacy flat directory, and any root that stores icons directly.
     for root in &roots {
         for extension in ["svg", "png"] {
             let path = root.join(format!("{name}.{extension}"));
@@ -245,8 +346,6 @@ fn find_in_themes(name: &str, theme: &str) -> Option<PathBuf> {
     None
 }
 
-/// Searches one theme directory, preferring the largest available size so
-/// the tile is never upscaled from a tiny raster.
 fn find_in_theme_dir(theme_dir: &Path, name: &str) -> Option<PathBuf> {
     let Ok(entries) = std::fs::read_dir(theme_dir) else {
         return None;
@@ -258,9 +357,7 @@ fn find_in_theme_dir(theme_dir: &Path, name: &str) -> Option<PathBuf> {
         if !dir.is_dir() {
             continue;
         }
-        // Directory names are `48x48`, `64x64@2x`, `scalable`, `symbolic`.
         let label = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        // Scalable art wins outright: it renders crisply at any size.
         let rank = if label.starts_with("scalable") {
             u32::MAX
         } else {
@@ -283,7 +380,6 @@ fn find_in_theme_dir(theme_dir: &Path, name: &str) -> Option<PathBuf> {
     best.map(|(_, path)| path)
 }
 
-/// Loads and rasterises an icon file to `side × side`.
 fn render(path: &Path, side: i32) -> Option<Vec<u8>> {
     let data = std::fs::read(path).ok()?;
     match path.extension().and_then(|ext| ext.to_str()) {
@@ -351,8 +447,6 @@ mod tests {
             assert_eq!(read_icon_key(&path).as_deref(), Some("my-icon"));
         }
 
-        /// Other groups carry their own `Icon=` keys for actions; only the
-        /// main entry's icon describes the app.
         #[test]
         fn an_icon_in_another_group_is_ignored() {
             let dir = temp("other-group");
@@ -384,9 +478,6 @@ mod tests {
         }
     }
 
-    /// Exercised against whatever is really installed. Skips rather than
-    /// fails when a machine has no icon theme, so the suite stays useful
-    /// in a bare container.
     mod against_the_real_system {
         use super::*;
 

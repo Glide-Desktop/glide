@@ -204,8 +204,9 @@ impl XdgShellHandler for GlideState {
 
             let grab = MoveSurfaceGrab {
                 start_data,
-                window,
+                window: window.clone(),
                 initial_window_location,
+                pending_restore: self.is_size_locked(&window),
             };
 
             pointer.set_grab(self, grab, serial, Focus::Clear);
@@ -347,7 +348,7 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
                 // terminal easily burns the whole 420ms before its first
                 // frame, and the animation was over by the time there was
                 // something to animate.
-                window.begin_open_animation();
+                state.begin_window_open_animation(id, &window);
                 state.reconcile_space();
             } else {
                 // `update_window_size` already kept `WindowState.geometry`
