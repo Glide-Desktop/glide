@@ -54,14 +54,14 @@ impl TextStyle {
         size_px: 13.0,
         line_height_px: 19.0,
         weight: 400,
-        tracking_em: -0.006,
+        tracking_em: 0.0,
         uppercase: false,
     };
     pub const CAP: Self = Self {
         size_px: 12.0,
         line_height_px: 16.0,
         weight: 450,
-        tracking_em: -0.006,
+        tracking_em: 0.0,
         uppercase: false,
     };
     pub const MICRO: Self = Self {
@@ -94,9 +94,23 @@ impl TextStyle {
         uppercase: false,
     };
     pub const LAUNCHER_CAPTION: Self = Self {
-        size_px: 11.0,
-        line_height_px: 14.0,
+        size_px: 14.5,
+        line_height_px: 18.5,
         weight: 480,
+        tracking_em: 0.0,
+        uppercase: false,
+    };
+    pub const TOPBAR: Self = Self {
+        size_px: 12.5,
+        line_height_px: 16.0,
+        weight: 520,
+        tracking_em: 0.0,
+        uppercase: false,
+    };
+    pub const LAUNCHER_CHIP: Self = Self {
+        size_px: 13.0,
+        line_height_px: 16.0,
+        weight: 520,
         tracking_em: 0.0,
         uppercase: false,
     };
@@ -105,6 +119,13 @@ impl TextStyle {
         line_height_px: 20.0,
         weight: 400,
         tracking_em: -0.008,
+        uppercase: false,
+    };
+    pub const FALLBACK_INITIAL: Self = Self {
+        size_px: 34.0,
+        line_height_px: 40.0,
+        weight: 560,
+        tracking_em: 0.0,
         uppercase: false,
     };
 
@@ -123,6 +144,9 @@ impl TextStyle {
         Self::WIN_TITLE,
         Self::OV_LABEL,
         Self::LAUNCHER_CAPTION,
+        Self::LAUNCHER_CHIP,
+        Self::TOPBAR,
+        Self::FALLBACK_INITIAL,
     ];
 }
 
@@ -135,7 +159,7 @@ mod tests {
     fn italic_is_never_expressed_here_by_design() {
         assert_eq!(
             TextStyle::ALL.len(),
-            14,
+            17,
             "no style role carries a slant field"
         );
     }

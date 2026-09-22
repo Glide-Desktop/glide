@@ -74,28 +74,27 @@ impl ExtWorkspaceManagerState {
                 };
                 let has_handle = handles.iter().any(|h| h.client() == Some(client.clone()));
 
-                if !has_handle {
-                    if let Ok(group) = client
+                if !has_handle
+                    && let Ok(group) = client
                         .create_resource::<ExtWorkspaceGroupHandleV1, _, GlideState>(
                             dh,
                             manager.version(),
                             (),
                         )
+                {
+                    manager.workspace_group(&group);
+                    if let Ok(handle) = client
+                        .create_resource::<ExtWorkspaceHandleV1, _, GlideState>(
+                            dh,
+                            manager.version(),
+                            ws_id,
+                        )
                     {
-                        manager.workspace_group(&group);
-                        if let Ok(handle) = client
-                            .create_resource::<ExtWorkspaceHandleV1, _, GlideState>(
-                                dh,
-                                manager.version(),
-                                ws_id,
-                            )
-                        {
-                            group.workspace_enter(&handle);
-                            handle.id(format!("{ws_id:?}"));
-                            handle.name(format!("Workspace {}", idx + 1));
-                            handle.state(state);
-                            handles.push(handle);
-                        }
+                        group.workspace_enter(&handle);
+                        handle.id(format!("{ws_id:?}"));
+                        handle.name(format!("Workspace {}", idx + 1));
+                        handle.state(state);
+                        handles.push(handle);
                     }
                 }
             }

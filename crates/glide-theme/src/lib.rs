@@ -197,8 +197,15 @@ pub struct DockTheme {
     pub icon: Color,
     pub running_color: Color,
     pub focused_color: Color,
+    pub hover_layer: Color,
     pub hover_lift: i32,
     pub hover_scale: f64,
+    pub menu_background: Color,
+    pub menu_border: Color,
+    pub menu_text: Color,
+    pub menu_text_muted: Color,
+    pub menu_text_danger: Color,
+    pub menu_item_hover: Color,
 }
 
 impl Default for DockTheme {
@@ -207,21 +214,33 @@ impl Default for DockTheme {
         Self {
             enabled: true,
             icon_theme: None,
-            bottom_margin: 16,
-            item_size: 48,
-            item_gap: 8,
-            padding_x: 12,
-            padding_y: 10,
+            bottom_margin: 12,
+            item_size: 42,
+            item_gap: 6,
+            padding_x: 9,
+            padding_y: 7,
             radius: shape::R4,
-            item_radius: shape::R4,
+            item_radius: shape::R3,
             background: t.shell_bg,
             border: t.shell_line,
-            separator: t.line_2,
+            separator: t.shell_line,
             icon: Color::from_hex("#ffffff").unwrap(),
             running_color: t.fg_1,
             focused_color: t.acc_bg,
-            hover_lift: 8,
-            hover_scale: 1.15,
+            hover_layer: Color([
+                t.shell_fg.0[0],
+                t.shell_fg.0[1],
+                t.shell_fg.0[2],
+                motion::ST_HOVER,
+            ]),
+            hover_lift: 6,
+            hover_scale: 1.05,
+            menu_background: t.popover_bg,
+            menu_border: t.line,
+            menu_text: t.fg_1,
+            menu_text_muted: t.fg_3,
+            menu_text_danger: t.danger,
+            menu_item_hover: t.fill_2,
         }
     }
 }
@@ -406,8 +425,15 @@ impl DockTheme {
             .color(self.icon)
             .color(self.running_color)
             .color(self.focused_color)
+            .color(self.hover_layer)
             .i32(self.hover_lift)
             .f64(self.hover_scale)
+            .color(self.menu_background)
+            .color(self.menu_border)
+            .color(self.menu_text)
+            .color(self.menu_text_muted)
+            .color(self.menu_text_danger)
+            .color(self.menu_item_hover)
             .finish()
     }
 }
@@ -736,5 +762,25 @@ shadow-color-focused = \"#000000bb\"
             ..OverviewTheme::default()
         };
         assert_eq!(o.duration(), std::time::Duration::from_millis(150));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn dock_theme_defaults_match_meridian_design_spec() {
+        let d = DockTheme::default();
+        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+
+        assert_eq!(d.bottom_margin, 12);
+        assert_eq!(d.item_size, 42);
+        assert_eq!(d.item_gap, 6);
+        assert_eq!(d.padding_x, 9);
+        assert_eq!(d.padding_y, 7);
+        assert_eq!(d.radius, shape::R4);
+        assert_eq!(d.item_radius, shape::R3);
+        assert_eq!(d.background, t.shell_bg);
+        assert_eq!(d.border, t.shell_line);
+        assert_eq!(d.separator, t.shell_line);
+        assert_eq!(d.hover_lift, 6);
+        assert_eq!(d.hover_scale, 1.05);
     }
 }

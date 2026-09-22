@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glide — системна смуга</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+.thm {
+  --ac-1:#d9e6fb; --ac-2:#a7c8f6; --ac-3:#5b9bec;
+  --ac-4:#2f6fd0; --ac-5:#1f56a8; --ac-6:#163e79;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px;
+  --sp-5:24px; --sp-6:32px; --sp-7:48px; --sp-8:64px;
+  --r-1:4px; --r-2:8px; --r-3:12px; --r-4:18px; --r-round:999px;
+  --st-hover:.08; --st-press:.13; --st-drag:.18;
+  --t-1:120ms; --t-2:200ms; --t-3:320ms; --t-4:420ms;
+  --e-out:cubic-bezier(.2,0,0,1);
+  --e-io:cubic-bezier(.4,0,.2,1);
+  --e-over:cubic-bezier(.32,1.28,.5,1);
+  --font:'Inter', system-ui, sans-serif;
+  --mono:'JetBrains Mono', ui-monospace, monospace;
+}
+.thm[data-theme="light"] {
+  color-scheme: light;
+  --view-bg:#fff; --card-bg:#fff; --popover-bg:#fff;
+  --win-bg:#f3f2ef; --bar-bg:#fbfaf8; --sunken-bg:#e8e6e2;
+  --fg-1:#1b1a17; --fg-2:rgba(27,26,23,.66); --fg-3:rgba(27,26,23,.44); --fg-4:rgba(27,26,23,.20);
+  --line:rgba(27,26,23,.10); --line-2:rgba(27,26,23,.17);
+  --state:27,26,23;
+  --fill-1:rgba(27,26,23,.05); --fill-2:rgba(27,26,23,.09); --fill-3:rgba(27,26,23,.14);
+  --ok:#1c7a4c; --warn:#a1690a; --danger:#bf372c;
+  --acc-bg:var(--ac-4); --acc-fg:#fff; --acc-text:var(--ac-5);
+  --acc-soft:var(--ac-1); --acc-soft-fg:var(--ac-6);
+  --acc-ring:rgba(47,111,208,.32);
+  --el-1:0 1px 2px rgba(27,26,23,.07);
+  --el-2:0 2px 4px rgba(27,26,23,.06), 0 6px 16px rgba(27,26,23,.09);
+  --el-3:0 4px 8px rgba(27,26,23,.08), 0 18px 44px rgba(27,26,23,.15);
+  --shell-bg:rgba(251,250,248,.82); --shell-fg:#1b1a17; --shell-line:rgba(27,26,23,.12);
+  --switch-thumb:#fff;
+  --cap-hi:rgba(255,255,255,.7); --cap-lo:rgba(27,26,23,.10);
+}
+.thm[data-theme="dark"] {
+  color-scheme: dark;
+  --view-bg:#161518; --card-bg:#29282d; --popover-bg:#2f2e34;
+  --win-bg:#1c1b1e; --bar-bg:#29282d; --sunken-bg:#121114;
+  --fg-1:#f2f0ed; --fg-2:rgba(242,240,237,.68); --fg-3:rgba(242,240,237,.46); --fg-4:rgba(242,240,237,.22);
+  --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.15);
+  --state:255,255,255;
+  --fill-1:rgba(255,255,255,.07); --fill-2:rgba(255,255,255,.12); --fill-3:rgba(255,255,255,.18);
+  --ok:#62d69b; --warn:#e5b355; --danger:#f0796f;
+  --acc-bg:var(--ac-4); --acc-fg:#fff; --acc-text:var(--ac-2);
+  --acc-soft:rgba(91,155,236,.20); --acc-soft-fg:var(--ac-2);
+  --acc-ring:rgba(167,200,246,.40);
+  --el-1:0 1px 2px rgba(0,0,0,.45);
+  --el-2:0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.40);
+  --el-3:0 4px 10px rgba(0,0,0,.5), 0 22px 52px rgba(0,0,0,.55);
+  --shell-bg:rgba(38,37,42,.84); --shell-fg:#f2f0ed; --shell-line:rgba(255,255,255,.12);
+  --switch-thumb:#cfccc7;
+  --cap-hi:rgba(255,255,255,.16); --cap-lo:rgba(0,0,0,.30);
+}
+
+* { box-sizing:border-box; }
+html, body { margin:0; padding:0; }
+body {
+  background:#131216; color:rgba(242,240,237,.9);
+  font-family:'Inter', system-ui, sans-serif; -webkit-font-smoothing:antialiased;
+  padding:56px 24px 96px; display:flex; flex-direction:column; align-items:center;
+}
+.page { width:100%; max-width:1000px; display:flex; flex-direction:column; gap:40px; }
+.lbl { font-size:11px; line-height:14px; font-weight:640; letter-spacing:.075em; text-transform:uppercase; color:rgba(242,240,237,.36); margin-bottom:12px; }
+
+.stage {
+  position:relative; border-radius:var(--r-3); overflow:hidden; font-family:var(--font);
+  box-shadow:0 0 0 1px rgba(255,255,255,.07), 0 18px 48px rgba(0,0,0,.5);
+}
+.stage .wall { position:absolute; inset:0; }
+.stage.dark  .wall { background:linear-gradient(150deg,#222c3c 0%,#2c2436 46%,#18202c 100%); }
+.stage.light .wall { background:linear-gradient(150deg,#dfe6ef 0%,#f1ece4 46%,#c9d6e6 100%); }
+.stage .wall .ring { position:absolute; border-radius:50%; border:1.5px solid; }
+.stage.dark  .wall .ring { border-color:rgba(255,255,255,.13); }
+.stage.light .wall .ring { border-color:rgba(27,26,23,.10); }
+.ring.r1 { width:420px; height:420px; left:-140px; bottom:-230px; }
+.ring.r2 { width:640px; height:640px; left:-250px; bottom:-360px; }
+.ring.r3 { width:300px; height:300px; right:-90px; top:-120px; }
+.stage-body { position:relative; height:150px; }
+
+/* ── смуга ───────────────────────────────────────────── */
+.topbar {
+  position:relative; z-index:45; height:34px; display:flex; align-items:center;
+  padding:0 var(--sp-2); gap:var(--sp-1);
+  background:var(--shell-bg); color:var(--shell-fg);
+  border-bottom:1px solid var(--shell-line);
+  backdrop-filter:blur(20px) saturate(1.6); -webkit-backdrop-filter:blur(20px) saturate(1.6);
+  font-size:12px;
+}
+.tb-group { display:flex; align-items:center; gap:2px; min-width:0; }
+.tb-group.right { margin-left:auto; }
+.tb-sep { width:1px; height:16px; background:var(--shell-line); margin:0 var(--sp-1); flex:none; }
+
+.tb-btn {
+  position:relative; isolation:isolate; overflow:hidden;
+  display:inline-flex; align-items:center; gap:6px;
+  height:24px; padding:0 var(--sp-2);
+  border:0; background:transparent; border-radius:var(--r-2);
+  font:inherit; font-size:12px; font-weight:500; line-height:1;
+  color:var(--fg-2); white-space:nowrap;
+}
+.tb-btn svg { flex:none; display:block; }
+.tb-btn::before { content:''; position:absolute; inset:0; z-index:-1; background:currentColor; opacity:0; }
+.tb-btn.is-hover::before { opacity:var(--st-hover); }
+.tb-btn.is-press::before { opacity:var(--st-press); }
+.tb-btn.is-hover, .tb-btn.is-press { color:var(--fg-1); }
+.tb-btn.is-open  { background:var(--fill-2); color:var(--fg-1); }
+.tb-btn.is-focus { box-shadow:0 0 0 2px var(--acc-bg), 0 0 0 4px var(--acc-ring); color:var(--fg-1); }
+
+/* застосунок + рядок меню */
+.tb-app { gap:7px; padding-left:5px; padding-right:9px; color:var(--fg-1); font-weight:630; letter-spacing:-.007em; }
+.app-icon {
+  width:16px; height:16px; border-radius:5px; flex:none; display:grid; place-items:center; color:#fff;
+  background:linear-gradient(160deg,#5b9bec,#2f6fd0); box-shadow:inset 0 1px 0 rgba(255,255,255,.28);
+}
+.app-icon svg { width:10px; height:10px; }
+.mb { display:flex; align-items:center; gap:0; min-width:0; }
+.mb-item { height:24px; padding:0 9px; border-radius:var(--r-2); display:inline-flex; align-items:center;
+  font-size:12px; font-weight:500; color:var(--fg-2); white-space:nowrap; position:relative; isolation:isolate; overflow:hidden; }
+.mb-item::before { content:''; position:absolute; inset:0; z-index:-1; background:currentColor; opacity:0; }
+.mb-item.is-hover::before { opacity:var(--st-hover); }
+.mb-item.is-hover { color:var(--fg-1); }
+.mb-item.is-open { background:var(--fill-2); color:var(--fg-1); }
+.mb-slot { position:relative; display:inline-flex; }
+
+/* годинник */
+.tb-clock { position:absolute; left:50%; transform:translateX(-50%); gap:var(--sp-2); padding:0 10px; color:var(--fg-1); font-weight:550; }
+.tb-clock .date { color:var(--fg-2); font-weight:500; }
+.tb-clock .time { font-family:var(--mono); font-size:12px; font-weight:500; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+.tb-clock .dot { width:5px; height:5px; border-radius:var(--r-round); background:var(--acc-bg); flex:none; }
+
+/* розкладка — сегментований контрол (2 розкладки) */
+.tb-lang { padding:0 3px; gap:0; }
+.seg { display:inline-flex; align-items:center; gap:2px; height:20px; padding:2px; border-radius:var(--r-2); background:var(--fill-1); }
+.seg span { display:grid; place-items:center; min-width:25px; height:16px; padding:0 5px; border-radius:var(--r-1);
+  font-family:var(--mono); font-size:10.5px; font-weight:500; letter-spacing:.03em; color:var(--fg-3); }
+.seg span.on { background:var(--card-bg); color:var(--fg-1); box-shadow:var(--el-1); }
+.seg.acc span.on { background:var(--acc-bg); color:var(--acc-fg); box-shadow:none; }
+
+/* розкладка — код + список (3 і більше) */
+.tb-lang1 { gap:5px; padding:0 6px 0 9px; }
+.tb-lang1 .code { font-family:var(--mono); font-size:11.5px; font-weight:500; letter-spacing:.04em; color:var(--fg-1); }
+.lang-menu { width:196px; }
+.lang-menu .mi .nat { margin-left:auto; font-size:11px; color:var(--fg-3); }
+
+/* кофеїн — перемикач */
+.tb-sw { padding:0 6px 0 7px; gap:7px; }
+.sw { position:relative; width:28px; height:16px; border-radius:var(--r-round); background:var(--fill-3); flex:none; }
+.sw i { position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:var(--r-round);
+  background:var(--switch-thumb); box-shadow:var(--el-1); }
+.sw.on { background:var(--acc-bg); }
+.sw.on i { left:14px; background:#fff; }
+.tb-sw.is-on-lbl { color:var(--fg-1); }
+.sw-lg { width:44px; height:26px; }
+.sw-lg i { top:3px; left:3px; width:20px; height:20px; }
+.sw-lg.on i { left:21px; }
+
+/* статус */
+.tb-status { gap:7px; padding:0 7px 0 8px; }
+.tb-status .pct { font-family:var(--mono); font-size:11px; font-weight:500; font-variant-numeric:tabular-nums; }
+.chev { color:var(--fg-3); }
+.batt { position:relative; width:22px; height:11px; flex:none; }
+.batt .shell { position:absolute; inset:0; border:1.3px solid currentColor; border-radius:3.5px; opacity:.7; }
+.batt .tip { position:absolute; right:-3px; top:3.2px; width:2px; height:4.6px; border-radius:0 1.5px 1.5px 0; background:currentColor; opacity:.7; }
+.batt .lvl { position:absolute; left:2px; top:2px; bottom:2px; border-radius:1.5px; background:currentColor; }
+.batt.charging .lvl { background:var(--ok); }
+.batt.low .lvl { background:var(--danger); }
+.batt .bolt { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:8px; height:8px; }
+.wifi { display:flex; align-items:flex-end; gap:1.5px; height:11px; flex:none; }
+.wifi i { width:2.5px; border-radius:1px; background:currentColor; opacity:.26; }
+.wifi i:nth-child(1){height:3px} .wifi i:nth-child(2){height:5.5px}
+.wifi i:nth-child(3){height:8px} .wifi i:nth-child(4){height:11px}
+.wifi[data-level="2"] i:nth-child(-n+2){opacity:1}
+.wifi[data-level="3"] i:nth-child(-n+3){opacity:1}
+.wifi[data-level="4"] i{opacity:1}
+
+/* ── меню ────────────────────────────────────────────── */
+.menu {
+  position:absolute; z-index:46; top:33px; left:0; width:236px; padding:var(--sp-1);
+  background:var(--popover-bg); color:var(--fg-1);
+  border:1px solid var(--line); border-radius:var(--r-3); box-shadow:var(--el-3); font-family:var(--font);
+}
+.mi { display:flex; align-items:center; gap:var(--sp-2); height:30px; padding:0 var(--sp-2);
+  border-radius:var(--r-2); font-size:13px; font-weight:450; letter-spacing:-.006em; color:var(--fg-1); }
+.mi .tick { width:13px; flex:none; color:var(--acc-text); }
+.mi .gap { width:13px; flex:none; }
+.mi .k { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--fg-3); }
+.mi .arw { margin-left:auto; color:var(--fg-3); }
+.mi.hl { background:var(--fill-2); }
+.mi.off { color:var(--fg-4); }
+.mi.danger { color:var(--danger); }
+.mi-div { height:1px; background:var(--line); margin:var(--sp-1) var(--sp-2); }
+
+/* ── швидкі налаштування ─────────────────────────────── */
+.qs {
+  position:absolute; top:40px; right:var(--sp-2); z-index:46; width:312px; padding:var(--sp-3);
+  display:flex; flex-direction:column; gap:var(--sp-3);
+  background:var(--popover-bg); color:var(--fg-1);
+  border:1px solid var(--line); border-radius:var(--r-3); box-shadow:var(--el-3); font-family:var(--font);
+}
+.qs-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-2); }
+.qs-tile { display:flex; align-items:center; gap:10px; height:54px; padding:0 10px; border-radius:var(--r-2); background:var(--fill-1); }
+.qs-tile.on { background:var(--acc-soft); }
+.qs-ico { width:28px; height:28px; border-radius:var(--r-round); flex:none; display:grid; place-items:center; background:var(--fill-2); color:var(--fg-2); }
+.qs-tile.on .qs-ico { background:var(--acc-bg); color:var(--acc-fg); }
+.qs-txt { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.qs-txt b { font-size:12.5px; line-height:16px; font-weight:570; letter-spacing:-.005em; }
+.qs-tile.on .qs-txt b { color:var(--acc-soft-fg); }
+.qs-txt span { font-size:11px; line-height:14px; font-weight:450; color:var(--fg-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qs-tile.on .qs-txt span { color:var(--acc-soft-fg); opacity:.72; }
+.qs-row { display:flex; align-items:center; gap:10px; height:44px; padding:0 10px; border-radius:var(--r-2); background:var(--fill-1); }
+.qs-row .qs-txt b { font-size:12.5px; }
+.qs-row .sw { margin-left:auto; }
+.qs-slider { display:flex; align-items:center; gap:10px; height:22px; color:var(--fg-2); }
+.qs-track { position:relative; flex:1; height:6px; border-radius:var(--r-round); background:var(--fill-2); }
+.qs-fill { position:absolute; inset:0 auto 0 0; border-radius:var(--r-round); background:var(--acc-bg); }
+.qs-thumb { position:absolute; top:50%; width:14px; height:14px; border-radius:var(--r-round); transform:translate(-50%,-50%); background:var(--switch-thumb); box-shadow:var(--el-1); }
+.qs-div { height:1px; background:var(--line); margin:2px 0; }
+.qs-foot { display:flex; align-items:center; gap:var(--sp-2); }
+.qs-ava { width:26px; height:26px; border-radius:var(--r-round); flex:none; display:grid; place-items:center; color:#fff; font-size:11px; font-weight:600; background:linear-gradient(160deg,#a077d8,#7a4dbb); }
+.qs-foot b { font-size:12.5px; font-weight:550; letter-spacing:-.005em; }
+.qs-acts { margin-left:auto; display:flex; gap:2px; }
+.qs-act { width:28px; height:28px; border-radius:var(--r-2); display:grid; place-items:center; color:var(--fg-2); }
+.qs-act.hl { background:var(--fill-1); color:var(--fg-1); }
+
+/* ── сповіщення ──────────────────────────────────────── */
+.rail { position:absolute; top:42px; right:var(--sp-3); z-index:48; display:flex; flex-direction:column; gap:10px; }
+.toast {
+  position:relative; width:348px; padding:var(--sp-3); border-radius:var(--r-3);
+  background:var(--popover-bg); border:1px solid var(--line); box-shadow:var(--el-3);
+  display:flex; gap:var(--sp-3); color:var(--fg-1); font-family:var(--font);
+}
+.n-ico { width:32px; height:32px; border-radius:9px; flex:none; display:grid; place-items:center; color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.24); }
+.n-ava { position:relative; width:32px; height:32px; flex:none; }
+.n-ava .ph { width:32px; height:32px; border-radius:var(--r-round); display:grid; place-items:center;
+  color:#fff; font-size:13px; font-weight:600; }
+.n-ava .bdg { position:absolute; right:-4px; bottom:-4px; width:17px; height:17px; border-radius:var(--r-round);
+  display:grid; place-items:center; border:2px solid var(--popover-bg); color:#fff; }
+.n-ava .bdg svg { width:8px; height:8px; }
+.n-main { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+.n-meta { display:flex; align-items:center; gap:6px; font-size:11px; line-height:15px; font-weight:450; color:var(--fg-3); }
+.n-meta b { font-size:11px; font-weight:600; letter-spacing:.02em; color:var(--fg-2); }
+.n-meta .sep { opacity:.5; }
+.n-cnt { height:16px; padding:0 6px; border-radius:var(--r-round); background:var(--fill-2);
+  font-family:var(--mono); font-size:10px; font-weight:500; color:var(--fg-2); display:grid; place-items:center; }
+.n-title { font-size:13.5px; line-height:18px; font-weight:630; letter-spacing:-.007em; }
+.n-body { font-size:12.5px; line-height:17px; font-weight:400; color:var(--fg-2); }
+.n-x { position:absolute; top:8px; right:8px; width:22px; height:22px; border-radius:var(--r-round);
+  display:grid; place-items:center; background:var(--fill-2); color:var(--fg-2); }
+.n-acts { display:flex; gap:var(--sp-2); margin-top:8px; flex-wrap:wrap; }
+.nb { height:28px; padding:0 11px; border-radius:var(--r-2); border:0; font-family:var(--font);
+  font-size:12.5px; font-weight:550; letter-spacing:-.005em; display:inline-flex; align-items:center; gap:6px;
+  background:var(--fill-1); color:var(--fg-1); }
+.nb.primary { background:var(--acc-bg); color:var(--acc-fg); box-shadow:var(--el-1); }
+.nb.ghost { background:transparent; color:var(--fg-2); padding:0 8px; }
+.n-reply { display:flex; align-items:center; gap:var(--sp-2); margin-top:8px; height:34px; padding:0 4px 0 11px;
+  border-radius:var(--r-2); background:var(--view-bg); border:1px solid var(--acc-bg); box-shadow:0 0 0 3px var(--acc-ring); }
+.n-reply .ph { flex:1; font-size:12.5px; color:var(--fg-3); }
+.n-reply .caret { width:1.5px; height:15px; background:var(--acc-bg); }
+.n-reply .send { width:26px; height:26px; border-radius:var(--r-2); background:var(--acc-bg); color:var(--acc-fg);
+  display:grid; place-items:center; flex:none; }
+.n-prog { position:relative; height:6px; border-radius:var(--r-round); background:var(--fill-2); margin-top:9px; }
+.n-prog i { position:absolute; inset:0 auto 0 0; border-radius:var(--r-round); background:var(--acc-bg); }
+.n-sub { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:11px; color:var(--fg-3); }
+.n-sub .num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+.toast.crit .n-title { color:var(--danger); }
+.stack { position:relative; }
+.stack .toast { z-index:2; }
+.stack .peek { position:absolute; height:16px; border-radius:var(--r-3);
+  background:var(--popover-bg); border:1px solid var(--line); box-shadow:var(--el-2); }
+.stack .peek.p1 { left:7px; right:7px; bottom:-6px; z-index:1; }
+.stack .peek.p2 { left:15px; right:15px; bottom:-11px; z-index:0; opacity:.7; }
+
+/* центр сповіщень */
+.nc { position:absolute; top:40px; left:50%; transform:translateX(-50%); z-index:46; width:380px;
+  padding:var(--sp-3); background:var(--popover-bg); border:1px solid var(--line); border-radius:var(--r-3);
+  box-shadow:var(--el-3); display:flex; flex-direction:column; gap:var(--sp-2); font-family:var(--font); color:var(--fg-1); }
+.nc-head { display:flex; align-items:center; gap:var(--sp-2); padding:0 2px 2px; }
+.nc-head b { font-size:11px; line-height:14px; font-weight:640; letter-spacing:.075em; text-transform:uppercase; color:var(--fg-3); }
+.nc-head .nb { margin-left:auto; }
+.nc-head .moon { color:var(--fg-3); }
+.nc-media { display:flex; align-items:center; gap:var(--sp-3); padding:10px; border-radius:var(--r-2); background:var(--fill-1); }
+.nc-art { width:44px; height:44px; border-radius:var(--r-2); flex:none; background:linear-gradient(150deg,#e0a83f,#cf6524); }
+.nc-media .tx { display:flex; flex-direction:column; gap:1px; min-width:0; flex:1; }
+.nc-media .tx b { font-size:12.5px; font-weight:570; letter-spacing:-.005em; }
+.nc-media .tx span { font-size:11px; color:var(--fg-3); }
+.nc-media .ctl { display:flex; gap:2px; }
+.nc-media .ctl span { width:28px; height:28px; border-radius:var(--r-2); display:grid; place-items:center; color:var(--fg-2); }
+.nc-media .ctl span.pl { background:var(--fill-2); color:var(--fg-1); }
+.nc-grp { border-radius:var(--r-2); background:var(--fill-1); overflow:hidden; }
+.nc-grp-h { display:flex; align-items:center; gap:var(--sp-2); height:32px; padding:0 10px; }
+.nc-grp-h .gi { width:16px; height:16px; border-radius:5px; flex:none; display:grid; place-items:center; color:#fff; }
+.nc-grp-h .gi svg { width:10px; height:10px; }
+.nc-grp-h b { font-size:11px; font-weight:640; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-2); }
+.nc-grp-h .n-cnt { margin-left:2px; }
+.nc-grp-h .x { margin-left:auto; color:var(--fg-3); }
+.nc-item { display:flex; gap:10px; padding:9px 10px; border-top:1px solid var(--line); }
+.nc-item .n-main { gap:1px; }
+.nc-item .n-title { font-size:12.5px; line-height:17px; font-weight:600; }
+.nc-item .n-body { font-size:12px; line-height:16px; }
+.nc-item .t { font-size:10.5px; color:var(--fg-4); font-family:var(--mono); flex:none; }
+
+/* DND у смузі */
+.tb-dnd { width:28px; padding:0; justify-content:center; }
+.tb-dnd.is-on { background:var(--acc-bg); color:var(--acc-fg); }
+.tb-clock .cnt { height:16px; min-width:16px; padding:0 5px; border-radius:var(--r-round); background:var(--acc-bg);
+  color:var(--acc-fg); font-family:var(--mono); font-size:10px; font-weight:500; display:grid; place-items:center; }
+
+/* ── ряд станів ──────────────────────────────────────── */
+.states { display:flex; flex-wrap:wrap; gap:var(--sp-3); padding:var(--sp-5); border-radius:var(--r-3);
+  background:linear-gradient(150deg,#222c3c,#18202c); border:1px solid rgba(255,255,255,.07); }
+.st { display:flex; align-items:center; height:34px; padding:0 var(--sp-2);
+  background:var(--shell-bg); color:var(--shell-fg); border:1px solid var(--shell-line);
+  border-radius:var(--r-2); backdrop-filter:blur(20px) saturate(1.6); }
+</style>
+</head>
+<body>
+<div class="page thm" data-theme="dark">
+
+<!-- 01 -->
+<section>
+  <div class="lbl">01</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.4 3.2h3l1 1.2h5.2v5.4H1.4z" stroke-linejoin="round"/></svg></span>
+          Файли
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span>
+          <span class="mb-item">Зміни</span>
+          <span class="mb-item">Перегляд</span>
+          <span class="mb-item">Перехід</span>
+          <span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">09:41</span><span class="dot"></span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button>
+        <button class="tb-btn tb-sw">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg>
+          <span class="sw"><i></i></span>
+        </button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status">
+          <span class="wifi" data-level="3"><i></i><i></i><i></i><i></i></span>
+          <svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg>
+          <span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:13px"></span></span>
+          <span class="pct">82%</span>
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="stage-body"></div>
+  </div>
+</section>
+
+<!-- 02 -->
+<section>
+  <div class="lbl">02</div>
+  <div class="stage light thm" data-theme="light">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon" style="background:linear-gradient(160deg,#6cbb62,#3f9639)"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 4l2 2-2 2M6.4 8.4h3"/></svg></span>
+          Термінал
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span>
+          <span class="mb-item is-hover">Зміни</span>
+          <span class="mb-item">Перегляд</span>
+          <span class="mb-item">Вкладки</span>
+          <span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">14:07</span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang"><span class="seg"><span>UA</span><span class="on">US</span></span></button>
+        <button class="tb-btn tb-sw is-on-lbl">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg>
+          <span class="sw on"><i></i></span>
+        </button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status">
+          <span class="wifi" data-level="4"><i></i><i></i><i></i><i></i></span>
+          <svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M12.4 5.4a5 5 0 010 7.2"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg>
+          <span class="batt charging"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:8px"></span><svg class="bolt" viewBox="0 0 10 10" fill="currentColor" style="color:var(--shell-fg)"><path d="M5.6 1L2.8 5.6h1.9L4.2 9 7.2 4.4H5.2z"/></svg></span>
+          <span class="pct">47%</span>
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="stage-body"></div>
+  </div>
+</section>
+
+<!-- 03 -->
+<section>
+  <div class="lbl">03</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon" style="background:linear-gradient(160deg,#cdb4ee,#7a4dbb)"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 2.6h6v6.8L6 7.8 3 9.4z"/></svg></span>
+          Записник
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Вт 22 вер</span><span class="time">11:02</span><span class="dot"></span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang1"><span class="code">PL</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="tb-btn tb-sw">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg>
+          <span class="sw"><i></i></span>
+        </button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status">
+          <span class="wifi" data-level="2"><i></i><i></i><i></i><i></i></span>
+          <svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M12.2 6.2l3.4 5.6M15.6 6.2l-3.4 5.6" stroke-linecap="round"/></svg>
+          <span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:16px"></span></span>
+          <span class="pct">96%</span>
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="stage-body"></div>
+  </div>
+</section>
+
+<!-- 04 -->
+<section>
+  <div class="lbl">04</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.4 3.2h3l1 1.2h5.2v5.4H1.4z" stroke-linejoin="round"/></svg></span>
+          Файли
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span>
+          <span class="mb-item">Зміни</span>
+          <span class="mb-slot">
+            <span class="mb-item is-open">Перегляд</span>
+            <div class="menu">
+              <div class="mi"><span class="gap"></span>Список<span class="k">Ctrl+1</span></div>
+              <div class="mi"><svg class="tick" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 7.4l2.8 2.8 6-6.4"/></svg>Сітка<span class="k">Ctrl+2</span></div>
+              <div class="mi-div"></div>
+              <div class="mi hl"><svg class="tick" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 7.4l2.8 2.8 6-6.4"/></svg>Приховані файли<span class="k">Ctrl+H</span></div>
+              <div class="mi"><span class="gap"></span>Бічна панель<span class="k">F9</span></div>
+              <div class="mi"><span class="gap"></span>Упорядкувати<svg class="arw" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.6 2.2L6.4 5 3.6 7.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="mi-div"></div>
+              <div class="mi"><span class="gap"></span>Збільшити<span class="k">Ctrl++</span></div>
+              <div class="mi off"><span class="gap"></span>Зменшити<span class="k">Ctrl+−</span></div>
+            </div>
+          </span>
+          <span class="mb-item">Перехід</span>
+          <span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">09:41</span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button>
+        <button class="tb-btn tb-sw">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg>
+          <span class="sw"><i></i></span>
+        </button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status">
+          <span class="wifi" data-level="3"><i></i><i></i><i></i><i></i></span>
+          <svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg>
+          <span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:13px"></span></span>
+          <span class="pct">82%</span>
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="stage-body" style="height:246px"></div>
+  </div>
+</section>
+
+<!-- 05 -->
+<section>
+  <div class="lbl">05</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.4 3.2h3l1 1.2h5.2v5.4H1.4z" stroke-linejoin="round"/></svg></span>
+          Файли
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span>
+          <span class="mb-item">Зміни</span>
+          <span class="mb-item">Перегляд</span>
+          <span class="mb-item">Перехід</span>
+          <span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">09:41</span><span class="dot"></span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button>
+        <button class="tb-btn tb-sw">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg>
+          <span class="sw"><i></i></span>
+        </button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status is-open">
+          <span class="wifi" data-level="3"><i></i><i></i><i></i><i></i></span>
+          <svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg>
+          <span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:13px"></span></span>
+          <span class="pct">82%</span>
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" style="transform:rotate(180deg)"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="qs">
+      <div class="qs-grid">
+        <div class="qs-tile on">
+          <span class="qs-ico"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.8 6.4a10.4 10.4 0 0114.4 0"/><path d="M4.4 9.3a6.7 6.7 0 019.2 0"/><path d="M6.9 12.1a3.1 3.1 0 014.2 0"/><circle cx="9" cy="14.6" r=".9" fill="currentColor" stroke="none"/></svg></span>
+          <span class="qs-txt"><b>Wi-Fi</b><span>Meridian-5G</span></span>
+        </div>
+        <div class="qs-tile">
+          <span class="qs-ico"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M6 5.4L12 12 9 14.4V3.6L12 6 6 12.6"/></svg></span>
+          <span class="qs-txt"><b>Bluetooth</b><span>Вимкнено</span></span>
+        </div>
+        <div class="qs-tile">
+          <span class="qs-ico"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M14.2 10.4A5.8 5.8 0 017.6 3.8a5.8 5.8 0 106.6 6.6z"/></svg></span>
+          <span class="qs-txt"><b>Нічне світло</b><span>За розкладом</span></span>
+        </div>
+        <div class="qs-tile">
+          <span class="qs-ico"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.4" y="4.6" width="13.2" height="9.4" rx="2"/><path d="M6.4 4.6l1.2-1.8h2.8l1.2 1.8" stroke-linejoin="round"/><circle cx="9" cy="9.3" r="2.6"/></svg></span>
+          <span class="qs-txt"><b>Знімок</b><span>Екран або ділянка</span></span>
+        </div>
+      </div>
+      <div class="qs-row">
+        <span class="qs-ico"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg></span>
+        <span class="qs-txt"><b>Кофеїн</b><span>Не присипляти екран</span></span>
+        <span class="sw sw-lg"><i></i></span>
+      </div>
+      <div class="qs-row">
+        <span class="qs-ico"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="4.2" width="14" height="9.6" rx="2"/><path d="M5 7.2h.01M8 7.2h.01M11 7.2h.01M5 10.4h8"/></svg></span>
+        <span class="qs-txt"><b>Розкладка</b><span>Українська</span></span>
+        <span class="seg" style="margin-left:auto"><span class="on">UA</span><span>US</span></span>
+      </div>
+      <div class="qs-slider">
+        <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg>
+        <span class="qs-track"><span class="qs-fill" style="width:62%"></span><span class="qs-thumb" style="left:62%"></span></span>
+      </div>
+      <div class="qs-slider">
+        <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.8v1.8M9 14.4v1.8M1.8 9h1.8M14.4 9h1.8M3.9 3.9l1.3 1.3M12.8 12.8l1.3 1.3M14.1 3.9l-1.3 1.3M5.2 12.8l-1.3 1.3"/></svg>
+        <span class="qs-track"><span class="qs-fill" style="width:78%"></span><span class="qs-thumb" style="left:78%"></span></span>
+      </div>
+      <div class="qs-div"></div>
+      <div class="qs-foot">
+        <span class="qs-ava">А</span><b>Артем</b>
+        <span class="qs-acts">
+          <span class="qs-act hl"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="9" cy="9" r="2.4"/><path d="M14.6 11a1.3 1.3 0 00.26 1.43l.05.05a1.55 1.55 0 11-2.2 2.2l-.05-.05A1.3 1.3 0 0011 14.6a1.3 1.3 0 00-.8 1.2v.13a1.55 1.55 0 11-3.1 0v-.07A1.3 1.3 0 006.24 14.6a1.3 1.3 0 00-1.43.26l-.05.05a1.55 1.55 0 11-2.2-2.2l.05-.05A1.3 1.3 0 003.4 11a1.3 1.3 0 00-1.2-.8h-.13a1.55 1.55 0 110-3.1h.07A1.3 1.3 0 003.4 6.24a1.3 1.3 0 00-.26-1.43l-.05-.05a1.55 1.55 0 112.2-2.2l.05.05A1.3 1.3 0 007 3.4a1.3 1.3 0 00.8-1.2v-.13a1.55 1.55 0 113.1 0v.07A1.3 1.3 0 0011.76 3.4a1.3 1.3 0 001.43-.26l.05-.05a1.55 1.55 0 112.2 2.2l-.05.05A1.3 1.3 0 0014.6 7a1.3 1.3 0 001.2.8h.13a1.55 1.55 0 110 3.1h-.07a1.3 1.3 0 00-1.2.8z"/></svg></span>
+          <span class="qs-act"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3.4" y="7.8" width="11.2" height="7.4" rx="2"/><path d="M5.9 7.8V5.6a3.1 3.1 0 016.2 0v2.2"/></svg></span>
+          <span class="qs-act"><svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M9 2.6v6.2"/><path d="M13.6 4.6a6.2 6.2 0 11-9.2 0"/></svg></span>
+        </span>
+      </div>
+    </div>
+    <div class="stage-body" style="height:330px"></div>
+  </div>
+</section>
+
+<!-- 06 -->
+<section>
+  <div class="lbl">06</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.4 3.2h3l1 1.2h5.2v5.4H1.4z" stroke-linejoin="round"/></svg></span>
+          Файли
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span>
+          <span class="mb-item">Зміни</span>
+          <span class="mb-item">Перегляд</span>
+          <span class="mb-item">Перехід</span>
+          <span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">09:41</span></button>
+      <div class="tb-group right">
+        <span class="mb-slot">
+          <button class="tb-btn tb-lang1 is-open"><span class="code">PL</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" style="transform:rotate(180deg)"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div class="menu lang-menu" style="left:auto;right:0">
+            <div class="mi"><span class="gap"></span>UA<span class="nat">Українська</span></div>
+            <div class="mi"><span class="gap"></span>US<span class="nat">English</span></div>
+            <div class="mi hl"><svg class="tick" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 7.4l2.8 2.8 6-6.4"/></svg>PL<span class="nat">Polski</span></div>
+            <div class="mi-div"></div>
+            <div class="mi"><span class="gap"></span>Налаштування вводу</div>
+          </div>
+        </span>
+        <button class="tb-btn tb-sw">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg>
+          <span class="sw"><i></i></span>
+        </button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status">
+          <span class="wifi" data-level="3"><i></i><i></i><i></i><i></i></span>
+          <svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg>
+          <span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:13px"></span></span>
+          <span class="pct">82%</span>
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="stage-body" style="height:196px"></div>
+  </div>
+</section>
+
+<!-- 07 -->
+<section>
+  <div class="lbl">07</div>
+  <div class="states thm" data-theme="dark">
+    <span class="st"><button class="tb-btn tb-sw"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw"><i></i></span></button></span>
+    <span class="st"><button class="tb-btn tb-sw is-hover"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw"><i></i></span></button></span>
+    <span class="st"><button class="tb-btn tb-sw is-on-lbl"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw on"><i></i></span></button></span>
+    <span class="st"><button class="tb-btn tb-sw is-press is-on-lbl"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw on"><i></i></span></button></span>
+    <span class="st"><button class="tb-btn tb-sw is-focus"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw"><i></i></span></button></span>
+
+    <span class="st"><button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button></span>
+    <span class="st"><button class="tb-btn tb-lang is-hover"><span class="seg"><span>UA</span><span class="on">US</span></span></button></span>
+    <span class="st"><button class="tb-btn tb-lang"><span class="seg acc"><span class="on">UA</span><span>US</span></span></button></span>
+    <span class="st"><button class="tb-btn tb-lang1"><span class="code">PL</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></span>
+    <span class="st"><button class="tb-btn tb-lang1 is-open"><span class="code">PL</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" style="transform:rotate(180deg)"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></span>
+
+    <span class="st"><span class="mb"><span class="mb-item">Файл</span><span class="mb-item is-hover">Зміни</span><span class="mb-item is-open">Перегляд</span></span></span>
+
+    <span class="st"><button class="tb-btn tb-status"><span class="wifi" data-level="2"><i></i><i></i><i></i><i></i></span><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M12.2 6.2l3.4 5.6M15.6 6.2l-3.4 5.6" stroke-linecap="round"/></svg><span class="batt low"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:3px"></span></span><span class="pct" style="color:var(--danger)">11%</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></span>
+    <span class="st"><button class="tb-btn tb-clock" style="position:static;transform:none"><span class="date">Пн 21 вер</span><span class="time">09:41</span><span class="dot"></span></button></span>
+    <span class="st"><button class="tb-btn tb-clock is-hover" style="position:static;transform:none"><span class="date">Пн 21 вер</span><span class="time">09:41</span></button></span>
+    <span class="st"><button class="tb-btn tb-clock" style="position:static;transform:none"><span class="date">Пн 21 вер</span><span class="time">09:41</span><span class="cnt">3</span></button></span>
+    <span class="st"><button class="tb-btn tb-dnd"><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M14.2 10.4A5.8 5.8 0 017.6 3.8a5.8 5.8 0 106.6 6.6z"/></svg></button></span>
+    <span class="st"><button class="tb-btn tb-dnd is-on"><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M14.2 10.4A5.8 5.8 0 017.6 3.8a5.8 5.8 0 106.6 6.6z"/></svg></button></span>
+  </div>
+</section>
+
+<!-- 08 -->
+<section>
+  <div class="lbl">08</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.4 3.2h3l1 1.2h5.2v5.4H1.4z" stroke-linejoin="round"/></svg></span>
+          Файли
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span><span class="mb-item">Зміни</span><span class="mb-item">Перегляд</span><span class="mb-item">Перехід</span><span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">09:41</span><span class="cnt">3</span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button>
+        <button class="tb-btn tb-sw"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw"><i></i></span></button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status"><span class="wifi" data-level="3"><i></i><i></i><i></i><i></i></span><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg><span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:13px"></span></span><span class="pct">82%</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </div>
+
+    <div class="rail">
+      <div class="toast">
+        <span class="n-ico" style="background:linear-gradient(160deg,#5b9bec,#2f6fd0)"><svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M2.6 5L9 9.6 15.4 5"/></svg></span>
+        <span class="n-main">
+          <span class="n-meta"><b>Пошта</b><span class="sep">·</span>щойно</span>
+          <span class="n-title">Оксана Литвин</span>
+          <span class="n-body">Договір на підпис — фінальна редакція, дедлайн до п'ятниці</span>
+          <span class="n-acts"><button class="nb primary">Відповісти</button><button class="nb">Архівувати</button><button class="nb ghost">Позначити</button></span>
+        </span>
+        <span class="n-x"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></span>
+      </div>
+
+      <div class="toast">
+        <span class="n-ava">
+          <span class="ph" style="background:linear-gradient(160deg,#a077d8,#7a4dbb)">МК</span>
+          <span class="bdg" style="background:#2f6fd0"><svg viewBox="0 0 18 18" fill="currentColor"><path d="M16.5 2.4L1.8 8.1l4.6 1.6 8-4.9-6.2 6.2 5.1 4.6z"/></svg></span>
+        </span>
+        <span class="n-main">
+          <span class="n-meta"><b>Telegram</b><span class="sep">·</span>2 хв</span>
+          <span class="n-title">Марта Ковальчук</span>
+          <span class="n-body">Скинь, будь ласка, макети — гляну ввечері</span>
+        </span>
+      </div>
+
+      <div class="toast">
+        <span class="n-ico" style="background:linear-gradient(160deg,#6cbb62,#3f9639)"><svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.6v8.2M5.6 7.6L9 11l3.4-3.4M3 14.2h12"/></svg></span>
+        <span class="n-main">
+          <span class="n-meta"><b>Файли</b><span class="sep">·</span>копіювання</span>
+          <span class="n-title">ubuntu-24.04.iso</span>
+          <span class="n-prog"><i style="width:64%"></i></span>
+          <span class="n-sub"><span class="num">2,9</span> з <span class="num">4,6 ГБ</span><span class="sep">·</span>лишилось <span class="num">1 хв</span></span>
+        </span>
+      </div>
+    </div>
+
+    <div class="stage-body" style="height:336px"></div>
+  </div>
+</section>
+
+<!-- 09 -->
+<section>
+  <div class="lbl">09</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon" style="background:linear-gradient(160deg,#6cbb62,#3f9639)"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 4l2 2-2 2M6.4 8.4h3"/></svg></span>
+          Термінал
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span><span class="mb-item">Зміни</span><span class="mb-item">Перегляд</span><span class="mb-item">Вкладки</span><span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">09:43</span><span class="cnt">6</span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button>
+        <button class="tb-btn tb-sw"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw"><i></i></span></button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status"><span class="wifi" data-level="3"><i></i><i></i><i></i><i></i></span><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg><span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:13px"></span></span><span class="pct">82%</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </div>
+
+    <div class="rail">
+      <div class="toast">
+        <span class="n-ava">
+          <span class="ph" style="background:linear-gradient(160deg,#a077d8,#7a4dbb)">МК</span>
+          <span class="bdg" style="background:#2f6fd0"><svg viewBox="0 0 18 18" fill="currentColor"><path d="M16.5 2.4L1.8 8.1l4.6 1.6 8-4.9-6.2 6.2 5.1 4.6z"/></svg></span>
+        </span>
+        <span class="n-main">
+          <span class="n-meta"><b>Telegram</b><span class="sep">·</span>2 хв</span>
+          <span class="n-title">Марта Ковальчук</span>
+          <span class="n-body">Скинь, будь ласка, макети — гляну ввечері</span>
+          <span class="n-reply"><span class="ph">Уже надсилаю</span><span class="caret"></span><span class="send"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.8 7.2L8 3l4.2 4.2"/></svg></span></span>
+        </span>
+      </div>
+
+      <div class="stack">
+        <span class="peek p1"></span>
+        <span class="peek p2"></span>
+        <div class="toast">
+          <span class="n-ava">
+            <span class="ph" style="background:linear-gradient(160deg,#46b3a6,#128b7e)">#</span>
+            <span class="bdg" style="background:#5b6ee0"><svg viewBox="0 0 18 18" fill="currentColor"><circle cx="6" cy="9" r="2"/><circle cx="12" cy="9" r="2"/></svg></span>
+          </span>
+          <span class="n-main">
+            <span class="n-meta"><b>Discord</b><span class="sep">·</span>#дизайн<span class="n-cnt">+4</span></span>
+            <span class="n-title">Андрій, Ніна та ще 2</span>
+            <span class="n-body">Ніна: топбар з меню виглядає значно щільніше, ніж було</span>
+            <span class="n-acts"><button class="nb primary">Відповісти</button><button class="nb">Прочитано</button></span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage-body" style="height:310px"></div>
+  </div>
+</section>
+
+<!-- 10 -->
+<section>
+  <div class="lbl">10</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.4 3.2h3l1 1.2h5.2v5.4H1.4z" stroke-linejoin="round"/></svg></span>
+          Файли
+        </button>
+        <span class="mb">
+          <span class="mb-item">Файл</span><span class="mb-item">Зміни</span><span class="mb-item">Перегляд</span><span class="mb-item">Перехід</span><span class="mb-item">Довідка</span>
+        </span>
+      </div>
+      <button class="tb-btn tb-clock is-open"><span class="date">Пн 21 вер</span><span class="time">09:41</span><span class="cnt">6</span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button>
+        <button class="tb-btn tb-sw"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw"><i></i></span></button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status"><span class="wifi" data-level="3"><i></i><i></i><i></i><i></i></span><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M11.6 6.8a3.3 3.3 0 010 4.6"/></svg><span class="batt"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:13px"></span></span><span class="pct">82%</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </div>
+
+    <div class="nc">
+      <div class="nc-head">
+        <b>Сповіщення</b>
+        <button class="nb ghost" style="height:24px">Очистити все</button>
+        <svg class="moon" width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M14.2 10.4A5.8 5.8 0 017.6 3.8a5.8 5.8 0 106.6 6.6z"/></svg>
+        <span class="sw"><i></i></span>
+      </div>
+
+      <div class="nc-media">
+        <span class="nc-art"></span>
+        <span class="tx"><b>Пісня про рушник</b><span>Український хор · Спокій</span></span>
+        <span class="ctl">
+          <span><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3h1.6v10H5zM12 3v10l-6-5z"/></svg></span>
+          <span class="pl"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M5.2 3h2v10h-2zM8.8 3h2v10h-2z"/></svg></span>
+          <span><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11 3h-1.6v10H11zM4 3v10l6-5z"/></svg></span>
+        </span>
+      </div>
+
+      <div class="nc-grp">
+        <div class="nc-grp-h">
+          <span class="gi" style="background:#2f6fd0"><svg viewBox="0 0 18 18" fill="currentColor"><path d="M16.5 2.4L1.8 8.1l4.6 1.6 8-4.9-6.2 6.2 5.1 4.6z"/></svg></span>
+          <b>Telegram</b><span class="n-cnt">4</span>
+          <span class="x"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></span>
+        </div>
+        <div class="nc-item">
+          <span class="n-ava" style="width:28px;height:28px"><span class="ph" style="width:28px;height:28px;background:linear-gradient(160deg,#a077d8,#7a4dbb);font-size:11px">МК</span></span>
+          <span class="n-main"><span class="n-title">Марта Ковальчук</span><span class="n-body">Скинь, будь ласка, макети</span></span>
+          <span class="t">2 хв</span>
+        </div>
+        <div class="nc-item">
+          <span class="n-ava" style="width:28px;height:28px"><span class="ph" style="width:28px;height:28px;background:linear-gradient(160deg,#e0a83f,#b57e10);font-size:11px">ІБ</span></span>
+          <span class="n-main"><span class="n-title">Ігор Бондар</span><span class="n-body">Домовились на 15:00</span></span>
+          <span class="t">17 хв</span>
+        </div>
+        <div class="nc-item">
+          <span class="n-ava" style="width:28px;height:28px"><span class="ph" style="width:28px;height:28px;background:linear-gradient(160deg,#46b3a6,#128b7e);font-size:11px">РГ</span></span>
+          <span class="n-main"><span class="n-title">Робоча група</span><span class="n-body">Ніна: чернетку виклала в спільну теку</span></span>
+          <span class="t">41 хв</span>
+        </div>
+      </div>
+
+      <div class="nc-grp">
+        <div class="nc-grp-h">
+          <span class="gi" style="background:linear-gradient(160deg,#5b9bec,#2f6fd0)"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M2.6 5L9 9.6 15.4 5"/></svg></span>
+          <b>Пошта</b><span class="n-cnt">2</span>
+          <span class="x"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></span>
+        </div>
+        <div class="nc-item">
+          <span class="n-ico" style="width:28px;height:28px;border-radius:8px;background:var(--fill-2);color:var(--fg-2)"><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M2.6 5L9 9.6 15.4 5"/></svg></span>
+          <span class="n-main"><span class="n-title">Оксана Литвин</span><span class="n-body">Договір на підпис — фінальна редакція</span></span>
+          <span class="t">1 год</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage-body" style="height:452px"></div>
+  </div>
+</section>
+
+<!-- 11 -->
+<section>
+  <div class="lbl">11</div>
+  <div class="states thm" data-theme="dark">
+    <div class="toast crit">
+      <span class="n-ico" style="background:linear-gradient(160deg,#f0796f,#c8483c)"><svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.8L16.2 15H1.8z"/><path d="M9 7v3.4M9 12.6h.01"/></svg></span>
+      <span class="n-main">
+        <span class="n-meta"><b>Живлення</b><span class="sep">·</span>зараз</span>
+        <span class="n-title">Заряд 7%</span>
+        <span class="n-body">Під'єднайте живлення. Сеанс буде призупинено за 5 хвилин.</span>
+        <span class="n-acts"><button class="nb primary">Режим економії</button><button class="nb ghost">Відкласти</button></span>
+      </span>
+    </div>
+
+    <div class="toast">
+      <span class="n-ico" style="background:linear-gradient(160deg,#cdb4ee,#7a4dbb)"><svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.4" y="4.6" width="13.2" height="9.4" rx="2"/><path d="M6.4 4.6l1.2-1.8h2.8l1.2 1.8" stroke-linejoin="round"/><circle cx="9" cy="9.3" r="2.6"/></svg></span>
+      <span class="n-main">
+        <span class="n-meta"><b>Знімок екрана</b><span class="sep">·</span>щойно</span>
+        <span class="n-title">Знімок збережено</span>
+        <span class="n-body">Зображення · 2560×1440 · 840 КБ</span>
+        <span class="n-acts"><button class="nb">Копіювати</button><button class="nb">Редагувати</button><button class="nb ghost">Показати в теці</button></span>
+      </span>
+      <span class="n-x"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></span>
+    </div>
+
+    <div class="toast">
+      <span class="n-ico" style="background:linear-gradient(160deg,#5b9bec,#1f56a8)"><svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2.4" y="3.4" width="13.2" height="12" rx="2"/><path d="M2.4 7h13.2M6 1.8v2.6M12 1.8v2.6"/></svg></span>
+      <span class="n-main">
+        <span class="n-meta"><b>Календар</b><span class="sep">·</span>за 10 хв</span>
+        <span class="n-title">Синхронізація команди</span>
+        <span class="n-body">10:00 – 10:30 · Кімната «Карпати»</span>
+        <span class="n-acts"><button class="nb primary">Приєднатись</button><button class="nb ghost">Відкласти 5 хв</button></span>
+      </span>
+    </div>
+
+    <div class="toast">
+      <span class="n-ico" style="background:linear-gradient(160deg,#918a7d,#4c4740)"><svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.4 8V5.6a2.6 2.6 0 015.2 0V8"/><rect x="3.6" y="8" width="10.8" height="7" rx="2"/></svg></span>
+      <span class="n-main">
+        <span class="n-meta"><b>Сховище ключів</b><span class="sep">·</span>зараз</span>
+        <span class="n-title">Потрібен доступ</span>
+        <span class="n-body">«Пошта» запитує ключ підпису з вашої зв'язки.</span>
+        <span class="n-acts"><button class="nb primary">Дозволити</button><button class="nb">Відхилити</button></span>
+      </span>
+    </div>
+  </div>
+</section>
+
+<!-- 12 -->
+<section>
+  <div class="lbl">12</div>
+  <div class="stage dark thm" data-theme="dark">
+    <span class="wall"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></span>
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb-btn tb-app">
+          <span class="app-icon" style="background:linear-gradient(160deg,#cdb4ee,#7a4dbb)"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 2.6h6v6.8L6 7.8 3 9.4z"/></svg></span>
+          Записник
+          <svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <button class="tb-btn tb-clock"><span class="date">Пн 21 вер</span><span class="time">22:18</span></button>
+      <div class="tb-group right">
+        <button class="tb-btn tb-dnd is-on"><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M14.2 10.4A5.8 5.8 0 017.6 3.8a5.8 5.8 0 106.6 6.6z"/></svg></button>
+        <button class="tb-btn tb-lang"><span class="seg"><span class="on">UA</span><span>US</span></span></button>
+        <button class="tb-btn tb-sw is-on-lbl"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 6.2h8.4v3.6a3 3 0 01-3 3H6a3 3 0 01-3-3z"/><path d="M11.6 7.2h1.2a1.6 1.6 0 010 3.2h-1.2"/><path d="M5.4 3.4v1.2M8 2.8v1.8M10.6 3.4v1.2"/></svg><span class="sw on"><i></i></span></button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn tb-status"><span class="wifi" data-level="4"><i></i><i></i><i></i><i></i></span><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z" stroke-linejoin="round"/><path d="M12.2 6.2l3.4 5.6M15.6 6.2l-3.4 5.6" stroke-linecap="round"/></svg><span class="batt charging"><span class="shell"></span><span class="tip"></span><span class="lvl" style="width:15px"></span><svg class="bolt" viewBox="0 0 10 10" fill="currentColor" style="color:var(--shell-fg)"><path d="M5.6 1L2.8 5.6h1.9L4.2 9 7.2 4.4H5.2z"/></svg></span><span class="pct">91%</span><svg class="chev" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.6 4l2.4 2.4L7.4 4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </div>
+    <div class="stage-body"></div>
+  </div>
+</section>
+
+</div>
+</body>
+</html>

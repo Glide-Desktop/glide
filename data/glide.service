@@ -1,0 +1,14 @@
+[Unit]
+Description=Glide Wayland compositor
+Documentation=https://github.com/glide
+BindsTo=graphical-session.target
+Before=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/glide
+Restart=on-failure
+RestartSec=1
+TimeoutStopSec=10

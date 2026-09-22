@@ -1,0 +1,22 @@
+#!/bin/sh
+export XDG_CURRENT_DESKTOP=Glide
+export XDG_SESSION_TYPE=wayland
+export XDG_SESSION_DESKTOP=glide
+
+if command -v systemctl >/dev/null 2>&1 && [ -n "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    systemctl --user reset-failed glide.service 2>/dev/null || true
+    systemctl --user start glide.service
+    systemctl --user --wait start glide.service 2>/dev/null || {
+        while systemctl --user is-active --quiet glide.service; do
+            sleep 2
+        done
+    }
+    systemctl --user start glide-shutdown.target 2>/dev/null || true
+    exit 0
+fi
+
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- glide
+fi
+
+exec glide

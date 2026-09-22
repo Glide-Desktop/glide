@@ -6,6 +6,8 @@ members = [
     "crates/glide-geom",
     "crates/glide-layout",
     "crates/glide-ipc",
+    "crates/glide-media",
+    "crates/glide-notify",
     "crates/glide-paint",
     "crates/glide-theme",
     "crates/glide-ui",
@@ -14,13 +16,13 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.89"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/artem/glide"
 
 [workspace.dependencies]
-smithay = { git = "https://github.com/Smithay/smithay", rev = "5fb12b87407b3680135c45d94214c5f1b1d0fbea", default-features = false }
-smithay-drm-extras = { git = "https://github.com/Smithay/smithay", rev = "5fb12b87407b3680135c45d94214c5f1b1d0fbea" }
+smithay = { git = "https://github.com/Smithay/smithay", rev = "d33a9c98fbd4d0ddd85315f93d436747bf3393a6", default-features = false }
+smithay-drm-extras = { git = "https://github.com/Smithay/smithay", rev = "d33a9c98fbd4d0ddd85315f93d436747bf3393a6" }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 bitflags = "2.2.1"
@@ -29,7 +31,7 @@ thiserror = "2.0"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "1"
 
 [workspace.lints.rust]
 future-incompatible = "warn"

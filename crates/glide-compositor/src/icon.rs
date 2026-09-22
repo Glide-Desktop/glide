@@ -52,6 +52,7 @@ impl IconLoader {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopApp {
+    pub id: String,
     pub name: String,
     pub command: String,
     pub icon: String,
@@ -112,6 +113,45 @@ pub fn list_applications() -> Vec<DesktopApp> {
     apps
 }
 
+#[must_use]
+pub fn find_application(app_id: &str) -> Option<DesktopApp> {
+    let app_id = app_id.trim();
+    if app_id.is_empty() {
+        return None;
+    }
+    let wanted = app_id.to_lowercase();
+    for dir in data_dirs() {
+        let apps = dir.join("applications");
+        let direct = apps.join(format!("{app_id}.desktop"));
+        if let Some(app) = read_desktop_app(&direct) {
+            return Some(app);
+        }
+        let Ok(entries) = std::fs::read_dir(&apps) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let stem_matches = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.to_lowercase() == wanted);
+            if stem_matches && let Some(app) = read_desktop_app(&path) {
+                return Some(app);
+            }
+        }
+    }
+    list_applications().into_iter().find(|app| {
+        app.name.eq_ignore_ascii_case(app_id)
+            || app.icon.eq_ignore_ascii_case(app_id)
+            || app
+                .command
+                .split_whitespace()
+                .next()
+                .and_then(|bin| bin.rsplit('/').next())
+                .is_some_and(|bin| bin.eq_ignore_ascii_case(app_id))
+    })
+}
+
 fn read_desktop_app(path: &Path) -> Option<DesktopApp> {
     let contents = std::fs::read_to_string(path).ok()?;
 
@@ -155,7 +195,13 @@ fn read_desktop_app(path: &Path) -> Option<DesktopApp> {
         return None;
     }
 
+    let id = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_string();
     Some(DesktopApp {
+        id,
         name: name?,
         command: strip_field_codes(&exec?),
         icon: icon.unwrap_or_default(),
@@ -238,10 +284,8 @@ fn desktop_icon_name(app_id: &str) -> Option<String> {
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .is_some_and(|stem| stem.eq_ignore_ascii_case(app_id));
-            if matches {
-                if let Some(icon) = read_icon_key(&path) {
-                    return Some(icon);
-                }
+            if matches && let Some(icon) = read_icon_key(&path) {
+                return Some(icon);
             }
         }
     }

@@ -16,22 +16,16 @@ fn resolve_xdg_path(
     component: &str,
     file_name: &str,
 ) -> Option<PathBuf> {
-    if let Some(xdg) = xdg_config_home {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join(component).join(file_name));
-        }
+    if let Some(xdg) = xdg_config_home.filter(|xdg| !xdg.is_empty()) {
+        return Some(PathBuf::from(xdg).join(component).join(file_name));
     }
-    if let Some(home) = home {
-        if !home.is_empty() {
-            return Some(
-                PathBuf::from(home)
-                    .join(".config")
-                    .join(component)
-                    .join(file_name),
-            );
-        }
-    }
-    None
+    let home = home.filter(|home| !home.is_empty())?;
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join(component)
+            .join(file_name),
+    )
 }
 
 #[cfg(test)]

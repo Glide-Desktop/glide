@@ -21,6 +21,7 @@ use glide_theme::{Color, TextStyle};
 pub enum TextAlign {
     Left,
     Center,
+    Right,
 }
 
 mod wallpaper;
@@ -457,6 +458,7 @@ impl Painter {
         let x_off = match align {
             TextAlign::Center => px_min + (avail_w - total_w) / 2,
             TextAlign::Left => px_min,
+            TextAlign::Right => px_max - total_w,
         };
         let content_h = metrics.max_ascent + metrics.max_descent;
         let band_h = (py_max - py_min) as f32;
@@ -653,6 +655,166 @@ fn composite_over(dst: [u8; 4], src_rgb_straight: [u8; 3], src_alpha: u8) -> [u8
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn draw_coffee_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    centre_x: f32,
+    centre_y: f32,
+    glyph_side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+    steam: bool,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if glyph_side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    let side = glyph_side * scale_f;
+    let (cx, cy) = (centre_x * scale_f, centre_y * scale_f);
+
+    let body_w = side * 0.52;
+    let body_h = side * 0.44;
+    let left = cx - body_w / 2.0;
+    let right = cx + body_w / 2.0;
+    let top = cy - body_h * 0.30;
+    let bottom = top + body_h;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(left, top);
+    pb.line_to(left + body_w * 0.10, bottom);
+    pb.line_to(right - body_w * 0.10, bottom);
+    pb.line_to(right, top);
+    pb.close();
+
+    let handle_r = body_h * 0.30;
+    let handle_cy = top + body_h * 0.34;
+    pb.move_to(right - body_w * 0.02, handle_cy - handle_r);
+    pb.cubic_to(
+        right + handle_r * 1.6,
+        handle_cy - handle_r,
+        right + handle_r * 1.6,
+        handle_cy + handle_r,
+        right - body_w * 0.08,
+        handle_cy + handle_r,
+    );
+
+    if steam {
+        for offset in [-body_w * 0.22, 0.0, body_w * 0.22] {
+            let x = cx + offset;
+            let y0 = top - side * 0.10;
+            pb.move_to(x, y0);
+            pb.line_to(x, y0 - side * 0.16);
+        }
+    }
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_search_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    centre_x: f32,
+    centre_y: f32,
+    glyph_side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if glyph_side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    let side = glyph_side * scale_f;
+    let (cx, cy) = (centre_x * scale_f, centre_y * scale_f);
+
+    let radius = side * 0.32;
+    let lens = (cx - side * 0.5 + radius, cy - side * 0.5 + radius);
+    let handle_from = (
+        lens.0 + radius * std::f32::consts::FRAC_1_SQRT_2,
+        lens.1 + radius * std::f32::consts::FRAC_1_SQRT_2,
+    );
+    let handle_to = (cx + side * 0.5, cy + side * 0.5);
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.push_circle(lens.0, lens.1, radius);
+    pb.move_to(handle_from.0, handle_from.1);
+    pb.line_to(handle_to.0, handle_to.1);
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
 pub fn draw_close_glyph_over(
     buf: &mut [u8],
     canvas_width: i32,
@@ -787,6 +949,55 @@ pub enum DockGlyph {
     Grid,
 }
 
+fn push_rounded_rect(
+    pb: &mut tiny_skia::PathBuilder,
+    x_pos: f32,
+    y_pos: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+) {
+    let r = radius.max(0.0).min(width.min(height) / 2.0);
+    if r <= 0.0 {
+        if let Some(rect) = tiny_skia::Rect::from_xywh(x_pos, y_pos, width, height) {
+            pb.push_rect(rect);
+        }
+        return;
+    }
+    let k = r * KAPPA;
+    pb.move_to(x_pos + r, y_pos);
+    pb.line_to(x_pos + width - r, y_pos);
+    pb.cubic_to(
+        x_pos + width - r + k,
+        y_pos,
+        x_pos + width,
+        y_pos + r - k,
+        x_pos + width,
+        y_pos + r,
+    );
+    pb.line_to(x_pos + width, y_pos + height - r);
+    pb.cubic_to(
+        x_pos + width,
+        y_pos + height - r + k,
+        x_pos + width - r + k,
+        y_pos + height,
+        x_pos + width - r,
+        y_pos + height,
+    );
+    pb.line_to(x_pos + r, y_pos + height);
+    pb.cubic_to(
+        x_pos + r - k,
+        y_pos + height,
+        x_pos,
+        y_pos + height - r + k,
+        x_pos,
+        y_pos + height - r,
+    );
+    pb.line_to(x_pos, y_pos + r);
+    pb.cubic_to(x_pos, y_pos + r - k, x_pos + r - k, y_pos, x_pos + r, y_pos);
+    pb.close();
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn draw_dock_glyph(
     buf: &mut [u8],
@@ -805,6 +1016,46 @@ pub fn draw_dock_glyph(
         return;
     };
 
+    if glyph == DockGlyph::Grid {
+        #[allow(clippy::cast_precision_loss)]
+        let grid_unit = (width.min(height) as f32 * scale as f32) / 2.0 / 18.0;
+        #[allow(clippy::cast_precision_loss)]
+        let origin_x = (width as f32 * scale as f32 - 18.0 * grid_unit) / 2.0;
+        #[allow(clippy::cast_precision_loss)]
+        let origin_y = (height as f32 * scale as f32 - 18.0 * grid_unit) / 2.0;
+        let mut pb = tiny_skia::PathBuilder::new();
+        for &cy in &[1.0_f32, 7.0, 13.0] {
+            for &cx in &[1.0_f32, 7.0, 13.0] {
+                push_rounded_rect(
+                    &mut pb,
+                    origin_x + cx * grid_unit,
+                    origin_y + cy * grid_unit,
+                    4.0 * grid_unit,
+                    4.0 * grid_unit,
+                    1.2 * grid_unit,
+                );
+            }
+        }
+        if let Some(path) = pb.finish() {
+            let paint = tiny_skia::Paint {
+                shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
+                anti_alias: true,
+                ..tiny_skia::Paint::default()
+            };
+            pixmap.fill_path(
+                &path,
+                &paint,
+                tiny_skia::FillRule::Winding,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+        let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+        let n = bytes.len().min(buf.len());
+        crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+        return;
+    }
+
     #[allow(clippy::cast_precision_loss)]
     let unit = (width.min(height) as f32 * scale as f32) / 2.0 / 20.0;
     #[allow(clippy::cast_precision_loss)]
@@ -816,10 +1067,14 @@ pub fn draw_dock_glyph(
     let mut pb = tiny_skia::PathBuilder::new();
     match glyph {
         DockGlyph::Terminal => {
-            let (x, y) = p(2.5, 3.5);
-            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 15.0 * unit, 13.0 * unit) {
-                pb.push_rect(rect);
-            }
+            push_rounded_rect(
+                &mut pb,
+                origin_x + 2.5 * unit,
+                origin_y + 3.5 * unit,
+                15.0 * unit,
+                13.0 * unit,
+                2.5 * unit,
+            );
             let (mx, my) = p(6.0, 8.0);
             pb.move_to(mx, my);
             let (lx, ly) = p(8.5, 10.0);
@@ -854,6 +1109,10 @@ pub fn draw_dock_glyph(
                 (10.0, 15.8, 10.0, 18.0),
                 (18.0, 10.0, 15.8, 10.0),
                 (4.2, 10.0, 2.0, 10.0),
+                (15.7, 4.3, 14.1, 5.9),
+                (5.9, 14.1, 4.3, 15.7),
+                (15.7, 15.7, 14.1, 14.1),
+                (5.9, 5.9, 4.3, 4.3),
             ] {
                 let (ax, ay) = p(x1, y1);
                 let (bx, by) = p(x2, y2);
@@ -876,10 +1135,14 @@ pub fn draw_dock_glyph(
             pb.push_circle(d2x, d2y, 1.8 * unit);
         }
         DockGlyph::Mail => {
-            let (x, y) = p(2.5, 4.5);
-            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 15.0 * unit, 11.0 * unit) {
-                pb.push_rect(rect);
-            }
+            push_rounded_rect(
+                &mut pb,
+                origin_x + 2.5 * unit,
+                origin_y + 4.5 * unit,
+                15.0 * unit,
+                11.0 * unit,
+                2.5 * unit,
+            );
             let (ax, ay) = p(2.5, 6.5);
             pb.move_to(ax, ay);
             let (bx, by) = p(10.0, 11.0);
@@ -888,19 +1151,16 @@ pub fn draw_dock_glyph(
             pb.line_to(cx, cy);
         }
         DockGlyph::Generic => {
-            let (x, y) = p(4.0, 4.0);
-            if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, 12.0 * unit, 12.0 * unit) {
-                pb.push_rect(rect);
-            }
+            push_rounded_rect(
+                &mut pb,
+                origin_x + 3.5 * unit,
+                origin_y + 3.5 * unit,
+                13.0 * unit,
+                13.0 * unit,
+                2.5 * unit,
+            );
         }
-        DockGlyph::Grid => {
-            for row in 0..3_u8 {
-                for column in 0..3_u8 {
-                    let (x, y) = p(2.0 + f32::from(column) * 6.0, 2.0 + f32::from(row) * 6.0);
-                    pb.push_circle(x + 2.0 * unit, y + 2.0 * unit, 2.0 * unit);
-                }
-            }
-        }
+        DockGlyph::Grid => {}
     }
 
     if let Some(path) = pb.finish() {
@@ -1003,6 +1263,1335 @@ pub fn fill_rounded_rect_gradient_over(
     let bytes = skia_pixmap_into_buffer_bytes(pixmap);
     let n = bytes.len().min(buf.len());
     crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaGlyph {
+    Play,
+    Pause,
+    Previous,
+    Next,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_media_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    box_x: i32,
+    box_y: i32,
+    box_side: i32,
+    scale: i32,
+    fg: Color,
+    glyph: MediaGlyph,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let side = box_side as f32 * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let ox = box_x as f32 * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let oy = box_y as f32 * scale_f;
+
+    let glyph_side = side * 0.56;
+    let left = ox + (side - glyph_side) / 2.0;
+    let top = oy + (side - glyph_side) / 2.0;
+    let right = left + glyph_side;
+    let bottom = top + glyph_side;
+    let mid_y = f32::midpoint(top, bottom);
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    match glyph {
+        MediaGlyph::Play => {
+            pb.move_to(left + glyph_side * 0.12, top);
+            pb.line_to(right, mid_y);
+            pb.line_to(left + glyph_side * 0.12, bottom);
+            pb.close();
+        }
+        MediaGlyph::Pause => {
+            let bar = glyph_side * 0.30;
+            pb.push_rect(
+                tiny_skia::Rect::from_ltrb(left, top, left + bar, bottom).unwrap_or(
+                    tiny_skia::Rect::from_xywh(left, top, bar.max(0.01), glyph_side.max(0.01))
+                        .unwrap_or(tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap()),
+                ),
+            );
+            if let Some(rect) = tiny_skia::Rect::from_ltrb(right - bar, top, right, bottom) {
+                pb.push_rect(rect);
+            }
+        }
+        MediaGlyph::Previous => {
+            let bar = glyph_side * 0.20;
+            if let Some(rect) = tiny_skia::Rect::from_ltrb(left, top, left + bar, bottom) {
+                pb.push_rect(rect);
+            }
+            pb.move_to(right, top);
+            pb.line_to(left + bar + glyph_side * 0.06, mid_y);
+            pb.line_to(right, bottom);
+            pb.close();
+        }
+        MediaGlyph::Next => {
+            let bar = glyph_side * 0.20;
+            if let Some(rect) = tiny_skia::Rect::from_ltrb(right - bar, top, right, bottom) {
+                pb.push_rect(rect);
+            }
+            pb.move_to(left, top);
+            pb.line_to(right - bar - glyph_side * 0.06, mid_y);
+            pb.line_to(left, bottom);
+            pb.close();
+        }
+    }
+
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    let paint = tiny_skia::Paint {
+        shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+        anti_alias: true,
+        ..tiny_skia::Paint::default()
+    };
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[must_use]
+pub fn decode_cover(data: &[u8], side: i32) -> Option<Vec<u8>> {
+    if data.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return render_png(data, side);
+    }
+    if data.starts_with(&[0xff, 0xd8]) {
+        return render_jpeg(data, side);
+    }
+    render_png(data, side).or_else(|| render_jpeg(data, side))
+}
+
+#[must_use]
+pub fn render_jpeg(data: &[u8], side: i32) -> Option<Vec<u8>> {
+    let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(data));
+    decoder.decode_headers().ok()?;
+    let (width, height) = decoder.dimensions()?;
+    let pixels = decoder.decode().ok()?;
+
+    let (Ok(src_w), Ok(src_h)) = (u32::try_from(width), u32::try_from(height)) else {
+        return None;
+    };
+    if src_w == 0 || src_h == 0 {
+        return None;
+    }
+    let channels = pixels.len() / (src_w as usize * src_h as usize);
+    if channels != 3 && channels != 1 {
+        return None;
+    }
+
+    let mut source = tiny_skia::Pixmap::new(src_w, src_h)?;
+    for (index, chunk) in source.pixels_mut().iter_mut().enumerate() {
+        let offset = index * channels;
+        if offset + channels > pixels.len() {
+            break;
+        }
+        let (r, g, b) = if channels == 1 {
+            (pixels[offset], pixels[offset], pixels[offset])
+        } else {
+            (pixels[offset], pixels[offset + 1], pixels[offset + 2])
+        };
+        *chunk = tiny_skia::PremultipliedColorU8::from_rgba(b, g, r, 255)?;
+    }
+
+    let side_u32 = u32::try_from(side).ok()?;
+    if side_u32 == 0 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let target = side as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let scale = (target / src_w as f32).min(target / src_h as f32);
+    #[allow(clippy::cast_precision_loss)]
+    let (dx, dy) = (
+        (target - src_w as f32 * scale) / 2.0,
+        (target - src_h as f32 * scale) / 2.0,
+    );
+
+    let mut pixmap = tiny_skia::Pixmap::new(side_u32, side_u32)?;
+    pixmap.draw_pixmap(
+        0,
+        0,
+        source.as_ref(),
+        &tiny_skia::PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bilinear,
+            ..tiny_skia::PixmapPaint::default()
+        },
+        tiny_skia::Transform::from_translate(dx, dy).pre_scale(scale, scale),
+        None,
+    );
+    Some(pixmap.take())
+}
+
+#[must_use]
+pub fn dominant_colour(buffer: &[u8]) -> Option<Color> {
+    let mut best: Option<(f32, [f32; 3])> = None;
+    let mut fallback: Option<[f32; 3]> = None;
+
+    for pixel in buffer.chunks_exact(4) {
+        if pixel[3] < 128 {
+            continue;
+        }
+        let b = f32::from(pixel[0]) / 255.0;
+        let g = f32::from(pixel[1]) / 255.0;
+        let r = f32::from(pixel[2]) / 255.0;
+
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let chroma = max - min;
+        if fallback.is_none() {
+            fallback = Some([r, g, b]);
+        }
+        if max <= 0.0 {
+            continue;
+        }
+        let saturation = chroma / max;
+        let score = saturation * (1.0 - (max - 0.62).abs());
+        if best.is_none_or(|(current, _)| score > current) {
+            best = Some((score, [r, g, b]));
+        }
+    }
+
+    let rgb = best.map(|(_, rgb)| rgb).or(fallback)?;
+    Some(Color([rgb[0], rgb[1], rgb[2], 1.0]))
+}
+
+#[must_use]
+pub fn fit_for_contrast(colour: Color, min_luma: f32, max_luma: f32) -> Color {
+    let [r, g, b, a] = colour.0;
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if luma >= min_luma && luma <= max_luma {
+        return colour;
+    }
+    let target = luma.clamp(min_luma, max_luma);
+    if luma <= f32::EPSILON {
+        return Color([target, target, target, a]);
+    }
+    let gain = target / luma;
+    Color([
+        (r * gain).clamp(0.0, 1.0),
+        (g * gain).clamp(0.0, 1.0),
+        (b * gain).clamp(0.0, 1.0),
+        a,
+    ])
+}
+
+pub fn draw_moon_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    glyph_side: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if glyph_side <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let radius = glyph_side * scale_f / 2.0;
+
+    let mut pb1 = tiny_skia::PathBuilder::new();
+    pb1.push_circle(cx, cy, radius);
+    let Some(path1) = pb1.finish() else {
+        return;
+    };
+
+    let mut pb2 = tiny_skia::PathBuilder::new();
+    pb2.push_circle(cx + radius * 0.52, cy - radius * 0.40, radius * 0.86);
+    let Some(path2) = pb2.finish() else {
+        return;
+    };
+
+    let paint = tiny_skia::Paint {
+        shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+        anti_alias: true,
+        ..tiny_skia::Paint::default()
+    };
+    pixmap.fill_path(
+        &path1,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+
+    let clear_paint = tiny_skia::Paint {
+        blend_mode: tiny_skia::BlendMode::Clear,
+        anti_alias: true,
+        ..tiny_skia::Paint::default()
+    };
+    pixmap.fill_path(
+        &path2,
+        &clear_paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tick_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    glyph_side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if glyph_side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (glyph_side * scale_f) / 14.0;
+    let ox = cx - 7.0 * unit;
+    let oy = cy - 7.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(ox + 2.6 * unit, oy + 7.4 * unit);
+    pb.line_to(ox + 5.4 * unit, oy + 10.2 * unit);
+    pb.line_to(ox + 11.4 * unit, oy + 3.8 * unit);
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_chevron_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    glyph_side: f32,
+    stroke_width: f32,
+    point_up: bool,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if glyph_side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (glyph_side * scale_f) / 10.0;
+    let ox = cx - 5.0 * unit;
+    let oy = cy - 5.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    if point_up {
+        pb.move_to(ox + 2.6 * unit, oy + 6.0 * unit);
+        pb.line_to(ox + 5.0 * unit, oy + 3.6 * unit);
+        pb.line_to(ox + 7.4 * unit, oy + 6.0 * unit);
+    } else {
+        pb.move_to(ox + 2.6 * unit, oy + 4.0 * unit);
+        pb.line_to(ox + 5.0 * unit, oy + 6.4 * unit);
+        pb.line_to(ox + 7.4 * unit, oy + 4.0 * unit);
+    }
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_wifi_bars_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    level: u8,
+    scale: i32,
+    fg: Color,
+    muted_fg: Color,
+) {
+    let bar_w = 2.5_f32;
+    let gap = 1.5_f32;
+    let heights = [3.0_f32, 5.5_f32, 8.0_f32, 11.0_f32];
+    let total_w = 4.0 * bar_w + 3.0 * gap;
+    #[allow(clippy::cast_precision_loss)]
+    let start_x = (canvas_width as f32 - total_w) / 2.0;
+    #[allow(clippy::cast_precision_loss)]
+    let bottom_y = f32::midpoint(canvas_height as f32, 11.0);
+
+    for (i, &h) in heights.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let x = start_x + (i as f32) * (bar_w + gap);
+        let y = bottom_y - h;
+        #[allow(clippy::cast_possible_truncation)]
+        let color = if (i as u8) < level { fg } else { muted_fg };
+        Painter::fill_rounded_rect_over(
+            buf,
+            canvas_width,
+            canvas_height,
+            x.round() as i32,
+            y.round() as i32,
+            bar_w.round() as i32,
+            h.round() as i32,
+            scale,
+            color,
+            1.0,
+        );
+    }
+}
+
+pub struct BatteryRenderArgs {
+    pub canvas_width: i32,
+    pub canvas_height: i32,
+    pub pct: u8,
+    pub charging: bool,
+    pub scale: i32,
+    pub fg: Color,
+    pub ok_color: Color,
+    pub danger_color: Color,
+}
+
+pub fn draw_battery_glyph_over(buf: &mut [u8], args: &BatteryRenderArgs) {
+    let batt_w = 22;
+    let batt_h = 11;
+    let x = (args.canvas_width - batt_w - 3) / 2;
+    let y = (args.canvas_height - batt_h) / 2;
+
+    stroke_rounded_rect_over(
+        buf,
+        args.canvas_width,
+        args.canvas_height,
+        x,
+        y,
+        batt_w,
+        batt_h,
+        args.scale,
+        1.3,
+        3.5,
+        args.fg,
+    );
+
+    let tip_w = 2;
+    let tip_h = 5;
+    let tip_x = x + batt_w;
+    let tip_y = y + (batt_h - tip_h) / 2;
+    Painter::fill_rounded_rect_over(
+        buf,
+        args.canvas_width,
+        args.canvas_height,
+        tip_x,
+        tip_y,
+        tip_w,
+        tip_h,
+        args.scale,
+        args.fg,
+        1.5,
+    );
+
+    let max_fill_w = 16_f32;
+    let pct_clamped = args.pct.min(100);
+    #[allow(clippy::cast_precision_loss)]
+    let fill_w = ((max_fill_w * f32::from(pct_clamped)) / 100.0).max(2.0);
+    let fill_color = if args.charging {
+        args.ok_color
+    } else if pct_clamped <= 20 {
+        args.danger_color
+    } else {
+        args.fg
+    };
+
+    #[allow(clippy::cast_possible_truncation)]
+    Painter::fill_rounded_rect_over(
+        buf,
+        args.canvas_width,
+        args.canvas_height,
+        x + 2,
+        y + 2,
+        fill_w.round() as i32,
+        batt_h - 4,
+        args.scale,
+        fill_color,
+        1.5,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_speaker_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    muted: bool,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(ox + 3.0 * unit, oy + 6.6 * unit);
+    pb.line_to(ox + 5.6 * unit, oy + 6.6 * unit);
+    pb.line_to(ox + 9.0 * unit, oy + 3.6 * unit);
+    pb.line_to(ox + 9.0 * unit, oy + 14.4 * unit);
+    pb.line_to(ox + 5.6 * unit, oy + 11.4 * unit);
+    pb.line_to(ox + 3.0 * unit, oy + 11.4 * unit);
+    pb.close();
+
+    if muted {
+        pb.move_to(ox + 12.0 * unit, oy + 6.6 * unit);
+        pb.line_to(ox + 16.0 * unit, oy + 11.4 * unit);
+        pb.move_to(ox + 16.0 * unit, oy + 6.6 * unit);
+        pb.line_to(ox + 12.0 * unit, oy + 11.4 * unit);
+    } else {
+        pb.move_to(ox + 11.6 * unit, oy + 6.8 * unit);
+        pb.quad_to(
+            ox + 13.6 * unit,
+            oy + 9.0 * unit,
+            ox + 11.6 * unit,
+            oy + 11.2 * unit,
+        );
+    }
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_wifi_waves_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(ox + 2.0 * unit, oy + 6.4 * unit);
+    pb.quad_to(
+        ox + 9.0 * unit,
+        oy + 1.8 * unit,
+        ox + 16.0 * unit,
+        oy + 6.4 * unit,
+    );
+
+    pb.move_to(ox + 4.6 * unit, oy + 9.2 * unit);
+    pb.quad_to(
+        ox + 9.0 * unit,
+        oy + 5.8 * unit,
+        ox + 13.4 * unit,
+        oy + 9.2 * unit,
+    );
+
+    pb.move_to(ox + 7.0 * unit, oy + 12.0 * unit);
+    pb.quad_to(
+        ox + 9.0 * unit,
+        oy + 9.8 * unit,
+        ox + 11.0 * unit,
+        oy + 12.0 * unit,
+    );
+
+    let mut pb_dot = tiny_skia::PathBuilder::new();
+    pb_dot.push_circle(ox + 9.0 * unit, oy + 14.6 * unit, 1.2 * unit);
+
+    let paint = tiny_skia::Paint {
+        shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+        anti_alias: true,
+        ..tiny_skia::Paint::default()
+    };
+    let stroke = tiny_skia::Stroke {
+        width: stroke_width * scale_f,
+        line_cap: tiny_skia::LineCap::Round,
+        ..tiny_skia::Stroke::default()
+    };
+    if let Some(path) = pb.finish() {
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+    if let Some(dot) = pb_dot.finish() {
+        pixmap.fill_path(
+            &dot,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_bluetooth_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(ox + 6.0 * unit, oy + 5.4 * unit);
+    pb.line_to(ox + 12.0 * unit, oy + 12.0 * unit);
+    pb.line_to(ox + 9.0 * unit, oy + 14.4 * unit);
+    pb.line_to(ox + 9.0 * unit, oy + 3.6 * unit);
+    pb.line_to(ox + 12.0 * unit, oy + 6.0 * unit);
+    pb.line_to(ox + 6.0 * unit, oy + 12.6 * unit);
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_camera_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    if let Some(r) =
+        tiny_skia::Rect::from_xywh(ox + 2.5 * unit, oy + 5.0 * unit, 13.0 * unit, 9.0 * unit)
+    {
+        pb.push_rect(r);
+    }
+    pb.move_to(ox + 6.5 * unit, oy + 5.0 * unit);
+    pb.line_to(ox + 7.5 * unit, oy + 3.2 * unit);
+    pb.line_to(ox + 10.5 * unit, oy + 3.2 * unit);
+    pb.line_to(ox + 11.5 * unit, oy + 5.0 * unit);
+    pb.push_circle(ox + 9.0 * unit, oy + 9.5 * unit, 2.5 * unit);
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_sun_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.push_circle(ox + 9.0 * unit, oy + 9.0 * unit, 3.2 * unit);
+    pb.move_to(ox + 9.0 * unit, oy + 1.8 * unit);
+    pb.line_to(ox + 9.0 * unit, oy + 3.6 * unit);
+    pb.move_to(ox + 9.0 * unit, oy + 14.4 * unit);
+    pb.line_to(ox + 9.0 * unit, oy + 16.2 * unit);
+    pb.move_to(ox + 1.8 * unit, oy + 9.0 * unit);
+    pb.line_to(ox + 3.6 * unit, oy + 9.0 * unit);
+    pb.move_to(ox + 14.4 * unit, oy + 9.0 * unit);
+    pb.line_to(ox + 16.2 * unit, oy + 9.0 * unit);
+    pb.move_to(ox + 3.9 * unit, oy + 3.9 * unit);
+    pb.line_to(ox + 5.2 * unit, oy + 5.2 * unit);
+    pb.move_to(ox + 12.8 * unit, oy + 12.8 * unit);
+    pb.line_to(ox + 14.1 * unit, oy + 14.1 * unit);
+    pb.move_to(ox + 14.1 * unit, oy + 3.9 * unit);
+    pb.line_to(ox + 12.8 * unit, oy + 5.2 * unit);
+    pb.move_to(ox + 5.2 * unit, oy + 12.8 * unit);
+    pb.line_to(ox + 3.9 * unit, oy + 14.1 * unit);
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_keyboard_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    if let Some(r) =
+        tiny_skia::Rect::from_xywh(ox + 2.0 * unit, oy + 4.2 * unit, 14.0 * unit, 9.6 * unit)
+    {
+        pb.push_rect(r);
+    }
+    pb.move_to(ox + 5.0 * unit, oy + 7.2 * unit);
+    pb.line_to(ox + 5.5 * unit, oy + 7.2 * unit);
+    pb.move_to(ox + 8.5 * unit, oy + 7.2 * unit);
+    pb.line_to(ox + 9.5 * unit, oy + 7.2 * unit);
+    pb.move_to(ox + 12.5 * unit, oy + 7.2 * unit);
+    pb.line_to(ox + 13.0 * unit, oy + 7.2 * unit);
+    pb.move_to(ox + 5.5 * unit, oy + 10.4 * unit);
+    pb.line_to(ox + 12.5 * unit, oy + 10.4 * unit);
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_gear_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.push_circle(cx, cy, 2.6 * unit);
+    for i in 0..6 {
+        #[allow(clippy::cast_precision_loss)]
+        let a = (i as f32) * (std::f32::consts::PI / 3.0);
+        let cos = a.cos();
+        let sin = a.sin();
+        pb.move_to(cx + cos * 4.4 * unit, cy + sin * 4.4 * unit);
+        pb.line_to(cx + cos * 6.6 * unit, cy + sin * 6.6 * unit);
+    }
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_lock_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    if let Some(r) =
+        tiny_skia::Rect::from_xywh(ox + 3.4 * unit, oy + 7.8 * unit, 11.2 * unit, 7.4 * unit)
+    {
+        pb.push_rect(r);
+    }
+    pb.move_to(ox + 5.9 * unit, oy + 7.8 * unit);
+    pb.line_to(ox + 5.9 * unit, oy + 5.6 * unit);
+    pb.quad_to(
+        ox + 9.0 * unit,
+        oy + 2.5 * unit,
+        ox + 12.1 * unit,
+        oy + 5.6 * unit,
+    );
+    pb.line_to(ox + 12.1 * unit, oy + 7.8 * unit);
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_power_glyph_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    side: f32,
+    stroke_width: f32,
+    scale: i32,
+    fg: Color,
+) {
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+        return;
+    };
+
+    #[allow(clippy::cast_precision_loss)]
+    let scale_f = scale as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cx = (canvas_width as f32 / 2.0) * scale_f;
+    #[allow(clippy::cast_precision_loss)]
+    let cy = (canvas_height as f32 / 2.0) * scale_f;
+    let unit = (side * scale_f) / 18.0;
+    let ox = cx - 9.0 * unit;
+    let oy = cy - 9.0 * unit;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(ox + 9.0 * unit, oy + 2.6 * unit);
+    pb.line_to(ox + 9.0 * unit, oy + 8.8 * unit);
+
+    pb.move_to(ox + 5.0 * unit, oy + 5.0 * unit);
+    pb.quad_to(
+        ox + 1.0 * unit,
+        oy + 10.0 * unit,
+        ox + 5.5 * unit,
+        oy + 14.5 * unit,
+    );
+    pb.quad_to(
+        ox + 9.0 * unit,
+        oy + 16.5 * unit,
+        ox + 12.5 * unit,
+        oy + 14.5 * unit,
+    );
+    pb.quad_to(
+        ox + 17.0 * unit,
+        oy + 10.0 * unit,
+        ox + 13.0 * unit,
+        oy + 5.0 * unit,
+    );
+
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
+            anti_alias: true,
+            ..tiny_skia::Paint::default()
+        };
+        let stroke = tiny_skia::Stroke {
+            width: stroke_width * scale_f,
+            line_cap: tiny_skia::LineCap::Round,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+}
+
+pub fn blit_square_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    src: &[u8],
+    src_side: i32,
+    dst_x: i32,
+    dst_y: i32,
+    scale: i32,
+) {
+    let (Ok(cw), Ok(ch)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    let Ok(side) = u32::try_from(src_side * scale) else {
+        return;
+    };
+    if side == 0 || src.len() < (side as usize) * (side as usize) * 4 {
+        return;
+    }
+    let Some(source) = tiny_skia::PixmapRef::from_bytes(src, side, side) else {
+        return;
+    };
+    let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(buf, cw, ch) else {
+        return;
+    };
+    pixmap.draw_pixmap(
+        dst_x * scale,
+        dst_y * scale,
+        source,
+        &tiny_skia::PixmapPaint::default(),
+        tiny_skia::Transform::identity(),
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn blit_rect_over(
+    buf: &mut [u8],
+    canvas_width: i32,
+    canvas_height: i32,
+    src: &[u8],
+    src_width: i32,
+    src_height: i32,
+    dst_x: i32,
+    dst_y: i32,
+    scale: i32,
+) {
+    let (Ok(cw), Ok(ch)) = (
+        u32::try_from(canvas_width * scale),
+        u32::try_from(canvas_height * scale),
+    ) else {
+        return;
+    };
+    let (Ok(sw), Ok(sh)) = (
+        u32::try_from(src_width * scale),
+        u32::try_from(src_height * scale),
+    ) else {
+        return;
+    };
+    if sw == 0 || sh == 0 || src.len() < (sw as usize) * (sh as usize) * 4 {
+        return;
+    }
+    let Some(source) = tiny_skia::PixmapRef::from_bytes(src, sw, sh) else {
+        return;
+    };
+    let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(buf, cw, ch) else {
+        return;
+    };
+    pixmap.draw_pixmap(
+        dst_x * scale,
+        dst_y * scale,
+        source,
+        &tiny_skia::PixmapPaint::default(),
+        tiny_skia::Transform::identity(),
+        None,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1916,6 +3505,82 @@ mod tests {
 }
 
 #[cfg(test)]
+mod cover_tests {
+    use super::*;
+
+    fn solid(r: u8, g: u8, b: u8) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        for _ in 0..64 {
+            buffer.extend_from_slice(&[b, g, r, 255]);
+        }
+        buffer
+    }
+
+    #[test]
+    fn a_vivid_cover_yields_its_vivid_hue_rather_than_an_average() {
+        let mut buffer = solid(40, 40, 42);
+        buffer.extend_from_slice(&[40, 160, 230, 255]);
+        let colour = dominant_colour(&buffer).expect("a colour is found");
+        assert!(colour.0[0] > colour.0[2], "the orange channel must lead");
+    }
+
+    #[test]
+    fn a_fully_transparent_cover_reports_nothing() {
+        let buffer = vec![0u8; 64 * 4];
+        assert!(dominant_colour(&buffer).is_none());
+    }
+
+    #[test]
+    fn a_grey_cover_still_reports_a_colour_to_clamp_later() {
+        let colour = dominant_colour(&solid(130, 130, 130)).expect("grey is still a colour");
+        assert!((colour.0[0] - colour.0[1]).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_colour_already_in_range_is_left_untouched() {
+        let colour = Color([0.6, 0.5, 0.3, 1.0]);
+        assert_eq!(fit_for_contrast(colour, 0.35, 0.8), colour);
+    }
+
+    #[test]
+    fn a_too_dark_colour_is_lifted_into_readable_range() {
+        let lifted = fit_for_contrast(Color([0.05, 0.06, 0.2, 1.0]), 0.35, 0.8);
+        let luma = 0.2126 * lifted.0[0] + 0.7152 * lifted.0[1] + 0.0722 * lifted.0[2];
+        assert!(luma >= 0.34, "luma {luma} is still too dark");
+    }
+
+    #[test]
+    fn a_blown_out_colour_is_pulled_back_down() {
+        let pulled = fit_for_contrast(Color([0.98, 0.99, 0.97, 1.0]), 0.35, 0.8);
+        let luma = 0.2126 * pulled.0[0] + 0.7152 * pulled.0[1] + 0.0722 * pulled.0[2];
+        assert!(luma <= 0.81, "luma {luma} is still blown out");
+    }
+
+    #[test]
+    fn pure_black_is_lifted_without_dividing_by_zero() {
+        let lifted = fit_for_contrast(Color([0.0, 0.0, 0.0, 1.0]), 0.35, 0.8);
+        assert!(lifted.0[0] > 0.3);
+        assert!(lifted.0[0].is_finite());
+    }
+
+    #[test]
+    fn a_cover_that_is_neither_png_nor_jpeg_is_refused() {
+        assert!(decode_cover(b"not an image at all", 32).is_none());
+    }
+
+    #[test]
+    fn an_empty_cover_is_refused() {
+        assert!(decode_cover(&[], 32).is_none());
+        assert!(render_jpeg(&[], 32).is_none());
+    }
+
+    #[test]
+    fn a_truncated_jpeg_header_does_not_panic() {
+        assert!(decode_cover(&[0xff, 0xd8, 0xff, 0xe0], 32).is_none());
+    }
+}
+
+#[cfg(test)]
 mod golden_tests {
     use super::*;
 
@@ -2149,5 +3814,27 @@ mod golden_tests {
             ));
         }
         assert_all_goldens(&failures);
+    }
+
+    #[test]
+    fn draw_dock_glyph_renders_all_variants_without_panicking() {
+        let glyphs = [
+            DockGlyph::Terminal,
+            DockGlyph::Files,
+            DockGlyph::Settings,
+            DockGlyph::Music,
+            DockGlyph::Mail,
+            DockGlyph::Generic,
+            DockGlyph::Grid,
+        ];
+        let color = Color([1.0, 1.0, 1.0, 1.0]);
+        for glyph in glyphs {
+            for scale in [1, 2] {
+                let side = 42;
+                let mut buf = vec![0u8; (side * scale * side * scale * 4) as usize];
+                draw_dock_glyph(&mut buf, side, side, scale, glyph, color);
+                assert!(buf.iter().any(|&b| b > 0));
+            }
+        }
     }
 }

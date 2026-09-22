@@ -36,11 +36,11 @@ pub fn parse_cli_args(args: &[String]) -> anyhow::Result<CliArgs> {
 
     let mut subcommand_args: Vec<String> = args[idx..].to_vec();
 
-    if subcommand_args.first().map(String::as_str) != Some("exec") {
-        if let Some(pos) = subcommand_args.iter().position(|a| a == "--json") {
-            json_output = true;
-            subcommand_args.remove(pos);
-        }
+    if subcommand_args.first().map(String::as_str) != Some("exec")
+        && let Some(pos) = subcommand_args.iter().position(|a| a == "--json")
+    {
+        json_output = true;
+        subcommand_args.remove(pos);
     }
 
     Ok(CliArgs {

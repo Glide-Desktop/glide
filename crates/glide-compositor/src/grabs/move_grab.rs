@@ -54,6 +54,7 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
             .map_element(self.window.clone(), new_location, true);
 
         data.record_window_move(&self.window, new_location);
+        data.update_snap_preview(event.location);
     }
 
     fn relative_motion(
@@ -76,6 +77,7 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
             self.window.set_dragging(false);
+            data.apply_snap(&self.window);
             data.queue_redraw();
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
@@ -170,5 +172,10 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut GlideState) {}
+    fn unset(&mut self, data: &mut GlideState) {
+        if let Some(preview) = data.snap_preview.as_mut() {
+            preview.dismiss();
+            data.queue_redraw();
+        }
+    }
 }

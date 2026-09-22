@@ -925,66 +925,65 @@ impl OverviewUi {
         }
 
         let hover_t = self.hover_progress() * t.clamp(0.0, 1.0);
-        if hover_t > 0.0 {
-            if let Some(hover_id) = hover {
-                if let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id) {
-                    let rect = preview.rect_at(t);
-                    let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
-                    let key = RasterKey::new(&theme, output_scale);
-                    let needs_redraw = preview.highlight.as_ref().is_none_or(
-                        |(cached_w, cached_h, cached_key, _)| {
-                            *cached_w != w || *cached_h != h || *cached_key != key
-                        },
+        if hover_t > 0.0
+            && let Some(hover_id) = hover
+            && let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id)
+        {
+            let rect = preview.rect_at(t);
+            let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
+            let key = RasterKey::new(&theme, output_scale);
+            let needs_redraw =
+                preview
+                    .highlight
+                    .as_ref()
+                    .is_none_or(|(cached_w, cached_h, cached_key, _)| {
+                        *cached_w != w || *cached_h != h || *cached_key != key
+                    });
+
+            if needs_redraw {
+                let (pw, ph) = (w * output_scale, h * output_scale);
+                if let Ok(pixels) = usize::try_from(pw * ph * 4) {
+                    let mut buf = vec![0u8; pixels];
+                    #[allow(clippy::cast_precision_loss)]
+                    let radius = theme.corner_radius * output_scale as f32;
+                    #[allow(clippy::cast_precision_loss)]
+                    let border_width = theme.border as f32 * output_scale as f32;
+                    crate::paint::draw_inset_border(
+                        &mut buf,
+                        pw,
+                        ph,
+                        border_width,
+                        radius,
+                        theme.highlight,
                     );
+                    let memory = MemoryRenderBuffer::from_slice(
+                        &buf,
+                        smithay::backend::allocator::Fourcc::Argb8888,
+                        (pw, ph),
+                        output_scale,
+                        Transform::Normal,
+                        None,
+                    );
+                    preview.highlight = Some((w, h, key, memory));
+                }
+            }
 
-                    if needs_redraw {
-                        let (pw, ph) = (w * output_scale, h * output_scale);
-                        if let Ok(pixels) = usize::try_from(pw * ph * 4) {
-                            let mut buf = vec![0u8; pixels];
-                            #[allow(clippy::cast_precision_loss)]
-                            let radius = theme.corner_radius * output_scale as f32;
-                            #[allow(clippy::cast_precision_loss)]
-                            let border_width = theme.border as f32 * output_scale as f32;
-                            crate::paint::draw_inset_border(
-                                &mut buf,
-                                pw,
-                                ph,
-                                border_width,
-                                radius,
-                                theme.highlight,
-                            );
-                            let memory = MemoryRenderBuffer::from_slice(
-                                &buf,
-                                smithay::backend::allocator::Fourcc::Argb8888,
-                                (pw, ph),
-                                output_scale,
-                                Transform::Normal,
-                                None,
-                            );
-                            preview.highlight = Some((w, h, key, memory));
-                        }
-                    }
-
-                    if let Some((cached_w, cached_h, _, memory)) = preview.highlight.as_ref() {
-                        let pos = rect.loc.to_f64().to_physical(scale);
-                        #[allow(clippy::cast_possible_truncation)]
-                        let alpha = hover_t as f32;
-                        let src = Rectangle::from_size(Size::from((
-                            f64::from(*cached_w),
-                            f64::from(*cached_h),
-                        )));
-                        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-                            renderer,
-                            pos,
-                            memory,
-                            Some(alpha),
-                            Some(src),
-                            Some(rect.size),
-                            Kind::Unspecified,
-                        ) {
-                            elements.push(OverviewRenderElement::Buffer(element));
-                        }
-                    }
+            if let Some((cached_w, cached_h, _, memory)) = preview.highlight.as_ref() {
+                let pos = rect.loc.to_f64().to_physical(scale);
+                #[allow(clippy::cast_possible_truncation)]
+                let alpha = hover_t as f32;
+                let src =
+                    Rectangle::from_size(Size::from((f64::from(*cached_w), f64::from(*cached_h))));
+                if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    pos,
+                    memory,
+                    Some(alpha),
+                    Some(src),
+                    Some(rect.size),
+                    Kind::Unspecified,
+                ) {
+                    elements.push(OverviewRenderElement::Buffer(element));
                 }
             }
         }

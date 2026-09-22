@@ -10,16 +10,22 @@ mod decoration;
 mod dock;
 mod focus;
 mod grabs;
+mod i18n;
 mod icon;
 mod input;
 mod ipc;
 mod launcher;
 mod logging;
+mod notifications;
 mod overview;
 mod paint;
+mod popup_menu;
 mod screencopy;
+mod snap;
 mod snapshot;
 mod state;
+pub mod system_info;
+mod topbar;
 mod window;
 
 use smithay::{
@@ -85,6 +91,10 @@ fn run() -> anyhow::Result<()> {
     spawn_xwayland_satellite();
     update_session_managers_environment();
     spawn_autostart(&config.general.autostart);
+    init_topbar_clock(&mut event_loop, &mut state)?;
+    init_system_status(&mut event_loop);
+    init_notifications(&mut event_loop, &mut state);
+    init_media(&mut event_loop, &mut state);
 
     event_loop.run(None, &mut state, move |state| {
         reap_child_processes();
@@ -99,8 +109,12 @@ fn run() -> anyhow::Result<()> {
         let dock_animating = state.dock.is_animating();
         let launcher_animating = state.tick_launcher();
         let cursor_animating = state.is_cursor_animating();
+        let toasts_animating = state.notifications.is_animating();
+        let snap_animating = state.settle_snap_preview();
 
-        if overview_animating
+        if toasts_animating
+            || snap_animating
+            || overview_animating
             || hover_animating
             || open_animating
             || geometry_animating
@@ -114,7 +128,11 @@ fn run() -> anyhow::Result<()> {
 
         if let Some(blank_after) = state.blank_after {
             let idle = state.last_activity.elapsed() >= blank_after;
-            if idle && !state.outputs_blanked && !state.is_idle_inhibited() {
+            if idle
+                && !state.outputs_blanked
+                && !state.is_idle_inhibited()
+                && !state.topbar.caffeinated()
+            {
                 tracing::info!("idle timeout reached; blanking outputs");
                 state.set_outputs_blanked(true);
             }
@@ -128,6 +146,136 @@ fn run() -> anyhow::Result<()> {
     drop(ipc_server);
 
     Ok(())
+}
+
+fn init_topbar_clock(
+    event_loop: &mut EventLoop<'static, state::GlideState>,
+    state: &mut state::GlideState,
+) -> anyhow::Result<()> {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
+    state.refresh_topbar();
+
+    event_loop
+        .handle()
+        .insert_source(
+            Timer::from_duration(std::time::Duration::from_secs(1)),
+            |_, (), state| {
+                let clock = state.refresh_topbar();
+                let expired = state.notifications.tick();
+                let night = state.tick_night_light();
+                if clock || expired || night {
+                    state.queue_redraw();
+                }
+                TimeoutAction::ToDuration(std::time::Duration::from_secs(1))
+            },
+        )
+        .map_err(|err| anyhow::anyhow!("failed to start the topbar clock: {err}"))?;
+    Ok(())
+}
+
+fn init_system_status(event_loop: &mut EventLoop<'static, state::GlideState>) {
+    use smithay::reexports::calloop::channel;
+
+    let (sender, receiver) = channel::channel::<system_info::SystemStatus>();
+    let sender = std::sync::Mutex::new(sender);
+    system_info::start_poller(move |status| {
+        let Ok(sender) = sender.lock() else {
+            return;
+        };
+        if let Err(err) = sender.send(status) {
+            tracing::debug!("dropping a system status sample, the compositor is gone: {err}");
+        }
+    });
+
+    let inserted = event_loop
+        .handle()
+        .insert_source(receiver, |event, (), state| {
+            if let channel::Event::Msg(status) = event {
+                state.handle_system_status(status);
+            }
+        });
+    if let Err(err) = inserted {
+        tracing::error!("failed to watch the system status channel: {err}");
+    }
+}
+
+fn init_notifications(
+    event_loop: &mut EventLoop<'static, state::GlideState>,
+    state: &mut state::GlideState,
+) {
+    use smithay::reexports::calloop::channel;
+
+    let (sender, receiver) = channel::channel::<glide_notify::NotifyEvent>();
+    let sender = std::sync::Mutex::new(sender);
+    let sink = std::sync::Arc::new(move |event| {
+        let Ok(sender) = sender.lock() else {
+            return;
+        };
+        if let Err(err) = sender.send(event) {
+            tracing::debug!("dropping a notification, the compositor is gone: {err}");
+        }
+    });
+
+    match glide_notify::start(sink) {
+        Ok(handle) => state.notifications.attach(handle),
+        Err(err) => {
+            tracing::warn!(
+                "notifications are unavailable ({err}); another daemon may already own \
+                 {}, or there is no session bus",
+                glide_notify::BUS_NAME
+            );
+            return;
+        }
+    }
+
+    let inserted = event_loop
+        .handle()
+        .insert_source(receiver, |event, (), state| {
+            if let channel::Event::Msg(event) = event {
+                state.handle_notify_event(event);
+            }
+        });
+    if let Err(err) = inserted {
+        tracing::error!("failed to watch the notification channel: {err}");
+    }
+}
+
+fn init_media(
+    event_loop: &mut EventLoop<'static, state::GlideState>,
+    state: &mut state::GlideState,
+) {
+    use smithay::reexports::calloop::channel;
+
+    let (sender, receiver) = channel::channel::<glide_media::MediaEvent>();
+    let sender = std::sync::Mutex::new(sender);
+    let sink = std::sync::Arc::new(move |event| {
+        let Ok(sender) = sender.lock() else {
+            return;
+        };
+        if let Err(err) = sender.send(event) {
+            tracing::debug!("dropping a media update, the compositor is gone: {err}");
+        }
+    });
+
+    match glide_media::start(sink) {
+        Ok(handle) => state.media = Some(handle),
+        Err(err) => {
+            tracing::warn!("media players are unavailable ({err}); is there a session bus?");
+            return;
+        }
+    }
+
+    let inserted = event_loop
+        .handle()
+        .insert_source(receiver, |event, (), state| {
+            if let channel::Event::Msg(event) = event {
+                state.handle_media_event(event);
+            }
+        });
+    if let Err(err) = inserted {
+        tracing::error!("failed to watch the media channel: {err}");
+    }
 }
 
 const STALE_SESSION_VARS: &[&str] = &[
@@ -329,8 +477,11 @@ mod tests {
         }
     }
 
+    static CHILD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_reap_child_processes() {
+        let _guard = CHILD_TEST_LOCK.lock().unwrap();
         for _ in 0..3 {
             let _ = std::process::Command::new("true").spawn();
         }
@@ -341,6 +492,7 @@ mod tests {
 
     #[test]
     fn spawn_shell_command_runs_through_a_shell() {
+        let _guard = CHILD_TEST_LOCK.lock().unwrap();
         let mut child = spawn_shell_command("true; true").expect("sh must exist");
         let status = child.wait().expect("child must be waitable");
         assert!(status.success());
@@ -348,6 +500,7 @@ mod tests {
 
     #[test]
     fn spawn_shell_command_reports_a_command_sh_itself_cannot_run() {
+        let _guard = CHILD_TEST_LOCK.lock().unwrap();
         let mut child =
             spawn_shell_command("definitely-not-a-real-command-xyz").expect("sh must exist");
         let status = child.wait().expect("child must be waitable");
@@ -361,6 +514,7 @@ mod tests {
 
     #[test]
     fn spawn_autostart_runs_every_command_in_the_list() {
+        let _guard = CHILD_TEST_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("glide-autostart-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let marker_a = dir.join("a");

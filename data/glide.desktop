@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Glide
+Comment=Glide Wayland compositor
+Exec=glide-session
+Type=Application
+DesktopNames=Glide

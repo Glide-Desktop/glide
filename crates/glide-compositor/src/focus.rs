@@ -112,7 +112,13 @@ impl PointerTarget<GlideState> for PointerFocusTarget {
         }
     }
 
-    fn leave(&self, seat: &Seat<GlideState>, data: &mut GlideState, serial: Serial, time: u32) {
+    fn leave(
+        &self,
+        seat: &Seat<GlideState>,
+        data: &mut GlideState,
+        serial: Serial,
+        time: smithay::backend::input::InputTime,
+    ) {
         match self {
             Self::Surface(s) => PointerTarget::leave(s, seat, data, serial, time),
             Self::Decoration(d) => PointerTarget::leave(d, seat, data, serial, time),
@@ -240,7 +246,7 @@ impl DndFocus<GlideState> for PointerFocusTarget {
         offer: Option<&mut Self::OfferData<S>>,
         seat: &Seat<GlideState>,
         location: Point<f64, Logical>,
-        time: u32,
+        time: smithay::backend::input::InputTime,
     ) {
         if let Self::Surface(s) = self {
             DndFocus::motion(s, data, offer, seat, location, time);

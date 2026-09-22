@@ -36,6 +36,9 @@ pub struct Config {
     pub decorations: DecorationTheme,
     pub overview: OverviewTheme,
     pub dock: DockConfig,
+    pub topbar: TopbarConfig,
+    #[serde(rename = "night-light")]
+    pub night_light: NightLightConfig,
     pub input: InputConfig,
     pub animations: AnimationConfig,
     #[serde(rename = "output")]
@@ -44,9 +47,87 @@ pub struct Config {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TopbarConfig {
+    pub enabled: bool,
+    pub appearance: glide_theme::Appearance,
+    pub accent: glide_theme::Accent,
+    pub battery_low_pct: u8,
+    pub max_volume_pct: u8,
+}
+
+impl Default for TopbarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            appearance: glide_theme::Appearance::Dark,
+            accent: glide_theme::Accent::Blue,
+            battery_low_pct: 20,
+            max_volume_pct: 100,
+        }
+    }
+}
+
+impl TopbarConfig {
+    #[must_use]
+    pub fn theme(self) -> crate::topbar::TopbarTheme {
+        let tokens = glide_theme::Tokens::new(self.appearance, self.accent);
+        let mut theme = crate::topbar::TopbarTheme::from_tokens(&tokens, self.enabled);
+        theme.battery_low_pct = self.battery_low_pct.min(100);
+        theme
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct NightLightConfig {
+    pub schedule: bool,
+    pub from: String,
+    pub to: String,
+}
+
+impl Default for NightLightConfig {
+    fn default() -> Self {
+        Self {
+            schedule: false,
+            from: "20:00".to_string(),
+            to: "07:00".to_string(),
+        }
+    }
+}
+
+impl NightLightConfig {
+    #[must_use]
+    pub fn window(&self) -> Option<(u16, u16)> {
+        Some((parse_clock(&self.from)?, parse_clock(&self.to)?))
+    }
+
+    #[must_use]
+    pub fn wants_on(&self, minute_of_day: u16) -> Option<bool> {
+        if !self.schedule {
+            return None;
+        }
+        let (from, to) = self.window()?;
+        Some(if from <= to {
+            (from..to).contains(&minute_of_day)
+        } else {
+            minute_of_day >= from || minute_of_day < to
+        })
+    }
+}
+
+fn parse_clock(text: &str) -> Option<u16> {
+    let (hours, minutes) = text.trim().split_once(':')?;
+    let hours: u16 = hours.parse().ok()?;
+    let minutes: u16 = minutes.parse().ok()?;
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct AnimationConfig {
     pub enabled: bool,
     pub speed: f32,
+    pub respect_system: bool,
 }
 
 impl Default for AnimationConfig {
@@ -54,6 +135,7 @@ impl Default for AnimationConfig {
         Self {
             enabled: true,
             speed: 1.0,
+            respect_system: true,
         }
     }
 }
@@ -130,19 +212,99 @@ pub struct OutputConfig {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, rename_all = "kebab-case")]
+#[derive(Default)]
 pub struct DockConfig {
     #[serde(flatten)]
     pub theme: DockTheme,
     pub items: Vec<DockItemConfig>,
 }
 
-impl Default for DockConfig {
-    fn default() -> Self {
-        Self {
-            theme: DockTheme::default(),
-            items: DockItemConfig::defaults(),
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DockPins {
+    pub pinned: Vec<PinnedApp>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct PinnedApp {
+    pub app_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub command: String,
+}
+
+const PINS_FILE: &str = "pins.toml";
+
+#[must_use]
+pub fn load_dock_pins() -> Option<Vec<DockItemConfig>> {
+    let path = glide_config::xdg_path("glide", PINS_FILE)?;
+    let text = fs::read_to_string(&path).ok()?;
+    match toml::from_str::<DockPins>(&text) {
+        Ok(pins) => Some(
+            pins.pinned
+                .into_iter()
+                .map(|pin| DockItemConfig {
+                    name: pin.name,
+                    command: pin.command,
+                    icon: String::new(),
+                    app_id: Some(pin.app_id),
+                    color_from: None,
+                    color_to: None,
+                    separator_before: false,
+                })
+                .collect(),
+        ),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), "ignoring malformed dock pins: {err}");
+            Some(Vec::new())
         }
     }
+}
+
+#[must_use]
+pub fn load_or_seed_dock_pins() -> Vec<DockItemConfig> {
+    if let Some(pins) = load_dock_pins() {
+        return pins;
+    }
+    let seed = DockItemConfig::installed_defaults();
+    save_pins(seed.iter().map(|item| PinnedApp {
+        app_id: item.app_id.clone().unwrap_or_default(),
+        name: item.name.clone(),
+        command: item.command.clone(),
+    }));
+    seed
+}
+
+pub fn save_dock_pins(items: &[crate::dock::DockItem]) {
+    save_pins(items.iter().map(|item| PinnedApp {
+        app_id: item.app_id.clone(),
+        name: item.name.clone(),
+        command: item.command.clone(),
+    }));
+}
+
+fn save_pins(pinned: impl Iterator<Item = PinnedApp>) {
+    let Some(path) = glide_config::xdg_path("glide", PINS_FILE) else {
+        return;
+    };
+    let pins = DockPins {
+        pinned: pinned.collect(),
+    };
+
+    let Ok(text) = toml::to_string_pretty(&pins) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(err) = fs::write(&path, text) {
+        tracing::error!(path = %path.display(), "failed to save dock pins: {err}");
+    }
+}
+
+#[must_use]
+pub fn pin_identity_for_app_id(app_id: &str) -> Option<(String, String)> {
+    crate::icon::find_application(app_id).map(|app| (app.name, app.command))
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -163,16 +325,69 @@ pub struct DockItemConfig {
 }
 
 impl DockItemConfig {
+    #[must_use]
+    pub fn installed_defaults() -> Vec<Self> {
+        Self::defaults()
+            .into_iter()
+            .filter_map(|item| {
+                let app = crate::icon::find_application(item.app_id.as_deref()?)?;
+                Some(Self {
+                    name: app.name,
+                    command: app.command,
+                    ..item
+                })
+            })
+            .collect()
+    }
+
     fn defaults() -> Vec<Self> {
-        vec![Self {
-            name: "Terminal".to_string(),
-            command: "alacritty".to_string(),
-            icon: "terminal".to_string(),
-            app_id: Some("Alacritty".to_string()),
-            color_from: Color::from_hex("#4a4640"),
-            color_to: Color::from_hex("#23201c"),
-            separator_before: false,
-        }]
+        vec![
+            Self {
+                name: "Files".to_string(),
+                command: "nautilus".to_string(),
+                icon: "files".to_string(),
+                app_id: Some("org.gnome.Nautilus".to_string()),
+                color_from: Some(Color::from_hex("#5b9bec").unwrap()),
+                color_to: Some(Color::from_hex("#1f56a8").unwrap()),
+                separator_before: false,
+            },
+            Self {
+                name: "Terminal".to_string(),
+                command: "alacritty".to_string(),
+                icon: "terminal".to_string(),
+                app_id: Some("Alacritty".to_string()),
+                color_from: Some(Color::from_hex("#4a4640").unwrap()),
+                color_to: Some(Color::from_hex("#23201c").unwrap()),
+                separator_before: false,
+            },
+            Self {
+                name: "Settings".to_string(),
+                command: "gnome-control-center".to_string(),
+                icon: "settings".to_string(),
+                app_id: Some("gnome-control-center".to_string()),
+                color_from: Some(Color::from_hex("#8a8377").unwrap()),
+                color_to: Some(Color::from_hex("#4c4740").unwrap()),
+                separator_before: false,
+            },
+            Self {
+                name: "Music".to_string(),
+                command: "rhythmbox".to_string(),
+                icon: "music".to_string(),
+                app_id: Some("rhythmbox".to_string()),
+                color_from: Some(Color::from_hex("#c9a06a").unwrap()),
+                color_to: Some(Color::from_hex("#8a5c2a").unwrap()),
+                separator_before: false,
+            },
+            Self {
+                name: "Mail".to_string(),
+                command: "thunderbird".to_string(),
+                icon: "mail".to_string(),
+                app_id: Some("thunderbird".to_string()),
+                color_from: Some(Color::from_hex("#7fae94").unwrap()),
+                color_to: Some(Color::from_hex("#2f7a56").unwrap()),
+                separator_before: true,
+            },
+        ]
     }
 }
 
@@ -185,6 +400,7 @@ pub struct GeneralConfig {
     pub wallpaper_fit: WallpaperFit,
     pub font_family: Option<String>,
     pub blank_after_seconds: u64,
+    pub language: crate::i18n::Lang,
 }
 
 impl Default for GeneralConfig {
@@ -196,6 +412,7 @@ impl Default for GeneralConfig {
             wallpaper_fit: WallpaperFit::default(),
             font_family: None,
             blank_after_seconds: 600,
+            language: crate::i18n::Lang::default(),
         }
     }
 }
@@ -472,6 +689,8 @@ impl Config {
             decorations: DecorationTheme::default(),
             overview: OverviewTheme::default(),
             dock: DockConfig::default(),
+            topbar: TopbarConfig::default(),
+            night_light: NightLightConfig::default(),
             input: InputConfig::default(),
             animations: AnimationConfig::default(),
             outputs: Vec::new(),
@@ -545,15 +764,38 @@ impl Config {
     }
 
     pub fn apply_to_state(&self, state: &mut GlideState) {
-        glide_theme::motion::set_scale(self.animations.motion_scale());
+        state.motion = crate::state::MotionPolicy {
+            configured_scale: self.animations.motion_scale(),
+            respect_system: self.animations.respect_system,
+        };
+        state.apply_motion_scale();
+        state.night_light = self.night_light.clone();
         state.layout.set_policy(self.workspaces.new_window.into());
         state.keybinds = self.resolve_keybinds();
         state.decoration_theme = self.decorations.clone();
         state.overview_theme = self.overview.clone();
-        state.dock.reconfigure(&self.dock);
+        let mut dock = self.dock.clone();
+        for pin in load_or_seed_dock_pins() {
+            let already = dock.items.iter().any(|item| {
+                item.app_id.as_deref().is_some_and(|id| {
+                    pin.app_id
+                        .as_deref()
+                        .is_some_and(|p| id.eq_ignore_ascii_case(p))
+                })
+            });
+            if !already {
+                dock.items.push(pin);
+            }
+        }
+        state.dock.reconfigure(&dock);
         state.refresh_dock();
+        state.topbar.reconfigure(self.topbar.theme());
+        state.shell_palette = (self.topbar.appearance, self.topbar.accent);
+        state.max_volume_pct = self.topbar.max_volume_pct.clamp(100, 150);
+        state.refresh_topbar();
         state.launcher_theme = crate::launcher::LauncherTheme::from_dock(&self.dock.theme);
         state.launcher_icons = crate::icon::IconLoader::new(self.dock.theme.icon_theme.clone());
+        crate::i18n::set_language(self.general.language);
         state.background_color = self.general.background;
         state.wallpaper_fit = self.general.wallpaper_fit;
         state.font_family.clone_from(&self.general.font_family);
@@ -952,6 +1194,56 @@ shadow-color = \"#000000aa\"
     }
 
     #[test]
+    fn the_night_light_schedule_wraps_past_midnight() {
+        let schedule = NightLightConfig {
+            schedule: true,
+            from: "20:00".to_string(),
+            to: "07:00".to_string(),
+        };
+        assert_eq!(schedule.wants_on(20 * 60), Some(true));
+        assert_eq!(schedule.wants_on(23 * 60 + 59), Some(true));
+        assert_eq!(schedule.wants_on(6 * 60 + 59), Some(true));
+        assert_eq!(schedule.wants_on(7 * 60), Some(false));
+        assert_eq!(schedule.wants_on(12 * 60), Some(false));
+
+        let daytime = NightLightConfig {
+            from: "09:00".to_string(),
+            to: "17:00".to_string(),
+            ..schedule
+        };
+        assert_eq!(daytime.wants_on(12 * 60), Some(true));
+        assert_eq!(daytime.wants_on(18 * 60), Some(false));
+
+        let off = NightLightConfig::default();
+        assert_eq!(off.wants_on(22 * 60), None, "no schedule means no opinion");
+    }
+
+    #[test]
+    fn a_malformed_clock_disables_the_schedule_instead_of_panicking() {
+        let broken = NightLightConfig {
+            schedule: true,
+            from: "25:99".to_string(),
+            to: "07".to_string(),
+        };
+        assert_eq!(broken.window(), None);
+        assert_eq!(broken.wants_on(0), None);
+    }
+
+    #[test]
+    fn topbar_and_animation_extras_parse_from_toml() {
+        let config: Config = toml::from_str(
+            "[topbar]\nbattery-low-pct = 15\nmax-volume-pct = 130\n\n[animations]\nrespect-system = false\n\n[general]\nlanguage = \"en\"\n\n[night-light]\nschedule = true\nfrom = \"21:30\"\nto = \"06:00\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.topbar.battery_low_pct, 15);
+        assert_eq!(config.topbar.max_volume_pct, 130);
+        assert!(!config.animations.respect_system);
+        assert_eq!(config.general.language, crate::i18n::Lang::En);
+        assert_eq!(config.night_light.window(), Some((21 * 60 + 30, 6 * 60)));
+        assert_eq!(config.topbar.theme().battery_low_pct, 15);
+    }
+
+    #[test]
     fn overview_theme_parses_from_toml() {
         let toml_str = "\
 [overview]
@@ -1025,5 +1317,41 @@ action = { exce = \"alacritty\" }
 
         assert_eq!(config, Config::with_defaults());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dock_item_defaults_match_design_concept() {
+        let defaults = DockItemConfig::defaults();
+        assert_eq!(defaults.len(), 5);
+
+        assert_eq!(defaults[0].name, "Files");
+        assert_eq!(defaults[0].command, "nautilus");
+        assert_eq!(defaults[0].icon, "files");
+        assert_eq!(defaults[0].app_id.as_deref(), Some("org.gnome.Nautilus"));
+        assert!(!defaults[0].separator_before);
+
+        assert_eq!(defaults[1].name, "Terminal");
+        assert_eq!(defaults[1].command, "alacritty");
+        assert_eq!(defaults[1].icon, "terminal");
+        assert_eq!(defaults[1].app_id.as_deref(), Some("Alacritty"));
+        assert!(!defaults[1].separator_before);
+
+        assert_eq!(defaults[2].name, "Settings");
+        assert_eq!(defaults[2].command, "gnome-control-center");
+        assert_eq!(defaults[2].icon, "settings");
+        assert_eq!(defaults[2].app_id.as_deref(), Some("gnome-control-center"));
+        assert!(!defaults[2].separator_before);
+
+        assert_eq!(defaults[3].name, "Music");
+        assert_eq!(defaults[3].command, "rhythmbox");
+        assert_eq!(defaults[3].icon, "music");
+        assert_eq!(defaults[3].app_id.as_deref(), Some("rhythmbox"));
+        assert!(!defaults[3].separator_before);
+
+        assert_eq!(defaults[4].name, "Mail");
+        assert_eq!(defaults[4].command, "thunderbird");
+        assert_eq!(defaults[4].icon, "mail");
+        assert_eq!(defaults[4].app_id.as_deref(), Some("thunderbird"));
+        assert!(defaults[4].separator_before);
     }
 }

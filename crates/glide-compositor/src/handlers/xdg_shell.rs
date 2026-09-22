@@ -76,25 +76,20 @@ impl XdgShellHandler for GlideState {
                 .and_then(|data| data.lock().ok())
                 .and_then(|guard| guard.title.clone())
         });
-        if let Some(title) = title
+        if let Some(title) = title.clone()
             && let Some(mut deco) = window.try_decoration_state_mut()
         {
             deco.header.set_title(title);
         }
-        // A window with no `app_id` falls back to its title as the dock's
-        // grouping key, so a title change can reshape the dock too.
+        self.ipc_subscribers
+            .broadcast(&glide_ipc::Event::TitleChanged {
+                id: id.as_u64(),
+                title: title.unwrap_or_default(),
+            });
         self.refresh_dock();
         self.queue_redraw();
     }
 
-    /// The dock groups windows by `app_id`, so it has to be rebuilt when
-    /// one arrives or changes.
-    ///
-    /// Clients send `set_app_id` on their own schedule — often, but not
-    /// always, before the first buffer. Without this hook the dock only
-    /// learned about a window when something else happened to call
-    /// `reconcile_space`, so a freshly launched app was missing from it
-    /// until the next workspace switch.
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;
@@ -107,10 +102,16 @@ impl XdgShellHandler for GlideState {
                 .and_then(|data| data.lock().ok())
                 .and_then(|guard| guard.app_id.clone())
         });
+        let app_id = app_id.unwrap_or_default();
         if let Some(handle) = self.foreign_toplevel_handles.get(&id) {
-            handle.send_app_id(&app_id.unwrap_or_default());
+            handle.send_app_id(&app_id);
             handle.send_done();
         }
+        self.ipc_subscribers
+            .broadcast(&glide_ipc::Event::AppIdChanged {
+                id: id.as_u64(),
+                app_id,
+            });
 
         if self.refresh_dock() {
             self.queue_redraw();
@@ -267,7 +268,42 @@ impl XdgShellHandler for GlideState {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        use smithay::desktop::{PopupKeyboardGrab, PopupPointerGrab, PopupUngrabStrategy};
+
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return;
+        };
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else {
+            return;
+        };
+        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
+            return;
+        };
+
+        if let Some(keyboard) = seat.get_keyboard() {
+            if keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
+    }
 }
 
 fn check_grab(

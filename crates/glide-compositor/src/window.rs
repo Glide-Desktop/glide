@@ -100,14 +100,14 @@ impl GlideWindow {
         self.0
             .user_data()
             .insert_if_missing(|| RefCell::new(Option::<OpenAnimation>::None));
-        if let Some(cell) = self.0.user_data().get::<RefCell<Option<OpenAnimation>>>() {
-            if let Ok(mut slot) = cell.try_borrow_mut() {
-                *slot = Some(OpenAnimation {
-                    started: Instant::now(),
-                    start_scale,
-                    start_offset,
-                });
-            }
+        if let Some(cell) = self.0.user_data().get::<RefCell<Option<OpenAnimation>>>()
+            && let Ok(mut slot) = cell.try_borrow_mut()
+        {
+            *slot = Some(OpenAnimation {
+                started: Instant::now(),
+                start_scale,
+                start_offset,
+            });
         }
     }
 
@@ -153,14 +153,13 @@ impl GlideWindow {
             .0
             .user_data()
             .get::<RefCell<Option<GeometryAnimation>>>()
+            && let Ok(mut slot) = cell.try_borrow_mut()
         {
-            if let Ok(mut slot) = cell.try_borrow_mut() {
-                *slot = Some(GeometryAnimation {
-                    started: Instant::now(),
-                    from,
-                    to,
-                });
-            }
+            *slot = Some(GeometryAnimation {
+                started: Instant::now(),
+                from,
+                to,
+            });
         }
     }
 
@@ -783,7 +782,13 @@ mod geometry_animation_tests {
     #[test]
     fn it_begins_exactly_on_the_old_rect() {
         let (from, to) = maximize();
-        let start = GeometryProgress::at(Duration::ZERO, Duration::from_millis(320), from, to, to.size);
+        let start = GeometryProgress::at(
+            Duration::ZERO,
+            Duration::from_millis(320),
+            from,
+            to,
+            to.size,
+        );
 
         assert!((start.scale.x - 800.0 / 1920.0).abs() < 1e-9);
         assert!((start.scale.y - 600.0 / 1080.0).abs() < 1e-9);

@@ -32,6 +32,8 @@ glide-config = { path = "../glide-config" }
 glide-geom = { path = "../glide-geom" }
 glide-ipc = { path = "../glide-ipc" }
 glide-layout = { path = "../glide-layout" }
+glide-media = { path = "../glide-media" }
+glide-notify = { path = "../glide-notify" }
 glide-paint = { path = "../glide-paint" }
 glide-theme = { path = "../glide-theme" }
 glide-ui = { path = "../glide-ui" }

@@ -474,24 +474,23 @@ fn push_wallpaper_elements(
 
     #[allow(clippy::cast_possible_truncation)]
     let muted_alpha = backdrop_t.clamp(0.0, 1.0) as f32;
-    if muted_alpha > 0.0 {
-        if let Some(buffer) = surface.wallpaper_muted_buf.as_mut() {
-            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-                gles_renderer,
-                origin,
-                buffer,
-                Some(muted_alpha),
-                src,
-                size,
-                Kind::Unspecified,
-            ) {
-                elements.push(GlideRenderElements::Memory(element));
-            }
-        }
+    if muted_alpha > 0.0
+        && let Some(buffer) = surface.wallpaper_muted_buf.as_mut()
+        && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            gles_renderer,
+            origin,
+            buffer,
+            Some(muted_alpha),
+            src,
+            size,
+            Kind::Unspecified,
+        )
+    {
+        elements.push(GlideRenderElements::Memory(element));
     }
 
-    if let Some(buffer) = surface.wallpaper_buf.as_mut() {
-        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+    if let Some(buffer) = surface.wallpaper_buf.as_mut()
+        && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
             gles_renderer,
             origin,
             buffer,
@@ -499,9 +498,9 @@ fn push_wallpaper_elements(
             src,
             size,
             Kind::Unspecified,
-        ) {
-            elements.push(GlideRenderElements::Memory(element));
-        }
+        )
+    {
+        elements.push(GlideRenderElements::Memory(element));
     }
 }
 
@@ -1172,6 +1171,32 @@ impl GlideState {
             else {
                 return;
             };
+            if let Some(preview) = self.snap_preview.as_mut()
+                && let Some(output_geometry) = self.space.output_geometry(&output)
+                && output_geometry.overlaps(preview.rect)
+            {
+                use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+                let (appearance, accent) = self.shell_palette;
+                let tokens = glide_theme::Tokens::new(appearance, accent);
+                let position = (preview.rect.loc - output_geometry.loc)
+                    .to_f64()
+                    .to_physical(scale);
+                let integer_scale = output.current_scale().integer_scale();
+                let alpha = preview.alpha();
+                if let Some(buffer) = preview.buffer(tokens.acc_soft, tokens.acc_bg, integer_scale)
+                    && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                        gles_renderer,
+                        position,
+                        buffer,
+                        Some(alpha),
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    )
+                {
+                    elements.push(GlideRenderElements::Memory(element));
+                }
+            }
             elements.extend(space_elements);
         }
 
@@ -1236,22 +1261,76 @@ impl GlideState {
             fractional_scale: output.current_scale().fractional_scale(),
             generation: glide_paint::wallpaper_generation(),
         });
+        let dock_hidden = backdrop_t.max(launcher_openness).clamp(0.0, 1.0);
         let dock = if locked {
             Vec::new()
         } else {
             crate::dock::render(
                 &mut self.dock,
                 gles_renderer,
+                &crate::paint::current(),
                 dock_area,
                 scale,
                 output.current_scale().integer_scale(),
-                backdrop_t,
+                dock_hidden,
                 dock_backdrop.as_ref(),
             )
         };
         if !dock.is_empty() {
             let mut ordered: Vec<GlideRenderElements> =
                 dock.into_iter().map(GlideRenderElements::Memory).collect();
+            ordered.append(&mut elements);
+            elements = ordered;
+        }
+
+        let toasts = if locked {
+            Vec::new()
+        } else {
+            let output_rect = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((0, 0)),
+                smithay::utils::Size::from(logical_size),
+            );
+            crate::notifications::render(
+                &mut self.notifications,
+                gles_renderer,
+                &crate::paint::current(),
+                output_rect,
+                scale,
+                output.current_scale().integer_scale(),
+            )
+        };
+        if !toasts.is_empty() {
+            let mut ordered: Vec<GlideRenderElements> = toasts
+                .into_iter()
+                .map(GlideRenderElements::Memory)
+                .collect();
+            ordered.append(&mut elements);
+            elements = ordered;
+        }
+
+        let topbar = if locked {
+            Vec::new()
+        } else {
+            let output_rect = smithay::utils::Rectangle::new(
+                smithay::utils::Point::from((0, 0)),
+                smithay::utils::Size::from(logical_size),
+            );
+            crate::topbar::render(
+                &mut self.topbar,
+                gles_renderer,
+                &crate::paint::current(),
+                &mut self.dock.icons,
+                output_rect,
+                scale,
+                output.current_scale().integer_scale(),
+                dock_backdrop.as_ref(),
+            )
+        };
+        if !topbar.is_empty() {
+            let mut ordered: Vec<GlideRenderElements> = topbar
+                .into_iter()
+                .map(GlideRenderElements::Memory)
+                .collect();
             ordered.append(&mut elements);
             elements = ordered;
         }
@@ -1461,10 +1540,10 @@ impl GlideState {
         let token = self
             .loop_handle
             .insert_source(Timer::from_duration(frame_duration), move |_, (), state| {
-                if let Some(device) = state.backend_data.device.as_mut() {
-                    if let Some(surface) = device.surfaces.get_mut(&crtc) {
-                        surface.pending_repaint = None;
-                    }
+                if let Some(device) = state.backend_data.device.as_mut()
+                    && let Some(surface) = device.surfaces.get_mut(&crtc)
+                {
+                    surface.pending_repaint = None;
                 }
                 state.render_surface(crtc);
                 TimeoutAction::Drop

@@ -12,16 +12,17 @@ impl MenuItem {
 
     #[must_use]
     pub fn label(self, maximized: bool) -> &'static str {
+        use crate::i18n::{Key, t};
         match self {
-            Self::Minimize => "Minimize",
+            Self::Minimize => t(Key::Minimize),
             Self::ToggleMaximize => {
                 if maximized {
-                    "Restore"
+                    t(Key::Restore)
                 } else {
-                    "Maximize"
+                    t(Key::Maximize)
                 }
             }
-            Self::Close => "Close",
+            Self::Close => t(Key::Close),
         }
     }
 
@@ -72,8 +73,14 @@ mod tests {
 
     #[test]
     fn toggle_maximize_label_reflects_the_current_state() {
-        assert_eq!(MenuItem::ToggleMaximize.label(false), "Maximize");
-        assert_eq!(MenuItem::ToggleMaximize.label(true), "Restore");
+        assert_ne!(
+            MenuItem::ToggleMaximize.label(false),
+            MenuItem::ToggleMaximize.label(true)
+        );
+        assert_eq!(
+            MenuItem::ToggleMaximize.label(true),
+            crate::i18n::t(crate::i18n::Key::Restore)
+        );
     }
 
     #[test]

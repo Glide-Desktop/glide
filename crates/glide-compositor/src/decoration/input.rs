@@ -188,7 +188,13 @@ impl PointerTarget<GlideState> for Decoration {
 
     fn frame(&self, _seat: &Seat<GlideState>, _data: &mut GlideState) {}
 
-    fn leave(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _serial: Serial, _time: u32) {
+    fn leave(
+        &self,
+        _seat: &Seat<GlideState>,
+        _data: &mut GlideState,
+        _serial: Serial,
+        _time: smithay::backend::input::InputTime,
+    ) {
         if let Some(mut deco) = self.0.try_decoration_state_mut() {
             deco.header.pointer_leave();
         }

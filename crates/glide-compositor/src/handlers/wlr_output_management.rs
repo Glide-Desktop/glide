@@ -88,6 +88,7 @@ pub struct PendingHeadConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct PendingOutputConfig {
+    pub serial: u32,
     pub heads: Vec<PendingHeadConfig>,
 }
 
@@ -117,6 +118,11 @@ impl WlrOutputManagerState {
         s
     }
 
+    #[must_use]
+    pub const fn is_current(&self, serial: u32) -> bool {
+        serial == self.serial.wrapping_sub(1)
+    }
+
     pub fn sync_outputs(&mut self, dh: &DisplayHandle, space: &Space<GlideWindow>) {
         let serial = self.next_serial();
         for manager in &self.instances {
@@ -139,50 +145,50 @@ impl WlrOutputManagerState {
             let transform = output.current_transform();
             let (phys_w, phys_h) = output.physical_properties().size.into();
 
-            if let Some(client_ref) = &client {
-                if let Ok(head) = client_ref.create_resource::<ZwlrOutputHeadV1, _, GlideState>(
+            if let Some(client_ref) = &client
+                && let Ok(head) = client_ref.create_resource::<ZwlrOutputHeadV1, _, GlideState>(
                     dh,
                     manager.version(),
                     output_name.clone(),
-                ) {
-                    manager.head(&head);
-                    head.name(output_name.clone());
-                    head.description(format!("Glide Output {output_name}"));
-                    head.physical_size(phys_w, phys_h);
-                    head.make(output.physical_properties().make.clone());
-                    head.model(output.physical_properties().model.clone());
-                    head.serial_number(output.physical_properties().serial_number.clone());
-                    head.enabled(1);
-                    head.position(geo.loc.x, geo.loc.y);
-                    head.scale(scale);
+                )
+            {
+                manager.head(&head);
+                head.name(output_name.clone());
+                head.description(format!("Glide Output {output_name}"));
+                head.physical_size(phys_w, phys_h);
+                head.make(output.physical_properties().make.clone());
+                head.model(output.physical_properties().model.clone());
+                head.serial_number(output.physical_properties().serial_number.clone());
+                head.enabled(1);
+                head.position(geo.loc.x, geo.loc.y);
+                head.scale(scale);
 
-                    let wl_transform = match transform {
-                        Transform::Normal => WlTransform::Normal,
-                        Transform::_90 => WlTransform::_90,
-                        Transform::_180 => WlTransform::_180,
-                        Transform::_270 => WlTransform::_270,
-                        Transform::Flipped => WlTransform::Flipped,
-                        Transform::Flipped90 => WlTransform::Flipped90,
-                        Transform::Flipped180 => WlTransform::Flipped180,
-                        Transform::Flipped270 => WlTransform::Flipped270,
-                    };
-                    head.transform(wl_transform);
+                let wl_transform = match transform {
+                    Transform::Normal => WlTransform::Normal,
+                    Transform::_90 => WlTransform::_90,
+                    Transform::_180 => WlTransform::_180,
+                    Transform::_270 => WlTransform::_270,
+                    Transform::Flipped => WlTransform::Flipped,
+                    Transform::Flipped90 => WlTransform::Flipped90,
+                    Transform::Flipped180 => WlTransform::Flipped180,
+                    Transform::Flipped270 => WlTransform::Flipped270,
+                };
+                head.transform(wl_transform);
 
-                    if let Some(mode) = output.current_mode() {
-                        let (w, h) = mode.size.into();
-                        if let Ok(mode_res) = client_ref
-                            .create_resource::<ZwlrOutputModeV1, _, GlideState>(
-                                dh,
-                                manager.version(),
-                                (w, h, mode.refresh),
-                            )
-                        {
-                            head.mode(&mode_res);
-                            mode_res.size(w, h);
-                            mode_res.refresh(mode.refresh);
-                            mode_res.preferred();
-                            head.current_mode(&mode_res);
-                        }
+                if let Some(mode) = output.current_mode() {
+                    let (w, h) = mode.size.into();
+                    if let Ok(mode_res) = client_ref
+                        .create_resource::<ZwlrOutputModeV1, _, GlideState>(
+                            dh,
+                            manager.version(),
+                            (w, h, mode.refresh),
+                        )
+                    {
+                        head.mode(&mode_res);
+                        mode_res.size(w, h);
+                        mode_res.refresh(mode.refresh);
+                        mode_res.preferred();
+                        head.current_mode(&mode_res);
                     }
                 }
             }
@@ -222,8 +228,12 @@ impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputManagerV1, GlobalDat
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        if let zwlr_output_manager_v1::Request::CreateConfiguration { id, serial: _ } = request {
-            data_init.init(id, Arc::new(Mutex::new(PendingOutputConfig::default())));
+        if let zwlr_output_manager_v1::Request::CreateConfiguration { id, serial } = request {
+            let config = PendingOutputConfig {
+                serial,
+                heads: Vec::new(),
+            };
+            data_init.init(id, Arc::new(Mutex::new(config)));
         }
     }
 }
@@ -266,6 +276,14 @@ impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputConfigurationV1, Con
             }
             zwlr_output_configuration_v1::Request::Apply => {
                 let config = data.lock().unwrap().clone();
+                if !state
+                    .protocols
+                    .wlr_output_manager_state
+                    .is_current(config.serial)
+                {
+                    resource.cancelled();
+                    return;
+                }
                 let ok = state.apply_output_config(config);
                 if ok {
                     resource.succeeded();
@@ -274,7 +292,12 @@ impl smithay::reexports::wayland_server::Dispatch<ZwlrOutputConfigurationV1, Con
                 }
             }
             zwlr_output_configuration_v1::Request::Test => {
-                resource.succeeded();
+                let serial = data.lock().unwrap().serial;
+                if state.protocols.wlr_output_manager_state.is_current(serial) {
+                    resource.succeeded();
+                } else {
+                    resource.cancelled();
+                }
             }
             _ => {}
         }
@@ -466,6 +489,7 @@ mod tests {
         space.map_output(&output, (0, 0));
 
         let config = PendingOutputConfig {
+            serial: 0,
             heads: vec![PendingHeadConfig {
                 output_name: "HDMI-A-1".to_string(),
                 enabled: true,
@@ -548,6 +572,7 @@ mod tests {
         space.map_output(&output, (0, 0));
 
         let config = PendingOutputConfig {
+            serial: 0,
             heads: vec![PendingHeadConfig {
                 output_name: "DP-1".to_string(),
                 enabled: true,
@@ -562,11 +587,11 @@ mod tests {
                 .outputs()
                 .find(|o| o.name() == head.output_name)
                 .cloned();
-            if let Some(out) = found_output {
-                if let Some((x, y)) = head.position {
-                    space.map_output(&out, (x, y));
-                    any_changed = true;
-                }
+            if let Some(out) = found_output
+                && let Some((x, y)) = head.position
+            {
+                space.map_output(&out, (x, y));
+                any_changed = true;
             }
         }
 
@@ -608,6 +633,7 @@ mod tests {
         space.map_output(&output, (0, 0));
 
         let config = PendingOutputConfig {
+            serial: 0,
             heads: vec![PendingHeadConfig {
                 output_name: "HDMI-A-1".to_string(),
                 enabled: false,
@@ -646,6 +672,7 @@ mod tests {
         space.map_output(&output, (0, 0));
 
         let config = PendingOutputConfig {
+            serial: 0,
             heads: vec![
                 PendingHeadConfig {
                     output_name: "NONEXISTENT-1".to_string(),
@@ -729,6 +756,7 @@ mod tests {
         space.map_output(&output, (0, 0));
 
         let config = PendingOutputConfig {
+            serial: 0,
             heads: vec![
                 PendingHeadConfig {
                     output_name: "HDMI-A-1".to_string(),
@@ -755,11 +783,11 @@ mod tests {
                 .outputs()
                 .find(|o| o.name() == head.output_name)
                 .cloned();
-            if let Some(out) = found_output {
-                if let Some((x, y)) = head.position {
-                    space.map_output(&out, (x, y));
-                    any_changed = true;
-                }
+            if let Some(out) = found_output
+                && let Some((x, y)) = head.position
+            {
+                space.map_output(&out, (x, y));
+                any_changed = true;
             }
         }
         assert!(any_changed);
@@ -786,7 +814,7 @@ mod tests {
                 transform: Some(Transform::Normal),
             });
         }
-        let config = PendingOutputConfig { heads };
+        let config = PendingOutputConfig { serial: 0, heads };
 
         let mut any_changed = false;
         for head in config.heads {
@@ -794,11 +822,11 @@ mod tests {
                 .outputs()
                 .find(|o| o.name() == head.output_name)
                 .cloned();
-            if let Some(out) = found_output {
-                if let Some((x, y)) = head.position {
-                    space.map_output(&out, (x, y));
-                    any_changed = true;
-                }
+            if let Some(out) = found_output
+                && let Some((x, y)) = head.position
+            {
+                space.map_output(&out, (x, y));
+                any_changed = true;
             }
         }
 
@@ -812,7 +840,7 @@ mod tests {
     #[test]
     fn test_apply_output_config_empty_heads_and_no_outputs() {
         let mut empty_space = Space::<GlideWindow>::default();
-        let config = PendingOutputConfig { heads: vec![] };
+        let config = PendingOutputConfig::default();
 
         let mut any_changed = false;
         for head in config.heads {
@@ -820,11 +848,11 @@ mod tests {
                 .outputs()
                 .find(|o| o.name() == head.output_name)
                 .cloned();
-            if let Some(out) = found_output {
-                if let Some((x, y)) = head.position {
-                    empty_space.map_output(&out, (x, y));
-                    any_changed = true;
-                }
+            if let Some(out) = found_output
+                && let Some((x, y)) = head.position
+            {
+                empty_space.map_output(&out, (x, y));
+                any_changed = true;
             }
         }
         assert!(!any_changed);

@@ -21,6 +21,8 @@ use crate::{
     state::GlideState,
 };
 
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +46,51 @@ pub enum KeyAction {
     Screenshot,
     ToggleLauncher,
     LauncherPage(bool),
+    LauncherNav(i32, i32),
+    LauncherActivate,
+    LauncherBackspace,
+    LauncherClear,
+    LauncherType(char),
+    ReplySend,
+    ReplyBackspace,
+    ReplyCancel,
+    ReplyType(char),
+    TopbarClosePopup,
+    TopbarNav(i32, i32),
+    TopbarActivate,
     None,
+}
+
+fn topbar_popup_shortcut(
+    keybinds: &[ResolvedKeybind],
+    modifiers: &ModifiersState,
+    raw_syms: &[Keysym],
+    modified_sym: Keysym,
+) -> Option<KeyAction> {
+    let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+    if matches(Keysym::Escape) {
+        return Some(KeyAction::TopbarClosePopup);
+    }
+    if matches(Keysym::Left) {
+        return Some(KeyAction::TopbarNav(-1, 0));
+    }
+    if matches(Keysym::Right) {
+        return Some(KeyAction::TopbarNav(1, 0));
+    }
+    if matches(Keysym::Up) {
+        return Some(KeyAction::TopbarNav(0, -1));
+    }
+    if matches(Keysym::Down) {
+        return Some(KeyAction::TopbarNav(0, 1));
+    }
+    if matches(Keysym::Tab) {
+        let step = if modifiers.shift { -1 } else { 1 };
+        return Some(KeyAction::TopbarNav(step, 0));
+    }
+    if matches(Keysym::Return) || matches(Keysym::KP_Enter) || matches(Keysym::space) {
+        return Some(KeyAction::TopbarActivate);
+    }
+    process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,28 +143,99 @@ fn launcher_active_shortcut(
     raw_syms: &[Keysym],
     modified_sym: Keysym,
 ) -> KeyAction {
-    launcher_shortcut(raw_syms, modified_sym)
+    launcher_shortcut(modifiers, raw_syms, modified_sym)
         .or_else(|| vt_switch_shortcut(raw_syms, modified_sym))
         .or_else(|| {
             process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym).filter(
                 |action| is_global_shortcut(action) || matches!(action, KeyAction::ToggleLauncher),
             )
         })
+        .or_else(|| launcher_text_input(modifiers, modified_sym))
         .unwrap_or(KeyAction::None)
 }
 
-fn launcher_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAction> {
+fn reply_active_shortcut(
+    keybinds: &[ResolvedKeybind],
+    modifiers: &ModifiersState,
+    raw_syms: &[Keysym],
+    modified_sym: Keysym,
+) -> KeyAction {
     let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
 
     if matches(Keysym::Escape) {
-        Some(KeyAction::ToggleLauncher)
-    } else if matches(Keysym::Left) || matches(Keysym::Page_Up) {
-        Some(KeyAction::LauncherPage(false))
-    } else if matches(Keysym::Right) || matches(Keysym::Page_Down) {
-        Some(KeyAction::LauncherPage(true))
-    } else {
-        None
+        return KeyAction::ReplyCancel;
     }
+    if matches(Keysym::BackSpace) {
+        return KeyAction::ReplyBackspace;
+    }
+    if matches(Keysym::Return) || matches(Keysym::KP_Enter) {
+        return KeyAction::ReplySend;
+    }
+
+    vt_switch_shortcut(raw_syms, modified_sym)
+        .or_else(|| {
+            process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
+                .filter(is_global_shortcut)
+        })
+        .or_else(|| reply_text_input(modifiers, modified_sym))
+        .unwrap_or(KeyAction::None)
+}
+
+fn reply_text_input(modifiers: &ModifiersState, modified_sym: Keysym) -> Option<KeyAction> {
+    if modifiers.ctrl || modifiers.alt || modifiers.logo {
+        return None;
+    }
+    let ch = modified_sym.key_char()?;
+    (!ch.is_control()).then_some(KeyAction::ReplyType(ch))
+}
+
+fn launcher_shortcut(
+    modifiers: &ModifiersState,
+    raw_syms: &[Keysym],
+    modified_sym: Keysym,
+) -> Option<KeyAction> {
+    let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+
+    if matches(Keysym::Escape) {
+        return Some(KeyAction::LauncherClear);
+    }
+    if matches(Keysym::BackSpace) {
+        return Some(KeyAction::LauncherBackspace);
+    }
+    if matches(Keysym::Return) || matches(Keysym::KP_Enter) {
+        return Some(KeyAction::LauncherActivate);
+    }
+    if matches(Keysym::Page_Up) {
+        return Some(KeyAction::LauncherPage(false));
+    }
+    if matches(Keysym::Page_Down) {
+        return Some(KeyAction::LauncherPage(true));
+    }
+    if matches(Keysym::Left) {
+        return Some(KeyAction::LauncherNav(-1, 0));
+    }
+    if matches(Keysym::Right) {
+        return Some(KeyAction::LauncherNav(1, 0));
+    }
+    if matches(Keysym::Up) {
+        return Some(KeyAction::LauncherNav(0, -1));
+    }
+    if matches(Keysym::Down) {
+        return Some(KeyAction::LauncherNav(0, 1));
+    }
+    if matches(Keysym::Tab) {
+        let step = if modifiers.shift { -1 } else { 1 };
+        return Some(KeyAction::LauncherNav(step, 0));
+    }
+    None
+}
+
+fn launcher_text_input(modifiers: &ModifiersState, modified_sym: Keysym) -> Option<KeyAction> {
+    if modifiers.ctrl || modifiers.alt || modifiers.logo {
+        return None;
+    }
+    let ch = modified_sym.key_char()?;
+    (!ch.is_control()).then_some(KeyAction::LauncherType(ch))
 }
 
 fn overview_active_shortcut(
@@ -252,7 +369,7 @@ impl GlideState {
                 slot: event.slot(),
                 location: position,
                 serial,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
     }
@@ -267,7 +384,7 @@ impl GlideState {
             &UpEvent {
                 slot: event.slot(),
                 serial,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
     }
@@ -289,7 +406,7 @@ impl GlideState {
             &TouchMotionEvent {
                 slot: event.slot(),
                 location: position,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
     }
@@ -309,7 +426,7 @@ impl GlideState {
     #[allow(clippy::too_many_lines)]
     fn handle_keyboard_event<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent) {
         let serial = SERIAL_COUNTER.next_serial();
-        let time = Event::time_msec(event);
+        let time = event.time();
         let key_state = event.state();
         let keycode = event.key_code();
         let mut suppressed_keys = std::mem::take(&mut self.suppressed_keys);
@@ -320,6 +437,8 @@ impl GlideState {
             .launcher
             .as_ref()
             .is_some_and(|launcher| !launcher.is_closing());
+        let replying = self.notifications.reply_target().is_some();
+        let topbar_popup = self.topbar.has_open_popup() || self.dock.menu_rect().is_some();
         let locked = self.session_lock.is_some();
         if locked {
             self.focus_lock_surface();
@@ -354,10 +473,10 @@ impl GlideState {
             |_, modifiers, handle| {
                 let keysym = handle.modified_sym();
                 let mut binding_syms = handle.raw_syms();
-                if let Some(latin) = handle.raw_latin_sym_or_raw_current_sym() {
-                    if !binding_syms.contains(&latin) {
-                        binding_syms.push(latin);
-                    }
+                if let Some(latin) = handle.raw_latin_sym_or_raw_current_sym()
+                    && !binding_syms.contains(&latin)
+                {
+                    binding_syms.push(latin);
                 }
 
                 tracing::debug!(
@@ -377,7 +496,14 @@ impl GlideState {
                         }
                         return FilterResult::Forward;
                     }
-                    let action = if launcher_open && !exclusive {
+                    let action = if replying && !exclusive {
+                        Some(reply_active_shortcut(
+                            &keybinds,
+                            modifiers,
+                            &binding_syms,
+                            keysym,
+                        ))
+                    } else if launcher_open && !exclusive {
                         Some(launcher_active_shortcut(
                             &keybinds,
                             modifiers,
@@ -391,6 +517,8 @@ impl GlideState {
                             &binding_syms,
                             keysym,
                         ))
+                    } else if topbar_popup && !exclusive {
+                        topbar_popup_shortcut(&keybinds, modifiers, &binding_syms, keysym)
                     } else {
                         process_keyboard_shortcut(&keybinds, modifiers, &binding_syms, keysym)
                     };
@@ -532,16 +660,110 @@ impl GlideState {
             }
             KeyAction::ToggleLauncher => self.toggle_launcher(),
             KeyAction::LauncherPage(forward) => {
-                if let Some(launcher) = self.launcher.as_mut() {
-                    if launcher.turn_page(forward) {
-                        self.queue_redraw();
-                    }
+                if let Some(launcher) = self.launcher.as_mut()
+                    && launcher.turn_page(forward)
+                {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::LauncherNav(dx, dy) => {
+                if let Some(launcher) = self.launcher.as_mut()
+                    && launcher.move_selection(dx, dy)
+                {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::LauncherActivate => {
+                if let Some(selected) = self
+                    .launcher
+                    .as_ref()
+                    .and_then(crate::launcher::Launcher::selected)
+                {
+                    self.activate_launcher_app(selected);
+                }
+            }
+            KeyAction::ReplyType(ch) => {
+                if self.notifications.type_reply(ch) {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::ReplyBackspace => {
+                if self.notifications.backspace_reply() {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::ReplyCancel => {
+                if self.notifications.cancel_reply() {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::ReplySend => {
+                if self.notifications.send_reply() {
+                    self.refresh_topbar();
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::LauncherType(ch) => {
+                if let Some(launcher) = self.launcher.as_mut()
+                    && launcher.push_query(ch)
+                {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::LauncherBackspace => {
+                if let Some(launcher) = self.launcher.as_mut()
+                    && launcher.pop_query()
+                {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::LauncherClear => {
+                let menu_closed = self
+                    .launcher
+                    .as_mut()
+                    .is_some_and(crate::launcher::Launcher::close_menu);
+                let cleared = menu_closed
+                    || self
+                        .launcher
+                        .as_mut()
+                        .is_some_and(crate::launcher::Launcher::clear_query);
+                if cleared {
+                    self.queue_redraw();
+                } else {
+                    self.toggle_launcher();
                 }
             }
             KeyAction::Screenshot => {
                 tracing::info!("screenshot requested");
                 self.pending_screenshot = true;
                 self.queue_redraw();
+            }
+            KeyAction::TopbarClosePopup => {
+                let topbar_closed = self.topbar.close_popup();
+                let dock_closed = self.dock.close_menu();
+                if topbar_closed || dock_closed {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::TopbarNav(dx, dy) => {
+                let adjusted = if dx != 0 && self.topbar.has_focus() {
+                    let delta = i8::try_from(dx * 5).unwrap_or(0);
+                    self.topbar.focus_adjust(delta)
+                } else {
+                    None
+                };
+                if let Some(action) = adjusted {
+                    self.run_topbar_action(action);
+                    self.queue_redraw();
+                } else if self.topbar.focus_nav(dx, dy) {
+                    self.queue_redraw();
+                }
+            }
+            KeyAction::TopbarActivate => {
+                if let Some(action) = self.topbar.focused_action() {
+                    self.run_topbar_action(action);
+                    self.queue_redraw();
+                }
             }
             KeyAction::None => {}
         }
@@ -566,14 +788,58 @@ impl GlideState {
             .launcher
             .as_ref()
             .and_then(|launcher| launcher.app_at(area, pos));
-        if self
-            .launcher
-            .as_mut()
-            .is_some_and(|launcher| launcher.set_hover(hit))
-        {
+        let Some(launcher) = self.launcher.as_mut() else {
+            return true;
+        };
+        let menu_changed = launcher.set_menu_hover(pos);
+        let hover_changed = launcher.set_hover(hit);
+        if menu_changed || hover_changed {
             self.queue_redraw();
         }
-        !self.dock.contains(self.dock_area(), pos)
+        true
+    }
+
+    fn topbar_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        if self.session_lock.is_some() || !self.topbar.is_enabled() {
+            return false;
+        }
+        if let Some(drag_slot) = self.active_slider_drag
+            && let Some(rect) = self.topbar.slot_rect(drag_slot)
+        {
+            let ratio = ((pos.x - f64::from(rect.loc.x)) / f64::from(rect.size.w)).clamp(0.0, 1.0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // Ratio is clamped to 0.0..=1.0
+            let pct = (ratio * 100.0).round() as u8;
+            match drag_slot {
+                crate::topbar::Slot::QsVolumeTrack => {
+                    self.handle_qs_action(crate::topbar::TopbarAction::QsVolumeAdjust(pct));
+                }
+                crate::topbar::Slot::QsBrightnessTrack => {
+                    self.handle_qs_action(crate::topbar::TopbarAction::QsBrightnessAdjust(pct));
+                }
+                _ => {}
+            }
+            self.queue_redraw();
+            return true;
+        }
+        let output = self.output_rect();
+        let over = self.topbar.contains(output, pos);
+        if self.topbar.set_hover(over.then_some(pos)) {
+            self.queue_redraw();
+        }
+        over
+    }
+
+    fn notifications_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        if self.session_lock.is_some() || !self.notifications.is_enabled() {
+            return false;
+        }
+        let output = self.output_rect();
+        let over = self.notifications.contains(output, pos);
+        if self.notifications.set_hover(over.then_some(pos)) {
+            self.queue_redraw();
+        }
+        over
     }
 
     fn dock_motion(&mut self, pos: Point<f64, Logical>) -> bool {
@@ -587,13 +853,19 @@ impl GlideState {
             return false;
         }
         let area = self.dock_area();
+        if self.dock.drag_motion(pos) {
+            self.queue_redraw();
+            return true;
+        }
         let over = self.dock.contains(area, pos);
         let item = if over {
             self.dock.item_at(area, pos)
         } else {
             None
         };
-        if self.dock.set_hover(item) {
+        let tile_changed = self.dock.set_hover(item);
+        let menu_changed = self.dock.set_menu_hover(over.then_some(pos));
+        if tile_changed || menu_changed {
             self.queue_redraw();
         }
         over
@@ -604,7 +876,10 @@ impl GlideState {
         pos: Point<f64, Logical>,
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
         let over_launcher = self.launcher_motion(pos);
-        if self.dock_motion(pos) || over_launcher {
+        let over_topbar = self.topbar_motion(pos);
+        let over_notifications = self.notifications_motion(pos);
+        let over_dock = self.dock_motion(pos);
+        if over_dock || over_launcher || over_topbar || over_notifications {
             return None;
         }
         if !self.layout.overview_active() {
@@ -688,7 +963,7 @@ impl GlideState {
             &RelativeMotionEvent {
                 delta: event.delta(),
                 delta_unaccel: event.delta_unaccel(),
-                utime: event.time(),
+                time: event.time(),
             },
         );
 
@@ -737,11 +1012,11 @@ impl GlideState {
 
         pointer.motion(
             self,
-            under,
+            new_under.clone(),
             &MotionEvent {
                 location: pointer_location,
                 serial,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
         pointer.frame(self);
@@ -794,7 +1069,7 @@ impl GlideState {
             &MotionEvent {
                 location: pos,
                 serial,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
         pointer.frame(self);
@@ -812,141 +1087,31 @@ impl GlideState {
 
         let button_state = event.state();
 
+        if button_state == ButtonState::Released {
+            self.active_slider_drag = None;
+            if button == BTN_LEFT {
+                let area = self.dock_area();
+                let pos = pointer.current_location();
+                match self.dock.end_press(area, pos) {
+                    crate::dock::PressOutcome::Click(index) => self.activate_dock_item(index),
+                    crate::dock::PressOutcome::Drop { index, target } => {
+                        self.drop_dock_tile(index, target);
+                    }
+                    crate::dock::PressOutcome::Nothing => {}
+                }
+            }
+        }
+
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             let pos = pointer.current_location();
 
             if self.session_lock.is_some() {
                 self.focus_lock_surface();
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button,
-                        state: button_state,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
+            } else if self.shell_button(pos, button) {
                 pointer.frame(self);
                 return;
-            }
-
-            if self
-                .launcher
-                .as_ref()
-                .is_some_and(|launcher| !launcher.is_closing())
-            {
-                let area = self.launcher_area();
-                let hit = self
-                    .launcher
-                    .as_ref()
-                    .and_then(|launcher| launcher.app_at(area, pos));
-                match hit {
-                    Some(index) => self.activate_launcher_app(index),
-                    None if !self.dock.contains(self.dock_area(), pos) => {
-                        if let Some(launcher) = self.launcher.as_mut() {
-                            launcher.begin_close();
-                        }
-                        self.queue_redraw();
-                    }
-                    None => {}
-                }
-                if hit.is_some() || !self.dock.contains(self.dock_area(), pos) {
-                    pointer.frame(self);
-                    return;
-                }
-            }
-
-            if self.dock.is_enabled() && !self.layout.overview_active() {
-                let area = self.dock_area();
-                if self.dock.contains(area, pos) {
-                    if let Some(index) = self.dock.item_at(area, pos) {
-                        match self.dock.action(index) {
-                            Some(crate::dock::DockAction::OpenLauncher) => {
-                                self.toggle_launcher();
-                            }
-                            _ => self.activate_dock_item(index),
-                        }
-                    }
-                    pointer.frame(self);
-                    return;
-                }
-            }
-
-            if self.layout.overview_active() {
-                let on_layer = matches!(
-                    self.surface_under(pos),
-                    Some((crate::focus::PointerFocusTarget::Surface(ref surface), _))
-                        if self.layer_for_surface(surface).is_some()
-                );
-
-                if !on_layer {
-                    if let Some(id) = self
-                        .overview
-                        .as_ref()
-                        .and_then(|ui| ui.close_button_at(pos))
-                    {
-                        if let Some(window) = self.window_map.get(&id)
-                            && let Some(toplevel) = window.toplevel()
-                        {
-                            tracing::info!(window = ?id, "closing from the overview");
-                            toplevel.send_close();
-                        }
-                        pointer.frame(self);
-                        return;
-                    }
-
-                    let hit = self.overview.as_ref().and_then(|ui| ui.preview_at(pos));
-
-                    match hit {
-                        Some(id) if button == BTN_MIDDLE => {
-                            if let Some(window) = self.window_map.get(&id)
-                                && let Some(toplevel) = window.toplevel()
-                            {
-                                toplevel.send_close();
-                            }
-                        }
-                        Some(id) => {
-                            self.begin_close_overview(Some(id));
-                        }
-                        None => {
-                            self.begin_close_overview(None);
-                        }
-                    }
-
-                    pointer.frame(self);
-                    return;
-                }
-            }
-
-            let target = self.surface_under(pos).map(|(target, _)| target);
-
-            match target {
-                Some(crate::focus::PointerFocusTarget::Surface(surface))
-                    if self.layer_for_surface(&surface).is_some() =>
-                {
-                    let layer = self
-                        .layer_for_surface(&surface)
-                        .expect("matched Some in the guard above");
-                    if layer.can_receive_keyboard_focus() {
-                        self.layer_focus = Some(layer);
-                        self.apply_keyboard_focus_public();
-                    }
-                }
-                Some(crate::focus::PointerFocusTarget::Decoration(deco)) => {
-                    if let Some(id) = self.window_id(&deco.0) {
-                        self.focus_window(id);
-                    }
-                }
-                Some(crate::focus::PointerFocusTarget::Surface(_)) => {
-                    let clicked = self
-                        .space
-                        .element_under(pos)
-                        .map(|(window, _)| window.clone());
-                    if let Some(id) = clicked.as_ref().and_then(|window| self.window_id(window)) {
-                        self.focus_window(id);
-                    }
-                }
-                None => self.clear_focus(),
+            } else {
+                self.focus_click_target(pos);
             }
         }
 
@@ -956,13 +1121,269 @@ impl GlideState {
                 button,
                 state: button_state,
                 serial,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
         pointer.frame(self);
     }
 
+    fn shell_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
+        if self.topbar_button(pos) {
+            return true;
+        }
+        if self.notifications_button(pos) {
+            return true;
+        }
+        if self.launcher_button(pos, button) {
+            return true;
+        }
+        if self.dock_button(pos, button) {
+            return true;
+        }
+        self.overview_button(pos, button)
+    }
+
+    fn topbar_button(&mut self, pos: Point<f64, Logical>) -> bool {
+        if self.topbar.contains(self.output_rect(), pos) {
+            if let Some(action) = self.topbar.action_at(pos) {
+                if let Some(slot) = self.topbar.slot_at(pos)
+                    && matches!(
+                        slot,
+                        crate::topbar::Slot::QsVolumeTrack | crate::topbar::Slot::QsBrightnessTrack
+                    )
+                {
+                    self.active_slider_drag = Some(slot);
+                }
+                self.run_topbar_action(action);
+            }
+            return true;
+        }
+        if self.topbar.close_popup() {
+            self.queue_redraw();
+            return true;
+        }
+        false
+    }
+
+    fn notifications_button(&mut self, pos: Point<f64, Logical>) -> bool {
+        if !self.notifications.contains(self.output_rect(), pos) {
+            return false;
+        }
+        if let Some(action) = self.notifications.action_at(pos) {
+            self.run_notification_action(action);
+        }
+        true
+    }
+
+    fn launcher_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
+        let area = self.launcher_area();
+        let Some(launcher) = self.launcher.as_mut().filter(|l| !l.is_closing()) else {
+            return false;
+        };
+        if let (Some(item), Some(result)) = (launcher.menu_item_at(pos), launcher.menu_result()) {
+            launcher.close_menu();
+            self.run_launcher_menu_item(result, item);
+            self.queue_redraw();
+            return true;
+        }
+        if launcher.close_menu() {
+            self.queue_redraw();
+            return true;
+        }
+
+        let hit = launcher.app_at(area, pos);
+        if button == BTN_RIGHT {
+            if let Some(result) = hit {
+                let pinned = self.launcher_app_is_pinned(result);
+                let opened = self
+                    .launcher
+                    .as_mut()
+                    .is_some_and(|launcher| launcher.open_menu(result, area, pinned));
+                if opened {
+                    self.queue_redraw();
+                }
+            }
+            return true;
+        }
+
+        let dot = launcher.dot_at(area, pos);
+        let on_search = launcher.search_contains(area, pos);
+        let chip = launcher.category_at(pos);
+        let changed = if let Some(result) = hit {
+            self.activate_launcher_app(result);
+            false
+        } else if let Some(category) = chip {
+            launcher.toggle_category(category)
+        } else if let Some(page) = dot {
+            launcher.go_to_page(page)
+        } else if on_search {
+            false
+        } else {
+            launcher.begin_close();
+            true
+        };
+        if changed {
+            self.queue_redraw();
+        }
+        true
+    }
+
+    fn dock_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
+        if !self.dock.is_enabled() || self.layout.overview_active() {
+            return false;
+        }
+        let area = self.dock_area();
+        if let Some(item) = self.dock.menu_item_at(pos) {
+            let index = self.dock.menu_index();
+            self.dock.close_menu();
+            if let Some(index) = index {
+                self.run_dock_menu_item(index, item);
+            }
+            self.queue_redraw();
+            return true;
+        }
+        let menu_closed = self.dock.close_menu();
+        if menu_closed {
+            self.queue_redraw();
+        }
+        if !self.dock.contains(area, pos) {
+            return menu_closed;
+        }
+        if let Some(index) = self.dock.item_at(area, pos) {
+            if button == BTN_RIGHT {
+                if self.dock.open_menu(index, area) {
+                    self.queue_redraw();
+                }
+            } else if button == BTN_MIDDLE {
+                self.run_dock_menu_item(index, crate::dock::DockMenuItem::NewWindow);
+            } else if self.dock.action(index) == Some(crate::dock::DockAction::OpenLauncher) {
+                self.toggle_launcher();
+            } else {
+                self.dock.begin_press(index, pos, area);
+            }
+        }
+        true
+    }
+
+    fn overview_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
+        if !self.layout.overview_active() {
+            return false;
+        }
+        let on_layer = matches!(
+            self.surface_under(pos),
+            Some((crate::focus::PointerFocusTarget::Surface(ref surface), _))
+                if self.layer_for_surface(surface).is_some()
+        );
+        if on_layer {
+            return false;
+        }
+
+        let close = self
+            .overview
+            .as_ref()
+            .and_then(|ui| ui.close_button_at(pos));
+        if let Some(id) = close {
+            tracing::info!(window = ?id, "closing from the overview");
+            self.send_close(id);
+            return true;
+        }
+
+        match self.overview.as_ref().and_then(|ui| ui.preview_at(pos)) {
+            Some(id) if button == BTN_MIDDLE => self.send_close(id),
+            hit => {
+                self.begin_close_overview(hit);
+            }
+        }
+        true
+    }
+
+    fn send_close(&self, id: glide_layout::WindowId) {
+        if let Some(toplevel) = self.window_map.get(&id).and_then(|w| w.toplevel()) {
+            toplevel.send_close();
+        }
+    }
+
+    fn focus_click_target(&mut self, pos: Point<f64, Logical>) {
+        let target = self.surface_under(pos).map(|(target, _)| target);
+        match target {
+            Some(crate::focus::PointerFocusTarget::Surface(surface))
+                if self.layer_for_surface(&surface).is_some() =>
+            {
+                let layer = self
+                    .layer_for_surface(&surface)
+                    .expect("matched Some in the guard above");
+                if layer.can_receive_keyboard_focus() {
+                    self.layer_focus = Some(layer);
+                    self.apply_keyboard_focus_public();
+                }
+            }
+            Some(crate::focus::PointerFocusTarget::Decoration(deco)) => {
+                if let Some(id) = self.window_id(&deco.0) {
+                    self.focus_window(id);
+                }
+            }
+            Some(crate::focus::PointerFocusTarget::Surface(_)) => {
+                let clicked = self
+                    .space
+                    .element_under(pos)
+                    .map(|(window, _)| window.clone());
+                if let Some(id) = clicked.as_ref().and_then(|window| self.window_id(window)) {
+                    self.focus_window(id);
+                }
+            }
+            None => self.clear_focus(),
+        }
+    }
+
+    fn topbar_scroll<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) -> bool {
+        if self.session_lock.is_some() || !self.topbar.is_enabled() {
+            return false;
+        }
+        let pos = self
+            .seat
+            .get_pointer()
+            .expect("a pointer was added in GlideState::new")
+            .current_location();
+        let Some(slot) = self.topbar.slot_at(pos) else {
+            return self.topbar.contains(self.output_rect(), pos);
+        };
+        let vertical = event
+            .amount(Axis::Vertical)
+            .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0);
+        if vertical == 0.0 {
+            return true;
+        }
+        let step: i16 = if vertical < 0.0 { 5 } else { -5 };
+        let status = self.topbar.system_status();
+        let action = match slot {
+            crate::topbar::Slot::Status
+            | crate::topbar::Slot::QsVolumeMute
+            | crate::topbar::Slot::QsVolumeTrack => {
+                let pct =
+                    (i16::from(status.volume_pct) + step).clamp(0, i16::from(self.max_volume_pct));
+                Some(crate::topbar::TopbarAction::QsVolumeAdjust(
+                    u8::try_from(pct).unwrap_or(0),
+                ))
+            }
+            crate::topbar::Slot::QsBrightnessTrack => {
+                let pct = (i16::from(status.brightness_pct) + step).clamp(1, 100);
+                Some(crate::topbar::TopbarAction::QsBrightnessAdjust(
+                    u8::try_from(pct).unwrap_or(1),
+                ))
+            }
+            _ => None,
+        };
+        if let Some(action) = action {
+            self.handle_qs_action(action);
+            self.queue_redraw();
+        }
+        true
+    }
+
     fn handle_pointer_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
+        if self.topbar_scroll::<I>(event) {
+            return;
+        }
         if self
             .launcher
             .as_ref()
@@ -979,12 +1400,11 @@ impl GlideState {
             } else {
                 vertical
             };
-            if amount != 0.0 {
-                if let Some(launcher) = self.launcher.as_mut() {
-                    if launcher.scroll_by(amount) {
-                        self.queue_redraw();
-                    }
-                }
+            if amount != 0.0
+                && let Some(launcher) = self.launcher.as_mut()
+                && launcher.scroll_by(amount)
+            {
+                self.queue_redraw();
             }
             return;
         }
@@ -1000,7 +1420,7 @@ impl GlideState {
         let horizontal_amount_discrete = event.amount_v120(Axis::Horizontal);
         let vertical_amount_discrete = event.amount_v120(Axis::Vertical);
 
-        let mut frame = AxisFrame::new(event.time_msec()).source(source);
+        let mut frame = AxisFrame::new(event.time()).source(source);
         if horizontal_amount != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal_amount);
             if let Some(discrete) = horizontal_amount_discrete {
@@ -1066,6 +1486,87 @@ mod tests {
 
     fn no_modifiers() -> ModifiersState {
         ModifiersState::default()
+    }
+
+    mod launcher_keys {
+        use super::*;
+
+        fn typed(sym: Keysym) -> KeyAction {
+            launcher_active_shortcut(&[], &no_modifiers(), &[sym], sym)
+        }
+
+        fn with(mods: ModifiersState, sym: Keysym) -> KeyAction {
+            launcher_active_shortcut(&[], &mods, &[sym], sym)
+        }
+
+        #[test]
+        fn a_plain_letter_goes_into_the_search_field() {
+            assert_eq!(typed(Keysym::a), KeyAction::LauncherType('a'));
+            assert_eq!(typed(Keysym::z), KeyAction::LauncherType('z'));
+        }
+
+        #[test]
+        fn digits_and_punctuation_are_typed_too() {
+            assert_eq!(typed(Keysym::_7), KeyAction::LauncherType('7'));
+            assert_eq!(typed(Keysym::minus), KeyAction::LauncherType('-'));
+        }
+
+        #[test]
+        fn space_is_typed_rather_than_swallowed() {
+            assert_eq!(typed(Keysym::space), KeyAction::LauncherType(' '));
+        }
+
+        #[test]
+        fn shift_still_types_so_capitals_reach_the_query() {
+            let mods = ModifiersState {
+                shift: true,
+                ..ModifiersState::default()
+            };
+            assert_eq!(with(mods, Keysym::A), KeyAction::LauncherType('A'));
+        }
+
+        #[test]
+        fn a_modifier_combination_is_left_for_the_global_bindings() {
+            for mods in [
+                ModifiersState {
+                    ctrl: true,
+                    ..ModifiersState::default()
+                },
+                ModifiersState {
+                    alt: true,
+                    ..ModifiersState::default()
+                },
+                ModifiersState {
+                    logo: true,
+                    ..ModifiersState::default()
+                },
+            ] {
+                assert_eq!(
+                    with(mods, Keysym::a),
+                    KeyAction::None,
+                    "a bound combination must not leak into the search field"
+                );
+            }
+        }
+
+        #[test]
+        fn editing_and_navigation_keys_keep_their_meaning() {
+            assert_eq!(typed(Keysym::BackSpace), KeyAction::LauncherBackspace);
+            assert_eq!(typed(Keysym::Escape), KeyAction::LauncherClear);
+            assert_eq!(typed(Keysym::Return), KeyAction::LauncherActivate);
+            assert_eq!(typed(Keysym::Right), KeyAction::LauncherNav(1, 0));
+            assert_eq!(typed(Keysym::Down), KeyAction::LauncherNav(0, 1));
+        }
+
+        #[test]
+        fn shift_tab_walks_the_selection_backwards() {
+            let mods = ModifiersState {
+                shift: true,
+                ..ModifiersState::default()
+            };
+            assert_eq!(with(mods, Keysym::Tab), KeyAction::LauncherNav(-1, 0));
+            assert_eq!(typed(Keysym::Tab), KeyAction::LauncherNav(1, 0));
+        }
     }
 
     mod clamp_to_outputs {

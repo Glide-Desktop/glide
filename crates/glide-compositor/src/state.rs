@@ -214,6 +214,21 @@ pub struct SessionLock {
     pub surfaces: HashMap<Output, smithay::wayland::session_lock::LockSurface>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotionPolicy {
+    pub configured_scale: f32,
+    pub respect_system: bool,
+}
+
+impl Default for MotionPolicy {
+    fn default() -> Self {
+        Self {
+            configured_scale: 1.0,
+            respect_system: true,
+        }
+    }
+}
+
 pub struct GlideState {
     pub backend_data: TtyData,
 
@@ -258,6 +273,9 @@ pub struct GlideState {
     pub windows_awaiting_open_animation: HashSet<glide_layout::WindowId>,
     pub snapshots: crate::snapshot::Snapshots,
     pub dock: crate::dock::Dock,
+    pub topbar: crate::topbar::Topbar,
+    pub notifications: crate::notifications::Notifications,
+    pub media: Option<glide_media::MediaHandle>,
     pub screencopy: crate::screencopy::ScreencopyState,
     pub launcher: Option<crate::launcher::Launcher>,
     pub launcher_theme: crate::launcher::LauncherTheme,
@@ -265,6 +283,14 @@ pub struct GlideState {
     pub ipc_subscribers: crate::ipc::IpcSubscribers,
 
     pub pending_screenshot: bool,
+    pub active_slider_drag: Option<crate::topbar::Slot>,
+    pub announced_workspace: Option<glide_layout::WorkspaceId>,
+    pub snap_preview: Option<crate::snap::SnapPreview>,
+    pub max_volume_pct: u8,
+    pub shell_palette: (glide_theme::Appearance, glide_theme::Accent),
+    pub night_light: crate::config::NightLightConfig,
+    pub night_light_scheduled: Option<bool>,
+    pub motion: MotionPolicy,
 
     pub font_family: Option<String>,
     pub outputs_blanked: bool,
@@ -344,12 +370,25 @@ impl GlideState {
             windows_awaiting_open_animation: HashSet::new(),
             snapshots: crate::snapshot::Snapshots::default(),
             dock: crate::dock::Dock::new(&crate::config::DockConfig::default()),
+            topbar: crate::topbar::Topbar::new(crate::topbar::TopbarTheme::default()),
+            media: None,
+            notifications: crate::notifications::Notifications::new(
+                crate::notifications::NotificationTheme::default(),
+            ),
             screencopy,
             launcher: None,
             launcher_theme: crate::launcher::LauncherTheme::default(),
             launcher_icons: crate::icon::IconLoader::default(),
             ipc_subscribers: crate::ipc::IpcSubscribers::default(),
             pending_screenshot: false,
+            announced_workspace: None,
+            snap_preview: None,
+            max_volume_pct: 100,
+            shell_palette: (glide_theme::Appearance::Dark, glide_theme::Accent::Blue),
+            night_light: crate::config::NightLightConfig::default(),
+            night_light_scheduled: None,
+            motion: MotionPolicy::default(),
+            active_slider_drag: None,
             font_family: None,
             outputs_blanked: false,
             blank_after: Some(std::time::Duration::from_secs(600)),
@@ -401,6 +440,8 @@ impl GlideState {
 
         self.refresh_overview();
         self.refresh_dock();
+        self.refresh_topbar();
+        self.announce_workspace();
 
         let visible: Vec<glide_layout::WindowState> = self.layout.visible_windows().collect();
         let visible_ids: HashSet<glide_layout::WindowId> =
@@ -593,6 +634,12 @@ impl GlideState {
     pub fn track_window(&mut self, window: GlideWindow, parent: Option<glide_layout::WindowId>) {
         let id = glide_layout::WindowId::next();
         let size = layout_size(&window);
+        if let Some(pointer) = self.seat.get_pointer() {
+            let at = pointer.current_location();
+            #[allow(clippy::cast_possible_truncation)]
+            self.layout
+                .set_placement_anchor(glide_layout::Point::new(at.x as i32, at.y as i32));
+        }
 
         if let Some(parent) = parent {
             self.layout.add_window_with_parent(id, size, parent);
@@ -646,22 +693,22 @@ impl GlideState {
             .find(|(_, window)| window_surface(window) == surface)
             .map(|(&id, _)| id);
 
-        if let Some(id) = id_opt {
-            if let Some(window) = self.window_map.remove(&id) {
-                self.capture_closing_window(id, &window);
-                self.space.unmap_elem(&window);
-                self.window_to_id.remove(&window);
-                self.windows_awaiting_open_animation.remove(&id);
-                self.layout.remove_window(id);
-                if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
-                    handle.send_closed();
-                    self.protocols
-                        .foreign_toplevel_list_state
-                        .remove_toplevel(&handle);
-                }
-                self.ipc_subscribers
-                    .broadcast(&glide_ipc::Event::WindowClosed { id: id.as_u64() });
+        if let Some(id) = id_opt
+            && let Some(window) = self.window_map.remove(&id)
+        {
+            self.capture_closing_window(id, &window);
+            self.space.unmap_elem(&window);
+            self.window_to_id.remove(&window);
+            self.windows_awaiting_open_animation.remove(&id);
+            self.layout.remove_window(id);
+            if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
+                handle.send_closed();
+                self.protocols
+                    .foreign_toplevel_list_state
+                    .remove_toplevel(&handle);
             }
+            self.ipc_subscribers
+                .broadcast(&glide_ipc::Event::WindowClosed { id: id.as_u64() });
         }
 
         self.cleanup_dead_windows();
@@ -814,15 +861,15 @@ impl GlideState {
                 .iter()
                 .find(|config| config.name == output.name())
                 .cloned();
-            if let Some(scale) = config.as_ref().and_then(|config| config.scale) {
-                if scale > 0.0 {
-                    output.change_current_state(
-                        None,
-                        None,
-                        Some(smithay::output::Scale::Fractional(scale)),
-                        None,
-                    );
-                }
+            if let Some(scale) = config.as_ref().and_then(|config| config.scale)
+                && scale > 0.0
+            {
+                output.change_current_state(
+                    None,
+                    None,
+                    Some(smithay::output::Scale::Fractional(scale)),
+                    None,
+                );
             }
             let position: Point<i32, Logical> = config
                 .as_ref()
@@ -866,12 +913,376 @@ impl GlideState {
         }))
     }
 
+    #[must_use]
+    pub fn keyboard_layouts(&mut self) -> Option<(Vec<String>, usize)> {
+        let keyboard = self.seat.get_keyboard()?;
+        Some(keyboard.with_xkb_state(self, |context| {
+            let xkb = context
+                .xkb()
+                .lock()
+                .expect("single-threaded event loop, this lock is never poisoned");
+            let names = xkb
+                .layouts()
+                .map(|layout| crate::topbar::short_layout_name(xkb.layout_name(layout)))
+                .collect();
+            (names, xkb.active_layout().0 as usize)
+        }))
+    }
+
     pub fn cycle_keyboard_layout(&mut self) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
         keyboard.with_xkb_state(self, |mut context| context.cycle_next_layout());
         self.broadcast_layout();
+    }
+
+    pub fn set_keyboard_layout(&mut self, index: usize) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let Ok(index) = u32::try_from(index) else {
+            return;
+        };
+        keyboard.with_xkb_state(self, |mut context| {
+            context.set_layout(smithay::input::keyboard::Layout(index));
+        });
+        self.broadcast_layout();
+    }
+
+    #[must_use]
+    fn focused_app(&self) -> (String, String) {
+        let identity = self
+            .layout
+            .focused_window()
+            .and_then(|id| self.window_map.get(&id))
+            .map(crate::window::GlideWindow::identity);
+        let Some((app_id, title)) = identity else {
+            return (String::new(), String::new());
+        };
+        let app_id = app_id.unwrap_or_default();
+        let title = title.unwrap_or_default();
+        let name = crate::topbar::app_display_name(&app_id, &title);
+        (app_id, name)
+    }
+
+    pub fn refresh_topbar(&mut self) -> bool {
+        if !self.topbar.is_enabled() {
+            return false;
+        }
+        let clock = crate::topbar::local_clock().unwrap_or_default();
+        let date = crate::topbar::local_date().unwrap_or_default();
+        let (app_id, app_name) = self.focused_app();
+        let layouts = self.keyboard_layouts();
+
+        let mut dirty = self.topbar.set_clock(date, clock);
+        if let Some((names, active)) = layouts {
+            dirty |= self.topbar.set_layouts(names, active);
+        }
+        dirty |= self.topbar.set_app(app_id, app_name);
+        dirty |= self.topbar.set_dnd(self.notifications.dnd());
+        dirty |= self.topbar.set_unread(self.notifications.unread());
+        dirty |= self.topbar.set_nc_items(self.notifications.nc_items());
+        dirty
+    }
+
+    pub fn handle_system_status(&mut self, mut status: crate::system_info::SystemStatus) {
+        status.night_light_on = self.topbar.system_status().night_light_on;
+        if self.topbar.set_system_status(status) {
+            self.apply_motion_scale();
+            self.queue_redraw();
+        }
+    }
+
+    pub fn apply_motion_scale(&self) {
+        let reduced = self.motion.respect_system && self.topbar.system_status().reduced_motion;
+        let scale = if reduced {
+            0.0
+        } else {
+            self.motion.configured_scale
+        };
+        glide_theme::motion::set_scale(scale);
+    }
+
+    pub fn tick_night_light(&mut self) -> bool {
+        let Some(minute) = crate::topbar::local_minute_of_day() else {
+            return false;
+        };
+        let wanted = self.night_light.wants_on(minute);
+        if wanted == self.night_light_scheduled {
+            return false;
+        }
+        self.night_light_scheduled = wanted;
+        let Some(on) = wanted else {
+            return false;
+        };
+        let mut status = self.topbar.system_status().clone();
+        if status.night_light_on == on {
+            return false;
+        }
+        status.night_light_on = on;
+        self.topbar.set_system_status(status);
+        self.apply_night_light(on);
+        true
+    }
+
+    pub fn apply_night_light(&mut self, on: bool) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for output in outputs {
+            if on {
+                let Some(size) = self.gamma_size(&output).map(|s| s as usize) else {
+                    continue;
+                };
+                if size < 2 {
+                    continue;
+                }
+                let mut ramp = vec![0u16; size * 3];
+                for index in 0..size {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_precision_loss,
+                        clippy::cast_sign_loss
+                    )]
+                    let base = (index as f64 / (size as f64 - 1.0)) * f64::from(u16::MAX);
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    {
+                        ramp[index] = base.round() as u16;
+                        ramp[size + index] = (base * 0.85).round() as u16;
+                        ramp[size * 2 + index] = (base * 0.65).round() as u16;
+                    }
+                }
+                self.apply_gamma(&output, &ramp);
+            } else {
+                self.reset_gamma(&output);
+            }
+        }
+    }
+
+    pub fn handle_media_event(&mut self, event: glide_media::MediaEvent) {
+        let dirty = match event {
+            glide_media::MediaEvent::Gone => self.topbar.set_media(None),
+            glide_media::MediaEvent::Changed(track) => {
+                self.topbar.set_media(Some(media_widget(&track)))
+            }
+            glide_media::MediaEvent::Progress(progress) => self.topbar.set_media_progress(progress),
+        };
+        if dirty {
+            self.queue_redraw();
+        }
+    }
+
+    pub fn run_media_command(&mut self, command: glide_media::Command) {
+        if let Some(handle) = self.media.as_ref() {
+            handle.send(command);
+        }
+    }
+
+    pub fn handle_notify_event(&mut self, event: glide_notify::NotifyEvent) {
+        let dirty = match event {
+            glide_notify::NotifyEvent::Added(notification) => {
+                self.notifications
+                    .push(&mut self.dock.icons, *notification, false)
+            }
+            glide_notify::NotifyEvent::Replaced(notification) => {
+                self.notifications
+                    .push(&mut self.dock.icons, *notification, true)
+            }
+            glide_notify::NotifyEvent::Closed(id, reason) => {
+                self.notifications.remove(id, reason, false)
+            }
+            glide_notify::NotifyEvent::InhibitedChanged(on) => {
+                self.notifications.set_inhibited(on);
+                false
+            }
+        };
+        let topbar_dirty = self.refresh_topbar();
+        if dirty || topbar_dirty {
+            self.queue_redraw();
+        }
+    }
+
+    pub fn run_notification_action(&mut self, action: crate::notifications::NotificationAction) {
+        match action {
+            crate::notifications::NotificationAction::Activate(id) => {
+                self.notifications.activate(id, None);
+            }
+            crate::notifications::NotificationAction::Dismiss(id) => {
+                self.notifications
+                    .remove(id, glide_notify::CloseReason::Dismissed, true);
+            }
+            crate::notifications::NotificationAction::Button(id, index) => {
+                self.notifications.press_button(id, index, None);
+            }
+            crate::notifications::NotificationAction::OpenReply(id) => {
+                self.notifications.open_reply(id);
+            }
+            crate::notifications::NotificationAction::SendReply(_) => {
+                self.notifications.send_reply();
+            }
+            crate::notifications::NotificationAction::Configure(id) => {
+                self.notifications.configure(id, None);
+            }
+        }
+        self.refresh_topbar();
+        self.queue_redraw();
+    }
+
+    pub(crate) fn handle_qs_action(&mut self, action: crate::topbar::TopbarAction) {
+        if action != crate::topbar::TopbarAction::QsPowerOff {
+            self.topbar.disarm_power_off();
+        }
+        match action {
+            crate::topbar::TopbarAction::QsToggleWifi => {
+                let was_on = crate::system_info::is_wifi_on();
+                crate::system_info::toggle_wifi();
+                let mut status = self.topbar.system_status().clone();
+                if was_on {
+                    status.wifi_level = 0;
+                    status.wifi_ssid = "Вимкнено".to_string();
+                } else {
+                    status.wifi_level = 3;
+                    status.wifi_ssid = "Підключення…".to_string();
+                }
+                self.topbar.set_system_status(status);
+            }
+            crate::topbar::TopbarAction::QsToggleBluetooth => {
+                let was_on = self.topbar.system_status().bluetooth_on;
+                crate::system_info::toggle_bluetooth();
+                let mut status = self.topbar.system_status().clone();
+                status.bluetooth_on = !was_on;
+                self.topbar.set_system_status(status);
+            }
+            crate::topbar::TopbarAction::QsToggleNightLight => {
+                let mut status = self.topbar.system_status().clone();
+                status.night_light_on = !status.night_light_on;
+                let on = status.night_light_on;
+                self.topbar.set_system_status(status);
+                self.apply_night_light(on);
+            }
+            crate::topbar::TopbarAction::QsVolumeMute => {
+                crate::system_info::toggle_volume_mute();
+                let mut status = self.topbar.system_status().clone();
+                status.volume_muted = !status.volume_muted;
+                self.topbar.set_system_status(status);
+            }
+            crate::topbar::TopbarAction::QsVolumeAdjust(pct) => {
+                let pct = pct.min(self.max_volume_pct);
+                crate::system_info::set_volume_pct(pct);
+                let mut status = self.topbar.system_status().clone();
+                status.volume_pct = pct;
+                status.volume_muted = false;
+                self.topbar.set_system_status(status);
+            }
+            crate::topbar::TopbarAction::QsBrightnessAdjust(pct) => {
+                crate::system_info::set_brightness_pct(pct);
+                let mut status = self.topbar.system_status().clone();
+                status.brightness_pct = pct;
+                self.topbar.set_system_status(status);
+            }
+            crate::topbar::TopbarAction::QsScreenshot => {
+                self.topbar.close_popup();
+                self.pending_screenshot = true;
+                self.queue_redraw();
+            }
+            crate::topbar::TopbarAction::QsOpenSettings => {
+                self.topbar.close_popup();
+                crate::system_info::open_settings();
+            }
+            crate::topbar::TopbarAction::QsLockSession => {
+                self.topbar.close_popup();
+                crate::system_info::lock_session();
+            }
+            crate::topbar::TopbarAction::QsPowerOff => {
+                if self.topbar.arm_power_off() {
+                    self.topbar.close_popup();
+                    crate::system_info::power_off();
+                }
+                self.queue_redraw();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn run_topbar_action(&mut self, action: crate::topbar::TopbarAction) {
+        match action {
+            crate::topbar::TopbarAction::MediaPlayPause => {
+                self.run_media_command(glide_media::Command::PlayPause);
+            }
+            crate::topbar::TopbarAction::MediaNext => {
+                self.run_media_command(glide_media::Command::Next);
+            }
+            crate::topbar::TopbarAction::MediaPrevious => {
+                self.run_media_command(glide_media::Command::Previous);
+            }
+            crate::topbar::TopbarAction::MediaSeek(pct) => {
+                if let Some(handle) = self.media.as_ref() {
+                    handle.seek(f32::from(pct) / 100.0);
+                }
+            }
+            crate::topbar::TopbarAction::ToggleMediaPlayer => {
+                self.topbar
+                    .toggle_popup(crate::topbar::OpenPopup::MediaPlayer);
+            }
+            crate::topbar::TopbarAction::CycleLayout => {
+                self.cycle_keyboard_layout();
+                self.refresh_topbar();
+            }
+            crate::topbar::TopbarAction::SelectLayout(index) => {
+                self.set_keyboard_layout(index);
+                self.topbar.close_popup();
+                self.refresh_topbar();
+            }
+            crate::topbar::TopbarAction::ToggleCaffeine => {
+                let on = !self.topbar.caffeinated();
+                self.topbar.set_caffeinated(on);
+                tracing::info!(caffeinated = on, "idle blanking toggled from the topbar");
+                if on {
+                    self.last_activity = std::time::Instant::now();
+                }
+            }
+            crate::topbar::TopbarAction::ToggleDoNotDisturb => {
+                let on = !self.topbar.dnd();
+                self.notifications.set_dnd(on);
+                self.topbar.set_dnd(on);
+                tracing::info!(dnd = on, "do not disturb toggled from the topbar");
+            }
+            crate::topbar::TopbarAction::ToggleNotificationCenter => {
+                self.topbar
+                    .toggle_popup(crate::topbar::OpenPopup::NotificationCenter);
+            }
+            crate::topbar::TopbarAction::ToggleLanguageMenu => {
+                self.topbar
+                    .toggle_popup(crate::topbar::OpenPopup::LanguageMenu);
+            }
+            crate::topbar::TopbarAction::ToggleQuickSettings => {
+                self.topbar
+                    .toggle_popup(crate::topbar::OpenPopup::QuickSettings);
+            }
+            crate::topbar::TopbarAction::ClearAllNotifications => {
+                self.notifications.clear_all();
+                self.refresh_topbar();
+            }
+            crate::topbar::TopbarAction::ActivateNotification(id) => {
+                self.notifications.activate(id, None);
+                self.refresh_topbar();
+            }
+            crate::topbar::TopbarAction::DismissNotification(id) => {
+                self.notifications
+                    .remove(id, glide_notify::CloseReason::Dismissed, true);
+                self.refresh_topbar();
+            }
+            crate::topbar::TopbarAction::OpenInputSettings => {
+                self.topbar.close_popup();
+                let _ = crate::spawn_shell_command(
+                    "gnome-control-center keyboard || kcmshell6 kcm_keyboard",
+                );
+            }
+            crate::topbar::TopbarAction::ClosePopup => {
+                self.topbar.close_popup();
+            }
+            other => self.handle_qs_action(other),
+        }
+        self.queue_redraw();
     }
 
     pub fn broadcast_layout(&mut self) {
@@ -1096,11 +1507,56 @@ impl GlideState {
         launcher.is_animating()
     }
 
-    pub fn activate_launcher_app(&mut self, index: usize) {
+    fn launcher_app(&self, result: usize) -> Option<crate::icon::DesktopApp> {
+        let launcher = self.launcher.as_ref()?;
+        let index = launcher.app_index(result)?;
+        launcher.apps().get(index).cloned()
+    }
+
+    #[must_use]
+    pub fn launcher_app_is_pinned(&self, result: usize) -> bool {
+        self.launcher_app(result)
+            .is_some_and(|app| self.dock.is_app_pinned(&app.id))
+    }
+
+    pub fn run_launcher_menu_item(
+        &mut self,
+        result: usize,
+        item: crate::launcher::LauncherMenuItem,
+    ) {
+        match item {
+            crate::launcher::LauncherMenuItem::Open => self.activate_launcher_app(result),
+            crate::launcher::LauncherMenuItem::Pin => {
+                let Some(app) = self.launcher_app(result) else {
+                    return;
+                };
+                if self.dock.pin_app(&app.id, &app.name, &app.command) {
+                    crate::config::save_dock_pins(self.dock.pinned_items());
+                    self.refresh_dock();
+                }
+                self.queue_redraw();
+            }
+            crate::launcher::LauncherMenuItem::Unpin => {
+                let Some(app) = self.launcher_app(result) else {
+                    return;
+                };
+                if self.dock.unpin_app(&app.id) {
+                    crate::config::save_dock_pins(self.dock.pinned_items());
+                    self.refresh_dock();
+                }
+                self.queue_redraw();
+            }
+        }
+    }
+
+    pub fn activate_launcher_app(&mut self, result: usize) {
         let command = self
             .launcher
             .as_ref()
-            .and_then(|launcher| launcher.apps().get(index))
+            .and_then(|launcher| {
+                let index = launcher.app_index(result)?;
+                launcher.apps().get(index)
+            })
             .map(|app| app.command.clone());
         let Some(command) = command else {
             return;
@@ -1117,13 +1573,16 @@ impl GlideState {
 
     #[must_use]
     pub fn launcher_area(&self) -> Rectangle<i32, Logical> {
-        let area = self.dock_area();
-        if !self.dock.is_enabled() {
-            return area;
-        }
-        let reserved = self.dock.rect(area).size.h + self.dock.bottom_margin() * 2;
-        let height = (area.size.h - reserved).max(1);
-        Rectangle::new(area.loc, smithay::utils::Size::from((area.size.w, height)))
+        self.dock_area()
+    }
+
+    #[must_use]
+    pub fn output_rect(&self) -> Rectangle<i32, Logical> {
+        let geometry = self.layout.primary_output_geometry();
+        Rectangle::new(
+            Point::from((geometry.loc.x, geometry.loc.y)),
+            smithay::utils::Size::from((geometry.size.width, geometry.size.height)),
+        )
     }
 
     #[must_use]
@@ -1172,33 +1631,120 @@ impl GlideState {
         self.dock.set_running(&apps)
     }
 
+    pub fn toggle_dock_pin(&mut self, index: usize) {
+        let app_id = self
+            .dock
+            .items()
+            .get(index)
+            .filter(|item| item.action == crate::dock::DockAction::Activate)
+            .map(|item| item.app_id.clone());
+        let Some(app_id) = app_id else {
+            return;
+        };
+
+        let identity = crate::config::pin_identity_for_app_id(&app_id);
+        if !self.dock.toggle_pinned(index, identity) {
+            return;
+        }
+
+        crate::config::save_dock_pins(self.dock.pinned_items());
+        self.refresh_dock();
+        self.queue_redraw();
+    }
+
+    fn windows_for_app(&self, app_id: &str) -> Vec<glide_layout::WindowId> {
+        let mut existing: Vec<_> = self
+            .window_map
+            .iter()
+            .filter_map(|(id, window)| {
+                let (candidate_id, title) = window.identity();
+                let key = candidate_id
+                    .filter(|candidate| !candidate.trim().is_empty())
+                    .or_else(|| title.filter(|t| !t.trim().is_empty()));
+                key.is_some_and(|candidate| candidate.eq_ignore_ascii_case(app_id))
+                    .then_some(*id)
+            })
+            .collect();
+        existing.sort();
+        existing
+    }
+
+    pub fn drop_dock_tile(&mut self, index: usize, target: usize) {
+        let from = if self.dock.is_pinned(index) {
+            index
+        } else {
+            let app_id = self
+                .dock
+                .items()
+                .get(index)
+                .map(|item| item.app_id.clone())
+                .unwrap_or_default();
+            let identity = crate::config::pin_identity_for_app_id(&app_id);
+            if !self.dock.toggle_pinned(index, identity) {
+                self.queue_redraw();
+                return;
+            }
+            self.dock.pinned_items().len() - 1
+        };
+        self.dock.move_pinned(from, target);
+        crate::config::save_dock_pins(self.dock.pinned_items());
+        self.refresh_dock();
+        self.queue_redraw();
+    }
+
+    pub fn run_dock_menu_item(&mut self, index: usize, item: crate::dock::DockMenuItem) {
+        let Some(tile) = self.dock.items().get(index).cloned() else {
+            return;
+        };
+        match item {
+            crate::dock::DockMenuItem::Open | crate::dock::DockMenuItem::NewWindow => {
+                if tile.command.trim().is_empty() {
+                    tracing::debug!(app_id = %tile.app_id, "dock tile has no command to launch");
+                } else if let Err(err) = crate::spawn_shell_command(&tile.command) {
+                    tracing::error!(command = %tile.command, ?err, "failed to launch from the dock");
+                }
+            }
+            crate::dock::DockMenuItem::Pin | crate::dock::DockMenuItem::Unpin => {
+                self.toggle_dock_pin(index);
+            }
+            crate::dock::DockMenuItem::CloseAll => {
+                for id in self.windows_for_app(&tile.app_id) {
+                    if let Some(toplevel) = self.window_map.get(&id).and_then(|w| w.toplevel()) {
+                        toplevel.send_close();
+                    }
+                }
+                self.reconcile_space();
+            }
+        }
+    }
+
     pub fn activate_dock_item(&mut self, index: usize) {
         let Some(item) = self.dock.items().get(index).cloned() else {
             return;
         };
 
-        let mut existing: Vec<_> = self
-            .window_map
-            .iter()
-            .filter_map(|(id, window)| {
-                let (app_id, title) = window.identity();
-                let key = app_id
-                    .filter(|candidate| !candidate.trim().is_empty())
-                    .or_else(|| title.filter(|t| !t.trim().is_empty()));
-                key.is_some_and(|candidate| candidate.eq_ignore_ascii_case(&item.app_id))
-                    .then_some(*id)
-            })
-            .collect();
-        existing.sort();
+        let existing = self.windows_for_app(&item.app_id);
 
         if !existing.is_empty() {
             let mut target = existing[0];
-            if let Some(focused) = self.layout.focused_window() {
-                if let Some(pos) = existing.iter().position(|&id| id == focused) {
-                    target = existing[(pos + 1) % existing.len()];
+            if let Some(focused) = self.layout.focused_window()
+                && let Some(pos) = existing.iter().position(|&id| id == focused)
+            {
+                if existing.len() == 1 {
+                    self.minimize_with_flight(target);
+                    return;
                 }
+                target = existing[(pos + 1) % existing.len()];
             }
-            self.focus_window(target);
+            if self
+                .layout
+                .window_state(target)
+                .is_some_and(|state| state.minimized)
+            {
+                self.minimize_with_flight(target);
+            } else {
+                self.focus_window(target);
+            }
         } else if item.command.trim().is_empty() {
             tracing::debug!(app_id = %item.app_id, "dock tile has no window and no command");
         } else if let Err(err) = crate::spawn_shell_command(&item.command) {
@@ -1397,19 +1943,17 @@ impl GlideState {
             self.frame_rect(id),
             self.window_map.get(&id).cloned(),
             self.minimize_target(id),
-        ) {
-            if let Some((scale, output_scale)) = self.output_scales() {
-                if let Some(device) = self.backend_data.device.as_mut() {
-                    self.snapshots.push_flight(
-                        &mut device.gles_renderer,
-                        &window,
-                        from,
-                        to,
-                        scale,
-                        output_scale,
-                    );
-                }
-            }
+        ) && let Some((scale, output_scale)) = self.output_scales()
+            && let Some(device) = self.backend_data.device.as_mut()
+        {
+            self.snapshots.push_flight(
+                &mut device.gles_renderer,
+                &window,
+                from,
+                to,
+                scale,
+                output_scale,
+            );
         }
 
         self.layout.toggle_minimize(id);
@@ -1485,7 +2029,21 @@ impl GlideState {
         }
     }
 
+    fn announce_workspace(&mut self) {
+        let active = self.layout.active_workspace();
+        if self.announced_workspace == Some(active) {
+            return;
+        }
+        self.announced_workspace = Some(active);
+        self.ipc_subscribers
+            .broadcast(&glide_ipc::Event::WorkspaceChanged {
+                id: active.as_u64(),
+            });
+    }
+
     pub fn sync_layout_outputs(&mut self) {
+        self.ipc_subscribers
+            .broadcast(&glide_ipc::Event::OutputChanged);
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
 
         self.output_ids.retain(|output, _| outputs.contains(output));
@@ -1508,11 +2066,16 @@ impl GlideState {
                     geometry.size.w,
                     geometry.size.h,
                 );
+                let reserved = if self.topbar.is_enabled() {
+                    crate::topbar::HEIGHT
+                } else {
+                    0
+                };
                 let work_area = glide_layout::Rectangle::from_loc_and_size(
                     geometry.loc.x + zone.loc.x,
-                    geometry.loc.y + zone.loc.y,
+                    geometry.loc.y + zone.loc.y + reserved,
                     zone.size.w,
-                    zone.size.h,
+                    (zone.size.h - reserved).max(1),
                 );
 
                 glide_layout::OutputInfo {
@@ -1546,6 +2109,84 @@ impl GlideState {
         if self.layout.set_window_insets(id, insets) {
             self.reconcile_space();
         }
+    }
+
+    pub fn update_snap_preview(&mut self, pointer: Point<f64, Logical>) {
+        let work_area = self.work_area_at(pointer);
+        let zone = crate::snap::zone_at(pointer, work_area);
+        let armed = self
+            .snap_preview
+            .as_ref()
+            .filter(|preview| preview.is_armed())
+            .map(|preview| preview.zone);
+        if zone == armed {
+            return;
+        }
+        match (zone, self.snap_preview.as_mut()) {
+            (None, Some(preview)) => preview.dismiss(),
+            (None, None) => return,
+            (Some(zone), Some(preview)) => {
+                preview.retarget(zone, crate::snap::zone_rect(zone, work_area));
+            }
+            (Some(zone), None) => {
+                self.snap_preview = Some(crate::snap::SnapPreview::new(
+                    zone,
+                    crate::snap::zone_rect(zone, work_area),
+                ));
+            }
+        }
+        self.queue_redraw();
+    }
+
+    pub fn settle_snap_preview(&mut self) -> bool {
+        let Some(preview) = self.snap_preview.as_ref() else {
+            return false;
+        };
+        if !preview.is_visible() {
+            self.snap_preview = None;
+            return false;
+        }
+        preview.is_animating()
+    }
+
+    pub fn apply_snap(&mut self, window: &GlideWindow) {
+        let Some(preview) = self.snap_preview.as_mut() else {
+            return;
+        };
+        if !preview.is_armed() {
+            return;
+        }
+        preview.dismiss();
+        let zone = preview.zone;
+        let rect = preview.rect;
+        self.queue_redraw();
+        let Some(id) = self.window_id(window) else {
+            return;
+        };
+        let target = glide_layout::Rectangle::from_loc_and_size(
+            rect.loc.x,
+            rect.loc.y,
+            rect.size.w,
+            rect.size.h,
+        );
+        self.morph_geometry(id, |state| {
+            if zone == crate::snap::SnapZone::Maximize {
+                state.layout.set_maximized(id, true);
+            } else {
+                state.layout.set_window_geometry(id, target);
+            }
+        });
+    }
+
+    #[must_use]
+    pub fn work_area_at(&self, pointer: Point<f64, Logical>) -> Rectangle<i32, Logical> {
+        let at = pointer.to_i32_floor::<i32>();
+        let point = glide_layout::Point::new(at.x, at.y);
+        let area = self.layout.work_area_at(point);
+        Rectangle::new(
+            Point::from((area.loc.x, area.loc.y)),
+            smithay::utils::Size::from((area.size.width, area.size.height)),
+        )
     }
 
     pub fn record_window_move(
@@ -1757,5 +2398,41 @@ impl FractionalScaleHandler for GlideState {
                 fractional.set_preferred_scale(scale);
             });
         });
+    }
+}
+
+fn media_widget(track: &glide_media::Track) -> crate::topbar::MediaWidget {
+    let art_bytes =
+        glide_media::local_art_path(&track.art_url).and_then(|path| std::fs::read(path).ok());
+    let art = art_bytes
+        .as_deref()
+        .and_then(|bytes| crate::paint::decode_cover(bytes, crate::topbar::MEDIA_ART));
+
+    let accent = art
+        .as_deref()
+        .and_then(crate::paint::dominant_colour)
+        .map_or_else(
+            || {
+                glide_theme::Tokens::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue)
+                    .acc_text
+            },
+            |colour| crate::paint::fit_for_contrast(colour, 0.38, 0.82),
+        );
+
+    let art_large = art_bytes
+        .as_deref()
+        .and_then(|bytes| crate::paint::decode_cover(bytes, crate::topbar::MEDIA_ART_LARGE));
+
+    crate::topbar::MediaWidget {
+        title: track.display_title().to_string(),
+        artist: track.artist.clone(),
+        source: track.identity.clone(),
+        art,
+        art_large,
+        accent,
+        playing: track.status == glide_media::Playback::Playing,
+        can_next: track.can_go_next,
+        can_previous: track.can_go_previous,
+        progress: track.progress(),
     }
 }

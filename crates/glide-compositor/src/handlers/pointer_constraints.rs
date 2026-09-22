@@ -22,7 +22,12 @@ impl PointerConstraintsHandler for GlideState {
         }
     }
 
-    fn remove_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+    fn remove_constraint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        _removal: smithay::wayland::pointer_constraints::ConstraintRemove,
+    ) {
         if !with_pointer_constraint(surface, pointer, |constraint| constraint.is_none()) {
             return;
         }

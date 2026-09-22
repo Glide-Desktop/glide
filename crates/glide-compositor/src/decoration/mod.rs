@@ -52,8 +52,8 @@ const IDLE_BUTTON_OPACITY: f32 = 0.45;
 pub(crate) const DOUBLE_CLICK_MS: u32 = 400;
 pub(crate) const DOUBLE_CLICK_SLOP: f64 = 6.0;
 
-fn button_hover_anim() -> std::time::Duration {
-    glide_theme::motion::t2()
+pub(crate) fn state_layer_anim() -> std::time::Duration {
+    glide_theme::motion::t1()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +214,7 @@ mod tests {
     fn press() -> ButtonEvent {
         ButtonEvent {
             serial: SERIAL_COUNTER.next_serial(),
-            time: 0,
+            time: smithay::backend::input::InputTime::from_millis(0),
             button: 0x110,
             state: ButtonState::Pressed,
         }
@@ -223,7 +223,7 @@ mod tests {
     fn release() -> ButtonEvent {
         ButtonEvent {
             serial: SERIAL_COUNTER.next_serial(),
-            time: 0,
+            time: smithay::backend::input::InputTime::from_millis(0),
             button: 0x110,
             state: ButtonState::Released,
         }
@@ -232,7 +232,7 @@ mod tests {
     fn right_press() -> ButtonEvent {
         ButtonEvent {
             serial: SERIAL_COUNTER.next_serial(),
-            time: 0,
+            time: smithay::backend::input::InputTime::from_millis(0),
             button: 0x111,
             state: ButtonState::Pressed,
         }
@@ -294,7 +294,13 @@ mod tests {
         const ON_DRAG: (f64, f64) = (400.0, 16.0);
 
         fn settle() {
-            std::thread::sleep(button_hover_anim() + std::time::Duration::from_millis(30));
+            std::thread::sleep(state_layer_anim() + std::time::Duration::from_millis(30));
+        }
+
+        #[test]
+        fn the_hover_layer_fades_over_t1_not_t2() {
+            assert_eq!(state_layer_anim(), glide_theme::motion::t1());
+            assert!(state_layer_anim() < menu_open_anim());
         }
 
         #[test]
@@ -382,20 +388,36 @@ mod tests {
     mod menu_open_animation {
         use super::*;
 
+        fn settle() {
+            std::thread::sleep(menu_open_anim() + std::time::Duration::from_millis(30));
+        }
+
+        fn open(h: &mut HeaderBar) {
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&right_press());
+        }
+
         #[test]
-        fn a_closed_menu_reports_settled() {
+        fn a_closed_menu_is_invisible_and_settled() {
             let h = header();
-            assert!((h.menu_open_progress() - 1.0).abs() < f64::EPSILON);
+            assert!(!h.menu.is_open());
+            assert!(!h.is_menu_visible());
+            assert!(h.menu_open_progress().abs() < f64::EPSILON);
             assert!(!h.is_menu_animating());
+        }
+
+        #[test]
+        fn the_menu_opens_over_t2_and_closes_over_t2() {
+            assert_eq!(menu_open_anim(), glide_theme::motion::t2());
         }
 
         #[test]
         fn opening_the_menu_starts_it_partway_and_keeps_the_frame_pump_alive() {
             let mut h = header();
-            h.pointer_enter(point(400.0, 16.0));
-            h.on_button(&right_press());
+            open(&mut h);
 
-            assert!(h.menu_open);
+            assert!(h.menu.is_open());
+            assert!(h.is_menu_visible());
             let t = h.menu_open_progress();
             assert!(
                 (0.0..1.0).contains(&t),
@@ -410,33 +432,148 @@ mod tests {
         }
 
         #[test]
-        fn it_settles_after_the_animation_duration() {
+        fn it_settles_open_after_the_animation_duration() {
             let mut h = header();
-            h.pointer_enter(point(400.0, 16.0));
-            h.on_button(&right_press());
+            open(&mut h);
 
-            std::thread::sleep(menu_open_anim() + std::time::Duration::from_millis(30));
+            settle();
             assert!((h.menu_open_progress() - 1.0).abs() < f64::EPSILON);
+            assert!(!h.is_menu_animating());
+            assert!(h.menu.is_open());
+        }
+
+        #[test]
+        fn closing_fades_out_over_the_same_duration_instead_of_vanishing() {
+            let mut h = header();
+            open(&mut h);
+            settle();
+
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&release());
+            assert!(!h.menu.is_open());
+            assert!(h.is_menu_visible(), "the panel is still fading out");
+            let t = h.menu_open_progress();
+            assert!(
+                (0.0..1.0).contains(&t),
+                "a freshly closed menu must be mid-transition, got {t}"
+            );
+            assert!(h.is_menu_animating());
+            assert!(
+                h.is_hover_animating(),
+                "the fade-out has to keep the frame pump alive too"
+            );
+
+            settle();
+            assert!(!h.is_menu_visible());
+            assert!(h.menu_open_progress().abs() < f64::EPSILON);
             assert!(!h.is_menu_animating());
         }
 
         #[test]
-        fn closing_the_menu_clears_the_transition_so_reopening_replays_it() {
+        fn closing_mid_open_reverses_from_the_current_progress_without_a_jump() {
             let mut h = header();
-            h.pointer_enter(point(400.0, 16.0));
-            h.on_button(&right_press());
-            std::thread::sleep(menu_open_anim() + std::time::Duration::from_millis(30));
+            open(&mut h);
+            std::thread::sleep(std::time::Duration::from_millis(60));
+
+            let before = h.menu_open_progress();
+            assert!((0.0..1.0).contains(&before), "still opening: {before}");
 
             h.pointer_enter(point(400.0, 16.0));
             h.on_button(&release());
-            assert!(!h.menu_open);
-            assert_eq!(h.menu_opened_at, None);
+            let after = h.menu_open_progress();
+            assert!(
+                (before - after).abs() < 0.05,
+                "reversal must continue from where it was: {before} vs {after}"
+            );
+            assert!(!h.menu.is_open());
+            assert!(h.is_menu_visible());
+            assert!(h.is_menu_animating());
+        }
 
-            h.on_button(&right_press());
+        #[test]
+        fn reopening_while_still_fading_out_resumes_from_the_current_progress() {
+            let mut h = header();
+            open(&mut h);
+            settle();
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&release());
+            std::thread::sleep(std::time::Duration::from_millis(60));
+
+            let before = h.menu_open_progress();
+            assert!((0.0..1.0).contains(&before), "still closing: {before}");
+            open(&mut h);
+            let after = h.menu_open_progress();
+            assert!(
+                (before - after).abs() < 0.05,
+                "reopening must not restart from zero: {before} vs {after}"
+            );
+            assert!(h.menu.is_open());
+        }
+
+        #[test]
+        fn a_closed_menu_stops_taking_clicks_immediately_even_while_fading() {
+            let mut h = header();
+            open(&mut h);
+            settle();
+
+            h.pointer_enter(point(400.0, 48.0));
+            assert_eq!(h.menu_item_at(point(400.0, 48.0)), Some(0));
+            assert_eq!(
+                h.on_button(&release()),
+                Some(DecorationAction::Run(MenuItem::Minimize))
+            );
+            assert!(h.is_menu_visible(), "the panel is still fading out");
+
+            assert_eq!(h.menu_item_at(point(400.0, 48.0)), None);
+            assert!(
+                !h.contains(point(400.0, 48.0)),
+                "a fading menu must not claim the content underneath it"
+            );
+            h.pointer_enter(point(400.0, 48.0));
+            assert_eq!(h.menu_hover, None);
+            assert_eq!(h.on_button(&press()), None);
+            assert_eq!(
+                h.on_button(&release()),
+                None,
+                "a release on the fading rows must not run an item"
+            );
+        }
+
+        #[test]
+        fn a_fully_closed_menu_reopens_with_a_fresh_transition() {
+            let mut h = header();
+            open(&mut h);
+            settle();
+
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&release());
+            settle();
+            assert!(!h.is_menu_visible());
+
+            open(&mut h);
             assert!(
                 h.menu_open_progress() < 1.0,
                 "a second open must animate too"
             );
+        }
+
+        #[test]
+        fn drawing_drops_the_panel_buffer_once_the_fade_out_has_finished() {
+            let mut h = header();
+            let p = crate::paint::Painter::new(14.0, None);
+            open(&mut h);
+            settle();
+            h.redraw(&p);
+            assert!(h.menu_buf.is_some());
+
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&release());
+            h.redraw(&p);
+            assert!(h.menu_buf.is_some(), "still drawn while fading out");
+
+            settle();
+            h.redraw(&p);
+            assert!(h.menu_buf.is_none());
         }
 
         #[test]
@@ -447,13 +584,167 @@ mod tests {
         }
     }
 
+    mod menu_row_highlight {
+        use super::*;
+
+        const ON_ROW_0: (f64, f64) = (750.0, 48.0);
+        const ON_ROW_1: (f64, f64) = (750.0, 80.0);
+
+        fn settle() {
+            std::thread::sleep(state_layer_anim() + std::time::Duration::from_millis(30));
+        }
+
+        fn open_header() -> HeaderBar {
+            HeaderBar {
+                menu: glide_ui::Reveal::open_now(),
+                ..header()
+            }
+        }
+
+        #[test]
+        fn the_highlight_fades_in_over_t1_rather_than_snapping() {
+            let mut h = open_header();
+            h.pointer_enter(point(ON_ROW_0.0, ON_ROW_0.1));
+            assert_eq!(h.menu_hover, Some(0));
+            let a = h.menu_row_alpha(0);
+            assert!((0.0..1.0).contains(&a), "fresh hover must be mid fade-in: {a}");
+            assert!(h.is_menu_row_fading());
+            assert!(
+                h.is_hover_animating(),
+                "the row fade has to keep the frame pump alive"
+            );
+
+            settle();
+            assert!((h.menu_row_alpha(0) - 1.0).abs() < f64::EPSILON);
+            assert!(!h.is_menu_row_fading());
+        }
+
+        #[test]
+        fn moving_to_a_neighbour_crossfades_instead_of_flashing_from_zero() {
+            let mut h = open_header();
+            h.pointer_enter(point(ON_ROW_0.0, ON_ROW_0.1));
+            settle();
+
+            h.pointer_enter(point(ON_ROW_1.0, ON_ROW_1.1));
+            let outgoing = h.menu_row_alpha(0);
+            let incoming = h.menu_row_alpha(1);
+            assert!(
+                (0.0..1.0).contains(&outgoing) && outgoing > 0.5,
+                "the old row must still be mostly lit: {outgoing}"
+            );
+            assert!(
+                (0.0..1.0).contains(&incoming) && incoming < 0.5,
+                "the new row must be fading in: {incoming}"
+            );
+
+            settle();
+            assert!(h.menu_row_alpha(0).abs() < f64::EPSILON);
+            assert!((h.menu_row_alpha(1) - 1.0).abs() < f64::EPSILON);
+        }
+
+        #[test]
+        fn leaving_fades_the_highlight_out_and_then_forgets_the_row() {
+            let mut h = open_header();
+            h.pointer_enter(point(ON_ROW_0.0, ON_ROW_0.1));
+            settle();
+
+            h.pointer_leave();
+            assert_eq!(h.menu_hover, None);
+            let a = h.menu_row_alpha(0);
+            assert!((0.0..1.0).contains(&a), "must fade out, not vanish: {a}");
+            assert!(h.is_menu_row_fading());
+
+            settle();
+            h.pointer_enter(point(ON_ROW_1.0, ON_ROW_1.1));
+            assert!(h.menu_row_alpha(0).abs() < f64::EPSILON);
+            assert!(
+                h.menu_row_fade.iter().all(|(row, _)| *row != 0),
+                "a row that has fully faded out must be dropped"
+            );
+        }
+
+        #[test]
+        fn the_row_fade_dirties_the_menu_buffer_until_it_settles() {
+            let mut h = open_header();
+            let p = crate::paint::Painter::new(14.0, None);
+            assert!(h.redraw(&p));
+            assert!(!h.redraw(&p));
+
+            h.pointer_enter(point(ON_ROW_0.0, ON_ROW_0.1));
+            assert!(h.redraw(&p), "a fresh hover must redraw");
+
+            settle();
+            assert!(h.redraw(&p), "the fade progressed, redraw once more");
+            assert!(!h.redraw(&p), "settled, nothing left to draw");
+        }
+    }
+
+    mod press_state_layer {
+        use super::*;
+
+        fn settle() {
+            std::thread::sleep(state_layer_anim() + std::time::Duration::from_millis(30));
+        }
+
+        #[test]
+        fn state_layers_fade_over_t1() {
+            assert_eq!(state_layer_anim(), glide_theme::motion::t1());
+        }
+
+        #[test]
+        fn a_press_lights_the_layer_instantly_and_a_release_fades_it_out() {
+            let mut h = header();
+            h.pointer_enter(point(16.0, 16.0));
+            h.on_button(&press());
+            assert!((h.press_layer_progress() - 1.0).abs() < f64::EPSILON);
+            assert!(!h.is_press_fading(), "on is instant");
+
+            h.on_button(&release());
+            assert_eq!(h.pressed, None);
+            let t = h.press_layer_progress();
+            assert!((0.0..1.0).contains(&t), "off must fade: {t}");
+            assert!(h.is_press_fading());
+            assert!(h.is_hover_animating(), "the fade keeps the frame pump alive");
+
+            settle();
+            assert!(h.press_layer_progress().abs() < f64::EPSILON);
+            assert!(!h.is_press_fading());
+        }
+
+        #[test]
+        fn the_pointer_leaving_releases_the_press_with_the_same_fade() {
+            let mut h = header();
+            h.pointer_enter(point(790.0, 16.0));
+            h.on_button(&press());
+            h.pointer_leave();
+            assert_eq!(h.pressed, None);
+            assert!(h.is_press_fading());
+        }
+
+        #[test]
+        fn the_fading_layer_stays_on_the_zone_that_was_pressed() {
+            let mut h = header();
+            let p = crate::paint::Painter::new(14.0, None);
+            h.pointer_enter(point(790.0, 16.0));
+            h.on_button(&press());
+            h.pointer_enter(point(400.0, 16.0));
+            h.on_button(&release());
+            assert!(h.redraw(&p));
+            assert_eq!(h.press_zone, Some(HitZone::Close));
+
+            settle();
+            assert!(h.redraw(&p), "the fade finished, redraw once more");
+            assert!(!h.redraw(&p));
+        }
+    }
+
     mod titlebar_double_click {
         use super::*;
 
         fn press_at(time: u32) -> ButtonEvent {
             ButtonEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time,
+                time: smithay::backend::input::InputTime::from_millis(time),
                 button: 0x110,
                 state: ButtonState::Pressed,
             }
@@ -626,7 +917,7 @@ mod tests {
                 fg_hover(),
                 0.0,
                 false,
-                false,
+                0.0,
                 true,
             );
             assert_eq!(bg, normal());
@@ -642,7 +933,7 @@ mod tests {
                 fg_hover(),
                 1.0,
                 true,
-                false,
+                0.0,
                 true,
             );
             assert_eq!(bg, hover_bg());
@@ -658,7 +949,7 @@ mod tests {
                 fg_hover(),
                 0.5,
                 true,
-                false,
+                0.0,
                 true,
             );
             assert!(bg.0[0] > normal().0[0] && bg.0[0] < hover_bg().0[0]);
@@ -673,7 +964,7 @@ mod tests {
                 fg_hover(),
                 0.0,
                 false,
-                false,
+                0.0,
                 true,
             );
             let (pressed_bg, _) = button_colors(
@@ -683,7 +974,7 @@ mod tests {
                 fg_hover(),
                 0.0,
                 false,
-                true,
+                1.0,
                 true,
             );
             assert!(
@@ -695,6 +986,41 @@ mod tests {
         }
 
         #[test]
+        fn a_half_faded_press_layer_lies_strictly_between_rest_and_full_press() {
+            let (rest_bg, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.0,
+                false,
+                0.0,
+                true,
+            );
+            let (half_bg, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.0,
+                false,
+                0.5,
+                true,
+            );
+            let (full_bg, _) = button_colors(
+                normal(),
+                hover_bg(),
+                fg(),
+                fg_hover(),
+                0.0,
+                false,
+                1.0,
+                true,
+            );
+            assert!(half_bg.0[0] > rest_bg.0[0] && half_bg.0[0] < full_bg.0[0]);
+        }
+
+        #[test]
         fn press_during_an_active_hover_layers_on_top_of_the_hover_color() {
             let (hover_only, _) = button_colors(
                 normal(),
@@ -703,7 +1029,7 @@ mod tests {
                 fg_hover(),
                 0.7,
                 true,
-                false,
+                0.0,
                 true,
             );
             let (hover_and_press, _) = button_colors(
@@ -713,7 +1039,7 @@ mod tests {
                 fg_hover(),
                 0.7,
                 true,
-                true,
+                1.0,
                 true,
             );
             assert_ne!(
@@ -731,7 +1057,7 @@ mod tests {
                 fg_hover(),
                 0.0,
                 false,
-                false,
+                0.0,
                 false,
             );
             assert!((bg.0[3] - normal().0[3] * 0.45).abs() < 0.001);
@@ -751,7 +1077,7 @@ mod tests {
                 fg_hover(),
                 1.0,
                 true,
-                false,
+                0.0,
                 true,
             );
             let (idle_hover, _) = button_colors(
@@ -761,7 +1087,7 @@ mod tests {
                 fg_hover(),
                 1.0,
                 true,
-                false,
+                0.0,
                 false,
             );
             assert!(
@@ -809,14 +1135,14 @@ mod tests {
         fn menu_rows_count_only_while_open() {
             let mut h = header();
             assert!(!h.contains(point(750.0, 48.0)));
-            h.menu_open = true;
+            h.menu = glide_ui::Reveal::open_now();
             assert!(h.contains(point(750.0, 48.0)));
         }
 
         #[test]
         fn menu_open_does_not_claim_content_outside_the_panel_column() {
             let mut h = header();
-            h.menu_open = true;
+            h.menu = glide_ui::Reveal::open_now();
             assert!(!h.contains(point(400.0, 48.0)), "left of the panel");
         }
 
@@ -941,7 +1267,7 @@ mod tests {
         #[test]
         fn row_zero_starts_below_the_strip() {
             let mut h = header();
-            h.menu_open = true;
+            h.menu = glide_ui::Reveal::open_now();
 
             assert_eq!(h.menu_item_at(point(750.0, 16.0)), None, "titlebar strip");
             assert_eq!(h.menu_item_at(point(750.0, 40.0)), Some(0), "first row");
@@ -958,7 +1284,7 @@ mod tests {
         #[test]
         fn x_outside_the_panel_column_is_never_a_row() {
             let mut h = header();
-            h.menu_open = true;
+            h.menu = glide_ui::Reveal::open_now();
             assert_eq!(
                 h.menu_item_at(point(400.0, 48.0)),
                 None,
@@ -1054,20 +1380,20 @@ mod tests {
 
             h.pointer_enter(point(400.0, 16.0));
             assert_eq!(h.on_button(&right_press()), None);
-            assert!(h.menu_open);
+            assert!(h.menu.is_open());
 
             h.pointer_enter(point(400.0, 48.0));
             assert_eq!(
                 h.on_button(&release()),
                 Some(DecorationAction::Run(MenuItem::Minimize))
             );
-            assert!(!h.menu_open, "any release closes the menu");
+            assert!(!h.menu.is_open(), "any release closes the menu");
         }
 
         #[test]
         fn a_second_press_while_the_menu_is_open_is_ignored() {
             let mut h = header();
-            h.menu_open = true;
+            h.menu = glide_ui::Reveal::open_now();
             h.pointer_enter(point(400.0, 16.0));
 
             assert_eq!(h.on_button(&press()), None);
@@ -1076,11 +1402,11 @@ mod tests {
         #[test]
         fn release_outside_the_open_menu_just_closes_it() {
             let mut h = header();
-            h.menu_open = true;
+            h.menu = glide_ui::Reveal::open_now();
             h.pointer_enter(point(400.0, 16.0));
 
             assert_eq!(h.on_button(&release()), None);
-            assert!(!h.menu_open);
+            assert!(!h.menu.is_open());
         }
 
         #[test]
@@ -1229,7 +1555,7 @@ mod tests {
 
             assert!(h.redraw(&p), "first draw with a fresh hover fade-in");
 
-            std::thread::sleep(button_hover_anim() + std::time::Duration::from_millis(30));
+            std::thread::sleep(state_layer_anim() + std::time::Duration::from_millis(30));
             assert!(
                 h.redraw(&p),
                 "the fade progressed since the last draw, must redraw once more"
@@ -1247,11 +1573,11 @@ mod tests {
             assert!(h.redraw(&p));
             assert!(!h.redraw(&p));
 
-            h.menu_open = true;
+            h.menu = glide_ui::Reveal::open_now();
             assert!(h.redraw(&p), "opening the menu must redraw");
             assert!(!h.redraw(&p));
 
-            h.menu_open = false;
+            h.menu = glide_ui::Reveal::closed();
             assert!(h.redraw(&p), "closing the menu must redraw");
         }
     }

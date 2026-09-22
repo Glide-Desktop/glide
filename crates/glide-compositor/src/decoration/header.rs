@@ -15,16 +15,43 @@ use crate::{
 use super::{
     BUTTON_HIT_WIDTH, BUTTON_PAD_X, BUTTON_SIZE, DOUBLE_CLICK_MS, DOUBLE_CLICK_SLOP,
     IDLE_BUTTON_OPACITY, MENU_CONTAINER_PADDING, MENU_CONTAINER_RADIUS, MENU_CORNER_RADIUS,
-    MENU_PADDING, MENU_ROW_HEIGHT, MENU_WIDTH, RESIZE_BORDER, TITLE_PADDING, button_hover_anim,
-    menu::MenuItem, render::redraw_button,
+    MENU_PADDING, MENU_ROW_HEIGHT, MENU_WIDTH, RESIZE_BORDER, TITLE_PADDING, menu::MenuItem,
+    menu_open_anim, render::redraw_button, state_layer_anim,
 };
 
-// `focused`, `maximized`, `menu_open` and `dragging` are four genuinely
-// orthogonal UI states that can hold in any combination — a focused, maximized
-// window can be dragged with its menu open. The lint exists to catch flags that
-// should have been one enum; collapsing these would lose information rather
-// than express it better.
-#[allow(clippy::struct_excessive_bools)]
+const ROW_ALPHA_STEPS: f64 = 15.0;
+
+fn ease_out(t: f64) -> f64 {
+    glide_theme::motion::E_OUT.ease_f64(t)
+}
+
+fn ease_io(t: f64) -> f64 {
+    glide_theme::motion::E_IO.ease_f64(t)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Fade(glide_ui::Tween);
+
+impl Default for Fade {
+    fn default() -> Self {
+        Self(glide_ui::Tween::at(0.0))
+    }
+}
+
+impl std::ops::Deref for Fade {
+    type Target = glide_ui::Tween;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Fade {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct HeaderBar {
     pub(crate) height: i32,
@@ -32,12 +59,15 @@ pub struct HeaderBar {
     pub(crate) content_height: i32,
     pub(crate) title: String,
     pub(crate) pointer_loc: Option<Point<f64, Logical>>,
-    pub(crate) menu_open: bool,
-    pub(crate) menu_opened_at: Option<std::time::Instant>,
+    pub(crate) menu: glide_ui::Reveal,
+    pub(crate) menu_t: Fade,
     pub(crate) menu_hover: Option<usize>,
+    pub(crate) menu_row_fade: Vec<(usize, Fade)>,
     pub(crate) menu_x: i32,
     pub(crate) menu_width: i32,
     pub(crate) pressed: Option<HitZone>,
+    pub(crate) press_zone: Option<HitZone>,
+    pub(crate) press_t: Fade,
     pub(crate) dragging: bool,
     pub(crate) last_drag_press: Option<(u32, Point<f64, Logical>)>,
     pub(crate) button_hover: glide_ui::HoverAnimation<HitZone>,
@@ -57,7 +87,9 @@ pub struct HeaderBar {
     pub(crate) last_redraw: Option<RedrawSnapshot>,
 }
 
-// Mirrors `HeaderBar`'s orthogonal flags; see the note there.
+// `focused`, `maximized`, `dragging` and `menu_visible` are orthogonal states
+// that can hold in any combination; collapsing them into an enum would lose
+// information rather than express it better.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RedrawSnapshot {
@@ -73,11 +105,12 @@ pub(crate) struct RedrawSnapshot {
     hover_t_bits: u32,
     focus_fade_bits: u32,
     pressed: Option<HitZone>,
+    press_zone: Option<HitZone>,
+    press_t_bits: u32,
     dragging: bool,
-    menu_open: bool,
+    menu_visible: bool,
     menu_width: i32,
-    menu_hover: Option<usize>,
-    menu_open_bits: u32,
+    menu_row_alpha: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +137,7 @@ pub(crate) fn button_colors(
     fg_hover: Color,
     hover_t: f32,
     is_hovered: bool,
-    is_pressed: bool,
+    press_t: f32,
     focused: bool,
 ) -> (Color, Color) {
     let (mut bg, mut fg) = if is_hovered {
@@ -113,9 +146,9 @@ pub(crate) fn button_colors(
         (normal, fg)
     };
 
-    if is_pressed {
+    if press_t > 0.0 {
         let press_overlay = Color([1.0, 1.0, 1.0, 1.0]);
-        bg = bg.lerp(press_overlay, glide_theme::motion::ST_PRESS);
+        bg = bg.lerp(press_overlay, glide_theme::motion::ST_PRESS * press_t);
     }
 
     if !focused {
@@ -190,7 +223,28 @@ impl HeaderBar {
     }
 
     pub(crate) fn button_hover_progress(&mut self) -> f64 {
-        glide_theme::motion::E_OUT.ease_f64(self.button_hover.progress(button_hover_anim()))
+        ease_io(self.button_hover.progress(state_layer_anim()))
+    }
+
+    #[must_use]
+    pub(crate) fn press_layer_progress(&self) -> f64 {
+        self.press_t.value(state_layer_anim(), ease_io)
+    }
+
+    #[must_use]
+    pub(crate) fn is_press_fading(&self) -> bool {
+        self.press_t.is_animating(state_layer_anim())
+    }
+
+    fn press_zone(&mut self, zone: HitZone) {
+        self.pressed = Some(zone);
+        self.press_zone = Some(zone);
+        self.press_t.jump(1.0);
+    }
+
+    fn release_press(&mut self) {
+        self.pressed = None;
+        self.press_t.retarget(0.0, state_layer_anim(), ease_io);
     }
 
     #[must_use]
@@ -208,9 +262,11 @@ impl HeaderBar {
 
     #[must_use]
     pub fn is_hover_animating(&self) -> bool {
-        self.button_hover.is_animating(button_hover_anim())
+        self.button_hover.is_animating(state_layer_anim())
             || self.is_focus_fading()
             || self.is_menu_animating()
+            || self.is_menu_row_fading()
+            || self.is_press_fading()
     }
 
     #[must_use]
@@ -275,7 +331,7 @@ impl HeaderBar {
     }
 
     fn interactive_height(&self) -> i32 {
-        if self.menu_open {
+        if self.menu.is_open() {
             self.height + self.menu_container_height()
         } else {
             self.height
@@ -302,7 +358,7 @@ impl HeaderBar {
             && rel.y >= f64::from(self.height)
             && rel.y < frame_height;
         if in_content {
-            if !self.menu_open || rel.y >= f64::from(self.interactive_height()) {
+            if !self.menu.is_open() || rel.y >= f64::from(self.interactive_height()) {
                 return false;
             }
             let menu_left = f64::from(self.menu_x);
@@ -351,50 +407,98 @@ impl HeaderBar {
     }
 
     pub(crate) fn menu_item_at(&self, loc: Point<f64, Logical>) -> Option<usize> {
-        if !self.menu_open {
+        if !self.menu.is_open() {
             return None;
         }
         glide_ui::hit_test(&self.menu_rows(), loc.x, loc.y)
     }
 
+    fn set_menu_hover(&mut self, hover: Option<usize>) {
+        self.menu_hover = hover;
+        let duration = state_layer_anim();
+        if let Some(row) = hover
+            && !self.menu_row_fade.iter().any(|(i, _)| *i == row)
+        {
+            self.menu_row_fade.push((row, Fade::default()));
+        }
+        for (row, fade) in &mut self.menu_row_fade {
+            let to = if hover == Some(*row) { 1.0 } else { 0.0 };
+            fade.retarget(to, duration, ease_io);
+        }
+        self.menu_row_fade
+            .retain(|(_, fade)| fade.target() > 0.0 || fade.is_animating(duration));
+    }
+
+    #[must_use]
+    pub(crate) fn menu_row_alpha(&self, row: usize) -> f64 {
+        self.menu_row_fade
+            .iter()
+            .find(|(i, _)| *i == row)
+            .map_or(0.0, |(_, fade)| fade.value(state_layer_anim(), ease_io))
+    }
+
+    #[must_use]
+    pub(crate) fn is_menu_row_fading(&self) -> bool {
+        let duration = state_layer_anim();
+        self.menu_row_fade
+            .iter()
+            .any(|(_, fade)| fade.is_animating(duration))
+    }
+
     pub fn pointer_enter(&mut self, loc: Point<f64, Logical>) {
         self.pointer_loc = Some(loc);
-        self.menu_hover = self.menu_item_at(loc);
+        self.set_menu_hover(self.menu_item_at(loc));
         self.sync_button_hover();
     }
 
     pub fn pointer_leave(&mut self) {
         self.pointer_loc = None;
-        self.menu_hover = None;
-        self.pressed = None;
+        self.set_menu_hover(None);
+        self.release_press();
         self.sync_button_hover();
     }
 
-    fn open_menu_at(&mut self, at_x: i32) {
-        if !self.menu_open {
-            self.menu_opened_at = Some(std::time::Instant::now());
+    fn menu_ease(&self) -> fn(f64) -> f64 {
+        if self.menu.is_open() {
+            ease_out
+        } else {
+            ease_io
         }
-        self.menu_open = true;
+    }
+
+    fn open_menu_at(&mut self, at_x: i32) {
+        let duration = menu_open_anim();
+        let ease = self.menu_ease();
+        if self.menu.open(duration) {
+            self.menu_t.retarget(1.0, duration, ease);
+        }
         self.menu_width = MENU_WIDTH.min(self.width);
         self.menu_x = (at_x - self.menu_width / 2).clamp(0, (self.width - self.menu_width).max(0));
+        let hover = self.pointer_loc.and_then(|loc| self.menu_item_at(loc));
+        self.set_menu_hover(hover);
+    }
+
+    fn close_menu(&mut self) {
+        let duration = menu_open_anim();
+        let ease = self.menu_ease();
+        if self.menu.close(duration) {
+            self.menu_t.retarget(0.0, duration, ease);
+        }
     }
 
     #[must_use]
     pub(crate) fn menu_open_progress(&self) -> f64 {
-        let Some(started) = self.menu_opened_at else {
-            return 1.0;
-        };
-        let duration = super::menu_open_anim();
-        let elapsed = started.elapsed();
-        if duration.is_zero() || elapsed >= duration {
-            return 1.0;
-        }
-        glide_theme::motion::E_OUT.ease_f64(elapsed.as_secs_f64() / duration.as_secs_f64())
+        self.menu_t.value(menu_open_anim(), self.menu_ease())
     }
 
     #[must_use]
     pub(crate) fn is_menu_animating(&self) -> bool {
-        self.menu_open && self.menu_open_progress() < 1.0
+        self.menu.is_animating(menu_open_anim())
+    }
+
+    #[must_use]
+    pub(crate) fn is_menu_visible(&self) -> bool {
+        self.menu.is_visible(menu_open_anim())
     }
 
     pub fn open_menu_at_default_position(&mut self) {
@@ -420,7 +524,7 @@ impl HeaderBar {
         let loc = self.pointer_loc?;
 
         if event.state == ButtonState::Pressed {
-            if self.menu_open {
+            if self.menu.is_open() {
                 return None;
             }
             if let Some(edges) = self.resize_edges_at(loc) {
@@ -437,25 +541,25 @@ impl HeaderBar {
 
             let zone = self.zone_at(loc.x, loc.y);
             if zone == HitZone::Drag {
-                if self.is_double_click(event.time, loc) {
+                let time = event.time.millis();
+                if self.is_double_click(time, loc) {
                     self.last_drag_press = None;
                     return Some(DecorationAction::ToggleMaximize);
                 }
-                self.last_drag_press = Some((event.time, loc));
+                self.last_drag_press = Some((time, loc));
                 return Some(DecorationAction::StartMove);
             }
             self.last_drag_press = None;
-            self.pressed = Some(zone);
+            self.press_zone(zone);
             return None;
         }
 
-        self.pressed = None;
+        self.release_press();
 
-        if self.menu_open {
+        if self.menu.is_open() {
             let item = self.menu_item_at(loc).and_then(|i| MenuItem::ALL.get(i));
             let action = item.map(|&item| DecorationAction::Run(item));
-            self.menu_open = false;
-            self.menu_opened_at = None;
+            self.close_menu();
             return action;
         }
 
@@ -484,14 +588,30 @@ impl HeaderBar {
             return false;
         }
 
+        self.menu.settle(menu_open_anim());
+
         let hovered = self.hovered_zone();
         let pressed = self.pressed;
         #[allow(clippy::cast_possible_truncation)]
         let hover_t = self.button_hover_progress() as f32;
+        #[allow(clippy::cast_possible_truncation)]
+        let press_t = self.press_layer_progress() as f32;
+        let press_zone = if press_t > 0.0 { self.press_zone } else { None };
         let focus_fade_t = self.focus_fade_t();
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let menu_open_bits = (self.menu_open_progress().clamp(0.0, 1.0) * 8.0).round() as u32;
+        let menu_visible = self.is_menu_visible();
+        let menu_row_alpha: Vec<u8> = if menu_visible {
+            (0..MenuItem::ALL.len())
+                .map(|row| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    {
+                        (self.menu_row_alpha(row).clamp(0.0, 1.0) * ROW_ALPHA_STEPS).round() as u8
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         let snapshot = RedrawSnapshot {
             width: self.width,
@@ -506,11 +626,12 @@ impl HeaderBar {
             hover_t_bits: hover_t.to_bits(),
             focus_fade_bits: focus_fade_t.to_bits(),
             pressed,
+            press_zone,
+            press_t_bits: press_t.to_bits(),
             dragging: self.dragging,
-            menu_open: self.menu_open,
+            menu_visible,
             menu_width: self.menu_width,
-            menu_hover: self.menu_hover,
-            menu_open_bits,
+            menu_row_alpha: menu_row_alpha.clone(),
         };
         if self.last_redraw.as_ref() == Some(&snapshot) {
             return false;
@@ -624,6 +745,11 @@ impl HeaderBar {
         ] {
             let is_hovered = hovered == Some(*zone);
             let is_pressed = pressed == Some(*zone);
+            let zone_press_t = if press_zone == Some(*zone) {
+                press_t
+            } else {
+                0.0
+            };
             let (btn_bg, btn_fg) = button_colors(
                 *normal,
                 *hover_bg,
@@ -631,13 +757,13 @@ impl HeaderBar {
                 *fg_hover,
                 hover_t,
                 is_hovered,
-                is_pressed,
+                zone_press_t,
                 self.focused,
             );
             redraw_button(buf, scale, btn_bg, btn_fg, is_pressed, *icon);
         }
 
-        if self.menu_open {
+        if menu_visible {
             let container_h = self.menu_container_height();
             let (pw, ph) = (MENU_WIDTH * scale, container_h * scale);
             let buf = self.menu_buf.get_or_insert_with(|| {
@@ -646,7 +772,6 @@ impl HeaderBar {
             let mut ctx = buf.render();
             ctx.resize((pw, ph));
 
-            let menu_hover = self.menu_hover;
             let menu_bg = theme.menu_background;
             let menu_border = theme.menu_border;
             let menu_row_hover_bg = theme.menu_item_hover;
@@ -681,7 +806,10 @@ impl HeaderBar {
                     let row_left = MENU_CONTAINER_PADDING;
                     let row_w = MENU_WIDTH - MENU_CONTAINER_PADDING * 2;
 
-                    if menu_hover == Some(i) {
+                    let row_alpha = menu_row_alpha.get(i).copied().unwrap_or(0);
+                    if row_alpha > 0 {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let row_t = (f64::from(row_alpha) / ROW_ALPHA_STEPS) as f32;
                         Painter::fill_rounded_rect_over(
                             pixels,
                             MENU_WIDTH,
@@ -691,7 +819,7 @@ impl HeaderBar {
                             row_w,
                             MENU_ROW_HEIGHT,
                             scale,
-                            menu_row_hover_bg,
+                            menu_row_hover_bg.with_alpha(menu_row_hover_bg.0[3] * row_t),
                             MENU_CORNER_RADIUS,
                         );
                     }

@@ -88,6 +88,7 @@ pub struct Layout {
     outputs: Vec<OutputInfo>,
     policy: NewWindowPolicy,
     overview_active: bool,
+    placement_anchor: Option<Point>,
 }
 
 impl Default for Layout {
@@ -108,7 +109,20 @@ impl Layout {
             outputs: Vec::new(),
             policy: NewWindowPolicy::NewWorkspace,
             overview_active: false,
+            placement_anchor: None,
         }
+    }
+
+    pub fn set_placement_anchor(&mut self, point: Point) {
+        self.placement_anchor = Some(point);
+    }
+
+    #[must_use]
+    pub fn placement_work_area(&self) -> Rectangle {
+        self.placement_anchor.map_or_else(
+            || self.primary_output_work_area(),
+            |anchor| self.work_area_at(anchor),
+        )
     }
 
     #[must_use]
@@ -123,6 +137,51 @@ impl Layout {
         self.outputs
             .first()
             .map_or(FALLBACK_OUTPUT, |output| output.work_area)
+    }
+
+    #[must_use]
+    pub fn output_at(&self, point: Point) -> Option<&OutputInfo> {
+        self.outputs
+            .iter()
+            .find(|output| output.geometry.contains(point))
+    }
+
+    #[must_use]
+    pub fn work_area_at(&self, point: Point) -> Rectangle {
+        self.output_at(point).map_or_else(
+            || self.primary_output_work_area(),
+            |output| output.work_area,
+        )
+    }
+
+    #[must_use]
+    pub fn output_geometry_at(&self, point: Point) -> Rectangle {
+        self.output_at(point)
+            .map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
+    }
+
+    fn output_for_window(&self, w: WindowId) -> Option<&OutputInfo> {
+        let state = self.windows.get(&w)?;
+        let centre = state.geometry.center();
+        self.output_at(centre).or_else(|| {
+            self.outputs
+                .iter()
+                .find(|output| output.geometry.overlaps(state.geometry))
+        })
+    }
+
+    #[must_use]
+    pub fn work_area_for_window(&self, w: WindowId) -> Rectangle {
+        self.output_for_window(w).map_or_else(
+            || self.primary_output_work_area(),
+            |output| output.work_area,
+        )
+    }
+
+    #[must_use]
+    pub fn output_geometry_for_window(&self, w: WindowId) -> Rectangle {
+        self.output_for_window(w)
+            .map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
     }
 
     pub fn set_policy(&mut self, policy: NewWindowPolicy) {
@@ -181,16 +240,16 @@ impl Layout {
     }
 
     pub fn visible_windows(&self) -> impl Iterator<Item = WindowState> {
-        let mut ordered_windows = Vec::new();
-        if let Some(ws) = self.workspaces.iter().find(|ws| ws.id == self.active) {
-            for id in &ws.windows {
-                if let Some(state) = self.windows.get(id) {
-                    if !state.minimized {
-                        ordered_windows.push(state.clone());
-                    }
-                }
-            }
-        }
+        let ordered_windows: Vec<WindowState> = self
+            .workspaces
+            .iter()
+            .find(|ws| ws.id == self.active)
+            .into_iter()
+            .flat_map(|ws| ws.windows.iter())
+            .filter_map(|id| self.windows.get(id))
+            .filter(|state| !state.minimized)
+            .cloned()
+            .collect();
         ordered_windows.into_iter()
     }
 
@@ -217,17 +276,13 @@ impl Layout {
 
     #[must_use]
     pub fn overview_windows(&self) -> Vec<WindowState> {
-        let mut windows = Vec::new();
-        for ws in &self.workspaces {
-            for id in &ws.windows {
-                if let Some(state) = self.windows.get(id) {
-                    if !state.minimized {
-                        windows.push(state.clone());
-                    }
-                }
-            }
-        }
-        windows
+        self.workspaces
+            .iter()
+            .flat_map(|ws| ws.windows.iter())
+            .filter_map(|id| self.windows.get(id))
+            .filter(|state| !state.minimized)
+            .cloned()
+            .collect()
     }
 
     pub fn raise_window(&mut self, w: WindowId) -> bool {
@@ -445,7 +500,7 @@ impl Layout {
     }
 
     pub fn set_maximized(&mut self, w: WindowId, maximized: bool) -> bool {
-        let work_area = self.primary_output_work_area();
+        let work_area = self.work_area_for_window(w);
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
@@ -474,8 +529,8 @@ impl Layout {
     }
 
     pub fn set_fullscreen(&mut self, w: WindowId, fullscreen: bool) -> bool {
-        let output_geom = self.primary_output_geometry();
-        let work_area = self.primary_output_work_area();
+        let output_geom = self.output_geometry_for_window(w);
+        let work_area = self.work_area_for_window(w);
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
@@ -681,7 +736,7 @@ impl Layout {
         insets: Insets,
         index_on_ws: usize,
     ) -> Rectangle {
-        let work_area = self.primary_output_work_area();
+        let work_area = self.placement_work_area();
         let frame_size = Size::new(
             content_size.width + insets.width(),
             content_size.height + insets.height(),
@@ -720,13 +775,20 @@ impl Layout {
             }
         }
 
-        let work_area = self.primary_output_work_area();
-        let output_geom = self.primary_output_geometry();
-        for state in self.windows.values_mut() {
-            if state.fullscreen {
-                state.geometry = output_geom;
-            } else if state.maximized {
-                state.geometry = work_area;
+        let locked: Vec<(WindowId, bool)> = self
+            .windows
+            .values()
+            .filter(|state| state.fullscreen || state.maximized)
+            .map(|state| (state.id, state.fullscreen))
+            .collect();
+        for (id, fullscreen) in locked {
+            let geometry = if fullscreen {
+                self.output_geometry_for_window(id)
+            } else {
+                self.work_area_for_window(id)
+            };
+            if let Some(state) = self.windows.get_mut(&id) {
+                state.geometry = geometry;
             }
         }
     }
@@ -739,18 +801,14 @@ impl Layout {
     }
 
     fn remove_workspace_if_empty(&mut self, ws_id: WorkspaceId) {
-        if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id) {
-            if self.workspaces[idx].windows.is_empty() && self.workspaces.len() > 1 {
-                self.workspaces.remove(idx);
-
-                if self.active == ws_id {
-                    let next_idx = if idx < self.workspaces.len() {
-                        idx
-                    } else {
-                        idx.saturating_sub(1)
-                    };
-                    self.active = self.workspaces[next_idx].id;
-                }
+        if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id)
+            && self.workspaces[idx].windows.is_empty()
+            && self.workspaces.len() > 1
+        {
+            self.workspaces.remove(idx);
+            if self.active == ws_id {
+                let next_idx = idx.min(self.workspaces.len() - 1);
+                self.active = self.workspaces[next_idx].id;
             }
         }
     }

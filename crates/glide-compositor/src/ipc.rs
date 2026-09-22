@@ -192,8 +192,7 @@ fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideStat
                 buffer.extend_from_slice(&chunk[..n]);
 
                 if let Some(newline) = buffer.iter().position(|&b| b == b'\n') {
-                    let line = buffer[..newline].to_vec();
-                    respond(stream, state, &line);
+                    respond(stream, state, &buffer[..newline]);
                     return PostAction::Remove;
                 }
 
@@ -215,8 +214,7 @@ fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideStat
     }
 }
 
-fn write_all_nonblocking(stream: &UnixStream, mut data: &[u8]) -> std::io::Result<()> {
-    let mut stream = stream;
+fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::Result<()> {
     let mut retries = 0;
     while !data.is_empty() {
         match stream.write(data) {
