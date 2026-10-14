@@ -577,7 +577,7 @@ impl GlideState {
         let Some(toplevel) = window.toplevel() else {
             return;
         };
-        if Self::update_pending_state(toplevel, state, false) && toplevel.is_initial_configure_sent() {
+        if Self::update_pending_state(toplevel, state, false, None) && toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }
     }
@@ -596,19 +596,29 @@ impl GlideState {
                 changed = true;
             }
         });
-        if Self::update_pending_state(toplevel, state, focused) || changed {
+        if Self::update_pending_state(toplevel, state, focused, Some(work_area)) || changed {
             toplevel.send_pending_configure();
         }
     }
 
     fn update_pending_state(
         toplevel: &smithay::wayland::shell::xdg::ToplevelSurface, state: &glide_layout::WindowState, focused: bool,
+        work_area: Option<glide_layout::Rectangle>,
     ) -> bool {
+        let tiled = work_area
+            .filter(|_| !state.maximized && !state.fullscreen)
+            .map_or([false; 4], |area| tiled_edges(state.geometry, area));
         let mut changed = false;
         toplevel.with_pending_state(|pending| {
             changed |= set_state_flag(pending, XdgState::Activated, focused);
             changed |= set_state_flag(pending, XdgState::Maximized, state.maximized);
             changed |= set_state_flag(pending, XdgState::Fullscreen, state.fullscreen);
+            for (flag, on) in [XdgState::TiledLeft, XdgState::TiledRight, XdgState::TiledTop, XdgState::TiledBottom]
+                .into_iter()
+                .zip(tiled)
+            {
+                changed |= set_state_flag(pending, flag, on);
+            }
 
             let content = state.content_geometry();
             let size = state.is_placed.then(|| smithay::utils::Size::from((content.size.width, content.size.height)));
@@ -3236,6 +3246,15 @@ pub fn content_bounds(
     ))
 }
 
+#[must_use]
+pub fn tiled_edges(frame: glide_layout::Rectangle, area: glide_layout::Rectangle) -> [bool; 4] {
+    let left = frame.loc.x == area.loc.x;
+    let right = frame.loc.x + frame.size.width == area.loc.x + area.size.width;
+    let top = frame.loc.y == area.loc.y;
+    let bottom = frame.loc.y + frame.size.height == area.loc.y + area.size.height;
+    if top && bottom && left != right { [left, right, true, true] } else { [false; 4] }
+}
+
 fn set_state_flag(pending: &mut ToplevelState, flag: XdgState, wanted: bool) -> bool {
     if wanted == pending.states.contains(flag) {
         return false;
@@ -3337,6 +3356,16 @@ pub fn auto_output_scale(physical_mm: (i32, i32), mode_px: (i32, i32)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_half_of_the_work_area_is_tiled_on_its_outer_edges_only() {
+        let rect = glide_layout::Rectangle::from_loc_and_size;
+        let area = rect(0, 32, 1920, 1048);
+        assert_eq!(tiled_edges(rect(0, 32, 960, 1048), area), [true, false, true, true]);
+        assert_eq!(tiled_edges(rect(960, 32, 960, 1048), area), [false, true, true, true]);
+        assert_eq!(tiled_edges(area, area), [false; 4], "the full area is maximized, not tiled");
+        assert_eq!(tiled_edges(rect(0, 100, 960, 900), area), [false; 4], "a window that only touches an edge floats");
+    }
 
     #[test]
     fn auto_scale_picks_hidpi_for_dense_laptop_panels() {
