@@ -250,6 +250,7 @@ impl Page {
                 let before = self.capture(config);
                 if let Some(output) = self.state.outputs.get_mut(self.selected) {
                     config.set_output_scale(&output.name, scale);
+                    config.tag_output(&output.name, &output.make, &output.model);
                     if !self.state.live {
                         output.scale = scale;
                     }
@@ -260,6 +261,7 @@ impl Page {
                 let before = self.capture(config);
                 if let Some(output) = self.state.outputs.get(self.selected) {
                     config.set_output_mode(&output.name, choice.key.as_deref());
+                    config.tag_output(&output.name, &output.make, &output.model);
                 }
                 return self.guard_change(before, config);
             }
@@ -335,6 +337,9 @@ impl Page {
             }
         }
         config.set_output_positions(&positions);
+        for output in &self.state.outputs {
+            config.tag_output(&output.name, &output.make, &output.model);
+        }
     }
 
     fn effective_scale(&self, config: &ConfigStore, index: usize) -> f64 {
@@ -722,6 +727,19 @@ mod tests {
         edit(config);
         assert!(Guard::changed(&before, config));
         guard.arm(before);
+    }
+
+    #[test]
+    fn a_written_output_is_tagged_with_its_monitor_once_known() {
+        let mut config = ConfigStore::parse("");
+        config.tag_output("DP-1", "Dell", "U2720Q");
+        assert_eq!(config.to_text(), "", "only an existing section is tagged");
+        config.set_output_scale("DP-1", 1.5);
+        config.tag_output("DP-1", "Unknown", "Unknown");
+        assert!(!config.to_text().contains("make"), "an unreadable EDID is not written");
+        config.tag_output("DP-1", "Dell", "U2720Q");
+        let text = config.to_text();
+        assert!(text.contains("make = \"Dell\"") && text.contains("model = \"U2720Q\""), "{text}");
     }
 
     #[test]

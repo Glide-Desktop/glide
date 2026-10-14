@@ -609,6 +609,22 @@ impl ConfigStore {
         array.get_mut(index).expect("the index points inside the array")
     }
 
+    pub fn tag_output(&mut self, name: &str, make: &str, model: &str) {
+        let known = |text: &str| !text.trim().is_empty() && text.trim() != "Unknown";
+        if self.error.is_some() || self.output_table(name).is_none() || !known(make) || !known(model) {
+            return;
+        }
+        let table = self.output_table_mut(name);
+        let mut changed = false;
+        for (key, text) in [("make", make.trim()), ("model", model.trim())] {
+            if table.get(key).and_then(Item::as_str) != Some(text) {
+                table.insert(key, value(text));
+                changed = true;
+            }
+        }
+        self.dirty |= changed;
+    }
+
     pub fn set_output_mode(&mut self, name: &str, mode: Option<&str>) {
         if self.error.is_some() || self.output_mode(name).as_deref() == mode {
             return;

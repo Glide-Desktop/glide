@@ -314,7 +314,7 @@ pub struct GlideState {
     pub focus_history: Vec<glide_layout::WindowId>,
     pub ipc_subscribers: crate::ipc::IpcSubscribers,
 
-    pub pending_screenshot: bool,
+    pub pending_screenshot: Option<Output>,
     pub active_slider_drag: Option<crate::topbar::Slot>,
     pub announced_workspace: Option<glide_layout::WorkspaceId>,
     pub synced_workspaces: Option<(Vec<glide_layout::WorkspaceId>, glide_layout::WorkspaceId)>,
@@ -434,7 +434,7 @@ impl GlideState {
             power_countdown: None,
             focus_history: Vec::new(),
             ipc_subscribers: crate::ipc::IpcSubscribers::default(),
-            pending_screenshot: false,
+            pending_screenshot: None,
             announced_workspace: None,
             synced_workspaces: None,
             snap_preview: None,
@@ -1038,7 +1038,8 @@ impl GlideState {
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         let mut next_x = 0;
         for output in outputs {
-            let config = self.output_configs.iter().find(|config| config.name == output.name()).cloned();
+            let identity = crate::config::OutputIdentity::of(&output);
+            let config = crate::config::output_config(&self.output_configs, &identity).cloned();
             let configured = config.as_ref().and_then(|config| config.scale).filter(|scale| *scale > 0.0);
             let scale = configured.or_else(|| {
                 output.current_mode().map(|mode| {
@@ -1443,8 +1444,7 @@ impl GlideState {
             }
             TopbarAction::QsScreenshot => {
                 self.topbar.close_popup();
-                self.pending_screenshot = true;
-                self.queue_redraw();
+                self.request_screenshot();
             }
             TopbarAction::QsOpenSettings => {
                 self.topbar.close_popup();

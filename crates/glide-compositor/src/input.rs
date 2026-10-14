@@ -1573,11 +1573,7 @@ impl GlideState {
                     self.toggle_launcher();
                 }
             }
-            KeyAction::Screenshot => {
-                tracing::info!("screenshot requested");
-                self.pending_screenshot = true;
-                self.queue_redraw();
-            }
+            KeyAction::Screenshot => self.request_screenshot(),
             KeyAction::TopbarClosePopup => {
                 let topbar_closed = self.topbar.close_popup();
                 let dock_closed = self.dock.close_menu();

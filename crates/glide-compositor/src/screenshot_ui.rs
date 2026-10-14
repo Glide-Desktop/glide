@@ -84,7 +84,31 @@ pub fn save_in_background(loop_handle: &LoopHandle<'static, GlideState>, pixels:
     }
 }
 
+#[must_use]
+pub fn target_output<T: Clone>(
+    outputs: &[(T, smithay::utils::Rectangle<i32, smithay::utils::Logical>)],
+    pointer: smithay::utils::Point<f64, smithay::utils::Logical>,
+) -> Option<T> {
+    outputs
+        .iter()
+        .find(|(_, area)| area.to_f64().contains(pointer))
+        .or_else(|| outputs.first())
+        .map(|(output, _)| output.clone())
+}
+
 impl GlideState {
+    pub fn request_screenshot(&mut self) {
+        let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
+        let outputs: Vec<_> = self
+            .space
+            .outputs()
+            .filter_map(|output| Some((output.clone(), self.space.output_geometry(output)?)))
+            .collect();
+        self.pending_screenshot = target_output(&outputs, pointer);
+        tracing::info!(output = ?self.pending_screenshot.as_ref().map(Output::name), "screenshot requested");
+        self.queue_redraw();
+    }
+
     fn screenshot_finished(&mut self, result: Result<Saved, String>) {
         let (summary, body) = match result {
             Ok(Saved { path, png }) => {
@@ -132,6 +156,19 @@ mod tests {
                 serial_number: String::new(),
             },
         )
+    }
+
+    #[test]
+    fn the_screenshot_is_taken_of_the_output_under_the_pointer() {
+        use smithay::utils::{Point, Rectangle};
+        let outputs = [
+            ("eDP-1", Rectangle::new((0, 0).into(), (1920, 1080).into())),
+            ("HDMI-A-1", Rectangle::new((1920, 0).into(), (2560, 1440).into())),
+        ];
+        assert_eq!(target_output(&outputs, Point::from((2500.0, 700.0))), Some("HDMI-A-1"));
+        assert_eq!(target_output(&outputs, Point::from((10.0, 10.0))), Some("eDP-1"));
+        assert_eq!(target_output(&outputs, Point::from((-5.0, 5000.0))), Some("eDP-1"), "off every output");
+        assert_eq!(target_output::<&str>(&[], Point::from((0.0, 0.0))), None);
     }
 
     #[test]

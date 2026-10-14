@@ -441,9 +441,62 @@ impl InputConfig {
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct OutputConfig {
     pub name: String,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
     pub position: Option<[i32; 2]>,
     pub scale: Option<f64>,
     pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutputIdentity {
+    pub name: String,
+    pub make: String,
+    pub model: String,
+    pub serial: String,
+}
+
+impl OutputIdentity {
+    #[must_use]
+    pub fn of(output: &smithay::output::Output) -> Self {
+        let properties = output.physical_properties();
+        Self { name: output.name(), make: properties.make, model: properties.model, serial: properties.serial_number }
+    }
+}
+
+fn given(want: Option<&str>) -> Option<&str> {
+    want.map(str::trim).filter(|want| !want.is_empty())
+}
+
+impl OutputConfig {
+    #[must_use]
+    pub fn score(&self, identity: &OutputIdentity) -> Option<u8> {
+        let wanted = [
+            (self.make.as_deref(), identity.make.as_str()),
+            (self.model.as_deref(), identity.model.as_str()),
+            (self.serial.as_deref(), identity.serial.as_str()),
+        ];
+        let named = !self.name.is_empty() && self.name == identity.name;
+        if wanted.iter().all(|(want, _)| given(*want).is_none()) {
+            return named.then_some(1);
+        }
+        let same = wanted.iter().all(|(want, have)| given(*want).is_none_or(|want| want == have.trim()));
+        same.then_some(if named { 3 } else { 2 })
+    }
+}
+
+#[must_use]
+pub fn output_config<'a>(configs: &'a [OutputConfig], identity: &OutputIdentity) -> Option<&'a OutputConfig> {
+    let mut best: Option<(u8, &OutputConfig)> = None;
+    for config in configs {
+        if let Some(score) = config.score(identity)
+            && best.is_none_or(|(best, _)| score > best)
+        {
+            best = Some((score, config));
+        }
+    }
+    best.map(|(_, config)| config)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1926,6 +1979,8 @@ mode = "2256x1504@59.999"
 
 [[output]]
 name = "HDMI-A-1"
+make = "Dell"
+model = "U2720Q"
 position = [2256, 0]
 mode = "1920x1080"
 
@@ -2053,6 +2108,28 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         assert_eq!(gtk_theme_for("'Adwaita'", glide_theme::Appearance::Dark), Some("Adwaita-dark"));
         assert_eq!(gtk_theme_for("'Adwaita-dark'\n", glide_theme::Appearance::Light), Some("Adwaita"));
         assert_eq!(gtk_theme_for("'Arc-Dark'", glide_theme::Appearance::Light), None);
+    }
+
+    #[test]
+    fn an_output_section_follows_its_monitor_across_ports_and_skips_a_stranger() {
+        let config: Config = toml::from_str(
+            "[[output]]\nname = \"DP-1\"\nmake = \"Dell\"\nmodel = \"U2720Q\"\nscale = 1.5\n\n\
+             [[output]]\nname = \"DP-2\"\nscale = 1.25\n\n\
+             [[output]]\nname = \"HDMI-A-1\"\nmake = \"Dell\"\nmodel = \"U2720Q\"\nscale = 2.0\n",
+        )
+        .expect("valid outputs");
+        let identity = |name: &str, make: &str, model: &str| OutputIdentity {
+            name: name.into(),
+            make: make.into(),
+            model: model.into(),
+            serial: "Unknown".into(),
+        };
+        let scale = |id: &OutputIdentity| output_config(&config.outputs, id).and_then(|config| config.scale);
+        assert_eq!(scale(&identity("DP-1", "Dell", "U2720Q")), Some(1.5), "its own port wins a tie");
+        assert_eq!(scale(&identity("HDMI-A-1", "Dell", "U2720Q")), Some(2.0));
+        assert_eq!(scale(&identity("DP-3", "Dell", "U2720Q")), Some(1.5), "a known monitor on a new port");
+        assert_eq!(scale(&identity("DP-2", "LG", "27UL850")), Some(1.25), "a name-only section still applies");
+        assert_eq!(scale(&identity("DP-1", "LG", "27UL850")), None, "another monitor on DP-1 does not inherit it");
     }
 
     #[test]

@@ -310,7 +310,7 @@ impl GlideState {
             DesktopCommand::OpenHome => {
                 let _ = crate::spawn_shell_command("xdg-open \"$HOME\"");
             }
-            DesktopCommand::Screenshot => self.pending_screenshot = true,
+            DesktopCommand::Screenshot => self.request_screenshot(),
             DesktopCommand::Overview => self.run_key_action(KeyAction::ToggleOverview),
             DesktopCommand::Launcher => self.run_key_action(KeyAction::ToggleLauncher),
             DesktopCommand::DoNotDisturb => {

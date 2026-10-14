@@ -763,11 +763,6 @@ impl GlideState {
     fn connector_connected(&mut self, connector: &connector::Info, crtc: crtc::Handle) -> anyhow::Result<()> {
         let output_name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
         let drm_modes = connector.modes().to_vec();
-        let (preferred_id, mode_id) = self.initial_mode(&output_name, &drm_modes);
-        let drm_mode = *drm_modes
-            .get(mode_id)
-            .ok_or_else(|| anyhow!("connector {:?} advertises no modes at all", connector.interface()))?;
-        let wl_mode = WlMode::from(drm_mode);
         let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
 
         let display_info = self.backend_data.device.as_ref().and_then(|device| {
@@ -779,6 +774,17 @@ impl GlideState {
             display_info.as_ref().and_then(|info| info.model()).unwrap_or_else(|| "Unknown".into()),
             display_info.as_ref().and_then(|info| info.serial()).unwrap_or_else(|| "Unknown".into()),
         );
+        let identity = crate::config::OutputIdentity {
+            name: output_name.clone(),
+            make: make.clone(),
+            model: model.clone(),
+            serial: serial_number.clone(),
+        };
+        let (preferred_id, mode_id) = self.initial_mode(&identity, &drm_modes);
+        let drm_mode = *drm_modes
+            .get(mode_id)
+            .ok_or_else(|| anyhow!("connector {:?} advertises no modes at all", connector.interface()))?;
+        let wl_mode = WlMode::from(drm_mode);
 
         let output = Output::new(
             output_name,
@@ -924,12 +930,11 @@ impl GlideState {
         self.apply_gamma(output, &ramp);
     }
 
-    fn initial_mode(&self, name: &str, modes: &[smithay::reexports::drm::control::Mode]) -> (usize, usize) {
+    fn initial_mode(
+        &self, identity: &crate::config::OutputIdentity, modes: &[smithay::reexports::drm::control::Mode],
+    ) -> (usize, usize) {
         let preferred = modes.iter().position(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED)).unwrap_or(0);
-        let chosen = self
-            .output_configs
-            .iter()
-            .find(|config| config.name == name)
+        let chosen = crate::config::output_config(&self.output_configs, identity)
             .and_then(crate::config::OutputConfig::mode_spec)
             .and_then(|spec| spec.pick(&mode_candidates(modes)))
             .unwrap_or(preferred);
@@ -943,11 +948,10 @@ impl GlideState {
         };
         let mut switched = Vec::new();
         for (crtc, surface) in &mut device.surfaces {
-            let name = surface.output.name();
+            let identity = crate::config::OutputIdentity::of(&surface.output);
+            let name = identity.name.clone();
             let candidates = mode_candidates(&surface.modes);
-            let wanted = configs
-                .iter()
-                .find(|config| config.name == name)
+            let wanted = crate::config::output_config(&configs, &identity)
                 .and_then(crate::config::OutputConfig::mode_spec)
                 .and_then(|spec| spec.pick(&candidates))
                 .or_else(|| candidates.iter().position(|mode| mode.3));
@@ -1432,8 +1436,8 @@ impl GlideState {
 
         push_wallpaper_elements(gles_renderer, surface, (phys_w, phys_h), logical_size, backdrop_t, &mut elements);
 
-        if self.pending_screenshot {
-            self.pending_screenshot = false;
+        if self.pending_screenshot.as_ref() == Some(&output) {
+            self.pending_screenshot = None;
             match super::screenshot::capture_frame(
                 gles_renderer,
                 &elements[cursor_count..],
