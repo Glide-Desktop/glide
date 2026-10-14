@@ -25,9 +25,9 @@ pub enum Kind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Levels {
-    pub volume: u8,
+    pub volume: Option<u8>,
     pub muted: bool,
-    pub brightness: u8,
+    pub brightness: Option<u8>,
     pub keyboard: Option<u8>,
 }
 
@@ -104,15 +104,16 @@ impl Osd {
             self.expected = None;
             return false;
         }
-        let reading = match kind {
-            Kind::Volume => Reading { kind, level: levels.volume, on: !levels.muted },
-            Kind::Brightness => Reading { kind, level: levels.brightness, on: true },
-            Kind::KeyboardBrightness => match levels.keyboard {
-                Some(level) => Reading { kind, level, on: true },
-                None => return false,
-            },
-            Kind::CapsLock => return false,
+        let (level, on) = match kind {
+            Kind::Volume => (levels.volume, !levels.muted),
+            Kind::Brightness => (levels.brightness, true),
+            Kind::KeyboardBrightness => (levels.keyboard, true),
+            Kind::CapsLock => (None, true),
         };
+        let Some(level) = level else {
+            return false;
+        };
+        let reading = Reading { kind, level, on };
         let unchanged = self.shown.is_some_and(|shown| shown.reading == reading) && self.alpha(now) > 0.0;
         self.show(reading, now);
         !unchanged
@@ -211,7 +212,18 @@ mod tests {
     use super::*;
 
     fn levels(volume: u8, brightness: u8) -> Levels {
-        Levels { volume, muted: false, brightness, keyboard: None }
+        Levels { volume: Some(volume), muted: false, brightness: Some(brightness), keyboard: None }
+    }
+
+    #[test]
+    fn no_indicator_without_a_real_reading() {
+        let mut osd = Osd::default();
+        let now = Instant::now();
+        osd.expect(Kind::Brightness, now);
+        assert!(!osd.status(Levels { brightness: None, ..levels(40, 80) }, now), "no backlight, no made-up 80 %");
+        osd.expect(Kind::Volume, now);
+        assert!(!osd.status(Levels { volume: None, ..levels(40, 80) }, now));
+        assert!(osd.status(levels(40, 80), now));
     }
 
     #[test]

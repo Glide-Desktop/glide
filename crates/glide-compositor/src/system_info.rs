@@ -13,6 +13,8 @@ pub struct SystemStatus {
     pub volume_pct: u8,
     pub volume_muted: bool,
     pub brightness_pct: u8,
+    pub volume_available: bool,
+    pub brightness_available: bool,
     pub keyboard_brightness: Option<u8>,
     pub battery_pct: Option<u8>,
     pub battery_charging: bool,
@@ -35,6 +37,8 @@ impl Default for SystemStatus {
             volume_pct: 50,
             volume_muted: false,
             brightness_pct: 80,
+            volume_available: true,
+            brightness_available: true,
             keyboard_brightness: None,
             battery_pct: None,
             battery_charging: false,
@@ -57,8 +61,12 @@ impl SystemStatus {
         self.battery_pct = battery.as_ref().map(|info| info.pct);
         self.battery_charging = battery.as_ref().is_some_and(|info| info.state == BatteryState::Charging);
         self.battery = battery;
-        (self.volume_pct, self.volume_muted) = read_volume();
-        self.brightness_pct = read_brightness();
+        let volume = read_volume();
+        self.volume_available = volume.is_some();
+        (self.volume_pct, self.volume_muted) = volume.unwrap_or((self.volume_pct, false));
+        let backlight = read_backlight();
+        self.brightness_available = backlight.is_some();
+        self.brightness_pct = backlight.map_or(self.brightness_pct, |backlight| backlight.percent());
         self.keyboard_brightness = read_keyboard_backlight(Path::new("/sys/class/leds"));
     }
 
@@ -512,7 +520,7 @@ fn fetch_active_ssid() -> Option<String> {
     parse_active_ssid(&poll_stdout("nmcli", &["-t", "-f", "active,ssid", "dev", "wifi", "list", "--rescan", "no"])?)
 }
 
-fn read_volume() -> (u8, bool) {
+fn read_volume() -> Option<(u8, bool)> {
     if let Some(text) = poll_stdout("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]) {
         let muted = text.contains("[MUTED]");
         let pct = text
@@ -521,7 +529,7 @@ fn read_volume() -> (u8, bool) {
             .and_then(|v| v.split_whitespace().next())
             .and_then(|v| v.parse::<f32>().ok())
             .map_or(50, |val| (val * 100.0).round().clamp(0.0, 100.0) as u8);
-        return (pct, muted);
+        return Some((pct, muted));
     }
 
     if let Some(text) = poll_stdout("pactl", &["get-sink-volume", "@DEFAULT_SINK@"]) {
@@ -533,10 +541,10 @@ fn read_volume() -> (u8, bool) {
             .unwrap_or(50);
         let muted =
             poll_stdout("pactl", &["get-sink-mute", "@DEFAULT_SINK@"]).is_some_and(|out| parse_pactl_mute(&out));
-        return (pct, muted);
+        return Some((pct, muted));
     }
 
-    (50, false)
+    None
 }
 
 #[must_use]
@@ -560,6 +568,12 @@ struct Backlight {
     max: u64,
 }
 
+impl Backlight {
+    fn percent(&self) -> u8 {
+        ((self.current as f64 * 100.0) / self.max as f64).round().clamp(0.0, 100.0) as u8
+    }
+}
+
 fn read_backlight() -> Option<Backlight> {
     let entries = fs::read_dir(Path::new("/sys/class/backlight")).ok()?;
     let mut found: Vec<(u8, Backlight)> = entries
@@ -576,12 +590,6 @@ fn read_backlight() -> Option<Backlight> {
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
     found.into_iter().next().map(|(_, backlight)| backlight)
-}
-
-fn read_brightness() -> u8 {
-    read_backlight().map_or(80, |backlight| {
-        ((backlight.current as f64 * 100.0) / backlight.max as f64).round().clamp(0.0, 100.0) as u8
-    })
 }
 
 #[must_use]

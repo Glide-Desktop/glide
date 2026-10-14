@@ -1477,6 +1477,7 @@ impl Topbar {
                 output,
                 strip_y,
                 (self.detail_slots(), self.system_status.battery_pct.is_some()),
+                (self.system_status.volume_available, self.system_status.brightness_available),
                 popup_slots,
             )),
             Some(OpenPopup::MediaPlayer) => {
@@ -1869,7 +1870,7 @@ fn push_state_layers<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_
 
 fn layout_qs_slots(
     output: Rectangle<i32, Logical>, strip_y: i32, (detail, battery): (Option<Vec<(Slot, LocalRect)>>, bool),
-    slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
+    (volume, brightness): (bool, bool), slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
 ) -> Rectangle<i32, Logical> {
     let geometry = qs_geometry();
     let origin = Point::from((output.loc.x + output.size.w - PAD_X - QS_WIDTH, strip_y + HEIGHT + POPUP_GAP));
@@ -1894,10 +1895,14 @@ fn layout_qs_slots(
         }
     }
     slots.push((Slot::QsCaffeine, offset_rect(geometry.caffeine, origin)));
-    slots.push((Slot::QsVolumeMute, offset_rect(geometry.volume_icon, origin)));
-    slots.push((Slot::QsVolumeTrack, offset_rect(geometry.volume_track, origin)));
-    slots.push((Slot::QsVolumeMore, offset_rect(geometry.volume_more, origin)));
-    slots.push((Slot::QsBrightnessTrack, offset_rect(geometry.brightness_track, origin)));
+    if volume {
+        slots.push((Slot::QsVolumeMute, offset_rect(geometry.volume_icon, origin)));
+        slots.push((Slot::QsVolumeTrack, offset_rect(geometry.volume_track, origin)));
+        slots.push((Slot::QsVolumeMore, offset_rect(geometry.volume_more, origin)));
+    }
+    if brightness {
+        slots.push((Slot::QsBrightnessTrack, offset_rect(geometry.brightness_track, origin)));
+    }
     if battery {
         slots.push((Slot::QsBattery, offset_rect(geometry.battery, origin)));
     }
@@ -3676,6 +3681,7 @@ struct QsSliderSpec<'a> {
     track: LocalRect,
     pct: u8,
     muted: bool,
+    enabled: bool,
     icon_name: &'a str,
 }
 
@@ -3686,13 +3692,18 @@ fn draw_qs_slider(
     let icon = spec.icon;
     let side = 16;
     let at = (icon.loc.x + (icon.size.w - side) / 2, icon.loc.y + (icon.size.h - side) / 2);
-    if !c.icon(spec.icon_name, side, at, theme.muted) {
-        c.glyph(icon, |b, w, h, s| draw_icon(b, w, h, s, theme.muted));
+    let icon_colour = if spec.enabled { theme.muted } else { theme.faint };
+    if !c.icon(spec.icon_name, side, at, icon_colour) {
+        c.glyph(icon, |b, w, h, s| draw_icon(b, w, h, s, icon_colour));
     }
 
     let track = spec.track;
     let tr_y = track.loc.y + (track.size.h - QS_SLIDER_TRACK_H) / 2;
     let bar = |width| local_rect(track.loc.x, tr_y, width, QS_SLIDER_TRACK_H);
+    if !spec.enabled {
+        c.fill(bar(track.size.w), theme.track_soft, R_ROUND);
+        return;
+    }
     c.fill(bar(track.size.w), theme.track, R_ROUND);
 
     let fill_w = (((track.size.w as f32) * f32::from(spec.pct.min(100))) / 100.0).round() as i32;
@@ -3929,6 +3940,7 @@ fn draw_qs_sliders(
             track: geometry.volume_track,
             pct: motion.volume,
             muted,
+            enabled: status.volume_available,
             icon_name: volume_icon_name(muted, motion.volume),
         },
         |b, w, h, s, c| crate::paint::draw_speaker_glyph_over(b, w, h, 15.0, 1.4, muted, s, c),
@@ -3941,6 +3953,7 @@ fn draw_qs_sliders(
             track: geometry.brightness_track,
             pct: motion.brightness,
             muted: false,
+            enabled: status.brightness_available,
             icon_name: "display-brightness",
         },
         |b, w, h, s, c| crate::paint::draw_sun_glyph_over(b, w, h, 15.0, 1.4, s, c),
@@ -3955,7 +3968,9 @@ fn draw_quick_settings(
     draw_qs_tiles(c, ctx, &geometry, status);
     draw_qs_caffeine_row(c, ctx, geometry.caffeine, caffeinated, motion.caffeine);
     draw_qs_sliders(c, ctx.theme, &geometry, status, motion);
-    panels::draw_tile_more(c, ctx, geometry.volume_more, false);
+    if status.volume_available {
+        panels::draw_tile_more(c, ctx, geometry.volume_more, false);
+    }
     let divider = local_rect(QS_PAD, geometry.divider_y, c.w - QS_PAD * 2, 1);
     c.fill(divider, ctx.theme.border, 0.0);
     draw_qs_footer(c, ctx, &geometry, status);
@@ -4586,6 +4601,28 @@ mod tests {
         bar.layout_slots(&painter(), output());
         assert!(!bar.has_open_popup());
         assert!(bar.slot_rect(Slot::QsWifi).is_none());
+    }
+
+    #[test]
+    fn a_control_the_machine_lacks_has_no_slider_to_drag() {
+        let mut bar = topbar_with(&["US"]);
+        bar.set_system_status(crate::system_info::SystemStatus {
+            brightness_available: false,
+            ..crate::system_info::SystemStatus::default()
+        });
+        let bar = with_popup(bar, OpenPopup::QuickSettings);
+        assert!(bar.slot_rect(Slot::QsBrightnessTrack).is_none(), "a desktop without a backlight");
+        assert!(bar.slot_rect(Slot::QsVolumeTrack).is_some());
+
+        let mut bar = topbar_with(&["US"]);
+        bar.set_system_status(crate::system_info::SystemStatus {
+            volume_available: false,
+            ..crate::system_info::SystemStatus::default()
+        });
+        let bar = with_popup(bar, OpenPopup::QuickSettings);
+        for slot in [Slot::QsVolumeTrack, Slot::QsVolumeMute, Slot::QsVolumeMore] {
+            assert!(bar.slot_rect(slot).is_none(), "{slot:?} without wpctl or pactl");
+        }
     }
 
     #[test]
