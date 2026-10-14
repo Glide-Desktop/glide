@@ -42,6 +42,12 @@ mod tr {
         WindowMenu => "Window menu", "Меню вікна";
         ShowDesktop => "Show the desktop", "Показати робочий стіл";
         ForceQuit => "Force quit the app", "Завершити програму примусово";
+        TileLeft => "Fill the left half", "Зайняти ліву половину";
+        TileRight => "Fill the right half", "Зайняти праву половину";
+        TileMaximize => "Fill the screen", "Розгорнути на весь екран";
+        TileRestore => "Restore or minimise", "Відновити або згорнути";
+        MonitorLeft => "Move window to the monitor on the left", "Перемістити вікно на монітор ліворуч";
+        MonitorRight => "Move window to the monitor on the right", "Перемістити вікно на монітор праворуч";
         Terminal => "Open a terminal", "Відкрити термінал";
         MoveToNextWorkspace => "Move window to the next workspace", "Перемістити вікно на наступний простір";
         MoveToPrevWorkspace => "Move window to the previous workspace", "Перемістити вікно на попередній простір";
@@ -342,6 +348,12 @@ fn named_label(name: &str) -> Option<tr::Key> {
         "open-window-menu" => tr::Key::WindowMenu,
         "show-desktop" => tr::Key::ShowDesktop,
         "force-quit" => tr::Key::ForceQuit,
+        "tile-left" => tr::Key::TileLeft,
+        "tile-right" => tr::Key::TileRight,
+        "tile-maximize" => tr::Key::TileMaximize,
+        "tile-restore" => tr::Key::TileRestore,
+        "move-window-to-monitor-left" => tr::Key::MonitorLeft,
+        "move-window-to-monitor-right" => tr::Key::MonitorRight,
         "terminal" => tr::Key::Terminal,
         "move-window-to-next-workspace" => tr::Key::MoveToNextWorkspace,
         "move-window-to-prev-workspace" => tr::Key::MoveToPrevWorkspace,

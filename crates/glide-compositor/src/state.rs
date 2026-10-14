@@ -357,6 +357,7 @@ pub struct SessionServices {
     pub prompts: crate::agent_prompt::Prompts,
     pub bell: Option<std::time::Instant>,
     pub volumes: crate::removable::Toasts,
+    pub tiled_from: HashMap<glide_layout::WindowId, glide_layout::Rectangle>,
 }
 
 impl GlideState {
@@ -740,6 +741,7 @@ impl GlideState {
         self.window_to_id.remove(window);
         self.window_map.remove(&id);
         self.windows_awaiting_open_animation.remove(&id);
+        self.session.tiled_from.remove(&id);
         self.focus_history.retain(|seen| *seen != id);
         self.layout_memory.retain(|key| *key != crate::layout_scope::ScopeKey::Window(id.as_u64()));
         if let Some(switcher) = self.switcher.as_mut() {

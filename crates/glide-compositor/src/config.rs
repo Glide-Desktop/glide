@@ -1016,6 +1016,12 @@ impl Config {
             simple(&[Super, Shift], "Page_Down", "move-window-to-next-workspace"),
             simple(&[Super, Shift], "Page_Up", "move-window-to-prev-workspace"),
             simple(&[Ctrl, Alt], "t", "terminal"),
+            simple(&[Super], "Left", "tile-left"),
+            simple(&[Super], "Right", "tile-right"),
+            simple(&[Super], "Up", "tile-maximize"),
+            simple(&[Super], "Down", "tile-restore"),
+            simple(&[Super, Shift], "Left", "move-window-to-monitor-left"),
+            simple(&[Super, Shift], "Right", "move-window-to-monitor-right"),
         ];
         for i in 1..=9 {
             let key = i.to_string();
@@ -1297,6 +1303,12 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "power-dialog" => KeyAction::PowerDialog,
             "terminal" => KeyAction::Terminal,
             "force-quit" => KeyAction::ForceQuit,
+            "tile-left" => KeyAction::Tile(crate::tiling::Side::Left),
+            "tile-right" => KeyAction::Tile(crate::tiling::Side::Right),
+            "tile-maximize" => KeyAction::TileMaximize,
+            "tile-restore" => KeyAction::TileRestore,
+            "move-window-to-monitor-left" => KeyAction::MoveToOutput(crate::tiling::Side::Left),
+            "move-window-to-monitor-right" => KeyAction::MoveToOutput(crate::tiling::Side::Right),
             "show-desktop" => KeyAction::ShowDesktop,
             "move-window-to-next-workspace" => KeyAction::MoveWindowToNeighbour(true),
             "move-window-to-prev-workspace" => KeyAction::MoveWindowToNeighbour(false),

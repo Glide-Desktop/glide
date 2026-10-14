@@ -101,6 +101,10 @@ pub enum KeyAction {
     GreeterToggleLayout,
     LockedPowerKey,
     ShowDesktop,
+    Tile(crate::tiling::Side),
+    TileMaximize,
+    TileRestore,
+    MoveToOutput(crate::tiling::Side),
     ForceQuit,
     Terminal,
     MoveWindowToNeighbour(bool),
@@ -1625,6 +1629,10 @@ impl GlideState {
             KeyAction::LockedPowerKey => self.locked_power_key(),
             KeyAction::ShowDesktop => self.toggle_show_desktop(),
             KeyAction::ForceQuit => self.force_quit_focused(),
+            KeyAction::Tile(side) => self.tile_focused(side),
+            KeyAction::TileMaximize => self.maximize_focused(),
+            KeyAction::TileRestore => self.restore_focused(),
+            KeyAction::MoveToOutput(side) => self.move_focused_to_output(side),
             KeyAction::Terminal => {
                 let terminal = crate::global_menu::terminal_command();
                 if let Err(err) = crate::spawn_shell_command(&terminal) {

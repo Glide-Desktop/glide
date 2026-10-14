@@ -170,6 +170,36 @@ action = "terminal"
 
 [[keybinds]]
 mods = ["super"]
+key = "Left"
+action = "tile-left"
+
+[[keybinds]]
+mods = ["super"]
+key = "Right"
+action = "tile-right"
+
+[[keybinds]]
+mods = ["super"]
+key = "Up"
+action = "tile-maximize"
+
+[[keybinds]]
+mods = ["super"]
+key = "Down"
+action = "tile-restore"
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "Left"
+action = "move-window-to-monitor-left"
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "Right"
+action = "move-window-to-monitor-right"
+
+[[keybinds]]
+mods = ["super"]
 key = "1"
 action = { switch-workspace = 1 }
 

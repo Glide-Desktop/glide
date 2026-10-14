@@ -59,6 +59,7 @@ mod switcher;
 pub mod system_info;
 #[cfg(test)]
 mod test_bus;
+mod tiling;
 mod topbar;
 mod tray;
 mod window;

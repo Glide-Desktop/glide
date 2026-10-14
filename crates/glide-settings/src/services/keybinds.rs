@@ -57,6 +57,12 @@ pub const NAMED_ACTIONS: &[&str] = &[
     "fullscreen",
     "minimize",
     "open-window-menu",
+    "tile-left",
+    "tile-right",
+    "tile-maximize",
+    "tile-restore",
+    "move-window-to-monitor-left",
+    "move-window-to-monitor-right",
     "force-quit",
     "show-desktop",
     "next-workspace",
@@ -112,8 +118,20 @@ impl Action {
     pub fn category(&self) -> Category {
         match self {
             Self::Named(name) => match name.as_str() {
-                "close-window" | "close-app" | "maximize" | "fullscreen" | "minimize" | "open-window-menu"
-                | "show-desktop" | "force-quit" => Category::Windows,
+                "close-window"
+                | "close-app"
+                | "maximize"
+                | "fullscreen"
+                | "minimize"
+                | "open-window-menu"
+                | "show-desktop"
+                | "force-quit"
+                | "tile-left"
+                | "tile-right"
+                | "tile-maximize"
+                | "tile-restore"
+                | "move-window-to-monitor-left"
+                | "move-window-to-monitor-right" => Category::Windows,
                 "next-workspace"
                 | "prev-workspace"
                 | "toggle-overview"
