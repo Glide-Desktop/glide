@@ -360,6 +360,8 @@ pub struct SessionServices {
     pub tiled_from: HashMap<glide_layout::WindowId, glide_layout::Rectangle>,
     pub osd: crate::osd::Osd,
     pub super_tap: crate::super_keys::SuperTap,
+    pub lid_closed: bool,
+    pub lid_hidden: Vec<Output>,
 }
 
 impl GlideState {
@@ -1050,7 +1052,8 @@ impl GlideState {
     }
 
     pub fn apply_output_configs(&mut self) {
-        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        let mut outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        outputs.sort_by_key(|output| (!crate::lid::is_internal(&output.name()), output.name()));
         let mut next_x = 0;
         for output in outputs {
             let identity = crate::config::OutputIdentity::of(&output);

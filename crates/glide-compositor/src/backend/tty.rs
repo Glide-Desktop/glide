@@ -766,6 +766,8 @@ impl GlideState {
 
         self.sync_layout_outputs();
         self.reconcile_space();
+        self.session.lid_hidden.retain(|panel| panel != &surface.output);
+        self.apply_lid();
 
         let Some(global) = surface.global else {
             return;
@@ -863,6 +865,7 @@ impl GlideState {
         self.space.map_output(&output, (0, 0));
         self.sync_layout_outputs();
         self.apply_output_configs();
+        self.apply_lid();
 
         self.loop_handle.insert_idle(move |state| state.render_surface(crtc));
 

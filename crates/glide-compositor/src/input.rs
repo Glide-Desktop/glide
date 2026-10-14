@@ -477,7 +477,7 @@ pub fn touch_output_index(names: &[String]) -> Option<usize> {
     if names.is_empty() {
         return None;
     }
-    let internal = names.iter().position(|name| ["eDP", "LVDS", "DSI"].iter().any(|prefix| name.starts_with(prefix)));
+    let internal = names.iter().position(|name| crate::lid::is_internal(name));
     Some(internal.unwrap_or(0))
 }
 
@@ -537,6 +537,10 @@ impl GlideState {
         I::GestureSwipeUpdateEvent: 'static,
     {
         use crate::idle::Contact;
+        if let InputEvent::SwitchToggle { event } = &event {
+            self.handle_switch::<I>(event);
+            return;
+        }
         self.protocols.idle_notifier_state.notify_activity(&self.seat);
         self.idle.activity(std::time::Instant::now());
         let waking = self.outputs_blanked;

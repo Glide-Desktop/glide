@@ -33,6 +33,7 @@ mod input;
 mod ipc;
 mod launcher;
 mod layout_scope;
+mod lid;
 mod logging;
 mod media_art;
 mod nm_agent;
