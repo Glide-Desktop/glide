@@ -134,6 +134,9 @@ catalogue! {
     SectionSettings => "Settings", "Налаштування";
     SectionWindows => "Windows", "Вікна";
     SectionRecentFiles => "Recent Files", "Недавні файли";
+    SectionRun => "Command", "Команда";
+    RunPrefix => "Run", "Виконати";
+    RunHint => "Press Enter to run", "Натисніть Enter, щоб виконати";
     CommandLogOut => "Log Out", "Вийти з сеансу";
     CommandRestart => "Restart", "Перезавантажити";
     CommandShutDown => "Shut Down", "Вимкнути";

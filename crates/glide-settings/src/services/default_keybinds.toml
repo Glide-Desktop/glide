@@ -229,6 +229,11 @@ key = "F3"
 action = "focus-dock"
 
 [[keybinds]]
+mods = ["alt"]
+key = "F2"
+action = "run-command"
+
+[[keybinds]]
 mods = ["super"]
 key = "1"
 action = { switch-workspace = 1 }

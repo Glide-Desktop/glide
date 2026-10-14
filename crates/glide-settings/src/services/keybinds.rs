@@ -77,6 +77,7 @@ pub const NAMED_ACTIONS: &[&str] = &[
     "focus-top-bar",
     "focus-dock",
     "toggle-launcher",
+    "run-command",
     "terminal",
     "screenshot",
     "toggle-notification-center",
@@ -146,6 +147,7 @@ impl Action {
                 | "focus-top-bar"
                 | "focus-dock" => Category::Switching,
                 "toggle-launcher"
+                | "run-command"
                 | "terminal"
                 | "screenshot"
                 | "lock"

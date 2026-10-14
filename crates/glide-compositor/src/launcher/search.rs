@@ -360,6 +360,7 @@ impl SettingsPanel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Section {
+    Run,
     Calculator,
     Apps,
     Windows,
@@ -373,6 +374,7 @@ impl Section {
     #[must_use]
     pub fn label(self) -> &'static str {
         t(match self {
+            Self::Run => Key::SectionRun,
             Self::Calculator => Key::SectionCalculator,
             Self::Apps => Key::Applications,
             Self::Windows => Key::SectionWindows,
@@ -393,6 +395,7 @@ pub struct OpenWindow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
+    Run(String),
     App(usize),
     Window { index: usize, app: Option<usize> },
     File(usize),
@@ -406,6 +409,7 @@ impl Entry {
     #[must_use]
     pub const fn section(&self) -> Section {
         match self {
+            Self::Run(_) => Section::Run,
             Self::App(_) => Section::Apps,
             Self::Window { .. } => Section::Windows,
             Self::File(_) => Section::Files,
@@ -485,6 +489,12 @@ pub fn action_matches(apps: &[DesktopApp], ranked_apps: &[usize], needle: &str) 
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.3.cmp(&b.3)));
     candidates.into_iter().take(LIST_ACTION_LIMIT).map(|(_, _, app, action)| Entry::Action { app, action }).collect()
+}
+
+#[must_use]
+pub fn run_entries(text: &str) -> Vec<Entry> {
+    let command = text.trim();
+    if command.is_empty() { Vec::new() } else { vec![Entry::Run(command.to_string())] }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -729,6 +739,13 @@ mod tests {
         assert_eq!(found("report"), [Entry::Window { index: 0, app: Some(0) }]);
         assert_eq!(found("text"), [Entry::Window { index: 1, app: Some(1) }]);
         assert!(found("u").is_empty(), "one letter is too little to search windows");
+    }
+
+    #[test]
+    fn the_run_prompt_offers_exactly_the_typed_command() {
+        assert_eq!(run_entries("  firefox --private-window "), [Entry::Run("firefox --private-window".into())]);
+        assert!(run_entries("   ").is_empty());
+        assert_eq!(Entry::Run("ls".into()).section(), Section::Run);
     }
 
     #[test]

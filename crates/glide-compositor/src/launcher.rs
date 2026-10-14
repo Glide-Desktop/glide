@@ -446,6 +446,12 @@ fn caret_half_period() -> Duration {
     glide_theme::motion::t4()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prompt {
+    Search,
+    Run,
+}
+
 #[derive(Debug)]
 pub struct Launcher {
     apps: Vec<DesktopApp>,
@@ -470,6 +476,7 @@ pub struct Launcher {
     entries: Vec<search::Entry>,
     windows: Vec<search::OpenWindow>,
     recent: Vec<recent::RecentFile>,
+    prompt: Prompt,
     selected: Option<usize>,
     history: history::LaunchHistory,
     list_scroll: usize,
@@ -573,6 +580,7 @@ impl Launcher {
             entries: Vec::new(),
             windows: Vec::new(),
             recent: Vec::new(),
+            prompt: Prompt::Search,
             selected: None,
             history: history::LaunchHistory::default(),
             list_scroll: 0,
@@ -672,7 +680,20 @@ impl Launcher {
 
     #[must_use]
     pub fn is_listing(&self) -> bool {
-        !self.field.text().trim().is_empty()
+        self.run_mode() || !self.field.text().trim().is_empty()
+    }
+
+    pub fn begin_run_mode(&mut self) {
+        if self.run_mode() {
+            return;
+        }
+        self.prompt = Prompt::Run;
+        self.refilter();
+    }
+
+    #[must_use]
+    pub const fn run_mode(&self) -> bool {
+        matches!(self.prompt, Prompt::Run)
     }
 
     #[must_use]
@@ -869,8 +890,12 @@ impl Launcher {
     fn refilter(&mut self) {
         let now = history::now_unix();
         self.results = filter_apps(&self.apps, self.field.text(), self.category, &self.history, now);
-        let sources = search::Sources { windows: &self.windows, files: &self.recent };
-        self.entries = search::build_entries(&self.apps, &self.results, &sources, self.field.text());
+        self.entries = if self.run_mode() {
+            search::run_entries(self.field.text())
+        } else {
+            let sources = search::Sources { windows: &self.windows, files: &self.recent };
+            search::build_entries(&self.apps, &self.results, &sources, self.field.text())
+        };
         self.page = 0;
         if self.page_is_sliding() {
             self.page_offset.retarget(0.0, page_anim(), ease_out);
@@ -1424,7 +1449,7 @@ where
     if launcher.is_listing() {
         launcher.chip_layout.clear();
         list::push_list(launcher, &mut frame, icons);
-        if launcher.entries.is_empty() {
+        if launcher.entries.is_empty() && !launcher.field.text().trim().is_empty() {
             push_empty_state(launcher, &mut frame);
         }
     } else {
@@ -1695,7 +1720,13 @@ fn draw_chip(
 fn push_search_field<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>) {
     let (painter, theme, output_scale) = (frame.painter, frame.theme, frame.output_scale);
     let rect = search_rect(frame.area);
-    let prefix = if launcher.category.is_all() { String::new() } else { format!("{}: ", launcher.category.label()) };
+    let prefix = if launcher.run_mode() {
+        format!("{}: ", crate::i18n::t(crate::i18n::Key::RunPrefix))
+    } else if launcher.category.is_all() {
+        String::new()
+    } else {
+        format!("{}: ", launcher.category.label())
+    };
     let shown = format!("{prefix}{}", launcher.field.text());
     let clear = !launcher.field.is_empty();
     let key = SearchFieldKey {

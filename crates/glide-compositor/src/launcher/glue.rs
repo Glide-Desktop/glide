@@ -89,6 +89,12 @@ impl GlideState {
                     tracing::error!(%command, ?err, "failed to open a settings panel");
                 }
             }
+            Entry::Run(command) => {
+                tracing::info!(%command, "running a command from the run prompt");
+                if let Err(err) = crate::spawn_shell_command(&command) {
+                    tracing::warn!(%command, ?err, "failed to run a command");
+                }
+            }
             Entry::File(index) => {
                 if let Some(path) = launcher.recent_file(index).map(|file| file.path.clone()) {
                     let mut command = std::process::Command::new("xdg-open");
@@ -108,6 +114,16 @@ impl GlideState {
             }
         }
         self.close_launcher();
+    }
+
+    pub fn open_run_prompt(&mut self) {
+        if self.launcher.as_ref().is_none_or(super::Launcher::is_closing) {
+            self.toggle_launcher();
+        }
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher.begin_run_mode();
+        }
+        self.queue_redraw();
     }
 
     #[must_use]

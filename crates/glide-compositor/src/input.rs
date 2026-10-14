@@ -109,6 +109,7 @@ pub enum KeyAction {
     RestoreShortcuts,
     FocusDock,
     FocusTopBar,
+    RunPrompt,
     DockNav(i32),
     DockOpenMenu,
     DockActivate,
@@ -1742,6 +1743,7 @@ impl GlideState {
             KeyAction::ShowDesktop => self.toggle_show_desktop(),
             KeyAction::ForceQuit => self.force_quit_focused(),
             KeyAction::RestoreShortcuts => self.restore_shortcuts(),
+            KeyAction::RunPrompt => self.open_run_prompt(),
             KeyAction::FocusDock
             | KeyAction::FocusTopBar
             | KeyAction::DockNav(_)

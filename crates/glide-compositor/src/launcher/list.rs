@@ -198,6 +198,7 @@ impl Launcher {
                 let title = if window.title.is_empty() { owner } else { &window.title };
                 (title.to_string(), owner.to_string())
             }),
+            Entry::Run(command) => (command.clone(), crate::i18n::t(crate::i18n::Key::RunHint).to_string()),
             Entry::File(index) => {
                 self.recent.get(*index).map_or_else(Default::default, |file| (file.name.clone(), file.folder.clone()))
             }
@@ -210,6 +211,7 @@ enum RowGlyph {
     Calculator,
     Window,
     File,
+    Run,
     Command(SystemCommand),
     Settings(SettingsPanel),
 }
@@ -225,6 +227,7 @@ const fn row_icon(entry: &Entry) -> RowIcon {
         Entry::Action { app, .. } | Entry::Window { app: Some(app), .. } => RowIcon::Tile(*app),
         Entry::Window { app: None, .. } => RowIcon::Glyph(RowGlyph::Window),
         Entry::File(_) => RowIcon::Glyph(RowGlyph::File),
+        Entry::Run(_) => RowIcon::Glyph(RowGlyph::Run),
         Entry::Calculator { .. } => RowIcon::Glyph(RowGlyph::Calculator),
         Entry::Command(command) => RowIcon::Glyph(RowGlyph::Command(*command)),
         Entry::Settings(panel) => RowIcon::Glyph(RowGlyph::Settings(*panel)),
@@ -253,10 +256,11 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
     use crate::paint as p;
     let (w, h) = (ROW_ICON, ROW_ICON);
     let stroked: fn(&mut [u8], i32, i32, f32, f32, i32, glide_theme::Color) = match glyph {
-        RowGlyph::Calculator | RowGlyph::Window | RowGlyph::File => {
+        RowGlyph::Calculator | RowGlyph::Window | RowGlyph::File | RowGlyph::Run => {
             let label = match glyph {
                 RowGlyph::Window => "\u{25a1}",
                 RowGlyph::File => "\u{2261}",
+                RowGlyph::Run => ">_",
                 _ => "=",
             };
             return painter.draw_label_over_styled(
@@ -588,6 +592,17 @@ mod tests {
             launcher.entry_text(&Entry::Calculator { expression: "6*7".into(), value: "42".into() });
         assert_eq!(title, "= 42");
         assert!(subtitle.starts_with("6*7"));
+    }
+
+    #[test]
+    fn the_run_prompt_lists_only_the_typed_command() {
+        let mut launcher = Launcher::new(apps(&["Firefox"]), area());
+        launcher.begin_run_mode();
+        assert!(launcher.is_listing(), "an empty run prompt hides the app grid");
+        assert!(launcher.entries().is_empty());
+        launcher.insert_text("firefox");
+        assert_eq!(launcher.entries(), [Entry::Run("firefox".into())], "no app matches, only the command");
+        assert_eq!(launcher.entry_text(&Entry::Run("firefox".into())).0, "firefox");
     }
 
     #[test]
