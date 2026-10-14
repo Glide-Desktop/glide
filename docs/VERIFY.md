@@ -151,14 +151,30 @@ Ctrl+Alt+F3 and a text login.
     corner: it resizes. Drag a file from Glide Files (or Nautilus) into
     another app with a finger: the drag icon follows the finger and the
     drop lands.
-44. **Single-pixel buffers.** A recent GTK4 app or mpv with letterboxing
+44. **Enterprise Wi-Fi.** Near an eduroam (802.1X) network, its quick
+    settings row reads "Set up in Settings" and a click opens the Network
+    page instead of a password field.
+45. **Toasts behind the lock.** Lock, then `notify-send -t 3000 hi` from
+    another VT or ssh session; wait a minute and unlock: the toast is still
+    on screen and then times out normally.
+46. **Recording shortcuts.** Settings › Keyboard Shortcuts › edit a binding
+    › Record, press Ctrl+Alt+K: the editor shows that combination.
+47. **Fixed workspaces.** Settings › Multitasking › Fixed number, 4: four
+    workspaces exist with no windows, closing the last window of one keeps
+    it, and a three-finger swipe past the fourth bounces back.
+48. **Scheduled appearance.** Settings › Appearance › Switch automatically
+    in the afternoon: the shell is light. Set the clock (a VM, or
+    `timedatectl set-time`) past 19:00: within a second the shell turns
+    dark — that switch is a full configuration reload, so watch for any
+    flicker on outputs or input settings.
+49. **Single-pixel buffers.** A recent GTK4 app or mpv with letterboxing
     renders its solid areas correctly.
 
 ## Packaging
 
-45. **Tarball.** `scripts/package.sh`, unpack on another machine,
+50. **Tarball.** `scripts/package.sh`, unpack on another machine,
     `sudo scripts/install.sh`: it installs, including `glide-files`.
-46. **Crash log.** After item 2, the log of the killed run survives as
+51. **Crash log.** After item 2, the log of the killed run survives as
     `glide.log.1`. When a release build panics, its log holds the message
     and a backtrace with file and line numbers (a signal such as SIGSEGV
     leaves no backtrace).

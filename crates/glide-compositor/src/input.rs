@@ -763,7 +763,9 @@ impl GlideState {
                 self.catch_workspace_swipe();
                 if self.workspace_swipe.is_none() {
                     let active_ws = self.active_workspace_index().unwrap_or(0);
-                    let total_ws = self.layout.workspace_count() + usize::from(!self.layout.last_workspace_is_empty());
+                    let room_for_new =
+                        self.layout.fixed_workspaces().is_none() && !self.layout.last_workspace_is_empty();
+                    let total_ws = self.layout.workspace_count() + usize::from(room_for_new);
                     let screen_width = self.output_width_at_pointer();
                     self.workspace_swipe = Some(WorkspaceSwipeState::new(active_ws, total_ws, screen_width));
                 }

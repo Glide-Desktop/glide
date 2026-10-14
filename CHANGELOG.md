@@ -70,6 +70,16 @@ have not been tried on real hardware or against the real system service.
   turns it into a Run prompt.
 - Keyboard backlight keys step the backlight and show its level; the
   Search and Calculator keys open the launcher.
+- Enterprise (802.1X) Wi-Fi networks in quick settings lead to Settings
+  instead of asking for a passphrase that could not work; the Wi-Fi
+  password field warns about Caps Lock.
+- Toasts and agent prompts that arrive behind the lock screen wait for the
+  unlock instead of expiring unseen.
+- A first login shows a welcome with the essential keys and gestures.
+- Workspaces can be fixed in number (Settings › Multitasking).
+- Light and dark can switch by the clock (Settings › Appearance).
+- Windows can be moved and resized with a finger, and drags started by
+  touch work. *unverified on a touchscreen*
 - `[general] cursor-theme` (Settings › Appearance › Pointer) changes the
   pointer for the shell and for newly started apps; cursor, font and
   wallpaper are shared with GTK apps through GSettings.
@@ -80,6 +90,8 @@ have not been tried on real hardware or against the real system service.
   administrator, and change passwords. *unverified with a polkit agent*
 - Power: a Preserve battery health switch on batteries whose firmware
   supports a charge limit (UPower).
+- Keyboard Shortcuts: Record takes the next key press instead of a typed
+  key name.
 
 ### Apps and launching
 
