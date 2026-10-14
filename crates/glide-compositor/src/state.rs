@@ -367,6 +367,7 @@ pub struct SessionServices {
     pub osd: crate::osd::Osd,
     pub super_tap: crate::super_keys::SuperTap,
     pub lid_closed: bool,
+    pub appearance_schedule: bool,
     pub lid_hidden: Vec<Output>,
     pub shortcuts: crate::shortcut_guard::ShortcutGuard,
 }
@@ -1284,6 +1285,29 @@ impl GlideState {
         let reduced = self.motion.respect_system && self.topbar.system_status().reduced_motion;
         let scale = if reduced { 0.0 } else { self.motion.configured_scale };
         glide_theme::motion::set_scale(scale);
+    }
+
+    pub fn tick_appearance_schedule(&mut self) -> bool {
+        if !self.session.appearance_schedule {
+            return false;
+        }
+        let Some(minute) = crate::topbar::local_minute_of_day() else {
+            return false;
+        };
+        if crate::config::scheduled_appearance(minute) == self.shell_palette.0 {
+            return false;
+        }
+        match crate::config::Config::try_load() {
+            Ok(config) => {
+                config.apply_to_state(self);
+                true
+            }
+            Err(message) => {
+                tracing::warn!(%message, "the scheduled appearance change waits for a readable glide.toml");
+                self.session.appearance_schedule = false;
+                false
+            }
+        }
     }
 
     pub fn tick_night_light(&mut self) -> bool {

@@ -34,6 +34,8 @@ mod tr {
         HintFull => "Full", "Повний";
         RenderingFailed => "Could not change the setting:", "Не вдалося змінити налаштування:";
         CursorTheme => "Pointer", "Вказівник";
+        Schedule => "Switch automatically", "Перемикати автоматично";
+        ScheduleHint => "Light from 7:00, dark from 19:00", "Світла з 7:00, темна з 19:00";
         CursorThemeHint => "Cursor theme for Glide and apps; X11 apps pick it up when restarted", "Тема курсора для Glide і програм; програми X11 підхоплять її після перезапуску";
         Slower => "Slower", "Повільніше";
         Faster => "Faster", "Швидше";
@@ -45,6 +47,7 @@ mod tr {
 #[derive(Debug, Clone)]
 pub enum Msg {
     SetAppearance(Appearance),
+    Schedule(bool),
     SetAccent(Accent),
     Animations(bool),
     Speed(f64),
@@ -143,7 +146,13 @@ impl Pane for Page {
 
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
-            Msg::SetAppearance(appearance) => config.set_appearance(appearance),
+            Msg::SetAppearance(appearance) => {
+                config.set_appearance(appearance);
+                if config.bool_or("topbar", "appearance-schedule", false) {
+                    config.set_bool("topbar", "appearance-schedule", false);
+                }
+            }
+            Msg::Schedule(on) => config.set_bool("topbar", "appearance-schedule", on),
             Msg::SetAccent(accent) => config.set_accent(accent),
             Msg::Animations(enabled) => config.set_bool("animations", "enabled", enabled),
             Msg::Speed(speed) => {
@@ -253,6 +262,13 @@ impl Page {
             .title(c.t(K::Style))
             .description(c.t(K::StyleHint))
             .push(container(gated(*c, options)).padding([16, 12]).center_x(Fill))
+            .push(switch_row(
+                *c,
+                c.t(tr::Key::Schedule),
+                c.t(tr::Key::ScheduleHint),
+                config.bool_or("topbar", "appearance-schedule", false),
+                Msg::Schedule,
+            ))
             .build()
     }
 

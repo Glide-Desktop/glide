@@ -128,6 +128,7 @@ impl NotificationsConfig {
 pub struct TopbarConfig {
     pub enabled: bool,
     pub appearance: glide_theme::Appearance,
+    pub appearance_schedule: bool,
     pub accent: glide_theme::Accent,
     pub battery_low_pct: u8,
     pub max_volume_pct: u8,
@@ -144,6 +145,7 @@ impl Default for TopbarConfig {
         Self {
             enabled: true,
             appearance: glide_theme::Appearance::Dark,
+            appearance_schedule: false,
             accent: glide_theme::Accent::Blue,
             battery_low_pct: 20,
             max_volume_pct: 100,
@@ -157,7 +159,27 @@ impl Default for TopbarConfig {
     }
 }
 
+pub const DARK_FROM_MINUTE: u16 = 19 * 60;
+pub const DARK_UNTIL_MINUTE: u16 = 7 * 60;
+
+#[must_use]
+pub const fn scheduled_appearance(minute_of_day: u16) -> glide_theme::Appearance {
+    if minute_of_day >= DARK_FROM_MINUTE || minute_of_day < DARK_UNTIL_MINUTE {
+        glide_theme::Appearance::Dark
+    } else {
+        glide_theme::Appearance::Light
+    }
+}
+
 impl TopbarConfig {
+    #[must_use]
+    pub fn effective_appearance(self, minute_of_day: Option<u16>) -> glide_theme::Appearance {
+        match minute_of_day.filter(|_| self.appearance_schedule) {
+            Some(minute) => scheduled_appearance(minute),
+            None => self.appearance,
+        }
+    }
+
     #[must_use]
     pub fn theme(self) -> crate::topbar::TopbarTheme {
         let tokens = glide_theme::Tokens::new(self.appearance, self.accent);
@@ -1188,6 +1210,14 @@ impl Config {
     }
 
     pub fn apply_to_state(&self, state: &mut GlideState) {
+        let appearance = self.topbar.effective_appearance(crate::topbar::local_minute_of_day());
+        if appearance != self.topbar.appearance {
+            let mut scheduled = self.clone();
+            scheduled.topbar.appearance = appearance;
+            scheduled.apply_to_state(state);
+            return;
+        }
+        state.session.appearance_schedule = self.topbar.appearance_schedule;
         state.motion = crate::state::MotionPolicy {
             configured_scale: self.animations.motion_scale(),
             respect_system: self.animations.respect_system,
@@ -2184,5 +2214,21 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         assert_eq!(policy.suspend_on_battery, Some(Duration::from_secs(600)));
         let delayed: Config = toml::from_str("[general]\nlock-after-seconds = 30\n").expect("valid idle keys");
         assert_eq!(delayed.general.idle_policy().lock, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_scheduled_appearance_is_dark_from_seven_in_the_evening_to_seven_in_the_morning() {
+        use glide_theme::Appearance::{Dark, Light};
+        let at = |hours: u16, minutes: u16| scheduled_appearance(hours * 60 + minutes);
+        assert_eq!(at(6, 59), Dark);
+        assert_eq!(at(7, 0), Light);
+        assert_eq!(at(18, 59), Light);
+        assert_eq!(at(19, 0), Dark);
+        assert_eq!(at(0, 0), Dark);
+        let fixed = TopbarConfig { appearance: Light, ..TopbarConfig::default() };
+        assert_eq!(fixed.effective_appearance(Some(23 * 60)), Light, "without the schedule the setting stands");
+        let scheduled = TopbarConfig { appearance_schedule: true, ..fixed };
+        assert_eq!(scheduled.effective_appearance(Some(23 * 60)), Dark);
+        assert_eq!(scheduled.effective_appearance(None), Light, "an unreadable clock keeps the setting");
     }
 }
