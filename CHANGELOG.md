@@ -119,6 +119,12 @@ have not been tried on real hardware or against the real system service.
   workspace protocol, and must be allowed by the user before they inhibit
   keyboard shortcuts; Super+Esc takes the shortcuts back from any window.
 
+### Fixes
+
+- Themed cursors are drawn with their hotspot on the pointer. The text
+  I-beam used to sit about half a line below and to the right of the point
+  that actually received the click, so selections started somewhere else.
+
 ### Robustness
 
 - An unknown key in `glide.toml` is dropped with a notification instead of

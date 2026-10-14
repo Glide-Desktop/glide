@@ -178,3 +178,10 @@ Ctrl+Alt+F3 and a text login.
     `glide.log.1`. When a release build panics, its log holds the message
     and a backtrace with file and line numbers (a signal such as SIGSEGV
     leaves no backtrace).
+
+## Pointer
+
+52. **Cursor hotspot.** In a GTK4 text field, a terminal and Firefox, click
+    with the I-beam's middle exactly between two letters: the caret lands
+    there, and a drag selects from that point. Hover a window edge: the
+    resize arrow's centre sits on the edge. Repeat at scale 2 and 1.25.

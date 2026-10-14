@@ -53,7 +53,7 @@ use smithay::{
         wayland_server::backend::GlobalId,
     },
     render_elements,
-    utils::{Buffer, Clock, DeviceFd, IsAlive, Logical, Monotonic, Point, Rectangle, Scale, Transform},
+    utils::{Buffer, Clock, DeviceFd, IsAlive, Logical, Monotonic, Physical, Point, Rectangle, Scale, Transform},
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -365,7 +365,7 @@ pub fn init_udev_monitor(event_loop: &mut EventLoop<GlideState>, state: &mut Gli
     Ok(())
 }
 
-fn cursor_hotspot(status: &CursorImageStatus) -> Point<i32, Logical> {
+fn cursor_hotspot(status: &CursorImageStatus, named: Point<f64, Logical>) -> Point<f64, Logical> {
     match status {
         CursorImageStatus::Surface(surface) => compositor::with_states(surface, |states| {
             states
@@ -373,18 +373,26 @@ fn cursor_hotspot(status: &CursorImageStatus) -> Point<i32, Logical> {
                 .get::<std::sync::Mutex<CursorImageAttributes>>()
                 .map(|attrs| attrs.lock().expect("single-threaded event loop, this mutex is never poisoned").hotspot)
                 .unwrap_or_default()
+                .to_f64()
         }),
-        _ => (0, 0).into(),
+        CursorImageStatus::Named(_) => named,
+        CursorImageStatus::Hidden => Point::default(),
     }
+}
+
+fn named_hotspot(image: &xcursor::parser::Image, scale: u32) -> Point<f64, Logical> {
+    let scale = f64::from(scale.max(1));
+    Point::from((f64::from(image.xhot) / scale, f64::from(image.yhot) / scale))
 }
 
 fn resolve_cursor_buffer(
     cursor: &mut Cursor, cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, icon: CursorIcon,
     scale: u32, elapsed: Duration,
-) -> MemoryRenderBuffer {
+) -> (MemoryRenderBuffer, Point<f64, Logical>) {
     let image = cursor.image(icon, scale, elapsed);
+    let hotspot = named_hotspot(&image, scale);
     if let Some((_, buffer)) = cursor_buffers.iter().find(|(cached, _)| cached == &image) {
-        return buffer.clone();
+        return (buffer.clone(), hotspot);
     }
 
     let buffer = MemoryRenderBuffer::from_slice(
@@ -396,7 +404,7 @@ fn resolve_cursor_buffer(
         None,
     );
     cursor_buffers.push((image, buffer.clone()));
-    buffer
+    (buffer, hotspot)
 }
 
 enum FrameOutcome {
@@ -579,11 +587,17 @@ fn pointer_on_output(
     reach.overlaps(output_geometry).then(|| pointer_location - output_geometry.loc.to_f64())
 }
 
+fn cursor_origin(
+    pointer_location: Point<f64, Logical>, cursor_hotspot: Point<f64, Logical>, scale: Scale<f64>,
+) -> Point<i32, Physical> {
+    (pointer_location - cursor_hotspot).to_physical(scale).to_i32_round()
+}
+
 fn cursor_elements(
     gles_renderer: &mut GlesRenderer, pointer_element: &mut PointerElement, pointer_location: Point<f64, Logical>,
-    cursor_hotspot: Point<i32, Logical>, scale: Scale<f64>,
+    cursor_hotspot: Point<f64, Logical>, scale: Scale<f64>,
 ) -> Vec<GlideRenderElements> {
-    let position = (pointer_location - cursor_hotspot.to_f64()).to_physical(scale).to_i32_round();
+    let position = cursor_origin(pointer_location, cursor_hotspot, scale);
     pointer_element
         .render_elements::<PointerRenderElement<GlesRenderer>>(gles_renderer, position, scale, 1.0)
         .into_iter()
@@ -1094,7 +1108,6 @@ impl GlideState {
         self.reset_dead_cursor_surface();
 
         let pointer_location = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
-        let cursor_hotspot = cursor_hotspot(&self.cursor_status);
         let cursor_status = self.cursor_status.clone();
         let elapsed = self.start_time.elapsed();
         let dock_area = self.dock_area();
@@ -1136,13 +1149,14 @@ impl GlideState {
             CursorImageStatus::Named(icon) => *icon,
             _ => CursorIcon::Default,
         };
-        let cursor_buffer = resolve_cursor_buffer(
+        let (cursor_buffer, named) = resolve_cursor_buffer(
             cursor,
             cursor_buffers,
             icon,
             output.current_scale().integer_scale().cast_unsigned(),
             elapsed,
         );
+        let cursor_hotspot = cursor_hotspot(&cursor_status, named);
         pointer_element.set_buffer(cursor_buffer);
         pointer_element.set_status(cursor_status);
 
@@ -1780,6 +1794,39 @@ mod tests {
         let mut cache = Vec::new();
         let _ = resolve_cursor_buffer(&mut cursor, &mut cache, CursorIcon::NwResize, 1, Duration::ZERO);
         assert_eq!(cache.len(), 1);
+    }
+
+    fn text_beam(scale: u32) -> xcursor::parser::Image {
+        let size = 24 * scale;
+        xcursor::parser::Image {
+            size,
+            width: size,
+            height: size,
+            xhot: 11 * scale,
+            yhot: 12 * scale,
+            delay: 0,
+            pixels_rgba: Vec::new(),
+            pixels_argb: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_themed_cursor_hotspot_is_in_logical_pixels() {
+        assert_eq!(named_hotspot(&text_beam(1), 1), Point::from((11.0, 12.0)));
+        assert_eq!(named_hotspot(&text_beam(2), 2), Point::from((11.0, 12.0)));
+        assert_eq!(named_hotspot(&text_beam(1), 0), Point::from((11.0, 12.0)));
+    }
+
+    #[test]
+    fn a_named_cursor_puts_its_hotspot_on_the_pointer() {
+        let hotspot = cursor_hotspot(&CursorImageStatus::Named(CursorIcon::Text), named_hotspot(&text_beam(1), 1));
+        assert_eq!(cursor_origin(Point::from((100.0, 100.0)), hotspot, Scale::from(1.0)), Point::from((89, 88)));
+        assert_eq!(cursor_origin(Point::from((100.0, 100.0)), hotspot, Scale::from(1.5)), Point::from((134, 132)));
+    }
+
+    #[test]
+    fn a_hidden_cursor_has_no_hotspot() {
+        assert_eq!(cursor_hotspot(&CursorImageStatus::Hidden, Point::from((11.0, 12.0))), Point::default());
     }
 
     #[test]
