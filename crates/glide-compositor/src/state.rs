@@ -114,7 +114,7 @@ impl Protocols {
         let cursor_shape_state = CursorShapeManagerState::new::<GlideState>(dh);
         let xdg_decoration_state = XdgDecorationState::new::<GlideState>(dh);
         let kde_decoration_state = KdeDecorationState::new::<GlideState>(dh, KdeMode::Server);
-        let layer_shell_state = WlrLayerShellState::new::<GlideState>(dh);
+        let layer_shell_state = WlrLayerShellState::new_with_filter::<GlideState, _>(dh, client_is_unrestricted);
         let fractional_scale_state = FractionalScaleManagerState::new::<GlideState>(dh);
         let viewporter_state = ViewporterState::new::<GlideState>(dh);
         let shm_state = ShmState::new::<GlideState>(dh, vec![]);
@@ -147,7 +147,7 @@ impl Protocols {
                 unrestricted,
             ),
             primary_selection_state,
-            foreign_toplevel_list_state: ForeignToplevelListState::new::<GlideState>(dh),
+            foreign_toplevel_list_state: ForeignToplevelListState::new_with_filter::<GlideState>(dh, unrestricted),
             idle_notifier_state: IdleNotifierState::new(dh, loop_handle.clone()),
             idle_inhibit_state: IdleInhibitManagerState::new::<GlideState>(dh),
             wlr_output_manager_state: WlrOutputManagerState::new::<GlideState>(dh),
@@ -362,6 +362,7 @@ pub struct SessionServices {
     pub super_tap: crate::super_keys::SuperTap,
     pub lid_closed: bool,
     pub lid_hidden: Vec<Output>,
+    pub shortcuts: crate::shortcut_guard::ShortcutGuard,
 }
 
 impl GlideState {

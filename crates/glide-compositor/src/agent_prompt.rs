@@ -167,6 +167,7 @@ impl crate::GlideState {
                 self.queue_redraw();
             }
         }
+        self.settle_shortcut_requests();
     }
 }
 

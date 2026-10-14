@@ -106,6 +106,7 @@ pub enum KeyAction {
     TileRestore,
     MoveToOutput(crate::tiling::Side),
     ForceQuit,
+    RestoreShortcuts,
     Terminal,
     MoveWindowToNeighbour(bool),
     Shell(crate::topbar::TopbarAction),
@@ -302,6 +303,13 @@ fn is_power_key(raw_syms: &[Keysym], modified_sym: Keysym) -> bool {
 
 fn survives_inhibit(action: &KeyAction, power_key: bool) -> bool {
     power_key || matches!(action, KeyAction::VtSwitch(_))
+}
+
+fn restores_shortcuts(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym) -> bool {
+    modifiers.logo
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && (modified_sym == Keysym::Escape || raw_syms.contains(&Keysym::Escape))
 }
 
 fn launcher_active_shortcut(
@@ -1378,7 +1386,9 @@ impl GlideState {
                         process_keyboard_shortcut(&keybinds, modifiers, &binding_syms, keysym)
                     };
 
-                    let action = if (exclusive || shortcuts_inhibited) && !power_open {
+                    let action = if shortcuts_inhibited && restores_shortcuts(modifiers, &binding_syms, keysym) {
+                        Some(KeyAction::RestoreShortcuts)
+                    } else if (exclusive || shortcuts_inhibited) && !power_open {
                         let power_key = is_power_key(&binding_syms, keysym);
                         action.filter(|action| survives_inhibit(action, power_key))
                     } else {
@@ -1664,6 +1674,7 @@ impl GlideState {
             KeyAction::LockedPowerKey => self.locked_power_key(),
             KeyAction::ShowDesktop => self.toggle_show_desktop(),
             KeyAction::ForceQuit => self.force_quit_focused(),
+            KeyAction::RestoreShortcuts => self.restore_shortcuts(),
             KeyAction::Tile(side) => self.tile_focused(side),
             KeyAction::TileMaximize => self.maximize_focused(),
             KeyAction::TileRestore => self.restore_focused(),
@@ -2784,6 +2795,16 @@ mod tests {
             KeyAction::OverviewNav(Direction::Right),
             "an unmodified l still walks the grid"
         );
+    }
+
+    #[test]
+    fn super_escape_alone_takes_the_shortcuts_back() {
+        let logo = ModifiersState { logo: true, ..ModifiersState::default() };
+        let logo_ctrl = ModifiersState { ctrl: true, ..logo };
+        assert!(restores_shortcuts(&logo, &[Keysym::Escape], Keysym::Escape));
+        assert!(!restores_shortcuts(&no_modifiers(), &[Keysym::Escape], Keysym::Escape));
+        assert!(!restores_shortcuts(&logo_ctrl, &[Keysym::Escape], Keysym::Escape));
+        assert!(!restores_shortcuts(&logo, &[Keysym::q], Keysym::q));
     }
 
     #[test]

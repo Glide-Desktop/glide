@@ -53,6 +53,7 @@ mod screencopy;
 mod screensaver;
 mod screenshot_ui;
 mod session_end;
+mod shortcut_guard;
 mod snap;
 mod snapshot;
 mod sound;

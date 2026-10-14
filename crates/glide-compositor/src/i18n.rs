@@ -169,6 +169,11 @@ catalogue! {
     DockQuit => "Quit", "Завершити";
     PowerLock => "Lock", "Заблокувати";
     PowerCancel => "Cancel", "Скасувати";
+    ShortcutsAsk => "{app} wants to use keyboard shortcuts", "{app} хоче перехоплювати клавіатурні скорочення";
+    ShortcutsAskBody => "While it is focused, Glide's shortcuts go to it. Super+Esc takes them back.", "Поки вона у фокусі, скорочення Glide надходять їй. Super+Esc поверне їх.";
+    ShortcutsAllow => "Allow", "Дозволити";
+    ShortcutsRestored => "Keyboard shortcuts restored", "Клавіатурні скорочення повернуто";
+    SomeApp => "An app", "Програма";
     PowerCountdownLogOut => "You will be logged out automatically in {n} s.", "Сеанс буде завершено автоматично через {n} с.";
     PowerCountdownRestart => "The computer will restart automatically in {n} s.", "Комп\u{2019}ютер буде перезавантажено автоматично через {n} с.";
     PowerCountdownShutDown => "The computer will shut down automatically in {n} s.", "Комп\u{2019}ютер буде вимкнено автоматично через {n} с.";

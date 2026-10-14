@@ -45,7 +45,6 @@ impl KeyboardShortcutsInhibitHandler for GlideState {
     }
 
     fn new_inhibitor(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
-        inhibitor.activate();
-        tracing::info!("a client took over the keyboard shortcuts");
+        self.request_shortcut_inhibit(inhibitor);
     }
 }

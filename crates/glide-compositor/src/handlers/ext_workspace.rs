@@ -209,6 +209,10 @@ impl GlobalDispatch<ExtWorkspaceManagerV1, GlobalData> for GlideState {
         });
         state.sync_ext_workspaces();
     }
+
+    fn can_view(client: Client, _global_data: &GlobalData) -> bool {
+        crate::state::client_is_unrestricted(&client)
+    }
 }
 
 impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceManagerV1, GlobalData> for GlideState {
