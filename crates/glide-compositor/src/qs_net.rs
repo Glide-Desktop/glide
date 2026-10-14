@@ -660,6 +660,14 @@ impl GlideState {
         if self.topbar.apply_net_event(event) {
             self.queue_redraw();
         }
+        self.sync_prompt_caps_lock();
+    }
+
+    pub(crate) fn sync_prompt_caps_lock(&mut self) {
+        let on = self.seat.get_keyboard().is_some_and(|keyboard| keyboard.modifier_state().caps_lock);
+        if self.topbar.set_caps_lock(on) {
+            self.queue_redraw();
+        }
     }
 
     pub fn rescan_quick_settings_panel(&mut self) {
@@ -700,7 +708,10 @@ impl GlideState {
                 }
                 Some(Detail::Battery | Detail::Sound) | None => {}
             },
-            PanelAction::Row(index) => self.activate_detail_row(index),
+            PanelAction::Row(index) => {
+                self.activate_detail_row(index);
+                self.sync_prompt_caps_lock();
+            }
             PanelAction::FocusPassword => self.topbar.focus_password(),
             PanelAction::Settings => {
                 let detail = self.topbar.detail();

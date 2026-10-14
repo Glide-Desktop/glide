@@ -239,11 +239,16 @@ struct Failure {
 struct Prompt {
     ssid: String,
     field: TextField,
+    caps_lock: bool,
 }
 
 impl std::fmt::Debug for Prompt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Prompt").field("ssid", &self.ssid).field("len", &self.field.text().chars().count()).finish()
+        f.debug_struct("Prompt")
+            .field("ssid", &self.ssid)
+            .field("len", &self.field.text().chars().count())
+            .field("caps_lock", &self.caps_lock)
+            .finish()
     }
 }
 
@@ -510,12 +515,25 @@ impl Topbar {
             self.qs_panel.prompt = None;
             self.settle_focus_on_row(ssid);
         } else {
-            self.qs_panel.prompt = Some(Prompt { ssid: ssid.to_string(), field: TextField::default() });
+            self.qs_panel.prompt =
+                Some(Prompt { ssid: ssid.to_string(), field: TextField::default(), caps_lock: false });
             self.set_focused(Some(Slot::QsPasswordField));
         }
         self.qs_panel.failure = None;
         self.qs_panel.bump();
         self.touch();
+    }
+
+    pub fn set_caps_lock(&mut self, on: bool) -> bool {
+        let Some(prompt) = self.qs_panel.prompt.as_mut() else {
+            return false;
+        };
+        if prompt.caps_lock == on {
+            return false;
+        }
+        prompt.caps_lock = on;
+        self.qs_panel.bump();
+        true
     }
 
     pub fn focus_password(&mut self) {
@@ -604,7 +622,7 @@ impl Topbar {
             NetEvent::WifiResult { ssid, result } => {
                 self.settle_pending(&ssid, result);
                 if result == Err(ConnectError::WrongPassword) && self.detail() == Some(Detail::Wifi) {
-                    self.qs_panel.prompt = Some(Prompt { ssid, field: TextField::default() });
+                    self.qs_panel.prompt = Some(Prompt { ssid, field: TextField::default(), caps_lock: false });
                     self.set_focused(Some(Slot::QsPasswordField));
                 }
             }
@@ -811,7 +829,7 @@ fn draw_list_body(
             }
             RowKind::Prompt => {
                 if let Some(prompt) = panel.prompt.as_ref() {
-                    draw_password_row(c, ctx, rect, &prompt.field);
+                    draw_password_row(c, ctx, rect, &prompt.field, prompt.caps_lock);
                 }
             }
         }
@@ -992,7 +1010,9 @@ fn draw_output_row(
     }
 }
 
-fn draw_password_row(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, field: &TextField) {
+fn draw_password_row(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, field: &TextField, caps_lock: bool,
+) {
     let theme = ctx.theme;
     let boxed = local_rect(
         rect.loc.x + SP2 + DETAIL_ICON + SP2,
@@ -1002,7 +1022,21 @@ fn draw_password_row(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalR
     );
     c.fill(boxed, theme.track_soft, R1);
     c.stroke(boxed, 1.0, R1, theme.active_background);
-    let (left, right, top, bottom) = band(boxed);
+    let (left, mut right, top, bottom) = band(boxed);
+    if caps_lock {
+        let cap = &TextStyle::CAP;
+        let label = t(Key::CapsLockOn);
+        let width = text_w(ctx.painter, label, cap);
+        c.text(
+            ctx.painter,
+            (right - SP2 - width, right - SP2, top, bottom),
+            TextAlign::Right,
+            label,
+            theme.danger,
+            cap,
+        );
+        right -= width + SP2;
+    }
     let (text_left, text_right) = (left + SP2, right - SP2);
     let text_band = (text_left, text_right, top, bottom);
     let style = TextStyle::CALL;
@@ -1179,6 +1213,17 @@ mod tests {
         let submitted = bar.prompt_key(FieldKey::Submit);
         assert!(submitted == PromptOutcome::Submit { ssid: "Neighbour".to_string(), password: "pa5w".to_string() });
         assert_eq!(bar.qs_key_mode(), QsKeyMode::Detail, "the field is gone");
+    }
+
+    #[test]
+    fn the_password_field_warns_about_caps_lock() {
+        let mut bar = open_wifi();
+        assert!(!bar.set_caps_lock(true), "no field open, nothing to warn");
+        bar.toggle_prompt("Neighbour");
+        assert!(bar.set_caps_lock(true));
+        assert!(!bar.set_caps_lock(true), "an unchanged state does not repaint");
+        assert!(bar.qs_panel.prompt.as_ref().is_some_and(|prompt| prompt.caps_lock));
+        assert!(bar.set_caps_lock(false));
     }
 
     #[test]

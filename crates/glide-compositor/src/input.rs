@@ -1500,6 +1500,7 @@ impl GlideState {
         }
 
         let mut action = action;
+        self.sync_prompt_caps_lock();
         if greeter_active {
             let caps_lock = keyboard.modifier_state().caps_lock;
             if self.greeter.as_mut().is_some_and(|greeter| greeter.set_caps_lock(caps_lock)) {
