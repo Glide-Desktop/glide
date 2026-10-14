@@ -132,6 +132,7 @@ catalogue! {
     SectionActions => "Actions", "Дії";
     SectionCommands => "Commands", "Команди";
     SectionSettings => "Settings", "Налаштування";
+    SectionWindows => "Windows", "Вікна";
     CommandLogOut => "Log Out", "Вийти з сеансу";
     CommandRestart => "Restart", "Перезавантажити";
     CommandShutDown => "Shut Down", "Вимкнути";

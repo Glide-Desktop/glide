@@ -89,8 +89,39 @@ impl GlideState {
                     tracing::error!(%command, ?err, "failed to open a settings panel");
                 }
             }
+            Entry::Window { index, .. } => {
+                let id = launcher.window(index).map(|window| glide_layout::WindowId(window.id));
+                self.close_launcher();
+                if let Some(id) = id.filter(|id| self.window_map.contains_key(id)) {
+                    self.activate_window_animated(id);
+                }
+                return;
+            }
         }
         self.close_launcher();
+    }
+
+    #[must_use]
+    pub fn open_windows_for_search(&self) -> Vec<super::search::OpenWindow> {
+        let mut order: Vec<glide_layout::WindowId> =
+            self.focus_history.iter().copied().filter(|id| self.window_map.contains_key(id)).collect();
+        let mut rest: Vec<glide_layout::WindowId> =
+            self.window_map.keys().copied().filter(|id| !order.contains(id)).collect();
+        rest.sort();
+        order.extend(rest);
+        order
+            .into_iter()
+            .filter_map(|id| {
+                let window = self.window_map.get(&id)?;
+                let (title, app_id) = crate::state::toplevel_title_and_app_id(crate::state::window_surface(window));
+                Some(super::search::OpenWindow {
+                    id: id.as_u64(),
+                    title: title.unwrap_or_default(),
+                    app_id: app_id.unwrap_or_default(),
+                })
+            })
+            .filter(|window| !window.title.is_empty() || !window.app_id.is_empty())
+            .collect()
     }
 
     fn run_system_command(&mut self, command: SystemCommand) {

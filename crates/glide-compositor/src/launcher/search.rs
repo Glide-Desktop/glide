@@ -10,6 +10,7 @@ pub const LIST_APP_LIMIT: usize = 10;
 pub const LIST_ACTION_LIMIT: usize = 5;
 pub const LIST_COMMAND_LIMIT: usize = 5;
 pub const LIST_SETTINGS_LIMIT: usize = 5;
+pub const LIST_WINDOW_LIMIT: usize = 5;
 
 const SCORE_NAME_PREFIX: u32 = 1000;
 const SCORE_NAME_WORD: u32 = 800;
@@ -360,6 +361,7 @@ impl SettingsPanel {
 pub enum Section {
     Calculator,
     Apps,
+    Windows,
     Actions,
     Commands,
     Settings,
@@ -371,6 +373,7 @@ impl Section {
         t(match self {
             Self::Calculator => Key::SectionCalculator,
             Self::Apps => Key::Applications,
+            Self::Windows => Key::SectionWindows,
             Self::Actions => Key::SectionActions,
             Self::Commands => Key::SectionCommands,
             Self::Settings => Key::SectionSettings,
@@ -379,8 +382,16 @@ impl Section {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenWindow {
+    pub id: u64,
+    pub title: String,
+    pub app_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     App(usize),
+    Window { index: usize, app: Option<usize> },
     Action { app: usize, action: usize },
     Calculator { expression: String, value: String },
     Command(SystemCommand),
@@ -392,12 +403,46 @@ impl Entry {
     pub const fn section(&self) -> Section {
         match self {
             Self::App(_) => Section::Apps,
+            Self::Window { .. } => Section::Windows,
             Self::Action { .. } => Section::Actions,
             Self::Calculator { .. } => Section::Calculator,
             Self::Command(_) => Section::Commands,
             Self::Settings(_) => Section::Settings,
         }
     }
+}
+
+#[must_use]
+pub fn app_for_window(apps: &[DesktopApp], window: &OpenWindow) -> Option<usize> {
+    let wanted = window.app_id.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    let wanted = wanted.strip_suffix(".desktop").unwrap_or(wanted);
+    apps.iter().position(|app| app.id.strip_suffix(".desktop").unwrap_or(&app.id).eq_ignore_ascii_case(wanted))
+}
+
+#[must_use]
+pub fn window_matches(apps: &[DesktopApp], windows: &[OpenWindow], needle: &str) -> Vec<Entry> {
+    ranked(
+        windows.iter().enumerate().map(|(index, window)| {
+            let app = app_for_window(apps, window);
+            let app_name = app.and_then(|app| apps.get(app)).map(|app| app.name.as_str());
+            let title = match_rank(&window.title, needle).map(name_score);
+            let owner = [Some(window.app_id.as_str()), app_name]
+                .into_iter()
+                .flatten()
+                .filter_map(|text| match_rank(text, needle))
+                .min()
+                .map(keyword_score);
+            ((index, app), title.max(owner))
+        }),
+        true,
+        LIST_WINDOW_LIMIT,
+    )
+    .into_iter()
+    .map(|(index, app)| Entry::Window { index, app })
+    .collect()
 }
 
 fn phrase_score(title: &str, keywords: &[&str], needle: &str) -> Option<u32> {
@@ -438,7 +483,7 @@ pub fn action_matches(apps: &[DesktopApp], ranked_apps: &[usize], needle: &str) 
 }
 
 #[must_use]
-pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], query: &str) -> Vec<Entry> {
+pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], windows: &[OpenWindow], query: &str) -> Vec<Entry> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Vec::new();
@@ -450,6 +495,7 @@ pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], query: &str) ->
     entries.extend(ranked_apps.iter().take(LIST_APP_LIMIT).map(|&index| Entry::App(index)));
     let long_enough = needle.chars().count() >= 2;
     if long_enough {
+        entries.extend(window_matches(apps, windows, &needle));
         entries.extend(action_matches(apps, ranked_apps, &needle));
     }
     entries.extend(
@@ -626,7 +672,7 @@ mod tests {
     #[test]
     fn desktop_actions_match_on_their_own_name() {
         let apps = vec![firefox()];
-        let entries = build_entries(&apps, &[], "private");
+        let entries = build_entries(&apps, &[], &[], "private");
         assert!(entries.contains(&Entry::Action { app: 0, action: 1 }));
         assert!(!entries.contains(&Entry::Action { app: 0, action: 0 }));
     }
@@ -634,38 +680,77 @@ mod tests {
     #[test]
     fn a_spaced_query_can_name_the_app_and_the_action() {
         let apps = vec![firefox()];
-        let entries = build_entries(&apps, &[0], "firefox new private");
+        let entries = build_entries(&apps, &[0], &[], "firefox new private");
         assert!(entries.contains(&Entry::Action { app: 0, action: 1 }));
+    }
+
+    fn window(id: u64, title: &str, app_id: &str) -> OpenWindow {
+        OpenWindow { id, title: title.to_string(), app_id: app_id.to_string() }
+    }
+
+    #[test]
+    fn open_windows_are_found_by_title_and_by_their_app() {
+        let apps = vec![firefox(), app("org.gnome.TextEditor", "Text Editor")];
+        let windows = vec![
+            window(7, "Quarterly report — Mozilla Firefox", "firefox"),
+            window(9, "notes.txt", "org.gnome.TextEditor"),
+            window(11, "Untitled", ""),
+        ];
+        let found = |query| {
+            build_entries(&apps, &[], &windows, query)
+                .into_iter()
+                .filter(|entry| entry.section() == Section::Windows)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(found("report"), [Entry::Window { index: 0, app: Some(0) }]);
+        assert_eq!(found("text"), [Entry::Window { index: 1, app: Some(1) }]);
+        assert!(found("u").is_empty(), "one letter is too little to search windows");
+    }
+
+    #[test]
+    fn a_title_match_outranks_an_app_match() {
+        let apps = vec![firefox()];
+        let windows = vec![window(1, "Docs", "firefox"), window(2, "Firefox release notes", "org.gnome.Epiphany")];
+        let entries = window_matches(&apps, &windows, "firefox");
+        assert_eq!(entries, [Entry::Window { index: 1, app: None }, Entry::Window { index: 0, app: Some(0) }]);
+    }
+
+    #[test]
+    fn window_app_ids_match_desktop_ids_loosely() {
+        let apps = vec![app("Alacritty", "Alacritty"), app("org.gnome.Nautilus.desktop", "Files")];
+        assert_eq!(app_for_window(&apps, &window(1, "", "alacritty")), Some(0));
+        assert_eq!(app_for_window(&apps, &window(1, "", "org.gnome.Nautilus")), Some(1));
+        assert_eq!(app_for_window(&apps, &window(1, "", " ")), None);
     }
 
     #[test]
     fn a_math_query_puts_the_calculator_first() {
-        let entries = build_entries(&[], &[], "2+2");
+        let entries = build_entries(&[], &[], &[], "2+2");
         assert_eq!(entries.first(), Some(&Entry::Calculator { expression: "2+2".into(), value: "4".into() }));
     }
 
     #[test]
     fn commands_match_in_either_language() {
         for query in ["reboot", "перезав", "restart"] {
-            let entries = build_entries(&[], &[], query);
+            let entries = build_entries(&[], &[], &[], query);
             assert!(entries.contains(&Entry::Command(SystemCommand::Restart)), "{query}: {entries:?}");
         }
-        let entries = build_entries(&[], &[], "lock");
+        let entries = build_entries(&[], &[], &[], "lock");
         assert_eq!(entries.first(), Some(&Entry::Command(SystemCommand::Lock)));
     }
 
     #[test]
     fn settings_panels_match_by_keyword() {
-        let entries = build_entries(&[], &[], "wifi");
+        let entries = build_entries(&[], &[], &[], "wifi");
         assert!(entries.contains(&Entry::Settings(SettingsPanel::Network)));
-        let entries = build_entries(&[], &[], "гучн");
+        let entries = build_entries(&[], &[], &[], "гучн");
         assert!(entries.contains(&Entry::Settings(SettingsPanel::Sound)));
     }
 
     #[test]
     fn sections_come_out_grouped_in_display_order() {
         let apps = vec![app("power-stats", "Power Statistics")];
-        let entries = build_entries(&apps, &[0], "power");
+        let entries = build_entries(&apps, &[0], &[], "power");
         let sections: Vec<Section> = entries.iter().map(Entry::section).collect();
         let mut sorted = sections.clone();
         sorted.sort();
@@ -678,7 +763,7 @@ mod tests {
     #[test]
     fn single_letters_only_search_apps() {
         let apps = vec![app("l", "Lollypop")];
-        let entries = build_entries(&apps, &[0], "l");
+        let entries = build_entries(&apps, &[0], &[], "l");
         assert_eq!(entries, [Entry::App(0)]);
     }
 
@@ -732,7 +817,7 @@ mod tests {
             ("printers", SettingsPanel::Printers),
             ("privacy", SettingsPanel::Privacy),
         ] {
-            let entries = build_entries(&[], &[], query);
+            let entries = build_entries(&[], &[], &[], query);
             let first = entries.iter().find_map(|entry| match entry {
                 Entry::Settings(panel) => Some(*panel),
                 _ => None,

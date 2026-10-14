@@ -193,6 +193,11 @@ impl Launcher {
             ),
             Entry::Command(command) => (command.title().to_string(), String::new()),
             Entry::Settings(panel) => (panel.title().to_string(), String::new()),
+            Entry::Window { index, app } => self.windows.get(*index).map_or_else(Default::default, |window| {
+                let owner = app.and_then(|app| self.apps.get(app)).map_or(window.app_id.as_str(), |app| &app.name);
+                let title = if window.title.is_empty() { owner } else { &window.title };
+                (title.to_string(), owner.to_string())
+            }),
         }
     }
 }
@@ -200,6 +205,7 @@ impl Launcher {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RowGlyph {
     Calculator,
+    Window,
     Command(SystemCommand),
     Settings(SettingsPanel),
 }
@@ -212,7 +218,8 @@ enum RowIcon {
 const fn row_icon(entry: &Entry) -> RowIcon {
     match entry {
         Entry::App(index) => RowIcon::Tile(*index),
-        Entry::Action { app, .. } => RowIcon::Tile(*app),
+        Entry::Action { app, .. } | Entry::Window { app: Some(app), .. } => RowIcon::Tile(*app),
+        Entry::Window { app: None, .. } => RowIcon::Glyph(RowGlyph::Window),
         Entry::Calculator { .. } => RowIcon::Glyph(RowGlyph::Calculator),
         Entry::Command(command) => RowIcon::Glyph(RowGlyph::Command(*command)),
         Entry::Settings(panel) => RowIcon::Glyph(RowGlyph::Settings(*panel)),
@@ -241,7 +248,8 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
     use crate::paint as p;
     let (w, h) = (ROW_ICON, ROW_ICON);
     let stroked: fn(&mut [u8], i32, i32, f32, f32, i32, glide_theme::Color) = match glyph {
-        RowGlyph::Calculator => {
+        RowGlyph::Calculator | RowGlyph::Window => {
+            let label = if glyph == RowGlyph::Window { "\u{25a1}" } else { "=" };
             return painter.draw_label_over_styled(
                 buf,
                 w,
@@ -250,7 +258,7 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
                 w,
                 scale,
                 p::TextAlign::Center,
-                "=",
+                label,
                 fg.to_buffer_bytes(),
                 &glide_theme::TextStyle::T3,
             );
@@ -571,5 +579,26 @@ mod tests {
             launcher.entry_text(&Entry::Calculator { expression: "6*7".into(), value: "42".into() });
         assert_eq!(title, "= 42");
         assert!(subtitle.starts_with("6*7"));
+    }
+
+    #[test]
+    fn a_window_row_shows_its_title_over_its_app() {
+        let mut launcher = Launcher::new(apps(&["Firefox"]), area());
+        let window = |id, title: &str, app_id: &str| super::super::search::OpenWindow {
+            id,
+            title: title.into(),
+            app_id: app_id.into(),
+        };
+        launcher.set_windows(vec![window(3, "Inbox", "firefox"), window(4, "", "foot")]);
+        assert_eq!(
+            launcher.entry_text(&Entry::Window { index: 0, app: Some(0) }),
+            ("Inbox".to_string(), "Firefox".to_string())
+        );
+        assert_eq!(
+            launcher.entry_text(&Entry::Window { index: 1, app: None }),
+            ("foot".to_string(), "foot".to_string())
+        );
+        assert!(matches!(row_icon(&Entry::Window { index: 0, app: Some(0) }), RowIcon::Tile(0)));
+        assert!(matches!(row_icon(&Entry::Window { index: 1, app: None }), RowIcon::Glyph(RowGlyph::Window)));
     }
 }
