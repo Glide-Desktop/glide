@@ -1011,6 +1011,14 @@ impl GlideState {
         true
     }
 
+    pub fn reload_cursor_theme(&mut self) {
+        if let Some(device) = self.backend_data.device.as_mut() {
+            device.cursor = Cursor::load();
+            device.cursor_buffers.clear();
+        }
+        self.queue_redraw();
+    }
+
     #[must_use]
     pub fn connected_outputs(&self) -> Vec<Output> {
         self.backend_data

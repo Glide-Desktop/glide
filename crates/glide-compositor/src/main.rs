@@ -634,6 +634,12 @@ pub fn spawn_detached(mut command: std::process::Command) -> std::io::Result<u32
     if let Some(terminal) = glide_config::terminal::configured() {
         command.env("TERMINAL", terminal);
     }
+    if let Some(theme) = cursor::configured_theme() {
+        command.env("XCURSOR_THEME", theme);
+    }
+    if let Some(size) = cursor::configured_size() {
+        command.env("XCURSOR_SIZE", size.to_string());
+    }
     let child = command.spawn()?;
     let pid = child.id();
     if let Ok(mut children) = DETACHED_CHILDREN.lock() {

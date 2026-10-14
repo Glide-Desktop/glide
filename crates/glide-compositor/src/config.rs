@@ -834,6 +834,7 @@ pub struct GeneralConfig {
     pub wallpaper: Option<PathBuf>,
     pub wallpaper_fit: WallpaperFit,
     pub font_family: Option<String>,
+    pub cursor_theme: Option<String>,
     pub blank_after_seconds: u64,
     pub lock_after_seconds: i64,
     pub suspend_after_seconds: u64,
@@ -865,6 +866,7 @@ impl Default for GeneralConfig {
             wallpaper: None,
             wallpaper_fit: WallpaperFit::default(),
             font_family: None,
+            cursor_theme: None,
             blank_after_seconds: 600,
             lock_after_seconds: 0,
             suspend_after_seconds: 0,
@@ -1210,6 +1212,10 @@ impl Config {
             appearance: self.topbar.appearance,
             accent: self.topbar.accent,
             icon_theme: self.dock.theme.icon_theme.clone(),
+            cursor_theme: self.general.cursor_theme.clone(),
+            cursor_size: self.accessibility.cursor_size,
+            font_family: self.general.font_family.clone(),
+            wallpaper: self.general.wallpaper.clone(),
         });
         state.max_volume_pct = self.topbar.max_volume_pct.clamp(100, 150);
         state.app_menus.registrar = self.topbar.appmenu_registrar;
@@ -1217,6 +1223,9 @@ impl Config {
         state.configure_tray(&self.topbar, self.dock.theme.icon_theme.clone());
         state.notifications.set_policy(self.notifications.policy());
         crate::cursor::set_configured_size(self.accessibility.cursor_size);
+        if crate::cursor::set_configured_theme(self.general.cursor_theme.as_deref()) {
+            state.reload_cursor_theme();
+        }
         self.announce_problems(state);
         state.refresh_topbar();
         state.launcher_theme = crate::launcher::LauncherTheme::from_dock(&dock.theme, &palette);

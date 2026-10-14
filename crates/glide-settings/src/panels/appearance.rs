@@ -33,6 +33,8 @@ mod tr {
         HintMedium => "Medium", "Середній";
         HintFull => "Full", "Повний";
         RenderingFailed => "Could not change the setting:", "Не вдалося змінити налаштування:";
+        CursorTheme => "Pointer", "Вказівник";
+        CursorThemeHint => "Cursor theme for Glide and apps; X11 apps pick it up when restarted", "Тема курсора для Glide і програм; програми X11 підхоплять її після перезапуску";
         Slower => "Slower", "Повільніше";
         Faster => "Faster", "Швидше";
         Instant => "Everything appears instantly", "Усе з'являється миттєво";
@@ -49,8 +51,9 @@ pub enum Msg {
     CommitSpeed,
     SettleSpeed(u64),
     RespectSystem(bool),
-    Assets(Vec<String>, Vec<String>),
+    Assets(Vec<String>, Vec<String>, Vec<String>),
     IconTheme(Choice),
+    CursorTheme(Choice),
     Font(Choice),
     IconPreview(Option<String>, Vec<PathBuf>),
     Rendering(Option<FontRendering>),
@@ -80,6 +83,7 @@ fn choices(default_label: &str, values: &[String]) -> Vec<Choice> {
 #[derive(Debug, Default)]
 pub struct Page {
     icon_themes: Vec<String>,
+    cursor_themes: Vec<String>,
     fonts: Vec<String>,
     loaded: bool,
     speed: Option<f64>,
@@ -106,7 +110,11 @@ impl Pane for Page {
         "animation",
         "motion",
         "hinting",
+        "cursor",
+        "pointer",
         "тема",
+        "курсор",
+        "вказівник",
         "темна",
         "світла",
         "акцент",
@@ -125,9 +133,9 @@ impl Pane for Page {
         self.loaded = true;
         Task::batch([
             preview,
-            Task::perform(blocking(|| (apps::icon_themes(), apps::font_families())), |assets| {
-                let (icons, fonts) = assets.unwrap_or_default();
-                Msg::Assets(icons, fonts)
+            Task::perform(blocking(|| (apps::icon_themes(), apps::cursor_themes(), apps::font_families())), |assets| {
+                let (icons, cursors, fonts) = assets.unwrap_or_default();
+                Msg::Assets(icons, cursors, fonts)
             }),
             Task::perform(blocking(look::font_rendering), |rendering| Msg::Rendering(rendering.flatten())),
         ])
@@ -150,13 +158,17 @@ impl Pane for Page {
                 }
             }
             Msg::RespectSystem(respect) => config.set_bool("animations", "respect-system", respect),
-            Msg::Assets(icons, fonts) => {
+            Msg::Assets(icons, cursors, fonts) => {
                 self.icon_themes = icons;
+                self.cursor_themes = cursors;
                 self.fonts = fonts;
             }
             Msg::IconTheme(choice) => {
                 config.set_optional_str("dock", "icon-theme", choice.value.as_deref());
                 return self.refresh_preview(config);
+            }
+            Msg::CursorTheme(choice) => {
+                config.set_optional_str("general", "cursor-theme", choice.value.as_deref());
             }
             Msg::Font(choice) => {
                 config.set_optional_str("general", "font-family", choice.value.as_deref());
@@ -290,6 +302,8 @@ impl Page {
                 .into()
         };
         let well = t.sunken_bg();
+        let (cursors, cursor) =
+            pick(choices(c.t(K::SystemDefault), &self.cursor_themes), config.optional_str("general", "cursor-theme"));
         Group::new(t)
             .title(c.t(K::IconTheme))
             .description(c.t(K::IconThemeHint))
@@ -307,6 +321,12 @@ impl Page {
                         .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2())),
                 )
                 .padding([6.0, theme::ROW_PADDING_X]),
+            )
+            .push(
+                Row::new(t, c.t(tr::Key::CursorTheme))
+                    .subtitle(c.t(tr::Key::CursorThemeHint))
+                    .suffix(gated(*c, widgets::dropdown(t, cursors, cursor, Msg::CursorTheme, 240.0)))
+                    .build(),
             )
             .build()
     }

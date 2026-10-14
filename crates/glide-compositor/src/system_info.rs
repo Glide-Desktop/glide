@@ -985,6 +985,71 @@ pub struct DesktopAppearance {
     pub appearance: glide_theme::Appearance,
     pub accent: glide_theme::Accent,
     pub icon_theme: Option<String>,
+    pub cursor_theme: Option<String>,
+    pub cursor_size: Option<u32>,
+    pub font_family: Option<String>,
+    pub wallpaper: Option<std::path::PathBuf>,
+}
+
+const INTERFACE: &str = "org.gnome.desktop.interface";
+const BACKGROUND: &str = "org.gnome.desktop.background";
+pub const INTERFACE_FONT_POINTS: u32 = 11;
+
+#[must_use]
+pub fn gvariant_string(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+#[must_use]
+pub fn file_uri(path: &Path) -> Option<String> {
+    use std::fmt::Write as _;
+    use std::os::unix::ffi::OsStrExt;
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut uri = String::from("file://");
+    for &byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+            uri.push(char::from(byte));
+        } else {
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    Some(uri)
+}
+
+#[must_use]
+pub fn gsettings_extras(wanted: &DesktopAppearance) -> Vec<(&'static str, &'static str, String)> {
+    fn named(value: Option<&String>) -> Option<&str> {
+        value.map(|value| value.trim()).filter(|value| !value.is_empty())
+    }
+    let mut extras = Vec::new();
+    if let Some(theme) = named(wanted.cursor_theme.as_ref()) {
+        extras.push((INTERFACE, "cursor-theme", gvariant_string(theme)));
+    }
+    if let Some(size) = wanted.cursor_size {
+        extras.push((INTERFACE, "cursor-size", size.to_string()));
+    }
+    if let Some(family) = named(wanted.font_family.as_ref()) {
+        extras.push((INTERFACE, "font-name", gvariant_string(&format!("{family} {INTERFACE_FONT_POINTS}"))));
+    }
+    if let Some(uri) = wanted.wallpaper.as_deref().and_then(file_uri) {
+        extras.push((BACKGROUND, "picture-uri", gvariant_string(&uri)));
+        extras.push((BACKGROUND, "picture-uri-dark", gvariant_string(&uri)));
+    }
+    extras
+}
+
+#[must_use]
+pub fn activation_environment(wanted: &DesktopAppearance) -> Vec<String> {
+    let mut vars = Vec::new();
+    if let Some(theme) = wanted.cursor_theme.as_deref().map(str::trim).filter(|theme| !theme.is_empty()) {
+        vars.push(format!("XCURSOR_THEME={theme}"));
+    }
+    if let Some(size) = wanted.cursor_size {
+        vars.push(format!("XCURSOR_SIZE={size}"));
+    }
+    vars
 }
 
 #[must_use]
@@ -1024,8 +1089,12 @@ pub fn gtk_theme_for(current: &str, appearance: glide_theme::Appearance) -> Opti
 static SYNCED_APPEARANCE: std::sync::Mutex<Option<DesktopAppearance>> = std::sync::Mutex::new(None);
 
 fn gsettings_set(key: &str, value: &str) {
+    gsettings_set_in(INTERFACE, key, value);
+}
+
+fn gsettings_set_in(schema: &str, key: &str, value: &str) {
     let _ = Command::new("gsettings")
-        .args(["set", "org.gnome.desktop.interface", key, value])
+        .args(["set", schema, key, value])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1058,6 +1127,19 @@ pub fn sync_desktop_appearance(wanted: DesktopAppearance) {
         }
         if let Some(icons) = wanted.icon_theme.as_deref().filter(|name| !name.is_empty()) {
             gsettings_set("icon-theme", icons);
+        }
+        for (schema, key, value) in gsettings_extras(&wanted) {
+            gsettings_set_in(schema, key, &value);
+        }
+        let environment = activation_environment(&wanted);
+        if !environment.is_empty() {
+            let _ = Command::new("dbus-update-activation-environment")
+                .arg("--systemd")
+                .args(&environment)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
         }
         tracing::info!(
             appearance = ?wanted.appearance,
@@ -1360,6 +1442,59 @@ mod tests {
         let lonely = r#"[{"id": 5, "type": "PipeWire:Interface:Node", "info": {"state": "running",
             "props": {"media.class": "Video/Source", "node.name": "libcamera_input"}}}]"#;
         assert_eq!(parse_pw_dump(lonely).camera, vec![String::new()]);
+    }
+
+    fn appearance() -> DesktopAppearance {
+        DesktopAppearance {
+            appearance: glide_theme::Appearance::Dark,
+            accent: glide_theme::Accent::Blue,
+            icon_theme: None,
+            cursor_theme: None,
+            cursor_size: None,
+            font_family: None,
+            wallpaper: None,
+        }
+    }
+
+    #[test]
+    fn nothing_configured_leaves_the_desktop_settings_alone() {
+        assert!(gsettings_extras(&appearance()).is_empty());
+        assert!(activation_environment(&appearance()).is_empty());
+        let blank =
+            DesktopAppearance { cursor_theme: Some("  ".into()), font_family: Some(String::new()), ..appearance() };
+        assert!(gsettings_extras(&blank).is_empty());
+    }
+
+    #[test]
+    fn cursor_font_and_wallpaper_reach_gsettings_quoted() {
+        let wanted = DesktopAppearance {
+            cursor_theme: Some("Bibata-Modern-Ice".into()),
+            cursor_size: Some(32),
+            font_family: Some("Inter".into()),
+            wallpaper: Some("/home/me/Pictures/sea & sky.png".into()),
+            ..appearance()
+        };
+        assert_eq!(
+            gsettings_extras(&wanted),
+            vec![
+                (INTERFACE, "cursor-theme", "'Bibata-Modern-Ice'".to_string()),
+                (INTERFACE, "cursor-size", "32".to_string()),
+                (INTERFACE, "font-name", "'Inter 11'".to_string()),
+                (BACKGROUND, "picture-uri", "'file:///home/me/Pictures/sea%20%26%20sky.png'".to_string()),
+                (BACKGROUND, "picture-uri-dark", "'file:///home/me/Pictures/sea%20%26%20sky.png'".to_string()),
+            ]
+        );
+        assert_eq!(activation_environment(&wanted), ["XCURSOR_THEME=Bibata-Modern-Ice", "XCURSOR_SIZE=32"]);
+    }
+
+    #[test]
+    fn strings_are_escaped_for_gvariant_and_uris_need_absolute_paths() {
+        assert_eq!(gvariant_string(r"it's a \ test"), r"'it\'s a \\ test'");
+        assert_eq!(file_uri(Path::new("relative.png")), None);
+        assert_eq!(
+            file_uri(Path::new("/tmp/Шпалери.jpg")).as_deref(),
+            Some("file:///tmp/%D0%A8%D0%BF%D0%B0%D0%BB%D0%B5%D1%80%D0%B8.jpg")
+        );
     }
 
     #[test]

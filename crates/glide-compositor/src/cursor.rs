@@ -47,6 +47,47 @@ pub struct Cursor {
 }
 
 static CONFIGURED_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static CONFIGURED_THEME: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[must_use]
+pub fn theme_name(theme: Option<&str>) -> Option<String> {
+    theme.map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned)
+}
+
+#[must_use]
+pub fn pick_theme(configured: Option<String>, environment: Option<&str>) -> String {
+    configured.or_else(|| theme_name(environment)).unwrap_or_else(|| "default".into())
+}
+
+pub fn set_configured_theme(theme: Option<&str>) -> bool {
+    let wanted = theme_name(theme);
+    let Ok(mut current) = CONFIGURED_THEME.lock() else {
+        return false;
+    };
+    if *current == wanted {
+        return false;
+    }
+    *current = wanted;
+    true
+}
+
+#[must_use]
+pub fn configured_theme() -> Option<String> {
+    CONFIGURED_THEME.lock().ok().and_then(|theme| theme.clone())
+}
+
+#[must_use]
+pub fn effective_theme(environment: Option<&str>) -> String {
+    pick_theme(configured_theme(), environment)
+}
+
+#[must_use]
+pub fn configured_size() -> Option<u32> {
+    match CONFIGURED_SIZE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        size => Some(size),
+    }
+}
 
 pub const MIN_SIZE: u32 = 16;
 pub const MAX_SIZE: u32 = 256;
@@ -70,7 +111,7 @@ pub fn effective_size(environment: u32) -> u32 {
 
 impl Cursor {
     pub fn load() -> Self {
-        let theme_name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
+        let theme_name = effective_theme(std::env::var("XCURSOR_THEME").ok().as_deref());
         let size = std::env::var("XCURSOR_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
 
         let theme = CursorTheme::load(&theme_name);
@@ -279,6 +320,16 @@ mod tests {
         assert_eq!(configured_value(Some(48)), 48);
         assert_eq!(configured_value(Some(2)), MIN_SIZE);
         assert_eq!(configured_value(Some(4096)), MAX_SIZE);
+    }
+
+    #[test]
+    fn a_configured_cursor_theme_wins_over_the_environment() {
+        assert_eq!(pick_theme(Some("Bibata".into()), Some("Adwaita")), "Bibata");
+        assert_eq!(pick_theme(None, Some("Adwaita")), "Adwaita");
+        assert_eq!(pick_theme(None, Some(" ")), "default");
+        assert_eq!(pick_theme(None, None), "default");
+        assert_eq!(theme_name(Some("  Breeze ")), Some("Breeze".to_string()));
+        assert_eq!(theme_name(Some("")), None);
     }
 
     #[test]

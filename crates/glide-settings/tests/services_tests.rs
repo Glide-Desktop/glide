@@ -799,3 +799,22 @@ fn every_default_keybind_is_its_own_default_even_with_shared_actions() {
     let restored = keybinds::default_for(&edited, Some(second), &power).expect("has a default");
     assert_eq!(restored.key, "XF86PowerOff");
 }
+
+#[test]
+fn cursor_themes_are_icon_directories_with_cursors() {
+    let root = std::env::temp_dir().join(format!("glide-cursor-themes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (user, system) = (root.join("user"), root.join("system"));
+    for dir in [
+        user.join("Bibata-Modern-Ice/cursors"),
+        system.join("Adwaita/cursors"),
+        system.join("Adwaita/scalable"),
+        system.join("Papirus/64x64"),
+        system.join("default/cursors"),
+    ] {
+        std::fs::create_dir_all(dir).expect("scratch theme");
+    }
+    let themes = glide_settings::services::apps::cursor_themes_in(&[user, system.clone(), system]);
+    assert_eq!(themes, ["Adwaita", "Bibata-Modern-Ice"]);
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}

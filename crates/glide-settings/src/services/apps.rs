@@ -619,6 +619,26 @@ pub fn icon_themes() -> Vec<String> {
 }
 
 #[must_use]
+pub fn cursor_themes_in(dirs: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter(|entry| entry.path().join("cursors").is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "default")
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup();
+    names
+}
+
+#[must_use]
+pub fn cursor_themes() -> Vec<String> {
+    cursor_themes_in(&theme_dirs())
+}
+
+#[must_use]
 pub fn parse_font_families(text: &str) -> Vec<String> {
     let mut families: Vec<String> = text
         .lines()
