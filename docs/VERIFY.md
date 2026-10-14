@@ -130,13 +130,30 @@ Ctrl+Alt+F3 and a text login.
 38. **Keyboard to the shell.** Ctrl+F2 opens the app's first menu (or quick
     settings with a focus ring). Ctrl+F3 highlights the first dock tile;
     arrows move, Up opens its menu, Down / Enter pick a row, Esc backs out.
-    With `[dock] autohide = "always"` the dock comes up for it.
+    With `[dock] autohide = "always"` the dock comes up for it. With the
+    dock highlighted, click a window: the click lands in it.
+39. **Run prompt.** Alt+F2, type `gnome-calculator`, Enter: it starts.
+40. **Quick settings tiles.** Airplane mode on: `rfkill list` shows every
+    radio soft-blocked; off again unblocks them. Power mode: each click
+    moves `powerprofilesctl get` to the next profile. On a desktop without
+    a backlight the brightness slider is dimmed and does nothing.
+41. **Charge limit.** On a laptop whose UPower battery reports
+    `ChargeThresholdSupported`, Settings › Power shows Preserve battery
+    health; switching it on asks polkit and `ChargeThresholdEnabled` turns
+    true.
+42. **Users.** With a polkit agent running, add a user with a password:
+    they can log in through the greeter. Make them administrator and back,
+    change their password, remove them keeping and then deleting files.
+    If the password step fails after the account was created, note what
+    the greeter does with a password-less account.
+43. **Single-pixel buffers.** A recent GTK4 app or mpv with letterboxing
+    renders its solid areas correctly.
 
 ## Packaging
 
-39. **Tarball.** `scripts/package.sh`, unpack on another machine,
+44. **Tarball.** `scripts/package.sh`, unpack on another machine,
     `sudo scripts/install.sh`: it installs, including `glide-files`.
-40. **Crash log.** After item 2, the log of the killed run survives as
+45. **Crash log.** After item 2, the log of the killed run survives as
     `glide.log.1`. When a release build panics, its log holds the message
     and a backtrace with file and line numbers (a signal such as SIGSEGV
     leaves no backtrace).

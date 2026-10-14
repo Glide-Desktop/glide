@@ -54,6 +54,32 @@ have not been tried on real hardware or against the real system service.
   connector name; screenshots take the monitor under the pointer.
 - New key actions: show desktop, move window to next / previous workspace,
   notification centre, quick settings, Do Not Disturb, caffeine.
+- Closing the lid with an external monitor attached switches the laptop
+  panel off and moves the shell to the other display; opening it, or
+  unplugging the monitor, brings the panel back. *unverified*
+- Ctrl+F2 reaches the top bar (the app's menus, or quick settings) and
+  Ctrl+F3 the dock, which then takes arrows, Enter, its menus and Esc.
+
+### Shell
+
+- Quick settings: an audio output picker behind a chevron on the volume
+  slider; airplane mode and power mode tiles; sliders for controls the
+  machine lacks (no backlight, no audio tools) are dimmed and inert
+  instead of showing made-up levels.
+- The launcher also finds open windows and recently used files, and Alt+F2
+  turns it into a Run prompt.
+- Keyboard backlight keys step the backlight and show its level; the
+  Search and Calculator keys open the launcher.
+- `[general] cursor-theme` (Settings › Appearance › Pointer) changes the
+  pointer for the shell and for newly started apps; cursor, font and
+  wallpaper are shared with GTK apps through GSettings.
+
+### Settings
+
+- Users: add and remove accounts, switch them between standard and
+  administrator, and change passwords. *unverified with a polkit agent*
+- Power: a Preserve battery health switch on batteries whose firmware
+  supports a charge limit (UPower).
 
 ### Apps and launching
 
@@ -76,6 +102,10 @@ have not been tried on real hardware or against the real system service.
   really modesets, and can switch an output off and on again.
   *unverified with wlr-randr / kanshi*
 - `xdg-foreign-v2`, so portal dialogs attach to the app that opened them.
+- `single-pixel-buffer-v1` and `content-type-v1`.
+- Sandboxed clients no longer see layer shell, the toplevel list or the
+  workspace protocol, and must be allowed by the user before they inhibit
+  keyboard shortcuts; Super+Esc takes the shortcuts back from any window.
 
 ### Robustness
 

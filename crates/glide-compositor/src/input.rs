@@ -2398,8 +2398,9 @@ impl GlideState {
             self.queue_redraw();
             return true;
         }
-        let menu_closed = self.dock.end_keyboard() | self.dock.close_menu();
-        if menu_closed {
+        let menu_closed = self.dock.close_menu();
+        let left_keyboard = self.dock.end_keyboard();
+        if menu_closed || left_keyboard {
             self.queue_redraw();
         }
         if !self.dock.contains(area, pos) {
