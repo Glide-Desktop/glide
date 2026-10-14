@@ -70,6 +70,7 @@ pub enum BannerPositionConfig {
     Left,
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent [notifications] switches mirrored from glide.toml
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct NotificationsConfig {
@@ -81,6 +82,7 @@ pub struct NotificationsConfig {
     pub banner_seconds: u32,
     pub position: BannerPositionConfig,
     pub muted_apps: Vec<String>,
+    pub sounds: bool,
 }
 
 impl Default for NotificationsConfig {
@@ -94,6 +96,7 @@ impl Default for NotificationsConfig {
             banner_seconds: 0,
             position: BannerPositionConfig::default(),
             muted_apps: Vec::new(),
+            sounds: true,
         }
     }
 }
@@ -114,6 +117,7 @@ impl NotificationsConfig {
                 BannerPositionConfig::Left => BannerPosition::Left,
             },
             muted: self.muted_apps.iter().map(|app| app.trim().to_string()).filter(|app| !app.is_empty()).collect(),
+            sounds: self.sounds,
         }
     }
 }
@@ -1899,6 +1903,7 @@ allow-critical = false
 banner-seconds = 12
 position = "top-center"
 muted-apps = ["org.telegram.desktop", "Steam"]
+sounds = false
 
 [gestures]
 enabled = true

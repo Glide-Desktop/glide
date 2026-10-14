@@ -51,6 +51,7 @@ mod screenshot_ui;
 mod session_end;
 mod snap;
 mod snapshot;
+mod sound;
 mod state;
 mod switcher;
 pub mod system_info;

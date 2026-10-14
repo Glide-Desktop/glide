@@ -24,6 +24,8 @@ mod tr {
         TimeInvalid => "Use 24-hour HH:MM", "Формат 24 години, ГГ:ХХ";
         AllowCritical => "Allow urgent notifications", "Пропускати термінові сповіщення";
         AllowCriticalHint => "Critical alerts, such as a low battery, still show a banner", "Критичні попередження, як-от низький заряд, усе одно показують банер";
+        Sounds => "Play sounds", "Відтворювати звуки";
+        SoundsHint => "When an app asks for one; never during Do Not Disturb", "Коли програма просить; ніколи в режимі «Не турбувати»";
         Banners => "Banners", "Банери";
         BannersHint => "Where banners appear and how long they stay", "Де з'являються банери і скільки тримаються";
         TopLeft => "Top left", "Угорі ліворуч";
@@ -106,6 +108,7 @@ pub enum Msg {
     From(String),
     To(String),
     AllowCritical(bool),
+    Sounds(bool),
     Position(Position),
     Duration(Choice),
     Mute(AppChoice),
@@ -179,6 +182,7 @@ impl Pane for Page {
             Msg::From(value) => self.from = Some(set_clock(config, "from", value)),
             Msg::To(value) => self.to = Some(set_clock(config, "to", value)),
             Msg::AllowCritical(on) => config.set_bool(SECTION, "allow-critical", on),
+            Msg::Sounds(on) => config.set_bool(SECTION, "sounds", on),
             Msg::Position(position) => config.set_str(SECTION, "position", position.key()),
             Msg::Duration(duration) => config.set_int(SECTION, "banner-seconds", duration.value),
             Msg::Mute(choice) => {
@@ -254,6 +258,13 @@ impl Page {
                     .subtitle(c.t(T::AllowCriticalHint))
                     .prefix(widgets::icon(Icon::Warning, 18.0, t.fg_2()))
                     .suffix(toggle(*c, config.bool_or(SECTION, "allow-critical", true), Msg::AllowCritical))
+                    .build(),
+            )
+            .push(
+                Row::new(t, c.t(T::Sounds))
+                    .subtitle(c.t(T::SoundsHint))
+                    .prefix(widgets::icon(Icon::Volume, 18.0, t.fg_2()))
+                    .suffix(toggle(*c, config.bool_or(SECTION, "sounds", true), Msg::Sounds))
                     .build(),
             )
             .build()

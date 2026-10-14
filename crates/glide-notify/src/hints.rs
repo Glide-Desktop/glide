@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-use crate::model::{Image, Urgency};
+use crate::model::{Image, Sound, Urgency};
 
 const MAX_SIDE: i32 = 1024;
 
@@ -35,6 +35,21 @@ pub fn integer(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<i64> {
 #[must_use]
 pub fn urgency(hints: &HashMap<String, OwnedValue>) -> Urgency {
     integer(hints, "urgency").and_then(|value| u8::try_from(value).ok()).map_or(Urgency::Normal, Urgency::from_hint)
+}
+
+#[must_use]
+pub fn sound(hints: &HashMap<String, OwnedValue>) -> Sound {
+    if boolean(hints, "suppress-sound") {
+        return Sound::None;
+    }
+    let file = string(hints, "sound-file");
+    let file = file.trim();
+    if !file.is_empty() {
+        return Sound::File(file.strip_prefix("file://").unwrap_or(file).to_string());
+    }
+    let name = string(hints, "sound-name");
+    let name = name.trim();
+    if name.is_empty() { Sound::None } else { Sound::Named(name.to_string()) }
 }
 
 #[must_use]
@@ -114,6 +129,21 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(key.to_string(), OwnedValue::try_from(value).expect("value converts"));
         map
+    }
+
+    #[test]
+    fn a_sound_file_beats_a_sound_name_and_suppress_sound_beats_both() {
+        assert_eq!(
+            sound(&hint("sound-name", Value::from("message-new-instant"))),
+            Sound::Named("message-new-instant".into())
+        );
+        let mut both = hint("sound-name", Value::from("bell"));
+        both.extend(hint("sound-file", Value::from("file:///usr/share/sounds/ping.oga")));
+        assert_eq!(sound(&both), Sound::File("/usr/share/sounds/ping.oga".into()));
+        both.extend(hint("suppress-sound", Value::Bool(true)));
+        assert_eq!(sound(&both), Sound::None);
+        assert_eq!(sound(&hint("sound-name", Value::from("  "))), Sound::None);
+        assert_eq!(sound(&HashMap::new()), Sound::None, "silent unless the app asks");
     }
 
     #[test]

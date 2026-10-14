@@ -1342,7 +1342,12 @@ impl GlideState {
     pub fn handle_notify_event(&mut self, event: glide_notify::NotifyEvent) {
         let dirty = match event {
             glide_notify::NotifyEvent::Added(notification) => {
-                self.notifications.push(&mut self.dock.icons, *notification, false)
+                let sound = self.notifications.audible(&notification);
+                let shown = self.notifications.push(&mut self.dock.icons, *notification, false);
+                if let Some(sound) = sound.filter(|_| shown) {
+                    crate::sound::play(sound);
+                }
+                shown
             }
             glide_notify::NotifyEvent::Replaced(notification) => {
                 self.notifications.push(&mut self.dock.icons, *notification, true)

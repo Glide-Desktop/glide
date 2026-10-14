@@ -486,6 +486,7 @@ pub struct NotificationPolicy {
     pub banner_timeout: Option<Duration>,
     pub position: BannerPosition,
     pub muted: Vec<String>,
+    pub sounds: bool,
 }
 
 impl Default for NotificationPolicy {
@@ -497,6 +498,7 @@ impl Default for NotificationPolicy {
             banner_timeout: None,
             position: BannerPosition::default(),
             muted: Vec::new(),
+            sounds: true,
         }
     }
 }
@@ -649,6 +651,12 @@ impl Notifications {
         }
         self.policy_applied = true;
         self.policy = policy;
+    }
+
+    #[must_use]
+    pub fn audible(&self, notification: &Notification) -> Option<glide_notify::Sound> {
+        let wanted = self.is_enabled() && self.policy.sounds && notification.sound != glide_notify::Sound::None;
+        (wanted && !self.silences(notification)).then(|| notification.sound.clone())
     }
 
     #[must_use]

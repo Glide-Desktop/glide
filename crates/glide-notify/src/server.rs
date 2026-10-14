@@ -153,6 +153,7 @@ impl Service {
             transient: hints::boolean(&hint_map, "transient"),
             timeout: resolve_timeout(expire_timeout, urgency),
             progress: hints::progress(&hint_map),
+            sound: hints::sound(&hint_map),
         };
 
         let replacing = {

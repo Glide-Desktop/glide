@@ -68,6 +68,14 @@ pub struct Reply {
     pub secret: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Sound {
+    #[default]
+    None,
+    Named(String),
+    File(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
     pub width: i32,
@@ -99,6 +107,7 @@ pub struct Notification {
     pub transient: bool,
     pub timeout: Option<Duration>,
     pub progress: Option<f32>,
+    pub sound: Sound,
 }
 
 impl Notification {
@@ -318,6 +327,7 @@ pub fn capabilities() -> Vec<String> {
         "body-markup",
         "icon-static",
         "persistence",
+        "sound",
         "inline-reply",
         "inhibitions",
         "x-kde-origin-name",
