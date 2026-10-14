@@ -279,12 +279,87 @@ pub fn bluetooth_succeeded(status_ok: bool, stdout: &str) -> bool {
     status_ok && !stdout.contains("Failed") && !stdout.contains("not available")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioOutput {
+    pub name: String,
+    pub description: String,
+    pub icon: &'static str,
+    pub active: bool,
+}
+
+#[must_use]
+pub fn output_icon(form_factor: Option<&str>, bus: Option<&str>, port: &str) -> &'static str {
+    let port = port.to_ascii_lowercase();
+    match form_factor {
+        Some("headset" | "hands-free") => return "audio-headset",
+        Some("headphone") => return "audio-headphones",
+        Some("speaker") => return "audio-speakers",
+        _ => {}
+    }
+    if port.contains("headset") {
+        "audio-headset"
+    } else if port.contains("headphone") || bus == Some("bluetooth") || port.contains("bluez") {
+        "audio-headphones"
+    } else if port.contains("hdmi") || port.contains("displayport") {
+        "video-display"
+    } else {
+        "audio-speakers"
+    }
+}
+
+#[must_use]
+pub fn parse_sinks_json(text: &str, default: &str) -> Vec<AudioOutput> {
+    use serde_json::Value;
+    let Ok(Value::Array(sinks)) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    sinks
+        .iter()
+        .filter_map(|sink| {
+            let name = sink.get("name")?.as_str()?.to_string();
+            let property = |key: &str| sink.get("properties").and_then(|map| map.get(key)).and_then(Value::as_str);
+            let description =
+                sink.get("description").and_then(Value::as_str).filter(|text| !text.is_empty()).unwrap_or(&name);
+            let port = sink.get("active_port").and_then(Value::as_str).unwrap_or(&name);
+            Some(AudioOutput {
+                description: description.to_string(),
+                icon: output_icon(property("device.form_factor"), property("device.bus"), port),
+                active: name == default,
+                name,
+            })
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn parse_sinks_short(text: &str, default: &str) -> Vec<AudioOutput> {
+    text.lines()
+        .filter_map(|line| {
+            let name = line.split('\t').nth(1)?.trim();
+            (!name.is_empty()).then(|| AudioOutput {
+                name: name.to_string(),
+                description: name.to_string(),
+                icon: output_icon(None, None, name),
+                active: name == default,
+            })
+        })
+        .collect()
+}
+
+pub fn sort_outputs(outputs: &mut [AudioOutput]) {
+    outputs.sort_by(|a, b| {
+        b.active.cmp(&a.active).then_with(|| a.description.to_lowercase().cmp(&b.description.to_lowercase()))
+    });
+}
+
 pub enum NetRequest {
     ScanWifi,
     ScanBluetooth,
+    ScanOutputs,
     ConnectWifi { ssid: String, password: Option<String>, saved: bool },
     DisconnectWifi { ssid: String },
     Bluetooth { mac: String, connect: bool },
+    UseOutput { name: String },
 }
 
 impl std::fmt::Debug for NetRequest {
@@ -292,6 +367,8 @@ impl std::fmt::Debug for NetRequest {
         match self {
             Self::ScanWifi => f.write_str("ScanWifi"),
             Self::ScanBluetooth => f.write_str("ScanBluetooth"),
+            Self::ScanOutputs => f.write_str("ScanOutputs"),
+            Self::UseOutput { name } => f.debug_struct("UseOutput").field("name", name).finish(),
             Self::ConnectWifi { ssid, password, saved } => f
                 .debug_struct("ConnectWifi")
                 .field("ssid", ssid)
@@ -312,6 +389,8 @@ pub enum NetEvent {
     WifiResult { ssid: String, result: Result<(), ConnectError> },
     Bluetooth(Vec<BtDevice>),
     BluetoothResult { mac: String, result: Result<(), ConnectError> },
+    Outputs(Vec<AudioOutput>),
+    OutputResult { name: String, result: Result<(), ConnectError> },
 }
 
 type Sink = Box<dyn Fn(NetEvent) + Send + Sync>;
@@ -319,6 +398,7 @@ type Sink = Box<dyn Fn(NetEvent) + Send + Sync>;
 static SINK: OnceLock<Sink> = OnceLock::new();
 static WIFI_SCANNING: AtomicBool = AtomicBool::new(false);
 static BLUETOOTH_SCANNING: AtomicBool = AtomicBool::new(false);
+static OUTPUTS_SCANNING: AtomicBool = AtomicBool::new(false);
 
 pub fn install(sink: impl Fn(NetEvent) + Send + Sync + 'static) {
     if SINK.set(Box::new(sink)).is_err() {
@@ -339,6 +419,7 @@ pub fn request(request: NetRequest) {
     let flag = match request {
         NetRequest::ScanWifi => Some(&WIFI_SCANNING),
         NetRequest::ScanBluetooth => Some(&BLUETOOTH_SCANNING),
+        NetRequest::ScanOutputs => Some(&OUTPUTS_SCANNING),
         _ => None,
     };
     if let Some(flag) = flag
@@ -387,7 +468,31 @@ fn run_request(request: NetRequest) {
             emit(NetEvent::BluetoothResult { mac, result });
             emit(NetEvent::Bluetooth(scan_bluetooth()));
         }
+        NetRequest::ScanOutputs => emit(NetEvent::Outputs(scan_outputs())),
+        NetRequest::UseOutput { name } => {
+            let result = run_with_timeout("pactl", &["set-default-sink", &name], SCAN_TIMEOUT)
+                .filter(|output| output.status.success())
+                .map(|_| ())
+                .ok_or(ConnectError::Failed);
+            if result.is_err() {
+                tracing::info!(name, "switching the audio output failed");
+            }
+            crate::system_info::poke();
+            emit(NetEvent::OutputResult { name, result });
+            emit(NetEvent::Outputs(scan_outputs()));
+        }
     }
+}
+
+fn scan_outputs() -> Vec<AudioOutput> {
+    let default = stdout_of("pactl", &["get-default-sink"]).map(|text| text.trim().to_string()).unwrap_or_default();
+    let mut outputs = stdout_of("pactl", &["--format=json", "list", "sinks"])
+        .map(|text| parse_sinks_json(&text, &default))
+        .filter(|outputs| !outputs.is_empty())
+        .or_else(|| stdout_of("pactl", &["list", "short", "sinks"]).map(|text| parse_sinks_short(&text, &default)))
+        .unwrap_or_default();
+    sort_outputs(&mut outputs);
+    outputs
 }
 
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<Output> {
@@ -509,6 +614,7 @@ pub const fn scan_for(detail: Detail) -> Option<NetRequest> {
     match detail {
         Detail::Wifi => Some(NetRequest::ScanWifi),
         Detail::Bluetooth => Some(NetRequest::ScanBluetooth),
+        Detail::Sound => Some(NetRequest::ScanOutputs),
         Detail::Battery => None,
     }
 }
@@ -564,7 +670,7 @@ impl GlideState {
                     self.handle_qs_action(crate::topbar::TopbarAction::QsToggleBluetooth);
                     request(NetRequest::ScanBluetooth);
                 }
-                Some(Detail::Battery) | None => {}
+                Some(Detail::Battery | Detail::Sound) | None => {}
             },
             PanelAction::Row(index) => self.activate_detail_row(index),
             PanelAction::FocusPassword => self.topbar.focus_password(),
@@ -574,6 +680,7 @@ impl GlideState {
                 match detail {
                     Some(Detail::Battery) => crate::system_info::open_power_settings(),
                     Some(Detail::Bluetooth) => open_settings_panel("bluetooth"),
+                    Some(Detail::Sound) => open_settings_panel("sound"),
                     _ => open_settings_panel("network"),
                 }
             }
@@ -596,7 +703,11 @@ impl GlideState {
                 self.topbar.begin_connect(&device.mac);
                 request(NetRequest::Bluetooth { connect: !device.connected, mac: device.mac });
             }
-            None => {}
+            Some(RowTarget::Output(output)) if !output.active => {
+                self.topbar.begin_connect(&output.name);
+                request(NetRequest::UseOutput { name: output.name });
+            }
+            Some(RowTarget::Output(_)) | None => {}
         }
     }
 
@@ -786,5 +897,61 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 200_000);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    const SINKS_JSON: &str = r#"[
+        {"index":56,"state":"RUNNING","name":"alsa_output.pci-0000_00_1f.3.analog-stereo",
+         "description":"Built-in Audio Analog Stereo","active_port":"analog-output-speaker",
+         "properties":{"device.bus":"pci","device.form_factor":"internal"}},
+        {"index":71,"state":"SUSPENDED","name":"alsa_output.pci-0000_01_00.1.hdmi-stereo",
+         "description":"HDA NVidia Digital Stereo (HDMI)","active_port":"hdmi-output-0","properties":{}},
+        {"index":90,"state":"IDLE","name":"bluez_output.AA_BB.1","description":"WH-1000XM4",
+         "active_port":null,"properties":{"device.bus":"bluetooth","device.form_factor":"headphone"}}
+    ]"#;
+
+    #[test]
+    fn pactl_json_sinks_keep_their_names_descriptions_and_kind() {
+        let mut outputs = parse_sinks_json(SINKS_JSON, "bluez_output.AA_BB.1");
+        sort_outputs(&mut outputs);
+        let summary: Vec<(&str, &str, bool)> =
+            outputs.iter().map(|output| (output.description.as_str(), output.icon, output.active)).collect();
+        assert_eq!(
+            summary,
+            [
+                ("WH-1000XM4", "audio-headphones", true),
+                ("Built-in Audio Analog Stereo", "audio-speakers", false),
+                ("HDA NVidia Digital Stereo (HDMI)", "video-display", false),
+            ]
+        );
+        assert_eq!(outputs[0].name, "bluez_output.AA_BB.1");
+        assert!(parse_sinks_json("not json", "").is_empty());
+        assert!(parse_sinks_json("{}", "").is_empty());
+    }
+
+    #[test]
+    fn short_sink_lines_fall_back_to_the_sink_name() {
+        let text = "56\talsa_output.pci.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tRUNNING\n\
+                    71\talsa_output.pci.hdmi-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n";
+        let outputs = parse_sinks_short(text, "alsa_output.pci.analog-stereo");
+        assert_eq!(outputs.len(), 2);
+        assert!(outputs[0].active && !outputs[1].active);
+        assert_eq!(outputs[1].description, "alsa_output.pci.hdmi-stereo");
+        assert_eq!(outputs[1].icon, "video-display");
+    }
+
+    #[test]
+    fn output_icons_prefer_the_form_factor_over_the_port() {
+        assert_eq!(output_icon(Some("headset"), None, "analog-output-speaker"), "audio-headset");
+        assert_eq!(output_icon(Some("speaker"), Some("bluetooth"), ""), "audio-speakers");
+        assert_eq!(output_icon(None, None, "analog-output-headphones"), "audio-headphones");
+        assert_eq!(output_icon(None, Some("bluetooth"), ""), "audio-headphones");
+        assert_eq!(output_icon(None, None, "analog-output-lineout"), "audio-speakers");
+    }
+
+    #[test]
+    fn the_sound_panel_scans_outputs_and_a_switch_request_names_its_sink() {
+        assert!(matches!(scan_for(Detail::Sound), Some(NetRequest::ScanOutputs)));
+        let request = NetRequest::UseOutput { name: "hdmi".into() };
+        assert_eq!(format!("{request:?}"), "UseOutput { name: \"hdmi\" }");
     }
 }

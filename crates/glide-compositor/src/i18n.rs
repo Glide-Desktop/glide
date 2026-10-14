@@ -184,6 +184,9 @@ catalogue! {
     QsDevices => "Devices", "Пристрої";
     QsWifiSettings => "Wi-Fi Settings…", "Налаштування Wi-Fi…";
     QsBluetoothSettings => "Bluetooth Settings…", "Налаштування Bluetooth…";
+    QsSoundSettings => "Sound Settings…", "Налаштування звуку…";
+    QsOutput => "Output", "Вивід";
+    QsNoOutputs => "No output devices", "Немає пристроїв виводу";
     QsWifiIsOff => "Wi-Fi is off", "Wi-Fi вимкнено";
     QsBluetoothIsOff => "Bluetooth is off", "Bluetooth вимкнено";
     QsSearching => "Searching…", "Пошук…";

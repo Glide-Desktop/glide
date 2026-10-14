@@ -309,6 +309,7 @@ pub enum Slot {
     QsPowerButton(PowerAction),
     QsWifiMore,
     QsBluetoothMore,
+    QsVolumeMore,
     QsBattery,
     QsBack,
     QsDetailToggle,
@@ -437,6 +438,7 @@ impl Slot {
             Self::QsPowerButton(action) => TopbarAction::QsPower(action),
             Self::QsWifiMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi)),
             Self::QsBluetoothMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Bluetooth)),
+            Self::QsVolumeMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Sound)),
             Self::QsBattery => TopbarAction::QsPanel(PanelAction::Open(Detail::Battery)),
             Self::QsBack => TopbarAction::QsPanel(PanelAction::Back),
             Self::QsDetailToggle => TopbarAction::QsPanel(PanelAction::Toggle),
@@ -1668,6 +1670,7 @@ struct QsGeometry {
     caffeine: LocalRect,
     volume_icon: LocalRect,
     volume_track: LocalRect,
+    volume_more: LocalRect,
     brightness_icon: LocalRect,
     brightness_track: LocalRect,
     divider_y: i32,
@@ -1703,6 +1706,8 @@ fn qs_geometry() -> QsGeometry {
     let track_x = QS_PAD + QS_SLIDER_ICON + QS_GRID_GAP;
     let track_w = QS_PAD + row_w - track_x;
     let volume_y = caffeine_y + QS_ROW_HEIGHT + QS_GAP;
+    let volume_more =
+        local_rect(QS_PAD + row_w - panels::QS_TILE_MORE, volume_y, panels::QS_TILE_MORE, QS_SLIDER_HEIGHT);
     let brightness_y = volume_y + QS_SLIDER_HEIGHT + QS_SLIDER_GAP;
 
     let divider_y = brightness_y + QS_SLIDER_HEIGHT + QS_GAP;
@@ -1724,7 +1729,8 @@ fn qs_geometry() -> QsGeometry {
         tiles,
         caffeine,
         volume_icon: local_rect(QS_PAD, volume_y, QS_SLIDER_ICON, QS_SLIDER_HEIGHT),
-        volume_track: local_rect(track_x, volume_y, track_w, QS_SLIDER_HEIGHT),
+        volume_track: local_rect(track_x, volume_y, volume_more.loc.x - QS_GRID_GAP - track_x, QS_SLIDER_HEIGHT),
+        volume_more,
         brightness_icon: local_rect(QS_PAD, brightness_y, QS_SLIDER_ICON, QS_SLIDER_HEIGHT),
         brightness_track: local_rect(track_x, brightness_y, track_w, QS_SLIDER_HEIGHT),
         divider_y,
@@ -1890,6 +1896,7 @@ fn layout_qs_slots(
     slots.push((Slot::QsCaffeine, offset_rect(geometry.caffeine, origin)));
     slots.push((Slot::QsVolumeMute, offset_rect(geometry.volume_icon, origin)));
     slots.push((Slot::QsVolumeTrack, offset_rect(geometry.volume_track, origin)));
+    slots.push((Slot::QsVolumeMore, offset_rect(geometry.volume_more, origin)));
     slots.push((Slot::QsBrightnessTrack, offset_rect(geometry.brightness_track, origin)));
     if battery {
         slots.push((Slot::QsBattery, offset_rect(geometry.battery, origin)));
@@ -3948,6 +3955,7 @@ fn draw_quick_settings(
     draw_qs_tiles(c, ctx, &geometry, status);
     draw_qs_caffeine_row(c, ctx, geometry.caffeine, caffeinated, motion.caffeine);
     draw_qs_sliders(c, ctx.theme, &geometry, status, motion);
+    panels::draw_tile_more(c, ctx, geometry.volume_more, false);
     let divider = local_rect(QS_PAD, geometry.divider_y, c.w - QS_PAD * 2, 1);
     c.fill(divider, ctx.theme.border, 0.0);
     draw_qs_footer(c, ctx, &geometry, status);
@@ -4548,6 +4556,7 @@ mod tests {
             Slot::QsSettings,
             Slot::QsWifiMore,
             Slot::QsBluetoothMore,
+            Slot::QsVolumeMore,
             Slot::Caffeine,
         ]
         .into_iter()
@@ -4559,6 +4568,7 @@ mod tests {
             (Slot::QsWifi, TopbarAction::QsToggleWifi),
             (Slot::QsScreenshot, TopbarAction::QsScreenshot),
             (Slot::QsCaffeine, TopbarAction::ToggleCaffeine),
+            (Slot::QsVolumeMore, TopbarAction::QsPanel(PanelAction::Open(Detail::Sound))),
         ] {
             assert_eq!(click(&bar, slot), Some(action));
         }
@@ -4587,8 +4597,10 @@ mod tests {
             geometry.volume_icon.loc.x + QS_SLIDER_ICON + QS_GRID_GAP,
             "clicking the visual start of the track must read as 0%"
         );
-        assert_eq!(track.loc.x + track.size.w, QS_WIDTH - QS_PAD);
+        assert_eq!(track.loc.x + track.size.w + QS_GRID_GAP, geometry.volume_more.loc.x);
+        assert_eq!(geometry.volume_more.loc.x + geometry.volume_more.size.w, QS_WIDTH - QS_PAD);
         assert_eq!(geometry.brightness_track.loc.x, track.loc.x);
+        assert_eq!(geometry.brightness_track.loc.x + geometry.brightness_track.size.w, QS_WIDTH - QS_PAD);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use super::{
 use crate::i18n::{Key, t};
 use crate::launcher::field::{CaretMove, TextField};
 use crate::power::PowerAction;
-use crate::qs_net::{BtDevice, ConnectError, NetEvent, WifiNetwork};
+use crate::qs_net::{AudioOutput, BtDevice, ConnectError, NetEvent, WifiNetwork};
 use crate::system_info::{BatteryInfo, BatteryState, PowerProfile};
 use glide_theme::shape::{R_ROUND, R1};
 use glide_theme::spacing::{SP1, SP2};
@@ -29,6 +29,7 @@ pub enum Detail {
     Wifi,
     Bluetooth,
     Battery,
+    Sound,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +80,7 @@ pub enum QsKeyMode {
 pub enum RowTarget {
     Network(WifiNetwork),
     Device(BtDevice),
+    Output(AudioOutput),
 }
 
 #[derive(PartialEq, Eq)]
@@ -139,6 +141,7 @@ pub(super) const fn more_slot(detail: Detail) -> Slot {
         Detail::Wifi => Slot::QsWifiMore,
         Detail::Bluetooth => Slot::QsBluetoothMore,
         Detail::Battery => Slot::QsBattery,
+        Detail::Sound => Slot::QsVolumeMore,
     }
 }
 
@@ -261,6 +264,8 @@ pub(super) struct DetailPanel {
     wifi_ready: bool,
     devices: Vec<BtDevice>,
     devices_ready: bool,
+    outputs: Vec<AudioOutput>,
+    outputs_ready: bool,
     pending: Option<Pending>,
     failure: Option<Failure>,
     prompt: Option<Prompt>,
@@ -313,6 +318,7 @@ impl DetailPanel {
 pub(super) enum RowKind {
     Network(usize),
     Device(usize),
+    Output(usize),
     Prompt,
 }
 
@@ -362,11 +368,12 @@ fn radio_on(detail: Detail, status: &crate::system_info::SystemStatus) -> bool {
         Detail::Wifi => status.wifi_enabled,
         Detail::Bluetooth => status.bluetooth_on,
         Detail::Battery => status.battery_pct.is_some(),
+        Detail::Sound => true,
     }
 }
 
 const fn has_radio(detail: Detail) -> bool {
-    !matches!(detail, Detail::Battery)
+    !matches!(detail, Detail::Battery | Detail::Sound)
 }
 
 pub(super) fn detail_rows(
@@ -390,6 +397,9 @@ pub(super) fn detail_rows(
         Detail::Bluetooth => {
             kinds.extend((0..panel.devices.len().min(capacity)).map(RowKind::Device));
         }
+        Detail::Sound => {
+            kinds.extend((0..panel.outputs.len().min(capacity)).map(RowKind::Output));
+        }
         Detail::Battery => {}
     }
     let mut y = list.loc.y;
@@ -397,7 +407,9 @@ pub(super) fn detail_rows(
         .into_iter()
         .filter_map(|kind| {
             let slot = match kind {
-                RowKind::Network(index) | RowKind::Device(index) => Slot::QsDetailRow(u16::try_from(index).ok()?),
+                RowKind::Network(index) | RowKind::Device(index) | RowKind::Output(index) => {
+                    Slot::QsDetailRow(u16::try_from(index).ok()?)
+                }
                 RowKind::Prompt => Slot::QsPasswordField,
             };
             let rect = local_rect(list.loc.x, y, list.size.w, DETAIL_ROW);
@@ -454,6 +466,7 @@ impl Topbar {
         match self.detail()? {
             Detail::Wifi => self.qs_panel.wifi.get(index).cloned().map(RowTarget::Network),
             Detail::Bluetooth => self.qs_panel.devices.get(index).cloned().map(RowTarget::Device),
+            Detail::Sound => self.qs_panel.outputs.get(index).cloned().map(RowTarget::Output),
             Detail::Battery => None,
         }
     }
@@ -462,6 +475,7 @@ impl Topbar {
         let index = match self.qs_panel.view? {
             Detail::Wifi => self.qs_panel.wifi.iter().position(|n| n.ssid == key)?,
             Detail::Bluetooth => self.qs_panel.devices.iter().position(|d| d.mac == key)?,
+            Detail::Sound => self.qs_panel.outputs.iter().position(|o| o.name == key)?,
             Detail::Battery => return None,
         };
         Some(Slot::QsDetailRow(u16::try_from(index).ok()?))
@@ -595,6 +609,14 @@ impl Topbar {
                 }
             }
             NetEvent::BluetoothResult { mac, result } => self.settle_pending(&mac, result),
+            NetEvent::Outputs(outputs) => {
+                if self.qs_panel.outputs_ready && self.qs_panel.outputs == outputs {
+                    return false;
+                }
+                self.qs_panel.outputs = outputs;
+                self.qs_panel.outputs_ready = true;
+            }
+            NetEvent::OutputResult { name, result } => self.settle_pending(&name, result),
         }
         self.qs_panel.bump();
         self.touch();
@@ -688,6 +710,7 @@ pub(super) fn draw_detail(
         Detail::Wifi => Key::QsWifiSettings,
         Detail::Bluetooth => Key::QsBluetoothSettings,
         Detail::Battery => Key::TbBatterySettings,
+        Detail::Sound => Key::QsSoundSettings,
     });
     let (left, right, top, bottom) = band(settings);
     c.text(
@@ -756,6 +779,7 @@ fn draw_list_body(
     let section_label = t(match detail {
         Detail::Wifi => Key::QsNetworks,
         Detail::Bluetooth | Detail::Battery => Key::QsDevices,
+        Detail::Sound => Key::QsOutput,
     });
     let muted = ctx.theme.muted;
     let section = band(geometry.section);
@@ -780,6 +804,11 @@ fn draw_list_body(
                     draw_device_row(c, ctx, rect, device, panel.status_for(&device.mac));
                 }
             }
+            RowKind::Output(index) => {
+                if let Some(output) = panel.outputs.get(index) {
+                    draw_output_row(c, ctx, rect, output, panel.status_for(&output.name));
+                }
+            }
             RowKind::Prompt => {
                 if let Some(prompt) = panel.prompt.as_ref() {
                     draw_password_row(c, ctx, rect, &prompt.field);
@@ -795,8 +824,10 @@ fn empty_message(panel: &DetailPanel, detail: Detail, status: &crate::system_inf
         Detail::Bluetooth if !status.bluetooth_on => Key::QsBluetoothIsOff,
         Detail::Wifi if !panel.wifi_ready => Key::QsSearching,
         Detail::Bluetooth if !panel.devices_ready => Key::QsSearching,
+        Detail::Sound if !panel.outputs_ready => Key::QsSearching,
         Detail::Wifi => Key::QsNoNetworks,
         Detail::Bluetooth | Detail::Battery => Key::QsNoDevices,
+        Detail::Sound => Key::QsNoOutputs,
     }
 }
 
@@ -816,14 +847,20 @@ fn draw_detail_header(
         Detail::Wifi => Key::WiFi,
         Detail::Bluetooth => Key::Bluetooth,
         Detail::Battery => Key::TbBattery,
+        Detail::Sound => Key::SettingsSound,
     });
     let (top, bottom) = (back.loc.y, back.loc.y + back.size.h);
     let title_band = (geometry.title_left, geometry.title_right, top, bottom);
     c.text(ctx.painter, title_band, TextAlign::Left, title, label, head);
     let toggle = geometry.toggle;
     if !has_radio(detail) {
-        let pct = status.battery_pct.map_or_else(String::new, |pct| format!("{pct}%"));
-        let colour = if battery_low(ctx.theme, status) { ctx.theme.danger } else { label };
+        let (pct, colour) = if detail == Detail::Sound {
+            let colour = if status.volume_muted { ctx.theme.muted } else { label };
+            (format!("{}%", status.volume_pct), colour)
+        } else {
+            let pct = status.battery_pct.map_or_else(String::new, |pct| format!("{pct}%"));
+            (pct, if battery_low(ctx.theme, status) { ctx.theme.danger } else { label })
+        };
         let pct_band = (geometry.title_right, toggle.loc.x + toggle.size.w, top, bottom);
         c.text(ctx.painter, pct_band, TextAlign::Right, &pct, colour, &TextStyle::NUM);
         return;
@@ -931,6 +968,25 @@ fn draw_device_row(
         trailing,
     };
     draw_row_body(c, ctx, rect, &spec);
+}
+
+fn draw_output_row(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, output: &AudioOutput, status: RowStatus,
+) {
+    let tick_w = if output.active { TRAILING_ICON + SP2 } else { 0 };
+    let inset = local_rect(rect.loc.x, rect.loc.y, rect.size.w - tick_w, rect.size.h);
+    let spec = RowSpec {
+        icon: output.icon,
+        glyph: |b, w, h, side, stroke, s, c| crate::paint::draw_speaker_glyph_over(b, w, h, side, stroke, false, s, c),
+        title: &output.description,
+        active: output.active,
+        trailing: status_trailing(ctx.theme, status),
+    };
+    draw_row_body(c, ctx, inset, &spec);
+    if output.active {
+        let tick = ("object-select", crate::paint::draw_tick_glyph_over as GlyphPainter);
+        trailing_icon(c, rect, rect.loc.x + rect.size.w - SP2, tick, ctx.theme.active_background);
+    }
 }
 
 fn draw_password_row(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, field: &TextField) {
@@ -1217,6 +1273,49 @@ mod tests {
         assert!(radio_on(Detail::Battery, &status));
         assert!(!has_radio(Detail::Battery));
         assert_eq!(more_slot(Detail::Battery), Slot::QsBattery);
+    }
+
+    fn sink(name: &str, active: bool) -> AudioOutput {
+        AudioOutput { name: name.to_string(), description: name.to_uppercase(), icon: "audio-speakers", active }
+    }
+
+    fn two_sinks() -> NetEvent {
+        NetEvent::Outputs(vec![sink("speakers", true), sink("hdmi", false)])
+    }
+
+    #[test]
+    fn the_volume_chevron_opens_a_list_of_audio_outputs() {
+        let mut bar = Topbar::new(TopbarTheme::default());
+        bar.toggle_popup(OpenPopup::QuickSettings);
+        relayout(&mut bar);
+        let more = bar.slot_rect(Slot::QsVolumeMore).expect("volume chevron");
+        assert_eq!(bar.action_at(centre(more)), Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Sound))));
+        assert!(bar.open_detail(Detail::Sound));
+        relayout(&mut bar);
+        assert!(bar.slot_rect(Slot::QsDetailToggle).is_none(), "outputs have no radio");
+        assert!(bar.slot_rect(Slot::QsDetailRow(0)).is_none(), "nothing listed before the scan");
+
+        assert!(bar.apply_net_event(two_sinks()));
+        relayout(&mut bar);
+        assert!(bar.slot_rect(Slot::QsDetailRow(1)).is_some());
+        assert_eq!(bar.detail_row(1), Some(RowTarget::Output(sink("hdmi", false))));
+        assert!(!bar.apply_net_event(two_sinks()));
+
+        bar.set_focused(Some(Slot::QsBack));
+        bar.close_detail();
+        assert_eq!(bar.focused, Some(Slot::QsVolumeMore), "focus returns to the chevron");
+    }
+
+    #[test]
+    fn a_failed_output_switch_marks_its_row() {
+        let mut bar = Topbar::new(TopbarTheme::default());
+        bar.toggle_popup(OpenPopup::QuickSettings);
+        bar.open_detail(Detail::Sound);
+        bar.apply_net_event(two_sinks());
+        bar.begin_connect("hdmi");
+        assert_eq!(bar.qs_panel.status_for("hdmi"), RowStatus::Connecting);
+        bar.apply_net_event(NetEvent::OutputResult { name: "hdmi".into(), result: Err(ConnectError::Failed) });
+        assert_eq!(bar.qs_panel.status_for("hdmi"), RowStatus::Failed(ConnectError::Failed));
     }
 
     #[test]
