@@ -34,6 +34,7 @@ mod launcher;
 mod layout_scope;
 mod logging;
 mod media_art;
+mod nm_agent;
 mod notifications;
 mod oneshot;
 mod overview;
@@ -53,6 +54,8 @@ mod snapshot;
 mod state;
 mod switcher;
 pub mod system_info;
+#[cfg(test)]
+mod test_bus;
 mod topbar;
 mod tray;
 mod window;
@@ -258,6 +261,7 @@ fn init_session_services(
     init_logind(event_loop, state);
     init_screensaver(event_loop, state);
     init_bluetooth_agent(event_loop);
+    init_network_agent(event_loop);
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
     }
@@ -286,6 +290,15 @@ fn init_bluetooth_agent(event_loop: &mut EventLoop<'static, GlideState>) {
         return;
     }
     watch(event_loop, receiver, "the Bluetooth agent channel", GlideState::handle_bluetooth_agent);
+}
+
+fn init_network_agent(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<nm_agent::Event>("a network secret request");
+    if let Err(err) = nm_agent::start(send) {
+        tracing::warn!("the network secret agent is unavailable ({err}); saved networks cannot ask for a password");
+        return;
+    }
+    watch(event_loop, receiver, "the network agent channel", GlideState::handle_network_agent);
 }
 
 fn init_logind(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use zbus::{
-    blocking::{Connection, MessageIterator, Proxy, connection::Builder, fdo::DBusProxy},
+    blocking::{Connection, Proxy, connection::Builder},
     zvariant::{ObjectPath, OwnedObjectPath},
 };
 
 use crate::{
-    agent_prompt::{Answer, Prompt},
+    agent_prompt::{Answer, Prompt, fill},
     i18n::{Key, t},
     oneshot,
 };
@@ -15,8 +15,6 @@ pub const OWNER: &str = "bluetooth";
 const AGENT_PATH: &str = "/org/glide/BluetoothAgent";
 const CAPABILITY: &str = "KeyboardDisplay";
 const BLUEZ: &str = "org.bluez";
-const BLUEZ_APPEARED: &str = "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',\
-                              member='NameOwnerChanged',arg0='org.bluez'";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -49,10 +47,6 @@ fn code(passkey: u32) -> String {
     format!("{passkey:06}")
 }
 
-fn fill(template: Key, device: &str, code: &str) -> String {
-    t(template).replace("{device}", device).replace("{code}", code)
-}
-
 impl Request {
     #[must_use]
     pub fn prompt(&self) -> Prompt {
@@ -62,6 +56,7 @@ impl Request {
             body: fill(body, device, code),
             accept: accept.map(|key| t(key).to_string()),
             reply: None,
+            secret: false,
         };
         let enter = |body: Key, device: &str, placeholder: &str| Prompt {
             reply: Some((t(Key::BtEnterCode).to_string(), placeholder.to_string())),
@@ -220,33 +215,9 @@ fn register(connection: &Connection) -> zbus::Result<()> {
     Ok(())
 }
 
-fn bluez_appeared(message: &zbus::Message) -> bool {
-    let header = message.header();
-    let relevant = header.message_type() == zbus::message::Type::Signal
-        && header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged");
-    relevant
-        && message
-            .body()
-            .deserialize::<(String, String, String)>()
-            .is_ok_and(|(name, _, owner)| name == BLUEZ && !owner.is_empty())
-}
-
 pub fn start(sink: impl Fn(Event) + Send + Sync + 'static) -> anyhow::Result<()> {
     let connection = serve(Builder::system()?, Arc::new(sink))?;
-    DBusProxy::new(&connection)?.add_match_rule(zbus::MatchRule::try_from(BLUEZ_APPEARED)?)?;
-    if let Err(err) = register(&connection) {
-        tracing::info!(%err, "bluetoothd is not reachable yet; the pairing agent waits for it");
-    }
-    std::thread::Builder::new().name("glide-bt-agent".into()).spawn(move || {
-        for message in MessageIterator::from(&connection) {
-            if message.as_ref().is_ok_and(bluez_appeared)
-                && let Err(err) = register(&connection)
-            {
-                tracing::warn!(%err, "could not register the Bluetooth pairing agent");
-            }
-        }
-    })?;
-    Ok(())
+    crate::agent_prompt::keep_registered(connection, BLUEZ, "glide-bt-agent", register)
 }
 
 impl crate::GlideState {
@@ -278,8 +249,6 @@ pub const SHOW_NOTICE_ID: u32 = u32::MAX - 5;
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader},
-        process::{Child, Command, Stdio},
         sync::{Mutex, PoisonError, mpsc},
         time::Duration,
     };
@@ -315,40 +284,17 @@ mod tests {
         assert!(!show.body.contains('{'), "every placeholder is filled");
     }
 
-    struct Daemon(Child, String);
-
-    impl Drop for Daemon {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    fn private_bus() -> Option<Daemon> {
-        let mut child = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .inspect_err(|err| eprintln!("no dbus-daemon ({err}); skipping"))
-            .ok()?;
-        let mut address = String::new();
-        BufReader::new(child.stdout.take()?).read_line(&mut address).ok()?;
-        let daemon = Daemon(child, address.trim().to_string());
-        (!daemon.1.is_empty()).then_some(daemon)
-    }
-
     #[test]
     fn bluez_calls_wait_for_the_users_answer_and_get_bluez_errors_on_refusal() {
-        let Some(daemon) = private_bus() else { return };
+        let Some(daemon) = crate::test_bus::private_bus() else { return };
         let (sender, events) = mpsc::channel();
         let sender = Mutex::new(sender);
         let sink: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(move |event| {
             let _ = sender.lock().unwrap_or_else(PoisonError::into_inner).send(event);
         });
-        let agent = serve(Builder::address(daemon.1.as_str()).expect("address"), sink).expect("served");
+        let agent = serve(daemon.builder(), sink).expect("served");
         let destination = agent.unique_name().expect("a unique name").to_string();
-        let bluez = Builder::address(daemon.1.as_str()).expect("address").build().expect("client");
+        let bluez = daemon.client();
         let device = ObjectPath::from_static_str_unchecked("/org/bluez/hci0/dev_AA_BB_CC_00_11_22");
         let call = |method: &'static str, body: (ObjectPath<'static>, u32)| {
             let bluez = bluez.clone();

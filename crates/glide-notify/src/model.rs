@@ -65,6 +65,7 @@ pub struct Reply {
     pub key: String,
     pub label: String,
     pub placeholder: String,
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

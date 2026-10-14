@@ -1982,6 +1982,11 @@ fn reply_placeholder(entry: &Entry) -> String {
         .unwrap_or_else(|| crate::i18n::t(crate::i18n::Key::Reply).to_string())
 }
 
+fn visible_reply(entry: &Entry, text: &str) -> String {
+    let secret = entry.notification.reply.as_ref().is_some_and(|reply| reply.secret);
+    if secret { "\u{2022}".repeat(text.chars().count()) } else { text.to_string() }
+}
+
 fn draw_reply_composer(
     painter: &crate::paint::Painter, theme: &NotificationTheme, entry: &Entry, c: &mut Canvas<'_>, phase: ReplyPhase,
 ) {
@@ -2004,7 +2009,7 @@ fn draw_reply_composer(
     let (shown, colour) = if showing_placeholder {
         (reply_placeholder(entry), theme.meta)
     } else {
-        (clip_tail(painter, text, text_right - text_left), theme.title)
+        (clip_tail(painter, &visible_reply(entry, text), text_right - text_left), theme.title)
     };
     let style = &TextStyle::LAUNCHER_CHIP;
     c.text(painter, (text_left, text_right, top, top + REPLY_HEIGHT), TextAlign::Left, &shown, colour, style);
@@ -2127,6 +2132,7 @@ mod tests {
                 key: glide_notify::ACTION_INLINE_REPLY.to_string(),
                 label: "Reply".to_string(),
                 placeholder: "Message…".to_string(),
+                secret: false,
             }),
             timeout: None,
             ..notification(id)
@@ -2142,6 +2148,30 @@ mod tests {
             store.live[0].shown_at = settled;
         }
         assert!(!store.is_animating(), "a settled toast has nothing left to animate");
+    }
+
+    #[test]
+    fn a_secret_reply_is_drawn_as_bullets_and_local_toasts_report_back_to_the_shell() {
+        let (mut store, mut icons) = store();
+        let mut prompt = repliable(LOCAL_ID_FLOOR + 1);
+        if let Some(reply) = prompt.reply.as_mut() {
+            reply.secret = true;
+        }
+        store.push(&mut icons, prompt, false);
+        assert_eq!(visible_reply(&store.live[0], "pässword"), "\u{2022}".repeat(8));
+        assert!(store.open_reply(LOCAL_ID_FLOOR + 1));
+        for ch in "hunter2".chars() {
+            store.type_reply(ch);
+        }
+        assert!(store.send_reply());
+        assert_eq!(
+            store.take_local_events(),
+            [LocalEvent::Reply { id: LOCAL_ID_FLOOR + 1, text: "hunter2".into() }],
+            "a local reply never reaches D-Bus"
+        );
+        store.push(&mut icons, repliable(7), false);
+        let ordinary = store.live.iter().find(|entry| entry.notification.id == 7).expect("pushed");
+        assert_eq!(visible_reply(ordinary, "hi"), "hi", "ordinary replies stay readable");
     }
 
     #[test]

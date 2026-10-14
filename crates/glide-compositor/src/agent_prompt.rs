@@ -22,6 +22,7 @@ pub struct Prompt {
     pub body: String,
     pub accept: Option<String>,
     pub reply: Option<(String, String)>,
+    pub secret: bool,
 }
 
 impl Prompt {
@@ -42,6 +43,7 @@ impl Prompt {
                 key: glide_notify::ACTION_INLINE_REPLY.to_string(),
                 label: label.clone(),
                 placeholder: placeholder.clone(),
+                secret: self.secret,
             }),
             urgency: glide_notify::Urgency::Critical,
             resident: true,
@@ -50,6 +52,46 @@ impl Prompt {
             ..glide_notify::Notification::default()
         }
     }
+}
+
+#[must_use]
+pub fn fill(template: crate::i18n::Key, name: &str, code: &str) -> String {
+    crate::i18n::t(template).replace("{device}", name).replace("{code}", code)
+}
+
+fn appeared(message: &zbus::Message, service: &str) -> bool {
+    let header = message.header();
+    let signal = header.message_type() == zbus::message::Type::Signal
+        && header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged");
+    signal
+        && message
+            .body()
+            .deserialize::<(String, String, String)>()
+            .is_ok_and(|(name, _, owner)| name == service && !owner.is_empty())
+}
+
+pub fn keep_registered(
+    connection: zbus::blocking::Connection, service: &'static str, thread: &str,
+    register: fn(&zbus::blocking::Connection) -> zbus::Result<()>,
+) -> anyhow::Result<()> {
+    let rule = format!(
+        "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',\
+         arg0='{service}'"
+    );
+    zbus::blocking::fdo::DBusProxy::new(&connection)?.add_match_rule(zbus::MatchRule::try_from(rule.as_str())?)?;
+    if let Err(err) = register(&connection) {
+        tracing::info!(service, %err, "the service is not reachable yet; the agent waits for it");
+    }
+    std::thread::Builder::new().name(thread.into()).spawn(move || {
+        for message in zbus::blocking::MessageIterator::from(&connection) {
+            if message.as_ref().is_ok_and(|message| appeared(message, service))
+                && let Err(err) = register(&connection)
+            {
+                tracing::warn!(service, %err, "could not register the agent again");
+            }
+        }
+    })?;
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -185,15 +227,18 @@ mod tests {
             body: "Check the code".into(),
             accept: Some("Pair".into()),
             reply: None,
+            secret: false,
         };
         let toast = prompt.notification(FIRST_ID);
         let keys: Vec<&str> = toast.actions.iter().map(|action| action.key.as_str()).collect();
         assert_eq!(keys, [ACCEPT, DECLINE]);
         assert!(toast.resident && toast.transient, "a click on the body must not decline");
         assert_eq!(toast.urgency, glide_notify::Urgency::Critical, "do-not-disturb still shows it");
-        let text = Prompt { accept: None, reply: Some(("Enter PIN".into(), "0000".into())), ..prompt };
+        let text = Prompt { accept: None, reply: Some(("Enter PIN".into(), "0000".into())), ..prompt.clone() };
         let toast = text.notification(FIRST_ID);
         assert_eq!(toast.actions.len(), 1);
-        assert_eq!(toast.reply.map(|reply| reply.label), Some("Enter PIN".to_string()));
+        assert_eq!(toast.reply.map(|reply| (reply.label, reply.secret)), Some(("Enter PIN".to_string(), false)));
+        let password = Prompt { reply: Some(("Password".into(), String::new())), secret: true, ..prompt };
+        assert!(password.notification(FIRST_ID).reply.is_some_and(|reply| reply.secret), "typed text is masked");
     }
 }

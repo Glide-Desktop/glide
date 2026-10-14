@@ -226,6 +226,14 @@ catalogue! {
     GreeterConfirmSleep => "Sleep", "Сон";
     LockHint => "Press Enter to unlock", "Натисніть Enter, щоб розблокувати";
     CapsLockOn => "Caps Lock is on", "Увімкнено Caps Lock";
+    NetPasswordSummary => "Password for {device}", "Пароль для {device}";
+    NetWifiBody => "The Wi-Fi network {device} needs its password.", "Мережа Wi-Fi {device} потребує пароля.";
+    NetEnterpriseBody => "Network {device} needs your account password.", "Мережа {device} потребує пароля вашого облікового запису.";
+    NetVpnBody => "The VPN {device} needs a password.", "VPN {device} потребує пароля.";
+    NetOtherBody => "The connection {device} needs a password.", "З\u{2019}єднання {device} потребує пароля.";
+    NetRetryBody => "The password for {device} was not accepted. Try again.", "Пароль для {device} не підійшов. Спробуйте ще раз.";
+    NetEnterPassword => "Enter password", "Ввести пароль";
+    NetPasswordPlaceholder => "Password", "Пароль";
     BtConfirmSummary => "Pair with {device}?", "Створити пару з {device}?";
     BtConfirmBody => "Check that {device} shows {code}.", "Перевірте, що {device} показує {code}.";
     BtPair => "Pair", "Створити пару";

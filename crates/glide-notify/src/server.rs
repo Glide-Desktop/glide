@@ -126,6 +126,7 @@ impl Service {
             key: crate::model::ACTION_INLINE_REPLY.to_string(),
             label,
             placeholder: hints::string(&hint_map, "x-kde-reply-placeholder-text"),
+            secret: false,
         });
 
         let display_name = hints::string(&hint_map, "x-kde-display-appname");

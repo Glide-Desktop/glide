@@ -230,38 +230,8 @@ fn serve(mut builder: Builder<'_>, sink: Box<dyn Fn(Event) + Send + Sync>) -> an
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Child, Command, Stdio},
-        time::{Duration, Instant},
-    };
-
-    struct Daemon(Child, String);
-
-    impl Drop for Daemon {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    fn private_bus() -> Option<Daemon> {
-        let mut child = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .inspect_err(|err| eprintln!("no dbus-daemon ({err}); skipping"))
-            .ok()?;
-        let mut address = String::new();
-        BufReader::new(child.stdout.take()?).read_line(&mut address).ok()?;
-        let daemon = Daemon(child, address.trim().to_string());
-        (!daemon.1.is_empty()).then_some(daemon)
-    }
-
-    fn client(daemon: &Daemon) -> Connection {
-        Builder::address(daemon.1.as_str()).expect("a bus address").build().expect("a client connection")
-    }
+    use crate::test_bus::private_bus;
+    use std::time::{Duration, Instant};
 
     fn call<B: serde::Serialize + zbus::zvariant::DynamicType>(
         connection: &Connection, path: &str, method: &str, body: &B,
@@ -288,16 +258,16 @@ mod tests {
         let sink = Box::new(move |event| {
             let _ = sender.lock().unwrap_or_else(PoisonError::into_inner).send(event);
         });
-        let mut handle = serve(Builder::address(daemon.1.as_str()).expect("a bus address"), sink).expect("served");
+        let mut handle = serve(daemon.builder(), sink).expect("served");
         let next = || events.recv_timeout(Duration::from_secs(5)).expect("an event arrives");
 
-        let player = client(&daemon);
+        let player = daemon.client();
         let cookie: u32 =
             call(&player, PATHS[0], "Inhibit", &("player", "video")).body().deserialize().expect("a cookie");
         assert_ne!(cookie, 0);
         assert_eq!(next(), Event::Inhibited(true));
 
-        let browser = client(&daemon);
+        let browser = daemon.client();
         call(&browser, PATHS[1], "Inhibit", &("browser", "call"));
         call(&browser, PATHS[1], "UnInhibit", &(cookie,));
         call(&player, PATHS[0], "UnInhibit", &(cookie,));
@@ -315,7 +285,7 @@ mod tests {
         handle.set_active(true);
         wait_until("the active state to be published", active);
 
-        let second = serve(Builder::address(daemon.1.as_str()).expect("a bus address"), Box::new(|_| {}));
+        let second = serve(daemon.builder(), Box::new(|_| {}));
         assert!(second.is_err(), "a second owner must fail loudly instead of serving paths nobody routes to");
     }
 
