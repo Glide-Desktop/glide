@@ -258,6 +258,8 @@ pub enum TopbarAction {
     QsToggleWifi,
     QsToggleBluetooth,
     QsToggleNightLight,
+    QsToggleAirplane,
+    QsCyclePowerMode,
     QsVolumeMute,
     QsVolumeAdjust(u8),
     QsBrightnessAdjust(u8),
@@ -301,6 +303,8 @@ pub enum Slot {
     QsBluetooth,
     QsNightLight,
     QsScreenshot,
+    QsAirplane,
+    QsPowerMode,
     QsCaffeine,
     QsVolumeMute,
     QsVolumeTrack,
@@ -431,6 +435,8 @@ impl Slot {
             Self::QsBluetooth => TopbarAction::QsToggleBluetooth,
             Self::QsNightLight => TopbarAction::QsToggleNightLight,
             Self::QsScreenshot => TopbarAction::QsScreenshot,
+            Self::QsAirplane => TopbarAction::QsToggleAirplane,
+            Self::QsPowerMode => TopbarAction::QsCyclePowerMode,
             Self::QsVolumeMute => TopbarAction::QsVolumeMute,
             Self::QsVolumeTrack => TopbarAction::QsVolumeAdjust(50),
             Self::QsBrightnessTrack => TopbarAction::QsBrightnessAdjust(50),
@@ -1667,7 +1673,7 @@ fn layout_nc_slots(
 type LocalRect = Rectangle<i32, Logical>;
 
 struct QsGeometry {
-    tiles: [(Slot, LocalRect); 4],
+    tiles: [(Slot, LocalRect); 6],
     caffeine: LocalRect,
     volume_icon: LocalRect,
     volume_track: LocalRect,
@@ -1694,14 +1700,17 @@ fn qs_geometry() -> QsGeometry {
     let col2_x = QS_PAD + col_w + QS_GRID_GAP;
     let row1_y = QS_PAD;
     let row2_y = row1_y + QS_TILE_HEIGHT + QS_GRID_GAP;
+    let row3_y = row2_y + QS_TILE_HEIGHT + QS_GRID_GAP;
     let tiles = [
         (Slot::QsWifi, local_rect(QS_PAD, row1_y, col_w, QS_TILE_HEIGHT)),
         (Slot::QsBluetooth, local_rect(col2_x, row1_y, col_w, QS_TILE_HEIGHT)),
         (Slot::QsNightLight, local_rect(QS_PAD, row2_y, col_w, QS_TILE_HEIGHT)),
         (Slot::QsScreenshot, local_rect(col2_x, row2_y, col_w, QS_TILE_HEIGHT)),
+        (Slot::QsAirplane, local_rect(QS_PAD, row3_y, col_w, QS_TILE_HEIGHT)),
+        (Slot::QsPowerMode, local_rect(col2_x, row3_y, col_w, QS_TILE_HEIGHT)),
     ];
 
-    let caffeine_y = row2_y + QS_TILE_HEIGHT + QS_GAP;
+    let caffeine_y = row3_y + QS_TILE_HEIGHT + QS_GAP;
     let caffeine = local_rect(QS_PAD, caffeine_y, row_w, QS_ROW_HEIGHT);
 
     let track_x = QS_PAD + QS_SLIDER_ICON + QS_GRID_GAP;
@@ -3876,6 +3885,22 @@ const fn volume_icon_name(muted: bool, pct: u8) -> &'static str {
     }
 }
 
+const fn power_profile_label(profile: crate::system_info::PowerProfile) -> crate::i18n::Key {
+    match profile {
+        crate::system_info::PowerProfile::PowerSaver => crate::i18n::Key::TbPowerSaver,
+        crate::system_info::PowerProfile::Balanced => crate::i18n::Key::TbPowerBalanced,
+        crate::system_info::PowerProfile::Performance => crate::i18n::Key::TbPowerPerformance,
+    }
+}
+
+const fn power_profile_icon(profile: Option<crate::system_info::PowerProfile>) -> &'static str {
+    match profile {
+        Some(crate::system_info::PowerProfile::PowerSaver) => "power-profile-power-saver-symbolic",
+        Some(crate::system_info::PowerProfile::Performance) => "power-profile-performance-symbolic",
+        _ => "power-profile-balanced-symbolic",
+    }
+}
+
 fn draw_qs_tiles(
     c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &QsGeometry, status: &crate::system_info::SystemStatus,
 ) {
@@ -3919,6 +3944,24 @@ fn draw_qs_tiles(
             subtitle: t(Key::WholeScreen),
             icon_name: "accessories-screenshot",
             glyph: crate::paint::draw_camera_glyph_over,
+            more: false,
+        },
+        QsTileSpec {
+            rect: geometry.tiles[4].1,
+            on: status.airplane,
+            title: t(Key::AirplaneMode),
+            subtitle: t(if status.airplane { Key::On } else { Key::Off }),
+            icon_name: "airplane-mode-symbolic",
+            glyph: crate::paint::draw_wifi_waves_glyph_over,
+            more: false,
+        },
+        QsTileSpec {
+            rect: geometry.tiles[5].1,
+            on: status.power_profile.is_some_and(|profile| profile != crate::system_info::PowerProfile::Balanced),
+            title: t(Key::TbPowerMode),
+            subtitle: t(status.power_profile.map_or(Key::Unavailable, power_profile_label)),
+            icon_name: power_profile_icon(status.power_profile),
+            glyph: crate::paint::draw_power_glyph_over,
             more: false,
         },
     ];
@@ -4584,6 +4627,8 @@ mod tests {
             (Slot::QsScreenshot, TopbarAction::QsScreenshot),
             (Slot::QsCaffeine, TopbarAction::ToggleCaffeine),
             (Slot::QsVolumeMore, TopbarAction::QsPanel(PanelAction::Open(Detail::Sound))),
+            (Slot::QsAirplane, TopbarAction::QsToggleAirplane),
+            (Slot::QsPowerMode, TopbarAction::QsCyclePowerMode),
         ] {
             assert_eq!(click(&bar, slot), Some(action));
         }
@@ -4906,6 +4951,7 @@ mod tests {
             [
                 Slot::QsWifi,
                 Slot::QsNightLight,
+                Slot::QsAirplane,
                 Slot::QsCaffeine,
                 Slot::QsVolumeTrack,
                 Slot::QsBrightnessTrack,

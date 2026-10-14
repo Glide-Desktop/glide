@@ -1460,6 +1460,25 @@ impl GlideState {
                 self.update_system_status(|status| status.night_light_on = on);
                 self.apply_night_light(on);
             }
+            TopbarAction::QsToggleAirplane => {
+                let on = !self.topbar.system_status().airplane;
+                crate::system_info::set_airplane(on);
+                self.update_system_status(|status| {
+                    status.airplane = on;
+                    if on {
+                        status.wifi_enabled = false;
+                        status.bluetooth_on = false;
+                    }
+                });
+            }
+            TopbarAction::QsCyclePowerMode => {
+                if let Some(next) =
+                    self.topbar.system_status().power_profile.map(crate::system_info::PowerProfile::next)
+                {
+                    crate::system_info::set_power_profile(next);
+                    self.update_system_status(|status| status.power_profile = Some(next));
+                }
+            }
             TopbarAction::QsVolumeMute => {
                 crate::system_info::toggle_volume_mute();
                 self.update_system_status(|status| status.volume_muted = !status.volume_muted);

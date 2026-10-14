@@ -16,6 +16,8 @@ pub struct SystemStatus {
     pub volume_available: bool,
     pub brightness_available: bool,
     pub keyboard_brightness: Option<u8>,
+    pub airplane: bool,
+    pub power_profile: Option<PowerProfile>,
     pub battery_pct: Option<u8>,
     pub battery_charging: bool,
     pub bluetooth_on: bool,
@@ -40,6 +42,8 @@ impl Default for SystemStatus {
             volume_available: true,
             brightness_available: true,
             keyboard_brightness: None,
+            airplane: false,
+            power_profile: None,
             battery_pct: None,
             battery_charging: false,
             bluetooth_on: false,
@@ -71,9 +75,11 @@ impl SystemStatus {
     }
 
     fn refresh_slow(&mut self) {
+        self.power_profile = poll_stdout("powerprofilesctl", &["get"]).and_then(|text| parse_power_profile(&text));
         if let Some(battery) = self.battery.as_mut() {
-            battery.profile = poll_stdout("powerprofilesctl", &["get"]).and_then(|text| parse_power_profile(&text));
+            battery.profile = self.power_profile;
         }
+        self.airplane = airplane_from(&read_radios(Path::new("/sys/class/rfkill")));
         (self.wifi_enabled, self.wifi_level, self.wifi_ssid) = read_wifi();
         self.bluetooth_on = read_bluetooth();
         self.bluetooth_connected = self.bluetooth_on && read_bluetooth_connected();
@@ -234,6 +240,65 @@ pub fn battery_minutes(state: BatteryState, now: f64, full: f64, rate: f64) -> O
     let minutes = (hours * 60.0).round();
     let minutes = minutes.clamp(0.0, 5999.0) as u32;
     (minutes > 0).then_some(minutes)
+}
+
+impl PowerProfile {
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::PowerSaver => "power-saver",
+            Self::Balanced => "balanced",
+            Self::Performance => "performance",
+        }
+    }
+
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Balanced => Self::PowerSaver,
+            Self::PowerSaver => Self::Performance,
+            Self::Performance => Self::Balanced,
+        }
+    }
+}
+
+pub fn set_power_profile(profile: PowerProfile) {
+    if let Err(err) = crate::spawn_shell_command(&format!("powerprofilesctl set {}", profile.key())) {
+        tracing::warn!("power profile change failed to start: {err}");
+    }
+}
+
+#[must_use]
+pub fn read_radios(root: &Path) -> Vec<(String, bool)> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let kind = fs::read_to_string(path.join("type")).ok()?.trim().to_string();
+            let soft = fs::read_to_string(path.join("soft")).ok()?.trim() == "1";
+            Some((kind, soft))
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn airplane_from(radios: &[(String, bool)]) -> bool {
+    let wireless: Vec<bool> = radios
+        .iter()
+        .filter(|(kind, _)| matches!(kind.as_str(), "wlan" | "bluetooth" | "wwan" | "uwb" | "wimax" | "nfc"))
+        .map(|(_, soft)| *soft)
+        .collect();
+    !wireless.is_empty() && wireless.iter().all(|soft| *soft)
+}
+
+pub fn set_airplane(on: bool) {
+    let command = if on { "rfkill block all" } else { "rfkill unblock all" };
+    if let Err(err) = crate::spawn_shell_command(command) {
+        tracing::warn!("airplane mode toggle failed to start: {err}");
+    }
 }
 
 #[must_use]
@@ -1503,6 +1568,33 @@ mod tests {
             file_uri(Path::new("/tmp/Шпалери.jpg")).as_deref(),
             Some("file:///tmp/%D0%A8%D0%BF%D0%B0%D0%BB%D0%B5%D1%80%D0%B8.jpg")
         );
+    }
+
+    #[test]
+    fn airplane_mode_means_every_wireless_radio_is_soft_blocked() {
+        let radio = |kind: &str, soft| (kind.to_string(), soft);
+        assert!(airplane_from(&[radio("wlan", true), radio("bluetooth", true)]));
+        assert!(!airplane_from(&[radio("wlan", true), radio("bluetooth", false)]));
+        assert!(!airplane_from(&[]), "no radios, nothing to fly with");
+        assert!(!airplane_from(&[radio("gps", true)]), "only wireless radios count");
+
+        let root = std::env::temp_dir().join(format!("glide-rfkill-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for (name, kind, soft) in [("rfkill0", "wlan", "1"), ("rfkill1", "bluetooth", "1")] {
+            let dir = root.join(name);
+            fs::create_dir_all(&dir).expect("scratch radio");
+            fs::write(dir.join("type"), format!("{kind}\n")).expect("type");
+            fs::write(dir.join("soft"), format!("{soft}\n")).expect("soft");
+        }
+        assert!(airplane_from(&read_radios(&root)));
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn power_profiles_cycle_through_all_three() {
+        let start = PowerProfile::Balanced;
+        assert_eq!(start.next().next().next(), start);
+        assert_eq!(parse_power_profile(start.next().key()), Some(PowerProfile::PowerSaver));
     }
 
     #[test]

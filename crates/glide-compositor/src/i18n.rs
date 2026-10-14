@@ -214,6 +214,8 @@ catalogue! {
     TbDurationMinutes => "{m} min", "{m} хв";
     TbPowerMode => "Power Mode", "Режим живлення";
     TbPowerSaver => "Power Saver", "Енергозбереження";
+    AirplaneMode => "Airplane Mode", "Режим польоту";
+    Unavailable => "Unavailable", "Недоступно";
     TbPowerBalanced => "Balanced", "Збалансований";
     TbPowerPerformance => "Performance", "Продуктивність";
     TbBatterySettings => "Battery Settings…", "Налаштування акумулятора…";
