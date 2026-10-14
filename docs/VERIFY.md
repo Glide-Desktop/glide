@@ -123,12 +123,20 @@ Ctrl+Alt+F3 and a text login.
     Super+Esc takes the shortcuts back and says so.
 36. **Config repair.** Add `[general] nonsense = 1` to `glide.toml`: a toast
     names the key and the rest of the file still applies.
+37. **Search windows and files.** With a minimized Firefox window on another
+    workspace, open the launcher and type part of its title: a Windows row
+    appears; Enter switches workspace and restores it. Type part of a
+    document you opened recently in a GTK app: a Recent Files row opens it.
+38. **Keyboard to the shell.** Ctrl+F2 opens the app's first menu (or quick
+    settings with a focus ring). Ctrl+F3 highlights the first dock tile;
+    arrows move, Up opens its menu, Down / Enter pick a row, Esc backs out.
+    With `[dock] autohide = "always"` the dock comes up for it.
 
 ## Packaging
 
-37. **Tarball.** `scripts/package.sh`, unpack on another machine,
+39. **Tarball.** `scripts/package.sh`, unpack on another machine,
     `sudo scripts/install.sh`: it installs, including `glide-files`.
-38. **Crash log.** After item 2, the log of the killed run survives as
+40. **Crash log.** After item 2, the log of the killed run survives as
     `glide.log.1`. When a release build panics, its log holds the message
     and a backtrace with file and line numbers (a signal such as SIGSEGV
     leaves no backtrace).
