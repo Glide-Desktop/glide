@@ -2524,7 +2524,7 @@ impl GlideState {
     }
 
     pub(crate) fn sync_ext_workspaces(&mut self) {
-        self.protocols.ext_workspace_state.sync_workspaces(&self.display_handle, &self.layout);
+        self.protocols.ext_workspace_state.sync_workspaces(&self.display_handle, &self.layout, &self.space);
     }
 
     pub fn sync_layout_outputs(&mut self) {
@@ -2563,6 +2563,7 @@ impl GlideState {
         tracing::info!(outputs = infos.len(), "layout outputs synchronized");
         self.layout.outputs_changed(&infos);
         self.protocols.wlr_output_manager_state.sync_outputs(&self.display_handle, &self.space);
+        self.sync_ext_workspaces();
     }
 
     pub fn set_window_decorated(&mut self, id: glide_layout::WindowId, decorated: bool) {

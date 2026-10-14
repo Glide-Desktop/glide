@@ -125,7 +125,14 @@ impl WaylandDndGrabHandler for GlideState {
     }
 }
 
-impl OutputHandler for GlideState {}
+impl OutputHandler for GlideState {
+    fn output_bound(
+        &mut self, _output: smithay::output::Output,
+        _wl_output: smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) {
+        self.sync_ext_workspaces();
+    }
+}
 
 impl smithay::wayland::xdg_foreign::XdgForeignHandler for GlideState {
     fn xdg_foreign_state(&mut self) -> &mut smithay::wayland::xdg_foreign::XdgForeignState {
