@@ -18,10 +18,39 @@ const POLL_STEP: Duration = Duration::from_millis(100);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WifiNetwork {
     pub ssid: String,
-    pub secured: bool,
+    pub security: Security,
     pub signal: u8,
     pub connected: bool,
     pub saved: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Security {
+    Open,
+    Passphrase,
+    Enterprise,
+}
+
+impl Security {
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        let text = text.trim();
+        if text.is_empty() || text == "--" {
+            Self::Open
+        } else if text
+            .split_whitespace()
+            .any(|part| part.eq_ignore_ascii_case("802.1X") || part.eq_ignore_ascii_case("EAP"))
+        {
+            Self::Enterprise
+        } else {
+            Self::Passphrase
+        }
+    }
+
+    #[must_use]
+    pub fn is_secured(self) -> bool {
+        self != Self::Open
+    }
 }
 
 impl WifiNetwork {
@@ -144,10 +173,9 @@ pub fn parse_wifi_list(text: &str) -> Vec<WifiNetwork> {
         if ssid.trim().is_empty() {
             continue;
         }
-        let security = security.trim();
         let network = WifiNetwork {
             ssid: ssid.clone(),
-            secured: !(security.is_empty() || security == "--"),
+            security: Security::parse(security),
             signal: signal.trim().parse::<u8>().unwrap_or(0).min(100),
             connected: in_use.trim() == "*",
             saved: false,
@@ -155,7 +183,7 @@ pub fn parse_wifi_list(text: &str) -> Vec<WifiNetwork> {
         match networks.iter_mut().find(|known| known.ssid == network.ssid) {
             Some(known) => {
                 known.connected |= network.connected;
-                known.secured |= network.secured;
+                known.security = known.security.max(network.security);
                 known.signal = known.signal.max(network.signal);
             }
             None => networks.push(network),
@@ -694,7 +722,11 @@ impl GlideState {
                 self.topbar.begin_disconnect(&network.ssid);
                 request(NetRequest::DisconnectWifi { ssid: network.ssid });
             }
-            Some(RowTarget::Network(network)) if network.saved || !network.secured => {
+            Some(RowTarget::Network(network)) if network.security == Security::Enterprise && !network.saved => {
+                self.topbar.close_popup();
+                open_settings_panel("network");
+            }
+            Some(RowTarget::Network(network)) if network.saved || !network.security.is_secured() => {
                 self.topbar.begin_connect(&network.ssid);
                 request(NetRequest::ConnectWifi { ssid: network.ssid, password: None, saved: network.saved });
             }
@@ -751,16 +783,26 @@ mod tests {
         let home = &networks[0];
         assert_eq!(home.ssid, "Home");
         assert_eq!(home.signal, 72);
-        assert!(home.connected && home.secured);
-        assert!(!networks[1].secured, "-- means an open network");
+        assert!(home.connected && home.security == Security::Passphrase);
+        assert_eq!(networks[1].security, Security::Open, "-- means an open network");
         assert_eq!(networks[2].ssid, "Lab:5G");
+    }
+
+    #[test]
+    fn enterprise_networks_are_told_apart_from_passphrase_ones() {
+        let networks = parse_wifi_list(" :eduroam:WPA2 802.1X:70:x\n :Office:WPA3 EAP:60:x\n :Home:WPA1 WPA2:50:x");
+        let kinds: Vec<Security> = networks.iter().map(|network| network.security).collect();
+        assert_eq!(kinds, [Security::Enterprise, Security::Enterprise, Security::Passphrase]);
+        assert!(Security::Enterprise.is_secured() && !Security::Open.is_secured());
+        let merged = parse_wifi_list(" :Campus:WPA2:40:x\n :Campus:WPA2 802.1X:70:x");
+        assert_eq!(merged[0].security, Security::Enterprise, "the strictest access point wins");
     }
 
     #[test]
     fn the_connected_network_sorts_first_then_by_signal() {
         let network = |ssid: &str, signal: u8, connected: bool| WifiNetwork {
             ssid: ssid.to_string(),
-            secured: true,
+            security: Security::Passphrase,
             signal,
             connected,
             saved: false,
@@ -795,8 +837,13 @@ mod tests {
 
     #[test]
     fn signal_strength_maps_onto_four_bars_and_an_icon() {
-        let network =
-            |signal: u8| WifiNetwork { ssid: String::new(), secured: false, signal, connected: false, saved: false };
+        let network = |signal: u8| WifiNetwork {
+            ssid: String::new(),
+            security: Security::Open,
+            signal,
+            connected: false,
+            saved: false,
+        };
         assert_eq!(network(0).icon(), "network-wireless-signal-none");
         assert_eq!(network(10).level(), 1);
         assert_eq!(network(49).level(), 2);

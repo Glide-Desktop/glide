@@ -8,7 +8,7 @@ use super::{
 use crate::i18n::{Key, t};
 use crate::launcher::field::{CaretMove, TextField};
 use crate::power::PowerAction;
-use crate::qs_net::{AudioOutput, BtDevice, ConnectError, NetEvent, WifiNetwork};
+use crate::qs_net::{AudioOutput, BtDevice, ConnectError, NetEvent, Security, WifiNetwork};
 use crate::system_info::{BatteryInfo, BatteryState, PowerProfile};
 use glide_theme::shape::{R_ROUND, R1};
 use glide_theme::spacing::{SP1, SP2};
@@ -930,14 +930,17 @@ fn trailing_icon(c: &mut Canvas<'_>, rect: LocalRect, right: i32, icon: (&str, G
 fn draw_network_row(
     c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, network: &WifiNetwork, status: RowStatus,
 ) {
-    let icons_w = (TRAILING_ICON + SP2) * (i32::from(network.secured) + i32::from(network.connected));
+    let secured = network.security.is_secured();
+    let icons_w = (TRAILING_ICON + SP2) * (i32::from(secured) + i32::from(network.connected));
     let inset = local_rect(rect.loc.x, rect.loc.y, rect.size.w - icons_w, rect.size.h);
+    let enterprise = (network.security == Security::Enterprise && !network.connected && !network.saved)
+        .then(|| (t(Key::QsEnterprise).to_string(), ctx.theme.muted));
     let spec = RowSpec {
         icon: network.icon(),
         glyph: crate::paint::draw_wifi_waves_glyph_over,
         title: &network.ssid,
         active: network.connected,
-        trailing: status_trailing(ctx.theme, status),
+        trailing: status_trailing(ctx.theme, status).or(enterprise),
     };
     draw_row_body(c, ctx, inset, &spec);
     let mut right = rect.loc.x + rect.size.w - SP2;
@@ -945,7 +948,7 @@ fn draw_network_row(
         let tick = ("object-select", crate::paint::draw_tick_glyph_over as GlyphPainter);
         right = trailing_icon(c, rect, right, tick, ctx.theme.active_background);
     }
-    if network.secured {
+    if secured {
         let lock = ("network-wireless-encrypted", crate::paint::draw_lock_glyph_over as GlyphPainter);
         trailing_icon(c, rect, right, lock, ctx.theme.muted);
     }
@@ -1049,7 +1052,8 @@ mod tests {
     }
 
     fn network(ssid: &str, secured: bool, connected: bool) -> WifiNetwork {
-        WifiNetwork { ssid: ssid.to_string(), secured, signal: 60, connected, saved: false }
+        let security = if secured { Security::Passphrase } else { Security::Open };
+        WifiNetwork { ssid: ssid.to_string(), security, signal: 60, connected, saved: false }
     }
 
     fn open_wifi() -> Topbar {
