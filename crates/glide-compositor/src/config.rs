@@ -1028,6 +1028,8 @@ impl Config {
             simple(&[Super], "Down", "tile-restore"),
             simple(&[Super, Shift], "Left", "move-window-to-monitor-left"),
             simple(&[Super, Shift], "Right", "move-window-to-monitor-right"),
+            simple(&[Ctrl], "F2", "focus-top-bar"),
+            simple(&[Ctrl], "F3", "focus-dock"),
         ];
         for i in 1..=9 {
             let key = i.to_string();
@@ -1323,6 +1325,8 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "move-window-to-monitor-left" => KeyAction::MoveToOutput(crate::tiling::Side::Left),
             "move-window-to-monitor-right" => KeyAction::MoveToOutput(crate::tiling::Side::Right),
             "show-desktop" => KeyAction::ShowDesktop,
+            "focus-top-bar" => KeyAction::FocusTopBar,
+            "focus-dock" => KeyAction::FocusDock,
             "move-window-to-next-workspace" => KeyAction::MoveWindowToNeighbour(true),
             "move-window-to-prev-workspace" => KeyAction::MoveWindowToNeighbour(false),
             "toggle-notification-center" => KeyAction::Shell(crate::topbar::TopbarAction::ToggleNotificationCenter),

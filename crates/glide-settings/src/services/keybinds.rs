@@ -74,6 +74,8 @@ pub const NAMED_ACTIONS: &[&str] = &[
     "switch-windows-backward",
     "switch-app-windows",
     "switch-app-windows-backward",
+    "focus-top-bar",
+    "focus-dock",
     "toggle-launcher",
     "terminal",
     "screenshot",
@@ -137,9 +139,12 @@ impl Action {
                 | "toggle-overview"
                 | "move-window-to-next-workspace"
                 | "move-window-to-prev-workspace" => Category::Workspaces,
-                "switch-windows" | "switch-windows-backward" | "switch-app-windows" | "switch-app-windows-backward" => {
-                    Category::Switching
-                }
+                "switch-windows"
+                | "switch-windows-backward"
+                | "switch-app-windows"
+                | "switch-app-windows-backward"
+                | "focus-top-bar"
+                | "focus-dock" => Category::Switching,
                 "toggle-launcher"
                 | "terminal"
                 | "screenshot"

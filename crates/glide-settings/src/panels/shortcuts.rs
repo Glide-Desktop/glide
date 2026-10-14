@@ -41,6 +41,8 @@ mod tr {
         Minimize => "Minimise", "Згорнути";
         WindowMenu => "Window menu", "Меню вікна";
         ShowDesktop => "Show the desktop", "Показати робочий стіл";
+        FocusTopBar => "Move focus to the top bar", "Перейти до верхньої панелі";
+        FocusDock => "Move focus to the dock", "Перейти до панелі програм";
         ForceQuit => "Force quit the app", "Завершити програму примусово";
         TileLeft => "Fill the left half", "Зайняти ліву половину";
         TileRight => "Fill the right half", "Зайняти праву половину";
@@ -347,6 +349,8 @@ fn named_label(name: &str) -> Option<tr::Key> {
         "minimize" => tr::Key::Minimize,
         "open-window-menu" => tr::Key::WindowMenu,
         "show-desktop" => tr::Key::ShowDesktop,
+        "focus-top-bar" => tr::Key::FocusTopBar,
+        "focus-dock" => tr::Key::FocusDock,
         "force-quit" => tr::Key::ForceQuit,
         "tile-left" => tr::Key::TileLeft,
         "tile-right" => tr::Key::TileRight,

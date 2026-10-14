@@ -65,6 +65,17 @@ fn bounce_height(elapsed: Duration, period: Duration, amplitude: f64, bounces: O
     amplitude * rise
 }
 
+#[must_use]
+pub fn step_index(current: Option<usize>, delta: i32, count: usize) -> usize {
+    let count = i64::try_from(count).unwrap_or(i64::MAX).max(1);
+    let next = match current.and_then(|index| i64::try_from(index).ok()) {
+        Some(index) => (index + i64::from(delta)).rem_euclid(count),
+        None if delta < 0 => count - 1,
+        None => 0,
+    };
+    usize::try_from(next).unwrap_or(0)
+}
+
 fn dwell_elapsed(since: Instant, now: Instant) -> bool {
     now.saturating_duration_since(since) >= REVEAL_DWELL
 }
@@ -515,6 +526,7 @@ pub struct Dock {
     run: Vec<RunState>,
     run_changed: Vec<Instant>,
     hover: glide_ui::HoverAnimation<usize>,
+    keyboard: bool,
     pub icons: crate::icon::IconLoader,
     icon_generation: u64,
     tiles: Vec<Buffers<i32>>,
@@ -594,6 +606,7 @@ impl Dock {
             run: vec![RunState::default(); count],
             run_changed: vec![settled_stamp(); count],
             hover: glide_ui::HoverAnimation::default(),
+            keyboard: false,
             icons: crate::icon::IconLoader::new(config.theme.icon_theme.clone()),
             icon_generation: 0,
             tiles: vec![HashMap::new(); count],
@@ -716,7 +729,64 @@ impl Dock {
     }
 
     fn is_engaged(&self) -> bool {
-        self.menu.is_some() || self.drag.is_some() || self.hover.target().is_some()
+        self.menu.is_some() || self.drag.is_some() || self.hover.target().is_some() || self.keyboard
+    }
+
+    pub fn begin_keyboard(&mut self) -> bool {
+        if !self.is_enabled() || self.items.is_empty() {
+            return false;
+        }
+        self.keyboard = true;
+        let start = self.hover.target().filter(|index| *index < self.items.len()).unwrap_or(0);
+        self.set_hover(Some(start));
+        true
+    }
+
+    pub fn end_keyboard(&mut self) -> bool {
+        if !self.keyboard {
+            return false;
+        }
+        self.keyboard = false;
+        self.close_menu();
+        self.set_hover(None);
+        true
+    }
+
+    #[must_use]
+    pub const fn keyboard_active(&self) -> bool {
+        self.keyboard
+    }
+
+    #[must_use]
+    pub fn keyboard_index(&self) -> Option<usize> {
+        self.hover.target().filter(|_| self.keyboard)
+    }
+
+    pub fn keyboard_step(&mut self, delta: i32) -> bool {
+        let count = self.items.len();
+        if !self.keyboard || count == 0 {
+            return false;
+        }
+        let next = step_index(self.hover.target(), delta, count);
+        self.set_hover(Some(next))
+    }
+
+    pub fn menu_step(&mut self, delta: i32) -> bool {
+        let Some(menu) = self.open_menu_state() else {
+            return false;
+        };
+        let count = menu.entries.len();
+        if count == 0 {
+            return false;
+        }
+        let next = step_index(menu.hovered, delta, count);
+        self.set_menu_row(Some(next))
+    }
+
+    #[must_use]
+    pub fn menu_selected(&self) -> Option<(usize, DockMenuItem)> {
+        let menu = self.open_menu_state()?;
+        Some((menu.index, menu.entries.get(menu.hovered?)?.item))
     }
 
     #[must_use]
@@ -1204,13 +1274,17 @@ impl Dock {
     }
 
     pub fn set_menu_hover(&mut self, pos: Option<Point<f64, Logical>>) -> bool {
+        let row = self.open_menu_state().and_then(|menu| pos.and_then(|pos| menu.row_at(pos)));
+        self.set_menu_row(row)
+    }
+
+    fn set_menu_row(&mut self, hovered: Option<usize>) -> bool {
         if !self.menu_reveal.is_open() {
             return false;
         }
         let Some(menu) = self.menu.as_mut() else {
             return false;
         };
-        let hovered = pos.and_then(|pos| menu.row_at(pos));
         if menu.hovered == hovered {
             return false;
         }
@@ -2375,6 +2449,48 @@ mod tests {
 
     fn area() -> Rectangle<i32, Logical> {
         Rectangle::new(Point::from((0, 0)), Size::from((1920, 1080)))
+    }
+
+    mod keyboard {
+        use super::*;
+
+        #[test]
+        fn steps_wrap_both_ways_and_start_from_the_nearest_end() {
+            assert_eq!(step_index(Some(0), 1, 3), 1);
+            assert_eq!(step_index(Some(2), 1, 3), 0);
+            assert_eq!(step_index(Some(0), -1, 3), 2);
+            assert_eq!(step_index(None, 1, 3), 0);
+            assert_eq!(step_index(None, -1, 3), 2);
+        }
+
+        #[test]
+        fn the_dock_takes_keyboard_focus_walks_and_lets_go() {
+            let mut dock = Dock::new(&config(3));
+            assert!(!dock.keyboard_step(1), "nothing moves before the dock has focus");
+            assert!(dock.begin_keyboard());
+            assert!(dock.keyboard_active());
+            assert_eq!(dock.keyboard_index(), Some(0));
+            assert!(dock.keyboard_step(-1));
+            assert_eq!(dock.keyboard_index(), Some(dock.items().len() - 1));
+            assert!(!dock.wants_hidden(true, false), "a focused dock stays on screen");
+            assert!(dock.end_keyboard());
+            assert_eq!(dock.keyboard_index(), None);
+            assert!(!dock.end_keyboard());
+        }
+
+        #[test]
+        fn the_menu_rows_are_walked_from_the_keyboard() {
+            let mut dock = Dock::new(&config(2));
+            dock.begin_keyboard();
+            assert!(dock.open_menu(0, area(), &MenuContext::default()));
+            assert_eq!(dock.menu_selected(), None, "no row until an arrow is pressed");
+            assert!(dock.menu_step(1));
+            let (index, first) = dock.menu_selected().expect("a row is selected");
+            assert_eq!(index, 0);
+            assert!(dock.menu_step(-1));
+            assert!(dock.menu_step(1));
+            assert_eq!(dock.menu_selected(), Some((0, first)));
+        }
     }
 
     fn centre_of(rect: Rectangle<i32, Logical>) -> Point<f64, Logical> {

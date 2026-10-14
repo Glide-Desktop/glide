@@ -107,6 +107,14 @@ pub enum KeyAction {
     MoveToOutput(crate::tiling::Side),
     ForceQuit,
     RestoreShortcuts,
+    FocusDock,
+    FocusTopBar,
+    DockNav(i32),
+    DockOpenMenu,
+    DockActivate,
+    DockLeave,
+    DockMenuNav(i32),
+    DockMenuActivate,
     Terminal,
     MoveWindowToNeighbour(bool),
     Shell(crate::topbar::TopbarAction),
@@ -249,10 +257,63 @@ fn topbar_popup_shortcut(
 }
 
 fn dock_menu_shortcut(
+    keybinds: &[ResolvedKeybind], modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym, keyboard: bool,
+) -> Option<KeyAction> {
+    let matches = |sym: Keysym| modified_sym == sym || raw_syms.contains(&sym);
+    if matches(Keysym::Escape) {
+        return Some(KeyAction::TopbarClosePopup);
+    }
+    let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.logo;
+    if keyboard && plain {
+        if matches(Keysym::Up) {
+            return Some(KeyAction::DockMenuNav(-1));
+        }
+        if matches(Keysym::Down) || matches(Keysym::Tab) {
+            return Some(KeyAction::DockMenuNav(1));
+        }
+        if matches(Keysym::Return) || matches(Keysym::KP_Enter) || matches(Keysym::space) {
+            return Some(KeyAction::DockMenuActivate);
+        }
+    }
+    process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
+}
+
+const fn keeps_dock_focus(action: &KeyAction) -> bool {
+    matches!(
+        action,
+        KeyAction::None
+            | KeyAction::FocusDock
+            | KeyAction::DockNav(_)
+            | KeyAction::DockOpenMenu
+            | KeyAction::DockActivate
+            | KeyAction::DockLeave
+            | KeyAction::DockMenuNav(_)
+            | KeyAction::DockMenuActivate
+            | KeyAction::TopbarClosePopup
+    )
+}
+
+fn dock_keys_shortcut(
     keybinds: &[ResolvedKeybind], modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym,
 ) -> Option<KeyAction> {
-    if modified_sym == Keysym::Escape || raw_syms.contains(&Keysym::Escape) {
-        return Some(KeyAction::TopbarClosePopup);
+    let matches = |sym: Keysym| modified_sym == sym || raw_syms.contains(&sym);
+    if matches(Keysym::Escape) {
+        return Some(KeyAction::DockLeave);
+    }
+    let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.logo;
+    if plain {
+        if matches(Keysym::Left) || (matches(Keysym::Tab) && modifiers.shift) {
+            return Some(KeyAction::DockNav(-1));
+        }
+        if matches(Keysym::Right) || matches(Keysym::Tab) {
+            return Some(KeyAction::DockNav(1));
+        }
+        if matches(Keysym::Up) || matches(Keysym::Menu) || (matches(Keysym::F10) && modifiers.shift) {
+            return Some(KeyAction::DockOpenMenu);
+        }
+        if matches(Keysym::Return) || matches(Keysym::KP_Enter) || matches(Keysym::space) {
+            return Some(KeyAction::DockActivate);
+        }
     }
     process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
 }
@@ -1304,6 +1365,7 @@ impl GlideState {
         let topbar_popup = self.topbar.has_open_popup();
         let qs_mode = self.topbar.qs_key_mode();
         let dock_menu = self.dock.menu_rect().is_some();
+        let dock_keys = self.dock.keyboard_active();
         let power_open = self.power_dialog_open();
         let switcher_open = self.switcher_open();
         let switcher_mode = self.switcher.as_ref().map_or(crate::switcher::Mode::Apps, crate::switcher::Switcher::mode);
@@ -1381,7 +1443,9 @@ impl GlideState {
                     } else if topbar_popup && !exclusive {
                         topbar_popup_shortcut(&keybinds, modifiers, &binding_syms, keysym, qs_mode)
                     } else if dock_menu && !exclusive {
-                        dock_menu_shortcut(&keybinds, modifiers, &binding_syms, keysym)
+                        dock_menu_shortcut(&keybinds, modifiers, &binding_syms, keysym, dock_keys)
+                    } else if dock_keys && !exclusive {
+                        dock_keys_shortcut(&keybinds, modifiers, &binding_syms, keysym)
                     } else {
                         process_keyboard_shortcut(&keybinds, modifiers, &binding_syms, keysym)
                     };
@@ -1462,6 +1526,9 @@ impl GlideState {
 
     #[allow(clippy::too_many_lines)]
     pub(crate) fn run_key_action(&mut self, action: KeyAction) {
+        if self.dock.keyboard_active() && !keeps_dock_focus(&action) && self.dock.end_keyboard() {
+            self.queue_redraw();
+        }
         match action {
             KeyAction::Quit => self.loop_signal.stop(),
             KeyAction::VtSwitch(vt) => {
@@ -1675,6 +1742,14 @@ impl GlideState {
             KeyAction::ShowDesktop => self.toggle_show_desktop(),
             KeyAction::ForceQuit => self.force_quit_focused(),
             KeyAction::RestoreShortcuts => self.restore_shortcuts(),
+            KeyAction::FocusDock
+            | KeyAction::FocusTopBar
+            | KeyAction::DockNav(_)
+            | KeyAction::DockOpenMenu
+            | KeyAction::DockActivate
+            | KeyAction::DockLeave
+            | KeyAction::DockMenuNav(_)
+            | KeyAction::DockMenuActivate => self.run_shell_focus_action(&action),
             KeyAction::Tile(side) => self.tile_focused(side),
             KeyAction::TileMaximize => self.maximize_focused(),
             KeyAction::TileRestore => self.restore_focused(),
@@ -1819,8 +1894,10 @@ impl GlideState {
         }
         let over = self.dock.contains(area, pos);
         let item = if over { self.dock.item_at(area, pos) } else { None };
-        let tile_changed = self.dock.set_hover(item);
-        let menu_changed = self.dock.set_menu_hover(over.then_some(pos));
+        let keyboard = self.dock.keyboard_active();
+        let tile_changed = (!keyboard || item.is_some()) && self.dock.set_hover(item);
+        let on_menu = self.dock.menu_rect().is_some_and(|rect| rect.to_f64().contains(pos));
+        let menu_changed = (!keyboard || on_menu) && self.dock.set_menu_hover(over.then_some(pos));
         if tile_changed || menu_changed {
             self.queue_redraw();
         }
@@ -1907,8 +1984,9 @@ impl GlideState {
     fn clear_shell_hover(&mut self) {
         let topbar = self.topbar.set_hover(None);
         let notifications = self.notifications.set_hover(None);
-        let dock = self.dock.set_hover(None);
-        let dock_menu = self.dock.set_menu_hover(None);
+        let keyboard = self.dock.keyboard_active();
+        let dock = !keyboard && self.dock.set_hover(None);
+        let dock_menu = !keyboard && self.dock.set_menu_hover(None);
         if topbar || notifications || dock || dock_menu {
             self.queue_redraw();
         }
@@ -2311,13 +2389,14 @@ impl GlideState {
         if let Some(item) = self.dock.menu_item_at(pos) {
             let index = self.dock.menu_index();
             self.dock.close_menu();
+            self.dock.end_keyboard();
             if let Some(index) = index {
                 self.run_dock_menu_item(index, item);
             }
             self.queue_redraw();
             return true;
         }
-        let menu_closed = self.dock.close_menu();
+        let menu_closed = self.dock.end_keyboard() | self.dock.close_menu();
         if menu_closed {
             self.queue_redraw();
         }
@@ -2722,10 +2801,47 @@ mod tests {
 
     #[test]
     fn only_escape_is_taken_by_the_dock_menu() {
-        assert_eq!(dock_menu_shortcut(&[], &no_modifiers(), &[], Keysym::Escape), Some(KeyAction::TopbarClosePopup));
+        let none = no_modifiers();
+        assert_eq!(dock_menu_shortcut(&[], &none, &[], Keysym::Escape, false), Some(KeyAction::TopbarClosePopup));
         for sym in [Keysym::Return, Keysym::Left, Keysym::Down, Keysym::Tab, Keysym::space] {
-            assert_eq!(dock_menu_shortcut(&[], &no_modifiers(), &[], sym), None);
+            assert_eq!(dock_menu_shortcut(&[], &none, &[], sym, false), None);
         }
+    }
+
+    #[test]
+    fn a_menu_opened_from_the_keyboard_is_walked_with_arrows() {
+        let none = no_modifiers();
+        let key = |sym| dock_menu_shortcut(&[], &none, &[], sym, true);
+        assert_eq!(key(Keysym::Down), Some(KeyAction::DockMenuNav(1)));
+        assert_eq!(key(Keysym::Up), Some(KeyAction::DockMenuNav(-1)));
+        assert_eq!(key(Keysym::Return), Some(KeyAction::DockMenuActivate));
+        assert_eq!(key(Keysym::Escape), Some(KeyAction::TopbarClosePopup));
+    }
+
+    #[test]
+    fn the_focused_dock_walks_opens_activates_and_lets_go() {
+        let none = no_modifiers();
+        let shift = ModifiersState { shift: true, ..ModifiersState::default() };
+        let key = |modifiers: &ModifiersState, sym| dock_keys_shortcut(&[], modifiers, &[], sym);
+        assert_eq!(key(&none, Keysym::Right), Some(KeyAction::DockNav(1)));
+        assert_eq!(key(&none, Keysym::Left), Some(KeyAction::DockNav(-1)));
+        assert_eq!(key(&shift, Keysym::Tab), Some(KeyAction::DockNav(-1)));
+        assert_eq!(key(&none, Keysym::Up), Some(KeyAction::DockOpenMenu));
+        assert_eq!(key(&shift, Keysym::F10), Some(KeyAction::DockOpenMenu));
+        assert_eq!(key(&none, Keysym::Return), Some(KeyAction::DockActivate));
+        assert_eq!(key(&none, Keysym::Escape), Some(KeyAction::DockLeave));
+        assert_eq!(key(&none, Keysym::a), None, "other keys still reach the focused window");
+        assert!(keeps_dock_focus(&KeyAction::DockNav(1)));
+        assert!(!keeps_dock_focus(&KeyAction::ToggleLauncher), "any other shortcut lets the dock go");
+    }
+
+    #[test]
+    fn ctrl_f2_and_ctrl_f3_reach_the_top_bar_and_the_dock() {
+        let binds = default_binds();
+        let ctrl = ModifiersState { ctrl: true, ..ModifiersState::default() };
+        let action = |sym| process_keyboard_shortcut(&binds, &ctrl, &[sym], sym);
+        assert_eq!(action(Keysym::F2), Some(KeyAction::FocusTopBar));
+        assert_eq!(action(Keysym::F3), Some(KeyAction::FocusDock));
     }
 
     mod overview_active_shortcut_tests {

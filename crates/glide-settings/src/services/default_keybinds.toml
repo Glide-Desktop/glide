@@ -219,6 +219,16 @@ key = "Right"
 action = "move-window-to-monitor-right"
 
 [[keybinds]]
+mods = ["ctrl"]
+key = "F2"
+action = "focus-top-bar"
+
+[[keybinds]]
+mods = ["ctrl"]
+key = "F3"
+action = "focus-dock"
+
+[[keybinds]]
 mods = ["super"]
 key = "1"
 action = { switch-workspace = 1 }

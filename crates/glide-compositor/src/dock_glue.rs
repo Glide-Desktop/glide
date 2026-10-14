@@ -247,6 +247,64 @@ impl GlideState {
         MenuContext { windows, actions }
     }
 
+    pub(crate) fn run_shell_focus_action(&mut self, action: &crate::input::KeyAction) {
+        use crate::input::KeyAction;
+        let changed = match action {
+            KeyAction::FocusDock => {
+                !self.layout.overview_active() && !self.dock_suppressed() && self.dock.begin_keyboard()
+            }
+            KeyAction::FocusTopBar => self.focus_top_bar(),
+            KeyAction::DockNav(delta) => self.dock.keyboard_step(*delta),
+            KeyAction::DockLeave => self.dock.end_keyboard(),
+            KeyAction::DockOpenMenu => {
+                let Some(index) = self.dock.keyboard_index() else {
+                    return;
+                };
+                let (area, context) = (self.dock_area(), self.dock_menu_context(index));
+                self.dock.open_menu(index, area, &context) && self.dock.menu_step(1)
+            }
+            KeyAction::DockMenuNav(delta) => self.dock.menu_step(*delta),
+            KeyAction::DockActivate => {
+                let Some(index) = self.dock.keyboard_index() else {
+                    return;
+                };
+                self.dock.end_keyboard();
+                if self.dock.action(index) == Some(crate::dock::DockAction::OpenLauncher) {
+                    self.toggle_launcher();
+                } else {
+                    self.activate_dock_item(index);
+                }
+                true
+            }
+            KeyAction::DockMenuActivate => {
+                let Some((index, item)) = self.dock.menu_selected() else {
+                    return;
+                };
+                self.dock.end_keyboard();
+                self.run_dock_menu_item(index, item);
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            self.queue_redraw();
+        }
+    }
+
+    fn focus_top_bar(&mut self) -> bool {
+        use crate::topbar::{OpenPopup, TopbarAction};
+        if !self.topbar.app_menu().is_empty() && self.topbar.open_popup() != Some(OpenPopup::AppMenu) {
+            self.open_app_menu(0);
+            if self.topbar.open_popup() == Some(OpenPopup::AppMenu) {
+                return true;
+            }
+        }
+        if self.topbar.open_popup() != Some(OpenPopup::QuickSettings) {
+            self.run_topbar_action(TopbarAction::ToggleQuickSettings);
+        }
+        self.topbar.focus_nav(1, 0)
+    }
+
     pub fn activate_dock_item(&mut self, index: usize) {
         let Some(item) = self.dock.items().get(index).cloned() else {
             return;
