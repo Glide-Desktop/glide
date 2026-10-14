@@ -1781,14 +1781,16 @@ impl GlideState {
             let side = crate::launcher::icon_side() * output_scale.max(1);
             let pixels: Vec<Option<Vec<u8>>> =
                 apps.iter().map(|app| loader.load_named(&app.icon, side).map(<[u8]>::to_vec)).collect();
-            let _ = sender.send((apps, pixels, output_scale, history));
+            let recent = crate::launcher::recent::load();
+            let _ = sender.send((apps, pixels, output_scale, history, recent));
         });
 
         let result = self.loop_handle.insert_source(receiver, |event, (), state| {
-            if let smithay::reexports::calloop::channel::Event::Msg((apps, pixels, scale, history)) = event {
-                tracing::info!(count = apps.len(), "launcher apps loaded");
+            if let smithay::reexports::calloop::channel::Event::Msg((apps, pixels, scale, history, recent)) = event {
+                tracing::info!(count = apps.len(), recent = recent.len(), "launcher apps loaded");
                 if let Some(launcher) = state.launcher.as_mut() {
                     launcher.set_history(history);
+                    launcher.set_recent(recent);
                     launcher.set_apps(apps, &pixels, scale);
                 }
                 state.queue_redraw();

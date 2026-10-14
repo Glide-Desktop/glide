@@ -198,6 +198,9 @@ impl Launcher {
                 let title = if window.title.is_empty() { owner } else { &window.title };
                 (title.to_string(), owner.to_string())
             }),
+            Entry::File(index) => {
+                self.recent.get(*index).map_or_else(Default::default, |file| (file.name.clone(), file.folder.clone()))
+            }
         }
     }
 }
@@ -206,6 +209,7 @@ impl Launcher {
 enum RowGlyph {
     Calculator,
     Window,
+    File,
     Command(SystemCommand),
     Settings(SettingsPanel),
 }
@@ -220,6 +224,7 @@ const fn row_icon(entry: &Entry) -> RowIcon {
         Entry::App(index) => RowIcon::Tile(*index),
         Entry::Action { app, .. } | Entry::Window { app: Some(app), .. } => RowIcon::Tile(*app),
         Entry::Window { app: None, .. } => RowIcon::Glyph(RowGlyph::Window),
+        Entry::File(_) => RowIcon::Glyph(RowGlyph::File),
         Entry::Calculator { .. } => RowIcon::Glyph(RowGlyph::Calculator),
         Entry::Command(command) => RowIcon::Glyph(RowGlyph::Command(*command)),
         Entry::Settings(panel) => RowIcon::Glyph(RowGlyph::Settings(*panel)),
@@ -248,8 +253,12 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
     use crate::paint as p;
     let (w, h) = (ROW_ICON, ROW_ICON);
     let stroked: fn(&mut [u8], i32, i32, f32, f32, i32, glide_theme::Color) = match glyph {
-        RowGlyph::Calculator | RowGlyph::Window => {
-            let label = if glyph == RowGlyph::Window { "\u{25a1}" } else { "=" };
+        RowGlyph::Calculator | RowGlyph::Window | RowGlyph::File => {
+            let label = match glyph {
+                RowGlyph::Window => "\u{25a1}",
+                RowGlyph::File => "\u{2261}",
+                _ => "=",
+            };
             return painter.draw_label_over_styled(
                 buf,
                 w,

@@ -3,6 +3,7 @@ pub mod field;
 mod glue;
 pub mod history;
 mod list;
+pub mod recent;
 pub mod search;
 
 use std::time::{Duration, Instant};
@@ -468,6 +469,7 @@ pub struct Launcher {
     results: Vec<usize>,
     entries: Vec<search::Entry>,
     windows: Vec<search::OpenWindow>,
+    recent: Vec<recent::RecentFile>,
     selected: Option<usize>,
     history: history::LaunchHistory,
     list_scroll: usize,
@@ -570,6 +572,7 @@ impl Launcher {
             category: CategoryFilter::All,
             entries: Vec::new(),
             windows: Vec::new(),
+            recent: Vec::new(),
             selected: None,
             history: history::LaunchHistory::default(),
             list_scroll: 0,
@@ -757,6 +760,18 @@ impl Launcher {
         self.windows.get(index)
     }
 
+    pub fn set_recent(&mut self, recent: Vec<recent::RecentFile>) {
+        self.recent = recent;
+        if !self.field.text().trim().is_empty() {
+            self.refilter();
+        }
+    }
+
+    #[must_use]
+    pub fn recent_file(&self, index: usize) -> Option<&recent::RecentFile> {
+        self.recent.get(index)
+    }
+
     pub fn record_launch(&mut self, app_id: &str) -> history::LaunchHistory {
         self.history.record(app_id, history::now_unix());
         self.history.clone()
@@ -854,7 +869,8 @@ impl Launcher {
     fn refilter(&mut self) {
         let now = history::now_unix();
         self.results = filter_apps(&self.apps, self.field.text(), self.category, &self.history, now);
-        self.entries = search::build_entries(&self.apps, &self.results, &self.windows, self.field.text());
+        let sources = search::Sources { windows: &self.windows, files: &self.recent };
+        self.entries = search::build_entries(&self.apps, &self.results, &sources, self.field.text());
         self.page = 0;
         if self.page_is_sliding() {
             self.page_offset.retarget(0.0, page_anim(), ease_out);

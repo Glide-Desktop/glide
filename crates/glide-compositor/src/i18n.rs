@@ -133,6 +133,7 @@ catalogue! {
     SectionCommands => "Commands", "Команди";
     SectionSettings => "Settings", "Налаштування";
     SectionWindows => "Windows", "Вікна";
+    SectionRecentFiles => "Recent Files", "Недавні файли";
     CommandLogOut => "Log Out", "Вийти з сеансу";
     CommandRestart => "Restart", "Перезавантажити";
     CommandShutDown => "Shut Down", "Вимкнути";

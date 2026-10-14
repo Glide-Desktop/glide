@@ -11,6 +11,7 @@ pub const LIST_ACTION_LIMIT: usize = 5;
 pub const LIST_COMMAND_LIMIT: usize = 5;
 pub const LIST_SETTINGS_LIMIT: usize = 5;
 pub const LIST_WINDOW_LIMIT: usize = 5;
+pub const LIST_FILE_LIMIT: usize = 5;
 
 const SCORE_NAME_PREFIX: u32 = 1000;
 const SCORE_NAME_WORD: u32 = 800;
@@ -362,6 +363,7 @@ pub enum Section {
     Calculator,
     Apps,
     Windows,
+    Files,
     Actions,
     Commands,
     Settings,
@@ -374,6 +376,7 @@ impl Section {
             Self::Calculator => Key::SectionCalculator,
             Self::Apps => Key::Applications,
             Self::Windows => Key::SectionWindows,
+            Self::Files => Key::SectionRecentFiles,
             Self::Actions => Key::SectionActions,
             Self::Commands => Key::SectionCommands,
             Self::Settings => Key::SectionSettings,
@@ -392,6 +395,7 @@ pub struct OpenWindow {
 pub enum Entry {
     App(usize),
     Window { index: usize, app: Option<usize> },
+    File(usize),
     Action { app: usize, action: usize },
     Calculator { expression: String, value: String },
     Command(SystemCommand),
@@ -404,6 +408,7 @@ impl Entry {
         match self {
             Self::App(_) => Section::Apps,
             Self::Window { .. } => Section::Windows,
+            Self::File(_) => Section::Files,
             Self::Action { .. } => Section::Actions,
             Self::Calculator { .. } => Section::Calculator,
             Self::Command(_) => Section::Commands,
@@ -482,8 +487,26 @@ pub fn action_matches(apps: &[DesktopApp], ranked_apps: &[usize], needle: &str) 
     candidates.into_iter().take(LIST_ACTION_LIMIT).map(|(_, _, app, action)| Entry::Action { app, action }).collect()
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Sources<'a> {
+    pub windows: &'a [OpenWindow],
+    pub files: &'a [super::recent::RecentFile],
+}
+
 #[must_use]
-pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], windows: &[OpenWindow], query: &str) -> Vec<Entry> {
+pub fn file_matches(files: &[super::recent::RecentFile], needle: &str) -> Vec<Entry> {
+    ranked(
+        files.iter().enumerate().map(|(index, file)| (index, match_rank(&file.name, needle).map(name_score))),
+        true,
+        LIST_FILE_LIMIT,
+    )
+    .into_iter()
+    .map(Entry::File)
+    .collect()
+}
+
+#[must_use]
+pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], sources: &Sources<'_>, query: &str) -> Vec<Entry> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Vec::new();
@@ -495,7 +518,8 @@ pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], windows: &[Open
     entries.extend(ranked_apps.iter().take(LIST_APP_LIMIT).map(|&index| Entry::App(index)));
     let long_enough = needle.chars().count() >= 2;
     if long_enough {
-        entries.extend(window_matches(apps, windows, &needle));
+        entries.extend(window_matches(apps, sources.windows, &needle));
+        entries.extend(file_matches(sources.files, &needle));
         entries.extend(action_matches(apps, ranked_apps, &needle));
     }
     entries.extend(
@@ -672,7 +696,7 @@ mod tests {
     #[test]
     fn desktop_actions_match_on_their_own_name() {
         let apps = vec![firefox()];
-        let entries = build_entries(&apps, &[], &[], "private");
+        let entries = build_entries(&apps, &[], &Sources::default(), "private");
         assert!(entries.contains(&Entry::Action { app: 0, action: 1 }));
         assert!(!entries.contains(&Entry::Action { app: 0, action: 0 }));
     }
@@ -680,7 +704,7 @@ mod tests {
     #[test]
     fn a_spaced_query_can_name_the_app_and_the_action() {
         let apps = vec![firefox()];
-        let entries = build_entries(&apps, &[0], &[], "firefox new private");
+        let entries = build_entries(&apps, &[0], &Sources::default(), "firefox new private");
         assert!(entries.contains(&Entry::Action { app: 0, action: 1 }));
     }
 
@@ -697,7 +721,7 @@ mod tests {
             window(11, "Untitled", ""),
         ];
         let found = |query| {
-            build_entries(&apps, &[], &windows, query)
+            build_entries(&apps, &[], &Sources { windows: &windows, files: &[] }, query)
                 .into_iter()
                 .filter(|entry| entry.section() == Section::Windows)
                 .collect::<Vec<_>>()
@@ -705,6 +729,23 @@ mod tests {
         assert_eq!(found("report"), [Entry::Window { index: 0, app: Some(0) }]);
         assert_eq!(found("text"), [Entry::Window { index: 1, app: Some(1) }]);
         assert!(found("u").is_empty(), "one letter is too little to search windows");
+    }
+
+    #[test]
+    fn recent_files_are_found_by_name_in_recency_order() {
+        let file = |name: &str| super::super::recent::RecentFile {
+            path: std::path::PathBuf::from(format!("/home/user/{name}")),
+            name: name.to_string(),
+            folder: "~".to_string(),
+        };
+        let files = vec![file("budget.ods"), file("notes.txt"), file("old budget.ods")];
+        let sources = Sources { windows: &[], files: &files };
+        let found: Vec<Entry> = build_entries(&[], &[], &sources, "budget")
+            .into_iter()
+            .filter(|entry| entry.section() == Section::Files)
+            .collect();
+        assert_eq!(found, [Entry::File(0), Entry::File(2)]);
+        assert!(file_matches(&files, "zzz").is_empty());
     }
 
     #[test]
@@ -725,32 +766,32 @@ mod tests {
 
     #[test]
     fn a_math_query_puts_the_calculator_first() {
-        let entries = build_entries(&[], &[], &[], "2+2");
+        let entries = build_entries(&[], &[], &Sources::default(), "2+2");
         assert_eq!(entries.first(), Some(&Entry::Calculator { expression: "2+2".into(), value: "4".into() }));
     }
 
     #[test]
     fn commands_match_in_either_language() {
         for query in ["reboot", "перезав", "restart"] {
-            let entries = build_entries(&[], &[], &[], query);
+            let entries = build_entries(&[], &[], &Sources::default(), query);
             assert!(entries.contains(&Entry::Command(SystemCommand::Restart)), "{query}: {entries:?}");
         }
-        let entries = build_entries(&[], &[], &[], "lock");
+        let entries = build_entries(&[], &[], &Sources::default(), "lock");
         assert_eq!(entries.first(), Some(&Entry::Command(SystemCommand::Lock)));
     }
 
     #[test]
     fn settings_panels_match_by_keyword() {
-        let entries = build_entries(&[], &[], &[], "wifi");
+        let entries = build_entries(&[], &[], &Sources::default(), "wifi");
         assert!(entries.contains(&Entry::Settings(SettingsPanel::Network)));
-        let entries = build_entries(&[], &[], &[], "гучн");
+        let entries = build_entries(&[], &[], &Sources::default(), "гучн");
         assert!(entries.contains(&Entry::Settings(SettingsPanel::Sound)));
     }
 
     #[test]
     fn sections_come_out_grouped_in_display_order() {
         let apps = vec![app("power-stats", "Power Statistics")];
-        let entries = build_entries(&apps, &[0], &[], "power");
+        let entries = build_entries(&apps, &[0], &Sources::default(), "power");
         let sections: Vec<Section> = entries.iter().map(Entry::section).collect();
         let mut sorted = sections.clone();
         sorted.sort();
@@ -763,7 +804,7 @@ mod tests {
     #[test]
     fn single_letters_only_search_apps() {
         let apps = vec![app("l", "Lollypop")];
-        let entries = build_entries(&apps, &[0], &[], "l");
+        let entries = build_entries(&apps, &[0], &Sources::default(), "l");
         assert_eq!(entries, [Entry::App(0)]);
     }
 
@@ -817,7 +858,7 @@ mod tests {
             ("printers", SettingsPanel::Printers),
             ("privacy", SettingsPanel::Privacy),
         ] {
-            let entries = build_entries(&[], &[], &[], query);
+            let entries = build_entries(&[], &[], &Sources::default(), query);
             let first = entries.iter().find_map(|entry| match entry {
                 Entry::Settings(panel) => Some(*panel),
                 _ => None,

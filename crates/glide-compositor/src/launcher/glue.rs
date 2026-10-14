@@ -89,6 +89,15 @@ impl GlideState {
                     tracing::error!(%command, ?err, "failed to open a settings panel");
                 }
             }
+            Entry::File(index) => {
+                if let Some(path) = launcher.recent_file(index).map(|file| file.path.clone()) {
+                    let mut command = std::process::Command::new("xdg-open");
+                    command.arg(&path);
+                    if let Err(err) = crate::spawn_detached(command) {
+                        tracing::warn!(path = %path.display(), ?err, "failed to open a recent file");
+                    }
+                }
+            }
             Entry::Window { index, .. } => {
                 let id = launcher.window(index).map(|window| glide_layout::WindowId(window.id));
                 self.close_launcher();
