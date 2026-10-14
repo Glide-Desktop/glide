@@ -779,4 +779,52 @@ mod tests {
         assert_eq!(restored.size, SIZE);
         assert!(outputs[0].geometry.overlaps(restored), "saved geometry is rescued when its output goes away");
     }
+
+    #[test]
+    fn fixed_workspaces_exist_up_front_and_never_vanish() {
+        let mut layout = Layout::new();
+        assert!(layout.set_fixed_workspaces(Some(4)));
+        assert!(!layout.set_fixed_workspaces(Some(4)));
+        assert_eq!(layout.workspace_count(), 4);
+
+        let first = windows(&mut layout, 2, SIZE);
+        assert_eq!(layout.workspace_count(), 4, "new windows do not make new workspaces");
+        assert!(
+            first
+                .iter()
+                .all(|id| layout.window_state(*id).is_some_and(|s| s.workspace_id == layout.active_workspace()))
+        );
+
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(2)));
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(3)));
+        assert_eq!(layout.workspace_count(), 4, "leaving an empty workspace keeps it");
+        let parked = windows(&mut layout, 1, SIZE)[0];
+        assert!(!layout.switch_to_workspace(WorkspaceTarget::New), "no workspace is created past a busy last one");
+        assert_eq!(layout.workspace_count(), 4);
+        assert!(layout.move_window_to_workspace(parked, WorkspaceTarget::Index(0)));
+
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(0)));
+        assert!(layout.move_window_to_workspace(first[0], WorkspaceTarget::Index(1)));
+        assert!(layout.move_window_to_workspace(first[1], WorkspaceTarget::Index(1)));
+        assert_eq!(layout.workspace_count(), 4, "an emptied workspace stays");
+        assert_eq!(layout.active_workspace(), layout.workspace_ids()[0], "and so does the view");
+        layout.remove_window(first[0]);
+        assert_eq!(layout.workspace_count(), 4);
+    }
+
+    #[test]
+    fn shrinking_the_fixed_count_folds_windows_into_the_last_one_kept() {
+        let mut layout = Layout::new();
+        layout.set_fixed_workspaces(Some(3));
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(2)));
+        let late = windows(&mut layout, 1, SIZE)[0];
+        layout.set_fixed_workspaces(Some(2));
+        assert_eq!(layout.workspace_count(), 2);
+        let kept = layout.workspace_ids()[1];
+        assert_eq!(layout.window_state(late).map(|s| s.workspace_id), Some(kept));
+        assert_eq!(layout.active_workspace(), kept, "the view follows the folded workspace");
+
+        assert!(layout.set_fixed_workspaces(None));
+        assert_eq!(layout.workspace_count(), 1, "back to dynamic: empty workspaces other than the active one go");
+    }
 }

@@ -34,8 +34,14 @@ mod tr {
         PreviousWorkspace => "Previous workspace", "Попередній простір";
         Unbound => "Not set", "Не призначено";
         SwitcherHint => "Hold the modifier and press Tab to move on. Q closes the selected app, H hides it.", "Утримуйте модифікатор і натискайте Tab, щоб рухатися далі. Q закриває вибрану програму, H приховує її.";
+        Fixed => "Fixed number of workspaces", "Фіксована кількість просторів";
+        FixedHint => "Keep the same workspaces, empty or not; new windows open where you are", "Тримати ті самі простори, порожні чи ні; нові вікна відкриваються там, де ви";
+        FixedCount => "Workspaces", "Просторів";
     }
 }
+
+pub const DEFAULT_FIXED: i64 = 4;
+pub const FIXED_CHOICES: [u8; 9] = [2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 #[derive(Debug, Clone, Copy)]
 pub enum Msg {
@@ -43,6 +49,8 @@ pub enum Msg {
     OverviewLabels(bool),
     HotCorner(bool),
     EdgeSnapping(bool),
+    Fixed(bool),
+    FixedCount(u8),
 }
 
 #[derive(Debug, Default)]
@@ -73,6 +81,9 @@ impl Pane for Page {
             Msg::OverviewLabels(on) => config.set_bool("overview", "label", on),
             Msg::HotCorner(on) => config.set_bool("overview", "hot-corner", on),
             Msg::EdgeSnapping(on) => config.set_bool("windows", "edge-snapping", on),
+            Msg::Fixed(true) => config.set_int("workspaces", "fixed", DEFAULT_FIXED),
+            Msg::Fixed(false) => config.remove("workspaces", "fixed"),
+            Msg::FixedCount(count) => config.set_int("workspaces", "fixed", i64::from(count)),
         }
         Task::none()
     }
@@ -106,11 +117,21 @@ fn workspaces_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         card(NewWindow::ActiveWorkspace, K::CurrentWorkspace, tr::Key::ActiveWorkspaceHint),
     ]
     .spacing(12);
-    Group::new(t)
+    let fixed = config.int_or("workspaces", "fixed", 0);
+    let mut group = Group::new(t)
         .title(c.t(K::NewWindows))
         .description(c.t(K::WorkspacesHint))
         .push(container(gated(*c, cards)).padding(8))
-        .build()
+        .push(switch_row(*c, c.t(tr::Key::Fixed), c.t(tr::Key::FixedHint), fixed > 0, Msg::Fixed));
+    if fixed > 0 {
+        let selected = u8::try_from(fixed).ok();
+        group = group.push(
+            Row::new(t, c.t(tr::Key::FixedCount))
+                .suffix(gated(*c, widgets::dropdown(t, FIXED_CHOICES.to_vec(), selected, Msg::FixedCount, 120.0)))
+                .build(),
+        );
+    }
+    group.build()
 }
 
 fn overview_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {

@@ -882,6 +882,7 @@ impl Default for GeneralConfig {
 pub struct WorkspaceConfig {
     #[serde(rename = "new-window")]
     pub new_window: NewWindowPolicyConfig,
+    pub fixed: usize,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -1177,6 +1178,11 @@ impl Config {
 
     fn apply_window_policy(&self, state: &mut GlideState) {
         state.layout.set_policy(self.workspaces.new_window.into());
+        let fixed = (self.workspaces.fixed > 0).then_some(self.workspaces.fixed);
+        if state.layout.set_fixed_workspaces(fixed) {
+            state.reconcile_space();
+            state.sync_ext_workspaces();
+        }
         state.edge_snapping = self.windows.edge_snapping;
         state.gestures.config = self.gestures;
     }

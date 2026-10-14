@@ -103,6 +103,7 @@ pub struct Layout {
     policy: NewWindowPolicy,
     overview_active: bool,
     placement_anchor: Option<Point>,
+    fixed: Option<usize>,
 }
 
 impl Default for Layout {
@@ -124,6 +125,7 @@ impl Layout {
             policy: NewWindowPolicy::NewWorkspace,
             overview_active: false,
             placement_anchor: None,
+            fixed: None,
         }
     }
 
@@ -184,6 +186,62 @@ impl Layout {
     #[must_use]
     pub const fn policy(&self) -> NewWindowPolicy {
         self.policy
+    }
+
+    pub const MAX_FIXED_WORKSPACES: usize = 36;
+
+    pub fn set_fixed_workspaces(&mut self, count: Option<usize>) -> bool {
+        let count = count.map(|count| count.clamp(1, Self::MAX_FIXED_WORKSPACES));
+        if self.fixed == count {
+            return false;
+        }
+        self.fixed = count;
+        if let Some(count) = count {
+            while self.workspaces.len() < count {
+                self.workspaces.push(Workspace::new(WorkspaceId::next()));
+            }
+            while self.workspaces.len() > count {
+                self.fold_last_workspace();
+            }
+        } else {
+            let empty: Vec<WorkspaceId> = self
+                .workspaces
+                .iter()
+                .filter(|ws| ws.id != self.active && ws.windows.is_empty())
+                .map(|ws| ws.id)
+                .collect();
+            for id in empty {
+                self.remove_workspace_if_empty(id);
+            }
+        }
+        true
+    }
+
+    #[must_use]
+    pub const fn fixed_workspaces(&self) -> Option<usize> {
+        self.fixed
+    }
+
+    fn fold_last_workspace(&mut self) {
+        let Some(last) = self.workspaces.pop() else {
+            return;
+        };
+        let Some(into) = self.workspaces.last().map(|ws| ws.id) else {
+            self.workspaces.push(last);
+            return;
+        };
+        for id in &last.windows {
+            if let Some(state) = self.windows.get_mut(id) {
+                state.workspace_id = into;
+            }
+        }
+        if let Some(target) = self.workspace_mut(into) {
+            target.windows.extend(last.windows.iter().copied());
+        }
+        if self.active == last.id {
+            self.active = into;
+            self.focused = self.pick_new_focus();
+        }
     }
 
     pub fn workspaces(&self) -> impl Iterator<Item = &Workspace> {
@@ -325,7 +383,7 @@ impl Layout {
 
     fn resolve_or_create(&mut self, target: WorkspaceTarget) -> Option<WorkspaceId> {
         self.resolve_target(target).or_else(|| {
-            (target == WorkspaceTarget::New).then(|| {
+            (target == WorkspaceTarget::New && self.fixed.is_none()).then(|| {
                 let id = WorkspaceId::next();
                 self.workspaces.push(Workspace::new(id));
                 id
@@ -382,7 +440,7 @@ impl Layout {
             target_ws.focused = Some(w);
         }
 
-        let old_ws_vanishes = self.workspace_is_empty(old_ws_id) && self.workspaces.len() > 1;
+        let old_ws_vanishes = self.fixed.is_none() && self.workspace_is_empty(old_ws_id) && self.workspaces.len() > 1;
         if old_ws_vanishes && self.active == old_ws_id && self.focused == Some(w) {
             self.active = target_id;
         }
@@ -398,7 +456,7 @@ impl Layout {
 
     pub fn add_window(&mut self, w: WindowId, initial_size: Size) -> WorkspaceId {
         let ws_id = match self.policy {
-            NewWindowPolicy::NewWorkspace if !self.workspace_is_empty(self.active) => {
+            NewWindowPolicy::NewWorkspace if self.fixed.is_none() && !self.workspace_is_empty(self.active) => {
                 let new_ws = WorkspaceId::next();
                 let at = self.active_index().unwrap_or(0) + 1;
                 self.remember_focus();
@@ -753,6 +811,9 @@ impl Layout {
     }
 
     fn remove_workspace_if_empty(&mut self, ws_id: WorkspaceId) -> bool {
+        if self.fixed.is_some() {
+            return false;
+        }
         if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id)
             && self.workspaces[idx].windows.is_empty()
             && self.workspaces.len() > 1
