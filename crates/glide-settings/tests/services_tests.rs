@@ -801,6 +801,24 @@ fn every_default_keybind_is_its_own_default_even_with_shared_actions() {
 }
 
 #[test]
+fn recorded_keys_become_xkb_names_with_their_modifiers() {
+    use glide_settings::panels::shortcuts::{Capture, capture};
+    use glide_settings::services::keybinds::Mod;
+    use iced::keyboard::{Key, Modifiers, key::Named};
+    let combo = |mods: Vec<Mod>, key: &str| Capture::Combo(mods, key.to_string());
+    let super_shift = Modifiers::LOGO | Modifiers::SHIFT;
+    assert_eq!(capture(&Key::Character("t".into()), Modifiers::LOGO), combo(vec![Mod::Super], "t"));
+    assert_eq!(capture(&Key::Named(Named::ArrowLeft), super_shift), combo(vec![Mod::Super, Mod::Shift], "Left"));
+    assert_eq!(capture(&Key::Named(Named::F5), Modifiers::CTRL), combo(vec![Mod::Ctrl], "F5"));
+    assert_eq!(capture(&Key::Named(Named::PageDown), Modifiers::ALT), combo(vec![Mod::Alt], "Next"));
+    assert_eq!(capture(&Key::Character("-".into()), Modifiers::CTRL), combo(vec![Mod::Ctrl], "minus"));
+    assert_eq!(capture(&Key::Named(Named::AudioVolumeUp), Modifiers::empty()), combo(vec![], "XF86AudioRaiseVolume"));
+    assert_eq!(capture(&Key::Named(Named::Shift), Modifiers::SHIFT), Capture::Ignore, "a lone modifier waits");
+    assert_eq!(capture(&Key::Named(Named::Escape), Modifiers::empty()), Capture::Stop);
+    assert_eq!(capture(&Key::Named(Named::Escape), Modifiers::LOGO), combo(vec![Mod::Super], "Escape"));
+}
+
+#[test]
 fn new_user_names_follow_the_shadow_utils_rules() {
     use glide_settings::services::accounts::{UserNameProblem, user_name_problem};
     assert_eq!(user_name_problem("olena"), None);

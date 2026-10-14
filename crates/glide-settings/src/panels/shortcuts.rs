@@ -1,5 +1,5 @@
 use iced::widget::{column, container, row, space, text};
-use iced::{Alignment, Element, Fill, Length, Task};
+use iced::{Alignment, Element, Fill, Length, Subscription, Task};
 
 use super::common::gated;
 use super::{Ctx, Pane, Panel};
@@ -105,6 +105,89 @@ mod tr {
         NeedModifier => "Add a modifier, otherwise this key could no longer be typed", "Додайте модифікатор, інакше цю клавішу не можна буде друкувати";
         NeedCommand => "Enter the command to run", "Уведіть команду для запуску";
         AlreadyUsed => "Already used by", "Уже використовується для";
+        Record => "Record", "Записати";
+        Recording => "Press the shortcut… (Esc stops)", "Натисніть комбінацію… (Esc — зупинити)";
+        RecordHint => "Shortcuts Glide already uses never reach Settings; type those instead", "Комбінації, які вже використовує Glide, не доходять до Settings — введіть їх вручну";
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Capture {
+    Ignore,
+    Stop,
+    Combo(Vec<Mod>, String),
+}
+
+fn named_key(named: iced::keyboard::key::Named) -> Option<String> {
+    use iced::keyboard::key::Named as N;
+    let name = match named {
+        N::Enter => "Return",
+        N::Tab => "Tab",
+        N::Space => "space",
+        N::Escape => "Escape",
+        N::Backspace => "BackSpace",
+        N::Delete => "Delete",
+        N::Insert => "Insert",
+        N::Home => "Home",
+        N::End => "End",
+        N::PageUp => "Prior",
+        N::PageDown => "Next",
+        N::ArrowUp => "Up",
+        N::ArrowDown => "Down",
+        N::ArrowLeft => "Left",
+        N::ArrowRight => "Right",
+        N::PrintScreen => "Print",
+        N::AudioVolumeUp => "XF86AudioRaiseVolume",
+        N::AudioVolumeDown => "XF86AudioLowerVolume",
+        N::AudioVolumeMute => "XF86AudioMute",
+        N::MediaPlayPause => "XF86AudioPlay",
+        N::MediaTrackNext => "XF86AudioNext",
+        N::MediaTrackPrevious => "XF86AudioPrev",
+        N::BrightnessUp => "XF86MonBrightnessUp",
+        N::BrightnessDown => "XF86MonBrightnessDown",
+        other => {
+            let debug = format!("{other:?}");
+            return debug
+                .strip_prefix('F')
+                .and_then(|number| number.parse::<u8>().ok())
+                .filter(|number| (1..=35).contains(number))
+                .map(|number| format!("F{number}"));
+        }
+    };
+    Some(name.to_string())
+}
+
+#[must_use]
+pub fn capture(key: &iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) -> Capture {
+    use iced::keyboard::Key;
+    let mut mods = Vec::new();
+    for (held, m) in [
+        (modifiers.logo(), Mod::Super),
+        (modifiers.control(), Mod::Ctrl),
+        (modifiers.alt(), Mod::Alt),
+        (modifiers.shift(), Mod::Shift),
+    ] {
+        if held {
+            mods.push(m);
+        }
+    }
+    let name = match key {
+        Key::Named(iced::keyboard::key::Named::Escape) if mods.is_empty() => return Capture::Stop,
+        Key::Named(named) => named_key(*named),
+        Key::Character(text) => keybinds::normalize_key(text),
+        Key::Unidentified => None,
+    };
+    name.map_or(Capture::Ignore, |name| Capture::Combo(mods, name))
+}
+
+fn recorded(event: iced::keyboard::Event) -> Option<Msg> {
+    let iced::keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+        return None;
+    };
+    match capture(&key, modifiers) {
+        Capture::Ignore => None,
+        Capture::Stop => Some(Msg::StopRecording),
+        Capture::Combo(mods, key) => Some(Msg::Captured(mods, key)),
     }
 }
 
@@ -223,12 +306,16 @@ pub enum Msg {
     Remove,
     RestoreDefault,
     ResetAll,
+    Record,
+    StopRecording,
+    Captured(Vec<Mod>, String),
 }
 
 #[derive(Debug, Default)]
 pub struct Page {
     filter: String,
     draft: Option<Draft>,
+    recording: bool,
 }
 
 impl Pane for Page {
@@ -247,8 +334,28 @@ impl Pane for Page {
     ];
 
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
-        self.apply(msg, config);
+        match msg {
+            Msg::Record => self.recording = self.draft.is_some(),
+            Msg::StopRecording => self.recording = false,
+            Msg::Captured(mods, key) => {
+                if let Some(draft) = self.draft.as_mut().filter(|_| self.recording) {
+                    draft.mods = mods;
+                    draft.key = key;
+                }
+                self.recording = false;
+            }
+            other => {
+                if matches!(other, Msg::Save | Msg::Cancel | Msg::Remove | Msg::Edit(_)) {
+                    self.recording = false;
+                }
+                self.apply(other, config);
+            }
+        }
         Task::none()
+    }
+
+    fn subscription(&self) -> Subscription<Msg> {
+        if self.recording { iced::keyboard::listen().filter_map(recorded) } else { Subscription::none() }
     }
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
@@ -539,6 +646,7 @@ impl Page {
                 keybinds::reset(config);
                 self.draft = None;
             }
+            Msg::Record | Msg::StopRecording | Msg::Captured(..) => {}
         }
     }
 
@@ -559,7 +667,7 @@ impl Page {
     fn custom_rows<'a>(&'a self, c: &Ctx, binds: &[Keybind], mut group: Group<'a, Msg>) -> Group<'a, Msg> {
         let t = c.theme;
         if let Some(draft) = self.draft.as_ref().filter(|draft| draft.index.is_none()) {
-            group = group.push(Self::editor(c, binds, draft));
+            group = group.push(Self::editor(c, binds, draft, self.recording));
         }
         let c = *c;
         if !self.filter.trim().is_empty() {
@@ -592,7 +700,7 @@ impl Page {
         let t = c.theme;
         let bind = &binds[index];
         if let Some(draft) = self.draft.as_ref().filter(|draft| draft.index == Some(index)) {
-            return Self::editor(c, binds, draft);
+            return Self::editor(c, binds, draft, self.recording);
         }
         let c = *c;
         let conflict =
@@ -621,7 +729,7 @@ impl Page {
         line.build()
     }
 
-    fn editor<'a>(c: &Ctx, binds: &[Keybind], draft: &'a Draft) -> Element<'a, Msg> {
+    fn editor<'a>(c: &Ctx, binds: &[Keybind], draft: &'a Draft, recording: bool) -> Element<'a, Msg> {
         let c = *c;
         let t = c.theme;
         let result = validate(draft);
@@ -647,9 +755,20 @@ impl Page {
             ]
             .spacing(12)
             .align_y(Alignment::Center),
-            row![text(c.t(tr::Key::Modifiers)).size(13).color(t.fg_2()), chips, space().width(Fill), key_field,]
-                .spacing(10)
-                .align_y(Alignment::Center),
+            row![
+                text(c.t(tr::Key::Modifiers)).size(13).color(t.fg_2()),
+                chips,
+                space().width(Fill),
+                key_field,
+                if recording {
+                    widgets::tonal(t, c.t(tr::Key::Recording), Some(Msg::StopRecording))
+                } else {
+                    widgets::secondary(t, c.t(tr::Key::Record), Some(Msg::Record))
+                },
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            text(c.t(tr::Key::RecordHint)).size(12).color(t.fg_3()),
         ]
         .spacing(10);
         if let Action::Exec(command) = &draft.action {
