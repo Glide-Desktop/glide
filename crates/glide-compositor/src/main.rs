@@ -515,11 +515,22 @@ fn session_environment(socket_name: &std::ffi::OsStr) -> Vec<(&'static str, std:
         ("XDG_CURRENT_DESKTOP", "Glide".into()),
         ("XDG_SESSION_DESKTOP", "glide".into()),
     ];
-    if std::env::var_os("XCURSOR_THEME").is_none() {
-        vars.push(("XCURSOR_THEME", "default".into()));
+    let inherited = (std::env::var_os("XCURSOR_THEME").is_some(), std::env::var_os("XCURSOR_SIZE").is_some());
+    vars.extend(cursor_environment(cursor::configured_theme(), cursor::configured_size(), inherited));
+    vars
+}
+
+fn cursor_environment(
+    theme: Option<String>, size: Option<u32>, (theme_inherited, size_inherited): (bool, bool),
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    let theme = theme.or_else(|| (!theme_inherited).then(|| "default".to_string()));
+    let size = size.map(|size| size.to_string()).or_else(|| (!size_inherited).then(|| "24".to_string()));
+    let mut vars = Vec::new();
+    if let Some(theme) = theme {
+        vars.push(("XCURSOR_THEME", theme.into()));
     }
-    if std::env::var_os("XCURSOR_SIZE").is_none() {
-        vars.push(("XCURSOR_SIZE", "24".into()));
+    if let Some(size) = size {
+        vars.push(("XCURSOR_SIZE", size.into()));
     }
     vars
 }
@@ -718,6 +729,20 @@ mod tests {
             let got = vars.iter().find(|(k, _)| *k == key).unwrap_or_else(|| panic!("{key} must be set"));
             assert_eq!(got.1, std::ffi::OsString::from(want));
         }
+    }
+
+    #[test]
+    fn the_configured_cursor_wins_over_the_inherited_one_at_startup() {
+        let pairs = |vars: Vec<(&'static str, std::ffi::OsString)>| {
+            vars.into_iter().map(|(key, value)| (key, value.to_string_lossy().into_owned())).collect::<Vec<_>>()
+        };
+        let configured = cursor_environment(Some("Bibata".into()), Some(32), (true, true));
+        assert_eq!(pairs(configured), [("XCURSOR_THEME", "Bibata".to_string()), ("XCURSOR_SIZE", "32".to_string())]);
+        assert!(cursor_environment(None, None, (true, true)).is_empty(), "an inherited cursor is left alone");
+        assert_eq!(
+            pairs(cursor_environment(None, None, (false, false))),
+            [("XCURSOR_THEME", "default".to_string()), ("XCURSOR_SIZE", "24".to_string())]
+        );
     }
 
     #[test]

@@ -970,6 +970,9 @@ impl GlideState {
         };
         let mut switched = Vec::new();
         for (crtc, surface) in &mut device.surfaces {
+            if self.space.output_geometry(&surface.output).is_none() {
+                continue;
+            }
             let identity = crate::config::OutputIdentity::of(&surface.output);
             let candidates = mode_candidates(&surface.modes);
             let wanted = crate::config::output_config(&configs, &identity)
