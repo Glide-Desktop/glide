@@ -3032,6 +3032,7 @@ impl GlideState {
 
     pub fn sync_session_hints(&mut self) {
         let (locked, idle) = (self.screen_locked(), self.idle.is_idle());
+        self.notifications.set_locked(locked);
         if let Some(logind) = self.session.logind.as_mut() {
             logind.set_locked(locked);
             logind.set_idle(idle);

@@ -590,6 +590,7 @@ pub struct Notifications {
     layers: std::collections::HashMap<(LayerShape, LayerKind, i32), MemoryRenderBuffer>,
     rings: std::collections::HashMap<(bool, i32), MemoryRenderBuffer>,
     raster_rev: u64,
+    locked_at: Option<Instant>,
 }
 
 impl Notifications {
@@ -1035,6 +1036,9 @@ impl Notifications {
             expiry: Expiry::new(now),
             hover: Tween::at(0.0),
         };
+        if self.locked_at.is_some() {
+            entry.expiry.pause(now);
+        }
 
         if replaces && let Some(slot) = self.live.iter_mut().find(|slot| !slot.leaving() && slot.owns(id)) {
             if slot.notification.id == id {
@@ -1278,9 +1282,27 @@ impl Notifications {
 
     fn sync_toast_hover(&mut self, now: Instant) {
         let over = self.hovered.map(Hit::id);
+        let locked = self.locked_at.is_some();
         for entry in self.live.iter_mut().filter(|entry| !entry.leaving()) {
             let hovered = over.is_some_and(|id| entry.notification.id == id);
-            entry.set_hovered(hovered, now);
+            entry.set_hovered(hovered || locked, now);
+        }
+    }
+
+    pub fn set_locked(&mut self, locked: bool) {
+        if locked == self.locked_at.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        self.locked_at = locked.then_some(now);
+        let over = self.hovered.map(Hit::id);
+        for entry in &mut self.live {
+            let hovered = over.is_some_and(|id| entry.notification.id == id);
+            if locked {
+                entry.expiry.pause(now);
+            } else if !hovered {
+                entry.expiry.resume(now);
+            }
         }
     }
 
@@ -2412,6 +2434,24 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         assert!(!store.tick());
         assert_eq!(store.unread(), 1);
+    }
+
+    #[test]
+    fn toasts_wait_out_the_lock_screen_instead_of_expiring_unseen() {
+        let (mut store, mut icons) = store();
+        let quick = Notification { timeout: Some(Duration::from_millis(20)), ..notification(1) };
+        store.push(&mut icons, quick, false);
+        store.set_locked(true);
+        let during = Notification { timeout: Some(Duration::from_millis(20)), ..notification(2) };
+        store.push(&mut icons, during, false);
+        store.set_hover(None);
+        std::thread::sleep(Duration::from_millis(40));
+        store.tick();
+        assert_eq!(store.live.len(), 2, "nothing times out while locked, before or after the lock began");
+        store.set_locked(false);
+        std::thread::sleep(Duration::from_millis(40));
+        store.tick();
+        assert!(store.active().next().is_none(), "the clock runs again after unlocking");
     }
 
     #[test]
