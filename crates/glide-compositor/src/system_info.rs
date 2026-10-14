@@ -1054,6 +1054,12 @@ pub fn open_power_settings() {
     }
 }
 
+pub fn open_storage_settings() {
+    if let Err(err) = run("glide-settings", &["storage"]) {
+        tracing::warn!("could not open glide-settings storage: {err}");
+    }
+}
+
 fn run_power_command(command: &str) {
     if let Err(err) = crate::spawn_shell_command(command) {
         tracing::warn!(command, "power command failed to start: {err}");

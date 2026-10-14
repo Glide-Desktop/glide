@@ -226,6 +226,9 @@ catalogue! {
     GreeterConfirmSleep => "Sleep", "Сон";
     LockHint => "Press Enter to unlock", "Натисніть Enter, щоб розблокувати";
     CapsLockOn => "Caps Lock is on", "Увімкнено Caps Lock";
+    DiskLowSummary => "The disk is almost full", "Диск майже заповнений";
+    DiskLowBody => "Only {code} left in your home folder. Apps may fail to save files.", "У домашній теці лишилося {code}. Програми можуть не змогти зберегти файли.";
+    DiskOpenStorage => "Free up space", "Звільнити місце";
     NetPasswordSummary => "Password for {device}", "Пароль для {device}";
     NetWifiBody => "The Wi-Fi network {device} needs its password.", "Мережа Wi-Fi {device} потребує пароля.";
     NetEnterpriseBody => "Network {device} needs your account password.", "Мережа {device} потребує пароля вашого облікового запису.";

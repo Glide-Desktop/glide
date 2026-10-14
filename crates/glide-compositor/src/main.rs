@@ -18,6 +18,7 @@ mod config;
 mod config_repair;
 mod cursor;
 mod decoration;
+mod disk_space;
 mod dock;
 mod focus;
 mod force_quit;
@@ -264,6 +265,7 @@ fn init_session_services(
     init_screensaver(event_loop, state);
     init_bluetooth_agent(event_loop);
     init_network_agent(event_loop);
+    init_disk_space(event_loop);
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
     }
@@ -292,6 +294,12 @@ fn init_bluetooth_agent(event_loop: &mut EventLoop<'static, GlideState>) {
         return;
     }
     watch(event_loop, receiver, "the Bluetooth agent channel", GlideState::handle_bluetooth_agent);
+}
+
+fn init_disk_space(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<disk_space::Low>("a low disk space warning");
+    disk_space::start(send);
+    watch(event_loop, receiver, "the disk space channel", GlideState::handle_low_disk);
 }
 
 fn init_network_agent(event_loop: &mut EventLoop<'static, GlideState>) {
