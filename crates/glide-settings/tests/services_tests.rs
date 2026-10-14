@@ -801,6 +801,35 @@ fn every_default_keybind_is_its_own_default_even_with_shared_actions() {
 }
 
 #[test]
+fn the_charge_limit_comes_from_a_supported_system_battery() {
+    use glide_settings::services::power::{ChargeLimit, UpowerDevice, pick_charge_limit};
+    let device = |path: &str, kind, power_supply, supported| UpowerDevice {
+        path: path.to_string(),
+        kind,
+        power_supply,
+        supported,
+        enabled: true,
+        start: 75,
+        end: 80,
+    };
+    let devices = vec![
+        device("/org/freedesktop/UPower/devices/line_power_AC", 1, true, false),
+        device("/org/freedesktop/UPower/devices/mouse_hid", 2, false, true),
+        device("/org/freedesktop/UPower/devices/battery_BAT0", 2, true, true),
+    ];
+    assert_eq!(
+        pick_charge_limit(devices),
+        Some(ChargeLimit {
+            path: "/org/freedesktop/UPower/devices/battery_BAT0".into(),
+            enabled: true,
+            start: 75,
+            end: 80
+        })
+    );
+    assert_eq!(pick_charge_limit(vec![device("/b", 2, true, false)]), None, "no threshold support, no switch");
+}
+
+#[test]
 fn cursor_themes_are_icon_directories_with_cursors() {
     let root = std::env::temp_dir().join(format!("glide-cursor-themes-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

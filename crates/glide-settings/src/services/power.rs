@@ -202,6 +202,70 @@ fn has_lid() -> bool {
     std::fs::read_dir("/proc/acpi/button/lid").is_ok_and(|mut entries| entries.next().is_some())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChargeLimit {
+    pub path: String,
+    pub enabled: bool,
+    pub start: u32,
+    pub end: u32,
+}
+
+#[allow(clippy::struct_excessive_bools)] // Mirrors UPower's independent device properties
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpowerDevice {
+    pub path: String,
+    pub kind: u32,
+    pub power_supply: bool,
+    pub supported: bool,
+    pub enabled: bool,
+    pub start: u32,
+    pub end: u32,
+}
+
+const UPOWER_BATTERY: u32 = 2;
+
+#[must_use]
+pub fn pick_charge_limit(devices: Vec<UpowerDevice>) -> Option<ChargeLimit> {
+    devices
+        .into_iter()
+        .find(|device| device.kind == UPOWER_BATTERY && device.power_supply && device.supported)
+        .map(|device| ChargeLimit { path: device.path, enabled: device.enabled, start: device.start, end: device.end })
+}
+
+const UPOWER: &str = "org.freedesktop.UPower";
+
+fn read_upower_devices() -> Option<Vec<UpowerDevice>> {
+    use zbus::blocking::{Connection, Proxy};
+    let bus = Connection::system().ok()?;
+    let manager = Proxy::new(&bus, UPOWER, "/org/freedesktop/UPower", UPOWER).ok()?;
+    let paths: Vec<zbus::zvariant::OwnedObjectPath> = manager.call("EnumerateDevices", &()).ok()?;
+    let devices = paths
+        .into_iter()
+        .filter_map(|path| {
+            let device = Proxy::new(&bus, UPOWER, path.clone(), "org.freedesktop.UPower.Device").ok()?;
+            let flag = |name: &str| device.get_property::<bool>(name).unwrap_or(false);
+            let number = |name: &str| device.get_property::<u32>(name).unwrap_or(0);
+            Some(UpowerDevice {
+                path: path.to_string(),
+                kind: number("Type"),
+                power_supply: flag("PowerSupply"),
+                supported: flag("ChargeThresholdSupported"),
+                enabled: flag("ChargeThresholdEnabled"),
+                start: number("ChargeStartThreshold"),
+                end: number("ChargeEndThreshold"),
+            })
+        })
+        .collect();
+    Some(devices)
+}
+
+pub fn set_charge_limit(path: &str, enabled: bool) -> Result<String, String> {
+    let bus = zbus::blocking::Connection::system().map_err(|err| err.to_string())?;
+    let device = zbus::blocking::Proxy::new(&bus, UPOWER, path.to_string(), "org.freedesktop.UPower.Device")
+        .map_err(|err| err.to_string())?;
+    super::timedate::authorized_call(&device, "EnableChargeThreshold", &(enabled,)).map(|()| String::new())
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PowerState {
     pub battery: Option<Battery>,
@@ -211,6 +275,7 @@ pub struct PowerState {
     pub profiles_available: bool,
     pub logind: Option<LogindPolicy>,
     pub has_lid: bool,
+    pub charge_limit: Option<ChargeLimit>,
 }
 
 #[must_use]
@@ -258,6 +323,9 @@ pub fn read_state() -> PowerState {
     (state.battery, state.details) = found.unzip();
     state.logind = read_logind();
     state.has_lid = has_lid();
+    if state.battery.is_some() {
+        state.charge_limit = read_upower_devices().and_then(pick_charge_limit);
+    }
     if let Some(text) = run::output("powerprofilesctl", &["get"]) {
         state.profiles_available = true;
         state.profile = Profile::from_key(&text);

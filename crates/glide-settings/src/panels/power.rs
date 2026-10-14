@@ -55,6 +55,9 @@ mod tr {
         WattHours => "Wh", "Вт·год";
         NoBattery => "This computer runs on mains power", "Цей комп'ютер живиться від мережі";
         NoBatteryHint => "There is no battery to show", "Батареї немає";
+        Charging => "Charging", "Заряджання";
+        PreserveHealth => "Preserve battery health", "Берегти батарею";
+        PreserveHealthHint => "Stops charging at {}% so the battery wears out more slowly", "Зупиняє заряджання на {}%, щоб батарея повільніше зношувалася";
     }
 }
 
@@ -85,6 +88,7 @@ pub enum Msg {
     SettleBatteryLow(u64),
     Profile(Profile),
     ShowPercentage(bool),
+    ChargeLimit(bool),
     Done(Option<Result<String, String>>),
 }
 
@@ -188,6 +192,16 @@ impl Pane for Page {
                 self.pending += 1;
                 return Task::perform(blocking(move || power::set_profile(profile)), Msg::Done);
             }
+            Msg::ChargeLimit(enabled) => {
+                let Some(limit) = self.state.charge_limit.as_mut() else {
+                    return Task::none();
+                };
+                limit.enabled = enabled;
+                let path = limit.path.clone();
+                self.invalidate();
+                self.pending += 1;
+                return Task::perform(blocking(move || power::set_charge_limit(&path, enabled)), Msg::Done);
+            }
             Msg::Done(result) => {
                 self.error = match result {
                     Some(Err(err)) => Some(err),
@@ -206,6 +220,14 @@ impl Pane for Page {
         let mut page = column![error_banner(t, self.error.as_deref())].spacing(theme::SECTION_GAP);
         if self.state.battery.is_some() {
             page = page.push(self.battery_hero(&c, config));
+            if let Some(limit) = &self.state.charge_limit {
+                let hint = c.t(tr::Key::PreserveHealthHint).replace("{}", &limit.end.to_string());
+                let row = Row::new(t, c.t(tr::Key::PreserveHealth))
+                    .subtitle(hint)
+                    .suffix(toggle(c, limit.enabled, Msg::ChargeLimit))
+                    .build();
+                page = page.push(Group::new(t).title(c.t(tr::Key::Charging)).push(row).build());
+            }
             if let Some(details) = &self.state.details {
                 if let Some(stats) = stats(&c, details) {
                     page = page.push(stats);
