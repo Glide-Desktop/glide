@@ -2797,13 +2797,18 @@ mod tests {
         });
         let none = no_modifiers();
         let locked = |modifiers: &ModifiersState, sym| locked_media_shortcut(&binds, modifiers, &[sym], sym);
-        for sym in [Keysym::XF86_AudioRaiseVolume, Keysym::XF86_AudioMute, Keysym::XF86_MonBrightnessDown] {
+        for sym in [
+            Keysym::XF86_AudioRaiseVolume,
+            Keysym::XF86_AudioMute,
+            Keysym::XF86_MonBrightnessDown,
+            Keysym::XF86_KbdBrightnessUp,
+        ] {
             assert!(matches!(locked(&none, sym), Some(KeyAction::Exec(_))), "{sym:?}");
         }
         assert_eq!(locked(&logo, Keysym::Return), None, "a launcher binding must not run behind the lock");
         assert_eq!(locked(&logo, Keysym::q), None);
         assert_eq!(locked(&none, Keysym::XF86_PowerOff), None);
-        assert_eq!(locked(&none, Keysym::XF86_KbdBrightnessUp), None, "nothing is bound to it by default");
+        assert_eq!(locked(&none, Keysym::XF86_Search), None, "the launcher stays behind the lock");
     }
 
     #[test]

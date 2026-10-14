@@ -110,6 +110,26 @@ action = { exec = "brightnessctl set 5%-" }
 
 [[keybinds]]
 mods = []
+key = "XF86KbdBrightnessUp"
+action = { exec = "brightnessctl --device='*::kbd_backlight' set +33%" }
+
+[[keybinds]]
+mods = []
+key = "XF86KbdBrightnessDown"
+action = { exec = "brightnessctl --device='*::kbd_backlight' set 33%-" }
+
+[[keybinds]]
+mods = []
+key = "XF86Search"
+action = "toggle-launcher"
+
+[[keybinds]]
+mods = []
+key = "XF86Calculator"
+action = "toggle-launcher"
+
+[[keybinds]]
+mods = []
 key = "XF86AudioPlay"
 action = { exec = "playerctl play-pause" }
 

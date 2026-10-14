@@ -13,6 +13,7 @@ pub struct SystemStatus {
     pub volume_pct: u8,
     pub volume_muted: bool,
     pub brightness_pct: u8,
+    pub keyboard_brightness: Option<u8>,
     pub battery_pct: Option<u8>,
     pub battery_charging: bool,
     pub bluetooth_on: bool,
@@ -34,6 +35,7 @@ impl Default for SystemStatus {
             volume_pct: 50,
             volume_muted: false,
             brightness_pct: 80,
+            keyboard_brightness: None,
             battery_pct: None,
             battery_charging: false,
             bluetooth_on: false,
@@ -57,6 +59,7 @@ impl SystemStatus {
         self.battery = battery;
         (self.volume_pct, self.volume_muted) = read_volume();
         self.brightness_pct = read_brightness();
+        self.keyboard_brightness = read_keyboard_backlight(Path::new("/sys/class/leds"));
     }
 
     fn refresh_slow(&mut self) {
@@ -73,7 +76,12 @@ impl SystemStatus {
 
     #[must_use]
     pub fn looks_like(&self, other: &Self) -> bool {
-        let detail_only = Self { battery: other.battery, reduced_motion: other.reduced_motion, ..self.clone() };
+        let detail_only = Self {
+            battery: other.battery,
+            reduced_motion: other.reduced_motion,
+            keyboard_brightness: other.keyboard_brightness,
+            ..self.clone()
+        };
         detail_only == *other
     }
 }
@@ -573,6 +581,23 @@ fn read_backlight() -> Option<Backlight> {
 fn read_brightness() -> u8 {
     read_backlight().map_or(80, |backlight| {
         ((backlight.current as f64 * 100.0) / backlight.max as f64).round().clamp(0.0, 100.0) as u8
+    })
+}
+
+#[must_use]
+pub fn read_keyboard_backlight(leds: &Path) -> Option<u8> {
+    let mut entries: Vec<_> = fs::read_dir(leds)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with("::kbd_backlight"))
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+    entries.iter().find_map(|path| {
+        let read = |file: &str| fs::read_to_string(path.join(file)).ok().and_then(|s| s.trim().parse::<u64>().ok());
+        let max = read("max_brightness").filter(|max| *max > 0)?;
+        let current = read("brightness")?;
+        Some(((current as f64 * 100.0) / max as f64).round().clamp(0.0, 100.0) as u8)
     })
 }
 
@@ -1335,5 +1360,22 @@ mod tests {
         let lonely = r#"[{"id": 5, "type": "PipeWire:Interface:Node", "info": {"state": "running",
             "props": {"media.class": "Video/Source", "node.name": "libcamera_input"}}}]"#;
         assert_eq!(parse_pw_dump(lonely).camera, vec![String::new()]);
+    }
+
+    #[test]
+    fn the_keyboard_backlight_is_read_as_a_percentage_from_its_led() {
+        let leds = std::env::temp_dir().join(format!("glide-leds-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&leds);
+        for (name, current, max) in [("input3::capslock", "1", "1"), ("tpacpi::kbd_backlight", "1", "2")] {
+            let dir = leds.join(name);
+            fs::create_dir_all(&dir).expect("scratch led");
+            fs::write(dir.join("brightness"), current).expect("brightness");
+            fs::write(dir.join("max_brightness"), max).expect("max");
+        }
+        assert_eq!(read_keyboard_backlight(&leds), Some(50));
+        fs::remove_dir_all(leds.join("tpacpi::kbd_backlight")).expect("cleanup");
+        assert_eq!(read_keyboard_backlight(&leds), None, "a caps lock led is not a backlight");
+        fs::remove_dir_all(&leds).expect("cleanup");
+        assert_eq!(read_keyboard_backlight(&leds), None);
     }
 }

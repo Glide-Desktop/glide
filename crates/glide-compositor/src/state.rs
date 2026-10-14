@@ -1230,8 +1230,13 @@ impl GlideState {
         }
         let discharging =
             status.battery.is_some_and(|battery| battery.state == crate::system_info::BatteryState::Discharging);
-        let readings = ((status.volume_pct, status.volume_muted), status.brightness_pct);
-        if self.session.osd.status(readings.0, readings.1, std::time::Instant::now()) {
+        let levels = crate::osd::Levels {
+            volume: status.volume_pct,
+            muted: status.volume_muted,
+            brightness: status.brightness_pct,
+            keyboard: status.keyboard_brightness,
+        };
+        if self.session.osd.status(levels, std::time::Instant::now()) {
             self.queue_redraw();
         }
         let alert = self.session.battery_alert.update(status.battery_pct, discharging, self.topbar.battery_low_pct());

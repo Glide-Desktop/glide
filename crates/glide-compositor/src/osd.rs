@@ -19,7 +19,16 @@ const EXPECT: Duration = Duration::from_secs(2);
 pub enum Kind {
     Volume,
     Brightness,
+    KeyboardBrightness,
     CapsLock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Levels {
+    pub volume: u8,
+    pub muted: bool,
+    pub brightness: u8,
+    pub keyboard: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +47,7 @@ impl Reading {
             (Kind::Volume, true) if self.level < 67 => "audio-volume-medium-symbolic",
             (Kind::Volume, true) => "audio-volume-high-symbolic",
             (Kind::Brightness, _) => "display-brightness-symbolic",
+            (Kind::KeyboardBrightness, _) => "keyboard-brightness-symbolic",
             (Kind::CapsLock, _) => "input-keyboard-symbolic",
         }
     }
@@ -53,6 +63,8 @@ pub fn kind_for_key(
         Some(Kind::Volume)
     } else if pressed(&[Keysym::XF86_MonBrightnessUp, Keysym::XF86_MonBrightnessDown]) {
         Some(Kind::Brightness)
+    } else if pressed(&[Keysym::XF86_KbdBrightnessUp, Keysym::XF86_KbdBrightnessDown]) {
+        Some(Kind::KeyboardBrightness)
     } else if pressed(&[Keysym::Caps_Lock]) {
         Some(Kind::CapsLock)
     } else {
@@ -84,7 +96,7 @@ impl Osd {
         self.shown = Some(Shown { reading, since, updated: now });
     }
 
-    pub fn status(&mut self, volume: (u8, bool), brightness: u8, now: Instant) -> bool {
+    pub fn status(&mut self, levels: Levels, now: Instant) -> bool {
         let Some((kind, at)) = self.expected else {
             return false;
         };
@@ -93,8 +105,12 @@ impl Osd {
             return false;
         }
         let reading = match kind {
-            Kind::Volume => Reading { kind, level: volume.0, on: !volume.1 },
-            Kind::Brightness => Reading { kind, level: brightness, on: true },
+            Kind::Volume => Reading { kind, level: levels.volume, on: !levels.muted },
+            Kind::Brightness => Reading { kind, level: levels.brightness, on: true },
+            Kind::KeyboardBrightness => match levels.keyboard {
+                Some(level) => Reading { kind, level, on: true },
+                None => return false,
+            },
             Kind::CapsLock => return false,
         };
         let unchanged = self.shown.is_some_and(|shown| shown.reading == reading) && self.alpha(now) > 0.0;
@@ -194,16 +210,34 @@ impl Osd {
 mod tests {
     use super::*;
 
+    fn levels(volume: u8, brightness: u8) -> Levels {
+        Levels { volume, muted: false, brightness, keyboard: None }
+    }
+
     #[test]
     fn a_status_change_shows_only_after_a_media_key() {
         let mut osd = Osd::default();
         let now = Instant::now();
-        assert!(!osd.status((40, false), 80, now), "a slider drag or another app does not pop the OSD");
+        assert!(!osd.status(levels(40, 80), now), "a slider drag or another app does not pop the OSD");
         osd.expect(Kind::Volume, now);
-        assert!(osd.status((45, false), 80, now + Duration::from_millis(150)));
-        assert!(!osd.status((45, false), 80, now + Duration::from_millis(300)), "the same reading only extends it");
+        assert!(osd.status(levels(45, 80), now + Duration::from_millis(150)));
+        assert!(!osd.status(levels(45, 80), now + Duration::from_millis(300)), "the same reading only extends it");
         osd.expect(Kind::Brightness, now);
-        assert!(!osd.status((45, false), 60, now + EXPECT + Duration::from_millis(1)), "a stale expectation lapses");
+        assert!(!osd.status(levels(45, 60), now + EXPECT + Duration::from_millis(1)), "a stale expectation lapses");
+    }
+
+    #[test]
+    fn the_keyboard_backlight_shows_only_where_there_is_one() {
+        let mut osd = Osd::default();
+        let now = Instant::now();
+        osd.expect(Kind::KeyboardBrightness, now);
+        assert!(!osd.status(levels(40, 80), now), "no keyboard backlight, no indicator");
+        let lit = Levels { keyboard: Some(66), ..levels(40, 80) };
+        assert!(osd.status(lit, now));
+        assert_eq!(
+            Reading { kind: Kind::KeyboardBrightness, level: 66, on: true }.icon(),
+            "keyboard-brightness-symbolic"
+        );
     }
 
     #[test]
@@ -224,9 +258,9 @@ mod tests {
         let start = Instant::now();
         let rise = glide_theme::motion::t1();
         osd.expect(Kind::Volume, start);
-        assert!(osd.status((40, false), 80, start));
+        assert!(osd.status(levels(40, 80), start));
         let steady = start + rise + Duration::from_millis(50);
-        assert!(osd.status((45, false), 80, steady), "a new level is drawn");
+        assert!(osd.status(levels(45, 80), steady), "a new level is drawn");
         assert!(osd.alpha(steady + Duration::from_millis(1)) >= 0.99, "no fresh fade-in on every step");
         let still = steady + HOLD;
         assert!(osd.alpha(still) >= 0.99, "the hold restarts from the last change");
@@ -248,6 +282,7 @@ mod tests {
         assert_eq!(kind_for_key(&[], Keysym::XF86_AudioMute), Some(Kind::Volume));
         assert_eq!(kind_for_key(&[Keysym::XF86_MonBrightnessUp], Keysym::NoSymbol), Some(Kind::Brightness));
         assert_eq!(kind_for_key(&[Keysym::Caps_Lock], Keysym::Caps_Lock), Some(Kind::CapsLock));
+        assert_eq!(kind_for_key(&[], Keysym::XF86_KbdBrightnessDown), Some(Kind::KeyboardBrightness));
         assert_eq!(kind_for_key(&[Keysym::a], Keysym::a), None);
     }
 
