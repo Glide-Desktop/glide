@@ -61,6 +61,7 @@ mod tray;
 mod window;
 mod x11_menus;
 mod xdg_autostart;
+mod xwayland;
 
 use smithay::{
     backend::session::libseat::LibSeatSession,
@@ -581,37 +582,13 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duratio
     }
 }
 
-fn pick_x11_display() -> Option<u32> {
-    (10..64).find(|number| {
-        let lock = std::path::Path::new("/tmp").join(format!(".X{number}-lock"));
-        let socket = std::path::Path::new("/tmp/.X11-unix").join(format!("X{number}"));
-        !lock.exists() && !socket.exists()
-    })
-}
-
 fn spawn_xwayland_satellite() {
-    let Some(display_number) = pick_x11_display() else {
-        tracing::warn!("no free X11 display number; XWayland support disabled");
-        return;
-    };
-    let x11_display = format!(":{display_number}");
-    let mut satellite = std::process::Command::new("xwayland-satellite");
-    satellite.arg(&x11_display);
-    match spawn_detached(satellite) {
-        Ok(pid) => {
-            unsafe { std::env::set_var("DISPLAY", &x11_display) };
-            tracing::info!(
-                pid,
-                x11_display = x11_display.as_str(),
-                "spawned xwayland-satellite; X11 apps land on this display"
-            );
-        }
-        Err(err) => {
-            tracing::info!(
-                "xwayland-satellite not available ({err}); X11 apps will not run. \
-                 Install xwayland-satellite to enable them."
-            );
-        }
+    if let Some(x11) = xwayland::start() {
+        // SAFETY: called on the main thread during startup; the only other thread
+        // touching processes now is the satellite supervisor, already blocked in
+        // `wait()` on its first child, and it never reads the environment there.
+        unsafe { std::env::set_var("DISPLAY", &x11) };
+        tracing::info!(x11, "X11 apps land on this display");
     }
 }
 
