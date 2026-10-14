@@ -358,6 +358,7 @@ pub struct SessionServices {
     pub bell: Option<std::time::Instant>,
     pub volumes: crate::removable::Toasts,
     pub tiled_from: HashMap<glide_layout::WindowId, glide_layout::Rectangle>,
+    pub osd: crate::osd::Osd,
 }
 
 impl GlideState {
@@ -1215,6 +1216,10 @@ impl GlideState {
         }
         let discharging =
             status.battery.is_some_and(|battery| battery.state == crate::system_info::BatteryState::Discharging);
+        let readings = ((status.volume_pct, status.volume_muted), status.brightness_pct);
+        if self.session.osd.status(readings.0, readings.1, std::time::Instant::now()) {
+            self.queue_redraw();
+        }
         let alert = self.session.battery_alert.update(status.battery_pct, discharging, self.topbar.battery_low_pct());
         let pct = status.battery_pct.unwrap_or_default();
         if self.topbar.set_system_status(status) {

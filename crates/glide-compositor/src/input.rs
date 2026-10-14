@@ -1317,6 +1317,7 @@ impl GlideState {
         };
 
         let keyboard = self.seat.get_keyboard().expect("a keyboard was added in GlideState::new");
+        let mut osd_kind = None;
         let action: Option<KeyAction> =
             keyboard.input(self, keycode, key_state, serial, time, |_, modifiers, handle| {
                 let keysym = handle.modified_sym();
@@ -1328,6 +1329,7 @@ impl GlideState {
                 }
 
                 if let KeyState::Pressed = key_state {
+                    osd_kind = crate::osd::kind_for_key(&binding_syms, keysym);
                     if handoff_blocking {
                         suppressed_keys.push(keycode);
                         let action = vt_switch_shortcut(&binding_syms, keysym);
@@ -1388,6 +1390,17 @@ impl GlideState {
 
         self.suppressed_keys = suppressed_keys;
         self.keybinds = keybinds;
+
+        let now = std::time::Instant::now();
+        match osd_kind {
+            Some(crate::osd::Kind::CapsLock) if !waking && !handoff_blocking => {
+                let on = keyboard.modifier_state().caps_lock;
+                self.session.osd.show(crate::osd::Reading { kind: crate::osd::Kind::CapsLock, level: 0, on }, now);
+                self.queue_redraw();
+            }
+            Some(kind) if matches!(action, Some(KeyAction::Exec(_))) => self.session.osd.expect(kind, now),
+            _ => {}
+        }
 
         let mut action = action;
         if greeter_active {

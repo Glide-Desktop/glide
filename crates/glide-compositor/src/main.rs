@@ -38,6 +38,7 @@ mod media_art;
 mod nm_agent;
 mod notifications;
 mod oneshot;
+mod osd;
 mod overview;
 mod paint;
 mod polkit_agent;
@@ -207,8 +208,10 @@ fn run() -> anyhow::Result<()> {
         let snap_animating = state.settle_snap_preview();
         let topbar_animating = state.topbar.is_animating();
         let flash_animating = state.screenshot_flash.tick(std::time::Instant::now());
+        let osd_animating = state.session.osd.tick(std::time::Instant::now());
 
         if toasts_animating
+            || osd_animating
             || snap_animating
             || topbar_animating
             || overview_animating

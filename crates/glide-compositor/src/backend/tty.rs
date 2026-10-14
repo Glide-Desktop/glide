@@ -1378,6 +1378,28 @@ impl GlideState {
             surface.power_blur = None;
         }
 
+        let osd_alpha = self.session.osd.alpha(std::time::Instant::now());
+        if osd_alpha > 0.0 && primary {
+            let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
+            let area = crate::osd::Osd::rect(output_rect);
+            let painter = crate::paint::current();
+            let integer_scale = output.current_scale().integer_scale();
+            if let Some(buffer) = self.session.osd.buffer(&painter, &mut self.launcher_icons, &tokens, integer_scale)
+                && let Ok(element) =
+                    smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+                        gles_renderer,
+                        area.loc.to_f64().to_physical(scale),
+                        buffer,
+                        Some(osd_alpha),
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    )
+            {
+                prepend(&mut elements, std::iter::once(GlideRenderElements::Memory(element)));
+            }
+        }
+
         let local_pointer = pointer_on_output(pointer_location, output_geometry);
         let mut ordered = local_pointer.map_or_else(Vec::new, |local| {
             cursor_elements(gles_renderer, pointer_element, local, cursor_hotspot, scale)

@@ -226,6 +226,7 @@ catalogue! {
     GreeterConfirmSleep => "Sleep", "Сон";
     LockHint => "Press Enter to unlock", "Натисніть Enter, щоб розблокувати";
     CapsLockOn => "Caps Lock is on", "Увімкнено Caps Lock";
+    CapsLockOff => "Caps Lock is off", "Вимкнено Caps Lock";
     RemovableSummary => "{device} connected", "Під\u{2019}єднано {device}";
     RemovableDrive => "A drive", "Накопичувач";
     RemovableOpen => "Open", "Відкрити";
