@@ -66,6 +66,7 @@ mod test_bus;
 mod tiling;
 mod topbar;
 mod tray;
+mod welcome;
 mod window;
 mod x11_menus;
 mod xdg_autostart;
@@ -275,6 +276,7 @@ fn init_session_services(
     init_network_agent(event_loop);
     init_disk_space(event_loop);
     init_removable(event_loop);
+    state.welcome_if_first_run();
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
     }

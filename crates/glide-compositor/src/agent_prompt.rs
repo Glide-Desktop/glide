@@ -155,6 +155,16 @@ impl crate::GlideState {
                 crate::system_info::open_storage_settings();
                 continue;
             }
+            if let LocalEvent::Action { id: crate::welcome::NOTICE_ID, key } = &event {
+                let page =
+                    if key == crate::welcome::OPEN_SHORTCUTS { "glide-settings shortcuts" } else { "glide-settings" };
+                if let Err(err) = crate::spawn_shell_command(page) {
+                    tracing::warn!(%err, "could not open Settings from the welcome");
+                }
+                self.notifications.dismiss(crate::welcome::NOTICE_ID);
+                self.queue_redraw();
+                continue;
+            }
             if let LocalEvent::Action { id, key } = &event
                 && key == crate::removable::OPEN
                 && let Some(path) = self.session.volumes.path(*id)

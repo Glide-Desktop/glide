@@ -219,6 +219,10 @@ catalogue! {
     TbPowerMode => "Power Mode", "Режим живлення";
     TbPowerSaver => "Power Saver", "Енергозбереження";
     AirplaneMode => "Airplane Mode", "Режим польоту";
+    WelcomeTitle => "Welcome to Glide", "Ласкаво просимо до Glide";
+    WelcomeBody => "Tap Super for the launcher, Super+O for the overview and Super+V for notifications. Swipe three fingers sideways to switch workspaces and up for the overview.", "Натисніть Super для запуску програм, Super+O для огляду, Super+V для сповіщень. Проведіть трьома пальцями вбік, щоб перемкнути робочий простір, і вгору — для огляду.";
+    WelcomeShortcuts => "Shortcuts", "Комбінації клавіш";
+    WelcomeSettings => "Settings", "Налаштування";
     Unavailable => "Unavailable", "Недоступно";
     TbPowerBalanced => "Balanced", "Збалансований";
     TbPowerPerformance => "Performance", "Продуктивність";
