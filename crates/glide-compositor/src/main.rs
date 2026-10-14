@@ -1,8 +1,10 @@
 #![allow(irrefutable_let_patterns)]
 
+mod agent_prompt;
 mod app_index;
 mod app_menu;
 mod battery_alert;
+mod bluetooth_agent;
 mod dock_glue;
 mod drag_assist;
 mod handlers;
@@ -33,6 +35,7 @@ mod layout_scope;
 mod logging;
 mod media_art;
 mod notifications;
+mod oneshot;
 mod overview;
 mod paint;
 mod polkit_agent;
@@ -218,6 +221,7 @@ fn run() -> anyhow::Result<()> {
 
         state.tick_idle();
         state.tick_session_end();
+        state.tick_local_notifications();
         state.sync_session_hints();
         let _ = state.display_handle.flush_clients();
     })?;
@@ -253,6 +257,7 @@ fn init_session_services(
     init_dock_services(event_loop, state);
     init_logind(event_loop, state);
     init_screensaver(event_loop, state);
+    init_bluetooth_agent(event_loop);
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
     }
@@ -272,6 +277,15 @@ fn init_screensaver(event_loop: &mut EventLoop<'static, GlideState>, state: &mut
         }
     }
     watch(event_loop, receiver, "the screen saver channel", GlideState::handle_screensaver_event);
+}
+
+fn init_bluetooth_agent(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<bluetooth_agent::Event>("a Bluetooth pairing request");
+    if let Err(err) = bluetooth_agent::start(send) {
+        tracing::warn!("the Bluetooth pairing agent is unavailable ({err}); devices that need a code cannot pair");
+        return;
+    }
+    watch(event_loop, receiver, "the Bluetooth agent channel", GlideState::handle_bluetooth_agent);
 }
 
 fn init_logind(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {

@@ -550,10 +550,25 @@ struct Archived {
     read: bool,
 }
 
+pub const LOCAL_ID_FLOOR: u32 = u32::MAX - 4096;
+
+#[must_use]
+pub const fn is_local(id: u32) -> bool {
+    id >= LOCAL_ID_FLOOR
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalEvent {
+    Action { id: u32, key: String },
+    Reply { id: u32, text: String },
+    Closed { id: u32 },
+}
+
 #[derive(Debug, Default)]
 pub struct Notifications {
     theme: NotificationTheme,
     handle: Option<glide_notify::NotifyHandle>,
+    local: Vec<LocalEvent>,
     live: Vec<Entry>,
     archive: Vec<Archived>,
     dnd: bool,
@@ -591,6 +606,10 @@ impl Notifications {
 
     pub fn attach(&mut self, handle: glide_notify::NotifyHandle) {
         self.handle = Some(handle);
+    }
+
+    pub fn take_local_events(&mut self) -> Vec<LocalEvent> {
+        std::mem::take(&mut self.local)
     }
 
     #[must_use]
@@ -851,7 +870,9 @@ impl Notifications {
             }
             return true;
         }
-        if let Some(handle) = self.handle.as_ref() {
+        if is_local(id) {
+            self.local.push(LocalEvent::Reply { id, text });
+        } else if let Some(handle) = self.handle.as_ref() {
             handle.replied(id, &sender, &text);
         }
         if glide_theme::motion::t4().is_zero() {
@@ -1132,8 +1153,10 @@ impl Notifications {
         changed || sent || left
     }
 
-    fn notify_closed(&self, id: u32, reason: CloseReason) {
-        if let Some(handle) = self.handle.as_ref() {
+    fn notify_closed(&mut self, id: u32, reason: CloseReason) {
+        if is_local(id) {
+            self.local.push(LocalEvent::Closed { id });
+        } else if let Some(handle) = self.handle.as_ref() {
             handle.closed(id, reason);
         }
     }
@@ -1147,7 +1170,9 @@ impl Notifications {
         };
         let key = action.key.clone();
         let resident = entry.notification.resident;
-        if let Some(handle) = self.handle.as_ref() {
+        if is_local(id) {
+            self.local.push(LocalEvent::Action { id, key });
+        } else if let Some(handle) = self.handle.as_ref() {
             handle.invoked(id, &key, token);
         }
         if !resident {

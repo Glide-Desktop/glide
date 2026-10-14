@@ -350,6 +350,7 @@ pub struct SessionServices {
     pub end: crate::session_end::SessionEnd,
     pub battery_alert: crate::battery_alert::BatteryAlert,
     pub announced_config_keys: Vec<String>,
+    pub prompts: crate::agent_prompt::Prompts,
 }
 
 impl GlideState {
