@@ -1318,6 +1318,7 @@ impl GlideState {
 
         let keyboard = self.seat.get_keyboard().expect("a keyboard was added in GlideState::new");
         let mut osd_kind = None;
+        let mut super_key = None;
         let action: Option<KeyAction> =
             keyboard.input(self, keycode, key_state, serial, time, |_, modifiers, handle| {
                 let keysym = handle.modified_sym();
@@ -1328,6 +1329,10 @@ impl GlideState {
                     binding_syms.push(latin);
                 }
 
+                super_key = Some((
+                    crate::super_keys::is_super(&binding_syms, keysym),
+                    modifiers.ctrl || modifiers.alt || modifiers.shift,
+                ));
                 if let KeyState::Pressed = key_state {
                     osd_kind = crate::osd::kind_for_key(&binding_syms, keysym);
                     if handoff_blocking {
@@ -1390,6 +1395,19 @@ impl GlideState {
 
         self.suppressed_keys = suppressed_keys;
         self.keybinds = keybinds;
+
+        if let Some((is_super, other_modifiers)) = super_key {
+            let tapped = match key_state {
+                KeyState::Pressed => {
+                    self.session.super_tap.press(is_super, other_modifiers);
+                    false
+                }
+                KeyState::Released => self.session.super_tap.release(is_super),
+            };
+            if tapped && !self.screen_locked() && !handoff_blocking && !shortcuts_inhibited {
+                self.toggle_launcher();
+            }
+        }
 
         let now = std::time::Instant::now();
         match osd_kind {
@@ -2041,6 +2059,7 @@ impl GlideState {
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             let pos = pointer.current_location();
 
+            self.session.super_tap.interrupt();
             if self.session_lock.is_some() {
                 self.focus_lock_surface();
             } else if self.shell_button(pos, button) {
@@ -2048,6 +2067,11 @@ impl GlideState {
                 return;
             } else {
                 self.focus_click_target(pos);
+                if self.super_drag(pos, button, serial) {
+                    pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time() });
+                    pointer.frame(self);
+                    return;
+                }
             }
         }
 

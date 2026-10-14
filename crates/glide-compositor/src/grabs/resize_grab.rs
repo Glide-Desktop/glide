@@ -15,8 +15,6 @@ use smithay::{
 
 use crate::{GlideState, focus::PointerFocusTarget, state::window_surface, window::GlideWindow};
 
-const BTN_LEFT: u32 = 0x110;
-
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct ResizeEdge: u32 {
@@ -122,7 +120,7 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
     fn button(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>, event: &ButtonEvent) {
         handle.button(data, event);
 
-        if !handle.current_pressed().contains(&BTN_LEFT) {
+        if !handle.current_pressed().contains(&self.start_data.button) {
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }

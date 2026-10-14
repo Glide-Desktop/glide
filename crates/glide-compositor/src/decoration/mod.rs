@@ -14,14 +14,13 @@ use crate::{config::DecorationTheme, window::GlideWindow};
 
 pub use header::HeaderBar;
 pub use input::Decoration;
+pub(crate) use input::resize_cursor;
 pub use render::{frame_buffers, shadow_and_border_buffer, shadow_and_border_fade};
 
 #[cfg(test)]
 use crate::grabs::resize_grab::ResizeEdge;
 #[cfg(test)]
 use header::{DecorationAction, HitZone, button_colors};
-#[cfg(test)]
-use input::resize_cursor;
 #[cfg(test)]
 use menu::MenuItem;
 

@@ -56,6 +56,7 @@ mod snap;
 mod snapshot;
 mod sound;
 mod state;
+mod super_keys;
 mod switcher;
 pub mod system_info;
 #[cfg(test)]

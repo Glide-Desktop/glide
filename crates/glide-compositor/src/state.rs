@@ -359,6 +359,7 @@ pub struct SessionServices {
     pub volumes: crate::removable::Toasts,
     pub tiled_from: HashMap<glide_layout::WindowId, glide_layout::Rectangle>,
     pub osd: crate::osd::Osd,
+    pub super_tap: crate::super_keys::SuperTap,
 }
 
 impl GlideState {

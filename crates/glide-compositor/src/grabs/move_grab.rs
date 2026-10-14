@@ -10,8 +10,6 @@ use smithay::{
 
 use crate::{GlideState, focus::PointerFocusTarget, window::GlideWindow};
 
-const BTN_LEFT: u32 = 0x110;
-
 const RESTORE_THRESHOLD: f64 = 4.0;
 
 pub struct MoveSurfaceGrab {
@@ -58,7 +56,7 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
     fn button(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>, event: &ButtonEvent) {
         handle.button(data, event);
 
-        if !handle.current_pressed().contains(&BTN_LEFT) {
+        if !handle.current_pressed().contains(&self.start_data.button) {
             self.window.set_dragging(false);
             let snapped = data.apply_snap(&self.window);
             if !snapped && !self.pending_restore {
