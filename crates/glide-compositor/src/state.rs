@@ -356,6 +356,7 @@ pub struct SessionServices {
     pub announced_config_keys: Vec<String>,
     pub prompts: crate::agent_prompt::Prompts,
     pub bell: Option<std::time::Instant>,
+    pub volumes: crate::removable::Toasts,
 }
 
 impl GlideState {

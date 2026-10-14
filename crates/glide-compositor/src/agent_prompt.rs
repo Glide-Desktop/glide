@@ -154,6 +154,13 @@ impl crate::GlideState {
                 crate::system_info::open_storage_settings();
                 continue;
             }
+            if let LocalEvent::Action { id, key } = &event
+                && key == crate::removable::OPEN
+                && let Some(path) = self.session.volumes.path(*id)
+            {
+                crate::removable::open(path.to_string());
+                continue;
+            }
             if let Some(id) = self.session.prompts.resolve(&event) {
                 self.notifications.dismiss(id);
                 self.queue_redraw();

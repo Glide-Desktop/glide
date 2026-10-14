@@ -46,6 +46,7 @@ mod power;
 mod power_dialog;
 mod qs_net;
 mod raster;
+mod removable;
 mod screencopy;
 mod screensaver;
 mod screenshot_ui;
@@ -266,6 +267,7 @@ fn init_session_services(
     init_bluetooth_agent(event_loop);
     init_network_agent(event_loop);
     init_disk_space(event_loop);
+    init_removable(event_loop);
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
     }
@@ -294,6 +296,15 @@ fn init_bluetooth_agent(event_loop: &mut EventLoop<'static, GlideState>) {
         return;
     }
     watch(event_loop, receiver, "the Bluetooth agent channel", GlideState::handle_bluetooth_agent);
+}
+
+fn init_removable(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<removable::Event>("a removable drive event");
+    if let Err(err) = removable::start(send) {
+        tracing::info!("removable drives are not announced ({err}); is udisks2 installed?");
+        return;
+    }
+    watch(event_loop, receiver, "the removable drive channel", GlideState::handle_removable);
 }
 
 fn init_disk_space(event_loop: &mut EventLoop<'static, GlideState>) {

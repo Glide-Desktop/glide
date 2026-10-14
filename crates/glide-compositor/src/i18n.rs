@@ -226,6 +226,9 @@ catalogue! {
     GreeterConfirmSleep => "Sleep", "Сон";
     LockHint => "Press Enter to unlock", "Натисніть Enter, щоб розблокувати";
     CapsLockOn => "Caps Lock is on", "Увімкнено Caps Lock";
+    RemovableSummary => "{device} connected", "Під\u{2019}єднано {device}";
+    RemovableDrive => "A drive", "Накопичувач";
+    RemovableOpen => "Open", "Відкрити";
     DiskLowSummary => "The disk is almost full", "Диск майже заповнений";
     DiskLowBody => "Only {code} left in your home folder. Apps may fail to save files.", "У домашній теці лишилося {code}. Програми можуть не змогти зберегти файли.";
     DiskOpenStorage => "Free up space", "Звільнити місце";
