@@ -801,6 +801,49 @@ fn every_default_keybind_is_its_own_default_even_with_shared_actions() {
 }
 
 #[test]
+fn new_user_names_follow_the_shadow_utils_rules() {
+    use glide_settings::services::accounts::{UserNameProblem, user_name_problem};
+    assert_eq!(user_name_problem("olena"), None);
+    assert_eq!(user_name_problem("_svc-2"), None);
+    assert_eq!(user_name_problem(""), Some(UserNameProblem::Empty));
+    assert_eq!(user_name_problem("2fast"), Some(UserNameProblem::BadStart));
+    assert_eq!(user_name_problem("Olena"), Some(UserNameProblem::BadStart));
+    assert_eq!(user_name_problem("ole.na"), Some(UserNameProblem::BadCharacter));
+    assert_eq!(user_name_problem(&"a".repeat(33)), Some(UserNameProblem::TooLong));
+}
+
+#[test]
+fn the_user_name_is_suggested_from_the_first_word() {
+    use glide_settings::services::accounts::suggest_user_name;
+    assert_eq!(suggest_user_name("Ada Lovelace"), "ada");
+    assert_eq!(suggest_user_name("  Jean-Luc Picard"), "jeanluc");
+    assert_eq!(suggest_user_name("Олена Пчілка"), "", "no Latin letters, no guess");
+    assert_eq!(suggest_user_name("007 Bond"), "", "a name cannot start with a digit");
+}
+
+#[test]
+fn passwords_must_match_and_stay_on_one_line() {
+    use glide_settings::services::accounts::{PasswordProblem, password_problem};
+    assert_eq!(password_problem("s3cret", "s3cret"), None);
+    assert_eq!(password_problem("", ""), Some(PasswordProblem::Empty));
+    assert_eq!(password_problem("s3cret", "s3cre"), Some(PasswordProblem::Mismatch));
+    assert_eq!(password_problem("a\nb", "a\nb"), Some(PasswordProblem::LineBreak));
+}
+
+#[test]
+fn passwords_are_hashed_with_sha512_crypt_over_stdin() {
+    use glide_settings::services::accounts::hash_password;
+    if !glide_settings::services::run::available("openssl") {
+        eprintln!("no openssl; skipping");
+        return;
+    }
+    let hash = hash_password("correct horse").expect("openssl hashes the password");
+    assert!(hash.starts_with("$6$"), "{hash}");
+    assert_ne!(hash, hash_password("correct horse").expect("hashed again"), "a fresh salt each time");
+    assert!(hash_password("two\nlines").is_err());
+}
+
+#[test]
 fn the_charge_limit_comes_from_a_supported_system_battery() {
     use glide_settings::services::power::{ChargeLimit, UpowerDevice, pick_charge_limit};
     let device = |path: &str, kind, power_supply, supported| UpowerDevice {

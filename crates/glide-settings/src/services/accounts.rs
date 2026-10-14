@@ -231,13 +231,8 @@ pub fn read() -> UsersState {
     }
 }
 
-fn call_user(path: &str, method: &str, argument: &str) -> Result<String, String> {
-    let result = (|| -> zbus::Result<()> {
-        let bus = Connection::system()?;
-        let user = user_proxy(&bus, path)?;
-        user.call_with_flags::<_, _, ()>(method, MethodFlags::AllowInteractiveAuth.into(), &(argument,)).map(|_| ())
-    })();
-    result.map(|()| String::new()).map_err(|err| match err {
+fn describe(err: zbus::Error) -> String {
+    match err {
         zbus::Error::MethodError(name, message, _) => {
             let detail = message.unwrap_or_default();
             if name.as_str().ends_with("PermissionDenied") || name.as_str().contains("NotAuthorized") {
@@ -247,7 +242,143 @@ fn call_user(path: &str, method: &str, argument: &str) -> Result<String, String>
             }
         }
         other => format!("AccountsService: {other}"),
-    })
+    }
+}
+
+fn call_user_with<B>(path: &str, method: &str, body: &B) -> Result<String, String>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+{
+    let result = (|| -> zbus::Result<()> {
+        let bus = Connection::system()?;
+        let user = user_proxy(&bus, path)?;
+        user.call_with_flags::<_, _, ()>(method, MethodFlags::AllowInteractiveAuth.into(), body).map(|_| ())
+    })();
+    result.map(|()| String::new()).map_err(describe)
+}
+
+fn call_user(path: &str, method: &str, argument: &str) -> Result<String, String> {
+    call_user_with(path, method, &(argument,))
+}
+
+fn call_manager<B, R>(method: &str, body: &B) -> Result<R, String>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+    R: serde::de::DeserializeOwned + zbus::zvariant::Type,
+{
+    let result = (|| -> zbus::Result<Option<R>> {
+        let bus = Connection::system()?;
+        let manager = Proxy::new(&bus, ACCOUNTS, ACCOUNTS_PATH, ACCOUNTS)?;
+        manager.call_with_flags::<_, _, R>(method, MethodFlags::AllowInteractiveAuth.into(), body)
+    })();
+    result.map_err(describe)?.ok_or_else(|| format!("AccountsService: {method} returned nothing"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserNameProblem {
+    Empty,
+    TooLong,
+    BadStart,
+    BadCharacter,
+}
+
+#[must_use]
+pub fn user_name_problem(name: &str) -> Option<UserNameProblem> {
+    let Some(first) = name.chars().next() else {
+        return Some(UserNameProblem::Empty);
+    };
+    if name.chars().count() > 32 {
+        return Some(UserNameProblem::TooLong);
+    }
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return Some(UserNameProblem::BadStart);
+    }
+    let allowed = |ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-');
+    (!name.chars().all(allowed)).then_some(UserNameProblem::BadCharacter)
+}
+
+#[must_use]
+pub fn suggest_user_name(full_name: &str) -> String {
+    let word = full_name.split_whitespace().next().unwrap_or_default();
+    let name: String = word
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        .take(32)
+        .collect();
+    match name.chars().next() {
+        Some(first) if first.is_ascii_lowercase() => name,
+        _ => String::new(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordProblem {
+    Empty,
+    Mismatch,
+    LineBreak,
+}
+
+#[must_use]
+pub fn password_problem(password: &str, confirm: &str) -> Option<PasswordProblem> {
+    if password.is_empty() {
+        Some(PasswordProblem::Empty)
+    } else if password.contains(['\n', '\r']) {
+        Some(PasswordProblem::LineBreak)
+    } else if password != confirm {
+        Some(PasswordProblem::Mismatch)
+    } else {
+        None
+    }
+}
+
+pub fn hash_password(password: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    if password.contains(['\n', '\r']) {
+        return Err("A password cannot contain a line break".to_string());
+    }
+    let mut child = Command::new("openssl")
+        .args(["passwd", "-6", "-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("openssl: {err}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(password.as_bytes()).and_then(|()| stdin.write_all(b"\n")).map_err(|err| err.to_string())?;
+    }
+    let output = child.wait_with_output().map_err(|err| format!("openssl: {err}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("$6$"))
+        .map(str::to_string)
+        .ok_or_else(|| "openssl could not hash the password".to_string())
+}
+
+pub fn set_password(path: &str, password: &str) -> Result<String, String> {
+    let hash = hash_password(password)?;
+    call_user_with(path, "SetPassword", &(hash, String::new()))
+}
+
+pub fn set_account_type(path: &str, administrator: bool) -> Result<String, String> {
+    call_user_with(path, "SetAccountType", &(i32::from(administrator),))
+}
+
+pub fn create_user(user_name: &str, real_name: &str, administrator: bool, password: &str) -> Result<String, String> {
+    if let Some(problem) = user_name_problem(user_name) {
+        return Err(format!("{problem:?}"));
+    }
+    let real_name = clean_real_name(real_name).ok_or_else(|| "That name is too long".to_string())?;
+    let hash = hash_password(password)?;
+    let path: OwnedObjectPath =
+        call_manager("CreateUser", &(user_name.to_string(), real_name, i32::from(administrator)))?;
+    call_user_with(path.as_str(), "SetPassword", &(hash, String::new()))
+}
+
+pub fn delete_user(uid: u64, remove_files: bool) -> Result<String, String> {
+    call_manager::<_, ()>("DeleteUser", &(uid.cast_signed(), remove_files)).map(|()| String::new())
 }
 
 #[must_use]

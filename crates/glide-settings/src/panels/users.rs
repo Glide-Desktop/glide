@@ -57,6 +57,52 @@ mod tr {
         NoOthers => "You are the only user", "Ви єдиний користувач";
         Saved => "Saved", "Збережено";
         PolkitHint => "Some changes ask for your password through polkit. Without a polkit agent they fail with “Permission denied”.", "Деякі зміни просять пароль через polkit. Без агента polkit вони завершаться помилкою «Доступ заборонено».";
+        Password => "Password", "Пароль";
+        ChangePassword => "Change…", "Змінити…";
+        SetPassword => "Password…", "Пароль…";
+        NewPassword => "New password", "Новий пароль";
+        ConfirmPassword => "Repeat it", "Повторіть його";
+        AddUser => "Add user…", "Додати користувача…";
+        NewUser => "New user", "Новий користувач";
+        Create => "Create", "Створити";
+        Cancel => "Cancel", "Скасувати";
+        Remove => "Remove…", "Видалити…";
+        RemoveAsk => "Remove {}? Their sign-in goes away; choose what happens to their files.", "Видалити {}? Вхід цього користувача зникне; оберіть, що буде з файлами.";
+        KeepFiles => "Remove, keep files", "Видалити, лишити файли";
+        DeleteFiles => "Remove with files", "Видалити разом із файлами";
+        MakeAdmin => "Make administrator", "Зробити адміністратором";
+        MakeStandard => "Make standard", "Зробити звичайним";
+        NameEmpty => "Enter a user name", "Введіть ім'я користувача";
+        NameTooLong => "At most 32 characters", "Не більше 32 символів";
+        NameBadStart => "Start with a lowercase Latin letter", "Почніть з малої латинської літери";
+        NameBadCharacter => "Only a–z, 0–9, - and _", "Лише a–z, 0–9, - і _";
+        PasswordEmpty => "Enter a password", "Введіть пароль";
+        PasswordMismatch => "The passwords differ", "Паролі не збігаються";
+        PasswordLineBreak => "No line breaks", "Без переносів рядка";
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Form {
+    AddUser { full_name: String, user_name: String, named: bool, password: String, confirm: String, admin: bool },
+    Password { path: String, password: String, confirm: String },
+    Remove { uid: u64, name: String },
+}
+
+fn name_hint(problem: accounts::UserNameProblem) -> T {
+    match problem {
+        accounts::UserNameProblem::Empty => T::NameEmpty,
+        accounts::UserNameProblem::TooLong => T::NameTooLong,
+        accounts::UserNameProblem::BadStart => T::NameBadStart,
+        accounts::UserNameProblem::BadCharacter => T::NameBadCharacter,
+    }
+}
+
+fn password_hint(problem: accounts::PasswordProblem) -> T {
+    match problem {
+        accounts::PasswordProblem::Empty => T::PasswordEmpty,
+        accounts::PasswordProblem::Mismatch => T::PasswordMismatch,
+        accounts::PasswordProblem::LineBreak => T::PasswordLineBreak,
     }
 }
 
@@ -72,6 +118,19 @@ pub enum Msg {
     UsePath,
     Linger(bool),
     EndSession(String),
+    OpenAddUser,
+    OpenPassword(String),
+    AskRemove(u64, String),
+    CloseForm,
+    FullName(String),
+    UserName(String),
+    NewPassword(String),
+    ConfirmPassword(String),
+    Admin(bool),
+    Create,
+    SavePassword,
+    Remove(bool),
+    AccountType(String, bool),
     Done(Option<Result<String, String>>),
 }
 
@@ -86,6 +145,7 @@ pub struct Page {
     error: Option<String>,
     saved: bool,
     busy: bool,
+    form: Option<Form>,
 }
 
 impl Pane for Page {
@@ -128,6 +188,17 @@ impl Pane for Page {
                 self.state.sessions.retain(|session| session.id != id);
                 return self.run(move || accounts::terminate_session(&id));
             }
+            Msg::OpenAddUser
+            | Msg::OpenPassword(_)
+            | Msg::AskRemove(..)
+            | Msg::CloseForm
+            | Msg::FullName(_)
+            | Msg::UserName(_)
+            | Msg::NewPassword(_)
+            | Msg::ConfirmPassword(_)
+            | Msg::Admin(_) => self.edit_form(msg),
+            Msg::Create | Msg::SavePassword | Msg::Remove(_) => return self.submit_form(msg),
+            Msg::AccountType(path, admin) => return self.run(move || accounts::set_account_type(&path, admin)),
             Msg::Done(result) => {
                 self.busy = false;
                 match result {
@@ -135,6 +206,7 @@ impl Pane for Page {
                         self.saved = true;
                         self.name = None;
                         self.path.clear();
+                        self.form = None;
                     }
                     Some(Err(err)) => self.error = Some(err),
                     None => {}
@@ -168,6 +240,64 @@ impl Pane for Page {
 }
 
 impl Page {
+    fn edit_form(&mut self, msg: Msg) {
+        match (msg, self.form.as_mut()) {
+            (Msg::OpenAddUser, _) => {
+                self.form = Some(Form::AddUser {
+                    full_name: String::new(),
+                    user_name: String::new(),
+                    named: false,
+                    password: String::new(),
+                    confirm: String::new(),
+                    admin: false,
+                });
+            }
+            (Msg::OpenPassword(path), _) => {
+                self.form = Some(Form::Password { path, password: String::new(), confirm: String::new() });
+            }
+            (Msg::AskRemove(uid, name), _) => self.form = Some(Form::Remove { uid, name }),
+            (Msg::CloseForm, _) => self.form = None,
+            (Msg::FullName(value), Some(Form::AddUser { full_name, user_name, named, .. })) => {
+                if !*named {
+                    *user_name = accounts::suggest_user_name(&value);
+                }
+                *full_name = value;
+            }
+            (Msg::UserName(value), Some(Form::AddUser { user_name, named, .. })) => {
+                *named = !value.is_empty();
+                *user_name = value;
+            }
+            (Msg::NewPassword(value), Some(Form::AddUser { password, .. } | Form::Password { password, .. })) => {
+                *password = value;
+            }
+            (Msg::ConfirmPassword(value), Some(Form::AddUser { confirm, .. } | Form::Password { confirm, .. })) => {
+                *confirm = value;
+            }
+            (Msg::Admin(on), Some(Form::AddUser { admin, .. })) => *admin = on,
+            _ => {}
+        }
+    }
+
+    fn submit_form(&mut self, msg: Msg) -> Task<Msg> {
+        match (msg, self.form.clone()) {
+            (Msg::Create, Some(Form::AddUser { full_name, user_name, password, confirm, admin, .. }))
+                if accounts::user_name_problem(&user_name).is_none()
+                    && accounts::password_problem(&password, &confirm).is_none() =>
+            {
+                self.run(move || accounts::create_user(&user_name, &full_name, admin, &password))
+            }
+            (Msg::SavePassword, Some(Form::Password { path, password, confirm }))
+                if accounts::password_problem(&password, &confirm).is_none() =>
+            {
+                self.run(move || accounts::set_password(&path, &password))
+            }
+            (Msg::Remove(remove_files), Some(Form::Remove { uid, .. })) => {
+                self.run(move || accounts::delete_user(uid, remove_files))
+            }
+            _ => Task::none(),
+        }
+    }
+
     fn reload(&mut self) -> Task<Msg> {
         if self.loading {
             return Task::none();
@@ -277,12 +407,109 @@ impl Page {
         .into_iter()
         .filter_map(|(label, value)| Some((c.t(label).to_string(), value?)))
         .collect();
+        let mut password = Group::new(t).push(
+            Row::new(t, c.t(T::Password))
+                .suffix(widgets::secondary(
+                    t,
+                    c.t(T::ChangePassword),
+                    (!self.busy).then(|| Msg::OpenPassword(me.path.clone())),
+                ))
+                .build(),
+        );
+        if let Some(form) = self.password_form(c, &me.path) {
+            password = password.push(form);
+        }
         column![
             Group::new(t).title(c.t(T::Account)).description(c.t(T::AccountHint)).build(),
             widgets::info_grid(t, info),
+            password.build(),
         ]
         .spacing(8)
         .into()
+    }
+
+    fn password_form<'a>(&'a self, c: &Ctx, owner: &str) -> Option<Element<'a, Msg>> {
+        let Some(Form::Password { path, password, confirm }) = self.form.as_ref() else {
+            return None;
+        };
+        if path != owner {
+            return None;
+        }
+        let t = c.theme;
+        let problem = accounts::password_problem(password, confirm);
+        let ready = problem.is_none() && !self.busy;
+        let save = ready.then_some(Msg::SavePassword);
+        let hint = problem.filter(|_| !confirm.is_empty()).map(|problem| c.t(password_hint(problem)));
+        Some(
+            column![
+                form_row(
+                    t,
+                    c.t(T::NewPassword),
+                    None,
+                    widgets::field(t, "", password, Msg::NewPassword, None, false).secure(true).into(),
+                ),
+                form_row(
+                    t,
+                    c.t(T::ConfirmPassword),
+                    hint,
+                    widgets::field(t, "", confirm, Msg::ConfirmPassword, save.clone(), hint.is_some())
+                        .secure(true)
+                        .into(),
+                ),
+                form_buttons(c, widgets::primary(t, c.t(K::Apply), save)),
+            ]
+            .spacing(4)
+            .into(),
+        )
+    }
+
+    fn add_user_form(&self, c: &Ctx) -> Option<Element<'_, Msg>> {
+        let Some(Form::AddUser { full_name, user_name, password, confirm, admin, .. }) = self.form.as_ref() else {
+            return None;
+        };
+        let t = c.theme;
+        let name_problem = accounts::user_name_problem(user_name);
+        let password_problem = accounts::password_problem(password, confirm);
+        let ready = name_problem.is_none() && password_problem.is_none() && !self.busy;
+        let create = ready.then_some(Msg::Create);
+        let name_hint = name_problem.filter(|_| !user_name.is_empty()).map(|problem| c.t(name_hint(problem)));
+        let password_hint = password_problem.filter(|_| !confirm.is_empty()).map(|problem| c.t(password_hint(problem)));
+        Some(
+            column![
+                text(c.t(T::NewUser)).size(13.5).font(theme::SEMIBOLD).color(t.fg_1()),
+                form_row(
+                    t,
+                    c.t(T::FullName),
+                    None,
+                    widgets::field(t, "", full_name, Msg::FullName, None, false).into()
+                ),
+                form_row(
+                    t,
+                    c.t(T::UserName),
+                    name_hint,
+                    widgets::field(t, "", user_name, Msg::UserName, None, name_hint.is_some()).into(),
+                ),
+                form_row(
+                    t,
+                    c.t(T::NewPassword),
+                    None,
+                    widgets::field(t, "", password, Msg::NewPassword, None, false).secure(true).into(),
+                ),
+                form_row(
+                    t,
+                    c.t(T::ConfirmPassword),
+                    password_hint,
+                    widgets::field(t, "", confirm, Msg::ConfirmPassword, create.clone(), password_hint.is_some())
+                        .secure(true)
+                        .into(),
+                ),
+                form_row(t, c.t(T::Administrator), None, widgets::switch(t, *admin, Msg::Admin)),
+                form_buttons(c, widgets::primary(t, c.t(T::Create), create)),
+            ]
+            .spacing(4)
+            .padding([8.0, theme::ROW_PADDING_X])
+            .into(),
+        )
     }
 
     fn sessions(&self, c: &Ctx) -> Element<'_, Msg> {
@@ -306,8 +533,9 @@ impl Page {
         let t = c.theme;
         let mut group = Group::new(t).title(c.t(T::Others));
         if self.state.others.is_empty() {
-            return group.push(widgets::list_empty(t, Icon::Users, c.t(T::NoOthers), "")).build();
+            group = group.push(widgets::list_empty(t, Icon::Users, c.t(T::NoOthers), ""));
         }
+        let idle = !self.busy;
         for user in &self.state.others {
             let mut badges = row![].spacing(6).align_y(Alignment::Center);
             if user.administrator {
@@ -316,6 +544,16 @@ impl Page {
             if user.locked {
                 badges = badges.push(widgets::pill(t, Tone::Danger, c.t(T::Locked)));
             }
+            let kind = if user.administrator { T::MakeStandard } else { T::MakeAdmin };
+            let toggle = Msg::AccountType(user.path.clone(), !user.administrator);
+            badges = badges
+                .push(widgets::secondary(t, c.t(kind), idle.then_some(toggle)))
+                .push(widgets::secondary(t, c.t(T::SetPassword), idle.then(|| Msg::OpenPassword(user.path.clone()))))
+                .push(widgets::danger(
+                    t,
+                    c.t(T::Remove),
+                    idle.then(|| Msg::AskRemove(user.uid, user.display_name().to_string())),
+                ));
             group = group.push(
                 Row::new(t, user.display_name().to_string())
                     .subtitle(user.user_name.clone())
@@ -323,9 +561,59 @@ impl Page {
                     .suffix(badges)
                     .build(),
             );
+            if let Some(form) = self.password_form(c, &user.path) {
+                group = group.push(form);
+            }
+            if let Some(Form::Remove { uid, name }) = self.form.as_ref()
+                && *uid == user.uid
+            {
+                group = group.push(remove_form(c, name, idle));
+            }
+        }
+        match self.add_user_form(c) {
+            Some(form) => group = group.push(form),
+            None => {
+                group = group.push(
+                    container(widgets::secondary(t, c.t(T::AddUser), idle.then_some(Msg::OpenAddUser)))
+                        .padding([8.0, theme::ROW_PADDING_X]),
+                );
+            }
         }
         group.build()
     }
+}
+
+fn form_buttons<'a>(c: &Ctx, confirm: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(
+        row![
+            iced::widget::space().width(Fill),
+            widgets::secondary(c.theme, c.t(T::Cancel), Some(Msg::CloseForm)),
+            confirm
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .padding([4.0, 8.0])
+    .into()
+}
+
+fn remove_form<'a>(c: &Ctx, name: &str, idle: bool) -> Element<'a, Msg> {
+    let t = c.theme;
+    column![
+        container(text(c.t(T::RemoveAsk).replace("{}", name)).size(13).color(t.fg_2())).padding([4.0, 8.0]),
+        container(
+            row![
+                iced::widget::space().width(Fill),
+                widgets::secondary(t, c.t(T::Cancel), Some(Msg::CloseForm)),
+                widgets::secondary(t, c.t(T::KeepFiles), idle.then_some(Msg::Remove(false))),
+                widgets::danger(t, c.t(T::DeleteFiles), idle.then_some(Msg::Remove(true))),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([4.0, 8.0]),
+    ]
+    .into()
 }
 
 fn session_row<'a>(c: &Ctx, session: &'a Session, current: &str, busy: bool) -> Element<'a, Msg> {
