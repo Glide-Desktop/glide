@@ -460,6 +460,23 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_goes_to_the_output_the_client_names_and_can_move_there_later() {
+        let mut layout = Layout::new();
+        layout.outputs_changed(&two_outputs());
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        let external = Point::new(1920 + 1280, 720);
+        assert!(layout.set_fullscreen_on(w, true, Some(external)));
+        assert_eq!(geometry(&layout, w), rect(1920, 0, 2560, 1440));
+        assert!(layout.set_fullscreen_on(w, true, Some(Point::new(10, 10))), "a second request moves it");
+        assert_eq!(geometry(&layout, w), rect(0, 0, 1920, 1080));
+        assert!(!layout.set_fullscreen_on(w, true, Some(Point::new(10, 10))), "already there");
+        assert!(!layout.set_fullscreen_on(w, true, None), "no output named, nothing to do");
+        assert!(layout.set_fullscreen(w, false));
+        assert_eq!(geometry(&layout, w).size, SIZE, "it comes back to its floating size");
+    }
+
+    #[test]
     fn test_set_fullscreen_and_restore_when_maximized() {
         let mut layout = Layout::new();
         let w = WindowId::next();

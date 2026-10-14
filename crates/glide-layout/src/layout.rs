@@ -483,12 +483,22 @@ impl Layout {
     }
 
     pub fn set_fullscreen(&mut self, w: WindowId, fullscreen: bool) -> bool {
-        let output_geom = self.output_geometry_for_window(w);
+        self.set_fullscreen_on(w, fullscreen, None)
+    }
+
+    pub fn set_fullscreen_on(&mut self, w: WindowId, fullscreen: bool, on: Option<Point>) -> bool {
+        let requested = on.and_then(|point| self.output_at(point)).map(|output| output.geometry);
+        let output_geom = requested.unwrap_or_else(|| self.output_geometry_for_window(w));
         let work_area = self.work_area_for_window(w);
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
         };
+
+        if state.fullscreen && fullscreen && requested.is_some_and(|area| area != state.geometry) {
+            state.geometry = output_geom;
+            return true;
+        }
 
         if state.fullscreen == fullscreen {
             return false;

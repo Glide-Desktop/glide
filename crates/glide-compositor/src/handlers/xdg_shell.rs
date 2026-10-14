@@ -114,8 +114,13 @@ impl XdgShellHandler for GlideState {
         self.set_toplevel_maximized(&surface, false);
     }
 
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
-        self.set_toplevel_fullscreen(&surface, true);
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+        let target = output
+            .as_ref()
+            .and_then(smithay::output::Output::from_resource)
+            .and_then(|output| self.space.output_geometry(&output))
+            .map(|area| glide_layout::Point::new(area.loc.x + area.size.w / 2, area.loc.y + area.size.h / 2));
+        self.set_toplevel_state(&surface, |layout, id| layout.set_fullscreen_on(id, true, target));
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
