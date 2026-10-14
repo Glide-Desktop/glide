@@ -75,12 +75,8 @@ pub(crate) fn start_move(seat: &Seat<GlideState>, state: &mut GlideState, window
         };
 
         let start_data = GrabStartData { focus: None, button, location: pointer.current_location() };
-        let grab = MoveSurfaceGrab {
-            start_data,
-            window: window.clone(),
-            initial_window_location,
-            pending_restore: state.is_size_locked(&window),
-        };
+        let grab =
+            MoveSurfaceGrab::new(start_data, window.clone(), initial_window_location, state.is_size_locked(&window));
         window.set_dragging(true);
         pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Clear);
         state.queue_redraw();

@@ -53,7 +53,7 @@ macro_rules! forward_pointer_events {
 }
 
 pub mod move_grab;
-pub use move_grab::MoveSurfaceGrab;
+pub use move_grab::{MoveSurfaceGrab, TouchMoveGrab};
 
 pub mod resize_grab;
-pub use resize_grab::ResizeSurfaceGrab;
+pub use resize_grab::{ResizeSurfaceGrab, TouchResizeGrab};

@@ -17,6 +17,7 @@ pub enum DragTarget {
 #[derive(Debug, Default)]
 pub struct DragState {
     pub icon: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    pub touch_at: Option<Point<f64, Logical>>,
     pub active: bool,
     dwell: DragDwell,
     pointer: Point<f64, Logical>,

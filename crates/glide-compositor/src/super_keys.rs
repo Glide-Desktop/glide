@@ -66,7 +66,7 @@ impl crate::GlideState {
         if button == BTN_LEFT {
             let pending_restore = self.is_size_locked(&window);
             window.set_dragging(true);
-            let grab = MoveSurfaceGrab { start_data, window, initial_window_location: location, pending_restore };
+            let grab = MoveSurfaceGrab::new(start_data, window, location, pending_restore);
             handle.set_grab(self, grab, serial, Focus::Clear);
         } else {
             if self.is_size_locked(&window) {

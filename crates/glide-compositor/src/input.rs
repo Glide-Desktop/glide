@@ -1331,6 +1331,9 @@ impl GlideState {
             return;
         }
         self.queue_redraw();
+        if self.drag.touch_at.is_some() {
+            self.drag.touch_at = Some(position);
+        }
         let under = self
             .surface_under(position)
             .and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), loc.to_f64())));

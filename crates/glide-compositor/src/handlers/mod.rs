@@ -89,6 +89,7 @@ impl DndGrabHandler for GlideState {
 
 impl GlideState {
     fn clear_dnd_icon(&mut self) {
+        self.drag.touch_at = None;
         if self.drag.icon.take().is_some() {
             self.queue_redraw();
         }
@@ -119,7 +120,22 @@ impl WaylandDndGrabHandler for GlideState {
                 self.queue_redraw();
             }
             GrabType::Touch => {
-                source.cancel();
+                let Some(touch) = seat.get_touch() else {
+                    tracing::warn!("drag requested on a seat without touch");
+                    source.cancel();
+                    return;
+                };
+                let Some(start_data) = touch.grab_start_data() else {
+                    tracing::warn!("drag requested without an active touch grab");
+                    source.cancel();
+                    return;
+                };
+                self.drag.icon = icon;
+                self.drag.touch_at = Some(start_data.location);
+                self.drag_started();
+                let grab = DnDGrab::new_touch(&self.display_handle, start_data, source, seat);
+                touch.set_grab(self, grab, serial);
+                self.queue_redraw();
             }
         }
     }

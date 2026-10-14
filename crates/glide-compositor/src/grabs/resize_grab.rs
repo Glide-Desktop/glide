@@ -2,11 +2,17 @@ use std::cell::RefCell;
 
 use smithay::{
     desktop::Space,
-    input::pointer::{
-        AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
-        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-        GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
-        RelativeMotionEvent,
+    input::{
+        pointer::{
+            AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+            GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+            GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab,
+            PointerInnerHandle, RelativeMotionEvent,
+        },
+        touch::{
+            DownEvent, GrabStartData as TouchGrabStartData, MotionEvent as TouchMotionEvent, OrientationEvent,
+            ShapeEvent, TouchGrab, TouchInnerHandle, UpEvent,
+        },
     },
     reexports::{wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::protocol::wl_surface::WlSurface},
     utils::{Logical, Point, Rectangle, Size},
@@ -38,38 +44,27 @@ impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     }
 }
 
-pub struct ResizeSurfaceGrab {
-    start_data: PointerGrabStartData<GlideState>,
+struct ResizeCore {
+    start: Point<f64, Logical>,
     window: GlideWindow,
-
     edges: ResizeEdge,
-
     initial_rect: Rectangle<i32, Logical>,
     last_window_size: Size<i32, Logical>,
     finished: bool,
 }
 
-impl ResizeSurfaceGrab {
-    pub fn start(
-        start_data: PointerGrabStartData<GlideState>, window: GlideWindow, edges: ResizeEdge,
-        initial_rect: Rectangle<i32, Logical>,
+impl ResizeCore {
+    fn start(
+        start: Point<f64, Logical>, window: GlideWindow, edges: ResizeEdge, initial_rect: Rectangle<i32, Logical>,
     ) -> Self {
         ResizeSurfaceState::with(window_surface(&window), |state| {
             *state = ResizeSurfaceState::Resizing { edges, initial_rect };
         });
-
-        Self { start_data, window, edges, initial_rect, last_window_size: initial_rect.size, finished: false }
+        Self { start, window, edges, initial_rect, last_window_size: initial_rect.size, finished: false }
     }
-}
 
-impl PointerGrab<GlideState> for ResizeSurfaceGrab {
-    fn motion(
-        &mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>,
-        _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>, event: &MotionEvent,
-    ) {
-        handle.motion(data, None, event);
-
-        let mut delta = event.location - self.start_data.location;
+    fn motion(&mut self, location: Point<f64, Logical>) {
+        let mut delta = location - self.start;
 
         let mut new_window_width = self.initial_rect.size.w;
         let mut new_window_height = self.initial_rect.size.h;
@@ -115,17 +110,7 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
         xdg.send_pending_configure();
     }
 
-    forward_pointer_events!();
-
-    fn button(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>, event: &ButtonEvent) {
-        handle.button(data, event);
-
-        if !handle.current_pressed().contains(&self.start_data.button) {
-            handle.unset_grab(self, data, event.serial, event.time, true);
-        }
-    }
-
-    fn unset(&mut self, _data: &mut GlideState) {
+    fn finish(&mut self) {
         if self.finished {
             return;
         }
@@ -146,6 +131,113 @@ impl PointerGrab<GlideState> for ResizeSurfaceGrab {
         ResizeSurfaceState::with(xdg.wl_surface(), |state| {
             *state = ResizeSurfaceState::WaitingForLastCommit { edges: self.edges, initial_rect: self.initial_rect };
         });
+    }
+}
+
+pub struct ResizeSurfaceGrab {
+    start_data: PointerGrabStartData<GlideState>,
+    core: ResizeCore,
+}
+
+impl ResizeSurfaceGrab {
+    pub fn start(
+        start_data: PointerGrabStartData<GlideState>, window: GlideWindow, edges: ResizeEdge,
+        initial_rect: Rectangle<i32, Logical>,
+    ) -> Self {
+        let core = ResizeCore::start(start_data.location, window, edges, initial_rect);
+        Self { start_data, core }
+    }
+}
+
+impl PointerGrab<GlideState> for ResizeSurfaceGrab {
+    fn motion(
+        &mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>,
+        _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>, event: &MotionEvent,
+    ) {
+        handle.motion(data, None, event);
+        self.core.motion(event.location);
+    }
+
+    forward_pointer_events!();
+
+    fn button(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>, event: &ButtonEvent) {
+        handle.button(data, event);
+        if !handle.current_pressed().contains(&self.start_data.button) {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
+    }
+
+    fn unset(&mut self, _data: &mut GlideState) {
+        self.core.finish();
+    }
+}
+
+pub struct TouchResizeGrab {
+    start_data: TouchGrabStartData<GlideState>,
+    core: ResizeCore,
+}
+
+impl TouchResizeGrab {
+    pub fn start(
+        start_data: TouchGrabStartData<GlideState>, window: GlideWindow, edges: ResizeEdge,
+        initial_rect: Rectangle<i32, Logical>,
+    ) -> Self {
+        let core = ResizeCore::start(start_data.location, window, edges, initial_rect);
+        Self { start_data, core }
+    }
+}
+
+impl TouchGrab<GlideState> for TouchResizeGrab {
+    fn down(
+        &mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>, event: &DownEvent,
+    ) {
+        handle.down(data, None, event);
+    }
+
+    fn up(&mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>, event: &UpEvent) {
+        handle.up(data, event);
+        if event.slot == self.start_data.slot {
+            handle.unset_grab(self, data);
+        }
+    }
+
+    fn motion(
+        &mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>, event: &TouchMotionEvent,
+    ) {
+        if event.slot == self.start_data.slot {
+            self.core.motion(event.location);
+        } else {
+            handle.motion(data, None, event);
+        }
+    }
+
+    fn frame(&mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>) {
+        handle.frame(data);
+    }
+
+    fn cancel(&mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>) {
+        handle.cancel(data);
+        handle.unset_grab(self, data);
+    }
+
+    fn shape(&mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>, event: &ShapeEvent) {
+        handle.shape(data, event);
+    }
+
+    fn orientation(
+        &mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>, event: &OrientationEvent,
+    ) {
+        handle.orientation(data, event);
+    }
+
+    fn start_data(&self) -> &TouchGrabStartData<GlideState> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, _data: &mut GlideState) {
+        self.core.finish();
     }
 }
 

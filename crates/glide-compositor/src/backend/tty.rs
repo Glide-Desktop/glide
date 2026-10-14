@@ -1467,8 +1467,9 @@ impl GlideState {
             cursor_elements(gles_renderer, pointer_element, local, cursor_hotspot, scale)
         });
         let mut cursor_count = ordered.len();
+        let icon_at = self.drag.touch_at.map_or(local_pointer, |at| pointer_on_output(at, output_geometry));
         if let Some(icon) = self.drag.icon.as_ref().filter(|icon| IsAlive::alive(*icon))
-            && let Some(local) = local_pointer
+            && let Some(local) = icon_at
         {
             ordered.extend(dnd_icon_elements(gles_renderer, icon, local, scale));
         }

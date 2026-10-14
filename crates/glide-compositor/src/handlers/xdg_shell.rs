@@ -32,7 +32,7 @@ use smithay::{
 
 use crate::{
     GlideState,
-    grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
+    grabs::{MoveSurfaceGrab, ResizeSurfaceGrab, TouchMoveGrab, TouchResizeGrab},
     state::{layout_size, toplevel_title_and_app_id, window_surface},
     window::GlideWindow,
 };
@@ -169,34 +169,31 @@ impl XdgShellHandler for GlideState {
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
         let seat: Seat<GlideState> =
             Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
-
         let wl_surface = surface.wl_surface();
 
-        let Some(start_data) = check_grab(&seat, wl_surface, serial) else {
-            return;
-        };
-        self.finish_workspace_swipe();
-        let Some(pointer) = seat.get_pointer() else {
-            return;
-        };
-        let Some(window) = self.mapped_window(wl_surface) else {
-            return;
-        };
-
-        self.restore_for_move(&window, pointer.current_location());
-
-        let Some(initial_window_location) = self.space.element_location(&window) else {
-            return;
-        };
-
-        let grab = MoveSurfaceGrab {
-            start_data,
-            window: window.clone(),
-            initial_window_location,
-            pending_restore: self.is_size_locked(&window),
-        };
-
-        pointer.set_grab(self, grab, serial, Focus::Clear);
+        if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
+            let Some(pointer) = seat.get_pointer() else {
+                return;
+            };
+            let Some((window, location, pending_restore)) = self.begin_move(wl_surface, pointer.current_location())
+            else {
+                return;
+            };
+            pointer.set_grab(
+                self,
+                MoveSurfaceGrab::new(start_data, window, location, pending_restore),
+                serial,
+                Focus::Clear,
+            );
+        } else if let Some(start_data) = check_touch_grab(&seat, wl_surface, serial) {
+            let Some(touch) = seat.get_touch() else {
+                return;
+            };
+            let Some((window, location, pending_restore)) = self.begin_move(wl_surface, start_data.location) else {
+                return;
+            };
+            touch.set_grab(self, TouchMoveGrab::new(start_data, window, location, pending_restore), serial);
+        }
     }
 
     fn resize_request(
@@ -204,42 +201,30 @@ impl XdgShellHandler for GlideState {
     ) {
         let seat: Seat<GlideState> =
             Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
-
         let wl_surface = surface.wl_surface();
 
-        let Some(start_data) = check_grab(&seat, wl_surface, serial) else {
-            return;
-        };
-        self.finish_workspace_swipe();
-        let Some(pointer) = seat.get_pointer() else {
-            return;
-        };
-        let Some(window) = self.mapped_window(wl_surface) else {
-            return;
-        };
-        let Some(initial_window_location) = self.space.element_location(&window) else {
-            return;
-        };
-        let initial_window_size = window.geometry().size;
-
-        if self.is_size_locked(&window) {
-            return;
+        if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
+            let Some(pointer) = seat.get_pointer() else {
+                return;
+            };
+            let Some((window, rect)) = self.begin_resize(&surface) else {
+                return;
+            };
+            pointer.set_grab(
+                self,
+                ResizeSurfaceGrab::start(start_data, window, edges.into(), rect),
+                serial,
+                Focus::Clear,
+            );
+        } else if let Some(start_data) = check_touch_grab(&seat, wl_surface, serial) {
+            let Some(touch) = seat.get_touch() else {
+                return;
+            };
+            let Some((window, rect)) = self.begin_resize(&surface) else {
+                return;
+            };
+            touch.set_grab(self, TouchResizeGrab::start(start_data, window, edges.into(), rect), serial);
         }
-
-        surface.with_pending_state(|state| {
-            state.states.set(xdg_toplevel::State::Resizing);
-        });
-
-        surface.send_pending_configure();
-
-        let grab = ResizeSurfaceGrab::start(
-            start_data,
-            window,
-            edges.into(),
-            Rectangle::new(initial_window_location, initial_window_size),
-        );
-
-        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
@@ -281,6 +266,53 @@ impl XdgShellHandler for GlideState {
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }
     }
+}
+
+impl GlideState {
+    fn begin_move(
+        &mut self, surface: &WlSurface, location: Point<f64, Logical>,
+    ) -> Option<(GlideWindow, Point<i32, Logical>, bool)> {
+        self.finish_workspace_swipe();
+        let window = self.mapped_window(surface)?;
+        self.restore_for_move(&window, location);
+        let initial = self.space.element_location(&window)?;
+        let pending_restore = self.is_size_locked(&window);
+        Some((window, initial, pending_restore))
+    }
+
+    fn begin_resize(&mut self, surface: &ToplevelSurface) -> Option<(GlideWindow, Rectangle<i32, Logical>)> {
+        self.finish_workspace_swipe();
+        let window = self.mapped_window(surface.wl_surface())?;
+        let location = self.space.element_location(&window)?;
+        if self.is_size_locked(&window) {
+            return None;
+        }
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Resizing);
+        });
+        surface.send_pending_configure();
+        Some((window.clone(), Rectangle::new(location, window.geometry().size)))
+    }
+}
+
+fn root_surface(surface: &WlSurface) -> WlSurface {
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+    root
+}
+
+fn check_touch_grab(
+    seat: &Seat<GlideState>, surface: &WlSurface, serial: Serial,
+) -> Option<smithay::input::touch::GrabStartData<GlideState>> {
+    let touch = seat.get_touch()?;
+    if !touch.has_grab(serial) {
+        return None;
+    }
+    let start_data = touch.grab_start_data()?;
+    let (focus, _) = start_data.focus.as_ref()?;
+    (&root_surface(focus) == surface).then_some(start_data)
 }
 
 fn check_grab(

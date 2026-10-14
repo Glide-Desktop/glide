@@ -146,14 +146,19 @@ Ctrl+Alt+F3 and a text login.
     change their password, remove them keeping and then deleting files.
     If the password step fails after the account was created, note what
     the greeter does with a password-less account.
-43. **Single-pixel buffers.** A recent GTK4 app or mpv with letterboxing
+43. **Touch.** On a touchscreen, drag a GTK4 app by its header bar with a
+    finger: it moves and snaps to a half at the screen edge. Drag its
+    corner: it resizes. Drag a file from Glide Files (or Nautilus) into
+    another app with a finger: the drag icon follows the finger and the
+    drop lands.
+44. **Single-pixel buffers.** A recent GTK4 app or mpv with letterboxing
     renders its solid areas correctly.
 
 ## Packaging
 
-44. **Tarball.** `scripts/package.sh`, unpack on another machine,
+45. **Tarball.** `scripts/package.sh`, unpack on another machine,
     `sudo scripts/install.sh`: it installs, including `glide-files`.
-45. **Crash log.** After item 2, the log of the killed run survives as
+46. **Crash log.** After item 2, the log of the killed run survives as
     `glide.log.1`. When a release build panics, its log holds the message
     and a backtrace with file and line numbers (a signal such as SIGSEGV
     leaves no backtrace).
