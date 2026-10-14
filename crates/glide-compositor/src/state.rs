@@ -1634,11 +1634,13 @@ impl GlideState {
 
     pub fn apply_input_config(&mut self) {
         self.layout_memory.set_policy(self.input_config.layout_scope, self.input_config.new_window_layout);
+        let rebuild = self.applied_config.keymap_changed(&self.input_config);
+        let numlock = self.applied_config.numlock_changed(self.input_config.numlock);
         if let Some(keyboard) = self.seat.get_keyboard() {
-            if let Err(err) = keyboard.set_xkb_config(self, self.input_config.clone().xkb()) {
+            if rebuild && let Err(err) = keyboard.set_xkb_config(self, self.input_config.clone().xkb()) {
                 tracing::error!(?err, "failed to apply the xkb config");
             }
-            if self.input_config.numlock {
+            if self.input_config.numlock && (rebuild || numlock) {
                 let mods = smithay::input::keyboard::ModifiersState { num_lock: true, ..keyboard.modifier_state() };
                 if keyboard.set_modifier_state(mods) != 0 {
                     keyboard.advertise_modifier_state(self);

@@ -636,11 +636,15 @@ impl FileStamp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Applied<T>(T);
 
+type Keymap = (String, String, String, String, Option<String>);
+
 #[derive(Debug, Default)]
 pub struct AppliedConfig {
     wallpaper: Option<Applied<Option<FileStamp>>>,
     icon_theme: Option<Applied<Option<String>>>,
     pins: Option<(Option<FileStamp>, Vec<DockItemConfig>)>,
+    keymap: Option<Applied<Keymap>>,
+    numlock: Option<Applied<bool>>,
 }
 
 fn replace_if_changed<T: PartialEq>(slot: &mut Option<Applied<T>>, value: T) -> bool {
@@ -659,6 +663,21 @@ impl AppliedConfig {
 
     fn icon_theme_changed(&mut self, theme: Option<&str>) -> bool {
         replace_if_changed(&mut self.icon_theme, theme.map(str::to_owned))
+    }
+
+    pub fn keymap_changed(&mut self, input: &InputConfig) -> bool {
+        let keymap = (
+            input.xkb_rules.clone(),
+            input.xkb_model.clone(),
+            input.xkb_layout.clone(),
+            input.xkb_variant.clone(),
+            input.xkb_options.clone(),
+        );
+        replace_if_changed(&mut self.keymap, keymap)
+    }
+
+    pub fn numlock_changed(&mut self, numlock: bool) -> bool {
+        replace_if_changed(&mut self.numlock, numlock)
     }
 
     fn pins(&mut self) -> Vec<DockItemConfig> {
@@ -1399,6 +1418,23 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reload_rebuilds_the_keymap_only_when_the_keymap_changed() {
+        let mut applied = AppliedConfig::default();
+        let input = InputConfig::default();
+        assert!(applied.keymap_changed(&input), "the first apply builds it");
+        assert!(!applied.keymap_changed(&input), "an unrelated reload keeps the layout in use");
+        let repeat = InputConfig { repeat_rate: 40, ..input.clone() };
+        assert!(!applied.keymap_changed(&repeat));
+        let layouts = InputConfig { xkb_layout: "us,de".to_string(), ..input.clone() };
+        assert!(applied.keymap_changed(&layouts));
+        let options = InputConfig { xkb_options: Some("caps:escape".to_string()), ..layouts };
+        assert!(applied.keymap_changed(&options));
+        assert!(applied.numlock_changed(false));
+        assert!(!applied.numlock_changed(false));
+        assert!(applied.numlock_changed(true));
+    }
 
     #[test]
     fn gestures_claim_only_the_configured_finger_counts() {
