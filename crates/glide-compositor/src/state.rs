@@ -85,6 +85,8 @@ pub struct Protocols {
     pub pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub wlr_output_power_state: crate::handlers::wlr_output_power::WlrOutputPowerState,
     pub wlr_gamma_control_state: crate::handlers::wlr_gamma_control::WlrGammaControlState,
+    pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
+    pub system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState,
 }
 
 impl Protocols {
@@ -163,6 +165,8 @@ impl Protocols {
             wlr_output_power_state: WlrOutputPowerState::new::<GlideState>(dh),
             wlr_gamma_control_state: WlrGammaControlState::new::<GlideState>(dh),
             session_lock_state: SessionLockManagerState::new::<GlideState, _>(dh, unrestricted),
+            xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState::new::<GlideState>(dh),
+            system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState::new::<GlideState>(dh),
         }
     }
 }
@@ -351,6 +355,7 @@ pub struct SessionServices {
     pub battery_alert: crate::battery_alert::BatteryAlert,
     pub announced_config_keys: Vec<String>,
     pub prompts: crate::agent_prompt::Prompts,
+    pub bell: Option<std::time::Instant>,
 }
 
 impl GlideState {

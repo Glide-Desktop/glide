@@ -127,4 +127,41 @@ impl WaylandDndGrabHandler for GlideState {
 
 impl OutputHandler for GlideState {}
 
+impl smithay::wayland::xdg_foreign::XdgForeignHandler for GlideState {
+    fn xdg_foreign_state(&mut self) -> &mut smithay::wayland::xdg_foreign::XdgForeignState {
+        &mut self.protocols.xdg_foreign_state
+    }
+}
+
+const BELL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+#[must_use]
+pub fn bell_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= BELL_INTERVAL)
+}
+
+impl smithay::wayland::xdg_system_bell::XdgSystemBellHandler for GlideState {
+    fn ring(&mut self, _surface: Option<WlSurface>) {
+        let now = std::time::Instant::now();
+        if !self.notifications.policy().sounds || !bell_due(self.session.bell, now) {
+            return;
+        }
+        self.session.bell = Some(now);
+        crate::sound::play(glide_notify::Sound::Named("bell".into()));
+    }
+}
+
 smithay::delegate_dispatch2!(GlideState);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bell_rung_in_a_burst_sounds_once() {
+        let start = std::time::Instant::now();
+        assert!(bell_due(None, start));
+        assert!(!bell_due(Some(start), start + std::time::Duration::from_millis(100)));
+        assert!(bell_due(Some(start), start + BELL_INTERVAL));
+    }
+}
