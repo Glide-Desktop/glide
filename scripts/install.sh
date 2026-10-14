@@ -5,9 +5,9 @@
 #
 #   --prefix DIR   install prefix (default /usr/local)
 #   --destdir DIR  stage into DIR instead of / (for distribution packages)
-#   --from DIR     directory holding the glide, glidectl and glide-settings
-#                  binaries (default: bin/ of a release tarball, else
-#                  target/release of the source tree)
+#   --from DIR     directory holding the glide, glidectl, glide-settings and
+#                  glide-files binaries (default: bin/ of a release tarball,
+#                  else target/release of the source tree)
 #   --dm           install and configure glide-dm (via greetd) as system display manager
 #   --uninstall    remove every file this script installs
 #
@@ -175,7 +175,7 @@ if [ -z "$DESTDIR" ]; then
 fi
 
 missing=""
-TOOLS="xwayland-satellite swaylock wpctl brightnessctl playerctl nmcli bluetoothctl"
+TOOLS="xwayland-satellite wpctl brightnessctl playerctl nmcli bluetoothctl udisksctl"
 if [ "$INSTALL_DM" -eq 1 ]; then
     TOOLS="$TOOLS greetd"
 fi
@@ -194,12 +194,13 @@ if [ -n "$missing" ]; then
     echo
     echo "Optional runtime tools not found:$missing"
     echo "  xwayland-satellite   X11 apps"
-    echo "  swaylock (or gtklock, hyprlock)   screen lock (Super+L, power menu)"
-    echo "  a polkit agent (e.g. polkit-gnome, lxqt-policykit) listed in [general] autostart"
-    echo "                       password prompts for Settings (date, users, hotspot)"
     echo "  xdg-desktop-portal(-gtk, -wlr), pipewire, wireplumber   file dialogs, screen sharing"
     echo "  wpctl (wireplumber), brightnessctl, playerctl   volume, brightness and media keys"
     echo "  nmcli (NetworkManager), bluetoothctl (bluez)   Wi-Fi and Bluetooth in quick settings"
+    echo "  udisksctl (udisks2)   removable drives in Glide Files"
 fi
+echo
+echo "Password prompts for Settings need a polkit agent (polkit-gnome, polkit-kde,"
+echo "lxqt-policykit, mate-polkit, xfce-polkit or soteria); Glide starts the first one installed."
 echo
 echo "Glide has its own notification centre; do not autostart mako, dunst or swaync in this session."

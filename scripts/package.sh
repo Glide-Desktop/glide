@@ -30,10 +30,10 @@ STAGE="$REPO/dist/$NAME"
 
 rm -rf "$STAGE"
 install -d "$STAGE/bin" "$STAGE/data" "$STAGE/scripts"
-for bin in glide glidectl glide-settings; do
+for bin in glide glidectl glide-settings glide-files; do
     install -m755 "$REPO/target/release/$bin" "$STAGE/bin/$bin"
 done
-for f in glide-session glide-lock glide.desktop glide.service glide-shutdown.target glide-portals.conf glide-settings.desktop greetd-glide.toml; do
+for f in glide-session glide-lock glide.desktop glide.service glide-shutdown.target glide-portals.conf glide-settings.desktop glide-files.desktop greetd-glide.toml; do
     cp -p "$REPO/data/$f" "$STAGE/data/$f"
 done
 install -Dm644 "$REPO/data/pam.d/glide-lock" "$STAGE/data/pam.d/glide-lock"
