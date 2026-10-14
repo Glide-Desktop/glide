@@ -2562,7 +2562,8 @@ impl GlideState {
 
         tracing::info!(outputs = infos.len(), "layout outputs synchronized");
         self.layout.outputs_changed(&infos);
-        self.protocols.wlr_output_manager_state.sync_outputs(&self.display_handle, &self.space);
+        let heads = self.output_heads();
+        self.protocols.wlr_output_manager_state.sync_outputs(&self.display_handle, heads);
         self.sync_ext_workspaces();
     }
 

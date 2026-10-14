@@ -140,6 +140,23 @@ fn mode_candidates(modes: &[smithay::reexports::drm::control::Mode]) -> Vec<(i32
         .collect()
 }
 
+fn switch_mode(
+    surface: &mut SurfaceData, renderer: &mut GlesRenderer, drm_mode: smithay::reexports::drm::control::Mode,
+) -> bool {
+    let result = surface.drm_output.use_mode(
+        drm_mode,
+        renderer,
+        &DrmOutputRenderElements::<GlesRenderer, GlideRenderElements>::default(),
+    );
+    if let Err(err) = result {
+        tracing::warn!(output = %surface.output.name(), ?err, "failed to switch the display mode");
+        return false;
+    }
+    surface.output.change_current_state(Some(WlMode::from(drm_mode)), None, None, None);
+    surface.wallpaper_key = None;
+    true
+}
+
 fn advertise_modes(output: &Output, modes: &[smithay::reexports::drm::control::Mode], preferred: usize) {
     for mode in modes {
         output.add_mode(WlMode::from(*mode));
@@ -183,6 +200,7 @@ struct SurfaceData {
     modes: Vec<smithay::reexports::drm::control::Mode>,
     pending_repaint: Option<RegistrationToken>,
     redraw_queued: bool,
+    switched_off: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
     wallpaper_muted_buf: Option<MemoryRenderBuffer>,
     wallpaper_blur_buf: Option<MemoryRenderBuffer>,
@@ -829,6 +847,7 @@ impl GlideState {
                 modes: drm_modes,
                 pending_repaint: None,
                 redraw_queued: false,
+                switched_off: false,
                 wallpaper_buf: None,
                 wallpaper_muted_buf: None,
                 wallpaper_blur_buf: None,
@@ -949,7 +968,6 @@ impl GlideState {
         let mut switched = Vec::new();
         for (crtc, surface) in &mut device.surfaces {
             let identity = crate::config::OutputIdentity::of(&surface.output);
-            let name = identity.name.clone();
             let candidates = mode_candidates(&surface.modes);
             let wanted = crate::config::output_config(&configs, &identity)
                 .and_then(crate::config::OutputConfig::mode_spec)
@@ -958,28 +976,45 @@ impl GlideState {
             let Some(drm_mode) = wanted.and_then(|index| surface.modes.get(index).copied()) else {
                 continue;
             };
-            let wl_mode = WlMode::from(drm_mode);
-            if surface.output.current_mode() == Some(wl_mode) {
+            if surface.output.current_mode() == Some(WlMode::from(drm_mode)) {
                 continue;
             }
-            match surface.drm_output.use_mode(
-                drm_mode,
-                &mut device.gles_renderer,
-                &DrmOutputRenderElements::<GlesRenderer, GlideRenderElements>::default(),
-            ) {
-                Ok(()) => {
-                    surface.output.change_current_state(Some(wl_mode), None, None, None);
-                    surface.wallpaper_key = None;
-                    switched.push(*crtc);
-                }
-                Err(err) => {
-                    tracing::warn!(output = %name, ?err, "failed to switch the display mode");
-                }
+            if switch_mode(surface, &mut device.gles_renderer, drm_mode) {
+                switched.push(*crtc);
             }
         }
         for crtc in switched {
             self.loop_handle.insert_idle(move |state| state.render_surface(crtc));
         }
+    }
+
+    pub fn set_output_mode(&mut self, output: &Output, mode: WlMode) -> bool {
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return false;
+        };
+        let Some((&crtc, surface)) = device.surfaces.iter_mut().find(|(_, surface)| &surface.output == output) else {
+            return false;
+        };
+        if surface.output.current_mode() == Some(mode) {
+            return true;
+        }
+        let Some(drm_mode) = surface.modes.iter().copied().find(|candidate| WlMode::from(*candidate) == mode) else {
+            return false;
+        };
+        if !switch_mode(surface, &mut device.gles_renderer, drm_mode) {
+            return false;
+        }
+        self.loop_handle.insert_idle(move |state| state.render_surface(crtc));
+        true
+    }
+
+    #[must_use]
+    pub fn connected_outputs(&self) -> Vec<Output> {
+        self.backend_data
+            .device
+            .as_ref()
+            .map(|device| device.surfaces.values().map(|surface| surface.output.clone()).collect())
+            .unwrap_or_default()
     }
 
     pub fn set_outputs_blanked(&mut self, blanked: bool) {
@@ -1068,6 +1103,19 @@ impl GlideState {
         }
 
         let output = surface.output.clone();
+        if self.space.output_geometry(&output).is_none() {
+            if !surface.switched_off {
+                if let Err(err) =
+                    surface.drm_output.with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+                {
+                    tracing::warn!(output = %output.name(), ?err, "failed to switch off a disabled output");
+                }
+                self.screencopy.fail_for(&output);
+                surface.switched_off = true;
+            }
+            return;
+        }
+        surface.switched_off = false;
         let scale = Scale::from(output.current_scale().fractional_scale());
 
         let icon = match &cursor_status {
