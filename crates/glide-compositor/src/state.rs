@@ -87,6 +87,8 @@ pub struct Protocols {
     pub wlr_gamma_control_state: crate::handlers::wlr_gamma_control::WlrGammaControlState,
     pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
     pub system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState,
+    pub single_pixel_buffer_state: smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
+    pub content_type_state: smithay::wayland::content_type::ContentTypeState,
 }
 
 impl Protocols {
@@ -167,6 +169,10 @@ impl Protocols {
             session_lock_state: SessionLockManagerState::new::<GlideState, _>(dh, unrestricted),
             xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState::new::<GlideState>(dh),
             system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState::new::<GlideState>(dh),
+            single_pixel_buffer_state: smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<GlideState>(
+                dh,
+            ),
+            content_type_state: smithay::wayland::content_type::ContentTypeState::new::<GlideState>(dh),
         }
     }
 }
