@@ -169,7 +169,7 @@ impl crate::GlideState {
                     summary: t(Key::RemovableSummary).replace("{device}", &name),
                     body: crate::disk_space::human(volume.size),
                     actions: vec![glide_notify::Action { key: OPEN.into(), label: t(Key::RemovableOpen).into() }],
-                    transient: true,
+                    timeout: Some(std::time::Duration::from_secs(15)),
                     ..glide_notify::Notification::default()
                 };
                 self.notifications.push(&mut self.dock.icons, notice, true);

@@ -79,11 +79,12 @@ pub fn keep_registered(
          arg0='{service}'"
     );
     zbus::blocking::fdo::DBusProxy::new(&connection)?.add_match_rule(zbus::MatchRule::try_from(rule.as_str())?)?;
-    if let Err(err) = register(&connection) {
-        tracing::info!(service, %err, "the service is not reachable yet; the agent waits for it");
-    }
     std::thread::Builder::new().name(thread.into()).spawn(move || {
-        for message in zbus::blocking::MessageIterator::from(&connection) {
+        let messages = zbus::blocking::MessageIterator::from(&connection);
+        if let Err(err) = register(&connection) {
+            tracing::info!(service, %err, "the service is not reachable yet; the agent waits for it");
+        }
+        for message in messages {
             if message.as_ref().is_ok_and(|message| appeared(message, service))
                 && let Err(err) = register(&connection)
             {

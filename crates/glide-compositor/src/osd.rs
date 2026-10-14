@@ -60,9 +60,16 @@ pub fn kind_for_key(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Shown {
+    reading: Reading,
+    since: Instant,
+    updated: Instant,
+}
+
 #[derive(Debug, Default)]
 pub struct Osd {
-    shown: Option<(Reading, Instant)>,
+    shown: Option<Shown>,
     expected: Option<(Kind, Instant)>,
     cache: std::collections::HashMap<i32, (u64, MemoryRenderBuffer)>,
 }
@@ -73,7 +80,8 @@ impl Osd {
     }
 
     pub fn show(&mut self, reading: Reading, now: Instant) {
-        self.shown = Some((reading, now));
+        let since = self.shown.filter(|_| self.alpha(now) > 0.0).map_or(now, |shown| shown.since);
+        self.shown = Some(Shown { reading, since, updated: now });
     }
 
     pub fn status(&mut self, volume: (u8, bool), brightness: u8, now: Instant) -> bool {
@@ -89,38 +97,41 @@ impl Osd {
             Kind::Brightness => Reading { kind, level: brightness, on: true },
             Kind::CapsLock => return false,
         };
-        if self.shown.is_some_and(|(shown, _)| shown == reading) && self.alpha(now) > 0.0 {
-            self.shown = Some((reading, now));
-            return false;
-        }
+        let unchanged = self.shown.is_some_and(|shown| shown.reading == reading) && self.alpha(now) > 0.0;
         self.show(reading, now);
-        true
+        !unchanged
     }
 
     #[must_use]
     pub fn alpha(&self, now: Instant) -> f32 {
-        let Some((_, at)) = self.shown else {
+        let Some(shown) = self.shown else {
             return 0.0;
         };
-        let elapsed = now.saturating_duration_since(at);
         let (rise, fall) = (glide_theme::motion::t1(), glide_theme::motion::t2());
-        if elapsed < rise {
-            return glide_theme::motion::ease_out(elapsed.as_secs_f64() / rise.as_secs_f64()) as f32;
-        }
-        let leaving = elapsed.saturating_sub(rise + HOLD);
-        if fall.is_zero() || leaving >= fall {
-            return if leaving.is_zero() { 1.0 } else { 0.0 };
-        }
-        1.0 - glide_theme::motion::ease_out(leaving.as_secs_f64() / fall.as_secs_f64()) as f32
+        let entering = now.saturating_duration_since(shown.since);
+        let fade_in = if rise.is_zero() || entering >= rise {
+            1.0
+        } else {
+            glide_theme::motion::ease_out(entering.as_secs_f64() / rise.as_secs_f64())
+        };
+        let leaving = now.saturating_duration_since(shown.updated).saturating_sub(rise + HOLD);
+        let fade_out = if leaving.is_zero() {
+            0.0
+        } else if fall.is_zero() || leaving >= fall {
+            1.0
+        } else {
+            glide_theme::motion::ease_out(leaving.as_secs_f64() / fall.as_secs_f64())
+        };
+        (fade_in.min(1.0 - fade_out)) as f32
     }
 
     pub fn tick(&mut self, now: Instant) -> bool {
-        if self.shown.is_some() && self.alpha(now) <= 0.0 {
-            let elapsed = self.shown.map_or(Duration::ZERO, |(_, at)| now.saturating_duration_since(at));
-            if elapsed > glide_theme::motion::t1() {
-                self.shown = None;
-                return true;
-            }
+        if let Some(shown) = self.shown
+            && self.alpha(now) <= 0.0
+            && now.saturating_duration_since(shown.since) > glide_theme::motion::t1()
+        {
+            self.shown = None;
+            return true;
         }
         self.shown.is_some()
     }
@@ -137,7 +148,7 @@ impl Osd {
         &mut self, painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader, tokens: &glide_theme::Tokens,
         scale: i32,
     ) -> Option<&MemoryRenderBuffer> {
-        let (reading, _) = self.shown?;
+        let reading = self.shown?.reading;
         let key = glide_theme::Revision::new()
             .str(&format!("{:?}{:?}{reading:?}", tokens.appearance, tokens.accent))
             .u64(crate::paint::painter_generation())
@@ -205,6 +216,20 @@ mod tests {
         assert!(osd.alpha(gone) <= 0.0);
         assert!(osd.tick(gone), "one last frame to clear it");
         assert!(!osd.tick(gone));
+    }
+
+    #[test]
+    fn holding_a_volume_key_updates_the_bar_without_fading_it_again() {
+        let mut osd = Osd::default();
+        let start = Instant::now();
+        let rise = glide_theme::motion::t1();
+        osd.expect(Kind::Volume, start);
+        assert!(osd.status((40, false), 80, start));
+        let steady = start + rise + Duration::from_millis(50);
+        assert!(osd.status((45, false), 80, steady), "a new level is drawn");
+        assert!(osd.alpha(steady + Duration::from_millis(1)) >= 0.99, "no fresh fade-in on every step");
+        let still = steady + HOLD;
+        assert!(osd.alpha(still) >= 0.99, "the hold restarts from the last change");
     }
 
     #[test]

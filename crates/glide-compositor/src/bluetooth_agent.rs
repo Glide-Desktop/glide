@@ -321,6 +321,11 @@ mod tests {
 
         let pending = call("RequestConfirmation", (device, 9));
         let Event::Ask(_, answer) = next() else { panic!("expected a prompt") };
+        let canceller = daemon.client();
+        canceller
+            .call_method(Some(destination.as_str()), AGENT_PATH, Some("org.bluez.Agent1"), "Cancel", &())
+            .expect("Cancel is served while another call still waits for the user");
+        assert!(matches!(next(), Event::Cancel), "the shell hears the cancellation at once");
         drop(answer);
         let err = pending.join().expect("joined").expect_err("cancelled");
         assert!(err.to_string().contains("org.bluez.Error.Canceled"), "{err}");

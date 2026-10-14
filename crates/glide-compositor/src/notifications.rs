@@ -661,7 +661,11 @@ impl Notifications {
 
     #[must_use]
     pub fn silences(&self, notification: &Notification) -> bool {
-        let breaks_through = notification.urgency == Urgency::Critical && self.policy.allow_critical;
+        let critical = notification.urgency == Urgency::Critical;
+        if critical && is_local(notification.id) {
+            return false;
+        }
+        let breaks_through = critical && self.policy.allow_critical;
         (self.suppressed() && !breaks_through) || self.policy.mutes(notification)
     }
 
@@ -2257,6 +2261,8 @@ mod tests {
         });
         assert!(store.push(&mut icons, critical(1), false));
         assert!(store.active().next().is_none(), "critical can be held back too");
+        assert!(store.push(&mut icons, critical(LOCAL_ID_FLOOR + 1), false));
+        assert_eq!(store.active().count(), 1, "the shell's own critical toasts, like a pairing prompt, always show");
 
         let (mut store, mut icons) = self::store();
         store.set_inhibited(true);
