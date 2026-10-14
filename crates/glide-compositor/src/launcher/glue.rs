@@ -1,0 +1,168 @@
+use std::{io::Read, sync::Arc};
+
+use smithay::{
+    reexports::calloop::timer::{TimeoutAction, Timer},
+    wayland::selection::data_device::{
+        current_data_device_selection_userdata, request_data_device_client_selection, set_data_device_selection,
+    },
+};
+
+use super::search::{Entry, SystemCommand};
+use crate::{power::PowerAction, state::GlideState};
+
+const TEXT_MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT", "STRING"];
+const PASTE_LIMIT: u64 = 64 * 1024;
+
+impl GlideState {
+    pub fn arm_launcher_caret(&mut self) {
+        let Some(launcher) = self.launcher.as_mut() else {
+            return;
+        };
+        let Some(first) = launcher.next_caret_toggle() else {
+            return;
+        };
+        if !launcher.arm_caret_timer() {
+            return;
+        }
+        let result = self.loop_handle.insert_source(Timer::from_deadline(first), |_, (), state| {
+            let next = state.launcher.as_ref().and_then(super::Launcher::next_caret_toggle);
+            if let Some(next) = next {
+                state.queue_redraw();
+                return TimeoutAction::ToInstant(next);
+            }
+            if let Some(launcher) = state.launcher.as_mut() {
+                launcher.disarm_caret_timer();
+            }
+            TimeoutAction::Drop
+        });
+        if let Err(err) = result {
+            tracing::warn!(?err, "failed to arm the launcher caret timer");
+            if let Some(launcher) = self.launcher.as_mut() {
+                launcher.disarm_caret_timer();
+            }
+        }
+    }
+
+    fn close_launcher(&mut self) {
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher.begin_close();
+        }
+        self.queue_redraw();
+    }
+
+    fn launch_command(&mut self, app_id: &str, name: &str, command: &str) {
+        self.launch_app(app_id, name, command);
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher.record_launch(app_id).save_in_background();
+        }
+    }
+
+    pub fn activate_launcher_entry(&mut self, entry: Entry) {
+        let Some(launcher) = self.launcher.as_ref() else {
+            return;
+        };
+        let apps = launcher.apps();
+        let target = match &entry {
+            Entry::App(index) => apps.get(*index).map(|app| (app, &app.command)),
+            Entry::Action { app, action } => {
+                apps.get(*app).and_then(|owner| Some((owner, &owner.actions.get(*action)?.command)))
+            }
+            _ => None,
+        }
+        .map(|(app, command)| (app.id.clone(), app.name.clone(), command.clone()));
+        match entry {
+            Entry::App(_) | Entry::Action { .. } => {
+                let Some((id, name, command)) = target else {
+                    return;
+                };
+                self.launch_command(&id, &name, &command);
+            }
+            Entry::Calculator { value, .. } => self.copy_to_clipboard(&value),
+            Entry::Command(command) => {
+                self.close_launcher();
+                self.run_system_command(command);
+                return;
+            }
+            Entry::Settings(panel) => {
+                let command = format!("glide-settings {}", panel.slug());
+                if let Err(err) = crate::spawn_shell_command(&command) {
+                    tracing::error!(%command, ?err, "failed to open a settings panel");
+                }
+            }
+        }
+        self.close_launcher();
+    }
+
+    fn run_system_command(&mut self, command: SystemCommand) {
+        tracing::info!(?command, "system command from the launcher");
+        match command {
+            SystemCommand::Lock => self.perform_power_action(PowerAction::Lock),
+            SystemCommand::Sleep => self.perform_power_action(PowerAction::Sleep),
+            SystemCommand::LogOut => self.open_power_dialog(Some(PowerAction::LogOut)),
+            SystemCommand::Restart => self.open_power_dialog(Some(PowerAction::Restart)),
+            SystemCommand::ShutDown => self.open_power_dialog(Some(PowerAction::ShutDown)),
+        }
+    }
+
+    pub fn copy_to_clipboard(&mut self, text: &str) {
+        set_data_device_selection(
+            &self.display_handle,
+            &self.seat,
+            TEXT_MIMES.iter().map(ToString::to_string).collect(),
+            crate::clipboard::Owned::Text(Arc::<str>::from(text)),
+        );
+    }
+
+    pub fn paste_into_launcher(&mut self) {
+        let own = current_data_device_selection_userdata(&self.seat).map(|own| own.text().map(str::to_string));
+        if let Some(own) = own {
+            if let Some(text) = own
+                && let Some(launcher) = self.launcher.as_mut()
+                && launcher.insert_text(&text)
+            {
+                self.queue_redraw();
+            }
+            return;
+        }
+
+        for mime in TEXT_MIMES {
+            let Ok((reader, writer)) = std::io::pipe() else {
+                return;
+            };
+            match request_data_device_client_selection(&self.seat, mime.to_string(), writer.into()) {
+                Ok(()) => {
+                    self.read_paste(reader);
+                    return;
+                }
+                Err(smithay::wayland::selection::data_device::SelectionRequestError::InvalidMimetype) => {}
+                Err(err) => {
+                    tracing::debug!(?err, "nothing to paste into the launcher");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn read_paste(&mut self, reader: std::io::PipeReader) {
+        let (sender, receiver) = smithay::reexports::calloop::channel::channel::<String>();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if reader.take(PASTE_LIMIT).read_to_end(&mut bytes).is_ok() {
+                let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        });
+        let result = self.loop_handle.insert_source(receiver, |event, (), state| {
+            let smithay::reexports::calloop::channel::Event::Msg(text) = event else {
+                return;
+            };
+            if let Some(launcher) = state.launcher.as_mut().filter(|l| !l.is_closing())
+                && launcher.insert_text(&text)
+            {
+                state.queue_redraw();
+            }
+        });
+        if let Err(err) = result {
+            tracing::warn!(?err, "failed to register the launcher paste reader");
+        }
+    }
+}

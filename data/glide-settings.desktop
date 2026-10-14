@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Name[uk]=Налаштування
+Comment=Appearance, displays, sound, network and input for Glide
+Comment[uk]=Вигляд, дисплеї, звук, мережа та ввід для Glide
+Exec=glide-settings %U
+Icon=preferences-system
+Terminal=false
+Categories=Settings;DesktopSettings;System;
+Keywords=settings;preferences;wallpaper;theme;wifi;bluetooth;sound;display;keyboard;mouse;налаштування;шпалери;тема;звук;
+StartupWMClass=glide-settings
+OnlyShowIn=Glide;

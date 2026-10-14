@@ -36,11 +36,7 @@ impl ExtWorkspaceManagerState {
         D: ExtWorkspaceHandler + GlobalDispatch<ExtWorkspaceManagerV1, GlobalData> + 'static,
     {
         let global = dh.create_global::<D, ExtWorkspaceManagerV1, _>(1, GlobalData);
-        Self {
-            global,
-            instances: Vec::new(),
-            workspace_handles: HashMap::new(),
-        }
+        Self { global, instances: Vec::new(), workspace_handles: HashMap::new() }
     }
 
     pub fn sync_workspaces(&mut self, dh: &DisplayHandle, layout: &glide_layout::Layout) {
@@ -60,11 +56,7 @@ impl ExtWorkspaceManagerState {
 
         for (idx, &ws_id) in current_ids.iter().enumerate() {
             let is_active = ws_id == active_ws;
-            let state = if is_active {
-                ProtocolWorkspaceState::Active
-            } else {
-                ProtocolWorkspaceState::Hidden
-            };
+            let state = if is_active { ProtocolWorkspaceState::Active } else { ProtocolWorkspaceState::Hidden };
 
             let handles = self.workspace_handles.entry(ws_id).or_default();
 
@@ -75,20 +67,12 @@ impl ExtWorkspaceManagerState {
                 let has_handle = handles.iter().any(|h| h.client() == Some(client.clone()));
 
                 if !has_handle
-                    && let Ok(group) = client
-                        .create_resource::<ExtWorkspaceGroupHandleV1, _, GlideState>(
-                            dh,
-                            manager.version(),
-                            (),
-                        )
+                    && let Ok(group) =
+                        client.create_resource::<ExtWorkspaceGroupHandleV1, _, GlideState>(dh, manager.version(), ())
                 {
                     manager.workspace_group(&group);
-                    if let Ok(handle) = client
-                        .create_resource::<ExtWorkspaceHandleV1, _, GlideState>(
-                            dh,
-                            manager.version(),
-                            ws_id,
-                        )
+                    if let Ok(handle) =
+                        client.create_resource::<ExtWorkspaceHandleV1, _, GlideState>(dh, manager.version(), ws_id)
                     {
                         group.workspace_enter(&handle);
                         handle.id(format!("{ws_id:?}"));
@@ -104,8 +88,7 @@ impl ExtWorkspaceManagerState {
             }
         }
 
-        self.workspace_handles
-            .retain(|_, handles| !handles.is_empty());
+        self.workspace_handles.retain(|_, handles| !handles.is_empty());
 
         for manager in &self.instances {
             manager.done();
@@ -115,32 +98,19 @@ impl ExtWorkspaceManagerState {
 
 impl GlobalDispatch<ExtWorkspaceManagerV1, GlobalData> for GlideState {
     fn bind(
-        state: &mut Self,
-        dh: &DisplayHandle,
-        _client: &Client,
-        resource: New<ExtWorkspaceManagerV1>,
-        _global_data: &GlobalData,
-        data_init: &mut DataInit<'_, Self>,
+        state: &mut Self, dh: &DisplayHandle, _client: &Client, resource: New<ExtWorkspaceManagerV1>,
+        _global_data: &GlobalData, data_init: &mut DataInit<'_, Self>,
     ) {
         let instance = data_init.init(resource, GlobalData);
         state.protocols.ext_workspace_state.instances.push(instance);
-        state
-            .protocols
-            .ext_workspace_state
-            .sync_workspaces(dh, &state.layout);
+        state.protocols.ext_workspace_state.sync_workspaces(dh, &state.layout);
     }
 }
 
-impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceManagerV1, GlobalData>
-    for GlideState
-{
+impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceManagerV1, GlobalData> for GlideState {
     fn request(
-        _state: &mut Self,
-        _client: &Client,
-        _resource: &ExtWorkspaceManagerV1,
-        _request: ext_workspace_manager_v1::Request,
-        _data: &GlobalData,
-        _dhandle: &DisplayHandle,
+        _state: &mut Self, _client: &Client, _resource: &ExtWorkspaceManagerV1,
+        _request: ext_workspace_manager_v1::Request, _data: &GlobalData, _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
     }
@@ -148,38 +118,23 @@ impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceManagerV1, GlobalD
 
 impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceGroupHandleV1, ()> for GlideState {
     fn request(
-        _state: &mut Self,
-        _client: &Client,
-        _resource: &ExtWorkspaceGroupHandleV1,
-        _request: ext_workspace_group_handle_v1::Request,
-        _data: &(),
-        _dhandle: &DisplayHandle,
+        _state: &mut Self, _client: &Client, _resource: &ExtWorkspaceGroupHandleV1,
+        _request: ext_workspace_group_handle_v1::Request, _data: &(), _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
     }
 }
 
-impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceHandleV1, WorkspaceId>
-    for GlideState
-{
+impl smithay::reexports::wayland_server::Dispatch<ExtWorkspaceHandleV1, WorkspaceId> for GlideState {
     fn request(
-        state: &mut Self,
-        _client: &Client,
-        _resource: &ExtWorkspaceHandleV1,
-        request: ext_workspace_handle_v1::Request,
-        data: &WorkspaceId,
-        _dhandle: &DisplayHandle,
+        state: &mut Self, _client: &Client, _resource: &ExtWorkspaceHandleV1,
+        request: ext_workspace_handle_v1::Request, data: &WorkspaceId, _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
         if matches!(request, ext_workspace_handle_v1::Request::Activate) {
-            state
-                .layout
-                .switch_to_workspace(glide_layout::WorkspaceTarget::Id(*data));
+            state.layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(*data));
             state.reconcile_space();
-            state
-                .protocols
-                .ext_workspace_state
-                .sync_workspaces(&state.display_handle, &state.layout);
+            state.protocols.ext_workspace_state.sync_workspaces(&state.display_handle, &state.layout);
         }
     }
 }
@@ -201,10 +156,7 @@ mod tests {
 
     #[test]
     fn test_workspace_protocol_state_values() {
-        assert_ne!(
-            ProtocolWorkspaceState::Active,
-            ProtocolWorkspaceState::Hidden
-        );
+        assert_ne!(ProtocolWorkspaceState::Active, ProtocolWorkspaceState::Hidden);
     }
 
     #[test]
@@ -233,19 +185,16 @@ mod tests {
                 }
                 3 => {
                     let target_id = ws_ids[i % ws_ids.len()];
-                    let ok =
-                        layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(target_id));
+                    let ok = layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(target_id));
                     assert!(ok);
                 }
                 4 => {
-                    let ok =
-                        layout.switch_to_workspace(glide_layout::WorkspaceTarget::Index(99999));
+                    let ok = layout.switch_to_workspace(glide_layout::WorkspaceTarget::Index(99999));
                     assert!(!ok);
                 }
                 5 => {
                     let bogus_id = glide_layout::WorkspaceId::next();
-                    let ok =
-                        layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(bogus_id));
+                    let ok = layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(bogus_id));
                     assert!(!ok);
                 }
                 _ => unreachable!(),

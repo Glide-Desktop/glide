@@ -1,8 +1,6 @@
 use glide_layout::{
-    Insets, Layout, NewWindowPolicy, OutputId, OutputInfo, Rectangle, Size, WindowId, WorkspaceId,
-    WorkspaceTarget,
+    Insets, Layout, NewWindowPolicy, OutputId, OutputInfo, Rectangle, Size, WindowId, WorkspaceId, WorkspaceTarget,
 };
-use std::collections::HashSet;
 
 fn sample_output(id: u64, x: i32, y: i32, w: i32, h: i32) -> OutputInfo {
     OutputInfo {
@@ -46,8 +44,7 @@ fn test_rapid_workspace_switching_and_window_movement_stress() {
                 let _ = layout.switch_to_workspace(WorkspaceTarget::Previous);
             }
             3 => {
-                let _ =
-                    layout.switch_to_workspace(WorkspaceTarget::Id(WorkspaceId::from_u64(999_999)));
+                let _ = layout.switch_to_workspace(WorkspaceTarget::Id(WorkspaceId::from_u64(999_999)));
             }
             _ => unreachable!(),
         }
@@ -70,10 +67,7 @@ fn test_empty_workspace_and_window_lifecycle() {
     assert_eq!(layout.visible_windows().count(), 0);
 
     assert_eq!(layout.resolve_target(WorkspaceTarget::Index(999)), None);
-    assert_eq!(
-        layout.resolve_target(WorkspaceTarget::Id(WorkspaceId::from_u64(99999))),
-        None
-    );
+    assert_eq!(layout.resolve_target(WorkspaceTarget::Id(WorkspaceId::from_u64(99999))), None);
     assert_eq!(layout.resolve_target(WorkspaceTarget::Next), None);
     assert_eq!(layout.resolve_target(WorkspaceTarget::Previous), None);
 
@@ -100,21 +94,10 @@ fn test_outputs_changed_boundary_conditions() {
     let mut layout = Layout::new();
     let w1 = WindowId::next();
     layout.add_window(w1, Size::new(800, 600));
-    layout.set_window_insets(
-        w1,
-        Insets {
-            top: 30,
-            left: 5,
-            right: 5,
-            bottom: 5,
-        },
-    );
+    layout.set_window_insets(w1, Insets { top: 30, left: 5, right: 5, bottom: 5 });
 
     layout.outputs_changed(&[]);
-    assert_eq!(
-        layout.primary_output_geometry(),
-        glide_layout::layout::FALLBACK_OUTPUT
-    );
+    assert_eq!(layout.primary_output_geometry(), glide_layout::layout::FALLBACK_OUTPUT);
 
     let offscreen_output = sample_output(2, 5000, 5000, 1920, 1080);
     layout.outputs_changed(std::slice::from_ref(&offscreen_output));
@@ -133,66 +116,4 @@ fn test_outputs_changed_boundary_conditions() {
     layout.outputs_changed(std::slice::from_ref(&new_output2));
     let state_full = layout.window_state(w1).unwrap();
     assert_eq!(state_full.geometry, new_output2.geometry);
-}
-
-#[test]
-fn test_multi_surface_idle_inhibit_simulation() {
-    struct MockIdleTracker {
-        inhibited: bool,
-        surfaces: HashSet<u64>,
-    }
-
-    impl MockIdleTracker {
-        fn new() -> Self {
-            Self {
-                inhibited: false,
-                surfaces: HashSet::new(),
-            }
-        }
-
-        fn inhibit(&mut self, surface_id: u64) {
-            self.surfaces.insert(surface_id);
-            self.inhibited = true;
-        }
-
-        fn uninhibit(&mut self, surface_id: u64) {
-            self.surfaces.remove(&surface_id);
-            if self.surfaces.is_empty() {
-                self.inhibited = false;
-            }
-        }
-    }
-
-    let mut tracker = MockIdleTracker::new();
-    assert!(!tracker.inhibited);
-
-    for id in 1..=100 {
-        tracker.inhibit(id);
-        assert!(tracker.inhibited);
-    }
-
-    for _ in 0..10 {
-        tracker.inhibit(50);
-        assert!(tracker.inhibited);
-    }
-
-    for _ in 0..10 {
-        tracker.uninhibit(999);
-        assert!(tracker.inhibited);
-    }
-
-    for id in 1..100 {
-        tracker.uninhibit(id);
-        assert!(
-            tracker.inhibited,
-            "Should remain inhibited until last surface (100) uninhibits"
-        );
-    }
-
-    tracker.uninhibit(100);
-    assert!(
-        !tracker.inhibited,
-        "Should be uninhibited when surface set becomes empty"
-    );
-    assert!(tracker.surfaces.is_empty());
 }

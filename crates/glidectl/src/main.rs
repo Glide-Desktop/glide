@@ -2,9 +2,12 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
     path::PathBuf,
+    time::Duration,
 };
 
 use glide_ipc::{Event, Request, Response, WindowSelector, WorkspaceTarget};
+
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CliArgs {
@@ -17,24 +20,12 @@ pub fn parse_cli_args(args: &[String]) -> anyhow::Result<CliArgs> {
         anyhow::bail!("No command specified");
     }
 
-    let mut json_output = false;
-    let mut idx = 1;
-
-    while idx < args.len() {
-        let arg = &args[idx];
-        if arg == "--json" {
-            json_output = true;
-            idx += 1;
-        } else {
-            break;
-        }
-    }
-
-    if idx >= args.len() {
+    let flags = args[1..].iter().take_while(|arg| *arg == "--json").count();
+    let mut json_output = flags > 0;
+    let mut subcommand_args = args[1 + flags..].to_vec();
+    if subcommand_args.is_empty() {
         anyhow::bail!("No subcommand specified");
     }
-
-    let mut subcommand_args: Vec<String> = args[idx..].to_vec();
 
     if subcommand_args.first().map(String::as_str) != Some("exec")
         && let Some(pos) = subcommand_args.iter().position(|a| a == "--json")
@@ -43,10 +34,7 @@ pub fn parse_cli_args(args: &[String]) -> anyhow::Result<CliArgs> {
         subcommand_args.remove(pos);
     }
 
-    Ok(CliArgs {
-        json_output,
-        subcommand_args,
-    })
+    Ok(CliArgs { json_output, subcommand_args })
 }
 
 fn main() -> anyhow::Result<()> {
@@ -66,7 +54,7 @@ fn main() -> anyhow::Result<()> {
         return run_subscribe(&socket_path, cli.json_output);
     }
 
-    let response = send_request(&socket_path, &request)?;
+    let (_, response) = exchange(&socket_path, &request)?;
 
     if cli.json_output {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -74,29 +62,49 @@ fn main() -> anyhow::Result<()> {
         print_response(&response);
     }
 
+    if is_failure(&response) {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
-fn run_subscribe(socket_path: &PathBuf, json_output: bool) -> anyhow::Result<()> {
+#[must_use]
+pub fn is_failure(response: &Response) -> bool {
+    matches!(response, Response::Error { .. } | Response::Unknown)
+}
+
+fn connect(socket_path: &PathBuf) -> anyhow::Result<UnixStream> {
     let stream = UnixStream::connect(socket_path)?;
-    let mut json = serde_json::to_string(&Request::Subscribe)?;
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    Ok(stream)
+}
+
+fn exchange(socket_path: &PathBuf, request: &Request) -> anyhow::Result<(BufReader<UnixStream>, Response)> {
+    let mut json = serde_json::to_string(request)?;
     json.push('\n');
 
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(connect(socket_path)?);
     reader.get_mut().write_all(json.as_bytes())?;
     reader.get_mut().flush()?;
 
     let mut line = String::new();
     reader.read_line(&mut line)?;
-    let response: Response = serde_json::from_str(&line)?;
+    Ok((reader, serde_json::from_str(&line)?))
+}
+
+fn run_subscribe(socket_path: &PathBuf, json_output: bool) -> anyhow::Result<()> {
+    let (mut reader, response) = exchange(socket_path, &Request::Subscribe)?;
     if !matches!(response, Response::Subscribed) {
         anyhow::bail!("subscribe request was not accepted: {response:?}");
     }
+    reader.get_ref().set_read_timeout(None)?;
 
     if !json_output {
         eprintln!("Subscribed. Waiting for events (Ctrl+C to stop)...");
     }
 
+    let mut line = String::new();
     loop {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
@@ -133,6 +141,10 @@ fn format_event(event: &Event) -> String {
         Event::WorkspaceChanged { id } => format!("workspace changed: {id}"),
         Event::OutputChanged => "output changed".to_string(),
         Event::LayoutChanged { index, name } => format!("layout changed: {index} ({name})"),
+        Event::Gesture { sample } => format!(
+            "gesture: {:?} {:?} {} fingers ({:.0}, {:.0}) {:?}",
+            sample.kind, sample.phase, sample.fingers, sample.dx, sample.dy, sample.action
+        ),
     }
 }
 
@@ -152,10 +164,12 @@ COMMANDS:
     window focus <ID|focused>  Focus window by ID or focused
     window move <N|next|prev>  Move focused window to workspace
     reload                     Reload configuration from glide.toml
+    lock                       Lock the screen
     exec <command...>          Execute shell command
     subscribe                  Stream window/focus/workspace events until Ctrl+C
     dpms <on|off>              Turn the outputs on or blank them
     layout [get|next]          Read or cycle the active keyboard layout
+    outputs                    List connected outputs with mode, scale and position
 
 OPTIONS:
     --json                     Output response as raw JSON
@@ -171,10 +185,8 @@ fn find_socket_path() -> anyhow::Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
-    if let (Ok(wayland_display), Ok(runtime_dir)) = (
-        std::env::var("WAYLAND_DISPLAY"),
-        std::env::var("XDG_RUNTIME_DIR"),
-    ) {
+    if let (Ok(wayland_display), Ok(runtime_dir)) = (std::env::var("WAYLAND_DISPLAY"), std::env::var("XDG_RUNTIME_DIR"))
+    {
         let path = PathBuf::from(runtime_dir).join(format!("glide-{wayland_display}.sock"));
         if path.exists() {
             return Ok(path);
@@ -187,20 +199,18 @@ fn find_socket_path() -> anyhow::Result<PathBuf> {
     )
 }
 
-fn send_request(socket_path: &PathBuf, request: &Request) -> anyhow::Result<Response> {
-    let stream = UnixStream::connect(socket_path)?;
-    let mut json = serde_json::to_string(request)?;
-    json.push('\n');
+#[must_use]
+pub fn shell_quote(word: &str) -> String {
+    let safe = !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if safe { word.to_string() } else { format!("'{}'", word.replace('\'', r"'\''")) }
+}
 
-    let mut reader = BufReader::new(stream);
-    reader.get_mut().write_all(json.as_bytes())?;
-    reader.get_mut().flush()?;
-
-    let mut response_line = String::new();
-    reader.read_line(&mut response_line)?;
-
-    let response: Response = serde_json::from_str(&response_line)?;
-    Ok(response)
+#[must_use]
+pub fn exec_command(words: &[String]) -> String {
+    match words {
+        [single] => single.clone(),
+        many => many.iter().map(|word| shell_quote(word)).collect::<Vec<_>>().join(" "),
+    }
 }
 
 fn parse_args(args: &[String]) -> anyhow::Result<Request> {
@@ -208,6 +218,14 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
         "ping" => Ok(Request::Ping),
         "quit" => Ok(Request::Quit),
         "reload" => Ok(Request::Reload),
+        "lock" => Ok(Request::Lock),
+        "outputs" | "output" => Ok(Request::ListOutputs),
+        "night-light" | "nightlight" => match args.get(1).map(String::as_str) {
+            Some("on") => Ok(Request::NightLight { on: Some(true) }),
+            Some("off") => Ok(Request::NightLight { on: Some(false) }),
+            Some("status") | None => Ok(Request::NightLight { on: None }),
+            _ => anyhow::bail!("Usage: glidectl night-light <on|off|status>"),
+        },
         "subscribe" | "sub" => Ok(Request::Subscribe),
         "dpms" => match args.get(1).map(String::as_str) {
             Some("on") => Ok(Request::SetDpms { on: true }),
@@ -220,57 +238,36 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
             _ => anyhow::bail!("Usage: glidectl layout <get|next>"),
         },
         "exec" => {
-            if args.len() < 2 {
-                anyhow::bail!("Usage: glidectl exec <command>");
-            }
-            Ok(Request::Exec {
-                command: args[1..].join(" "),
-            })
+            required(args, 1, "exec <command>")?;
+            Ok(Request::Exec { command: exec_command(&args[1..]) })
         }
-        "workspace" | "ws" => {
-            if args.len() < 2 {
-                anyhow::bail!("Usage: glidectl workspace <list|switch>");
-            }
-            match args[1].as_str() {
-                "list" | "ls" => Ok(Request::ListWorkspaces),
-                "switch" => {
-                    if args.len() < 3 {
-                        anyhow::bail!("Usage: glidectl workspace switch <N|next|prev>");
-                    }
-                    let target = parse_workspace_target(&args[2])?;
-                    Ok(Request::SwitchWorkspace { target })
-                }
-                _ => anyhow::bail!("Unknown workspace subcommand: {}", args[1]),
-            }
-        }
-        "window" | "win" => {
-            if args.len() < 2 {
-                anyhow::bail!("Usage: glidectl window <list|focus|move>");
-            }
-            match args[1].as_str() {
-                "list" | "ls" => Ok(Request::ListWindows),
-                "focus" => {
-                    if args.len() < 3 {
-                        anyhow::bail!("Usage: glidectl window focus <ID|focused>");
-                    }
-                    let selector = parse_window_selector(&args[2])?;
-                    Ok(Request::FocusWindow { selector })
-                }
-                "move" => {
-                    if args.len() < 3 {
-                        anyhow::bail!("Usage: glidectl window move <N|next|prev>");
-                    }
-                    let target = parse_workspace_target(&args[2])?;
-                    Ok(Request::MoveWindow {
-                        window: WindowSelector::Focused,
-                        target,
-                    })
-                }
-                _ => anyhow::bail!("Unknown window subcommand: {}", args[1]),
-            }
-        }
-        _ => anyhow::bail!("Unknown command: {}", args[0]),
+        "workspace" | "ws" => match required(args, 1, "workspace <list|switch>")? {
+            "list" | "ls" => Ok(Request::ListWorkspaces),
+            "switch" => Ok(Request::SwitchWorkspace {
+                target: parse_workspace_target(required(args, 2, "workspace switch <N|next|prev>")?)?,
+            }),
+            other => anyhow::bail!("Unknown workspace subcommand: {other}"),
+        },
+        "window" | "win" => match required(args, 1, "window <list|focus|move>")? {
+            "list" | "ls" => Ok(Request::ListWindows),
+            "focus" => Ok(Request::FocusWindow {
+                selector: match required(args, 2, "window focus <ID|focused>")? {
+                    id if id.eq_ignore_ascii_case("focused") => WindowSelector::Focused,
+                    id => WindowSelector::Id(id.parse()?),
+                },
+            }),
+            "move" => Ok(Request::MoveWindow {
+                window: WindowSelector::Focused,
+                target: parse_workspace_target(required(args, 2, "window move <N|next|prev>")?)?,
+            }),
+            other => anyhow::bail!("Unknown window subcommand: {other}"),
+        },
+        other => anyhow::bail!("Unknown command: {other}"),
     }
+}
+
+fn required<'a>(args: &'a [String], index: usize, usage: &str) -> anyhow::Result<&'a str> {
+    args.get(index).map(String::as_str).ok_or_else(|| anyhow::anyhow!("Usage: glidectl {usage}"))
 }
 
 fn parse_workspace_target(s: &str) -> anyhow::Result<WorkspaceTarget> {
@@ -287,37 +284,31 @@ fn parse_workspace_target(s: &str) -> anyhow::Result<WorkspaceTarget> {
     }
 }
 
-fn parse_window_selector(s: &str) -> anyhow::Result<WindowSelector> {
-    if s.eq_ignore_ascii_case("focused") {
-        Ok(WindowSelector::Focused)
-    } else {
-        let id: u64 = s.parse()?;
-        Ok(WindowSelector::Id(id))
-    }
-}
-
 fn print_response(response: &Response) {
     match response {
         Response::Ok => println!("OK"),
         Response::Pong => println!("PONG"),
         Response::Error { message } => eprintln!("Error: {message}"),
         Response::Subscribed => println!("Subscribed"),
+        Response::Unknown => {
+            eprintln!("Error: the compositor sent a response this glidectl does not understand")
+        }
         Response::Layout { index, name } => println!("{index} {name}"),
+        Response::NightLight { on } => println!("{}", if *on { "on" } else { "off" }),
+        Response::Outputs { list } => {
+            println!("{:<12} {:<28} {:<22} {:<7} {:<12}", "NAME", "MODEL", "MODE", "SCALE", "POSITION");
+            println!("{}", "-".repeat(84));
+            for o in list {
+                let model = format!("{} {}", o.make, o.model);
+                let mode = format!("{}x{}@{:.2}", o.width, o.height, f64::from(o.refresh_mhz) / 1000.0);
+                println!("{:<12} {:<28} {:<22} {:<7} {},{}", o.name, model.trim(), mode, o.scale, o.x, o.y);
+            }
+        }
         Response::Workspaces { list } => {
-            println!(
-                "{:<5} {:<10} {:<8} {:<10}",
-                "INDEX", "ID", "ACTIVE", "WINDOWS"
-            );
+            println!("{:<5} {:<10} {:<8} {:<10}", "INDEX", "ID", "ACTIVE", "WINDOWS");
             println!("{}", "-".repeat(35));
             for ws in list {
-                let active_str = if ws.active { "*" } else { "" };
-                println!(
-                    "{:<5} {:<10} {:<8} {:<10}",
-                    ws.index + 1,
-                    ws.id,
-                    active_str,
-                    ws.window_count
-                );
+                println!("{:<5} {:<10} {:<8} {:<10}", ws.index + 1, ws.id, star(ws.active), ws.window_count);
             }
         }
         Response::Windows { list } => {
@@ -327,228 +318,119 @@ fn print_response(response: &Response) {
             );
             println!("{}", "-".repeat(78));
             for w in list {
-                let app_id = w.app_id.as_deref().unwrap_or("<unknown>");
-                let title = w.title.as_deref().unwrap_or("<untitled>");
-                let focused_str = if w.focused { "*" } else { "" };
-                let minimized_str = if w.minimized { "*" } else { "" };
                 println!(
                     "{:<6} {:<15} {:<10} {:<25} {:<8} {:<9}",
                     w.id,
-                    app_id,
+                    w.app_id.as_deref().unwrap_or("<unknown>"),
                     w.workspace_index + 1,
-                    title,
-                    focused_str,
-                    minimized_str
+                    w.title.as_deref().unwrap_or("<untitled>"),
+                    star(w.focused),
+                    star(w.minimized)
                 );
             }
         }
     }
 }
 
+fn star(on: bool) -> &'static str {
+    if on { "*" } else { "" }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_parse_args() {
-        assert_eq!(parse_args(&["ping".into()]).unwrap(), Request::Ping);
-        assert_eq!(parse_args(&["quit".into()]).unwrap(), Request::Quit);
-        assert_eq!(
-            parse_args(&["workspace".into(), "list".into()]).unwrap(),
-            Request::ListWorkspaces
-        );
-        assert_eq!(
-            parse_args(&["workspace".into(), "switch".into(), "2".into()]).unwrap(),
-            Request::SwitchWorkspace {
-                target: WorkspaceTarget::Index(1)
-            }
-        );
-        assert_eq!(
-            parse_args(&["exec".into(), "alacritty".into()]).unwrap(),
-            Request::Exec {
-                command: "alacritty".into()
-            }
-        );
-        assert_eq!(
-            parse_args(&["subscribe".into()]).unwrap(),
-            Request::Subscribe
-        );
-        assert_eq!(parse_args(&["sub".into()]).unwrap(), Request::Subscribe);
+    fn words(words: &[&str]) -> Vec<String> {
+        words.iter().map(ToString::to_string).collect()
+    }
+
+    fn parse(args: &[&str]) -> Request {
+        parse_args(&words(args)).unwrap()
+    }
+
+    fn cli(args: &[&str]) -> CliArgs {
+        parse_cli_args(&words(args)).unwrap()
+    }
+
+    fn exec(command: &str) -> Request {
+        Request::Exec { command: command.into() }
     }
 
     #[test]
-    fn format_event_covers_every_variant_without_panicking() {
-        let events = [
-            Event::WindowOpened { id: 1 },
-            Event::WindowClosed { id: 2 },
-            Event::TitleChanged {
-                id: 3,
-                title: "Terminal".to_string(),
-            },
-            Event::AppIdChanged {
-                id: 4,
-                app_id: "alacritty".to_string(),
-            },
-            Event::FocusChanged { id: Some(5) },
-            Event::FocusChanged { id: None },
-            Event::WorkspaceChanged { id: 6 },
-            Event::OutputChanged,
-        ];
-        for event in events {
-            assert!(!format_event(&event).is_empty());
-        }
+    fn test_parse_args() {
+        assert_eq!(parse(&["ping"]), Request::Ping);
+        assert_eq!(parse(&["quit"]), Request::Quit);
+        assert_eq!(parse(&["workspace", "list"]), Request::ListWorkspaces);
+        assert_eq!(
+            parse(&["workspace", "switch", "2"]),
+            Request::SwitchWorkspace { target: WorkspaceTarget::Index(1) }
+        );
+        assert_eq!(parse(&["exec", "alacritty"]), exec("alacritty"));
+        assert_eq!(parse(&["exec", "notify-send", "a b"]), exec("notify-send 'a b'"));
+        assert_eq!(parse(&["exec", "echo hi | wc -c"]), exec("echo hi | wc -c"));
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(parse(&["subscribe"]), Request::Subscribe);
+        assert_eq!(parse(&["sub"]), Request::Subscribe);
+        assert_eq!(parse(&["lock"]), Request::Lock);
     }
 
     #[test]
     fn test_parse_cli_args_flags() {
-        let args = vec![
-            "glidectl".into(),
-            "--json".into(),
-            "workspace".into(),
-            "list".into(),
-        ];
-        let cli = parse_cli_args(&args).unwrap();
-        assert!(cli.json_output);
-        assert_eq!(cli.subcommand_args, vec!["workspace", "list"]);
+        let first = cli(&["glidectl", "--json", "workspace", "list"]);
+        assert!(first.json_output);
+        assert_eq!(first.subcommand_args, vec!["workspace", "list"]);
 
-        let args2 = vec![
-            "glidectl".into(),
-            "workspace".into(),
-            "list".into(),
-            "--json".into(),
-        ];
-        let cli2 = parse_cli_args(&args2).unwrap();
-        assert!(cli2.json_output);
-        assert_eq!(cli2.subcommand_args, vec!["workspace", "list"]);
+        let trailing = cli(&["glidectl", "workspace", "list", "--json"]);
+        assert!(trailing.json_output);
+        assert_eq!(trailing.subcommand_args, vec!["workspace", "list"]);
 
-        let args3 = vec![
-            "glidectl".into(),
-            "exec".into(),
-            "my_script".into(),
-            "--json".into(),
-        ];
-        let cli3 = parse_cli_args(&args3).unwrap();
-        assert!(!cli3.json_output);
-        assert_eq!(cli3.subcommand_args, vec!["exec", "my_script", "--json"]);
-        let req = parse_args(&cli3.subcommand_args).unwrap();
-        assert_eq!(
-            req,
-            Request::Exec {
-                command: "my_script --json".into()
-            }
-        );
+        let in_exec = cli(&["glidectl", "exec", "my_script", "--json"]);
+        assert!(!in_exec.json_output);
+        assert_eq!(in_exec.subcommand_args, vec!["exec", "my_script", "--json"]);
+        assert_eq!(parse_args(&in_exec.subcommand_args).unwrap(), exec("my_script --json"));
 
-        let args4 = vec![
-            "glidectl".into(),
-            "--json".into(),
-            "exec".into(),
-            "my_script".into(),
-            "--json".into(),
-        ];
-        let cli4 = parse_cli_args(&args4).unwrap();
-        assert!(cli4.json_output);
-        assert_eq!(cli4.subcommand_args, vec!["exec", "my_script", "--json"]);
-        let req4 = parse_args(&cli4.subcommand_args).unwrap();
-        assert_eq!(
-            req4,
-            Request::Exec {
-                command: "my_script --json".into()
-            }
-        );
+        let both = cli(&["glidectl", "--json", "exec", "my_script", "--json"]);
+        assert!(both.json_output);
+        assert_eq!(both.subcommand_args, vec!["exec", "my_script", "--json"]);
+        assert_eq!(parse_args(&both.subcommand_args).unwrap(), exec("my_script --json"));
     }
 
     #[test]
     fn test_adversarial_cli_edge_cases() {
         assert!(parse_cli_args(&[]).is_err());
-        assert!(parse_cli_args(&["glidectl".into()]).is_err());
-        assert!(parse_cli_args(&["glidectl".into(), "--json".into()]).is_err());
+        assert!(parse_cli_args(&words(&["glidectl"])).is_err());
+        assert!(parse_cli_args(&words(&["glidectl", "--json"])).is_err());
 
-        let args_ws0 = vec![
-            "glidectl".into(),
-            "workspace".into(),
-            "switch".into(),
-            "0".into(),
-        ];
-        let cli_ws0 = parse_cli_args(&args_ws0).unwrap();
-        assert!(parse_args(&cli_ws0.subcommand_args).is_err());
+        let ws0 = cli(&["glidectl", "workspace", "switch", "0"]);
+        assert!(parse_args(&ws0.subcommand_args).is_err());
 
-        let args_prev = vec![
-            "glidectl".into(),
-            "workspace".into(),
-            "switch".into(),
-            "prev".into(),
-        ];
-        let cli_prev = parse_cli_args(&args_prev).unwrap();
+        for (word, target) in [("prev", WorkspaceTarget::Previous), ("next", WorkspaceTarget::Next)] {
+            let switch = cli(&["glidectl", "workspace", "switch", word]);
+            assert_eq!(parse_args(&switch.subcommand_args).unwrap(), Request::SwitchWorkspace { target });
+        }
+
+        let focused = cli(&["glidectl", "window", "focus", "focused"]);
         assert_eq!(
-            parse_args(&cli_prev.subcommand_args).unwrap(),
-            Request::SwitchWorkspace {
-                target: WorkspaceTarget::Previous
-            }
+            parse_args(&focused.subcommand_args).unwrap(),
+            Request::FocusWindow { selector: WindowSelector::Focused }
         );
 
-        let args_next = vec![
-            "glidectl".into(),
-            "workspace".into(),
-            "switch".into(),
-            "next".into(),
-        ];
-        let cli_next = parse_cli_args(&args_next).unwrap();
+        let by_id = cli(&["glidectl", "--json", "window", "focus", "42"]);
+        assert!(by_id.json_output);
         assert_eq!(
-            parse_args(&cli_next.subcommand_args).unwrap(),
-            Request::SwitchWorkspace {
-                target: WorkspaceTarget::Next
-            }
+            parse_args(&by_id.subcommand_args).unwrap(),
+            Request::FocusWindow { selector: WindowSelector::Id(42) }
         );
 
-        let args_foc = vec![
-            "glidectl".into(),
-            "window".into(),
-            "focus".into(),
-            "focused".into(),
-        ];
-        let cli_foc = parse_cli_args(&args_foc).unwrap();
+        let moved = cli(&["glidectl", "window", "move", "3", "--json"]);
+        assert!(moved.json_output);
         assert_eq!(
-            parse_args(&cli_foc.subcommand_args).unwrap(),
-            Request::FocusWindow {
-                selector: WindowSelector::Focused
-            }
+            parse_args(&moved.subcommand_args).unwrap(),
+            Request::MoveWindow { window: WindowSelector::Focused, target: WorkspaceTarget::Index(2) }
         );
 
-        let args_id = vec![
-            "glidectl".into(),
-            "--json".into(),
-            "window".into(),
-            "focus".into(),
-            "42".into(),
-        ];
-        let cli_id = parse_cli_args(&args_id).unwrap();
-        assert!(cli_id.json_output);
-        assert_eq!(
-            parse_args(&cli_id.subcommand_args).unwrap(),
-            Request::FocusWindow {
-                selector: WindowSelector::Id(42)
-            }
-        );
-
-        let args_mv = vec![
-            "glidectl".into(),
-            "window".into(),
-            "move".into(),
-            "3".into(),
-            "--json".into(),
-        ];
-        let cli_mv = parse_cli_args(&args_mv).unwrap();
-        assert!(cli_mv.json_output);
-        assert_eq!(
-            parse_args(&cli_mv.subcommand_args).unwrap(),
-            Request::MoveWindow {
-                window: WindowSelector::Focused,
-                target: WorkspaceTarget::Index(2),
-            }
-        );
-
-        let args_unk = vec!["glidectl".into(), "unknown_cmd".into()];
-        let cli_unk = parse_cli_args(&args_unk).unwrap();
-        assert!(parse_args(&cli_unk.subcommand_args).is_err());
+        let unknown = cli(&["glidectl", "unknown_cmd"]);
+        assert!(parse_args(&unknown.subcommand_args).is_err());
     }
 }

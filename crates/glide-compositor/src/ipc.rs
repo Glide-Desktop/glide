@@ -8,10 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use glide_ipc::{Event, Request, Response, WindowInfo, WorkspaceInfo};
-use smithay::reexports::calloop::{
-    EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic,
-};
+use glide_ipc::{Event, OutputInfo, Request, Response, WindowInfo, WorkspaceInfo};
+use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic};
 
 use crate::GlideState;
 
@@ -37,10 +35,24 @@ pub struct IpcSubscribers {
 impl IpcSubscribers {
     fn add(&mut self, stream: UnixStream) {
         self.streams.push(stream);
-        tracing::info!(
-            subscriber_count = self.streams.len(),
-            "IPC event subscriber connected"
-        );
+        tracing::info!(subscriber_count = self.streams.len(), "IPC event subscriber connected");
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.streams.is_empty()
+    }
+
+    pub fn prune_closed(&mut self) {
+        self.streams.retain(|stream| {
+            let mut probe = [0_u8; 64];
+            let mut reader = stream;
+            match reader.read(&mut probe) {
+                Ok(0) => false,
+                Ok(_) => true,
+                Err(err) => matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted),
+            }
+        });
     }
 
     pub fn broadcast(&mut self, event: &Event) {
@@ -76,9 +88,7 @@ impl Drop for IpcServer {
 }
 
 fn socket_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
+    std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from)
 }
 
 fn socket_file_name(socket_name: &std::ffi::OsStr) -> String {
@@ -99,8 +109,7 @@ fn to_layout_target(target: glide_ipc::WorkspaceTarget) -> glide_layout::Workspa
 }
 
 pub fn init_ipc(
-    event_loop: &mut EventLoop<'static, GlideState>,
-    socket_name: &std::ffi::OsStr,
+    event_loop: &mut EventLoop<'static, GlideState>, socket_name: &std::ffi::OsStr,
 ) -> anyhow::Result<Option<IpcServer>> {
     let Some(socket_path) = socket_path_for(socket_name) else {
         tracing::warn!("XDG_RUNTIME_DIR is unset; IPC socket disabled");
@@ -119,25 +128,19 @@ pub fn init_ipc(
     let listener = UnixListener::bind(&socket_path)?;
     listener.set_nonblocking(true)?;
 
-    if let Err(err) = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
-    {
+    if let Err(err) = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)) {
         tracing::warn!(?err, "failed to restrict IPC socket permissions to 0600");
     }
 
-    let server = IpcServer {
-        socket_path: socket_path.clone(),
-    };
+    let server = IpcServer { socket_path: socket_path.clone() };
 
     let loop_handle = event_loop.handle();
     event_loop
         .handle()
-        .insert_source(
-            Generic::new(listener, Interest::READ, Mode::Level),
-            move |_, listener, _state| {
-                accept_pending(listener, &loop_handle);
-                Ok(PostAction::Continue)
-            },
-        )
+        .insert_source(Generic::new(listener, Interest::READ, Mode::Level), move |_, listener, _state| {
+            accept_pending(listener, &loop_handle);
+            Ok(PostAction::Continue)
+        })
         .map_err(|e| e.error)
         .map_err(|e| anyhow::anyhow!("failed to register the IPC listener: {e}"))?;
 
@@ -163,18 +166,14 @@ fn accept_pending(listener: &UnixListener, loop_handle: &LoopHandle<'static, Gli
     }
 }
 
-fn register_connection(
-    stream: UnixStream,
-    loop_handle: &LoopHandle<'static, GlideState>,
-) -> anyhow::Result<()> {
+fn register_connection(stream: UnixStream, loop_handle: &LoopHandle<'static, GlideState>) -> anyhow::Result<()> {
     stream.set_nonblocking(true)?;
 
     let mut buffer: Vec<u8> = Vec::new();
     loop_handle
-        .insert_source(
-            Generic::new(stream, Interest::READ, Mode::Level),
-            move |_, stream, state| Ok(read_request(stream, &mut buffer, state)),
-        )
+        .insert_source(Generic::new(stream, Interest::READ, Mode::Level), move |_, stream, state| {
+            Ok(read_request(stream, &mut buffer, state))
+        })
         .map_err(|e| e.error)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -219,10 +218,7 @@ fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::R
     while !data.is_empty() {
         match stream.write(data) {
             Ok(0) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::WriteZero,
-                    "failed to write response: zero bytes written",
-                ));
+                return Err(std::io::Error::new(ErrorKind::WriteZero, "failed to write response: zero bytes written"));
             }
             Ok(n) => {
                 data = &data[n..];
@@ -244,12 +240,14 @@ fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::R
 
 fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     let request = match std::str::from_utf8(line) {
-        Ok(text) => serde_json::from_str::<Request>(text.trim())
-            .map_err(|err| format!("invalid IPC request JSON: {err}")),
+        Ok(text) => {
+            serde_json::from_str::<Request>(text.trim()).map_err(|err| format!("invalid IPC request JSON: {err}"))
+        }
         Err(err) => Err(format!("IPC request was not valid UTF-8: {err}")),
     };
 
     let subscribing = matches!(request, Ok(Request::Subscribe));
+    let practising = matches!(request, Ok(Request::PracticeGestures));
     let response = match request {
         Ok(request) => dispatch_request(state, request),
         Err(message) => Response::Error { message },
@@ -262,15 +260,16 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     json.push('\n');
 
     if let Err(err) = write_all_nonblocking(stream, json.as_bytes()) {
-        tracing::debug!(
-            ?err,
-            "failed to write an IPC response; client likely hung up or buffer full"
-        );
+        tracing::debug!(?err, "failed to write an IPC response; client likely hung up or buffer full");
         return;
     }
 
-    if subscribing {
+    if subscribing || practising {
         match stream.try_clone() {
+            Ok(clone) if practising => {
+                state.cancel_touchpad_gesture();
+                state.gestures.clients.add(clone);
+            }
             Ok(clone) => state.ipc_subscribers.add(clone),
             Err(err) => tracing::warn!(?err, "failed to register an IPC event subscriber"),
         }
@@ -294,9 +293,7 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
         }
         Request::MoveWindow { window, target } => match resolve_window(state, window) {
             Some(w_id) => {
-                state
-                    .layout
-                    .move_window_to_workspace(w_id, to_layout_target(target));
+                state.layout.move_window_to_workspace(w_id, to_layout_target(target));
                 state.reconcile_space();
                 Response::Ok
             }
@@ -309,13 +306,19 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             }
             _ => window_not_found(),
         },
-        Request::Reload => {
-            crate::config::Config::load_or_default().apply_to_state(state);
-            state.queue_redraw();
-            Response::Ok
-        }
+        Request::Reload => match crate::config::Config::try_load() {
+            Ok(config) => {
+                config.apply_to_state(state);
+                state.queue_redraw();
+                Response::Ok
+            }
+            Err(message) => {
+                tracing::warn!(%message, "reload rejected; keeping the running configuration");
+                Response::Error { message }
+            }
+        },
         Request::Exec { command } => spawn_command(&command),
-        Request::Subscribe => Response::Subscribed,
+        Request::Subscribe | Request::PracticeGestures => Response::Subscribed,
         Request::SetDpms { on } => {
             state.set_outputs_blanked(!on);
             Response::Ok
@@ -329,23 +332,65 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
         }
         Request::GetLayout => match state.active_layout() {
             Some((index, name)) => Response::Layout { index, name },
-            None => Response::Error {
-                message: "no keyboard".to_string(),
-            },
+            None => Response::Error { message: "no keyboard".to_string() },
         },
+        Request::ListOutputs => list_outputs(state),
+        Request::NightLight { on } => {
+            if let Some(on) = on {
+                state.set_night_light(on);
+            }
+            Response::NightLight { on: state.topbar.system_status().night_light_on }
+        }
+        Request::Lock => {
+            state.lock_screen();
+            Response::Ok
+        }
     }
+}
+
+fn list_outputs(state: &GlideState) -> Response {
+    let list = state
+        .space
+        .outputs()
+        .map(|output| {
+            let physical = output.physical_properties();
+            let (width, height, refresh_mhz) =
+                output.current_mode().map_or((0, 0, 0), |mode| (mode.size.w, mode.size.h, mode.refresh));
+            let location = output.current_location();
+            let preferred = output.preferred_mode();
+            let modes = output
+                .modes()
+                .into_iter()
+                .map(|mode| glide_ipc::ModeInfo {
+                    width: mode.size.w,
+                    height: mode.size.h,
+                    refresh_mhz: mode.refresh,
+                    preferred: preferred == Some(mode),
+                })
+                .collect();
+            OutputInfo {
+                name: output.name(),
+                make: physical.make,
+                model: physical.model,
+                width,
+                height,
+                refresh_mhz,
+                scale: output.current_scale().fractional_scale(),
+                x: location.x,
+                y: location.y,
+                modes,
+                physical_mm: (physical.size.w, physical.size.h),
+            }
+        })
+        .collect();
+    Response::Outputs { list }
 }
 
 fn window_not_found() -> Response {
-    Response::Error {
-        message: "window not found".to_string(),
-    }
+    Response::Error { message: "window not found".to_string() }
 }
 
-fn resolve_window(
-    state: &GlideState,
-    selector: glide_ipc::WindowSelector,
-) -> Option<glide_layout::WindowId> {
+fn resolve_window(state: &GlideState, selector: glide_ipc::WindowSelector) -> Option<glide_layout::WindowId> {
     match selector {
         glide_ipc::WindowSelector::Focused => state.layout.focused_window(),
         glide_ipc::WindowSelector::Id(raw) => {
@@ -373,12 +418,8 @@ fn list_workspaces(state: &GlideState) -> Response {
 
 fn list_windows(state: &GlideState) -> Response {
     let focused = state.layout.focused_window();
-    let workspace_index: HashMap<_, _> = state
-        .layout
-        .workspaces()
-        .enumerate()
-        .map(|(index, ws)| (ws.id, index))
-        .collect();
+    let workspace_index: HashMap<_, _> =
+        state.layout.workspaces().enumerate().map(|(index, ws)| (ws.id, index)).collect();
 
     let list = state
         .window_map
@@ -402,13 +443,11 @@ fn list_windows(state: &GlideState) -> Response {
 
 fn spawn_command(command: &str) -> Response {
     match crate::spawn_shell_command(command) {
-        Ok(child) => {
-            tracing::info!(command, pid = child.id(), "ipc spawned process");
+        Ok(pid) => {
+            tracing::info!(command, pid, "ipc spawned process");
             Response::Ok
         }
-        Err(err) => Response::Error {
-            message: format!("failed to spawn process: {err}"),
-        },
+        Err(err) => Response::Error { message: format!("failed to spawn process: {err}") },
     }
 }
 
@@ -418,26 +457,14 @@ mod tests {
 
     #[test]
     fn socket_file_name_is_derived_from_the_wayland_socket() {
-        assert_eq!(
-            socket_file_name(std::ffi::OsStr::new("wayland-1")),
-            "glide-wayland-1.sock"
-        );
+        assert_eq!(socket_file_name(std::ffi::OsStr::new("wayland-1")), "glide-wayland-1.sock");
     }
 
     #[test]
     fn workspace_targets_map_onto_the_layout_engine() {
-        assert_eq!(
-            to_layout_target(glide_ipc::WorkspaceTarget::Index(3)),
-            glide_layout::WorkspaceTarget::Index(3)
-        );
-        assert_eq!(
-            to_layout_target(glide_ipc::WorkspaceTarget::Next),
-            glide_layout::WorkspaceTarget::Next
-        );
-        assert_eq!(
-            to_layout_target(glide_ipc::WorkspaceTarget::Previous),
-            glide_layout::WorkspaceTarget::Previous
-        );
+        assert_eq!(to_layout_target(glide_ipc::WorkspaceTarget::Index(3)), glide_layout::WorkspaceTarget::Index(3));
+        assert_eq!(to_layout_target(glide_ipc::WorkspaceTarget::Next), glide_layout::WorkspaceTarget::Next);
+        assert_eq!(to_layout_target(glide_ipc::WorkspaceTarget::Previous), glide_layout::WorkspaceTarget::Previous);
     }
 
     #[test]
@@ -468,10 +495,7 @@ mod tests {
         });
 
         let write_res = write_all_nonblocking(&server_stream, &payload);
-        assert!(
-            write_res.is_ok(),
-            "write_all_nonblocking failed: {write_res:?}"
-        );
+        assert!(write_res.is_ok(), "write_all_nonblocking failed: {write_res:?}");
 
         let received = handle.join().unwrap();
         assert_eq!(received, payload);
@@ -567,16 +591,11 @@ mod tests {
         subscribers.add(reading);
         subscribers.broadcast(&Event::OutputChanged);
 
-        assert_eq!(
-            subscribers.streams.len(),
-            1,
-            "exactly the stalled subscriber must have been dropped"
-        );
+        assert_eq!(subscribers.streams.len(), 1, "exactly the stalled subscriber must have been dropped");
 
         let mut buf = [0_u8; 256];
         let n = reading_client.read(&mut buf).unwrap();
-        let parsed: Event =
-            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        let parsed: Event = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert_eq!(parsed, Event::OutputChanged);
     }
 
@@ -591,5 +610,21 @@ mod tests {
         subscribers.broadcast(&Event::OutputChanged);
 
         assert!(subscribers.streams.is_empty());
+    }
+
+    #[test]
+    fn gesture_practice_ends_when_the_settings_app_hangs_up() {
+        let (alive, _alive_client) = UnixStream::pair().unwrap();
+        let (gone, gone_client) = UnixStream::pair().unwrap();
+        alive.set_nonblocking(true).unwrap();
+        gone.set_nonblocking(true).unwrap();
+        drop(gone_client);
+
+        let mut practice = IpcSubscribers::default();
+        practice.add(alive);
+        practice.add(gone);
+        practice.prune_closed();
+        assert_eq!(practice.streams.len(), 1, "an idle open client stays");
+        assert!(!practice.is_empty());
     }
 }

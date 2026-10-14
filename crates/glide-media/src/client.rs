@@ -1,22 +1,30 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc,
+        mpsc::{self, RecvTimeoutError},
+    },
     time::Duration,
 };
 
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
+use crate::art::ArtFetcher;
 use crate::model::{
-    Command, MediaEvent, OBJECT_PATH, PLAYER_INTERFACE, Playback, Track, artists_to_line,
-    better_candidate, identity_from_bus, is_player_bus,
+    Command, MediaEvent, OBJECT_PATH, PLAYER_INTERFACE, Playback, Track, artists_to_line, better_candidate,
+    identity_from_bus, is_player_bus, seek_target,
 };
 
 pub type Sink = Arc<dyn Fn(MediaEvent) + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Request {
+    Command(Command),
+    Seek(f32),
+}
+
 pub struct MediaHandle {
-    connection: zbus::blocking::Connection,
-    current: Arc<Mutex<Option<String>>>,
-    wake: Arc<std::sync::atomic::AtomicBool>,
+    requests: mpsc::Sender<Request>,
 }
 
 impl std::fmt::Debug for MediaHandle {
@@ -26,90 +34,79 @@ impl std::fmt::Debug for MediaHandle {
 }
 
 impl MediaHandle {
-    fn bus(&self) -> Option<String> {
-        self.current
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn poke(&self) {
-        self.wake.store(true, std::sync::atomic::Ordering::Release);
-    }
-
     pub fn send(&self, command: Command) {
-        let Some(bus) = self.bus() else {
-            return;
-        };
-        let call = zbus::message::Message::method_call(OBJECT_PATH, command.method())
-            .and_then(|builder| builder.destination(bus.as_str()))
-            .and_then(|builder| builder.interface(PLAYER_INTERFACE))
-            .and_then(|builder| builder.build(&()));
-        match call {
-            Ok(message) => {
-                if let Err(err) = self.connection.send(&message) {
-                    tracing::debug!("failed to send {}: {err}", command.method());
-                }
-            }
-            Err(err) => tracing::debug!("failed to build {}: {err}", command.method()),
-        }
-        self.poke();
-    }
-
-    #[must_use]
-    pub fn poll(&self) -> Option<Track> {
-        let bus = self.bus()?;
-        read_track(&self.connection, &bus)
+        self.request(Request::Command(command));
     }
 
     pub fn seek(&self, fraction: f32) {
-        let Some(bus) = self.bus() else {
-            return;
-        };
-        let Some(track) = read_track(&self.connection, &bus) else {
-            return;
-        };
-        let Some(target) = crate::model::seek_target(track.length, fraction) else {
-            return;
-        };
-        if track.track_id.is_empty() {
-            return;
-        }
-        let Ok(path) = zbus::zvariant::ObjectPath::try_from(track.track_id) else {
-            return;
-        };
-        let Ok(micros) = i64::try_from(target.as_micros()) else {
-            return;
-        };
+        self.request(Request::Seek(fraction));
+    }
 
-        let call = zbus::message::Message::method_call(OBJECT_PATH, "SetPosition")
-            .and_then(|builder| builder.destination(bus.as_str()))
-            .and_then(|builder| builder.interface(PLAYER_INTERFACE))
-            .and_then(|builder| builder.build(&(path, micros)));
-        match call {
-            Ok(message) => {
-                if let Err(err) = self.connection.send(&message) {
-                    tracing::debug!("failed to seek: {err}");
-                }
-            }
-            Err(err) => tracing::debug!("failed to build SetPosition: {err}"),
+    fn request(&self, request: Request) {
+        if self.requests.send(request).is_err() {
+            tracing::debug!("media worker has stopped; dropping {request:?}");
         }
-        self.poke();
+    }
+}
+
+fn coalesce(requests: Vec<Request>) -> Vec<Request> {
+    let last_seek = requests.iter().rposition(|request| matches!(request, Request::Seek(_)));
+    requests
+        .into_iter()
+        .enumerate()
+        .filter(|(index, request)| !matches!(request, Request::Seek(_)) || Some(*index) == last_seek)
+        .map(|(_, request)| request)
+        .collect()
+}
+
+fn seek_arguments(track: &Track, fraction: f32) -> Option<(ObjectPath<'static>, i64)> {
+    if !fraction.is_finite() || track.track_id.is_empty() {
+        return None;
+    }
+    let target = seek_target(track.length, fraction)?;
+    let path = ObjectPath::try_from(track.track_id.clone()).ok()?;
+    let micros = i64::try_from(target.as_micros()).ok()?;
+    Some((path, micros))
+}
+
+fn player_call<'a>(bus: &'a str, method: &'a str) -> zbus::Result<zbus::message::Builder<'a>> {
+    zbus::message::Message::method_call(OBJECT_PATH, method)?.destination(bus)?.interface(PLAYER_INTERFACE)
+}
+
+fn perform(connection: &zbus::blocking::Connection, current: Option<&Track>, request: Request) {
+    let Some(track) = current else {
+        return;
+    };
+    let bus = track.bus.as_str();
+    let method = match request {
+        Request::Command(command) => format!("{command:?}"),
+        Request::Seek(_) => String::from("SetPosition"),
+    };
+    let message = match request {
+        Request::Command(_) => player_call(bus, &method).and_then(|builder| builder.build(&())),
+        Request::Seek(fraction) => {
+            let Some(arguments) = seek_arguments(track, fraction) else {
+                return;
+            };
+            player_call(bus, &method).and_then(|builder| builder.build(&arguments))
+        }
+    };
+    match message {
+        Ok(message) => {
+            if let Err(err) = connection.send(&message) {
+                tracing::debug!("failed to send {method}: {err}");
+            }
+        }
+        Err(err) => tracing::debug!("failed to build {method}: {err}"),
     }
 }
 
 fn string_of(map: &HashMap<String, OwnedValue>, key: &str) -> String {
-    map.get(key)
-        .and_then(|value| String::try_from(value.clone()).ok())
-        .unwrap_or_default()
+    map.get(key).and_then(|value| String::try_from(value.clone()).ok()).unwrap_or_default()
 }
 
 fn micros_of(map: &HashMap<String, OwnedValue>, key: &str) -> Option<Duration> {
-    micros_from(map.get(key)?)
-}
-
-fn micros_from(value: &OwnedValue) -> Option<Duration> {
-    let micros = match &**value {
+    let micros = match &**map.get(key)? {
         Value::I64(inner) => u64::try_from(*inner).ok()?,
         Value::U64(inner) => *inner,
         Value::I32(inner) => u64::try_from(*inner).ok()?,
@@ -129,40 +126,33 @@ fn artists_of(map: &HashMap<String, OwnedValue>) -> String {
     String::try_from(value.clone()).unwrap_or_default()
 }
 
-fn property(connection: &zbus::blocking::Connection, bus: &str, name: &str) -> Option<OwnedValue> {
-    let proxy = zbus::blocking::Proxy::new(
-        connection,
-        bus,
-        OBJECT_PATH,
-        "org.freedesktop.DBus.Properties",
-    )
-    .ok()?;
-    proxy.call("Get", &(PLAYER_INTERFACE, name)).ok()
-}
+const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 
-fn boolean(connection: &zbus::blocking::Connection, bus: &str, name: &str) -> bool {
-    property(connection, bus, name)
-        .and_then(|value| bool::try_from(value).ok())
-        .unwrap_or(false)
+type Properties = HashMap<String, OwnedValue>;
+
+fn properties(connection: &zbus::blocking::Connection, bus: &str, interface: &str) -> Option<Properties> {
+    connection
+        .call_method(Some(bus), OBJECT_PATH, Some("org.freedesktop.DBus.Properties"), "GetAll", &(interface,))
+        .ok()?
+        .body()
+        .deserialize()
+        .ok()
 }
 
 fn read_track(connection: &zbus::blocking::Connection, bus: &str) -> Option<Track> {
-    let metadata = property(connection, bus, "Metadata")?;
-    let metadata = HashMap::<String, OwnedValue>::try_from(metadata).ok()?;
-
-    let status = property(connection, bus, "PlaybackStatus")
-        .and_then(|value| String::try_from(value).ok())
-        .map_or(Playback::Stopped, |value| Playback::from_wire(&value));
-
-    let position = property(connection, bus, "Position").and_then(|value| micros_from(&value));
-
+    let player = properties(connection, bus, PLAYER_INTERFACE)?;
+    let metadata = Properties::try_from(player.get("Metadata")?.try_clone().ok()?).ok()?;
+    let flag = |key: &str| player.get(key).and_then(|value| bool::try_from(value).ok()).unwrap_or(false);
     Some(Track {
         bus: bus.to_string(),
         identity: identity_from_bus(bus),
+        desktop_entry: properties(connection, bus, ROOT_INTERFACE)
+            .map(|root| string_of(&root, "DesktopEntry"))
+            .unwrap_or_default(),
         track_id: metadata
             .get("mpris:trackid")
             .and_then(|value| {
-                zbus::zvariant::ObjectPath::try_from(value.clone())
+                ObjectPath::try_from(value.clone())
                     .map(|path| path.as_str().to_string())
                     .ok()
                     .or_else(|| String::try_from(value.clone()).ok())
@@ -173,114 +163,86 @@ fn read_track(connection: &zbus::blocking::Connection, bus: &str) -> Option<Trac
         album: string_of(&metadata, "xesam:album"),
         art_url: string_of(&metadata, "mpris:artUrl"),
         length: micros_of(&metadata, "mpris:length"),
-        position,
-        status,
-        can_go_next: boolean(connection, bus, "CanGoNext"),
-        can_go_previous: boolean(connection, bus, "CanGoPrevious"),
-        can_pause: boolean(connection, bus, "CanPause"),
+        position: micros_of(&player, "Position"),
+        status: Playback::from_wire(&string_of(&player, "PlaybackStatus")),
+        can_go_next: flag("CanGoNext"),
+        can_go_previous: flag("CanGoPrevious"),
+        can_pause: flag("CanPause"),
     })
 }
 
 fn list_players(connection: &zbus::blocking::Connection) -> Vec<String> {
-    let proxy = zbus::blocking::fdo::DBusProxy::new(connection);
-    let Ok(proxy) = proxy else {
-        return Vec::new();
-    };
-    let Ok(names) = proxy.list_names() else {
-        return Vec::new();
-    };
-    names
-        .into_iter()
-        .filter(|name| is_player_bus(name.as_str()))
-        .map(|name| name.as_str().to_string())
-        .collect()
+    let names = zbus::blocking::fdo::DBusProxy::new(connection)
+        .ok()
+        .and_then(|proxy| proxy.list_names().ok())
+        .unwrap_or_default();
+    names.into_iter().filter(|name| is_player_bus(name.as_str())).map(|name| name.as_str().to_string()).collect()
 }
 
 fn choose(connection: &zbus::blocking::Connection) -> Option<Track> {
-    let mut best: Option<Track> = None;
-    for bus in list_players(connection) {
-        let Some(track) = read_track(connection, &bus) else {
-            continue;
-        };
-        if !track.status.is_active() {
-            continue;
-        }
-        if better_candidate(best.as_ref(), &track) || best.is_none() {
-            best = Some(track);
-        }
-    }
-    best
+    list_players(connection)
+        .iter()
+        .filter_map(|bus| read_track(connection, bus))
+        .filter(|track| track.status.is_active())
+        .fold(None, |best, track| if better_candidate(best.as_ref(), &track) { Some(track) } else { best })
 }
 
-const TICK: Duration = Duration::from_millis(100);
-const TICKS_PER_SCAN: u32 = 5;
+const SCAN_INTERVAL: Duration = Duration::from_millis(500);
+const SETTLE_DELAY: Duration = Duration::from_millis(100);
+const METHOD_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn start(sink: Sink) -> anyhow::Result<MediaHandle> {
-    let connection = zbus::blocking::Connection::session()?;
-    let current: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let wake = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    let handle = MediaHandle {
-        connection: connection.clone(),
-        current: Arc::clone(&current),
-        wake: Arc::clone(&wake),
-    };
+    let connection = zbus::blocking::connection::Builder::session()?.method_timeout(METHOD_TIMEOUT).build()?;
+    let (requests, inbox) = mpsc::channel();
 
     std::thread::Builder::new()
         .name("glide-mpris".to_string())
-        .spawn(move || {
-            let mut last: Option<Track> = None;
-            let mut ticks = 0u32;
-            publish(&connection, &current, &mut last, &sink);
-            loop {
-                std::thread::sleep(TICK);
-                ticks += 1;
-                let poked = wake.swap(false, std::sync::atomic::Ordering::AcqRel);
-                if !poked && ticks < TICKS_PER_SCAN {
-                    continue;
-                }
-                ticks = 0;
-                publish(&connection, &current, &mut last, &sink);
-            }
-        })?;
+        .spawn(move || run_worker(&connection, &inbox, &sink))?;
 
-    Ok(handle)
+    Ok(MediaHandle { requests })
 }
 
-fn publish(
-    connection: &zbus::blocking::Connection,
-    current: &Arc<Mutex<Option<String>>>,
-    last: &mut Option<Track>,
-    sink: &Sink,
-) {
-    let track = choose(connection);
-    {
-        let mut slot = current
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = track.as_ref().map(|track| track.bus.clone());
+fn run_worker(connection: &zbus::blocking::Connection, inbox: &mpsc::Receiver<Request>, sink: &Sink) {
+    let mut last: Option<Track> = None;
+    let mut wait = SCAN_INTERVAL;
+    let mut art = ArtFetcher::start();
+    publish(connection, &mut last, &mut art, sink);
+    loop {
+        let first = match inbox.recv_timeout(wait) {
+            Ok(request) => Some(request),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        let pending = coalesce(first.into_iter().chain(inbox.try_iter()).collect());
+        for request in &pending {
+            perform(connection, last.as_ref(), *request);
+        }
+        publish(connection, &mut last, &mut art, sink);
+        wait = if pending.is_empty() { SCAN_INTERVAL } else { SETTLE_DELAY };
     }
+}
 
-    match (&track, last.as_ref()) {
+fn publish(connection: &zbus::blocking::Connection, last: &mut Option<Track>, art: &mut ArtFetcher, sink: &Sink) {
+    let track = choose(connection).map(|mut track| {
+        art.localise(&mut track.art_url);
+        track
+    });
+
+    match (track, last.as_ref()) {
         (None, None) => {}
         (None, Some(_)) => {
             *last = None;
             sink(MediaEvent::Gone);
         }
-        (Some(track), None) => {
-            *last = Some(track.clone());
-            sink(MediaEvent::Changed(Box::new(track.clone())));
-        }
-        (Some(track), Some(previous)) => {
-            if previous.is_same_track(track) && previous.status == track.status {
-                if previous.progress() != track.progress() {
-                    *last = Some(track.clone());
-                    sink(MediaEvent::Progress(track.progress()));
-                }
-            } else {
-                *last = Some(track.clone());
-                sink(MediaEvent::Changed(Box::new(track.clone())));
+        (Some(track), Some(previous)) if previous.is_same_track(&track) && previous.status == track.status => {
+            if previous.progress() != track.progress() {
+                sink(MediaEvent::Progress(track.progress()));
+                *last = Some(track);
             }
+        }
+        (Some(track), _) => {
+            sink(MediaEvent::Changed(Box::new(track.clone())));
+            *last = Some(track);
         }
     }
 }
@@ -289,62 +251,74 @@ fn publish(
 mod tests {
     use super::*;
 
-    #[test]
-    fn metadata_strings_default_rather_than_failing() {
-        let map = HashMap::new();
-        assert_eq!(string_of(&map, "xesam:title"), "");
-        assert_eq!(artists_of(&map), "");
+    fn seekable_track() -> Track {
+        Track {
+            bus: "org.mpris.MediaPlayer2.test".to_string(),
+            track_id: "/org/glide/track/1".to_string(),
+            length: Some(Duration::from_secs(200)),
+            ..Track::default()
+        }
     }
 
     #[test]
-    fn a_length_is_read_from_any_integer_width() {
-        let mut map = HashMap::new();
-        map.insert(
-            "mpris:length".to_string(),
-            OwnedValue::try_from(Value::I64(2_000_000)).expect("value converts"),
-        );
+    fn handle_calls_only_enqueue_requests_for_the_worker() {
+        let (requests, inbox) = mpsc::channel();
+        let handle = MediaHandle { requests };
+        handle.send(Command::PlayPause);
+        handle.seek(0.5);
+        let received: Vec<Request> = inbox.try_iter().collect();
+        assert_eq!(received, vec![Request::Command(Command::PlayPause), Request::Seek(0.5)]);
+    }
+
+    #[test]
+    fn a_burst_of_seeks_collapses_to_the_last_one_and_commands_keep_their_order() {
+        let pending = vec![
+            Request::Seek(0.1),
+            Request::Command(Command::Next),
+            Request::Seek(0.2),
+            Request::Command(Command::PlayPause),
+            Request::Seek(0.3),
+        ];
         assert_eq!(
-            micros_of(&map, "mpris:length"),
-            Some(Duration::from_secs(2))
+            coalesce(pending),
+            vec![Request::Command(Command::Next), Request::Command(Command::PlayPause), Request::Seek(0.3),]
         );
-
-        map.insert(
-            "mpris:length".to_string(),
-            OwnedValue::try_from(Value::U32(3_000_000)).expect("value converts"),
-        );
-        assert_eq!(
-            micros_of(&map, "mpris:length"),
-            Some(Duration::from_secs(3))
-        );
+        assert!(coalesce(Vec::new()).is_empty());
     }
 
     #[test]
-    fn a_negative_length_is_refused_rather_than_wrapping() {
-        let mut map = HashMap::new();
-        map.insert(
-            "mpris:length".to_string(),
-            OwnedValue::try_from(Value::I64(-5)).expect("value converts"),
-        );
-        assert_eq!(micros_of(&map, "mpris:length"), None);
+    fn a_seek_uses_the_cached_track_length_and_id() {
+        let (path, micros) = seek_arguments(&seekable_track(), 0.25).expect("seekable");
+        assert_eq!(path.as_str(), "/org/glide/track/1");
+        assert_eq!(micros, 50_000_000);
     }
 
     #[test]
-    fn a_single_artist_string_is_accepted_as_well_as_a_list() {
-        let mut map = HashMap::new();
-        map.insert(
-            "xesam:artist".to_string(),
-            OwnedValue::try_from(Value::Str("Solo".into())).expect("value converts"),
-        );
-        assert_eq!(artists_of(&map), "Solo");
+    fn a_seek_without_a_usable_track_is_dropped() {
+        let no_id = Track { track_id: String::new(), ..seekable_track() };
+        assert!(seek_arguments(&no_id, 0.5).is_none());
+
+        let bad_id = Track { track_id: "not a path".to_string(), ..seekable_track() };
+        assert!(seek_arguments(&bad_id, 0.5).is_none());
+
+        let no_length = Track { length: None, ..seekable_track() };
+        assert!(seek_arguments(&no_length, 0.5).is_none());
+
+        assert!(seek_arguments(&seekable_track(), f32::NAN).is_none());
+    }
+
+    fn map(key: &str, value: Value<'_>) -> HashMap<String, OwnedValue> {
+        HashMap::from([(key.to_string(), OwnedValue::try_from(value).expect("owned"))])
     }
 
     #[test]
-    fn a_metadata_key_of_the_wrong_type_does_not_panic() {
-        let mut map = HashMap::new();
-        map.insert(
-            "xesam:title".to_string(),
-            OwnedValue::try_from(Value::I32(7)).expect("value converts"),
-        );
-        assert_eq!(string_of(&map, "xesam:title"), "");
+    fn metadata_is_read_leniently() {
+        let length = |value| micros_of(&map("mpris:length", value), "mpris:length");
+        assert_eq!(length(Value::I64(2_000_000)), Some(Duration::from_secs(2)));
+        assert_eq!(length(Value::U32(3_000_000)), Some(Duration::from_secs(3)));
+        assert_eq!(length(Value::I64(-5)), None, "negative never wraps");
+        assert_eq!(artists_of(&map("xesam:artist", Value::Str("Solo".into()))), "Solo");
+        assert_eq!(string_of(&map("xesam:title", Value::I32(7)), "xesam:title"), "");
+        assert_eq!(artists_of(&HashMap::new()), "");
     }
 }

@@ -1,9 +1,13 @@
 use smithay::{
     backend::renderer::element::memory::MemoryRenderBuffer,
-    utils::{Logical, Point, Rectangle, Size, Transform},
+    utils::{Logical, Point, Rectangle, Size},
 };
 
-use crate::config::Color;
+use crate::{
+    config::Color,
+    paint::TextAlign,
+    raster::{Canvas, rect},
+};
 
 pub const WIDTH: i32 = 224;
 pub const PADDING: i32 = glide_theme::spacing::SP1;
@@ -23,6 +27,7 @@ pub struct MenuColors {
     pub text_muted: Color,
     pub text_danger: Color,
     pub item_hover: Color,
+    pub appearance: glide_theme::Appearance,
 }
 
 impl MenuColors {
@@ -35,14 +40,21 @@ impl MenuColors {
             text_muted: theme.menu_text_muted,
             text_danger: theme.menu_text_danger,
             item_hover: theme.menu_item_hover,
+            appearance: theme.appearance,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MenuRow {
-    pub label: &'static str,
+    pub label: std::borrow::Cow<'static, str>,
     pub danger: bool,
+    pub muted: bool,
+}
+
+#[must_use]
+pub fn text_px(painter: &crate::paint::Painter, text: &str, style: &glide_theme::TextStyle) -> i32 {
+    painter.text_width_styled(text, style).ceil() as i32
 }
 
 #[must_use]
@@ -51,10 +63,14 @@ pub fn height(rows: usize) -> i32 {
 }
 
 #[must_use]
+pub fn rows_fitting_above(anchor: Rectangle<i32, Logical>, area: Rectangle<i32, Logical>) -> usize {
+    let space = anchor.loc.y - GAP - (area.loc.y + EDGE_MARGIN) - PADDING * 2 - HEADER_HEIGHT;
+    usize::try_from(space / ROW_HEIGHT).unwrap_or(0)
+}
+
+#[must_use]
 pub fn place_above(
-    anchor: Rectangle<i32, Logical>,
-    area: Rectangle<i32, Logical>,
-    rows: usize,
+    anchor: Rectangle<i32, Logical>, area: Rectangle<i32, Logical>, rows: usize,
 ) -> Rectangle<i32, Logical> {
     let height = height(rows);
     let min_x = area.loc.x + EDGE_MARGIN;
@@ -68,148 +84,52 @@ pub fn place_above(
 pub fn row_rect(menu: Rectangle<i32, Logical>, row: usize) -> Rectangle<i32, Logical> {
     let row = i32::try_from(row).unwrap_or(0);
     Rectangle::new(
-        Point::from((
-            menu.loc.x + PADDING,
-            menu.loc.y + PADDING + HEADER_HEIGHT + row * ROW_HEIGHT,
-        )),
+        Point::from((menu.loc.x + PADDING, menu.loc.y + PADDING + HEADER_HEIGHT + row * ROW_HEIGHT)),
         Size::from((WIDTH - PADDING * 2, ROW_HEIGHT)),
     )
 }
 
 #[must_use]
-pub fn row_at(
-    menu: Rectangle<i32, Logical>,
-    rows: usize,
-    pos: Point<f64, Logical>,
-) -> Option<usize> {
+pub fn row_at(menu: Rectangle<i32, Logical>, rows: usize, pos: Point<f64, Logical>) -> Option<usize> {
     (0..rows).find(|row| row_rect(menu, *row).to_f64().contains(pos))
 }
 
 #[must_use]
 pub fn draw(
-    painter: &crate::paint::Painter,
-    colors: &MenuColors,
-    title: &str,
-    rows: &[MenuRow],
-    hovered: Option<usize>,
+    painter: &crate::paint::Painter, colors: &MenuColors, title: &str, rows: &[MenuRow], hovered: Option<usize>,
     scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let (w, h) = (WIDTH, height(rows.len()));
-    let scale = scale.max(1);
-    let pixels = usize::try_from(w * scale * h * scale * 4).ok()?;
-    let mut buf = vec![0u8; pixels];
-
-    crate::paint::Painter::fill_panel_background(
-        &mut buf,
-        w,
-        h,
-        scale,
-        colors.background,
-        RADIUS,
-        [true; 4],
-    );
-    crate::paint::stroke_rounded_rect_over(
-        &mut buf,
-        w,
-        h,
-        0,
-        0,
-        w,
-        h,
-        scale,
-        1.0,
-        RADIUS,
-        colors.border,
-    );
-
-    let row_left = PADDING;
-    let row_w = w - PADDING * 2;
-    painter.draw_label_over_styled_in_band(
-        &mut buf,
-        w,
-        h,
-        row_left + ROW_PAD_X,
-        row_left + row_w - ROW_PAD_X,
-        PADDING,
-        PADDING + HEADER_HEIGHT,
-        scale,
-        crate::paint::TextAlign::Left,
-        title,
-        colors.text_muted.to_buffer_bytes(),
-        &glide_theme::TextStyle::CAP,
-    );
-    crate::paint::Painter::fill_rounded_rect_over(
-        &mut buf,
-        w,
-        h,
-        row_left + glide_theme::spacing::SP1,
-        PADDING + HEADER_HEIGHT - 1,
-        row_w - glide_theme::spacing::SP1 * 2,
-        1,
-        scale,
-        colors.border,
-        0.0,
-    );
+    let mut c = Canvas::popover((w, h), scale.max(1), RADIUS, colors.background, colors.border)?;
+    let (left, right) = (PADDING + ROW_PAD_X, w - PADDING - ROW_PAD_X);
+    let head = (left, right, PADDING, PADDING + HEADER_HEIGHT);
+    c.text(painter, head, TextAlign::Left, title, colors.text_muted, &glide_theme::TextStyle::CAP);
+    let sp1 = glide_theme::spacing::SP1;
+    c.fill(rect(PADDING + sp1, PADDING + HEADER_HEIGHT - 1, w - PADDING * 2 - sp1 * 2, 1), colors.border, 0.0);
 
     for (row, item) in rows.iter().enumerate() {
         let top = PADDING + HEADER_HEIGHT + i32::try_from(row).unwrap_or(0) * ROW_HEIGHT;
         if hovered == Some(row) {
-            crate::paint::Painter::fill_rounded_rect_over(
-                &mut buf,
-                w,
-                h,
-                row_left,
-                top,
-                row_w,
-                ROW_HEIGHT,
-                scale,
-                colors.item_hover,
-                ROW_RADIUS,
-            );
+            c.fill(rect(PADDING, top, w - PADDING * 2, ROW_HEIGHT), colors.item_hover, ROW_RADIUS);
         }
         let color = if item.danger {
             colors.text_danger
+        } else if item.muted {
+            colors.text_muted
         } else {
             colors.text
         };
-        painter.draw_label_over_styled_in_band(
-            &mut buf,
-            w,
-            h,
-            row_left + ROW_PAD_X,
-            row_left + row_w - ROW_PAD_X,
-            top,
-            top + ROW_HEIGHT,
-            scale,
-            crate::paint::TextAlign::Left,
-            item.label,
-            color.to_buffer_bytes(),
-            &glide_theme::TextStyle::MENU_ITEM,
-        );
+        let band = (left, right, top, top + ROW_HEIGHT);
+        c.text(painter, band, TextAlign::Left, &item.label, color, &glide_theme::TextStyle::MENU_ITEM);
     }
-
-    Some(MemoryRenderBuffer::from_slice(
-        &buf,
-        smithay::backend::allocator::Fourcc::Argb8888,
-        (w * scale, h * scale),
-        scale,
-        Transform::Normal,
-        None,
-    ))
-}
-
-fn shadow_layers() -> Vec<glide_theme::elevation::ShadowLayer> {
-    glide_theme::elevation::layers(
-        glide_theme::elevation::Level::El3,
-        glide_theme::Appearance::Dark,
-    )
+    Some(c.finish())
 }
 
 #[must_use]
 pub fn shadow_margin() -> i32 {
-    #[allow(clippy::cast_possible_truncation)]
-    let widest = shadow_layers()
-        .iter()
+    let widest = [glide_theme::Appearance::Light, glide_theme::Appearance::Dark]
+        .into_iter()
+        .flat_map(|appearance| glide_theme::elevation::layers(glide_theme::elevation::Level::El3, appearance))
         .map(|layer| layer.blur)
         .fold(0.0_f32, f32::max)
         .ceil() as i32;
@@ -218,47 +138,18 @@ pub fn shadow_margin() -> i32 {
 
 #[must_use]
 pub fn draw_shadow(
-    size: Size<i32, Logical>,
-    radius: f32,
-    output_scale: i32,
+    size: Size<i32, Logical>, radius: f32, output_scale: i32, appearance: glide_theme::Appearance,
 ) -> Option<MemoryRenderBuffer> {
-    let margin = shadow_margin();
-    let (w, h) = (size.w + margin * 2, size.h + margin * 2);
-    let (pw, ph) = (w * output_scale, h * output_scale);
-    let mut buf = vec![0u8; usize::try_from(pw * ph * 4).ok()?];
+    draw_elevation(size, radius, output_scale, glide_theme::elevation::Level::El3, appearance)
+}
 
-    #[allow(clippy::cast_precision_loss)]
-    let factor = output_scale as f32;
-    let layers: Vec<_> = shadow_layers()
-        .into_iter()
-        .map(|layer| crate::paint::ShadowLayerSpec {
-            dy: layer.dy * factor,
-            blur: layer.blur * factor,
-            color: layer.color,
-        })
-        .collect();
-    #[allow(clippy::cast_precision_loss)]
-    crate::paint::draw_outset_shadow_and_border(
-        &mut buf,
-        pw,
-        ph,
-        factor * size.w as f32,
-        factor * size.h as f32,
-        &layers,
-        0.0,
-        Color([0.0, 0.0, 0.0, 0.0]),
-        radius * factor,
-        Some(radius * factor),
-    );
-
-    Some(MemoryRenderBuffer::from_slice(
-        &buf,
-        smithay::backend::allocator::Fourcc::Argb8888,
-        (pw, ph),
-        output_scale,
-        Transform::Normal,
-        None,
-    ))
+#[must_use]
+pub fn draw_elevation(
+    size: Size<i32, Logical>, radius: f32, output_scale: i32, level: glide_theme::elevation::Level,
+    appearance: glide_theme::Appearance,
+) -> Option<MemoryRenderBuffer> {
+    let layers = glide_theme::elevation::layers(level, appearance);
+    Some(crate::raster::shadow((size.w, size.h), shadow_margin(), radius, &layers, output_scale)?.finish())
 }
 
 #[cfg(test)]
@@ -282,23 +173,30 @@ mod tests {
     }
 
     #[test]
+    fn the_fitting_row_count_keeps_the_menu_above_its_anchor() {
+        let area = Rectangle::new(Point::from((0, 32)), Size::from((1366, 736)));
+        let anchor = Rectangle::new(Point::from((600, 700)), Size::from((56, 56)));
+        let rows = rows_fitting_above(anchor, area);
+        assert!(rows > 0);
+        let fits = place_above(anchor, area, rows);
+        assert!(fits.loc.y >= area.loc.y + EDGE_MARGIN);
+        assert!(fits.loc.y + fits.size.h <= anchor.loc.y - GAP);
+        let over = place_above(anchor, area, rows + 1);
+        assert!(over.loc.y + over.size.h > anchor.loc.y - GAP);
+
+        let squeezed = Rectangle::new(Point::from((600, 40)), Size::from((56, 56)));
+        assert_eq!(rows_fitting_above(squeezed, area), 0);
+    }
+
+    #[test]
     fn rows_are_hit_in_order_and_the_header_hits_nothing() {
-        let menu = place_above(
-            Rectangle::new(Point::from((500, 900)), Size::from((42, 42))),
-            area(),
-            2,
-        );
-        let header = Point::from((
-            f64::from(menu.loc.x) + 20.0,
-            f64::from(menu.loc.y + PADDING) + 5.0,
-        ));
+        let menu = place_above(Rectangle::new(Point::from((500, 900)), Size::from((42, 42))), area(), 2);
+        let header = Point::from((f64::from(menu.loc.x) + 20.0, f64::from(menu.loc.y + PADDING) + 5.0));
         assert_eq!(row_at(menu, 2, header), None);
         for row in 0..2 {
             let rect = row_rect(menu, row);
-            let centre = Point::from((
-                f64::from(rect.loc.x + rect.size.w / 2),
-                f64::from(rect.loc.y + rect.size.h / 2),
-            ));
+            let centre =
+                Point::from((f64::from(rect.loc.x + rect.size.w / 2), f64::from(rect.loc.y + rect.size.h / 2)));
             assert_eq!(row_at(menu, 2, centre), Some(row));
         }
     }

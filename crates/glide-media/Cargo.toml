@@ -7,9 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+glide-config = { path = "../glide-config" }
 anyhow.workspace = true
 tracing.workspace = true
 zbus = "5"
+ureq = "3"
 
 [lints]
 workspace = true

@@ -13,14 +13,12 @@ impl IdleNotifierHandler for GlideState {
 impl IdleInhibitHandler for GlideState {
     fn inhibit(&mut self, surface: WlSurface) {
         self.idle_inhibited_surfaces.insert(surface);
-        self.protocols.idle_notifier_state.set_is_inhibited(true);
+        self.refresh_idle_inhibit();
     }
 
     fn uninhibit(&mut self, surface: WlSurface) {
         self.idle_inhibited_surfaces.remove(&surface);
-        if self.idle_inhibited_surfaces.is_empty() {
-            self.protocols.idle_notifier_state.set_is_inhibited(false);
-        }
+        self.refresh_idle_inhibit();
     }
 }
 
@@ -37,10 +35,7 @@ mod tests {
 
     impl TestIdleHandler {
         fn new() -> Self {
-            Self {
-                idle_notifier_state_inhibited: false,
-                idle_inhibited_surfaces: HashSet::new(),
-            }
+            Self { idle_notifier_state_inhibited: false, idle_inhibited_surfaces: HashSet::new() }
         }
 
         #[allow(dead_code)]
@@ -74,7 +69,11 @@ mod tests {
 
         let handler = TestIdleHandler::new();
 
-        let client_res = dh.create_global::<GlideState, smithay::reexports::wayland_server::protocol::wl_compositor::WlCompositor, _>(5, smithay::wayland::GlobalData);
+        let client_res = dh
+            .create_global::<GlideState, smithay::reexports::wayland_server::protocol::wl_compositor::WlCompositor, _>(
+                5,
+                smithay::wayland::GlobalData,
+            );
         assert!(!format!("{client_res:?}").is_empty());
 
         assert!(!handler.idle_notifier_state_inhibited);

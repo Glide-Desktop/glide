@@ -6,8 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[dependencies]
-glide-geom = { path = "../glide-geom" }
 
 [lints]
 workspace = true

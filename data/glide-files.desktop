@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Name[uk]=Файли
+Comment=Browse files and folders
+Comment[uk]=Перегляд файлів та папок
+Exec=glide-files %U
+Icon=system-file-manager
+Terminal=false
+Categories=System;FileTools;FileManager;Utility;
+Keywords=files;folders;manager;finder;nautilus;документи;файли;папки;менеджер;провідник;
+StartupWMClass=glide-files
+MimeType=inode/directory;

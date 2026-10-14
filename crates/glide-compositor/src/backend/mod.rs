@@ -1,2 +1,2 @@
-mod screenshot;
+pub mod screenshot;
 pub mod tty;

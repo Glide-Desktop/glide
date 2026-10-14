@@ -1,9 +1,9 @@
 use smithay::{
     input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
-        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
-        GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData,
-        MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
+        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+        GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+        RelativeMotionEvent,
     },
     utils::{Logical, Point},
 };
@@ -23,11 +23,8 @@ pub struct MoveSurfaceGrab {
 
 impl PointerGrab<GlideState> for MoveSurfaceGrab {
     fn motion(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
-        event: &MotionEvent,
+        &mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>,
+        _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>, event: &MotionEvent,
     ) {
         handle.motion(data, None, event);
 
@@ -50,129 +47,31 @@ impl PointerGrab<GlideState> for MoveSurfaceGrab {
         let new_location = self.initial_window_location.to_f64() + delta;
         let new_location = new_location.to_i32_round();
 
-        data.space
-            .map_element(self.window.clone(), new_location, true);
+        data.space.map_element(self.window.clone(), new_location, true);
 
         data.record_window_move(&self.window, new_location);
         data.update_snap_preview(event.location);
     }
 
-    fn relative_motion(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
-        event: &RelativeMotionEvent,
-    ) {
-        handle.relative_motion(data, focus, event);
-    }
+    forward_pointer_events!();
 
-    fn button(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &ButtonEvent,
-    ) {
+    fn button(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>, event: &ButtonEvent) {
         handle.button(data, event);
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
             self.window.set_dragging(false);
-            data.apply_snap(&self.window);
+            let snapped = data.apply_snap(&self.window);
+            if !snapped && !self.pending_restore {
+                data.settle_moved_window(&self.window, handle.current_location());
+            }
             data.queue_redraw();
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }
 
-    fn axis(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        details: AxisFrame,
-    ) {
-        handle.axis(data, details);
-    }
-
-    fn frame(&mut self, data: &mut GlideState, handle: &mut PointerInnerHandle<'_, GlideState>) {
-        handle.frame(data);
-    }
-
-    fn gesture_swipe_begin(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GestureSwipeBeginEvent,
-    ) {
-        handle.gesture_swipe_begin(data, event);
-    }
-
-    fn gesture_swipe_update(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GestureSwipeUpdateEvent,
-    ) {
-        handle.gesture_swipe_update(data, event);
-    }
-
-    fn gesture_swipe_end(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GestureSwipeEndEvent,
-    ) {
-        handle.gesture_swipe_end(data, event);
-    }
-
-    fn gesture_pinch_begin(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GesturePinchBeginEvent,
-    ) {
-        handle.gesture_pinch_begin(data, event);
-    }
-
-    fn gesture_pinch_update(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GesturePinchUpdateEvent,
-    ) {
-        handle.gesture_pinch_update(data, event);
-    }
-
-    fn gesture_pinch_end(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GesturePinchEndEvent,
-    ) {
-        handle.gesture_pinch_end(data, event);
-    }
-
-    fn gesture_hold_begin(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GestureHoldBeginEvent,
-    ) {
-        handle.gesture_hold_begin(data, event);
-    }
-
-    fn gesture_hold_end(
-        &mut self,
-        data: &mut GlideState,
-        handle: &mut PointerInnerHandle<'_, GlideState>,
-        event: &GestureHoldEndEvent,
-    ) {
-        handle.gesture_hold_end(data, event);
-    }
-
-    fn start_data(&self) -> &PointerGrabStartData<GlideState> {
-        &self.start_data
-    }
-
     fn unset(&mut self, data: &mut GlideState) {
+        self.window.set_dragging(false);
+        data.snap_dwell.reset();
         if let Some(preview) = data.snap_preview.as_mut() {
             preview.dismiss();
             data.queue_redraw();

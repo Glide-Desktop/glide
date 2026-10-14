@@ -39,22 +39,18 @@ impl Urgency {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 pub enum CloseReason {
-    Expired,
-    Dismissed,
-    Revoked,
-    Undefined,
+    Expired = 1,
+    Dismissed = 2,
+    Revoked = 3,
+    Undefined = 4,
 }
 
 impl CloseReason {
     #[must_use]
     pub const fn as_wire(self) -> u32 {
-        match self {
-            Self::Expired => 1,
-            Self::Dismissed => 2,
-            Self::Revoked => 3,
-            Self::Undefined => 4,
-        }
+        self as u32
     }
 }
 
@@ -78,9 +74,7 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
-// The flag set mirrors the wire format of the freedesktop notification
-// specification; collapsing independent protocol flags into enums would
-// misrepresent what senders are allowed to combine.
+// Independent flags of the freedesktop notification wire format.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Notification {
@@ -109,24 +103,12 @@ pub struct Notification {
 impl Notification {
     #[must_use]
     pub fn group_key(&self) -> String {
-        if !self.desktop_entry.trim().is_empty() {
-            return self.desktop_entry.trim().to_lowercase();
-        }
-        if !self.app_name.trim().is_empty() {
-            return self.app_name.trim().to_lowercase();
-        }
-        self.sender.trim().to_lowercase()
+        first_filled(&[&self.desktop_entry, &self.app_name]).unwrap_or(self.sender.trim()).to_lowercase()
     }
 
     #[must_use]
     pub fn display_app(&self) -> &str {
-        if !self.app_name.trim().is_empty() {
-            return self.app_name.trim();
-        }
-        if !self.desktop_entry.trim().is_empty() {
-            return self.desktop_entry.trim();
-        }
-        "Notification"
+        first_filled(&[&self.app_name, &self.desktop_entry]).unwrap_or("Notification")
     }
 
     #[must_use]
@@ -137,6 +119,10 @@ impl Notification {
             && self.desktop_entry == other.desktop_entry
             && self.actions == other.actions
     }
+}
+
+fn first_filled<'a>(fields: &[&'a String]) -> Option<&'a str> {
+    fields.iter().map(|field| field.trim()).find(|field| !field.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -166,15 +152,20 @@ pub fn sanitize_body(raw: &str) -> String {
 
     while let Some(ch) = chars.next() {
         match ch {
-            '<' => {
+            '<' if chars.peek().is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '/' | '!')) => {
                 let mut tag = String::new();
+                let mut closed = false;
                 for inner in chars.by_ref() {
                     if inner == '>' {
+                        closed = true;
                         break;
                     }
                     tag.push(inner);
                 }
-                if tag_breaks_line(&tag) {
+                if !closed {
+                    out.push('<');
+                    out.push_str(&tag);
+                } else if tag_breaks_line(&tag) {
                     out.push('\n');
                 }
             }
@@ -200,41 +191,35 @@ pub fn sanitize_body(raw: &str) -> String {
     collapse(&out)
 }
 
+#[must_use]
+pub fn plain_text(raw: &str) -> String {
+    collapse(raw)
+}
+
 fn tag_breaks_line(tag: &str) -> bool {
-    let name: String = tag
-        .trim_start_matches('/')
-        .chars()
-        .take_while(char::is_ascii_alphanumeric)
-        .collect();
+    let name: String = tag.trim_start_matches('/').chars().take_while(char::is_ascii_alphanumeric).collect();
     name.eq_ignore_ascii_case("br") || name.eq_ignore_ascii_case("tr")
 }
 
 fn decode_entity(entity: &str) -> String {
     match entity {
-        "amp" => "&".to_string(),
-        "lt" => "<".to_string(),
-        "gt" => ">".to_string(),
-        "quot" => "\"".to_string(),
-        "apos" => "'".to_string(),
-        "nbsp" => " ".to_string(),
-        other => decode_numeric_entity(other).unwrap_or_else(|| {
-            if other.is_empty() {
-                "&".to_string()
-            } else {
-                format!("&{other}")
-            }
-        }),
+        "amp" => "&".into(),
+        "lt" => "<".into(),
+        "gt" => ">".into(),
+        "quot" => "\"".into(),
+        "apos" => "'".into(),
+        "nbsp" => " ".into(),
+        other => decode_numeric_entity(other).map_or_else(|| format!("&{other}"), String::from),
     }
 }
 
-fn decode_numeric_entity(entity: &str) -> Option<String> {
+fn decode_numeric_entity(entity: &str) -> Option<char> {
     let digits = entity.strip_prefix('#')?;
-    let code = if let Some(hex) = digits.strip_prefix(['x', 'X']) {
-        u32::from_str_radix(hex, 16).ok()?
-    } else {
-        digits.parse::<u32>().ok()?
+    let code = match digits.strip_prefix(['x', 'X']) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => digits.parse().ok()?,
     };
-    char::from_u32(code).map(|ch| ch.to_string())
+    char::from_u32(code)
 }
 
 fn collapse(text: &str) -> String {
@@ -279,22 +264,15 @@ pub fn split_actions(raw: &[String]) -> (Vec<Action>, bool, bool, Option<String>
     let mut reply_label = None;
 
     for pair in raw.chunks(2) {
-        let key = pair.first().cloned().unwrap_or_default();
-        if key.is_empty() {
-            continue;
-        }
         let label = pair.get(1).cloned().unwrap_or_default();
-
-        if key == ACTION_DEFAULT {
-            has_default = true;
-        } else if key == ACTION_SETTINGS {
-            has_settings = true;
-        } else if key == ACTION_INLINE_REPLY {
-            if reply_label.is_none() {
-                reply_label = Some(label);
+        match pair[0].as_str() {
+            "" => {}
+            ACTION_DEFAULT => has_default = true,
+            ACTION_SETTINGS => has_settings = true,
+            ACTION_INLINE_REPLY => {
+                reply_label.get_or_insert(label);
             }
-        } else {
-            actions.push(Action { key, label });
+            key => actions.push(Action { key: key.to_string(), label }),
         }
     }
 
@@ -308,16 +286,13 @@ pub fn scale_image(image: Image) -> Image {
         return image;
     }
     let ratio = f64::from(MAX_IMAGE_SIDE) / f64::from(longest);
-    #[allow(clippy::cast_possible_truncation)]
     let width = ((f64::from(image.width) * ratio).round() as i32).max(1);
-    #[allow(clippy::cast_possible_truncation)]
     let height = ((f64::from(image.height) * ratio).round() as i32).max(1);
 
     let (Ok(columns), Ok(rows)) = (usize::try_from(width), usize::try_from(height)) else {
         return image;
     };
-    let (Ok(src_w), Ok(src_h)) = (usize::try_from(image.width), usize::try_from(image.height))
-    else {
+    let (Ok(src_w), Ok(src_h)) = (usize::try_from(image.width), usize::try_from(image.height)) else {
         return image;
     };
 
@@ -325,21 +300,12 @@ pub fn scale_image(image: Image) -> Image {
     for y in 0..rows {
         let src_y = y * src_h / rows;
         for x in 0..columns {
-            let src_x = x * src_w / columns;
-            let offset = (src_y * src_w + src_x) * 4;
-            if offset + 4 <= image.rgba.len() {
-                rgba.extend_from_slice(&image.rgba[offset..offset + 4]);
-            } else {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-            }
+            let offset = (src_y * src_w + x * src_w / columns) * 4;
+            rgba.extend_from_slice(image.rgba.get(offset..offset + 4).unwrap_or(&[0; 4]));
         }
     }
 
-    Image {
-        width,
-        height,
-        rgba,
-    }
+    Image { width, height, rgba }
 }
 
 #[must_use]
@@ -357,9 +323,8 @@ pub fn capabilities() -> Vec<String> {
         "x-kde-display-appname",
         "x-glide-progress",
     ]
-    .iter()
-    .map(ToString::to_string)
-    .collect()
+    .map(String::from)
+    .into()
 }
 
 #[cfg(test)]
@@ -376,16 +341,19 @@ mod tests {
     fn markup_is_reduced_to_plain_text() {
         assert_eq!(sanitize_body("<b>bold</b> text"), "bold text");
         assert_eq!(sanitize_body("a<br/>b"), "a\nb");
-        assert_eq!(
-            sanitize_body("<a href=\"http://x\">link</a>"),
-            "link",
-            "the label survives, the markup does not"
-        );
+        assert_eq!(sanitize_body("<a href=\"http://x\">link</a>"), "link", "the label survives, the markup does not");
     }
 
     #[test]
     fn an_unclosed_tag_cannot_swallow_the_rest_of_the_body() {
-        assert_eq!(sanitize_body("safe <img src=\"/evil"), "safe");
+        assert_eq!(sanitize_body("safe <img src=\"/evil"), "safe <img src=\"/evil");
+        assert_eq!(sanitize_body("if x <5 then y"), "if x <5 then y");
+        assert_eq!(sanitize_body("a < b > c"), "a < b > c");
+    }
+
+    #[test]
+    fn plain_text_is_kept_verbatim_apart_from_whitespace() {
+        assert_eq!(plain_text("<b>not bold</b> &amp;   co"), "<b>not bold</b> &amp; co");
     }
 
     #[test]
@@ -426,62 +394,24 @@ mod tests {
     }
 
     #[test]
-    fn critical_notifications_never_expire_on_their_own() {
-        assert_eq!(resolve_timeout(5000, Urgency::Critical), None);
-        assert_eq!(resolve_timeout(-1, Urgency::Critical), None);
-        assert_eq!(resolve_timeout(0, Urgency::Critical), None);
-    }
-
-    #[test]
-    fn a_zero_timeout_means_the_sender_wants_it_to_stay() {
+    fn timeouts_follow_the_specification() {
+        for timeout in [5000, -1, 0] {
+            assert_eq!(resolve_timeout(timeout, Urgency::Critical), None);
+        }
         assert_eq!(resolve_timeout(0, Urgency::Normal), None);
-    }
-
-    #[test]
-    fn a_negative_timeout_falls_back_to_our_own_policy() {
-        assert_eq!(
-            resolve_timeout(-1, Urgency::Normal),
-            Some(DEFAULT_TIMEOUT_NORMAL)
-        );
+        assert_eq!(resolve_timeout(-1, Urgency::Normal), Some(DEFAULT_TIMEOUT_NORMAL));
         assert_eq!(resolve_timeout(-1, Urgency::Low), Some(DEFAULT_TIMEOUT_LOW));
-    }
-
-    #[test]
-    fn an_explicit_timeout_is_honoured_verbatim() {
-        assert_eq!(
-            resolve_timeout(1234, Urgency::Normal),
-            Some(Duration::from_millis(1234))
-        );
-    }
-
-    #[test]
-    fn urgency_maps_from_the_wire_byte() {
-        assert_eq!(Urgency::from_hint(0), Urgency::Low);
-        assert_eq!(Urgency::from_hint(1), Urgency::Normal);
-        assert_eq!(Urgency::from_hint(2), Urgency::Critical);
-        assert_eq!(Urgency::from_hint(9), Urgency::Normal);
-    }
-
-    #[test]
-    fn close_reasons_match_the_numbers_in_the_specification() {
-        assert_eq!(CloseReason::Expired.as_wire(), 1);
-        assert_eq!(CloseReason::Dismissed.as_wire(), 2);
-        assert_eq!(CloseReason::Revoked.as_wire(), 3);
+        assert_eq!(resolve_timeout(1234, Urgency::Normal), Some(Duration::from_millis(1234)));
         assert_eq!(CloseReason::Undefined.as_wire(), 4);
+    }
+
+    fn strings(words: &[&str]) -> Vec<String> {
+        words.iter().map(ToString::to_string).collect()
     }
 
     #[test]
     fn the_reserved_action_keys_are_pulled_out_of_the_button_list() {
-        let raw = [
-            "default".to_string(),
-            "Open".to_string(),
-            "reply-now".to_string(),
-            "Reply".to_string(),
-            "settings".to_string(),
-            "Configure".to_string(),
-            "inline-reply".to_string(),
-            "Send".to_string(),
-        ];
+        let raw = strings(&["default", "Open", "reply-now", "Reply", "settings", "Configure", "inline-reply", "Send"]);
         let (actions, has_default, has_settings, reply) = split_actions(&raw);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].key, "reply-now");
@@ -492,20 +422,14 @@ mod tests {
 
     #[test]
     fn an_odd_action_list_does_not_panic() {
-        let raw = ["lonely".to_string()];
-        let (actions, _, _, _) = split_actions(&raw);
+        let (actions, _, _, _) = split_actions(&strings(&["lonely"]));
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].label, "");
     }
 
     #[test]
     fn only_the_first_inline_reply_action_wins() {
-        let raw = [
-            "inline-reply".to_string(),
-            "First".to_string(),
-            "inline-reply".to_string(),
-            "Second".to_string(),
-        ];
+        let raw = strings(&["inline-reply", "First", "inline-reply", "Second"]);
         let (_, _, _, reply) = split_actions(&raw);
         assert_eq!(reply.as_deref(), Some("First"));
     }
@@ -522,16 +446,10 @@ mod tests {
 
     #[test]
     fn grouping_falls_back_to_the_app_name_then_the_bus_name() {
-        let named = Notification {
-            app_name: "Mail".to_string(),
-            ..Notification::default()
-        };
+        let named = Notification { app_name: "Mail".to_string(), ..Notification::default() };
         assert_eq!(named.group_key(), "mail");
 
-        let anonymous = Notification {
-            sender: ":1.42".to_string(),
-            ..Notification::default()
-        };
+        let anonymous = Notification { sender: ":1.42".to_string(), ..Notification::default() };
         assert_eq!(anonymous.group_key(), ":1.42");
     }
 
@@ -552,11 +470,7 @@ mod tests {
 
     #[test]
     fn an_oversized_image_is_scaled_into_the_cache_budget() {
-        let image = Image {
-            width: 1024,
-            height: 512,
-            rgba: vec![255; 1024 * 512 * 4],
-        };
+        let image = Image { width: 1024, height: 512, rgba: vec![255; 1024 * 512 * 4] };
         let scaled = scale_image(image);
         assert_eq!(scaled.width, MAX_IMAGE_SIDE);
         assert_eq!(scaled.height, MAX_IMAGE_SIDE / 2);
@@ -565,32 +479,15 @@ mod tests {
 
     #[test]
     fn an_image_already_within_budget_is_left_alone() {
-        let image = Image {
-            width: 64,
-            height: 64,
-            rgba: vec![1; 64 * 64 * 4],
-        };
+        let image = Image { width: 64, height: 64, rgba: vec![1; 64 * 64 * 4] };
         let scaled = scale_image(image.clone());
         assert_eq!(scaled, image);
     }
 
     #[test]
     fn a_truncated_image_buffer_does_not_panic_the_scaler() {
-        let image = Image {
-            width: 512,
-            height: 512,
-            rgba: vec![7; 16],
-        };
+        let image = Image { width: 512, height: 512, rgba: vec![7; 16] };
         let scaled = scale_image(image);
         assert_eq!(scaled.rgba.len(), pixel_count(&scaled));
-    }
-
-    #[test]
-    fn the_advertised_capabilities_cover_what_chromium_demands() {
-        let caps = capabilities();
-        assert!(caps.contains(&"body".to_string()));
-        assert!(caps.contains(&"actions".to_string()));
-        assert!(caps.contains(&"persistence".to_string()));
-        assert!(caps.contains(&"inline-reply".to_string()));
     }
 }

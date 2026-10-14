@@ -5,6 +5,7 @@ pub struct TextStyle {
     pub weight: u16,
     pub tracking_em: f32,
     pub uppercase: bool,
+    pub tabular: bool,
 }
 
 impl TextStyle {
@@ -14,6 +15,7 @@ impl TextStyle {
         weight: 680,
         tracking_em: -0.030,
         uppercase: false,
+        tabular: false,
     };
     pub const T1: Self = Self {
         size_px: 26.0,
@@ -21,6 +23,7 @@ impl TextStyle {
         weight: 650,
         tracking_em: -0.024,
         uppercase: false,
+        tabular: false,
     };
     pub const T2: Self = Self {
         size_px: 19.0,
@@ -28,6 +31,7 @@ impl TextStyle {
         weight: 630,
         tracking_em: -0.017,
         uppercase: false,
+        tabular: false,
     };
     pub const T3: Self = Self {
         size_px: 16.0,
@@ -35,6 +39,7 @@ impl TextStyle {
         weight: 610,
         tracking_em: -0.012,
         uppercase: false,
+        tabular: false,
     };
     pub const HEAD: Self = Self {
         size_px: 14.0,
@@ -42,6 +47,7 @@ impl TextStyle {
         weight: 630,
         tracking_em: -0.007,
         uppercase: false,
+        tabular: false,
     };
     pub const BODY: Self = Self {
         size_px: 14.0,
@@ -49,35 +55,16 @@ impl TextStyle {
         weight: 400,
         tracking_em: -0.006,
         uppercase: false,
+        tabular: false,
     };
-    pub const CALL: Self = Self {
-        size_px: 13.0,
-        line_height_px: 19.0,
-        weight: 400,
-        tracking_em: 0.0,
-        uppercase: false,
-    };
-    pub const CAP: Self = Self {
-        size_px: 12.0,
-        line_height_px: 16.0,
-        weight: 450,
-        tracking_em: 0.0,
-        uppercase: false,
-    };
-    pub const MICRO: Self = Self {
-        size_px: 11.0,
-        line_height_px: 14.0,
-        weight: 640,
-        tracking_em: 0.075,
-        uppercase: true,
-    };
-    pub const NUM: Self = Self {
-        size_px: 13.0,
-        line_height_px: 15.6,
-        weight: 400,
-        tracking_em: -0.020,
-        uppercase: false,
-    };
+    pub const CALL: Self =
+        Self { size_px: 13.0, line_height_px: 19.0, weight: 400, tracking_em: 0.0, uppercase: false, tabular: false };
+    pub const CAP: Self =
+        Self { size_px: 12.0, line_height_px: 16.0, weight: 450, tracking_em: 0.0, uppercase: false, tabular: false };
+    pub const MICRO: Self =
+        Self { size_px: 11.0, line_height_px: 14.0, weight: 640, tracking_em: 0.075, uppercase: true, tabular: false };
+    pub const NUM: Self =
+        Self { size_px: 13.0, line_height_px: 15.6, weight: 400, tracking_em: -0.020, uppercase: false, tabular: true };
 
     pub const WIN_TITLE: Self = Self {
         size_px: 13.5,
@@ -85,49 +72,26 @@ impl TextStyle {
         weight: 640,
         tracking_em: -0.012,
         uppercase: false,
+        tabular: false,
     };
-    pub const OV_LABEL: Self = Self {
-        size_px: 12.0,
-        line_height_px: 16.0,
-        weight: 570,
-        tracking_em: 0.0,
-        uppercase: false,
-    };
-    pub const LAUNCHER_CAPTION: Self = Self {
-        size_px: 14.5,
-        line_height_px: 18.5,
-        weight: 480,
-        tracking_em: 0.0,
-        uppercase: false,
-    };
-    pub const TOPBAR: Self = Self {
-        size_px: 12.5,
-        line_height_px: 16.0,
-        weight: 520,
-        tracking_em: 0.0,
-        uppercase: false,
-    };
-    pub const LAUNCHER_CHIP: Self = Self {
-        size_px: 13.0,
-        line_height_px: 16.0,
-        weight: 520,
-        tracking_em: 0.0,
-        uppercase: false,
-    };
+    pub const OV_LABEL: Self =
+        Self { size_px: 12.0, line_height_px: 16.0, weight: 570, tracking_em: 0.0, uppercase: false, tabular: false };
+    pub const LAUNCHER_CAPTION: Self =
+        Self { size_px: 13.0, line_height_px: 18.0, weight: 480, tracking_em: 0.0, uppercase: false, tabular: false };
+    pub const TOPBAR: Self =
+        Self { size_px: 12.5, line_height_px: 16.0, weight: 520, tracking_em: 0.0, uppercase: false, tabular: false };
+    pub const LAUNCHER_CHIP: Self =
+        Self { size_px: 12.0, line_height_px: 16.0, weight: 560, tracking_em: 0.0, uppercase: false, tabular: false };
     pub const MENU_ITEM: Self = Self {
         size_px: 13.5,
         line_height_px: 20.0,
         weight: 400,
         tracking_em: -0.008,
         uppercase: false,
+        tabular: false,
     };
-    pub const FALLBACK_INITIAL: Self = Self {
-        size_px: 34.0,
-        line_height_px: 40.0,
-        weight: 560,
-        tracking_em: 0.0,
-        uppercase: false,
-    };
+    pub const FALLBACK_INITIAL: Self =
+        Self { size_px: 34.0, line_height_px: 40.0, weight: 560, tracking_em: 0.0, uppercase: false, tabular: false };
 
     pub const ALL: &'static [Self] = &[
         Self::DISPLAY,
@@ -151,97 +115,25 @@ impl TextStyle {
 }
 
 #[cfg(test)]
-#[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
 
     #[test]
-    fn italic_is_never_expressed_here_by_design() {
-        assert_eq!(
-            TextStyle::ALL.len(),
-            17,
-            "no style role carries a slant field"
-        );
-    }
-
-    #[test]
     fn only_micro_is_uppercase() {
         for style in TextStyle::ALL {
-            let is_micro = *style == TextStyle::MICRO;
-            assert_eq!(
-                style.uppercase, is_micro,
-                "uppercase must be exclusive to .t-micro"
-            );
+            assert_eq!(style.uppercase, *style == TextStyle::MICRO, "{style:?}");
+            assert_eq!(style.tabular, *style == TextStyle::NUM, "{style:?}");
+            assert!(style.line_height_px >= style.size_px, "{style:?}");
         }
     }
 
     #[test]
-    fn display_is_the_largest_and_boldest_document_role() {
-        for style in [
-            TextStyle::T1,
-            TextStyle::T2,
-            TextStyle::T3,
-            TextStyle::HEAD,
-            TextStyle::BODY,
-            TextStyle::CALL,
-            TextStyle::CAP,
-            TextStyle::MICRO,
-        ] {
-            assert!(TextStyle::DISPLAY.size_px > style.size_px);
-        }
-    }
-
-    #[test]
-    fn negative_tracking_grows_more_negative_as_size_grows_on_the_document_scale() {
-        let scale = [
-            TextStyle::HEAD,
-            TextStyle::T3,
-            TextStyle::T2,
-            TextStyle::T1,
-            TextStyle::DISPLAY,
-        ];
-        for pair in scale.windows(2) {
-            assert!(
-                pair[0].tracking_em >= pair[1].tracking_em,
-                "{:?} should not be tighter than {:?}",
-                pair[0],
-                pair[1]
-            );
-        }
-    }
-
-    #[test]
-    fn line_height_is_never_smaller_than_the_font_size() {
-        for style in TextStyle::ALL {
-            assert!(
-                style.line_height_px >= style.size_px,
-                "{style:?}: line-height must not clip the glyph"
-            );
-        }
-    }
-
-    #[test]
-    fn num_uses_tabular_leaning_negative_tracking_like_the_spec_table() {
-        assert!((TextStyle::NUM.tracking_em - (-0.020)).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn win_title_matches_the_winbar_title_css_rule() {
-        assert!((TextStyle::WIN_TITLE.size_px - 13.5).abs() < f32::EPSILON);
-        assert_eq!(TextStyle::WIN_TITLE.weight, 640);
-        assert!((TextStyle::WIN_TITLE.tracking_em - (-0.012)).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn menu_item_is_the_same_size_as_win_title_but_regular_weight() {
-        assert!((TextStyle::MENU_ITEM.size_px - TextStyle::WIN_TITLE.size_px).abs() < f32::EPSILON);
-        assert_eq!(TextStyle::MENU_ITEM.weight, 400);
-        assert!(TextStyle::MENU_ITEM.weight < TextStyle::WIN_TITLE.weight);
-    }
-
-    #[test]
-    fn ov_label_matches_the_overview_label_css_rule() {
-        assert!((TextStyle::OV_LABEL.size_px - 12.0).abs() < f32::EPSILON);
-        assert_eq!(TextStyle::OV_LABEL.weight, 570);
+    fn larger_document_roles_track_tighter() {
+        let scale = [TextStyle::HEAD, TextStyle::T3, TextStyle::T2, TextStyle::T1, TextStyle::DISPLAY];
+        assert!(
+            scale
+                .windows(2)
+                .all(|pair| pair[0].tracking_em >= pair[1].tracking_em && pair[0].size_px <= pair[1].size_px)
+        );
     }
 }

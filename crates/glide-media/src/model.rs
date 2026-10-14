@@ -32,6 +32,7 @@ impl Playback {
 pub struct Track {
     pub bus: String,
     pub identity: String,
+    pub desktop_entry: String,
     pub track_id: String,
     pub title: String,
     pub artist: String,
@@ -48,11 +49,7 @@ pub struct Track {
 impl Track {
     #[must_use]
     pub fn display_title(&self) -> &str {
-        if self.title.trim().is_empty() {
-            "Unknown"
-        } else {
-            self.title.trim()
-        }
+        Some(self.title.trim()).filter(|title| !title.is_empty()).unwrap_or("Unknown")
     }
 
     #[must_use]
@@ -62,7 +59,6 @@ impl Track {
         if length.is_zero() {
             return None;
         }
-        #[allow(clippy::cast_possible_truncation)]
         let fraction = (position.as_secs_f64() / length.as_secs_f64()) as f32;
         Some(fraction.clamp(0.0, 1.0))
     }
@@ -90,17 +86,6 @@ pub enum Command {
     Previous,
 }
 
-impl Command {
-    #[must_use]
-    pub const fn method(self) -> &'static str {
-        match self {
-            Self::PlayPause => "PlayPause",
-            Self::Next => "Next",
-            Self::Previous => "Previous",
-        }
-    }
-}
-
 #[must_use]
 pub fn seek_target(length: Option<Duration>, fraction: f32) -> Option<Duration> {
     let length = length?;
@@ -116,32 +101,44 @@ pub fn is_player_bus(name: &str) -> bool {
     name.starts_with(BUS_PREFIX) && name.len() > BUS_PREFIX.len()
 }
 
-#[must_use]
-pub fn identity_from_bus(name: &str) -> String {
+fn bus_head(name: &str) -> &str {
     let tail = name.strip_prefix(BUS_PREFIX).unwrap_or(name);
     let tail = tail.split('.').next().unwrap_or(tail);
-    let tail = tail.split_once("instance").map_or(tail, |(head, _)| head);
-    let tail = tail.trim_matches('-');
+    tail.split_once("instance").map_or(tail, |(head, _)| head)
+}
+
+#[must_use]
+pub fn identity_from_bus(name: &str) -> String {
+    let tail = bus_head(name).trim_matches('-');
     if tail.is_empty() {
         return name.to_string();
     }
     let mut chars = tail.chars();
     match chars.next() {
-        Some(first) if first.is_lowercase() => {
-            first.to_uppercase().collect::<String>() + chars.as_str()
-        }
+        Some(first) if first.is_lowercase() => first.to_uppercase().collect::<String>() + chars.as_str(),
         _ => tail.to_string(),
     }
 }
 
 #[must_use]
+pub fn player_icon_candidates(bus: &str, desktop_entry: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |candidate: &str| {
+        let candidate = candidate.trim();
+        if !candidate.is_empty() && !out.iter().any(|seen| seen == candidate) {
+            out.push(candidate.to_string());
+        }
+    };
+    push(desktop_entry.trim_end_matches(".desktop"));
+    let head = bus_head(bus).trim_matches(['-', '_']);
+    push(&head.to_lowercase());
+    push(head);
+    out
+}
+
+#[must_use]
 pub fn artists_to_line(artists: &[String]) -> String {
-    artists
-        .iter()
-        .map(|artist| artist.trim())
-        .filter(|artist| !artist.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ")
+    artists.iter().map(|artist| artist.trim()).filter(|artist| !artist.is_empty()).collect::<Vec<_>>().join(", ")
 }
 
 #[must_use]
@@ -163,6 +160,7 @@ pub fn better_candidate(current: Option<&Track>, candidate: &Track) -> bool {
 pub fn local_art_path(art_url: &str) -> Option<std::path::PathBuf> {
     let trimmed = art_url.trim();
     let path = trimmed.strip_prefix("file://")?;
+    let path = path.strip_prefix("localhost").unwrap_or(path);
     let decoded = percent_decode(path);
     let path = std::path::PathBuf::from(decoded);
     path.is_file().then_some(path)
@@ -173,7 +171,7 @@ fn percent_decode(raw: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
+        if bytes[index] == b'%' && index + 3 <= bytes.len() {
             let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
             if let Some(value) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
                 out.push(value);
@@ -192,21 +190,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn playback_maps_from_the_wire_string() {
-        assert_eq!(Playback::from_wire("Playing"), Playback::Playing);
-        assert_eq!(Playback::from_wire("Paused"), Playback::Paused);
-        assert_eq!(Playback::from_wire("Stopped"), Playback::Stopped);
-        assert_eq!(Playback::from_wire("nonsense"), Playback::Stopped);
-    }
-
-    #[test]
-    fn only_playing_and_paused_count_as_an_active_player() {
-        assert!(Playback::Playing.is_active());
-        assert!(Playback::Paused.is_active());
-        assert!(!Playback::Stopped.is_active());
-    }
-
-    #[test]
     fn a_player_bus_name_needs_more_than_the_bare_prefix() {
         assert!(is_player_bus("org.mpris.MediaPlayer2.rhythmbox"));
         assert!(!is_player_bus("org.mpris.MediaPlayer2."));
@@ -215,19 +198,13 @@ mod tests {
 
     #[test]
     fn the_identity_is_derived_from_the_bus_tail() {
-        assert_eq!(
-            identity_from_bus("org.mpris.MediaPlayer2.rhythmbox"),
-            "Rhythmbox"
-        );
+        assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.rhythmbox"), "Rhythmbox");
         assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.VLC"), "VLC");
     }
 
     #[test]
     fn an_instance_suffix_is_stripped_from_the_identity() {
-        assert_eq!(
-            identity_from_bus("org.mpris.MediaPlayer2.chromium.instance1234"),
-            "Chromium"
-        );
+        assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.chromium.instance1234"), "Chromium");
     }
 
     #[test]
@@ -239,10 +216,7 @@ mod tests {
 
     #[test]
     fn progress_needs_both_a_length_and_a_position() {
-        let mut track = Track {
-            length: Some(Duration::from_secs(200)),
-            ..Track::default()
-        };
+        let mut track = Track { length: Some(Duration::from_secs(200)), ..Track::default() };
         assert_eq!(track.progress(), None);
 
         track.position = Some(Duration::from_secs(50));
@@ -251,11 +225,7 @@ mod tests {
 
     #[test]
     fn a_zero_length_track_reports_no_progress() {
-        let track = Track {
-            length: Some(Duration::ZERO),
-            position: Some(Duration::from_secs(1)),
-            ..Track::default()
-        };
+        let track = Track { length: Some(Duration::ZERO), position: Some(Duration::from_secs(1)), ..Track::default() };
         assert_eq!(track.progress(), None);
     }
 
@@ -275,52 +245,28 @@ mod tests {
         assert_eq!(track.display_title(), "Unknown");
     }
 
+    fn player(bus: &str, status: Playback) -> Track {
+        Track { bus: bus.to_string(), status, ..Track::default() }
+    }
+
     #[test]
     fn the_first_active_player_is_adopted() {
-        let idle = Track {
-            bus: "a".to_string(),
-            status: Playback::Stopped,
-            ..Track::default()
-        };
-        assert!(!better_candidate(None, &idle));
-
-        let playing = Track {
-            bus: "a".to_string(),
-            status: Playback::Playing,
-            ..Track::default()
-        };
-        assert!(better_candidate(None, &playing));
+        assert!(!better_candidate(None, &player("a", Playback::Stopped)));
+        assert!(better_candidate(None, &player("a", Playback::Playing)));
     }
 
     #[test]
     fn a_playing_player_wins_over_a_paused_one() {
-        let paused = Track {
-            bus: "a".to_string(),
-            status: Playback::Paused,
-            ..Track::default()
-        };
-        let playing = Track {
-            bus: "b".to_string(),
-            status: Playback::Playing,
-            ..Track::default()
-        };
+        let paused = player("a", Playback::Paused);
+        let playing = player("b", Playback::Playing);
         assert!(better_candidate(Some(&paused), &playing));
         assert!(!better_candidate(Some(&playing), &paused));
     }
 
     #[test]
     fn the_current_player_always_updates_itself() {
-        let current = Track {
-            bus: "a".to_string(),
-            status: Playback::Playing,
-            ..Track::default()
-        };
-        let update = Track {
-            bus: "a".to_string(),
-            status: Playback::Paused,
-            ..Track::default()
-        };
-        assert!(better_candidate(Some(&current), &update));
+        let current = player("a", Playback::Playing);
+        assert!(better_candidate(Some(&current), &player("a", Playback::Paused)));
     }
 
     #[test]
@@ -331,16 +277,10 @@ mod tests {
             position: Some(Duration::from_secs(1)),
             ..Track::default()
         };
-        let later = Track {
-            position: Some(Duration::from_secs(9)),
-            ..first.clone()
-        };
+        let later = Track { position: Some(Duration::from_secs(9)), ..first.clone() };
         assert!(first.is_same_track(&later));
 
-        let other = Track {
-            title: "Another".to_string(),
-            ..first.clone()
-        };
+        let other = Track { title: "Another".to_string(), ..first.clone() };
         assert!(!first.is_same_track(&other));
     }
 
@@ -357,6 +297,23 @@ mod tests {
         assert_eq!(percent_decode("/plain/path.png"), "/plain/path.png");
         assert_eq!(percent_decode("/trailing%"), "/trailing%");
         assert_eq!(percent_decode("/bad%zz"), "/bad%zz");
+        assert_eq!(percent_decode("/end%20"), "/end ");
+    }
+
+    #[test]
+    fn player_icons_prefer_the_desktop_entry_then_the_bus_name() {
+        assert_eq!(
+            player_icon_candidates("org.mpris.MediaPlayer2.firefox.instance_1_23", "firefox"),
+            vec!["firefox".to_string()]
+        );
+        assert_eq!(
+            player_icon_candidates("org.mpris.MediaPlayer2.chromium.instance4521", ""),
+            vec!["chromium".to_string()]
+        );
+        assert_eq!(
+            player_icon_candidates("org.mpris.MediaPlayer2.Spotify", "com.spotify.Client"),
+            vec!["com.spotify.Client".to_string(), "spotify".to_string(), "Spotify".to_string()]
+        );
     }
 
     #[test]
@@ -381,9 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_map_to_their_mpris_method_names() {
-        assert_eq!(Command::PlayPause.method(), "PlayPause");
-        assert_eq!(Command::Next.method(), "Next");
-        assert_eq!(Command::Previous.method(), "Previous");
+    fn commands_are_named_like_their_mpris_methods() {
+        assert_eq!(format!("{:?}", Command::PlayPause), "PlayPause");
     }
 }

@@ -1,0 +1,433 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum Lang {
+    #[default]
+    Uk,
+    En,
+}
+
+impl Lang {
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Uk => "uk",
+            Self::En => "en",
+        }
+    }
+
+    #[must_use]
+    pub const fn native_name(self) -> &'static str {
+        match self {
+            Self::Uk => "Українська",
+            Self::En => "English",
+        }
+    }
+
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "uk" => Some(Self::Uk),
+            "en" => Some(Self::En),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn from_env() -> Self {
+        let var = |name: &str| std::env::var(name).ok();
+        Self::from_locale_vars(var("LC_ALL").as_deref(), var("LC_MESSAGES").as_deref(), var("LANG").as_deref())
+    }
+
+    #[must_use]
+    pub fn from_locale_vars(lc_all: Option<&str>, lc_messages: Option<&str>, lang: Option<&str>) -> Self {
+        let locale = [lc_all, lc_messages, lang]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+        let base = locale.split(['_', '.', '@']).next().unwrap_or_default();
+        if base.eq_ignore_ascii_case("uk") { Self::Uk } else { Self::En }
+    }
+}
+
+pub trait Text: Copy {
+    fn text(self, lang: Lang) -> &'static str;
+}
+
+macro_rules! catalogue {
+    ($($key:ident => $en:literal, $uk:literal;)*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[allow(clippy::enum_variant_names)] // Keys name UI strings such as "ComposeKey", not variants of a key
+        pub enum Key {
+            $($key,)*
+        }
+
+        impl Key {
+            #[allow(dead_code)] // Per-panel catalogues read ALL only from the generated test
+            pub const ALL: &'static [Self] = &[$(Self::$key,)*];
+
+            #[must_use]
+            pub const fn en(self) -> &'static str {
+                match self {
+                    $(Self::$key => $en,)*
+                }
+            }
+
+            #[must_use]
+            pub const fn uk(self) -> &'static str {
+                match self {
+                    $(Self::$key => $uk,)*
+                }
+            }
+
+            #[must_use]
+            pub const fn text(self, lang: $crate::i18n::Lang) -> &'static str {
+                match lang {
+                    $crate::i18n::Lang::Uk => self.uk(),
+                    $crate::i18n::Lang::En => self.en(),
+                }
+            }
+        }
+
+        impl $crate::i18n::Text for Key {
+            fn text(self, lang: $crate::i18n::Lang) -> &'static str {
+                Key::text(self, lang)
+            }
+        }
+
+        #[cfg(test)]
+        mod catalogue_tests {
+            #[test]
+            fn every_key_is_translated_and_none_shouts() {
+                for key in super::Key::ALL {
+                    for text in [key.en(), key.uk()] {
+                        assert!(!text.trim().is_empty(), "{key:?} has an empty translation");
+                        let letters: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
+                        let shouting = letters.len() > 3 && letters.iter().all(|c| c.is_uppercase());
+                        assert!(!shouting, "{key:?} is written in capitals: {text}");
+                    }
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use catalogue;
+
+catalogue! {
+    Settings => "Settings", "Налаштування";
+    SearchPlaceholder => "Search", "Пошук";
+    NoResults => "No results", "Нічого не знайдено";
+    User => "User", "Користувач";
+    Loading => "Loading…", "Завантаження…";
+    SaveFailed => "Could not save glide.toml", "Не вдалося зберегти glide.toml";
+    SavedOffline => "Saved to glide.toml. Glide is not running, so changes apply the next time it starts.", "Збережено в glide.toml. Glide не запущено, тож зміни застосуються під час наступного запуску.";
+    ConfigReadOnly => "glide.toml has a syntax error, so settings are read-only until it is fixed:", "У glide.toml синтаксична помилка, тому налаштування доступні лише для читання, доки її не виправлено:";
+    ConfigRejected => "Glide rejected glide.toml:", "Glide відхилив glide.toml:";
+    ConfigUnreadable => "glide.toml could not be read, so settings are read-only until it is accessible:", "Не вдалося прочитати glide.toml, тому налаштування доступні лише для читання, доки файл недоступний:";
+
+    PanelNetwork => "Network", "Мережа";
+    PanelBluetooth => "Bluetooth", "Bluetooth";
+    PanelAppearance => "Appearance", "Вигляд";
+    PanelDisplays => "Displays", "Дисплеї";
+    PanelSound => "Sound", "Звук";
+    PanelKeyboard => "Keyboard", "Клавіатура";
+    PanelMouse => "Mouse & Touchpad", "Миша й тачпад";
+    PanelGestures => "Gestures", "Жести";
+    PanelAbout => "About", "Про систему";
+    PanelDesktop => "Dock", "Док";
+    PanelWindows => "Windows", "Вікна";
+    PanelPower => "Power & Battery", "Живлення й батарея";
+    PanelApps => "Default Apps", "Типові програми";
+    PanelVpn => "VPN", "VPN";
+    PanelNotifications => "Notifications", "Сповіщення";
+    PanelWallpaper => "Wallpaper", "Шпалери";
+    PanelTopBar => "Top Bar", "Верхня панель";
+    PanelMultitasking => "Multitasking", "Багатозадачність";
+    PanelNightLight => "Night Light", "Нічне світло";
+    PanelShortcuts => "Keyboard Shortcuts", "Сполучення клавіш";
+    PanelAccessibility => "Accessibility", "Доступність";
+    PanelPrivacy => "Privacy & Security", "Конфіденційність і безпека";
+    PanelUsers => "Users", "Користувачі";
+    PanelDateTime => "Date & Time", "Дата й час";
+    PanelRegion => "Region & Language", "Регіон і мова";
+    PanelStartup => "Startup Apps", "Автозапуск";
+    PanelStorage => "Storage", "Сховище";
+    PanelPrinters => "Printers", "Принтери";
+
+    GroupConnections => "Connections", "З'єднання";
+    GroupAlerts => "Alerts", "Сповіщення";
+    GroupPersonalisation => "Personalisation", "Персоналізація";
+    GroupHardware => "Hardware", "Обладнання";
+    GroupInput => "Input", "Введення";
+    GroupPeople => "Privacy & people", "Люди й безпека";
+    GroupSystem => "System", "Система";
+
+    AboutNetwork => "Wi-Fi, wired connections and saved networks", "Wi-Fi, дротові з'єднання та збережені мережі";
+    AboutBluetooth => "Pair and connect wireless devices", "Під'єднання та сполучення бездротових пристроїв";
+    AboutAppearance => "Style, accent colour, icons, fonts and motion", "Стиль, колір акценту, іконки, шрифти та рух";
+    AboutDesktop => "Pinned apps, size, magnification and hiding", "Закріплені програми, розмір, збільшення й приховування";
+    AboutWindows => "Title bars, buttons, shadows and borders", "Смуги заголовків, кнопки, тіні та рамки";
+    AboutDisplays => "Arrangement, resolution and scale", "Розташування, роздільність і масштаб";
+    AboutSound => "Output and input devices and their volume", "Пристрої виводу й вводу та їхня гучність";
+    AboutPower => "Screen blanking, battery and power mode", "Вимкнення екрана, батарея та режим живлення";
+    AboutKeyboard => "Input sources, key repeat and language", "Джерела вводу, повтор клавіш і мова";
+    AboutMouse => "Pointer speed, scrolling and tapping", "Швидкість вказівника, прокрутка й дотики";
+    AboutGestures => "Touchpad swipes for workspaces and the overview, and a place to practise them", "Свайпи тачпадом для робочих просторів і огляду та місце, щоб їх випробувати";
+    AboutApps => "Which apps open links, mail, files and media", "Які програми відкривають посилання, пошту, файли й медіа";
+    AboutSystem => "This computer and the Glide session", "Цей комп'ютер і сеанс Glide";
+    AboutVpn => "Virtual private networks and WireGuard tunnels", "Віртуальні приватні мережі та тунелі WireGuard";
+    AboutNotifications => "Banners, sounds and Do Not Disturb", "Банери, звуки й режим «Не турбувати»";
+    AboutWallpaper => "The picture behind your windows", "Зображення за вашими вікнами";
+    AboutTopBar => "Clock, status icons, tray and the global menu", "Годинник, значки стану, трей і глобальне меню";
+    AboutMultitasking => "Workspaces, overview, hot corner and edge snapping", "Робочі простори, огляд, гарячий кут і прилипання до країв";
+    AboutNightLight => "Warmer colours in the evening", "Тепліші кольори ввечері";
+    AboutShortcuts => "Key combinations for the shell and apps", "Сполучення клавіш для оболонки й програм";
+    AboutAccessibility => "Seeing, hearing, typing and pointing", "Зір, слух, набір тексту й керування вказівником";
+    AboutPrivacy => "Screen lock, history and what apps can see", "Блокування екрана, історія та що бачать програми";
+    AboutUsers => "Accounts on this computer", "Облікові записи на цьому комп'ютері";
+    AboutDateTime => "Time zone, clock format and synchronisation", "Часовий пояс, формат годинника й синхронізація";
+    AboutRegion => "Language, formats and locale", "Мова, формати й локаль";
+    AboutStartup => "Apps and commands that run when you sign in", "Програми й команди, що запускаються під час входу";
+    AboutStorage => "Disk usage and space you can reclaim", "Використання диска й місце, яке можна звільнити";
+    AboutPrinters => "Printers and print queues", "Принтери та черги друку";
+
+    SystemDefault => "System default", "Системний типовий";
+    FontsAndIcons => "Fonts & icons", "Шрифти й іконки";
+    IconTheme => "Icon theme", "Тема іконок";
+    IconThemeHint => "Dock, launcher and apps", "Док, лаунчер і програми";
+    InterfaceFont => "Interface font", "Шрифт інтерфейсу";
+    InterfaceFontHint => "Top bar, dock, titlebars and menus", "Верхня панель, док, заголовки й меню";
+
+    OverAmplification => "Over-amplification", "Підсилення понад 100%";
+    OverAmplificationHint => "Allow output volume up to 150%. Sound may distort.", "Дозволити гучність до 150%. Звук може спотворюватися.";
+
+    Dock => "Dock", "Док";
+    ShowDock => "Show the dock", "Показувати док";
+    ShowDockHint => "Pinned and running apps at the bottom of the screen", "Закріплені й запущені програми внизу екрана";
+    AutoHide => "Hide automatically", "Автоматично ховати";
+    AutohideSmart => "When covered", "Коли перекрито";
+    AutohideAlways => "Always", "Завжди";
+    AutohideNever => "Never", "Ніколи";
+    AutohideSmartHint => "Slides away when a window overlaps it", "Ховається, коли його перекриває вікно";
+    AutohideAlwaysHint => "Push the pointer to the bottom edge to show it", "Щоб показати, підведіть вказівник до нижнього краю";
+    AutohideNeverHint => "Always stays on screen", "Завжди на екрані";
+    DockSize =>"Icon size", "Розмір іконок";
+    TopBar => "Top bar", "Верхня панель";
+    ShowTopBar => "Show the top bar", "Показувати верхню панель";
+    ShowTopBarHint => "Clock, status, quick settings and notifications", "Годинник, стан, швидкі налаштування й сповіщення";
+    GlobalMenu => "Global menu", "Глобальне меню";
+    GlobalMenuHint => "Show the menus of the active app in the top bar", "Показувати меню активної програми у верхній панелі";
+    AppMenuRegistrar => "Menus of Qt, Chrome and LibreOffice", "Меню Qt, Chrome і LibreOffice";
+    AppMenuRegistrarHint => "Takes effect after signing in again", "Застосується після повторного входу";
+    Workspaces => "Workspaces", "Робочі простори";
+    WorkspacesHint => "Glide creates and removes workspaces automatically", "Glide створює й прибирає робочі простори автоматично";
+    NewWindows => "Open new windows", "Нові вікна відкривати";
+    OwnWorkspace => "On a new workspace", "На новому просторі";
+    CurrentWorkspace => "On the current one", "На поточному";
+    OverviewLabels => "Window titles in overview", "Назви вікон в огляді";
+    OverviewLabelsHint => "Label each window thumbnail", "Підписувати кожну мініатюру вікна";
+
+    Titlebars => "Titlebars", "Заголовки вікон";
+    TitlebarsHint => "Applies to windows that Glide decorates", "Стосується вікон, які оформлює Glide";
+    TitleAlignment => "Title position", "Розташування назви";
+    AlignLeft => "Left", "Ліворуч";
+    AlignCenter => "Centre", "По центру";
+    TitlebarSize => "Titlebar height", "Висота заголовка";
+    Compact => "Compact", "Компактна";
+    Standard => "Standard", "Стандартна";
+    WindowFrame => "Frame", "Рамка";
+    Shadows => "Shadows", "Тіні";
+    ShadowsHint => "Soft shadow around windows", "М'яка тінь навколо вікон";
+    Border => "Border", "Обвідка";
+    BorderHint => "Thin line around windows", "Тонка лінія навколо вікон";
+
+    PowerMode => "Power mode", "Режим живлення";
+    PowerModeHint => "Balance performance against battery life", "Баланс між продуктивністю й автономністю";
+    PowerSaver => "Saver", "Економія";
+    Balanced => "Balanced", "Баланс";
+    Performance => "Performance", "Швидкодія";
+    PowerSaving => "Power saving", "Енергозбереження";
+    BlankScreen => "Turn off the screen", "Вимикати екран";
+    BlankScreenHint => "After this much inactivity", "Після такого часу бездіяльності";
+    Never => "Never", "Ніколи";
+    BatteryWarning => "Low battery warning", "Попередження про низький заряд";
+    BatteryFull => "Fully charged", "Повністю заряджено";
+    Charging => "Charging", "Заряджається";
+    PluggedIn => "Plugged in", "Під'єднано до мережі";
+    OnBattery => "On battery", "Від батареї";
+
+    DefaultApps => "Default apps", "Типові програми";
+    DefaultAppsHint => "Used to open links and files", "Використовуються для відкриття посилань і файлів";
+    RoleWeb => "Web", "Браузер";
+    RoleMail => "Mail", "Пошта";
+    RoleFiles => "Files", "Файли";
+    RoleText => "Text", "Текст";
+    RoleImages => "Photos", "Фото";
+    RoleMusic => "Music", "Музика";
+    RoleVideo => "Video", "Відео";
+    RolePdf => "Documents (PDF)", "Документи (PDF)";
+    NoHandlers => "No installed app", "Немає встановлених програм";
+    StartupApps => "Startup apps", "Автозапуск";
+    StartupAppsHint => "Started when you sign in to Glide", "Запускаються під час входу в Glide";
+    NoStartupApps => "Nothing starts automatically", "Нічого не запускається автоматично";
+    AddApp => "Add an app", "Додати програму";
+    ChooseApp => "Choose an app…", "Оберіть програму…";
+    AddCommand => "Add a command", "Додати команду";
+    CommandPlaceholder => "nm-applet --indicator", "nm-applet --indicator";
+    Add => "Add", "Додати";
+
+    Light => "Light", "Світлий";
+    Dark => "Dark", "Темний";
+    Style => "Style", "Стиль";
+    StyleHint => "Applies to the shell, window frames and apps that follow Glide", "Застосовується до оболонки, рамок вікон і програм, що наслідують Glide";
+    AccentColor => "Accent colour", "Акцентний колір";
+    AccentHint => "Selection, switches and focus rings", "Виділення, перемикачі та кільця фокуса";
+    Wallpaper => "Wallpaper", "Шпалери";
+    NoWallpaper => "Glide", "Glide";
+    SolidColor => "The built-in Glide wallpaper", "Вбудовані шпалери Glide";
+    WallpaperFit => "Fit", "Розміщення";
+    FitCover => "Fill", "Заповнити";
+    FitContain => "Fit", "Вмістити";
+    FitCenter => "Centre", "По центру";
+    FitTile => "Tile", "Плиткою";
+    CustomImage => "Custom image", "Власне зображення";
+    CustomImageHint => "Path to a JPEG or PNG file", "Шлях до файлу JPEG або PNG";
+    ImageNotFound => "That file is not a readable image", "Цей файл не є зображенням, яке можна прочитати";
+    WallpaperPathPlaceholder => "~/Pictures/wallpaper.jpg", "~/Pictures/wallpaper.jpg";
+    Apply => "Apply", "Застосувати";
+    Motion => "Motion", "Рух";
+    Animations => "Animations", "Анімації";
+    AnimationsHint => "Windows, overview, dock and popups", "Вікна, огляд, док і спливні панелі";
+    AnimationSpeed => "Speed", "Швидкість";
+    RespectSystemMotion => "Follow reduced motion", "Зважати на зменшення руху";
+    RespectSystemMotionHint => "Turn animations off when GNOME's accessibility setting asks for it", "Вимикати анімації, коли цього вимагає налаштування доступності GNOME";
+
+    DisplaysOffline => "Glide is not running. Showing the displays the kernel reports; a new scale applies the next time Glide starts.", "Glide не запущено. Показано дисплеї, про які повідомляє ядро; новий масштаб застосується під час наступного запуску.";
+    DisplaysUnsupported => "This Glide build cannot list its displays yet. Showing what the kernel reports; a new scale is saved and applied on reload. Update Glide to see live modes.", "Ця збірка Glide ще не вміє повідомляти про дисплеї. Показано дані ядра; новий масштаб зберігається й застосовується після перезавантаження конфігурації. Оновіть Glide, щоб бачити поточні режими.";
+    NoDisplays =>"No displays found", "Дисплеїв не знайдено";
+    NoDisplaysHint => "Connect a monitor or start Glide", "Під'єднайте монітор або запустіть Glide";
+    DisplayGeneric => "Display", "Дисплей";
+    Resolution => "Resolution", "Роздільна здатність";
+    ResolutionHint => "The display's preferred mode", "Бажаний режим дисплея";
+    RefreshRate => "Refresh rate", "Частота оновлення";
+    Scale => "Scale", "Масштаб";
+    ScaleHint => "Size of text, windows and the shell", "Розмір тексту, вікон і оболонки";
+    NightLight => "Night light", "Нічне світло";
+    NightLightHint => "Warmer screen colours at night. Toggle it by hand from quick settings.", "Тепліші кольори екрана вночі. Вмикається вручну в швидких налаштуваннях.";
+    NightSchedule => "Schedule", "За розкладом";
+    NightScheduleHint => "Turn on and off automatically", "Вмикати й вимикати автоматично";
+    From => "From", "З";
+    To => "To", "До";
+    TimeInvalid => "Use 24-hour HH:MM", "Формат 24 години, ГГ:ХХ";
+
+    SoundUnavailable => "Sound is unavailable", "Звук недоступний";
+    SoundUnavailableHint => "PipeWire and wpctl are needed for sound settings", "Для налаштувань звуку потрібні PipeWire і wpctl";
+    Output => "Output", "Вихід";
+    OutputDevice => "Output device", "Пристрій виводу";
+    Input => "Input", "Вхід";
+    InputDevice => "Input device", "Пристрій вводу";
+    NoDevices => "No devices", "Немає пристроїв";
+    Volume => "Volume", "Гучність";
+    Muted => "Muted", "Вимкнено";
+
+    NetworkUnavailable => "Networking is unavailable", "Мережа недоступна";
+    NetworkUnavailableHint => "NetworkManager and nmcli are needed for network settings", "Для налаштувань мережі потрібні NetworkManager і nmcli";
+    WifiOff => "Off", "Вимкнено";
+    ConnectedTo => "Connected to", "Під'єднано до";
+    NotConnected => "Not connected", "Не під'єднано";
+    Wired => "Wired", "Дротова";
+    CableUnplugged => "Cable unplugged", "Кабель від'єднано";
+    Networks => "Networks", "Мережі";
+    NoNetworks => "No networks in range", "Немає мереж поблизу";
+    Scanning => "Scanning…", "Пошук…";
+    Connecting => "Connecting…", "Під'єднання…";
+    Connected => "Connected", "Під'єднано";
+    Disconnected => "Disconnected", "Від'єднано";
+    Saved => "Saved", "Збережена";
+    Secured => "Secured", "Захищена";
+    Open => "Open", "Відкрита";
+    Connect => "Connect", "Під'єднати";
+    Disconnect => "Disconnect", "Від'єднати";
+    Forget => "Forget", "Забути";
+    Signal => "Signal", "Сигнал";
+    NetworkManageHint => "Forgetting removes the saved password", "«Забути» видаляє збережений пароль";
+    Password => "Password", "Пароль";
+    PasswordHint => "The network is protected", "Мережа захищена";
+    Cancel => "Cancel", "Скасувати";
+
+    BluetoothUnavailable => "Bluetooth is unavailable", "Bluetooth недоступний";
+    BluetoothUnavailableHint => "No adapter was found, or BlueZ and bluetoothctl are missing", "Адаптер не знайдено або немає BlueZ і bluetoothctl";
+    BluetoothOff => "Off", "Вимкнено";
+    VisibleAs => "Visible as", "Видимий як";
+    BluetoothBlocked => "The adapter is blocked by rfkill. Turning Bluetooth on unblocks it.", "Адаптер заблоковано rfkill. Увімкнення Bluetooth розблокує його.";
+    MyDevices => "My devices", "Мої пристрої";
+    NoPairedDevices => "No paired devices", "Немає спарених пристроїв";
+    NearbyDevices => "Nearby devices", "Пристрої поблизу";
+    NearbyHint => "Put the device in pairing mode, then search", "Переведіть пристрій у режим спарювання й запустіть пошук";
+    NoNearbyDevices => "Nothing found yet", "Поки нічого не знайдено";
+    Search => "Search", "Шукати";
+    Working => "Working…", "Виконується…";
+    Pair => "Pair", "Спарити";
+
+    InputSources => "Input sources", "Джерела вводу";
+    InputSourcesHint => "The first layout is used by default", "Перша розкладка використовується за замовчуванням";
+    Default => "default", "типова";
+    AddInputSource => "Add input source", "Додати джерело вводу";
+    ChooseLayout => "Choose a layout…", "Оберіть розкладку…";
+    SwitchLayouts =>"Switch layouts", "Перемикання розкладок";
+    SwitchLayoutsHint => "Shortcut that cycles input sources", "Комбінація, що перемикає джерела вводу";
+    KeyRepeat => "Key repeat", "Повтор клавіш";
+    Reset => "Reset", "Скинути";
+    RepeatDelay => "Delay", "Затримка";
+    RepeatRate => "Rate", "Частота";
+    Milliseconds => "ms", "мс";
+    PerSecond => "per second", "за секунду";
+    TestHere => "Type here to test", "Надрукуйте тут для перевірки";
+    Language => "Language", "Мова";
+    InterfaceLanguage => "Interface language", "Мова інтерфейсу";
+    InterfaceLanguageHint => "Used by the shell and by Settings", "Використовується оболонкою та налаштуваннями";
+    LanguageSystem => "System", "Системна";
+
+    Pointer => "Pointer", "Вказівник";
+    PointerSpeed => "Speed", "Швидкість";
+    Slow => "Slow", "Повільно";
+    Fast => "Fast", "Швидко";
+    Acceleration => "Acceleration", "Прискорення";
+    AccelerationHint => "Adaptive speeds up quick movements", "Адаптивне пришвидшує швидкі рухи";
+    Adaptive => "Adaptive", "Адаптивне";
+    Flat => "Flat", "Лінійне";
+    Scrolling => "Scrolling", "Прокрутка";
+    NaturalScrolling => "Natural scrolling", "Природна прокрутка";
+    NaturalScrollingHint => "Content moves with your fingers", "Вміст рухається за пальцями";
+    Touchpad => "Touchpad", "Тачпад";
+    TapToClick => "Tap to click", "Дотик як клік";
+    TapToClickHint => "Tap the touchpad instead of pressing it", "Торкніться тачпада замість натискання";
+
+    Version => "Version", "Версія";
+    Device => "Device", "Пристрій";
+    CopyDetails => "Copy", "Копіювати";
+    DeviceName => "Device name", "Назва пристрою";
+    Hardware => "Hardware", "Обладнання";
+    Processor => "Processor", "Процесор";
+    Threads => "threads", "потоків";
+    Memory => "Memory", "Пам'ять";
+    Graphics => "Graphics", "Графіка";
+    Disk => "Disk", "Диск";
+    FreeOf => "free of", "вільно з";
+    Software => "Software", "Програмне забезпечення";
+    OperatingSystem => "Operating system", "Операційна система";
+    Kernel => "Kernel", "Ядро";
+    WindowingSystem => "Windowing system", "Віконна система";
+    Uptime => "Uptime", "Час роботи";
+    DaysShort => "d", "д";
+    HoursShort => "h", "год";
+    MinutesShort => "min", "хв";
+    ConfigFile => "Configuration", "Конфігурація";
+    CompositorOnline => "Glide running", "Glide працює";
+    CompositorOffline => "Glide not running", "Glide не запущено";
+    LocalAccount => "Local account", "Локальний обліковий запис";
+    ResultOne => "result", "результат";
+    ResultFew => "results", "результати";
+    ResultMany => "results", "результатів";
+}

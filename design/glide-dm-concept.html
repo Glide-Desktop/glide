@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glide DM — macOS-style Lockscreen (greetd + Meridian)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;550;600;650;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* =========================================================================
+   MERIDIAN Design System Tokens (Dark / Light)
+   ========================================================================= */
+:root {
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 24px; --sp-6: 32px; --sp-7: 48px; --sp-8: 64px;
+
+  /* Шкала форм Meridian */
+  --r-1: 4px;       /* мікроелементи */
+  --r-2: 8px;       /* контролі: поля вводу, кнопки, меню */
+  --r-3: 12px;      /* контейнери: спливні меню */
+  --r-4: 18px;      /* оболонки */
+  --r-round: 999px; /* виключно для круглих кнопок, аватара, пігулок */
+
+  /* Шари стану */
+  --st-hover: .08;
+  --st-press: .13;
+
+  /* Рух (Motion) */
+  --t-1: 120ms;
+  --t-2: 200ms;
+  --t-3: 320ms;
+  --t-4: 420ms;
+  --e-out: cubic-bezier(.2, 0, 0, 1);
+  --e-io: cubic-bezier(.4, 0, .2, 1);
+  --e-over: cubic-bezier(.32, 1.28, .5, 1);
+
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Meridian Azurite */
+  --ac-1: #d9e6fb; --ac-2: #a7c8f6; --ac-3: #5b9bec;
+  --ac-4: #2f6fd0; --ac-5: #1f56a8; --ac-6: #163e79;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --win-bg: #141316;
+  --fg-1: #f2f0ed;
+  --fg-2: rgba(242, 240, 237, 0.72);
+  --fg-3: rgba(242, 240, 237, 0.48);
+  --fg-4: rgba(242, 240, 237, 0.24);
+
+  --glass-bg: rgba(30, 29, 34, 0.45);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-card: rgba(26, 25, 30, 0.65);
+
+  --sunken-bg: rgba(0, 0, 0, 0.35);
+  --popover-bg: #252429;
+
+  --line: rgba(255, 255, 255, 0.10);
+  --line-2: rgba(255, 255, 255, 0.18);
+
+  --ok: #62d69b;
+  --danger: #f0796f;
+  --danger-soft: rgba(240, 121, 111, 0.20);
+
+  --acc-bg: var(--ac-4);
+  --acc-bg-hover: var(--ac-3);
+  --acc-ring: rgba(167, 200, 246, 0.45);
+
+  --el-1: 0 2px 6px rgba(0, 0, 0, 0.35);
+  --el-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --el-3: 0 16px 48px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.12);
+
+  --wall-overlay: rgba(10, 9, 12, 0.40);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --win-bg: #f5f4f1;
+  --fg-1: #1b1a17;
+  --fg-2: rgba(27, 26, 23, 0.70);
+  --fg-3: rgba(27, 26, 23, 0.46);
+  --fg-4: rgba(27, 26, 23, 0.22);
+
+  --glass-bg: rgba(255, 255, 255, 0.45);
+  --glass-border: rgba(255, 255, 255, 0.65);
+  --glass-card: rgba(255, 255, 255, 0.75);
+
+  --sunken-bg: rgba(0, 0, 0, 0.08);
+  --popover-bg: #ffffff;
+
+  --line: rgba(27, 26, 23, 0.10);
+  --line-2: rgba(27, 26, 23, 0.18);
+
+  --ok: #1c7a4c;
+  --danger: #bf372c;
+  --danger-soft: rgba(191, 55, 44, 0.16);
+
+  --acc-bg: var(--ac-4);
+  --acc-bg-hover: var(--ac-5);
+  --acc-ring: rgba(47, 111, 208, 0.35);
+
+  --el-1: 0 2px 6px rgba(27, 26, 23, 0.08);
+  --el-2: 0 8px 24px rgba(27, 26, 23, 0.12);
+  --el-3: 0 16px 48px rgba(27, 26, 23, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.85);
+
+  --wall-overlay: rgba(255, 255, 255, 0.20);
+}
+
+/* =========================================================================
+   БАЗОВА СТРУКТУРА ЕКРАНА
+   ========================================================================= */
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%;
+  font-family: var(--font); color: var(--fg-1);
+  overflow: hidden; user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Фонова сцена */
+.stage-wallpaper {
+  position: fixed; inset: 0; z-index: 0;
+  background-image: url('wallpaper.png'),
+    radial-gradient(circle at 18% 22%, #2d3b50 0%, transparent 55%),
+    radial-gradient(circle at 82% 78%, #362942 0%, transparent 60%),
+    linear-gradient(135deg, #121116 0%, #0d0f14 100%);
+  background-size: cover; background-position: center;
+  transition: transform 600ms var(--e-out);
+}
+
+.stage-scrim {
+  position: absolute; inset: 0;
+  backdrop-filter: blur(48px) saturate(1.4);
+  -webkit-backdrop-filter: blur(48px) saturate(1.4);
+  background: var(--wall-overlay);
+}
+
+/* Головний контейнер розкладки (macOS Layout) */
+.lockscreen-layout {
+  position: relative; z-index: 10;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  padding: 32px 36px 32px;
+}
+
+/* =========================================================================
+   1. ПЛАВАЮЧІ СТАТУС-ІКОНКИ У ВЕРХНЬОМУ ПРАВОМУ КУТІ
+   ========================================================================= */
+.floating-status-cluster {
+  position: absolute; top: 24px; right: 28px;
+  display: flex; align-items: center; gap: 8px;
+  z-index: 20;
+}
+
+.status-pill-btn {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: var(--fg-2);
+  height: 32px; padding: 0 10px;
+  border-radius: var(--r-round);
+  font-family: var(--font); font-size: 12px; font-weight: 550;
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; box-shadow: var(--el-1);
+  transition: all var(--t-1) var(--e-io);
+}
+.status-pill-btn:hover {
+  background: var(--glass-card);
+  color: var(--fg-1);
+  border-color: var(--line-2);
+}
+.status-pill-btn:active {
+  transform: scale(0.97);
+}
+.status-pill-btn.kbd {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+  padding: 0 9px;
+}
+
+/* =========================================================================
+   2. ВЕРХНІЙ БЛОК: ЗБІЛЬШЕНИЙ ГОДИННИК ТА ДАТА (114px Cinematic)
+   ========================================================================= */
+.clock-section {
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+  margin-top: 4px;
+}
+
+.lock-date {
+  font-size: 21px; line-height: 26px; font-weight: 500;
+  letter-spacing: -0.02em; color: var(--fg-2);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  margin-bottom: 2px;
+}
+
+.lock-time {
+  font-size: 114px; line-height: 0.95; font-weight: 560;
+  letter-spacing: -0.045em; font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-1);
+  text-shadow: 0 6px 30px rgba(0, 0, 0, 0.40);
+  transition: transform var(--t-3) var(--e-out);
+}
+
+/* =========================================================================
+   3. ЦЕНТРАЛЬНИЙ БЛОК: АВАТАР + ВХІД (Meridian Controls)
+   ========================================================================= */
+.auth-section {
+  display: flex; flex-direction: column; align-items: center;
+  width: 100%; max-width: 320px;
+  position: relative; margin-top: -10px;
+  transition: opacity var(--t-3) var(--e-out), transform var(--t-3) var(--e-out);
+}
+
+/* Круглий аватар із контуром Meridian */
+.user-avatar-btn {
+  background: transparent; border: none; padding: 0; cursor: pointer;
+  position: relative; margin-bottom: 12px; outline: none;
+}
+.user-avatar-img {
+  width: 82px; height: 82px; border-radius: var(--r-round);
+  background: linear-gradient(135deg, var(--ac-3) 0%, var(--ac-5) 100%);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 30px; font-weight: 650; color: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30), 0 0 0 2px var(--glass-border);
+  transition: transform var(--t-2) var(--e-out), box-shadow var(--t-2);
+}
+.user-avatar-btn:hover .user-avatar-img {
+  transform: scale(1.03);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38), 0 0 0 2.5px var(--acc-ring);
+}
+.user-avatar-btn:active .user-avatar-img {
+  transform: scale(0.98);
+}
+
+/* Ім'я користувача */
+.user-name-label {
+  font-size: 17px; font-weight: 620; letter-spacing: -0.015em;
+  color: var(--fg-1); margin-bottom: 12px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.30);
+  cursor: pointer;
+}
+
+/* Поле пароля (Meridian контрол --r-2: 8px) */
+.password-box {
+  width: 240px; position: relative;
+  height: 38px;
+}
+.pwd-field {
+  width: 100%; height: 100%;
+  background: var(--sunken-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-radius: var(--r-2); /* 8px за специфікацією Meridian */
+  padding: 0 38px 0 14px;
+  color: var(--fg-1); font-family: var(--font); font-size: 13.5px;
+  outline: none;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: border-color var(--t-2) var(--e-out), box-shadow var(--t-2) var(--e-out), background var(--t-2);
+}
+.pwd-field::placeholder { color: var(--fg-3); }
+.pwd-field:focus {
+  border-color: var(--acc-bg);
+  background: var(--glass-card);
+  box-shadow: 0 0 0 3px var(--acc-ring), inset 0 1px 2px rgba(0,0,0,0.15);
+}
+.pwd-field.error {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+  animation: shake 320ms var(--e-out);
+}
+
+/* Кнопка стрілки всередині поля */
+.pwd-submit-btn {
+  position: absolute; right: 3px; top: 3px; bottom: 3px;
+  width: 32px; border-radius: 6px;
+  background: var(--acc-bg); border: none; color: #fff;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background var(--t-1) var(--e-io), transform var(--t-1) var(--e-out);
+}
+.pwd-submit-btn:hover { background: var(--acc-bg-hover); }
+.pwd-submit-btn:active { transform: scale(0.94); }
+
+/* Підказка Touch ID / біометрії */
+.biometric-hint {
+  margin-top: 10px; font-size: 12px; font-weight: 450;
+  color: var(--fg-3); display: flex; align-items: center; gap: 6px;
+  min-height: 18px; cursor: pointer;
+  padding: 3px 6px; border-radius: var(--r-1);
+  transition: color var(--t-2);
+}
+.biometric-hint:hover { color: var(--fg-1); }
+.biometric-hint.error-msg { color: var(--danger); font-weight: 550; }
+.biometric-hint.ok-msg { color: var(--ok); font-weight: 550; }
+
+/* =========================================================================
+   4. НИЖНІЙ РЯДОК: ЦІКАВО ОБІГРАНИЙ ОСТРІВ ЖИВЛЕННЯ ЗЛІВА, СТІЛЬНИЦЯ СПРАВА
+   ========================================================================= */
+.bottom-dock-row {
+  width: 100%;
+  display: flex; align-items: flex-end; justify-content: space-between;
+}
+
+/* ЗЛІВА ВНИЗУ: Інтерактивна скляна капсула живлення з Inline-озброєнням */
+.power-cluster-left {
+  position: relative;
+}
+
+.power-morph-capsule {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(28px) saturate(1.4);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  box-shadow: var(--el-1);
+  border-radius: var(--r-round);
+  height: 42px;
+  display: flex; align-items: center;
+  padding: 0 4px;
+  transition: all var(--t-3) var(--e-out);
+  overflow: hidden;
+}
+.power-morph-capsule:hover {
+  background: var(--glass-card);
+  border-color: var(--line-2);
+  box-shadow: var(--el-2);
+}
+
+/* Звичайний стан: 3 іконки з магнітним розкриттям підписів */
+.power-idle-tray {
+  display: flex; align-items: center; gap: 2px;
+  transition: opacity var(--t-2) var(--e-out), transform var(--t-2) var(--e-out);
+}
+.power-morph-capsule.armed .power-idle-tray {
+  display: none;
+}
+
+.pwr-item-btn {
+  background: transparent; border: none; outline: none;
+  height: 34px; padding: 0 10px;
+  border-radius: var(--r-round);
+  color: var(--fg-2); cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+  transition: all var(--t-2) var(--e-out);
+}
+.pwr-item-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--fg-1);
+}
+.pwr-item-btn.danger-act:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.pwr-item-btn:active {
+  transform: scale(0.96);
+}
+
+.pwr-icon {
+  width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
+}
+.pwr-text {
+  font-size: 12px; font-weight: 500; letter-spacing: -0.01em;
+  max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap;
+  transition: max-width var(--t-2) var(--e-out), opacity var(--t-2) var(--e-out);
+}
+/* При наведенні плавно розгортається назва дії */
+.pwr-item-btn:hover .pwr-text {
+  max-width: 80px; opacity: 1;
+}
+
+.pwr-divider {
+  width: 1px; height: 16px; background: var(--line);
+}
+
+/* Стан озброєння (Inline Armed Tray) — замінює розгортання в модалку! */
+.power-armed-tray {
+  display: none; align-items: center; gap: 8px;
+  padding: 0 4px 0 12px;
+  animation: fadeInTray var(--t-2) var(--e-out);
+}
+.power-morph-capsule.armed .power-armed-tray {
+  display: flex;
+}
+
+.armed-question-text {
+  font-size: 12.5px; font-weight: 550; color: var(--fg-1);
+  white-space: nowrap;
+}
+
+.armed-btn-confirm {
+  height: 30px; padding: 0 12px;
+  border-radius: var(--r-round);
+  border: none; font-size: 12px; font-weight: 600;
+  cursor: pointer; display: flex; align-items: center; gap: 4px;
+  transition: all var(--t-1) var(--e-io);
+}
+.armed-btn-confirm.danger {
+  background: var(--danger); color: #ffffff;
+}
+.armed-btn-confirm.accent {
+  background: var(--acc-bg); color: #ffffff;
+}
+.armed-btn-confirm:hover {
+  opacity: 0.92; transform: scale(1.02);
+}
+.armed-btn-confirm:active {
+  transform: scale(0.96);
+}
+
+.armed-btn-cancel {
+  width: 28px; height: 28px; border-radius: var(--r-round);
+  background: rgba(255, 255, 255, 0.08); border: none;
+  color: var(--fg-2); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; transition: all var(--t-1);
+}
+.armed-btn-cancel:hover {
+  background: rgba(255, 255, 255, 0.16); color: var(--fg-1);
+}
+
+/* СПРАВА ВНИЗУ: Вибір стільниці (Wayland Session Picker) */
+.session-cluster-right {
+  position: relative;
+}
+
+.session-pill-btn {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(28px) saturate(1.4);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  color: var(--fg-2);
+  height: 42px; padding: 0 16px;
+  border-radius: var(--r-round);
+  font-family: var(--font); font-size: 12.5px; font-weight: 500;
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer; box-shadow: var(--el-1);
+  transition: all var(--t-2) var(--e-out);
+}
+.session-pill-btn:hover {
+  background: var(--glass-card);
+  color: var(--fg-1);
+  border-color: var(--line-2);
+  transform: translateY(-2px);
+  box-shadow: var(--el-2);
+}
+.session-pill-btn:active {
+  transform: translateY(0);
+}
+
+/* Спливне меню сесій (випадає вгору) */
+.session-menu-popover {
+  position: absolute; bottom: 50px; right: 0;
+  background: var(--popover-bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  padding: 6px; width: 220px;
+  display: none; flex-direction: column; gap: 2px;
+  z-index: 50;
+}
+.session-menu-popover.open {
+  display: flex; animation: revealMenu var(--t-2) var(--e-out);
+}
+.session-menu-option {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-radius: var(--r-2);
+  border: none; background: transparent; cursor: pointer;
+  color: var(--fg-1); font-size: 13px; text-align: left;
+  transition: background var(--t-1);
+}
+.session-menu-option:hover { background: rgba(255, 255, 255, 0.08); }
+.session-menu-option.active { background: var(--acc-bg); color: #fff; font-weight: 500; }
+
+/* =========================================================================
+   АНІМАЦІЇ
+   ========================================================================= */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-7px); }
+  40%, 80% { transform: translateX(7px); }
+}
+@keyframes revealMenu {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes fadeInTray {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.spinner {
+  width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.35);
+  border-top-color: #fff; border-radius: 50%;
+  animation: spin 0.6s linear infinite; display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Стан успішного запуску Glide */
+.launching .auth-section {
+  opacity: 0; transform: scale(0.95);
+}
+.launching .clock-section {
+  opacity: 0; transform: translateY(-20px);
+}
+.launching .bottom-dock-row {
+  opacity: 0; transform: translateY(20px);
+}
+.launch-scrim {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--win-bg); opacity: 0; pointer-events: none;
+  transition: opacity 400ms var(--e-out);
+}
+.launching .launch-scrim {
+  opacity: 1; pointer-events: auto;
+}
+</style>
+</head>
+
+<body data-theme="dark">
+
+<!-- Фонова шпалера + Scrim -->
+<div class="stage-wallpaper">
+  <div class="stage-scrim"></div>
+</div>
+
+<!-- Екран плавного переходу в сесію -->
+<div class="launch-scrim" id="launchScrim">
+  <div class="spinner" style="width:36px; height:36px; border-width:3px; border-top-color:var(--acc-bg);"></div>
+  <div style="margin-top:16px; font-weight:550; font-size:15px; color:var(--fg-1);">Вхід до Glide Desktop...</div>
+</div>
+
+<!-- ПЛАВАЮЧІ ІНДИКАТОРИ В КУТКУ -->
+<div class="floating-status-cluster">
+  <!-- Перемикач розкладки клавіатури -->
+  <button class="status-pill-btn kbd" id="kbdBtn" onclick="toggleKeyboardLayout()" title="Перемкнути розкладку (Super+Space)">
+    <span id="kbdText">UA</span>
+  </button>
+
+  <!-- Wi-Fi -->
+  <button class="status-pill-btn" title="Wi-Fi: Підключено (5 GHz)">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+  </button>
+
+  <!-- Батарея -->
+  <button class="status-pill-btn" title="Батарея: 94%">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg>
+    <span style="font-size:11.5px; font-variant-numeric:tabular-nums;">94%</span>
+  </button>
+</div>
+
+<!-- ГОЛОВНА РОЗМІТКА ЕКРАНА -->
+<div class="lockscreen-layout">
+
+  <!-- ВЕРХ: ГОДИННИК ТА ДАТА (ЗБІЛЬШЕНИЙ ЕЛЕГАНТНИЙ ШРИФТ 114px) -->
+  <header class="clock-section">
+    <div class="lock-date" id="dateDisplay">пʼятниця, 25 вересня</div>
+    <div class="lock-time" id="timeDisplay">14:50</div>
+  </header>
+
+  <!-- ЦЕНТР: АВАТАР, КОРИСТУВАЧ, ПОЛЕ ВХОДУ (Meridian) -->
+  <main class="auth-section">
+
+    <!-- Круглий аватар -->
+    <button class="user-avatar-btn" onclick="focusPassword()" title="Користувач Артем">
+      <div class="user-avatar-img" id="avatarLetter">А</div>
+    </button>
+
+    <!-- Ім'я -->
+    <div class="user-name-label" id="userNameLabel">Артем</div>
+
+    <!-- Поле введення пароля (Meridian контрол --r-2: 8px) -->
+    <form class="password-box" id="loginForm" onsubmit="handleAuthSubmit(event)">
+      <input
+        type="password"
+        class="pwd-field"
+        id="pwdInput"
+        placeholder="Введіть пароль"
+        autocomplete="current-password"
+        autofocus
+      />
+      <button type="submit" class="pwd-submit-btn" id="submitBtn" title="Увійти">
+        <span id="submitIcon">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </span>
+      </button>
+    </form>
+
+    <!-- Підказка біометрії (Touch ID) -->
+    <div class="biometric-hint" id="biometricHint" onclick="simulateFingerprintAuth()" title="Натисніть для симуляції Touch ID">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/></svg>
+      <span id="hintText">Торкніться Touch ID або натисніть Enter</span>
+    </div>
+
+  </main>
+
+  <!-- НИЗ: ЦІКАВО ОБІГРАНИЙ ОСТРІВ ЖИВЛЕННЯ ЗЛІВА, СТІЛЬНИЦЯ СПРАВА -->
+  <footer class="bottom-dock-row">
+
+    <!-- ЗЛІВА ВНИЗУ: Інтерактивна капсула живлення з Inline Morphing -->
+    <div class="power-cluster-left">
+      <div class="power-morph-capsule" id="powerCapsule">
+
+        <!-- Звичайний стан: 3 дії з магнітним розгортанням тексту на ховері -->
+        <div class="power-idle-tray" id="powerIdleTray">
+          <!-- Сон -->
+          <button class="pwr-item-btn" onclick="armInlineAction('sleep', 'Перевести комп’ютер у сон?', 'Заснути', 'accent')" title="Сон">
+            <span class="pwr-icon">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </span>
+            <span class="pwr-text">Сон</span>
+          </button>
+
+          <div class="pwr-divider"></div>
+
+          <!-- Перезапуск -->
+          <button class="pwr-item-btn danger-act" onclick="armInlineAction('restart', 'Перезавантажити компʼютер?', 'Перезапуск', 'danger')" title="Перезапуск">
+            <span class="pwr-icon">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </span>
+            <span class="pwr-text">Перезапуск</span>
+          </button>
+
+          <div class="pwr-divider"></div>
+
+          <!-- Вимкнути -->
+          <button class="pwr-item-btn danger-act" onclick="armInlineAction('shutdown', 'Вимкнути компʼютер?', 'Вимкнути', 'danger')" title="Вимкнути">
+            <span class="pwr-icon">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="20" x2="12" y2="12"/></svg>
+            </span>
+            <span class="pwr-text">Вимкнути</span>
+          </button>
+        </div>
+
+        <!-- Озброєний стан: плавно замінює іконки прямо всередині капсули -->
+        <div class="power-armed-tray" id="powerArmedTray">
+          <span class="armed-question-text" id="armedQuestion">Вимкнути компʼютер?</span>
+          <button class="armed-btn-confirm danger" id="armedConfirmBtn" onclick="confirmPowerAction()">Вимкнути</button>
+          <button class="armed-btn-cancel" onclick="cancelInlineAction()" title="Скасувати (Esc)">✕</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- СПРАВА ВНИЗУ: Вибір стільниці (Wayland Session Picker) -->
+    <div class="session-cluster-right">
+      <button class="session-pill-btn" onclick="toggleSessionMenu(event)" title="Вибрати стільницю">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        <span id="currentSessionLabel">Glide Desktop</span>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+
+      <!-- Спливне меню вибору сесії (відкривається вгору) -->
+      <div class="session-menu-popover" id="sessionMenu">
+        <button class="session-menu-option active" onclick="pickSession('Glide Desktop')">
+          <span>Glide Desktop (Wayland)</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
+        <button class="session-menu-option" onclick="pickSession('GNOME (Wayland)')">
+          <span>GNOME (Wayland)</span>
+        </button>
+        <button class="session-menu-option" onclick="pickSession('Sway')">
+          <span>Sway</span>
+        </button>
+      </div>
+    </div>
+
+  </footer>
+
+</div>
+
+<script>
+// Годинник і дата реального часу (Збільшений 114px шрифт)
+function updateTime() {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  document.getElementById('timeDisplay').textContent = `${hours}:${minutes}`;
+
+  const days = ['неділя', 'понеділок', 'вівторок', 'середа', 'четвер', 'пʼятниця', 'субота'];
+  const months = ['січня', 'лютого', 'березня', 'квітня', 'травня', 'червня', 'липня', 'серпня', 'вересня', 'жовтня', 'листопада', 'грудня'];
+  document.getElementById('dateDisplay').textContent = `${days[now.getDay()]}, ${now.getDate()} ${months[now.getMonth()]}`;
+}
+setInterval(updateTime, 1000);
+updateTime();
+
+// Фокус у поле вводу
+function focusPassword() {
+  document.getElementById('pwdInput').focus();
+}
+
+// Перемикач розкладки клавіатури
+const kbdText = document.getElementById('kbdText');
+function toggleKeyboardLayout() {
+  kbdText.textContent = kbdText.textContent === 'UA' ? 'EN' : 'UA';
+}
+
+// Меню вибору сесії Wayland (справа внизу)
+const sessionMenu = document.getElementById('sessionMenu');
+function toggleSessionMenu(e) {
+  e.stopPropagation();
+  sessionMenu.classList.toggle('open');
+}
+function pickSession(name) {
+  document.getElementById('currentSessionLabel').textContent = name;
+  sessionMenu.classList.remove('open');
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#sessionMenu') && !e.target.closest('.session-pill-btn')) {
+    sessionMenu.classList.remove('open');
+  }
+  if (!e.target.closest('#powerCapsule')) {
+    cancelInlineAction();
+  }
+});
+
+// Кнопка Esc скасовує озброєння дій або закриває меню
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    cancelInlineAction();
+    sessionMenu.classList.remove('open');
+  }
+});
+
+// Обробка форми логіну
+function handleAuthSubmit(e) {
+  e.preventDefault();
+  const input = document.getElementById('pwdInput');
+  const val = input.value.trim();
+
+  const submitIcon = document.getElementById('submitIcon');
+  submitIcon.innerHTML = `<span class="spinner"></span>`;
+
+  setTimeout(() => {
+    if (val === 'wrong') {
+      // Помилка (shake)
+      input.classList.remove('error');
+      void input.offsetWidth;
+      input.classList.add('error');
+      input.value = '';
+
+      const hint = document.getElementById('biometricHint');
+      const hintText = document.getElementById('hintText');
+      hint.className = 'biometric-hint error-msg';
+      hintText.textContent = 'Невірний пароль. Спробуйте ще раз';
+
+      submitIcon.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`;
+
+      setTimeout(() => {
+        hint.className = 'biometric-hint';
+        hintText.textContent = 'Торкніться Touch ID або натисніть Enter';
+        input.classList.remove('error');
+      }, 2500);
+    } else {
+      // Успішний вхід (запуск Glide)
+      document.body.classList.add('launching');
+    }
+  }, 450);
+}
+
+// Симуляція відбитка пальця
+function simulateFingerprintAuth() {
+  const hint = document.getElementById('biometricHint');
+  const hintText = document.getElementById('hintText');
+  hint.className = 'biometric-hint ok-msg';
+  hintText.textContent = '✓ Відбиток розпізнано! Вхід...';
+
+  setTimeout(() => {
+    document.body.classList.add('launching');
+  }, 400);
+}
+
+// =========================================================================
+// ЦІКАВЕ ІНТЕРАКТИВНЕ ОБІГРАВАННЯ КНОПОК ЖИВЛЕННЯ (Inline Morphing)
+// =========================================================================
+let activePowerAction = null;
+const powerCapsule = document.getElementById('powerCapsule');
+const armedQuestion = document.getElementById('armedQuestion');
+const armedConfirmBtn = document.getElementById('armedConfirmBtn');
+
+function armInlineAction(action, questionText, confirmBtnLabel, themeType) {
+  activePowerAction = action;
+  armedQuestion.textContent = questionText;
+  armedConfirmBtn.textContent = confirmBtnLabel;
+  armedConfirmBtn.className = `armed-btn-confirm ${themeType}`;
+  powerCapsule.classList.add('armed');
+}
+
+function cancelInlineAction() {
+  powerCapsule.classList.remove('armed');
+  activePowerAction = null;
+}
+
+function confirmPowerAction() {
+  cancelInlineAction();
+}
+</script>
+
+</body>
+</html>

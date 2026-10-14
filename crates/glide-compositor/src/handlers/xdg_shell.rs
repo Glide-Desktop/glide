@@ -6,25 +6,23 @@ use smithay::{
     },
     reexports::{
         wayland_protocols::xdg::{
-            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
-            shell::server::xdg_toplevel,
+            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode, shell::server::xdg_toplevel,
         },
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
             Mode as KdeMode, OrgKdeKwinServerDecoration,
         },
         wayland_server::{
-            Resource, WEnum,
+            WEnum,
             protocol::{wl_output::WlOutput, wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Rectangle, Serial},
+    utils::{Logical, Point, Rectangle, Serial},
     wayland::{
-        compositor::with_states,
+        compositor::{get_parent, with_states},
         shell::{
             kde::decoration::{KdeDecorationHandler, KdeDecorationState},
             xdg::{
-                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-                XdgToplevelSurfaceData,
+                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
                 decoration::XdgDecorationHandler,
                 dialog::{ToplevelDialogHint, XdgDialogHandler},
             },
@@ -35,7 +33,7 @@ use smithay::{
 use crate::{
     GlideState,
     grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
-    state::{layout_size, window_surface},
+    state::{layout_size, toplevel_title_and_app_id, window_surface},
     window::GlideWindow,
 };
 
@@ -46,20 +44,14 @@ impl XdgShellHandler for GlideState {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         tracing::info!("new toplevel");
-        let parent = surface
-            .parent()
-            .and_then(|parent| self.window_id_for_surface(&parent));
+        let parent = surface.parent().and_then(|parent| self.window_id_for_surface(&parent));
 
-        self.track_window(
-            GlideWindow::new(Window::new_wayland_window(surface)),
-            parent,
-        );
+        self.track_window(GlideWindow::new(Window::new_wayland_window(surface)), parent);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         tracing::info!("toplevel destroyed");
         self.untrack_window(surface.wl_surface());
-        self.cleanup_dead_windows();
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
@@ -69,23 +61,14 @@ impl XdgShellHandler for GlideState {
         let Some(window) = self.window_map.get(&id) else {
             return;
         };
-        let title = with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|data| data.lock().ok())
-                .and_then(|guard| guard.title.clone())
-        });
+        let (title, _) = toplevel_title_and_app_id(surface.wl_surface());
         if let Some(title) = title.clone()
             && let Some(mut deco) = window.try_decoration_state_mut()
         {
             deco.header.set_title(title);
         }
         self.ipc_subscribers
-            .broadcast(&glide_ipc::Event::TitleChanged {
-                id: id.as_u64(),
-                title: title.unwrap_or_default(),
-            });
+            .broadcast(&glide_ipc::Event::TitleChanged { id: id.as_u64(), title: title.unwrap_or_default() });
         self.refresh_dock();
         self.queue_redraw();
     }
@@ -95,23 +78,12 @@ impl XdgShellHandler for GlideState {
             return;
         };
 
-        let app_id = with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|data| data.lock().ok())
-                .and_then(|guard| guard.app_id.clone())
-        });
-        let app_id = app_id.unwrap_or_default();
+        let app_id = toplevel_title_and_app_id(surface.wl_surface()).1.unwrap_or_default();
         if let Some(handle) = self.foreign_toplevel_handles.get(&id) {
             handle.send_app_id(&app_id);
             handle.send_done();
         }
-        self.ipc_subscribers
-            .broadcast(&glide_ipc::Event::AppIdChanged {
-                id: id.as_u64(),
-                app_id,
-            });
+        self.ipc_subscribers.broadcast(&glide_ipc::Event::AppIdChanged { id: id.as_u64(), app_id });
 
         if self.refresh_dock() {
             self.queue_redraw();
@@ -122,20 +94,14 @@ impl XdgShellHandler for GlideState {
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;
         };
-        let Some(parent) = surface
-            .parent()
-            .and_then(|parent| self.window_id_for_surface(&parent))
-        else {
+        let Some(parent) = surface.parent().and_then(|parent| self.window_id_for_surface(&parent)) else {
             return;
         };
         let Some(target) = self.layout.window_state(parent).map(|s| s.workspace_id) else {
             return;
         };
 
-        if self
-            .layout
-            .move_window_to_workspace(id, glide_layout::WorkspaceTarget::Id(target))
-        {
+        if self.layout.move_window_to_workspace(id, glide_layout::WorkspaceTarget::Id(target)) {
             self.reconcile_space();
         }
     }
@@ -156,17 +122,36 @@ impl XdgShellHandler for GlideState {
         self.set_toplevel_fullscreen(&surface, false);
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        self.minimize_with_flight(id);
+    }
+
+    fn show_window_menu(
+        &mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial, location: Point<i32, Logical>,
+    ) {
+        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        let Some(window) = self.window_map.get(&id) else {
+            return;
+        };
+        let Some(mut deco) = window.try_decoration_state_mut() else {
+            return;
+        };
+        deco.header.open_menu_at_x(location.x);
+        drop(deco);
+        self.queue_redraw();
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
 
-    fn reposition_request(
-        &mut self,
-        surface: PopupSurface,
-        positioner: PositionerState,
-        token: u32,
-    ) {
+    fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
         surface.with_pending_state(|state| {
             let geometry = positioner.get_geometry();
             state.geometry = geometry;
@@ -182,90 +167,74 @@ impl XdgShellHandler for GlideState {
 
         let wl_surface = surface.wl_surface();
 
-        if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat
-                .get_pointer()
-                .expect("a pointer was added in GlideState::new");
+        let Some(start_data) = check_grab(&seat, wl_surface, serial) else {
+            return;
+        };
+        self.finish_workspace_swipe();
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        let Some(window) = self.mapped_window(wl_surface) else {
+            return;
+        };
 
-            let window = self
-                .space
-                .elements()
-                .find(|w| window_surface(w) == wl_surface)
-                .expect("check_grab confirmed this surface's window is focused, hence mapped")
-                .clone();
+        self.restore_for_move(&window, pointer.current_location());
 
-            // Same restore-on-drag as Glide's own titlebar drag; clients
-            // start moves from their own headerbars too.
-            self.restore_for_move(&window, pointer.current_location());
+        let Some(initial_window_location) = self.space.element_location(&window) else {
+            return;
+        };
 
-            let initial_window_location = self
-                .space
-                .element_location(&window)
-                .expect("window was just found in space.elements(), so it has a location");
+        let grab = MoveSurfaceGrab {
+            start_data,
+            window: window.clone(),
+            initial_window_location,
+            pending_restore: self.is_size_locked(&window),
+        };
 
-            let grab = MoveSurfaceGrab {
-                start_data,
-                window: window.clone(),
-                initial_window_location,
-                pending_restore: self.is_size_locked(&window),
-            };
-
-            pointer.set_grab(self, grab, serial, Focus::Clear);
-        }
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
     fn resize_request(
-        &mut self,
-        surface: ToplevelSurface,
-        seat: wl_seat::WlSeat,
-        serial: Serial,
-        edges: xdg_toplevel::ResizeEdge,
+        &mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial, edges: xdg_toplevel::ResizeEdge,
     ) {
         let seat: Seat<GlideState> =
             Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
 
         let wl_surface = surface.wl_surface();
 
-        if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat
-                .get_pointer()
-                .expect("a pointer was added in GlideState::new");
+        let Some(start_data) = check_grab(&seat, wl_surface, serial) else {
+            return;
+        };
+        self.finish_workspace_swipe();
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        let Some(window) = self.mapped_window(wl_surface) else {
+            return;
+        };
+        let Some(initial_window_location) = self.space.element_location(&window) else {
+            return;
+        };
+        let initial_window_size = window.geometry().size;
 
-            let window = self
-                .space
-                .elements()
-                .find(|w| window_surface(w) == wl_surface)
-                .expect("check_grab confirmed this surface's window is focused, hence mapped")
-                .clone();
-            let initial_window_location = self
-                .space
-                .element_location(&window)
-                .expect("window was just found in space.elements(), so it has a location");
-            let initial_window_size = window.geometry().size;
-
-            // A maximized or fullscreen window is sized by the compositor;
-            // see `GlideState::is_size_locked`. Clients drive interactive
-            // resizes from their own edge handles too, so the request has
-            // to be declined here as well as in Glide's border drag.
-            if self.is_size_locked(&window) {
-                return;
-            }
-
-            surface.with_pending_state(|state| {
-                state.states.set(xdg_toplevel::State::Resizing);
-            });
-
-            surface.send_pending_configure();
-
-            let grab = ResizeSurfaceGrab::start(
-                start_data,
-                window,
-                edges.into(),
-                Rectangle::new(initial_window_location, initial_window_size),
-            );
-
-            pointer.set_grab(self, grab, serial, Focus::Clear);
+        if self.is_size_locked(&window) {
+            return;
         }
+
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Resizing);
+        });
+
+        surface.send_pending_configure();
+
+        let grab = ResizeSurfaceGrab::start(
+            start_data,
+            window,
+            edges.into(),
+            Rectangle::new(initial_window_location, initial_window_size),
+        );
+
+        pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
@@ -281,11 +250,14 @@ impl XdgShellHandler for GlideState {
         let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
             return;
         };
+        if self.screen_locked() {
+            grab.ungrab(PopupUngrabStrategy::All);
+            return;
+        }
 
         if let Some(keyboard) = seat.get_keyboard() {
             if keyboard.is_grabbed()
-                && !(keyboard.has_grab(serial)
-                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+                && !(keyboard.has_grab(serial) || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
             {
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
@@ -307,9 +279,7 @@ impl XdgShellHandler for GlideState {
 }
 
 fn check_grab(
-    seat: &Seat<GlideState>,
-    surface: &WlSurface,
-    serial: Serial,
+    seat: &Seat<GlideState>, surface: &WlSurface, serial: Serial,
 ) -> Option<PointerGrabStartData<GlideState>> {
     let pointer = seat.get_pointer()?;
 
@@ -320,8 +290,11 @@ fn check_grab(
     let start_data = pointer.grab_start_data()?;
 
     let (focus, _) = start_data.focus.as_ref()?;
-    let focus_surface = focus.as_surface()?;
-    if !focus_surface.id().same_client_as(&surface.id()) {
+    let mut focus_root = focus.as_surface()?.clone();
+    while let Some(parent) = get_parent(&focus_root) {
+        focus_root = parent;
+    }
+    if &focus_root != surface {
         return None;
     }
 
@@ -329,11 +302,7 @@ fn check_grab(
 }
 
 pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
-    let window = state
-        .window_map
-        .values()
-        .find(|w| window_surface(w) == surface)
-        .cloned();
+    let window = state.window_map.values().find(|w| window_surface(w) == surface).cloned();
 
     if let Some(window) = window {
         let initial_configure_sent = with_states(surface, |states| {
@@ -354,52 +323,20 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
         }
 
         if let Some(id) = state.window_id(&window) {
-            let (title, app_id) = with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<XdgToplevelSurfaceData>()
-                    .map(|data| {
-                        let guard = data.lock().unwrap();
-                        (
-                            guard.title.clone().unwrap_or_default(),
-                            guard.app_id.clone().unwrap_or_default(),
-                        )
-                    })
-                    .unwrap_or_default()
-            });
-
-            if let Some(handle) = state.foreign_toplevel_handles.get(&id) {
+            let (title, app_id) = toplevel_title_and_app_id(surface);
+            let (title, app_id) = (title.unwrap_or_default(), app_id.unwrap_or_default());
+            if let Some(handle) = state.foreign_toplevel_handles.get(&id)
+                && (handle.title() != title || handle.app_id() != app_id)
+            {
                 handle.send_title(&title);
                 handle.send_app_id(&app_id);
                 handle.send_done();
             }
 
-            let placed = state.layout.update_window_size(id, layout_size(&window));
-            if placed {
-                // First commit that carries a real buffer — this is the
-                // moment the window actually appears, so the grow starts
-                // here rather than at `new_toplevel`. A toplevel is created
-                // as soon as the client asks for one, long before it has
-                // configured, allocated and drawn anything: a cold-starting
-                // terminal easily burns the whole 420ms before its first
-                // frame, and the animation was over by the time there was
-                // something to animate.
+            if state.layout.update_window_size(id, layout_size(&window)) {
                 state.begin_window_open_animation(id, &window);
                 state.reconcile_space();
             } else {
-                // `update_window_size` already kept `WindowState.geometry`
-                // in sync with this commit's live buffer size above
-                // (that happens regardless of `placed`) — but for an
-                // already-mapped window resizing in place, nothing else
-                // re-derives from that new size. In particular, overview
-                // mode's cached preview rects are a snapshot taken when it
-                // was last (re)laid out, so a window resizing while
-                // overview is open would otherwise leave its highlight
-                // ring and label sized/positioned for its old dimensions
-                // until something unrelated happened to trigger a full
-                // `reconcile_space()`. `refresh_overview()` is a no-op
-                // whenever overview isn't actually open, so this is cheap
-                // the rest of the time.
                 state.refresh_overview();
             }
         }
@@ -410,8 +347,11 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
     if let Some(popup) = popups.find_popup(surface) {
         match popup {
             PopupKind::Xdg(ref xdg) => {
-                if !xdg.is_initial_configure_sent() {
-                    xdg.send_configure().expect("initial configure failed");
+                if !xdg.is_initial_configure_sent()
+                    && let Err(err) = xdg.send_configure()
+                {
+                    tracing::warn!(?err, "initial popup configure failed, dismissing the popup");
+                    xdg.send_popup_done();
                 }
             }
             PopupKind::InputMethod(ref _input_method) => {}
@@ -421,42 +361,15 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
 
 impl XdgDecorationHandler for GlideState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
-        });
-        toplevel.send_pending_configure();
-
-        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
-            self.set_window_decorated(id, true);
-        }
+        self.apply_decoration_mode(&toplevel, true);
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        let server_side = mode == DecorationMode::ServerSide;
-
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(if server_side {
-                DecorationMode::ServerSide
-            } else {
-                DecorationMode::ClientSide
-            });
-        });
-        toplevel.send_pending_configure();
-
-        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
-            self.set_window_decorated(id, server_side);
-        }
+        self.apply_decoration_mode(&toplevel, mode == DecorationMode::ServerSide);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
-        });
-        toplevel.send_pending_configure();
-
-        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
-            self.set_window_decorated(id, true);
-        }
+        self.apply_decoration_mode(&toplevel, true);
     }
 }
 
@@ -465,12 +378,7 @@ impl KdeDecorationHandler for GlideState {
         &self.protocols.kde_decoration_state
     }
 
-    fn request_mode(
-        &mut self,
-        surface: &WlSurface,
-        decoration: &OrgKdeKwinServerDecoration,
-        mode: WEnum<KdeMode>,
-    ) {
+    fn request_mode(&mut self, surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration, mode: WEnum<KdeMode>) {
         let WEnum::Value(mode) = mode else {
             return;
         };
@@ -496,25 +404,56 @@ impl XdgDialogHandler for GlideState {
 }
 
 impl GlideState {
-    fn set_toplevel_maximized(&mut self, surface: &ToplevelSurface, maximized: bool) {
-        let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
-            return;
-        };
-        if self.layout.set_maximized(id, maximized) {
-            self.reconcile_space();
-        } else {
-            surface.send_pending_configure();
+    fn apply_decoration_mode(&mut self, toplevel: &ToplevelSurface, server_side: bool) {
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode =
+                Some(if server_side { DecorationMode::ServerSide } else { DecorationMode::ClientSide });
+        });
+        toplevel.send_pending_configure();
+        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
+            self.set_window_decorated(id, server_side);
         }
     }
 
+    fn set_toplevel_maximized(&mut self, surface: &ToplevelSurface, maximized: bool) {
+        self.set_toplevel_state(surface, |layout, id| layout.set_maximized(id, maximized));
+    }
+
     fn set_toplevel_fullscreen(&mut self, surface: &ToplevelSurface, fullscreen: bool) {
+        self.set_toplevel_state(surface, |layout, id| layout.set_fullscreen(id, fullscreen));
+    }
+
+    fn set_toplevel_state(
+        &mut self, surface: &ToplevelSurface,
+        apply: impl FnOnce(&mut glide_layout::Layout, glide_layout::WindowId) -> bool,
+    ) {
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;
         };
-        if self.layout.set_fullscreen(id, fullscreen) {
+        if self.can_morph_state_change(id, surface) {
+            let mut changed = false;
+            self.morph_geometry(id, |state| changed = apply(&mut state.layout, id));
+            if !changed {
+                surface.send_configure();
+            }
+            return;
+        }
+        let changed = apply(&mut self.layout, id);
+        self.answer_state_request(surface, changed);
+    }
+
+    fn can_morph_state_change(&self, id: glide_layout::WindowId, surface: &ToplevelSurface) -> bool {
+        surface.is_initial_configure_sent()
+            && self.layout.is_visible(id)
+            && self.layout.window_state(id).is_some_and(|state| state.is_placed)
+            && self.window_map.get(&id).is_some_and(|window| self.space.element_location(window).is_some())
+    }
+
+    fn answer_state_request(&mut self, surface: &ToplevelSurface, changed: bool) {
+        if changed {
             self.reconcile_space();
-        } else {
-            surface.send_pending_configure();
+        } else if surface.is_initial_configure_sent() {
+            surface.send_configure();
         }
     }
 
@@ -522,32 +461,21 @@ impl GlideState {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let Some(window) = self.space.elements().find(|w| window_surface(w) == &root) else {
+        let Some(window_geo) = self.mapped_window(&root).and_then(|window| self.space.element_geometry(&window)) else {
             return;
         };
-
-        let window_geo = self
-            .space
-            .element_geometry(window)
-            .expect("window came from space.elements(), so it has a geometry");
 
         let output = self
             .space
             .outputs()
-            .find(|o| {
-                self.space
-                    .output_geometry(o)
-                    .is_some_and(|geo| geo.contains(window_geo.loc))
-            })
+            .find(|o| self.space.output_geometry(o).is_some_and(|geo| geo.contains(window_geo.loc)))
             .or_else(|| self.space.outputs().next());
 
         let Some(output) = output else {
             return;
         };
-        let output_geo = self
-            .space
-            .output_geometry(output)
-            .expect("output came from space.outputs(), so it has a geometry");
+        let output_geo =
+            self.space.output_geometry(output).expect("output came from space.outputs(), so it has a geometry");
 
         let mut target = output_geo;
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));

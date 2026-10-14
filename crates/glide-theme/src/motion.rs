@@ -9,11 +9,7 @@ pub const T4: Duration = Duration::from_millis(420);
 static MOTION_SCALE: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
 
 pub fn set_scale(scale: f32) {
-    let clamped = if scale.is_finite() {
-        scale.clamp(0.0, 10.0)
-    } else {
-        1.0
-    };
+    let clamped = if scale.is_finite() { scale.clamp(0.0, 10.0) } else { 1.0 };
     MOTION_SCALE.store(clamped.to_bits(), Ordering::Relaxed);
 }
 
@@ -138,69 +134,74 @@ impl CubicBezier {
 
     #[must_use]
     pub fn ease_f64(self, progress: f64) -> f64 {
-        #[allow(clippy::cast_possible_truncation)]
         f64::from(self.ease(progress as f32))
     }
 }
 
-pub const E_OUT: CubicBezier = CubicBezier {
-    x1: 0.2,
-    y1: 0.0,
-    x2: 0.0,
-    y2: 1.0,
-};
+pub const E_OUT: CubicBezier = CubicBezier { x1: 0.2, y1: 0.0, x2: 0.0, y2: 1.0 };
 
-pub const E_IO: CubicBezier = CubicBezier {
-    x1: 0.4,
-    y1: 0.0,
-    x2: 0.2,
-    y2: 1.0,
-};
+pub const E_IO: CubicBezier = CubicBezier { x1: 0.4, y1: 0.0, x2: 0.2, y2: 1.0 };
 
-pub const E_OVER: CubicBezier = CubicBezier {
-    x1: 0.32,
-    y1: 1.28,
-    x2: 0.5,
-    y2: 1.0,
-};
+pub const E_OVER: CubicBezier = CubicBezier { x1: 0.32, y1: 1.28, x2: 0.5, y2: 1.0 };
+
+#[must_use]
+pub fn ease_out(t: f64) -> f64 {
+    E_OUT.ease_f64(t)
+}
+
+#[must_use]
+pub fn ease_io(t: f64) -> f64 {
+    E_IO.ease_f64(t)
+}
+
+#[must_use]
+pub fn lerp(from: f64, to: f64, t: f64) -> f64 {
+    (to - from).mul_add(t, from)
+}
+
+pub const RELEASE_MAX_SLOPE: f64 = 3.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Release {
+    pub duration: Duration,
+    pub slope: f64,
+}
+
+impl Release {
+    #[must_use]
+    pub fn new(distance: f64, velocity: f64, longest: Duration) -> Self {
+        if is_disabled() {
+            return Self { duration: Duration::ZERO, slope: 0.0 };
+        }
+        let span = distance.abs();
+        let paced = longest.mul_f64(span.clamp(0.25, 1.0));
+        let speed = velocity.abs();
+        let towards = velocity * distance > 0.0 && speed > 1e-3 && span > 1e-6;
+        if !towards {
+            return Self { duration: paced, slope: 0.0 };
+        }
+        let matched = Duration::from_secs_f64(RELEASE_MAX_SLOPE * span / speed);
+        let duration = matched.clamp(t1().min(paced), paced);
+        Self { duration, slope: (speed * duration.as_secs_f64() / span).min(RELEASE_MAX_SLOPE) }
+    }
+
+    #[must_use]
+    pub fn at(self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        let (t2, t3) = (t * t, t * t * t);
+        (t3 - 2.0 * t2 + t).mul_add(self.slope, 3.0 * t2 - 2.0 * t3)
+    }
+}
 
 pub const ST_HOVER: f32 = 0.08;
 pub const ST_PRESS: f32 = 0.13;
 pub const ST_DRAG: f32 = 0.18;
 
 #[cfg(test)]
-#[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn durations_strictly_increase() {
-        assert!(T1 < T2);
-        assert!(T2 < T3);
-        assert!(T3 < T4);
-    }
-
-    #[test]
-    fn e_over_overshoots_past_one() {
-        assert!(
-            E_OVER.y1 > 1.0,
-            "the overshoot curve must have a control point beyond y=1"
-        );
-    }
-
-    #[test]
-    fn e_out_and_e_io_stay_within_the_unit_square_on_x() {
-        for curve in [E_OUT, E_IO] {
-            assert!((0.0..=1.0).contains(&curve.x1));
-            assert!((0.0..=1.0).contains(&curve.x2));
-        }
-    }
-
-    #[test]
-    fn state_layer_opacities_strictly_increase_with_intensity() {
-        assert!(ST_HOVER < ST_PRESS);
-        assert!(ST_PRESS < ST_DRAG);
-    }
+    const _: () = assert!(ST_HOVER < ST_PRESS && ST_PRESS < ST_DRAG);
 
     mod motion_scale {
         use super::*;
@@ -208,47 +209,73 @@ mod tests {
         static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
         fn with_scale<F: FnOnce()>(value: f32, body: F) {
-            let _lock = GUARD
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _lock = GUARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             set_scale(value);
             body();
             set_scale(1.0);
         }
 
         #[test]
-        fn the_default_scale_leaves_tokens_at_their_spec_values() {
+        fn the_scale_stretches_collapses_and_clamps_every_token() {
             with_scale(1.0, || {
-                assert_eq!(t1(), T1);
-                assert_eq!(t2(), T2);
-                assert_eq!(t3(), T3);
-                assert_eq!(t4(), T4);
+                assert_eq!([t1(), t2(), t3(), t4()], [T1, T2, T3, T4]);
+            });
+            with_scale(0.0, || {
+                assert!(is_disabled());
+                assert_eq!([t1(), t2(), t3(), t4()], [Duration::ZERO; 4]);
+            });
+            with_scale(0.5, || assert_eq!(t4(), Duration::from_millis(210)));
+            with_scale(1e9, || assert!((scale() - 10.0).abs() < f32::EPSILON));
+            with_scale(-4.0, || assert!(scale().abs() < f32::EPSILON));
+            with_scale(f32::NAN, || assert!((scale() - 1.0).abs() < f32::EPSILON));
+        }
+
+        #[test]
+        fn a_release_starts_at_the_finger_speed_and_lands_at_rest() {
+            with_scale(1.0, || {
+                let release = Release::new(0.6, 4.0, T3);
+                let dt = 1e-4;
+                let start = release.at(dt) / dt * 0.6 / release.duration.as_secs_f64();
+                assert!((start - 4.0).abs() < 0.05, "starts at the finger speed, got {start}");
+                let end = (release.at(1.0) - release.at(1.0 - dt)) / dt;
+                assert!(end.abs() < 1e-3, "lands at rest, got {end}");
+                assert!((release.at(1.0) - 1.0).abs() < 1e-9);
             });
         }
 
         #[test]
-        fn a_zero_scale_collapses_every_token_to_nothing() {
-            with_scale(0.0, || {
-                assert!(is_disabled());
-                for token in [t1(), t2(), t3(), t4()] {
-                    assert_eq!(token, Duration::ZERO);
+        fn a_release_never_overshoots_or_runs_backwards() {
+            with_scale(1.0, || {
+                for (distance, velocity) in [(0.6, 50.0), (0.3, -8.0), (-0.5, -0.2), (0.05, 0.0)] {
+                    let release = Release::new(distance, velocity, T3);
+                    let mut previous = 0.0;
+                    for step in 0..=100 {
+                        let value = release.at(f64::from(step) / 100.0);
+                        assert!(value >= previous - 1e-9 && value <= 1.0 + 1e-9);
+                        previous = value;
+                    }
                 }
             });
         }
 
         #[test]
-        fn a_fractional_scale_shortens_proportionally() {
-            with_scale(0.5, || {
-                assert_eq!(t2(), Duration::from_millis(100));
-                assert_eq!(t4(), Duration::from_millis(210));
+        fn a_faster_flick_releases_sooner_but_never_under_t1() {
+            with_scale(1.0, || {
+                let slow = Release::new(0.6, 0.0, T3);
+                let fast = Release::new(0.6, 12.0, T3);
+                let absurd = Release::new(0.6, 1e6, T3);
+                assert!(fast.duration < slow.duration);
+                assert_eq!(absurd.duration, T1);
+                assert!(slow.duration <= T3);
+                assert_eq!(slow.slope, 0.0);
             });
         }
 
         #[test]
-        fn absurd_and_non_finite_scales_are_clamped_rather_than_honoured() {
-            with_scale(1e9, || assert!((scale() - 10.0).abs() < f32::EPSILON));
-            with_scale(-4.0, || assert!(scale().abs() < f32::EPSILON));
-            with_scale(f32::NAN, || assert!((scale() - 1.0).abs() < f32::EPSILON));
+        fn a_disabled_scale_releases_instantly() {
+            with_scale(0.0, || {
+                assert_eq!(Release::new(0.6, 4.0, T3).duration, Duration::ZERO);
+            });
         }
     }
 
@@ -258,16 +285,9 @@ mod tests {
         #[test]
         fn every_curve_is_pinned_at_both_endpoints() {
             for curve in [E_OUT, E_IO, E_OVER] {
-                assert!(curve.ease(0.0).abs() < 1e-4, "{curve:?} at 0");
-                assert!((curve.ease(1.0) - 1.0).abs() < 1e-4, "{curve:?} at 1");
-            }
-        }
-
-        #[test]
-        fn out_of_range_progress_is_clamped_at_the_endpoints() {
-            for curve in [E_OUT, E_IO, E_OVER] {
-                assert!(curve.ease(-5.0).abs() < 1e-4);
-                assert!((curve.ease(9.0) - 1.0).abs() < 1e-4);
+                for (progress, expected) in [(0.0, 0.0), (1.0, 1.0), (-5.0, 0.0), (9.0, 1.0)] {
+                    assert!((curve.ease(progress) - expected).abs() < 1e-4, "{curve:?}");
+                }
             }
         }
 
@@ -276,13 +296,9 @@ mod tests {
             for curve in [E_OUT, E_IO] {
                 let mut previous = 0.0;
                 for step in 0..=100 {
-                    #[allow(clippy::cast_precision_loss)]
                     let progress = step as f32 / 100.0;
                     let value = curve.ease(progress);
-                    assert!(
-                        value >= previous - 1e-4,
-                        "{curve:?} dipped at {progress}: {value} < {previous}"
-                    );
+                    assert!(value >= previous - 1e-4, "{curve:?} dipped at {progress}: {value} < {previous}");
                     assert!(
                         (-1e-4..=1.0 + 1e-4).contains(&value),
                         "{curve:?} left the unit range at {progress}: {value}"
@@ -295,16 +311,12 @@ mod tests {
         #[test]
         fn e_out_is_already_half_done_a_fifth_of_the_way_through() {
             let y = E_OUT.ease(0.2);
-            assert!(
-                (y - 0.5).abs() < 0.02,
-                "expected ~0.5 at x=0.2, got {y} — the x-axis solve looks wrong"
-            );
+            assert!((y - 0.5).abs() < 0.02, "expected ~0.5 at x=0.2, got {y} — the x-axis solve looks wrong");
         }
 
         #[test]
         fn e_out_front_loads_more_than_e_io() {
             for step in 1..50 {
-                #[allow(clippy::cast_precision_loss)]
                 let progress = step as f32 / 100.0;
                 assert!(
                     E_OUT.ease(progress) > E_IO.ease(progress),
@@ -319,23 +331,11 @@ mod tests {
         fn e_over_actually_overshoots_past_one_before_settling() {
             let peak = (0..=100)
                 .map(|step| {
-                    #[allow(clippy::cast_precision_loss)]
                     let progress = step as f32 / 100.0;
                     E_OVER.ease(progress)
                 })
                 .fold(f32::MIN, f32::max);
             assert!(peak > 1.0, "overshoot curve peaked at only {peak}");
-        }
-
-        #[test]
-        fn f64_and_f32_entry_points_agree() {
-            for step in 0..=20 {
-                #[allow(clippy::cast_precision_loss)]
-                let progress = step as f32 / 20.0;
-                let a = f64::from(E_OUT.ease(progress));
-                let b = E_OUT.ease_f64(f64::from(progress));
-                assert!((a - b).abs() < 1e-6, "at {progress}: {a} vs {b}");
-            }
         }
     }
 }

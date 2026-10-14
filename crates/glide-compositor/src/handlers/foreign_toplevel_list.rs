@@ -1,6 +1,4 @@
-use smithay::wayland::foreign_toplevel_list::{
-    ForeignToplevelListHandler, ForeignToplevelListState,
-};
+use smithay::wayland::foreign_toplevel_list::{ForeignToplevelListHandler, ForeignToplevelListState};
 
 use crate::GlideState;
 

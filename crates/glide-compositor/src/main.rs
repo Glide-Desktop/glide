@@ -1,47 +1,126 @@
 #![allow(irrefutable_let_patterns)]
 
+mod app_index;
+mod app_menu;
+mod battery_alert;
+mod dock_glue;
+mod drag_assist;
 mod handlers;
+mod launcher_entry;
+mod logind;
 
 mod backend;
 mod clip;
+mod clipboard;
 mod config;
+mod config_repair;
 mod cursor;
 mod decoration;
 mod dock;
 mod focus;
+mod force_quit;
+mod global_menu;
 mod grabs;
+pub mod greeter;
+mod handoff;
 mod i18n;
 mod icon;
+mod idle;
 mod input;
 mod ipc;
 mod launcher;
+mod layout_scope;
 mod logging;
+mod media_art;
 mod notifications;
 mod overview;
 mod paint;
+mod polkit_agent;
 mod popup_menu;
+mod power;
+mod power_dialog;
+mod qs_net;
+mod raster;
 mod screencopy;
+mod screensaver;
+mod screenshot_ui;
+mod session_end;
 mod snap;
 mod snapshot;
 mod state;
+mod switcher;
 pub mod system_info;
 mod topbar;
+mod tray;
 mod window;
+mod x11_menus;
+mod xdg_autostart;
 
 use smithay::{
     backend::session::libseat::LibSeatSession,
-    reexports::{calloop::EventLoop, wayland_server::Display},
+    reexports::{
+        calloop::{EventLoop, channel},
+        wayland_server::Display,
+    },
 };
 
 use backend::tty::TtyData;
 pub use state::GlideState;
 
+const USAGE: &str = "\
+Usage: glide [OPTION]
+
+The Glide Wayland compositor and desktop shell. Run it from a free virtual
+terminal or through the `glide-session` wrapper of a display manager.
+
+Options:
+      --greeter   run as a greetd login screen instead of a desktop session
+  -h, --help      show this help and exit
+  -V, --version   show the version and exit
+
+Configuration is read from $XDG_CONFIG_HOME/glide/glide.toml; `glidectl`
+talks to a running session.";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Cli {
+    Run,
+    Help,
+    Version,
+    Unknown(String),
+}
+
+fn cli(args: impl Iterator<Item = String>) -> Cli {
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => return Cli::Help,
+            "-V" | "--version" => return Cli::Version,
+            "--greeter" => {}
+            _ => return Cli::Unknown(arg),
+        }
+    }
+    Cli::Run
+}
+
 fn main() -> anyhow::Result<()> {
+    match cli(std::env::args().skip(1)) {
+        Cli::Run => {}
+        Cli::Help => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Cli::Version => {
+            println!("glide {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Cli::Unknown(arg) => anyhow::bail!("unknown option `{arg}`\n\n{USAGE}"),
+    }
+
     #[cfg(feature = "profile-with-tracy")]
     tracy_client::Client::start();
     profiling::register_thread!("Main");
 
     let log_path = logging::init();
+    logging::install_panic_hook();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -64,12 +143,9 @@ fn run() -> anyhow::Result<()> {
 
     let display = Display::new()?;
 
-    let mut state = GlideState::new(
-        TtyData::new(session)?,
-        event_loop.handle(),
-        event_loop.get_signal(),
-        display,
-    );
+    let mut state = GlideState::new(TtyData::new(session)?, event_loop.handle(), event_loop.get_signal(), display);
+
+    state.handoff = handoff::Handoff::from_environment();
 
     let config = config::Config::load_or_default();
     config.apply_to_state(&mut state);
@@ -88,32 +164,42 @@ fn run() -> anyhow::Result<()> {
         unsafe { std::env::set_var("GLIDE_IPC_SOCK", server.socket_path()) };
     }
 
-    spawn_xwayland_satellite();
-    update_session_managers_environment();
-    spawn_autostart(&config.general.autostart);
-    init_topbar_clock(&mut event_loop, &mut state)?;
-    init_system_status(&mut event_loop);
-    init_notifications(&mut event_loop, &mut state);
-    init_media(&mut event_loop, &mut state);
+    let is_greeter = std::env::args().any(|arg| arg == "--greeter")
+        || (std::env::var("GREETD_SOCK").is_ok() && std::env::var("GLIDE_SESSION").is_err());
+    let login_session = is_greeter || state.handoff.is_some();
+
+    if is_greeter {
+        tracing::info!("starting glide in greeter display manager mode");
+        state.init_greeter(&mut event_loop)?;
+        init_greeter_timer(&mut event_loop)?;
+    } else {
+        init_session_services(&mut event_loop, &mut state, &config)?;
+    }
 
     event_loop.run(None, &mut state, move |state| {
-        reap_child_processes();
         state.space.refresh();
         state.popups.cleanup();
 
+        let login_animating = state.tick_login();
         let overview_animating = state.tick_overview();
         let hover_animating = state.any_button_hover_animating();
         let open_animating = state.any_window_open_animating();
         let geometry_animating = state.any_window_geometry_animating();
         let snapshots_animating = state.snapshots.tick();
-        let dock_animating = state.dock.is_animating();
+        let dock_autohide = state.update_dock_autohide();
+        let dock_animating = dock_autohide || state.dock.is_animating();
         let launcher_animating = state.tick_launcher();
+        let switcher_animating = state.tick_switcher();
+        let power_dialog_animating = state.tick_power_dialog();
         let cursor_animating = state.is_cursor_animating();
-        let toasts_animating = state.notifications.is_animating();
+        let toasts_animating = state.notifications.settle();
         let snap_animating = state.settle_snap_preview();
+        let topbar_animating = state.topbar.is_animating();
+        let flash_animating = state.screenshot_flash.tick(std::time::Instant::now());
 
         if toasts_animating
             || snap_animating
+            || topbar_animating
             || overview_animating
             || hover_animating
             || open_animating
@@ -121,103 +207,186 @@ fn run() -> anyhow::Result<()> {
             || snapshots_animating
             || dock_animating
             || launcher_animating
+            || switcher_animating
+            || power_dialog_animating
             || cursor_animating
+            || flash_animating
+            || login_animating
         {
             state.queue_animation_redraw();
         }
 
-        if let Some(blank_after) = state.blank_after {
-            let idle = state.last_activity.elapsed() >= blank_after;
-            if idle
-                && !state.outputs_blanked
-                && !state.is_idle_inhibited()
-                && !state.topbar.caffeinated()
-            {
-                tracing::info!("idle timeout reached; blanking outputs");
-                state.set_outputs_blanked(true);
-            }
-        }
-
+        state.tick_idle();
+        state.tick_session_end();
+        state.sync_session_hints();
         let _ = state.display_handle.flush_clients();
     })?;
 
     tracing::info!("shutting down");
+    if login_session {
+        handoff::paint_console();
+    }
 
     drop(ipc_server);
 
     Ok(())
 }
 
-fn init_topbar_clock(
-    event_loop: &mut EventLoop<'static, state::GlideState>,
-    state: &mut state::GlideState,
+fn init_session_services(
+    event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState, config: &config::Config,
 ) -> anyhow::Result<()> {
+    spawn_xwayland_satellite();
+    update_session_managers_environment();
+    spawn_autostart(&config.general.autostart);
+    if config.general.xdg_autostart {
+        xdg_autostart::spawn_all();
+    }
+    if config.general.polkit_agent {
+        polkit_agent::spawn_if_missing();
+    }
+    init_topbar_clock(event_loop, state)?;
+    init_system_status(event_loop);
+    init_quick_settings_network(event_loop);
+    init_notifications(event_loop, state);
+    init_media(event_loop, state);
+    init_app_menu(event_loop, state);
+    init_dock_services(event_loop, state);
+    init_logind(event_loop, state);
+    init_screensaver(event_loop, state);
+    if !greeter::pam::available() {
+        tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
+    }
+    Ok(())
+}
+
+fn init_screensaver(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<screensaver::Event>("a screen saver request");
+    match screensaver::start(send) {
+        Ok(handle) => state.session.screensaver = Some(handle),
+        Err(err) => {
+            tracing::warn!(
+                "{} is unavailable ({err}); browsers and video players cannot keep the screen on",
+                screensaver::BUS_NAME
+            );
+            return;
+        }
+    }
+    watch(event_loop, receiver, "the screen saver channel", GlideState::handle_screensaver_event);
+}
+
+fn init_logind(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<logind::LoginEvent>("a logind lock request");
+    let (handle, locked_at_start) = match logind::start(send) {
+        Ok(started) => started,
+        Err(err) => {
+            tracing::warn!(?err, "failed to spawn the logind listener");
+            return;
+        }
+    };
+    state.session.logind = Some(handle);
+    watch(event_loop, receiver, "the logind channel", |state, event| match event {
+        logind::LoginEvent::Lock | logind::LoginEvent::Sleep => state.lock_screen(),
+        logind::LoginEvent::Unlock => state.unlock_screen(),
+    });
+    if locked_at_start.recv_timeout(logind::STARTUP_WAIT).unwrap_or(false) {
+        state.lock_screen();
+    }
+}
+
+fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) -> anyhow::Result<()> {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
     state.refresh_topbar();
 
     event_loop
         .handle()
-        .insert_source(
-            Timer::from_duration(std::time::Duration::from_secs(1)),
-            |_, (), state| {
-                let clock = state.refresh_topbar();
-                let expired = state.notifications.tick();
-                let night = state.tick_night_light();
-                if clock || expired || night {
-                    state.queue_redraw();
-                }
-                TimeoutAction::ToDuration(std::time::Duration::from_secs(1))
-            },
-        )
+        .insert_source(Timer::from_duration(std::time::Duration::from_secs(1)), |_, (), state| {
+            reap_child_processes();
+            let clock = state.refresh_topbar();
+            let expired = state.notifications.tick();
+            let night = state.tick_night_light();
+            if clock || expired || night {
+                state.queue_redraw();
+            }
+            TimeoutAction::ToDuration(std::time::Duration::from_secs(1))
+        })
         .map_err(|err| anyhow::anyhow!("failed to start the topbar clock: {err}"))?;
     Ok(())
 }
 
-fn init_system_status(event_loop: &mut EventLoop<'static, state::GlideState>) {
-    use smithay::reexports::calloop::channel;
+fn init_greeter_timer(event_loop: &mut EventLoop<'static, GlideState>) -> anyhow::Result<()> {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
-    let (sender, receiver) = channel::channel::<system_info::SystemStatus>();
+    event_loop
+        .handle()
+        .insert_source(Timer::from_duration(std::time::Duration::from_secs(1)), |_, (), state| {
+            reap_child_processes();
+            if state.tick_greeter() {
+                state.queue_redraw();
+            }
+            TimeoutAction::ToDuration(std::time::Duration::from_secs(1))
+        })
+        .map_err(|err| anyhow::anyhow!("failed to start greeter timer: {err}"))?;
+    Ok(())
+}
+
+fn sink<T: Send + 'static>(what: &'static str) -> (impl Fn(T) + Send + Sync + 'static, channel::Channel<T>) {
+    let (sender, receiver) = channel::channel::<T>();
     let sender = std::sync::Mutex::new(sender);
-    system_info::start_poller(move |status| {
+    let send = move |value: T| {
         let Ok(sender) = sender.lock() else {
             return;
         };
-        if let Err(err) = sender.send(status) {
-            tracing::debug!("dropping a system status sample, the compositor is gone: {err}");
+        if let Err(err) = sender.send(value) {
+            tracing::debug!("dropping {what}, the compositor is gone: {err}");
+        }
+    };
+    (send, receiver)
+}
+
+fn watch<T: 'static>(
+    event_loop: &mut EventLoop<'static, GlideState>, receiver: channel::Channel<T>, what: &'static str,
+    mut handle: impl FnMut(&mut GlideState, T) + 'static,
+) -> bool {
+    let inserted = event_loop.handle().insert_source(receiver, move |event, (), state| {
+        if let channel::Event::Msg(value) = event {
+            handle(state, value);
         }
     });
-
-    let inserted = event_loop
-        .handle()
-        .insert_source(receiver, |event, (), state| {
-            if let channel::Event::Msg(status) = event {
-                state.handle_system_status(status);
-            }
-        });
-    if let Err(err) = inserted {
-        tracing::error!("failed to watch the system status channel: {err}");
+    match inserted {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::error!("failed to watch {what}: {err}");
+            false
+        }
     }
 }
 
-fn init_notifications(
-    event_loop: &mut EventLoop<'static, state::GlideState>,
-    state: &mut state::GlideState,
-) {
-    use smithay::reexports::calloop::channel;
+fn init_system_status(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<system_info::SystemStatus>("a system status sample");
+    system_info::start_poller(send);
+    watch(event_loop, receiver, "the system status channel", GlideState::handle_system_status);
+}
 
-    let (sender, receiver) = channel::channel::<glide_notify::NotifyEvent>();
-    let sender = std::sync::Mutex::new(sender);
-    let sink = std::sync::Arc::new(move |event| {
-        let Ok(sender) = sender.lock() else {
-            return;
-        };
-        if let Err(err) = sender.send(event) {
-            tracing::debug!("dropping a notification, the compositor is gone: {err}");
-        }
+fn init_quick_settings_network(event_loop: &mut EventLoop<'static, GlideState>) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
+    let (send, receiver) = sink::<qs_net::NetEvent>("a network panel update");
+    qs_net::install(send);
+    watch(event_loop, receiver, "the network panel channel", GlideState::handle_net_event);
+
+    let rescan = event_loop.handle().insert_source(Timer::from_duration(qs_net::RESCAN_INTERVAL), |_, (), state| {
+        state.rescan_quick_settings_panel();
+        TimeoutAction::ToDuration(qs_net::RESCAN_INTERVAL)
     });
+    if let Err(err) = rescan {
+        tracing::error!("failed to start the network panel rescan timer: {err}");
+    }
+}
 
-    match glide_notify::start(sink) {
+fn init_notifications(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<glide_notify::NotifyEvent>("a notification");
+    match glide_notify::start(std::sync::Arc::new(send)) {
         Ok(handle) => state.notifications.attach(handle),
         Err(err) => {
             tracing::warn!(
@@ -228,62 +397,61 @@ fn init_notifications(
             return;
         }
     }
-
-    let inserted = event_loop
-        .handle()
-        .insert_source(receiver, |event, (), state| {
-            if let channel::Event::Msg(event) = event {
-                state.handle_notify_event(event);
-            }
-        });
-    if let Err(err) = inserted {
-        tracing::error!("failed to watch the notification channel: {err}");
-    }
+    watch(event_loop, receiver, "the notification channel", GlideState::handle_notify_event);
 }
 
-fn init_media(
-    event_loop: &mut EventLoop<'static, state::GlideState>,
-    state: &mut state::GlideState,
-) {
-    use smithay::reexports::calloop::channel;
-
-    let (sender, receiver) = channel::channel::<glide_media::MediaEvent>();
-    let sender = std::sync::Mutex::new(sender);
-    let sink = std::sync::Arc::new(move |event| {
-        let Ok(sender) = sender.lock() else {
-            return;
-        };
-        if let Err(err) = sender.send(event) {
-            tracing::debug!("dropping a media update, the compositor is gone: {err}");
-        }
-    });
-
-    match glide_media::start(sink) {
+fn init_media(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<glide_media::MediaEvent>("a media update");
+    match glide_media::start(std::sync::Arc::new(send)) {
         Ok(handle) => state.media = Some(handle),
         Err(err) => {
             tracing::warn!("media players are unavailable ({err}); is there a session bus?");
             return;
         }
     }
+    watch(event_loop, receiver, "the media channel", GlideState::handle_media_event);
 
-    let inserted = event_loop
-        .handle()
-        .insert_source(receiver, |event, (), state| {
-            if let channel::Event::Msg(event) = event {
-                state.handle_media_event(event);
-            }
-        });
-    if let Err(err) = inserted {
-        tracing::error!("failed to watch the media channel: {err}");
+    let (send, receiver) = sink::<(String, media_art::DecodedArt)>("decoded cover art");
+    let Some(worker) = media_art::start(move |url, art| send((url, art))) else {
+        return;
+    };
+    if watch(event_loop, receiver, "the cover art channel", |state, (url, art)| state.handle_media_art(&url, art)) {
+        state.media_art.attach(worker);
     }
 }
 
-const STALE_SESSION_VARS: &[&str] = &[
-    "DISPLAY",
-    "XAUTHORITY",
-    "GNOME_SETUP_DISPLAY",
-    "WAYLAND_SOCKET",
-];
+fn init_dock_services(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<app_index::Reply>("a desktop entry lookup");
+    let worker = app_index::start(send);
+    if watch(event_loop, receiver, "the desktop entry index", GlideState::handle_app_index)
+        && let Some(worker) = worker
+    {
+        state.app_directory.attach(worker);
+    }
+
+    let (send, receiver) = sink::<(String, launcher_entry::EntryUpdate)>("a launcher entry update");
+    if let Err(err) = launcher_entry::start(move |desktop_id, update| send((desktop_id, update))) {
+        tracing::warn!("dock badges are unavailable ({err}); is there a session bus?");
+        return;
+    }
+    watch(event_loop, receiver, "the launcher entry channel", |state, (desktop_id, update)| {
+        state.handle_launcher_entry(&desktop_id, &update);
+    });
+}
+
+fn init_app_menu(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<glide_appmenu::AppMenuEvent>("an app menu update");
+    match glide_appmenu::start(std::sync::Arc::new(send), state.app_menus.registrar) {
+        Ok(handle) => state.app_menus.handle = Some(handle),
+        Err(err) => {
+            tracing::warn!("the global menu is unavailable ({err}); is there a session bus?");
+            return;
+        }
+    }
+    watch(event_loop, receiver, "the app menu channel", GlideState::handle_app_menu_event);
+}
+
+const STALE_SESSION_VARS: &[&str] = &["DISPLAY", "XAUTHORITY", "GNOME_SETUP_DISPLAY", "WAYLAND_SOCKET"];
 
 fn session_environment(socket_name: &std::ffi::OsStr) -> Vec<(&'static str, std::ffi::OsString)> {
     let mut vars: Vec<(&'static str, std::ffi::OsString)> = vec![
@@ -343,32 +511,46 @@ const SESSION_ENV_VARS: &[&str] = &[
 ];
 
 fn update_session_managers_environment() {
-    let vars: Vec<String> = SESSION_ENV_VARS
-        .iter()
-        .filter(|name| std::env::var_os(name).is_some())
-        .map(ToString::to_string)
-        .collect();
+    let vars: Vec<String> =
+        SESSION_ENV_VARS.iter().filter(|name| std::env::var_os(name).is_some()).map(ToString::to_string).collect();
 
-    let dbus = std::process::Command::new("dbus-update-activation-environment")
-        .arg("--systemd")
-        .args(&vars)
-        .spawn();
+    let dbus = std::process::Command::new("dbus-update-activation-environment").arg("--systemd").args(&vars).spawn();
     match dbus {
-        Ok(mut child) => {
-            let _ = child.wait();
+        Ok(child) => {
+            if !wait_with_timeout(child, SESSION_ENV_TIMEOUT) {
+                tracing::warn!("dbus-update-activation-environment timed out and was killed");
+            }
         }
         Err(err) => tracing::info!("dbus-update-activation-environment unavailable: {err}"),
     }
 
-    let systemd = std::process::Command::new("systemctl")
-        .args(["--user", "import-environment"])
-        .args(&vars)
-        .spawn();
+    let systemd = std::process::Command::new("systemctl").args(["--user", "import-environment"]).args(&vars).spawn();
     match systemd {
-        Ok(mut child) => {
-            let _ = child.wait();
+        Ok(child) => {
+            if !wait_with_timeout(child, SESSION_ENV_TIMEOUT) {
+                tracing::warn!("systemctl import-environment timed out and was killed");
+            }
         }
         Err(err) => tracing::info!("systemctl import-environment unavailable: {err}"),
+    }
+}
+
+const SESSION_ENV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
     }
 }
 
@@ -386,14 +568,13 @@ fn spawn_xwayland_satellite() {
         return;
     };
     let x11_display = format!(":{display_number}");
-    match std::process::Command::new("xwayland-satellite")
-        .arg(&x11_display)
-        .spawn()
-    {
-        Ok(child) => {
+    let mut satellite = std::process::Command::new("xwayland-satellite");
+    satellite.arg(&x11_display);
+    match spawn_detached(satellite) {
+        Ok(pid) => {
             unsafe { std::env::set_var("DISPLAY", &x11_display) };
             tracing::info!(
-                pid = child.id(),
+                pid,
                 x11_display = x11_display.as_str(),
                 "spawned xwayland-satellite; X11 apps land on this display"
             );
@@ -410,24 +591,44 @@ fn spawn_xwayland_satellite() {
 fn spawn_autostart(commands: &[String]) {
     for command in commands {
         match spawn_shell_command(command) {
-            Ok(child) => tracing::info!(command, pid = child.id(), "spawned autostart command"),
+            Ok(pid) => tracing::info!(command, pid, "spawned autostart command"),
             Err(err) => tracing::error!(command, "failed to spawn autostart command: {err}"),
         }
     }
 }
 
-pub fn spawn_shell_command(command: &str) -> std::io::Result<std::process::Child> {
+static DETACHED_CHILDREN: std::sync::Mutex<Vec<std::process::Child>> = std::sync::Mutex::new(Vec::new());
+
+pub fn spawn_detached(mut command: std::process::Command) -> std::io::Result<u32> {
     reap_child_processes();
-    let result = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .spawn();
-    reap_child_processes();
-    result
+    if let Some(terminal) = glide_config::terminal::configured() {
+        command.env("TERMINAL", terminal);
+    }
+    let child = command.spawn()?;
+    let pid = child.id();
+    if let Ok(mut children) = DETACHED_CHILDREN.lock() {
+        children.push(child);
+    }
+    Ok(pid)
+}
+
+pub fn spawn_shell_command(command: &str) -> std::io::Result<u32> {
+    spawn_shell_command_with_env(command, &[])
+}
+
+pub fn spawn_shell_command_with_env(command: &str, env: &[(&str, &str)]) -> std::io::Result<u32> {
+    let mut shell = std::process::Command::new("sh");
+    shell.arg("-c").arg(command);
+    for (key, value) in env {
+        shell.env(key, value);
+    }
+    spawn_detached(shell)
 }
 
 pub fn reap_child_processes() {
-    unsafe { while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {} }
+    if let Ok(mut children) = DETACHED_CHILDREN.lock() {
+        children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+    }
 }
 
 #[cfg(test)]
@@ -435,27 +636,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_command_line_knows_help_version_and_greeter_and_rejects_the_rest() {
+        let parse = |args: &[&str]| cli(args.iter().map(ToString::to_string));
+        assert_eq!(parse(&[]), Cli::Run);
+        assert_eq!(parse(&["--greeter"]), Cli::Run);
+        assert_eq!(parse(&["--help"]), Cli::Help);
+        assert_eq!(parse(&["--greeter", "-h"]), Cli::Help);
+        assert_eq!(parse(&["-V"]), Cli::Version);
+        assert_eq!(parse(&["--versoin"]), Cli::Unknown("--versoin".into()));
+        assert!(USAGE.contains("--greeter") && USAGE.contains("--version"));
+    }
+
+    fn detached_child_count() -> usize {
+        DETACHED_CHILDREN.lock().map_or(0, |children| children.len())
+    }
+
+    #[test]
+    fn a_hung_session_env_helper_is_killed_after_the_timeout() {
+        let started = std::time::Instant::now();
+        let child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        assert!(!wait_with_timeout(child, std::time::Duration::from_millis(100)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_finished_session_env_helper_reports_success() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        assert!(wait_with_timeout(child, std::time::Duration::from_secs(5)));
+    }
+
+    #[test]
     fn session_environment_points_clients_at_our_socket() {
         let vars = session_environment(std::ffi::OsStr::new("wayland-7"));
-        let display = vars
-            .iter()
-            .find(|(key, _)| *key == "WAYLAND_DISPLAY")
-            .expect("WAYLAND_DISPLAY must be set");
+        let display = vars.iter().find(|(key, _)| *key == "WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY must be set");
         assert_eq!(display.1, std::ffi::OsString::from("wayland-7"));
     }
 
     #[test]
     fn session_environment_identifies_the_desktop_as_glide() {
         let vars = session_environment(std::ffi::OsStr::new("wayland-0"));
-        for (key, want) in [
-            ("XDG_CURRENT_DESKTOP", "Glide"),
-            ("XDG_SESSION_DESKTOP", "glide"),
-            ("XDG_SESSION_TYPE", "wayland"),
-        ] {
-            let got = vars
-                .iter()
-                .find(|(k, _)| *k == key)
-                .unwrap_or_else(|| panic!("{key} must be set"));
+        for (key, want) in
+            [("XDG_CURRENT_DESKTOP", "Glide"), ("XDG_SESSION_DESKTOP", "glide"), ("XDG_SESSION_TYPE", "wayland")]
+        {
+            let got = vars.iter().find(|(k, _)| *k == key).unwrap_or_else(|| panic!("{key} must be set"));
             assert_eq!(got.1, std::ffi::OsString::from(want));
         }
     }
@@ -470,41 +693,62 @@ mod tests {
     fn session_environment_never_clears_what_it_sets() {
         let vars = session_environment(std::ffi::OsStr::new("wayland-0"));
         for (key, _) in &vars {
-            assert!(
-                !STALE_SESSION_VARS.contains(key),
-                "{key} is both set and cleared"
-            );
+            assert!(!STALE_SESSION_VARS.contains(key), "{key} is both set and cleared");
         }
     }
 
     static CHILD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn test_reap_child_processes() {
+    fn the_reaper_never_steals_a_child_another_thread_is_waiting_for() {
         let _guard = CHILD_TEST_LOCK.lock().unwrap();
-        for _ in 0..3 {
-            let _ = std::process::Command::new("true").spawn();
+        let output = std::thread::spawn(|| std::process::Command::new("true").output());
+        for _ in 0..200 {
+            reap_child_processes();
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let status =
+            output.join().expect("thread must not panic").expect("output() must see its own exit status").status;
+        assert!(status.success());
+    }
+
+    #[test]
+    fn finished_detached_children_are_reaped() {
+        let _guard = CHILD_TEST_LOCK.lock().unwrap();
         reap_child_processes();
+        let before = detached_child_count();
+        spawn_shell_command("true").expect("sh must exist");
+        assert_eq!(detached_child_count(), before + 1);
+        std::thread::sleep(std::time::Duration::from_millis(100));
         reap_child_processes();
+        assert_eq!(detached_child_count(), before);
     }
 
     #[test]
     fn spawn_shell_command_runs_through_a_shell() {
         let _guard = CHILD_TEST_LOCK.lock().unwrap();
-        let mut child = spawn_shell_command("true; true").expect("sh must exist");
-        let status = child.wait().expect("child must be waitable");
-        assert!(status.success());
+        let marker = std::env::temp_dir().join(format!("glide-sh-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        spawn_shell_command(&format!("true; touch {}", marker.display())).expect("sh must exist");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        reap_child_processes();
+        assert!(marker.exists(), "the shell did not run both commands");
+        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]
-    fn spawn_shell_command_reports_a_command_sh_itself_cannot_run() {
+    fn a_launch_hands_the_activation_token_to_the_child() {
         let _guard = CHILD_TEST_LOCK.lock().unwrap();
-        let mut child =
-            spawn_shell_command("definitely-not-a-real-command-xyz").expect("sh must exist");
-        let status = child.wait().expect("child must be waitable");
-        assert!(!status.success());
+        let marker = std::env::temp_dir().join(format!("glide-env-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        spawn_shell_command_with_env(
+            &format!("printf '%s %s' \"$XDG_ACTIVATION_TOKEN\" \"$DESKTOP_STARTUP_ID\" > {}", marker.display()),
+            &[("XDG_ACTIVATION_TOKEN", "tok"), ("DESKTOP_STARTUP_ID", "tok")],
+        )
+        .expect("sh must exist");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        reap_child_processes();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap_or_default(), "tok tok");
+        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]
@@ -520,10 +764,7 @@ mod tests {
         let marker_a = dir.join("a");
         let marker_b = dir.join("b");
 
-        spawn_autostart(&[
-            format!("touch {}", marker_a.display()),
-            format!("touch {}", marker_b.display()),
-        ]);
+        spawn_autostart(&[format!("touch {}", marker_a.display()), format!("touch {}", marker_b.display())]);
         std::thread::sleep(std::time::Duration::from_millis(200));
         reap_child_processes();
 

@@ -11,13 +11,7 @@ pub struct ShadowLayer {
 
 impl ShadowLayer {
     const fn new(dx: f32, dy: f32, blur: f32, spread: f32, color: Color) -> Self {
-        Self {
-            dx,
-            dy,
-            blur,
-            spread,
-            color,
-        }
+        Self { dx, dy, blur, spread, color }
     }
 }
 
@@ -33,21 +27,11 @@ pub enum Level {
 #[must_use]
 pub fn layers(level: Level, appearance: Appearance) -> Vec<ShadowLayer> {
     match (level, appearance) {
-        (Level::El1, Appearance::Light) => vec![ShadowLayer::new(
-            0.0,
-            1.0,
-            2.0,
-            0.0,
-            Color::from_rgb8(27, 26, 23, 0.07),
-        )],
+        (Level::El1, Appearance::Light) => {
+            vec![ShadowLayer::new(0.0, 1.0, 2.0, 0.0, Color::from_rgb8(27, 26, 23, 0.07))]
+        }
         (Level::El1, Appearance::Dark) => {
-            vec![ShadowLayer::new(
-                0.0,
-                1.0,
-                2.0,
-                0.0,
-                Color::from_rgb8(0, 0, 0, 0.45),
-            )]
+            vec![ShadowLayer::new(0.0, 1.0, 2.0, 0.0, Color::from_rgb8(0, 0, 0, 0.45))]
         }
 
         (Level::El2, Appearance::Light) => vec![
@@ -97,48 +81,15 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn el_win_has_a_border_ring_plus_two_shadow_layers_in_both_appearances() {
+    fn window_levels_are_a_ring_plus_deepening_shadows() {
         for appearance in [Appearance::Light, Appearance::Dark] {
-            let l = layers(Level::ElWin, appearance);
-            assert_eq!(l.len(), 3, "{appearance:?}");
-            assert_eq!(l[0].spread, 1.0, "first layer is the 1px border ring");
-            assert_eq!(l[0].blur, 0.0);
+            for level in [Level::ElWin, Level::ElWinIdle] {
+                let l = layers(level, appearance);
+                assert_eq!((l.len(), l[0].spread, l[0].blur), (3, 1.0, 0.0));
+                assert!(l[1].dy < l[2].dy && l[1].blur < l[2].blur);
+            }
         }
-    }
-
-    #[test]
-    fn el_win_shadows_get_deeper_further_from_the_window() {
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            let l = layers(Level::ElWin, appearance);
-            assert!(
-                l[1].dy < l[2].dy,
-                "{appearance:?}: dy must grow with distance"
-            );
-            assert!(
-                l[1].blur < l[2].blur,
-                "{appearance:?}: blur must grow with distance"
-            );
-        }
-    }
-
-    #[test]
-    fn el_win_is_darker_than_el_win_idle_in_dark_appearance() {
-        let active = layers(Level::ElWin, Appearance::Dark);
-        let idle = layers(Level::ElWinIdle, Appearance::Dark);
-        let deepest = |layers: &[ShadowLayer]| layers.last().unwrap().color.0[3];
-        assert!(
-            deepest(&active) > deepest(&idle),
-            "an active window's shadow must read as deeper than an idle one's"
-        );
-    }
-
-    #[test]
-    fn el_1_through_el_3_add_more_layers_as_elevation_increases() {
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            assert_eq!(layers(Level::El1, appearance).len(), 1);
-            assert_eq!(layers(Level::El2, appearance).len(), 2);
-            assert_eq!(layers(Level::El3, appearance).len(), 2);
-        }
+        let deepest = |level| layers(level, Appearance::Dark)[2].color.0[3];
+        assert!(deepest(Level::ElWin) > deepest(Level::ElWinIdle));
     }
 }

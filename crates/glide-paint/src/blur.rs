@@ -39,57 +39,32 @@ pub(crate) fn box_blur_alpha(alpha: &mut [u8], width: i32, height: i32, radius: 
     }
 }
 
-fn box_blur_pass(
-    src: &[u8],
-    dst: &mut [u8],
-    width: i32,
-    height: i32,
-    radius: i32,
-    horizontal: bool,
-) {
-    if horizontal {
-        for y in 0..height {
-            let row = (y * width) as usize;
-            let mut sum: i64 = 0;
-            let mut count: i64 = 0;
-            for dx in 0..=radius.min(width - 1) {
-                sum += i64::from(src[row + dx as usize]);
-                count += 1;
-            }
-            for x in 0..width {
-                dst[row + x as usize] = (sum / count.max(1)) as u8;
-                let leaving = x - radius;
-                let entering = x + radius + 1;
-                if leaving >= 0 {
-                    sum -= i64::from(src[row + leaving as usize]);
-                    count -= 1;
-                }
-                if entering < width {
-                    sum += i64::from(src[row + entering as usize]);
-                    count += 1;
-                }
-            }
+fn rounded_mean(sum: i64, count: i64) -> u8 {
+    let count = count.max(1);
+    u8::try_from((sum + count / 2) / count).unwrap_or(u8::MAX)
+}
+
+fn box_blur_pass(src: &[u8], dst: &mut [u8], width: i32, height: i32, radius: i32, horizontal: bool) {
+    let (len, lines, step, line_step) = if horizontal { (width, height, 1, width) } else { (height, width, width, 1) };
+    for line in 0..lines {
+        let at = |i: i32| (line * line_step + i * step) as usize;
+        let mut sum: i64 = 0;
+        let mut count: i64 = 0;
+        for i in 0..=radius.min(len - 1) {
+            sum += i64::from(src[at(i)]);
+            count += 1;
         }
-    } else {
-        for x in 0..width {
-            let mut sum: i64 = 0;
-            let mut count: i64 = 0;
-            for dy in 0..=radius.min(height - 1) {
-                sum += i64::from(src[(dy * width + x) as usize]);
-                count += 1;
+        for i in 0..len {
+            dst[at(i)] = rounded_mean(sum, count);
+            let leaving = i - radius;
+            let entering = i + radius + 1;
+            if leaving >= 0 {
+                sum -= i64::from(src[at(leaving)]);
+                count -= 1;
             }
-            for y in 0..height {
-                dst[(y * width + x) as usize] = (sum / count.max(1)) as u8;
-                let leaving = y - radius;
-                let entering = y + radius + 1;
-                if leaving >= 0 {
-                    sum -= i64::from(src[(leaving * width + x) as usize]);
-                    count -= 1;
-                }
-                if entering < height {
-                    sum += i64::from(src[(entering * width + x) as usize]);
-                    count += 1;
-                }
+            if entering < len {
+                sum += i64::from(src[at(entering)]);
+                count += 1;
             }
         }
     }
@@ -113,10 +88,7 @@ mod tests {
         let mut alpha = vec![255u8; (w * h) as usize];
         box_blur_alpha(&mut alpha, w, h, 6);
         let center = alpha[(h / 2 * w + w / 2) as usize];
-        assert_eq!(
-            center, 255,
-            "a uniform field must blur to itself away from any edge"
-        );
+        assert_eq!(center, 255, "a uniform field must blur to itself away from any edge");
     }
 
     #[test]
@@ -139,14 +111,8 @@ mod tests {
 
         let far_left = alpha[(row) as usize];
         let far_right = alpha[(row + w - 1) as usize];
-        assert!(
-            far_left < boundary,
-            "far from the edge on the 0 side must stay darker"
-        );
-        assert!(
-            far_right > boundary,
-            "far from the edge on the 255 side must stay brighter"
-        );
+        assert!(far_left < boundary, "far from the edge on the 0 side must stay darker");
+        assert!(far_right > boundary, "far from the edge on the 255 side must stay brighter");
     }
 
     #[test]
@@ -184,6 +150,29 @@ mod tests {
             "15px past the edge, a larger blur radius must have bled the dark side through further \
              (a lower value here), a small radius should have already fully recovered to 255: \
              small={small} large={large}"
+        );
+    }
+
+    #[test]
+    fn the_window_mean_rounds_to_nearest_instead_of_truncating() {
+        assert_eq!(rounded_mean(3, 2), 2);
+        assert_eq!(rounded_mean(5, 3), 2);
+        assert_eq!(rounded_mean(4, 3), 1);
+        assert_eq!(rounded_mean(255 * 7, 7), 255);
+        assert_eq!(rounded_mean(0, 0), 0);
+    }
+
+    #[test]
+    fn a_non_uniform_field_keeps_its_average_brightness() {
+        let (w, h) = (64, 64);
+        let mut alpha: Vec<u8> = (0..w * h).map(|i| if (i / w + i % w) % 2 == 0 { 101 } else { 102 }).collect();
+        let before: u64 = alpha.iter().map(|&v| u64::from(v)).sum();
+        box_blur_alpha(&mut alpha, w, h, 4);
+        let after: u64 = alpha.iter().map(|&v| u64::from(v)).sum();
+        let pixels = u64::try_from(w * h).expect("positive");
+        assert!(
+            before.abs_diff(after) < pixels / 4,
+            "blurring must not systematically darken: before={before} after={after}"
         );
     }
 

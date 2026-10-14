@@ -1,11 +1,7 @@
 use smithay::wayland::selection::{
-    ext_data_control::{
-        DataControlHandler as ExtDataControlHandler, DataControlState as ExtDataControlState,
-    },
+    ext_data_control::{DataControlHandler as ExtDataControlHandler, DataControlState as ExtDataControlState},
     primary_selection::{PrimarySelectionHandler, PrimarySelectionState},
-    wlr_data_control::{
-        DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState,
-    },
+    wlr_data_control::{DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState},
 };
 
 use crate::GlideState;

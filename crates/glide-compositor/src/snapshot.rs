@@ -13,7 +13,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Scale, Size, Transform},
 };
 
-use glide_theme::motion::CubicBezier;
+use glide_theme::motion::{CubicBezier, E_IO, E_OUT};
 
 use crate::window::GlideWindow;
 
@@ -39,6 +39,24 @@ const MAX_CONCURRENT: usize = 24;
 
 pub type SnapshotRenderElement = TextureRenderElement<GlesTexture>;
 
+#[derive(Debug, Clone, Copy)]
+struct Track {
+    from: Rectangle<i32, Logical>,
+    to: Rectangle<i32, Logical>,
+    to_alpha: f32,
+    duration: Duration,
+    curve: CubicBezier,
+}
+
+impl Track {
+    const fn new(
+        from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, to_alpha: f32, duration: Duration,
+        curve: CubicBezier,
+    ) -> Self {
+        Self { from, to, to_alpha, duration, curve }
+    }
+}
+
 #[derive(Debug)]
 struct Snapshot {
     id: Id,
@@ -46,70 +64,53 @@ struct Snapshot {
     natural: Size<i32, Logical>,
     margin: i32,
     buffer_scale: i32,
-
-    from: Rectangle<i32, Logical>,
-    to: Rectangle<i32, Logical>,
-    from_alpha: f32,
-    to_alpha: f32,
-
-    duration: Duration,
-    curve: CubicBezier,
+    track: Track,
     started: Instant,
 }
 
 impl Snapshot {
     fn eased(&self) -> f64 {
-        if self.duration.is_zero() {
+        let duration = self.track.duration;
+        if duration.is_zero() {
             return 1.0;
         }
         let elapsed = self.started.elapsed().as_secs_f64();
-        let t = (elapsed / self.duration.as_secs_f64()).clamp(0.0, 1.0);
-        self.curve.ease_f64(t)
+        let t = (elapsed / duration.as_secs_f64()).clamp(0.0, 1.0);
+        self.track.curve.ease_f64(t)
     }
 
     fn is_finished(&self) -> bool {
-        self.started.elapsed() >= self.duration
+        self.started.elapsed() >= self.track.duration
     }
 
     fn sample(&self) -> (Rectangle<i32, Logical>, f32) {
         let t = self.eased();
-        (
-            lerp_rect(self.from, self.to, t),
-            lerp_alpha(self.from_alpha, self.to_alpha, t),
-        )
+        let Track { from, to, to_alpha, .. } = self.track;
+        (lerp_rect(from, to, t), lerp_alpha(1.0, to_alpha, t))
     }
 }
 
-fn lerp_rect(
-    from: Rectangle<i32, Logical>,
-    to: Rectangle<i32, Logical>,
-    t: f64,
-) -> Rectangle<i32, Logical> {
-    #[allow(clippy::cast_possible_truncation)]
+fn lerp_rect(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
     let mix = |a: i32, b: i32| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as i32;
 
     Rectangle::new(
         Point::from((mix(from.loc.x, to.loc.x), mix(from.loc.y, to.loc.y))),
-        Size::from((
-            mix(from.size.w, to.size.w).max(1),
-            mix(from.size.h, to.size.h).max(1),
-        )),
+        Size::from((mix(from.size.w, to.size.w).max(1), mix(from.size.h, to.size.h).max(1))),
     )
 }
 
 fn lerp_alpha(from: f32, to: f32, t: f64) -> f32 {
-    #[allow(clippy::cast_possible_truncation)]
     let alpha = (f64::from(from) + (f64::from(to) - f64::from(from)) * t) as f32;
     alpha.clamp(0.0, 1.0)
 }
 
 fn close_target(from: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
-    #[allow(clippy::cast_possible_truncation)]
     let shrunk = Size::from((
         (f64::from(from.size.w) * CLOSE_END_SCALE).round() as i32,
         (f64::from(from.size.h) * CLOSE_END_SCALE).round() as i32,
     ));
-    Rectangle::new(from.loc, shrunk)
+    let offset = Point::from(((from.size.w - shrunk.w) / 2, (from.size.h - shrunk.h) / 2));
+    Rectangle::new(from.loc + offset, shrunk)
 }
 
 #[derive(Debug, Default)]
@@ -119,108 +120,40 @@ pub struct Snapshots {
 
 impl Snapshots {
     pub fn push_close(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        window: &GlideWindow,
-        target_frame: Rectangle<i32, Logical>,
-        scale: Scale<f64>,
-        output_scale: i32,
+        &mut self, renderer: &mut GlesRenderer, window: &GlideWindow, target_frame: Rectangle<i32, Logical>,
+        scale: Scale<f64>, output_scale: i32,
     ) -> bool {
-        self.push(
-            renderer,
-            window,
-            target_frame,
-            close_target(target_frame),
-            1.0,
-            0.0,
-            close_duration(),
-            glide_theme::motion::E_IO,
-            scale,
-            output_scale,
-        )
+        let to = close_target(target_frame);
+        let track = Track::new(target_frame, to, 0.0, close_duration(), E_IO);
+        self.push(renderer, window, track, scale, output_scale)
     }
 
     pub fn push_morph(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        window: &GlideWindow,
-        from: Rectangle<i32, Logical>,
-        to: Rectangle<i32, Logical>,
-        scale: Scale<f64>,
-        output_scale: i32,
+        &mut self, renderer: &mut GlesRenderer, window: &GlideWindow, from: Rectangle<i32, Logical>,
+        to: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
     ) -> bool {
-        self.push(
-            renderer,
-            window,
-            from,
-            to,
-            1.0,
-            0.0,
-            morph_duration(),
-            glide_theme::motion::E_OUT,
-            scale,
-            output_scale,
-        )
+        let track = Track::new(from, to, 0.0, morph_duration(), E_OUT);
+        self.push(renderer, window, track, scale, output_scale)
     }
 
     pub fn push_slide(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        window: &GlideWindow,
-        from: Rectangle<i32, Logical>,
-        to: Rectangle<i32, Logical>,
-        scale: Scale<f64>,
-        output_scale: i32,
+        &mut self, renderer: &mut GlesRenderer, window: &GlideWindow, from: Rectangle<i32, Logical>,
+        to: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
     ) -> bool {
-        self.push(
-            renderer,
-            window,
-            from,
-            to,
-            1.0,
-            1.0,
-            workspace_duration(),
-            glide_theme::motion::E_OUT,
-            scale,
-            output_scale,
-        )
+        let track = Track::new(from, to, 1.0, workspace_duration(), E_OUT);
+        self.push(renderer, window, track, scale, output_scale)
     }
 
     pub fn push_flight(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        window: &GlideWindow,
-        from: Rectangle<i32, Logical>,
-        to: Rectangle<i32, Logical>,
-        scale: Scale<f64>,
-        output_scale: i32,
+        &mut self, renderer: &mut GlesRenderer, window: &GlideWindow, from: Rectangle<i32, Logical>,
+        to: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
     ) -> bool {
-        self.push(
-            renderer,
-            window,
-            from,
-            to,
-            1.0,
-            0.0,
-            flight_duration(),
-            glide_theme::motion::E_IO,
-            scale,
-            output_scale,
-        )
+        let track = Track::new(from, to, 0.0, flight_duration(), E_IO);
+        self.push(renderer, window, track, scale, output_scale)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn push(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        window: &GlideWindow,
-        from: Rectangle<i32, Logical>,
-        to: Rectangle<i32, Logical>,
-        from_alpha: f32,
-        to_alpha: f32,
-        duration: Duration,
-        curve: CubicBezier,
-        scale: Scale<f64>,
+        &mut self, renderer: &mut GlesRenderer, window: &GlideWindow, track: Track, scale: Scale<f64>,
         output_scale: i32,
     ) -> bool {
         let Some(capture) = capture_window(renderer, window, scale) else {
@@ -237,12 +170,7 @@ impl Snapshots {
             natural: capture.size,
             margin: capture.margin,
             buffer_scale: output_scale,
-            from,
-            to,
-            from_alpha,
-            to_alpha,
-            duration,
-            curve,
+            track,
             started: Instant::now(),
         });
         true
@@ -264,46 +192,33 @@ impl Snapshots {
 
     #[must_use]
     pub fn render_elements(
-        &self,
-        renderer: &GlesRenderer,
-        scale: Scale<f64>,
+        &self, renderer: &GlesRenderer, scale: Scale<f64>, output_geometry: Rectangle<i32, Logical>,
     ) -> Vec<SnapshotRenderElement> {
         self.entries
             .iter()
-            .map(|entry| {
+            .filter_map(|entry| {
                 let (frame, alpha) = entry.sample();
 
-                let captured_frame_width = entry.natural.w - entry.margin * 2;
-                let captured_frame_height = entry.natural.h - entry.margin * 2;
-                let factor_x = if captured_frame_width > 0 {
-                    f64::from(frame.size.w) / f64::from(captured_frame_width)
-                } else {
-                    1.0
+                let factor = |shown: i32, natural: i32| {
+                    let captured = natural - entry.margin * 2;
+                    if captured > 0 { f64::from(shown) / f64::from(captured) } else { 1.0 }
                 };
-                let factor_y = if captured_frame_height > 0 {
-                    f64::from(frame.size.h) / f64::from(captured_frame_height)
-                } else {
-                    1.0
-                };
-                #[allow(clippy::cast_possible_truncation)]
-                let margin_x = (f64::from(entry.margin) * factor_x).round() as i32;
-                #[allow(clippy::cast_possible_truncation)]
-                let margin_y = (f64::from(entry.margin) * factor_y).round() as i32;
-                #[allow(clippy::cast_possible_truncation)]
-                let display = Size::from((
-                    (f64::from(entry.natural.w) * factor_x).round() as i32,
-                    (f64::from(entry.natural.h) * factor_y).round() as i32,
+                let factor_x = factor(frame.size.w, entry.natural.w);
+                let factor_y = factor(frame.size.h, entry.natural.h);
+                let stretch = |v: i32, f: f64| (f64::from(v) * f).round() as i32;
+                let display = Size::from((stretch(entry.natural.w, factor_x), stretch(entry.natural.h, factor_y)));
+                let global = Point::from((
+                    frame.loc.x - stretch(entry.margin, factor_x),
+                    frame.loc.y - stretch(entry.margin, factor_y),
                 ));
-                let location = Point::from((frame.loc.x - margin_x, frame.loc.y - margin_y))
-                    .to_f64()
-                    .to_physical(scale);
+                if !output_geometry.overlaps(Rectangle::new(global, display)) {
+                    return None;
+                }
+                let location = (global - output_geometry.loc).to_f64().to_physical(scale);
 
-                let src = Rectangle::from_size(Size::from((
-                    f64::from(entry.natural.w),
-                    f64::from(entry.natural.h),
-                )));
+                let src = Rectangle::from_size(Size::from((f64::from(entry.natural.w), f64::from(entry.natural.h))));
 
-                TextureRenderElement::from_static_texture(
+                Some(TextureRenderElement::from_static_texture(
                     entry.id.clone(),
                     renderer.context_id(),
                     location,
@@ -315,7 +230,7 @@ impl Snapshots {
                     Some(display),
                     None,
                     Kind::Unspecified,
-                )
+                ))
             })
             .collect()
     }
@@ -327,11 +242,7 @@ struct Capture {
     margin: i32,
 }
 
-fn capture_window(
-    renderer: &mut GlesRenderer,
-    window: &GlideWindow,
-    scale: Scale<f64>,
-) -> Option<Capture> {
+fn capture_window(renderer: &mut GlesRenderer, window: &GlideWindow, scale: Scale<f64>) -> Option<Capture> {
     let content = window.geometry().size;
     let header = window.header_height();
     let margin = window.shadow_margin();
@@ -345,9 +256,7 @@ fn capture_window(
         return None;
     }
 
-    let mut texture: GlesTexture = renderer
-        .create_buffer(Fourcc::Abgr8888, (physical.w, physical.h).into())
-        .ok()?;
+    let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (physical.w, physical.h).into()).ok()?;
     let mut target = renderer.bind(&mut texture).ok()?;
 
     let content_origin = Point::from((margin, margin + header)).to_physical_precise_round(scale);
@@ -361,25 +270,17 @@ fn capture_window(
         );
 
     let mut tracker = OutputDamageTracker::new((physical.w, physical.h), scale, Transform::Normal);
-    tracker
-        .render_output(renderer, &mut target, 0, &elements, [0.0, 0.0, 0.0, 0.0])
-        .ok()?;
+    tracker.render_output(renderer, &mut target, 0, &elements, [0.0, 0.0, 0.0, 0.0]).ok()?;
     drop(target);
 
-    Some(Capture {
-        texture,
-        size,
-        margin,
-    })
+    Some(Capture { texture, size, margin })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
-        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
-    }
+    use crate::raster::rect;
 
     #[test]
     fn a_fresh_collection_has_nothing_to_animate() {
@@ -428,13 +329,27 @@ mod tests {
         use super::*;
 
         #[test]
-        fn it_shrinks_about_the_top_left_corner() {
+        fn it_shrinks_about_the_centre() {
             let from = rect(40, 60, 200, 100);
             let to = close_target(from);
 
-            assert_eq!(to.loc, from.loc, "the corner must not move");
             assert_eq!(to.size, Size::from((188, 94)));
+            assert_eq!(to.loc, Point::from((46, 63)));
             assert!(to.size.w < from.size.w && to.size.h < from.size.h);
+        }
+
+        #[test]
+        fn the_centre_stays_put_for_any_frame() {
+            for (w, h) in [(1, 1), (7, 3), (199, 101), (800, 600), (1921, 1079)] {
+                let from = rect(-300, 25, w, h);
+                let to = close_target(from);
+                let centre_from_x2 = (from.loc.x * 2 + from.size.w, from.loc.y * 2 + from.size.h);
+                let centre_to_x2 = (to.loc.x * 2 + to.size.w, to.loc.y * 2 + to.size.h);
+                assert!(
+                    (centre_from_x2.0 - centre_to_x2.0).abs() <= 1 && (centre_from_x2.1 - centre_to_x2.1).abs() <= 1,
+                    "{w}x{h}: centre moved from {centre_from_x2:?} to {centre_to_x2:?} (doubled)"
+                );
+            }
         }
 
         #[test]
@@ -449,10 +364,7 @@ mod tests {
         #[test]
         fn the_morph_is_front_loaded() {
             let travelled = glide_theme::motion::E_OUT.ease_f64(0.25);
-            assert!(
-                travelled > 0.5,
-                "only {travelled} of the way at a quarter of the duration"
-            );
+            assert!(travelled > 0.5, "only {travelled} of the way at a quarter of the duration");
         }
 
         #[test]
@@ -467,10 +379,7 @@ mod tests {
 
         fn restored_x(from: Rectangle<i32, Logical>, pointer_x: f64, restored_w: i32) -> i32 {
             let grip = (pointer_x - f64::from(from.loc.x)) / f64::from(from.size.w);
-            #[allow(clippy::cast_possible_truncation)]
-            {
-                (pointer_x - grip * f64::from(restored_w)).round() as i32
-            }
+            (pointer_x - grip * f64::from(restored_w)).round() as i32
         }
 
         #[test]
@@ -498,7 +407,6 @@ mod tests {
             for step in 0..=100 {
                 let pointer_x = f64::from(step) / 100.0 * 1920.0;
                 let x = restored_x(maximized, pointer_x, restored_w);
-                #[allow(clippy::cast_possible_truncation)]
                 let pointer = pointer_x.round() as i32;
                 assert!(
                     (x..=x + restored_w).contains(&pointer),

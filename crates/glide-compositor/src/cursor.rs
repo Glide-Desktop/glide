@@ -46,108 +46,90 @@ pub struct Cursor {
     cache: HashMap<CursorIcon, Vec<Image>>,
 }
 
+static CONFIGURED_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub const MIN_SIZE: u32 = 16;
+pub const MAX_SIZE: u32 = 256;
+
+#[must_use]
+pub fn configured_value(size: Option<u32>) -> u32 {
+    size.map_or(0, |size| size.clamp(MIN_SIZE, MAX_SIZE))
+}
+
+pub fn set_configured_size(size: Option<u32>) {
+    CONFIGURED_SIZE.store(configured_value(size), std::sync::atomic::Ordering::Relaxed);
+}
+
+#[must_use]
+pub fn effective_size(environment: u32) -> u32 {
+    match CONFIGURED_SIZE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => environment,
+        configured => configured,
+    }
+}
+
 impl Cursor {
     pub fn load() -> Self {
         let theme_name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
-        let size = std::env::var("XCURSOR_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(24);
+        let size = std::env::var("XCURSOR_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
 
         let theme = CursorTheme::load(&theme_name);
 
-        let mut cursor = Self {
-            theme,
-            size,
-            cache: HashMap::new(),
-        };
+        let mut cursor = Self { theme, size, cache: HashMap::new() };
 
-        let default_images = cursor
-            .load_icon_images(CursorIcon::Default)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    theme = theme_name,
-                    "could not load the xcursor theme's default cursor, \
+        let default_images = cursor.load_icon_images(CursorIcon::Default).unwrap_or_else(|| {
+            tracing::warn!(
+                theme = theme_name,
+                "could not load the xcursor theme's default cursor, \
                      using the built-in fallback"
-                );
-                vec![fallback_image()]
-            });
+            );
+            vec![fallback_image()]
+        });
         cursor.cache.insert(CursorIcon::Default, default_images);
 
         cursor
     }
 
-    pub fn image_with_index(
-        &mut self,
-        icon: CursorIcon,
-        scale: u32,
-        time: Duration,
-    ) -> (Image, usize) {
-        #[allow(clippy::cast_possible_truncation)]
+    pub fn image_with_index(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> (Image, usize) {
         let millis = time.as_millis() as u32;
-        let size = self.size * scale;
+        let size = effective_size(self.size) * scale;
         frame_with_index(millis, size, self.images_for(icon))
     }
 
-    #[allow(dead_code)]
     pub fn image(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Image {
         self.image_with_index(icon, scale, time).0
     }
 
-    pub fn time_to_next_frame(
-        &mut self,
-        icon: CursorIcon,
-        scale: u32,
-        time: Duration,
-    ) -> Option<Duration> {
-        #[allow(clippy::cast_possible_truncation)]
+    pub fn time_to_next_frame(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Option<Duration> {
         let millis = time.as_millis() as u32;
-        let size = self.size * scale;
+        let size = effective_size(self.size) * scale;
         time_to_next_frame(millis, size, self.images_for(icon))
     }
 
     fn images_for(&mut self, icon: CursorIcon) -> &[Image] {
         if !self.cache.contains_key(&icon) {
             let images = self.load_icon_images(icon).unwrap_or_else(|| {
-                tracing::debug!(
-                    icon = icon.name(),
-                    "xcursor theme lacks this shape; substituting the default cursor"
-                );
-                self.cache
-                    .get(&CursorIcon::Default)
-                    .expect("Default is inserted unconditionally in load()")
-                    .clone()
+                tracing::debug!(icon = icon.name(), "xcursor theme lacks this shape; substituting the default cursor");
+                self.cache.get(&CursorIcon::Default).expect("Default is inserted unconditionally in load()").clone()
             });
             self.cache.insert(icon, images);
         }
-
-        self.cache
-            .get(&icon)
-            .expect("inserted above if it was missing")
+        &self.cache[&icon]
     }
 
     fn load_icon_images(&self, icon: CursorIcon) -> Option<Vec<Image>> {
-        std::iter::once(icon.name())
-            .chain(icon.alt_names().iter().copied())
-            .find_map(|name| {
-                let path = self.theme.load_icon(name)?;
-                let mut data = Vec::new();
-                std::fs::File::open(path)
-                    .ok()?
-                    .read_to_end(&mut data)
-                    .ok()?;
-                parse_xcursor(&data)
-            })
+        std::iter::once(icon.name()).chain(icon.alt_names().iter().copied()).find_map(|name| {
+            let path = self.theme.load_icon(name)?;
+            let mut data = Vec::new();
+            std::fs::File::open(path).ok()?.read_to_end(&mut data).ok()?;
+            parse_xcursor(&data)
+        })
     }
 }
 
 fn fallback_image() -> Image {
     let height = FALLBACK_ARROW.len();
-    let width = FALLBACK_ARROW
-        .iter()
-        .map(|row| row.len())
-        .max()
-        .unwrap_or(0);
+    let width = FALLBACK_ARROW.iter().map(|row| row.len()).max().unwrap_or(0);
 
     let mut pixels = Vec::with_capacity(width * height * 4);
     for row in FALLBACK_ARROW {
@@ -165,16 +147,7 @@ fn fallback_image() -> Image {
     let width = u32::try_from(width).expect("FALLBACK_ARROW is a small fixed-size array");
     let height = u32::try_from(height).expect("FALLBACK_ARROW is a small fixed-size array");
 
-    Image {
-        size: height,
-        width,
-        height,
-        xhot: 0,
-        yhot: 0,
-        delay: 0,
-        pixels_rgba: pixels,
-        pixels_argb: Vec::new(),
-    }
+    Image { size: height, width, height, xhot: 0, yhot: 0, delay: 0, pixels_rgba: pixels, pixels_argb: Vec::new() }
 }
 
 fn nearest_images(size: u32, images: &[Image]) -> impl Iterator<Item = &Image> {
@@ -183,47 +156,39 @@ fn nearest_images(size: u32, images: &[Image]) -> impl Iterator<Item = &Image> {
         .min_by_key(|image| (size.cast_signed() - image.size.cast_signed()).abs())
         .expect("cursor always has at least the fallback image");
 
-    images
-        .iter()
-        .filter(move |image| image.width == nearest.width && image.height == nearest.height)
+    images.iter().filter(move |image| image.width == nearest.width && image.height == nearest.height)
 }
 
-fn time_to_next_frame(mut millis: u32, size: u32, images: &[Image]) -> Option<Duration> {
-    let total: u32 = nearest_images(size, images).map(|image| image.delay).sum();
-    if total == 0 || nearest_images(size, images).count() < 2 {
-        return None;
-    }
-
-    millis %= total;
-    for image in nearest_images(size, images) {
-        if millis < image.delay {
-            return Some(Duration::from_millis(u64::from(image.delay - millis)));
-        }
-        millis -= image.delay;
-    }
-
-    unreachable!("millis was reduced below the total delay above")
-}
-
-fn frame_with_index(mut millis: u32, size: u32, images: &[Image]) -> (Image, usize) {
+fn current_frame(mut millis: u32, size: u32, images: &[Image]) -> Option<(usize, &Image, u32)> {
     let total: u32 = nearest_images(size, images).map(|image| image.delay).sum();
     if total == 0 {
-        let img = nearest_images(size, images)
-            .next()
-            .expect("cursor always has at least the fallback image")
-            .clone();
-        return (img, 0);
+        return None;
     }
-
     millis %= total;
     for (idx, image) in nearest_images(size, images).enumerate() {
         if millis < image.delay {
-            return (image.clone(), idx);
+            return Some((idx, image, image.delay - millis));
         }
         millis -= image.delay;
     }
-
     unreachable!("millis was reduced below the total delay above")
+}
+
+fn time_to_next_frame(millis: u32, size: u32, images: &[Image]) -> Option<Duration> {
+    if nearest_images(size, images).count() < 2 {
+        return None;
+    }
+    current_frame(millis, size, images).map(|(_, _, left)| Duration::from_millis(u64::from(left)))
+}
+
+fn frame_with_index(millis: u32, size: u32, images: &[Image]) -> (Image, usize) {
+    current_frame(millis, size, images).map_or_else(
+        || {
+            let first = nearest_images(size, images).next();
+            (first.expect("cursor always has at least the fallback image").clone(), 0)
+        },
+        |(idx, image, _)| (image.clone(), idx),
+    )
 }
 
 render_elements! {
@@ -249,10 +214,7 @@ pub struct PointerElement {
 
 impl Default for PointerElement {
     fn default() -> Self {
-        Self {
-            buffer: None,
-            status: CursorImageStatus::default_named(),
-        }
+        Self { buffer: None, status: CursorImageStatus::default_named() }
     }
 }
 
@@ -273,11 +235,7 @@ where
     type RenderElement = PointerRenderElement<R>;
 
     fn render_elements<E: From<PointerRenderElement<R>>>(
-        &self,
-        renderer: &mut R,
-        location: Point<i32, Physical>,
-        scale: Scale<f64>,
-        alpha: f32,
+        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
     ) -> Vec<E> {
         match &self.status {
             CursorImageStatus::Hidden => Vec::new(),
@@ -316,18 +274,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_configured_cursor_size_is_clamped_and_absent_means_the_environment() {
+        assert_eq!(configured_value(None), 0);
+        assert_eq!(configured_value(Some(48)), 48);
+        assert_eq!(configured_value(Some(2)), MIN_SIZE);
+        assert_eq!(configured_value(Some(4096)), MAX_SIZE);
+    }
+
+    #[test]
     fn fallback_image_is_well_formed() {
         let image = fallback_image();
 
-        let expected_width =
-            u32::try_from(FALLBACK_ARROW.iter().map(|r| r.len()).max().unwrap()).unwrap();
+        let expected_width = u32::try_from(FALLBACK_ARROW.iter().map(|r| r.len()).max().unwrap()).unwrap();
         assert_eq!(image.width, expected_width);
         assert_eq!(image.height, u32::try_from(FALLBACK_ARROW.len()).unwrap());
 
-        assert_eq!(
-            image.pixels_rgba.len(),
-            (image.width * image.height * 4) as usize
-        );
+        assert_eq!(image.pixels_rgba.len(), (image.width * image.height * 4) as usize);
     }
 
     #[test]
@@ -348,10 +310,7 @@ mod tests {
     #[test]
     fn fallback_image_is_not_fully_transparent() {
         let image = fallback_image();
-        assert!(
-            image.pixels_rgba.chunks_exact(4).any(|px| px[3] != 0),
-            "fallback cursor has no visible pixels"
-        );
+        assert!(image.pixels_rgba.chunks_exact(4).any(|px| px[3] != 0), "fallback cursor has no visible pixels");
     }
 
     #[test]
@@ -359,10 +318,7 @@ mod tests {
         let mut cursor = Cursor::load();
         let image = cursor.image(CursorIcon::Default, 1, Duration::ZERO);
         assert!(image.width > 0 && image.height > 0);
-        assert_eq!(
-            image.pixels_rgba.len(),
-            (image.width * image.height * 4) as usize
-        );
+        assert_eq!(image.pixels_rgba.len(), (image.width * image.height * 4) as usize);
     }
 
     #[test]
@@ -411,9 +367,6 @@ mod tests {
             assert!(img.width > 0 && img.height > 0);
         }
         let elapsed = start.elapsed();
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "50,000 cache lookups took too long: {elapsed:?}"
-        );
+        assert!(elapsed < Duration::from_secs(1), "50,000 cache lookups took too long: {elapsed:?}");
     }
 }

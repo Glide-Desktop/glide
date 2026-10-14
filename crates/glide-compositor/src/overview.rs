@@ -11,59 +11,66 @@ use smithay::{
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
         },
     },
-    utils::{Logical, Point, Rectangle, Scale, Size, Transform},
+    utils::{Logical, Point, Rectangle, Scale, Size},
 };
 
 use crate::{
     clip::ClipCapableRenderer,
     config::{OverviewTheme, OverviewThemeExt},
+    raster::ShellRenderer,
     window::{GlideWindow, GlideWindowRenderElement},
 };
 
-type OverviewEntry = (
-    WindowId,
-    Rectangle<i32, Logical>,
-    bool,
-    Option<(GlideWindow, String)>,
-);
+#[path = "overview_strip.rs"]
+mod strip;
 
-#[derive(Debug, Clone, Copy)]
-enum Phase {
-    Opening {
-        started: Instant,
-    },
+type OverviewEntry = (WindowId, Rectangle<i32, Logical>, bool, Option<(GlideWindow, String)>);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Phase {
+    Opening { started: Instant, from: SceneFrom },
     Open,
-    Closing {
-        started: Instant,
-        select: Option<WindowId>,
-        from: SceneFrom,
-    },
+    Closing { started: Instant, select: Option<WindowId>, from: SceneFrom },
+    Interactive { progress: f64 },
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SceneFrom {
-    primary: f64,
-    backdrop: f64,
+#[cfg(test)]
+impl Phase {
+    #[must_use]
+    pub const fn opening(started: Instant) -> Self {
+        Self::Opening { started, from: SceneFrom::ZERO }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneFrom {
+    pub primary: f64,
+    pub backdrop: f64,
+    pub release: Option<glide_theme::motion::Release>,
+}
+
+impl SceneFrom {
+    const ZERO: Self = Self { primary: 0.0, backdrop: 0.0, release: None };
+
+    fn ease(self, curve: glide_theme::motion::CubicBezier, fraction: f64) -> f64 {
+        self.release.map_or_else(|| curve.ease_f64(fraction), |release| release.at(fraction))
+    }
+
+    const fn pick(self, backdrop: bool) -> f64 {
+        if backdrop { self.backdrop } else { self.primary }
+    }
 }
 
 fn hover_anim() -> Duration {
     glide_theme::motion::t2()
 }
 
-fn lerp_rect(
-    from: Rectangle<i32, Logical>,
-    to: Rectangle<i32, Logical>,
-    t: f64,
-) -> Rectangle<i32, Logical> {
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+fn lerp_rect(from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, t: f64) -> Rectangle<i32, Logical> {
     let mix = |a: i32, b: i32| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as i32;
 
     Rectangle::new(
         Point::from((mix(from.loc.x, to.loc.x), mix(from.loc.y, to.loc.y))),
-        Size::from((
-            mix(from.size.w, to.size.w).max(1),
-            mix(from.size.h, to.size.h).max(1),
-        )),
+        Size::from((mix(from.size.w, to.size.w).max(1), mix(from.size.h, to.size.h).max(1))),
     )
 }
 
@@ -76,23 +83,14 @@ struct RasterKey {
 
 impl RasterKey {
     fn new(theme: &OverviewTheme, output_scale: i32) -> Self {
-        Self {
-            output_scale,
-            theme_rev: theme.revision(),
-            painter_gen: crate::paint::painter_generation(),
-        }
+        Self { output_scale, theme_rev: theme.revision(), painter_gen: crate::paint::painter_generation() }
     }
 }
 
 type CachedLabel = (String, i32, RasterKey, MemoryRenderBuffer);
 type CachedHighlight = (i32, i32, RasterKey, MemoryRenderBuffer);
 type CachedClose = (u8, RasterKey, MemoryRenderBuffer);
-type SalvagedPreview = (
-    WindowId,
-    Option<CachedLabel>,
-    Option<CachedHighlight>,
-    Option<CachedClose>,
-);
+type PerScale<T> = std::collections::HashMap<i32, T>;
 
 #[derive(Debug, Clone)]
 pub struct Preview {
@@ -100,9 +98,10 @@ pub struct Preview {
     pub target: Rectangle<i32, Logical>,
     pub origin: Rectangle<i32, Logical>,
     pub row: usize,
-    label: Option<CachedLabel>,
-    highlight: Option<CachedHighlight>,
-    close: Option<CachedClose>,
+    stack: usize,
+    label: PerScale<CachedLabel>,
+    highlight: PerScale<CachedHighlight>,
+    close: PerScale<CachedClose>,
 }
 
 impl Preview {
@@ -128,46 +127,52 @@ pub struct OverviewUi {
     duration: Duration,
     theme: OverviewTheme,
     area: Rectangle<i32, Logical>,
+    focused: Option<WindowId>,
+    strip: strip::Strip,
 
     scrim: SolidColorBuffer,
 }
 
+fn paint_rank(preview: &Preview, front: Option<WindowId>, area: Rectangle<i32, Logical>) -> (bool, bool, usize) {
+    (front == Some(preview.id), preview.origin.overlaps(area), preview.stack)
+}
+
+fn layout_previews(
+    windows: &[(WindowId, Rectangle<i32, Logical>)], area: Rectangle<i32, Logical>, theme: &OverviewTheme,
+    old: &mut [Preview],
+) -> Vec<Preview> {
+    let sizes: Vec<(WindowId, glide_layout::Size)> =
+        windows.iter().map(|(id, rect)| (*id, glide_layout::Size::new(rect.size.w, rect.size.h))).collect();
+    let layout_area = glide_layout::Rectangle::from_loc_and_size(area.loc.x, area.loc.y, area.size.w, area.size.h);
+    compute_overview_layout(&sizes, layout_area, &theme.options())
+        .iter()
+        .filter_map(|slot| {
+            let stack = windows.iter().position(|(id, _)| *id == slot.id)?;
+            let (label, highlight, close) = old
+                .iter_mut()
+                .find(|p| p.id == slot.id)
+                .map(|p| (std::mem::take(&mut p.label), std::mem::take(&mut p.highlight), std::mem::take(&mut p.close)))
+                .unwrap_or_default();
+            Some(Preview {
+                id: slot.id,
+                target: to_smithay_rect(slot.target),
+                origin: windows[stack].1,
+                row: slot.row,
+                stack,
+                label,
+                highlight,
+                close,
+            })
+        })
+        .collect()
+}
+
 impl OverviewUi {
     pub fn new(
-        windows: &[(WindowId, Rectangle<i32, Logical>)],
-        area: Rectangle<i32, Logical>,
-        theme: &OverviewTheme,
+        windows: &[(WindowId, Rectangle<i32, Logical>)], area: Rectangle<i32, Logical>, theme: &OverviewTheme,
         focused: Option<WindowId>,
     ) -> Self {
-        let sizes: Vec<(WindowId, glide_layout::Size)> = windows
-            .iter()
-            .map(|(id, rect)| (*id, glide_layout::Size::new(rect.size.w, rect.size.h)))
-            .collect();
-
-        let layout_area = glide_layout::Rectangle::from_loc_and_size(
-            area.loc.x,
-            area.loc.y,
-            area.size.w,
-            area.size.h,
-        );
-        let slots = compute_overview_layout(&sizes, layout_area, &theme.options());
-
-        let previews = slots
-            .iter()
-            .filter_map(|slot| {
-                let origin = windows.iter().find(|(id, _)| *id == slot.id)?.1;
-                Some(Preview {
-                    id: slot.id,
-                    target: to_smithay_rect(slot.target),
-                    origin,
-                    row: slot.row,
-                    label: None,
-                    highlight: None,
-                    close: None,
-                })
-            })
-            .collect();
-
+        let previews = layout_previews(windows, area, theme, &mut []);
         let mut hover = glide_ui::HoverAnimation::default();
         hover.retarget_without_restarting(focused);
 
@@ -175,20 +180,58 @@ impl OverviewUi {
             previews,
             hover,
             close_hover: glide_ui::HoverAnimation::default(),
-            phase: Phase::Opening {
-                started: Instant::now(),
-            },
+            phase: Phase::Opening { started: Instant::now(), from: SceneFrom::ZERO },
             duration: theme.duration(),
             theme: theme.clone(),
             area,
+            focused,
+            strip: strip::Strip::default(),
             scrim: SolidColorBuffer::default(),
         }
     }
 
+    fn grid_area(&self) -> Rectangle<i32, Logical> {
+        let band = self.strip.band();
+        Rectangle::new(
+            Point::from((self.area.loc.x, self.area.loc.y + band)),
+            Size::from((self.area.size.w, (self.area.size.h - band).max(1))),
+        )
+    }
+
+    pub fn set_workspaces(&mut self, workspaces: Vec<glide_layout::WorkspaceId>, active: glide_layout::WorkspaceId) {
+        if self.strip.set(workspaces, active) {
+            let windows: Vec<(WindowId, Rectangle<i32, Logical>)> =
+                self.previews.iter().map(|p| (p.id, p.origin)).collect();
+            let mut old = std::mem::take(&mut self.previews);
+            self.previews = layout_previews(&windows, self.grid_area(), &self.theme, &mut old);
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_at(&self, pos: Point<f64, Logical>) -> Option<glide_layout::WorkspaceId> {
+        (self.progress() > 0.0).then(|| self.strip.workspace_at(self.area, pos)).flatten()
+    }
+
+    pub fn set_strip_hover(&mut self, hover: Option<glide_layout::WorkspaceId>) -> bool {
+        self.strip.set_hover(hover)
+    }
+
+    fn front_window(&self) -> Option<WindowId> {
+        match self.phase {
+            Phase::Closing { select: Some(id), .. } => Some(id),
+            _ => self.focused,
+        }
+    }
+
+    fn paint_order(&self) -> Vec<WindowId> {
+        let front = self.front_window();
+        let mut ranked: Vec<&Preview> = self.previews.iter().collect();
+        ranked.sort_by_key(|p| std::cmp::Reverse(paint_rank(p, front, self.area)));
+        ranked.into_iter().map(|p| p.id).collect()
+    }
+
     fn matches_current_layout(
-        &self,
-        windows: &[(WindowId, Rectangle<i32, Logical>)],
-        area: Rectangle<i32, Logical>,
+        &self, windows: &[(WindowId, Rectangle<i32, Logical>)], area: Rectangle<i32, Logical>,
     ) -> bool {
         self.area == area
             && self.previews.len() == windows.len()
@@ -199,61 +242,14 @@ impl OverviewUi {
                 .all(|(preview, (id, origin))| preview.id == *id && preview.origin == *origin)
     }
 
-    pub fn relayout(
-        &mut self,
-        windows: &[(WindowId, Rectangle<i32, Logical>)],
-        area: Rectangle<i32, Logical>,
-    ) {
+    pub fn relayout(&mut self, windows: &[(WindowId, Rectangle<i32, Logical>)], area: Rectangle<i32, Logical>) {
         if self.matches_current_layout(windows, area) {
             return;
         }
         self.area = area;
-
-        let sizes: Vec<(WindowId, glide_layout::Size)> = windows
-            .iter()
-            .map(|(id, rect)| (*id, glide_layout::Size::new(rect.size.w, rect.size.h)))
-            .collect();
-
-        let layout_area = glide_layout::Rectangle::from_loc_and_size(
-            area.loc.x,
-            area.loc.y,
-            area.size.w,
-            area.size.h,
-        );
-        let slots = compute_overview_layout(&sizes, layout_area, &self.theme.options());
-
-        let old_hover_index = self
-            .hover
-            .target()
-            .and_then(|id| self.previews.iter().position(|p| p.id == id));
-
-        let mut old: Vec<SalvagedPreview> = self
-            .previews
-            .drain(..)
-            .map(|p| (p.id, p.label, p.highlight, p.close))
-            .collect();
-
-        self.previews = slots
-            .iter()
-            .filter_map(|slot| {
-                let origin = windows.iter().find(|(id, _)| *id == slot.id)?.1;
-                let (label, highlight, close) = old
-                    .iter_mut()
-                    .find(|(id, ..)| *id == slot.id)
-                    .map_or((None, None, None), |(_, label, highlight, close)| {
-                        (label.take(), highlight.take(), close.take())
-                    });
-                Some(Preview {
-                    id: slot.id,
-                    target: to_smithay_rect(slot.target),
-                    origin,
-                    row: slot.row,
-                    label,
-                    highlight,
-                    close,
-                })
-            })
-            .collect();
+        let old_hover_index = self.hover.target().and_then(|id| self.previews.iter().position(|p| p.id == id));
+        let mut old = std::mem::take(&mut self.previews);
+        self.previews = layout_previews(windows, self.grid_area(), &self.theme, &mut old);
 
         if self.hover.target().is_some_and(|id| !self.contains(id)) {
             let neighbor = old_hover_index.and_then(|idx| {
@@ -262,11 +258,7 @@ impl OverviewUi {
             });
             self.hover.retarget_without_restarting(neighbor);
         }
-        if self
-            .close_hover
-            .target()
-            .is_some_and(|id| !self.contains(id))
-        {
+        if self.close_hover.target().is_some_and(|id| !self.contains(id)) {
             self.close_hover.retarget_without_restarting(None);
         }
     }
@@ -285,16 +277,16 @@ impl OverviewUi {
 
     fn scene_progress(&self, curve: glide_theme::motion::CubicBezier, backdrop: bool) -> f64 {
         match self.phase {
-            Phase::Opening { started } => curve.ease_f64(self.elapsed_fraction(started)),
+            Phase::Opening { started, from } => {
+                let eased = from.ease(curve, self.elapsed_fraction(started));
+                let from = from.pick(backdrop);
+                from + (1.0 - from) * eased
+            }
             Phase::Open => 1.0,
             Phase::Closing { started, from, .. } => {
-                let from = if backdrop {
-                    from.backdrop
-                } else {
-                    from.primary
-                };
-                from * (1.0 - curve.ease_f64(self.elapsed_fraction(started)))
+                from.pick(backdrop) * (1.0 - from.ease(curve, self.elapsed_fraction(started)))
             }
+            Phase::Interactive { progress } => progress.clamp(0.0, 1.0),
         }
     }
 
@@ -311,49 +303,83 @@ impl OverviewUi {
     #[must_use]
     pub fn is_animating(&self) -> bool {
         let phase_animating = match self.phase {
-            Phase::Open => false,
-            Phase::Opening { started } | Phase::Closing { started, .. } => {
-                started.elapsed() < self.duration
-            }
+            Phase::Open | Phase::Interactive { .. } => false,
+            Phase::Opening { started, .. } | Phase::Closing { started, .. } => started.elapsed() < self.duration,
         };
-        phase_animating
-            || self.hover.progress(hover_anim()) < 1.0
-            || self.close_hover.progress(ov_close_hover_anim()) < 1.0
+        phase_animating || self.hovers_animating()
+    }
+
+    fn hovers_animating(&self) -> bool {
+        self.hover.progress(hover_anim()) < 1.0
+            || self.close_hover.progress(hover_anim()) < 1.0
+            || self.strip.is_animating()
     }
 
     pub fn tick(&mut self) -> Tick {
         match self.phase {
-            Phase::Opening { started } if started.elapsed() >= self.duration => {
+            Phase::Opening { started, .. } if started.elapsed() >= self.duration => {
                 self.phase = Phase::Open;
                 Tick::Running
             }
-            Phase::Closing {
-                started, select, ..
-            } if started.elapsed() >= self.duration => Tick::Finished { select },
-            Phase::Open
-                if self.hover.progress(hover_anim()) < 1.0
-                    || self.close_hover.progress(ov_close_hover_anim()) < 1.0 =>
-            {
-                Tick::Running
-            }
-            Phase::Open => Tick::Idle,
+            Phase::Closing { started, select, .. } if started.elapsed() >= self.duration => Tick::Finished { select },
+            Phase::Open | Phase::Interactive { .. } if self.hovers_animating() => Tick::Running,
+            Phase::Open | Phase::Interactive { .. } => Tick::Idle,
             Phase::Opening { .. } | Phase::Closing { .. } => Tick::Running,
         }
     }
 
+    pub fn set_interactive_progress(&mut self, progress: f64) {
+        self.phase = Phase::Interactive { progress: progress.clamp(0.0, 1.0) };
+    }
+
+    pub fn commit_to_opening(&mut self, velocity: f64) {
+        let current = self.progress();
+        if current >= 1.0 {
+            self.phase = Phase::Open;
+            return;
+        }
+        let release = glide_theme::motion::Release::new(1.0 - current, velocity, self.theme.duration());
+        let from = SceneFrom { primary: current, backdrop: self.backdrop_progress(), release: Some(release) };
+        self.duration = release.duration;
+        self.phase = Phase::Opening { started: Instant::now(), from };
+    }
+
+    pub fn catch(&mut self) -> bool {
+        if !matches!(self.phase, Phase::Opening { .. } | Phase::Closing { .. }) {
+            return false;
+        }
+        self.set_interactive_progress(self.progress());
+        true
+    }
+
+    pub fn revert_to_closing(&mut self, velocity: f64) {
+        self.close_from(None, Some(velocity));
+    }
+
+    #[must_use]
+    pub const fn is_interactive(&self) -> bool {
+        matches!(self.phase, Phase::Interactive { .. })
+    }
+
     pub fn begin_close(&mut self, select: Option<WindowId>) {
+        self.close_from(select, None);
+    }
+
+    fn close_from(&mut self, select: Option<WindowId>, velocity: Option<f64>) {
         if matches!(self.phase, Phase::Closing { .. }) {
             return;
         }
-        let from = SceneFrom {
-            primary: self.progress(),
-            backdrop: self.backdrop_progress(),
-        };
-        self.phase = Phase::Closing {
-            started: Instant::now(),
-            select,
-            from,
-        };
+        let primary = self.progress();
+        let release =
+            velocity.map(|velocity| glide_theme::motion::Release::new(-primary, velocity, self.theme.duration()));
+        let from = SceneFrom { primary, backdrop: self.backdrop_progress(), release };
+        self.duration = release.map_or_else(|| self.scaled_duration(primary), |release| release.duration);
+        self.phase = Phase::Closing { started: Instant::now(), select, from };
+    }
+
+    fn scaled_duration(&self, fraction: f64) -> Duration {
+        let base_duration = self.theme.duration();
+        base_duration.mul_f64(fraction.clamp(0.0, 1.0)).max(glide_theme::motion::t1()).min(base_duration)
     }
 
     #[must_use]
@@ -369,10 +395,7 @@ impl OverviewUi {
     #[must_use]
     pub fn preview_at(&self, pos: Point<f64, Logical>) -> Option<WindowId> {
         let t = self.progress();
-        self.previews
-            .iter()
-            .find(|p| p.rect_at(t).to_f64().contains(pos))
-            .map(|p| p.id)
+        self.previews.iter().find(|p| p.rect_at(t).to_f64().contains(pos)).map(|p| p.id)
     }
 
     pub fn set_hover(&mut self, hover: Option<WindowId>) -> bool {
@@ -384,16 +407,13 @@ impl OverviewUi {
     }
 
     fn close_hover_progress(&self) -> f64 {
-        glide_theme::motion::E_OVER.ease_f64(self.close_hover.progress(ov_close_hover_anim()))
+        glide_theme::motion::E_OVER.ease_f64(self.close_hover.progress(hover_anim()))
     }
 
     #[must_use]
     pub fn preview_rect(&self, id: WindowId) -> Option<Rectangle<i32, Logical>> {
         let t = self.progress();
-        self.previews
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.rect_at(t))
+        self.previews.iter().find(|p| p.id == id).map(|p| p.rect_at(t))
     }
 
     #[must_use]
@@ -402,10 +422,7 @@ impl OverviewUi {
         if t < 1.0 {
             return None;
         }
-        self.previews
-            .iter()
-            .find(|p| close_button_rect(p.rect_at(t)).to_f64().contains(pos))
-            .map(|p| p.id)
+        self.previews.iter().find(|p| close_button_rect(p.rect_at(t)).to_f64().contains(pos)).map(|p| p.id)
     }
 
     pub fn set_close_hover(&mut self, hover: Option<WindowId>) -> bool {
@@ -417,11 +434,7 @@ impl OverviewUi {
             return false;
         }
 
-        let Some(current) = self
-            .hover
-            .target()
-            .and_then(|id| self.previews.iter().position(|p| p.id == id))
-        else {
+        let Some(current) = self.hover.target().and_then(|id| self.previews.iter().position(|p| p.id == id)) else {
             let default = match dir {
                 Direction::Left | Direction::Up => self.previews.last(),
                 Direction::Right | Direction::Down => self.previews.first(),
@@ -482,47 +495,29 @@ pub enum Direction {
 }
 
 const LABEL_PADDING: i32 = 12;
-
 const LABEL_RISE: f64 = 4.0;
-
 const OV_CLOSE_SIZE: i32 = 26;
-
 const OV_CLOSE_OUTSET: i32 = 10;
-
-fn ov_close_hover_anim() -> Duration {
-    glide_theme::motion::t2()
-}
-
 const OV_CLOSE_HOVER_SCALE: f64 = 1.12;
-
 const OV_CLOSE_GLYPH: f32 = 5.5;
-
 const OV_CLOSE_GLYPH_STROKE: f32 = 1.65;
-
 const OV_CLOSE_BORDER: f32 = 1.0;
 
-fn close_shadow_layers() -> Vec<crate::paint::ShadowLayerSpec> {
-    glide_theme::elevation::layers(
-        glide_theme::elevation::Level::El2,
-        glide_theme::Appearance::Dark,
-    )
-    .into_iter()
-    .map(|layer| crate::paint::ShadowLayerSpec {
-        dy: layer.dy,
-        blur: layer.blur,
-        color: layer.color,
-    })
-    .collect()
+fn close_shadow_layers(appearance: glide_theme::Appearance) -> Vec<glide_theme::elevation::ShadowLayer> {
+    glide_theme::elevation::layers(glide_theme::elevation::Level::El2, appearance)
 }
 
 fn close_shadow_margin() -> i32 {
-    #[allow(clippy::cast_possible_truncation)]
-    let widest = close_shadow_layers()
-        .iter()
-        .map(|layer| layer.blur)
-        .fold(0.0_f32, f32::max)
-        .ceil() as i32;
-    crate::paint::shadow_fade_margin(widest)
+    static MARGIN: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *MARGIN.get_or_init(|| {
+        let widest = [glide_theme::Appearance::Light, glide_theme::Appearance::Dark]
+            .into_iter()
+            .flat_map(close_shadow_layers)
+            .map(|layer| layer.blur)
+            .fold(0.0_f32, f32::max)
+            .ceil() as i32;
+        crate::paint::shadow_fade_margin(widest)
+    })
 }
 
 fn close_button_rect(preview: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
@@ -544,10 +539,7 @@ fn centre_x(rect: Rectangle<i32, Logical>) -> f64 {
 }
 
 fn to_smithay_rect(rect: glide_layout::Rectangle) -> Rectangle<i32, Logical> {
-    Rectangle::new(
-        Point::from((rect.loc.x, rect.loc.y)),
-        Size::from((rect.size.width, rect.size.height)),
-    )
+    Rectangle::new(Point::from((rect.loc.x, rect.loc.y)), Size::from((rect.size.width, rect.size.height)))
 }
 
 smithay::render_elements! {
@@ -570,122 +562,42 @@ impl<R: Renderer> std::fmt::Debug for OverviewRenderElement<R> {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn hover_bucket(t: f32) -> u8 {
     (t.clamp(0.0, 1.0) * 20.0).round() as u8
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn draw_close_button(
-    theme: &OverviewTheme,
-    hover_t: f32,
-    output_scale: i32,
-) -> Option<MemoryRenderBuffer> {
+fn draw_close_button(theme: &OverviewTheme, hover_t: f32, output_scale: i32) -> Option<MemoryRenderBuffer> {
     let margin = close_shadow_margin();
-    let canvas = OV_CLOSE_SIZE + margin * 2;
-    let (pw, ph) = (canvas * output_scale, canvas * output_scale);
-    let Ok(pixels) = usize::try_from(pw * ph * 4) else {
-        return None;
-    };
-    let mut buf = vec![0u8; pixels];
-
-    let bg = theme
-        .close_background
-        .lerp(theme.close_hover_background, hover_t);
-    let fg = theme
-        .close_foreground
-        .lerp(theme.close_hover_foreground, hover_t);
-    let border = theme
-        .close_border
-        .lerp(theme.close_hover_background, hover_t);
-
-    #[allow(clippy::cast_precision_loss)]
+    let bg = theme.close_background.lerp(theme.close_hover_background, hover_t);
+    let fg = theme.close_foreground.lerp(theme.close_hover_foreground, hover_t);
+    let border = theme.close_border.lerp(theme.close_hover_background, hover_t);
     let radius = OV_CLOSE_SIZE as f32 / 2.0;
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = output_scale as f32;
+    let side = (OV_CLOSE_SIZE, OV_CLOSE_SIZE);
+    let mut c = crate::raster::shadow(side, margin, radius, &close_shadow_layers(theme.appearance), output_scale)?;
+    let button = crate::raster::rect(margin, margin, OV_CLOSE_SIZE, OV_CLOSE_SIZE);
+    c.fill(button, bg, radius);
+    c.stroke(button, OV_CLOSE_BORDER, radius, border);
+    let (glyph, stroke) = (OV_CLOSE_GLYPH, OV_CLOSE_GLYPH_STROKE);
+    crate::paint::draw_close_glyph_over(&mut c.buf, c.w, c.h, glyph, stroke, output_scale, fg);
+    Some(c.finish())
+}
 
-    let layers: Vec<_> = close_shadow_layers()
-        .into_iter()
-        .map(|layer| crate::paint::ShadowLayerSpec {
-            dy: layer.dy * scale_f,
-            blur: layer.blur * scale_f,
-            color: layer.color,
-        })
-        .collect();
-    #[allow(clippy::cast_precision_loss)]
-    crate::paint::draw_outset_shadow_and_border(
-        &mut buf,
-        pw,
-        ph,
-        OV_CLOSE_SIZE as f32 * scale_f,
-        OV_CLOSE_SIZE as f32 * scale_f,
-        &layers,
-        0.0,
-        crate::config::Color([0.0, 0.0, 0.0, 0.0]),
-        radius * scale_f,
-        Some(radius * scale_f),
-    );
-
-    crate::paint::Painter::fill_rounded_rect_over(
-        &mut buf,
-        canvas,
-        canvas,
-        margin,
-        margin,
-        OV_CLOSE_SIZE,
-        OV_CLOSE_SIZE,
-        output_scale,
-        bg,
-        radius,
-    );
-    crate::paint::stroke_rounded_rect_over(
-        &mut buf,
-        canvas,
-        canvas,
-        margin,
-        margin,
-        OV_CLOSE_SIZE,
-        OV_CLOSE_SIZE,
-        output_scale,
-        OV_CLOSE_BORDER,
-        radius,
-        border,
-    );
-    crate::paint::draw_close_glyph_over(
-        &mut buf,
-        canvas,
-        canvas,
-        OV_CLOSE_GLYPH,
-        OV_CLOSE_GLYPH_STROKE,
-        output_scale,
-        fg,
-    );
-
-    Some(MemoryRenderBuffer::from_slice(
-        &buf,
-        smithay::backend::allocator::Fourcc::Argb8888,
-        (pw, ph),
-        output_scale,
-        Transform::Normal,
-        None,
-    ))
+fn place<R>(
+    renderer: &mut R, pos: Point<f64, smithay::utils::Physical>, memory: &MemoryRenderBuffer, alpha: f32,
+) -> Option<MemoryRenderBufferRenderElement<R>>
+where
+    R: ShellRenderer,
+{
+    MemoryRenderBufferRenderElement::from_buffer(renderer, pos, memory, Some(alpha), None, None, Kind::Unspecified).ok()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn push_close_buttons<R>(
-    renderer: &mut R,
-    previews: &mut [Preview],
-    entries: &[OverviewEntry],
-    theme: &OverviewTheme,
-    hovered: Option<WindowId>,
-    hover_t: f32,
-    alpha: f32,
-    scale: Scale<f64>,
-    output_scale: i32,
+    renderer: &mut R, previews: &mut [Preview], entries: &[OverviewEntry], theme: &OverviewTheme,
+    hovered: Option<WindowId>, hover_t: f32, alpha: f32, scale: Scale<f64>, output_scale: i32,
     elements: &mut Vec<OverviewRenderElement<R>>,
 ) where
-    R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
-    R::TextureId: Send + Clone + 'static,
+    R: ShellRenderer + ClipCapableRenderer,
 {
     for (id, rect, _, resolved) in entries {
         if resolved.is_none() {
@@ -700,38 +612,26 @@ fn push_close_buttons<R>(
         let key = RasterKey::new(theme, output_scale);
         let needs_redraw = preview
             .close
-            .as_ref()
-            .is_none_or(|(cached_bucket, cached_key, _)| {
-                *cached_bucket != bucket || *cached_key != key
-            });
+            .get(&output_scale)
+            .is_none_or(|(cached_bucket, cached_key, _)| *cached_bucket != bucket || *cached_key != key);
 
         if needs_redraw {
             let quantized = f32::from(bucket) / 20.0;
             if let Some(memory) = draw_close_button(theme, quantized, output_scale) {
-                preview.close = Some((bucket, key, memory));
+                preview.close.insert(output_scale, (bucket, key, memory));
             }
         }
 
-        let Some((_, _, memory)) = preview.close.as_ref() else {
+        let Some((_, _, memory)) = preview.close.get(&output_scale) else {
             continue;
         };
 
         let button = close_button_rect(*rect);
         let margin = close_shadow_margin();
 
-        let pos = Point::from((button.loc.x - margin, button.loc.y - margin))
-            .to_f64()
-            .to_physical(scale);
+        let pos = Point::from((button.loc.x - margin, button.loc.y - margin)).to_f64().to_physical(scale);
 
-        let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            pos,
-            memory,
-            Some(alpha),
-            None,
-            None,
-            Kind::Unspecified,
-        ) else {
+        let Some(element) = place(renderer, pos, memory, alpha) else {
             continue;
         };
 
@@ -739,30 +639,21 @@ fn push_close_buttons<R>(
         if (grow - 1.0).abs() < f64::EPSILON {
             elements.push(OverviewRenderElement::Buffer(element));
         } else {
-            let centre = Point::from((
-                button.loc.x + OV_CLOSE_SIZE / 2,
-                button.loc.y + OV_CLOSE_SIZE / 2,
-            ))
-            .to_physical_precise_round(scale);
-            elements.push(OverviewRenderElement::ScaledBuffer(
-                RescaleRenderElement::from_element(element, centre, grow),
-            ));
+            let centre = Point::from((button.loc.x + OV_CLOSE_SIZE / 2, button.loc.y + OV_CLOSE_SIZE / 2))
+                .to_physical_precise_round(scale);
+            elements
+                .push(OverviewRenderElement::ScaledBuffer(RescaleRenderElement::from_element(element, centre, grow)));
         }
     }
 }
 
 impl OverviewUi {
     fn render_labels<R>(
-        &mut self,
-        renderer: &mut R,
-        entries: &[OverviewEntry],
-        scale: Scale<f64>,
-        output_scale: i32,
+        &mut self, renderer: &mut R, entries: &[OverviewEntry], scale: Scale<f64>, output_scale: i32,
         painter: &crate::paint::Painter,
     ) -> Vec<OverviewRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
-        R::TextureId: Send + Clone + 'static,
+        R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
     {
         let t = self.progress();
@@ -771,9 +662,7 @@ impl OverviewUi {
             return Vec::new();
         }
 
-        #[allow(clippy::cast_possible_truncation)]
         let alpha = t.clamp(0.0, 1.0) as f32;
-        #[allow(clippy::cast_possible_truncation)]
         let rise = ((1.0 - t) * LABEL_RISE).round() as i32;
 
         let mut elements = Vec::new();
@@ -786,69 +675,34 @@ impl OverviewUi {
             };
 
             let height = theme.label_height;
-            #[allow(clippy::cast_possible_truncation)]
-            let text_w =
-                painter.text_width_styled(title.as_str(), &glide_theme::TextStyle::OV_LABEL) as i32;
+            let text_w = painter.text_width_styled(title.as_str(), &glide_theme::TextStyle::OV_LABEL) as i32;
             let width = (text_w + LABEL_PADDING * 2).clamp(1, rect.size.w.max(1));
 
             let key = RasterKey::new(&theme, output_scale);
             let needs_redraw =
-                preview
-                    .label
-                    .as_ref()
-                    .is_none_or(|(cached_title, cached_width, cached_key, _)| {
-                        cached_title != title || *cached_width != width || *cached_key != key
-                    });
+                preview.label.get(&output_scale).is_none_or(|(cached_title, cached_width, cached_key, _)| {
+                    cached_title != title || *cached_width != width || *cached_key != key
+                });
             if needs_redraw {
-                let (pwidth, pheight) = (width * output_scale, height * output_scale);
-                let Ok(pixels) = usize::try_from(pwidth * pheight * 4) else {
+                let Some(mut c) = crate::raster::Canvas::new(width, height, output_scale) else {
                     continue;
                 };
-                let mut buf = vec![0u8; pixels];
-                #[allow(clippy::cast_precision_loss)]
-                let radius = height as f32 / 2.0;
-                crate::paint::Painter::fill_panel_background(
-                    &mut buf,
-                    width,
-                    height,
-                    output_scale,
-                    theme.label_background,
-                    radius,
-                    [true; 4],
-                );
-                #[allow(clippy::cast_precision_loss)]
+                let (radius, s) = (height as f32 / 2.0, output_scale as f32);
+                c.panel(theme.label_background, radius);
                 crate::paint::draw_inset_border(
-                    &mut buf,
-                    pwidth,
-                    pheight,
-                    output_scale as f32,
-                    radius * output_scale as f32,
+                    &mut c.buf,
+                    c.w * output_scale,
+                    c.h * output_scale,
+                    s,
+                    radius * s,
                     theme.label_border,
                 );
-                painter.draw_label_over_styled(
-                    &mut buf,
-                    width,
-                    height,
-                    LABEL_PADDING,
-                    width - LABEL_PADDING,
-                    output_scale,
-                    crate::paint::TextAlign::Center,
-                    title.as_str(),
-                    theme.label_color.to_buffer_bytes(),
-                    &glide_theme::TextStyle::OV_LABEL,
-                );
-                let memory = MemoryRenderBuffer::from_slice(
-                    &buf,
-                    smithay::backend::allocator::Fourcc::Argb8888,
-                    (pwidth, pheight),
-                    output_scale,
-                    Transform::Normal,
-                    None,
-                );
-                preview.label = Some((title.clone(), width, key, memory));
+                let (band, style) = ((LABEL_PADDING, width - LABEL_PADDING), &glide_theme::TextStyle::OV_LABEL);
+                c.label(painter, band, crate::paint::TextAlign::Center, title, theme.label_color, style);
+                preview.label.insert(output_scale, (title.clone(), width, key, c.finish()));
             }
 
-            let Some((_, _, _, memory)) = preview.label.as_ref() else {
+            let Some((_, _, _, memory)) = preview.label.get(&output_scale) else {
                 continue;
             };
 
@@ -858,17 +712,7 @@ impl OverviewUi {
             ))
             .to_f64()
             .to_physical(scale);
-            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                pos,
-                memory,
-                Some(alpha),
-                None,
-                None,
-                Kind::Unspecified,
-            ) {
-                elements.push(OverviewRenderElement::Buffer(element));
-            }
+            elements.extend(place(renderer, pos, memory, alpha).map(OverviewRenderElement::Buffer));
         }
         elements
     }
@@ -876,17 +720,11 @@ impl OverviewUi {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     #[profiling::function]
     pub fn render<R, F>(
-        &mut self,
-        renderer: &mut R,
-        output_rect: Rectangle<i32, Logical>,
-        scale: Scale<f64>,
-        output_scale: i32,
-        painter: &crate::paint::Painter,
-        mut lookup: F,
+        &mut self, renderer: &mut R, output_rect: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
+        painter: &crate::paint::Painter, mut lookup: F,
     ) -> Vec<OverviewRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem + ClipCapableRenderer,
-        R::TextureId: Send + Clone + 'static,
+        R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
         F: FnMut(WindowId) -> Option<(GlideWindow, String)>,
     {
@@ -896,19 +734,15 @@ impl OverviewUi {
         let hover = self.hover.target();
         let theme = self.theme.clone();
 
-        let entries: Vec<OverviewEntry> = self
-            .previews
-            .iter()
-            .map(|p| (p.id, p.rect_at(t), hover == Some(p.id), lookup(p.id)))
-            .collect();
+        let entries: Vec<OverviewEntry> =
+            self.previews.iter().map(|p| (p.id, p.rect_at(t), hover == Some(p.id), lookup(p.id))).collect();
 
         elements.extend(self.render_labels(renderer, &entries, scale, output_scale, painter));
+        self.strip.render(renderer, &theme, (self.area, t), (scale, output_scale), &mut elements);
 
         if t > 0.0 {
-            #[allow(clippy::cast_possible_truncation)]
             let button_alpha = t.clamp(0.0, 1.0) as f32;
             let close_hovered = self.close_hover.target();
-            #[allow(clippy::cast_possible_truncation)]
             let close_hover_t = self.close_hover_progress().clamp(0.0, 1.0) as f32;
             push_close_buttons(
                 renderer,
@@ -933,47 +767,24 @@ impl OverviewUi {
             let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
             let key = RasterKey::new(&theme, output_scale);
             let needs_redraw =
-                preview
-                    .highlight
-                    .as_ref()
-                    .is_none_or(|(cached_w, cached_h, cached_key, _)| {
-                        *cached_w != w || *cached_h != h || *cached_key != key
-                    });
+                preview.highlight.get(&output_scale).is_none_or(|(cached_w, cached_h, cached_key, _)| {
+                    *cached_w != w || *cached_h != h || *cached_key != key
+                });
 
-            if needs_redraw {
-                let (pw, ph) = (w * output_scale, h * output_scale);
-                if let Ok(pixels) = usize::try_from(pw * ph * 4) {
-                    let mut buf = vec![0u8; pixels];
-                    #[allow(clippy::cast_precision_loss)]
-                    let radius = theme.corner_radius * output_scale as f32;
-                    #[allow(clippy::cast_precision_loss)]
-                    let border_width = theme.border as f32 * output_scale as f32;
-                    crate::paint::draw_inset_border(
-                        &mut buf,
-                        pw,
-                        ph,
-                        border_width,
-                        radius,
-                        theme.highlight,
-                    );
-                    let memory = MemoryRenderBuffer::from_slice(
-                        &buf,
-                        smithay::backend::allocator::Fourcc::Argb8888,
-                        (pw, ph),
-                        output_scale,
-                        Transform::Normal,
-                        None,
-                    );
-                    preview.highlight = Some((w, h, key, memory));
-                }
+            let (pw, ph) = (w * output_scale, h * output_scale);
+            if needs_redraw && let Ok(pixels) = usize::try_from(pw * ph * 4) {
+                let mut buf = vec![0u8; pixels];
+                let radius = theme.corner_radius * output_scale as f32;
+                let border_width = theme.border as f32 * output_scale as f32;
+                crate::paint::draw_inset_border(&mut buf, pw, ph, border_width, radius, theme.highlight);
+                let memory = crate::raster::buffer_from(&buf, w, h, output_scale);
+                preview.highlight.insert(output_scale, (w, h, key, memory));
             }
 
-            if let Some((cached_w, cached_h, _, memory)) = preview.highlight.as_ref() {
+            if let Some((cached_w, cached_h, _, memory)) = preview.highlight.get(&output_scale) {
                 let pos = rect.loc.to_f64().to_physical(scale);
-                #[allow(clippy::cast_possible_truncation)]
                 let alpha = hover_t as f32;
-                let src =
-                    Rectangle::from_size(Size::from((f64::from(*cached_w), f64::from(*cached_h))));
+                let src = Rectangle::from_size(Size::from((f64::from(*cached_w), f64::from(*cached_h))));
                 if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     pos,
@@ -988,7 +799,9 @@ impl OverviewUi {
             }
         }
 
-        for (id, rect, _, resolved) in &entries {
+        let stacked: Vec<&OverviewEntry> =
+            self.paint_order().into_iter().filter_map(|id| entries.iter().find(|(entry, ..)| *entry == id)).collect();
+        for (id, rect, _, resolved) in stacked {
             let Some((window, _)) = resolved else {
                 continue;
             };
@@ -1004,46 +817,30 @@ impl OverviewUi {
                 preview.origin.loc.y + window.header_height() - buffer_offset.y,
             ));
             let real_physical = content_origin.to_f64().to_physical(scale).to_i32_round();
-            let frame_physical = preview
-                .origin
-                .loc
-                .to_f64()
-                .to_physical(scale)
-                .to_i32_round();
+            let frame_physical = preview.origin.loc.to_f64().to_physical(scale).to_i32_round();
             let target_physical = rect.loc.to_f64().to_physical(scale).to_i32_round();
 
             let raw: Vec<GlideWindowRenderElement<R>> =
                 window.preview_render_elements(renderer, real_physical, scale, 1.0);
 
             for element in raw {
-                let scaled =
-                    RescaleRenderElement::from_element(element, frame_physical, window_scale);
-                let placed = RelocateRenderElement::from_element(
-                    scaled,
-                    target_physical - frame_physical,
-                    Relocate::Relative,
-                );
+                let scaled = RescaleRenderElement::from_element(element, frame_physical, window_scale);
+                let placed =
+                    RelocateRenderElement::from_element(scaled, target_physical - frame_physical, Relocate::Relative);
                 elements.push(OverviewRenderElement::Preview(placed));
             }
         }
 
-        #[allow(clippy::cast_possible_truncation)]
         let backdrop_t = self.backdrop_progress() as f32;
-        let mut scrim_color = theme.dim.0;
-        for channel in &mut scrim_color {
-            *channel = (*channel * backdrop_t).clamp(0.0, 1.0);
-        }
-        self.scrim
-            .update((output_rect.size.w, output_rect.size.h), scrim_color);
-        elements.push(OverviewRenderElement::Solid(
-            SolidColorRenderElement::from_buffer(
-                &self.scrim,
-                output_rect.loc.to_f64().to_physical(scale).to_i32_round(),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            ),
-        ));
+        let scrim_color = theme.dim.0.map(|c| (c * backdrop_t).clamp(0.0, 1.0));
+        self.scrim.update((output_rect.size.w, output_rect.size.h), scrim_color);
+        elements.push(OverviewRenderElement::Solid(SolidColorRenderElement::from_buffer(
+            &self.scrim,
+            output_rect.loc.to_f64().to_physical(scale).to_i32_round(),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        )));
 
         elements
     }
@@ -1054,14 +851,48 @@ mod tests {
     use super::*;
 
     fn theme_with_duration(ms: u64) -> OverviewTheme {
-        OverviewTheme {
-            duration_ms: ms,
-            ..OverviewTheme::default()
+        OverviewTheme { duration_ms: ms, ..OverviewTheme::default() }
+    }
+
+    use crate::raster::rect;
+
+    fn centre(rect: Rectangle<i32, Logical>) -> Point<f64, Logical> {
+        Point::from((
+            f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0,
+            f64::from(rect.loc.y) + f64::from(rect.size.h) / 2.0,
+        ))
+    }
+
+    fn ago(ms: u64) -> Instant {
+        Instant::now()
+            .checked_sub(Duration::from_millis(ms))
+            .expect("the process has been up for longer than the test's offset")
+    }
+
+    fn closing_since(ms: u64) -> Phase {
+        Phase::Closing {
+            started: ago(ms),
+            select: None,
+            from: SceneFrom { primary: 1.0, backdrop: 1.0, release: None },
         }
     }
 
-    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
-        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    #[test]
+    fn the_focused_window_paints_above_neighbours_and_other_workspaces_paint_last() {
+        let focused = WindowId::next();
+        let above = WindowId::next();
+        let elsewhere = WindowId::next();
+        let windows = [
+            (focused, rect(100, 100, 800, 600)),
+            (above, rect(300, 200, 800, 600)),
+            (elsewhere, rect(2020, 100, 800, 600)),
+        ];
+        let area = rect(0, 0, 1920, 1080);
+        let mut ui = OverviewUi::new(&windows, area, &theme_with_duration(200), Some(focused));
+        assert_eq!(ui.paint_order(), vec![focused, above, elsewhere]);
+
+        ui.begin_close(Some(elsewhere));
+        assert_eq!(ui.paint_order()[0], elsewhere);
     }
 
     fn ui_with_one_window(duration_ms: u64) -> (OverviewUi, WindowId) {
@@ -1078,45 +909,18 @@ mod tests {
         #[test]
         fn the_exit_is_front_loaded_just_like_the_entry() {
             let (mut ui, _id) = ui_with_one_window(400);
-            ui.phase = Phase::Closing {
-                started: Instant::now()
-                    .checked_sub(Duration::from_millis(80))
-                    .expect("the process has been up for longer than 80ms"),
-                select: None,
-                from: SceneFrom {
-                    primary: 1.0,
-                    backdrop: 1.0,
-                },
-            };
-
+            ui.phase = closing_since(80);
             let remaining = ui.progress();
-            assert!(
-                remaining < 0.6,
-                "the exit stalled: still {remaining} open a fifth of the way through"
-            );
+            assert!(remaining < 0.6, "the exit stalled: still {remaining} open a fifth of the way through");
         }
 
         #[test]
         fn closing_mirrors_opening_over_the_same_elapsed_time() {
             for millis in [40_u64, 120, 200, 320] {
                 let (mut opening, _) = ui_with_one_window(400);
-                opening.phase = Phase::Opening {
-                    started: Instant::now()
-                        .checked_sub(Duration::from_millis(millis))
-                        .expect("process uptime"),
-                };
+                opening.phase = Phase::opening(ago(millis));
                 let (mut closing, _) = ui_with_one_window(400);
-                closing.phase = Phase::Closing {
-                    started: Instant::now()
-                        .checked_sub(Duration::from_millis(millis))
-                        .expect("process uptime"),
-                    select: None,
-                    from: SceneFrom {
-                        primary: 1.0,
-                        backdrop: 1.0,
-                    },
-                };
-
+                closing.phase = closing_since(millis);
                 let sum = opening.progress() + closing.progress();
                 assert!(
                     (sum - 1.0).abs() < 0.05,
@@ -1125,40 +929,6 @@ mod tests {
                     closing.progress()
                 );
             }
-        }
-
-        #[test]
-        fn the_preview_scale_advances_continuously() {
-            let (ui, _id) = ui_with_one_window(0);
-            let preview = &ui.previews[0];
-
-            assert!(
-                (preview.scale_at(0.0) - 1.0).abs() < f64::EPSILON,
-                "a transition starts at the window's real size"
-            );
-
-            let settled = f64::from(preview.target.size.w) / f64::from(preview.origin.size.w);
-            assert!((preview.scale_at(1.0) - settled).abs() < 1e-9);
-
-            let mut previous = preview.scale_at(0.0);
-            for step in 1..=200 {
-                let t = f64::from(step) / 200.0;
-                let value = preview.scale_at(t);
-                assert!(
-                    (value - previous).abs() > 0.0,
-                    "scale stalled at t={t}: {value}"
-                );
-                previous = value;
-            }
-        }
-
-        #[test]
-        fn the_scale_is_the_midpoint_halfway_through() {
-            let (ui, _id) = ui_with_one_window(0);
-            let preview = &ui.previews[0];
-            let settled = f64::from(preview.target.size.w) / f64::from(preview.origin.size.w);
-            let expected = 1.0 + (settled - 1.0) * 0.5;
-            assert!((preview.scale_at(0.5) - expected).abs() < 1e-9);
         }
 
         #[test]
@@ -1171,18 +941,10 @@ mod tests {
         #[test]
         fn previews_lead_the_backdrop_mid_transition() {
             let (mut ui, _id) = ui_with_one_window(400);
-            ui.phase = Phase::Opening {
-                started: Instant::now()
-                    .checked_sub(Duration::from_millis(80))
-                    .expect("the process has been up for longer than 80ms"),
-            };
-
+            ui.phase = Phase::opening(ago(80));
             let previews = ui.progress();
             let backdrop = ui.backdrop_progress();
-            assert!(
-                previews > backdrop,
-                "previews ({previews}) must lead the backdrop ({backdrop})"
-            );
+            assert!(previews > backdrop, "previews ({previews}) must lead the backdrop ({backdrop})");
             assert!((0.0..1.0).contains(&backdrop), "backdrop: {backdrop}");
         }
 
@@ -1190,287 +952,78 @@ mod tests {
         fn closing_runs_both_curves_back_towards_zero() {
             let (mut ui, _id) = ui_with_one_window(400);
             ui.begin_close(None);
-            ui.phase = Phase::Closing {
-                started: Instant::now()
-                    .checked_sub(Duration::from_millis(320))
-                    .expect("the process has been up for longer than 320ms"),
-                select: None,
-                from: SceneFrom {
-                    primary: 1.0,
-                    backdrop: 1.0,
-                },
-            };
+            ui.phase = closing_since(320);
             assert!(ui.progress() < 0.5);
             assert!(ui.backdrop_progress() < 0.5);
         }
     }
 
-    mod label_rise {
-        use super::*;
-
-        #[test]
-        fn labels_are_already_partly_visible_early_in_the_transition() {
-            let (mut ui, _id) = ui_with_one_window(400);
-            ui.phase = Phase::Opening {
-                started: Instant::now()
-                    .checked_sub(Duration::from_millis(40))
-                    .expect("the process has been up for longer than 40ms"),
-            };
-            let t = ui.progress();
-            assert!(
-                t > 0.0 && t < 1.0,
-                "expected a mid-transition progress, got {t}"
-            );
+    #[test]
+    fn the_preview_scale_moves_linearly_from_the_window_to_its_slot() {
+        let (ui, _id) = ui_with_one_window(0);
+        let preview = &ui.previews[0];
+        let settled = f64::from(preview.target.size.w) / f64::from(preview.origin.size.w);
+        for step in 0..=200 {
+            let t = f64::from(step) / 200.0;
+            assert!((preview.scale_at(t) - (1.0 + (settled - 1.0) * t)).abs() < 1e-9);
         }
-
-        #[test]
-        fn the_rise_starts_at_four_pixels_and_lands_at_zero() {
-            #[allow(clippy::cast_possible_truncation)]
-            let settled = ((1.0 - 1.0) * LABEL_RISE).round() as i32;
-            #[allow(clippy::cast_possible_truncation)]
-            let start = ((1.0 - 0.0) * LABEL_RISE).round() as i32;
-            assert_eq!(settled, 0, "a settled label must sit at its anchor");
-            assert_eq!(start, 4, "spec's .ov-label starts at translateY(4px)");
-        }
-    }
-
-    mod close_button {
-        use super::*;
-
-        #[test]
-        fn it_straddles_the_previews_top_right_corner() {
-            let preview = rect(100, 200, 400, 300);
-            let button = close_button_rect(preview);
-
-            assert_eq!(button.size, Size::from((OV_CLOSE_SIZE, OV_CLOSE_SIZE)));
-            assert_eq!(
-                button.loc.y,
-                preview.loc.y - OV_CLOSE_OUTSET,
-                "top edge must hang above the preview"
-            );
-            assert_eq!(
-                button.loc.x + button.size.w,
-                preview.loc.x + preview.size.w + OV_CLOSE_OUTSET,
-                "right edge must hang past the preview"
-            );
-        }
-
-        #[test]
-        fn it_overlaps_the_preview_rather_than_floating_away() {
-            let preview = rect(0, 100, 400, 300);
-            let button = close_button_rect(preview);
-            assert!(
-                button.loc.x < preview.loc.x + preview.size.w,
-                "the button must still overlap the preview horizontally"
-            );
-            assert!(
-                button.loc.y + button.size.h > preview.loc.y,
-                "the button must still overlap the preview vertically"
-            );
-        }
-
-        #[test]
-        fn a_settled_overview_reports_a_hit_inside_the_button() {
-            let (ui, id) = ui_with_one_window(0);
-            let button = close_button_rect(ui.previews[0].rect_at(1.0));
-            let centre = Point::from((
-                f64::from(button.loc.x) + f64::from(button.size.w) / 2.0,
-                f64::from(button.loc.y) + f64::from(button.size.h) / 2.0,
-            ));
-            assert_eq!(ui.close_button_at(centre), Some(id));
-        }
-
-        #[test]
-        fn a_point_away_from_the_button_is_not_a_hit() {
-            let (ui, _id) = ui_with_one_window(0);
-            let preview = ui.previews[0].rect_at(1.0);
-            let middle = Point::from((
-                f64::from(preview.loc.x) + f64::from(preview.size.w) / 2.0,
-                f64::from(preview.loc.y) + f64::from(preview.size.h) / 2.0,
-            ));
-            assert_eq!(ui.close_button_at(middle), None);
-        }
-
-        #[test]
-        fn it_is_not_clickable_while_the_scene_is_still_animating() {
-            let (mut ui, _id) = ui_with_one_window(400);
-            ui.phase = Phase::Opening {
-                started: Instant::now()
-                    .checked_sub(Duration::from_millis(40))
-                    .expect("the process has been up for longer than 40ms"),
-            };
-            let button = close_button_rect(ui.previews[0].rect_at(ui.progress()));
-            let centre = Point::from((
-                f64::from(button.loc.x) + f64::from(button.size.w) / 2.0,
-                f64::from(button.loc.y) + f64::from(button.size.h) / 2.0,
-            ));
-            assert_eq!(ui.close_button_at(centre), None);
-        }
-
-        #[test]
-        fn the_cross_matches_the_designs_absolute_size() {
-            #[allow(clippy::cast_precision_loss)]
-            let from_svg = 6.0 * 11.0 / 12.0;
-            assert!(
-                (OV_CLOSE_GLYPH - from_svg).abs() < 0.01,
-                "expected {from_svg}, got {OV_CLOSE_GLYPH}"
-            );
-            assert!(
-                (OV_CLOSE_GLYPH_STROKE - 1.8 * 11.0 / 12.0).abs() < 0.01,
-                "stroke width drifted from the design"
-            );
-        }
-
-        #[test]
-        fn the_cross_is_a_small_part_of_the_button_not_most_of_it() {
-            #[allow(clippy::cast_precision_loss)]
-            let ratio = OV_CLOSE_GLYPH / OV_CLOSE_SIZE as f32;
-            assert!(
-                (0.15..0.28).contains(&ratio),
-                "the cross should read as a small mark inside the pill, got {ratio}"
-            );
-        }
-
-        #[test]
-        fn the_buffer_reserves_room_for_the_elevation_shadow() {
-            let margin = close_shadow_margin();
-            let widest = close_shadow_layers()
-                .iter()
-                .map(|layer| layer.blur)
-                .fold(0.0_f32, f32::max);
-            assert!(margin > 0, "no shadow margin reserved");
-            #[allow(clippy::cast_precision_loss)]
-            let margin_f = margin as f32;
-            assert!(
-                margin_f >= widest,
-                "margin {margin} is tighter than the widest blur {widest}"
-            );
-        }
-
-        #[test]
-        fn the_shadow_is_the_two_layer_elevation_two_token() {
-            let layers = close_shadow_layers();
-            assert_eq!(layers.len(), 2, "--el-2 is a two-layer shadow");
-            assert!(
-                layers[0].blur < layers[1].blur,
-                "the tighter layer must come first"
-            );
-            assert!(
-                layers.iter().all(|layer| layer.color.0[3] > 0.0),
-                "an invisible shadow layer is pointless"
-            );
-        }
-
-        #[test]
-        fn hovering_never_moves_or_resizes_the_button() {
-            let (ui, _id) = ui_with_one_window(0);
-            let rect = ui.previews[0].rect_at(1.0);
-
-            let button = close_button_rect(rect);
-            let margin = close_shadow_margin();
-            let expected: Point<i32, Logical> =
-                Point::from((button.loc.x - margin, button.loc.y - margin));
-            assert_eq!(
-                expected,
-                Point::<i32, Logical>::from((button.loc.x - margin, button.loc.y - margin)),
-                "the origin depends only on the preview rect and a constant margin"
-            );
-            assert_eq!(
-                close_button_rect(rect).size,
-                Size::from((OV_CLOSE_SIZE, OV_CLOSE_SIZE)),
-                "the button keeps its size in every state"
-            );
-        }
-
-        #[test]
-        fn hovering_the_button_is_tracked_separately_from_the_ring() {
-            let (mut ui, id) = ui_with_one_window(0);
-            assert!(ui.set_close_hover(Some(id)), "a new target must animate");
-            assert!(!ui.set_close_hover(Some(id)), "the same target is a no-op");
-            assert!(ui.set_close_hover(None));
-        }
-
-        #[test]
-        fn a_button_hover_keeps_the_ui_animating() {
-            let (mut ui, id) = ui_with_one_window(0);
-            ui.set_close_hover(None);
-            ui.set_close_hover(Some(id));
-            assert!(
-                ui.is_animating(),
-                "the pop must keep frames coming until it settles"
-            );
-        }
-
-        #[test]
-        fn relayout_drops_a_button_hover_for_a_window_that_vanished() {
-            let (mut ui, id) = ui_with_one_window(0);
-            ui.set_close_hover(Some(id));
-
-            let other = WindowId::next();
-            ui.relayout(&[(other, rect(0, 0, 800, 600))], rect(0, 0, 1920, 1080));
-
-            assert_eq!(
-                ui.close_hover.target(),
-                None,
-                "a hover on a gone window must be cleared, not moved"
-            );
-        }
-
-        #[test]
-        fn relayout_keeps_the_cached_button_for_a_window_still_present() {
-            let (mut ui, id) = ui_with_one_window(0);
-            let key = RasterKey::new(&ui.theme, 1);
-            ui.previews[0].close = Some((0, key, MemoryRenderBuffer::default()));
-
-            ui.relayout(&[(id, rect(0, 0, 800, 600))], rect(0, 0, 1920, 1080));
-
-            assert!(ui.previews[0].close.is_some());
-        }
-
-        #[test]
-        fn a_brand_new_preview_gets_no_inherited_button_buffer() {
-            let (mut ui, id) = ui_with_one_window(0);
-            let key = RasterKey::new(&ui.theme, 1);
-            ui.previews[0].close = Some((20, key, MemoryRenderBuffer::default()));
-
-            let new_id = WindowId::next();
-            ui.relayout(
-                &[(id, rect(0, 0, 800, 600)), (new_id, rect(0, 0, 400, 300))],
-                rect(0, 0, 1920, 1080),
-            );
-
-            let fresh = ui
-                .previews
-                .iter()
-                .find(|p| p.id == new_id)
-                .expect("the new window must get a preview");
-            assert!(fresh.close.is_none());
-        }
-    }
-
-    mod label_offset_tests {
-        use super::*;
-
-        #[test]
-        fn the_pill_hangs_halfway_over_the_preview() {
-            assert_eq!(label_offset(28), -14);
-            assert_eq!(label_offset(40), -20);
-        }
-
-        #[test]
-        fn the_space_consumed_below_a_row_is_half_the_pill() {
-            for height in [0, 24, 28, 40] {
-                let consumed = height + label_offset(height);
-                assert!(consumed >= 0, "height {height} consumed {consumed}");
-                assert_eq!(consumed, height - height / 2);
-            }
+        assert!((LABEL_RISE - 4.0).abs() < f64::EPSILON, ".ov-label starts 4px low");
+        assert_eq!((label_offset(28), label_offset(40)), (-14, -20));
+        for height in [0, 24, 28, 40] {
+            assert_eq!(height + label_offset(height), height - height / 2);
         }
     }
 
     #[test]
-    fn initial_hover_has_no_pop_in_animation() {
-        let (ui, _id) = ui_with_one_window(220);
-        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
+    fn the_close_button_straddles_the_top_right_corner_and_clicks_only_when_settled() {
+        let preview = rect(100, 200, 400, 300);
+        let button = close_button_rect(preview);
+        assert_eq!(button.size, Size::from((OV_CLOSE_SIZE, OV_CLOSE_SIZE)));
+        assert_eq!(button.loc.y, preview.loc.y - OV_CLOSE_OUTSET);
+        let right = preview.loc.x + preview.size.w;
+        assert_eq!(button.loc.x + button.size.w, right + OV_CLOSE_OUTSET);
+        assert!(button.loc.x < right && button.loc.y + button.size.h > preview.loc.y);
+
+        let (ui, id) = ui_with_one_window(0);
+        let settled = ui.previews[0].rect_at(1.0);
+        assert_eq!(ui.close_button_at(centre(close_button_rect(settled))), Some(id));
+        assert_eq!(ui.close_button_at(centre(settled)), None);
+        let (mut moving, _) = ui_with_one_window(400);
+        moving.phase = Phase::opening(ago(40));
+        let button = close_button_rect(moving.previews[0].rect_at(moving.progress()));
+        assert_eq!(moving.close_button_at(centre(button)), None);
+    }
+
+    #[test]
+    fn the_close_cross_and_shadow_follow_the_design() {
+        assert!((OV_CLOSE_GLYPH - 6.0 * 11.0 / 12.0).abs() < 0.01);
+        assert!((OV_CLOSE_GLYPH_STROKE - 1.8 * 11.0 / 12.0).abs() < 0.01);
+        assert!((0.15..0.28).contains(&(OV_CLOSE_GLYPH / OV_CLOSE_SIZE as f32)));
+        let layers = close_shadow_layers(glide_theme::Appearance::Dark);
+        assert_eq!(layers.len(), 2, "--el-2 is a two-layer shadow");
+        assert!(layers[0].blur < layers[1].blur);
+        assert!(layers.iter().all(|layer| layer.color.0[3] > 0.0));
+        let widest = layers.iter().map(|layer| layer.blur).fold(0.0_f32, f32::max);
+        assert!(close_shadow_margin() > 0 && close_shadow_margin() as f32 >= widest);
+    }
+
+    #[test]
+    fn close_hover_animates_and_relayout_keeps_only_what_still_exists() {
+        let (mut ui, id) = ui_with_one_window(0);
+        assert!(ui.set_close_hover(Some(id)), "a new target must animate");
+        assert!(!ui.set_close_hover(Some(id)), "the same target is a no-op");
+        assert!(ui.is_animating(), "the pop keeps frames coming");
+        let key = RasterKey::new(&ui.theme, 1);
+        ui.previews[0].close.insert(1, (0, key, MemoryRenderBuffer::default()));
+        let fresh = WindowId::next();
+        let area = rect(0, 0, 1920, 1080);
+        ui.relayout(&[(id, rect(0, 0, 800, 600)), (fresh, rect(0, 0, 400, 300))], area);
+        let preview = |ui: &OverviewUi, id| ui.previews.iter().find(|p| p.id == id).map(|p| p.close.len());
+        assert_eq!(preview(&ui, id), Some(1), "a surviving window keeps its button");
+        assert_eq!(preview(&ui, fresh), Some(0), "a new preview inherits nothing");
+        ui.relayout(&[(fresh, rect(0, 0, 400, 300))], area);
+        assert_eq!(ui.close_hover.target(), None, "a gone window's hover is cleared");
+        assert!(ui.set_close_hover(Some(fresh)) && ui.set_close_hover(None));
     }
 
     #[test]
@@ -1482,10 +1035,7 @@ mod tests {
         ui.previews[0].row = 99;
 
         ui.relayout(&windows, area);
-        assert_eq!(
-            ui.previews[0].row, 99,
-            "identical inputs must leave the previews untouched"
-        );
+        assert_eq!(ui.previews[0].row, 99, "identical inputs must leave the previews untouched");
 
         ui.relayout(&windows, rect(0, 0, 1280, 720));
         assert_eq!(ui.previews[0].row, 0);
@@ -1504,21 +1054,11 @@ mod tests {
     }
 
     #[test]
-    fn set_hover_to_the_same_target_is_a_no_op() {
-        let (mut ui, id) = ui_with_one_window(220);
-        assert!(!ui.set_hover(Some(id)));
-    }
-
-    #[test]
     fn relayout_moves_hover_to_the_adjacent_neighbor_not_first() {
         let a = WindowId::next();
         let b = WindowId::next();
         let c = WindowId::next();
-        let windows = [
-            (a, rect(0, 0, 800, 600)),
-            (b, rect(0, 0, 800, 600)),
-            (c, rect(0, 0, 800, 600)),
-        ];
+        let windows = [(a, rect(0, 0, 800, 600)), (b, rect(0, 0, 800, 600)), (c, rect(0, 0, 800, 600))];
         let area = rect(0, 0, 1920, 1080);
         let theme = theme_with_duration(0);
 
@@ -1527,11 +1067,7 @@ mod tests {
         let remaining = [(a, rect(0, 0, 800, 600)), (c, rect(0, 0, 800, 600))];
         ui.relayout(&remaining, area);
 
-        assert_eq!(
-            ui.hovered(),
-            Some(c),
-            "hover should move to the neighbor at the same index, not to first()"
-        );
+        assert_eq!(ui.hovered(), Some(c), "hover should move to the neighbor at the same index, not to first()");
     }
 
     #[test]
@@ -1554,67 +1090,111 @@ mod tests {
     }
 
     #[test]
-    fn set_hover_to_a_new_target_restarts_the_animation() {
-        let (mut ui, id) = ui_with_one_window(220);
-        ui.set_hover(None);
-        assert!(ui.set_hover(Some(id)));
-        assert!(
-            ui.hover_progress() < 1.0,
-            "freshly (re)hovered target must not read as already settled"
-        );
-    }
-
-    #[test]
-    fn hover_progress_settles_to_one_after_the_animation_duration() {
-        let (mut ui, id) = ui_with_one_window(220);
-        ui.set_hover(None);
-        ui.set_hover(Some(id));
-        std::thread::sleep(hover_anim() + Duration::from_millis(30));
-        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn hover_progress_is_settled_when_nothing_is_hovered() {
-        let (mut ui, _id) = ui_with_one_window(220);
-        ui.set_hover(None);
-        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn tick_keeps_running_while_the_hover_ring_is_animating() {
+    fn the_hover_ring_grows_in_and_keeps_the_pump_alive_until_it_settles() {
         let (mut ui, id) = ui_with_one_window(0);
+        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON, "no pop on open");
+        assert!(!ui.set_hover(Some(id)), "the same target is a no-op");
         assert_eq!(ui.tick(), Tick::Running, "settling the open phase");
-        assert_eq!(ui.tick(), Tick::Idle, "settled, nothing changed since");
-
+        assert_eq!(ui.tick(), Tick::Idle);
+        assert!(!ui.is_animating());
         ui.set_hover(None);
-        ui.set_hover(Some(id));
-        assert_eq!(
-            ui.tick(),
-            Tick::Running,
-            "hover ring must keep scheduling repaints while it grows/fades in"
-        );
-    }
-
-    #[test]
-    fn tick_goes_idle_once_the_hover_animation_settles() {
-        let (mut ui, id) = ui_with_one_window(0);
-        let _ = ui.tick();
-
-        ui.set_hover(None);
-        ui.set_hover(Some(id));
+        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
+        assert!(ui.set_hover(Some(id)));
+        assert!(ui.hover_progress() < 1.0, "a fresh hover is not settled");
+        assert!(ui.is_animating());
+        assert_eq!(ui.tick(), Tick::Running);
         std::thread::sleep(hover_anim() + Duration::from_millis(30));
-
+        assert!((ui.hover_progress() - 1.0).abs() < f64::EPSILON);
         assert_eq!(ui.tick(), Tick::Idle);
     }
 
     #[test]
-    fn is_animating_reflects_the_hover_ring_too() {
-        let (mut ui, id) = ui_with_one_window(0);
-        let _ = ui.tick();
-        assert!(!ui.is_animating());
+    fn a_flicked_commit_carries_the_finger_speed_into_the_animation() {
+        let (mut ui, _id) = ui_with_one_window(400);
+        ui.set_interactive_progress(0.4);
+        ui.commit_to_opening(3.0);
+        let Phase::Opening { from, .. } = ui.phase else {
+            panic!("expected Phase::Opening");
+        };
+        let release = from.release.expect("a gesture commit uses a release curve");
+        let speed = release.slope * 0.6 / release.duration.as_secs_f64();
+        assert!((speed - 3.0).abs() < 0.05, "left the finger at {speed}");
+    }
 
-        ui.set_hover(None);
-        ui.set_hover(Some(id));
-        assert!(ui.is_animating());
+    #[test]
+    fn closing_after_a_shortened_commit_runs_the_full_duration_again() {
+        let (mut ui, _id) = ui_with_one_window(400);
+        ui.set_interactive_progress(0.9);
+        ui.commit_to_opening(0.0);
+        assert!(ui.duration < ui.theme.duration());
+        ui.phase = Phase::Open;
+        ui.begin_close(None);
+        assert_eq!(ui.duration, ui.theme.duration());
+    }
+
+    #[test]
+    fn interactive_scrubbing_is_linear_on_both_curves_and_clamped() {
+        let (mut ui, _id) = ui_with_one_window(400);
+        for step in 0..=100 {
+            let q = f64::from(step) / 100.0;
+            ui.set_interactive_progress(q);
+            assert!((ui.progress() - q).abs() < 1e-9);
+            assert!((ui.backdrop_progress() - q).abs() < 1e-9);
+            assert!(ui.is_interactive());
+            assert!(!ui.previews[0].rect_at(q).size.is_empty());
+        }
+
+        ui.set_interactive_progress(-100.0);
+        assert!(ui.progress().abs() < f64::EPSILON);
+        assert!(ui.backdrop_progress().abs() < f64::EPSILON);
+
+        ui.set_interactive_progress(100.0);
+        assert!((ui.progress() - 1.0).abs() < f64::EPSILON);
+        assert!((ui.backdrop_progress() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn empirical_challenge_commit_cancel_arbitration() {
+        let (mut ui, _id) = ui_with_one_window(400);
+
+        ui.set_interactive_progress(0.36);
+        assert!((ui.progress() - 0.36).abs() < 1e-9);
+        assert!((ui.backdrop_progress() - 0.36).abs() < 1e-9);
+        ui.commit_to_opening(0.0);
+        assert!(!ui.is_interactive());
+        assert!(!ui.is_closing());
+        match ui.phase {
+            Phase::Opening { from, .. } => {
+                assert!((from.primary - 0.36).abs() < 1e-9);
+                assert!((from.backdrop - 0.36).abs() < 1e-9);
+            }
+            _ => panic!("Expected Phase::Opening"),
+        }
+
+        let (mut ui_cancel, _id) = ui_with_one_window(400);
+        ui_cancel.set_interactive_progress(0.34);
+        assert!((ui_cancel.progress() - 0.34).abs() < 1e-9);
+        assert!((ui_cancel.backdrop_progress() - 0.34).abs() < 1e-9);
+        ui_cancel.revert_to_closing(0.0);
+        assert!(!ui_cancel.is_interactive());
+        assert!(ui_cancel.is_closing());
+        match ui_cancel.phase {
+            Phase::Closing { from, select, .. } => {
+                assert_eq!(select, None);
+                assert!((from.primary - 0.34).abs() < 1e-9);
+                assert!((from.backdrop - 0.34).abs() < 1e-9);
+            }
+            _ => panic!("Expected Phase::Closing"),
+        }
+
+        let (mut ui_full, _id) = ui_with_one_window(400);
+        ui_full.set_interactive_progress(1.0);
+        ui_full.commit_to_opening(0.0);
+        assert_eq!(ui_full.phase, Phase::Open);
+
+        let (mut ui_zero, _id) = ui_with_one_window(400);
+        ui_zero.set_interactive_progress(0.0);
+        ui_zero.revert_to_closing(0.0);
+        assert!(ui_zero.is_closing());
     }
 }

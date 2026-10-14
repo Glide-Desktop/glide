@@ -1,0 +1,17 @@
+#!/bin/sh
+# Lock the Glide session. Inside Glide the built-in lock screen is used.
+# Override with GLIDE_LOCKER="mylocker --args" in the session environment.
+if [ -n "${GLIDE_LOCKER:-}" ]; then
+    exec sh -c "$GLIDE_LOCKER"
+fi
+if command -v glidectl >/dev/null 2>&1 && glidectl lock >/dev/null 2>&1; then
+    exit 0
+fi
+if command -v swaylock >/dev/null 2>&1; then
+    exec swaylock -f
+elif command -v gtklock >/dev/null 2>&1; then
+    exec gtklock -d
+elif command -v hyprlock >/dev/null 2>&1; then
+    exec hyprlock
+fi
+exec loginctl lock-session

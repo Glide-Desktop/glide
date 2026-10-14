@@ -4,8 +4,7 @@ use smithay::{
     wayland::{
         input_method::{InputMethodHandler, PopupSurface},
         keyboard_shortcuts_inhibit::{
-            KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState,
-            KeyboardShortcutsInhibitor,
+            KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
         },
     },
 };

@@ -18,10 +18,8 @@ impl FakePlayer {
         let mut map = HashMap::new();
         map.insert(
             "mpris:trackid".to_string(),
-            OwnedValue::try_from(Value::ObjectPath(
-                ObjectPath::try_from("/org/glide/track/1").expect("a valid path"),
-            ))
-            .expect("value converts"),
+            OwnedValue::try_from(Value::ObjectPath(ObjectPath::try_from("/org/glide/track/1").expect("a valid path")))
+                .expect("value converts"),
         );
         map.insert(
             "xesam:title".to_string(),
@@ -29,13 +27,9 @@ impl FakePlayer {
         );
         map.insert(
             "xesam:artist".to_string(),
-            OwnedValue::try_from(Value::Array(vec!["Hor".to_string()].into()))
-                .expect("value converts"),
+            OwnedValue::try_from(Value::Array(vec!["Hor".to_string()].into())).expect("value converts"),
         );
-        map.insert(
-            "mpris:length".to_string(),
-            OwnedValue::try_from(Value::I64(200_000_000)).expect("value converts"),
-        );
+        map.insert("mpris:length".to_string(), OwnedValue::try_from(Value::I64(200_000_000)).expect("value converts"));
         map
     }
 
@@ -65,21 +59,43 @@ impl FakePlayer {
     }
 }
 
+fn another_player_is_playing() -> bool {
+    let Ok(connection) = zbus::blocking::Connection::session() else {
+        return false;
+    };
+    let Ok(bus) = zbus::blocking::fdo::DBusProxy::new(&connection) else {
+        return false;
+    };
+    let Ok(names) = bus.list_names() else {
+        return false;
+    };
+    names.iter().filter(|name| name.as_str().starts_with("org.mpris.MediaPlayer2.")).any(|name| {
+        zbus::blocking::Proxy::new(
+            &connection,
+            name.as_str(),
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2.Player",
+        )
+        .and_then(|proxy| proxy.get_property::<String>("PlaybackStatus"))
+        .is_ok_and(|status| status == "Playing")
+    })
+}
+
 fn session_bus_available() -> bool {
+    if another_player_is_playing() {
+        eprintln!("a real media player is playing on this session bus and outranks the fake one");
+        return false;
+    }
     zbus::blocking::Connection::session().is_ok()
 }
 
 fn wait_for_track(
-    seen: &Arc<Mutex<Vec<glide_media::MediaEvent>>>,
-    bus_name: &str,
-    within: Duration,
+    seen: &Arc<Mutex<Vec<glide_media::MediaEvent>>>, bus_name: &str, within: Duration,
 ) -> Option<glide_media::Track> {
     let deadline = Instant::now() + within;
     while Instant::now() < deadline {
         {
-            let events = seen
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let events = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             for event in events.iter() {
                 if let glide_media::MediaEvent::Changed(found) = event
                     && found.bus == bus_name
@@ -103,10 +119,7 @@ fn a_player_that_appears_after_we_started_is_still_found() {
     let seen: Arc<Mutex<Vec<glide_media::MediaEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let _handle = glide_media::start(Arc::new(move |event| {
-        sink_seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(event);
+        sink_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event);
     }))
     .expect("the media client starts");
 
@@ -123,10 +136,7 @@ fn a_player_that_appears_after_we_started_is_still_found() {
         .expect("player connection");
 
     let track = wait_for_track(&seen, &bus_name, Duration::from_secs(5));
-    assert!(
-        track.is_some(),
-        "a player that starts after the compositor must still reach the bar"
-    );
+    assert!(track.is_some(), "a player that starts after the compositor must still reach the bar");
 }
 
 #[test]
@@ -149,10 +159,7 @@ fn a_player_on_the_bus_is_found_and_reported() {
     let seen: Arc<Mutex<Vec<glide_media::MediaEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let _handle = glide_media::start(Arc::new(move |event| {
-        sink_seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(event);
+        sink_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event);
     }))
     .expect("the media client starts");
 
@@ -160,9 +167,7 @@ fn a_player_on_the_bus_is_found_and_reported() {
     let mut track = None;
     while Instant::now() < deadline {
         {
-            let events = seen
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let events = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             for event in events.iter() {
                 if let glide_media::MediaEvent::Changed(found) = event
                     && found.bus == bus_name

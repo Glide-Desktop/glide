@@ -1,4 +1,5 @@
 /target
+/dist
 
 # Agent/session artifacts.
 #
@@ -13,6 +14,8 @@ GEMINI.md
 session.md
 session_export.json
 session_opencode.md
+TEST_INFRA.md
+TEST_READY.md
 
 # Scratch files from debugging sessions: one-off reproducers, stray patches.
 fix.patch

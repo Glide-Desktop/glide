@@ -11,16 +11,16 @@ mod session_lock;
 pub mod wlr_gamma_control;
 pub mod wlr_output_management;
 pub mod wlr_output_power;
-mod xdg_activation;
+pub mod xdg_activation;
 mod xdg_shell;
 
-use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
+use smithay::input::dnd::{DnDGrab, DndGrabHandler, DndTarget, GrabType, Source};
 use smithay::input::pointer::Focus;
 use smithay::input::tablet::TabletSeatHandler;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::Serial;
+use smithay::utils::{Logical, Point, Serial};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
@@ -39,11 +39,7 @@ impl SeatHandler for GlideState {
         &mut self.protocols.seat_state
     }
 
-    fn cursor_image(
-        &mut self,
-        _seat: &Seat<Self>,
-        image: smithay::input::pointer::CursorImageStatus,
-    ) {
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: smithay::input::pointer::CursorImageStatus) {
         self.cursor_status = image;
     }
 
@@ -60,7 +56,14 @@ impl TabletSeatHandler for GlideState {
 }
 
 impl SelectionHandler for GlideState {
-    type SelectionUserData = ();
+    type SelectionUserData = crate::clipboard::Owned;
+
+    fn send_selection(
+        &mut self, _ty: smithay::wayland::selection::SelectionTarget, _mime_type: String, fd: std::os::fd::OwnedFd,
+        _seat: Seat<Self>, user_data: &Self::SelectionUserData,
+    ) {
+        crate::clipboard::write(user_data.clone(), fd);
+    }
 }
 
 impl DataDeviceHandler for GlideState {
@@ -69,27 +72,51 @@ impl DataDeviceHandler for GlideState {
     }
 }
 
-impl DndGrabHandler for GlideState {}
+impl DndGrabHandler for GlideState {
+    fn dropped(
+        &mut self, _target: Option<DndTarget<'_, Self>>, _validated: bool, _seat: Seat<Self>,
+        _location: Point<f64, Logical>,
+    ) {
+        self.drag_finished();
+        self.clear_dnd_icon();
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>, _location: Point<f64, Logical>) {
+        self.drag_finished();
+        self.clear_dnd_icon();
+    }
+}
+
+impl GlideState {
+    fn clear_dnd_icon(&mut self) {
+        if self.drag.icon.take().is_some() {
+            self.queue_redraw();
+        }
+    }
+}
+
 impl WaylandDndGrabHandler for GlideState {
     fn dnd_requested<S: Source>(
-        &mut self,
-        source: S,
-        _icon: Option<WlSurface>,
-        seat: Seat<Self>,
-        serial: Serial,
-        type_: GrabType,
+        &mut self, source: S, icon: Option<WlSurface>, seat: Seat<Self>, serial: Serial, type_: GrabType,
     ) {
         match type_ {
             GrabType::Pointer => {
-                let ptr = seat
-                    .get_pointer()
-                    .expect("a pointer was added in GlideState::new");
-                let start_data = ptr
-                    .grab_start_data()
-                    .expect("dnd_requested is only called while a pointer grab is active");
+                let Some(ptr) = seat.get_pointer() else {
+                    tracing::warn!("drag requested on a seat without a pointer");
+                    source.cancel();
+                    return;
+                };
+                let Some(start_data) = ptr.grab_start_data() else {
+                    tracing::warn!("drag requested without an active pointer grab");
+                    source.cancel();
+                    return;
+                };
 
+                self.drag.icon = icon;
+                self.drag_started();
                 let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);
                 ptr.set_grab(self, grab, serial, Focus::Keep);
+                self.queue_redraw();
             }
             GrabType::Touch => {
                 source.cancel();

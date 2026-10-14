@@ -1,7 +1,5 @@
 use smithay::{
-    backend::{
-        allocator::Fourcc, input::ButtonState, renderer::element::memory::MemoryRenderBuffer,
-    },
+    backend::{allocator::Fourcc, input::ButtonState, renderer::element::memory::MemoryRenderBuffer},
     input::pointer::ButtonEvent,
     utils::{Logical, Point, Rectangle, Transform},
 };
@@ -10,24 +8,18 @@ use crate::{
     config::{Color, DecorationTheme, TitleAlign},
     grabs::resize_grab::ResizeEdge,
     paint::{Painter, TextAlign},
+    raster::{Canvas, rect},
 };
 
 use super::{
-    BUTTON_HIT_WIDTH, BUTTON_PAD_X, BUTTON_SIZE, DOUBLE_CLICK_MS, DOUBLE_CLICK_SLOP,
-    IDLE_BUTTON_OPACITY, MENU_CONTAINER_PADDING, MENU_CONTAINER_RADIUS, MENU_CORNER_RADIUS,
-    MENU_PADDING, MENU_ROW_HEIGHT, MENU_WIDTH, RESIZE_BORDER, TITLE_PADDING, menu::MenuItem,
-    menu_open_anim, render::redraw_button, state_layer_anim,
+    BUTTON_HIT_WIDTH, BUTTON_PAD_X, BUTTON_SIZE, DOUBLE_CLICK_MS, DOUBLE_CLICK_SLOP, IDLE_BUTTON_OPACITY,
+    MENU_CONTAINER_PADDING, MENU_CONTAINER_RADIUS, MENU_CORNER_RADIUS, MENU_PADDING, MENU_ROW_HEIGHT, MENU_WIDTH,
+    RESIZE_BORDER, TITLE_PADDING, menu::MenuItem, menu_open_anim, render::redraw_button, state_layer_anim,
 };
 
+use glide_theme::motion::{ease_io, ease_out};
+
 const ROW_ALPHA_STEPS: f64 = 15.0;
-
-fn ease_out(t: f64) -> f64 {
-    glide_theme::motion::E_OUT.ease_f64(t)
-}
-
-fn ease_io(t: f64) -> f64 {
-    glide_theme::motion::E_IO.ease_f64(t)
-}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Fade(glide_ui::Tween);
@@ -77,19 +69,20 @@ pub struct HeaderBar {
     pub(crate) focused: bool,
     pub(crate) focus_fade_started: Option<std::time::Instant>,
     pub(crate) maximized: bool,
-    pub(crate) scale: i32,
 
-    pub(crate) titlebar_buf: Option<MemoryRenderBuffer>,
-    pub(crate) maximize_buf: Option<MemoryRenderBuffer>,
-    pub(crate) close_buf: Option<MemoryRenderBuffer>,
-    pub(crate) menu_buf: Option<MemoryRenderBuffer>,
-
-    pub(crate) last_redraw: Option<RedrawSnapshot>,
+    pub(crate) buffers: std::collections::HashMap<i32, HeaderBuffers>,
 }
 
-// `focused`, `maximized`, `dragging` and `menu_visible` are orthogonal states
-// that can hold in any combination; collapsing them into an enum would lose
-// information rather than express it better.
+#[derive(Debug, Default)]
+pub(crate) struct HeaderBuffers {
+    pub(crate) titlebar: Option<MemoryRenderBuffer>,
+    pub(crate) maximize: Option<MemoryRenderBuffer>,
+    pub(crate) close: Option<MemoryRenderBuffer>,
+    pub(crate) menu: Option<MemoryRenderBuffer>,
+    last_redraw: Option<RedrawSnapshot>,
+}
+
+// Orthogonal states that hold in any combination; an enum would lose information.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RedrawSnapshot {
@@ -110,6 +103,7 @@ pub(crate) struct RedrawSnapshot {
     dragging: bool,
     menu_visible: bool,
     menu_width: i32,
+    menu_hover: Option<usize>,
     menu_row_alpha: Vec<u8>,
 }
 
@@ -131,24 +125,14 @@ pub(crate) enum DecorationAction {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn button_colors(
-    normal: Color,
-    hover_bg: Color,
-    fg: Color,
-    fg_hover: Color,
-    hover_t: f32,
-    is_hovered: bool,
-    press_t: f32,
+    normal: Color, hover_bg: Color, fg: Color, fg_hover: Color, hover_t: f32, is_hovered: bool, press_t: f32,
     focused: bool,
 ) -> (Color, Color) {
-    let (mut bg, mut fg) = if is_hovered {
-        (normal.lerp(hover_bg, hover_t), fg.lerp(fg_hover, hover_t))
-    } else {
-        (normal, fg)
-    };
+    let (mut bg, mut fg) =
+        if is_hovered { (normal.lerp(hover_bg, hover_t), fg.lerp(fg_hover, hover_t)) } else { (normal, fg) };
 
     if press_t > 0.0 {
-        let press_overlay = Color([1.0, 1.0, 1.0, 1.0]);
-        bg = bg.lerp(press_overlay, glide_theme::motion::ST_PRESS * press_t);
+        bg = bg.state_layer(fg, glide_theme::motion::ST_PRESS * press_t);
     }
 
     if !focused {
@@ -179,11 +163,13 @@ impl HeaderBar {
         self.height = height;
     }
 
+    pub(crate) fn border_width(&self) -> i32 {
+        i32::try_from(self.theme.border_width).unwrap_or(RESIZE_BORDER).clamp(0, RESIZE_BORDER)
+    }
+
     #[must_use]
     pub fn shadow_margin(&self) -> i32 {
-        let border = i32::try_from(self.theme.border_width)
-            .unwrap_or(super::RESIZE_BORDER)
-            .clamp(0, super::RESIZE_BORDER);
+        let border = self.border_width();
         if self.theme.shadow {
             let s1 = i32::try_from(self.theme.shadow_size).unwrap_or(i32::MAX);
             let s2 = i32::try_from(self.theme.shadow_size_focused).unwrap_or(i32::MAX);
@@ -193,33 +179,25 @@ impl HeaderBar {
         }
     }
 
-    pub(crate) fn sync(
-        &mut self,
-        theme: &DecorationTheme,
-        focused: bool,
-        maximized: bool,
-        scale: i32,
-    ) {
+    pub(crate) fn sync(&mut self, theme: &DecorationTheme, focused: bool, maximized: bool) {
         if &self.theme != theme {
             self.theme = theme.clone();
             self.theme_rev = self.theme_rev.wrapping_add(1);
         }
         if self.focused != focused {
-            self.focus_fade_started = Some(std::time::Instant::now());
+            let now = std::time::Instant::now();
+            let duration = super::focus_fade();
+            let remaining =
+                self.focus_fade_started.map(|started| duration.saturating_sub(started.elapsed())).unwrap_or_default();
+            self.focus_fade_started = Some(now.checked_sub(remaining).unwrap_or(now));
         }
         self.focused = focused;
         self.maximized = maximized;
-        if self.scale != scale {
-            self.scale = scale;
-            self.titlebar_buf = None;
-            self.maximize_buf = None;
-            self.close_buf = None;
-            self.menu_buf = None;
-        }
     }
 
-    pub(crate) const fn effective_scale(&self) -> i32 {
-        if self.scale < 1 { 1 } else { self.scale }
+    #[must_use]
+    pub(crate) fn buffers_at(&self, scale: i32) -> Option<&HeaderBuffers> {
+        self.buffers.get(&scale.max(1))
     }
 
     pub(crate) fn button_hover_progress(&mut self) -> f64 {
@@ -272,10 +250,7 @@ impl HeaderBar {
     #[must_use]
     pub fn is_focus_fading(&self) -> bool {
         let duration = super::focus_fade();
-        !duration.is_zero()
-            && self
-                .focus_fade_started
-                .is_some_and(|started| started.elapsed() < duration)
+        !duration.is_zero() && self.focus_fade_started.is_some_and(|started| started.elapsed() < duration)
     }
 
     fn focus_fade_t(&mut self) -> f32 {
@@ -289,39 +264,35 @@ impl HeaderBar {
             return 1.0;
         }
         let t = elapsed.as_secs_f64() / duration.as_secs_f64();
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            glide_theme::motion::E_IO.ease_f64(t) as f32
-        }
+        ease_io(t) as f32
     }
 
     pub fn set_title(&mut self, title: String) {
         if self.title != title {
             self.title = title;
-            self.titlebar_buf = None;
+            for buffers in self.buffers.values_mut() {
+                buffers.titlebar = None;
+            }
         }
     }
 
-    fn titlebar_row(&self) -> [(HitZone, glide_geom::Rectangle); 3] {
-        let max_rect =
-            glide_geom::Rectangle::from_loc_and_size(0, 0, BUTTON_HIT_WIDTH, self.height);
-        let close_rect = glide_geom::Rectangle::from_loc_and_size(
-            self.width - BUTTON_HIT_WIDTH,
-            0,
-            BUTTON_HIT_WIDTH,
-            self.height,
-        );
-        let drag_rect = glide_geom::Rectangle::from_loc_and_size(0, 0, self.width, self.height);
-
-        [
-            (HitZone::Drag, drag_rect),
-            (HitZone::Maximize, max_rect),
-            (HitZone::Close, close_rect),
-        ]
+    #[must_use]
+    pub(crate) const fn close_on_left(&self) -> bool {
+        matches!(self.theme.button_layout, glide_theme::ButtonLayout::CloseMaximize)
     }
 
     pub(crate) fn zone_at(&self, x: f64, y: f64) -> HitZone {
-        glide_ui::hit_test(&self.titlebar_row(), x, y).unwrap_or(HitZone::Drag)
+        let (width, button) = (f64::from(self.width), f64::from(BUTTON_HIT_WIDTH));
+        if !(0.0..f64::from(self.height)).contains(&y) {
+            return HitZone::Drag;
+        }
+        let left = (0.0..button).contains(&x);
+        let right = (width - button..width).contains(&x);
+        match (left, right, self.close_on_left()) {
+            (true, _, true) | (_, true, false) => HitZone::Close,
+            (true, _, false) | (_, true, true) => HitZone::Maximize,
+            _ => HitZone::Drag,
+        }
     }
 
     #[allow(clippy::unused_self)]
@@ -330,12 +301,13 @@ impl HeaderBar {
         MENU_CONTAINER_PADDING * 2 + MENU_ROW_HEIGHT * row_count
     }
 
-    fn interactive_height(&self) -> i32 {
-        if self.menu.is_open() {
-            self.height + self.menu_container_height()
-        } else {
-            self.height
-        }
+    pub(crate) fn menu_panel_rect(&self) -> glide_geom::Rectangle {
+        glide_geom::Rectangle::from_loc_and_size(
+            self.menu_x,
+            self.height,
+            self.menu_width.max(1),
+            self.menu_container_height(),
+        )
     }
 
     pub fn contains(&self, rel: Point<f64, Logical>) -> bool {
@@ -347,26 +319,26 @@ impl HeaderBar {
         let frame_height = f64::from(self.height + self.content_height);
         let band = f64::from(RESIZE_BORDER);
 
-        let in_expanded_frame =
-            rel.x >= -band && rel.x < width + band && rel.y >= -band && rel.y < frame_height + band;
+        let in_expanded_frame = rel.x >= -band && rel.x < width + band && rel.y >= -band && rel.y < frame_height + band;
         if !in_expanded_frame {
             return false;
         }
 
-        let in_content = rel.x >= 0.0
-            && rel.x < width
-            && rel.y >= f64::from(self.height)
-            && rel.y < frame_height;
+        let in_content = rel.x >= 0.0 && rel.x < width && rel.y >= f64::from(self.height) && rel.y < frame_height;
         if in_content {
-            if !self.menu.is_open() || rel.y >= f64::from(self.interactive_height()) {
-                return false;
-            }
-            let menu_left = f64::from(self.menu_x);
-            let menu_right = f64::from(self.menu_x + self.menu_width);
-            return rel.x >= menu_left && rel.x < menu_right;
+            return self.menu.is_open() && self.in_menu_panel(rel);
         }
 
         true
+    }
+
+    fn in_menu_panel(&self, rel: Point<f64, Logical>) -> bool {
+        let panel = self.menu_panel_rect();
+        let (left, top) = (f64::from(panel.loc.x), f64::from(panel.loc.y));
+        rel.x >= left
+            && rel.x < left + f64::from(panel.size.width)
+            && rel.y >= top
+            && rel.y < top + f64::from(panel.size.height)
     }
 
     pub(crate) fn resize_edges_at(&self, rel: Point<f64, Logical>) -> Option<ResizeEdge> {
@@ -392,25 +364,19 @@ impl HeaderBar {
         (!edges.is_empty()).then_some(edges)
     }
 
-    fn menu_rows(&self) -> Vec<(usize, glide_geom::Rectangle)> {
-        let row_count = MenuItem::ALL.len();
-        let bounds = glide_geom::Rectangle::from_loc_and_size(
-            self.menu_x + MENU_CONTAINER_PADDING,
-            self.height + MENU_CONTAINER_PADDING,
-            self.menu_width - MENU_CONTAINER_PADDING * 2,
-            MENU_ROW_HEIGHT * i32::try_from(row_count).unwrap_or(0),
-        );
-        let tracks = vec![glide_ui::Track::Fixed(MENU_ROW_HEIGHT); row_count];
-        (0..row_count)
-            .zip(glide_ui::layout_column(bounds, &tracks))
-            .collect()
-    }
-
     pub(crate) fn menu_item_at(&self, loc: Point<f64, Logical>) -> Option<usize> {
         if !self.menu.is_open() {
             return None;
         }
-        glide_ui::hit_test(&self.menu_rows(), loc.x, loc.y)
+        let panel = self.menu_panel_rect();
+        let x = loc.x - f64::from(panel.loc.x + MENU_CONTAINER_PADDING);
+        let y = loc.y - f64::from(panel.loc.y + MENU_CONTAINER_PADDING);
+        let width = f64::from(panel.size.width - MENU_CONTAINER_PADDING * 2);
+        if !(0.0..width).contains(&x) || y < 0.0 {
+            return None;
+        }
+        let row = (y / f64::from(MENU_ROW_HEIGHT)) as usize;
+        (row < MenuItem::ALL.len()).then_some(row)
     }
 
     fn set_menu_hover(&mut self, hover: Option<usize>) {
@@ -425,8 +391,7 @@ impl HeaderBar {
             let to = if hover == Some(*row) { 1.0 } else { 0.0 };
             fade.retarget(to, duration, ease_io);
         }
-        self.menu_row_fade
-            .retain(|(_, fade)| fade.target() > 0.0 || fade.is_animating(duration));
+        self.menu_row_fade.retain(|(_, fade)| fade.target() > 0.0 || fade.is_animating(duration));
     }
 
     #[must_use]
@@ -440,9 +405,7 @@ impl HeaderBar {
     #[must_use]
     pub(crate) fn is_menu_row_fading(&self) -> bool {
         let duration = state_layer_anim();
-        self.menu_row_fade
-            .iter()
-            .any(|(_, fade)| fade.is_animating(duration))
+        self.menu_row_fade.iter().any(|(_, fade)| fade.is_animating(duration))
     }
 
     pub fn pointer_enter(&mut self, loc: Point<f64, Logical>) {
@@ -459,11 +422,7 @@ impl HeaderBar {
     }
 
     fn menu_ease(&self) -> fn(f64) -> f64 {
-        if self.menu.is_open() {
-            ease_out
-        } else {
-            ease_io
-        }
+        if self.menu.is_open() { ease_out } else { ease_io }
     }
 
     fn open_menu_at(&mut self, at_x: i32) {
@@ -502,10 +461,14 @@ impl HeaderBar {
     }
 
     pub fn open_menu_at_default_position(&mut self) {
+        self.open_menu_at_x(BUTTON_HIT_WIDTH);
+    }
+
+    pub fn open_menu_at_x(&mut self, x: i32) {
         if !self.is_decorated() {
             return;
         }
-        self.open_menu_at(BUTTON_HIT_WIDTH);
+        self.open_menu_at(x);
     }
 
     fn is_double_click(&self, time: u32, loc: Point<f64, Logical>) -> bool {
@@ -534,7 +497,6 @@ impl HeaderBar {
                 return None;
             }
             if event.button == 0x111 {
-                #[allow(clippy::cast_possible_truncation)]
                 self.open_menu_at(loc.x as i32);
                 return None;
             }
@@ -544,7 +506,15 @@ impl HeaderBar {
                 let time = event.time.millis();
                 if self.is_double_click(time, loc) {
                     self.last_drag_press = None;
-                    return Some(DecorationAction::ToggleMaximize);
+                    match self.theme.double_click {
+                        glide_theme::TitlebarAction::Maximize => {
+                            return Some(DecorationAction::ToggleMaximize);
+                        }
+                        glide_theme::TitlebarAction::Minimize => {
+                            return Some(DecorationAction::Run(MenuItem::Minimize));
+                        }
+                        glide_theme::TitlebarAction::None => {}
+                    }
                 }
                 self.last_drag_press = Some((time, loc));
                 return Some(DecorationAction::StartMove);
@@ -575,26 +545,22 @@ impl HeaderBar {
     }
 
     fn in_titlebar_strip(&self, loc: Point<f64, Logical>) -> bool {
-        loc.x >= 0.0
-            && loc.x < f64::from(self.width)
-            && loc.y >= 0.0
-            && loc.y < f64::from(self.height)
+        loc.x >= 0.0 && loc.x < f64::from(self.width) && loc.y >= 0.0 && loc.y < f64::from(self.height)
     }
 
     #[allow(clippy::too_many_lines)]
     #[profiling::function]
-    pub(crate) fn redraw(&mut self, painter: &Painter) -> bool {
+    pub(crate) fn redraw(&mut self, painter: &Painter, scale: i32) -> bool {
         if self.width == 0 || self.height == 0 {
             return false;
         }
+        let scale = scale.max(1);
 
         self.menu.settle(menu_open_anim());
 
         let hovered = self.hovered_zone();
         let pressed = self.pressed;
-        #[allow(clippy::cast_possible_truncation)]
         let hover_t = self.button_hover_progress() as f32;
-        #[allow(clippy::cast_possible_truncation)]
         let press_t = self.press_layer_progress() as f32;
         let press_zone = if press_t > 0.0 { self.press_zone } else { None };
         let focus_fade_t = self.focus_fade_t();
@@ -602,12 +568,7 @@ impl HeaderBar {
         let menu_visible = self.is_menu_visible();
         let menu_row_alpha: Vec<u8> = if menu_visible {
             (0..MenuItem::ALL.len())
-                .map(|row| {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    {
-                        (self.menu_row_alpha(row).clamp(0.0, 1.0) * ROW_ALPHA_STEPS).round() as u8
-                    }
-                })
+                .map(|row| (self.menu_row_alpha(row).clamp(0.0, 1.0) * ROW_ALPHA_STEPS).round() as u8)
                 .collect()
         } else {
             Vec::new()
@@ -616,7 +577,7 @@ impl HeaderBar {
         let snapshot = RedrawSnapshot {
             width: self.width,
             height: self.height,
-            scale: self.effective_scale(),
+            scale,
             focused: self.focused,
             maximized: self.maximized,
             theme_rev: self.theme_rev,
@@ -631,15 +592,18 @@ impl HeaderBar {
             dragging: self.dragging,
             menu_visible,
             menu_width: self.menu_width,
+            menu_hover: self.menu_hover.filter(|_| menu_visible),
             menu_row_alpha: menu_row_alpha.clone(),
         };
-        if self.last_redraw.as_ref() == Some(&snapshot) {
+        let container_h = self.menu_container_height();
+        let menu_w = self.menu_panel_rect().size.width;
+        let buffers = self.buffers.entry(scale).or_default();
+        if buffers.last_redraw.as_ref() == Some(&snapshot) {
             return false;
         }
-        self.last_redraw = Some(snapshot);
+        buffers.last_redraw = Some(snapshot);
 
         let theme = &self.theme;
-        let scale = self.effective_scale();
         let mix = |from: crate::config::Color, to: crate::config::Color| {
             let mut out = from;
             for (channel, target) in out.0.iter_mut().zip(to.0) {
@@ -648,48 +612,30 @@ impl HeaderBar {
             out
         };
         let (bg_color, title_color) = if self.focused {
-            (
-                mix(theme.background, theme.background_focused),
-                mix(theme.title, theme.title_focused),
-            )
+            (mix(theme.background, theme.background_focused), mix(theme.title, theme.title_focused))
         } else {
-            (
-                mix(theme.background_focused, theme.background),
-                mix(theme.title_focused, theme.title),
-            )
+            (mix(theme.background_focused, theme.background), mix(theme.title_focused, theme.title))
         };
 
-        let bg_color = if self.dragging {
-            bg_color.lerp(
-                crate::config::Color([1.0, 1.0, 1.0, bg_color.0[3]]),
-                glide_theme::motion::ST_DRAG,
-            )
-        } else {
-            bg_color
-        };
+        let bg_color =
+            if self.dragging { bg_color.state_layer(title_color, glide_theme::motion::ST_DRAG) } else { bg_color };
 
-        let corner_radius = if self.maximized {
-            0.0
-        } else {
-            theme.corner_radius
-        };
+        let corner_radius = if self.maximized { 0.0 } else { theme.corner_radius };
 
         {
             let w = self.width;
             let h = self.height;
             let (pw, ph) = (w * scale, h * scale);
-            let buf = self.titlebar_buf.get_or_insert_with(|| {
+            let buf = buffers.titlebar.get_or_insert_with(|| {
                 MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
             });
             let mut ctx = buf.render();
             ctx.resize((pw, ph));
-            let title = self.title.clone();
             let align = match theme.title_align {
                 TitleAlign::Left => TextAlign::Left,
                 TitleAlign::Center => TextAlign::Center,
             };
             let _ = ctx.draw(|pixels| {
-                let fg = title_color.to_buffer_bytes();
                 Painter::fill_panel_background(
                     pixels,
                     w,
@@ -699,190 +645,97 @@ impl HeaderBar {
                     corner_radius,
                     [true, true, false, false],
                 );
-                let x_min = BUTTON_PAD_X + BUTTON_SIZE + TITLE_PADDING;
-                let x_max = w - BUTTON_PAD_X - BUTTON_SIZE - TITLE_PADDING;
-                painter.draw_label_over_styled(
-                    pixels,
-                    w,
-                    h,
-                    x_min,
-                    x_max,
-                    scale,
-                    align,
-                    &title,
-                    fg,
-                    &glide_theme::TextStyle::WIN_TITLE,
-                );
+                let band = (BUTTON_PAD_X + BUTTON_SIZE + TITLE_PADDING, w - BUTTON_PAD_X - BUTTON_SIZE - TITLE_PADDING);
+                let style = &glide_theme::TextStyle::WIN_TITLE;
+                Canvas::over(pixels, w, h, scale).label(painter, band, align, &self.title, title_color, style);
                 Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
         }
 
-        let maximize_icon: fn(&mut [u8], i32, i32, i32, Color, Color) = if self.maximized {
-            Painter::draw_icon_restore
-        } else {
-            Painter::draw_icon_maximize
-        };
+        let maximize_icon: fn(&mut [u8], i32, i32, i32, Color, Color) =
+            if self.maximized { Painter::draw_icon_restore } else { Painter::draw_icon_maximize };
 
-        for (buf, zone, normal, hover_bg, fg, fg_hover, icon) in &mut [
+        let fg_hover = Color([1.0, 1.0, 1.0, 1.0]);
+        for (buf, zone, normal, hover_bg, fg, icon) in &mut [
             (
-                &mut self.maximize_buf,
+                &mut buffers.maximize,
                 HitZone::Maximize,
                 theme.maximize_button,
                 theme.maximize_button_hover,
                 theme.icon,
-                crate::config::Color([1.0, 1.0, 1.0, 1.0]),
                 maximize_icon,
             ),
             (
-                &mut self.close_buf,
+                &mut buffers.close,
                 HitZone::Close,
                 theme.close_button,
                 theme.close_button_hover,
                 theme.close_icon,
-                crate::config::Color([1.0, 1.0, 1.0, 1.0]),
                 Painter::draw_icon_close,
             ),
         ] {
             let is_hovered = hovered == Some(*zone);
             let is_pressed = pressed == Some(*zone);
-            let zone_press_t = if press_zone == Some(*zone) {
-                press_t
-            } else {
-                0.0
-            };
-            let (btn_bg, btn_fg) = button_colors(
-                *normal,
-                *hover_bg,
-                *fg,
-                *fg_hover,
-                hover_t,
-                is_hovered,
-                zone_press_t,
-                self.focused,
-            );
+            let zone_press_t = if press_zone == Some(*zone) { press_t } else { 0.0 };
+            let (btn_bg, btn_fg) =
+                button_colors(*normal, *hover_bg, *fg, fg_hover, hover_t, is_hovered, zone_press_t, self.focused);
             redraw_button(buf, scale, btn_bg, btn_fg, is_pressed, *icon);
         }
 
         if menu_visible {
-            let container_h = self.menu_container_height();
-            let (pw, ph) = (MENU_WIDTH * scale, container_h * scale);
-            let buf = self.menu_buf.get_or_insert_with(|| {
+            let (pw, ph) = (menu_w * scale, container_h * scale);
+            let buf = buffers.menu.get_or_insert_with(|| {
                 MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
             });
             let mut ctx = buf.render();
             ctx.resize((pw, ph));
-
-            let menu_bg = theme.menu_background;
-            let menu_border = theme.menu_border;
-            let menu_row_hover_bg = theme.menu_item_hover;
-            let menu_text = theme.menu_text;
-            let menu_text_danger = theme.menu_text_danger;
-            let menu_accel_text = theme.menu_accel_text.to_buffer_bytes();
             let maximized = self.maximized;
-
             let _ = ctx.draw(|pixels| {
-                Painter::fill_panel_background(
-                    pixels,
-                    MENU_WIDTH,
-                    container_h,
-                    scale,
-                    menu_bg,
-                    MENU_CONTAINER_RADIUS,
-                    [true; 4],
-                );
-                #[allow(clippy::cast_precision_loss)]
-                crate::paint::draw_inset_border(
-                    pixels,
-                    pw,
-                    ph,
-                    scale as f32,
-                    MENU_CONTAINER_RADIUS * scale as f32,
-                    menu_border,
-                );
+                let mut c = Canvas::over(pixels, menu_w, container_h, scale);
+                c.panel(theme.menu_background, MENU_CONTAINER_RADIUS);
+                let s = scale as f32;
+                crate::paint::draw_inset_border(c.buf, pw, ph, s, MENU_CONTAINER_RADIUS * s, theme.menu_border);
 
+                let (row_left, row_w) = (MENU_CONTAINER_PADDING, menu_w - MENU_CONTAINER_PADDING * 2);
                 for (i, item) in MenuItem::ALL.iter().enumerate() {
-                    let row_top =
-                        MENU_CONTAINER_PADDING + i32::try_from(i).unwrap_or(0) * MENU_ROW_HEIGHT;
-                    let row_left = MENU_CONTAINER_PADDING;
-                    let row_w = MENU_WIDTH - MENU_CONTAINER_PADDING * 2;
-
+                    let row_top = MENU_CONTAINER_PADDING + i32::try_from(i).unwrap_or(0) * MENU_ROW_HEIGHT;
                     let row_alpha = menu_row_alpha.get(i).copied().unwrap_or(0);
                     if row_alpha > 0 {
-                        #[allow(clippy::cast_possible_truncation)]
                         let row_t = (f64::from(row_alpha) / ROW_ALPHA_STEPS) as f32;
-                        Painter::fill_rounded_rect_over(
-                            pixels,
-                            MENU_WIDTH,
-                            container_h,
-                            row_left,
-                            row_top,
-                            row_w,
-                            MENU_ROW_HEIGHT,
-                            scale,
-                            menu_row_hover_bg.with_alpha(menu_row_hover_bg.0[3] * row_t),
-                            MENU_CORNER_RADIUS,
-                        );
+                        let hover = theme.menu_item_hover.with_alpha(theme.menu_item_hover.0[3] * row_t);
+                        c.fill(rect(row_left, row_top, row_w, MENU_ROW_HEIGHT), hover, MENU_CORNER_RADIUS);
                     }
-
-                    let label_color = if item.is_danger() {
-                        menu_text_danger
-                    } else {
-                        menu_text
-                    }
-                    .to_buffer_bytes();
-
+                    let label_color = if item.is_danger() { theme.menu_text_danger } else { theme.menu_text };
                     let row_bottom = row_top + MENU_ROW_HEIGHT;
-
                     let accel = item.accel().unwrap_or("");
-                    #[allow(clippy::cast_possible_truncation)]
                     let accel_w = if accel.is_empty() {
                         0
                     } else {
-                        painter.text_width_styled(accel, &glide_theme::TextStyle::CAP) as i32
-                            + MENU_PADDING
+                        painter.text_width_styled(accel, &glide_theme::TextStyle::CAP) as i32 + MENU_PADDING
                     };
-
                     let label_x_min = row_left + MENU_PADDING;
                     let label_x_max = (row_left + row_w - MENU_PADDING - accel_w).max(label_x_min);
-                    painter.draw_label_over_styled_in_band(
-                        pixels,
-                        MENU_WIDTH,
-                        container_h,
-                        label_x_min,
-                        label_x_max,
-                        row_top,
-                        row_bottom,
-                        scale,
-                        TextAlign::Left,
-                        item.label(maximized),
-                        label_color,
-                        &glide_theme::TextStyle::MENU_ITEM,
-                    );
-
+                    let band = (label_x_min, label_x_max, row_top, row_bottom);
+                    let label = item.label(maximized);
+                    c.text(painter, band, TextAlign::Left, label, label_color, &glide_theme::TextStyle::MENU_ITEM);
                     if !accel.is_empty() {
                         let accel_x_max = row_left + row_w - MENU_PADDING;
-                        let accel_x_min = (accel_x_max - accel_w + MENU_PADDING).max(label_x_max);
-                        painter.draw_label_over_styled_in_band(
-                            pixels,
-                            MENU_WIDTH,
-                            container_h,
-                            accel_x_min,
-                            accel_x_max,
-                            row_top,
-                            row_bottom,
-                            scale,
+                        let band =
+                            ((accel_x_max - accel_w + MENU_PADDING).max(label_x_max), accel_x_max, row_top, row_bottom);
+                        c.text(
+                            painter,
+                            band,
                             TextAlign::Left,
                             accel,
-                            menu_accel_text,
+                            theme.menu_accel_text,
                             &glide_theme::TextStyle::CAP,
                         );
                     }
                 }
-
                 Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
         } else {
-            self.menu_buf = None;
+            buffers.menu = None;
         }
 
         true

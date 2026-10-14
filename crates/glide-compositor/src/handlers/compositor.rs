@@ -4,21 +4,15 @@ use smithay::{
         Client,
         protocol::{wl_buffer, wl_surface::WlSurface},
     },
+    utils::{Logical, Point},
     wayland::{
         buffer::BufferHandler,
-        compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface,
-        },
+        compositor::{CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface},
         shm::{ShmHandler, ShmState},
     },
 };
 
-use crate::{
-    GlideState,
-    grabs::resize_grab,
-    state::{ClientState, window_surface},
-};
+use crate::{GlideState, grabs::resize_grab, state::ClientState};
 
 use super::xdg_shell;
 
@@ -42,7 +36,7 @@ impl CompositorHandler for GlideState {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self.space.elements().find(|w| window_surface(w) == &root) {
+            if let Some(window) = self.mapped_window(&root) {
                 window.on_commit();
             }
         }
@@ -53,15 +47,19 @@ impl CompositorHandler for GlideState {
 
         xdg_shell::handle_commit(self, surface);
 
+        let location_before = self.mapped_location(surface);
         resize_grab::handle_commit(&mut self.space, surface);
-        let resized = self
-            .space
-            .elements()
-            .find(|w| window_surface(w) == surface)
-            .cloned();
-        if let Some(window) = resized {
-            self.record_window_resize(&window);
+        let location_after = self.mapped_location(surface);
+        if let Some(window) = self.mapped_window(surface) {
+            let moved_to = location_after.filter(|_| location_after != location_before);
+            self.record_window_resize(&window, moved_to);
         }
+    }
+}
+
+impl GlideState {
+    fn mapped_location(&self, surface: &WlSurface) -> Option<Point<i32, Logical>> {
+        self.mapped_window(surface).and_then(|window| self.space.element_location(&window))
     }
 }
 

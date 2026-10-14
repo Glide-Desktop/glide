@@ -1,13 +1,8 @@
 use smithay::{
     backend::renderer::{
         Renderer, Texture,
-        element::{
-            Element, Id, Kind, RenderElement, UnderlyingStorage,
-            surface::WaylandSurfaceRenderElement,
-        },
-        gles::{
-            GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType,
-        },
+        element::{Element, Id, Kind, RenderElement, UnderlyingStorage, surface::WaylandSurfaceRenderElement},
+        gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType},
         utils::{CommitCounter, DamageSet, OpaqueRegions},
     },
     utils::{Buffer as BufferCoord, Physical, Point, Rectangle, Scale, Transform},
@@ -90,56 +85,30 @@ impl RoundedClip {
     fn damage_key(&self) -> usize {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::hash::DefaultHasher::new();
-        for value in self
-            .offset
-            .iter()
-            .chain(self.size.iter())
-            .chain(self.radii.iter())
-        {
+        for value in self.offset.iter().chain(self.size.iter()).chain(self.radii.iter()) {
             value.to_bits().hash(&mut hasher);
         }
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            hasher.finish() as usize
-        }
+        hasher.finish() as usize
     }
 
     #[must_use]
     pub fn from_frame(
-        dst: Rectangle<i32, Physical>,
-        frame: Rectangle<i32, Physical>,
-        radius_physical: f32,
+        dst: Rectangle<i32, Physical>, frame: Rectangle<i32, Physical>, radius_physical: f32,
     ) -> Option<Self> {
         if dst.size.is_empty() || frame.size.is_empty() || radius_physical <= 0.0 {
             return None;
         }
 
-        #[allow(clippy::cast_precision_loss)]
         let (dst_w, dst_h) = (dst.size.w as f32, dst.size.h as f32);
-        #[allow(clippy::cast_precision_loss)]
         let (frame_w, frame_h) = (frame.size.w as f32, frame.size.h as f32);
-        #[allow(clippy::cast_precision_loss)]
-        let offset = [
-            (frame.loc.x - dst.loc.x) as f32 / dst_w,
-            (frame.loc.y - dst.loc.y) as f32 / dst_h,
-        ];
+        let offset = [(frame.loc.x - dst.loc.x) as f32 / dst_w, (frame.loc.y - dst.loc.y) as f32 / dst_h];
 
-        Some(Self {
-            offset,
-            size: [frame_w / dst_w, frame_h / dst_h],
-            radii: [radius_physical / frame_h; 4],
-        })
+        Some(Self { offset, size: [frame_w / dst_w, frame_h / dst_h], radii: [radius_physical / frame_h; 4] })
     }
 
     fn resolve(&self, dst: Rectangle<i32, Physical>) -> ([f32; 4], [f32; 4]) {
-        #[allow(clippy::cast_precision_loss)]
         let (dst_w, dst_h) = (dst.size.w as f32, dst.size.h as f32);
-        let rect = [
-            self.offset[0] * dst_w,
-            self.offset[1] * dst_h,
-            self.size[0] * dst_w,
-            self.size[1] * dst_h,
-        ];
+        let rect = [self.offset[0] * dst_w, self.offset[1] * dst_h, self.size[0] * dst_w, self.size[1] * dst_h];
         let radii = self.radii.map(|frac| frac * rect[3]);
         (rect, radii)
     }
@@ -155,15 +124,9 @@ pub trait ClipCapableRenderer: Renderer {
 
     #[allow(clippy::too_many_arguments)]
     fn draw_rounded_clipped(
-        frame: &mut Self::Frame<'_, '_>,
-        texture: &Self::TextureId,
-        src: Rectangle<f64, BufferCoord>,
-        dst: Rectangle<i32, Physical>,
-        damage: &[Rectangle<i32, Physical>],
-        opaque_regions: &[Rectangle<i32, Physical>],
-        transform: Transform,
-        alpha: f32,
-        clip: &RoundedClip,
+        frame: &mut Self::Frame<'_, '_>, texture: &Self::TextureId, src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>, damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>], transform: Transform, alpha: f32, clip: &RoundedClip,
     ) -> Result<(), Self::Error>;
 }
 
@@ -192,34 +155,18 @@ fn compile_clip_program(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
 
 impl ClipCapableRenderer for GlesRenderer {
     fn prepare_rounded_clip(&mut self) -> bool {
-        if self
-            .egl_context()
-            .user_data()
-            .get::<Option<CachedClipProgram>>()
-            .is_none()
-        {
+        if self.egl_context().user_data().get::<Option<CachedClipProgram>>().is_none() {
             let compiled = compile_clip_program(self);
-            self.egl_context()
-                .user_data()
-                .insert_if_missing(|| compiled.map(CachedClipProgram));
+            self.egl_context().user_data().insert_if_missing(|| compiled.map(CachedClipProgram));
         }
 
-        self.egl_context()
-            .user_data()
-            .get::<Option<CachedClipProgram>>()
-            .is_some_and(Option::is_some)
+        self.egl_context().user_data().get::<Option<CachedClipProgram>>().is_some_and(Option::is_some)
     }
 
     fn draw_rounded_clipped(
-        frame: &mut GlesFrame<'_, '_>,
-        texture: &Self::TextureId,
-        src: Rectangle<f64, BufferCoord>,
-        dst: Rectangle<i32, Physical>,
-        damage: &[Rectangle<i32, Physical>],
-        opaque_regions: &[Rectangle<i32, Physical>],
-        transform: Transform,
-        alpha: f32,
-        clip: &RoundedClip,
+        frame: &mut GlesFrame<'_, '_>, texture: &Self::TextureId, src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>, damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>], transform: Transform, alpha: f32, clip: &RoundedClip,
     ) -> Result<(), GlesError> {
         let program = frame
             .egl_context()
@@ -228,9 +175,7 @@ impl ClipCapableRenderer for GlesRenderer {
             .and_then(Option::as_ref)
             .map(|cached| cached.0.clone());
 
-        let uniforms = program
-            .as_ref()
-            .map(|_| clip_uniforms(texture, src, dst, clip));
+        let uniforms = program.as_ref().map(|_| clip_uniforms(texture, src, dst, clip));
 
         frame.render_texture_from_to(
             texture,
@@ -247,29 +192,19 @@ impl ClipCapableRenderer for GlesRenderer {
 }
 
 fn clip_uniforms(
-    texture: &impl Texture,
-    src: Rectangle<f64, BufferCoord>,
-    dst: Rectangle<i32, Physical>,
-    clip: &RoundedClip,
+    texture: &impl Texture, src: Rectangle<f64, BufferCoord>, dst: Rectangle<i32, Physical>, clip: &RoundedClip,
 ) -> Vec<Uniform<'static>> {
     let tex_size = texture.size();
-    #[allow(clippy::cast_precision_loss)]
     let (tex_w, tex_h) = (tex_size.w as f32, tex_size.h as f32);
-    #[allow(clippy::cast_possible_truncation)]
     let (src_w, src_h) = (src.size.w as f32, src.size.h as f32);
-    #[allow(clippy::cast_possible_truncation)]
     let (src_x, src_y) = (src.loc.x as f32, src.loc.y as f32);
 
     let (unit_scale, unit_offset) = if src_w > 0.0 && src_h > 0.0 {
-        (
-            [tex_w / src_w, tex_h / src_h],
-            [-src_x / src_w, -src_y / src_h],
-        )
+        ([tex_w / src_w, tex_h / src_h], [-src_x / src_w, -src_y / src_h])
     } else {
         ([1.0, 1.0], [0.0, 0.0])
     };
 
-    #[allow(clippy::cast_precision_loss)]
     let dst_size = [dst.size.w as f32, dst.size.h as f32];
     let (clip_rect, clip_radii) = clip.resolve(dst);
 
@@ -329,11 +264,7 @@ where
         self.inner.transform()
     }
 
-    fn damage_since(
-        &self,
-        scale: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
+    fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
         self.inner.damage_since(scale, commit)
     }
 
@@ -360,12 +291,8 @@ where
     }
 
     fn draw(
-        &self,
-        frame: &mut R::Frame<'_, '_>,
-        src: Rectangle<f64, BufferCoord>,
-        dst: Rectangle<i32, Physical>,
-        damage: &[Rectangle<i32, Physical>],
-        opaque_regions: &[Rectangle<i32, Physical>],
+        &self, frame: &mut R::Frame<'_, '_>, src: Rectangle<f64, BufferCoord>, dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>], opaque_regions: &[Rectangle<i32, Physical>],
         cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), R::Error> {
         use smithay::backend::renderer::element::surface::WaylandSurfaceTexture;
@@ -382,10 +309,7 @@ where
                 self.inner.alpha(),
                 &self.clip,
             ),
-            WaylandSurfaceTexture::SolidColor(_) => {
-                self.inner
-                    .draw(frame, src, dst, damage, opaque_regions, cache)
-            }
+            WaylandSurfaceTexture::SolidColor(_) => self.inner.draw(frame, src, dst, damage, opaque_regions, cache),
         }
     }
 }
@@ -415,10 +339,7 @@ mod tests {
     #[test]
     fn the_shader_handles_every_variant_smithay_compiles() {
         for define in ["NO_ALPHA", "EXTERNAL", "DEBUG_FLAGS"] {
-            assert!(
-                ROUNDED_CLIP_SHADER.contains(define),
-                "shader ignores the {define} variant"
-            );
+            assert!(ROUNDED_CLIP_SHADER.contains(define), "shader ignores the {define} variant");
         }
         assert!(
             ROUNDED_CLIP_SHADER.contains("samplerExternalOES"),
@@ -428,13 +349,7 @@ mod tests {
 
     #[test]
     fn every_declared_uniform_appears_in_the_shader() {
-        for name in [
-            UNIFORM_UNIT_SCALE,
-            UNIFORM_UNIT_OFFSET,
-            UNIFORM_DST_SIZE,
-            UNIFORM_CLIP_RECT,
-            UNIFORM_CLIP_RADII,
-        ] {
+        for name in [UNIFORM_UNIT_SCALE, UNIFORM_UNIT_OFFSET, UNIFORM_DST_SIZE, UNIFORM_CLIP_RECT, UNIFORM_CLIP_RADII] {
             assert!(
                 ROUNDED_CLIP_SHADER.contains(name),
                 "uniform {name} is declared to smithay but unused by the shader"
@@ -471,10 +386,7 @@ mod tests {
         let (r, radii) = clip.resolve(rect(500, 400, 100, 50));
         assert!((r[2] - 100.0).abs() < 0.01, "width did not halve: {r:?}");
         assert!((r[3] - 50.0).abs() < 0.01, "height did not halve: {r:?}");
-        assert!(
-            (radii[0] - 6.0).abs() < 0.01,
-            "radius must halve with the preview, got {radii:?}"
-        );
+        assert!((radii[0] - 6.0).abs() < 0.01, "radius must halve with the preview, got {radii:?}");
     }
 
     #[test]
@@ -485,16 +397,9 @@ mod tests {
         let clip = RoundedClip::from_frame(content, frame, 12.0).expect("must build");
 
         let (r, _) = clip.resolve(content);
-        assert!(
-            r[1] < 0.0,
-            "the frame starts above the surface, so the offset must be negative: {r:?}"
-        );
-        #[allow(clippy::cast_precision_loss)]
+        assert!(r[1] < 0.0, "the frame starts above the surface, so the offset must be negative: {r:?}");
         let expected_h = (100 + titlebar) as f32;
-        assert!(
-            (r[3] - expected_h).abs() < 0.01,
-            "clip must span the whole frame height: {r:?}"
-        );
+        assert!((r[3] - expected_h).abs() < 0.01, "clip must span the whole frame height: {r:?}");
     }
 
     #[test]
@@ -508,16 +413,8 @@ mod tests {
     fn a_clip_applies_only_to_untransformed_surfaces() {
         let dst = rect(0, 0, 100, 80);
         assert!(clip_applies(Transform::Normal, dst));
-        for transform in [
-            Transform::_90,
-            Transform::_180,
-            Transform::_270,
-            Transform::Flipped,
-        ] {
-            assert!(
-                !clip_applies(transform, dst),
-                "{transform:?} must fall back to an unclipped draw"
-            );
+        for transform in [Transform::_90, Transform::_180, Transform::_270, Transform::Flipped] {
+            assert!(!clip_applies(transform, dst), "{transform:?} must fall back to an unclipped draw");
         }
     }
 

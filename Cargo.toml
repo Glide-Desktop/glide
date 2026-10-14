@@ -1,15 +1,19 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/glide-appmenu",
     "crates/glide-compositor",
     "crates/glide-config",
     "crates/glide-geom",
+    "crates/glide-files",
     "crates/glide-layout",
     "crates/glide-ipc",
     "crates/glide-media",
     "crates/glide-notify",
     "crates/glide-paint",
+    "crates/glide-settings",
     "crates/glide-theme",
+    "crates/glide-tray",
     "crates/glide-ui",
     "crates/glidectl",
 ]
@@ -45,3 +49,9 @@ manual_while_let_some = { level = "deny", priority = 4 }
 pedantic = { level = "warn", priority = 3 }
 missing_errors_doc = { level = "allow", priority = 4 }
 missing_panics_doc = { level = "allow", priority = 4 }
+cast_possible_truncation = { level = "allow", priority = 4 }
+cast_precision_loss = { level = "allow", priority = 4 }
+cast_sign_loss = { level = "allow", priority = 4 }
+cast_possible_wrap = { level = "allow", priority = 4 }
+cast_lossless = { level = "allow", priority = 4 }
+float_cmp = { level = "allow", priority = 4 }

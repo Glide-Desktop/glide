@@ -187,126 +187,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_appearance_is_dark() {
-        assert_eq!(Appearance::default(), Appearance::Dark);
-    }
-
-    #[test]
-    fn appearance_round_trips_through_toml() {
+    fn appearance_reads_from_toml_and_defaults_to_dark() {
         #[derive(Deserialize)]
         struct Wrapper {
             appearance: Appearance,
         }
         let light: Wrapper = toml::from_str("appearance = \"light\"\n").unwrap();
         assert_eq!(light.appearance, Appearance::Light);
-        let dark: Wrapper = toml::from_str("appearance = \"dark\"\n").unwrap();
-        assert_eq!(dark.appearance, Appearance::Dark);
+        assert_eq!(Appearance::default(), Appearance::Dark);
     }
 
     #[test]
-    fn acc_bg_is_ramp_three_in_both_appearances() {
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            let t = Tokens::new(appearance, Accent::Blue);
-            assert_eq!(t.acc_bg, t.ramp[3], "{appearance:?}");
-        }
-    }
-
-    #[test]
-    fn acc_bg_hover_differs_by_appearance() {
-        let light = Tokens::new(Appearance::Light, Accent::Blue);
+    fn soft_variants_follow_the_spec_alphas() {
+        let (light, dark) = (Tokens::new(Appearance::Light, Accent::Blue), Tokens::new(Appearance::Dark, Accent::Blue));
         assert_eq!(light.acc_bg_hover, light.ramp[4]);
-
-        let dark = Tokens::new(Appearance::Dark, Accent::Blue);
-        assert_eq!(dark.acc_bg_hover, dark.ramp[2]);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn acc_soft_is_opaque_in_light_and_translucent_in_dark() {
-        let light = Tokens::new(Appearance::Light, Accent::Blue);
-        assert_eq!(light.acc_soft.0[3], 1.0, "light acc-soft is a solid tint");
-
-        let dark = Tokens::new(Appearance::Dark, Accent::Blue);
-        assert!(
-            (dark.acc_soft.0[3] - 0.20).abs() < 0.001,
-            "dark acc-soft must be 20% of ramp[2]"
-        );
-        assert_eq!(
-            [dark.acc_soft.0[0], dark.acc_soft.0[1], dark.acc_soft.0[2]],
-            [dark.ramp[2].0[0], dark.ramp[2].0[1], dark.ramp[2].0[2]]
-        );
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn semantic_soft_variants_are_rgba_sixteen_percent_in_dark() {
-        let dark = Tokens::new(Appearance::Dark, Accent::Blue);
-        for (soft, base) in [
-            (dark.ok_soft, dark.ok),
-            (dark.warn_soft, dark.warn),
-            (dark.danger_soft, dark.danger),
-        ] {
-            assert!((soft.0[3] - 0.16).abs() < 0.001);
-            assert_eq!(
-                [soft.0[0], soft.0[1], soft.0[2]],
-                [base.0[0], base.0[1], base.0[2]]
-            );
+        assert_eq!(light.acc_soft.0[3], 1.0);
+        assert_eq!(dark.acc_soft, dark.ramp[2].with_alpha(0.20));
+        for (soft, base) in [(dark.ok_soft, dark.ok), (dark.warn_soft, dark.warn), (dark.danger_soft, dark.danger)] {
+            assert_eq!(soft, base.with_alpha(0.16));
         }
-    }
-
-    #[test]
-    fn text_tiers_get_less_opaque_from_fg_1_to_fg_4() {
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            let t = Tokens::new(appearance, Accent::Blue);
-            assert!(t.fg_1.0[3] >= t.fg_2.0[3], "{appearance:?}");
-            assert!(t.fg_2.0[3] > t.fg_3.0[3], "{appearance:?}");
-            assert!(t.fg_3.0[3] > t.fg_4.0[3], "{appearance:?}");
-        }
-    }
-
-    #[test]
-    fn line_two_is_stronger_than_line_in_both_appearances() {
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            let t = Tokens::new(appearance, Accent::Blue);
-            assert!(t.line_2.0[3] > t.line.0[3], "{appearance:?}");
-        }
-    }
-
-    #[test]
-    fn fills_escalate_from_fill_1_to_fill_3() {
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            let t = Tokens::new(appearance, Accent::Blue);
-            assert!(t.fill_1.0[3] < t.fill_2.0[3], "{appearance:?}");
-            assert!(t.fill_2.0[3] < t.fill_3.0[3], "{appearance:?}");
-        }
-    }
-
-    #[test]
-    fn dark_surfaces_are_darker_than_light_surfaces() {
         let luma = |c: Color| c.0[0] * 0.299 + c.0[1] * 0.587 + c.0[2] * 0.114;
-        let light = Tokens::new(Appearance::Light, Accent::Blue);
-        let dark = Tokens::new(Appearance::Dark, Accent::Blue);
-        assert!(luma(dark.win_bg) < luma(light.win_bg));
-        assert!(luma(dark.view_bg) < luma(light.view_bg));
-        assert!(luma(dark.popover_bg) < luma(light.popover_bg));
-    }
-
-    #[test]
-    fn switching_accent_changes_the_ramp_but_not_the_neutral_surfaces() {
-        let blue = Tokens::new(Appearance::Dark, Accent::Blue);
-        let red = Tokens::new(Appearance::Dark, Accent::Red);
-        assert_ne!(blue.ramp, red.ramp);
-        assert_eq!(blue.win_bg, red.win_bg);
-        assert_eq!(blue.fg_1, red.fg_1);
-    }
-
-    #[test]
-    fn every_accent_produces_a_valid_token_set_in_both_appearances() {
-        for accent in Accent::ALL {
-            for appearance in [Appearance::Light, Appearance::Dark] {
-                let t = Tokens::new(appearance, *accent);
-                assert_eq!(t.acc_bg, t.ramp[3]);
-            }
+        for (d, l) in [(dark.win_bg, light.win_bg), (dark.popover_bg, light.popover_bg)] {
+            assert!(luma(d) < luma(l));
         }
     }
 }

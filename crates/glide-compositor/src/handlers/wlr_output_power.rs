@@ -31,15 +31,7 @@ impl WlrOutputPowerState {
         D: GlobalDispatch<ZwlrOutputPowerManagerV1, GlobalData> + 'static,
     {
         let global = display.create_global::<D, ZwlrOutputPowerManagerV1, _>(1, GlobalData);
-        Self {
-            global,
-            controls: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub const fn global(&self) -> &GlobalId {
-        &self.global
+        Self { global, controls: Vec::new() }
     }
 
     pub fn broadcast_mode(&mut self, blanked: bool) {
@@ -53,25 +45,21 @@ impl WlrOutputPowerState {
 
 impl GlobalDispatch<ZwlrOutputPowerManagerV1, GlobalData> for GlideState {
     fn bind(
-        _state: &mut Self,
-        _dh: &DisplayHandle,
-        _client: &Client,
-        resource: New<ZwlrOutputPowerManagerV1>,
-        _global_data: &GlobalData,
-        data_init: &mut DataInit<'_, Self>,
+        _state: &mut Self, _dh: &DisplayHandle, _client: &Client, resource: New<ZwlrOutputPowerManagerV1>,
+        _global_data: &GlobalData, data_init: &mut DataInit<'_, Self>,
     ) {
         data_init.init(resource, GlobalData);
+    }
+
+    fn can_view(client: Client, _global_data: &GlobalData) -> bool {
+        crate::state::client_is_unrestricted(&client)
     }
 }
 
 impl Dispatch<ZwlrOutputPowerManagerV1, GlobalData> for GlideState {
     fn request(
-        state: &mut Self,
-        _client: &Client,
-        _resource: &ZwlrOutputPowerManagerV1,
-        request: zwlr_output_power_manager_v1::Request,
-        _data: &GlobalData,
-        _dh: &DisplayHandle,
+        state: &mut Self, _client: &Client, _resource: &ZwlrOutputPowerManagerV1,
+        request: zwlr_output_power_manager_v1::Request, _data: &GlobalData, _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
         if let zwlr_output_power_manager_v1::Request::GetOutputPower { id, output } = request {
@@ -80,48 +68,25 @@ impl Dispatch<ZwlrOutputPowerManagerV1, GlobalData> for GlideState {
                 control.failed();
                 return;
             };
-            control.mode(if state.outputs_blanked {
-                Mode::Off
-            } else {
-                Mode::On
-            });
-            state
-                .protocols
-                .wlr_output_power_state
-                .controls
-                .push((control, output));
+            control.mode(if state.outputs_blanked { Mode::Off } else { Mode::On });
+            state.protocols.wlr_output_power_state.controls.push((control, output));
         }
     }
 }
 
 impl Dispatch<ZwlrOutputPowerV1, GlobalData> for GlideState {
     fn request(
-        state: &mut Self,
-        _client: &Client,
-        resource: &ZwlrOutputPowerV1,
-        request: zwlr_output_power_v1::Request,
-        _data: &GlobalData,
-        _dh: &DisplayHandle,
-        _data_init: &mut DataInit<'_, Self>,
+        state: &mut Self, _client: &Client, resource: &ZwlrOutputPowerV1, request: zwlr_output_power_v1::Request,
+        _data: &GlobalData, _dh: &DisplayHandle, _data_init: &mut DataInit<'_, Self>,
     ) {
         match request {
             zwlr_output_power_v1::Request::SetMode { mode } => {
-                let blank = matches!(
-                    mode,
-                    smithay::reexports::wayland_server::WEnum::Value(Mode::Off)
-                );
+                let blank = matches!(mode, smithay::reexports::wayland_server::WEnum::Value(Mode::Off));
                 state.set_outputs_blanked(blank);
-                state
-                    .protocols
-                    .wlr_output_power_state
-                    .broadcast_mode(state.outputs_blanked);
+                state.protocols.wlr_output_power_state.broadcast_mode(state.outputs_blanked);
             }
             zwlr_output_power_v1::Request::Destroy => {
-                state
-                    .protocols
-                    .wlr_output_power_state
-                    .controls
-                    .retain(|(control, _)| control != resource);
+                state.protocols.wlr_output_power_state.controls.retain(|(control, _)| control != resource);
             }
             _ => {}
         }

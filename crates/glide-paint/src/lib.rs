@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use cosmic_text::{
-    Attrs, Buffer, Color as TextColor, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
-    Wrap, fontdb,
+    Attrs, Buffer, Color as TextColor, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache,
+    Weight, Wrap, fontdb,
 };
 
 use glide_theme::{Color, TextStyle};
@@ -27,7 +27,7 @@ pub enum TextAlign {
 mod wallpaper;
 pub use wallpaper::{
     compose_wallpaper, decode_wallpaper, desaturate_in_place, draw_wallpaper, draw_wallpaper_into,
-    embedded_wallpaper_bytes, fit_transform, init_wallpaper, wallpaper_generation,
+    embedded_wallpaper_bytes, fit_transform, init_wallpaper, saturate_in_place, wallpaper_generation,
 };
 
 mod blur;
@@ -35,7 +35,7 @@ pub use blur::box_blur_rgba;
 
 mod border;
 pub use border::{
-    SHADOW_DY_RATIO, ShadowLayerSpec, blit_rounded_backdrop, draw_inset_border,
+    SHADOW_DY_RATIO, ShadowLayerSpec, blit_rounded_backdrop, css_blur_box_radius, draw_inset_border,
     draw_outset_shadow_and_border, shadow_fade_margin,
 };
 
@@ -43,16 +43,31 @@ static EMBEDDED_FONT_BYTES: &[u8] = include_bytes!("fonts/LiberationSans-Regular
 
 const DEFAULT_FAMILY: &str = "Adwaita Sans";
 
+const FALLBACK_FAMILIES: &[&str] =
+    &[DEFAULT_FAMILY, "Cantarell", "Inter", "Noto Sans", "Ubuntu", "DejaVu Sans", "Liberation Sans"];
+
+#[must_use]
+pub fn ui_family<'a>(requested: Option<&str>, available: impl IntoIterator<Item = &'a str>) -> String {
+    let available: Vec<&str> = available.into_iter().map(str::trim).collect();
+    let installed = |name: &str| available.iter().any(|family| family.eq_ignore_ascii_case(name));
+    requested
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && installed(name))
+        .into_iter()
+        .chain(FALLBACK_FAMILIES.iter().copied().filter(|name| installed(name)))
+        .next()
+        .unwrap_or(DEFAULT_FAMILY)
+        .to_string()
+}
+
+const NEVER_POISONED: &str = "single-threaded event loop, this lock is never poisoned";
+
 static PAINTER: RwLock<Option<Arc<Painter>>> = RwLock::new(None);
 static PAINTER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SYSTEM_FONTS: RwLock<Option<Arc<fontdb::Database>>> = RwLock::new(None);
 
 fn system_font_database() -> Arc<fontdb::Database> {
-    if let Some(db) = SYSTEM_FONTS
-        .read()
-        .expect("single-threaded event loop, this lock is never poisoned")
-        .clone()
-    {
+    if let Some(db) = SYSTEM_FONTS.read().expect(NEVER_POISONED).clone() {
         return db;
     }
 
@@ -61,18 +76,14 @@ fn system_font_database() -> Arc<fontdb::Database> {
     db.load_font_data(EMBEDDED_FONT_BYTES.to_vec());
     let db = Arc::new(db);
 
-    let mut slot = SYSTEM_FONTS
-        .write()
-        .expect("single-threaded event loop, this lock is never poisoned");
+    let mut slot = SYSTEM_FONTS.write().expect(NEVER_POISONED);
     *slot = Some(Arc::clone(&db));
     db
 }
 
 pub fn init_or_replace(font_size: f32, family: Option<&str>) {
     let painter = Arc::new(Painter::new(font_size, family));
-    let mut slot = PAINTER
-        .write()
-        .expect("single-threaded event loop, this lock is never poisoned");
+    let mut slot = PAINTER.write().expect(NEVER_POISONED);
     *slot = Some(painter);
     PAINTER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
@@ -83,20 +94,17 @@ pub fn painter_generation() -> u64 {
 }
 
 #[must_use]
+pub fn raster_revision(theme_revision: u64) -> u64 {
+    glide_theme::Revision::new().u64(theme_revision).u64(painter_generation()).finish()
+}
+
+#[must_use]
 pub fn current() -> Arc<Painter> {
-    if let Some(painter) = PAINTER
-        .read()
-        .expect("single-threaded event loop, this lock is never poisoned")
-        .clone()
-    {
+    if let Some(painter) = PAINTER.read().expect(NEVER_POISONED).clone() {
         return painter;
     }
     init_or_replace(14.0, None);
-    PAINTER
-        .read()
-        .expect("single-threaded event loop, this lock is never poisoned")
-        .clone()
-        .expect("init_or_replace just populated the slot")
+    PAINTER.read().expect(NEVER_POISONED).clone().expect("init_or_replace just populated the slot")
 }
 
 const DEFAULT_WEIGHT: u16 = Weight::NORMAL.0;
@@ -104,10 +112,23 @@ const DEFAULT_TRACKING_EM: f32 = 0.0;
 
 const MAX_CACHED_TEXTS_PER_STYLE: usize = 512;
 
-type StyleKey = (u32, u16, u32);
+pub const TABULAR_FAMILY: &str = "JetBrains Mono";
 
-fn style_key(font_size: f32, weight: u16, tracking_em: f32) -> StyleKey {
-    (font_size.to_bits(), weight, tracking_em.to_bits())
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum FaceRole {
+    Ui,
+    Mono,
+}
+
+type StyleKey = (FaceRole, u32, u16, u32, bool);
+
+#[must_use]
+pub fn tabular_family<'a>(available: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
+    available.into_iter().any(|family| family.trim().eq_ignore_ascii_case(TABULAR_FAMILY)).then_some(TABULAR_FAMILY)
+}
+
+fn style_key_with(role: FaceRole, font_size: f32, weight: u16, tracking_em: f32, tabular: bool) -> StyleKey {
+    (role, font_size.to_bits(), weight, tracking_em.to_bits(), tabular)
 }
 
 pub struct Painter {
@@ -116,6 +137,7 @@ pub struct Painter {
     width_cache: Mutex<HashMap<StyleKey, HashMap<String, f32>>>,
     font_size: f32,
     family: String,
+    mono_family: Option<&'static str>,
 }
 
 struct LineMetrics {
@@ -142,35 +164,52 @@ impl Painter {
 
     fn from_db(db: fontdb::Database, font_size: f32, family: Option<&str>) -> Self {
         let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string());
+        let mono_family =
+            tabular_family(db.faces().flat_map(|face| face.families.iter().map(|(name, _)| name.as_str())));
+        let family = ui_family(family, db.faces().flat_map(|face| face.families.iter().map(|(name, _)| name.as_str())));
         let font_system = FontSystem::new_with_locale_and_db(locale, db);
         Self {
             font_system: Mutex::new(font_system),
             swash_cache: Mutex::new(SwashCache::new()),
             width_cache: Mutex::new(HashMap::new()),
             font_size,
-            family: family
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or(DEFAULT_FAMILY)
-                .to_string(),
+            family,
+            mono_family,
+        }
+    }
+
+    #[must_use]
+    pub const fn tabular_family_in_use(&self) -> Option<&'static str> {
+        self.mono_family
+    }
+
+    const fn face_role(&self, tabular: bool) -> FaceRole {
+        if tabular && self.mono_family.is_some() { FaceRole::Mono } else { FaceRole::Ui }
+    }
+
+    fn family_for(&self, role: FaceRole) -> &str {
+        match (role, self.mono_family) {
+            (FaceRole::Mono, Some(mono)) => mono,
+            _ => &self.family,
         }
     }
 
     fn shape(
-        &self,
-        font_system: &mut FontSystem,
-        text: &str,
-        font_size: f32,
-        weight: u16,
-        tracking_em: f32,
+        &self, font_system: &mut FontSystem, text: &str, font_size: f32, weight: u16, tracking_em: f32, tabular: bool,
     ) -> Buffer {
         let metrics = Metrics::new(font_size, font_size * 1.2);
         let mut buffer = Buffer::new(font_system, metrics);
         buffer.set_wrap(Wrap::None);
-        let mut attrs = Attrs::new()
-            .family(Family::Name(&self.family))
-            .weight(Weight(weight));
+        let mut attrs =
+            Attrs::new().family(Family::Name(self.family_for(self.face_role(tabular)))).weight(Weight(weight));
         if tracking_em != DEFAULT_TRACKING_EM {
             attrs = attrs.letter_spacing(tracking_em);
+        }
+        if tabular {
+            let mut features = FontFeatures::new();
+            features.enable(FeatureTag::new(b"tnum"));
+            features.disable(FeatureTag::KERNING);
+            attrs = attrs.font_features(features);
         }
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(font_system, false);
@@ -181,61 +220,34 @@ impl Painter {
         let (width, max_ascent, max_descent) = buffer
             .line_layout(font_system, 0)
             .and_then(|lines| lines.first())
-            .map_or((0.0, 0.0, 0.0), |line| {
-                (line.w, line.max_ascent, line.max_descent)
-            });
+            .map_or((0.0, 0.0, 0.0), |line| (line.w, line.max_ascent, line.max_descent));
         let baseline_y = buffer.layout_runs().next().map_or(0.0, |run| run.line_y);
-        LineMetrics {
-            width,
-            baseline_y,
-            max_ascent,
-            max_descent,
-        }
+        LineMetrics { width, baseline_y, max_ascent, max_descent }
     }
 
-    fn measure_width_uncached(
-        &self,
-        text: &str,
-        font_size: f32,
-        weight: u16,
-        tracking_em: f32,
-    ) -> f32 {
-        let mut font_system = self
-            .font_system
-            .lock()
-            .expect("single-threaded event loop, this lock is never poisoned");
-        let mut buffer = self.shape(&mut font_system, text, font_size, weight, tracking_em);
+    fn measure_width_uncached(&self, text: &str, font_size: f32, weight: u16, tracking_em: f32, tabular: bool) -> f32 {
+        let mut font_system = self.font_system.lock().expect(NEVER_POISONED);
+        let mut buffer = self.shape(&mut font_system, text, font_size, weight, tracking_em, tabular);
         Self::line_metrics(&mut font_system, &mut buffer).width
     }
 
-    fn measure_width_cached(
-        &self,
-        text: &str,
-        font_size: f32,
-        weight: u16,
-        tracking_em: f32,
+    fn measure_width_cached_with(
+        &self, text: &str, font_size: f32, weight: u16, tracking_em: f32, tabular: bool,
     ) -> f32 {
         if text.is_empty() {
             return 0.0;
         }
-        let key = style_key(font_size, weight, tracking_em);
+        let key = style_key_with(self.face_role(tabular), font_size, weight, tracking_em, tabular);
 
-        if let Some(width) = self
-            .width_cache
-            .lock()
-            .expect("single-threaded event loop, this lock is never poisoned")
-            .get(&key)
-            .and_then(|by_text| by_text.get(text))
+        if let Some(width) =
+            self.width_cache.lock().expect(NEVER_POISONED).get(&key).and_then(|by_text| by_text.get(text))
         {
             return *width;
         }
 
-        let width = self.measure_width_uncached(text, font_size, weight, tracking_em);
+        let width = self.measure_width_uncached(text, font_size, weight, tracking_em, tabular);
 
-        let mut cache = self
-            .width_cache
-            .lock()
-            .expect("single-threaded event loop, this lock is never poisoned");
+        let mut cache = self.width_cache.lock().expect(NEVER_POISONED);
         let by_text = cache.entry(key).or_default();
         if by_text.len() >= MAX_CACHED_TEXTS_PER_STYLE {
             by_text.clear();
@@ -246,26 +258,21 @@ impl Painter {
     }
 
     fn fit_text_at(
-        &self,
-        text: &str,
-        avail_w: i32,
-        font_size: f32,
-        weight: u16,
-        tracking_em: f32,
+        &self, text: &str, avail_w: i32, font_size: f32, weight: u16, tracking_em: f32, tabular: bool,
     ) -> String {
         let avail_w = avail_w as f32;
         if avail_w <= 0.0 {
             return String::new();
         }
-        if self.measure_width_cached(text, font_size, weight, tracking_em) <= avail_w {
+        let measure =
+            |candidate: &str| self.measure_width_cached_with(candidate, font_size, weight, tracking_em, tabular);
+        if measure(text) <= avail_w {
             return text.to_owned();
         }
 
         let chars: Vec<char> = text.chars().collect();
         let candidate_at = |k: usize| -> String { chars[..k].iter().collect::<String>() + "…" };
-        let fits = |k: usize| -> bool {
-            self.measure_width_cached(&candidate_at(k), font_size, weight, tracking_em) <= avail_w
-        };
+        let fits = |k: usize| -> bool { measure(&candidate_at(k)) <= avail_w };
 
         if chars.is_empty() || !fits(0) {
             return String::new();
@@ -286,37 +293,23 @@ impl Painter {
 
     #[must_use]
     pub fn text_width(&self, text: &str) -> f32 {
-        self.measure_width_cached(text, self.font_size, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM)
+        self.measure_width_cached_with(text, self.font_size, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM, false)
     }
 
     #[must_use]
     pub fn text_width_styled(&self, text: &str, style: &TextStyle) -> f32 {
         let text = Self::apply_case(text, style);
-        self.measure_width_cached(&text, style.size_px, style.weight, style.tracking_em)
+        self.measure_width_cached_with(&text, style.size_px, style.weight, style.tracking_em, style.tabular)
     }
 
     fn apply_case<'a>(text: &'a str, style: &TextStyle) -> std::borrow::Cow<'a, str> {
-        if style.uppercase {
-            std::borrow::Cow::Owned(text.to_uppercase())
-        } else {
-            std::borrow::Cow::Borrowed(text)
-        }
+        if style.uppercase { std::borrow::Cow::Owned(text.to_uppercase()) } else { std::borrow::Cow::Borrowed(text) }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_label_over(
-        &self,
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        x_min: i32,
-        x_max: i32,
-        scale: i32,
-        align: TextAlign,
-        text: &str,
-        fg_argb: [u8; 4],
+        &self, buf: &mut [u8], width: i32, height: i32, x_min: i32, x_max: i32, scale: i32, align: TextAlign,
+        text: &str, fg_argb: [u8; 4],
     ) {
-        #[allow(clippy::cast_precision_loss)]
         let font_size = self.font_size * scale as f32;
         self.draw_label_at(
             buf,
@@ -333,62 +326,24 @@ impl Painter {
             font_size,
             DEFAULT_WEIGHT,
             DEFAULT_TRACKING_EM,
+            false,
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_label_over_styled(
-        &self,
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        x_min: i32,
-        x_max: i32,
-        scale: i32,
-        align: TextAlign,
-        text: &str,
-        fg_argb: [u8; 4],
-        style: &TextStyle,
+        &self, buf: &mut [u8], width: i32, height: i32, x_min: i32, x_max: i32, scale: i32, align: TextAlign,
+        text: &str, fg_argb: [u8; 4], style: &TextStyle,
     ) {
-        let text = Self::apply_case(text, style);
-        #[allow(clippy::cast_precision_loss)]
-        let font_size = style.size_px * scale as f32;
-        self.draw_label_at(
-            buf,
-            width,
-            height,
-            x_min,
-            x_max,
-            0,
-            height,
-            scale,
-            align,
-            &text,
-            fg_argb,
-            font_size,
-            style.weight,
-            style.tracking_em,
+        self.draw_label_over_styled_in_band(
+            buf, width, height, x_min, x_max, 0, height, scale, align, text, fg_argb, style,
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_label_over_styled_in_band(
-        &self,
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        x_min: i32,
-        x_max: i32,
-        y_min: i32,
-        y_max: i32,
-        scale: i32,
-        align: TextAlign,
-        text: &str,
-        fg_argb: [u8; 4],
-        style: &TextStyle,
+        &self, buf: &mut [u8], width: i32, height: i32, x_min: i32, x_max: i32, y_min: i32, y_max: i32, scale: i32,
+        align: TextAlign, text: &str, fg_argb: [u8; 4], style: &TextStyle,
     ) {
         let text = Self::apply_case(text, style);
-        #[allow(clippy::cast_precision_loss)]
         let font_size = style.size_px * scale as f32;
         self.draw_label_at(
             buf,
@@ -405,26 +360,14 @@ impl Painter {
             font_size,
             style.weight,
             style.tracking_em,
+            style.tabular,
         );
     }
 
-    #[allow(clippy::too_many_arguments, clippy::similar_names)]
+    #[allow(clippy::similar_names)]
     fn draw_label_at(
-        &self,
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        x_min: i32,
-        x_max: i32,
-        y_min: i32,
-        y_max: i32,
-        scale: i32,
-        align: TextAlign,
-        text: &str,
-        fg_argb: [u8; 4],
-        font_size: f32,
-        weight: u16,
-        tracking_em: f32,
+        &self, buf: &mut [u8], width: i32, height: i32, x_min: i32, x_max: i32, y_min: i32, y_max: i32, scale: i32,
+        align: TextAlign, text: &str, fg_argb: [u8; 4], font_size: f32, weight: u16, tracking_em: f32, tabular: bool,
     ) {
         let (pw, ph) = (width * scale, height * scale);
         if pw <= 0 || ph <= 0 || buf.len() < (pw * ph * 4) as usize {
@@ -433,21 +376,15 @@ impl Painter {
         let (px_min, px_max) = (x_min * scale, x_max * scale);
         let (py_min, py_max) = (y_min * scale, y_max * scale);
 
-        let text = self.fit_text_at(text, px_max - px_min, font_size, weight, tracking_em);
+        let text = self.fit_text_at(text, px_max - px_min, font_size, weight, tracking_em, tabular);
         if text.is_empty() {
             return;
         }
 
-        let mut font_system = self
-            .font_system
-            .lock()
-            .expect("single-threaded event loop, this lock is never poisoned");
-        let mut swash_cache = self
-            .swash_cache
-            .lock()
-            .expect("single-threaded event loop, this lock is never poisoned");
+        let mut font_system = self.font_system.lock().expect(NEVER_POISONED);
+        let mut swash_cache = self.swash_cache.lock().expect(NEVER_POISONED);
 
-        let mut buffer = self.shape(&mut font_system, &text, font_size, weight, tracking_em);
+        let mut buffer = self.shape(&mut font_system, &text, font_size, weight, tracking_em, tabular);
         let metrics = Self::line_metrics(&mut font_system, &mut buffer);
         if metrics.width <= 0.0 {
             return;
@@ -462,47 +399,34 @@ impl Painter {
         };
         let content_h = metrics.max_ascent + metrics.max_descent;
         let band_h = (py_max - py_min) as f32;
-        let y_off =
-            py_min + ((band_h - content_h) / 2.0 - metrics.baseline_y + metrics.max_ascent) as i32;
+        let y_off = py_min + ((band_h - content_h) / 2.0 - metrics.baseline_y + metrics.max_ascent) as i32;
 
         let fg = TextColor::rgba(fg_argb[0], fg_argb[1], fg_argb[2], fg_argb[3]);
-        buffer.draw(
-            &mut font_system,
-            &mut swash_cache,
-            fg,
-            |x, y, gw, gh, color| {
-                let (r, g, b, a) = color.as_rgba_tuple();
-                if a == 0 {
-                    return;
-                }
-                for row in 0..gh as i32 {
-                    for col in 0..gw as i32 {
-                        let px = x_off + x + col;
-                        let py = y_off + y + row;
-                        if px < 0 || py < 0 || px >= pw || py >= ph {
-                            continue;
-                        }
-                        let offset = ((py * pw + px) * 4) as usize;
-                        if offset + 3 >= buf.len() {
-                            continue;
-                        }
-                        let dst: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
-                        let out = composite_over(dst, [r, g, b], a);
-                        buf[offset..offset + 4].copy_from_slice(&out);
+        buffer.draw(&mut font_system, &mut swash_cache, fg, |x, y, gw, gh, color| {
+            let (r, g, b, a) = color.as_rgba_tuple();
+            if a == 0 {
+                return;
+            }
+            for row in 0..gh as i32 {
+                for col in 0..gw as i32 {
+                    let px = x_off + x + col;
+                    let py = y_off + y + row;
+                    if px < 0 || py < 0 || px >= pw || py >= ph {
+                        continue;
                     }
+                    let offset = ((py * pw + px) * 4) as usize;
+                    if offset + 3 >= buf.len() {
+                        continue;
+                    }
+                    let dst: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
+                    let out = composite_over(dst, [r, g, b], a);
+                    buf[offset..offset + 4].copy_from_slice(&out);
                 }
-            },
-        );
+            }
+        });
     }
 
-    pub fn draw_icon_maximize(
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        scale: i32,
-        fg: Color,
-        bg: Color,
-    ) {
+    pub fn draw_icon_maximize(buf: &mut [u8], width: i32, height: i32, scale: i32, fg: Color, bg: Color) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
             let (x0, y0, x1, y1) = glyph_bounds(width, height);
             let w = x1 - x0;
@@ -514,42 +438,24 @@ impl Painter {
         });
     }
 
-    pub fn draw_icon_restore(
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        scale: i32,
-        fg: Color,
-        bg: Color,
-    ) {
+    pub fn draw_icon_restore(buf: &mut [u8], width: i32, height: i32, scale: i32, fg: Color, bg: Color) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
             let (x0, y0, x1, y1) = glyph_bounds(width, height);
             let offset = ((x1 - x0) * 0.28).max(1.0);
             let rx = ((x1 - offset - x0) * (1.6 / 7.6)).max(1.0);
 
-            if let Some(path) =
-                rounded_rect(x0 + offset, y0, x1 - offset - x0, y1 - offset - y0, rx)
-            {
+            if let Some(path) = rounded_rect(x0 + offset, y0, x1 - offset - x0, y1 - offset - y0, rx) {
                 stroke(pixmap, &path, fg, height, scale);
             }
 
-            if let Some(path) =
-                rounded_rect(x0, y0 + offset, x1 - offset - x0, y1 - offset - y0, rx)
-            {
+            if let Some(path) = rounded_rect(x0, y0 + offset, x1 - offset - x0, y1 - offset - y0, rx) {
                 fill(pixmap, &path, bg, scale);
                 stroke(pixmap, &path, fg, height, scale);
             }
         });
     }
 
-    pub fn draw_icon_close(
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        scale: i32,
-        fg: Color,
-        bg: Color,
-    ) {
+    pub fn draw_icon_close(buf: &mut [u8], width: i32, height: i32, scale: i32, fg: Color, bg: Color) {
         render_icon(buf, width, height, scale, bg, |pixmap| {
             let (x0, y0, x1, y1) = glyph_bounds(width, height);
             let mut pb = tiny_skia::PathBuilder::new();
@@ -564,49 +470,21 @@ impl Painter {
     }
 
     pub fn fill_panel_background(
-        buf: &mut [u8],
-        width: i32,
-        height: i32,
-        scale: i32,
-        bg: Color,
-        radius: f32,
-        corners: [bool; 4],
+        buf: &mut [u8], width: i32, height: i32, scale: i32, bg: Color, radius: f32, corners: [bool; 4],
     ) {
-        let (Ok(w), Ok(h)) = (u32::try_from(width * scale), u32::try_from(height * scale)) else {
+        let Some(mut pixmap) = cleared(buf, width, height, scale) else {
             return;
         };
-        let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-            return;
-        };
-        if let Some(path) =
-            rounded_rect_corners(0.0, 0.0, width as f32, height as f32, radius, corners)
-        {
+        if let Some(path) = rounded_rect_corners(0.0, 0.0, width as f32, height as f32, radius, corners) {
             fill(&mut pixmap, &path, bg, scale);
         }
-        let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-        let n = bytes.len().min(buf.len());
-        buf[..n].copy_from_slice(&bytes[..n]);
     }
 
     pub fn fill_rounded_rect_over(
-        buf: &mut [u8],
-        canvas_width: i32,
-        canvas_height: i32,
-        rect_x: i32,
-        rect_y: i32,
-        rect_width: i32,
-        rect_height: i32,
-        scale: i32,
-        color: Color,
-        radius: f32,
+        buf: &mut [u8], canvas_width: i32, canvas_height: i32, rect_x: i32, rect_y: i32, rect_width: i32,
+        rect_height: i32, scale: i32, color: Color, radius: f32,
     ) {
-        let (Ok(cw), Ok(ch)) = (
-            u32::try_from(canvas_width * scale),
-            u32::try_from(canvas_height * scale),
-        ) else {
-            return;
-        };
-        let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(buf, cw, ch) else {
+        let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
             return;
         };
         let Some(path) = rounded_rect(
@@ -619,21 +497,9 @@ impl Painter {
             return;
         };
         let [r, g, b, a] = color.0;
-        let bgra_color = tiny_skia::Color::from_rgba(
-            b.clamp(0.0, 1.0),
-            g.clamp(0.0, 1.0),
-            r.clamp(0.0, 1.0),
-            a.clamp(0.0, 1.0),
-        )
-        .unwrap_or(tiny_skia::Color::TRANSPARENT);
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(bgra_color),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
         pixmap.fill_path(
             &path,
-            &paint,
+            &paint_for(Color([b, g, r, a])),
             tiny_skia::FillRule::Winding,
             tiny_skia::Transform::identity(),
             None,
@@ -655,287 +521,200 @@ fn composite_over(dst: [u8; 4], src_rgb_straight: [u8; 3], src_alpha: u8) -> [u8
     ]
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_coffee_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    centre_x: f32,
-    centre_y: f32,
-    glyph_side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
-    steam: bool,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, centre_x: f32, centre_y: f32, glyph_side: f32,
+    stroke_width: f32, scale: i32, fg: Color, steam: bool,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
     if glyph_side <= 0.0 || stroke_width <= 0.0 {
         return;
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
-
-    #[allow(clippy::cast_precision_loss)]
     let scale_f = scale as f32;
     let side = glyph_side * scale_f;
     let (cx, cy) = (centre_x * scale_f, centre_y * scale_f);
 
-    let body_w = side * 0.52;
-    let body_h = side * 0.44;
+    let body_w = side * 0.50;
+    let body_h = side * 0.42;
     let left = cx - body_w / 2.0;
     let right = cx + body_w / 2.0;
-    let top = cy - body_h * 0.30;
+    let top = cy - body_h * 0.25;
     let bottom = top + body_h;
+    let corner_r = body_w * 0.32;
 
     let mut pb = tiny_skia::PathBuilder::new();
     pb.move_to(left, top);
-    pb.line_to(left + body_w * 0.10, bottom);
-    pb.line_to(right - body_w * 0.10, bottom);
+    pb.line_to(left, bottom - corner_r);
+    pb.quad_to(left, bottom, left + corner_r, bottom);
+    pb.line_to(right - corner_r, bottom);
+    pb.quad_to(right, bottom, right, bottom - corner_r);
     pb.line_to(right, top);
     pb.close();
 
-    let handle_r = body_h * 0.30;
-    let handle_cy = top + body_h * 0.34;
-    pb.move_to(right - body_w * 0.02, handle_cy - handle_r);
-    pb.cubic_to(
-        right + handle_r * 1.6,
-        handle_cy - handle_r,
-        right + handle_r * 1.6,
-        handle_cy + handle_r,
-        right - body_w * 0.08,
-        handle_cy + handle_r,
-    );
+    let handle_w = body_w * 0.30;
+    let handle_top = top + body_h * 0.18;
+    let handle_bottom = top + body_h * 0.72;
+    pb.move_to(right, handle_top);
+    pb.quad_to(right + handle_w, handle_top, right + handle_w, f32::midpoint(handle_top, handle_bottom));
+    pb.quad_to(right + handle_w, handle_bottom, right, handle_bottom);
 
     if steam {
-        for offset in [-body_w * 0.22, 0.0, body_w * 0.22] {
-            let x = cx + offset;
-            let y0 = top - side * 0.10;
-            pb.move_to(x, y0);
-            pb.line_to(x, y0 - side * 0.16);
+        let steam_h = side * 0.14;
+        let y_bot = top - side * 0.08;
+        let y_top = y_bot - steam_h;
+        for offset in [-body_w * 0.24, 0.0, body_w * 0.24] {
+            polyline(&mut pb, [(cx + offset, y_bot), (cx + offset, y_top)]);
         }
     }
 
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let stroke = round_stroke(stroke_width * scale_f, tiny_skia::LineJoin::Round);
+    stroke_solid(&mut pixmap, pb.finish(), bgr(fg), &stroke);
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_search_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    centre_x: f32,
-    centre_y: f32,
-    glyph_side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, centre_x: f32, centre_y: f32, glyph_side: f32,
+    stroke_width: f32, scale: i32, fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
     if glyph_side <= 0.0 || stroke_width <= 0.0 {
         return;
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
-
-    #[allow(clippy::cast_precision_loss)]
     let scale_f = scale as f32;
     let side = glyph_side * scale_f;
     let (cx, cy) = (centre_x * scale_f, centre_y * scale_f);
 
     let radius = side * 0.32;
     let lens = (cx - side * 0.5 + radius, cy - side * 0.5 + radius);
-    let handle_from = (
-        lens.0 + radius * std::f32::consts::FRAC_1_SQRT_2,
-        lens.1 + radius * std::f32::consts::FRAC_1_SQRT_2,
-    );
-    let handle_to = (cx + side * 0.5, cy + side * 0.5);
-
+    let handle_from =
+        (lens.0 + radius * std::f32::consts::FRAC_1_SQRT_2, lens.1 + radius * std::f32::consts::FRAC_1_SQRT_2);
     let mut pb = tiny_skia::PathBuilder::new();
     pb.push_circle(lens.0, lens.1, radius);
-    pb.move_to(handle_from.0, handle_from.1);
-    pb.line_to(handle_to.0, handle_to.1);
+    polyline(&mut pb, [handle_from, (cx + side * 0.5, cy + side * 0.5)]);
 
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let stroke = round_stroke(stroke_width * scale_f, tiny_skia::LineJoin::Miter);
+    stroke_solid(&mut pixmap, pb.finish(), bgr(fg), &stroke);
 }
 
 pub fn draw_close_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    glyph_side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, glyph_side: f32, stroke_width: f32, scale: i32, fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
     if glyph_side <= 0.0 || stroke_width <= 0.0 {
         return;
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
-
-    #[allow(clippy::cast_precision_loss)]
     let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let (cx, cy) = (
-        canvas_width as f32 * scale_f / 2.0,
-        canvas_height as f32 * scale_f / 2.0,
-    );
+    let (cx, cy) = (canvas_width as f32 * scale_f / 2.0, canvas_height as f32 * scale_f / 2.0);
     let half = glyph_side * scale_f / 2.0;
 
     let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(cx - half, cy - half);
-    pb.line_to(cx + half, cy + half);
-    pb.move_to(cx + half, cy - half);
-    pb.line_to(cx - half, cy + half);
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    polyline(&mut pb, [(cx - half, cy - half), (cx + half, cy + half)]);
+    polyline(&mut pb, [(cx + half, cy - half), (cx - half, cy + half)]);
+    let stroke = round_stroke(stroke_width * scale_f, tiny_skia::LineJoin::Miter);
+    stroke_solid(&mut pixmap, pb.finish(), bgr(fg), &stroke);
 }
 
 #[must_use]
 pub fn render_svg(data: &[u8], side: i32) -> Option<Vec<u8>> {
-    let side_u32 = u32::try_from(side).ok()?;
-    if side_u32 == 0 {
-        return None;
-    }
-
+    let side_u32 = square_side(side)?;
     let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
     let intrinsic = tree.size();
     if intrinsic.width() <= 0.0 || intrinsic.height() <= 0.0 {
         return None;
     }
-
-    #[allow(clippy::cast_precision_loss)]
-    let target = side as f32;
-    let scale = (target / intrinsic.width()).min(target / intrinsic.height());
-    let (dx, dy) = (
-        (target - intrinsic.width() * scale) / 2.0,
-        (target - intrinsic.height() * scale) / 2.0,
-    );
-
     let mut pixmap = tiny_skia::Pixmap::new(side_u32, side_u32)?;
-    let transform = tiny_skia::Transform::from_translate(dx, dy).pre_scale(scale, scale);
+    let transform = fit_square_transform(intrinsic.width(), intrinsic.height(), side, true);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
+    if pixmap.pixels().iter().all(|px| px.alpha() == 0) {
+        return None;
+    }
     Some(skia_pixmap_into_buffer_bytes(pixmap))
 }
 
 #[must_use]
-pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
-    let side_u32 = u32::try_from(side).ok()?;
-    if side_u32 == 0 {
-        return None;
+pub fn render_svg_tinted(data: &[u8], side: i32, tint: Color) -> Option<Vec<u8>> {
+    let mut bytes = render_svg(data, side)?;
+    tint_buffer(&mut bytes, tint);
+    Some(bytes)
+}
+
+#[must_use]
+pub fn render_png_tinted(data: &[u8], side: i32, tint: Color) -> Option<Vec<u8>> {
+    let mut bytes = render_png(data, side)?;
+    tint_buffer(&mut bytes, tint);
+    Some(bytes)
+}
+
+fn tint_buffer(bytes: &mut [u8], tint: Color) {
+    let [r, g, b, a] = tint.0;
+    for pixel in bytes.chunks_exact_mut(4) {
+        let alpha = f32::from(pixel[3]) / 255.0;
+        let channel = |c: f32| (c * alpha * a * 255.0).round() as u8;
+        let out_alpha = (a * alpha * 255.0).round() as u8;
+        pixel.copy_from_slice(&[channel(b), channel(g), channel(r), out_alpha]);
     }
+}
 
-    let source = tiny_skia::Pixmap::decode_png(data).ok()?;
-    #[allow(clippy::cast_precision_loss)]
+fn halve_pixmap(source: &tiny_skia::Pixmap) -> Option<tiny_skia::Pixmap> {
+    let (w, h) = (source.width() / 2, source.height() / 2);
+    let mut out = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
+    let src = source.data();
+    let stride = source.width() as usize * 4;
+    let out_stride = out.width() as usize * 4;
+    let dst = out.data_mut();
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let a = (2 * y) * stride + (2 * x) * 4;
+            let b = a + stride;
+            for c in 0..4 {
+                let sum = u16::from(src[a + c])
+                    + u16::from(src[a + 4 + c])
+                    + u16::from(src[b + c])
+                    + u16::from(src[b + 4 + c]);
+                dst[y * out_stride + x * 4 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    Some(out)
+}
+
+#[must_use]
+pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
+    let side_u32 = square_side(side)?;
+    let mut source = tiny_skia::Pixmap::decode_png(data).ok()?;
+    while source.width().min(source.height()) >= side_u32 * 2 {
+        source = halve_pixmap(&source)?;
+    }
+    let (w, h) = (source.width() as f32, source.height() as f32);
+    let transform = fit_square_transform(w, h, side, true);
+    draw_bilinear(source.as_ref(), side_u32, transform).map(skia_pixmap_into_buffer_bytes)
+}
+
+fn square_side(side: i32) -> Option<u32> {
+    u32::try_from(side).ok().filter(|&side| side > 0)
+}
+
+fn fit_square_transform(src_w: f32, src_h: f32, side: i32, snap: bool) -> tiny_skia::Transform {
     let target = side as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let scale = (target / source.width() as f32).min(target / source.height() as f32);
-    #[allow(clippy::cast_precision_loss)]
-    let (dx, dy) = (
-        (target - source.width() as f32 * scale) / 2.0,
-        (target - source.height() as f32 * scale) / 2.0,
-    );
+    let scale = (target / src_w).min(target / src_h);
+    let (dx, dy) = ((target - src_w * scale) / 2.0, (target - src_h * scale) / 2.0);
+    let (dx, dy) = if snap { (dx.round(), dy.round()) } else { (dx, dy) };
+    tiny_skia::Transform::from_translate(dx, dy).pre_scale(scale, scale)
+}
 
-    let mut pixmap = tiny_skia::Pixmap::new(side_u32, side_u32)?;
-    pixmap.draw_pixmap(
-        0,
-        0,
-        source.as_ref(),
-        &tiny_skia::PixmapPaint {
-            quality: tiny_skia::FilterQuality::Bilinear,
-            ..tiny_skia::PixmapPaint::default()
-        },
-        tiny_skia::Transform::from_translate(dx, dy).pre_scale(scale, scale),
-        None,
-    );
-
-    Some(skia_pixmap_into_buffer_bytes(pixmap))
+fn draw_bilinear(
+    source: tiny_skia::PixmapRef, side: u32, transform: tiny_skia::Transform,
+) -> Option<tiny_skia::Pixmap> {
+    let mut pixmap = tiny_skia::Pixmap::new(side, side)?;
+    let paint =
+        tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..tiny_skia::PixmapPaint::default() };
+    pixmap.draw_pixmap(0, 0, source, &paint, transform, None);
+    Some(pixmap)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -949,156 +728,43 @@ pub enum DockGlyph {
     Grid,
 }
 
-fn push_rounded_rect(
-    pb: &mut tiny_skia::PathBuilder,
-    x_pos: f32,
-    y_pos: f32,
-    width: f32,
-    height: f32,
-    radius: f32,
-) {
-    let r = radius.max(0.0).min(width.min(height) / 2.0);
-    if r <= 0.0 {
-        if let Some(rect) = tiny_skia::Rect::from_xywh(x_pos, y_pos, width, height) {
-            pb.push_rect(rect);
-        }
-        return;
-    }
-    let k = r * KAPPA;
-    pb.move_to(x_pos + r, y_pos);
-    pb.line_to(x_pos + width - r, y_pos);
-    pb.cubic_to(
-        x_pos + width - r + k,
-        y_pos,
-        x_pos + width,
-        y_pos + r - k,
-        x_pos + width,
-        y_pos + r,
-    );
-    pb.line_to(x_pos + width, y_pos + height - r);
-    pb.cubic_to(
-        x_pos + width,
-        y_pos + height - r + k,
-        x_pos + width - r + k,
-        y_pos + height,
-        x_pos + width - r,
-        y_pos + height,
-    );
-    pb.line_to(x_pos + r, y_pos + height);
-    pb.cubic_to(
-        x_pos + r - k,
-        y_pos + height,
-        x_pos,
-        y_pos + height - r + k,
-        x_pos,
-        y_pos + height - r,
-    );
-    pb.line_to(x_pos, y_pos + r);
-    pb.cubic_to(x_pos, y_pos + r - k, x_pos + r - k, y_pos, x_pos + r, y_pos);
-    pb.close();
-}
-
-#[allow(clippy::too_many_lines)]
-pub fn draw_dock_glyph(
-    buf: &mut [u8],
-    width: i32,
-    height: i32,
-    scale: i32,
-    glyph: DockGlyph,
-    color: Color,
-) {
-    let (Ok(pixel_width), Ok(pixel_height)) =
-        (u32::try_from(width * scale), u32::try_from(height * scale))
-    else {
+pub fn draw_dock_glyph(buf: &mut [u8], width: i32, height: i32, scale: i32, glyph: DockGlyph, color: Color) {
+    let Some(mut pixmap) = over(buf, width, height, scale) else {
         return;
     };
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(pixel_width, pixel_height) else {
-        return;
-    };
-
-    if glyph == DockGlyph::Grid {
-        #[allow(clippy::cast_precision_loss)]
-        let grid_unit = (width.min(height) as f32 * scale as f32) / 2.0 / 18.0;
-        #[allow(clippy::cast_precision_loss)]
-        let origin_x = (width as f32 * scale as f32 - 18.0 * grid_unit) / 2.0;
-        #[allow(clippy::cast_precision_loss)]
-        let origin_y = (height as f32 * scale as f32 - 18.0 * grid_unit) / 2.0;
-        let mut pb = tiny_skia::PathBuilder::new();
-        for &cy in &[1.0_f32, 7.0, 13.0] {
-            for &cx in &[1.0_f32, 7.0, 13.0] {
-                push_rounded_rect(
-                    &mut pb,
-                    origin_x + cx * grid_unit,
-                    origin_y + cy * grid_unit,
-                    4.0 * grid_unit,
-                    4.0 * grid_unit,
-                    1.2 * grid_unit,
-                );
-            }
-        }
-        if let Some(path) = pb.finish() {
-            let paint = tiny_skia::Paint {
-                shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
-                anti_alias: true,
-                ..tiny_skia::Paint::default()
-            };
-            pixmap.fill_path(
-                &path,
-                &paint,
-                tiny_skia::FillRule::Winding,
-                tiny_skia::Transform::identity(),
-                None,
-            );
-        }
-        let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-        let n = bytes.len().min(buf.len());
-        crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
-        return;
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    let unit = (width.min(height) as f32 * scale as f32) / 2.0 / 20.0;
-    #[allow(clippy::cast_precision_loss)]
-    let origin_x = (width as f32 * scale as f32 - 20.0 * unit) / 2.0;
-    #[allow(clippy::cast_precision_loss)]
-    let origin_y = (height as f32 * scale as f32 - 20.0 * unit) / 2.0;
+    let grid = if glyph == DockGlyph::Grid { 18.0 } else { 20.0 };
+    let unit = (width.min(height) as f32 * scale as f32) / 2.0 / grid;
+    let origin_x = (width as f32 * scale as f32 - grid * unit) / 2.0;
+    let origin_y = (height as f32 * scale as f32 - grid * unit) / 2.0;
     let p = |x: f32, y: f32| (origin_x + x * unit, origin_y + y * unit);
-
     let mut pb = tiny_skia::PathBuilder::new();
+    let mut rounded = |x: f32, y: f32, w: f32, h: f32, r: f32| {
+        let (x, y) = p(x, y);
+        if let Some(path) = rounded_rect(x, y, w * unit, h * unit, r * unit) {
+            pb.push_path(&path);
+        }
+    };
+
     match glyph {
+        DockGlyph::Grid => {
+            for cy in [1.0, 7.0, 13.0] {
+                for cx in [1.0, 7.0, 13.0] {
+                    rounded(cx, cy, 4.0, 4.0, 1.2);
+                }
+            }
+            fill_solid(&mut pixmap, pb.finish(), bgr(color));
+            return;
+        }
         DockGlyph::Terminal => {
-            push_rounded_rect(
-                &mut pb,
-                origin_x + 2.5 * unit,
-                origin_y + 3.5 * unit,
-                15.0 * unit,
-                13.0 * unit,
-                2.5 * unit,
-            );
-            let (mx, my) = p(6.0, 8.0);
-            pb.move_to(mx, my);
-            let (lx, ly) = p(8.5, 10.0);
-            pb.line_to(lx, ly);
-            let (ex, ey) = p(6.0, 12.0);
-            pb.line_to(ex, ey);
-            let (ux, uy) = p(10.5, 12.5);
-            pb.move_to(ux, uy);
-            let (vx, vy) = p(14.5, 12.5);
-            pb.line_to(vx, vy);
+            rounded(2.5, 3.5, 15.0, 13.0, 2.5);
+            polyline(&mut pb, [p(6.0, 8.0), p(8.5, 10.0), p(6.0, 12.0)]);
+            polyline(&mut pb, [p(10.5, 12.5), p(14.5, 12.5)]);
         }
         DockGlyph::Files => {
-            let (sx, sy) = p(2.5, 5.0);
-            pb.move_to(sx, sy);
-            let (ax, ay) = p(7.5, 5.0);
-            pb.line_to(ax, ay);
-            let (bx, by) = p(9.0, 7.0);
-            pb.line_to(bx, by);
-            let (cx, cy) = p(17.5, 7.0);
-            pb.line_to(cx, cy);
-            let (dx, dy) = p(17.5, 15.5);
-            pb.line_to(dx, dy);
-            let (ex, ey) = p(2.5, 15.5);
-            pb.line_to(ex, ey);
+            polyline(
+                &mut pb,
+                [(2.5, 5.0), (7.5, 5.0), (9.0, 7.0), (17.5, 7.0), (17.5, 15.5), (2.5, 15.5)].map(|(x, y)| p(x, y)),
+            );
             pb.close();
         }
         DockGlyph::Settings => {
@@ -1114,114 +780,37 @@ pub fn draw_dock_glyph(
                 (15.7, 15.7, 14.1, 14.1),
                 (5.9, 5.9, 4.3, 4.3),
             ] {
-                let (ax, ay) = p(x1, y1);
-                let (bx, by) = p(x2, y2);
-                pb.move_to(ax, ay);
-                pb.line_to(bx, by);
+                polyline(&mut pb, [p(x1, y1), p(x2, y2)]);
             }
         }
         DockGlyph::Music => {
-            let (sx, sy) = p(7.5, 14.0);
-            pb.move_to(sx, sy);
-            let (ax, ay) = p(7.5, 5.0);
-            pb.line_to(ax, ay);
-            let (bx, by) = p(14.5, 3.5);
-            pb.line_to(bx, by);
-            let (cx, cy) = p(14.5, 13.0);
-            pb.line_to(cx, cy);
-            let (d1x, d1y) = p(5.8, 14.2);
-            pb.push_circle(d1x, d1y, 1.8 * unit);
-            let (d2x, d2y) = p(12.8, 12.7);
-            pb.push_circle(d2x, d2y, 1.8 * unit);
+            polyline(&mut pb, [p(7.5, 14.0), p(7.5, 5.0), p(14.5, 3.5), p(14.5, 13.0)]);
+            for (x, y) in [(5.8, 14.2), (12.8, 12.7)] {
+                let (x, y) = p(x, y);
+                pb.push_circle(x, y, 1.8 * unit);
+            }
         }
         DockGlyph::Mail => {
-            push_rounded_rect(
-                &mut pb,
-                origin_x + 2.5 * unit,
-                origin_y + 4.5 * unit,
-                15.0 * unit,
-                11.0 * unit,
-                2.5 * unit,
-            );
-            let (ax, ay) = p(2.5, 6.5);
-            pb.move_to(ax, ay);
-            let (bx, by) = p(10.0, 11.0);
-            pb.line_to(bx, by);
-            let (cx, cy) = p(17.5, 6.5);
-            pb.line_to(cx, cy);
+            rounded(2.5, 4.5, 15.0, 11.0, 2.5);
+            polyline(&mut pb, [p(2.5, 6.5), p(10.0, 11.0), p(17.5, 6.5)]);
         }
-        DockGlyph::Generic => {
-            push_rounded_rect(
-                &mut pb,
-                origin_x + 3.5 * unit,
-                origin_y + 3.5 * unit,
-                13.0 * unit,
-                13.0 * unit,
-                2.5 * unit,
-            );
-        }
-        DockGlyph::Grid => {}
+        DockGlyph::Generic => rounded(3.5, 3.5, 13.0, 13.0, 2.5),
     }
 
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: 1.5 * unit,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let stroke = round_stroke(1.5 * unit, tiny_skia::LineJoin::Round);
+    stroke_solid(&mut pixmap, pb.finish(), bgr(color), &stroke);
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn fill_rounded_rect_gradient_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    rect_x: i32,
-    rect_y: i32,
-    rect_width: i32,
-    rect_height: i32,
-    scale: i32,
-    from: Color,
-    to: Color,
-    radius: f32,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, rect_x: i32, rect_y: i32, rect_width: i32, rect_height: i32,
+    scale: i32, from: Color, to: Color, radius: f32,
 ) {
-    let (Ok(pixel_width), Ok(pixel_height)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(pixel_width, pixel_height) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
     let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let (x, y, rw, rh) = (
-        rect_x as f32 * scale_f,
-        rect_y as f32 * scale_f,
-        rect_width as f32 * scale_f,
-        rect_height as f32 * scale_f,
-    );
+    let (x, y, rw, rh) =
+        (rect_x as f32 * scale_f, rect_y as f32 * scale_f, rect_width as f32 * scale_f, rect_height as f32 * scale_f);
 
     let Some(path) = rounded_rect(x, y, rw, rh, radius * scale_f) else {
         return;
@@ -1238,8 +827,8 @@ pub fn fill_rounded_rect_gradient_over(
         start,
         end,
         vec![
-            tiny_skia::GradientStop::new(0.0, to_skia_color(from)),
-            tiny_skia::GradientStop::new(1.0, to_skia_color(to)),
+            tiny_skia::GradientStop::new(0.0, to_skia_color(bgr(from))),
+            tiny_skia::GradientStop::new(1.0, to_skia_color(bgr(to))),
         ],
         tiny_skia::SpreadMode::Pad,
         tiny_skia::Transform::identity(),
@@ -1247,22 +836,8 @@ pub fn fill_rounded_rect_gradient_over(
         return;
     };
 
-    let paint = tiny_skia::Paint {
-        shader,
-        anti_alias: true,
-        ..tiny_skia::Paint::default()
-    };
-    pixmap.fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        tiny_skia::Transform::identity(),
-        None,
-    );
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let paint = tiny_skia::Paint { shader, anti_alias: true, ..tiny_skia::Paint::default() };
+    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1273,35 +848,16 @@ pub enum MediaGlyph {
     Next,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_media_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    box_x: i32,
-    box_y: i32,
-    box_side: i32,
-    scale: i32,
-    fg: Color,
-    glyph: MediaGlyph,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, box_x: i32, box_y: i32, box_side: i32, scale: i32,
+    fg: Color, glyph: MediaGlyph,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
     let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
     let side = box_side as f32 * scale_f;
-    #[allow(clippy::cast_precision_loss)]
     let ox = box_x as f32 * scale_f;
-    #[allow(clippy::cast_precision_loss)]
     let oy = box_y as f32 * scale_f;
 
     let glyph_side = side * 0.56;
@@ -1321,14 +877,10 @@ pub fn draw_media_glyph_over(
         }
         MediaGlyph::Pause => {
             let bar = glyph_side * 0.30;
-            pb.push_rect(
-                tiny_skia::Rect::from_ltrb(left, top, left + bar, bottom).unwrap_or(
-                    tiny_skia::Rect::from_xywh(left, top, bar.max(0.01), glyph_side.max(0.01))
-                        .unwrap_or(tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap()),
-                ),
-            );
-            if let Some(rect) = tiny_skia::Rect::from_ltrb(right - bar, top, right, bottom) {
-                pb.push_rect(rect);
+            for (from, to) in [(left, left + bar), (right - bar, right)] {
+                if let Some(rect) = tiny_skia::Rect::from_ltrb(from, top, to, bottom) {
+                    pb.push_rect(rect);
+                }
             }
         }
         MediaGlyph::Previous => {
@@ -1353,25 +905,7 @@ pub fn draw_media_glyph_over(
         }
     }
 
-    let Some(path) = pb.finish() else {
-        return;
-    };
-    let paint = tiny_skia::Paint {
-        shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-        anti_alias: true,
-        ..tiny_skia::Paint::default()
-    };
-    pixmap.fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        tiny_skia::Transform::identity(),
-        None,
-    );
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    fill_solid(&mut pixmap, pb.finish(), bgr(fg));
 }
 
 #[must_use]
@@ -1382,68 +916,30 @@ pub fn decode_cover(data: &[u8], side: i32) -> Option<Vec<u8>> {
     if data.starts_with(&[0xff, 0xd8]) {
         return render_jpeg(data, side);
     }
+    if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
+        return render_webp(data, side);
+    }
     render_png(data, side).or_else(|| render_jpeg(data, side))
 }
 
 #[must_use]
+pub fn render_webp(data: &[u8], side: i32) -> Option<Vec<u8>> {
+    fit_into_square(wallpaper::decode_webp(data)?, side)
+}
+
+#[must_use]
 pub fn render_jpeg(data: &[u8], side: i32) -> Option<Vec<u8>> {
-    let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(data));
-    decoder.decode_headers().ok()?;
-    let (width, height) = decoder.dimensions()?;
-    let pixels = decoder.decode().ok()?;
+    fit_into_square(wallpaper::decode_jpeg(data)?, side)
+}
 
-    let (Ok(src_w), Ok(src_h)) = (u32::try_from(width), u32::try_from(height)) else {
-        return None;
-    };
-    if src_w == 0 || src_h == 0 {
-        return None;
+fn fit_into_square(mut source: tiny_skia::Pixmap, side: i32) -> Option<Vec<u8>> {
+    let side_u32 = square_side(side)?;
+    for px in source.data_mut().chunks_exact_mut(4) {
+        px.swap(0, 2);
     }
-    let channels = pixels.len() / (src_w as usize * src_h as usize);
-    if channels != 3 && channels != 1 {
-        return None;
-    }
-
-    let mut source = tiny_skia::Pixmap::new(src_w, src_h)?;
-    for (index, chunk) in source.pixels_mut().iter_mut().enumerate() {
-        let offset = index * channels;
-        if offset + channels > pixels.len() {
-            break;
-        }
-        let (r, g, b) = if channels == 1 {
-            (pixels[offset], pixels[offset], pixels[offset])
-        } else {
-            (pixels[offset], pixels[offset + 1], pixels[offset + 2])
-        };
-        *chunk = tiny_skia::PremultipliedColorU8::from_rgba(b, g, r, 255)?;
-    }
-
-    let side_u32 = u32::try_from(side).ok()?;
-    if side_u32 == 0 {
-        return None;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let target = side as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let scale = (target / src_w as f32).min(target / src_h as f32);
-    #[allow(clippy::cast_precision_loss)]
-    let (dx, dy) = (
-        (target - src_w as f32 * scale) / 2.0,
-        (target - src_h as f32 * scale) / 2.0,
-    );
-
-    let mut pixmap = tiny_skia::Pixmap::new(side_u32, side_u32)?;
-    pixmap.draw_pixmap(
-        0,
-        0,
-        source.as_ref(),
-        &tiny_skia::PixmapPaint {
-            quality: tiny_skia::FilterQuality::Bilinear,
-            ..tiny_skia::PixmapPaint::default()
-        },
-        tiny_skia::Transform::from_translate(dx, dy).pre_scale(scale, scale),
-        None,
-    );
-    Some(pixmap.take())
+    let (w, h) = (source.width() as f32, source.height() as f32);
+    let transform = fit_square_transform(w, h, side, false);
+    draw_bilinear(source.as_ref(), side_u32, transform).map(tiny_skia::Pixmap::take)
 }
 
 #[must_use]
@@ -1491,259 +987,43 @@ pub fn fit_for_contrast(colour: Color, min_luma: f32, max_luma: f32) -> Color {
         return Color([target, target, target, a]);
     }
     let gain = target / luma;
-    Color([
-        (r * gain).clamp(0.0, 1.0),
-        (g * gain).clamp(0.0, 1.0),
-        (b * gain).clamp(0.0, 1.0),
-        a,
-    ])
+    Color([(r * gain).clamp(0.0, 1.0), (g * gain).clamp(0.0, 1.0), (b * gain).clamp(0.0, 1.0), a])
 }
 
 pub fn draw_moon_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    glyph_side: f32,
-    scale: i32,
-    fg: Color,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, glyph_side: f32, scale: i32, fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if glyph_side <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let radius = glyph_side * scale_f / 2.0;
-
-    let mut pb1 = tiny_skia::PathBuilder::new();
-    pb1.push_circle(cx, cy, radius);
-    let Some(path1) = pb1.finish() else {
-        return;
-    };
-
-    let mut pb2 = tiny_skia::PathBuilder::new();
-    pb2.push_circle(cx + radius * 0.52, cy - radius * 0.40, radius * 0.86);
-    let Some(path2) = pb2.finish() else {
-        return;
-    };
-
-    let paint = tiny_skia::Paint {
-        shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-        anti_alias: true,
-        ..tiny_skia::Paint::default()
-    };
-    pixmap.fill_path(
-        &path1,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        tiny_skia::Transform::identity(),
-        None,
-    );
-
-    let clear_paint = tiny_skia::Paint {
-        blend_mode: tiny_skia::BlendMode::Clear,
-        anti_alias: true,
-        ..tiny_skia::Paint::default()
-    };
-    pixmap.fill_path(
-        &path2,
-        &clear_paint,
-        tiny_skia::FillRule::Winding,
-        tiny_skia::Transform::identity(),
-        None,
-    );
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let (w, h, round) = (canvas_width, canvas_height, tiny_skia::LineJoin::Round);
+    draw_stroked_glyph(buf, w, h, glyph_side, 1.4, scale, fg, 18.0, round, |g| {
+        g.move_to(14.2, 10.4);
+        g.cubic_to(12.0, 4.8, 6.2, 4.2, 3.8, 7.6);
+        g.cubic_to(3.2, 12.0, 7.4, 15.6, 12.2, 14.8);
+        g.cubic_to(13.8, 14.2, 14.8, 12.6, 14.2, 10.4);
+        g.pb.close();
+    });
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_tick_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    glyph_side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, glyph_side: f32, stroke_width: f32, scale: i32, fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if glyph_side <= 0.0 || stroke_width <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (glyph_side * scale_f) / 14.0;
-    let ox = cx - 7.0 * unit;
-    let oy = cy - 7.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(ox + 2.6 * unit, oy + 7.4 * unit);
-    pb.line_to(ox + 5.4 * unit, oy + 10.2 * unit);
-    pb.line_to(ox + 11.4 * unit, oy + 3.8 * unit);
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let (w, h, round) = (canvas_width, canvas_height, tiny_skia::LineJoin::Round);
+    draw_stroked_glyph(buf, w, h, glyph_side, stroke_width, scale, fg, 14.0, round, |g| {
+        g.polyline(&[(2.6, 7.4), (5.4, 10.2), (11.4, 3.8)]);
+    });
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_chevron_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    glyph_side: f32,
-    stroke_width: f32,
-    point_up: bool,
-    scale: i32,
-    fg: Color,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, glyph_side: f32, stroke_width: f32, point_up: bool,
+    scale: i32, fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if glyph_side <= 0.0 || stroke_width <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (glyph_side * scale_f) / 10.0;
-    let ox = cx - 5.0 * unit;
-    let oy = cy - 5.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    if point_up {
-        pb.move_to(ox + 2.6 * unit, oy + 6.0 * unit);
-        pb.line_to(ox + 5.0 * unit, oy + 3.6 * unit);
-        pb.line_to(ox + 7.4 * unit, oy + 6.0 * unit);
-    } else {
-        pb.move_to(ox + 2.6 * unit, oy + 4.0 * unit);
-        pb.line_to(ox + 5.0 * unit, oy + 6.4 * unit);
-        pb.line_to(ox + 7.4 * unit, oy + 4.0 * unit);
-    }
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_wifi_bars_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    level: u8,
-    scale: i32,
-    fg: Color,
-    muted_fg: Color,
-) {
-    let bar_w = 2.5_f32;
-    let gap = 1.5_f32;
-    let heights = [3.0_f32, 5.5_f32, 8.0_f32, 11.0_f32];
-    let total_w = 4.0 * bar_w + 3.0 * gap;
-    #[allow(clippy::cast_precision_loss)]
-    let start_x = (canvas_width as f32 - total_w) / 2.0;
-    #[allow(clippy::cast_precision_loss)]
-    let bottom_y = f32::midpoint(canvas_height as f32, 11.0);
-
-    for (i, &h) in heights.iter().enumerate() {
-        #[allow(clippy::cast_precision_loss)]
-        let x = start_x + (i as f32) * (bar_w + gap);
-        let y = bottom_y - h;
-        #[allow(clippy::cast_possible_truncation)]
-        let color = if (i as u8) < level { fg } else { muted_fg };
-        Painter::fill_rounded_rect_over(
-            buf,
-            canvas_width,
-            canvas_height,
-            x.round() as i32,
-            y.round() as i32,
-            bar_w.round() as i32,
-            h.round() as i32,
-            scale,
-            color,
-            1.0,
-        );
-    }
+    let (w, h, round) = (canvas_width, canvas_height, tiny_skia::LineJoin::Round);
+    draw_stroked_glyph(buf, w, h, glyph_side, stroke_width, scale, fg, 10.0, round, |g| {
+        if point_up {
+            g.polyline(&[(2.6, 6.0), (5.0, 3.6), (7.4, 6.0)]);
+        } else {
+            g.polyline(&[(2.6, 4.0), (5.0, 6.4), (7.4, 4.0)]);
+        }
+    });
 }
 
 pub struct BatteryRenderArgs {
@@ -1758,29 +1038,29 @@ pub struct BatteryRenderArgs {
 }
 
 pub fn draw_battery_glyph_over(buf: &mut [u8], args: &BatteryRenderArgs) {
-    let batt_w = 22;
+    let batt_w = 20;
     let batt_h = 11;
-    let x = (args.canvas_width - batt_w - 3) / 2;
-    let y = (args.canvas_height - batt_h) / 2;
+    let batt_x = (args.canvas_width - batt_w - 3) / 2;
+    let batt_y = (args.canvas_height - batt_h) / 2;
 
     stroke_rounded_rect_over(
         buf,
         args.canvas_width,
         args.canvas_height,
-        x,
-        y,
+        batt_x,
+        batt_y,
         batt_w,
         batt_h,
         args.scale,
         1.3,
-        3.5,
+        3.0,
         args.fg,
     );
 
     let tip_w = 2;
     let tip_h = 5;
-    let tip_x = x + batt_w;
-    let tip_y = y + (batt_h - tip_h) / 2;
+    let tip_x = batt_x + batt_w;
+    let tip_y = batt_y + (batt_h - tip_h) / 2;
     Painter::fill_rounded_rect_over(
         buf,
         args.canvas_width,
@@ -1791,12 +1071,11 @@ pub fn draw_battery_glyph_over(buf: &mut [u8], args: &BatteryRenderArgs) {
         tip_h,
         args.scale,
         args.fg,
-        1.5,
+        1.0,
     );
 
-    let max_fill_w = 16_f32;
+    let max_fill_w = 14_f32;
     let pct_clamped = args.pct.min(100);
-    #[allow(clippy::cast_precision_loss)]
     let fill_w = ((max_fill_w * f32::from(pct_clamped)) / 100.0).max(2.0);
     let fill_color = if args.charging {
         args.ok_color
@@ -1806,773 +1085,230 @@ pub fn draw_battery_glyph_over(buf: &mut [u8], args: &BatteryRenderArgs) {
         args.fg
     };
 
-    #[allow(clippy::cast_possible_truncation)]
     Painter::fill_rounded_rect_over(
         buf,
         args.canvas_width,
         args.canvas_height,
-        x + 2,
-        y + 2,
+        batt_x + 2,
+        batt_y + 2,
         fill_w.round() as i32,
         batt_h - 4,
         args.scale,
         fill_color,
         1.5,
     );
+
+    if !args.charging {
+        return;
+    }
+    let Some(mut pixmap) = over(buf, args.canvas_width, args.canvas_height, args.scale) else {
+        return;
+    };
+    let scale_f = args.scale as f32;
+    let bcx = (batt_x as f32 + batt_w as f32 / 2.0) * scale_f;
+    let bcy = (batt_y as f32 + batt_h as f32 / 2.0) * scale_f;
+    let bolt_scale = scale_f * 0.9;
+    let mut bolt = tiny_skia::PathBuilder::new();
+    polyline(
+        &mut bolt,
+        [(0.6, -3.8), (-2.2, 0.4), (-0.2, 0.4), (-0.6, 3.8), (2.2, -0.4), (0.2, -0.4)]
+            .map(|(x, y)| (bcx + x * bolt_scale, bcy + y * bolt_scale)),
+    );
+    bolt.close();
+    fill_solid(&mut pixmap, bolt.finish(), bgr(args.fg));
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_speaker_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    muted: bool,
-    scale: i32,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, side: f32, stroke_width: f32, muted: bool, scale: i32,
     fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
+    let (w, h, round) = (canvas_width, canvas_height, tiny_skia::LineJoin::Round);
+    draw_stroked_glyph(buf, w, h, side, stroke_width, scale, fg, 18.0, round, |g| {
+        g.polyline(&[(3.0, 6.6), (5.6, 6.6), (9.0, 3.6), (9.0, 14.4), (5.6, 11.4), (3.0, 11.4)]);
+        g.pb.close();
+        if muted {
+            g.segments(&[(12.2, 6.2, 15.6, 11.8), (15.6, 6.2, 12.2, 11.8)]);
+        } else {
+            g.move_to(11.8, 6.6);
+            g.quad_to(14.0, 9.0, 11.8, 11.4);
+            g.move_to(14.2, 4.8);
+            g.quad_to(17.2, 9.0, 14.2, 13.2);
+        }
+    });
+}
+
+pub fn draw_wifi_waves_level_over(
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, side: f32, stroke_width: f32, level: u8, scale: i32,
+    fg: Color, muted_fg: Color,
+) {
     if side <= 0.0 || stroke_width <= 0.0 {
         return;
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(ox + 3.0 * unit, oy + 6.6 * unit);
-    pb.line_to(ox + 5.6 * unit, oy + 6.6 * unit);
-    pb.line_to(ox + 9.0 * unit, oy + 3.6 * unit);
-    pb.line_to(ox + 9.0 * unit, oy + 14.4 * unit);
-    pb.line_to(ox + 5.6 * unit, oy + 11.4 * unit);
-    pb.line_to(ox + 3.0 * unit, oy + 11.4 * unit);
-    pb.close();
-
-    if muted {
-        pb.move_to(ox + 12.0 * unit, oy + 6.6 * unit);
-        pb.line_to(ox + 16.0 * unit, oy + 11.4 * unit);
-        pb.move_to(ox + 16.0 * unit, oy + 6.6 * unit);
-        pb.line_to(ox + 12.0 * unit, oy + 11.4 * unit);
-    } else {
-        pb.move_to(ox + 11.6 * unit, oy + 6.8 * unit);
-        pb.quad_to(
-            ox + 13.6 * unit,
-            oy + 9.0 * unit,
-            ox + 11.6 * unit,
-            oy + 11.2 * unit,
-        );
+    let colour_from = |min_level: u8| if level >= min_level { fg } else { muted_fg };
+    let stroke = round_stroke(stroke_width * scale as f32, tiny_skia::LineJoin::Miter);
+    let new_glyph = || GlyphPath::new(canvas_width, canvas_height, side, scale, 18.0);
+    for (min_level, x0, y, ctrl_y, x1) in
+        [(4, 2.0, 6.4, 1.8, 16.0), (3, 4.6, 9.2, 5.8, 13.4), (2, 7.0, 12.0, 9.8, 11.0)]
+    {
+        let mut arc = new_glyph();
+        arc.move_to(x0, y);
+        arc.quad_to(9.0, ctrl_y, x1, y);
+        stroke_solid(&mut pixmap, arc.pb.finish(), bgr(colour_from(min_level)), &stroke);
     }
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let mut dot = new_glyph();
+    dot.circle(9.0, 14.6, 1.2);
+    fill_solid(&mut pixmap, dot.pb.finish(), bgr(colour_from(1)));
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn draw_wifi_waves_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, side: f32, stroke_width: f32, scale: i32, fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(ox + 2.0 * unit, oy + 6.4 * unit);
-    pb.quad_to(
-        ox + 9.0 * unit,
-        oy + 1.8 * unit,
-        ox + 16.0 * unit,
-        oy + 6.4 * unit,
-    );
-
-    pb.move_to(ox + 4.6 * unit, oy + 9.2 * unit);
-    pb.quad_to(
-        ox + 9.0 * unit,
-        oy + 5.8 * unit,
-        ox + 13.4 * unit,
-        oy + 9.2 * unit,
-    );
-
-    pb.move_to(ox + 7.0 * unit, oy + 12.0 * unit);
-    pb.quad_to(
-        ox + 9.0 * unit,
-        oy + 9.8 * unit,
-        ox + 11.0 * unit,
-        oy + 12.0 * unit,
-    );
-
-    let mut pb_dot = tiny_skia::PathBuilder::new();
-    pb_dot.push_circle(ox + 9.0 * unit, oy + 14.6 * unit, 1.2 * unit);
-
-    let paint = tiny_skia::Paint {
-        shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-        anti_alias: true,
-        ..tiny_skia::Paint::default()
-    };
-    let stroke = tiny_skia::Stroke {
-        width: stroke_width * scale_f,
-        line_cap: tiny_skia::LineCap::Round,
-        ..tiny_skia::Stroke::default()
-    };
-    if let Some(path) = pb.finish() {
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-    if let Some(dot) = pb_dot.finish() {
-        pixmap.fill_path(
-            &dot,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    draw_wifi_waves_level_over(buf, canvas_width, canvas_height, side, stroke_width, 4, scale, fg, fg);
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn draw_bluetooth_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
-) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
+macro_rules! stroked_glyphs {
+    ($($name:ident, $join:ident, |$g:ident| $body:block)*) => {
+        $(
+            pub fn $name(
+                buf: &mut [u8],
+                canvas_width: i32,
+                canvas_height: i32,
+                side: f32,
+                stroke_width: f32,
+                scale: i32,
+                fg: Color,
+            ) {
+                let (w, h, join) = (canvas_width, canvas_height, tiny_skia::LineJoin::$join);
+                draw_stroked_glyph(buf, w, h, side, stroke_width, scale, fg, 18.0, join, |$g| $body);
+            }
+        )*
     };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(ox + 6.0 * unit, oy + 5.4 * unit);
-    pb.line_to(ox + 12.0 * unit, oy + 12.0 * unit);
-    pb.line_to(ox + 9.0 * unit, oy + 14.4 * unit);
-    pb.line_to(ox + 9.0 * unit, oy + 3.6 * unit);
-    pb.line_to(ox + 12.0 * unit, oy + 6.0 * unit);
-    pb.line_to(ox + 6.0 * unit, oy + 12.6 * unit);
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn draw_camera_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
-) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
+stroked_glyphs! {
+    draw_bluetooth_glyph_over, Round, |g| {
+        g.polyline(&[
+            (6.0, 5.4),
+            (12.0, 12.0),
+            (9.0, 14.4),
+            (9.0, 3.6),
+            (12.0, 6.0),
+            (6.0, 12.6),
+        ]);
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    if let Some(r) =
-        tiny_skia::Rect::from_xywh(ox + 2.5 * unit, oy + 5.0 * unit, 13.0 * unit, 9.0 * unit)
-    {
-        pb.push_rect(r);
+    draw_camera_glyph_over, Round, |g| {
+        g.quad_box(2.5, 5.2, 13.0, 8.8, 1.6);
+        g.polyline(&[(6.8, 5.2), (7.6, 3.4), (10.4, 3.4), (11.2, 5.2)]);
+        g.circle(9.0, 9.6, 2.5);
+        g.circle(13.2, 7.0, 0.6);
     }
-    pb.move_to(ox + 6.5 * unit, oy + 5.0 * unit);
-    pb.line_to(ox + 7.5 * unit, oy + 3.2 * unit);
-    pb.line_to(ox + 10.5 * unit, oy + 3.2 * unit);
-    pb.line_to(ox + 11.5 * unit, oy + 5.0 * unit);
-    pb.push_circle(ox + 9.0 * unit, oy + 9.5 * unit, 2.5 * unit);
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
+    draw_sun_glyph_over, Miter, |g| {
+        g.circle(9.0, 9.0, 3.2);
+        g.segments(&[
+            (9.0, 1.8, 9.0, 3.6),
+            (9.0, 14.4, 9.0, 16.2),
+            (1.8, 9.0, 3.6, 9.0),
+            (14.4, 9.0, 16.2, 9.0),
+            (3.9, 3.9, 5.2, 5.2),
+            (12.8, 12.8, 14.1, 14.1),
+            (14.1, 3.9, 12.8, 5.2),
+            (5.2, 12.8, 3.9, 14.1),
+        ]);
     }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    draw_keyboard_glyph_over, Round, |g| {
+        let (x, y) = g.pt(2.0, 4.2);
+        if let Some(r) = tiny_skia::Rect::from_xywh(x, y, 14.0 * g.unit, 9.6 * g.unit) {
+            g.pb.push_rect(r);
+        }
+        g.segments(&[
+            (5.0, 7.2, 5.5, 7.2),
+            (8.5, 7.2, 9.5, 7.2),
+            (12.5, 7.2, 13.0, 7.2),
+            (5.5, 10.4, 12.5, 10.4),
+        ]);
+    }
+    draw_gear_glyph_over, Round, |g| {
+        let (cx, cy, unit) = (g.cx, g.cy, g.unit);
+        g.pb.push_circle(cx, cy, 2.2 * unit);
+        let teeth = 6;
+        let (r_in, r_out) = (4.4 * unit, 6.4 * unit);
+        let half_tooth = std::f32::consts::PI / 18.0;
+        let step = std::f32::consts::PI * 2.0 / (teeth as f32);
+        let at = |angle: f32, r: f32| (cx + angle.cos() * r, cy + angle.sin() * r);
+        let points = (0..teeth).flat_map(|i| {
+            let mid = (i as f32) * step;
+            let (a1, a2) = (mid - half_tooth, mid + half_tooth);
+            [
+                at(a1, r_in),
+                at(a1, r_out),
+                at(a2, r_out),
+                at(a2, r_in),
+                at(mid + step - half_tooth, r_in),
+            ]
+        });
+        polyline(&mut g.pb, points);
+        g.pb.close();
+    }
+    draw_lock_glyph_over, Round, |g| {
+        g.quad_box(3.6, 7.6, 10.8, 7.4, 1.8);
+        g.polyline(&[(6.0, 7.6), (6.0, 5.2)]);
+        g.cubic_to(6.0, 2.2, 12.0, 2.2, 12.0, 5.2);
+        g.line_to(12.0, 7.6);
+        g.circle(9.0, 10.5, 0.9);
+        g.polyline(&[(9.0, 11.4), (9.0, 12.8)]);
+    }
+    draw_power_glyph_over, Miter, |g| {
+        g.segments(&[(9.0, 2.6, 9.0, 8.8)]);
+        g.move_to(5.0, 5.0);
+        g.quad_to(1.0, 10.0, 5.5, 14.5);
+        g.quad_to(9.0, 16.5, 12.5, 14.5);
+        g.quad_to(17.0, 10.0, 13.0, 5.0);
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn draw_sun_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
-) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
+#[must_use]
+pub fn resample_square(src: &[u8], src_px: i32, dst_px: i32) -> Option<Vec<u8>> {
+    let (src_u, dst_u) = (u32::try_from(src_px).ok()?, u32::try_from(dst_px).ok()?);
+    if src_u == 0 || dst_u == 0 || src.len() < (src_u * src_u * 4) as usize {
+        return None;
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.push_circle(ox + 9.0 * unit, oy + 9.0 * unit, 3.2 * unit);
-    pb.move_to(ox + 9.0 * unit, oy + 1.8 * unit);
-    pb.line_to(ox + 9.0 * unit, oy + 3.6 * unit);
-    pb.move_to(ox + 9.0 * unit, oy + 14.4 * unit);
-    pb.line_to(ox + 9.0 * unit, oy + 16.2 * unit);
-    pb.move_to(ox + 1.8 * unit, oy + 9.0 * unit);
-    pb.line_to(ox + 3.6 * unit, oy + 9.0 * unit);
-    pb.move_to(ox + 14.4 * unit, oy + 9.0 * unit);
-    pb.line_to(ox + 16.2 * unit, oy + 9.0 * unit);
-    pb.move_to(ox + 3.9 * unit, oy + 3.9 * unit);
-    pb.line_to(ox + 5.2 * unit, oy + 5.2 * unit);
-    pb.move_to(ox + 12.8 * unit, oy + 12.8 * unit);
-    pb.line_to(ox + 14.1 * unit, oy + 14.1 * unit);
-    pb.move_to(ox + 14.1 * unit, oy + 3.9 * unit);
-    pb.line_to(ox + 12.8 * unit, oy + 5.2 * unit);
-    pb.move_to(ox + 5.2 * unit, oy + 12.8 * unit);
-    pb.line_to(ox + 3.9 * unit, oy + 14.1 * unit);
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
+    if src_u == dst_u {
+        return Some(src[..(src_u * src_u * 4) as usize].to_vec());
     }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let mut source = tiny_skia::Pixmap::new(src_u, src_u)?;
+    source.data_mut().copy_from_slice(&src[..(src_u * src_u * 4) as usize]);
+    while source.width() >= dst_u * 2 {
+        source = halve_pixmap(&source)?;
+    }
+    let factor = dst_u as f32 / source.width() as f32;
+    let transform = tiny_skia::Transform::from_scale(factor, factor);
+    draw_bilinear(source.as_ref(), dst_u, transform).map(tiny_skia::Pixmap::take)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn draw_keyboard_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
+pub fn blit_icon_over(
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, src: &[u8], src_px: i32, side: i32, dst_x: i32, dst_y: i32,
     scale: i32,
-    fg: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
+    if let Some(icon) = resample_square(src, src_px, side * scale) {
+        blit_square_over(buf, canvas_width, canvas_height, &icon, side, dst_x, dst_y, scale);
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    if let Some(r) =
-        tiny_skia::Rect::from_xywh(ox + 2.0 * unit, oy + 4.2 * unit, 14.0 * unit, 9.6 * unit)
-    {
-        pb.push_rect(r);
-    }
-    pb.move_to(ox + 5.0 * unit, oy + 7.2 * unit);
-    pb.line_to(ox + 5.5 * unit, oy + 7.2 * unit);
-    pb.move_to(ox + 8.5 * unit, oy + 7.2 * unit);
-    pb.line_to(ox + 9.5 * unit, oy + 7.2 * unit);
-    pb.move_to(ox + 12.5 * unit, oy + 7.2 * unit);
-    pb.line_to(ox + 13.0 * unit, oy + 7.2 * unit);
-    pb.move_to(ox + 5.5 * unit, oy + 10.4 * unit);
-    pb.line_to(ox + 12.5 * unit, oy + 10.4 * unit);
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_gear_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
-) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.push_circle(cx, cy, 2.6 * unit);
-    for i in 0..6 {
-        #[allow(clippy::cast_precision_loss)]
-        let a = (i as f32) * (std::f32::consts::PI / 3.0);
-        let cos = a.cos();
-        let sin = a.sin();
-        pb.move_to(cx + cos * 4.4 * unit, cy + sin * 4.4 * unit);
-        pb.line_to(cx + cos * 6.6 * unit, cy + sin * 6.6 * unit);
-    }
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_lock_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
-) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    if let Some(r) =
-        tiny_skia::Rect::from_xywh(ox + 3.4 * unit, oy + 7.8 * unit, 11.2 * unit, 7.4 * unit)
-    {
-        pb.push_rect(r);
-    }
-    pb.move_to(ox + 5.9 * unit, oy + 7.8 * unit);
-    pb.line_to(ox + 5.9 * unit, oy + 5.6 * unit);
-    pb.quad_to(
-        ox + 9.0 * unit,
-        oy + 2.5 * unit,
-        ox + 12.1 * unit,
-        oy + 5.6 * unit,
-    );
-    pb.line_to(ox + 12.1 * unit, oy + 7.8 * unit);
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_power_glyph_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    side: f32,
-    stroke_width: f32,
-    scale: i32,
-    fg: Color,
-) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    if side <= 0.0 || stroke_width <= 0.0 {
-        return;
-    }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let scale_f = scale as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let cx = (canvas_width as f32 / 2.0) * scale_f;
-    #[allow(clippy::cast_precision_loss)]
-    let cy = (canvas_height as f32 / 2.0) * scale_f;
-    let unit = (side * scale_f) / 18.0;
-    let ox = cx - 9.0 * unit;
-    let oy = cy - 9.0 * unit;
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(ox + 9.0 * unit, oy + 2.6 * unit);
-    pb.line_to(ox + 9.0 * unit, oy + 8.8 * unit);
-
-    pb.move_to(ox + 5.0 * unit, oy + 5.0 * unit);
-    pb.quad_to(
-        ox + 1.0 * unit,
-        oy + 10.0 * unit,
-        ox + 5.5 * unit,
-        oy + 14.5 * unit,
-    );
-    pb.quad_to(
-        ox + 9.0 * unit,
-        oy + 16.5 * unit,
-        ox + 12.5 * unit,
-        oy + 14.5 * unit,
-    );
-    pb.quad_to(
-        ox + 17.0 * unit,
-        oy + 10.0 * unit,
-        ox + 13.0 * unit,
-        oy + 5.0 * unit,
-    );
-
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(fg)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            line_cap: tiny_skia::LineCap::Round,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
 }
 
 pub fn blit_square_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    src: &[u8],
-    src_side: i32,
-    dst_x: i32,
-    dst_y: i32,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, src: &[u8], src_side: i32, dst_x: i32, dst_y: i32,
     scale: i32,
 ) {
-    let (Ok(cw), Ok(ch)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    let Ok(side) = u32::try_from(src_side * scale) else {
-        return;
-    };
-    if side == 0 || src.len() < (side as usize) * (side as usize) * 4 {
-        return;
-    }
-    let Some(source) = tiny_skia::PixmapRef::from_bytes(src, side, side) else {
-        return;
-    };
-    let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(buf, cw, ch) else {
-        return;
-    };
-    pixmap.draw_pixmap(
-        dst_x * scale,
-        dst_y * scale,
-        source,
-        &tiny_skia::PixmapPaint::default(),
-        tiny_skia::Transform::identity(),
-        None,
-    );
+    blit_rect_over(buf, canvas_width, canvas_height, src, src_side, src_side, dst_x, dst_y, scale);
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn blit_rect_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    src: &[u8],
-    src_width: i32,
-    src_height: i32,
-    dst_x: i32,
-    dst_y: i32,
-    scale: i32,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, src: &[u8], src_width: i32, src_height: i32, dst_x: i32,
+    dst_y: i32, scale: i32,
 ) {
-    let (Ok(cw), Ok(ch)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
-    let (Ok(sw), Ok(sh)) = (
-        u32::try_from(src_width * scale),
-        u32::try_from(src_height * scale),
-    ) else {
+    let (Ok(sw), Ok(sh)) = (u32::try_from(src_width * scale), u32::try_from(src_height * scale)) else {
         return;
     };
     if sw == 0 || sh == 0 || src.len() < (sw as usize) * (sh as usize) * 4 {
@@ -2581,7 +1317,7 @@ pub fn blit_rect_over(
     let Some(source) = tiny_skia::PixmapRef::from_bytes(src, sw, sh) else {
         return;
     };
-    let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(buf, cw, ch) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
     pixmap.draw_pixmap(
@@ -2594,37 +1330,18 @@ pub fn blit_rect_over(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn stroke_rounded_rect_over(
-    buf: &mut [u8],
-    canvas_width: i32,
-    canvas_height: i32,
-    rect_x: i32,
-    rect_y: i32,
-    rect_width: i32,
-    rect_height: i32,
-    scale: i32,
-    stroke_width: f32,
-    radius: f32,
-    color: Color,
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, rect_x: i32, rect_y: i32, rect_width: i32, rect_height: i32,
+    scale: i32, stroke_width: f32, radius: f32, color: Color,
 ) {
-    let (Ok(w), Ok(h)) = (
-        u32::try_from(canvas_width * scale),
-        u32::try_from(canvas_height * scale),
-    ) else {
-        return;
-    };
     if stroke_width <= 0.0 {
         return;
     }
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
         return;
     };
-
-    #[allow(clippy::cast_precision_loss)]
     let scale_f = scale as f32;
     let inset = stroke_width * scale_f / 2.0;
-    #[allow(clippy::cast_precision_loss)]
     let path = rounded_rect(
         rect_x as f32 * scale_f + inset,
         rect_y as f32 * scale_f + inset,
@@ -2632,60 +1349,21 @@ pub fn stroke_rounded_rect_over(
         rect_height as f32 * scale_f - inset * 2.0,
         (radius * scale_f - inset).max(0.0),
     );
-    if let Some(path) = path {
-        let paint = tiny_skia::Paint {
-            shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
-            anti_alias: true,
-            ..tiny_skia::Paint::default()
-        };
-        let stroke = tiny_skia::Stroke {
-            width: stroke_width * scale_f,
-            ..tiny_skia::Stroke::default()
-        };
-        pixmap.stroke_path(
-            &path,
-            &paint,
-            &stroke,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    crate::border::composite_premul_over(&mut buf[..n], &bytes[..n]);
+    let stroke = tiny_skia::Stroke { width: stroke_width * scale_f, ..tiny_skia::Stroke::default() };
+    stroke_solid(&mut pixmap, path, bgr(color), &stroke);
 }
 
 fn render_icon(
-    buf: &mut [u8],
-    width: i32,
-    height: i32,
-    scale: i32,
-    bg: Color,
-    draw_glyph: impl FnOnce(&mut tiny_skia::Pixmap),
+    buf: &mut [u8], width: i32, height: i32, scale: i32, bg: Color,
+    draw_glyph: impl FnOnce(&mut tiny_skia::PixmapMut<'_>),
 ) {
-    let (Ok(w), Ok(h)) = (u32::try_from(width * scale), u32::try_from(height * scale)) else {
+    let Some(mut pixmap) = cleared(buf, width, height, scale) else {
         return;
     };
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
-        return;
-    };
-
-    if let Some(path) = rounded_rect(
-        0.0,
-        0.0,
-        width as f32,
-        height as f32,
-        glide_theme::shape::BUTTON_RADIUS,
-    ) {
+    if let Some(path) = rounded_rect(0.0, 0.0, width as f32, height as f32, glide_theme::shape::R2) {
         fill(&mut pixmap, &path, bg, scale);
     }
-
     draw_glyph(&mut pixmap);
-
-    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-    let n = bytes.len().min(buf.len());
-    buf[..n].copy_from_slice(&bytes[..n]);
 }
 
 fn glyph_bounds(width: i32, height: i32) -> (f32, f32, f32, f32) {
@@ -2697,16 +1375,6 @@ fn glyph_bounds(width: i32, height: i32) -> (f32, f32, f32, f32) {
     (cx - half, cy - half, cx + half, cy + half)
 }
 
-fn icon_stroke(height: i32) -> tiny_skia::Stroke {
-    let width = (height as f32 / 16.0).clamp(1.5, 2.5);
-    tiny_skia::Stroke {
-        width,
-        line_cap: tiny_skia::LineCap::Round,
-        line_join: tiny_skia::LineJoin::Round,
-        ..tiny_skia::Stroke::default()
-    }
-}
-
 fn paint_for(color: Color) -> tiny_skia::Paint<'static> {
     tiny_skia::Paint {
         shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
@@ -2715,36 +1383,19 @@ fn paint_for(color: Color) -> tiny_skia::Paint<'static> {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn scale_transform(scale: i32) -> tiny_skia::Transform {
     let s = scale as f32;
     tiny_skia::Transform::from_scale(s, s)
 }
 
-fn stroke(
-    pixmap: &mut tiny_skia::Pixmap,
-    path: &tiny_skia::Path,
-    color: Color,
-    height: i32,
-    scale: i32,
-) {
-    pixmap.stroke_path(
-        path,
-        &paint_for(color),
-        &icon_stroke(height),
-        scale_transform(scale),
-        None,
-    );
+fn stroke(pixmap: &mut tiny_skia::PixmapMut<'_>, path: &tiny_skia::Path, color: Color, height: i32, scale: i32) {
+    let width = (height as f32 / 16.0).clamp(1.5, 2.5);
+    let stroke = round_stroke(width, tiny_skia::LineJoin::Round);
+    pixmap.stroke_path(path, &paint_for(bgr(color)), &stroke, scale_transform(scale), None);
 }
 
-fn fill(pixmap: &mut tiny_skia::Pixmap, path: &tiny_skia::Path, color: Color, scale: i32) {
-    pixmap.fill_path(
-        path,
-        &paint_for(color),
-        tiny_skia::FillRule::Winding,
-        scale_transform(scale),
-        None,
-    );
+fn fill(pixmap: &mut tiny_skia::PixmapMut<'_>, path: &tiny_skia::Path, color: Color, scale: i32) {
+    pixmap.fill_path(path, &paint_for(bgr(color)), tiny_skia::FillRule::Winding, scale_transform(scale), None);
 }
 
 const KAPPA: f32 = 0.552_284_8;
@@ -2754,14 +1405,7 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<tiny_skia
 }
 
 #[allow(clippy::many_single_char_names)]
-fn rounded_rect_corners(
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    radius: f32,
-    corners: [bool; 4],
-) -> Option<tiny_skia::Path> {
+fn rounded_rect_corners(x: f32, y: f32, w: f32, h: f32, radius: f32, corners: [bool; 4]) -> Option<tiny_skia::Path> {
     if w <= 0.0 || h <= 0.0 {
         return None;
     }
@@ -2816,13 +1460,8 @@ fn rounded_rect_corners(
 #[allow(clippy::many_single_char_names)]
 fn to_skia_color(c: Color) -> tiny_skia::Color {
     let [r, g, b, a] = c.0;
-    tiny_skia::Color::from_rgba(
-        r.clamp(0.0, 1.0),
-        g.clamp(0.0, 1.0),
-        b.clamp(0.0, 1.0),
-        a.clamp(0.0, 1.0),
-    )
-    .unwrap_or(tiny_skia::Color::TRANSPARENT)
+    tiny_skia::Color::from_rgba(r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), a.clamp(0.0, 1.0))
+        .unwrap_or(tiny_skia::Color::TRANSPARENT)
 }
 
 fn skia_pixmap_into_buffer_bytes(pixmap: tiny_skia::Pixmap) -> Vec<u8> {
@@ -2833,270 +1472,225 @@ fn skia_pixmap_into_buffer_bytes(pixmap: tiny_skia::Pixmap) -> Vec<u8> {
     bytes
 }
 
+fn copy_pixmap_into(buf: &mut [u8], pixmap: tiny_skia::Pixmap) {
+    let bytes = skia_pixmap_into_buffer_bytes(pixmap);
+    let n = bytes.len().min(buf.len());
+    buf[..n].copy_from_slice(&bytes[..n]);
+}
+
+fn over(buf: &mut [u8], canvas_width: i32, canvas_height: i32, scale: i32) -> Option<tiny_skia::PixmapMut<'_>> {
+    let (width, height) = (u32::try_from(canvas_width * scale).ok()?, u32::try_from(canvas_height * scale).ok()?);
+    let len = usize::try_from(u64::from(width) * u64::from(height) * 4).ok()?;
+    tiny_skia::PixmapMut::from_bytes(buf.get_mut(..len)?, width, height)
+}
+
+fn cleared(buf: &mut [u8], canvas_width: i32, canvas_height: i32, scale: i32) -> Option<tiny_skia::PixmapMut<'_>> {
+    let mut pixmap = over(buf, canvas_width, canvas_height, scale)?;
+    pixmap.fill(tiny_skia::Color::TRANSPARENT);
+    Some(pixmap)
+}
+
+fn bgr(Color([r, g, b, a]): Color) -> Color {
+    Color([b, g, r, a])
+}
+
+fn round_stroke(width: f32, line_join: tiny_skia::LineJoin) -> tiny_skia::Stroke {
+    tiny_skia::Stroke { width, line_cap: tiny_skia::LineCap::Round, line_join, ..tiny_skia::Stroke::default() }
+}
+
+fn stroke_solid(
+    pixmap: &mut tiny_skia::PixmapMut<'_>, path: Option<tiny_skia::Path>, color: Color, stroke: &tiny_skia::Stroke,
+) {
+    if let Some(path) = path {
+        pixmap.stroke_path(&path, &paint_for(color), stroke, tiny_skia::Transform::identity(), None);
+    }
+}
+
+fn fill_solid(pixmap: &mut tiny_skia::PixmapMut<'_>, path: Option<tiny_skia::Path>, color: Color) {
+    if let Some(path) = path {
+        pixmap.fill_path(
+            &path,
+            &paint_for(color),
+            tiny_skia::FillRule::Winding,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+}
+
+fn polyline(pb: &mut tiny_skia::PathBuilder, points: impl IntoIterator<Item = (f32, f32)>) {
+    for (i, (x, y)) in points.into_iter().enumerate() {
+        if i == 0 {
+            pb.move_to(x, y);
+        } else {
+            pb.line_to(x, y);
+        }
+    }
+}
+
+struct GlyphPath {
+    pb: tiny_skia::PathBuilder,
+    cx: f32,
+    cy: f32,
+    unit: f32,
+    ox: f32,
+    oy: f32,
+}
+
+impl GlyphPath {
+    fn new(canvas_width: i32, canvas_height: i32, side: f32, scale: i32, grid: f32) -> Self {
+        let scale_f = scale as f32;
+        let cx = (canvas_width as f32 / 2.0) * scale_f;
+        let cy = (canvas_height as f32 / 2.0) * scale_f;
+        let unit = (side * scale_f) / grid;
+        Self { pb: tiny_skia::PathBuilder::new(), cx, cy, unit, ox: cx - grid / 2.0 * unit, oy: cy - grid / 2.0 * unit }
+    }
+
+    fn pt(&self, x: f32, y: f32) -> (f32, f32) {
+        (self.ox + x * self.unit, self.oy + y * self.unit)
+    }
+
+    fn move_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.pt(x, y);
+        self.pb.move_to(x, y);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.pt(x, y);
+        self.pb.line_to(x, y);
+    }
+
+    fn polyline(&mut self, points: &[(f32, f32)]) {
+        let points: Vec<_> = points.iter().map(|&(x, y)| self.pt(x, y)).collect();
+        polyline(&mut self.pb, points);
+    }
+
+    fn segments(&mut self, segments: &[(f32, f32, f32, f32)]) {
+        for &(x1, y1, x2, y2) in segments {
+            self.polyline(&[(x1, y1), (x2, y2)]);
+        }
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let ((x1, y1), (x, y)) = (self.pt(x1, y1), self.pt(x, y));
+        self.pb.quad_to(x1, y1, x, y);
+    }
+
+    fn cubic_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let ((x1, y1), (x2, y2), (x, y)) = (self.pt(x1, y1), self.pt(x2, y2), self.pt(x, y));
+        self.pb.cubic_to(x1, y1, x2, y2, x, y);
+    }
+
+    fn circle(&mut self, x: f32, y: f32, r: f32) {
+        let (x, y) = self.pt(x, y);
+        self.pb.push_circle(x, y, r * self.unit);
+    }
+
+    fn quad_box(&mut self, left: f32, top: f32, width: f32, height: f32, radius: f32) {
+        let (bx, by) = self.pt(left, top);
+        let (bw, bh, r) = (width * self.unit, height * self.unit, radius * self.unit);
+        let pb = &mut self.pb;
+        pb.move_to(bx + r, by);
+        pb.line_to(bx + bw - r, by);
+        pb.quad_to(bx + bw, by, bx + bw, by + r);
+        pb.line_to(bx + bw, by + bh - r);
+        pb.quad_to(bx + bw, by + bh, bx + bw - r, by + bh);
+        pb.line_to(bx + r, by + bh);
+        pb.quad_to(bx, by + bh, bx, by + bh - r);
+        pb.line_to(bx, by + r);
+        pb.quad_to(bx, by, bx + r, by);
+    }
+}
+
+fn draw_stroked_glyph(
+    buf: &mut [u8], canvas_width: i32, canvas_height: i32, side: f32, stroke_width: f32, scale: i32, fg: Color,
+    grid: f32, line_join: tiny_skia::LineJoin, build: impl FnOnce(&mut GlyphPath),
+) {
+    if side <= 0.0 || stroke_width <= 0.0 {
+        return;
+    }
+    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
+        return;
+    };
+    let mut glyph = GlyphPath::new(canvas_width, canvas_height, side, scale, grid);
+    build(&mut glyph);
+    let stroke = round_stroke(stroke_width * scale as f32, line_join);
+    stroke_solid(&mut pixmap, glyph.pb.finish(), bgr(fg), &stroke);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn composite_fully_opaque_source_replaces_destination() {
-        let dst = [10, 20, 30, 255];
-        let out = composite_over(dst, [200, 100, 50], 255);
-        assert_eq!(out, [200, 100, 50, 255]);
-    }
+    const WHITE: Color = Color([1.0, 1.0, 1.0, 1.0]);
+    const CLEAR: Color = Color([0.0; 4]);
 
     #[test]
-    fn composite_fully_transparent_source_leaves_destination_untouched() {
-        let dst = [10, 20, 30, 200];
-        let out = composite_over(dst, [255, 0, 0], 0);
-        assert_eq!(out, dst);
-    }
+    fn composite_over_blends_straight_source_onto_premultiplied_destination() {
+        assert_eq!(composite_over([10, 20, 30, 255], [200, 100, 50], 255), [200, 100, 50, 255]);
+        assert_eq!(composite_over([10, 20, 30, 200], [255, 0, 0], 0), [10, 20, 30, 200]);
+        let half = composite_over([0, 0, 0, 0], [255, 255, 255], 128);
+        assert!(half[3] == 128 && (100..150).contains(&half[0]));
+        let grey = composite_over([0, 0, 0, 255], [255, 255, 255], 128);
+        assert!(grey[3] == 255 && (100..=150).contains(&grey[0]));
 
-    #[test]
-    fn composite_over_transparent_destination_yields_premultiplied_source() {
-        let dst = [0, 0, 0, 0];
-        let out = composite_over(dst, [255, 255, 255], 128);
-        assert_eq!(out[3], 128, "result alpha must reflect source alpha");
-        assert!(
-            out[0] > 100 && out[0] < 150,
-            "premultiplied colour channel should be ~half of 255, got {}",
-            out[0]
-        );
-    }
-
-    #[test]
-    fn composite_over_is_order_correct_source_over() {
-        let dst = [0, 0, 0, 255];
-        let out = composite_over(dst, [255, 255, 255], 128);
-        assert_eq!(out[3], 255, "compositing over opaque stays opaque");
-        assert!(
-            (100..=150).contains(&out[0]),
-            "expected roughly half-grey, got {}",
-            out[0]
-        );
-    }
-
-    #[test]
-    fn skia_pixmap_swaps_red_and_blue_into_our_buffer_order() {
         let mut pixmap = tiny_skia::Pixmap::new(1, 1).unwrap();
         pixmap.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
-        let bytes = skia_pixmap_into_buffer_bytes(pixmap);
-        assert_eq!(bytes, vec![0, 0, 255, 255]);
+        assert_eq!(skia_pixmap_into_buffer_bytes(pixmap), vec![0, 0, 255, 255]);
     }
 
     #[test]
-    fn rounded_rect_bounds_match_the_requested_box() {
-        let path = rounded_rect(10.0, 20.0, 100.0, 50.0, 8.0).unwrap();
-        let bounds = path.bounds();
-        assert!((bounds.left() - 10.0).abs() < 0.01);
-        assert!((bounds.top() - 20.0).abs() < 0.01);
-        assert!((bounds.right() - 110.0).abs() < 0.01);
-        assert!((bounds.bottom() - 70.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn rounded_rect_radius_is_clamped_to_half_the_short_side() {
-        let path = rounded_rect(0.0, 0.0, 20.0, 10.0, 1000.0).unwrap();
-        let bounds = path.bounds();
-        assert!((bounds.width() - 20.0).abs() < 0.01);
-        assert!((bounds.height() - 10.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn rounded_rect_rejects_degenerate_size() {
+    fn rounded_rects_fill_their_box_whatever_the_corners_and_radius() {
+        for (corners, radius) in
+            [([true; 4], 8.0), ([false; 4], 8.0), ([true, true, false, false], 8.0), ([true; 4], 1000.0)]
+        {
+            let b = rounded_rect_corners(10.0, 20.0, 100.0, 50.0, radius, corners).unwrap().bounds();
+            assert!((b.left() - 10.0).abs() < 0.01 && (b.top() - 20.0).abs() < 0.01);
+            assert!((b.width() - 100.0).abs() < 0.01 && (b.height() - 50.0).abs() < 0.01);
+        }
         assert!(rounded_rect(0.0, 0.0, 0.0, 10.0, 4.0).is_none());
         assert!(rounded_rect(0.0, 0.0, 10.0, -1.0, 4.0).is_none());
     }
 
     #[test]
-    fn rounded_rect_corners_with_all_square_matches_a_plain_rect() {
-        let path = rounded_rect_corners(0.0, 0.0, 100.0, 50.0, 8.0, [false; 4]).unwrap();
-        let bounds = path.bounds();
-        assert!((bounds.width() - 100.0).abs() < 0.01);
-        assert!((bounds.height() - 50.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn rounded_rect_corners_bounds_are_unaffected_by_which_corners_round() {
-        let all = rounded_rect_corners(0.0, 0.0, 100.0, 50.0, 8.0, [true; 4])
-            .unwrap()
-            .bounds();
-        let top_only = rounded_rect_corners(0.0, 0.0, 100.0, 50.0, 8.0, [true, true, false, false])
-            .unwrap()
-            .bounds();
-        assert!((all.width() - top_only.width()).abs() < 0.01);
-        assert!((all.height() - top_only.height()).abs() < 0.01);
-    }
-
-    #[test]
-    fn fill_panel_background_produces_a_full_size_buffer() {
+    fn panels_cut_only_their_rounded_corners() {
         let mut buf = vec![0u8; 100 * 32 * 4];
-        Painter::fill_panel_background(
-            &mut buf,
-            100,
-            32,
-            1,
-            Color([0.1, 0.1, 0.15, 1.0]),
-            8.0,
-            [true, true, false, false],
-        );
-        assert_eq!(buf.len(), 100 * 32 * 4);
-        let centre_top_offset = (50usize) * 4;
-        assert_eq!(buf[centre_top_offset + 3], 255, "centre-top must be opaque");
-        assert_eq!(buf[3], 0, "top-left corner pixel must be cut away");
+        let corners = [true, true, false, false];
+        Painter::fill_panel_background(&mut buf, 100, 32, 1, WHITE, 8.0, corners);
+        let alpha = |x: usize, y: usize| buf[(y * 100 + x) * 4 + 3];
+        assert_eq!((alpha(50, 0), alpha(0, 0), alpha(0, 31)), (255, 0, 255));
     }
 
     #[test]
-    fn fill_rounded_rect_over_preserves_bgra_byte_order() {
-        let (w, h) = (20, 20);
-        let mut buf = vec![0u8; (w * h * 4) as usize];
-        let red = Color([1.0, 0.0, 0.0, 1.0]);
-        Painter::fill_rounded_rect_over(&mut buf, w, h, 0, 0, w, h, 1, red, 0.0);
-        let center = ((h / 2 * w + w / 2) * 4) as usize;
-        assert_eq!(
-            &buf[center..center + 4],
-            &[0, 0, 255, 255],
-            "opaque red must store R in byte 2, matching Color::to_buffer_bytes' BGRA order"
-        );
-    }
-
-    #[test]
-    fn fill_rounded_rect_over_only_touches_the_rect_it_covers() {
+    fn rounded_rect_over_blends_bgra_inside_its_rect_only() {
         let (w, h) = (40, 20);
         let mut buf = vec![0u8; (w * h * 4) as usize];
-        Painter::fill_rounded_rect_over(
-            &mut buf,
-            w,
-            h,
-            20,
-            0,
-            20,
-            h,
-            1,
-            Color([1.0, 1.0, 1.0, 1.0]),
-            0.0,
-        );
-        let left_untouched = ((h / 2 * w + 5) * 4) as usize;
-        let right_filled = ((h / 2 * w + 30) * 4) as usize;
-        assert_eq!(buf[left_untouched + 3], 0, "left half must stay untouched");
-        assert_eq!(
-            buf[right_filled + 3],
-            255,
-            "right half (the rect) must be filled"
-        );
-    }
+        let red = Color([1.0, 0.0, 0.0, 1.0]);
+        Painter::fill_rounded_rect_over(&mut buf, w, h, 20, 0, 20, h, 1, red, 0.0);
+        let at = |x: i32| ((h / 2 * w + x) * 4) as usize;
+        assert_eq!(&buf[at(30)..at(30) + 4], &[0, 0, 255, 255]);
+        assert_eq!(buf[at(5) + 3], 0);
 
-    #[test]
-    fn fill_rounded_rect_over_blends_over_existing_content_not_replacing_the_canvas() {
-        let (w, h) = (20, 20);
-        let mut buf = vec![0u8; (w * h * 4) as usize];
-        Painter::fill_panel_background(
-            &mut buf,
-            w,
-            h,
-            1,
-            Color([0.0, 0.0, 1.0, 1.0]),
-            0.0,
-            [true; 4],
-        );
         let before = buf.clone();
-        Painter::fill_rounded_rect_over(
-            &mut buf,
-            w,
-            h,
-            0,
-            0,
-            w / 2,
-            h,
-            1,
-            Color([1.0, 0.0, 0.0, 0.5]),
-            0.0,
-        );
-        assert_ne!(buf, before, "the overlay must have changed something");
-        let right_half_untouched = ((h / 2 * w + 3 * w / 4) * 4) as usize;
-        assert_eq!(
-            &buf[right_half_untouched..right_half_untouched + 4],
-            &before[right_half_untouched..right_half_untouched + 4],
-            "the right half, outside the overlay rect, must be exactly what fill_panel_background left"
-        );
+        let blue = Color([0.0, 0.0, 1.0, 0.5]);
+        Painter::fill_rounded_rect_over(&mut buf, w, h, 20, 0, 10, h, 1, blue, 0.0);
+        assert_ne!(buf[at(25)..at(25) + 4], before[at(25)..at(25) + 4]);
+        assert_eq!(buf[at(35)..at(35) + 4], before[at(35)..at(35) + 4]);
     }
 
     #[test]
-    fn fill_panel_background_square_corner_is_opaque_at_the_pixel_edge() {
-        let mut buf = vec![0u8; 100 * 32 * 4];
-        Painter::fill_panel_background(
-            &mut buf,
-            100,
-            32,
-            1,
-            Color([0.1, 0.1, 0.15, 1.0]),
-            8.0,
-            [true, true, false, false],
-        );
-        let bottom_left_offset = (31 * 100) * 4;
-        assert_eq!(
-            buf[bottom_left_offset + 3],
-            255,
-            "square bottom-left corner must stay opaque"
-        );
-    }
-
-    #[test]
-    fn icon_drawing_functions_fill_the_whole_buffer_without_panicking() {
-        for (w, h) in [(32, 32), (1, 1), (2, 3), (28, 28), (40, 26)] {
+    fn window_icons_survive_tiny_cells_and_sit_on_a_rounded_pill() {
+        for (w, h) in [(1, 1), (2, 3), (28, 28), (40, 26)] {
             for scale in [1, 2] {
-                for icon in [
-                    Painter::draw_icon_maximize,
-                    Painter::draw_icon_restore,
-                    Painter::draw_icon_close,
-                ] {
-                    let expected_len = (w * scale * h * scale * 4) as usize;
-                    let mut buf = vec![0u8; expected_len];
-                    let fg = Color([1.0, 1.0, 1.0, 1.0]);
-                    let bg = Color([0.12, 0.12, 0.15, 1.0]);
-                    icon(&mut buf, w, h, scale, fg, bg);
-                    assert_eq!(buf.len(), expected_len, "w={w} h={h} scale={scale}");
+                for icon in [Painter::draw_icon_maximize, Painter::draw_icon_restore, Painter::draw_icon_close] {
+                    let mut buf = vec![0u8; (w * scale * h * scale * 4) as usize];
+                    icon(&mut buf, w, h, scale, WHITE, Color([0.1, 0.1, 0.1, 1.0]));
                 }
             }
         }
-    }
-
-    #[test]
-    fn icon_pill_background_is_transparent_at_the_corners() {
         let mut buf = vec![0u8; 32 * 32 * 4];
-        Painter::draw_icon_maximize(
-            &mut buf,
-            32,
-            32,
-            1,
-            Color([1.0, 1.0, 1.0, 1.0]),
-            Color([1.0, 0.0, 0.0, 1.0]),
-        );
-        let corner = &buf[0..4];
-        assert_eq!(corner[3], 0, "corner pixel must be fully transparent");
-    }
-
-    #[test]
-    fn icon_at_scale_2_produces_a_physically_larger_buffer_than_scale_1() {
-        let mut buf1 = vec![0u8; 32 * 32 * 4];
-        Painter::draw_icon_close(
-            &mut buf1,
-            32,
-            32,
-            1,
-            Color([1.0, 1.0, 1.0, 1.0]),
-            Color([0.0, 0.0, 0.0, 1.0]),
-        );
-        let mut buf2 = vec![0u8; 64 * 64 * 4];
-        Painter::draw_icon_close(
-            &mut buf2,
-            32,
-            32,
-            2,
-            Color([1.0, 1.0, 1.0, 1.0]),
-            Color([0.0, 0.0, 0.0, 1.0]),
-        );
-        assert_eq!(buf1.len(), 32 * 32 * 4);
-        assert_eq!(buf2.len(), 64 * 64 * 4);
+        Painter::draw_icon_maximize(&mut buf, 32, 32, 1, WHITE, Color([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(buf[3], 0);
     }
 
     fn alpha_centroid(buf: &[u8], width: i32, height: i32, scale: i32) -> (f64, f64) {
@@ -3112,299 +1706,144 @@ mod tests {
             }
         }
         assert!(sum_a > 0.0, "glyph drew nothing");
-        (
-            sum_x / sum_a / f64::from(scale),
-            sum_y / sum_a / f64::from(scale),
-        )
+        (sum_x / sum_a / f64::from(scale), sum_y / sum_a / f64::from(scale))
     }
 
     #[test]
-    #[allow(clippy::similar_names)]
-    fn close_glyph_is_centred_on_the_cell_for_square_and_non_square_cells() {
-        for (w, h) in [(32, 32), (40, 26), (26, 40), (32, 44)] {
-            let mut buf = vec![0u8; (w * h * 4) as usize];
-            Painter::draw_icon_close(
-                &mut buf,
-                w,
-                h,
-                1,
-                Color([1.0, 1.0, 1.0, 1.0]),
-                Color([0.0, 0.0, 0.0, 0.0]),
-            );
-            let (cx, cy) = alpha_centroid(&buf, w, h, 1);
-            let (expected_cx, expected_cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
-            assert!(
-                (cx - expected_cx).abs() < 1.0,
-                "close glyph x-centroid off for {w}x{h}: got {cx}, expected {expected_cx}"
-            );
-            assert!(
-                (cy - expected_cy).abs() < 1.0,
-                "close glyph y-centroid off for {w}x{h}: got {cy}, expected {expected_cy}"
-            );
-        }
-    }
-
-    #[test]
-    fn maximize_glyph_is_centred_and_scale_independent() {
-        for scale in [1, 2] {
-            let (w, h) = (32, 32);
+    fn window_glyphs_are_centred_half_cell_marks_at_every_scale() {
+        type Icon = fn(&mut [u8], i32, i32, i32, Color, Color);
+        let cases: [(Icon, i32, i32, i32); 6] = [
+            (Painter::draw_icon_close, 32, 32, 1),
+            (Painter::draw_icon_close, 40, 26, 1),
+            (Painter::draw_icon_close, 26, 40, 1),
+            (Painter::draw_icon_close, 32, 44, 1),
+            (Painter::draw_icon_maximize, 32, 32, 1),
+            (Painter::draw_icon_maximize, 32, 32, 2),
+        ];
+        for (icon, w, h, scale) in cases {
             let mut buf = vec![0u8; (w * scale * h * scale * 4) as usize];
-            Painter::draw_icon_maximize(
-                &mut buf,
-                w,
-                h,
-                scale,
-                Color([1.0, 1.0, 1.0, 1.0]),
-                Color([0.0, 0.0, 0.0, 0.0]),
-            );
+            icon(&mut buf, w, h, scale, WHITE, CLEAR);
             let (cx, cy) = alpha_centroid(&buf, w, h, scale);
-            assert!(
-                (cx - f64::from(w) / 2.0).abs() < 1.0,
-                "scale {scale}: got cx={cx}"
-            );
-            assert!(
-                (cy - f64::from(h) / 2.0).abs() < 1.0,
-                "scale {scale}: got cy={cy}"
-            );
+            assert!((cx - f64::from(w) / 2.0).abs() < 1.0, "{w}x{h}@{scale}");
+            assert!((cy - f64::from(h) / 2.0).abs() < 1.0, "{w}x{h}@{scale}");
         }
+
+        let mut buf = vec![0u8; 32 * 32 * 4];
+        Painter::draw_icon_maximize(&mut buf, 32, 32, 1, WHITE, CLEAR);
+        let inked: Vec<usize> = (0..32 * 32).filter(|i| buf[i * 4 + 3] > 10).map(|i| i % 32).collect();
+        let span = inked.iter().max().unwrap() - inked.iter().min().unwrap();
+        assert!(span.abs_diff(16) <= 3, "span {span}");
+    }
+
+    fn fit(painter: &Painter, text: &str, avail_w: i32) -> String {
+        let size = painter.font_size;
+        painter.fit_text_at(text, avail_w, size, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM, false)
     }
 
     #[test]
-    fn glyph_spans_half_the_minimum_cell_dimension() {
-        let (w, h) = (32, 32);
-        let mut buf = vec![0u8; (w * h * 4) as usize];
-        Painter::draw_icon_maximize(
-            &mut buf,
-            w,
-            h,
-            1,
-            Color([1.0, 1.0, 1.0, 1.0]),
-            Color([0.0, 0.0, 0.0, 0.0]),
-        );
-        let mut min_x = w;
-        let mut max_x = 0;
-        for y in 0..h {
-            for x in 0..w {
-                let idx = ((y * w + x) * 4) as usize;
-                if buf[idx + 3] > 10 {
-                    min_x = min_x.min(x);
-                    max_x = max_x.max(x);
-                }
-            }
-        }
-        let span = max_x - min_x;
-        let expected = (f64::from(w.min(h)) * 0.5) as i32;
-        assert!(
-            (span - expected).abs() <= 3,
-            "expected glyph span ~{expected}, got {span}"
-        );
-    }
-
-    #[test]
-    fn fit_text_returns_input_unchanged_when_it_already_fits() {
+    fn fit_text_ellipsises_exactly_like_a_linear_search() {
         let painter = Painter::with_embedded_font_only(14.0);
-        assert_eq!(
-            painter.fit_text_at(
-                "ok",
-                1000,
-                painter.font_size,
-                DEFAULT_WEIGHT,
-                DEFAULT_TRACKING_EM
-            ),
-            "ok"
-        );
-    }
-
-    #[test]
-    fn fit_text_truncates_with_an_ellipsis_when_too_narrow() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let long = "a very long window title that will not fit";
-        let fitted = painter.fit_text_at(
-            long,
-            40,
-            painter.font_size,
-            DEFAULT_WEIGHT,
-            DEFAULT_TRACKING_EM,
-        );
-        assert!(fitted.ends_with('…'), "{fitted:?}");
-        assert!(
-            fitted.len() < long.len(),
-            "expected shortening, got {fitted:?}"
-        );
-    }
-
-    #[test]
-    fn fit_text_truncation_matches_a_naive_linear_search() {
-        let painter = Painter::with_embedded_font_only(14.0);
+        assert_eq!(fit(&painter, "ok", 1000), "ok");
+        assert_eq!(fit(&painter, "anything", 0), "");
+        assert_eq!(fit(&painter, "", 1000), "");
         let long = "a very long window title that will not fit in the available space";
+        let chars: Vec<char> = long.chars().collect();
         for avail_w in [10, 30, 60, 100, 200] {
-            let binary = painter.fit_text_at(
-                long,
-                avail_w,
-                painter.font_size,
-                DEFAULT_WEIGHT,
-                DEFAULT_TRACKING_EM,
-            );
-
-            let chars: Vec<char> = long.chars().collect();
-            let mut linear = String::new();
-            let mut probe = chars.clone();
-            while !probe.is_empty() {
-                probe.pop();
-                let candidate: String = probe.iter().collect::<String>() + "…";
-                if painter.measure_width_cached(
-                    &candidate,
-                    painter.font_size,
-                    DEFAULT_WEIGHT,
-                    DEFAULT_TRACKING_EM,
-                ) <= avail_w as f32
-                {
-                    linear = candidate;
-                    break;
-                }
-            }
-            assert_eq!(binary, linear, "avail_w={avail_w}");
+            let linear = (0..chars.len())
+                .rev()
+                .map(|k| chars[..k].iter().collect::<String>() + "…")
+                .find(|candidate| painter.text_width(candidate) <= avail_w as f32)
+                .unwrap_or_default();
+            assert_eq!(fit(&painter, long, avail_w), linear, "avail_w={avail_w}");
         }
     }
 
     #[test]
-    fn fit_text_on_zero_width_is_empty() {
+    fn widths_follow_size_tracking_case_and_survive_the_cache() {
         let painter = Painter::with_embedded_font_only(14.0);
-        assert_eq!(
-            painter.fit_text_at(
-                "anything",
-                0,
-                painter.font_size,
-                DEFAULT_WEIGHT,
-                DEFAULT_TRACKING_EM
-            ),
-            ""
-        );
-    }
-
-    #[test]
-    fn fit_text_on_empty_input_is_empty() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        assert_eq!(
-            painter.fit_text_at(
-                "",
-                1000,
-                painter.font_size,
-                DEFAULT_WEIGHT,
-                DEFAULT_TRACKING_EM
-            ),
-            ""
-        );
-    }
-
-    #[test]
-    fn measure_width_grows_with_a_larger_font_size() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let small =
-            painter.measure_width_cached("Hello", 14.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
-        let large =
-            painter.measure_width_cached("Hello", 28.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
-        assert!(
-            large > small,
-            "a 2x font size must measure a wider line, got small={small} large={large}"
-        );
-    }
-
-    #[test]
-    fn measure_width_cache_returns_the_same_value_as_an_uncached_measurement() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let cached =
-            painter.measure_width_cached("Hello, world", 14.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
-        let again =
-            painter.measure_width_cached("Hello, world", 14.0, DEFAULT_WEIGHT, DEFAULT_TRACKING_EM);
-        let uncached = painter.measure_width_uncached(
-            "Hello, world",
-            14.0,
-            DEFAULT_WEIGHT,
-            DEFAULT_TRACKING_EM,
-        );
-        assert!((cached - uncached).abs() < f32::EPSILON);
-        assert!(
-            (cached - again).abs() < f32::EPSILON,
-            "a cache hit must not drift"
-        );
-    }
-
-    #[test]
-    fn style_key_is_distinct_per_weight_and_tracking() {
-        let base = style_key(14.0, 400, 0.0);
-        assert_ne!(
-            base,
-            style_key(14.0, 700, 0.0),
-            "weight must change the key"
-        );
-        assert_ne!(
-            base,
-            style_key(14.0, 400, 0.1),
-            "tracking must change the key"
-        );
-        assert_ne!(base, style_key(15.0, 400, 0.0), "size must change the key");
-        assert_eq!(
-            base,
-            style_key(14.0, 400, 0.0),
-            "identical inputs must collide"
-        );
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn measure_width_cache_is_isolated_by_tracking() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let regular = painter.measure_width_cached("Hello, world", 14.0, 400, 0.0);
-        let tracked = painter.measure_width_cached("Hello, world", 14.0, 400, 0.3);
-        assert_ne!(regular, tracked, "letter-spacing must measure differently");
-    }
-
-    #[test]
-    fn text_width_styled_uppercases_when_the_style_asks_for_it() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let lower = painter.text_width_styled("micro", &TextStyle::MICRO);
-        let upper = painter.text_width_styled("MICRO", &TextStyle::MICRO);
-        assert!(
-            (lower - upper).abs() < 0.01,
-            "MICRO must uppercase its input before measuring, so both spellings measure the same"
-        );
-    }
-
-    #[test]
-    fn text_width_styled_reflects_the_roles_own_size_not_the_painters_default() {
-        let painter = Painter::with_embedded_font_only(16.0);
-        let small = painter.text_width_styled("Overview", &TextStyle::CAP);
-        let large = painter.text_width_styled("Overview", &TextStyle::DISPLAY);
-        assert!(
-            large > small,
-            "DISPLAY (36px) must measure wider than CAP (12px), got small={small} large={large}"
-        );
-    }
-
-    #[test]
-    fn draw_label_over_is_deterministic_across_repeated_calls() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let render = || {
-            let mut buf = vec![0u8; 200 * 32 * 4];
-            painter.draw_label_over(
-                &mut buf,
-                200,
-                32,
-                32,
-                168,
-                1,
-                TextAlign::Left,
-                "Hello",
-                [255, 255, 255, 255],
-            );
-            buf
+        let measure = |text: &str, size: f32, tracking: f32| {
+            painter.measure_width_cached_with(text, size, DEFAULT_WEIGHT, tracking, false)
         };
-        assert_eq!(
-            render(),
-            render(),
-            "shaping and rasterising the same text twice must produce identical pixels"
-        );
+        assert!(measure("Hello", 28.0, 0.0) > measure("Hello", 14.0, 0.0));
+        assert_ne!(measure("Hello", 14.0, 0.0), measure("Hello", 14.0, 0.3));
+        let uncached = painter.measure_width_uncached("Hello", 14.0, DEFAULT_WEIGHT, 0.0, false);
+        assert!((measure("Hello", 14.0, 0.0) - uncached).abs() < f32::EPSILON);
+
+        let styled = |text, style| painter.text_width_styled(text, style);
+        assert!((styled("micro", &TextStyle::MICRO) - styled("MICRO", &TextStyle::MICRO)).abs() < 0.01);
+        assert!(styled("Overview", &TextStyle::DISPLAY) > styled("Overview", &TextStyle::CAP));
+    }
+
+    #[test]
+    fn style_keys_separate_every_shaping_input() {
+        let base = style_key_with(FaceRole::Ui, 14.0, 400, 0.0, false);
+        assert_eq!(base, style_key_with(FaceRole::Ui, 14.0, 400, 0.0, false));
+        for other in [
+            style_key_with(FaceRole::Mono, 14.0, 400, 0.0, false),
+            style_key_with(FaceRole::Ui, 15.0, 400, 0.0, false),
+            style_key_with(FaceRole::Ui, 14.0, 700, 0.0, false),
+            style_key_with(FaceRole::Ui, 14.0, 400, 0.1, false),
+            style_key_with(FaceRole::Ui, 14.0, 400, 0.0, true),
+        ] {
+            assert_ne!(base, other);
+        }
+    }
+
+    #[test]
+    fn jetbrains_mono_is_picked_for_tabular_text_only_when_installed() {
+        assert_eq!(tabular_family(["Adwaita Sans", "JetBrains Mono", "Noto Sans"]), Some(TABULAR_FAMILY));
+        assert_eq!(tabular_family(["jetbrains mono"]), Some(TABULAR_FAMILY));
+        assert_eq!(tabular_family(["Adwaita Sans", "JetBrains Mono NL"]), None);
+        assert_eq!(tabular_family(std::iter::empty()), None);
+
+        let painter = Painter::with_embedded_font_only(14.0);
+        assert_eq!(painter.tabular_family_in_use(), None);
+        assert_eq!(painter.family_for(painter.face_role(true)), "Liberation Sans");
+        let wide = painter.text_width_styled("00:00", &TextStyle::NUM);
+        let narrow = painter.text_width_styled("11:11", &TextStyle::NUM);
+        assert!((wide - narrow).abs() < 0.5, "{wide} vs {narrow}");
+    }
+
+    #[test]
+    fn the_ui_family_falls_back_to_an_installed_face() {
+        assert_eq!(ui_family(None, ["Noto Sans", "Adwaita Sans"]), DEFAULT_FAMILY);
+        assert_eq!(ui_family(None, ["DejaVu Sans", "Noto Sans"]), "Noto Sans");
+        assert_eq!(ui_family(Some("Inter"), ["Inter", "Adwaita Sans"]), "Inter");
+        assert_eq!(ui_family(Some("Missing Font"), ["Cantarell", "Liberation Sans"]), "Cantarell");
+        assert_eq!(ui_family(Some("  "), std::iter::empty()), DEFAULT_FAMILY);
+    }
+
+    #[test]
+    fn a_painter_with_the_monospace_family_draws_tabular_text_in_it() {
+        let mut painter = Painter::with_embedded_font_only(14.0);
+        painter.mono_family = Some(TABULAR_FAMILY);
+        assert_eq!(painter.face_role(false), FaceRole::Ui);
+        assert_eq!(painter.face_role(true), FaceRole::Mono);
+        assert_eq!(painter.family_for(FaceRole::Mono), TABULAR_FAMILY);
+        assert_eq!(painter.family_for(FaceRole::Ui), "Liberation Sans");
+        let wide = painter.text_width_styled("00:00", &TextStyle::NUM);
+        let narrow = painter.text_width_styled("11:11", &TextStyle::NUM);
+        assert!((wide - narrow).abs() < 0.5, "{wide} vs {narrow}");
+    }
+
+    fn label(painter: &Painter, x: (i32, i32), scale: i32, align: TextAlign, text: &str) -> Vec<u8> {
+        let mut buf = vec![0u8; (200 * 32 * scale * scale * 4) as usize];
+        painter.draw_label_over(&mut buf, 200, 32, x.0, x.1, scale, align, text, [255; 4]);
+        buf
+    }
+
+    #[test]
+    fn labels_are_deterministic_scaled_ellipsised_and_aligned() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let render = |scale, align, text| label(&painter, (20, 180), scale, align, text);
+        let hello = render(1, TextAlign::Left, "Hello");
+        assert_eq!(hello, render(1, TextAlign::Left, "Hello"));
+        assert!(hello.iter().any(|&b| b != 0));
+        let doubled = render(2, TextAlign::Left, "Hello");
+        assert!(doubled.len() == 400 * 64 * 4 && doubled.iter().any(|&b| b != 0));
+        let long = "a title so long it must be ellipsised to fit the available space";
+        assert!(render(1, TextAlign::Left, long).iter().any(|&b| b != 0));
+        assert_ne!(render(1, TextAlign::Left, "Hi"), render(1, TextAlign::Center, "Hi"));
     }
 
     #[test]
@@ -3418,88 +1857,6 @@ mod tests {
             Arc::ptr_eq(&painter, &painter_again),
             "repeated current() calls must share one Painter allocation, \
              not deep-copy the embedded font on every call"
-        );
-    }
-
-    #[test]
-    fn draw_label_over_does_not_panic_on_overflowing_text() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let mut buf = vec![0u8; 200 * 32 * 4];
-        painter.draw_label_over(
-            &mut buf,
-            200,
-            32,
-            32,
-            168,
-            1,
-            TextAlign::Left,
-            "a title so long it must be ellipsised to fit the available space",
-            [255, 255, 255, 255],
-        );
-        assert!(buf.iter().any(|&b| b != 0));
-    }
-
-    #[test]
-    fn draw_label_over_at_scale_2_produces_a_physically_larger_buffer() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let mut buf1 = vec![0u8; 200 * 32 * 4];
-        painter.draw_label_over(
-            &mut buf1,
-            200,
-            32,
-            32,
-            168,
-            1,
-            TextAlign::Left,
-            "Hello",
-            [255, 255, 255, 255],
-        );
-        let mut buf2 = vec![0u8; 400 * 64 * 4];
-        painter.draw_label_over(
-            &mut buf2,
-            200,
-            32,
-            32,
-            168,
-            2,
-            TextAlign::Left,
-            "Hello",
-            [255, 255, 255, 255],
-        );
-        assert!(buf1.iter().any(|&b| b != 0));
-        assert!(buf2.iter().any(|&b| b != 0));
-    }
-
-    #[test]
-    fn left_align_and_center_align_place_glyphs_differently() {
-        let painter = Painter::with_embedded_font_only(14.0);
-        let mut left_buf = vec![0u8; 200 * 32 * 4];
-        let mut center_buf = vec![0u8; 200 * 32 * 4];
-        painter.draw_label_over(
-            &mut left_buf,
-            200,
-            32,
-            20,
-            180,
-            1,
-            TextAlign::Left,
-            "Hi",
-            [255, 255, 255, 255],
-        );
-        painter.draw_label_over(
-            &mut center_buf,
-            200,
-            32,
-            20,
-            180,
-            1,
-            TextAlign::Center,
-            "Hi",
-            [255, 255, 255, 255],
-        );
-        assert_ne!(
-            left_buf, center_buf,
-            "left- and centre-aligned short text must land in different pixels"
         );
     }
 }
@@ -3525,58 +1882,47 @@ mod cover_tests {
     }
 
     #[test]
-    fn a_fully_transparent_cover_reports_nothing() {
-        let buffer = vec![0u8; 64 * 4];
-        assert!(dominant_colour(&buffer).is_none());
-    }
-
-    #[test]
-    fn a_grey_cover_still_reports_a_colour_to_clamp_later() {
-        let colour = dominant_colour(&solid(130, 130, 130)).expect("grey is still a colour");
+    fn transparent_covers_report_nothing_and_grey_ones_still_report() {
+        assert!(dominant_colour(&[0u8; 64 * 4]).is_none());
+        let colour = dominant_colour(&solid(130, 130, 130)).unwrap();
         assert!((colour.0[0] - colour.0[1]).abs() < 0.01);
     }
 
     #[test]
-    fn a_colour_already_in_range_is_left_untouched() {
+    fn fit_for_contrast_moves_only_out_of_range_colours_into_range() {
         let colour = Color([0.6, 0.5, 0.3, 1.0]);
         assert_eq!(fit_for_contrast(colour, 0.35, 0.8), colour);
+        let luma = |c: Color| 0.2126 * c.0[0] + 0.7152 * c.0[1] + 0.0722 * c.0[2];
+        assert!(luma(fit_for_contrast(Color([0.05, 0.06, 0.2, 1.0]), 0.35, 0.8)) >= 0.34);
+        assert!(luma(fit_for_contrast(Color([0.98, 0.99, 0.97, 1.0]), 0.35, 0.8)) <= 0.81);
+        let black = fit_for_contrast(Color([0.0, 0.0, 0.0, 1.0]), 0.35, 0.8);
+        assert!(black.0[0] > 0.3 && black.0[0].is_finite());
     }
 
     #[test]
-    fn a_too_dark_colour_is_lifted_into_readable_range() {
-        let lifted = fit_for_contrast(Color([0.05, 0.06, 0.2, 1.0]), 0.35, 0.8);
-        let luma = 0.2126 * lifted.0[0] + 0.7152 * lifted.0[1] + 0.0722 * lifted.0[2];
-        assert!(luma >= 0.34, "luma {luma} is still too dark");
-    }
-
-    #[test]
-    fn a_blown_out_colour_is_pulled_back_down() {
-        let pulled = fit_for_contrast(Color([0.98, 0.99, 0.97, 1.0]), 0.35, 0.8);
-        let luma = 0.2126 * pulled.0[0] + 0.7152 * pulled.0[1] + 0.0722 * pulled.0[2];
-        assert!(luma <= 0.81, "luma {luma} is still blown out");
-    }
-
-    #[test]
-    fn pure_black_is_lifted_without_dividing_by_zero() {
-        let lifted = fit_for_contrast(Color([0.0, 0.0, 0.0, 1.0]), 0.35, 0.8);
-        assert!(lifted.0[0] > 0.3);
-        assert!(lifted.0[0].is_finite());
-    }
-
-    #[test]
-    fn a_cover_that_is_neither_png_nor_jpeg_is_refused() {
+    fn unrecognised_empty_and_truncated_covers_are_refused() {
         assert!(decode_cover(b"not an image at all", 32).is_none());
-    }
-
-    #[test]
-    fn an_empty_cover_is_refused() {
         assert!(decode_cover(&[], 32).is_none());
         assert!(render_jpeg(&[], 32).is_none());
+        assert!(render_webp(&[], 32).is_none());
+        assert!(decode_cover(&[0xff, 0xd8, 0xff, 0xe0], 32).is_none());
     }
 
     #[test]
-    fn a_truncated_jpeg_header_does_not_panic() {
-        assert!(decode_cover(&[0xff, 0xd8, 0xff, 0xe0], 32).is_none());
+    fn a_webp_cover_is_decoded_with_premultiplied_alpha() {
+        let rgba: Vec<u8> = [[255, 0, 0, 255], [0, 0, 255, 128]].into_iter().cycle().take(4).flatten().collect();
+        let mut encoded = Vec::new();
+        image_webp::WebPEncoder::new(&mut encoded)
+            .encode(&rgba, 2, 2, image_webp::ColorType::Rgba8)
+            .expect("lossless encode of a 2x2 image");
+
+        let decoded = decode_cover(&encoded, 4).expect("webp is recognised");
+        assert_eq!(decoded.len(), 4 * 4 * 4);
+        assert!(
+            decoded.chunks_exact(4).all(|px| px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3]),
+            "every channel stays within its alpha"
+        );
+        assert!(decoded.chunks_exact(4).any(|px| px[2] > 200 && px[3] == 255));
     }
 }
 
@@ -3585,9 +1931,7 @@ mod golden_tests {
     use super::*;
 
     fn goldens_dir(category: &str) -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata/goldens")
-            .join(category)
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/goldens").join(category)
     }
 
     fn bgra_premul_to_rgba_premul(buf: &[u8]) -> Vec<u8> {
@@ -3600,19 +1944,13 @@ mod golden_tests {
 
     #[must_use]
     fn check_golden_rgba_premul(
-        category: &str,
-        name: &str,
-        width: u32,
-        height: u32,
-        rgba_premul: &[u8],
+        category: &str, name: &str, width: u32, height: u32, rgba_premul: &[u8],
     ) -> Option<String> {
         let mut pixmap = tiny_skia::Pixmap::new(width, height)
             .unwrap_or_else(|| panic!("golden {name}: {width}x{height} must be nonzero"));
         let len = pixmap.data().len();
         pixmap.data_mut().copy_from_slice(&rgba_premul[..len]);
-        let png = pixmap
-            .encode_png()
-            .unwrap_or_else(|e| panic!("golden {name}: failed to encode png: {e}"));
+        let png = pixmap.encode_png().unwrap_or_else(|e| panic!("golden {name}: failed to encode png: {e}"));
 
         let dir = goldens_dir(category);
         let path = dir.join(format!("{name}.png"));
@@ -3621,17 +1959,14 @@ mod golden_tests {
                 return None;
             }
             let actual_path = dir.join(format!("{name}.actual.png"));
-            std::fs::write(&actual_path, &png)
-                .unwrap_or_else(|e| panic!("golden {name}: failed to write actual: {e}"));
+            std::fs::write(&actual_path, &png).unwrap_or_else(|e| panic!("golden {name}: failed to write actual: {e}"));
             return Some(format!(
                 "golden mismatch for {name}: wrote {actual_path:?} for review; \
                  if the change is intentional, replace {path:?} with it"
             ));
         }
-        std::fs::create_dir_all(&dir)
-            .unwrap_or_else(|e| panic!("golden {name}: failed to create dir: {e}"));
-        std::fs::write(&path, &png)
-            .unwrap_or_else(|e| panic!("golden {name}: failed to write baseline: {e}"));
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("golden {name}: failed to create dir: {e}"));
+        std::fs::write(&path, &png).unwrap_or_else(|e| panic!("golden {name}: failed to write baseline: {e}"));
         Some(format!(
             "golden {name} did not exist; created a new baseline at {path:?} — \
              review it, then re-run tests and commit it"
@@ -3644,13 +1979,7 @@ mod golden_tests {
 
     fn corner_name(corners: [bool; 4]) -> String {
         let bit = |b: bool| i32::from(b);
-        format!(
-            "tl{}_tr{}_br{}_bl{}",
-            bit(corners[0]),
-            bit(corners[1]),
-            bit(corners[2]),
-            bit(corners[3])
-        )
+        format!("tl{}_tr{}_br{}_bl{}", bit(corners[0]), bit(corners[1]), bit(corners[2]), bit(corners[3]))
     }
 
     #[test]
@@ -3722,10 +2051,8 @@ mod golden_tests {
         let painter = Painter::with_embedded_font_only(16.0);
         let (width, height) = (120, 32);
         let mut failures = Vec::new();
-        for (name, text) in [
-            ("draw_label_over_ascii", "Hello world"),
-            ("draw_label_over_cyrillic", "Привіт світ"),
-        ] {
+        for (name, text) in [("draw_label_over_ascii", "Hello world"), ("draw_label_over_cyrillic", "Привіт світ")]
+        {
             let mut buf = vec![0u8; (width * height * 4) as usize];
             painter.draw_label_over(
                 &mut buf,
@@ -3738,13 +2065,7 @@ mod golden_tests {
                 text,
                 [255, 255, 255, 255],
             );
-            failures.extend(check_golden_rgba_premul(
-                "text",
-                name,
-                width as u32,
-                height as u32,
-                &buf,
-            ));
+            failures.extend(check_golden_rgba_premul("text", name, width as u32, height as u32, &buf));
         }
         assert_all_goldens(&failures);
     }
@@ -3759,16 +2080,8 @@ mod golden_tests {
             (
                 "window_shadow_idle",
                 [
-                    ShadowLayerSpec {
-                        dy: 3.30,
-                        blur: 7.68,
-                        color: Color([0.0, 0.0, 0.0, 0.26]),
-                    },
-                    ShadowLayerSpec {
-                        dy: 13.76,
-                        blur: 32.0,
-                        color: Color([0.0, 0.0, 0.0, 0.4]),
-                    },
+                    ShadowLayerSpec { dy: 3.30, blur: 7.68, color: Color([0.0, 0.0, 0.0, 0.26]) },
+                    ShadowLayerSpec { dy: 13.76, blur: 32.0, color: Color([0.0, 0.0, 0.0, 0.4]) },
                 ],
                 1.0,
                 Color([1.0, 1.0, 1.0, 0.05]),
@@ -3776,16 +2089,8 @@ mod golden_tests {
             (
                 "window_shadow_focused",
                 [
-                    ShadowLayerSpec {
-                        dy: 7.02,
-                        blur: 16.32,
-                        color: Color([0.0, 0.0, 0.0, 0.39]),
-                    },
-                    ShadowLayerSpec {
-                        dy: 29.24,
-                        blur: 68.0,
-                        color: Color([0.0, 0.0, 0.0, 0.6]),
-                    },
+                    ShadowLayerSpec { dy: 7.02, blur: 16.32, color: Color([0.0, 0.0, 0.0, 0.39]) },
+                    ShadowLayerSpec { dy: 29.24, blur: 68.0, color: Color([0.0, 0.0, 0.0, 0.6]) },
                 ],
                 1.0,
                 Color([1.0, 1.0, 1.0, 0.10]),
@@ -3805,13 +2110,7 @@ mod golden_tests {
                 None,
             );
             let rgba = bgra_premul_to_rgba_premul(&buf);
-            failures.extend(check_golden_rgba_premul(
-                "chrome",
-                name,
-                buf_w as u32,
-                buf_h as u32,
-                &rgba,
-            ));
+            failures.extend(check_golden_rgba_premul("chrome", name, buf_w as u32, buf_h as u32, &rgba));
         }
         assert_all_goldens(&failures);
     }

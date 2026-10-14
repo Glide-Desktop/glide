@@ -1,0 +1,4 @@
+#%PAM-1.0
+# PAM service used by Glide's built-in lock screen to verify the password.
+# Without this file Glide falls back to the "login" service.
+auth include login

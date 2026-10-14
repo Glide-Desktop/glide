@@ -1,0 +1,259 @@
+[[keybinds]]
+mods = ["super"]
+key = "q"
+action = "close-app"
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "q"
+action = "logout"
+
+[[keybinds]]
+mods = ["super"]
+key = "Tab"
+action = "next-workspace"
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "Tab"
+action = "prev-workspace"
+
+[[keybinds]]
+mods = ["super"]
+key = "f"
+action = "maximize"
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "f"
+action = "fullscreen"
+
+[[keybinds]]
+mods = ["super"]
+key = "m"
+action = "minimize"
+
+[[keybinds]]
+mods = ["super"]
+key = "o"
+action = "toggle-overview"
+
+[[keybinds]]
+mods = ["alt"]
+key = "Tab"
+action = "switch-windows"
+
+[[keybinds]]
+mods = ["alt", "shift"]
+key = "Tab"
+action = "switch-windows-backward"
+
+[[keybinds]]
+mods = ["alt"]
+key = "grave"
+action = "switch-app-windows"
+
+[[keybinds]]
+mods = ["alt", "shift"]
+key = "grave"
+action = "switch-app-windows-backward"
+
+[[keybinds]]
+mods = ["alt"]
+key = "F4"
+action = "close-window"
+
+[[keybinds]]
+mods = ["alt"]
+key = "space"
+action = "open-window-menu"
+
+[[keybinds]]
+mods = []
+key = "Print"
+action = "screenshot"
+
+[[keybinds]]
+mods = ["super"]
+key = "a"
+action = "toggle-launcher"
+
+[[keybinds]]
+mods = []
+key = "XF86AudioRaiseVolume"
+action = { exec = "wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+ || pactl set-sink-volume @DEFAULT_SINK@ +5%" }
+
+[[keybinds]]
+mods = []
+key = "XF86AudioLowerVolume"
+action = { exec = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- || pactl set-sink-volume @DEFAULT_SINK@ -5%" }
+
+[[keybinds]]
+mods = []
+key = "XF86AudioMute"
+action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle" }
+
+[[keybinds]]
+mods = []
+key = "XF86AudioMicMute"
+action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle || pactl set-source-mute @DEFAULT_SOURCE@ toggle" }
+
+[[keybinds]]
+mods = []
+key = "XF86MonBrightnessUp"
+action = { exec = "brightnessctl set +5%" }
+
+[[keybinds]]
+mods = []
+key = "XF86MonBrightnessDown"
+action = { exec = "brightnessctl set 5%-" }
+
+[[keybinds]]
+mods = []
+key = "XF86AudioPlay"
+action = { exec = "playerctl play-pause" }
+
+[[keybinds]]
+mods = []
+key = "XF86AudioNext"
+action = { exec = "playerctl next" }
+
+[[keybinds]]
+mods = []
+key = "XF86AudioPrev"
+action = { exec = "playerctl previous" }
+
+[[keybinds]]
+mods = ["super"]
+key = "l"
+action = "lock"
+
+[[keybinds]]
+mods = ["ctrl", "alt"]
+key = "Delete"
+action = "power-dialog"
+
+[[keybinds]]
+mods = []
+key = "XF86PowerOff"
+action = "power-dialog"
+
+[[keybinds]]
+mods = ["super"]
+key = "d"
+action = "show-desktop"
+
+[[keybinds]]
+mods = ["super"]
+key = "v"
+action = "toggle-notification-center"
+
+[[keybinds]]
+mods = ["super"]
+key = "s"
+action = "toggle-quick-settings"
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "Page_Down"
+action = "move-window-to-next-workspace"
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "Page_Up"
+action = "move-window-to-prev-workspace"
+
+[[keybinds]]
+mods = ["ctrl", "alt"]
+key = "t"
+action = "terminal"
+
+[[keybinds]]
+mods = ["super"]
+key = "1"
+action = { switch-workspace = 1 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "1"
+action = { move-window-to-workspace = 1 }
+
+[[keybinds]]
+mods = ["super"]
+key = "2"
+action = { switch-workspace = 2 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "2"
+action = { move-window-to-workspace = 2 }
+
+[[keybinds]]
+mods = ["super"]
+key = "3"
+action = { switch-workspace = 3 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "3"
+action = { move-window-to-workspace = 3 }
+
+[[keybinds]]
+mods = ["super"]
+key = "4"
+action = { switch-workspace = 4 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "4"
+action = { move-window-to-workspace = 4 }
+
+[[keybinds]]
+mods = ["super"]
+key = "5"
+action = { switch-workspace = 5 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "5"
+action = { move-window-to-workspace = 5 }
+
+[[keybinds]]
+mods = ["super"]
+key = "6"
+action = { switch-workspace = 6 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "6"
+action = { move-window-to-workspace = 6 }
+
+[[keybinds]]
+mods = ["super"]
+key = "7"
+action = { switch-workspace = 7 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "7"
+action = { move-window-to-workspace = 7 }
+
+[[keybinds]]
+mods = ["super"]
+key = "8"
+action = { switch-workspace = 8 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "8"
+action = { move-window-to-workspace = 8 }
+
+[[keybinds]]
+mods = ["super"]
+key = "9"
+action = { switch-workspace = 9 }
+
+[[keybinds]]
+mods = ["super", "shift"]
+key = "9"
+action = { move-window-to-workspace = 9 }

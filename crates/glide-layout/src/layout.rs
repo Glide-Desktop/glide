@@ -16,6 +16,7 @@ pub enum WorkspaceTarget {
     Id(WorkspaceId),
     Next,
     Previous,
+    New,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,10 +26,7 @@ pub struct OutputInfo {
     pub work_area: Rectangle,
 }
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "maximized/fullscreen/minimized are genuinely orthogonal"
-)]
+#[expect(clippy::struct_excessive_bools, reason = "maximized/fullscreen/minimized are genuinely orthogonal")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowState {
     pub id: WindowId,
@@ -50,11 +48,7 @@ impl WindowState {
 
     #[must_use]
     pub fn content_geometry(&self) -> Rectangle {
-        if self.fullscreen {
-            self.geometry
-        } else {
-            self.geometry.inset(self.insets)
-        }
+        if self.fullscreen { self.geometry } else { self.geometry.inset(self.insets) }
     }
 }
 
@@ -67,17 +61,37 @@ pub struct Workspace {
 
 impl Workspace {
     fn new(id: WorkspaceId) -> Self {
-        Self {
-            id,
-            windows: Vec::new(),
-            focused: None,
-        }
+        Self { id, windows: Vec::new(), focused: None }
     }
 }
 
 pub const FALLBACK_OUTPUT: Rectangle = Rectangle::from_loc_and_size(0, 0, 1920, 1080);
 
 const CASCADE_STEP: i32 = 32;
+
+#[must_use]
+pub fn keep_reachable(frame: Rectangle, area: Rectangle) -> Rectangle {
+    let max_x = (area.loc.x + area.size.width - frame.size.width).max(area.loc.x);
+    let max_y = (area.loc.y + area.size.height - frame.size.height).max(area.loc.y);
+    Rectangle::new(Point::new(frame.loc.x.clamp(area.loc.x, max_x), frame.loc.y.clamp(area.loc.y, max_y)), frame.size)
+}
+
+pub const MOVE_MIN_VISIBLE_WIDTH: i32 = 64;
+
+pub const MOVE_MIN_GRIP_HEIGHT: i32 = 32;
+
+#[must_use]
+pub fn keep_grip_reachable(frame: Rectangle, grip_height: i32, area: Rectangle) -> Rectangle {
+    let grip_height = grip_height.max(MOVE_MIN_GRIP_HEIGHT).min(frame.size.height).max(1);
+    let visible = MOVE_MIN_VISIBLE_WIDTH.min(frame.size.width).max(1);
+    let overhang = frame.size.width - visible;
+    let grip = Rectangle::new(frame.loc, Size::new(frame.size.width, grip_height));
+    let reach = Rectangle::new(
+        Point::new(area.loc.x - overhang, area.loc.y),
+        Size::new(area.size.width + overhang * 2, area.size.height),
+    );
+    Rectangle::new(keep_reachable(grip, reach).loc, frame.size)
+}
 
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -119,69 +133,48 @@ impl Layout {
 
     #[must_use]
     pub fn placement_work_area(&self) -> Rectangle {
-        self.placement_anchor.map_or_else(
-            || self.primary_output_work_area(),
-            |anchor| self.work_area_at(anchor),
-        )
+        self.placement_anchor.map_or_else(|| self.primary_output_work_area(), |anchor| self.work_area_at(anchor))
     }
 
     #[must_use]
     pub fn primary_output_geometry(&self) -> Rectangle {
-        self.outputs
-            .first()
-            .map_or(FALLBACK_OUTPUT, |output| output.geometry)
+        self.outputs.first().map_or(FALLBACK_OUTPUT, |output| output.geometry)
     }
 
     #[must_use]
     pub fn primary_output_work_area(&self) -> Rectangle {
-        self.outputs
-            .first()
-            .map_or(FALLBACK_OUTPUT, |output| output.work_area)
+        self.outputs.first().map_or(FALLBACK_OUTPUT, |output| output.work_area)
     }
 
     #[must_use]
     pub fn output_at(&self, point: Point) -> Option<&OutputInfo> {
-        self.outputs
-            .iter()
-            .find(|output| output.geometry.contains(point))
+        self.outputs.iter().find(|output| output.geometry.contains(point))
     }
 
     #[must_use]
     pub fn work_area_at(&self, point: Point) -> Rectangle {
-        self.output_at(point).map_or_else(
-            || self.primary_output_work_area(),
-            |output| output.work_area,
-        )
+        self.output_at(point).map_or_else(|| self.primary_output_work_area(), |output| output.work_area)
     }
 
     #[must_use]
     pub fn output_geometry_at(&self, point: Point) -> Rectangle {
-        self.output_at(point)
-            .map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
+        self.output_at(point).map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
     }
 
     fn output_for_window(&self, w: WindowId) -> Option<&OutputInfo> {
         let state = self.windows.get(&w)?;
         let centre = state.geometry.center();
-        self.output_at(centre).or_else(|| {
-            self.outputs
-                .iter()
-                .find(|output| output.geometry.overlaps(state.geometry))
-        })
+        self.output_at(centre).or_else(|| self.outputs.iter().find(|output| output.geometry.overlaps(state.geometry)))
     }
 
     #[must_use]
     pub fn work_area_for_window(&self, w: WindowId) -> Rectangle {
-        self.output_for_window(w).map_or_else(
-            || self.primary_output_work_area(),
-            |output| output.work_area,
-        )
+        self.output_for_window(w).map_or_else(|| self.primary_output_work_area(), |output| output.work_area)
     }
 
     #[must_use]
     pub fn output_geometry_for_window(&self, w: WindowId) -> Rectangle {
-        self.output_for_window(w)
-            .map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
+        self.output_for_window(w).map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
     }
 
     pub fn set_policy(&mut self, policy: NewWindowPolicy) {
@@ -229,9 +222,7 @@ impl Layout {
 
     #[must_use]
     pub fn is_visible(&self, w: WindowId) -> bool {
-        self.windows
-            .get(&w)
-            .is_some_and(|state| state.workspace_id == self.active && !state.minimized)
+        self.windows.get(&w).is_some_and(|state| state.workspace_id == self.active && !state.minimized)
     }
 
     #[must_use]
@@ -240,17 +231,22 @@ impl Layout {
     }
 
     pub fn visible_windows(&self) -> impl Iterator<Item = WindowState> {
-        let ordered_windows: Vec<WindowState> = self
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == self.active)
+        self.shown_windows_of(self.active).into_iter()
+    }
+
+    #[must_use]
+    pub fn workspace_windows_at(&self, index: usize) -> Vec<WindowState> {
+        self.workspaces.get(index).map(|ws| self.shown_windows_of(ws.id)).unwrap_or_default()
+    }
+
+    fn shown_windows_of(&self, workspace: WorkspaceId) -> Vec<WindowState> {
+        self.workspace(workspace)
             .into_iter()
             .flat_map(|ws| ws.windows.iter())
             .filter_map(|id| self.windows.get(id))
             .filter(|state| !state.minimized)
             .cloned()
-            .collect();
-        ordered_windows.into_iter()
+            .collect()
     }
 
     #[must_use]
@@ -258,20 +254,12 @@ impl Layout {
         self.overview_active
     }
 
-    pub fn open_overview(&mut self) -> bool {
-        if self.overview_active {
-            return false;
-        }
-        self.overview_active = true;
-        true
+    pub const fn open_overview(&mut self) -> bool {
+        !std::mem::replace(&mut self.overview_active, true)
     }
 
-    pub fn close_overview(&mut self) -> bool {
-        if !self.overview_active {
-            return false;
-        }
-        self.overview_active = false;
-        true
+    pub const fn close_overview(&mut self) -> bool {
+        std::mem::replace(&mut self.overview_active, false)
     }
 
     #[must_use]
@@ -285,12 +273,24 @@ impl Layout {
             .collect()
     }
 
+    fn workspace(&self, id: WorkspaceId) -> Option<&Workspace> {
+        self.workspaces.iter().find(|ws| ws.id == id)
+    }
+
+    fn workspace_mut(&mut self, id: WorkspaceId) -> Option<&mut Workspace> {
+        self.workspaces.iter_mut().find(|ws| ws.id == id)
+    }
+
+    fn active_index(&self) -> Option<usize> {
+        self.workspaces.iter().position(|ws| ws.id == self.active)
+    }
+
     pub fn raise_window(&mut self, w: WindowId) -> bool {
         let Some(ws_id) = self.windows.get(&w).map(|s| s.workspace_id) else {
             return false;
         };
 
-        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == ws_id) {
+        if let Some(ws) = self.workspace_mut(ws_id) {
             ws.windows.retain(|&id| id != w);
             ws.windows.push(w);
         }
@@ -310,35 +310,37 @@ impl Layout {
     #[must_use]
     pub fn resolve_target(&self, target: WorkspaceTarget) -> Option<WorkspaceId> {
         match target {
-            WorkspaceTarget::Id(id) => {
-                if self.workspaces.iter().any(|ws| ws.id == id) {
-                    Some(id)
-                } else {
-                    None
-                }
-            }
+            WorkspaceTarget::Id(id) => self.workspace(id).map(|ws| ws.id),
             WorkspaceTarget::Index(idx) => self.workspaces.get(idx).map(|ws| ws.id),
-            WorkspaceTarget::Next => {
-                let current_idx = self.workspaces.iter().position(|ws| ws.id == self.active)?;
-                if current_idx + 1 < self.workspaces.len() {
-                    Some(self.workspaces[current_idx + 1].id)
-                } else {
-                    None
-                }
-            }
-            WorkspaceTarget::Previous => {
-                let current_idx = self.workspaces.iter().position(|ws| ws.id == self.active)?;
-                if current_idx > 0 {
-                    Some(self.workspaces[current_idx - 1].id)
-                } else {
-                    None
-                }
-            }
+            WorkspaceTarget::Next => self.workspaces.get(self.active_index()? + 1).map(|ws| ws.id),
+            WorkspaceTarget::Previous => self.workspaces.get(self.active_index()?.checked_sub(1)?).map(|ws| ws.id),
+            WorkspaceTarget::New => self.workspaces.last().filter(|ws| ws.windows.is_empty()).map(|ws| ws.id),
+        }
+    }
+
+    #[must_use]
+    pub fn last_workspace_is_empty(&self) -> bool {
+        self.workspaces.last().is_some_and(|ws| ws.windows.is_empty())
+    }
+
+    fn resolve_or_create(&mut self, target: WorkspaceTarget) -> Option<WorkspaceId> {
+        self.resolve_target(target).or_else(|| {
+            (target == WorkspaceTarget::New).then(|| {
+                let id = WorkspaceId::next();
+                self.workspaces.push(Workspace::new(id));
+                id
+            })
+        })
+    }
+
+    fn leave_workspace(&mut self, left: WorkspaceId) {
+        if left != self.active {
+            self.remove_workspace_if_empty(left);
         }
     }
 
     pub fn switch_to_workspace(&mut self, target: WorkspaceTarget) -> bool {
-        let Some(target_id) = self.resolve_target(target) else {
+        let Some(target_id) = self.resolve_or_create(target) else {
             return false;
         };
 
@@ -347,13 +349,18 @@ impl Layout {
         }
 
         self.remember_focus();
+        let left = self.active;
         self.active = target_id;
+        self.leave_workspace(left);
         self.focused = self.pick_new_focus();
         true
     }
 
     pub fn move_window_to_workspace(&mut self, w: WindowId, target: WorkspaceTarget) -> bool {
-        let Some(target_id) = self.resolve_target(target) else {
+        if !self.windows.contains_key(&w) {
+            return false;
+        }
+        let Some(target_id) = self.resolve_or_create(target) else {
             return false;
         };
 
@@ -368,23 +375,21 @@ impl Layout {
 
         state.workspace_id = target_id;
 
-        if let Some(old_ws) = self.workspaces.iter_mut().find(|ws| ws.id == old_ws_id) {
-            old_ws.windows.retain(|&id| id != w);
-            if old_ws.focused == Some(w) {
-                old_ws.focused = None;
-            }
-        }
+        self.detach(w, old_ws_id);
 
-        if let Some(target_ws) = self.workspaces.iter_mut().find(|ws| ws.id == target_id) {
+        if let Some(target_ws) = self.workspace_mut(target_id) {
             target_ws.windows.push(w);
             target_ws.focused = Some(w);
         }
 
-        if self.workspace_is_empty(old_ws_id) && self.workspaces.len() > 1 {
-            self.remove_workspace_if_empty(old_ws_id);
+        let old_ws_vanishes = self.workspace_is_empty(old_ws_id) && self.workspaces.len() > 1;
+        if old_ws_vanishes && self.active == old_ws_id && self.focused == Some(w) {
+            self.active = target_id;
         }
 
-        if self.focused == Some(w) && self.active != target_id {
+        let active_changed = old_ws_vanishes && self.remove_workspace_if_empty(old_ws_id);
+
+        if active_changed || (self.focused == Some(w) && self.active != target_id) {
             self.focused = self.pick_new_focus();
         }
 
@@ -393,110 +398,54 @@ impl Layout {
 
     pub fn add_window(&mut self, w: WindowId, initial_size: Size) -> WorkspaceId {
         let ws_id = match self.policy {
-            NewWindowPolicy::ActiveWorkspace => self.active,
-            NewWindowPolicy::NewWorkspace => {
-                if self.workspace_is_empty(self.active) {
-                    self.active
-                } else {
-                    let new_ws = WorkspaceId::next();
-                    let active_idx = self
-                        .workspaces
-                        .iter()
-                        .position(|ws| ws.id == self.active)
-                        .unwrap_or(0);
-                    self.remember_focus();
-                    self.workspaces
-                        .insert(active_idx + 1, Workspace::new(new_ws));
-                    self.active = new_ws;
-                    new_ws
-                }
+            NewWindowPolicy::NewWorkspace if !self.workspace_is_empty(self.active) => {
+                let new_ws = WorkspaceId::next();
+                let at = self.active_index().unwrap_or(0) + 1;
+                self.remember_focus();
+                self.workspaces.insert(at, Workspace::new(new_ws));
+                self.active = new_ws;
+                new_ws
             }
+            _ => self.active,
         };
-
-        let is_placed = !initial_size.is_empty();
-        let index_on_ws = self
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == ws_id)
-            .map_or(0, |ws| ws.windows.len());
-
-        let geometry = if is_placed {
-            self.calculate_centered_geometry(initial_size, Insets::NONE, index_on_ws)
-        } else {
-            Rectangle::new(Point::ZERO, initial_size)
-        };
-
-        let state = WindowState {
-            id: w,
-            workspace_id: ws_id,
-            geometry,
-            saved_geometry: None,
-            is_placed,
-            maximized: false,
-            fullscreen: false,
-            minimized: false,
-            insets: Insets::NONE,
-        };
-
-        self.windows.insert(w, state);
-
-        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == ws_id) {
-            ws.windows.push(w);
-        }
-
-        self.focused = Some(w);
-        self.remember_focus();
-        ws_id
+        self.insert_window(w, ws_id, initial_size)
     }
 
-    pub fn add_window_with_parent(
-        &mut self,
-        w: WindowId,
-        initial_size: Size,
-        parent: WindowId,
-    ) -> WorkspaceId {
-        let target_ws = self
-            .windows
-            .get(&parent)
-            .map_or(self.active, |state| state.workspace_id);
+    pub fn add_window_with_parent(&mut self, w: WindowId, initial_size: Size, parent: WindowId) -> WorkspaceId {
+        let ws_id = self.windows.get(&parent).map_or(self.active, |state| state.workspace_id);
+        self.insert_window(w, ws_id, initial_size)
+    }
 
-        let is_placed = !initial_size.is_empty();
-        let index_on_ws = self
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == target_ws)
-            .map_or(0, |ws| ws.windows.len());
-
+    fn insert_window(&mut self, w: WindowId, ws_id: WorkspaceId, size: Size) -> WorkspaceId {
+        let is_placed = !size.is_empty();
+        let index_on_ws = self.workspace(ws_id).map_or(0, |ws| ws.windows.len());
         let geometry = if is_placed {
-            self.calculate_centered_geometry(initial_size, Insets::NONE, index_on_ws)
+            self.calculate_centered_geometry(size, Insets::NONE, index_on_ws)
         } else {
-            Rectangle::new(Point::ZERO, initial_size)
+            Rectangle::new(Point::ZERO, size)
         };
-
-        let state = WindowState {
-            id: w,
-            workspace_id: target_ws,
-            geometry,
-            saved_geometry: None,
-            is_placed,
-            maximized: false,
-            fullscreen: false,
-            minimized: false,
-            insets: Insets::NONE,
-        };
-
-        self.windows.insert(w, state);
-
-        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == target_ws) {
+        self.windows.insert(
+            w,
+            WindowState {
+                id: w,
+                workspace_id: ws_id,
+                geometry,
+                saved_geometry: None,
+                is_placed,
+                maximized: false,
+                fullscreen: false,
+                minimized: false,
+                insets: Insets::NONE,
+            },
+        );
+        if let Some(ws) = self.workspace_mut(ws_id) {
             ws.windows.push(w);
             ws.focused = Some(w);
         }
-
-        if target_ws == self.active {
+        if ws_id == self.active {
             self.focused = Some(w);
         }
-
-        target_ws
+        ws_id
     }
 
     pub fn set_maximized(&mut self, w: WindowId, maximized: bool) -> bool {
@@ -508,6 +457,11 @@ impl Layout {
 
         if state.maximized == maximized {
             return false;
+        }
+
+        if state.fullscreen {
+            state.maximized = maximized;
+            return true;
         }
 
         if maximized {
@@ -605,23 +559,16 @@ impl Layout {
             return false;
         }
 
+        let insets = state.insets;
         if state.is_placed || size.is_empty() {
-            let insets = state.insets;
             if let Some(state) = self.windows.get_mut(&w) {
-                state.geometry.size =
-                    Size::new(size.width + insets.width(), size.height + insets.height());
+                state.geometry.size = size.grow(insets);
             }
             return false;
         }
 
-        let ws_id = state.workspace_id;
-        let insets = state.insets;
-        let index_on_ws = self
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == ws_id)
-            .and_then(|ws| ws.windows.iter().position(|&id| id == w))
-            .unwrap_or(0);
+        let index_on_ws =
+            self.workspace(state.workspace_id).and_then(|ws| ws.windows.iter().position(|&id| id == w)).unwrap_or(0);
 
         let geometry = self.calculate_centered_geometry(size, insets, index_on_ws);
         if let Some(state) = self.windows.get_mut(&w) {
@@ -632,8 +579,8 @@ impl Layout {
     }
 
     pub fn set_window_insets(&mut self, w: WindowId, insets: Insets) -> bool {
-        let work_area = self.primary_output_work_area();
-        let output_geom = self.primary_output_geometry();
+        let work_area = self.work_area_for_window(w);
+        let output_geom = self.output_geometry_for_window(w);
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
@@ -644,27 +591,11 @@ impl Layout {
         } else if state.maximized {
             state.geometry = work_area;
         } else if state.is_placed && !state.geometry.size.is_empty() {
-            let content = state.geometry.inset(state.insets);
-            state.geometry = Rectangle::new(
-                Point::new(content.loc.x - insets.left, content.loc.y - insets.top),
-                Size::new(
-                    content.size.width + insets.width(),
-                    content.size.height + insets.height(),
-                ),
-            );
+            let grown = state.geometry.inset(state.insets).outset(insets);
+            state.geometry = if grown.loc.y < work_area.loc.y { keep_reachable(grown, work_area) } else { grown };
         }
 
-        if let Some(saved) = state.saved_geometry {
-            let content = saved.inset(state.insets);
-            state.saved_geometry = Some(Rectangle::new(
-                Point::new(content.loc.x - insets.left, content.loc.y - insets.top),
-                Size::new(
-                    content.size.width + insets.width(),
-                    content.size.height + insets.height(),
-                ),
-            ));
-        }
-
+        state.saved_geometry = state.saved_geometry.map(|saved| saved.inset(state.insets).outset(insets));
         state.insets = insets;
         true
     }
@@ -674,20 +605,10 @@ impl Layout {
             return false;
         };
 
-        let ws_id = state.workspace_id;
+        self.detach(w, state.workspace_id);
+        let active_changed = self.remove_workspace_if_empty(state.workspace_id);
 
-        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == ws_id) {
-            ws.windows.retain(|&id| id != w);
-            if ws.focused == Some(w) {
-                ws.focused = None;
-            }
-        }
-
-        if self.workspace_is_empty(ws_id) && self.workspaces.len() > 1 {
-            self.remove_workspace_if_empty(ws_id);
-        }
-
-        if self.focused == Some(w) {
+        if active_changed || self.focused == Some(w) {
             self.focused = self.pick_new_focus();
         }
 
@@ -701,7 +622,9 @@ impl Layout {
 
         if self.active != target_ws {
             self.remember_focus();
+            let left = self.active;
             self.active = target_ws;
+            self.leave_workspace(left);
         }
 
         if let Some(state) = self.windows.get_mut(&w) {
@@ -720,34 +643,35 @@ impl Layout {
     }
 
     pub fn set_window_geometry(&mut self, w: WindowId, geometry: Rectangle) -> bool {
-        if let Some(state) = self.windows.get_mut(&w) {
+        self.windows.get_mut(&w).is_some_and(|state| {
             state.geometry = geometry;
             state.is_placed = true;
             true
-        } else {
-            false
-        }
+        })
     }
 
     #[must_use]
-    pub fn calculate_centered_geometry(
-        &self,
-        content_size: Size,
-        insets: Insets,
-        index_on_ws: usize,
-    ) -> Rectangle {
+    pub fn settled_after_move(&self, w: WindowId, anchor: Point) -> Option<Rectangle> {
+        let state = self.windows.get(&w)?;
+        if state.maximized || state.fullscreen || !state.is_placed {
+            return None;
+        }
+        let area = self.work_area_at(anchor);
+        let settled = keep_grip_reachable(state.geometry, state.insets.top, area);
+        (settled != state.geometry).then_some(settled)
+    }
+
+    #[must_use]
+    pub fn calculate_centered_geometry(&self, content_size: Size, insets: Insets, index_on_ws: usize) -> Rectangle {
         let work_area = self.placement_work_area();
-        let frame_size = Size::new(
-            content_size.width + insets.width(),
-            content_size.height + insets.height(),
-        );
+        let frame_size = content_size.grow(insets);
 
         let step = i32::try_from(index_on_ws % 8).unwrap_or(0);
         let offset = step * CASCADE_STEP;
         let x = work_area.loc.x + (work_area.size.width - frame_size.width) / 2 + offset;
         let y = work_area.loc.y + (work_area.size.height - frame_size.height) / 2 + offset;
 
-        Rectangle::new(Point::new(x, y), frame_size)
+        keep_reachable(Rectangle::new(Point::new(x, y), frame_size), work_area)
     }
 
     fn rescue_offscreen_windows(&mut self) {
@@ -775,6 +699,22 @@ impl Layout {
             }
         }
 
+        let stranded_saved: Vec<(WindowId, Size)> = self
+            .windows
+            .values()
+            .filter_map(|state| state.saved_geometry.map(|saved| (state.id, saved)))
+            .filter(|(_, saved)| !saved.size.is_empty())
+            .filter(|(_, saved)| !outputs.iter().any(|rect| rect.overlaps(*saved)))
+            .map(|(id, saved)| (id, saved.size))
+            .collect();
+
+        for (id, size) in stranded_saved {
+            let geometry = self.calculate_centered_geometry(size, Insets::NONE, 0);
+            if let Some(state) = self.windows.get_mut(&id) {
+                state.saved_geometry = Some(geometry);
+            }
+        }
+
         let locked: Vec<(WindowId, bool)> = self
             .windows
             .values()
@@ -782,11 +722,7 @@ impl Layout {
             .map(|state| (state.id, state.fullscreen))
             .collect();
         for (id, fullscreen) in locked {
-            let geometry = if fullscreen {
-                self.output_geometry_for_window(id)
-            } else {
-                self.work_area_for_window(id)
-            };
+            let geometry = if fullscreen { self.output_geometry_for_window(id) } else { self.work_area_for_window(id) };
             if let Some(state) = self.windows.get_mut(&id) {
                 state.geometry = geometry;
             }
@@ -794,13 +730,19 @@ impl Layout {
     }
 
     fn workspace_is_empty(&self, ws_id: WorkspaceId) -> bool {
-        self.workspaces
-            .iter()
-            .find(|ws| ws.id == ws_id)
-            .is_none_or(|ws| ws.windows.is_empty())
+        self.workspace(ws_id).is_none_or(|ws| ws.windows.is_empty())
     }
 
-    fn remove_workspace_if_empty(&mut self, ws_id: WorkspaceId) {
+    fn detach(&mut self, w: WindowId, ws_id: WorkspaceId) {
+        if let Some(ws) = self.workspace_mut(ws_id) {
+            ws.windows.retain(|&id| id != w);
+            if ws.focused == Some(w) {
+                ws.focused = None;
+            }
+        }
+    }
+
+    fn remove_workspace_if_empty(&mut self, ws_id: WorkspaceId) -> bool {
         if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id)
             && self.workspaces[idx].windows.is_empty()
             && self.workspaces.len() > 1
@@ -809,32 +751,26 @@ impl Layout {
             if self.active == ws_id {
                 let next_idx = idx.min(self.workspaces.len() - 1);
                 self.active = self.workspaces[next_idx].id;
+                return true;
             }
         }
+        false
     }
 
     fn remember_focus(&mut self) {
         let focused = self.focused;
-        let active = self.active;
-        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == active) {
+        if let Some(ws) = self.workspace_mut(self.active) {
             ws.focused = focused;
         }
     }
 
     fn pick_new_focus(&self) -> Option<WindowId> {
-        let active_ws = self.workspaces.iter().find(|ws| ws.id == self.active)?;
+        let active_ws = self.workspace(self.active)?;
         let visible = |id: WindowId| self.windows.get(&id).is_some_and(|state| !state.minimized);
 
         active_ws
             .focused
             .filter(|&id| active_ws.windows.contains(&id) && visible(id))
-            .or_else(|| {
-                active_ws
-                    .windows
-                    .iter()
-                    .rev()
-                    .copied()
-                    .find(|&id| visible(id))
-            })
+            .or_else(|| active_ws.windows.iter().rev().copied().find(|&id| visible(id)))
     }
 }

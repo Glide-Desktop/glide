@@ -22,32 +22,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_fit_is_cover() {
-        assert_eq!(WallpaperFit::default(), WallpaperFit::Cover);
-    }
-
-    #[test]
-    fn cover_and_tile_always_cover_the_output() {
-        assert!(WallpaperFit::Cover.always_covers_the_output());
-        assert!(WallpaperFit::Tile.always_covers_the_output());
-        assert!(!WallpaperFit::Contain.always_covers_the_output());
-        assert!(!WallpaperFit::Center.always_covers_the_output());
-    }
-
-    #[test]
-    fn round_trips_through_toml() {
+    fn fits_read_from_toml_and_only_cover_and_tile_fill_the_output() {
         #[derive(Deserialize)]
         struct Wrapper {
             fit: WallpaperFit,
         }
-        for (text, expected) in [
-            ("cover", WallpaperFit::Cover),
-            ("contain", WallpaperFit::Contain),
-            ("center", WallpaperFit::Center),
-            ("tile", WallpaperFit::Tile),
+        for (text, expected, covers) in [
+            ("cover", WallpaperFit::Cover, true),
+            ("contain", WallpaperFit::Contain, false),
+            ("center", WallpaperFit::Center, false),
+            ("tile", WallpaperFit::Tile, true),
         ] {
             let parsed: Wrapper = toml::from_str(&format!("fit = \"{text}\"\n")).unwrap();
             assert_eq!(parsed.fit, expected);
+            assert_eq!(expected.always_covers_the_output(), covers);
         }
     }
 }

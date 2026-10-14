@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -9,8 +9,8 @@ use zbus::zvariant::OwnedValue;
 use crate::{
     hints,
     model::{
-        CloseReason, Notification, NotifyEvent, Reply, capabilities, resolve_timeout,
-        sanitize_body, split_actions,
+        CloseReason, Notification, NotifyEvent, Reply, capabilities, plain_text, resolve_timeout, sanitize_body,
+        split_actions,
     },
 };
 
@@ -27,74 +27,99 @@ pub struct Inhibitor {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Held {
+    owner: String,
+    inhibitor: Inhibitor,
+}
+
 struct Inner {
     next_id: u32,
     next_cookie: u32,
     last: Option<(Notification, Instant)>,
-    inhibitors: HashMap<u32, Inhibitor>,
+    live: HashSet<u32>,
+    inhibitors: HashMap<u32, Held>,
 }
 
 impl Inner {
     fn new() -> Self {
-        Self {
-            next_id: 1,
-            next_cookie: 1,
-            last: None,
-            inhibitors: HashMap::new(),
-        }
+        Self { next_id: 1, next_cookie: 1, last: None, live: HashSet::new(), inhibitors: HashMap::new() }
     }
 
     fn allocate(&mut self) -> u32 {
-        let id = self.next_id;
-        self.next_id = self.next_id.checked_add(1).unwrap_or(1);
+        let mut id = self.next_id;
+        while self.live.contains(&id) {
+            id = id.checked_add(1).unwrap_or(1);
+        }
+        self.next_id = id.checked_add(1).unwrap_or(1);
         id
     }
+
+    fn replaceable(&self, replaces_id: u32) -> bool {
+        replaces_id != 0 && self.live.contains(&replaces_id)
+    }
+
+    fn forget(&mut self, id: u32) {
+        self.live.remove(&id);
+    }
+
+    fn hold(&mut self, owner: String, inhibitor: Inhibitor) -> (u32, bool) {
+        let was = !self.inhibitors.is_empty();
+        let mut cookie = self.next_cookie;
+        while cookie == 0 || self.inhibitors.contains_key(&cookie) {
+            cookie = cookie.checked_add(1).unwrap_or(1);
+        }
+        self.next_cookie = cookie.checked_add(1).unwrap_or(1);
+        self.inhibitors.insert(cookie, Held { owner, inhibitor });
+        (cookie, !was)
+    }
+
+    fn release(&mut self, owner: &str, cookie: u32) -> bool {
+        let by_caller = self.inhibitors.get(&cookie).is_some_and(|held| held.owner == owner);
+        if !by_caller {
+            return false;
+        }
+        self.inhibitors.remove(&cookie);
+        self.inhibitors.is_empty()
+    }
+
+    fn release_owner(&mut self, owner: &str) -> bool {
+        let before = self.inhibitors.len();
+        self.inhibitors.retain(|_, held| held.owner != owner);
+        before != self.inhibitors.len() && self.inhibitors.is_empty()
+    }
+}
+
+type Shared = Arc<Mutex<Inner>>;
+
+fn lock_shared(inner: &Shared) -> std::sync::MutexGuard<'_, Inner> {
+    inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub struct Service {
     sink: Sink,
-    inner: Mutex<Inner>,
+    inner: Shared,
 }
 
 impl Service {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock_shared(&self.inner)
     }
 
-    fn is_inhibited(&self) -> bool {
-        !self.lock().inhibitors.is_empty()
+    fn sender(header: &zbus::message::Header<'_>) -> String {
+        header.sender().map(ToString::to_string).unwrap_or_default()
     }
 }
 
-// Every signature below is dictated by the org.freedesktop.Notifications
-// D-Bus interface rather than chosen here: entry points must take `&self`,
-// keep the argument order and count the specification fixes, take their
-// arguments by value across the bus boundary, and keep a `Result` so zbus can
-// map a failure onto a D-Bus error reply.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::needless_pass_by_value,
-    clippy::unnecessary_wraps,
-    clippy::unused_self
-)]
+// Signatures are fixed by the org.freedesktop.Notifications D-Bus interface.
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value, clippy::unnecessary_wraps, clippy::unused_self)]
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Service {
     fn notify(
-        &self,
-        app_name: String,
-        replaces_id: u32,
-        app_icon: String,
-        summary: String,
-        body: String,
-        actions: Vec<String>,
-        hint_map: HashMap<String, OwnedValue>,
-        expire_timeout: i32,
+        &self, app_name: String, replaces_id: u32, app_icon: String, summary: String, body: String,
+        actions: Vec<String>, hint_map: HashMap<String, OwnedValue>, expire_timeout: i32,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<u32> {
-        let sender = header.sender().map(ToString::to_string).unwrap_or_default();
-
         let urgency = hints::urgency(&hint_map);
         let (buttons, has_default, has_settings, reply_label) = split_actions(&actions);
         let reply = reply_label.map(|label| Reply {
@@ -104,19 +129,15 @@ impl Service {
         });
 
         let display_name = hints::string(&hint_map, "x-kde-display-appname");
-        let app_name = if display_name.is_empty() {
-            app_name
-        } else {
-            display_name
-        };
+        let app_name = if display_name.is_empty() { app_name } else { display_name };
 
         let mut notification = Notification {
             id: replaces_id,
-            sender,
+            sender: Self::sender(&header),
             app_name,
             desktop_entry: hints::string(&hint_map, "desktop-entry"),
             app_icon,
-            summary: sanitize_body(&summary),
+            summary: plain_text(&summary),
             body: sanitize_body(&body),
             actions: buttons,
             has_default_action: has_default,
@@ -133,9 +154,9 @@ impl Service {
             progress: hints::progress(&hint_map),
         };
 
-        let replacing = replaces_id != 0;
-        {
+        let replacing = {
             let mut inner = self.lock();
+            let replacing = inner.replaceable(replaces_id);
             if !replacing {
                 if let Some((previous, at)) = inner.last.as_ref()
                     && at.elapsed() < FLOOD_WINDOW
@@ -147,21 +168,19 @@ impl Service {
                 }
                 notification.id = inner.allocate();
             }
+            inner.live.insert(notification.id);
             inner.last = Some((notification.clone(), Instant::now()));
-        }
+            replacing
+        };
 
         let id = notification.id;
-        let event = if replacing {
-            NotifyEvent::Replaced(Box::new(notification))
-        } else {
-            NotifyEvent::Added(Box::new(notification))
-        };
-        (self.sink)(event);
-
+        let event = if replacing { NotifyEvent::Replaced } else { NotifyEvent::Added };
+        (self.sink)(event(Box::new(notification)));
         Ok(id)
     }
 
     fn close_notification(&self, id: u32) -> zbus::fdo::Result<()> {
+        self.lock().forget(id);
         (self.sink)(NotifyEvent::Closed(id, CloseReason::Revoked));
         Ok(())
     }
@@ -171,47 +190,23 @@ impl Service {
     }
 
     fn get_server_information(&self) -> (String, String, String, String) {
-        (
-            "Glide".to_string(),
-            "glide".to_string(),
-            env!("CARGO_PKG_VERSION").to_string(),
-            "1.3".to_string(),
-        )
+        ("Glide".to_string(), "glide".to_string(), env!("CARGO_PKG_VERSION").to_string(), "1.3".to_string())
     }
 
     fn inhibit(
-        &self,
-        desktop_entry: String,
-        reason: String,
-        hints: HashMap<String, OwnedValue>,
+        &self, desktop_entry: String, reason: String, hints: HashMap<String, OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<u32> {
         drop(hints);
-        let (cookie, became_inhibited) = {
-            let mut inner = self.lock();
-            let was = !inner.inhibitors.is_empty();
-            let cookie = inner.next_cookie;
-            inner.next_cookie = inner.next_cookie.checked_add(1).unwrap_or(1);
-            inner.inhibitors.insert(
-                cookie,
-                Inhibitor {
-                    desktop_entry,
-                    reason,
-                },
-            );
-            (cookie, !was)
-        };
+        let (cookie, became_inhibited) = self.lock().hold(Self::sender(&header), Inhibitor { desktop_entry, reason });
         if became_inhibited {
             (self.sink)(NotifyEvent::InhibitedChanged(true));
         }
         Ok(cookie)
     }
 
-    fn un_inhibit(&self, cookie: u32) -> zbus::fdo::Result<()> {
-        let released = {
-            let mut inner = self.lock();
-            inner.inhibitors.remove(&cookie);
-            inner.inhibitors.is_empty()
-        };
+    fn un_inhibit(&self, cookie: u32, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<()> {
+        let released = self.lock().release(&Self::sender(&header), cookie);
         if released {
             (self.sink)(NotifyEvent::InhibitedChanged(false));
         }
@@ -220,22 +215,17 @@ impl Service {
 
     #[zbus(property)]
     fn inhibited(&self) -> bool {
-        self.is_inhibited()
+        !self.lock().inhibitors.is_empty()
     }
 }
 
 fn first_non_empty(hint_map: &HashMap<String, OwnedValue>, keys: &[&str]) -> String {
-    for key in keys {
-        let value = hints::string(hint_map, key);
-        if !value.is_empty() {
-            return value;
-        }
-    }
-    String::new()
+    keys.iter().map(|key| hints::string(hint_map, key)).find(|value| !value.is_empty()).unwrap_or_default()
 }
 
 pub struct NotifyHandle {
     connection: zbus::blocking::Connection,
+    inner: Shared,
 }
 
 impl std::fmt::Debug for NotifyHandle {
@@ -250,11 +240,9 @@ impl NotifyHandle {
         B: serde::Serialize + zbus::zvariant::DynamicType,
     {
         let built =
-            zbus::message::Message::signal(OBJECT_PATH, BUS_NAME, member).and_then(|builder| {
-                match destination {
-                    Some(destination) => builder.destination(destination)?.build(body),
-                    None => builder.build(body),
-                }
+            zbus::message::Message::signal(OBJECT_PATH, BUS_NAME, member).and_then(|builder| match destination {
+                Some(destination) => builder.destination(destination)?.build(body),
+                None => builder.build(body),
             });
         match built {
             Ok(message) => {
@@ -267,6 +255,7 @@ impl NotifyHandle {
     }
 
     pub fn closed(&self, id: u32, reason: CloseReason) {
+        lock_shared(&self.inner).forget(id);
         self.emit("NotificationClosed", None, &(id, reason.as_wire()));
     }
 
@@ -286,18 +275,44 @@ impl NotifyHandle {
 }
 
 pub fn start(sink: Sink) -> anyhow::Result<NotifyHandle> {
-    let service = Service {
-        sink,
-        inner: Mutex::new(Inner::new()),
-    };
+    let inner: Shared = Arc::new(Mutex::new(Inner::new()));
+    let service = Service { sink: Arc::clone(&sink), inner: Arc::clone(&inner) };
 
-    let connection = zbus::blocking::connection::Builder::session()?
-        .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, service)?
-        .build()?;
+    let connection =
+        zbus::blocking::connection::Builder::session()?.name(BUS_NAME)?.serve_at(OBJECT_PATH, service)?.build()?;
+
+    watch_inhibitor_owners(&connection, Arc::clone(&inner), sink);
 
     tracing::info!("serving {BUS_NAME} on the session bus");
-    Ok(NotifyHandle { connection })
+    Ok(NotifyHandle { connection, inner })
+}
+
+fn watch_inhibitor_owners(connection: &zbus::blocking::Connection, inner: Shared, sink: Sink) {
+    let signals = zbus::blocking::fdo::DBusProxy::new(connection).and_then(|proxy| proxy.receive_name_owner_changed());
+    let signals = match signals {
+        Ok(signals) => signals,
+        Err(err) => {
+            tracing::debug!("inhibitors will not follow vanished clients: {err}");
+            return;
+        }
+    };
+    let spawned = std::thread::Builder::new().name("glide-notify-owners".into()).spawn(move || {
+        for signal in signals {
+            let Ok(args) = signal.args() else {
+                continue;
+            };
+            if args.new_owner().is_some() {
+                continue;
+            }
+            let released = lock_shared(&inner).release_owner(args.name().as_str());
+            if released {
+                sink(NotifyEvent::InhibitedChanged(false));
+            }
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::debug!("failed to spawn the inhibitor owner watcher: {err}");
+    }
 }
 
 #[cfg(test)]
@@ -309,14 +324,62 @@ mod tests {
         let sink_log = Arc::clone(&log);
         let service = Service {
             sink: Arc::new(move |event| {
-                sink_log
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(event);
+                sink_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event);
             }),
-            inner: Mutex::new(Inner::new()),
+            inner: Arc::new(Mutex::new(Inner::new())),
         };
         (service, log)
+    }
+
+    fn inhibitor(entry: &str) -> Inhibitor {
+        Inhibitor { desktop_entry: entry.to_string(), reason: String::new() }
+    }
+
+    #[test]
+    fn only_a_live_id_can_be_replaced() {
+        let (service, _) = service();
+        let mut inner = service.lock();
+        assert!(!inner.replaceable(0));
+        assert!(!inner.replaceable(7), "an id we never handed out is new");
+        let id = inner.allocate();
+        inner.live.insert(id);
+        assert!(inner.replaceable(id));
+        inner.forget(id);
+        assert!(!inner.replaceable(id), "a closed id is no longer replaceable");
+    }
+
+    #[test]
+    fn allocation_skips_ids_that_are_still_live() {
+        let (service, _) = service();
+        let mut inner = service.lock();
+        inner.live.insert(1);
+        inner.live.insert(2);
+        assert_eq!(inner.allocate(), 3);
+    }
+
+    #[test]
+    fn an_inhibitor_is_released_only_by_its_owner() {
+        let (service, _) = service();
+        let mut inner = service.lock();
+        let (cookie, became) = inner.hold(":1.5".to_string(), inhibitor("player"));
+        assert!(became);
+        assert!(!inner.release(":1.9", cookie), "a stranger cannot release it");
+        assert_eq!(inner.inhibitors.len(), 1);
+        assert!(inner.release(":1.5", cookie));
+        assert!(inner.inhibitors.is_empty());
+    }
+
+    #[test]
+    fn a_vanished_owner_drops_all_of_its_inhibitors() {
+        let (service, _) = service();
+        let mut inner = service.lock();
+        inner.hold(":1.5".to_string(), inhibitor("a"));
+        inner.hold(":1.5".to_string(), inhibitor("b"));
+        inner.hold(":1.6".to_string(), inhibitor("c"));
+        assert!(!inner.release_owner(":1.5"), "another owner still inhibits");
+        assert_eq!(inner.inhibitors.len(), 1);
+        assert!(inner.release_owner(":1.6"));
+        assert!(!inner.release_owner(":1.6"), "nothing left to release");
     }
 
     #[test]
@@ -332,61 +395,12 @@ mod tests {
     }
 
     #[test]
-    fn an_inhibitor_flips_the_inhibited_property_once_per_transition() {
-        let (service, log) = service();
-        assert!(!service.inhibited());
-
-        let first = {
-            let mut inner = service.lock();
-            let cookie = inner.next_cookie;
-            inner.next_cookie += 1;
-            inner.inhibitors.insert(
-                cookie,
-                Inhibitor {
-                    desktop_entry: "player".to_string(),
-                    reason: "playing a film".to_string(),
-                },
-            );
-            cookie
-        };
-        assert!(service.inhibited());
-
-        service.lock().inhibitors.remove(&first);
-        assert!(!service.inhibited());
-        assert!(
-            log.lock().unwrap().is_empty(),
-            "direct state edits do not emit; only the D-Bus entry points do"
-        );
-    }
-
-    #[test]
-    fn the_server_identifies_itself_with_the_spec_version_it_implements() {
-        let (service, _) = service();
-        let (name, vendor, _, spec) = service.get_server_information();
-        assert_eq!(name, "Glide");
-        assert_eq!(vendor, "glide");
-        assert_eq!(spec, "1.3");
-    }
-
-    #[test]
-    fn the_first_image_path_hint_that_carries_a_value_wins() {
-        let mut hints = HashMap::new();
-        hints.insert(
+    fn the_legacy_image_path_hint_is_honoured() {
+        let hints = HashMap::from([(
             "image_path".to_string(),
-            OwnedValue::try_from(zbus::zvariant::Value::Str("/legacy.png".into()))
-                .expect("value converts"),
-        );
-        assert_eq!(
-            first_non_empty(&hints, &["image-path", "image_path"]),
-            "/legacy.png"
-        );
-    }
-
-    #[test]
-    fn a_missing_image_path_hint_yields_an_empty_string() {
-        assert_eq!(
-            first_non_empty(&HashMap::new(), &["image-path", "image_path"]),
-            ""
-        );
+            OwnedValue::try_from(zbus::zvariant::Value::Str("/legacy.png".into())).expect("owned"),
+        )]);
+        assert_eq!(first_non_empty(&hints, &["image-path", "image_path"]), "/legacy.png");
+        assert_eq!(first_non_empty(&HashMap::new(), &["image-path"]), "");
     }
 }

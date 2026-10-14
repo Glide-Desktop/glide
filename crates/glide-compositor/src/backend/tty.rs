@@ -1,11 +1,9 @@
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
-use smithay::backend::renderer::element::{
-    RenderElementStates, default_primary_scanout_output_compare,
-};
+use smithay::backend::renderer::element::{RenderElementStates, default_primary_scanout_output_compare};
 use smithay::desktop::utils::{
-    OutputPresentationFeedback, surface_presentation_feedback_flags_from_states,
-    surface_primary_scanout_output, update_surface_primary_scanout_output,
+    OutputPresentationFeedback, surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+    update_surface_primary_scanout_output,
 };
 
 use anyhow::{Context, anyhow};
@@ -31,13 +29,11 @@ use smithay::{
                 memory::MemoryRenderBuffer,
                 solid::{SolidColorBuffer, SolidColorRenderElement},
                 surface::WaylandSurfaceRenderElement,
+                utils::{Relocate, RelocateRenderElement},
             },
             gles::GlesRenderer,
         },
-        session::{
-            Event as SessionEvent, Session, libseat::LibSeatSession,
-            libseat::LibSeatSessionNotifier,
-        },
+        session::{Event as SessionEvent, Session, libseat::LibSeatSession, libseat::LibSeatSessionNotifier},
         udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
     },
     desktop::{
@@ -57,9 +53,7 @@ use smithay::{
         wayland_server::backend::GlobalId,
     },
     render_elements,
-    utils::{
-        Buffer, Clock, DeviceFd, IsAlive, Logical, Monotonic, Point, Rectangle, Scale, Transform,
-    },
+    utils::{Buffer, Clock, DeviceFd, IsAlive, Logical, Monotonic, Point, Rectangle, Scale, Transform},
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -86,12 +80,7 @@ type GbmDrmOutput = DrmOutput<
     DrmDeviceFd,
 >;
 
-const SUPPORTED_FORMATS: &[Fourcc] = &[
-    Fourcc::Abgr2101010,
-    Fourcc::Argb2101010,
-    Fourcc::Abgr8888,
-    Fourcc::Argb8888,
-];
+const SUPPORTED_FORMATS: &[Fourcc] = &[Fourcc::Abgr2101010, Fourcc::Argb2101010, Fourcc::Abgr8888, Fourcc::Argb8888];
 
 render_elements! {
     pub GlideRenderElements<=GlesRenderer>;
@@ -101,25 +90,73 @@ render_elements! {
     Memory=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
     Snapshot=crate::snapshot::SnapshotRenderElement,
     Launcher=crate::launcher::LauncherRenderElement<GlesRenderer>,
-    LockSurface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Switcher=crate::switcher::SwitcherRenderElement<GlesRenderer>,
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     LockBackdrop=SolidColorRenderElement,
+    RelocatedMemory=RelocateRenderElement<smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>>,
+    RelocatedLauncher=RelocateRenderElement<crate::launcher::LauncherRenderElement<GlesRenderer>>,
+    RelocatedSwitcher=RelocateRenderElement<crate::switcher::SwitcherRenderElement<GlesRenderer>>,
+}
+
+fn prepend(elements: &mut Vec<GlideRenderElements>, front: impl IntoIterator<Item = GlideRenderElements>) {
+    elements.splice(0..0, front);
+}
+
+fn backdrop_element(
+    renderer: &mut GlesRenderer, buffer: &MemoryRenderBuffer, alpha: f32, (phys_w, phys_h): (i32, i32),
+    logical_size: (i32, i32),
+) -> Option<GlideRenderElements> {
+    let src = smithay::utils::Rectangle::from_size(smithay::utils::Size::<f64, Logical>::from((
+        f64::from(phys_w),
+        f64::from(phys_h),
+    )));
+    let size: smithay::utils::Size<i32, Logical> = logical_size.into();
+    smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        (0.0, 0.0),
+        buffer,
+        Some(alpha),
+        Some(src),
+        Some(size),
+        Kind::Unspecified,
+    )
+    .ok()
+    .map(GlideRenderElements::Memory)
+}
+
+fn relocate<E: smithay::backend::renderer::element::Element>(
+    element: E, offset: Point<i32, smithay::utils::Physical>,
+) -> RelocateRenderElement<E> {
+    RelocateRenderElement::from_element(element, offset, Relocate::Relative)
+}
+
+fn mode_candidates(modes: &[smithay::reexports::drm::control::Mode]) -> Vec<(i32, i32, i32, bool)> {
+    modes
+        .iter()
+        .map(|mode| {
+            let wl = WlMode::from(*mode);
+            (wl.size.w, wl.size.h, wl.refresh, mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+        })
+        .collect()
+}
+
+fn advertise_modes(output: &Output, modes: &[smithay::reexports::drm::control::Mode], preferred: usize) {
+    for mode in modes {
+        output.add_mode(WlMode::from(*mode));
+    }
+    if let Some(mode) = modes.get(preferred) {
+        output.set_preferred(WlMode::from(*mode));
+    }
 }
 
 fn layer_elements(
-    renderer: &mut GlesRenderer,
-    output: &Output,
-    scale: Scale<f64>,
-    upper: bool,
+    renderer: &mut GlesRenderer, output: &Output, scale: Scale<f64>, upper: bool,
 ) -> Vec<GlideRenderElements> {
     use smithay::desktop::layer_map_for_output;
     use smithay::wayland::shell::wlr_layer::Layer;
 
     let map = layer_map_for_output(output);
-    let wanted = if upper {
-        [Layer::Overlay, Layer::Top]
-    } else {
-        [Layer::Bottom, Layer::Background]
-    };
+    let wanted = if upper { [Layer::Overlay, Layer::Top] } else { [Layer::Bottom, Layer::Background] };
 
     let mut elements = Vec::new();
     for layer in wanted {
@@ -130,29 +167,31 @@ fn layer_elements(
             let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
             let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                 AsRenderElements::render_elements(surface, renderer, location, scale, 1.0);
-            elements.extend(
-                surface_elements
-                    .into_iter()
-                    .map(SpaceRenderElements::Surface)
-                    .map(GlideRenderElements::Space),
-            );
+            elements
+                .extend(surface_elements.into_iter().map(SpaceRenderElements::Surface).map(GlideRenderElements::Space));
         }
     }
     elements
 }
 
+type WallpaperKey = (i32, i32, crate::config::WallpaperFit, u64, u64);
+
 struct SurfaceData {
     output: Output,
     global: Option<GlobalId>,
     drm_output: GbmDrmOutput,
+    modes: Vec<smithay::reexports::drm::control::Mode>,
     pending_repaint: Option<RegistrationToken>,
     redraw_queued: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
     wallpaper_muted_buf: Option<MemoryRenderBuffer>,
     wallpaper_blur_buf: Option<MemoryRenderBuffer>,
     wallpaper_blur_rgba: Option<std::sync::Arc<Vec<u8>>>,
-    wallpaper_key: Option<(i32, i32, crate::config::WallpaperFit, u64)>,
+    wallpaper_key: Option<WallpaperKey>,
     lock_backdrop: SolidColorBuffer,
+    screenshot_flash: SolidColorBuffer,
+    power_scrim: SolidColorBuffer,
+    power_blur: Option<(WallpaperKey, MemoryRenderBuffer)>,
 }
 
 pub(crate) struct DeviceData {
@@ -174,11 +213,14 @@ pub struct TtyData {
 }
 
 impl TtyData {
+    #[must_use]
+    pub fn session_active(&self) -> bool {
+        self.session.is_active()
+    }
+
     pub fn new(session: LibSeatSession) -> anyhow::Result<Self> {
         let seat_name = session.seat();
-        let primary_gpu_path = match primary_gpu(&seat_name)
-            .context("failed to enumerate the primary GPU via udev")?
-        {
+        let primary_gpu_path = match primary_gpu(&seat_name).context("failed to enumerate the primary GPU via udev")? {
             Some(path) => path,
             None => all_gpus(&seat_name)
                 .context("failed to enumerate GPUs via udev")?
@@ -189,13 +231,7 @@ impl TtyData {
         let primary_gpu = DrmNode::from_path(&primary_gpu_path)
             .with_context(|| format!("{} is not a DRM node", primary_gpu_path.display()))?;
 
-        Ok(Self {
-            session,
-            primary_gpu,
-            primary_gpu_path,
-            device: None,
-            dmabuf_state: None,
-        })
+        Ok(Self { session, primary_gpu, primary_gpu_path, device: None, dmabuf_state: None })
     }
 }
 
@@ -212,15 +248,12 @@ impl TtyData {
 }
 
 pub fn init_tty(
-    event_loop: &mut EventLoop<GlideState>,
-    state: &mut GlideState,
-    notifier: LibSeatSessionNotifier,
+    event_loop: &mut EventLoop<GlideState>, state: &mut GlideState, notifier: LibSeatSessionNotifier,
 ) -> anyhow::Result<()> {
     let seat_name = state.backend_data.seat_name();
     let session = state.backend_data.session.clone();
 
-    let mut libinput_context =
-        Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.into());
+    let mut libinput_context = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.into());
     libinput_context
         .udev_assign_seat(&seat_name)
         .map_err(|()| anyhow!("failed to assign libinput seat {seat_name}"))?;
@@ -282,26 +315,18 @@ pub fn init_tty(
     Ok(())
 }
 
-pub fn init_udev_monitor(
-    event_loop: &mut EventLoop<GlideState>,
-    state: &mut GlideState,
-) -> anyhow::Result<()> {
+pub fn init_udev_monitor(event_loop: &mut EventLoop<GlideState>, state: &mut GlideState) -> anyhow::Result<()> {
     let seat_name = state.backend_data.seat_name();
     let primary_gpu = state.backend_data.primary_gpu;
 
-    let udev_backend =
-        UdevBackend::new(&seat_name).context("failed to initialize the udev device monitor")?;
+    let udev_backend = UdevBackend::new(&seat_name).context("failed to initialize the udev device monitor")?;
     tracing::info!(seat = seat_name, "watching udev for monitor hot-plug");
 
     event_loop
         .handle()
         .insert_source(udev_backend, move |event, _, state| match event {
             UdevEvent::Added { device_id, path } => {
-                tracing::info!(
-                    ?device_id,
-                    ?path,
-                    "udev device added; ignored, Glide only drives the primary GPU"
-                );
+                tracing::info!(?device_id, ?path, "udev device added; ignored, Glide only drives the primary GPU");
             }
             UdevEvent::Changed { device_id } => match DrmNode::from_dev_id(device_id) {
                 Ok(node) if node == primary_gpu => state.device_changed(),
@@ -328,12 +353,7 @@ fn cursor_hotspot(status: &CursorImageStatus) -> Point<i32, Logical> {
             states
                 .data_map
                 .get::<std::sync::Mutex<CursorImageAttributes>>()
-                .map(|attrs| {
-                    attrs
-                        .lock()
-                        .expect("single-threaded event loop, this mutex is never poisoned")
-                        .hotspot
-                })
+                .map(|attrs| attrs.lock().expect("single-threaded event loop, this mutex is never poisoned").hotspot)
                 .unwrap_or_default()
         }),
         _ => (0, 0).into(),
@@ -341,11 +361,8 @@ fn cursor_hotspot(status: &CursorImageStatus) -> Point<i32, Logical> {
 }
 
 fn resolve_cursor_buffer(
-    cursor: &mut Cursor,
-    cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>,
-    icon: CursorIcon,
-    scale: u32,
-    elapsed: Duration,
+    cursor: &mut Cursor, cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, icon: CursorIcon,
+    scale: u32, elapsed: Duration,
 ) -> MemoryRenderBuffer {
     let image = cursor.image(icon, scale, elapsed);
     if let Some((_, buffer)) = cursor_buffers.iter().find(|(cached, _)| cached == &image) {
@@ -371,9 +388,7 @@ enum FrameOutcome {
 }
 
 fn take_presentation_feedback(
-    output: &Output,
-    space: &Space<GlideWindow>,
-    render_element_states: &RenderElementStates,
+    output: &Output, space: &Space<GlideWindow>, render_element_states: &RenderElementStates,
 ) -> OutputPresentationFeedback {
     use smithay::desktop::layer_map_for_output;
 
@@ -381,41 +396,23 @@ fn take_presentation_feedback(
 
     for window in space.elements() {
         if space.outputs_for_element(window).contains(output) {
-            window.take_presentation_feedback(
-                &mut feedback,
-                surface_primary_scanout_output,
-                |surface, _| {
-                    surface_presentation_feedback_flags_from_states(
-                        surface,
-                        None,
-                        render_element_states,
-                    )
-                },
-            );
+            window.take_presentation_feedback(&mut feedback, surface_primary_scanout_output, |surface, _| {
+                surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
+            });
         }
     }
 
     for layer_surface in layer_map_for_output(output).layers() {
-        layer_surface.take_presentation_feedback(
-            &mut feedback,
-            surface_primary_scanout_output,
-            |surface, _| {
-                surface_presentation_feedback_flags_from_states(
-                    surface,
-                    None,
-                    render_element_states,
-                )
-            },
-        );
+        layer_surface.take_presentation_feedback(&mut feedback, surface_primary_scanout_output, |surface, _| {
+            surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
+        });
     }
 
     feedback
 }
 
 fn present_feedback(
-    output: &Output,
-    mut feedback: OutputPresentationFeedback,
-    metadata: Option<&DrmEventMetadata>,
+    output: &Output, mut feedback: OutputPresentationFeedback, metadata: Option<&DrmEventMetadata>,
     clock: &Clock<Monotonic>,
 ) {
     use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
@@ -427,14 +424,12 @@ fn present_feedback(
     });
     let sequence = metadata.map_or(0, |metadata| metadata.sequence);
 
-    let (time, flags): (Duration, Kind) = hw_time.map_or_else(
-        || (clock.now().into(), Kind::Vsync),
-        |tp| (tp, Kind::Vsync | Kind::HwClock | Kind::HwCompletion),
-    );
+    let (time, flags): (Duration, Kind) = hw_time
+        .map_or_else(|| (clock.now().into(), Kind::Vsync), |tp| (tp, Kind::Vsync | Kind::HwClock | Kind::HwCompletion));
 
-    let refresh = output.current_mode().map_or(Refresh::Unknown, |mode| {
-        Refresh::fixed(Duration::from_secs_f64(1_000.0 / f64::from(mode.refresh)))
-    });
+    let refresh = output
+        .current_mode()
+        .map_or(Refresh::Unknown, |mode| Refresh::fixed(Duration::from_secs_f64(1_000.0 / f64::from(mode.refresh))));
 
     feedback.presented::<_, Monotonic>(time, refresh, u64::from(sequence), flags);
 }
@@ -443,15 +438,17 @@ const OVERVIEW_WALLPAPER_ZOOM: f64 = 1.06;
 
 const OVERVIEW_WALLPAPER_SATURATION: f32 = 0.9;
 
-const BACKDROP_BLUR_RADIUS: i32 = 26;
+const BACKDROP_BLUR_SIGMA: f64 = 22.0;
+
+const BACKDROP_SATURATION: f32 = 1.6;
+
+fn backdrop_box_radius(fractional_scale: f64) -> i32 {
+    glide_paint::css_blur_box_radius((BACKDROP_BLUR_SIGMA * 2.0 * fractional_scale) as f32)
+}
 
 fn push_wallpaper_elements(
-    gles_renderer: &mut GlesRenderer,
-    surface: &mut SurfaceData,
-    buffer_size: (i32, i32),
-    logical_size: (i32, i32),
-    backdrop_t: f64,
-    elements: &mut Vec<GlideRenderElements>,
+    gles_renderer: &mut GlesRenderer, surface: &mut SurfaceData, buffer_size: (i32, i32), logical_size: (i32, i32),
+    backdrop_t: f64, elements: &mut Vec<GlideRenderElements>,
 ) {
     use smithay::backend::renderer::element::{Kind, memory::MemoryRenderBufferRenderElement};
 
@@ -459,20 +456,15 @@ fn push_wallpaper_elements(
     let (log_w, log_h) = logical_size;
     let zoom = 1.0 + (OVERVIEW_WALLPAPER_ZOOM - 1.0) * backdrop_t.clamp(0.0, 1.0);
 
-    #[allow(clippy::cast_possible_truncation)]
     let zoomed_w = (f64::from(log_w) * zoom).round() as i32;
-    #[allow(clippy::cast_possible_truncation)]
     let zoomed_h = (f64::from(log_h) * zoom).round() as i32;
-    let origin = (
-        f64::from(log_w - zoomed_w) / 2.0,
-        f64::from(log_h - zoomed_h) / 2.0,
-    );
+    let origin = (f64::from(log_w - zoomed_w) / 2.0, f64::from(log_h - zoomed_h) / 2.0);
     let size: Option<smithay::utils::Size<i32, Logical>> = Some((zoomed_w, zoomed_h).into());
-    let src = Some(smithay::utils::Rectangle::from_size(
-        smithay::utils::Size::<f64, Logical>::from((f64::from(buf_w), f64::from(buf_h))),
-    ));
+    let src = Some(smithay::utils::Rectangle::from_size(smithay::utils::Size::<f64, Logical>::from((
+        f64::from(buf_w),
+        f64::from(buf_h),
+    ))));
 
-    #[allow(clippy::cast_possible_truncation)]
     let muted_alpha = backdrop_t.clamp(0.0, 1.0) as f32;
     if muted_alpha > 0.0
         && let Some(buffer) = surface.wallpaper_muted_buf.as_mut()
@@ -505,11 +497,8 @@ fn push_wallpaper_elements(
 }
 
 fn overview_elements(
-    gles_renderer: &mut GlesRenderer,
-    overview: &mut crate::overview::OverviewUi,
-    window_map: &HashMap<glide_layout::WindowId, GlideWindow>,
-    scale: Scale<f64>,
-    output: &Output,
+    gles_renderer: &mut GlesRenderer, overview: &mut crate::overview::OverviewUi,
+    window_map: &HashMap<glide_layout::WindowId, GlideWindow>, scale: Scale<f64>, output: &Output,
     output_geometry: smithay::utils::Rectangle<i32, Logical>,
 ) -> Vec<GlideRenderElements> {
     let mut elements: Vec<GlideRenderElements> = Vec::new();
@@ -520,18 +509,9 @@ fn overview_elements(
     let output_scale = output.current_scale().integer_scale();
     elements.extend(
         overview
-            .render(
-                gles_renderer,
-                output_geometry,
-                scale,
-                output_scale,
-                &painter,
-                |id| {
-                    window_map
-                        .get(&id)
-                        .map(|window| (window.clone(), window.display_name()))
-                },
-            )
+            .render(gles_renderer, output_geometry, scale, output_scale, &painter, |id| {
+                window_map.get(&id).map(|window| (window.clone(), window.display_name()))
+            })
             .into_iter()
             .map(GlideRenderElements::Overview),
     );
@@ -541,17 +521,10 @@ fn overview_elements(
 }
 
 fn build_render_elements(
-    gles_renderer: &mut GlesRenderer,
-    space: &Space<GlideWindow>,
-    output: &Output,
+    gles_renderer: &mut GlesRenderer, space: &Space<GlideWindow>, output: &Output,
 ) -> Option<Vec<GlideRenderElements>> {
     match space_render_elements(gles_renderer, [space], output, 1.0) {
-        Ok(space_elements) => Some(
-            space_elements
-                .into_iter()
-                .map(GlideRenderElements::Space)
-                .collect(),
-        ),
+        Ok(space_elements) => Some(space_elements.into_iter().map(GlideRenderElements::Space).collect()),
         Err(err) => {
             tracing::error!(?err, "failed to collect render elements");
             None
@@ -559,21 +532,63 @@ fn build_render_elements(
     }
 }
 
+fn is_window_element(element: &GlideRenderElements) -> bool {
+    matches!(element, GlideRenderElements::Space(SpaceRenderElements::Element(_)) | GlideRenderElements::Overview(_))
+}
+
+fn leading_layer_count(elements: &[GlideRenderElements]) -> usize {
+    elements
+        .iter()
+        .take_while(|element| matches!(element, GlideRenderElements::Space(SpaceRenderElements::Surface(_))))
+        .count()
+}
+
+fn above_windows_index(elements: &[GlideRenderElements]) -> usize {
+    elements.iter().position(is_window_element).unwrap_or_else(|| leading_layer_count(elements))
+}
+
+fn below_windows_index(elements: &[GlideRenderElements]) -> usize {
+    elements.iter().rposition(is_window_element).map_or_else(|| leading_layer_count(elements), |index| index + 1)
+}
+
+const CURSOR_EXTENT: i32 = 128;
+
+fn pointer_on_output(
+    pointer_location: Point<f64, Logical>, output_geometry: Rectangle<i32, Logical>,
+) -> Option<Point<f64, Logical>> {
+    let origin = pointer_location.to_i32_floor() - Point::from((CURSOR_EXTENT, CURSOR_EXTENT));
+    let reach = Rectangle::new(origin, smithay::utils::Size::from((CURSOR_EXTENT * 2, CURSOR_EXTENT * 2)));
+    reach.overlaps(output_geometry).then(|| pointer_location - output_geometry.loc.to_f64())
+}
+
 fn cursor_elements(
-    gles_renderer: &mut GlesRenderer,
-    pointer_element: &mut PointerElement,
-    pointer_location: Point<f64, Logical>,
-    cursor_hotspot: Point<i32, Logical>,
-    scale: Scale<f64>,
+    gles_renderer: &mut GlesRenderer, pointer_element: &mut PointerElement, pointer_location: Point<f64, Logical>,
+    cursor_hotspot: Point<i32, Logical>, scale: Scale<f64>,
 ) -> Vec<GlideRenderElements> {
-    let position = (pointer_location - cursor_hotspot.to_f64())
-        .to_physical(scale)
-        .to_i32_round();
+    let position = (pointer_location - cursor_hotspot.to_f64()).to_physical(scale).to_i32_round();
     pointer_element
         .render_elements::<PointerRenderElement<GlesRenderer>>(gles_renderer, position, scale, 1.0)
         .into_iter()
         .map(GlideRenderElements::Pointer)
         .collect()
+}
+
+fn dnd_icon_elements(
+    gles_renderer: &mut GlesRenderer, icon: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    pointer_location: Point<f64, Logical>, scale: Scale<f64>,
+) -> Vec<GlideRenderElements> {
+    let position = pointer_location.to_physical(scale).to_i32_round();
+    smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+        gles_renderer,
+        icon,
+        position,
+        scale,
+        1.0,
+        Kind::Unspecified,
+    )
+    .into_iter()
+    .map(GlideRenderElements::Surface)
+    .collect()
 }
 
 impl GlideState {
@@ -586,10 +601,7 @@ impl GlideState {
         let fd = self
             .backend_data
             .session
-            .open(
-                &path,
-                OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
-            )
+            .open(&path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)
             .with_context(|| format!("failed to open {}", path.display()))?;
         let fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
@@ -606,38 +618,22 @@ impl GlideState {
 
         let egl_display = unsafe { EGLDisplay::new(gbm_device.clone()) }
             .context("failed to create an EGL display for the GBM device")?;
-        let egl_context =
-            EGLContext::new(&egl_display).context("failed to create an EGL context")?;
-        let gles_renderer = unsafe { GlesRenderer::new(egl_context) }
-            .context("failed to create the GLES renderer")?;
+        let egl_context = EGLContext::new(&egl_display).context("failed to create an EGL context")?;
+        let gles_renderer = unsafe { GlesRenderer::new(egl_context) }.context("failed to create the GLES renderer")?;
 
         let dmabuf_formats = gles_renderer.dmabuf_formats();
-        let default_dmabuf_feedback =
-            DmabufFeedbackBuilder::new(node.dev_id(), dmabuf_formats.clone())
-                .build()
-                .context("failed to build the default dmabuf feedback")?;
+        let default_dmabuf_feedback = DmabufFeedbackBuilder::new(node.dev_id(), dmabuf_formats.clone())
+            .build()
+            .context("failed to build the default dmabuf feedback")?;
         let mut dmabuf_state = DmabufState::new();
-        let dmabuf_global = dmabuf_state.create_global_with_default_feedback::<GlideState>(
-            &self.display_handle,
-            &default_dmabuf_feedback,
-        );
+        let dmabuf_global = dmabuf_state
+            .create_global_with_default_feedback::<GlideState>(&self.display_handle, &default_dmabuf_feedback);
         self.backend_data.dmabuf_state = Some((dmabuf_state, dmabuf_global));
-        tracing::info!(
-            formats = dmabuf_formats.indexset().len(),
-            "dmabuf global created"
-        );
+        tracing::info!(formats = dmabuf_formats.indexset().len(), "dmabuf global created");
 
-        let allocator = GbmAllocator::new(
-            gbm_device.clone(),
-            GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-        );
+        let allocator = GbmAllocator::new(gbm_device.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
         let framebuffer_exporter = GbmFramebufferExporter::new(gbm_device.clone(), node.into());
-        let render_formats = gles_renderer
-            .egl_context()
-            .dmabuf_render_formats()
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+        let render_formats = gles_renderer.egl_context().dmabuf_render_formats().iter().copied().collect::<Vec<_>>();
 
         let drm_output_manager = DrmOutputManager::new(
             drm_device,
@@ -676,18 +672,25 @@ impl GlideState {
                 .collect()
         };
 
+        let mut last_error = None;
+        let mut initialized = 0usize;
         for event in events {
-            if let DrmScanEvent::Connected {
-                connector,
-                crtc: Some(crtc),
-            } = event
-            {
+            if let DrmScanEvent::Connected { connector, crtc: Some(crtc) } = event {
                 tracing::info!(?crtc, interface = ?connector.interface(), "connector connected");
-                self.connector_connected(&connector, crtc)?;
+                match self.connector_connected(&connector, crtc) {
+                    Ok(()) => initialized += 1,
+                    Err(err) => {
+                        tracing::error!(?err, interface = ?connector.interface(), "failed to initialize connector, skipping it");
+                        last_error = Some(err);
+                    }
+                }
             }
         }
 
-        Ok(())
+        match last_error {
+            Some(err) if initialized == 0 => Err(err.context("no connected output could be initialized")),
+            _ => Ok(()),
+        }
     }
 
     fn device_changed(&mut self) {
@@ -695,10 +698,7 @@ impl GlideState {
             return;
         };
 
-        let events: Vec<_> = match device
-            .drm_scanner
-            .scan_connectors(device.drm_output_manager.device())
-        {
+        let events: Vec<_> = match device.drm_scanner.scan_connectors(device.drm_output_manager.device()) {
             Ok(result) => result.into_iter().collect(),
             Err(err) => {
                 tracing::warn!(?err, "failed to rescan DRM connectors");
@@ -708,19 +708,13 @@ impl GlideState {
 
         for event in events {
             match event {
-                DrmScanEvent::Connected {
-                    connector,
-                    crtc: Some(crtc),
-                } => {
+                DrmScanEvent::Connected { connector, crtc: Some(crtc) } => {
                     tracing::info!(?crtc, interface = ?connector.interface(), "connector connected");
                     if let Err(err) = self.connector_connected(&connector, crtc) {
                         tracing::error!(?err, "failed to initialize newly connected connector");
                     }
                 }
-                DrmScanEvent::Disconnected {
-                    connector,
-                    crtc: Some(crtc),
-                } => {
+                DrmScanEvent::Disconnected { connector, crtc: Some(crtc) } => {
                     tracing::info!(?crtc, interface = ?connector.interface(), "connector disconnected");
                     self.connector_disconnected(crtc);
                 }
@@ -738,6 +732,19 @@ impl GlideState {
         };
 
         self.space.unmap_output(&surface.output);
+        self.screencopy.fail_for(&surface.output);
+        {
+            let mut map = smithay::desktop::layer_map_for_output(&surface.output);
+            let layers: Vec<_> = map.layers().cloned().collect();
+            for layer in layers {
+                layer.layer_surface().send_close();
+                map.unmap_layer(&layer);
+            }
+        }
+        if let Some(lock) = self.session_lock.as_mut() {
+            lock.forget_output(&surface.output);
+            lock.confirm_if_all_presented(self.space.outputs());
+        }
 
         self.sync_layout_outputs();
         self.reconcile_space();
@@ -747,62 +754,30 @@ impl GlideState {
         };
         let global_for_removal = global.clone();
         self.display_handle.disable_global::<GlideState>(global);
-        let _ = self.loop_handle.insert_source(
-            Timer::from_duration(Duration::from_secs(5)),
-            move |_, (), state| {
-                state
-                    .display_handle
-                    .remove_global::<GlideState>(global_for_removal.clone());
-                TimeoutAction::Drop
-            },
-        );
+        let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_secs(5)), move |_, (), state| {
+            state.display_handle.remove_global::<GlideState>(global_for_removal.clone());
+            TimeoutAction::Drop
+        });
     }
 
-    fn connector_connected(
-        &mut self,
-        connector: &connector::Info,
-        crtc: crtc::Handle,
-    ) -> anyhow::Result<()> {
-        let mode_id = connector
-            .modes()
-            .iter()
-            .position(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .unwrap_or(0);
-        let drm_mode = *connector.modes().get(mode_id).ok_or_else(|| {
-            anyhow!(
-                "connector {:?} advertises no modes at all",
-                connector.interface()
-            )
-        })?;
+    fn connector_connected(&mut self, connector: &connector::Info, crtc: crtc::Handle) -> anyhow::Result<()> {
+        let output_name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
+        let drm_modes = connector.modes().to_vec();
+        let (preferred_id, mode_id) = self.initial_mode(&output_name, &drm_modes);
+        let drm_mode = *drm_modes
+            .get(mode_id)
+            .ok_or_else(|| anyhow!("connector {:?} advertises no modes at all", connector.interface()))?;
         let wl_mode = WlMode::from(drm_mode);
-
-        let output_name = format!(
-            "{}-{}",
-            connector.interface().as_str(),
-            connector.interface_id()
-        );
         let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
 
         let display_info = self.backend_data.device.as_ref().and_then(|device| {
-            smithay_drm_extras::display_info::for_connector(
-                device.drm_output_manager.device(),
-                connector.handle(),
-            )
+            smithay_drm_extras::display_info::for_connector(device.drm_output_manager.device(), connector.handle())
         });
         #[allow(clippy::redundant_closure_for_method_calls)]
         let (make, model, serial_number) = (
-            display_info
-                .as_ref()
-                .and_then(|info| info.make())
-                .unwrap_or_else(|| "Unknown".into()),
-            display_info
-                .as_ref()
-                .and_then(|info| info.model())
-                .unwrap_or_else(|| "Unknown".into()),
-            display_info
-                .as_ref()
-                .and_then(|info| info.serial())
-                .unwrap_or_else(|| "Unknown".into()),
+            display_info.as_ref().and_then(|info| info.make()).unwrap_or_else(|| "Unknown".into()),
+            display_info.as_ref().and_then(|info| info.model()).unwrap_or_else(|| "Unknown".into()),
+            display_info.as_ref().and_then(|info| info.serial()).unwrap_or_else(|| "Unknown".into()),
         );
 
         let output = Output::new(
@@ -815,12 +790,8 @@ impl GlideState {
                 serial_number,
             },
         );
-        let global = output.create_global::<GlideState>(&self.display_handle);
-        output.set_preferred(wl_mode);
+        advertise_modes(&output, &drm_modes, preferred_id);
         output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
-        self.space.map_output(&output, (0, 0));
-
-        self.sync_layout_outputs();
 
         let device = self
             .backend_data
@@ -842,12 +813,14 @@ impl GlideState {
             )
             .map_err(|err| anyhow!("failed to initialize DRM output: {err}"))?;
 
+        let global = output.create_global::<GlideState>(&self.display_handle);
         device.surfaces.insert(
             crtc,
             SurfaceData {
-                output,
+                output: output.clone(),
                 global: Some(global),
                 drm_output,
+                modes: drm_modes,
                 pending_repaint: None,
                 redraw_queued: false,
                 wallpaper_buf: None,
@@ -856,13 +829,17 @@ impl GlideState {
                 wallpaper_blur_rgba: None,
                 wallpaper_key: None,
                 lock_backdrop: SolidColorBuffer::default(),
+                screenshot_flash: SolidColorBuffer::default(),
+                power_scrim: SolidColorBuffer::default(),
+                power_blur: None,
             },
         );
 
+        self.space.map_output(&output, (0, 0));
+        self.sync_layout_outputs();
         self.apply_output_configs();
 
-        self.loop_handle
-            .insert_idle(move |state| state.render_surface(crtc));
+        self.loop_handle.insert_idle(move |state| state.render_surface(crtc));
 
         Ok(())
     }
@@ -887,6 +864,10 @@ impl GlideState {
                     tracing::error!("failed to mark frame submitted: {:?}", err);
                 }
             }
+
+            if let Some(lock) = self.session_lock.as_mut() {
+                lock.frame_presented(&output, self.space.outputs());
+            }
         }
 
         self.render_surface(crtc);
@@ -903,11 +884,7 @@ impl GlideState {
 
     fn crtc_for_output(&self, output: &Output) -> Option<crtc::Handle> {
         let device = self.backend_data.device.as_ref()?;
-        device
-            .surfaces
-            .iter()
-            .find(|(_, surface)| &surface.output == output)
-            .map(|(crtc, _)| *crtc)
+        device.surfaces.iter().find(|(_, surface)| &surface.output == output).map(|(crtc, _)| *crtc)
     }
 
     pub fn apply_gamma(&mut self, output: &Output, ramp: &[u16]) -> bool {
@@ -921,11 +898,7 @@ impl GlideState {
         let size = ramp.len() / 3;
         let (red, rest) = ramp.split_at(size);
         let (green, blue) = rest.split_at(size);
-        match device
-            .drm_output_manager
-            .device()
-            .set_gamma(crtc, red, green, blue)
-        {
+        match device.drm_output_manager.device().set_gamma(crtc, red, green, blue) {
             Ok(()) => true,
             Err(err) => {
                 tracing::warn!(?err, "failed to set the gamma ramp");
@@ -943,11 +916,6 @@ impl GlideState {
         }
         let mut ramp = vec![0u16; size * 3];
         for index in 0..size {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_precision_loss,
-                clippy::cast_sign_loss
-            )]
             let value = ((index as f64 / (size as f64 - 1.0)) * f64::from(u16::MAX)).round() as u16;
             ramp[index] = value;
             ramp[size + index] = value;
@@ -956,23 +924,74 @@ impl GlideState {
         self.apply_gamma(output, &ramp);
     }
 
+    fn initial_mode(&self, name: &str, modes: &[smithay::reexports::drm::control::Mode]) -> (usize, usize) {
+        let preferred = modes.iter().position(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED)).unwrap_or(0);
+        let chosen = self
+            .output_configs
+            .iter()
+            .find(|config| config.name == name)
+            .and_then(crate::config::OutputConfig::mode_spec)
+            .and_then(|spec| spec.pick(&mode_candidates(modes)))
+            .unwrap_or(preferred);
+        (preferred, chosen)
+    }
+
+    pub fn apply_output_modes(&mut self) {
+        let configs = self.output_configs.clone();
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        let mut switched = Vec::new();
+        for (crtc, surface) in &mut device.surfaces {
+            let name = surface.output.name();
+            let candidates = mode_candidates(&surface.modes);
+            let wanted = configs
+                .iter()
+                .find(|config| config.name == name)
+                .and_then(crate::config::OutputConfig::mode_spec)
+                .and_then(|spec| spec.pick(&candidates))
+                .or_else(|| candidates.iter().position(|mode| mode.3));
+            let Some(drm_mode) = wanted.and_then(|index| surface.modes.get(index).copied()) else {
+                continue;
+            };
+            let wl_mode = WlMode::from(drm_mode);
+            if surface.output.current_mode() == Some(wl_mode) {
+                continue;
+            }
+            match surface.drm_output.use_mode(
+                drm_mode,
+                &mut device.gles_renderer,
+                &DrmOutputRenderElements::<GlesRenderer, GlideRenderElements>::default(),
+            ) {
+                Ok(()) => {
+                    surface.output.change_current_state(Some(wl_mode), None, None, None);
+                    surface.wallpaper_key = None;
+                    switched.push(*crtc);
+                }
+                Err(err) => {
+                    tracing::warn!(output = %name, ?err, "failed to switch the display mode");
+                }
+            }
+        }
+        for crtc in switched {
+            self.loop_handle.insert_idle(move |state| state.render_surface(crtc));
+        }
+    }
+
     pub fn set_outputs_blanked(&mut self, blanked: bool) {
         if self.outputs_blanked == blanked {
             return;
         }
         self.outputs_blanked = blanked;
-        self.protocols
-            .wlr_output_power_state
-            .broadcast_mode(blanked);
+        self.protocols.wlr_output_power_state.broadcast_mode(blanked);
 
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
         };
         if blanked {
             for surface in device.surfaces.values_mut() {
-                if let Err(err) = surface
-                    .drm_output
-                    .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+                if let Err(err) =
+                    surface.drm_output.with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
                 {
                     tracing::error!(?err, "failed to blank an output");
                 }
@@ -1009,41 +1028,32 @@ impl GlideState {
             })
             .collect();
         for crtc in crtcs {
-            self.loop_handle
-                .insert_idle(move |state| state.render_surface(crtc));
+            self.loop_handle.insert_idle(move |state| state.render_surface(crtc));
         }
     }
 
     #[profiling::function]
     fn render_surface(&mut self, crtc: crtc::Handle) {
-        if !self.backend_data.session.is_active() {
+        if !self.backend_data.session.is_active() || self.outputs_blanked {
             return;
         }
 
         self.reset_dead_cursor_surface();
 
-        let pointer_location = self
-            .seat
-            .get_pointer()
-            .map(|pointer| pointer.current_location())
-            .unwrap_or_default();
+        let pointer_location = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
         let cursor_hotspot = cursor_hotspot(&self.cursor_status);
         let cursor_status = self.cursor_status.clone();
         let elapsed = self.start_time.elapsed();
         let dock_area = self.dock_area();
         let launcher_area = self.launcher_area();
+        let fullscreen_center = self.focused_fullscreen_center();
+        let topbar_popup_open = self.topbar.has_open_popup();
+        let dock_suppressed = self.dock_suppressed();
 
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
         };
-        let DeviceData {
-            surfaces,
-            gles_renderer,
-            cursor,
-            cursor_buffers,
-            pointer_element,
-            ..
-        } = device;
+        let DeviceData { surfaces, gles_renderer, cursor, cursor_buffers, pointer_element, .. } = device;
         let Some(surface) = surfaces.get_mut(&crtc) else {
             return;
         };
@@ -1070,9 +1080,7 @@ impl GlideState {
         pointer_element.set_buffer(cursor_buffer);
         pointer_element.set_status(cursor_status);
 
-        let output_mode = output
-            .current_mode()
-            .map_or((1920, 1080), |m| (m.size.w, m.size.h));
+        let output_mode = output.current_mode().map_or((1920, 1080), |m| (m.size.w, m.size.h));
         let (phys_w, phys_h) = output_mode;
         let wallpaper_fit = self.wallpaper_fit;
         let wallpaper_key = (
@@ -1080,6 +1088,7 @@ impl GlideState {
             phys_h,
             wallpaper_fit,
             glide_paint::wallpaper_generation(),
+            output.current_scale().fractional_scale().to_bits(),
         );
         if surface.wallpaper_key != Some(wallpaper_key) {
             let mut buf = vec![0; usize::try_from(phys_w * phys_h * 4).unwrap_or_default()];
@@ -1103,8 +1112,9 @@ impl GlideState {
                 &mut blurred,
                 phys_w,
                 phys_h,
-                BACKDROP_BLUR_RADIUS * output.current_scale().integer_scale().max(1),
+                backdrop_box_radius(output.current_scale().fractional_scale()),
             );
+            glide_paint::saturate_in_place(&mut blurred, BACKDROP_SATURATION);
             surface.wallpaper_blur_buf = Some(make_buffer(&blurred));
             surface.wallpaper_blur_rgba = Some(std::sync::Arc::new(blurred));
             glide_paint::desaturate_in_place(&mut buf, OVERVIEW_WALLPAPER_SATURATION);
@@ -1114,20 +1124,41 @@ impl GlideState {
 
         let logical_size = {
             let fractional = output.current_scale().fractional_scale();
-            #[allow(clippy::cast_possible_truncation)]
             let w = (f64::from(phys_w) / fractional).round() as i32;
-            #[allow(clippy::cast_possible_truncation)]
             let h = (f64::from(phys_h) / fractional).round() as i32;
             (w, h)
         };
+        let output_geometry =
+            self.space.output_geometry(&output).unwrap_or_else(|| Rectangle::from_size(logical_size.into()));
+        let primary = self.space.outputs().next() == Some(&output);
+        let origin = output_geometry.loc.to_f64().to_physical(scale).to_i32_round::<i32>();
+        let shell_offset = Point::<i32, smithay::utils::Physical>::from((-origin.x, -origin.y));
+        let topbar_hidden = !topbar_popup_open && fullscreen_center.is_some_and(|c| output_geometry.contains(c));
+        let dock_hidden_here = !primary || dock_suppressed;
 
-        let backdrop_t = self
-            .overview
-            .as_ref()
-            .map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
+        let backdrop_t = self.overview.as_ref().map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
 
+        let unlocking = self.greeter.as_ref().is_some_and(|greeter| greeter.is_lock() && greeter.is_leaving());
         let mut elements = Vec::new();
-        if let Some(lock) = self.session_lock.as_ref() {
+        if let Some(greeter) = self.greeter.as_mut().filter(|_| !unlocking) {
+            let painter = crate::paint::current();
+            elements.extend(
+                greeter
+                    .render(
+                        gles_renderer,
+                        &painter,
+                        Rectangle::new(output_geometry.loc, logical_size.into()),
+                        scale,
+                        output.current_scale().integer_scale(),
+                        primary,
+                    )
+                    .into_iter()
+                    .map(GlideRenderElements::Memory),
+            );
+            if let Some(buffer) = surface.wallpaper_blur_buf.as_ref() {
+                elements.extend(backdrop_element(gles_renderer, buffer, 1.0, output_mode, logical_size));
+            }
+        } else if let Some(lock) = self.session_lock.as_ref() {
             if let Some(surface) = lock.surfaces.get(&output) {
                 elements.extend(
                     smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
@@ -1139,25 +1170,18 @@ impl GlideState {
                         Kind::Unspecified,
                     )
                     .into_iter()
-                    .map(GlideRenderElements::LockSurface),
+                    .map(GlideRenderElements::Surface),
                 );
             }
-            surface
-                .lock_backdrop
-                .update((logical_size.0, logical_size.1), [0.0, 0.0, 0.0, 1.0]);
-            elements.push(GlideRenderElements::LockBackdrop(
-                SolidColorRenderElement::from_buffer(
-                    &surface.lock_backdrop,
-                    (0, 0),
-                    scale,
-                    1.0,
-                    Kind::Unspecified,
-                ),
-            ));
+            surface.lock_backdrop.update((logical_size.0, logical_size.1), [0.0, 0.0, 0.0, 1.0]);
+            elements.push(GlideRenderElements::LockBackdrop(SolidColorRenderElement::from_buffer(
+                &surface.lock_backdrop,
+                (0, 0),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            )));
         } else if let Some(overview) = self.overview.as_mut() {
-            let Some(output_geometry) = self.space.output_geometry(&output) else {
-                return;
-            };
             elements.extend(overview_elements(
                 gles_renderer,
                 overview,
@@ -1167,20 +1191,17 @@ impl GlideState {
                 output_geometry,
             ));
         } else {
-            let Some(space_elements) = build_render_elements(gles_renderer, &self.space, &output)
-            else {
+            let Some(space_elements) = build_render_elements(gles_renderer, &self.space, &output) else {
                 return;
             };
+            elements.extend(space_elements);
             if let Some(preview) = self.snap_preview.as_mut()
-                && let Some(output_geometry) = self.space.output_geometry(&output)
                 && output_geometry.overlaps(preview.rect)
             {
                 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
                 let (appearance, accent) = self.shell_palette;
                 let tokens = glide_theme::Tokens::new(appearance, accent);
-                let position = (preview.rect.loc - output_geometry.loc)
-                    .to_f64()
-                    .to_physical(scale);
+                let position = (preview.rect.loc - output_geometry.loc).to_f64().to_physical(scale);
                 let integer_scale = output.current_scale().integer_scale();
                 let alpha = preview.alpha();
                 if let Some(buffer) = preview.buffer(tokens.acc_soft, tokens.acc_bg, integer_scale)
@@ -1194,18 +1215,20 @@ impl GlideState {
                         Kind::Unspecified,
                     )
                 {
-                    elements.push(GlideRenderElements::Memory(element));
+                    let index = below_windows_index(&elements);
+                    elements.insert(index, GlideRenderElements::Memory(element));
                 }
             }
-            elements.extend(space_elements);
         }
 
-        let locked = self.session_lock.is_some();
-        let launcher_openness = self
-            .launcher
-            .as_ref()
-            .map_or(0.0, crate::launcher::Launcher::openness);
-        if let Some(launcher) = self.launcher.as_mut().filter(|_| !locked) {
+        let locked = self.session_lock.is_some() || (self.greeter.is_some() && !unlocking);
+        if self.snapshots.is_animating() && !locked {
+            let snapshots = self.snapshots.render_elements(gles_renderer, scale, output_geometry);
+            let index = above_windows_index(&elements);
+            elements.splice(index..index, snapshots.into_iter().map(GlideRenderElements::Snapshot));
+        }
+        let launcher_openness = self.launcher.as_ref().map_or(0.0, crate::launcher::Launcher::openness);
+        if let Some(launcher) = self.launcher.as_mut().filter(|_| !locked && primary) {
             let grid = crate::launcher::render(
                 launcher,
                 gles_renderer,
@@ -1218,39 +1241,13 @@ impl GlideState {
             );
             let mut ordered: Vec<GlideRenderElements> = grid
                 .into_iter()
-                .map(GlideRenderElements::Launcher)
+                .map(|element| GlideRenderElements::RelocatedLauncher(relocate(element, shell_offset)))
                 .collect();
-            if let Some(buffer) = surface
-                .wallpaper_blur_buf
-                .as_mut()
-                .filter(|_| launcher_openness > 0.0)
-            {
-                use smithay::backend::renderer::element::{
-                    Kind, memory::MemoryRenderBufferRenderElement,
-                };
-                #[allow(clippy::cast_possible_truncation)]
+            if let Some(buffer) = surface.wallpaper_blur_buf.as_ref().filter(|_| launcher_openness > 0.0) {
                 let alpha = launcher_openness.clamp(0.0, 1.0) as f32;
-                let src = smithay::utils::Rectangle::from_size(
-                    smithay::utils::Size::<f64, Logical>::from((
-                        f64::from(phys_w),
-                        f64::from(phys_h),
-                    )),
-                );
-                let size: smithay::utils::Size<i32, Logical> = logical_size.into();
-                if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-                    gles_renderer,
-                    (0.0, 0.0),
-                    buffer,
-                    Some(alpha),
-                    Some(src),
-                    Some(size),
-                    Kind::Unspecified,
-                ) {
-                    ordered.push(GlideRenderElements::Memory(element));
-                }
+                ordered.extend(backdrop_element(gles_renderer, buffer, alpha, output_mode, logical_size));
             }
-            ordered.append(&mut elements);
-            elements = ordered;
+            prepend(&mut elements, ordered);
         }
 
         let blur_pixels = surface.wallpaper_blur_rgba.clone();
@@ -1261,8 +1258,8 @@ impl GlideState {
             fractional_scale: output.current_scale().fractional_scale(),
             generation: glide_paint::wallpaper_generation(),
         });
-        let dock_hidden = backdrop_t.max(launcher_openness).clamp(0.0, 1.0);
-        let dock = if locked {
+        let dock_hidden = backdrop_t.max(launcher_openness).max(self.dock.autohide_level()).clamp(0.0, 1.0);
+        let dock = if locked || dock_hidden_here {
             Vec::new()
         } else {
             crate::dock::render(
@@ -1276,46 +1273,26 @@ impl GlideState {
                 dock_backdrop.as_ref(),
             )
         };
-        if !dock.is_empty() {
-            let mut ordered: Vec<GlideRenderElements> =
-                dock.into_iter().map(GlideRenderElements::Memory).collect();
-            ordered.append(&mut elements);
-            elements = ordered;
-        }
+        prepend(
+            &mut elements,
+            dock.into_iter().map(|element| GlideRenderElements::RelocatedMemory(relocate(element, shell_offset))),
+        );
 
-        let toasts = if locked {
-            Vec::new()
-        } else {
-            let output_rect = smithay::utils::Rectangle::new(
-                smithay::utils::Point::from((0, 0)),
-                smithay::utils::Size::from(logical_size),
-            );
-            crate::notifications::render(
+        let output_rect = Rectangle::from_size(logical_size.into());
+        if !locked {
+            let toasts = crate::notifications::render(
                 &mut self.notifications,
                 gles_renderer,
                 &crate::paint::current(),
                 output_rect,
                 scale,
                 output.current_scale().integer_scale(),
-            )
-        };
-        if !toasts.is_empty() {
-            let mut ordered: Vec<GlideRenderElements> = toasts
-                .into_iter()
-                .map(GlideRenderElements::Memory)
-                .collect();
-            ordered.append(&mut elements);
-            elements = ordered;
+            );
+            prepend(&mut elements, toasts.into_iter().map(GlideRenderElements::Memory));
         }
 
-        let topbar = if locked {
-            Vec::new()
-        } else {
-            let output_rect = smithay::utils::Rectangle::new(
-                smithay::utils::Point::from((0, 0)),
-                smithay::utils::Size::from(logical_size),
-            );
-            crate::topbar::render(
+        if !locked && !topbar_hidden {
+            let topbar = crate::topbar::render(
                 &mut self.topbar,
                 gles_renderer,
                 &crate::paint::current(),
@@ -1324,61 +1301,155 @@ impl GlideState {
                 scale,
                 output.current_scale().integer_scale(),
                 dock_backdrop.as_ref(),
-            )
-        };
-        if !topbar.is_empty() {
-            let mut ordered: Vec<GlideRenderElements> = topbar
+            );
+            prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
+        }
+
+        if let Some(switcher) = self.switcher.as_mut().filter(|_| !locked && primary) {
+            let panel = crate::switcher::render(
+                switcher,
+                gles_renderer,
+                &mut self.launcher_icons,
+                &crate::paint::current(),
+                &self.launcher_theme,
+                launcher_area,
+                scale,
+                output.current_scale().integer_scale(),
+                dock_backdrop.as_ref(),
+            );
+            prepend(
+                &mut elements,
+                panel
+                    .into_iter()
+                    .map(|element| GlideRenderElements::RelocatedSwitcher(relocate(element, shell_offset))),
+            );
+        }
+
+        if let Some(dialog) = self.power_dialog.as_mut().filter(|_| !locked) {
+            let openness = dialog.openness();
+            let tokens = glide_theme::Tokens::new(glide_theme::Appearance::Dark, self.shell_palette.1);
+            let content = crate::power_dialog::render(
+                dialog,
+                gles_renderer,
+                &mut self.launcher_icons,
+                &crate::paint::current(),
+                self.launcher_theme.revision(),
+                &crate::power_dialog::Palette::from_tokens(&tokens),
+                output_rect,
+                scale,
+                output.current_scale().integer_scale(),
+            );
+            if openness > 0.0 {
+                let mut ordered: Vec<GlideRenderElements> =
+                    content.into_iter().map(GlideRenderElements::Switcher).collect();
+                let alpha = openness.clamp(0.0, 1.0) as f32;
+                surface.power_scrim.update(logical_size, crate::power_dialog::scrim_color());
+                ordered.push(GlideRenderElements::LockBackdrop(SolidColorRenderElement::from_buffer(
+                    &surface.power_scrim,
+                    (0, 0),
+                    scale,
+                    alpha,
+                    Kind::Unspecified,
+                )));
+                if surface.power_blur.as_ref().is_none_or(|(key, _)| Some(*key) != surface.wallpaper_key) {
+                    surface.power_blur =
+                        surface.wallpaper_key.zip(surface.wallpaper_blur_rgba.as_ref()).map(|(key, pixels)| {
+                            let buffer = MemoryRenderBuffer::from_slice(
+                                pixels,
+                                Fourcc::Argb8888,
+                                (phys_w, phys_h),
+                                1,
+                                Transform::Normal,
+                                None,
+                            );
+                            (key, buffer)
+                        });
+                }
+                if let Some((_, buffer)) = surface.power_blur.as_ref() {
+                    ordered.extend(backdrop_element(gles_renderer, buffer, alpha, output_mode, logical_size));
+                }
+                prepend(&mut elements, ordered);
+            }
+        } else {
+            surface.power_blur = None;
+        }
+
+        let local_pointer = pointer_on_output(pointer_location, output_geometry);
+        let mut ordered = local_pointer.map_or_else(Vec::new, |local| {
+            cursor_elements(gles_renderer, pointer_element, local, cursor_hotspot, scale)
+        });
+        let mut cursor_count = ordered.len();
+        if let Some(icon) = self.drag.icon.as_ref().filter(|icon| IsAlive::alive(*icon))
+            && let Some(local) = local_pointer
+        {
+            ordered.extend(dnd_icon_elements(gles_renderer, icon, local, scale));
+        }
+        prepend(&mut elements, ordered);
+
+        if let Some(greeter) = self.greeter.as_mut().filter(|_| unlocking) {
+            let mut cover: Vec<GlideRenderElements> = greeter
+                .render(
+                    gles_renderer,
+                    &crate::paint::current(),
+                    Rectangle::new(output_geometry.loc, logical_size.into()),
+                    scale,
+                    output.current_scale().integer_scale(),
+                    primary,
+                )
                 .into_iter()
                 .map(GlideRenderElements::Memory)
                 .collect();
-            ordered.append(&mut elements);
-            elements = ordered;
+            if let Some(buffer) = surface.wallpaper_blur_buf.as_ref() {
+                cover.extend(backdrop_element(
+                    gles_renderer,
+                    buffer,
+                    greeter.cover_alpha() as f32,
+                    output_mode,
+                    logical_size,
+                ));
+            }
+            elements.splice(cursor_count..cursor_count, cover);
         }
 
-        if self.snapshots.is_animating() && !locked {
-            let snapshots = self.snapshots.render_elements(gles_renderer, scale);
-            let mut ordered: Vec<GlideRenderElements> = snapshots
+        if let Some(handoff) = self.handoff.as_mut() {
+            let covered: Vec<GlideRenderElements> = handoff
+                .cover
+                .render(
+                    gles_renderer,
+                    &crate::paint::current(),
+                    logical_size.into(),
+                    scale,
+                    output.current_scale().integer_scale(),
+                    handoff.alpha(),
+                )
                 .into_iter()
-                .map(GlideRenderElements::Snapshot)
+                .map(GlideRenderElements::Memory)
                 .collect();
-            ordered.append(&mut elements);
-            elements = ordered;
+            handoff.mark_frame();
+            cursor_count += covered.len();
+            prepend(&mut elements, covered);
         }
 
-        let mut ordered = cursor_elements(
-            gles_renderer,
-            pointer_element,
-            pointer_location,
-            cursor_hotspot,
-            scale,
-        );
-        ordered.append(&mut elements);
-        elements = ordered;
-
-        push_wallpaper_elements(
-            gles_renderer,
-            surface,
-            (phys_w, phys_h),
-            logical_size,
-            backdrop_t,
-            &mut elements,
-        );
+        push_wallpaper_elements(gles_renderer, surface, (phys_w, phys_h), logical_size, backdrop_t, &mut elements);
 
         if self.pending_screenshot {
             self.pending_screenshot = false;
-            match super::screenshot::capture_screenshot(
+            match super::screenshot::capture_frame(
                 gles_renderer,
-                &elements,
+                &elements[cursor_count..],
                 output_mode,
                 output.current_scale().fractional_scale(),
                 output.current_transform(),
             ) {
-                Ok(path) => tracing::info!(path = %path.display(), "screenshot saved"),
+                Ok(pixels) => {
+                    self.screenshot_flash.start(output.clone(), std::time::Instant::now(), glide_theme::motion::t2());
+                    crate::screenshot_ui::save_in_background(&self.loop_handle, pixels, output_mode);
+                }
                 Err(err) => tracing::error!(?err, "failed to capture screenshot"),
             }
         }
 
-        let captured = self.screencopy.has_pending().then(|| {
+        let captured = self.screencopy.has_pending_for(&output).then(|| {
             super::screenshot::capture_frame(
                 gles_renderer,
                 &elements,
@@ -1388,14 +1459,24 @@ impl GlideState {
             )
         });
 
+        let flash = self.screenshot_flash.alpha_on(&output, std::time::Instant::now());
+        if flash > 0.0 {
+            surface.screenshot_flash.update((logical_size.0, logical_size.1), [flash, flash, flash, flash]);
+            elements.insert(
+                cursor_count.min(elements.len()),
+                GlideRenderElements::LockBackdrop(SolidColorRenderElement::from_buffer(
+                    &surface.screenshot_flash,
+                    (0, 0),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                )),
+            );
+        }
+
         let clear_color = self.background_color.0;
 
-        let render_result = surface.drm_output.render_frame(
-            gles_renderer,
-            &elements,
-            clear_color,
-            FrameFlags::DEFAULT,
-        );
+        let render_result = surface.drm_output.render_frame(gles_renderer, &elements, clear_color, FrameFlags::DEFAULT);
 
         let outcome = match render_result {
             Ok(res) if res.is_empty => FrameOutcome::NoDamage(res.states),
@@ -1414,6 +1495,12 @@ impl GlideState {
                 FrameOutcome::Failed
             }
         };
+
+        if let FrameOutcome::Queued(_) = outcome
+            && let Some(lock) = self.session_lock.as_mut()
+        {
+            lock.frame_queued(&output);
+        }
 
         match captured {
             Some(Ok(pixels)) => {
@@ -1455,18 +1542,35 @@ impl GlideState {
 
         match outcome {
             FrameOutcome::Queued(_) | FrameOutcome::NoDamage(_) => {
-                self.space.elements_for_output(output).for_each(|window| {
-                    window.send_frame(
-                        output,
-                        self.start_time.elapsed(),
-                        Some(Duration::ZERO),
-                        |_, _| Some(output.clone()),
-                    );
-                });
+                self.send_frame_callbacks(output);
             }
             FrameOutcome::Failed => {
                 self.schedule_repaint(crtc, output);
             }
+        }
+    }
+
+    fn send_frame_callbacks(&self, output: &Output) {
+        use smithay::desktop::{layer_map_for_output, utils::send_frames_surface_tree};
+
+        let now = self.start_time.elapsed();
+        let throttle = Some(Duration::ZERO);
+        self.space.elements_for_output(output).for_each(|window| {
+            window.send_frame(output, now, throttle, |_, _| Some(output.clone()));
+        });
+        for layer in layer_map_for_output(output).layers() {
+            layer.send_frame(output, now, throttle, |_, _| Some(output.clone()));
+        }
+        if let Some(lock_surface) = self.session_lock.as_ref().and_then(|lock| lock.surfaces.get(output)) {
+            send_frames_surface_tree(lock_surface.wl_surface(), output, now, throttle, |_, _| Some(output.clone()));
+        }
+        if let CursorImageStatus::Surface(surface) = &self.cursor_status
+            && surface.alive()
+        {
+            send_frames_surface_tree(surface, output, now, throttle, |_, _| Some(output.clone()));
+        }
+        if let Some(icon) = self.drag.icon.as_ref().filter(|icon| IsAlive::alive(*icon)) {
+            send_frames_surface_tree(icon, output, now, throttle, |_, _| Some(output.clone()));
         }
     }
 
@@ -1506,10 +1610,7 @@ impl GlideState {
         let Some(device) = self.backend_data.device.as_mut() else {
             return false;
         };
-        device
-            .cursor
-            .time_to_next_frame(icon, scale, elapsed)
-            .is_some()
+        device.cursor.time_to_next_frame(icon, scale, elapsed).is_some()
     }
 
     fn reset_dead_cursor_surface(&mut self) {
@@ -1533,9 +1634,7 @@ impl GlideState {
 
         let frame_duration = output
             .current_mode()
-            .map_or(Duration::from_millis(16), |mode| {
-                Duration::from_secs_f64(1_000f64 / f64::from(mode.refresh))
-            });
+            .map_or(Duration::from_millis(16), |mode| Duration::from_secs_f64(1_000f64 / f64::from(mode.refresh)));
 
         let token = self
             .loop_handle
@@ -1564,12 +1663,7 @@ impl DmabufHandler for GlideState {
             .0
     }
 
-    fn dmabuf_imported(
-        &mut self,
-        _global: &DmabufGlobal,
-        dmabuf: Dmabuf,
-        notifier: ImportNotifier,
-    ) {
+    fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
         let Some(device) = self.backend_data.device.as_mut() else {
             notifier.failed();
             return;
@@ -1595,59 +1689,39 @@ mod tests {
     fn resolve_cursor_buffer_threads_the_requested_icon_through() {
         let mut cursor = Cursor::load();
         let mut cache = Vec::new();
-        let _ = resolve_cursor_buffer(
-            &mut cursor,
-            &mut cache,
-            CursorIcon::NwResize,
-            1,
-            Duration::ZERO,
-        );
+        let _ = resolve_cursor_buffer(&mut cursor, &mut cache, CursorIcon::NwResize, 1, Duration::ZERO);
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn pointer_is_drawn_in_output_local_coordinates() {
+        let secondary = Rectangle::new(Point::from((1920, 0)), (2560, 1440).into());
+        let local = pointer_on_output(Point::from((2000.0, 300.0)), secondary);
+        assert_eq!(local, Some(Point::from((80.0, 300.0))));
+    }
+
+    #[test]
+    fn pointer_is_skipped_on_outputs_it_is_far_from() {
+        let primary = Rectangle::new(Point::from((0, 0)), (1920, 1080).into());
+        assert_eq!(pointer_on_output(Point::from((3000.0, 500.0)), primary), None);
+        assert!(pointer_on_output(Point::from((1930.0, 500.0)), primary).is_some());
     }
 
     #[test]
     fn resolve_cursor_buffer_reuses_the_cache_for_a_repeated_request() {
         let mut cursor = Cursor::load();
         let mut cache = Vec::new();
-        let _ = resolve_cursor_buffer(
-            &mut cursor,
-            &mut cache,
-            CursorIcon::Default,
-            1,
-            Duration::ZERO,
-        );
-        let _ = resolve_cursor_buffer(
-            &mut cursor,
-            &mut cache,
-            CursorIcon::Default,
-            1,
-            Duration::ZERO,
-        );
-        assert_eq!(
-            cache.len(),
-            1,
-            "identical icon/scale/time must not grow the cache"
-        );
+        let _ = resolve_cursor_buffer(&mut cursor, &mut cache, CursorIcon::Default, 1, Duration::ZERO);
+        let _ = resolve_cursor_buffer(&mut cursor, &mut cache, CursorIcon::Default, 1, Duration::ZERO);
+        assert_eq!(cache.len(), 1, "identical icon/scale/time must not grow the cache");
     }
 
     #[test]
     fn resolve_cursor_buffer_caches_separately_per_scale() {
         let mut cursor = Cursor::load();
         let mut cache = Vec::new();
-        let _ = resolve_cursor_buffer(
-            &mut cursor,
-            &mut cache,
-            CursorIcon::Default,
-            1,
-            Duration::ZERO,
-        );
-        let _ = resolve_cursor_buffer(
-            &mut cursor,
-            &mut cache,
-            CursorIcon::Default,
-            2,
-            Duration::ZERO,
-        );
+        let _ = resolve_cursor_buffer(&mut cursor, &mut cache, CursorIcon::Default, 1, Duration::ZERO);
+        let _ = resolve_cursor_buffer(&mut cursor, &mut cache, CursorIcon::Default, 2, Duration::ZERO);
         assert_eq!(cache.len(), 2);
     }
 }

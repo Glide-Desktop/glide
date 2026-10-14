@@ -4,20 +4,16 @@ use zbus::zvariant::{OwnedValue, Value};
 
 use crate::model::{Image, Urgency};
 
+const MAX_SIDE: i32 = 1024;
+
 #[must_use]
 pub fn string(hints: &HashMap<String, OwnedValue>, key: &str) -> String {
-    hints
-        .get(key)
-        .and_then(|value| String::try_from(value.clone()).ok())
-        .unwrap_or_default()
+    hints.get(key).and_then(|value| String::try_from(value.clone()).ok()).unwrap_or_default()
 }
 
 #[must_use]
 pub fn boolean(hints: &HashMap<String, OwnedValue>, key: &str) -> bool {
-    hints
-        .get(key)
-        .and_then(|value| bool::try_from(value.clone()).ok())
-        .unwrap_or(false)
+    hints.get(key).and_then(|value| bool::try_from(value.clone()).ok()).unwrap_or(false)
 }
 
 #[must_use]
@@ -31,27 +27,20 @@ pub fn integer(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<i64> {
         Value::U32(inner) => Some(i64::from(*inner)),
         Value::I64(inner) => Some(*inner),
         Value::U64(inner) => i64::try_from(*inner).ok(),
-        Value::F64(inner) =>
-        {
-            #[allow(clippy::cast_possible_truncation)]
-            Some(inner.round() as i64)
-        }
+        Value::F64(inner) => Some(inner.round() as i64),
         _ => None,
     }
 }
 
 #[must_use]
 pub fn urgency(hints: &HashMap<String, OwnedValue>) -> Urgency {
-    integer(hints, "urgency")
-        .and_then(|value| u8::try_from(value).ok())
-        .map_or(Urgency::Normal, Urgency::from_hint)
+    integer(hints, "urgency").and_then(|value| u8::try_from(value).ok()).map_or(Urgency::Normal, Urgency::from_hint)
 }
 
 #[must_use]
 pub fn progress(hints: &HashMap<String, OwnedValue>) -> Option<f32> {
     for key in ["value", "x-glide-progress", "x-kde-progress"] {
         if let Some(raw) = integer(hints, key) {
-            #[allow(clippy::cast_precision_loss)]
             return Some((raw as f32 / 100.0).clamp(0.0, 1.0));
         }
     }
@@ -76,34 +65,23 @@ fn decode_image(value: &OwnedValue) -> Option<Image> {
         return None;
     }
 
-    let width = i32::try_from(fields[0].try_clone().ok()?).ok()?;
-    let height = i32::try_from(fields[1].try_clone().ok()?).ok()?;
-    let stride = i32::try_from(fields[2].try_clone().ok()?).ok()?;
+    let int = |index: usize| i32::try_from(fields[index].try_clone().ok()?).ok();
     let has_alpha = bool::try_from(fields[3].try_clone().ok()?).ok()?;
-    let bits = i32::try_from(fields[4].try_clone().ok()?).ok()?;
-    let channels = i32::try_from(fields[5].try_clone().ok()?).ok()?;
-    let pixels: Vec<u8> = Vec::<u8>::try_from(fields[6].try_clone().ok()?).ok()?;
+    let pixels = Vec::<u8>::try_from(fields[6].try_clone().ok()?).ok()?;
 
-    normalise(width, height, stride, has_alpha, bits, channels, &pixels)
+    normalise(int(0)?, int(1)?, int(2)?, has_alpha, int(4)?, int(5)?, &pixels)
 }
 
 fn normalise(
-    width: i32,
-    height: i32,
-    stride: i32,
-    has_alpha: bool,
-    bits: i32,
-    channels: i32,
-    pixels: &[u8],
+    width: i32, height: i32, stride: i32, has_alpha: bool, bits: i32, channels: i32, pixels: &[u8],
 ) -> Option<Image> {
-    if width <= 0 || height <= 0 || width > 4096 || height > 4096 || stride <= 0 {
-        return None;
-    }
-    if bits != 8 {
-        return None;
-    }
     let expected_channels = if has_alpha { 4 } else { 3 };
-    if channels != expected_channels {
+    if !(1..=MAX_SIDE).contains(&width)
+        || !(1..=MAX_SIDE).contains(&height)
+        || stride <= 0
+        || bits != 8
+        || channels != expected_channels
+    {
         return None;
     }
 
@@ -111,29 +89,21 @@ fn normalise(
     let rows = usize::try_from(height).ok()?;
     let row_stride = usize::try_from(stride).ok()?;
     let step = usize::try_from(channels).ok()?;
+    let row_bytes = columns * step;
+    if row_stride < row_bytes || pixels.len() < row_stride * (rows - 1) + row_bytes {
+        return None;
+    }
 
     let mut rgba = Vec::with_capacity(columns * rows * 4);
     for y in 0..rows {
         let row = y * row_stride;
-        for x in 0..columns {
-            let offset = row + x * step;
-            if offset + step > pixels.len() {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-                continue;
-            }
-            let r = pixels[offset];
-            let g = pixels[offset + 1];
-            let b = pixels[offset + 2];
-            let a = if has_alpha { pixels[offset + 3] } else { 255 };
-            rgba.extend_from_slice(&[r, g, b, a]);
+        for pixel in pixels[row..row + row_bytes].chunks_exact(step) {
+            rgba.extend_from_slice(&pixel[..3]);
+            rgba.push(if has_alpha { pixel[3] } else { 255 });
         }
     }
 
-    Some(Image {
-        width,
-        height,
-        rgba,
-    })
+    Some(Image { width, height, rgba })
 }
 
 #[cfg(test)]
@@ -142,10 +112,7 @@ mod tests {
 
     fn hint(key: &str, value: Value<'static>) -> HashMap<String, OwnedValue> {
         let mut map = HashMap::new();
-        map.insert(
-            key.to_string(),
-            OwnedValue::try_from(value).expect("value converts"),
-        );
+        map.insert(key.to_string(), OwnedValue::try_from(value).expect("value converts"));
         map
     }
 
@@ -210,16 +177,20 @@ mod tests {
     }
 
     #[test]
-    fn a_short_pixel_buffer_is_padded_rather_than_panicking() {
-        let image = normalise(4, 4, 16, true, 8, 4, &[0; 8]).expect("image decodes");
-        assert_eq!(image.rgba.len(), 4 * 4 * 4);
+    fn a_short_pixel_buffer_is_rejected_rather_than_padded() {
+        assert!(normalise(4, 4, 16, true, 8, 4, &[0; 8]).is_none());
+        assert!(normalise(1024, 1024, 4096, true, 8, 4, &[0; 16]).is_none());
+        assert!(normalise(4, 2, 20, true, 8, 4, &[0; 36]).is_some(), "the last row needs no trailing padding");
+        assert!(normalise(4, 2, 20, true, 8, 4, &[0; 35]).is_none());
     }
 
     #[test]
     fn implausible_geometry_is_rejected_outright() {
         assert!(normalise(0, 4, 16, true, 8, 4, &[0; 64]).is_none());
         assert!(normalise(9000, 4, 16, true, 8, 4, &[0; 64]).is_none());
+        assert!(normalise(2048, 1, 8192, true, 8, 4, &[0; 8192]).is_none());
         assert!(normalise(4, 4, 0, true, 8, 4, &[0; 64]).is_none());
+        assert!(normalise(4, 1, 8, true, 8, 4, &[0; 64]).is_none(), "a stride narrower than a row is malformed");
     }
 
     #[test]

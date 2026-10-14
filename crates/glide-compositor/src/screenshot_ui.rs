@@ -1,0 +1,190 @@
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use smithay::{
+    output::Output,
+    reexports::calloop::{LoopHandle, channel},
+};
+
+use crate::{backend::screenshot::Saved, state::GlideState};
+
+pub const NOTICE_ID: u32 = u32::MAX - 1;
+const NOTICE_TIMEOUT: Duration = Duration::from_secs(4);
+const PEAK: f32 = 0.6;
+const RISE: f32 = 0.25;
+
+#[must_use]
+pub fn flash_alpha(fraction: f32) -> f32 {
+    use glide_theme::motion::E_OUT;
+    if !(0.0..1.0).contains(&fraction) {
+        return 0.0;
+    }
+    if fraction < RISE {
+        PEAK * E_OUT.ease(fraction / RISE)
+    } else {
+        PEAK * (1.0 - E_OUT.ease((fraction - RISE) / (1.0 - RISE)))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Flash {
+    active: Option<(Output, Instant, Duration)>,
+}
+
+impl Flash {
+    pub fn start(&mut self, output: Output, now: Instant, duration: Duration) {
+        self.active = (!duration.is_zero()).then_some((output, now, duration));
+    }
+
+    #[must_use]
+    pub fn alpha_on(&self, output: &Output, now: Instant) -> f32 {
+        let Some((flashing, started, duration)) = self.active.as_ref() else {
+            return 0.0;
+        };
+        if flashing != output {
+            return 0.0;
+        }
+        let elapsed = now.saturating_duration_since(*started);
+        let fraction = (elapsed.as_secs_f64() / duration.as_secs_f64()) as f32;
+        flash_alpha(fraction)
+    }
+
+    pub fn tick(&mut self, now: Instant) -> bool {
+        let Some((_, started, duration)) = self.active.as_ref() else {
+            return false;
+        };
+        if now.saturating_duration_since(*started) >= *duration {
+            self.active = None;
+        }
+        true
+    }
+}
+
+pub fn save_in_background(loop_handle: &LoopHandle<'static, GlideState>, pixels: Vec<u8>, size: (i32, i32)) {
+    let (sender, receiver) = channel::channel::<Result<Saved, String>>();
+    let spawned = std::thread::Builder::new().name("glide-screenshot".into()).spawn(move || {
+        let result = crate::backend::screenshot::save(pixels, size.0, size.1).map_err(|err| format!("{err:#}"));
+        if sender.send(result).is_err() {
+            tracing::debug!("the compositor went away before the screenshot was saved");
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::error!(?err, "failed to start the screenshot encoder");
+        return;
+    }
+    let inserted = loop_handle.insert_source(receiver, |event, (), state| {
+        if let channel::Event::Msg(result) = event {
+            state.screenshot_finished(result);
+        }
+    });
+    if let Err(err) = inserted {
+        tracing::error!(?err, "failed to watch the screenshot encoder");
+    }
+}
+
+impl GlideState {
+    fn screenshot_finished(&mut self, result: Result<Saved, String>) {
+        let (summary, body) = match result {
+            Ok(Saved { path, png }) => {
+                tracing::info!(path = %path.display(), "screenshot saved");
+                smithay::wayland::selection::data_device::set_data_device_selection(
+                    &self.display_handle,
+                    &self.seat,
+                    vec![crate::clipboard::PNG_MIME.to_string()],
+                    crate::clipboard::Owned::Png(Arc::from(png)),
+                );
+                (crate::i18n::screenshot_saved(), path.display().to_string())
+            }
+            Err(err) => {
+                tracing::error!(%err, "failed to save the screenshot");
+                (crate::i18n::screenshot_failed(), err)
+            }
+        };
+        let notice = glide_notify::Notification {
+            id: NOTICE_ID,
+            app_name: "Glide".to_string(),
+            summary: summary.to_string(),
+            body,
+            transient: true,
+            timeout: Some(NOTICE_TIMEOUT),
+            ..glide_notify::Notification::default()
+        };
+        self.notifications.push(&mut self.dock.icons, notice, true);
+        self.refresh_topbar();
+        self.queue_redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(name: &str) -> Output {
+        Output::new(
+            name.to_string(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn the_flash_rises_to_its_peak_and_fades_back_to_nothing() {
+        assert!(flash_alpha(0.0).abs() < 1e-4);
+        assert!((flash_alpha(RISE) - PEAK).abs() < 1e-3);
+        assert!(flash_alpha(0.999) < 0.05);
+        assert!(flash_alpha(1.0).abs() < f32::EPSILON);
+        let peak = (0..=100)
+            .map(|step| {
+                let fraction = step as f32 / 100.0;
+                flash_alpha(fraction)
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(peak <= PEAK + 1e-4, "the flash overshot to {peak}");
+    }
+
+    #[test]
+    fn the_flash_only_covers_the_captured_output() {
+        let mut flash = Flash::default();
+        let now = Instant::now();
+        let shot = output("DP-1");
+        flash.start(shot.clone(), now, glide_theme::motion::T2);
+        let mid = now + glide_theme::motion::T2.mul_f32(RISE);
+        assert!(flash.alpha_on(&shot, mid) > 0.5);
+        assert!(flash.alpha_on(&output("HDMI-A-1"), mid).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_flash_asks_for_one_last_frame_after_it_ends_then_goes_quiet() {
+        let mut flash = Flash::default();
+        let now = Instant::now();
+        let shot = output("DP-1");
+        flash.start(shot.clone(), now, glide_theme::motion::T2);
+        assert!(flash.tick(now));
+        let after = now + glide_theme::motion::T2 * 2;
+        assert!(flash.tick(after), "the frame that clears the overlay");
+        assert!(!flash.tick(after));
+        assert!(flash.alpha_on(&shot, after).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn disabled_animations_never_flash() {
+        let mut flash = Flash::default();
+        let now = Instant::now();
+        let shot = output("DP-1");
+        flash.start(shot.clone(), now, Duration::ZERO);
+        assert!(flash.alpha_on(&shot, now).abs() < f32::EPSILON);
+        assert!(!flash.tick(now));
+    }
+
+    #[test]
+    fn the_screenshot_notice_never_collides_with_the_logout_hint() {
+        assert_ne!(NOTICE_ID, u32::MAX);
+    }
+}

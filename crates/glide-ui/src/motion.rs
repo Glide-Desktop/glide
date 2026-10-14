@@ -8,11 +8,25 @@ enum Phase {
     Closing,
 }
 
+pub type Ease = fn(f64) -> f64;
+
+pub(crate) fn fraction(since: Instant, duration: Duration) -> f64 {
+    if duration.is_zero() {
+        return 1.0;
+    }
+    (since.elapsed().as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+}
+
+fn linear_ease(t: f64) -> f64 {
+    t
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Reveal {
     phase: Phase,
     from: f64,
     started: Instant,
+    ease: Ease,
 }
 
 impl Default for Reveal {
@@ -22,21 +36,38 @@ impl Default for Reveal {
 }
 
 impl Reveal {
+    fn at_rest(phase: Phase, from: f64) -> Self {
+        Self { phase, from, started: Instant::now(), ease: linear_ease }
+    }
+
     #[must_use]
     pub fn closed() -> Self {
-        Self {
-            phase: Phase::Closed,
-            from: 0.0,
-            started: Instant::now(),
-        }
+        Self::at_rest(Phase::Closed, 0.0)
     }
 
     #[must_use]
     pub fn open_now() -> Self {
-        Self {
-            phase: Phase::Open,
-            from: 1.0,
-            started: Instant::now(),
+        Self::at_rest(Phase::Open, 1.0)
+    }
+
+    #[must_use]
+    pub fn with_ease(mut self, ease: Ease) -> Self {
+        self.ease = ease;
+        self
+    }
+
+    #[must_use]
+    pub fn value(&self, duration: Duration) -> f64 {
+        self.progress(duration, self.ease)
+    }
+
+    #[must_use]
+    pub fn progress(&self, duration: Duration, ease: impl Fn(f64) -> f64) -> f64 {
+        match self.phase {
+            Phase::Open => 1.0,
+            Phase::Closed => 0.0,
+            Phase::Opening => self.from + (1.0 - self.from) * ease(self.fraction(duration)),
+            Phase::Closing => self.from * (1.0 - ease(self.fraction(duration))),
         }
     }
 
@@ -54,9 +85,7 @@ impl Reveal {
     pub fn is_animating(&self, duration: Duration) -> bool {
         match self.phase {
             Phase::Open | Phase::Closed => false,
-            Phase::Opening | Phase::Closing => {
-                !duration.is_zero() && self.started.elapsed() < duration
-            }
+            Phase::Opening | Phase::Closing => !duration.is_zero() && self.started.elapsed() < duration,
         }
     }
 
@@ -64,12 +93,8 @@ impl Reveal {
         if self.is_open() {
             return false;
         }
-        self.from = self.linear(duration);
-        self.phase = if duration.is_zero() {
-            Phase::Open
-        } else {
-            Phase::Opening
-        };
+        self.from = self.value(duration);
+        self.phase = if duration.is_zero() { Phase::Open } else { Phase::Opening };
         self.started = Instant::now();
         true
     }
@@ -78,22 +103,14 @@ impl Reveal {
         if !self.is_open() {
             return false;
         }
-        self.from = self.linear(duration);
-        self.phase = if duration.is_zero() {
-            Phase::Closed
-        } else {
-            Phase::Closing
-        };
+        self.from = self.value(duration);
+        self.phase = if duration.is_zero() { Phase::Closed } else { Phase::Closing };
         self.started = Instant::now();
         true
     }
 
     pub fn toggle(&mut self, duration: Duration) -> bool {
-        if self.is_open() {
-            self.close(duration)
-        } else {
-            self.open(duration)
-        }
+        if self.is_open() { self.close(duration) } else { self.open(duration) }
     }
 
     pub fn settle(&mut self, duration: Duration) {
@@ -107,30 +124,12 @@ impl Reveal {
     }
 
     fn fraction(&self, duration: Duration) -> f64 {
-        if duration.is_zero() {
-            return 1.0;
-        }
-        (self.started.elapsed().as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+        fraction(self.started, duration)
     }
 
     #[must_use]
     pub fn linear(&self, duration: Duration) -> f64 {
-        match self.phase {
-            Phase::Open => 1.0,
-            Phase::Closed => 0.0,
-            Phase::Opening => self.from + (1.0 - self.from) * self.fraction(duration),
-            Phase::Closing => self.from * (1.0 - self.fraction(duration)),
-        }
-    }
-
-    #[must_use]
-    pub fn progress(&self, duration: Duration, ease: impl Fn(f64) -> f64) -> f64 {
-        match self.phase {
-            Phase::Open => 1.0,
-            Phase::Closed => 0.0,
-            Phase::Opening => self.from + (1.0 - self.from) * ease(self.fraction(duration)),
-            Phase::Closing => self.from * (1.0 - ease(self.fraction(duration))),
-        }
+        self.progress(duration, linear_ease)
     }
 }
 
@@ -144,11 +143,7 @@ pub struct Tween {
 impl Tween {
     #[must_use]
     pub fn at(value: f64) -> Self {
-        Self {
-            from: value,
-            to: value,
-            started: Instant::now(),
-        }
+        Self { from: value, to: value, started: Instant::now() }
     }
 
     #[must_use]
@@ -187,9 +182,7 @@ impl Tween {
 
     #[must_use]
     pub fn is_animating(&self, duration: Duration) -> bool {
-        !duration.is_zero()
-            && (self.from - self.to).abs() > f64::EPSILON
-            && self.started.elapsed() < duration
+        !duration.is_zero() && (self.from - self.to).abs() > f64::EPSILON && self.started.elapsed() < duration
     }
 }
 
@@ -208,7 +201,7 @@ mod tests {
         assert!(!r.is_open());
         assert!(!r.is_visible(D));
         assert!(!r.is_animating(D));
-        assert!((r.progress(D, linear) - 0.0).abs() < f64::EPSILON);
+        assert!((r.value(D) - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -218,7 +211,7 @@ mod tests {
         assert!(!r.open(D), "opening twice is a no-op");
         assert!(r.is_open());
         assert!(r.is_animating(D));
-        let t = r.progress(D, linear);
+        let t = r.value(D);
         assert!((0.0..1.0).contains(&t));
     }
 
@@ -227,13 +220,10 @@ mod tests {
         let mut r = Reveal::closed();
         r.open(D);
         std::thread::sleep(Duration::from_millis(60));
-        let before = r.progress(D, linear);
+        let before = r.value(D);
         assert!(r.close(D));
-        let after = r.progress(D, linear);
-        assert!(
-            (before - after).abs() < 0.05,
-            "reversal must continue from where it was: {before} vs {after}"
-        );
+        let after = r.value(D);
+        assert!((before - after).abs() < 0.05, "reversal must continue from where it was: {before} vs {after}");
         assert!(!r.is_open());
         assert!(r.is_visible(D), "still fading out");
     }
@@ -269,10 +259,7 @@ mod tests {
         assert!(mid > 0.1 && mid < 0.9, "mid was {mid}");
         t.retarget(0.0, D, linear);
         let back = t.value(D, linear);
-        assert!(
-            (back - mid).abs() < 0.05,
-            "no pop on reversal: {mid} vs {back}"
-        );
+        assert!((back - mid).abs() < 0.05, "no pop on reversal: {mid} vs {back}");
         assert!(t.is_animating(D));
     }
 

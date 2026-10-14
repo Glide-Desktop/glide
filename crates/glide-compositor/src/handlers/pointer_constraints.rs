@@ -23,9 +23,7 @@ impl PointerConstraintsHandler for GlideState {
     }
 
     fn remove_constraint(
-        &mut self,
-        surface: &WlSurface,
-        pointer: &PointerHandle<Self>,
+        &mut self, surface: &WlSurface, pointer: &PointerHandle<Self>,
         _removal: smithay::wayland::pointer_constraints::ConstraintRemove,
     ) {
         if !with_pointer_constraint(surface, pointer, |constraint| constraint.is_none()) {
@@ -37,9 +35,7 @@ impl PointerConstraintsHandler for GlideState {
         let origin: Point<f64, Logical> = self
             .space
             .elements()
-            .find_map(|window| {
-                (window.wl_surface().as_deref() == Some(hint_surface)).then(|| window.geometry())
-            })
+            .find_map(|window| (window.wl_surface().as_deref() == Some(hint_surface)).then(|| window.geometry()))
             .unwrap_or_default()
             .loc
             .to_f64();
@@ -48,14 +44,10 @@ impl PointerConstraintsHandler for GlideState {
     }
 
     fn cursor_position_hint(
-        &mut self,
-        surface: &WlSurface,
-        pointer: &PointerHandle<Self>,
-        location: Point<f64, Logical>,
+        &mut self, surface: &WlSurface, pointer: &PointerHandle<Self>, location: Point<f64, Logical>,
     ) {
-        let is_active_lock = with_pointer_constraint(surface, pointer, |constraint| {
-            constraint.is_some_and(|c| c.is_active())
-        });
+        let is_active_lock =
+            with_pointer_constraint(surface, pointer, |constraint| constraint.is_some_and(|c| c.is_active()));
         if is_active_lock {
             self.cursor_position_hint = Some((surface.clone(), location));
         }

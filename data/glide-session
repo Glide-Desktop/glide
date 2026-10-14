@@ -3,20 +3,34 @@ export XDG_CURRENT_DESKTOP=Glide
 export XDG_SESSION_TYPE=wayland
 export XDG_SESSION_DESKTOP=glide
 
-if command -v systemctl >/dev/null 2>&1 && [ -n "$DBUS_SESSION_BUS_ADDRESS" ]; then
+GLIDE="$(dirname "$0")/glide"
+[ -x "$GLIDE" ] || GLIDE=glide
+
+if command -v systemctl >/dev/null 2>&1 && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] \
+    && systemctl --user cat glide.service >/dev/null 2>&1; then
     systemctl --user reset-failed glide.service 2>/dev/null || true
+    if [ "${GLIDE_HANDOFF:-}" = 1 ]; then
+        systemctl --user set-environment GLIDE_HANDOFF=1 2>/dev/null || true
+    fi
     systemctl --user start glide.service
+    systemctl --user unset-environment GLIDE_HANDOFF 2>/dev/null || true
     systemctl --user --wait start glide.service 2>/dev/null || {
         while systemctl --user is-active --quiet glide.service; do
             sleep 2
         done
     }
     systemctl --user start glide-shutdown.target 2>/dev/null || true
+    systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY GLIDE_IPC_SOCK \
+        XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP 2>/dev/null || true
+    if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+        dbus-update-activation-environment WAYLAND_DISPLAY= DISPLAY= GLIDE_IPC_SOCK= \
+            XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= 2>/dev/null || true
+    fi
     exit 0
 fi
 
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && command -v dbus-run-session >/dev/null 2>&1; then
-    exec dbus-run-session -- glide
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- "$GLIDE"
 fi
 
-exec glide
+exec "$GLIDE"

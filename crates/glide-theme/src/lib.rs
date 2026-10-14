@@ -30,37 +30,21 @@ impl Color {
             _ => return None,
         };
 
-        Some(Self([
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
-            f32::from(a) / 255.0,
-        ]))
+        Some(Self([f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, f32::from(a) / 255.0]))
     }
 }
 
 impl Color {
     #[must_use]
     pub fn to_buffer_bytes(self) -> [u8; 4] {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-        [
-            byte(self.0[2]),
-            byte(self.0[1]),
-            byte(self.0[0]),
-            byte(self.0[3]),
-        ]
+        [byte(self.0[2]), byte(self.0[1]), byte(self.0[0]), byte(self.0[3])]
     }
 
     #[must_use]
     pub fn darken(self, factor: f32) -> Self {
         let [r, g, b, a] = self.0;
-        Self([
-            (r * factor).clamp(0.0, 1.0),
-            (g * factor).clamp(0.0, 1.0),
-            (b * factor).clamp(0.0, 1.0),
-            a,
-        ])
+        Self([(r * factor).clamp(0.0, 1.0), (g * factor).clamp(0.0, 1.0), (b * factor).clamp(0.0, 1.0), a])
     }
 
     #[must_use]
@@ -74,6 +58,21 @@ impl Color {
     }
 
     #[must_use]
+    pub fn state_layer(self, current: Self, opacity: f32) -> Self {
+        let p = opacity.clamp(0.0, 1.0) * current.0[3];
+        let base_a = self.0[3];
+        let out_a = p + base_a * (1.0 - p);
+        if out_a <= 0.0 {
+            return Self([0.0; 4]);
+        }
+        let mut out = [0.0, 0.0, 0.0, out_a];
+        for (channel, value) in out.iter_mut().take(3).enumerate() {
+            *value = (current.0[channel] * p + self.0[channel] * base_a * (1.0 - p)) / out_a;
+        }
+        Self(out)
+    }
+
+    #[must_use]
     pub fn with_alpha(self, alpha: f32) -> Self {
         let [r, g, b, _] = self.0;
         Self([r, g, b, alpha.clamp(0.0, 1.0)])
@@ -81,12 +80,7 @@ impl Color {
 
     #[must_use]
     pub fn from_rgb8(r: u8, g: u8, b: u8, alpha: f32) -> Self {
-        Self([
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
-            alpha.clamp(0.0, 1.0),
-        ])
+        Self([f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, alpha.clamp(0.0, 1.0)])
     }
 }
 
@@ -97,9 +91,7 @@ impl<'de> serde::Deserialize<'de> for Color {
     {
         let s = String::deserialize(deserializer)?;
         Self::from_hex(&s).ok_or_else(|| {
-            serde::de::Error::custom(format!(
-                "invalid color {s:?}: expected \"#rrggbb\" or \"#rrggbbaa\""
-            ))
+            serde::de::Error::custom(format!("invalid color {s:?}: expected \"#rrggbb\" or \"#rrggbbaa\""))
         })
     }
 }
@@ -112,11 +104,30 @@ pub enum TitleAlign {
     Center,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TitlebarAction {
+    #[default]
+    Maximize,
+    Minimize,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ButtonLayout {
+    #[default]
+    MaximizeClose,
+    CloseMaximize,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DecorationTheme {
     pub height: u32,
     pub title_align: TitleAlign,
+    pub double_click: TitlebarAction,
+    pub button_layout: ButtonLayout,
     pub corner_radius: f32,
     pub background: Color,
     pub background_focused: Color,
@@ -142,14 +153,52 @@ pub struct DecorationTheme {
     pub shadow_size_focused: u32,
     pub shadow_color: Color,
     pub shadow_color_focused: Color,
+    #[serde(skip)]
+    pub appearance: Appearance,
+}
+
+macro_rules! repaint_colors {
+    ($this:ident, $from:expr, $to:expr; $($field:ident),+ $(,)?) => {{
+        let (from, to) = ($from, $to);
+        $(
+            if $this.$field == from.$field {
+                $this.$field = to.$field;
+            }
+        )+
+    }};
+}
+
+fn default_tokens() -> Tokens {
+    Tokens::new(Appearance::Dark, Accent::Blue)
+}
+
+fn window_ring(t: &Tokens, level: elevation::Level) -> Color {
+    elevation::layers(level, t.appearance).first().map_or(t.line, |ring| ring.color)
 }
 
 impl Default for DecorationTheme {
     fn default() -> Self {
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+        Self::from_tokens(&default_tokens())
+    }
+}
+
+impl DecorationTheme {
+    pub fn repaint(&mut self, t: &Tokens) {
+        repaint_colors!(self, Self::default(), Self::from_tokens(t);
+            background, background_focused, title, title_focused, close_button,
+            close_button_hover, maximize_button, maximize_button_hover, menu_background,
+            menu_border, menu_item_hover, menu_text, menu_text_danger, menu_accel_text, icon,
+            close_icon, border, border_focused, shadow_color, shadow_color_focused);
+        self.appearance = t.appearance;
+    }
+
+    #[must_use]
+    pub fn from_tokens(t: &Tokens) -> Self {
         Self {
             height: 48,
             title_align: TitleAlign::Left,
+            double_click: TitlebarAction::Maximize,
+            button_layout: ButtonLayout::MaximizeClose,
             corner_radius: shape::R3,
             background: t.bar_bg_idle,
             background_focused: t.bar_bg,
@@ -161,20 +210,21 @@ impl Default for DecorationTheme {
             close_button_hover: t.danger,
             menu_background: t.popover_bg,
             menu_border: t.line,
-            menu_item_hover: t.fill_1,
+            menu_item_hover: t.fill_2,
             menu_text: t.fg_1,
             menu_text_danger: t.danger,
             menu_accel_text: t.fg_3,
             icon: t.fg_2,
             close_icon: t.fg_2,
             border_width: 1,
-            border: t.line,
-            border_focused: t.line_2,
+            border: window_ring(t, elevation::Level::ElWinIdle),
+            border_focused: window_ring(t, elevation::Level::ElWin),
             shadow: true,
             shadow_size: 32,
             shadow_size_focused: 68,
             shadow_color: Color::from_hex("#00000066").unwrap(),
             shadow_color_focused: Color::from_hex("#00000099").unwrap(),
+            appearance: t.appearance,
         }
     }
 }
@@ -186,6 +236,7 @@ pub struct DockTheme {
     pub icon_theme: Option<String>,
     pub bottom_margin: i32,
     pub item_size: i32,
+    pub icon_size: i32,
     pub item_gap: i32,
     pub padding_x: i32,
     pub padding_y: i32,
@@ -193,11 +244,21 @@ pub struct DockTheme {
     pub item_radius: f32,
     pub background: Color,
     pub border: Color,
+    pub edge_highlight: Color,
     pub separator: Color,
     pub icon: Color,
     pub running_color: Color,
     pub focused_color: Color,
+    pub attention_color: Color,
+    pub badge_text: Color,
     pub hover_layer: Color,
+    pub well_focused: Color,
+    pub launcher_background: Color,
+    pub launcher_background_hover: Color,
+    pub launcher_glyph: Color,
+    pub launcher_glyph_hover: Color,
+    pub fallback_background: Color,
+    pub fallback_text: Color,
     pub hover_lift: i32,
     pub hover_scale: f64,
     pub menu_background: Color,
@@ -206,41 +267,70 @@ pub struct DockTheme {
     pub menu_text_muted: Color,
     pub menu_text_danger: Color,
     pub menu_item_hover: Color,
+    #[serde(skip)]
+    pub appearance: Appearance,
 }
 
 impl Default for DockTheme {
     fn default() -> Self {
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+        Self::from_tokens(&default_tokens())
+    }
+}
+
+impl DockTheme {
+    pub fn repaint(&mut self, t: &Tokens) {
+        repaint_colors!(self, Self::default(), Self::from_tokens(t);
+            background, border, edge_highlight, separator, icon, running_color, focused_color,
+            attention_color, badge_text, hover_layer, well_focused, launcher_background,
+            launcher_background_hover, launcher_glyph, launcher_glyph_hover,
+            fallback_background, fallback_text, menu_background, menu_border, menu_text,
+            menu_text_muted, menu_text_danger, menu_item_hover);
+        self.appearance = t.appearance;
+    }
+
+    #[must_use]
+    pub fn from_tokens(t: &Tokens) -> Self {
+        let bezel_alpha = match t.appearance {
+            Appearance::Light => 0.55,
+            Appearance::Dark => 0.12,
+        };
         Self {
             enabled: true,
             icon_theme: None,
-            bottom_margin: 12,
-            item_size: 42,
-            item_gap: 6,
-            padding_x: 9,
-            padding_y: 7,
+            bottom_margin: spacing::SP3,
+            item_size: 56,
+            icon_size: 44,
+            item_gap: spacing::SP1,
+            padding_x: spacing::SP2,
+            padding_y: spacing::SP2,
             radius: shape::R4,
             item_radius: shape::R3,
             background: t.shell_bg,
             border: t.shell_line,
-            separator: t.shell_line,
-            icon: Color::from_hex("#ffffff").unwrap(),
+            edge_highlight: Color::from_rgb8(255, 255, 255, bezel_alpha),
+            separator: t.line_2,
+            icon: t.fg_2,
             running_color: t.fg_1,
             focused_color: t.acc_bg,
-            hover_layer: Color([
-                t.shell_fg.0[0],
-                t.shell_fg.0[1],
-                t.shell_fg.0[2],
-                motion::ST_HOVER,
-            ]),
-            hover_lift: 6,
-            hover_scale: 1.05,
+            attention_color: t.danger,
+            badge_text: t.acc_fg,
+            hover_layer: t.shell_fg.with_alpha(motion::ST_HOVER),
+            well_focused: t.fill_1,
+            launcher_background: t.fill_1,
+            launcher_background_hover: t.fill_2,
+            launcher_glyph: t.fg_2,
+            launcher_glyph_hover: t.fg_1,
+            fallback_background: t.fill_2,
+            fallback_text: t.fg_2,
+            hover_lift: 4,
+            hover_scale: 1.06,
             menu_background: t.popover_bg,
             menu_border: t.line,
             menu_text: t.fg_1,
             menu_text_muted: t.fg_3,
             menu_text_danger: t.danger,
             menu_item_hover: t.fill_2,
+            appearance: t.appearance,
         }
     }
 }
@@ -253,6 +343,7 @@ pub struct OverviewTheme {
     pub label_height: i32,
     pub max_scale: f64,
     pub label: bool,
+    pub hot_corner: bool,
     pub label_color: Color,
     pub label_background: Color,
     pub label_border: Color,
@@ -263,20 +354,40 @@ pub struct OverviewTheme {
     pub close_hover_foreground: Color,
     pub dim: Color,
     pub highlight: Color,
+    pub strip_from: Color,
+    pub strip_to: Color,
+    pub strip_pick: Color,
     pub border: i32,
     pub corner_radius: f32,
     pub duration_ms: u64,
+    #[serde(skip)]
+    pub appearance: Appearance,
 }
 
 impl Default for OverviewTheme {
     fn default() -> Self {
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
+        Self::from_tokens(&default_tokens())
+    }
+}
+
+impl OverviewTheme {
+    pub fn repaint(&mut self, t: &Tokens) {
+        repaint_colors!(self, Self::default(), Self::from_tokens(t);
+            label_color, label_background, label_border, close_background, close_foreground,
+            close_border, close_hover_background, close_hover_foreground, dim, highlight,
+            strip_from, strip_to, strip_pick);
+        self.appearance = t.appearance;
+    }
+
+    #[must_use]
+    pub fn from_tokens(t: &Tokens) -> Self {
         Self {
             gap: 30,
             padding: spacing::SP8,
             label_height: 28,
             max_scale: 0.92,
             label: true,
+            hot_corner: false,
             label_color: t.fg_1,
             label_background: t.popover_bg,
             label_border: t.line,
@@ -287,22 +398,48 @@ impl Default for OverviewTheme {
             close_hover_foreground: t.view_bg,
             dim: Color::from_hex("#100f0e66").unwrap(),
             highlight: t.acc_bg,
+            strip_from: t.popover_bg,
+            strip_to: t.fill_2,
+            strip_pick: t.fg_1.with_alpha(0.45),
             border: 3,
             corner_radius: shape::R3,
             duration_ms: u64::try_from(motion::T4.as_millis()).unwrap_or(u64::MAX),
+            appearance: t.appearance,
         }
     }
-}
 
-impl OverviewTheme {
     #[must_use]
     pub fn duration(&self) -> std::time::Duration {
-        motion::scaled(std::time::Duration::from_millis(self.duration_ms))
+        motion::scaled(self.base_duration())
     }
 
     #[must_use]
     pub const fn base_duration(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.duration_ms)
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        Revision::new()
+            .i32(self.gap)
+            .i32(self.padding)
+            .i32(self.label_height)
+            .f64(self.max_scale)
+            .bool(self.label)
+            .color(self.label_color)
+            .color(self.label_background)
+            .color(self.label_border)
+            .color(self.close_background)
+            .color(self.close_foreground)
+            .color(self.close_border)
+            .color(self.close_hover_background)
+            .color(self.close_hover_foreground)
+            .color(self.dim)
+            .color(self.highlight)
+            .i32(self.border)
+            .f32(self.corner_radius)
+            .bool(self.appearance == Appearance::Dark)
+            .finish()
     }
 }
 
@@ -328,7 +465,6 @@ impl Revision {
     pub const fn u64(mut self, value: u64) -> Self {
         let mut i = 0;
         while i < 8 {
-            #[allow(clippy::cast_possible_truncation)]
             let byte = (value >> (i * 8)) as u8;
             self.0 ^= byte as u64;
             self.0 = self.0.wrapping_mul(Self::PRIME);
@@ -359,50 +495,17 @@ impl Revision {
 
     #[must_use]
     pub fn color(self, value: Color) -> Self {
-        let mut this = self;
-        for channel in value.0 {
-            this = this.f32(channel);
-        }
-        this
+        value.0.into_iter().fold(self, Self::f32)
     }
 
     #[must_use]
     pub fn str(self, value: &str) -> Self {
-        let mut this = self;
-        for byte in value.as_bytes() {
-            this = this.u64(u64::from(*byte));
-        }
-        this
+        value.bytes().fold(self, |this, byte| this.u64(u64::from(byte)))
     }
 
     #[must_use]
     pub const fn finish(self) -> u64 {
         self.0
-    }
-}
-
-impl OverviewTheme {
-    #[must_use]
-    pub fn revision(&self) -> u64 {
-        Revision::new()
-            .i32(self.gap)
-            .i32(self.padding)
-            .i32(self.label_height)
-            .f64(self.max_scale)
-            .bool(self.label)
-            .color(self.label_color)
-            .color(self.label_background)
-            .color(self.label_border)
-            .color(self.close_background)
-            .color(self.close_foreground)
-            .color(self.close_border)
-            .color(self.close_hover_background)
-            .color(self.close_hover_foreground)
-            .color(self.dim)
-            .color(self.highlight)
-            .i32(self.border)
-            .f32(self.corner_radius)
-            .finish()
     }
 }
 
@@ -414,6 +517,7 @@ impl DockTheme {
             .str(self.icon_theme.as_deref().unwrap_or(""))
             .i32(self.bottom_margin)
             .i32(self.item_size)
+            .i32(self.icon_size)
             .i32(self.item_gap)
             .i32(self.padding_x)
             .i32(self.padding_y)
@@ -421,11 +525,21 @@ impl DockTheme {
             .f32(self.item_radius)
             .color(self.background)
             .color(self.border)
+            .color(self.edge_highlight)
             .color(self.separator)
             .color(self.icon)
             .color(self.running_color)
             .color(self.focused_color)
+            .color(self.attention_color)
+            .color(self.badge_text)
             .color(self.hover_layer)
+            .color(self.well_focused)
+            .color(self.launcher_background)
+            .color(self.launcher_background_hover)
+            .color(self.launcher_glyph)
+            .color(self.launcher_glyph_hover)
+            .color(self.fallback_background)
+            .color(self.fallback_text)
             .i32(self.hover_lift)
             .f64(self.hover_scale)
             .color(self.menu_background)
@@ -434,6 +548,7 @@ impl DockTheme {
             .color(self.menu_text_muted)
             .color(self.menu_text_danger)
             .color(self.menu_item_hover)
+            .bool(self.appearance == Appearance::Dark)
             .finish()
     }
 }
@@ -443,344 +558,77 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn color_parses_rrggbb_as_opaque() {
-        let c = Color::from_hex("#ff0000").unwrap();
-        assert_eq!(c.0, [1.0, 0.0, 0.0, 1.0]);
+    fn colours_parse_blend_and_pack_as_bgra() {
+        assert_eq!(Color::from_hex("#ff0000").unwrap().0, [1.0, 0.0, 0.0, 1.0]);
+        let green = Color::from_hex("#00ff0080").unwrap();
+        assert_eq!(green.to_buffer_bytes(), [0, 255, 0, 128]);
+        for bad in ["ff0000", "#ff00", "#gggggg"] {
+            assert!(Color::from_hex(bad).is_none(), "{bad}");
+        }
+        let (from, to) = (Color([0.0; 4]), Color([1.0, 0.4, 0.8, 1.0]));
+        assert_eq!(from.lerp(to, -1.0), from);
+        assert_eq!(from.lerp(to, 2.0), to);
+        assert_eq!(from.lerp(to, 0.5), Color([0.5, 0.2, 0.4, 0.5]));
+        assert_eq!(Color([0.8, 0.4, 0.2, 0.5]).darken(0.5), Color([0.4, 0.2, 0.1, 0.5]));
+        assert_eq!(Color([0.2, 0.0, 1.0, 1.0]).darken(-1.0).0[2], 0.0);
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn color_parses_rrggbbaa() {
-        let c = Color::from_hex("#00ff0080").unwrap();
-        assert_eq!(c.0[1], 1.0);
-        assert!((c.0[3] - 0.502).abs() < 0.01);
+    fn a_state_layer_tints_toward_the_current_colour_not_white() {
+        let light = Tokens::new(Appearance::Light, Accent::Blue);
+        let pressed = light.bar_bg.state_layer(light.state, motion::ST_PRESS);
+        let luma = |c: Color| c.0[0] + c.0[1] + c.0[2];
+        assert!(luma(pressed) < luma(light.bar_bg));
+        let clear = Color([0.0; 4]).state_layer(light.state, motion::ST_HOVER);
+        assert!((clear.0[3] - motion::ST_HOVER).abs() < 1e-6);
     }
 
     #[test]
-    fn color_rejects_malformed_hex() {
-        assert!(Color::from_hex("ff0000").is_none(), "missing #");
-        assert!(Color::from_hex("#ff00").is_none(), "wrong length");
-        assert!(Color::from_hex("#gggggg").is_none(), "not hex digits");
+    fn defaults_follow_the_spec_geometry() {
+        let (d, o, dock) = (DecorationTheme::default(), OverviewTheme::default(), DockTheme::default());
+        assert_eq!(d.corner_radius, shape::R3);
+        assert_eq!(o.corner_radius, d.corner_radius);
+        assert!(o.padding >= o.gap);
+        assert_eq!(o.base_duration(), motion::T4);
+        assert_ne!(o.label_background, o.dim);
+        assert_eq!((dock.item_size - dock.icon_size) % 2, 0);
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            let d = DecorationTheme::from_tokens(&Tokens::new(appearance, Accent::Blue));
+            let ring = |level| elevation::layers(level, appearance)[0].color;
+            assert_eq!(d.border, ring(elevation::Level::ElWinIdle));
+            assert_eq!(d.border_focused, ring(elevation::Level::ElWin));
+        }
     }
 
     #[test]
-    fn to_buffer_bytes_is_b_g_r_a_not_a_r_g_b() {
-        let red = Color::from_hex("#ff0000ff").unwrap().to_buffer_bytes();
-        assert_eq!(red, [0, 0, 255, 255], "opaque red must store R in byte 2");
+    fn repaint_follows_the_palette_but_keeps_user_overrides() {
+        let custom = Color::from_hex("#123456").unwrap();
+        let mut d = DecorationTheme { title_focused: custom, ..DecorationTheme::default() };
+        let light = Tokens::new(Appearance::Light, Accent::Green);
+        d.repaint(&light);
+        assert_eq!(d.title_focused, custom);
+        assert_eq!(d.background_focused, light.bar_bg);
 
-        let blue = Color::from_hex("#0000ffff").unwrap().to_buffer_bytes();
-        assert_eq!(blue, [255, 0, 0, 255], "opaque blue must store B in byte 0");
+        let mut dock = DockTheme::default();
+        dock.repaint(&light);
+        assert_eq!(dock, DockTheme::from_tokens(&light));
 
-        let translucent_green = Color::from_hex("#00ff0080").unwrap().to_buffer_bytes();
-        assert_eq!(translucent_green[0], 0, "B");
-        assert_eq!(translucent_green[1], 255, "G");
-        assert_eq!(translucent_green[2], 0, "R");
-        assert!(
-            (i16::from(translucent_green[3]) - 0x80).abs() <= 1,
-            "A byte 3, ~{:#x}, got {:#x}",
-            0x80,
-            translucent_green[3]
-        );
+        let mut overview = OverviewTheme::default();
+        overview.repaint(&light);
+        assert_eq!(overview, OverviewTheme::from_tokens(&light));
     }
 
     #[test]
-    fn darken_scales_rgb_and_keeps_alpha() {
-        let c = Color([0.8, 0.4, 0.2, 0.5]).darken(0.5);
-        assert!((c.0[0] - 0.4).abs() < 0.001);
-        assert!((c.0[1] - 0.2).abs() < 0.001);
-        assert!((c.0[2] - 0.1).abs() < 0.001);
-        assert!((c.0[3] - 0.5).abs() < 0.001, "alpha must be untouched");
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn lerp_at_zero_and_one_returns_the_endpoints() {
-        let from = Color([0.0, 0.0, 0.0, 0.0]);
-        let to = Color([1.0, 0.5, 0.25, 1.0]);
-        assert_eq!(from.lerp(to, 0.0).0, from.0);
-        assert_eq!(from.lerp(to, 1.0).0, to.0);
-    }
-
-    #[test]
-    fn lerp_at_half_averages_every_channel_including_alpha() {
-        let from = Color([0.0, 0.0, 0.0, 0.0]);
-        let to = Color([1.0, 0.4, 0.8, 1.0]);
-        let mid = from.lerp(to, 0.5);
-        assert!((mid.0[0] - 0.5).abs() < 0.001);
-        assert!((mid.0[1] - 0.2).abs() < 0.001);
-        assert!((mid.0[2] - 0.4).abs() < 0.001);
-        assert!((mid.0[3] - 0.5).abs() < 0.001, "alpha must interpolate too");
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn lerp_clamps_an_out_of_range_t() {
-        let from = Color([0.0, 0.0, 0.0, 0.0]);
-        let to = Color([1.0, 1.0, 1.0, 1.0]);
-        assert_eq!(from.lerp(to, -1.0).0, from.0);
-        assert_eq!(from.lerp(to, 2.0).0, to.0);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn darken_clamps_at_zero() {
-        let c = Color([0.2, 0.0, 1.0, 1.0]).darken(-1.0);
-        assert_eq!(c.0[0], 0.0);
-        assert_eq!(c.0[2], 0.0);
-    }
-
-    #[test]
-    fn decoration_theme_defaults_title_align_left() {
-        assert_eq!(DecorationTheme::default().title_align, TitleAlign::Left);
-    }
-
-    #[test]
-    fn decoration_theme_defaults_border_width_to_one() {
-        assert_eq!(DecorationTheme::default().border_width, 1);
-    }
-
-    #[test]
-    fn decoration_theme_defaults_shadow_enabled() {
-        let d = DecorationTheme::default();
-        assert!(d.shadow);
-        assert!(d.shadow_size > 0);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn decoration_theme_buttons_are_subtle_at_rest() {
-        let d = DecorationTheme::default();
-        assert!(
-            (d.maximize_button.0[3] - 0.07).abs() < 0.01,
-            "maximize must be subtle"
-        );
-        assert!(
-            (d.close_button.0[3] - 0.07).abs() < 0.01,
-            "close must be subtle"
-        );
-    }
-
-    #[test]
-    fn decoration_theme_close_hover_is_the_odd_one_out() {
-        let d = DecorationTheme::default();
-        let [r, g, b, _] = d.close_button_hover.0;
-        assert!(
-            r > g && r > b,
-            "close hover must be red-dominant, got {:?}",
-            d.close_button_hover.0
-        );
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn decoration_theme_defaults_are_derived_from_meridian_dark_blue_tokens() {
-        let d = DecorationTheme::default();
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
-
-        assert_eq!(d.corner_radius, shape::R3, "window radius is --r-3");
-        assert_eq!(d.background, t.bar_bg_idle);
-        assert_eq!(d.background_focused, t.bar_bg);
-        assert_eq!(d.maximize_button, t.fill_1);
-        assert_eq!(d.maximize_button_hover, t.acc_bg);
-        assert_eq!(d.close_button_hover, t.danger);
-        assert_eq!(d.menu_background, t.popover_bg);
-        assert_eq!(d.icon, t.fg_2);
-    }
-
-    #[test]
-    fn decoration_theme_title_is_tertiary_idle_and_primary_focused() {
-        let d = DecorationTheme::default();
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
-
-        assert_eq!(
-            d.title, t.fg_3,
-            "idle titlebar text reads as third-tier per spec section 12.2"
-        );
-        assert_eq!(
-            d.title_focused, t.fg_1,
-            "focused titlebar text is full-strength fg-1"
-        );
-        assert!(
-            d.title_focused.0[3] > d.title.0[3],
-            "focused title must be more opaque than idle"
-        );
-    }
-
-    #[test]
-    fn decoration_theme_menu_colors_are_derived_from_tokens() {
-        let d = DecorationTheme::default();
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
-
-        assert_eq!(d.menu_border, t.line);
-        assert_eq!(d.menu_text, t.fg_1);
-        assert_eq!(d.menu_text_danger, t.danger);
-        assert_eq!(d.menu_accel_text, t.fg_3);
-        assert_ne!(
-            d.menu_text, d.menu_text_danger,
-            "the destructive item's label must read differently from the rest"
-        );
-    }
-
-    #[test]
-    fn decoration_theme_border_alpha_matches_the_line_tokens_not_a_hand_picked_value() {
-        let d = DecorationTheme::default();
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
-
-        assert_eq!(d.border, t.line, "unfocused border is --line, 9% not 5%");
-        assert_eq!(
-            d.border_focused, t.line_2,
-            "focused border is --line-2, 15% not 10%"
-        );
-    }
-
-    #[test]
-    fn overview_theme_defaults_are_derived_from_meridian_dark_blue_tokens() {
-        let o = OverviewTheme::default();
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
-
-        assert_eq!(o.label_color, t.fg_1);
-        assert_eq!(o.label_background, t.popover_bg);
-        assert_eq!(o.highlight, t.acc_bg);
-        assert_eq!(o.close_background, t.popover_bg);
-        assert_eq!(o.close_foreground, t.fg_1);
-        assert_eq!(o.close_border, t.line);
-        assert_eq!(o.close_hover_background, t.danger);
-        assert_eq!(o.close_hover_foreground, t.view_bg);
-        assert_eq!(
-            o.gap, 30,
-            "preview gap matches the design's layoutOverview()"
-        );
-        assert_eq!(o.padding, spacing::SP8, "screen-edge padding is --sp-8");
-        assert_eq!(
-            o.duration_ms,
-            u64::try_from(motion::T4.as_millis()).unwrap()
-        );
-    }
-
-    #[test]
-    fn overview_edge_padding_is_not_tighter_than_the_gap_between_previews() {
-        let o = OverviewTheme::default();
-        assert!(o.padding >= o.gap, "{} < {}", o.padding, o.gap);
-    }
-
-    #[test]
-    fn decoration_theme_defaults_a_positive_corner_radius() {
-        assert!(DecorationTheme::default().corner_radius > 0.0);
-    }
-
-    #[test]
-    fn decoration_theme_round_trips_through_toml_directly() {
-        let toml_str = "\
-height = 40
-title-align = \"center\"
-corner-radius = 12.0
-background = \"#111111\"
-background-focused = \"#222222\"
-title = \"#123456\"
-title-focused = \"#654321\"
-close-button = \"#333333\"
-close-button-hover = \"#444444\"
-maximize-button = \"#555555\"
-maximize-button-hover = \"#666666\"
-menu-background = \"#999999\"
-menu-border = \"#977766\"
-menu-item-hover = \"#aaaaaa\"
-menu-text = \"#a1a1a1\"
-menu-text-danger = \"#b2b2b2\"
-menu-accel-text = \"#c3c3c3\"
-icon = \"#bbbbbb\"
-close-icon = \"#cccccc\"
-border-width = 2
-border = \"#dddddd\"
-border-focused = \"#eeeeee\"
-shadow = false
-shadow-size = 24
-shadow-size-focused = 36
-shadow-color = \"#000000aa\"
-shadow-color-focused = \"#000000bb\"
-";
-        let theme: DecorationTheme = toml::from_str(toml_str).unwrap();
+    fn decoration_theme_reads_kebab_case_toml() {
+        let theme: DecorationTheme = toml::from_str(
+            "height = 40\ntitle-align = \"center\"\nmenu-text-danger = \"#b2b2b2\"\nshadow = false\nshadow-color-focused = \"#000000bb\"\n",
+        )
+        .unwrap();
         assert_eq!(theme.height, 40);
         assert_eq!(theme.title_align, TitleAlign::Center);
-        assert!((theme.corner_radius - 12.0).abs() < f32::EPSILON);
-        assert_eq!(theme.title, Color::from_hex("#123456").unwrap());
-        assert_eq!(theme.title_focused, Color::from_hex("#654321").unwrap());
-        assert_eq!(theme.menu_border, Color::from_hex("#977766").unwrap());
-        assert_eq!(theme.menu_text, Color::from_hex("#a1a1a1").unwrap());
         assert_eq!(theme.menu_text_danger, Color::from_hex("#b2b2b2").unwrap());
-        assert_eq!(theme.menu_accel_text, Color::from_hex("#c3c3c3").unwrap());
-        assert_eq!(theme.border_width, 2);
         assert!(!theme.shadow);
-        assert_eq!(theme.shadow_size, 24);
-        assert_eq!(theme.shadow_size_focused, 36);
-        assert_eq!(theme.shadow_color, Color::from_hex("#000000aa").unwrap());
-        assert_eq!(
-            theme.shadow_color_focused,
-            Color::from_hex("#000000bb").unwrap()
-        );
-    }
-
-    #[test]
-    fn overview_theme_defaults_a_visible_hover_ring() {
-        assert!(OverviewTheme::default().border > 0);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn overview_theme_label_background_differs_from_the_scrim() {
-        let o = OverviewTheme::default();
-        assert_ne!(o.label_background.0, o.dim.0);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn overview_theme_corner_radius_matches_the_container_shape_step() {
-        assert_eq!(OverviewTheme::default().corner_radius, shape::R3);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn overview_and_window_corner_radii_agree() {
-        assert_eq!(
-            OverviewTheme::default().corner_radius,
-            DecorationTheme::default().corner_radius
-        );
-    }
-
-    #[test]
-    fn overview_theme_label_border_is_derived_from_the_line_token() {
-        let o = OverviewTheme::default();
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
-        assert_eq!(o.label_border, t.line);
-    }
-
-    #[test]
-    fn overview_theme_duration_converts_milliseconds() {
-        let o = OverviewTheme {
-            duration_ms: 150,
-            ..OverviewTheme::default()
-        };
-        assert_eq!(o.duration(), std::time::Duration::from_millis(150));
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn dock_theme_defaults_match_meridian_design_spec() {
-        let d = DockTheme::default();
-        let t = Tokens::new(Appearance::Dark, Accent::Blue);
-
-        assert_eq!(d.bottom_margin, 12);
-        assert_eq!(d.item_size, 42);
-        assert_eq!(d.item_gap, 6);
-        assert_eq!(d.padding_x, 9);
-        assert_eq!(d.padding_y, 7);
-        assert_eq!(d.radius, shape::R4);
-        assert_eq!(d.item_radius, shape::R3);
-        assert_eq!(d.background, t.shell_bg);
-        assert_eq!(d.border, t.shell_line);
-        assert_eq!(d.separator, t.shell_line);
-        assert_eq!(d.hover_lift, 6);
-        assert_eq!(d.hover_scale, 1.05);
+        assert_eq!(theme.shadow_color_focused, Color::from_hex("#000000bb").unwrap());
+        assert!(toml::from_str::<DecorationTheme>("bogus = 1").is_err());
     }
 }

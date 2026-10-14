@@ -1,11 +1,13 @@
+use std::cell::Cell;
+
 use smithay::{
+    backend::input::ButtonState,
     input::{
         Seat,
         pointer::{
-            AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, GestureHoldBeginEvent,
-            GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
-            GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-            GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerTarget,
+            AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, GestureHoldBeginEvent, GestureHoldEndEvent,
+            GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
+            GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerTarget,
             RelativeMotionEvent,
         },
     },
@@ -34,31 +36,45 @@ pub(crate) fn resize_cursor(edges: ResizeEdge) -> CursorIcon {
     }
 }
 
-pub(crate) fn start_move(
-    seat: &Seat<GlideState>,
-    state: &mut GlideState,
-    window: &GlideWindow,
-    event: &ButtonEvent,
-) {
+#[derive(Debug, Default)]
+struct HeldGrabButton(Cell<Option<u32>>);
+
+fn held_grab_button(window: &GlideWindow) -> &Cell<Option<u32>> {
+    let data = window.user_data();
+    data.insert_if_missing(HeldGrabButton::default);
+    &data.get::<HeldGrabButton>().expect("inserted just above").0
+}
+
+fn release_held_grab_button(window: &GlideWindow, event: &ButtonEvent) {
+    if event.state == ButtonState::Released {
+        let held = held_grab_button(window);
+        if held.get() == Some(event.button) {
+            held.set(None);
+        }
+    }
+}
+
+pub(crate) fn start_move(seat: &Seat<GlideState>, state: &mut GlideState, window: &GlideWindow, event: &ButtonEvent) {
     let seat = seat.clone();
     let window = window.clone();
     let button = event.button;
     let serial = event.serial;
+    held_grab_button(&window).set(Some(button));
 
     state.loop_handle.insert_idle(move |state| {
+        if held_grab_button(&window).take() != Some(button) {
+            return;
+        }
         let Some(pointer) = seat.get_pointer() else {
             return;
         };
 
+        state.finish_workspace_swipe();
         let Some(initial_window_location) = state.space.element_location(&window) else {
             return;
         };
 
-        let start_data = GrabStartData {
-            focus: None,
-            button,
-            location: pointer.current_location(),
-        };
+        let start_data = GrabStartData { focus: None, button, location: pointer.current_location() };
         let grab = MoveSurfaceGrab {
             start_data,
             window: window.clone(),
@@ -72,11 +88,7 @@ pub(crate) fn start_move(
 }
 
 pub(crate) fn start_resize(
-    seat: &Seat<GlideState>,
-    state: &mut GlideState,
-    window: &GlideWindow,
-    event: &ButtonEvent,
-    edges: ResizeEdge,
+    seat: &Seat<GlideState>, state: &mut GlideState, window: &GlideWindow, event: &ButtonEvent, edges: ResizeEdge,
 ) {
     if state.is_size_locked(window) {
         return;
@@ -86,23 +98,24 @@ pub(crate) fn start_resize(
     let window = window.clone();
     let button = event.button;
     let serial = event.serial;
+    held_grab_button(&window).set(Some(button));
 
     state.loop_handle.insert_idle(move |state| {
+        if held_grab_button(&window).take() != Some(button) {
+            return;
+        }
         let Some(pointer) = seat.get_pointer() else {
             return;
         };
         if state.is_size_locked(&window) {
             return;
         }
+        state.finish_workspace_swipe();
         let Some(location) = state.space.element_location(&window) else {
             return;
         };
 
-        let start_data = GrabStartData {
-            focus: None,
-            button,
-            location: pointer.current_location(),
-        };
+        let start_data = GrabStartData { focus: None, button, location: pointer.current_location() };
         let initial_rect = smithay::utils::Rectangle::new(location, window.geometry().size);
 
         let grab = ResizeSurfaceGrab::start(start_data, window.clone(), edges, initial_rect);
@@ -124,17 +137,10 @@ impl IsAlive for Decoration {
 impl Decoration {
     fn update_pointer(&self, data: &mut GlideState, event: &MotionEvent) {
         let resizable = !data.is_size_locked(&self.0);
-        let icon = {
-            if let Some(mut deco) = self.0.try_decoration_state_mut() {
-                deco.header.pointer_enter(event.location);
-                deco.header
-                    .resize_edges_at(event.location)
-                    .filter(|_| resizable)
-                    .map_or(CursorIcon::Default, resize_cursor)
-            } else {
-                CursorIcon::Default
-            }
-        };
+        let icon = self.0.try_decoration_state_mut().map_or(CursorIcon::Default, |mut deco| {
+            deco.header.pointer_enter(event.location);
+            deco.header.resize_edges_at(event.location).filter(|_| resizable).map_or(CursorIcon::Default, resize_cursor)
+        });
         data.cursor_status = CursorImageStatus::Named(icon);
     }
 }
@@ -148,19 +154,11 @@ impl PointerTarget<GlideState> for Decoration {
         self.update_pointer(data, event);
     }
 
-    fn relative_motion(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &RelativeMotionEvent,
-    ) {
-    }
+    fn relative_motion(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &RelativeMotionEvent) {}
 
     fn button(&self, seat: &Seat<GlideState>, data: &mut GlideState, event: &ButtonEvent) {
-        let action = self
-            .0
-            .try_decoration_state_mut()
-            .and_then(|mut deco| deco.header.on_button(event));
+        release_held_grab_button(&self.0, event);
+        let action = self.0.try_decoration_state_mut().and_then(|mut deco| deco.header.on_button(event));
 
         match action {
             Some(DecorationAction::ToggleMaximize) => {
@@ -189,71 +187,23 @@ impl PointerTarget<GlideState> for Decoration {
     fn frame(&self, _seat: &Seat<GlideState>, _data: &mut GlideState) {}
 
     fn leave(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _serial: Serial,
+        &self, _seat: &Seat<GlideState>, data: &mut GlideState, _serial: Serial,
         _time: smithay::backend::input::InputTime,
     ) {
         if let Some(mut deco) = self.0.try_decoration_state_mut() {
             deco.header.pointer_leave();
         }
+        data.cursor_status = CursorImageStatus::default_named();
     }
 
-    fn gesture_swipe_begin(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GestureSwipeBeginEvent,
-    ) {
+    fn gesture_swipe_begin(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GestureSwipeBeginEvent) {}
+    fn gesture_swipe_update(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GestureSwipeUpdateEvent) {
     }
-    fn gesture_swipe_update(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GestureSwipeUpdateEvent,
-    ) {
+    fn gesture_swipe_end(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GestureSwipeEndEvent) {}
+    fn gesture_pinch_begin(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GesturePinchBeginEvent) {}
+    fn gesture_pinch_update(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GesturePinchUpdateEvent) {
     }
-    fn gesture_swipe_end(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GestureSwipeEndEvent,
-    ) {
-    }
-    fn gesture_pinch_begin(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GesturePinchBeginEvent,
-    ) {
-    }
-    fn gesture_pinch_update(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GesturePinchUpdateEvent,
-    ) {
-    }
-    fn gesture_pinch_end(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GesturePinchEndEvent,
-    ) {
-    }
-    fn gesture_hold_begin(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GestureHoldBeginEvent,
-    ) {
-    }
-    fn gesture_hold_end(
-        &self,
-        _seat: &Seat<GlideState>,
-        _data: &mut GlideState,
-        _event: &GestureHoldEndEvent,
-    ) {
-    }
+    fn gesture_pinch_end(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GesturePinchEndEvent) {}
+    fn gesture_hold_begin(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GestureHoldBeginEvent) {}
+    fn gesture_hold_end(&self, _seat: &Seat<GlideState>, _data: &mut GlideState, _event: &GestureHoldEndEvent) {}
 }
