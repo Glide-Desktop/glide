@@ -44,7 +44,7 @@ const BARS_W: i32 = 12;
 const BARS_H: i32 = 11;
 const BAR_W: i32 = 3;
 const TITLE_MAX: i32 = 90;
-const BADGE_H: i32 = 15;
+const BADGE_H: i32 = 16;
 const BADGE_PAD: i32 = 6;
 const ALERT_ICON: i32 = 26;
 const ALERT_CLOSE: i32 = 22;
@@ -749,8 +749,10 @@ fn draw_compact(
     Some(c.finish())
 }
 
-fn draw_alert(ink: &Ink<'_>, alert: &IslandAlert, scale: i32) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(WIDE, ALERT_H, scale)?;
+fn draw_alert(
+    ink: &Ink<'_>, alert: &IslandAlert, scale: i32, icons: Option<&mut crate::icon::IconLoader>,
+) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::new(WIDE, ALERT_H, scale)?.with_icons(icons);
     let layout = alert_layout();
     if let Some(icon) = alert.icon.as_deref() {
         let source = crate::notifications::ICON_SOURCE_PX;
@@ -989,10 +991,11 @@ fn draw_scrollbar(c: &mut Canvas<'_>, theme: &TopbarTheme, first: usize, count: 
 }
 
 fn draw_notifications(
-    ink: &NcInk<'_>, items: &[NcItem], first: usize, switch_w: Option<i32>, scale: i32,
+    ink: &NcInk<'_>, (items, first): (&[NcItem], usize), switch_w: Option<i32>, scale: i32,
+    icons: Option<&mut crate::icon::IconLoader>,
 ) -> Option<MemoryRenderBuffer> {
     let height = calendar_height(items.len());
-    let mut c = Canvas::new(WIDE, height, scale)?;
+    let mut c = Canvas::new(WIDE, height, scale)?.with_icons(icons);
     let layout = nc_layout(ink.ink.painter, items, first, switch_w);
     draw_nc_header(&mut c, ink, &layout);
     draw_nc_section(&mut c, ink, &layout);
@@ -1103,7 +1106,7 @@ fn push_compact<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>,
 }
 
 fn push_alert<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
-    let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     let Some((alert, _)) = topbar.island.alert.as_ref() else {
         return;
     };
@@ -1113,7 +1116,7 @@ fn push_alert<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
     let Some(buffer) = topbar
         .island
         .alert_cache
-        .resolve(topbar.island.alert_rev, output_scale, || draw_alert(&ink, alert, output_scale))
+        .resolve(topbar.island.alert_rev, output_scale, || draw_alert(&ink, alert, output_scale, Some(icons)))
     else {
         return;
     };
@@ -1163,8 +1166,10 @@ fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
         hovered,
     };
     let items = &topbar.nc_items;
-    let Some(buffer) =
-        topbar.island.nc.resolve(key, output_scale, || draw_notifications(&ink, items, first, switch_w, output_scale))
+    let Some(buffer) = topbar
+        .island
+        .nc
+        .resolve(key, output_scale, || draw_notifications(&ink, (items, first), switch_w, output_scale, Some(icons)))
     else {
         return;
     };

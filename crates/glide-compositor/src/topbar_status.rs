@@ -1,10 +1,9 @@
-use super::glyphs::{Glyph, glyph, svg_glyph, wifi_bars};
+use super::glyphs::{Glyph, battery_cell, glyph, svg_glyph, themed, wifi_bars};
 use super::{
     Anim, BUTTON_HEIGHT, BUTTON_RADIUS, Cache, Color, E_IO, E_OUT, HEIGHT, ITEM_GAP, Logical, MOTION_QUANTUM,
     MemoryRenderBuffer, MemoryRenderBufferRenderElement, OpenPopup, PAD_X, POPUP_GAP, POPUP_RADIUS, Point, Rectangle,
-    STATUS_BATT_WIDTH, STATUS_SEP_WIDTH, STATUS_SPEAKER_WIDTH, STATUS_WIFI_WIDTH, Scale, Size, Slot, Topbar,
-    TopbarTheme, lerp, local_rect, motion, numeric_label_width, push_buffer, push_popup_buffer, push_popup_shadow,
-    quantize,
+    STATUS_SEP_WIDTH, Scale, Size, Slot, Topbar, TopbarTheme, lerp, local_rect, motion, numeric_label_width,
+    push_buffer, push_popup_buffer, push_popup_shadow, quantize,
 };
 use crate::i18n::{Key, t};
 use crate::paint::TextAlign;
@@ -14,17 +13,9 @@ use glide_theme::spacing::{SP1, SP2, SP3};
 
 const CONTROL_W: i32 = 28;
 const BLOCK_PAD: i32 = SP2;
-const BLOCK_PAD_END: i32 = 7;
-const BLOCK_GAP: i32 = 7;
-const ICON: i32 = 14;
-const CHEVRON: i32 = 9;
-const SHELL_W: i32 = 22;
-const SHELL_H: i32 = 11;
-const TIP_W: i32 = 2;
-const TIP_H: i32 = 5;
-const TIP_GAP: i32 = 1;
-const LEVEL_INSET: i32 = 2;
-const BOLT: i32 = 8;
+const BLOCK_GAP: i32 = 6;
+const PCT_GAP: i32 = SP1;
+pub(super) const ICON: i32 = 16;
 pub(super) const PCT_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
     size_px: 11.0,
     line_height_px: 14.0,
@@ -158,9 +149,9 @@ const fn privacy_width(dots: i32) -> i32 {
 }
 
 fn battery_width(painter: &crate::paint::Painter, pct: u8, show_pct: bool) -> i32 {
-    let mut width = STATUS_BATT_WIDTH;
+    let mut width = ICON;
     if show_pct {
-        width += BLOCK_GAP + numeric_label_width(painter, &format!("{pct}%"), &PCT_STYLE);
+        width += PCT_GAP + numeric_label_width(painter, &format!("{pct}%"), &PCT_STYLE);
     }
     width
 }
@@ -170,9 +161,7 @@ fn indicator_width(
 ) -> i32 {
     match indicator {
         Indicator::Battery => battery_width(painter, status.battery_pct.unwrap_or(0), show_pct),
-        Indicator::Wifi => STATUS_WIFI_WIDTH,
-        Indicator::Volume => STATUS_SPEAKER_WIDTH,
-        Indicator::Bluetooth | Indicator::Vpn => ICON,
+        Indicator::Wifi | Indicator::Volume | Indicator::Bluetooth | Indicator::Vpn => ICON,
     }
 }
 
@@ -193,12 +182,8 @@ fn block_layout(painter: &crate::paint::Painter, status: &SystemStatus, show_pct
         .collect()
 }
 
-fn chevron_x(painter: &crate::paint::Painter, status: &SystemStatus, show_pct: bool) -> i32 {
-    block_layout(painter, status, show_pct).last().map_or(BLOCK_PAD, |(_, x, width)| x + width + BLOCK_GAP)
-}
-
 fn block_width(painter: &crate::paint::Painter, status: &SystemStatus, show_pct: bool) -> i32 {
-    chevron_x(painter, status, show_pct) + CHEVRON + BLOCK_PAD_END
+    block_layout(painter, status, show_pct).last().map_or(BLOCK_PAD * 2, |(_, x, width)| x + width + BLOCK_PAD)
 }
 
 fn privacy_popover_height(rows: usize) -> i32 {
@@ -422,12 +407,9 @@ fn draw_cluster(
         let fg = if open || ctx.hovered == Some(slot) { ctx.theme.label } else { ctx.theme.muted };
         match slot {
             Slot::Status => {
-                let show_pct = ctx.theme.battery_percentage;
-                for (indicator, dx, width) in block_layout(ctx.painter, ctx.status, show_pct) {
+                for (indicator, dx, width) in block_layout(ctx.painter, ctx.status, ctx.theme.battery_percentage) {
                     draw_indicator(&mut c, ctx, (indicator, x + dx, width), fg);
                 }
-                let chevron = column(x + chevron_x(ctx.painter, ctx.status, show_pct), CHEVRON);
-                glyph(&mut c, Glyph::Chevron, CHEVRON, chevron, ctx.theme.faint);
             }
             Slot::Search => glyph(&mut c, Glyph::Search, ICON, column(x, width), fg),
             Slot::Privacy => draw_dots(&mut c, ctx, x),
@@ -452,18 +434,41 @@ const fn speaker(muted: bool, pct: u8) -> Glyph {
     }
 }
 
+fn battery_icon_names(pct: u8, charging: bool) -> [String; 2] {
+    let level = u32::from(pct.min(100)).div_ceil(10) * 10;
+    let suffix = match (charging, level) {
+        (true, 100) => "-charged",
+        (true, _) => "-charging",
+        (false, _) => "",
+    };
+    let legacy = (u32::from(pct.min(100)) + 10) / 20 * 20;
+    let legacy_suffix = if charging { "-charging" } else { "" };
+    [format!("battery-level-{level}{suffix}"), format!("battery-{legacy:03}{legacy_suffix}")]
+}
+
 fn draw_indicator(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, (indicator, x, width): (Indicator, i32, i32), fg: Color) {
     let status = ctx.status;
+    let cell = column(x, width);
     match indicator {
         Indicator::Battery => draw_status_battery(c, ctx, x, fg),
         Indicator::Wifi => {
-            let level = if status.wifi_enabled { status.wifi_level } else { 0 };
-            svg_glyph(c, &wifi_bars(level), 16, column(x, width), fg);
+            let name =
+                if status.wifi_enabled { super::wifi_icon_name(status.wifi_level) } else { "network-wireless-offline" };
+            if !themed(c, name, ICON, cell, fg) {
+                let level = if status.wifi_enabled { status.wifi_level } else { 0 };
+                svg_glyph(c, &wifi_bars(level), ICON, cell, fg);
+            }
         }
-        Indicator::Bluetooth => glyph(c, Glyph::Bluetooth, ICON, column(x, width), fg),
-        Indicator::Vpn => glyph(c, Glyph::Shield, ICON, column(x, width), fg),
+        Indicator::Bluetooth => {
+            if !(status.bluetooth_connected && themed(c, "bluetooth-active", ICON, cell, fg)) {
+                glyph(c, Glyph::Bluetooth, ICON, cell, fg);
+            }
+        }
+        Indicator::Vpn => glyph(c, Glyph::Shield, ICON, cell, fg),
         Indicator::Volume => {
-            glyph(c, speaker(status.volume_muted, status.volume_pct), ICON, column(x, width), fg);
+            if !themed(c, super::volume_icon_name(status.volume_muted, status.volume_pct), ICON, cell, fg) {
+                glyph(c, speaker(status.volume_muted, status.volume_pct), ICON, cell, fg);
+            }
         }
     }
 }
@@ -474,32 +479,17 @@ fn draw_status_battery(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, x: i32, fg: C
     };
     let charging = ctx.status.battery_charging;
     let low = !charging && pct <= ctx.theme.battery_low_pct;
-    let top = (BUTTON_HEIGHT - SHELL_H) / 2;
-    let frame = fg.with_alpha(fg.0[3] * 0.7);
-    c.stroke(rect(x, top, SHELL_W, SHELL_H), 1.3, 3.5, frame);
-    c.fill(rect(x + SHELL_W + TIP_GAP, top + (SHELL_H - TIP_H) / 2, TIP_W, TIP_H), frame, 1.0);
-    let room = SHELL_W - LEVEL_INSET * 2;
-    let filled = ((f32::from(pct.min(100)) / 100.0) * room as f32).round() as i32;
-    let level = if charging {
-        ctx.theme.ok
-    } else if low {
-        ctx.theme.danger
-    } else {
-        fg
-    };
-    if filled > 0 {
-        let bar = rect(x + LEVEL_INSET, top + LEVEL_INSET, filled.max(2), SHELL_H - LEVEL_INSET * 2);
-        c.fill(bar, level, 1.5);
-    }
-    if charging {
-        glyph(c, Glyph::Bolt, BOLT, rect(x, top, SHELL_W, SHELL_H), ctx.theme.label);
+    let colour = if low { ctx.theme.danger } else { fg };
+    let cell = column(x, ICON);
+    let drawn = battery_icon_names(pct, charging).iter().any(|name| themed(c, name, ICON, cell, colour));
+    if !drawn {
+        svg_glyph(c, &battery_cell(pct), ICON, cell, colour);
     }
     if ctx.theme.battery_percentage {
-        let left = x + STATUS_BATT_WIDTH + BLOCK_GAP;
+        let left = x + ICON + PCT_GAP;
         let text = format!("{pct}%");
         let width = numeric_label_width(ctx.painter, &text, &PCT_STYLE);
-        let colour = if low { ctx.theme.danger } else { fg };
-        c.text(ctx.painter, (left, left + width, 0, BUTTON_HEIGHT), TextAlign::Left, &text, colour, &PCT_STYLE);
+        c.text(ctx.painter, (left, left + width, 0, BUTTON_HEIGHT), TextAlign::Right, &text, colour, &PCT_STYLE);
     }
 }
 
@@ -611,8 +601,7 @@ mod tests {
             assert_eq!(pair[0].1 + pair[0].2 + BLOCK_GAP, pair[1].1);
         }
         let (_, x, w) = items.last().copied().expect("battery");
-        assert_eq!(chevron_x(&painter, &status, true), x + w + BLOCK_GAP, "the chevron keeps the same rhythm");
-        assert_eq!(x + w + BLOCK_GAP + CHEVRON + BLOCK_PAD_END, width);
+        assert_eq!(x + w + BLOCK_PAD, width, "the same padding on both ends");
         assert!(
             block_width(&painter, &SystemStatus::default(), true) < width,
             "fewer indicators make a narrower block"
@@ -642,5 +631,13 @@ mod tests {
     fn privacy_dot_width_grows_by_one_dot_and_gap() {
         assert_eq!(privacy_width(1), DOT_PAD * 2 + DOT);
         assert_eq!(privacy_width(3) - privacy_width(2), DOT + DOT_GAP);
+    }
+
+    #[test]
+    fn battery_names_round_up_to_the_theme_levels() {
+        assert_eq!(battery_icon_names(82, false), ["battery-level-90", "battery-080"]);
+        assert_eq!(battery_icon_names(0, true), ["battery-level-0-charging", "battery-000-charging"]);
+        assert_eq!(battery_icon_names(100, true), ["battery-level-100-charged", "battery-100-charging"]);
+        assert_eq!(battery_icon_names(200, false), ["battery-level-100", "battery-100"]);
     }
 }

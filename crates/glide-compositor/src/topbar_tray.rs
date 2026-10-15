@@ -755,11 +755,10 @@ mod tests {
         bar.layout_slots(&painter, output);
         let first = bar.slot_rect(Slot::Tray(bar.tray.entries[0].id)).expect("placed");
         let second = bar.slot_rect(Slot::Tray(bar.tray.entries[1].id)).expect("placed");
-        let dnd = bar.slot_rect(Slot::DoNotDisturb).expect("dnd");
+        let layout = bar.layout_control_rect().expect("layout control");
         let clock = bar.slot_rect(Slot::Clock).expect("clock");
-        assert!(first.loc.x + first.size.w <= dnd.loc.x);
         assert_eq!(second.loc.x + second.size.w + ITEM_GAP, first.loc.x, "newer items go left");
-        assert_eq!(first.loc.x + first.size.w + ITEM_GAP, dnd.loc.x, "one even gap all the way along");
+        assert_eq!(first.loc.x + first.size.w + ITEM_GAP, layout.loc.x, "one even gap all the way along");
         assert!(second.loc.x > clock.loc.x + clock.size.w);
         let hit = Point::from((f64::from(first.loc.x + first.size.w / 2), f64::from(first.loc.y + first.size.h / 2)));
         assert!(matches!(

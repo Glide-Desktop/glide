@@ -23,8 +23,6 @@ pub(super) enum Glyph {
     SpeakerMuted,
     Bluetooth,
     Shield,
-    Chevron,
-    Bolt,
 }
 
 const SPEAKER: &str = "<path d=\"M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z\"/>";
@@ -33,7 +31,7 @@ const FAR_WAVE: &str = "<path d=\"M13.8 4.6a6.4 6.4 0 010 9\"/>";
 
 impl Glyph {
     #[cfg(test)]
-    pub(super) const ALL: [Self; 21] = [
+    pub(super) const ALL: [Self; 19] = [
         Self::Bell,
         Self::Quiet,
         Self::Play,
@@ -53,8 +51,6 @@ impl Glyph {
         Self::SpeakerMuted,
         Self::Bluetooth,
         Self::Shield,
-        Self::Chevron,
-        Self::Bolt,
     ];
 
     fn body(self) -> String {
@@ -84,8 +80,6 @@ impl Glyph {
             Self::SpeakerMuted => return format!("{SPEAKER}<path d=\"M12.2 6.2l3.4 5.6M15.6 6.2l-3.4 5.6\"/>"),
             Self::Bluetooth => "<path d=\"M5 5.4l6 5.2-3 2.6V2.8l3 2.6-6 5.2\"/>",
             Self::Shield => "<path d=\"M8 2.2l4.8 1.8v3.6c0 3-2 5.2-4.8 6.2-2.8-1-4.8-3.2-4.8-6.2V4z\"/>",
-            Self::Chevron => "<path d=\"M2.6 4l2.4 2.4L7.4 4\"/>",
-            Self::Bolt => "<path d=\"M5.6 1L2.8 5.6h1.9L4.2 9 7.2 4.4H5.2z\"/>",
         };
         fixed.to_string()
     }
@@ -93,14 +87,13 @@ impl Glyph {
     const fn view(self) -> u8 {
         match self {
             Self::Moon | Self::SpeakerSilent | Self::SpeakerLow | Self::SpeakerHigh | Self::SpeakerMuted => 18,
-            Self::Chevron | Self::Bolt => 10,
             _ => 16,
         }
     }
 
     const fn stroke(self) -> Option<&'static str> {
         match self {
-            Self::Play | Self::Pause | Self::Previous | Self::Next | Self::Bolt => None,
+            Self::Play | Self::Pause | Self::Previous | Self::Next => None,
             Self::Bell => Some("1.6"),
             Self::Quiet => Some("1.3"),
             Self::Collapse | Self::Close => Some("2.2"),
@@ -108,7 +101,7 @@ impl Glyph {
             Self::SpeakerSilent | Self::SpeakerLow | Self::SpeakerHigh | Self::SpeakerMuted | Self::Bluetooth => {
                 Some("1.4")
             }
-            Self::Moon | Self::Cup | Self::Search | Self::Shield | Self::Chevron => Some("1.5"),
+            Self::Moon | Self::Cup | Self::Search | Self::Shield => Some("1.5"),
         }
     }
 
@@ -129,12 +122,46 @@ impl Glyph {
     }
 }
 
+impl Glyph {
+    const fn theme_name(self) -> &'static str {
+        match self {
+            Self::Bell | Self::Quiet => "notifications",
+            Self::Play => "media-playback-start",
+            Self::Pause => "media-playback-pause",
+            Self::Previous => "media-skip-backward",
+            Self::Next => "media-skip-forward",
+            Self::Collapse => "pan-up",
+            Self::Close => "window-close",
+            Self::Moon => "notifications-disabled",
+            Self::Back => "pan-start",
+            Self::Forward => "pan-end",
+            Self::Cup => "caffeine-cup-empty",
+            Self::Search => "system-search",
+            Self::SpeakerSilent | Self::SpeakerMuted => "audio-volume-muted",
+            Self::SpeakerLow => "audio-volume-low",
+            Self::SpeakerHigh => "audio-volume-high",
+            Self::Bluetooth => "bluetooth",
+            Self::Shield => "network-vpn",
+        }
+    }
+}
+
+const fn centred(rect: LocalRect, side: i32) -> (i32, i32) {
+    (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2)
+}
+
 pub(super) fn glyph(c: &mut Canvas<'_>, glyph: Glyph, side: i32, rect: LocalRect, colour: Color) {
-    svg_glyph(c, &glyph.svg(), side, rect, colour);
+    if !themed(c, glyph.theme_name(), side, rect, colour) {
+        svg_glyph(c, &glyph.svg(), side, rect, colour);
+    }
+}
+
+pub(super) fn themed(c: &mut Canvas<'_>, name: &str, side: i32, rect: LocalRect, colour: Color) -> bool {
+    c.icon(name, side, centred(rect, side), colour)
 }
 
 pub(super) fn svg_glyph(c: &mut Canvas<'_>, svg: &str, side: i32, rect: LocalRect, colour: Color) {
-    let at = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
+    let at = centred(rect, side);
     if let Some(pixels) = crate::paint::render_svg_tinted(svg.as_bytes(), side * c.scale, colour) {
         crate::paint::blit_square_over(&mut c.buf, c.w, c.h, &pixels, side, at.0, at.1, c.scale);
     }
@@ -158,6 +185,15 @@ pub(super) fn wifi_bars(level: u8) -> String {
     )
 }
 
+#[must_use]
+pub(super) fn battery_cell(pct: u8) -> String {
+    let level = f32::from(pct.min(100)) / 100.0 * 9.0;
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"#000\"><path d=\"M6 1.5h4V3h1.5a1 1 0 011 1v10a1 1 0 01-1 1h-7a1 1 0 01-1-1V4a1 1 0 011-1H6z\" fill-opacity=\"0.35\"/><rect x=\"5\" y=\"{y}\" width=\"6\" height=\"{level}\" rx=\"0.5\"/></svg>",
+        y = 13.5 - level
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +205,9 @@ mod tests {
         }
         for level in 0..=4 {
             assert!(crate::paint::render_svg(wifi_bars(level).as_bytes(), 24).is_some(), "{level}");
+        }
+        for pct in [0, 37, 100, 255] {
+            assert!(crate::paint::render_svg(battery_cell(pct).as_bytes(), 24).is_some(), "{pct}");
         }
     }
 }

@@ -87,22 +87,16 @@ const SWITCH_HEIGHT: i32 = 16;
 const SWITCH_THUMB: i32 = 12;
 const SWITCH_INSET: i32 = 2;
 
-const COFFEE_GLYPH: i32 = 14;
-const COFFEE_PAD: i32 = 7;
+const COFFEE_GLYPH: i32 = status::ICON;
+const COFFEE_PAD: i32 = 6;
 const COFFEE_GAP: i32 = 7;
 const COFFEE_PAD_END: i32 = 6;
-
-const DND_WIDTH: i32 = 28;
-const DND_GLYPH: i32 = 14;
 
 const LANG_MENU_WIDTH: i32 = 196;
 const LANG_MENU_PAD: i32 = glide_theme::spacing::SP1;
 const LANG_MENU_ITEM_HEIGHT: i32 = 34;
 const LANG_MENU_DIVIDER: i32 = glide_theme::spacing::SP1 * 2 + 1;
 
-const STATUS_WIFI_WIDTH: i32 = 15;
-const STATUS_SPEAKER_WIDTH: i32 = 14;
-const STATUS_BATT_WIDTH: i32 = 25;
 const STATUS_SEP_WIDTH: i32 = 13;
 
 const QS_WIDTH: i32 = 352;
@@ -347,7 +341,6 @@ pub enum Slot {
     LayoutPick(usize),
     LayoutDropdown,
     Caffeine,
-    DoNotDisturb,
     Status,
     LangMenuItem(usize),
     LangMenuSettings,
@@ -428,7 +421,6 @@ impl Slot {
                     | Self::LayoutPick(_)
                     | Self::LayoutDropdown
                     | Self::Caffeine
-                    | Self::DoNotDisturb
                     | Self::Tray(_)
             )
     }
@@ -532,7 +524,7 @@ impl Slot {
             Self::LayoutPick(index) | Self::LangMenuItem(index) => TopbarAction::SelectLayout(index),
             Self::LayoutDropdown => TopbarAction::ToggleLanguageMenu,
             Self::Caffeine | Self::QsCaffeine => TopbarAction::ToggleCaffeine,
-            Self::DoNotDisturb | Self::NcDndToggle | Self::QsDnd => TopbarAction::ToggleDoNotDisturb,
+            Self::NcDndToggle | Self::QsDnd => TopbarAction::ToggleDoNotDisturb,
             Self::Status => TopbarAction::ToggleQuickSettings,
             Self::LangMenuSettings => TopbarAction::OpenInputSettings,
             Self::NcClearAll => TopbarAction::ClearAllNotifications,
@@ -715,7 +707,6 @@ pub struct Topbar {
     app_cache: Cache<(String, String)>,
     layout_cache: Cache<(u64, usize, Option<Slot>, bool, u8)>,
     coffee_cache: Cache<(bool, bool, (u8, u8))>,
-    dnd_cache: Cache<(bool, u8)>,
     qs_cache: Cache<QsCacheKey>,
     qs_row_cache: Cache<QsPowerKey>,
     qs_confirm_cache: Cache<QsPowerKey>,
@@ -775,7 +766,6 @@ impl Topbar {
         self.app_cache.clear();
         self.layout_cache.clear();
         self.coffee_cache.clear();
-        self.dnd_cache.clear();
         self.qs_cache.clear();
         self.qs_row_cache.clear();
         self.qs_confirm_cache.clear();
@@ -1784,12 +1774,6 @@ impl Topbar {
                 slots.push((Slot::LayoutCycle, control_rect));
             }
         }
-
-        right -= ITEM_GAP + DND_WIDTH;
-        slots.push((
-            Slot::DoNotDisturb,
-            Rectangle::new(Point::from((right, y)), Size::from((DND_WIDTH, BUTTON_HEIGHT))),
-        ));
 
         let mut island_slots = Vec::new();
         let island = self.layout_island(painter, strip, &mut island_slots);
@@ -3027,7 +3011,6 @@ where
     island::push(topbar, &mut frame, output);
     push_global_menu(topbar, &mut frame);
     push_app_chip(topbar, &mut frame, strip);
-    push_dnd(topbar, &mut frame);
     push_layout(topbar, &mut frame);
     push_caffeine(topbar, &mut frame);
     push_status(topbar, &mut frame);
@@ -3509,42 +3492,13 @@ fn draw_caffeine(
     let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?.with_icons(icons);
     let colour = hover_colour(theme, on || hovered);
     let cup = local_rect(COFFEE_PAD, 0, COFFEE_GLYPH, BUTTON_HEIGHT);
-    glyphs::glyph(&mut c, glyphs::Glyph::Cup, COFFEE_GLYPH, cup, colour);
+    let name = if on { "caffeine-cup-full" } else { "caffeine-cup-empty" };
+    if !glyphs::themed(&mut c, name, COFFEE_GLYPH, cup, colour) {
+        glyphs::glyph(&mut c, glyphs::Glyph::Cup, COFFEE_GLYPH, cup, colour);
+    }
     let track_y = (BUTTON_HEIGHT - SWITCH_HEIGHT) / 2;
     let track = local_rect(width - COFFEE_PAD_END - SWITCH_WIDTH, track_y, SWITCH_WIDTH, SWITCH_HEIGHT);
     draw_switch(&mut c, theme, track, (SWITCH_INSET, SWITCH_THUMB), switch);
-    Some(c.finish())
-}
-
-fn push_dnd<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
-    let (renderer, _, icons, scale, output_scale, elements) = frame.parts();
-    let Some(rect) = topbar.slot_rect(Slot::DoNotDisturb) else {
-        return;
-    };
-    let hovered = topbar.hovered == Some(Slot::DoNotDisturb);
-    let on = topbar.dnd_anim.value_with(E_OUT);
-    let theme = &topbar.theme;
-    let width = rect.size.w;
-
-    let buffer = topbar.dnd_cache.resolve((hovered, quantize(on, MOTION_QUANTUM)), output_scale, || {
-        draw_dnd(theme, width, hovered, on, output_scale, Some(icons))
-    });
-    let Some(buffer) = buffer else {
-        return;
-    };
-    push_buffer(renderer, buffer, rect.loc, scale, elements);
-}
-
-fn draw_dnd(
-    theme: &TopbarTheme, width: i32, hovered: bool, on: f64, scale: i32, icons: Option<&mut crate::icon::IconLoader>,
-) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?.with_icons(icons);
-    if on > 0.0 {
-        let fill = theme.active_background;
-        c.panel(fill.with_alpha(0.0).lerp(fill, on as f32), BUTTON_RADIUS);
-    }
-    let colour = hover_colour(theme, hovered).lerp(theme.active_label, on as f32);
-    glyphs::glyph(&mut c, glyphs::Glyph::Moon, DND_GLYPH, local_rect(0, 0, width, BUTTON_HEIGHT), colour);
     Some(c.finish())
 }
 
@@ -4899,8 +4853,8 @@ mod tests {
         assert!(inside(control, seg(0)) && inside(control, seg(1)));
         assert!(seg(0).loc.x + seg(0).size.w <= seg(1).loc.x);
         assert_eq!(click(&two, Slot::LayoutPick(1)), Some(TopbarAction::SelectLayout(1)));
-        let dnd = two.slot_rect(Slot::DoNotDisturb).expect("dnd slot");
-        assert!(dnd.loc.x + dnd.size.w <= seg(0).loc.x);
+        let coffee = two.slot_rect(Slot::Caffeine).expect("caffeine slot");
+        assert_eq!(control.loc.x + control.size.w + ITEM_GAP, coffee.loc.x);
 
         let three = topbar_with(&["US", "UA", "PL"]);
         assert!(!three.segmented());
