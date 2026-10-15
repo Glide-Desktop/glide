@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn applets_the_shell_replaces_are_not_started() {
-        for exec in ["nm-applet --indicator %U", "/usr/bin/nm-applet", "blueman-applet"] {
+        for exec in ["nm-applet --indicator %U", "/usr/bin/nm-applet", "blueman-applet", "/usr/bin/netbird-ui"] {
             let text = format!("[Desktop Entry]\nType=Application\nExec={exec}\nNotShowIn=KDE;GNOME;\n");
             assert_eq!(command(&text, &INSTALLED), None, "{exec}");
         }

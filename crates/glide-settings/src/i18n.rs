@@ -140,6 +140,7 @@ catalogue! {
     PanelPower => "Power & Battery", "Живлення й батарея";
     PanelApps => "Default Apps", "Типові програми";
     PanelVpn => "VPN", "VPN";
+    PanelNetbird => "NetBird", "NetBird";
     PanelNotifications => "Notifications", "Сповіщення";
     PanelWallpaper => "Wallpaper", "Шпалери";
     PanelTopBar => "Top Bar", "Верхня панель";
@@ -177,6 +178,7 @@ catalogue! {
     AboutApps => "Which apps open links, mail, files and media", "Які програми відкривають посилання, пошту, файли й медіа";
     AboutSystem => "This computer and the Glide session", "Цей комп'ютер і сеанс Glide";
     AboutVpn => "Virtual private networks and WireGuard tunnels", "Віртуальні приватні мережі та тунелі WireGuard";
+    AboutNetbird => "Your NetBird mesh network: peers, resources, exit nodes and profiles", "Ваша мережа NetBird: вузли, ресурси, вихідні вузли та профілі";
     AboutNotifications => "Banners, sounds and Do Not Disturb", "Банери, звуки й режим «Не турбувати»";
     AboutWallpaper => "The picture behind your windows", "Зображення за вашими вікнами";
     AboutTopBar => "Clock, status icons, tray and the global menu", "Годинник, значки стану, трей і глобальне меню";

@@ -11,6 +11,7 @@ pub mod gestures;
 pub mod keyboard;
 pub mod mouse;
 pub mod multitasking;
+pub mod netbird;
 pub mod network;
 pub mod night_light;
 pub mod notifications;
@@ -93,6 +94,7 @@ macro_rules! with_panels {
             Network => network,
             Bluetooth => bluetooth,
             Vpn => vpn,
+            Netbird => netbird,
             Notifications => notifications,
             Sound => sound,
             Appearance => appearance,
@@ -198,6 +200,7 @@ panel_meta! {
     Network: PanelNetwork, AboutNetwork, "network", Wifi, Azurit 3;
     Bluetooth: PanelBluetooth, AboutBluetooth, "bluetooth", Bluetooth, Azurit 4;
     Vpn: PanelVpn, AboutVpn, "vpn", Shield, Azurit 5;
+    Netbird: PanelNetbird, AboutNetbird, "netbird", Link, Amber 2;
     Notifications: PanelNotifications, AboutNotifications, "notifications", Bell, Cinnabar 4;
     Sound: PanelSound, AboutSound, "sound", Volume, Cinnabar 3;
     Appearance: PanelAppearance, AboutAppearance, "appearance", Appearance, Amethyst 3;
@@ -233,7 +236,7 @@ pub struct Group {
 
 impl Panel {
     pub const GROUPS: &'static [Group] = &[
-        Group { title: Key::GroupConnections, panels: &[Self::Network, Self::Bluetooth, Self::Vpn] },
+        Group { title: Key::GroupConnections, panels: &[Self::Network, Self::Bluetooth, Self::Vpn, Self::Netbird] },
         Group { title: Key::GroupAlerts, panels: &[Self::Notifications, Self::Sound] },
         Group {
             title: Key::GroupPersonalisation,

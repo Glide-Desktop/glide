@@ -265,7 +265,7 @@ fn autostart_entries_for_applets_the_shell_replaces_do_not_count_as_starting() {
             &|_| true,
         )
     };
-    for exec in ["nm-applet", "/usr/bin/blueman-applet %U"] {
+    for exec in ["nm-applet", "/usr/bin/blueman-applet %U", "/usr/bin/netbird-ui"] {
         let entry = build(exec);
         assert!(entry.enabled && entry.desktop_ok && entry.runnable, "{exec}");
         assert!(entry.replaced && !entry.starts(), "{exec}");

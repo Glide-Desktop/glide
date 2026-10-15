@@ -1,6 +1,6 @@
 use std::path::Path;
 
-const PROVIDED_BY_SHELL: [&str; 2] = ["nm-applet", "blueman-applet"];
+const PROVIDED_BY_SHELL: [&str; 3] = ["nm-applet", "blueman-applet", "netbird-ui"];
 
 #[must_use]
 pub fn provided_by_shell(exec: &str) -> bool {
@@ -14,9 +14,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn network_and_bluetooth_applets_are_provided_by_the_shell_however_they_are_spelled() {
-        for exec in ["nm-applet", "nm-applet --indicator %U", "/usr/bin/nm-applet", "blueman-applet", "Blueman-Applet"]
-        {
+    fn network_bluetooth_and_netbird_applets_are_provided_by_the_shell_however_they_are_spelled() {
+        for exec in [
+            "nm-applet",
+            "nm-applet --indicator %U",
+            "/usr/bin/nm-applet",
+            "blueman-applet",
+            "Blueman-Applet",
+            "/usr/bin/netbird-ui",
+            "netbird-ui --daemon-addr unix:///var/run/netbird.sock",
+        ] {
             assert!(provided_by_shell(exec), "{exec}");
         }
     }

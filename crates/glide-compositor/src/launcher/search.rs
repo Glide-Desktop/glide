@@ -175,6 +175,7 @@ pub enum SettingsPanel {
     Network,
     Bluetooth,
     Vpn,
+    Netbird,
     Notifications,
     Sound,
     Appearance,
@@ -202,11 +203,17 @@ pub enum SettingsPanel {
     About,
 }
 
+fn netbird_installed() -> bool {
+    static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INSTALLED.get_or_init(glide_netbird::installed)
+}
+
 impl SettingsPanel {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
+        Self::Netbird,
         Self::Notifications,
         Self::Sound,
         Self::Appearance,
@@ -240,6 +247,7 @@ impl SettingsPanel {
             Self::Network => "network",
             Self::Bluetooth => "bluetooth",
             Self::Vpn => "vpn",
+            Self::Netbird => "netbird",
             Self::Notifications => "notifications",
             Self::Sound => "sound",
             Self::Appearance => "appearance",
@@ -274,6 +282,7 @@ impl SettingsPanel {
             Self::Network => Key::SettingsNetwork,
             Self::Bluetooth => Key::Bluetooth,
             Self::Vpn => Key::SettingsVpn,
+            Self::Netbird => Key::Netbird,
             Self::Notifications => Key::SettingsNotifications,
             Self::Sound => Key::SettingsSound,
             Self::Appearance => Key::SettingsAppearance,
@@ -308,6 +317,7 @@ impl SettingsPanel {
             Self::Network => &["network", "wifi", "wi-fi", "wireless", "internet", "ethernet", "мережа", "інтернет"],
             Self::Bluetooth => &["bluetooth", "блютуз", "пристрої", "devices"],
             Self::Vpn => &["vpn", "wireguard", "openvpn", "tunnel", "тунель"],
+            Self::Netbird => &["netbird", "mesh", "peers", "exit node", "вузли", "вихідний вузол"],
             Self::Notifications => {
                 &["notifications", "do not disturb", "banners", "alerts", "сповіщення", "не турбувати"]
             }
@@ -545,7 +555,10 @@ pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], sources: &Sourc
     );
     entries.extend(
         ranked(
-            SettingsPanel::ALL.into_iter().map(|panel| (panel, phrase_score(panel.title(), panel.keywords(), &needle))),
+            SettingsPanel::ALL
+                .into_iter()
+                .filter(|panel| *panel != SettingsPanel::Netbird || netbird_installed())
+                .map(|panel| (panel, phrase_score(panel.title(), panel.keywords(), &needle))),
             long_enough,
             LIST_SETTINGS_LIMIT,
         )
@@ -834,6 +847,7 @@ mod tests {
                 "network",
                 "bluetooth",
                 "vpn",
+                "netbird",
                 "notifications",
                 "sound",
                 "appearance",

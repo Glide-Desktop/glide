@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod keybinds;
 pub mod locale;
 pub mod look;
+pub mod netbird;
 pub mod network;
 pub mod pointer;
 pub mod power;

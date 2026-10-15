@@ -80,7 +80,18 @@ fn search_filters_visible_panels_and_enter_opens_the_first_hit() {
     let _ = app.update(Message::SearchSubmitted);
     assert_eq!(app.active_panel(), Panel::Displays);
     let _ = app.update(Message::ClearSearch);
-    assert_eq!(app.visible_panels().len(), Panel::ALL.len());
+    assert_eq!(app.visible_panels().len(), Panel::ALL.len() - 1, "NetBird stays hidden until it is installed");
+}
+
+#[test]
+fn the_netbird_panel_is_listed_only_when_netbird_is_installed() {
+    let hidden = app("");
+    assert!(!hidden.visible_panels().contains(&Panel::Netbird));
+    let mut shown = app("").with_netbird(true);
+    assert_eq!(shown.visible_panels().len(), Panel::ALL.len());
+    let _ = shown.update(Message::SearchChanged(String::from("exit node")));
+    assert_eq!(shown.visible_panels(), vec![Panel::Netbird]);
+    assert_eq!(Panel::from_slug("netbird"), Some(Panel::Netbird), "the quick settings link resolves either way");
 }
 
 #[test]
@@ -768,7 +779,11 @@ fn sidebar_shortcuts_step_through_panels() {
 
 #[test]
 fn stepping_walks_the_sidebar_in_group_order_and_wraps() {
-    let order: Vec<Panel> = Panel::GROUPS.iter().flat_map(|group| group.panels.iter().copied()).collect();
+    let order: Vec<Panel> = Panel::GROUPS
+        .iter()
+        .flat_map(|group| group.panels.iter().copied())
+        .filter(|panel| *panel != Panel::Netbird)
+        .collect();
     let mut app = app("");
     let _ = app.update(Message::PanelSelected(order[0]));
     for expected in order.iter().skip(1) {

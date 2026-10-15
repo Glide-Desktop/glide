@@ -1564,6 +1564,7 @@ version = "0.1.0"
 dependencies = [
  "glide-config",
  "glide-ipc",
+ "glide-netbird",
  "glide-theme",
  "iced",
  "image",

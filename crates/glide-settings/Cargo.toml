@@ -32,6 +32,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 glide-config = { path = "../glide-config" }
 glide-theme = { path = "../glide-theme" }
 glide-ipc = { path = "../glide-ipc" }
+glide-netbird = { path = "../glide-netbird" }
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

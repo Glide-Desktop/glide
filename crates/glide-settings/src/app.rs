@@ -7,8 +7,8 @@ use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::panels::{
     Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop, displays,
-    gestures, keyboard, mouse, multitasking, network, night_light, notifications, power, printers, privacy, region,
-    shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
+    gestures, keyboard, mouse, multitasking, netbird, network, night_light, notifications, power, printers, privacy,
+    region, shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;
@@ -119,6 +119,7 @@ pub struct App {
     host_name: String,
     pages: Pages,
     synced: Option<DesktopLook>,
+    netbird: bool,
 }
 
 type DesktopLook = (theme::Appearance, theme::Accent, Option<String>);
@@ -145,15 +146,27 @@ impl App {
             host_name: String::new(),
             pages: Pages::default(),
             synced: None,
+            netbird: false,
         }
     }
 
+    #[must_use]
+    pub fn with_netbird(mut self, installed: bool) -> Self {
+        self.netbird = installed;
+        self
+    }
+
     pub fn new() -> (Self, Task<Message>) {
-        let mut app = Self::with_config(ConfigStore::load());
+        let mut app = Self::with_config(ConfigStore::load()).with_netbird(glide_netbird::installed());
         app.online = ipc::socket_path().is_some();
         app.user_name = system::user_name();
         app.host_name = system::hostname();
         let initial = std::env::args().nth(1).and_then(|arg| Panel::from_slug(&arg)).unwrap_or(Panel::Appearance);
+        if initial == Panel::Netbird
+            && let Some(section) = std::env::args().nth(2)
+        {
+            app.pages.netbird.show_tab(&section);
+        }
         let task = app.select(initial);
         (app, task)
     }
@@ -203,6 +216,7 @@ impl App {
         Panel::GROUPS
             .iter()
             .flat_map(|group| group.panels.iter().copied())
+            .filter(|panel| *panel != Panel::Netbird || self.netbird)
             .filter(|panel| panel.matches(&self.search_query))
             .collect()
     }
