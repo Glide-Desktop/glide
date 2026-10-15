@@ -9,6 +9,7 @@ members = [
     "crates/glide-layout",
     "crates/glide-ipc",
     "crates/glide-media",
+    "crates/glide-netbird",
     "crates/glide-notify",
     "crates/glide-paint",
     "crates/glide-settings",
