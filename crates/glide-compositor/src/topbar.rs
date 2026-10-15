@@ -3262,7 +3262,7 @@ fn scaled_about_centre(rect: LocalRect, factor: f64) -> LocalRect {
 }
 
 fn push_layout<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
-    let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     let Some(rect) = topbar.layout_control_rect() else {
         return;
     };
@@ -3287,15 +3287,8 @@ fn push_layout<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) 
             if segmented {
                 draw_segmented(painter, theme, layouts, SegmentState { active, hovered, pill }, width, output_scale)
             } else if layouts.len() >= 3 {
-                draw_lang_dropdown_button(
-                    painter,
-                    theme,
-                    label,
-                    width,
-                    hovered == Some(Slot::LayoutDropdown),
-                    open,
-                    output_scale,
-                )
+                let state = (hovered == Some(Slot::LayoutDropdown), open);
+                draw_lang_dropdown_button(painter, theme, label, width, state, output_scale, Some(icons))
             } else {
                 draw_button(painter, theme, label, width, hovered == Some(Slot::LayoutCycle), output_scale)
             }
@@ -3308,9 +3301,10 @@ fn push_layout<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) 
 }
 
 fn draw_lang_dropdown_button(
-    painter: &crate::paint::Painter, theme: &TopbarTheme, text: &str, width: i32, hovered: bool, open: bool, scale: i32,
+    painter: &crate::paint::Painter, theme: &TopbarTheme, text: &str, width: i32, (hovered, open): (bool, bool),
+    scale: i32, icons: Option<&mut crate::icon::IconLoader>,
 ) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?;
+    let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?.with_icons(icons);
     if open {
         c.panel(theme.open_fill, BUTTON_RADIUS);
     }
@@ -3320,14 +3314,16 @@ fn draw_lang_dropdown_button(
 
     let side = 10;
     let chevron = local_rect(width - 6 - side, (BUTTON_HEIGHT - side) / 2, side, side);
-    c.glyph(chevron, |b, w, h, s| {
-        crate::paint::draw_chevron_glyph_over(b, w, h, 9.0, 1.5, open, s, theme.faint);
-    });
+    if !glyphs::themed(&mut c, if open { "pan-up" } else { "pan-down" }, side, chevron, theme.faint) {
+        c.glyph(chevron, |b, w, h, s| {
+            crate::paint::draw_chevron_glyph_over(b, w, h, 9.0, 1.5, open, s, theme.faint);
+        });
+    }
     Some(c.finish())
 }
 
 fn push_lang_menu<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
-    let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     if topbar.shown_popup() != Some(OpenPopup::LanguageMenu) {
         return;
     }
@@ -3343,7 +3339,7 @@ fn push_lang_menu<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R
     let reveal = topbar.popup_progress();
 
     let buffer = topbar.lang_menu_cache.resolve((topbar.layouts_rev, active, hovered), output_scale, || {
-        draw_lang_menu(painter, theme, layouts, (active, hovered), (width, height), output_scale)
+        draw_lang_menu(painter, theme, layouts, (active, hovered), (width, height), output_scale, Some(icons))
     });
     let Some(buffer) = buffer else {
         return;
@@ -3354,9 +3350,9 @@ fn push_lang_menu<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R
 
 fn draw_lang_menu(
     painter: &crate::paint::Painter, theme: &TopbarTheme, layouts: &[String], (active, hovered): (usize, Option<Slot>),
-    size: (i32, i32), scale: i32,
+    size: (i32, i32), scale: i32, icons: Option<&mut crate::icon::IconLoader>,
 ) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::popover(size, scale, R3, theme.popover_bg, theme.border)?;
+    let mut c = Canvas::popover(size, scale, R3, theme.popover_bg, theme.border)?.with_icons(icons);
     let width = size.0;
     let style = &TextStyle::TOPBAR;
     let text_left = LANG_MENU_PAD + 6 + 14 + 6;
@@ -3366,9 +3362,12 @@ fn draw_lang_menu(
         if is_active {
             let tick_side = 14;
             let top = y + (LANG_MENU_ITEM_HEIGHT - tick_side) / 2;
-            c.glyph(local_rect(LANG_MENU_PAD + 6, top, tick_side, tick_side), |b, w, h, s| {
-                crate::paint::draw_tick_glyph_over(b, w, h, 13.0, 1.8, s, theme.active_background);
-            });
+            let tick = local_rect(LANG_MENU_PAD + 6, top, tick_side, tick_side);
+            if !glyphs::themed(&mut c, "object-select", tick_side, tick, theme.active_background) {
+                c.glyph(tick, |b, w, h, s| {
+                    crate::paint::draw_tick_glyph_over(b, w, h, 13.0, 1.8, s, theme.active_background);
+                });
+            }
         }
         let (top, bottom) = (y, y + LANG_MENU_ITEM_HEIGHT);
         let colour = hover_colour(theme, is_active || hovered == Some(Slot::LangMenuItem(index)));
