@@ -402,8 +402,10 @@ impl Painter {
         let y_off = py_min + ((band_h - content_h) / 2.0 - metrics.baseline_y + metrics.max_ascent) as i32;
 
         let fg = TextColor::rgba(fg_argb[0], fg_argb[1], fg_argb[2], fg_argb[3]);
+        let opacity = u32::from(fg_argb[3]);
         buffer.draw(&mut font_system, &mut swash_cache, fg, |x, y, gw, gh, color| {
-            let (r, g, b, a) = color.as_rgba_tuple();
+            let (r, g, b, coverage) = color.as_rgba_tuple();
+            let a = ((u32::from(coverage) * opacity + 127) / 255) as u8;
             if a == 0 {
                 return;
             }
@@ -1844,6 +1846,20 @@ mod tests {
         let long = "a title so long it must be ellipsised to fit the available space";
         assert!(render(1, TextAlign::Left, long).iter().any(|&b| b != 0));
         assert_ne!(render(1, TextAlign::Left, "Hi"), render(1, TextAlign::Center, "Hi"));
+    }
+
+    #[test]
+    fn a_translucent_text_colour_paints_translucent_glyphs() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let densest = |alpha: u8| {
+            let mut buf = vec![0u8; 200 * 32 * 4];
+            painter.draw_label_over(&mut buf, 200, 32, 20, 180, 1, TextAlign::Left, "Hello", [255, 255, 255, alpha]);
+            buf.chunks_exact(4).map(|px| px[3]).max().unwrap_or(0)
+        };
+        let (opaque, half) = (densest(255), densest(128));
+        assert!(opaque > 200, "solid text reaches full coverage, got {opaque}");
+        assert!(half.abs_diff(opaque / 2) <= 2, "fg-2 and fg-3 are alpha tokens, got {half} of {opaque}");
+        assert_eq!(densest(0), 0);
     }
 
     #[test]

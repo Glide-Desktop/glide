@@ -29,6 +29,11 @@ mod panels;
 #[path = "topbar_calendar.rs"]
 pub mod calendar;
 
+#[path = "topbar_island.rs"]
+mod island;
+
+pub use island::IslandAlert;
+
 #[path = "topbar_status.rs"]
 mod status;
 
@@ -56,8 +61,6 @@ const APP_PAD_LEFT: i32 = glide_theme::spacing::SP1;
 const APP_GAP: i32 = glide_theme::spacing::SP2;
 const APP_NAME_MAX: usize = 28;
 
-const CLOCK_GAP: i32 = glide_theme::spacing::SP2;
-
 const SEG_HEIGHT: i32 = 20;
 const SEG_INSET: i32 = 2;
 const SEG_GAP: i32 = 2;
@@ -76,23 +79,10 @@ const COFFEE_STROKE: f32 = 1.5;
 const DND_WIDTH: i32 = 28;
 const DND_GLYPH: f32 = 14.0;
 
-const CLOCK_BADGE_HEIGHT: i32 = 16;
-const CLOCK_BADGE_MIN_WIDTH: i32 = 16;
-const CLOCK_BADGE_PAD_X: i32 = 5;
-
 const LANG_MENU_WIDTH: i32 = 196;
 const LANG_MENU_PAD: i32 = glide_theme::spacing::SP1;
 const LANG_MENU_ITEM_HEIGHT: i32 = 34;
 const LANG_MENU_DIVIDER: i32 = glide_theme::spacing::SP1 * 2 + 1;
-
-const NC_WIDTH: i32 = crate::notifications::WIDTH;
-const NC_PAD: i32 = glide_theme::spacing::SP3;
-const NC_HEADER_HEIGHT: i32 = 24;
-const NC_GAP: i32 = glide_theme::spacing::SP2;
-const NC_ITEM_HEIGHT: i32 = 54;
-const NC_EMPTY_HEIGHT: i32 = 60;
-const NC_MAX_ITEMS: usize = 6;
-const NC_TOP: i32 = NC_PAD + calendar::BLOCK_H;
 
 const STATUS_WIFI_WIDTH: i32 = 15;
 const STATUS_SPEAKER_WIDTH: i32 = 14;
@@ -294,6 +284,7 @@ pub enum TopbarAction {
     DismissNotification(u32),
     OpenInputSettings,
     ClosePopup,
+    DismissIslandAlert,
     QsToggleWifi,
     QsToggleBluetooth,
     QsToggleNetbird,
@@ -326,10 +317,12 @@ pub enum Slot {
     MenuTitle(u16),
     MenuRow(MenuPath),
     Clock,
-    Media,
-    MediaPrev,
-    MediaPlay,
-    MediaNext,
+    IslandMedia,
+    IslandAlert,
+    IslandAlertClose,
+    IslandToMedia,
+    IslandToNotifications,
+    IslandCollapse,
     PopMediaPrev,
     PopMediaPlay,
     PopMediaNext,
@@ -412,10 +405,9 @@ impl Slot {
                 self,
                 Self::MenuTitle(_)
                     | Self::Clock
-                    | Self::Media
-                    | Self::MediaPrev
-                    | Self::MediaPlay
-                    | Self::MediaNext
+                    | Self::IslandMedia
+                    | Self::IslandAlert
+                    | Self::IslandAlertClose
                     | Self::LayoutCycle
                     | Self::LayoutPick(_)
                     | Self::LayoutDropdown
@@ -426,7 +418,15 @@ impl Slot {
     }
 
     const fn in_media_popup(self) -> bool {
-        matches!(self, Self::PopMediaPrev | Self::PopMediaPlay | Self::PopMediaNext | Self::PopMediaSeek)
+        matches!(
+            self,
+            Self::PopMediaPrev
+                | Self::PopMediaPlay
+                | Self::PopMediaNext
+                | Self::PopMediaSeek
+                | Self::IslandToNotifications
+                | Self::IslandCollapse
+        )
     }
 
     const fn in_layout(self) -> bool {
@@ -447,6 +447,8 @@ impl Slot {
                 | Self::CalMonth
                 | Self::CalPrev
                 | Self::CalNext
+                | Self::IslandToMedia
+                | Self::IslandCollapse
         )
     }
 
@@ -470,8 +472,19 @@ impl Slot {
             | Self::QsBrightnessTrack
             | Self::QsDetailToggle
             | Self::QsPasswordField
+            | Self::IslandAlert
             | Self::PopMediaSeek => None,
-            Self::MediaPrev | Self::MediaPlay | Self::MediaNext | Self::QsPromptReveal => Some(glide_theme::shape::R1),
+            Self::Clock
+            | Self::IslandMedia
+            | Self::IslandAlertClose
+            | Self::IslandToMedia
+            | Self::IslandToNotifications
+            | Self::IslandCollapse
+            | Self::NcClearAll
+            | Self::CalMonth
+            | Self::CalPrev
+            | Self::CalNext
+            | Self::QsPromptReveal => Some(glide_theme::shape::R1),
             Self::LayoutPick(_) | Self::QsProfile(_) => Some(SEG_RADIUS),
             Self::PopMediaPlay
             | Self::NcItemDismiss(_)
@@ -491,11 +504,13 @@ impl Slot {
         match self {
             Self::MenuTitle(index) => TopbarAction::OpenAppMenu(index),
             Self::MenuRow(path) => TopbarAction::AppMenuRow(path),
-            Self::Clock => TopbarAction::ToggleNotificationCenter,
-            Self::Media => TopbarAction::ToggleMediaPlayer,
-            Self::MediaPlay | Self::PopMediaPlay => TopbarAction::MediaPlayPause,
-            Self::MediaPrev | Self::PopMediaPrev => TopbarAction::MediaPrevious,
-            Self::MediaNext | Self::PopMediaNext => TopbarAction::MediaNext,
+            Self::Clock | Self::IslandAlert | Self::IslandToNotifications => TopbarAction::ToggleNotificationCenter,
+            Self::IslandMedia | Self::IslandToMedia => TopbarAction::ToggleMediaPlayer,
+            Self::IslandAlertClose => TopbarAction::DismissIslandAlert,
+            Self::IslandCollapse => TopbarAction::ClosePopup,
+            Self::PopMediaPlay => TopbarAction::MediaPlayPause,
+            Self::PopMediaPrev => TopbarAction::MediaPrevious,
+            Self::PopMediaNext => TopbarAction::MediaNext,
             Self::PopMediaSeek => TopbarAction::MediaSeek(0),
             Self::LayoutCycle => TopbarAction::CycleLayout,
             Self::LayoutPick(index) | Self::LangMenuItem(index) => TopbarAction::SelectLayout(index),
@@ -554,7 +569,6 @@ impl Slot {
 type ScaledBuffers = std::collections::HashMap<i32, MemoryRenderBuffer>;
 type QsCacheKey = ((u64, u64, String), QsFlags, QsMotion, Option<Slot>, QsShape);
 type QsPowerKey = (Option<Slot>, Option<(PowerAction, Option<u64>)>, (i32, i32));
-type NcCacheKey = (u64, bool, (u8, u8), Option<Slot>);
 type LayerKey = (u8, i32, i32, u32, i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -669,6 +683,7 @@ pub struct Topbar {
     rev: u64,
     layouts_rev: u64,
     media_rev: u64,
+    track_rev: u64,
     status_rev: u64,
     detail_rev: u64,
     nc_rev: u64,
@@ -682,9 +697,6 @@ pub struct Topbar {
     layers: HashMap<LayerKey, MemoryRenderBuffer>,
     separator_cache: Cache<()>,
     app_cache: Cache<(String, String)>,
-    clock_cache: Cache<(String, String, usize, bool, u8)>,
-    media_cache: Cache<(u64, Option<u16>)>,
-    media_popup_cache: Cache<(u64, Option<u16>)>,
     layout_cache: Cache<(u64, usize, Option<Slot>, bool, u8)>,
     coffee_cache: Cache<(bool, bool, (u8, u8))>,
     dnd_cache: Cache<(bool, u8)>,
@@ -693,7 +705,6 @@ pub struct Topbar {
     qs_confirm_cache: Cache<QsPowerKey>,
     qs_bg_cache: Cache<(i32, i32)>,
     qs_detail_cache: Cache<(u64, u64, Option<Slot>, Detail)>,
-    nc_cache: Cache<NcCacheKey>,
     lang_menu_cache: Cache<(u64, usize, Option<Slot>)>,
     raster_rev: u64,
 
@@ -705,6 +716,7 @@ pub struct Topbar {
     app_chip_w: i32,
 
     calendar: calendar::CalendarView,
+    island: island::Island,
     indicators: status::Indicators,
     tray: tray::TrayStrip,
 }
@@ -745,9 +757,6 @@ impl Topbar {
         self.layers.clear();
         self.separator_cache.clear();
         self.app_cache.clear();
-        self.clock_cache.clear();
-        self.media_cache.clear();
-        self.media_popup_cache.clear();
         self.layout_cache.clear();
         self.coffee_cache.clear();
         self.dnd_cache.clear();
@@ -756,11 +765,11 @@ impl Topbar {
         self.qs_confirm_cache.clear();
         self.qs_bg_cache.clear();
         self.qs_detail_cache.clear();
-        self.nc_cache.clear();
         self.lang_menu_cache.clear();
         self.menu_titles.clear();
         self.menu_rasters.clear();
         self.calendar.clear();
+        self.island.clear();
         self.indicators.clear();
     }
 
@@ -996,7 +1005,7 @@ impl Topbar {
         .into_iter()
         .any(Anim::is_animating);
         let detail = self.qs_panel.is_animating();
-        let extras = self.calendar.is_animating() || self.indicators.is_animating();
+        let extras = self.calendar.is_animating() || self.indicators.is_animating() || self.island.is_animating();
         let tray = self.tray_is_animating();
         popup || layers || controls || detail || extras || tray || self.pending_settle()
     }
@@ -1273,6 +1282,7 @@ impl Topbar {
         self.popup_reveal.close(motion::t2());
         self.set_focused(None);
         self.qs_panel.drop_prompt();
+        self.sync_island();
         self.touch();
         true
     }
@@ -1280,6 +1290,9 @@ impl Topbar {
     pub fn toggle_popup(&mut self, popup: OpenPopup) -> bool {
         if self.open_popup == Some(popup) {
             return self.close_popup();
+        }
+        if popup == OpenPopup::MediaPlayer && self.media.is_none() {
+            return false;
         }
         self.open_popup = Some(popup);
         self.closing_popup = None;
@@ -1290,7 +1303,10 @@ impl Topbar {
         self.forget_drawer();
         if popup == OpenPopup::NotificationCenter {
             self.calendar.reset();
+            self.reset_island_scroll();
+            self.island_forget_alert();
         }
+        self.sync_island();
         self.touch();
         true
     }
@@ -1518,9 +1534,15 @@ impl Topbar {
             return false;
         }
         let progress = media.as_ref().and_then(MediaWidget::progress_permille).map_or(0.0, f64::from);
+        let gone = media.is_none();
         self.media = media;
         self.seek_anim.jump(progress);
         self.media_rev = self.media_rev.wrapping_add(1);
+        self.track_rev = self.track_rev.wrapping_add(1);
+        if gone && self.open_popup == Some(OpenPopup::MediaPlayer) {
+            self.close_popup();
+        }
+        self.sync_island();
         self.touch();
         true
     }
@@ -1610,7 +1632,7 @@ impl Topbar {
         if !self.is_enabled() {
             return false;
         }
-        if self.rect(output).to_f64().contains(pos) {
+        if self.rect(output).to_f64().contains(pos) || self.island_target(output).to_f64().contains(pos) {
             return true;
         }
         if self.popup_reveal.is_open()
@@ -1697,13 +1719,6 @@ impl Topbar {
         self.layouts.get(self.layout_index).map_or("", String::as_str)
     }
 
-    fn clock_slot_width(&mut self, painter: &crate::paint::Painter) -> i32 {
-        let (date_w, time_w) = self.clock_metrics(painter);
-        let time_w = time_w.max(clock_time_width(painter, &self.clock));
-        let date_w = date_w.max(if self.date.is_empty() { 0 } else { clock_date_width(painter, &self.date) });
-        clock_width(date_w, time_w, painter, self.badge_shown())
-    }
-
     fn caffeine_width() -> i32 {
         let glyph = COFFEE_GLYPH.ceil() as i32;
         glide_theme::spacing::SP1 * 2 + glyph + glide_theme::spacing::SP2 + SWITCH_WIDTH
@@ -1761,21 +1776,21 @@ impl Topbar {
             Rectangle::new(Point::from((right, y)), Size::from((DND_WIDTH, BUTTON_HEIGHT))),
         ));
 
-        let clock_w = self.clock_slot_width(painter);
-        let clock_x = strip.loc.x + (strip.size.w - clock_w) / 2;
-        slots.push((Slot::Clock, Rectangle::new(Point::from((clock_x, y)), Size::from((clock_w, BUTTON_HEIGHT)))));
-        let tray_limit = clock_x + clock_w + glide_theme::spacing::SP3;
+        let mut island_slots = Vec::new();
+        let island = self.layout_island(painter, strip, &mut island_slots);
+        let tray_limit = island.loc.x + island.size.w + glide_theme::spacing::SP3;
         self.layout_tray(output, (right - ITEM_GAP, tray_limit, y), &mut slots);
 
-        let media_rect = self.media.as_ref().map(|media| layout_media_slots(painter, media, clock_x, y, &mut slots));
-
-        let menu_limit = media_rect.map_or(clock_x, |rect| rect.loc.x.min(clock_x)) - glide_theme::spacing::SP3;
+        let menu_limit = island.loc.x - glide_theme::spacing::SP3;
         let mut menu = self.layout_app_menu(painter, output, strip, menu_limit);
         slots.append(&mut menu.titles);
+        if !(self.popup_reveal.is_open() && Self::island_owns(self.open_popup)) {
+            slots.extend(island_slots);
+        }
 
         let mut popup_slots = std::mem::take(&mut menu.rows);
         let popup_rect = self
-            .layout_popup(painter, (output, strip.loc.y), (lang_rect, media_rect, menu.anchor), &mut popup_slots)
+            .layout_popup(painter, (output, strip), (lang_rect, menu.anchor), &mut popup_slots)
             .or_else(|| self.layout_status_popup(&slots, output, strip.loc.y));
         if self.popup_reveal.is_open() {
             slots.extend(popup_slots.iter().copied());
@@ -1788,16 +1803,19 @@ impl Topbar {
     }
 
     fn layout_popup(
-        &self, painter: &crate::paint::Painter, (output, strip_y): (Rectangle<i32, Logical>, i32),
-        anchors: (Anchor, Anchor, Anchor), popup_slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
+        &self, painter: &crate::paint::Painter, (output, strip): (Rectangle<i32, Logical>, Rectangle<i32, Logical>),
+        anchors: (Anchor, Anchor), popup_slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
     ) -> Option<Rectangle<i32, Logical>> {
-        let (lang_rect, media_rect, menu_anchor) = anchors;
+        let (lang_rect, menu_anchor) = anchors;
+        let strip_y = strip.loc.y;
         match self.shown_popup() {
             Some(OpenPopup::AppMenu) => menu_anchor,
             Some(OpenPopup::LanguageMenu) => {
                 lang_rect.map(|btn| layout_lang_menu_slots(&self.layouts, btn, strip_y, popup_slots))
             }
-            Some(OpenPopup::NotificationCenter) => Some(layout_nc_slots(&self.nc_items, output, strip_y, popup_slots)),
+            Some(popup @ (OpenPopup::NotificationCenter | OpenPopup::MediaPlayer)) => {
+                self.layout_island_popup(painter, popup, strip, popup_slots)
+            }
             Some(OpenPopup::QuickSettings) => Some(layout_qs_slots(
                 output,
                 strip_y,
@@ -1810,9 +1828,6 @@ impl Topbar {
                 },
                 popup_slots,
             )),
-            Some(OpenPopup::MediaPlayer) => {
-                media_rect.map(|anchor| layout_media_popup_slots(anchor, output, strip_y, popup_slots))
-            }
             Some(OpenPopup::Privacy) | None => None,
         }
     }
@@ -1945,52 +1960,6 @@ fn layout_lang_menu_slots(
             Size::from((menu_w - LANG_MENU_PAD * 2, LANG_MENU_ITEM_HEIGHT)),
         ),
     ));
-    rect
-}
-
-fn layout_nc_slots(
-    items: &[crate::notifications::NcItem], output: Rectangle<i32, Logical>, strip_y: i32,
-    slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
-) -> Rectangle<i32, Logical> {
-    let nc_w = NC_WIDTH;
-    let nc_x = output.loc.x + (output.size.w - nc_w) / 2;
-    let nc_y = strip_y + HEIGHT + POPUP_GAP;
-    let count = items.len().min(NC_MAX_ITEMS);
-    let content_h = if count == 0 { NC_EMPTY_HEIGHT } else { i32::try_from(count).unwrap_or(0) * NC_ITEM_HEIGHT };
-    let nc_h = NC_TOP + NC_HEADER_HEIGHT + NC_GAP + content_h + NC_PAD;
-    let rect = Rectangle::new(Point::from((nc_x, nc_y)), Size::from((nc_w, nc_h)));
-    calendar::layout_slots(rect.loc, nc_w, slots);
-
-    let head_y = nc_y + NC_TOP;
-    let sw_x = nc_x + nc_w - NC_PAD - SWITCH_WIDTH;
-    slots.push((
-        Slot::NcDndToggle,
-        Rectangle::new(Point::from((sw_x, head_y)), Size::from((SWITCH_WIDTH, NC_HEADER_HEIGHT))),
-    ));
-
-    let moon_x = sw_x - 8 - 14;
-    let clear_w = 96;
-    let clear_x = moon_x - 10 - clear_w;
-    slots.push((
-        Slot::NcClearAll,
-        Rectangle::new(Point::from((clear_x, head_y)), Size::from((clear_w, NC_HEADER_HEIGHT))),
-    ));
-
-    let mut item_y = nc_y + NC_TOP + NC_HEADER_HEIGHT + NC_GAP;
-    for item in items.iter().take(NC_MAX_ITEMS) {
-        let x_side = 22;
-        let x_left = nc_x + nc_w - NC_PAD - x_side;
-        let x_top = item_y + 24;
-        slots.push((
-            Slot::NcItemDismiss(item.id),
-            Rectangle::new(Point::from((x_left, x_top)), Size::from((x_side, x_side))),
-        ));
-        slots.push((
-            Slot::NcItem(item.id),
-            Rectangle::new(Point::from((nc_x + NC_PAD, item_y)), Size::from((nc_w - NC_PAD * 2, NC_ITEM_HEIGHT))),
-        ));
-        item_y += NC_ITEM_HEIGHT;
-    }
     rect
 }
 
@@ -2434,11 +2403,15 @@ fn push_state_layers<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_
     let (renderer, _, _, scale, output_scale, elements) = frame.parts();
     let reveal = topbar.popup_progress();
     let popup = topbar.popup_rect;
+    let island = Topbar::island_owns(topbar.shown_popup()).then(|| topbar.island_content_alpha());
     for job in topbar.layer_jobs() {
-        let placed = match (job.in_popup, popup) {
-            (true, Some(popup)) => Placed { popup, element: job.rect, progress: reveal, alpha: job.alpha },
-            (true, None) => continue,
-            (false, _) => Placed { popup: job.rect, element: job.rect, progress: 1.0, alpha: job.alpha },
+        let placed = match (job.in_popup, popup, island) {
+            (true, Some(_), Some(fade)) => {
+                Placed { popup: job.rect, element: job.rect, progress: 1.0, alpha: job.alpha * fade }
+            }
+            (true, Some(popup), None) => Placed { popup, element: job.rect, progress: reveal, alpha: job.alpha },
+            (true, None, _) => continue,
+            (false, _, _) => Placed { popup: job.rect, element: job.rect, progress: 1.0, alpha: job.alpha },
         };
         let Some(buffer) = topbar.layer_buffer(job.layer, job.rect.size, job.radius, output_scale) else {
             continue;
@@ -2663,22 +2636,15 @@ fn segment_width(painter: &crate::paint::Painter, label: &str) -> i32 {
     (text_w(painter, label, &TextStyle::TOPBAR) + SP1 * 2).max(SEG_MIN_WIDTH)
 }
 
-pub const MEDIA_ART: i32 = 18;
-const MEDIA_PAD: i32 = 3;
-const MEDIA_GAP: i32 = glide_theme::spacing::SP2;
-const MEDIA_TAG_GAP: i32 = 6;
-const MEDIA_TITLE_MAX: i32 = 104;
-const MEDIA_ARTIST_MAX: i32 = 58;
-const MEDIA_BTN: i32 = 22;
-const MEDIA_BTN_GAP: i32 = 2;
-const MEDIA_SEP: i32 = 5;
-const MEDIA_TINT: f32 = 0.14;
-const MEDIA_LINE: i32 = 2;
+pub const MEDIA_ART: i32 = 16;
+pub const MEDIA_ART_LARGE: i32 = 56;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaWidget {
     pub title: String,
     pub artist: String,
+    pub album: String,
+    pub length: Option<Duration>,
     pub source: String,
     pub art: Option<Vec<u8>>,
     pub art_large: Option<Vec<u8>>,
@@ -2701,201 +2667,12 @@ fn progress_permille(progress: Option<f32>) -> Option<u16> {
     progress.map(|value| (value.clamp(0.0, 1.0) * 1000.0).round() as u16)
 }
 
-const fn transport_width() -> i32 {
-    MEDIA_BTN * 3 + MEDIA_BTN_GAP * 2
-}
-
-fn clipped_width(painter: &crate::paint::Painter, text: &str, cap: i32) -> i32 {
-    if text.is_empty() {
-        return 0;
-    }
-    text_w(painter, text, &TextStyle::TOPBAR).min(cap)
-}
-
-fn media_width(painter: &crate::paint::Painter, media: &MediaWidget) -> i32 {
-    let title = clipped_width(painter, &media.title, MEDIA_TITLE_MAX);
-    let artist = clipped_width(painter, &media.artist, MEDIA_ARTIST_MAX);
-    let tags = if artist > 0 { title + MEDIA_TAG_GAP + artist } else { title };
-    MEDIA_PAD + MEDIA_ART + MEDIA_GAP + tags + MEDIA_GAP + transport_width() + MEDIA_PAD
-}
-
-const MP_WIDTH: i32 = 300;
-const MP_HEIGHT: i32 = 158;
-const MP_PAD: i32 = glide_theme::spacing::SP3;
-pub const MEDIA_ART_LARGE: i32 = 56;
-const MP_ART: i32 = MEDIA_ART_LARGE;
-const MP_TRACK_H: i32 = 4;
-const MP_BTN: i32 = 34;
-const MP_BTN_MAIN: i32 = 40;
-const MP_BTN_GAP: i32 = glide_theme::spacing::SP2;
-
-fn layout_media_popup_slots(
-    anchor: Rectangle<i32, Logical>, output: Rectangle<i32, Logical>, strip_y: i32,
-    slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
-) -> Rectangle<i32, Logical> {
-    let centred = anchor.loc.x + (anchor.size.w - MP_WIDTH) / 2;
-    let max_x = output.loc.x + output.size.w - PAD_X - MP_WIDTH;
-    let x = centred.clamp(output.loc.x + PAD_X, max_x.max(output.loc.x + PAD_X));
-    let y = strip_y + HEIGHT + POPUP_GAP;
-
-    let track_y = y + MP_PAD + MP_ART + MP_PAD;
-    let seek = local_rect(x + MP_PAD, track_y - 6, MP_WIDTH - MP_PAD * 2, MP_TRACK_H + 12);
-    slots.push((Slot::PopMediaSeek, seek));
-    let origin = Point::from((x, y));
-    let buttons = [Slot::PopMediaPrev, Slot::PopMediaPlay, Slot::PopMediaNext];
-    for (slot, rect) in buttons.into_iter().zip(popup_transport()) {
-        slots.push((slot, offset_rect(rect, origin)));
-    }
-    local_rect(x, y, MP_WIDTH, MP_HEIGHT)
-}
-
-fn popup_transport() -> [LocalRect; 3] {
-    let row_y = MP_HEIGHT - MP_PAD - MP_BTN_MAIN;
-    let row_w = MP_BTN * 2 + MP_BTN_MAIN + MP_BTN_GAP * 2;
-    let mut x = (MP_WIDTH - row_w) / 2;
-    [MP_BTN, MP_BTN_MAIN, MP_BTN].map(|side| {
-        let rect = local_rect(x, row_y + (MP_BTN_MAIN - side) / 2, side, side);
-        x += side + MP_BTN_GAP;
-        rect
-    })
-}
-
-fn strip_transport(width: i32) -> [LocalRect; 3] {
-    let x = width - MEDIA_PAD - transport_width();
-    let y = (BUTTON_HEIGHT - MEDIA_BTN) / 2;
-    [0, 1, 2].map(|i| local_rect(x + i * (MEDIA_BTN + MEDIA_BTN_GAP), y, MEDIA_BTN, MEDIA_BTN))
-}
-
-fn layout_media_slots(
-    painter: &crate::paint::Painter, media: &MediaWidget, clock_x: i32, y: i32,
-    slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
-) -> Rectangle<i32, Logical> {
-    let width = media_width(painter, media);
-    let left = clock_x - MEDIA_SEP - width;
-    let origin = Point::from((left, y));
-    let buttons = [Slot::MediaPrev, Slot::MediaPlay, Slot::MediaNext];
-    for (slot, rect) in buttons.into_iter().zip(strip_transport(width)) {
-        slots.push((slot, offset_rect(rect, origin)));
-    }
-    let body = local_rect(left, y, width - transport_width() - MEDIA_PAD, BUTTON_HEIGHT);
-    slots.push((Slot::Media, body));
-    local_rect(left, y, width, BUTTON_HEIGHT)
-}
-
-fn push_media<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
-    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
-    let Some(rect) = topbar.slot_rect(Slot::Media) else {
-        return;
-    };
-    let Some(media) = topbar.media.as_ref() else {
-        return;
-    };
-    let width = media_width(painter, media);
-    let theme = &topbar.theme;
-    let seek = topbar.seek_permille();
-    let progress = seek.map(|permille| f32::from(permille) / 1000.0);
-
-    let buffer = topbar.media_cache.resolve((topbar.media_rev, seek), output_scale, || {
-        draw_media(painter, theme, media, progress, width, output_scale, Some(icons))
-    });
-    let Some(buffer) = buffer else {
-        return;
-    };
-    push_buffer(renderer, buffer, rect.loc, scale, elements);
-}
-
-fn draw_media(
-    painter: &crate::paint::Painter, theme: &TopbarTheme, media: &MediaWidget, progress: Option<f32>, width: i32,
-    scale: i32, icons: Option<&mut crate::icon::IconLoader>,
-) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?.with_icons(icons);
-    let [red, green, blue, _] = media.accent.0;
-    c.panel(Color([red, green, blue, MEDIA_TINT]), BUTTON_RADIUS);
-
-    let art_top = (BUTTON_HEIGHT - MEDIA_ART) / 2;
-    let art = (media.art.as_deref(), (MEDIA_PAD, art_top, MEDIA_ART));
-    draw_media_art(&mut c, painter, media, art, R1);
-
-    let style = &TextStyle::TOPBAR;
-    let mut x = MEDIA_PAD + MEDIA_ART + MEDIA_GAP;
-    let title = clipped_width(painter, &media.title, MEDIA_TITLE_MAX);
-    c.label(painter, (x, x + title), TextAlign::Left, &media.title, theme.label, style);
-    x += title;
-
-    let artist = clipped_width(painter, &media.artist, MEDIA_ARTIST_MAX);
-    if artist > 0 {
-        x += MEDIA_TAG_GAP;
-        c.label(painter, (x, x + artist), TextAlign::Left, &media.artist, theme.faint, style);
-    }
-
-    for (index, rect) in strip_transport(width).into_iter().enumerate() {
-        let colour = if !transport_enabled(media, index) {
-            theme.faint
-        } else if index == 1 {
-            media.accent
-        } else {
-            theme.muted
-        };
-        draw_transport_button(&mut c, media, index, rect, (MEDIA_BTN, colour));
-    }
-
-    if let Some(progress) = progress {
-        let filled = (((width - MEDIA_PAD * 2) as f32) * progress.clamp(0.0, 1.0)).round() as i32;
-        if filled > 0 {
-            let line = local_rect(MEDIA_PAD, BUTTON_HEIGHT - MEDIA_LINE - 1, filled, MEDIA_LINE);
-            c.fill(line, media.accent, R_ROUND);
-        }
-    }
-
-    Some(c.finish())
-}
-
 const fn transport_enabled(media: &MediaWidget, index: usize) -> bool {
     match index {
         0 => media.can_previous,
         2 => media.can_next,
         _ => true,
     }
-}
-
-fn draw_transport_button(
-    c: &mut Canvas<'_>, media: &MediaWidget, index: usize, rect: LocalRect, (icon, colour): (i32, Color),
-) {
-    use crate::paint::MediaGlyph;
-    let (name, glyph) = match index {
-        0 => ("media-skip-backward", MediaGlyph::Previous),
-        2 => ("media-skip-forward", MediaGlyph::Next),
-        _ if media.playing => ("media-playback-pause", MediaGlyph::Pause),
-        _ => ("media-playback-start", MediaGlyph::Play),
-    };
-    let (x, y, side) = (rect.loc.x, rect.loc.y, rect.size.w);
-    let at = (x + (side - icon) / 2, y + (side - icon) / 2);
-    if !c.icon(name, icon, at, colour) {
-        crate::paint::draw_media_glyph_over(&mut c.buf, c.w, c.h, x, y, side, c.scale, colour, glyph);
-    }
-}
-
-fn push_media_popup<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
-    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
-    if topbar.shown_popup() != Some(OpenPopup::MediaPlayer) {
-        return;
-    }
-    let (Some(rect), Some(media)) = (topbar.popup_rect, topbar.media.as_ref()) else {
-        return;
-    };
-    let theme = &topbar.theme;
-    let seek = topbar.seek_permille();
-    let progress = seek.map(|permille| f32::from(permille) / 1000.0);
-    let reveal = topbar.popup_progress();
-
-    let buffer = topbar.media_popup_cache.resolve((topbar.media_rev, seek), output_scale, || {
-        draw_media_popup(painter, theme, media, progress, output_scale, Some(icons))
-    });
-    let Some(buffer) = buffer else {
-        return;
-    };
-    push_popup_buffer(renderer, buffer, rect, rect, reveal, scale, elements);
-    push_popup_shadow(topbar, renderer, rect, reveal, scale, output_scale, elements);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -3042,72 +2819,9 @@ fn draw_media_art(
     if c.icon("audio-x-generic-symbolic", glyph, (x + offset, y + offset), white) {
         return;
     }
-    let style = if side >= MP_ART { &TextStyle::DISPLAY } else { &TextStyle::TOPBAR };
+    let style = if side >= MEDIA_ART_LARGE { &TextStyle::DISPLAY } else { &TextStyle::TOPBAR };
     c.text(painter, (x, x + side, y, y + side), TextAlign::Center, "♪", white, style);
 }
-
-fn draw_media_popup(
-    painter: &crate::paint::Painter, theme: &TopbarTheme, media: &MediaWidget, progress: Option<f32>, scale: i32,
-    icons: Option<&mut crate::icon::IconLoader>,
-) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::popover((MP_WIDTH, MP_HEIGHT), scale, R3, theme.popover_bg, theme.border)?.with_icons(icons);
-    let art = (media.art_large.as_deref(), (MP_PAD, MP_PAD, MP_ART));
-    draw_media_art(&mut c, painter, media, art, R2);
-
-    let (left, right) = (MP_PAD + MP_ART + MP_PAD, MP_WIDTH - MP_PAD);
-    let lines = [
-        (6, 26, &media.title, theme.label, &TextStyle::HEAD),
-        (26, 44, &media.artist, theme.muted, &TextStyle::CALL),
-        (44, 58, &media.source, theme.faint, &TextStyle::CAP),
-    ];
-    for (top, bottom, text, colour, style) in lines {
-        let area = (left, right, MP_PAD + top, MP_PAD + bottom);
-        c.text(painter, area, TextAlign::Left, text, colour, style);
-    }
-
-    draw_media_popup_track(&mut c, theme, media, progress);
-    for (index, rect) in popup_transport().into_iter().enumerate() {
-        let main = index == 1;
-        if main {
-            c.fill(rect, media.accent, R_ROUND);
-        } else {
-            c.fill(rect, theme.track_soft, R2);
-        }
-        let colour = if main {
-            theme.popover_bg
-        } else if transport_enabled(media, index) {
-            theme.label
-        } else {
-            theme.faint
-        };
-        let icon = if main { 18 } else { 14 };
-        draw_transport_button(&mut c, media, index, rect, (icon, colour));
-    }
-
-    Some(c.finish())
-}
-
-fn draw_media_popup_track(c: &mut Canvas<'_>, theme: &TopbarTheme, media: &MediaWidget, progress: Option<f32>) {
-    let y = MP_PAD + MP_ART + MP_PAD;
-    let width = MP_WIDTH - MP_PAD * 2;
-    c.fill(local_rect(MP_PAD, y, width, MP_TRACK_H), theme.track_soft, R_ROUND);
-    let Some(progress) = progress else {
-        return;
-    };
-    let filled = ((width as f32) * progress.clamp(0.0, 1.0)).round() as i32;
-    if filled > 0 {
-        c.fill(local_rect(MP_PAD, y, filled, MP_TRACK_H), media.accent, R_ROUND);
-    }
-    let thumb_x = (MP_PAD + filled - 5).clamp(MP_PAD, MP_PAD + width - 10);
-    c.fill(local_rect(thumb_x, y - 3, 10, 10), theme.thumb, R_ROUND);
-}
-
-const CLOCK_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
-    size_px: glide_theme::TextStyle::TOPBAR.size_px,
-    line_height_px: glide_theme::TextStyle::TOPBAR.line_height_px,
-    weight: glide_theme::TextStyle::TOPBAR.weight,
-    ..glide_theme::TextStyle::NUM
-};
 
 const COUNT_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
     size_px: glide_theme::TextStyle::MICRO.size_px,
@@ -3124,28 +2838,6 @@ fn numeric_label_width(painter: &crate::paint::Painter, text: &str, style: &glid
     let actual = painter.text_width_styled(text, style);
     let widest = painter.text_width_styled(&widest_digits(text), style);
     actual.max(widest).ceil() as i32
-}
-
-fn clock_time_width(painter: &crate::paint::Painter, clock: &str) -> i32 {
-    numeric_label_width(painter, clock, &CLOCK_STYLE)
-}
-
-fn clock_date_width(painter: &crate::paint::Painter, date: &str) -> i32 {
-    text_w(painter, date, &TextStyle::TOPBAR)
-}
-
-fn clock_badge_width(painter: &crate::paint::Painter, count: usize) -> i32 {
-    let text = text_w(painter, &count.to_string(), &COUNT_STYLE);
-    (text + CLOCK_BADGE_PAD_X * 2).max(CLOCK_BADGE_MIN_WIDTH)
-}
-
-fn clock_width(date_w: i32, time_w: i32, painter: &crate::paint::Painter, unread: usize) -> i32 {
-    let gap = if date_w == 0 { 0 } else { CLOCK_GAP };
-    let mut width = date_w + gap + time_w + BUTTON_PAD_X * 2;
-    if unread > 0 {
-        width += CLOCK_GAP + clock_badge_width(painter, unread);
-    }
-    width
 }
 
 fn app_chip_width(painter: &crate::paint::Painter, name: &str, has_icon: bool) -> i32 {
@@ -3184,6 +2876,9 @@ pub struct TopbarTheme {
     pub fill_2: Color,
     pub bezel_hi: Color,
     pub acc_ring: Color,
+    pub island_bg: Color,
+    pub island_line: Color,
+    pub ghost: Color,
     pub battery_low_pct: u8,
     pub battery_percentage: bool,
     pub clock_date: bool,
@@ -3237,6 +2932,9 @@ impl TopbarTheme {
             fill_2: t.fill_2,
             bezel_hi: Color::from_rgb8(255, 255, 255, if dark { BEZEL_HI_DARK } else { BEZEL_HI_LIGHT }),
             acc_ring: t.acc_ring,
+            island_bg: t.island_bg,
+            island_line: t.island_line,
+            ghost: t.fg_4,
             battery_low_pct: BATTERY_LOW_PCT,
         }
     }
@@ -3272,6 +2970,9 @@ impl TopbarTheme {
             .color(self.fill_2)
             .color(self.bezel_hi)
             .color(self.acc_ring)
+            .color(self.island_bg)
+            .color(self.island_line)
+            .color(self.ghost)
             .u64(u64::from(self.battery_low_pct))
             .bool(self.battery_percentage)
             .bool(self.clock_date)
@@ -3312,12 +3013,9 @@ where
 
     push_state_layers(topbar, &mut frame);
     push_quick_settings(topbar, &mut frame);
-    push_notification_center(topbar, &mut frame);
+    island::push(topbar, &mut frame, output);
     push_global_menu(topbar, &mut frame);
     push_app_chip(topbar, &mut frame, strip);
-    push_clock(topbar, &mut frame);
-    push_media(topbar, &mut frame);
-    push_media_popup(topbar, &mut frame);
     push_dnd(topbar, &mut frame);
     push_layout(topbar, &mut frame);
     push_caffeine(topbar, &mut frame);
@@ -3544,31 +3242,6 @@ fn draw_app_chip(
     Some(c.finish())
 }
 
-fn push_clock<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
-    let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
-    if topbar.clock.is_empty() {
-        return;
-    }
-    let Some(rect) = topbar.slot_rect(Slot::Clock) else {
-        return;
-    };
-    let width = rect.size.w;
-
-    let theme = &topbar.theme;
-    let date = &topbar.date;
-    let clock = &topbar.clock;
-    let badge = BadgePop { count: topbar.badge_shown(), pop: topbar.badge_anim.value() };
-    let open = topbar.open_popup == Some(OpenPopup::NotificationCenter);
-    let buffer =
-        topbar.clock_cache.resolve((date.clone(), clock.clone(), badge.count, open, badge.key()), output_scale, || {
-            draw_clock(painter, theme, date, clock, badge, open, width, output_scale)
-        });
-    let Some(buffer) = buffer else {
-        return;
-    };
-    push_buffer(renderer, buffer, rect.loc, scale, elements);
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct BadgePop {
     count: usize,
@@ -3587,49 +3260,6 @@ impl BadgePop {
     fn visible(self) -> bool {
         self.count > 0 && self.pop > 0.0
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_clock(
-    painter: &crate::paint::Painter, theme: &TopbarTheme, date: &str, clock: &str, badge: BadgePop, open: bool,
-    width: i32, scale: i32,
-) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?;
-    if open {
-        c.panel(theme.open_fill, BUTTON_RADIUS);
-    }
-
-    let date_w = clock_date_width(painter, date);
-    let time_w = clock_time_width(painter, clock);
-    let lead = ((width - clock_width(date_w, time_w, painter, badge.count)) / 2).max(0);
-
-    let mut time_left = BUTTON_PAD_X + lead;
-    if !date.is_empty() {
-        let span = (time_left, time_left + date_w);
-        c.label(painter, span, TextAlign::Left, date, theme.muted, &TextStyle::TOPBAR);
-        time_left += date_w + CLOCK_GAP;
-    }
-    let span = (time_left, time_left + time_w);
-    c.label(painter, span, TextAlign::Left, clock, theme.label, &CLOCK_STYLE);
-
-    if badge.visible() {
-        let badge_w = clock_badge_width(painter, badge.count);
-        let badge_x = time_left + time_w + CLOCK_GAP;
-        let badge_y = (BUTTON_HEIGHT - CLOCK_BADGE_HEIGHT) / 2;
-        let pill = scaled_about_centre(local_rect(badge_x, badge_y, badge_w, CLOCK_BADGE_HEIGHT), badge.scale());
-        let alpha = badge.pop.clamp(0.0, 1.0) as f32;
-        c.fill(pill, theme.active_background.with_alpha(alpha), R_ROUND);
-        c.label(
-            painter,
-            (badge_x, badge_x + badge_w),
-            TextAlign::Center,
-            &badge.count.to_string(),
-            theme.active_label.with_alpha(alpha),
-            &COUNT_STYLE,
-        );
-    }
-
-    Some(c.finish())
 }
 
 fn scaled_about_centre(rect: LocalRect, factor: f64) -> LocalRect {
@@ -3773,187 +3403,8 @@ fn draw_lang_menu(
     Some(c.finish())
 }
 
-fn push_notification_center<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
-    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
-    if topbar.shown_popup() != Some(OpenPopup::NotificationCenter) {
-        return;
-    }
-    let Some(rect) = topbar.popup_rect else {
-        return;
-    };
-    let reveal = topbar.popup_progress();
-    calendar::push(topbar, renderer, painter, icons, rect, reveal, scale, output_scale, elements);
-    let theme = &topbar.theme;
-    let dnd = topbar.dnd;
-    let switch = topbar.dnd_anim.switch();
-    let hovered = topbar
-        .hovered_in(Slot::in_notification_center)
-        .filter(|slot| !matches!(slot, Slot::CalMonth | Slot::CalPrev | Slot::CalNext));
-    let width = rect.size.w;
-    let height = rect.size.h;
-    let nc_rev = topbar.nc_rev;
-    let items = &topbar.nc_items;
-
-    let buffer = topbar.nc_cache.resolve((nc_rev, dnd, switch.key(), hovered), output_scale, || {
-        let ctx = NcRenderContext { painter, theme, dnd, switch, hovered };
-        let mut canvas =
-            Canvas::popover((width, height), output_scale, R3, theme.popover_bg, theme.border)?.with_icons(Some(icons));
-        draw_notification_center(&mut canvas, &ctx, items);
-        Some(canvas.finish())
-    });
-    let Some(buffer) = buffer else {
-        return;
-    };
-    push_popup_buffer(renderer, buffer, rect, rect, reveal, scale, elements);
-    push_popup_shadow(topbar, renderer, rect, reveal, scale, output_scale, elements);
-}
-
-struct NcRenderContext<'a> {
-    painter: &'a crate::paint::Painter,
-    theme: &'a TopbarTheme,
-    dnd: bool,
-    switch: SwitchMotion,
-    hovered: Option<Slot>,
-}
-
 const fn hover_colour(theme: &TopbarTheme, hovered: bool) -> Color {
     if hovered { theme.label } else { theme.muted }
-}
-
-fn draw_nc_dnd_switch(c: &mut Canvas<'_>, ctx: &NcRenderContext<'_>, head_y: i32) -> i32 {
-    let sw_x = c.w - NC_PAD - SWITCH_WIDTH;
-    let sw_y = head_y + (NC_HEADER_HEIGHT - SWITCH_HEIGHT) / 2;
-    let track = local_rect(sw_x, sw_y, SWITCH_WIDTH, SWITCH_HEIGHT);
-    draw_switch(c, ctx.theme, track, (SWITCH_INSET, SWITCH_THUMB), ctx.switch);
-
-    let side = 14;
-    let moon_x = sw_x - 8 - side;
-    let moon_y = head_y + (NC_HEADER_HEIGHT - side) / 2;
-    let colour = if ctx.dnd { ctx.theme.active_label } else { ctx.theme.muted };
-    if !c.icon("notifications-disabled", side, (moon_x, moon_y), colour) {
-        c.glyph(local_rect(moon_x, moon_y, side, side), |b, w, h, s| {
-            crate::paint::draw_moon_glyph_over(b, w, h, 14.0, s, colour);
-        });
-    }
-    moon_x
-}
-
-fn draw_nc_header(c: &mut Canvas<'_>, ctx: &NcRenderContext<'_>) {
-    use crate::i18n::{Key, t};
-    let (top, bottom) = (NC_TOP, NC_TOP + NC_HEADER_HEIGHT);
-    c.text(
-        ctx.painter,
-        (NC_PAD + 2, NC_PAD + 120, top, bottom),
-        TextAlign::Left,
-        t(Key::Notifications),
-        ctx.theme.muted,
-        &TextStyle::MICRO,
-    );
-
-    let moon_x = draw_nc_dnd_switch(c, ctx, top);
-
-    let clear_w = 96;
-    let clear_x = moon_x - 10 - clear_w;
-    c.text(
-        ctx.painter,
-        (clear_x, clear_x + clear_w, top, bottom),
-        TextAlign::Center,
-        t(Key::ClearAll),
-        hover_colour(ctx.theme, ctx.hovered == Some(Slot::NcClearAll)),
-        &TextStyle::TOPBAR,
-    );
-}
-
-fn draw_nc_item_icon(c: &mut Canvas<'_>, ctx: &NcRenderContext<'_>, item: &crate::notifications::NcItem, item_y: i32) {
-    let side = 32;
-    let (x, y) = (NC_PAD + 4, item_y + (NC_ITEM_HEIGHT - side) / 2);
-    if let Some(icon) = item.icon.as_deref() {
-        let source = crate::notifications::ICON_SOURCE_PX;
-        crate::paint::blit_icon_over(&mut c.buf, c.w, c.h, icon, source, side, x, y, c.scale);
-    } else {
-        let rect = local_rect(x, y, side, side);
-        c.fill(rect, ctx.theme.track_soft, R2);
-        let label = initial(&item.app_name);
-        c.text(ctx.painter, band(rect), TextAlign::Center, &label, ctx.theme.label, &TextStyle::HEAD);
-    }
-}
-
-fn nc_count_badge_width(painter: &crate::paint::Painter, item: &crate::notifications::NcItem) -> i32 {
-    let label = format!("+{}", item.count.saturating_sub(1));
-    text_w(painter, &label, &TextStyle::MICRO) + SP2
-}
-
-fn nc_count_badge_left(painter: &crate::paint::Painter, width: i32, item: &crate::notifications::NcItem) -> i32 {
-    let time_left = width - NC_PAD - 60;
-    if item.count < 2 {
-        return time_left;
-    }
-    time_left - nc_count_badge_width(painter, item) - SP1
-}
-
-fn draw_nc_item_count(c: &mut Canvas<'_>, ctx: &NcRenderContext<'_>, item: &crate::notifications::NcItem, item_y: i32) {
-    if item.count < 2 {
-        return;
-    }
-    let label = format!("+{}", item.count - 1);
-    let left = nc_count_badge_left(ctx.painter, c.w, item);
-    let rect = local_rect(left, item_y + 8, nc_count_badge_width(ctx.painter, item), 15);
-    c.fill(rect, ctx.theme.track_soft, R_ROUND);
-    c.text(ctx.painter, band(rect), TextAlign::Center, &label, ctx.theme.muted, &TextStyle::MICRO);
-}
-
-fn draw_nc_item_dismiss(c: &mut Canvas<'_>, ctx: &NcRenderContext<'_>, id: u32, item_y: i32) {
-    let side = 22;
-    let colour = hover_colour(ctx.theme, ctx.hovered == Some(Slot::NcItemDismiss(id)));
-    let rect = local_rect(c.w - NC_PAD - side, item_y + 24, side, side);
-    c.glyph(rect, |b, w, h, s| {
-        crate::paint::draw_close_glyph_over(b, w, h, 9.0, 1.8, s, colour);
-    });
-}
-
-fn draw_nc_item(
-    c: &mut Canvas<'_>, ctx: &NcRenderContext<'_>, item: &crate::notifications::NcItem, item_y: i32, is_first: bool,
-) {
-    let (theme, width) = (ctx.theme, c.w);
-    if !is_first {
-        c.fill(local_rect(NC_PAD, item_y, width - NC_PAD * 2, 1), theme.border, 0.0);
-    }
-
-    draw_nc_item_icon(c, ctx, item, item_y);
-
-    let text_left = NC_PAD + 4 + 32 + 10;
-    let text_right = width - NC_PAD - 48;
-    let title_right = text_right.min(nc_count_badge_left(ctx.painter, width, item) - SP2);
-    let title = (text_left, title_right, item_y + 8, item_y + 26);
-    c.text(ctx.painter, title, TextAlign::Left, &item.title, theme.label, &TextStyle::HEAD);
-    let body = (text_left, text_right, item_y + 28, item_y + 46);
-    c.text(ctx.painter, body, TextAlign::Left, &item.body, theme.muted, &TextStyle::CALL);
-    let time = (width - NC_PAD - 60, width - NC_PAD - 4, item_y + 8, item_y + 24);
-    c.text(ctx.painter, time, TextAlign::Right, &item.time, theme.faint, &TextStyle::MICRO);
-
-    draw_nc_item_count(c, ctx, item, item_y);
-    draw_nc_item_dismiss(c, ctx, item.id, item_y);
-}
-
-fn draw_notification_center(c: &mut Canvas<'_>, ctx: &NcRenderContext<'_>, items: &[crate::notifications::NcItem]) {
-    draw_nc_header(c, ctx);
-
-    let mut item_y = NC_TOP + NC_HEADER_HEIGHT + NC_GAP;
-    if items.is_empty() {
-        c.text(
-            ctx.painter,
-            (NC_PAD, c.w - NC_PAD, item_y, item_y + NC_EMPTY_HEIGHT),
-            TextAlign::Center,
-            crate::i18n::t(crate::i18n::Key::NoNewNotifications),
-            ctx.theme.muted,
-            &TextStyle::TOPBAR,
-        );
-        return;
-    }
-    for (i, item) in items.iter().take(NC_MAX_ITEMS).enumerate() {
-        draw_nc_item(c, ctx, item, item_y, i == 0);
-        item_y += NC_ITEM_HEIGHT;
-    }
 }
 
 fn draw_button(
@@ -5265,6 +4716,8 @@ mod tests {
         MediaWidget {
             title: "Пісня про рушник".to_string(),
             artist: "Хор".to_string(),
+            album: "Золоті шедеври".to_string(),
+            length: Some(Duration::from_secs(212)),
             source: "Rhythmbox".to_string(),
             art: None,
             art_large: None,
@@ -5306,74 +4759,99 @@ mod tests {
     }
 
     #[test]
-    fn media_grows_left_of_a_fixed_clock_with_ordered_transport_targets() {
+    fn the_island_sits_in_the_middle_of_the_bar_with_the_player_left_of_the_clock() {
         let silent = topbar_with(&["US", "UA"]);
-        assert!(silent.media.is_none());
-        assert!(silent.slot_rect(Slot::Media).is_none());
-        assert!(silent.slot_rect(Slot::MediaPlay).is_none());
+        assert!(silent.slot_rect(Slot::IslandMedia).is_none());
+        let clock = silent.slot_rect(Slot::Clock).expect("the clock is always there");
+        let island = silent.island_target(output());
+        assert_eq!(silent.island.rect(silent.rect(output())), island, "the first layout is taken without a morph");
+        assert!(inside(island, clock));
+        assert_eq!(island.loc.y, island::TOP);
+        assert_eq!(island.loc.x + island.size.w / 2, output().size.w / 2, "the island is centred");
 
         let bar = playing_bar();
-        let rect = |slot| bar.slot_rect(slot).expect("slot");
-        let clock = rect(Slot::Clock);
-        assert_eq!(silent.slot_rect(Slot::Clock), Some(clock), "the clock is the anchor");
-        assert!(rect(Slot::Media).loc.x < clock.loc.x);
-        let (prev, play, next) = (rect(Slot::MediaPrev), rect(Slot::MediaPlay), rect(Slot::MediaNext));
-        assert!(prev.loc.x + prev.size.w <= play.loc.x);
-        assert!(play.loc.x + play.size.w <= next.loc.x);
-        assert!(next.loc.x + next.size.w <= clock.loc.x);
-        for (slot, want) in [
-            (Slot::MediaPrev, TopbarAction::MediaPrevious),
-            (Slot::MediaPlay, TopbarAction::MediaPlayPause),
-            (Slot::MediaNext, TopbarAction::MediaNext),
-        ] {
-            assert_eq!(click(&bar, slot), Some(want));
-        }
-        let media = rect(Slot::Media);
-        let name = Point::from((f64::from(media.loc.x + 8), centre(media).y));
-        assert_eq!(bar.action_at(name), Some(TopbarAction::ToggleMediaPlayer));
+        let island = bar.island_target(output());
+        let media = bar.slot_rect(Slot::IslandMedia).expect("a player button while something plays");
+        let clock = bar.slot_rect(Slot::Clock).expect("clock");
+        assert!(inside(island, media) && inside(island, clock));
+        assert!(media.loc.x + media.size.w < clock.loc.x);
+        assert!(island.size.w > silent.island_target(output()).size.w);
+        assert_eq!(click(&bar, Slot::IslandMedia), Some(TopbarAction::ToggleMediaPlayer));
+        assert_eq!(click(&bar, Slot::Clock), Some(TopbarAction::ToggleNotificationCenter));
     }
 
     #[test]
-    fn the_media_widget_width_follows_title_and_artist_up_to_a_cap() {
-        let painter = painter();
-        let width = |title: String, artist: &str| {
-            media_width(&painter, &MediaWidget { title, artist: artist.to_string(), ..playing() })
-        };
-        let (short, long) = (width("Hi".into(), "Хор"), width("x".repeat(400), "Хор"));
-        assert!(long > short);
-        assert!(
-            long <= MEDIA_PAD * 2
-                + MEDIA_ART
-                + MEDIA_GAP * 2
-                + MEDIA_TITLE_MAX
-                + MEDIA_TAG_GAP
-                + MEDIA_ARTIST_MAX
-                + transport_width()
-        );
-        assert!(width("Hi".into(), "") < short);
-    }
-
-    #[test]
-    fn the_player_popup_needs_a_track_and_seeks_where_the_pointer_lands() {
-        let silent = with_popup(topbar_with(&["US", "UA"]), OpenPopup::MediaPlayer);
-        assert!(silent.popup_rect().is_none(), "silence has no player to show");
+    fn the_player_needs_a_track_and_seeks_where_the_pointer_lands() {
+        let mut silent = topbar_with(&["US", "UA"]);
+        assert!(!silent.toggle_popup(OpenPopup::MediaPlayer), "silence has no player to show");
+        silent.layout_slots(&painter(), output());
+        assert!(silent.popup_rect().is_none());
 
         let bar = with_popup(playing_bar(), OpenPopup::MediaPlayer);
         let popup = bar.popup_rect().expect("popup rect");
-        for slot in [Slot::PopMediaPrev, Slot::PopMediaPlay, Slot::PopMediaNext, Slot::PopMediaSeek] {
-            assert!(inside(popup, bar.slot_rect(slot).expect("popup slot")));
+        assert_eq!((popup.loc.y, popup.size.w), (island::TOP, island::WIDE), "the island grows in place");
+        assert_eq!(popup.loc.x + popup.size.w / 2, output().size.w / 2);
+        for slot in [
+            Slot::PopMediaPrev,
+            Slot::PopMediaPlay,
+            Slot::PopMediaNext,
+            Slot::PopMediaSeek,
+            Slot::IslandToNotifications,
+            Slot::IslandCollapse,
+        ] {
+            assert!(inside(popup, bar.slot_rect(slot).expect("popup slot")), "{slot:?}");
         }
+        assert!(bar.slot_rect(Slot::Clock).is_none(), "the compact controls give way to the player");
         let track = bar.slot_rect(Slot::PopMediaSeek).expect("seek slot");
         let y = centre(track).y;
         let middle = f64::from(track.loc.x) + f64::from(track.size.w) / 2.0;
         assert_eq!(bar.action_at(Point::from((middle, y))), Some(TopbarAction::MediaSeek(50)));
         let start = Point::from((f64::from(track.loc.x), y));
         assert_eq!(bar.action_at(start), Some(TopbarAction::MediaSeek(0)));
+        assert_eq!(click(&bar, Slot::IslandCollapse), Some(TopbarAction::ClosePopup));
+        assert_eq!(click(&bar, Slot::IslandToNotifications), Some(TopbarAction::ToggleNotificationCenter));
+    }
 
-        let media = bar.slot_rect(Slot::Media).expect("media slot");
-        let next = bar.slot_rect(Slot::MediaNext).expect("next slot");
-        let widget_centre = i32::midpoint(media.loc.x, next.loc.x + next.size.w + MEDIA_PAD);
-        assert!((widget_centre - (popup.loc.x + popup.size.w / 2)).abs() <= 1);
+    #[test]
+    fn the_island_switches_between_its_views_without_closing() {
+        let mut bar = with_popup(playing_bar(), OpenPopup::MediaPlayer);
+        assert!(bar.toggle_popup(OpenPopup::NotificationCenter));
+        bar.layout_slots(&painter(), output());
+        assert!(bar.has_open_popup());
+        assert!(bar.slot_rect(Slot::IslandToMedia).is_some(), "with a player the calendar offers it");
+        assert!(bar.slot_rect(Slot::PopMediaPlay).is_none());
+        assert!(bar.set_media(None));
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::IslandToMedia).is_none());
+
+        let mut player = with_popup(playing_bar(), OpenPopup::MediaPlayer);
+        assert!(player.set_media(None));
+        assert!(!player.has_open_popup(), "the player closes when the track goes away");
+    }
+
+    #[test]
+    fn a_new_notification_flashes_in_the_island_and_opens_the_centre() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        let start = std::time::Instant::now();
+        let alert = IslandAlert { id: 1, heading: "Telegram".into(), summary: "Olena: hi".into(), icon: None };
+        assert!(bar.show_alert(alert, start));
+        bar.layout_slots(&painter(), output());
+        let close = bar.slot_rect(Slot::IslandAlertClose).expect("close button");
+        let below = Point::from((centre(close).x, f64::from(HEIGHT) + 6.0));
+        assert!(bar.contains(output(), below), "the alert is taller than the bar and still takes clicks");
+        assert_eq!(click(&bar, Slot::IslandAlertClose), Some(TopbarAction::DismissIslandAlert));
+        assert_eq!(click(&bar, Slot::IslandAlert), Some(TopbarAction::ToggleNotificationCenter));
+        assert!(bar.slot_rect(Slot::Clock).is_none());
+        assert!(!bar.tick_island(start + island::ALERT_HOLD / 2));
+        assert!(bar.tick_island(start + island::ALERT_HOLD));
+        assert!(bar.alert().is_none());
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::Clock).is_some());
+
+        let alert = IslandAlert { id: 2, heading: "Mail".into(), summary: String::new(), icon: None };
+        bar.show_alert(alert, start);
+        assert!(bar.toggle_popup(OpenPopup::NotificationCenter));
+        assert!(bar.alert().is_none(), "opening the centre answers the alert");
     }
 
     #[test]
@@ -5420,8 +4898,7 @@ mod tests {
 
         let painter = painter();
         let chip = PAD_X + app_chip_width(&painter, &bar.app_name, true);
-        let clock = text_clock_width(&painter, &bar.date, &bar.clock, bar.unread);
-        assert!(chip < (output().size.w - clock) / 2, "the app chip never reaches the clock");
+        assert!(chip < bar.island_target(output()).loc.x, "the app chip never reaches the island");
     }
 
     #[test]
@@ -5524,25 +5001,18 @@ mod tests {
         assert!(shown.chars().count() <= APP_NAME_MAX && shown.ends_with('…'));
     }
 
-    fn text_clock_width(painter: &crate::paint::Painter, date: &str, clock: &str, unread: usize) -> i32 {
-        clock_width(clock_date_width(painter, date), clock_time_width(painter, clock), painter, unread)
+    fn clock_box(bar: &mut Topbar) -> i32 {
+        island::clock_width(bar.island_clock(&painter()))
     }
 
     #[test]
     fn the_clock_reserves_room_for_both_the_date_and_the_time() {
-        let painter = painter();
-        let with_date = text_clock_width(&painter, "Mon 21 Sep", "12:34", 0);
-        let without = text_clock_width(&painter, "", "12:34", 0);
-        assert!(with_date > without);
-    }
-
-    #[test]
-    fn the_clock_keeps_its_width_as_the_minutes_tick() {
-        let painter = painter();
-        let reference = text_clock_width(&painter, "Mon 21 Sep", "88:88", 0);
-        for time in ["11:11", "12:34", "00:00", "19:07", "23:59"] {
-            assert_eq!(text_clock_width(&painter, "Mon 21 Sep", time, 0), reference, "{time}");
-        }
+        let mut with_date = Topbar::new(TopbarTheme { clock_24h: Some(true), ..TopbarTheme::default() });
+        with_date.set_now(at(21, 1, 8, 12));
+        let mut without =
+            Topbar::new(TopbarTheme { clock_date: false, clock_24h: Some(true), ..TopbarTheme::default() });
+        without.set_now(at(21, 1, 8, 12));
+        assert!(clock_box(&mut with_date) > clock_box(&mut without));
         assert_eq!(widest_digits("12:34"), "88:88");
     }
 
@@ -5552,13 +5022,12 @@ mod tests {
 
     #[test]
     fn the_clock_box_holds_its_width_across_days_months_and_hours() {
-        let painter = painter();
         let mut bar = topbar_with(&["US", "UA"]);
         let mut widths = Vec::new();
         for (day, weekday, month0) in [(24, 4, 8), (1, 3, 0), (31, 5, 4), (7, 0, 10)] {
             for hour in [0, 9, 13, 23] {
                 bar.set_now(at(day, weekday, month0, hour));
-                widths.push(bar.clock_slot_width(&painter));
+                widths.push(clock_box(&mut bar));
             }
         }
         assert!(widths.windows(2).all(|pair| pair[0] == pair[1]), "{widths:?}");
@@ -5579,11 +5048,11 @@ mod tests {
 
     #[test]
     fn numbers_are_set_in_tabular_figures_without_uppercase_tracking() {
-        for style in [CLOCK_STYLE, COUNT_STYLE] {
+        for style in [island::TIME_STYLE, COUNT_STYLE] {
             assert!(style.tabular);
             assert!(!style.uppercase);
         }
-        assert!((CLOCK_STYLE.size_px - glide_theme::TextStyle::TOPBAR.size_px).abs() < f32::EPSILON);
+        assert!((island::TIME_STYLE.size_px - island::DATE_STYLE.size_px).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -5597,10 +5066,10 @@ mod tests {
 
     #[test]
     fn an_unread_notification_count_expands_the_clock() {
-        let painter = painter();
-        let without_unread = text_clock_width(&painter, "Mon 21 Sep", "12:34", 0);
-        let with_unread = text_clock_width(&painter, "Mon 21 Sep", "12:34", 3);
-        assert!(with_unread > without_unread);
+        let mut bar = topbar_with(&["US", "UA"]);
+        let without_unread = clock_box(&mut bar);
+        bar.set_unread(3);
+        assert!(clock_box(&mut bar) > without_unread);
     }
 
     #[test]
@@ -5773,9 +5242,12 @@ mod tests {
             bar.close_popup();
             bar.toggle_popup(popup);
             bar.layout_slots(&painter(), output());
-            tops.push(bar.popup_rect().expect("popup rect").loc.y);
+            tops.push((popup, bar.popup_rect().expect("popup rect").loc.y));
         }
-        assert!(tops.iter().all(|top| *top == HEIGHT + POPUP_GAP), "{tops:?}");
+        for (popup, top) in tops {
+            let want = if Topbar::island_owns(Some(popup)) { island::TOP } else { HEIGHT + POPUP_GAP };
+            assert_eq!(top, want, "{popup:?}: the island grows from where it sits, the rest hang below");
+        }
     }
 
     #[test]
@@ -5924,10 +5396,14 @@ mod tests {
         let popup = bar.popup_rect().expect("clock popover");
         let month = bar.slot_rect(Slot::CalMonth).expect("month title");
         let next = bar.slot_rect(Slot::CalNext).expect("next month");
-        let clear = bar.slot_rect(Slot::NcClearAll).expect("clear all");
+        let quiet = bar.slot_rect(Slot::NcDndToggle).expect("do not disturb");
+        let collapse = bar.slot_rect(Slot::IslandCollapse).expect("collapse");
         assert!(popup.contains(month.loc) && popup.contains(next.loc));
-        assert!(month.loc.y + month.size.h < clear.loc.y);
-        assert!(clear.loc.y - popup.loc.y >= calendar::BLOCK_H);
+        assert!(collapse.loc.y + collapse.size.h <= month.loc.y, "the header sits above the calendar");
+        assert!(month.loc.y + month.size.h < quiet.loc.y);
+        assert!(quiet.loc.y - month.loc.y >= calendar::BLOCK_H);
+        assert!(bar.slot_rect(Slot::NcClearAll).is_none(), "nothing to clear");
+        assert!(bar.slot_rect(Slot::IslandToMedia).is_none(), "nothing playing");
     }
 
     #[test]
@@ -5938,6 +5414,8 @@ mod tests {
         bar.layout_slots(&painter(), output());
         let today = bar.calendar.month();
         assert!(bar.focus_nav(0, 1));
+        assert_eq!(bar.focused, Some(Slot::IslandCollapse), "the header comes first");
+        bar.set_focused(Some(Slot::CalMonth));
         assert_eq!(bar.focused_action(), Some(TopbarAction::CalendarToday));
         assert!(bar.focus_nav(1, 0));
         assert_eq!(bar.calendar.month(), today.shifted(1));
@@ -6114,7 +5592,9 @@ mod tests {
         bar.set_nc_items(vec![item(1), item(2)]);
         let mut bar = with_popup(bar, OpenPopup::NotificationCenter);
         bar.focus_nav(0, 1);
-        assert_eq!(bar.focused, Some(Slot::CalMonth), "the calendar heads the clock popover");
+        assert_eq!(bar.focused, Some(Slot::IslandCollapse), "the header heads the island");
+        assert!(bar.focus_nav(0, 1));
+        assert_eq!(bar.focused, Some(Slot::CalNext), "Down leaves the header for the calendar");
         bar.set_focused(Some(Slot::NcClearAll));
         assert!(bar.focus_nav(0, 1));
         assert_eq!(bar.focused, Some(Slot::NcItem(1)), "the dismiss button shares no column with clear-all");

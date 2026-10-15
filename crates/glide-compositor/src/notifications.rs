@@ -554,9 +554,37 @@ struct Archived {
 
 pub const LOCAL_ID_FLOOR: u32 = u32::MAX - 4096;
 
+const MAX_GLANCES: usize = 8;
+
 #[must_use]
 pub const fn is_local(id: u32) -> bool {
     id >= LOCAL_ID_FLOOR
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Glance {
+    pub item: NcItem,
+    pub replaces: bool,
+}
+
+#[must_use]
+pub fn glances(notification: &Notification) -> bool {
+    visible_buttons(notification).is_empty()
+        && notification.reply.is_none()
+        && !notification.resident
+        && notification.urgency != Urgency::Critical
+}
+
+fn nc_item(notification: &Notification, age: Duration, icon: Option<&std::sync::Arc<Vec<u8>>>, count: usize) -> NcItem {
+    NcItem {
+        id: notification.id,
+        app_name: notification.app_name.clone(),
+        title: notification.summary.clone(),
+        body: notification.body.clone(),
+        time: crate::i18n::elapsed_label(age.as_secs()),
+        icon: icon.cloned(),
+        count,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,12 +619,29 @@ pub struct Notifications {
     rings: std::collections::HashMap<(bool, i32), MemoryRenderBuffer>,
     raster_rev: u64,
     locked_at: Option<Instant>,
+    banners: Banners,
+    pending_glances: Vec<Glance>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Banners {
+    #[default]
+    Toasts,
+    Island,
 }
 
 impl Notifications {
     #[must_use]
     pub fn new(theme: NotificationTheme) -> Self {
-        Self { theme, ..Self::default() }
+        Self { theme, banners: Banners::Island, ..Self::default() }
+    }
+
+    pub const fn set_glances(&mut self, on: bool) {
+        self.banners = if on { Banners::Island } else { Banners::Toasts };
+    }
+
+    pub fn take_glances(&mut self) -> Vec<Glance> {
+        std::mem::take(&mut self.pending_glances)
     }
 
     pub fn set_theme(&mut self, theme: &NotificationTheme) {
@@ -708,21 +753,14 @@ impl Notifications {
     #[must_use]
     pub fn nc_items(&self) -> Vec<NcItem> {
         let now = Instant::now();
-        let item = |notification: &Notification, at: Instant, icon: &Option<std::sync::Arc<Vec<u8>>>, count| {
-            let elapsed = now.duration_since(at).as_secs();
-            NcItem {
-                id: notification.id,
-                app_name: notification.app_name.clone(),
-                title: notification.summary.clone(),
-                body: notification.body.clone(),
-                time: crate::i18n::elapsed_label(elapsed),
-                icon: icon.clone(),
-                count,
-            }
-        };
+        let age = |at: Instant| now.duration_since(at);
         self.active()
-            .map(|entry| item(&entry.notification, entry.updated_at, &entry.icon, entry.group_size()))
-            .chain(self.archive.iter().map(|kept| item(&kept.notification, kept.received_at, &kept.icon, 1)))
+            .map(|entry| nc_item(&entry.notification, age(entry.updated_at), entry.icon.as_ref(), entry.group_size()))
+            .chain(
+                self.archive
+                    .iter()
+                    .map(|kept| nc_item(&kept.notification, age(kept.received_at), kept.icon.as_ref(), 1)),
+            )
             .collect()
     }
 
@@ -993,6 +1031,17 @@ impl Notifications {
             || self.hover_layers.values().chain(self.press_layers.values()).any(|tween| tween.is_animating(t1))
     }
 
+    fn glance(&mut self, icons: &mut crate::icon::IconLoader, notification: Notification, replaces: bool) {
+        let icon = load_icon(icons, &notification);
+        self.remove(notification.id, CloseReason::Expired, false);
+        let item = nc_item(&notification, Duration::ZERO, icon.as_ref(), 1);
+        self.pending_glances.push(Glance { item, replaces });
+        if self.pending_glances.len() > MAX_GLANCES {
+            self.pending_glances.remove(0);
+        }
+        self.keep(notification, Instant::now(), icon);
+    }
+
     pub fn push(&mut self, icons: &mut crate::icon::IconLoader, notification: Notification, replaces: bool) -> bool {
         if !self.is_enabled() {
             return false;
@@ -1002,6 +1051,10 @@ impl Notifications {
         if self.silences(&notification) {
             let icon = load_icon(icons, &notification);
             self.keep(notification, Instant::now(), icon);
+            return true;
+        }
+        if self.banners == Banners::Island && glances(&notification) {
+            self.glance(icons, notification, replaces);
             return true;
         }
 
@@ -1136,6 +1189,12 @@ impl Notifications {
 
     pub fn dismiss(&mut self, id: u32) -> bool {
         let removed = self.remove(id, CloseReason::Dismissed, true);
+        let forgotten = self.forget_kept(id);
+        removed || forgotten
+    }
+
+    pub fn withdraw(&mut self, id: u32, reason: CloseReason) -> bool {
+        let removed = self.remove(id, reason, true);
         let forgotten = self.forget_kept(id);
         removed || forgotten
     }
@@ -2174,7 +2233,9 @@ mod tests {
     }
 
     fn store() -> (Notifications, crate::icon::IconLoader) {
-        (Notifications::new(NotificationTheme::default()), crate::icon::IconLoader::new(None))
+        let mut store = Notifications::new(NotificationTheme::default());
+        store.set_glances(false);
+        (store, crate::icon::IconLoader::new(None))
     }
 
     fn settle_entry(store: &mut Notifications) {
@@ -2182,6 +2243,54 @@ mod tests {
             store.live[0].shown_at = settled;
         }
         assert!(!store.is_animating(), "a settled toast has nothing left to animate");
+    }
+
+    #[test]
+    fn plain_notifications_go_to_the_island_and_the_interactive_ones_stay_toasts() {
+        let (mut store, mut icons) = store();
+        store.set_glances(true);
+        assert!(store.push(&mut icons, from_app(1, "Telegram"), false));
+        assert!(store.live.is_empty(), "no toast for a plain notification");
+        assert_eq!(store.unread(), 1, "it waits in the centre");
+        assert_eq!(store.nc_items().first().map(|item| item.id), Some(1));
+        let glances = store.take_glances();
+        assert_eq!(glances.len(), 1);
+        assert_eq!((glances[0].item.id, glances[0].replaces), (1, false));
+        assert!(store.take_glances().is_empty(), "each glance is handed over once");
+
+        let buttons = Notification {
+            actions: vec![glide_notify::Action { key: "open".into(), label: "Open".into() }],
+            ..notification(2)
+        };
+        let critical = Notification { urgency: Urgency::Critical, ..notification(3) };
+        let resident = Notification { resident: true, ..notification(4) };
+        for interactive in [repliable(5), buttons, critical, resident] {
+            let id = interactive.id;
+            store.push(&mut icons, interactive, false);
+            assert!(store.live.iter().any(|entry| entry.owns(id)), "{id} keeps its toast");
+        }
+        assert!(store.take_glances().is_empty());
+    }
+
+    #[test]
+    fn a_glance_follows_replacements_silence_and_withdrawal() {
+        let (mut store, mut icons) = store();
+        store.set_glances(true);
+        store.push(&mut icons, notification(1), false);
+        store.push(&mut icons, Notification { body: "newer".into(), ..notification(1) }, true);
+        let glances = store.take_glances();
+        assert_eq!(glances.iter().map(|glance| glance.replaces).collect::<Vec<_>>(), [false, true]);
+        assert_eq!(store.nc_items().len(), 1, "a replacement updates the kept one");
+        assert_eq!(store.nc_items()[0].body, "newer");
+
+        store.set_dnd(true);
+        store.push(&mut icons, notification(2), false);
+        assert!(store.take_glances().is_empty(), "Do Not Disturb keeps it quiet");
+        assert_eq!(store.nc_items().len(), 2);
+
+        assert!(store.withdraw(1, CloseReason::Revoked));
+        assert!(store.nc_items().iter().all(|item| item.id != 1), "an app that closes it takes it back");
+        assert!(!store.withdraw(1, CloseReason::Revoked));
     }
 
     #[test]

@@ -1351,6 +1351,7 @@ impl Config {
         state.set_global_menu_enabled(self.topbar.enabled && self.topbar.global_menu);
         state.configure_tray(&self.topbar, self.dock.theme.icon_theme.clone());
         state.notifications.set_policy(self.notifications.policy());
+        state.notifications.set_glances(self.topbar.enabled);
         crate::cursor::set_configured_size(self.accessibility.cursor_size);
         if crate::cursor::set_configured_theme(self.general.cursor_theme.as_deref()) {
             state.reload_cursor_theme();

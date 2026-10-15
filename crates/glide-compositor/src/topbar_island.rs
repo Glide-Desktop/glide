@@ -1,0 +1,1497 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use glide_theme::TextStyle;
+use glide_theme::elevation::Level;
+use glide_theme::shape::{R_ROUND, R1, R2};
+use glide_theme::spacing::{SP1, SP2, SP3, SP4};
+use smithay::backend::renderer::element::{
+    Kind,
+    memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+};
+use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
+
+use super::{
+    Anim, BadgePop, Cache, E_IO, E_OUT, Frame, LocalRect, MEDIA_ART, MEDIA_ART_LARGE, MediaWidget, OpenPopup, Slot,
+    SwitchMotion, Topbar, TopbarTheme, calendar, draw_media_art, draw_switch, initial, local_rect, motion,
+    numeric_label_width, push_buffer, scaled_about_centre, transport_enabled,
+};
+use crate::config::Color;
+use crate::i18n::Lang;
+use crate::notifications::NcItem;
+use crate::paint::{Painter, TextAlign};
+use crate::popup_menu::text_px as text_w;
+use crate::raster::{Canvas, ShellRenderer};
+
+pub(super) const TOP: i32 = 3;
+pub(super) const WIDE: i32 = 356;
+pub(super) const VISIBLE_ITEMS: usize = 4;
+pub(super) const ALERT_HOLD: Duration = Duration::from_millis(3500);
+
+const COMPACT_W: i32 = 330;
+const COMPACT_H: i32 = 28;
+const COMPACT_PAD: i32 = 10;
+const ALERT_H: i32 = 42;
+const PAD: i32 = SP3;
+const SUB_H: i32 = 24;
+const SUB_PAD: i32 = 6;
+const SUB_GAP: i32 = 7;
+const SEP_GAP: i32 = SP2;
+const SEP_H: i32 = 12;
+const BARS_W: i32 = 12;
+const BARS_H: i32 = 11;
+const BAR_W: i32 = 3;
+const TITLE_MAX: i32 = 90;
+const BADGE_H: i32 = 15;
+const BADGE_PAD: i32 = 6;
+const ALERT_ICON: i32 = 26;
+const ALERT_CLOSE: i32 = 22;
+const HEADER_H: i32 = 24;
+const NC_HEADER_H: i32 = 26;
+const MINI_H: i32 = 22;
+const MINI_PAD: i32 = SP2;
+const MINI_ICON: i32 = 12;
+const MINI_GAP: i32 = 5;
+const HEADER_GAP: i32 = 6;
+const COLLAPSE: i32 = 22;
+const DOT: i32 = 6;
+const PILL_H: i32 = 18;
+const TRACK_H: i32 = 5;
+const THUMB: i32 = 12;
+const TIMES_H: i32 = 14;
+const TRANSPORT: i32 = 32;
+const TRANSPORT_MAIN: i32 = 38;
+const SECTION_H: i32 = 22;
+const LINK_H: i32 = 19;
+const TOGGLE_W: i32 = 26;
+const TOGGLE_H: i32 = 15;
+const MOON: i32 = 13;
+const ITEM_H: i32 = 52;
+const ITEM_GAP: i32 = 5;
+const ITEM_ICON: i32 = 30;
+const ITEM_DISMISS: i32 = 20;
+const EMPTY_H: i32 = 75;
+const EMPTY_ICON: i32 = 22;
+const SCROLL_W: i32 = 3;
+const SCRIM_ALPHA: f32 = 0.25;
+const ENTER_RISE: f64 = 4.0;
+const SURFACE_CACHE_LIMIT: usize = 64;
+const INSET_HIGHLIGHT: f32 = 0.18;
+
+const MEDIA_H: i32 =
+    PAD + HEADER_H + PAD + MEDIA_ART_LARGE + PAD + TRACK_H + SP1 + TIMES_H + PAD + TRANSPORT_MAIN + PAD;
+const CAL_TOP: i32 = PAD + NC_HEADER_H + SP2;
+const DIVIDER_Y: i32 = CAL_TOP + calendar::BLOCK_H + SP2 + 2;
+const SECTION_Y: i32 = DIVIDER_Y + 1 + 2 + SP2;
+const STACK_Y: i32 = SECTION_Y + SECTION_H + SP2;
+const MEDIA_MIN: i32 = SUB_PAD * 2 + MEDIA_ART + SUB_GAP + BARS_W;
+
+const fn style(size_px: f32, line_height_px: f32, weight: u16, tabular: bool) -> TextStyle {
+    TextStyle { size_px, line_height_px, weight, tracking_em: 0.0, uppercase: false, tabular }
+}
+
+pub(super) const DATE_STYLE: TextStyle = style(11.5, 14.0, 500, false);
+pub(super) const TIME_STYLE: TextStyle = style(11.5, 14.0, 550, true);
+const TITLE_STYLE: TextStyle = style(11.5, 14.0, 550, false);
+const BADGE_STYLE: TextStyle = style(10.0, 13.0, 600, true);
+const ALERT_TITLE_STYLE: TextStyle = style(12.0, 16.0, 650, false);
+const ALERT_BODY_STYLE: TextStyle = style(11.5, 15.0, 400, false);
+const PILL_STYLE: TextStyle = style(11.0, 14.0, 600, false);
+const MINI_STYLE: TextStyle = style(11.0, 14.0, 550, false);
+const TRACK_TITLE_STYLE: TextStyle = style(13.5, 18.0, 640, false);
+const ARTIST_STYLE: TextStyle = style(12.5, 17.0, 400, false);
+const ALBUM_STYLE: TextStyle = style(11.0, 14.0, 400, false);
+const TIMES_STYLE: TextStyle = style(10.5, 14.0, 400, true);
+const VIEW_TITLE_STYLE: TextStyle = style(12.0, 16.0, 650, false);
+const LINK_STYLE: TextStyle = style(11.5, 15.0, 500, false);
+const ITEM_TITLE_STYLE: TextStyle = style(12.5, 17.0, 630, false);
+const ITEM_BODY_STYLE: TextStyle = style(11.5, 15.0, 400, false);
+const ITEM_TIME_STYLE: TextStyle = style(10.5, 14.0, 400, true);
+const COUNT_STYLE: TextStyle = style(9.5, 12.0, 600, true);
+const EMPTY_STYLE: TextStyle = style(12.5, 17.0, 400, false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(super) enum View {
+    #[default]
+    Compact,
+    Alert,
+    Media,
+    Calendar,
+}
+
+impl View {
+    pub(super) const fn expanded(self) -> bool {
+        matches!(self, Self::Media | Self::Calendar)
+    }
+
+    const fn elevation(self) -> Level {
+        match self {
+            Self::Compact => Level::El1,
+            Self::Alert => Level::El2,
+            Self::Media | Self::Calendar => Level::El3,
+        }
+    }
+
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Compact => 0,
+            Self::Alert => 1,
+            Self::Media => 2,
+            Self::Calendar => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IslandAlert {
+    pub id: u32,
+    pub heading: String,
+    pub summary: String,
+    pub icon: Option<Arc<Vec<u8>>>,
+}
+
+impl IslandAlert {
+    #[must_use]
+    pub fn from_item(item: &NcItem) -> Self {
+        let (title, body) = (item.title.trim(), item.body.trim());
+        let app = item.app_name.trim();
+        let (heading, summary) = match (app.is_empty(), title.is_empty(), body.is_empty()) {
+            (true, _, _) => (title.to_string(), body.to_string()),
+            (false, true, _) => (app.to_string(), body.to_string()),
+            (false, false, true) => (app.to_string(), title.to_string()),
+            (false, false, false) => (app.to_string(), format!("{title}: {body}")),
+        };
+        Self { id: item.id, heading, summary, icon: item.icon.clone() }
+    }
+}
+
+type CompactKey = (u64, String, String, usize, u8, i32, ClockWidths);
+type MediaKey = (u64, Option<u16>, i32, Lang);
+type NcKey = (u64, bool, (u8, u8), Option<Slot>, usize, Option<i32>, Lang);
+
+#[derive(Debug)]
+pub(super) struct Island {
+    pub(super) view: View,
+    previous: View,
+    fade: Anim,
+    from: Size<i32, Logical>,
+    to: Size<i32, Logical>,
+    morph: Anim,
+    scrim: Anim,
+    alert: Option<(IslandAlert, Instant)>,
+    alert_rev: u64,
+    first_item: usize,
+    compact_w: i32,
+    backgrounds: HashMap<(i32, i32, i32), MemoryRenderBuffer>,
+    shadows: HashMap<(u8, i32, i32, i32), MemoryRenderBuffer>,
+    scrim_buffer: Option<MemoryRenderBuffer>,
+    compact: Cache<CompactKey>,
+    alert_cache: Cache<u64>,
+    media: Cache<MediaKey>,
+    nc: Cache<NcKey>,
+}
+
+impl Default for Island {
+    fn default() -> Self {
+        Self {
+            view: View::Compact,
+            previous: View::Compact,
+            fade: Anim::at(1.0),
+            from: Size::default(),
+            to: Size::default(),
+            morph: Anim::at(1.0),
+            scrim: Anim::at(0.0),
+            alert: None,
+            alert_rev: 0,
+            first_item: 0,
+            compact_w: COMPACT_W,
+            backgrounds: HashMap::new(),
+            shadows: HashMap::new(),
+            scrim_buffer: None,
+            compact: Cache::default(),
+            alert_cache: Cache::default(),
+            media: Cache::default(),
+            nc: Cache::default(),
+        }
+    }
+}
+
+fn lerp_i32(from: i32, to: i32, t: f64) -> i32 {
+    motion::lerp(f64::from(from), f64::from(to), t).round() as i32
+}
+
+fn placed(strip: Rectangle<i32, Logical>, size: Size<i32, Logical>) -> LocalRect {
+    let centre = strip.loc.x + strip.size.w / 2;
+    local_rect(centre - size.w / 2, strip.loc.y + TOP, size.w, size.h)
+}
+
+impl Island {
+    pub(super) fn clear(&mut self) {
+        self.backgrounds.clear();
+        self.shadows.clear();
+        self.scrim_buffer = None;
+        self.compact.clear();
+        self.alert_cache.clear();
+        self.media.clear();
+        self.nc.clear();
+    }
+
+    pub(super) fn is_animating(&self) -> bool {
+        self.fade.is_animating() || self.morph.is_animating() || self.scrim.is_animating()
+    }
+
+    fn size(&self) -> Size<i32, Logical> {
+        let t = self.morph.value().clamp(0.0, 1.0);
+        Size::from((lerp_i32(self.from.w, self.to.w, t), lerp_i32(self.from.h, self.to.h, t)))
+    }
+
+    pub(super) fn rect(&self, strip: Rectangle<i32, Logical>) -> LocalRect {
+        placed(strip, self.size())
+    }
+
+    pub(super) fn target(&self, strip: Rectangle<i32, Logical>) -> LocalRect {
+        placed(strip, self.to)
+    }
+
+    fn aim(&mut self, target: Size<i32, Logical>) {
+        if self.to == target {
+            return;
+        }
+        if self.to.w <= 0 || self.to.h <= 0 {
+            self.from = target;
+            self.to = target;
+            self.morph.jump(1.0);
+            return;
+        }
+        self.from = self.size();
+        self.to = target;
+        self.morph.jump(0.0);
+        self.morph.retarget(1.0, motion::t3(), E_OUT);
+    }
+
+    fn show(&mut self, view: View) -> bool {
+        if self.view == view {
+            return false;
+        }
+        self.previous = self.view;
+        self.view = view;
+        self.fade.jump(0.0);
+        self.fade.retarget(1.0, motion::t2(), E_IO);
+        self.scrim.retarget(if view.expanded() { 1.0 } else { 0.0 }, motion::t3(), E_IO);
+        true
+    }
+
+    fn content_alpha(&self) -> f32 {
+        self.fade.value().clamp(0.0, 1.0) as f32
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(super) struct ClockWidths {
+    date: i32,
+    time: i32,
+    badge: i32,
+}
+
+pub(super) const fn clock_width(widths: ClockWidths) -> i32 {
+    let date = if widths.date > 0 { widths.date + SUB_GAP } else { 0 };
+    let badge = if widths.badge > 0 { SUB_GAP + widths.badge } else { 0 };
+    SUB_PAD * 2 + date + widths.time + badge
+}
+
+fn badge_label(count: usize) -> String {
+    format!("+{count}")
+}
+
+fn badge_width(painter: &Painter, count: usize) -> i32 {
+    text_w(painter, &badge_label(count), &BADGE_STYLE) + BADGE_PAD * 2
+}
+
+#[must_use]
+pub(super) fn compact_width(widths: ClockWidths, media: bool) -> i32 {
+    let bare = COMPACT_PAD * 2 + clock_width(widths);
+    if media { COMPACT_W.max(bare + SEP_GAP * 2 + 1 + MEDIA_MIN) } else { bare }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompactLayout {
+    media: Option<LocalRect>,
+    separator: Option<LocalRect>,
+    clock: LocalRect,
+}
+
+fn compact_layout(width: i32, widths: ClockWidths, media: bool) -> CompactLayout {
+    let y = (COMPACT_H - SUB_H) / 2;
+    let clock_w = clock_width(widths);
+    let clock = local_rect(width - COMPACT_PAD - clock_w, y, clock_w, SUB_H);
+    if !media {
+        return CompactLayout { media: None, separator: None, clock };
+    }
+    let sep_x = clock.loc.x - SEP_GAP - 1;
+    let separator = local_rect(sep_x, (COMPACT_H - SEP_H) / 2, 1, SEP_H);
+    let media_w = (sep_x - SEP_GAP - COMPACT_PAD).max(0);
+    CompactLayout { media: Some(local_rect(COMPACT_PAD, y, media_w, SUB_H)), separator: Some(separator), clock }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AlertLayout {
+    icon: LocalRect,
+    text: (i32, i32),
+    close: LocalRect,
+}
+
+fn alert_layout() -> AlertLayout {
+    let icon = local_rect(PAD, (ALERT_H - ALERT_ICON) / 2, ALERT_ICON, ALERT_ICON);
+    let close = local_rect(WIDE - PAD - ALERT_CLOSE, (ALERT_H - ALERT_CLOSE) / 2, ALERT_CLOSE, ALERT_CLOSE);
+    AlertLayout { icon, text: (PAD + ALERT_ICON + SP3, WIDE - PAD - ALERT_CLOSE - SP3), close }
+}
+
+fn mini_width(painter: &Painter, label: &str) -> i32 {
+    MINI_PAD * 2 + MINI_ICON + MINI_GAP + text_w(painter, label, &MINI_STYLE)
+}
+
+fn header_controls(header_h: i32, switch_w: Option<i32>) -> (LocalRect, Option<LocalRect>) {
+    let collapse = local_rect(WIDE - PAD - COLLAPSE, PAD + (header_h - COLLAPSE) / 2, COLLAPSE, COLLAPSE);
+    let switch =
+        switch_w.map(|w| local_rect(collapse.loc.x - HEADER_GAP - w, PAD + (header_h - MINI_H) / 2, w, MINI_H));
+    (collapse, switch)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MediaLayout {
+    collapse: LocalRect,
+    switch: LocalRect,
+    art: LocalRect,
+    track: LocalRect,
+    seek: LocalRect,
+    times_y: i32,
+    transport: [LocalRect; 3],
+}
+
+fn media_layout(switch_w: i32) -> MediaLayout {
+    let (collapse, switch) = header_controls(HEADER_H, Some(switch_w));
+    let art_y = PAD + HEADER_H + PAD;
+    let art = local_rect(PAD, art_y, MEDIA_ART_LARGE, MEDIA_ART_LARGE);
+    let track_y = art_y + MEDIA_ART_LARGE + PAD;
+    let track = local_rect(PAD, track_y, WIDE - PAD * 2, TRACK_H);
+    let seek = local_rect(PAD, track_y - SP2, WIDE - PAD * 2, TRACK_H + SP2 * 2);
+    let times_y = track_y + TRACK_H + SP1;
+    let row_y = times_y + TIMES_H + PAD;
+    let row_w = TRANSPORT * 2 + TRANSPORT_MAIN + SP2 * 2;
+    let mut x = (WIDE - row_w) / 2;
+    let transport = [TRANSPORT, TRANSPORT_MAIN, TRANSPORT].map(|side| {
+        let rect = local_rect(x, row_y + (TRANSPORT_MAIN - side) / 2, side, side);
+        x += side + SP2;
+        rect
+    });
+    MediaLayout { collapse, switch: switch.unwrap_or_default(), art, track, seek, times_y, transport }
+}
+
+const fn shown_items(count: usize) -> i32 {
+    let shown = if count < VISIBLE_ITEMS { count } else { VISIBLE_ITEMS };
+    shown as i32
+}
+
+const fn stack_height(count: usize) -> i32 {
+    let shown = shown_items(count);
+    if shown == 0 { EMPTY_H } else { shown * ITEM_H + (shown - 1) * ITEM_GAP }
+}
+
+#[must_use]
+pub(super) const fn calendar_height(count: usize) -> i32 {
+    STACK_Y + stack_height(count) + PAD
+}
+
+#[must_use]
+pub(super) fn first_item(first: usize, count: usize) -> usize {
+    first.min(count.saturating_sub(VISIBLE_ITEMS))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NcLayout {
+    collapse: LocalRect,
+    switch: Option<LocalRect>,
+    toggle: LocalRect,
+    track: LocalRect,
+    moon: LocalRect,
+    clear: Option<LocalRect>,
+    items: Vec<(u32, LocalRect, LocalRect)>,
+}
+
+fn nc_layout(painter: &Painter, items: &[NcItem], first: usize, switch_w: Option<i32>) -> NcLayout {
+    use crate::i18n::{Key, t};
+    let (collapse, switch) = header_controls(NC_HEADER_H, switch_w);
+    let track = local_rect(WIDE - PAD - TOGGLE_W, SECTION_Y + (SECTION_H - TOGGLE_H) / 2, TOGGLE_W, TOGGLE_H);
+    let moon = local_rect(track.loc.x - MINI_GAP - MOON, SECTION_Y + (SECTION_H - MOON) / 2, MOON, MOON);
+    let toggle = local_rect(moon.loc.x, SECTION_Y, WIDE - PAD - moon.loc.x, SECTION_H);
+    let clear = (!items.is_empty()).then(|| {
+        let w = text_w(painter, t(Key::ClearAll), &LINK_STYLE) + SUB_PAD * 2;
+        local_rect(moon.loc.x - SP2 - w, SECTION_Y + (SECTION_H - LINK_H) / 2, w, LINK_H)
+    });
+    let first = first_item(first, items.len());
+    let mut y = STACK_Y;
+    let rows = items
+        .iter()
+        .skip(first)
+        .take(VISIBLE_ITEMS)
+        .map(|item| {
+            let row = local_rect(PAD, y, WIDE - PAD * 2, ITEM_H);
+            let dismiss = local_rect(
+                row.loc.x + row.size.w - SP2 - ITEM_DISMISS,
+                y + (ITEM_H - ITEM_DISMISS) / 2,
+                ITEM_DISMISS,
+                ITEM_DISMISS,
+            );
+            y += ITEM_H + ITEM_GAP;
+            (item.id, row, dismiss)
+        })
+        .collect();
+    NcLayout { collapse, switch, toggle, track, moon, clear, items: rows }
+}
+
+fn shift(rect: LocalRect, origin: Point<i32, Logical>) -> LocalRect {
+    Rectangle::new(rect.loc + origin, rect.size)
+}
+
+fn clock_and_time(media: &MediaWidget) -> Option<(String, String)> {
+    let length = media.length?;
+    let elapsed = length.mul_f32(media.progress.unwrap_or(0.0).clamp(0.0, 1.0));
+    Some((format_duration(elapsed), format_duration(length)))
+}
+
+#[must_use]
+pub(super) fn format_duration(duration: Duration) -> String {
+    let total = duration.as_secs();
+    let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
+    if hours > 0 { format!("{hours}:{minutes:02}:{seconds:02}") } else { format!("{minutes:02}:{seconds:02}") }
+}
+
+impl Topbar {
+    fn wanted_island_view(&self) -> View {
+        match self.open_popup {
+            Some(OpenPopup::MediaPlayer) if self.media.is_some() => View::Media,
+            Some(OpenPopup::NotificationCenter) => View::Calendar,
+            _ if self.island.alert.is_some() => View::Alert,
+            _ => View::Compact,
+        }
+    }
+
+    pub(super) fn sync_island(&mut self) {
+        let view = self.wanted_island_view();
+        if self.island.show(view) {
+            self.touch();
+        }
+    }
+
+    pub(super) const fn island_owns(popup: Option<OpenPopup>) -> bool {
+        matches!(popup, Some(OpenPopup::MediaPlayer | OpenPopup::NotificationCenter))
+    }
+
+    pub(super) fn island_target(&self, output: Rectangle<i32, Logical>) -> LocalRect {
+        self.island.target(self.rect(output))
+    }
+
+    pub(super) fn island_content_alpha(&self) -> f32 {
+        if self.island.view.expanded() { self.island.content_alpha() } else { 0.0 }
+    }
+
+    pub fn show_alert(&mut self, alert: IslandAlert, now: Instant) -> bool {
+        if self.popup_reveal.is_open() && Self::island_owns(self.open_popup) {
+            return false;
+        }
+        self.island.alert = Some((alert, now + ALERT_HOLD));
+        self.island.alert_rev = self.island.alert_rev.wrapping_add(1);
+        self.sync_island();
+        self.touch();
+        true
+    }
+
+    pub(super) fn island_forget_alert(&mut self) {
+        self.island.alert = None;
+    }
+
+    pub fn dismiss_alert(&mut self) -> bool {
+        if self.island.alert.take().is_none() {
+            return false;
+        }
+        self.sync_island();
+        self.touch();
+        true
+    }
+
+    pub fn tick_island(&mut self, now: Instant) -> bool {
+        let Some((_, until)) = self.island.alert.as_ref() else {
+            return false;
+        };
+        let hovered = matches!(self.hovered, Some(Slot::IslandAlert | Slot::IslandAlertClose));
+        if now < *until || hovered {
+            return false;
+        }
+        self.dismiss_alert()
+    }
+
+    #[must_use]
+    pub fn alert(&self) -> Option<&IslandAlert> {
+        self.island.alert.as_ref().map(|(alert, _)| alert)
+    }
+
+    pub fn scroll_notifications(&mut self, steps: i32) -> bool {
+        if self.open_popup != Some(OpenPopup::NotificationCenter) || steps == 0 {
+            return false;
+        }
+        let current = first_item(self.island.first_item, self.nc_items.len());
+        let next = if steps > 0 {
+            current.saturating_add(steps.unsigned_abs() as usize)
+        } else {
+            current.saturating_sub(steps.unsigned_abs() as usize)
+        };
+        let next = first_item(next, self.nc_items.len());
+        if next == current {
+            return false;
+        }
+        self.island.first_item = next;
+        self.touch();
+        true
+    }
+
+    pub(super) fn reset_island_scroll(&mut self) {
+        self.island.first_item = 0;
+    }
+
+    pub(super) fn island_clock(&mut self, painter: &Painter) -> ClockWidths {
+        let (date_w, time_w) = self.clock_metrics(painter);
+        let time = time_w.max(numeric_label_width(painter, &self.clock, &TIME_STYLE));
+        let date = if self.date.is_empty() { 0 } else { date_w.max(text_w(painter, &self.date, &DATE_STYLE)) };
+        let count = self.badge_shown();
+        let badge = if count > 0 { badge_width(painter, count) } else { 0 };
+        ClockWidths { date, time, badge }
+    }
+
+    fn switch_width(&self, painter: &Painter, view: View) -> Option<i32> {
+        use crate::i18n::{Key, t};
+        match view {
+            View::Media => Some(mini_width(painter, t(Key::Notifications))),
+            View::Calendar => self.media.is_some().then(|| mini_width(painter, t(Key::Media))),
+            View::Compact | View::Alert => None,
+        }
+    }
+
+    fn island_size(&mut self, painter: &Painter, view: View) -> (i32, i32) {
+        match view {
+            View::Compact => {
+                let widths = self.island_clock(painter);
+                let width = compact_width(widths, self.media.is_some());
+                self.island.compact_w = width;
+                (width, COMPACT_H)
+            }
+            View::Alert => (WIDE, ALERT_H),
+            View::Media => (WIDE, MEDIA_H),
+            View::Calendar => (WIDE, calendar_height(self.nc_items.len())),
+        }
+    }
+
+    pub(super) fn layout_island(
+        &mut self, painter: &Painter, strip: Rectangle<i32, Logical>, slots: &mut Vec<(Slot, LocalRect)>,
+    ) -> LocalRect {
+        let centre = strip.loc.x + strip.size.w / 2;
+        let top = strip.loc.y + TOP;
+        let view = self.island.view;
+        let compact = self.island_size(painter, View::Compact);
+        let (w, h) = if view == View::Compact { compact } else { self.island_size(painter, view) };
+        self.island.aim(Size::from((w, h)));
+        let target = placed(strip, Size::from((w, h)));
+        let origin = target.loc;
+        match view {
+            View::Compact => {
+                let widths = self.island_clock(painter);
+                let layout = compact_layout(w, widths, self.media.is_some());
+                if let Some(media) = layout.media {
+                    slots.push((Slot::IslandMedia, shift(media, origin)));
+                }
+                slots.push((Slot::Clock, shift(layout.clock, origin)));
+            }
+            View::Alert => {
+                let layout = alert_layout();
+                slots.push((Slot::IslandAlertClose, shift(layout.close, origin)));
+                slots.push((Slot::IslandAlert, target));
+            }
+            View::Media | View::Calendar => {}
+        }
+        local_rect(centre - WIDE / 2, top, WIDE, COMPACT_H)
+    }
+
+    pub(super) fn layout_island_popup(
+        &self, painter: &Painter, popup: OpenPopup, strip: Rectangle<i32, Logical>, slots: &mut Vec<(Slot, LocalRect)>,
+    ) -> Option<LocalRect> {
+        let centre = strip.loc.x + strip.size.w / 2;
+        let origin = Point::from((centre - WIDE / 2, strip.loc.y + TOP));
+        match popup {
+            OpenPopup::MediaPlayer => {
+                self.media.as_ref()?;
+                let layout = media_layout(self.switch_width(painter, View::Media).unwrap_or(0));
+                slots.push((Slot::IslandCollapse, shift(layout.collapse, origin)));
+                slots.push((Slot::IslandToNotifications, shift(layout.switch, origin)));
+                slots.push((Slot::PopMediaSeek, shift(layout.seek, origin)));
+                let buttons = [Slot::PopMediaPrev, Slot::PopMediaPlay, Slot::PopMediaNext];
+                for (slot, rect) in buttons.into_iter().zip(layout.transport) {
+                    slots.push((slot, shift(rect, origin)));
+                }
+                Some(Rectangle::new(origin, Size::from((WIDE, MEDIA_H))))
+            }
+            OpenPopup::NotificationCenter => {
+                let switch = self.switch_width(painter, View::Calendar);
+                let layout = nc_layout(painter, &self.nc_items, self.island.first_item, switch);
+                slots.push((Slot::IslandCollapse, shift(layout.collapse, origin)));
+                if let Some(switch) = layout.switch {
+                    slots.push((Slot::IslandToMedia, shift(switch, origin)));
+                }
+                let block = Point::from((origin.x + PAD, origin.y + CAL_TOP));
+                calendar::layout_slots(painter, &self.calendar_month_title(), block, slots);
+                if let Some(clear) = layout.clear {
+                    slots.push((Slot::NcClearAll, shift(clear, origin)));
+                }
+                slots.push((Slot::NcDndToggle, shift(layout.toggle, origin)));
+                for (id, row, dismiss) in layout.items {
+                    slots.push((Slot::NcItemDismiss(id), shift(dismiss, origin)));
+                    slots.push((Slot::NcItem(id), shift(row, origin)));
+                }
+                Some(Rectangle::new(origin, Size::from((WIDE, calendar_height(self.nc_items.len())))))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Glyph {
+    Bell,
+    Quiet,
+    Play,
+    Pause,
+    Previous,
+    Next,
+    Collapse,
+    Close,
+    Moon,
+    Back,
+    Forward,
+}
+
+impl Glyph {
+    const fn source(self) -> (&'static str, u8, Option<&'static str>) {
+        match self {
+            Self::Bell => (
+                "<path d=\"M8 2.5a4 4 0 00-4 4v3l-1.5 2h11L12 9.5v-3a4 4 0 00-4-4zM6.5 13.5a1.5 1.5 0 003 0\"/>",
+                16,
+                Some("1.6"),
+            ),
+            Self::Quiet => (
+                "<path d=\"M8 3a3.5 3.5 0 00-3.5 3.5v2.5L3 11h10l-1.5-2V6.5A3.5 3.5 0 008 3z\"/><path d=\"M6.5 13a1.5 1.5 0 003 0\"/>",
+                16,
+                Some("1.3"),
+            ),
+            Self::Play => ("<path d=\"M4.5 3v10l8-5z\"/>", 16, None),
+            Self::Pause => ("<path d=\"M5 3h2v10H5zM9 3h2v10H9z\"/>", 16, None),
+            Self::Previous => ("<path d=\"M5 3h1.5v10H5zM12 3v10l-6-5z\"/>", 16, None),
+            Self::Next => ("<path d=\"M11 3h-1.5v10H11zM4 3v10l6-5z\"/>", 16, None),
+            Self::Collapse => ("<path d=\"M4 10l4-4 4 4\"/>", 16, Some("2.2")),
+            Self::Close => ("<path d=\"M4 4l8 8M12 4l-8 8\"/>", 16, Some("2.2")),
+            Self::Moon => ("<path d=\"M14.2 10.4A5.8 5.8 0 017.6 3.8a5.8 5.8 0 106.6 6.6z\"/>", 18, Some("1.5")),
+            Self::Back => ("<path d=\"M10 4l-4 4 4 4\"/>", 16, Some("1.8")),
+            Self::Forward => ("<path d=\"M6 4l4 4-4 4\"/>", 16, Some("1.8")),
+        }
+    }
+
+    fn svg(self) -> String {
+        let (body, view, stroke) = self.source();
+        let paint = stroke.map_or_else(
+            || String::from("fill=\"#000\""),
+            |width| {
+                format!(
+                    "fill=\"none\" stroke=\"#000\" stroke-width=\"{width}\" stroke-linecap=\"round\" stroke-linejoin=\"round\""
+                )
+            },
+        );
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{view}\" height=\"{view}\" viewBox=\"0 0 {view} {view}\" {paint}>{body}</svg>"
+        )
+    }
+}
+
+pub(super) fn glyph(c: &mut Canvas<'_>, glyph: Glyph, side: i32, rect: LocalRect, colour: Color) {
+    let at = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
+    if let Some(pixels) = crate::paint::render_svg_tinted(glyph.svg().as_bytes(), side * c.scale, colour) {
+        crate::paint::blit_square_over(&mut c.buf, c.w, c.h, &pixels, side, at.0, at.1, c.scale);
+    }
+}
+
+struct Ink<'a> {
+    painter: &'a Painter,
+    theme: &'a TopbarTheme,
+}
+
+fn draw_mini(c: &mut Canvas<'_>, ink: &Ink<'_>, rect: LocalRect, icon: Glyph, label: &str) {
+    c.fill(rect, ink.theme.track_soft, R1);
+    let icon_rect = local_rect(rect.loc.x + MINI_PAD, rect.loc.y, MINI_ICON, rect.size.h);
+    glyph(c, icon, MINI_ICON, icon_rect, ink.theme.muted);
+    let left = icon_rect.loc.x + MINI_ICON + MINI_GAP;
+    let band = (left, rect.loc.x + rect.size.w - MINI_PAD, rect.loc.y, rect.loc.y + rect.size.h);
+    c.text(ink.painter, band, TextAlign::Left, label, ink.theme.muted, &MINI_STYLE);
+}
+
+fn draw_collapse(c: &mut Canvas<'_>, ink: &Ink<'_>, rect: LocalRect) {
+    c.fill(rect, ink.theme.track_soft, R1);
+    glyph(c, Glyph::Collapse, MINI_ICON, rect, ink.theme.muted);
+}
+
+fn draw_bars(c: &mut Canvas<'_>, x: i32, playing: bool, accent: Color) {
+    let heights: [i32; 3] = if playing { [4, BARS_H, 7] } else { [3, 3, 3] };
+    let colour = if playing { accent } else { accent.with_alpha(0.5) };
+    let bottom = i32::midpoint(COMPACT_H, BARS_H);
+    let mut bar_x = x;
+    for height in heights {
+        c.fill(local_rect(bar_x, bottom - height, BAR_W, height), colour, 1.0);
+        bar_x += BAR_W + 1;
+    }
+}
+
+fn draw_compact_media(c: &mut Canvas<'_>, ink: &Ink<'_>, media: &MediaWidget, rect: LocalRect) {
+    let art = local_rect(rect.loc.x + SUB_PAD, (COMPACT_H - MEDIA_ART) / 2, MEDIA_ART, MEDIA_ART);
+    draw_media_art(c, ink.painter, media, (media.art.as_deref(), (art.loc.x, art.loc.y, MEDIA_ART)), R1);
+    c.stroke(art, 1.0, R1, Color([1.0, 1.0, 1.0, INSET_HIGHLIGHT]));
+    let bars_x = art.loc.x + MEDIA_ART + SUB_GAP;
+    draw_bars(c, bars_x, media.playing, media.accent);
+    let left = bars_x + BARS_W + SUB_GAP;
+    let right = (rect.loc.x + rect.size.w - SUB_PAD).min(left + TITLE_MAX);
+    if right > left {
+        c.label(ink.painter, (left, right), TextAlign::Left, &media.title, ink.theme.label, &TITLE_STYLE);
+    }
+}
+
+struct ClockText<'a> {
+    date: &'a str,
+    clock: &'a str,
+    badge: BadgePop,
+    widths: ClockWidths,
+}
+
+fn draw_compact_clock(c: &mut Canvas<'_>, ink: &Ink<'_>, text: &ClockText<'_>, rect: LocalRect) {
+    let mut x = rect.loc.x + SUB_PAD;
+    if text.widths.date > 0 {
+        let span = (x, x + text.widths.date);
+        c.label(ink.painter, span, TextAlign::Left, text.date, ink.theme.muted, &DATE_STYLE);
+        x += text.widths.date + SUB_GAP;
+    }
+    c.label(ink.painter, (x, x + text.widths.time), TextAlign::Left, text.clock, ink.theme.label, &TIME_STYLE);
+    x += text.widths.time + SUB_GAP;
+    if text.badge.visible() && text.widths.badge > 0 {
+        let pill = local_rect(x, (COMPACT_H - BADGE_H) / 2, text.widths.badge, BADGE_H);
+        let alpha = text.badge.pop.clamp(0.0, 1.0) as f32;
+        c.fill(scaled_about_centre(pill, text.badge.scale()), ink.theme.active_background.with_alpha(alpha), R_ROUND);
+        let label = badge_label(text.badge.count);
+        let band = (pill.loc.x, pill.loc.x + pill.size.w, pill.loc.y, pill.loc.y + pill.size.h);
+        c.text(ink.painter, band, TextAlign::Center, &label, ink.theme.active_label.with_alpha(alpha), &BADGE_STYLE);
+    }
+}
+
+fn draw_compact(
+    ink: &Ink<'_>, media: Option<&MediaWidget>, text: &ClockText<'_>, width: i32, scale: i32,
+    icons: Option<&mut crate::icon::IconLoader>,
+) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::new(width, COMPACT_H, scale)?.with_icons(icons);
+    let layout = compact_layout(width, text.widths, media.is_some());
+    if let (Some(media), Some(rect)) = (media, layout.media) {
+        draw_compact_media(&mut c, ink, media, rect);
+    }
+    if let Some(separator) = layout.separator {
+        c.fill(separator, ink.theme.line.with_alpha(ink.theme.line.0[3] * 0.8), 0.0);
+    }
+    draw_compact_clock(&mut c, ink, text, layout.clock);
+    Some(c.finish())
+}
+
+fn draw_alert(ink: &Ink<'_>, alert: &IslandAlert, scale: i32) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::new(WIDE, ALERT_H, scale)?;
+    let layout = alert_layout();
+    if let Some(icon) = alert.icon.as_deref() {
+        let source = crate::notifications::ICON_SOURCE_PX;
+        let (x, y) = (layout.icon.loc.x, layout.icon.loc.y);
+        crate::paint::blit_icon_over(&mut c.buf, c.w, c.h, icon, source, ALERT_ICON, x, y, c.scale);
+    } else {
+        c.fill(layout.icon, ink.theme.active_background, R1);
+        glyph(&mut c, Glyph::Bell, 14, layout.icon, ink.theme.active_label);
+    }
+    let (left, right) = layout.text;
+    let mid = ALERT_H / 2;
+    c.text(
+        ink.painter,
+        (left, right, mid - 16, mid),
+        TextAlign::Left,
+        &alert.heading,
+        ink.theme.label,
+        &ALERT_TITLE_STYLE,
+    );
+    c.text(
+        ink.painter,
+        (left, right, mid, mid + 16),
+        TextAlign::Left,
+        &alert.summary,
+        ink.theme.muted,
+        &ALERT_BODY_STYLE,
+    );
+    c.fill(layout.close, ink.theme.fill_2, R1);
+    glyph(&mut c, Glyph::Close, 10, layout.close, ink.theme.muted);
+    Some(c.finish())
+}
+
+fn draw_media_header(c: &mut Canvas<'_>, ink: &Ink<'_>, media: &MediaWidget, layout: &MediaLayout) {
+    use crate::i18n::{Key, t};
+    let source = if media.source.trim().is_empty() { "—" } else { media.source.as_str() };
+    let pill_w =
+        (SP2 + DOT + MINI_GAP + text_w(ink.painter, source, &PILL_STYLE) + SP2).min(layout.switch.loc.x - PAD - SP2);
+    let pill = local_rect(PAD, PAD + (HEADER_H - PILL_H) / 2, pill_w, PILL_H);
+    c.fill(pill, ink.theme.track_soft, R_ROUND);
+    c.fill(local_rect(pill.loc.x + SP2, pill.loc.y + (PILL_H - DOT) / 2, DOT, DOT), media.accent, R_ROUND);
+    let text_left = pill.loc.x + SP2 + DOT + MINI_GAP;
+    let band = (text_left, pill.loc.x + pill.size.w - SP2, pill.loc.y, pill.loc.y + PILL_H);
+    c.text(ink.painter, band, TextAlign::Left, source, ink.theme.muted, &PILL_STYLE);
+    draw_mini(c, ink, layout.switch, Glyph::Bell, t(Key::Notifications));
+    draw_collapse(c, ink, layout.collapse);
+}
+
+fn draw_media_text(c: &mut Canvas<'_>, ink: &Ink<'_>, media: &MediaWidget, art: LocalRect) {
+    let left = art.loc.x + art.size.w + PAD;
+    let right = WIDE - PAD;
+    let lines: Vec<(&str, Color, &TextStyle)> = [
+        (media.title.as_str(), ink.theme.label, &TRACK_TITLE_STYLE),
+        (media.artist.as_str(), ink.theme.muted, &ARTIST_STYLE),
+        (media.album.as_str(), ink.theme.faint, &ALBUM_STYLE),
+    ]
+    .into_iter()
+    .filter(|(text, _, _)| !text.trim().is_empty())
+    .collect();
+    let gap = 2;
+    let total: i32 = lines.iter().map(|(_, _, style)| style.line_height_px.ceil() as i32).sum::<i32>()
+        + gap * (lines.len() as i32 - 1).max(0);
+    let mut y = art.loc.y + (art.size.h - total) / 2;
+    for (text, colour, style) in lines {
+        let height = style.line_height_px.ceil() as i32;
+        c.text(ink.painter, (left, right, y, y + height), TextAlign::Left, text, colour, style);
+        y += height + gap;
+    }
+}
+
+fn draw_scrubber(c: &mut Canvas<'_>, ink: &Ink<'_>, media: &MediaWidget, layout: &MediaLayout, progress: Option<f32>) {
+    let track = layout.track;
+    c.fill(track, ink.theme.fill_2, R_ROUND);
+    let filled = ((track.size.w as f32) * progress.unwrap_or(0.0).clamp(0.0, 1.0)).round() as i32;
+    if filled > 0 {
+        c.fill(local_rect(track.loc.x, track.loc.y, filled, TRACK_H), media.accent, R_ROUND);
+    }
+    if progress.is_some() {
+        let thumb_x =
+            (track.loc.x + filled - THUMB / 2).clamp(track.loc.x - THUMB / 2, track.loc.x + track.size.w - THUMB / 2);
+        let thumb = local_rect(thumb_x, track.loc.y + (TRACK_H - THUMB) / 2, THUMB, THUMB);
+        c.fill(thumb, ink.theme.label, R_ROUND);
+    }
+    if let Some((elapsed, total)) = clock_and_time(media) {
+        let band = (track.loc.x, track.loc.x + track.size.w, layout.times_y, layout.times_y + TIMES_H);
+        c.text(ink.painter, band, TextAlign::Left, &elapsed, ink.theme.faint, &TIMES_STYLE);
+        c.text(ink.painter, band, TextAlign::Right, &total, ink.theme.faint, &TIMES_STYLE);
+    }
+}
+
+fn draw_transport(c: &mut Canvas<'_>, ink: &Ink<'_>, media: &MediaWidget, layout: &MediaLayout) {
+    let white = Color([1.0, 1.0, 1.0, 1.0]);
+    for (index, rect) in layout.transport.into_iter().enumerate() {
+        if index == 1 {
+            c.fill(rect, media.accent, R_ROUND);
+            let icon = if media.playing { Glyph::Pause } else { Glyph::Play };
+            glyph(c, icon, 14, rect, white);
+            continue;
+        }
+        c.fill(rect, ink.theme.track_soft, R2);
+        let colour = if transport_enabled(media, index) { ink.theme.muted } else { ink.theme.ghost };
+        glyph(c, if index == 0 { Glyph::Previous } else { Glyph::Next }, 13, rect, colour);
+    }
+}
+
+fn draw_media(
+    ink: &Ink<'_>, media: &MediaWidget, progress: Option<f32>, switch_w: i32, scale: i32,
+    icons: Option<&mut crate::icon::IconLoader>,
+) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::new(WIDE, MEDIA_H, scale)?.with_icons(icons);
+    let layout = media_layout(switch_w);
+    draw_media_header(&mut c, ink, media, &layout);
+    let art = layout.art;
+    draw_media_art(&mut c, ink.painter, media, (media.art_large.as_deref(), (art.loc.x, art.loc.y, art.size.w)), R2);
+    c.stroke(art, 1.0, R2, Color([1.0, 1.0, 1.0, INSET_HIGHLIGHT * 0.8]));
+    draw_media_text(&mut c, ink, media, art);
+    draw_scrubber(&mut c, ink, media, &layout, progress);
+    draw_transport(&mut c, ink, media, &layout);
+    Some(c.finish())
+}
+
+struct NcInk<'a> {
+    ink: Ink<'a>,
+    dnd: bool,
+    switch: SwitchMotion,
+    hovered: Option<Slot>,
+}
+
+fn draw_nc_header(c: &mut Canvas<'_>, ink: &NcInk<'_>, layout: &NcLayout) {
+    use crate::i18n::{Key, t};
+    let theme = ink.ink.theme;
+    let right = layout.switch.map_or(layout.collapse.loc.x, |switch| switch.loc.x) - SP2;
+    let band = (PAD, right, PAD, PAD + NC_HEADER_H);
+    c.text(ink.ink.painter, band, TextAlign::Left, t(Key::CalendarAndNotifications), theme.label, &VIEW_TITLE_STYLE);
+    if let Some(switch) = layout.switch {
+        draw_mini(c, &ink.ink, switch, Glyph::Play, t(Key::Media));
+    }
+    draw_collapse(c, &ink.ink, layout.collapse);
+    c.fill(local_rect(PAD, DIVIDER_Y, WIDE - PAD * 2, 1), theme.line, 0.0);
+}
+
+fn draw_nc_section(c: &mut Canvas<'_>, ink: &NcInk<'_>, layout: &NcLayout) {
+    use crate::i18n::{Key, t};
+    let theme = ink.ink.theme;
+    let band =
+        (PAD, layout.clear.map_or(layout.moon.loc.x, |clear| clear.loc.x) - SP2, SECTION_Y, SECTION_Y + SECTION_H);
+    c.text(ink.ink.painter, band, TextAlign::Left, t(Key::Notifications), theme.faint, &TextStyle::MICRO);
+    if let Some(clear) = layout.clear {
+        let colour = if ink.hovered == Some(Slot::NcClearAll) { theme.label } else { theme.muted };
+        c.text_in(ink.ink.painter, clear, TextAlign::Center, t(Key::ClearAll), colour, &LINK_STYLE);
+    }
+    glyph(c, Glyph::Moon, MOON, layout.moon, if ink.dnd { theme.active_background } else { theme.faint });
+    draw_switch(c, theme, layout.track, (1, TOGGLE_H - 2), ink.switch);
+}
+
+fn draw_item_icon(c: &mut Canvas<'_>, ink: &Ink<'_>, item: &NcItem, rect: LocalRect) {
+    if let Some(icon) = item.icon.as_deref() {
+        let source = crate::notifications::ICON_SOURCE_PX;
+        crate::paint::blit_icon_over(&mut c.buf, c.w, c.h, icon, source, rect.size.w, rect.loc.x, rect.loc.y, c.scale);
+        return;
+    }
+    c.fill(rect, ink.theme.fill_2, R2);
+    let band = (rect.loc.x, rect.loc.x + rect.size.w, rect.loc.y, rect.loc.y + rect.size.h);
+    c.text(ink.painter, band, TextAlign::Center, &initial(&item.app_name), ink.theme.label, &ITEM_TITLE_STYLE);
+}
+
+fn draw_item(c: &mut Canvas<'_>, ink: &Ink<'_>, item: &NcItem, row: LocalRect, dismiss: LocalRect) {
+    let theme = ink.theme;
+    c.fill(row, theme.track_soft, R2);
+    c.stroke(row, 1.0, R2, theme.line);
+    let icon = local_rect(row.loc.x + SP2, row.loc.y + (ITEM_H - ITEM_ICON) / 2, ITEM_ICON, ITEM_ICON);
+    draw_item_icon(c, ink, item, icon);
+    let left = icon.loc.x + ITEM_ICON + SP2;
+    let right = dismiss.loc.x - SP2;
+    let title_h = ITEM_TITLE_STYLE.line_height_px.ceil() as i32;
+    let body_h = ITEM_BODY_STYLE.line_height_px.ceil() as i32;
+    let top = row.loc.y + (ITEM_H - title_h - 1 - body_h) / 2;
+    let time_w = text_w(ink.painter, &item.time, &ITEM_TIME_STYLE);
+    let time_left = right - time_w;
+    c.text(
+        ink.painter,
+        (time_left, right, top, top + title_h),
+        TextAlign::Right,
+        &item.time,
+        theme.faint,
+        &ITEM_TIME_STYLE,
+    );
+    let mut title_right = time_left - SP1;
+    if item.count > 1 {
+        let label = format!("+{}", item.count - 1);
+        let badge_w = text_w(ink.painter, &label, &COUNT_STYLE) + 10;
+        let title_w = text_w(ink.painter, &item.title, &ITEM_TITLE_STYLE);
+        let badge_x = (left + title_w + MINI_GAP).min(title_right - badge_w);
+        let badge = local_rect(badge_x, top + (title_h - 13) / 2, badge_w, 13);
+        c.fill(badge, theme.fill_2, R_ROUND);
+        c.text_in(ink.painter, badge, TextAlign::Center, &label, theme.muted, &COUNT_STYLE);
+        title_right = badge_x - MINI_GAP;
+    }
+    c.text(
+        ink.painter,
+        (left, title_right, top, top + title_h),
+        TextAlign::Left,
+        &item.title,
+        theme.label,
+        &ITEM_TITLE_STYLE,
+    );
+    let body_top = top + title_h + 1;
+    c.text(
+        ink.painter,
+        (left, right, body_top, body_top + body_h),
+        TextAlign::Left,
+        &item.body,
+        theme.muted,
+        &ITEM_BODY_STYLE,
+    );
+    glyph(c, Glyph::Close, 10, dismiss, theme.faint);
+}
+
+fn draw_empty(c: &mut Canvas<'_>, ink: &Ink<'_>) {
+    let icon = local_rect((WIDE - EMPTY_ICON) / 2, STACK_Y + SP4, EMPTY_ICON, EMPTY_ICON);
+    glyph(c, Glyph::Quiet, EMPTY_ICON, icon, ink.theme.faint.with_alpha(ink.theme.faint.0[3] * 0.6));
+    let top = icon.loc.y + EMPTY_ICON + SP1;
+    let band = (PAD, WIDE - PAD, top, top + EMPTY_STYLE.line_height_px.ceil() as i32);
+    let label = crate::i18n::t(crate::i18n::Key::NoNewNotifications);
+    c.text(ink.painter, band, TextAlign::Center, label, ink.theme.faint, &EMPTY_STYLE);
+}
+
+fn draw_scrollbar(c: &mut Canvas<'_>, theme: &TopbarTheme, first: usize, count: usize) {
+    if count <= VISIBLE_ITEMS {
+        return;
+    }
+    let track = stack_height(count);
+    let thumb = (track * VISIBLE_ITEMS as i32 / count as i32).max(SP4);
+    let offset = (track - thumb) * first as i32 / (count - VISIBLE_ITEMS) as i32;
+    let x = WIDE - PAD + (PAD - SCROLL_W) / 2;
+    c.fill(local_rect(x, STACK_Y + offset, SCROLL_W, thumb), theme.track, R_ROUND);
+}
+
+fn draw_notifications(
+    ink: &NcInk<'_>, items: &[NcItem], first: usize, switch_w: Option<i32>, scale: i32,
+) -> Option<MemoryRenderBuffer> {
+    let height = calendar_height(items.len());
+    let mut c = Canvas::new(WIDE, height, scale)?;
+    let layout = nc_layout(ink.ink.painter, items, first, switch_w);
+    draw_nc_header(&mut c, ink, &layout);
+    draw_nc_section(&mut c, ink, &layout);
+    if items.is_empty() {
+        draw_empty(&mut c, &ink.ink);
+    }
+    let first = first_item(first, items.len());
+    for (item, (_, row, dismiss)) in items.iter().skip(first).zip(layout.items.iter()) {
+        draw_item(&mut c, &ink.ink, item, *row, *dismiss);
+    }
+    draw_scrollbar(&mut c, ink.ink.theme, first, items.len());
+    Some(c.finish())
+}
+
+fn push_clipped<R: ShellRenderer>(
+    renderer: &mut R, buffer: &MemoryRenderBuffer, (content, clip): (LocalRect, LocalRect), alpha: f32,
+    scale: Scale<f64>, elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) {
+    if alpha <= 0.0 {
+        return;
+    }
+    let Some(visible) = content.intersection(clip) else {
+        return;
+    };
+    if visible.size.w <= 0 || visible.size.h <= 0 {
+        return;
+    }
+    let offset = Point::from((f64::from(visible.loc.x - content.loc.x), f64::from(visible.loc.y - content.loc.y)));
+    let src = Rectangle::new(offset, visible.size.to_f64());
+    if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        visible.loc.to_f64().to_physical(scale),
+        buffer,
+        Some(alpha.clamp(0.0, 1.0)),
+        Some(src),
+        Some(visible.size),
+        Kind::Unspecified,
+    ) {
+        elements.push(element);
+    }
+}
+
+fn push_stretched<R: ShellRenderer>(
+    renderer: &mut R, buffer: &MemoryRenderBuffer, (source, target): (Size<i32, Logical>, LocalRect), alpha: f32,
+    scale: Scale<f64>, elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) {
+    if alpha <= 0.0 || target.size.w <= 0 || target.size.h <= 0 {
+        return;
+    }
+    if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        target.loc.to_f64().to_physical(scale),
+        buffer,
+        Some(alpha.clamp(0.0, 1.0)),
+        Some(Rectangle::from_size(source.to_f64())),
+        Some(target.size),
+        Kind::Unspecified,
+    ) {
+        elements.push(element);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Spot {
+    strip: Rectangle<i32, Logical>,
+    rise: i32,
+}
+
+impl Spot {
+    fn content(self, width: i32, height: i32) -> LocalRect {
+        let anchor = placed(self.strip, Size::from((width, height)));
+        Rectangle::new(Point::from((anchor.loc.x, anchor.loc.y + self.rise)), anchor.size)
+    }
+}
+
+fn push_view<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, view: View, alpha: f32, spot: Spot) {
+    if alpha <= 0.0 {
+        return;
+    }
+    match view {
+        View::Compact => push_compact(topbar, frame, alpha, spot),
+        View::Alert => push_alert(topbar, frame, alpha, spot),
+        View::Media => push_media(topbar, frame, alpha, spot),
+        View::Calendar => push_calendar(topbar, frame, alpha, spot),
+    }
+}
+
+fn push_compact<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
+    let widths = topbar.island_clock(painter);
+    let width = topbar.island.compact_w;
+    let clip = topbar.island.rect(spot.strip);
+    let badge = BadgePop { count: topbar.badge_shown(), pop: topbar.badge_anim.value() };
+    let key: CompactKey =
+        (topbar.track_rev, topbar.date.clone(), topbar.clock.clone(), badge.count, badge.key(), width, widths);
+    let content = spot.content(width, COMPACT_H);
+    let ink = Ink { painter, theme: &topbar.theme };
+    let text = ClockText { date: &topbar.date, clock: &topbar.clock, badge, widths };
+    let media = topbar.media.as_ref();
+    let Some(buffer) = topbar
+        .island
+        .compact
+        .resolve(key, output_scale, || draw_compact(&ink, media, &text, width, output_scale, Some(icons)))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+}
+
+fn push_alert<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
+    let Some((alert, _)) = topbar.island.alert.as_ref() else {
+        return;
+    };
+    let clip = topbar.island.rect(spot.strip);
+    let content = spot.content(WIDE, ALERT_H);
+    let ink = Ink { painter, theme: &topbar.theme };
+    let Some(buffer) = topbar
+        .island
+        .alert_cache
+        .resolve(topbar.island.alert_rev, output_scale, || draw_alert(&ink, alert, output_scale))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+}
+
+fn push_media<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
+    let Some(media) = topbar.media.as_ref() else {
+        return;
+    };
+    let switch_w = topbar.switch_width(painter, View::Media).unwrap_or(0);
+    let seek = topbar.seek_permille();
+    let progress = seek.map(|permille| f32::from(permille) / 1000.0);
+    let clip = topbar.island.rect(spot.strip);
+    let content = spot.content(WIDE, MEDIA_H);
+    let ink = Ink { painter, theme: &topbar.theme };
+    let key: MediaKey = (topbar.media_rev, seek, switch_w, crate::i18n::language());
+    let Some(buffer) = topbar
+        .island
+        .media
+        .resolve(key, output_scale, || draw_media(&ink, media, progress, switch_w, output_scale, Some(icons)))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+}
+
+fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
+    let clip = topbar.island.rect(spot.strip);
+    let switch_w = topbar.switch_width(painter, View::Calendar);
+    let height = calendar_height(topbar.nc_items.len());
+    let content = spot.content(WIDE, height);
+    if let Some(block) = calendar::block(topbar, painter, icons, output_scale) {
+        let block_rect = local_rect(content.loc.x + PAD, content.loc.y + CAL_TOP, WIDE - PAD * 2, calendar::BLOCK_H);
+        push_clipped(renderer, &block, (block_rect, clip), alpha, scale, elements);
+    }
+    let first = first_item(topbar.island.first_item, topbar.nc_items.len());
+    let hovered = topbar.hovered.filter(|slot| matches!(slot, Slot::NcClearAll));
+    let key: NcKey =
+        (topbar.nc_rev, topbar.dnd, topbar.dnd_anim.switch().key(), hovered, first, switch_w, crate::i18n::language());
+    let ink = NcInk {
+        ink: Ink { painter, theme: &topbar.theme },
+        dnd: topbar.dnd,
+        switch: topbar.dnd_anim.switch(),
+        hovered,
+    };
+    let items = &topbar.nc_items;
+    let Some(buffer) =
+        topbar.island.nc.resolve(key, output_scale, || draw_notifications(&ink, items, first, switch_w, output_scale))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+}
+
+fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: LocalRect) {
+    let (renderer, _, _, scale, output_scale, elements) = frame.parts();
+    if rect.size.w <= 0 || rect.size.h <= 0 {
+        return;
+    }
+    let key = (rect.size.w, rect.size.h, output_scale);
+    let island = &mut topbar.island;
+    if island.backgrounds.len() >= SURFACE_CACHE_LIMIT && !island.backgrounds.contains_key(&key) {
+        island.backgrounds.clear();
+    }
+    if !island.backgrounds.contains_key(&key)
+        && let Some(canvas) = Canvas::popover(
+            (rect.size.w, rect.size.h),
+            output_scale,
+            R2,
+            topbar.theme.island_bg,
+            topbar.theme.island_line,
+        )
+    {
+        island.backgrounds.insert(key, canvas.finish());
+    }
+    if let Some(buffer) = island.backgrounds.get(&key) {
+        push_buffer(renderer, buffer, rect.loc, scale, elements);
+    }
+}
+
+fn shadow_layers(dark: bool, level: Level) -> Vec<glide_theme::elevation::ShadowLayer> {
+    let appearance = if dark { glide_theme::Appearance::Dark } else { glide_theme::Appearance::Light };
+    glide_theme::elevation::layers(level, appearance)
+}
+
+fn shadow_margin(dark: bool, level: Level) -> i32 {
+    let reach = shadow_layers(dark, level).iter().map(|layer| layer.blur + layer.dy).fold(0.0_f32, f32::max);
+    reach.ceil() as i32 + SP1
+}
+
+fn push_shadow<R: ShellRenderer>(
+    topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: LocalRect, (view, size): (View, Size<i32, Logical>),
+    alpha: f32,
+) {
+    let (renderer, _, _, scale, output_scale, elements) = frame.parts();
+    if alpha <= 0.0 || size.w <= 0 || size.h <= 0 {
+        return;
+    }
+    let dark = topbar.theme.dark;
+    let level = view.elevation();
+    let margin = shadow_margin(dark, level);
+    let key = (view.tag(), size.w, size.h, output_scale);
+    let island = &mut topbar.island;
+    if island.shadows.len() >= SURFACE_CACHE_LIMIT && !island.shadows.contains_key(&key) {
+        island.shadows.clear();
+    }
+    if !island.shadows.contains_key(&key)
+        && let Some(canvas) =
+            crate::raster::shadow((size.w, size.h), margin, R2, &shadow_layers(dark, level), output_scale)
+    {
+        island.shadows.insert(key, canvas.finish());
+    }
+    let Some(buffer) = island.shadows.get(&key) else {
+        return;
+    };
+    let source = Size::from((size.w + margin * 2, size.h + margin * 2));
+    let target =
+        local_rect(rect.loc.x - margin, rect.loc.y - margin, rect.size.w + margin * 2, rect.size.h + margin * 2);
+    push_stretched(renderer, buffer, (source, target), alpha, scale, elements);
+}
+
+fn push_scrim<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, output: Rectangle<i32, Logical>) {
+    let (renderer, _, _, scale, _, elements) = frame.parts();
+    let level = topbar.island.scrim.value().clamp(0.0, 1.0) as f32 * SCRIM_ALPHA;
+    if level <= 0.0 {
+        return;
+    }
+    if topbar.island.scrim_buffer.is_none()
+        && let Some(mut canvas) = Canvas::new(1, 1, 1)
+    {
+        canvas.fill(canvas.full(), Color([0.0, 0.0, 0.0, 1.0]), 0.0);
+        topbar.island.scrim_buffer = Some(canvas.finish());
+    }
+    if let Some(buffer) = topbar.island.scrim_buffer.as_ref() {
+        push_stretched(renderer, buffer, (Size::from((1, 1)), output), level, scale, elements);
+    }
+}
+
+pub(super) fn push<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, output: Rectangle<i32, Logical>) {
+    let strip = topbar.rect(output);
+    let rect = topbar.island.rect(strip);
+    if rect.size.w <= 0 || rect.size.h <= 0 {
+        return;
+    }
+    let fade = topbar.island.fade.value().clamp(0.0, 1.0);
+    let rise = (ENTER_RISE * (1.0 - topbar.island.fade.value_with(E_OUT).clamp(0.0, 1.0))).round() as i32;
+    let (current, previous) = (topbar.island.view, topbar.island.previous);
+    let settled = fade >= 1.0 || previous == current;
+    let entering = Spot { strip, rise: if settled { 0 } else { rise } };
+    push_view(topbar, frame, current, if settled { 1.0 } else { fade as f32 }, entering);
+    if !settled {
+        push_view(topbar, frame, previous, (1.0 - fade) as f32, Spot { strip, rise: 0 });
+    }
+    push_surface(topbar, frame, rect);
+    let (from, to) = (topbar.island.from, topbar.island.to);
+    push_shadow(topbar, frame, rect, (current, to), if settled { 1.0 } else { fade as f32 });
+    if !settled {
+        push_shadow(topbar, frame, rect, (previous, from), (1.0 - fade) as f32);
+    }
+    push_scrim(topbar, frame, output);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn widths() -> ClockWidths {
+        ClockWidths { date: 60, time: 34, badge: 0 }
+    }
+
+    #[test]
+    fn the_compact_island_keeps_its_concept_width_with_media_and_hugs_the_clock_without() {
+        assert_eq!(compact_width(widths(), true), COMPACT_W);
+        let bare = compact_width(widths(), false);
+        assert_eq!(bare, COMPACT_PAD * 2 + SUB_PAD * 2 + 60 + SUB_GAP + 34);
+        assert!(bare < COMPACT_W);
+        let badge = ClockWidths { badge: 24, ..widths() };
+        assert_eq!(compact_width(badge, false), bare + SUB_GAP + 24, "the badge widens a clock-only island");
+        assert_eq!(compact_width(badge, true), COMPACT_W, "with media the clock takes the room from the title");
+    }
+
+    #[test]
+    fn compact_controls_sit_inside_the_island_with_the_clock_on_the_right() {
+        let layout = compact_layout(COMPACT_W, widths(), true);
+        let media = layout.media.expect("a media button when something plays");
+        let separator = layout.separator.expect("a separator between the two halves");
+        assert_eq!(media.loc.x, COMPACT_PAD);
+        assert_eq!(layout.clock.loc.x + layout.clock.size.w, COMPACT_W - COMPACT_PAD);
+        assert!(media.loc.x + media.size.w + SEP_GAP <= separator.loc.x);
+        assert!(separator.loc.x + 1 + SEP_GAP <= layout.clock.loc.x);
+        for rect in [media, layout.clock] {
+            assert!(rect.loc.y >= 0 && rect.loc.y + rect.size.h <= COMPACT_H);
+        }
+        let bare = compact_layout(compact_width(widths(), false), widths(), false);
+        assert!(bare.media.is_none() && bare.separator.is_none());
+        assert_eq!(bare.clock.loc.x, COMPACT_PAD);
+    }
+
+    #[test]
+    fn expanded_heights_match_the_concept_and_grow_with_notifications() {
+        assert_eq!(MEDIA_H, 201);
+        assert_eq!(calendar_height(0), STACK_Y + EMPTY_H + PAD);
+        assert_eq!(calendar_height(1), STACK_Y + ITEM_H + PAD);
+        assert_eq!(calendar_height(4), calendar_height(9), "more than four notifications scroll");
+        assert!(calendar_height(4) <= 564, "never taller than the concept's 564 px");
+        assert_eq!(stack_height(4), 4 * ITEM_H + 3 * ITEM_GAP);
+    }
+
+    #[test]
+    fn the_notification_list_scrolls_by_whole_items_and_stops_at_both_ends() {
+        assert_eq!(first_item(0, 9), 0);
+        assert_eq!(first_item(3, 9), 3);
+        assert_eq!(first_item(7, 9), 5, "the last page stays full");
+        assert_eq!(first_item(4, 3), 0, "a short list never scrolls");
+    }
+
+    #[test]
+    fn the_media_view_stacks_header_art_scrubber_and_transport() {
+        let layout = media_layout(90);
+        assert!(layout.switch.loc.x + layout.switch.size.w + HEADER_GAP <= layout.collapse.loc.x);
+        assert_eq!(layout.collapse.loc.x + COLLAPSE, WIDE - PAD);
+        assert!(layout.art.loc.y + layout.art.size.h < layout.track.loc.y);
+        assert!(layout.seek.loc.y < layout.track.loc.y);
+        assert!(layout.seek.loc.y + layout.seek.size.h > layout.track.loc.y + TRACK_H);
+        let [prev, play, next] = layout.transport;
+        assert_eq!(play.size.w, TRANSPORT_MAIN);
+        assert_eq!(prev.loc.y + prev.size.h / 2, play.loc.y + play.size.h / 2);
+        assert_eq!(play.loc.x + play.size.w / 2, WIDE / 2, "play sits in the middle");
+        assert!(next.loc.x > play.loc.x);
+        assert_eq!(play.loc.y + play.size.h + PAD, MEDIA_H);
+    }
+
+    #[test]
+    fn the_alert_holds_its_icon_text_and_close_button_on_one_line() {
+        let layout = alert_layout();
+        assert_eq!(layout.icon.loc.x, PAD);
+        assert_eq!(layout.close.loc.x + ALERT_CLOSE, WIDE - PAD);
+        assert!(layout.text.0 >= layout.icon.loc.x + ALERT_ICON && layout.text.1 <= layout.close.loc.x);
+    }
+
+    #[test]
+    fn a_view_change_crossfades_and_a_new_size_morphs_from_where_the_island_is() {
+        let strip = local_rect(0, 0, 1920, 34);
+        let mut island = Island::default();
+        island.aim(Size::from((COMPACT_W, COMPACT_H)));
+        assert_eq!(island.rect(strip), local_rect(795, TOP, COMPACT_W, COMPACT_H), "the first size is taken at once");
+        assert!(island.show(View::Calendar));
+        assert!(!island.show(View::Calendar));
+        assert_eq!(island.previous, View::Compact);
+        island.aim(Size::from((WIDE, 500)));
+        let now = island.rect(strip);
+        assert!(now.size.w >= COMPACT_W && now.size.w <= WIDE);
+        assert_eq!(island.target(strip), local_rect(782, TOP, WIDE, 500));
+        assert!(!island.morph.is_animating() || now.size.h < 500, "the morph starts from the compact size");
+    }
+
+    #[test]
+    fn every_output_draws_the_same_morph_centred_on_its_own_bar() {
+        let (left, right) = (local_rect(0, 0, 1920, 34), local_rect(1920, 0, 2560, 34));
+        let mut island = Island::default();
+        island.aim(Size::from((COMPACT_W, COMPACT_H)));
+        island.aim(Size::from((WIDE, ALERT_H)));
+        let animating = island.morph.is_animating();
+        island.aim(Size::from((WIDE, ALERT_H)));
+        assert_eq!(island.morph.is_animating(), animating, "laying out for another output does not restart it");
+        let (a, b) = (island.rect(left), island.rect(right));
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.loc.x + a.size.w / 2, 960);
+        assert_eq!(b.loc.x + b.size.w / 2, 1920 + 1280);
+    }
+
+    #[test]
+    fn alerts_read_like_the_concept() {
+        let item = NcItem {
+            id: 7,
+            app_name: String::from("Telegram"),
+            title: String::from("Olena"),
+            body: String::from("Call at 15:00?"),
+            time: String::new(),
+            icon: None,
+            count: 1,
+        };
+        let alert = IslandAlert::from_item(&item);
+        assert_eq!((alert.heading.as_str(), alert.summary.as_str()), ("Telegram", "Olena: Call at 15:00?"));
+        let bare = IslandAlert::from_item(&NcItem { app_name: String::new(), ..item.clone() });
+        assert_eq!((bare.heading.as_str(), bare.summary.as_str()), ("Olena", "Call at 15:00?"));
+        let quiet = IslandAlert::from_item(&NcItem { body: String::new(), ..item });
+        assert_eq!(quiet.summary, "Olena");
+    }
+
+    #[test]
+    fn durations_print_like_a_player() {
+        assert_eq!(format_duration(Duration::from_secs(81)), "01:21");
+        assert_eq!(format_duration(Duration::from_secs(212)), "03:32");
+        assert_eq!(format_duration(Duration::from_secs(3725)), "1:02:05");
+    }
+
+    #[test]
+    fn every_glyph_is_valid_svg() {
+        for glyph in [
+            Glyph::Bell,
+            Glyph::Quiet,
+            Glyph::Play,
+            Glyph::Pause,
+            Glyph::Previous,
+            Glyph::Next,
+            Glyph::Collapse,
+            Glyph::Close,
+            Glyph::Moon,
+            Glyph::Back,
+            Glyph::Forward,
+        ] {
+            assert!(crate::paint::render_svg(glyph.svg().as_bytes(), 24).is_some(), "{glyph:?}");
+        }
+    }
+}

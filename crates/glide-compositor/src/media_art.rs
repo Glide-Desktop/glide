@@ -89,6 +89,8 @@ fn bare_widget(
     crate::topbar::MediaWidget {
         title: track.display_title().to_string(),
         artist: track.artist.clone(),
+        album: track.album.clone(),
+        length: track.length.filter(|length| !length.is_zero()),
         source: track.identity.clone(),
         art: None,
         art_large: None,

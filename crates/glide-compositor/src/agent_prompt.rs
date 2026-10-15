@@ -148,6 +148,7 @@ impl crate::GlideState {
     }
 
     pub fn tick_local_notifications(&mut self) {
+        self.show_glances();
         for event in self.notifications.take_local_events() {
             if let LocalEvent::Action { id: crate::disk_space::NOTICE_ID, key } = &event
                 && key == crate::disk_space::OPEN_STORAGE

@@ -58,6 +58,9 @@ pub struct Tokens {
     pub shell_fg: Color,
     pub shell_line: Color,
 
+    pub island_bg: Color,
+    pub island_line: Color,
+
     pub term_bg: Color,
     pub term_fg: Color,
     pub term_accent: Color,
@@ -119,6 +122,9 @@ impl Tokens {
                 shell_fg: Color::from_hex("#1b1a17").unwrap(),
                 shell_line: Color::from_rgb8(27, 26, 23, 0.12),
 
+                island_bg: Color::from_hex("#ffffff").unwrap(),
+                island_line: Color::from_rgb8(27, 26, 23, 0.07),
+
                 term_bg: Color::from_hex("#f5f4f0").unwrap(),
                 term_fg: Color::from_hex("#1e241b").unwrap(),
                 term_accent: Color::from_hex("#1e5bb8").unwrap(),
@@ -171,6 +177,9 @@ impl Tokens {
                 shell_bg: Color::from_rgb8(38, 37, 42, 0.84),
                 shell_fg: Color::from_hex("#f2f0ed").unwrap(),
                 shell_line: Color::from_rgb8(255, 255, 255, 0.12),
+
+                island_bg: Color::from_hex("#26252b").unwrap(),
+                island_line: Color::from_rgb8(255, 255, 255, 0.07),
 
                 term_bg: Color::from_hex("#131218").unwrap(),
                 term_fg: Color::from_hex("#cfe4ca").unwrap(),

@@ -2569,6 +2569,12 @@ impl GlideState {
         if steps == 0 {
             return true;
         }
+        if matches!(slot, crate::topbar::Slot::NcItem(_) | crate::topbar::Slot::NcItemDismiss(_)) {
+            if self.topbar.scroll_notifications(steps) {
+                self.queue_redraw();
+            }
+            return true;
+        }
         let step = i16::try_from(steps.saturating_mul(-5).clamp(-200, 200)).unwrap_or(0);
         let status = self.topbar.system_status();
         let action = match slot {

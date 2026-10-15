@@ -1,25 +1,39 @@
+use super::island::{self, Glyph, glyph};
 use super::{
-    Anim, CLOCK_STYLE, Cache, E_OUT, LocalRect, Logical, MemoryRenderBuffer, MemoryRenderBufferRenderElement, NC_PAD,
-    OpenPopup, Point, Rectangle, Scale, Size, Slot, Topbar, TopbarTheme, local_rect, motion, numeric_label_width,
-    push_popup_buffer, quantize, widest_digits,
+    Anim, Cache, E_OUT, LocalRect, Logical, MemoryRenderBuffer, Point, Rectangle, Slot, Topbar, TopbarTheme,
+    local_rect, motion, numeric_label_width, quantize, widest_digits,
 };
 use crate::i18n::Lang;
 use crate::paint::TextAlign;
+use crate::popup_menu::text_px as text_w;
 use crate::raster::Canvas;
-use glide_theme::spacing::{SP1, SP2, SP3};
+use glide_theme::TextStyle;
+use glide_theme::shape::R_ROUND;
 
 const HEADER_H: i32 = 28;
-const NAV_BUTTON: i32 = 28;
-const TITLE_W: i32 = 184;
+const TITLE_H: i32 = 26;
+const TITLE_PAD: i32 = glide_theme::spacing::SP2;
+const BADGE_H: i32 = 14;
+const BADGE_PAD: i32 = 6;
+const NAV_BUTTON: i32 = 24;
+const NAV_GAP: i32 = 3;
+const NAV_GLYPH: i32 = 12;
+const BLOCK_GAP: i32 = 6;
 const WEEK_H: i32 = 16;
-const CELL_H: i32 = 28;
+const CELL_H: i32 = 26;
+const CELL_GAP: i32 = 2;
 const ROWS: i32 = 6;
-const TODAY_DOT: i32 = 24;
-const NAV_GLYPH: i32 = 14;
 const SLIDE_QUANTUM: f64 = 24.0;
-pub(super) const BLOCK_H: i32 = HEADER_H + SP2 + WEEK_H + SP1 + ROWS * CELL_H + SP3 + 1 + SP3;
+const GRID_Y: i32 = HEADER_H + BLOCK_GAP + WEEK_H + BLOCK_GAP;
+pub(super) const BLOCK_W: i32 = island::WIDE - glide_theme::spacing::SP3 * 2;
+pub(super) const BLOCK_H: i32 = GRID_Y + ROWS * CELL_H + (ROWS - 1) * CELL_GAP;
 
-type CalKey = (YearMonth, Option<YearMonth>, i32, u8, Option<(i32, u32, u32)>, FirstWeekday, Lang, i32);
+const MONTH_STYLE: TextStyle = TextStyle { size_px: 13.5, line_height_px: 18.0, weight: 650, ..TextStyle::HEAD };
+const TODAY_STYLE: TextStyle = TextStyle { size_px: 9.5, line_height_px: 12.0, weight: 500, ..TextStyle::CAP };
+const DAY_STYLE: TextStyle = TextStyle { size_px: 11.5, line_height_px: 14.0, weight: 500, ..TextStyle::NUM };
+const TODAY_DAY_STYLE: TextStyle = TextStyle { weight: 650, ..DAY_STYLE };
+
+type CalKey = (YearMonth, Option<YearMonth>, i32, u8, Option<(i32, u32, u32)>, FirstWeekday, Lang);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MetricsKey {
@@ -147,8 +161,11 @@ impl Topbar {
             return widths;
         }
         let date_w = if key.date { widest_date_width(painter, lang) } else { 0 };
-        let time_w =
-            widest_times(h24).iter().map(|time| numeric_label_width(painter, time, &CLOCK_STYLE)).max().unwrap_or(0);
+        let time_w = widest_times(h24)
+            .iter()
+            .map(|time| numeric_label_width(painter, time, &island::TIME_STYLE))
+            .max()
+            .unwrap_or(0);
         let widths = (date_w, time_w);
         self.calendar.metrics = Some((key, widths));
         widths
@@ -156,7 +173,7 @@ impl Topbar {
 }
 
 fn widest_date_width(painter: &crate::paint::Painter, lang: Lang) -> i32 {
-    let style = &glide_theme::TextStyle::TOPBAR;
+    let style = &island::DATE_STYLE;
     let widest = (0..7)
         .flat_map(|weekday| (0..12).map(move |month| (weekday, month)))
         .map(|(weekday, month)| {
@@ -167,26 +184,45 @@ fn widest_date_width(painter: &crate::paint::Painter, lang: Lang) -> i32 {
     widest.ceil() as i32
 }
 
-pub(super) fn layout_slots(popup: Point<i32, Logical>, width: i32, slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>) {
-    let top = popup.y + NC_PAD;
-    let next_x = popup.x + width - NC_PAD - NAV_BUTTON;
-    slots.push((Slot::CalMonth, local_rect(popup.x + NC_PAD, top, TITLE_W, HEADER_H)));
-    slots.push((Slot::CalPrev, local_rect(next_x - SP1 - NAV_BUTTON, top, NAV_BUTTON, HEADER_H)));
-    slots.push((Slot::CalNext, local_rect(next_x, top, NAV_BUTTON, HEADER_H)));
+fn badge_width(painter: &crate::paint::Painter) -> i32 {
+    text_w(painter, crate::i18n::t(crate::i18n::Key::Today), &TODAY_STYLE) + BADGE_PAD * 2
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn push<R>(
-    topbar: &mut Topbar, renderer: &mut R, painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader,
-    popup: Rectangle<i32, Logical>, reveal: f64, scale: Scale<f64>, output_scale: i32,
-    elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where
-    R: crate::raster::ShellRenderer,
-{
-    if topbar.shown_popup() != Some(OpenPopup::NotificationCenter) {
-        return;
+fn title_width(painter: &crate::paint::Painter, title: &str) -> i32 {
+    TITLE_PAD + text_w(painter, title, &MONTH_STYLE) + TITLE_PAD + badge_width(painter) + TITLE_PAD
+}
+
+fn nav_buttons() -> [LocalRect; 2] {
+    let next = local_rect(BLOCK_W - NAV_BUTTON, (HEADER_H - NAV_BUTTON) / 2, NAV_BUTTON, NAV_BUTTON);
+    let previous = local_rect(next.loc.x - NAV_GAP - NAV_BUTTON, next.loc.y, NAV_BUTTON, NAV_BUTTON);
+    [previous, next]
+}
+
+fn title_button(painter: &crate::paint::Painter, title: &str) -> LocalRect {
+    let limit = nav_buttons()[0].loc.x - NAV_GAP;
+    local_rect(0, (HEADER_H - TITLE_H) / 2, title_width(painter, title).min(limit), TITLE_H)
+}
+
+pub(super) fn layout_slots(
+    painter: &crate::paint::Painter, title: &str, origin: Point<i32, Logical>,
+    slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
+) {
+    let at = |rect: LocalRect| Rectangle::new(rect.loc + origin, rect.size);
+    let [previous, next] = nav_buttons();
+    slots.push((Slot::CalMonth, at(title_button(painter, title))));
+    slots.push((Slot::CalPrev, at(previous)));
+    slots.push((Slot::CalNext, at(next)));
+}
+
+impl Topbar {
+    pub(super) fn calendar_month_title(&self) -> String {
+        month_title(self.calendar.lang, self.calendar.month())
     }
-    let width = popup.size.w;
+}
+
+pub(super) fn block(
+    topbar: &mut Topbar, painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader, output_scale: i32,
+) -> Option<MemoryRenderBuffer> {
     let theme = &topbar.theme;
     let view = &mut topbar.calendar;
     let slide = view.slide.value().clamp(0.0, 1.0);
@@ -200,7 +236,6 @@ pub(super) fn push<R>(
         view.today.map(|now| (now.year, now.month0, now.day)),
         view.first,
         view.lang,
-        width,
     );
     let frame = Frame {
         month: view.month(),
@@ -211,13 +246,7 @@ pub(super) fn push<R>(
         first: view.first,
         lang: view.lang,
     };
-    let Some(buffer) =
-        view.cache.resolve(key, output_scale, || draw(painter, theme, &frame, width, output_scale, Some(icons)))
-    else {
-        return;
-    };
-    let element = Rectangle::new(Point::from((popup.loc.x, popup.loc.y + NC_PAD)), Size::from((width, BLOCK_H)));
-    push_popup_buffer(renderer, buffer, popup, element, reveal, scale, elements);
+    view.cache.resolve(key, output_scale, || draw(painter, theme, &frame, output_scale, Some(icons))).cloned()
 }
 
 struct Frame {
@@ -230,76 +259,60 @@ struct Frame {
     lang: Lang,
 }
 
+const CELL_W: i32 = (BLOCK_W - CELL_GAP * 6) / 7;
+const GRID_INSET: i32 = (BLOCK_W - CELL_W * 7 - CELL_GAP * 6) / 2;
+
+const fn column_x(column: i32) -> i32 {
+    GRID_INSET + column * (CELL_W + CELL_GAP)
+}
+
 fn draw_header(c: &mut Canvas<'_>, painter: &crate::paint::Painter, theme: &TopbarTheme, frame: &Frame) {
-    use glide_theme::TextStyle;
-    let width = c.w;
     let title = month_title(frame.lang, frame.month);
-    c.text(
-        painter,
-        (NC_PAD + SP2, NC_PAD + TITLE_W, 0, HEADER_H),
-        TextAlign::Left,
-        &title,
-        theme.label,
-        &TextStyle::HEAD,
-    );
+    let button = title_button(painter, &title);
+    let badge_w = badge_width(painter);
+    let title_right = button.loc.x + button.size.w - TITLE_PAD - badge_w - TITLE_PAD;
+    let band = (button.loc.x + TITLE_PAD, title_right, button.loc.y, button.loc.y + TITLE_H);
+    c.text(painter, band, TextAlign::Left, &title, theme.label, &MONTH_STYLE);
+    let badge = local_rect(title_right + TITLE_PAD, button.loc.y + (TITLE_H - BADGE_H) / 2, badge_w, BADGE_H);
+    c.fill(badge, theme.fill_2, R_ROUND);
+    let today = crate::i18n::t(crate::i18n::Key::Today);
+    c.text_in(painter, badge, TextAlign::Center, today, theme.muted, &TODAY_STYLE);
 
-    let next_x = width - NC_PAD - NAV_BUTTON;
-    for (x, icon, fallback) in [(next_x - SP1 - NAV_BUTTON, "go-previous", "\u{2039}"), (next_x, "go-next", "\u{203a}")]
-    {
-        let at = (x + (NAV_BUTTON - NAV_GLYPH) / 2, (HEADER_H - NAV_GLYPH) / 2);
-        if !c.icon(icon, NAV_GLYPH, at, theme.muted) {
-            c.text(
-                painter,
-                (x, x + NAV_BUTTON, 0, HEADER_H),
-                TextAlign::Center,
-                fallback,
-                theme.muted,
-                &TextStyle::HEAD,
-            );
-        }
-    }
+    let [previous, next] = nav_buttons();
+    glyph(c, Glyph::Back, NAV_GLYPH, previous, theme.muted);
+    glyph(c, Glyph::Forward, NAV_GLYPH, next, theme.muted);
 
-    let grid_w = width - NC_PAD * 2;
-    let cell_w = grid_w / 7;
-    let inset = (grid_w - cell_w * 7) / 2;
-    let week_y = HEADER_H + SP2;
+    let week_y = HEADER_H + BLOCK_GAP;
     for (column, name) in header_weekdays(frame.lang, frame.first).iter().enumerate() {
-        let x = NC_PAD + inset + i32::try_from(column).unwrap_or(0) * cell_w;
-        let band = (x, x + cell_w, week_y, week_y + WEEK_H);
+        let x = column_x(i32::try_from(column).unwrap_or(0));
+        let band = (x, x + CELL_W, week_y, week_y + WEEK_H);
         c.text(painter, band, TextAlign::Center, name, theme.faint, &TextStyle::MICRO);
     }
 }
 
 fn draw(
-    painter: &crate::paint::Painter, theme: &TopbarTheme, frame: &Frame, width: i32, scale: i32,
+    painter: &crate::paint::Painter, theme: &TopbarTheme, frame: &Frame, scale: i32,
     icons: Option<&mut crate::icon::IconLoader>,
 ) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(width, BLOCK_H, scale)?.with_icons(icons);
+    let mut c = Canvas::new(BLOCK_W, BLOCK_H, scale)?.with_icons(icons);
     draw_header(&mut c, painter, theme, frame);
 
-    let grid_w = width - NC_PAD * 2;
-    let cell_w = grid_w / 7;
-    let inset = (grid_w - cell_w * 7) / 2;
-    let mut grid = Canvas::new(grid_w, ROWS * CELL_H, scale)?;
-    let travel = f64::from(grid_w);
-    let grid_ctx = GridPaint { painter, theme, cell_w, inset, today: frame.today, first: frame.first };
+    let mut grid = Canvas::new(BLOCK_W, BLOCK_H - GRID_Y, scale)?;
+    let travel = f64::from(BLOCK_W);
+    let grid_ctx = GridPaint { painter, theme, today: frame.today, first: frame.first };
     let incoming = (f64::from(frame.dir) * (1.0 - frame.slide) * travel).round() as i32;
     if let Some(from) = frame.from {
         let outgoing = incoming - (f64::from(frame.dir) * travel).round() as i32;
         draw_month(&mut grid, &grid_ctx, from, outgoing);
     }
     draw_month(&mut grid, &grid_ctx, frame.month, incoming);
-    let grid_y = HEADER_H + SP2 + WEEK_H + SP1;
-    c.blit(&grid.buf, local_rect(NC_PAD, grid_y, grid_w, grid.h));
-    c.fill(local_rect(NC_PAD, BLOCK_H - SP3 - 1, grid_w, 1), theme.border, 0.0);
+    c.blit(&grid.buf, local_rect(0, GRID_Y, BLOCK_W, grid.h));
     Some(c.finish())
 }
 
 struct GridPaint<'a> {
     painter: &'a crate::paint::Painter,
     theme: &'a TopbarTheme,
-    cell_w: i32,
-    inset: i32,
     today: Option<LocalNow>,
     first: FirstWeekday,
 }
@@ -307,25 +320,24 @@ struct GridPaint<'a> {
 fn draw_month(c: &mut Canvas<'_>, ctx: &GridPaint<'_>, month: YearMonth, offset: i32) {
     for (index, cell) in month_grid(month, ctx.first).iter().enumerate() {
         let index = i32::try_from(index).unwrap_or(0);
-        let x = offset + ctx.inset + (index % 7) * ctx.cell_w;
-        let y = (index / 7) * CELL_H;
-        if x + ctx.cell_w <= 0 || x >= c.w {
+        let x = offset + column_x(index % 7);
+        let y = (index / 7) * (CELL_H + CELL_GAP);
+        if x + CELL_W <= 0 || x >= c.w {
             continue;
         }
-        let rect: LocalRect = local_rect(x, y, ctx.cell_w, CELL_H);
+        let rect: LocalRect = local_rect(x, y, CELL_W, CELL_H);
         let is_today = cell.in_month && ctx.today.is_some_and(|now| now.month() == month && now.day == cell.day);
         if is_today {
-            let dot = local_rect(x + (ctx.cell_w - TODAY_DOT) / 2, y + (CELL_H - TODAY_DOT) / 2, TODAY_DOT, TODAY_DOT);
-            c.fill(dot, ctx.theme.active_background, glide_theme::shape::R_ROUND);
+            c.fill(rect, ctx.theme.active_background, R_ROUND);
         }
-        let colour = if is_today {
-            ctx.theme.active_label
+        let (colour, style) = if is_today {
+            (ctx.theme.active_label, &TODAY_DAY_STYLE)
         } else if cell.in_month {
-            ctx.theme.label
+            (ctx.theme.label, &DAY_STYLE)
         } else {
-            ctx.theme.faint
+            (ctx.theme.ghost, &DAY_STYLE)
         };
-        c.text_in(ctx.painter, rect, TextAlign::Center, &cell.day.to_string(), colour, &CLOCK_STYLE);
+        c.text_in(ctx.painter, rect, TextAlign::Center, &cell.day.to_string(), colour, style);
     }
 }
 

@@ -1220,6 +1220,7 @@ impl GlideState {
         let layouts = self.keyboard_layouts();
 
         let mut dirty = now.is_some_and(|now| self.topbar.set_now(now));
+        dirty |= self.topbar.tick_island(std::time::Instant::now());
         let recording = self.screencopy.recording_clients(std::time::Instant::now());
         dirty |= self.topbar.set_screen_capture(recording);
         if let Some((names, active)) = layouts {
@@ -1458,14 +1459,38 @@ impl GlideState {
             glide_notify::NotifyEvent::Replaced(notification) => {
                 self.notifications.push(&mut self.dock.icons, *notification, true)
             }
-            glide_notify::NotifyEvent::Closed(id, reason) => self.notifications.remove(id, reason, true),
+            glide_notify::NotifyEvent::Closed(id, reason) => {
+                if self.topbar.alert().is_some_and(|alert| alert.id == id) {
+                    self.topbar.dismiss_alert();
+                }
+                self.notifications.withdraw(id, reason)
+            }
             glide_notify::NotifyEvent::InhibitedChanged(on) => {
                 self.notifications.set_inhibited(on);
                 false
             }
         };
+        self.show_glances();
         let topbar_dirty = self.refresh_topbar();
         if dirty || topbar_dirty {
+            self.queue_redraw();
+        }
+    }
+
+    pub fn show_glances(&mut self) {
+        if self.screen_locked() {
+            return;
+        }
+        let mut shown = false;
+        for glance in self.notifications.take_glances() {
+            let current = self.topbar.alert().is_some_and(|alert| alert.id == glance.item.id);
+            if glance.replaces && !current {
+                continue;
+            }
+            let alert = crate::topbar::IslandAlert::from_item(&glance.item);
+            shown |= self.topbar.show_alert(alert, std::time::Instant::now());
+        }
+        if shown {
             self.queue_redraw();
         }
     }
@@ -1680,6 +1705,9 @@ impl GlideState {
             }
             TopbarAction::ClosePopup => {
                 self.topbar.close_popup();
+            }
+            TopbarAction::DismissIslandAlert => {
+                self.topbar.dismiss_alert();
             }
             TopbarAction::OpenAppMenu(index) => self.open_app_menu(index),
             TopbarAction::AppMenuRow(path) => self.app_menu_row(path),

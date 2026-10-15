@@ -80,6 +80,9 @@ catalogue! {
     Notifications => "Notifications", "Сповіщення";
     ClearAll => "Clear All", "Очистити все";
     NoNewNotifications => "No new notifications", "Немає нових сповіщень";
+    CalendarAndNotifications => "Calendar & Notifications", "Календар та сповіщення";
+    Media => "Media", "Медіа";
+    Today => "Today", "Сьогодні";
     Caffeine => "Caffeine", "Кофеїн";
     Connected => "Connected", "Підключено";
     Off => "Off", "Вимкнено";
