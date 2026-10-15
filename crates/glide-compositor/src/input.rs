@@ -2217,6 +2217,10 @@ impl GlideState {
             let pos = pointer.current_location();
 
             self.session.super_tap.interrupt();
+            if self.session_lock.is_none() && self.dismiss_window_menus(pointer.current_focus().as_ref()) {
+                pointer.frame(self);
+                return;
+            }
             if self.session_lock.is_some() {
                 self.focus_lock_surface();
             } else if self.shell_button(pos, button) {
@@ -2234,6 +2238,20 @@ impl GlideState {
 
         pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time() });
         pointer.frame(self);
+    }
+
+    fn dismiss_window_menus(&mut self, target: Option<&crate::focus::PointerFocusTarget>) -> bool {
+        let mut dismissed = false;
+        for window in self.space.elements() {
+            let own = matches!(target, Some(crate::focus::PointerFocusTarget::Decoration(deco)) if deco.0 == *window);
+            if !own && let Some(mut deco) = window.try_decoration_state_mut() {
+                dismissed |= deco.header.dismiss_menu();
+            }
+        }
+        if dismissed {
+            self.queue_redraw();
+        }
+        dismissed
     }
 
     fn shell_release(&mut self, pos: Point<f64, Logical>, button: u32) {

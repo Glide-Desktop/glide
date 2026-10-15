@@ -209,6 +209,10 @@ mod tests {
         button(0x111, ButtonState::Pressed, 0)
     }
 
+    fn right_release() -> ButtonEvent {
+        button(0x111, ButtonState::Released, 0)
+    }
+
     fn at(h: &mut HeaderBar, (x, y): (f64, f64), event: &ButtonEvent) -> Option<DecorationAction> {
         h.pointer_enter(point(x, y));
         h.on_button(event)
@@ -718,17 +722,43 @@ mod tests {
     }
 
     #[test]
-    fn a_right_click_opens_the_menu_and_the_next_release_closes_it() {
+    fn a_right_click_opens_the_menu_and_the_next_click_closes_it() {
         let mut h = header();
         assert_eq!(at(&mut h, ON_DRAG, &right_press()), None);
         assert!(h.menu.is_open());
+        assert_eq!(at(&mut h, ON_DRAG, &right_release()), None);
+        assert!(h.menu.is_open(), "letting go of the button that opened it keeps the menu up");
+        assert_eq!(at(&mut h, ON_MENU_ROW, &press()), None);
         assert_eq!(at(&mut h, ON_MENU_ROW, &release()), Some(DecorationAction::Run(MenuItem::Minimize)));
         assert!(!h.menu.is_open());
 
-        let mut h = open_header();
+        let mut h = header();
+        at(&mut h, ON_DRAG, &right_press());
+        assert_eq!(
+            at(&mut h, ON_MENU_ROW, &right_release()),
+            Some(DecorationAction::Run(MenuItem::Minimize)),
+            "press, drag onto a row and release picks it"
+        );
+        assert!(!h.menu.is_open());
+
+        let mut h = header();
+        at(&mut h, ON_DRAG, &right_press());
+        at(&mut h, ON_DRAG, &right_release());
         assert_eq!(at(&mut h, ON_DRAG, &press()), None, "presses are ignored");
         assert_eq!(h.on_button(&release()), None);
-        assert!(!h.menu.is_open());
+        assert!(!h.menu.is_open(), "a click beside the rows closes it");
+    }
+
+    #[test]
+    fn a_click_elsewhere_dismisses_the_menu() {
+        let mut h = header();
+        assert!(!h.dismiss_menu(), "nothing to dismiss");
+        at(&mut h, ON_DRAG, &right_press());
+        at(&mut h, ON_DRAG, &right_release());
+        assert!(h.is_menu_open());
+        assert!(h.dismiss_menu());
+        assert!(!h.is_menu_open() && h.menu_opener.is_none());
+        assert_eq!(h.menu_item_at(point(ON_MENU_ROW.0, ON_MENU_ROW.1)), None);
     }
 
     #[test]

@@ -57,6 +57,7 @@ pub struct HeaderBar {
     pub(crate) menu_row_fade: Vec<(usize, Fade)>,
     pub(crate) menu_x: i32,
     pub(crate) menu_width: i32,
+    pub(crate) menu_opener: Option<u32>,
     pub(crate) pressed: Option<HitZone>,
     pub(crate) press_zone: Option<HitZone>,
     pub(crate) press_t: Fade,
@@ -438,11 +439,26 @@ impl HeaderBar {
     }
 
     fn close_menu(&mut self) {
+        self.menu_opener = None;
         let duration = menu_open_anim();
         let ease = self.menu_ease();
         if self.menu.close(duration) {
             self.menu_t.retarget(0.0, duration, ease);
         }
+    }
+
+    #[must_use]
+    pub const fn is_menu_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    pub fn dismiss_menu(&mut self) -> bool {
+        if !self.menu.is_open() {
+            return false;
+        }
+        self.close_menu();
+        self.set_menu_hover(None);
+        true
     }
 
     #[must_use]
@@ -484,6 +500,7 @@ impl HeaderBar {
     }
 
     pub(crate) fn on_button(&mut self, event: &ButtonEvent) -> Option<DecorationAction> {
+        let opener = event.state == ButtonState::Released && self.menu_opener.take() == Some(event.button);
         let loc = self.pointer_loc?;
 
         if event.state == ButtonState::Pressed {
@@ -498,6 +515,7 @@ impl HeaderBar {
             }
             if event.button == 0x111 {
                 self.open_menu_at(loc.x as i32);
+                self.menu_opener = Some(event.button);
                 return None;
             }
 
@@ -528,6 +546,9 @@ impl HeaderBar {
 
         if self.menu.is_open() {
             let item = self.menu_item_at(loc).and_then(|i| MenuItem::ALL.get(i));
+            if opener && item.is_none() {
+                return None;
+            }
             let action = item.map(|&item| DecorationAction::Run(item));
             self.close_menu();
             return action;
