@@ -37,7 +37,10 @@ mod tray;
 
 pub use tray::{ICON as TRAY_ICON, IconArt, MAX_SCALE as TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon};
 
-pub use panels::{Detail, FieldKey, PanelAction, PromptOutcome, QsKeyMode, RowTarget, field_key};
+pub use panels::{
+    Detail, FieldKey, NetbirdPending, NetbirdRow, NetbirdUpdate, PanelAction, PromptOutcome, QsKeyMode, RowTarget,
+    field_key,
+};
 
 pub const HEIGHT: i32 = 34;
 
@@ -104,7 +107,6 @@ const QS_RADIUS: f32 = R4;
 const QS_HEADER: i32 = 28;
 const QS_AVATAR: i32 = 28;
 const QS_TILE_HEIGHT: i32 = 52;
-const QS_TILE_ROWS: i32 = 4;
 const QS_TILE_INSET: i32 = 11;
 const QS_SPLIT_INSET: i32 = 9;
 const QS_SPLIT_GAP: i32 = 7;
@@ -294,6 +296,7 @@ pub enum TopbarAction {
     ClosePopup,
     QsToggleWifi,
     QsToggleBluetooth,
+    QsToggleNetbird,
     QsToggleNightLight,
     QsToggleAirplane,
     QsToggleDarkTheme,
@@ -345,6 +348,7 @@ pub enum Slot {
     NcItemDismiss(u32),
     QsWifi,
     QsBluetooth,
+    QsNetbird,
     QsNightLight,
     QsScreenshot,
     QsAirplane,
@@ -367,6 +371,7 @@ pub enum Slot {
     QsPowerConfirm(PowerAction),
     QsWifiMore,
     QsBluetoothMore,
+    QsNetbirdMore,
     QsVolumeMore,
     QsBattery,
     QsBack,
@@ -476,7 +481,8 @@ impl Slot {
             | Self::QsPromptCancel
             | Self::QsPromptConnect
             | Self::QsWifi
-            | Self::QsBluetooth => Some(glide_theme::shape::R_ROUND),
+            | Self::QsBluetooth
+            | Self::QsNetbird => Some(glide_theme::shape::R_ROUND),
             _ => Some(glide_theme::shape::R2),
         }
     }
@@ -503,6 +509,7 @@ impl Slot {
             Self::NcItemDismiss(id) => TopbarAction::DismissNotification(id),
             Self::QsWifi => TopbarAction::QsToggleWifi,
             Self::QsBluetooth => TopbarAction::QsToggleBluetooth,
+            Self::QsNetbird => TopbarAction::QsToggleNetbird,
             Self::QsNightLight => TopbarAction::QsToggleNightLight,
             Self::QsScreenshot => TopbarAction::QsScreenshot,
             Self::QsAirplane => TopbarAction::QsToggleAirplane,
@@ -522,6 +529,7 @@ impl Slot {
             Self::QsPowerConfirm(action) => TopbarAction::QsPower(action),
             Self::QsWifiMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi)),
             Self::QsBluetoothMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Bluetooth)),
+            Self::QsNetbirdMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Netbird)),
             Self::QsVolumeMore | Self::QsMicMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Sound)),
             Self::QsBattery => TopbarAction::QsPanel(PanelAction::Open(Detail::Battery)),
             Self::QsBack => TopbarAction::QsPanel(PanelAction::Back),
@@ -1308,6 +1316,7 @@ impl Topbar {
             mic: self.system_status.mic_available,
             battery: self.system_status.battery_pct.is_some(),
             profile: self.system_status.power_profile.is_some(),
+            netbird: self.qs_panel.netbird.installed,
             armed,
             drawer: self.drawer_extent_now(),
             pills,
@@ -1997,6 +2006,7 @@ enum QsTile {
     Airplane,
     Screenshot,
     DarkTheme,
+    Netbird,
 }
 
 const QS_TILES: [QsTile; 8] = [
@@ -2010,11 +2020,16 @@ const QS_TILES: [QsTile; 8] = [
     QsTile::DarkTheme,
 ];
 
+fn qs_tiles(shape: &QsShape) -> impl Iterator<Item = QsTile> {
+    QS_TILES.into_iter().chain(shape.netbird.then_some(QsTile::Netbird))
+}
+
 impl QsTile {
     const fn slot(self) -> Slot {
         match self {
             Self::Wifi => Slot::QsWifi,
             Self::Bluetooth => Slot::QsBluetooth,
+            Self::Netbird => Slot::QsNetbird,
             Self::NightLight => Slot::QsNightLight,
             Self::Dnd => Slot::QsDnd,
             Self::Caffeine => Slot::QsCaffeine,
@@ -2028,6 +2043,7 @@ impl QsTile {
         match self {
             Self::Wifi => Some(Slot::QsWifiMore),
             Self::Bluetooth => Some(Slot::QsBluetoothMore),
+            Self::Netbird => Some(Slot::QsNetbirdMore),
             _ => None,
         }
     }
@@ -2048,11 +2064,13 @@ struct QsPills {
     confirm: i32,
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent facts about which optional rows and tiles the popup has
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 struct QsShape {
     mic: bool,
     battery: bool,
     profile: bool,
+    netbird: bool,
     armed: Option<PowerAction>,
     drawer: Option<(Drawer, i32)>,
     pills: QsPills,
@@ -2116,12 +2134,12 @@ struct QsConfirm {
     confirm: LocalRect,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct QsGeometry {
     avatar: LocalRect,
     name: LocalRect,
     settings: LocalRect,
-    tiles: [(QsTile, LocalRect); 8],
+    tiles: Vec<(QsTile, LocalRect)>,
     sliders: LocalRect,
     volume: QsSliderRow,
     mic: Option<QsSliderRow>,
@@ -2222,15 +2240,17 @@ fn qs_geometry(shape: &QsShape) -> QsGeometry {
     y += QS_HEADER + QS_GAP;
 
     let col_w = (row_w - QS_GRID_GAP) / 2;
-    let mut index = 0;
     let grid_y = y;
-    let tiles = QS_TILES.map(|tile| {
-        let (column, row) = (index % 2, index / 2);
-        index += 1;
-        let x = QS_PAD + column * (col_w + QS_GRID_GAP);
-        (tile, local_rect(x, grid_y + row * (QS_TILE_HEIGHT + QS_GRID_GAP), col_w, QS_TILE_HEIGHT))
-    });
-    y += QS_TILE_ROWS * QS_TILE_HEIGHT + (QS_TILE_ROWS - 1) * QS_GRID_GAP + QS_GAP;
+    let tiles: Vec<(QsTile, LocalRect)> = qs_tiles(shape)
+        .zip(0..)
+        .map(|(tile, index)| {
+            let (column, row) = (index % 2, index / 2);
+            let x = QS_PAD + column * (col_w + QS_GRID_GAP);
+            (tile, local_rect(x, grid_y + row * (QS_TILE_HEIGHT + QS_GRID_GAP), col_w, QS_TILE_HEIGHT))
+        })
+        .collect();
+    let rows = i32::try_from(tiles.len().div_ceil(2)).unwrap_or(1);
+    y += rows * QS_TILE_HEIGHT + (rows - 1) * QS_GRID_GAP + QS_GAP;
 
     let inner_x = QS_PAD + 1 + QS_CARD_PAD_X;
     let inner_w = row_w - 2 * (1 + QS_CARD_PAD_X);
@@ -2451,7 +2471,7 @@ fn layout_qs_slots(
     }
 
     push(Slot::QsSettings, geometry.settings);
-    for (tile, rect) in geometry.tiles {
+    for &(tile, rect) in &geometry.tiles {
         if let Some(more) = tile.more() {
             push(tile.slot(), qs_badge(tile, rect));
             push(more, rect);
@@ -4770,8 +4790,12 @@ fn draw_qs_tiles(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_
         let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
         crate::paint::draw_coffee_glyph_over(b, w, h, cx, cy, side, stroke, s, c, false);
     };
-    for (tile, rect) in draw.geometry.tiles {
+    for &(tile, rect) in &draw.geometry.tiles {
         let (on, title, subtitle, icon_name, glyph): (bool, &str, &str, &str, GlyphPainter) = match tile {
+            QsTile::Netbird => {
+                let (on, subtitle) = draw.panel.netbird.tile();
+                (on, t(Key::Netbird), subtitle, "network-vpn", crate::paint::draw_lock_glyph_over)
+            }
             QsTile::Wifi => (
                 status.wifi_enabled,
                 t(Key::WiFi),
@@ -5970,6 +5994,22 @@ mod tests {
     }
 
     #[test]
+    fn the_netbird_tile_joins_the_grid_only_when_netbird_is_installed() {
+        let mut bar = quick_settings();
+        let plain = qs_geometry(&bar.qs_shape(None)).height;
+        assert!(bar.slot_rect(Slot::QsNetbird).is_none() && bar.slot_rect(Slot::QsNetbirdMore).is_none());
+        bar.set_netbird_installed(true);
+        bar.layout_slots(&painter(), output());
+        let taller = qs_geometry(&bar.qs_shape(None)).height;
+        assert_eq!(taller - plain, QS_TILE_HEIGHT + QS_GRID_GAP, "a ninth tile opens a fifth row");
+        assert!(bar.slot_rect(Slot::QsNetbird).is_some() && bar.slot_rect(Slot::QsNetbirdMore).is_some());
+        assert_eq!(Slot::QsNetbird.action(), TopbarAction::QsToggleNetbird);
+        assert_eq!(Slot::QsNetbirdMore.action(), TopbarAction::QsPanel(PanelAction::Open(Detail::Netbird)));
+        let (on, subtitle) = bar.qs_panel.netbird.tile();
+        assert!(!on && subtitle == crate::i18n::t(crate::i18n::Key::QsOff), "no status yet reads as off");
+    }
+
+    #[test]
     fn arrows_reach_every_row_of_quick_settings_from_top_to_bottom() {
         let mut bar = quick_settings();
         bar.focus_nav(0, 1);
@@ -6633,6 +6673,7 @@ mod tests {
                 let mut canvas = Canvas::new(QS_WIDTH, geometry.height, scale).expect("main canvas");
                 let flags = QsFlags { dragging: Some(Slot::QsMicTrack), ..flags };
                 let labels = (output_label.as_str(), input_label.as_str());
+                let geometry = geometry.clone();
                 let draw =
                     QsDraw { status: bar.system_status(), panel: &bar.qs_panel, geometry, flags, motion, labels };
                 draw_quick_settings(&mut canvas, &ctx, &draw);

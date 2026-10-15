@@ -172,6 +172,9 @@ impl crate::GlideState {
                 crate::removable::open(path.to_string());
                 continue;
             }
+            if self.netbird_local_event(&event) {
+                continue;
+            }
             if let Some(id) = self.session.prompts.resolve(&event) {
                 self.notifications.dismiss(id);
                 self.queue_redraw();

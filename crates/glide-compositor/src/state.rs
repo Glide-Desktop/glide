@@ -370,6 +370,7 @@ pub struct SessionServices {
     pub appearance_schedule: bool,
     pub lid_hidden: Vec<Output>,
     pub shortcuts: crate::shortcut_guard::ShortcutGuard,
+    pub netbird: crate::netbird::Session,
 }
 
 impl GlideState {
@@ -1497,6 +1498,7 @@ impl GlideState {
                 crate::system_info::set_bluetooth(!was_on);
                 self.update_system_status(|status| status.bluetooth_on = !was_on);
             }
+            TopbarAction::QsToggleNetbird => self.toggle_netbird(),
             TopbarAction::QsToggleNightLight => {
                 let on = !self.topbar.system_status().night_light_on;
                 self.update_system_status(|status| status.night_light_on = on);

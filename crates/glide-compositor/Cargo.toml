@@ -35,6 +35,7 @@ glide-geom = { path = "../glide-geom" }
 glide-ipc = { path = "../glide-ipc" }
 glide-layout = { path = "../glide-layout" }
 glide-media = { path = "../glide-media" }
+glide-netbird = { path = "../glide-netbird" }
 glide-notify = { path = "../glide-notify" }
 glide-paint = { path = "../glide-paint" }
 glide-theme = { path = "../glide-theme" }

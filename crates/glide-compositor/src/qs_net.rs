@@ -826,17 +826,20 @@ pub const fn use_device(drawer: crate::topbar::Drawer, name: String) -> NetReque
 }
 
 #[must_use]
-pub const fn scan_for(detail: Detail) -> NetRequest {
+pub const fn scan_for(detail: Detail) -> Option<NetRequest> {
     match detail {
-        Detail::Wifi => NetRequest::ScanWifi,
-        Detail::Bluetooth => NetRequest::ScanBluetooth,
-        Detail::Sound => NetRequest::ScanOutputs,
-        Detail::Battery => NetRequest::ScanChargeLimit,
+        Detail::Wifi => Some(NetRequest::ScanWifi),
+        Detail::Bluetooth => Some(NetRequest::ScanBluetooth),
+        Detail::Sound => Some(NetRequest::ScanOutputs),
+        Detail::Battery => Some(NetRequest::ScanChargeLimit),
+        Detail::Netbird => None,
     }
 }
 
 fn scan_detail(detail: Detail) {
-    request(scan_for(detail));
+    if let Some(scan) = scan_for(detail) {
+        request(scan);
+    }
     if detail == Detail::Sound {
         request(NetRequest::ScanInputs);
     }
@@ -890,6 +893,9 @@ impl GlideState {
             PanelAction::Open(detail) => {
                 if self.topbar.open_detail(detail) {
                     scan_detail(detail);
+                    if detail == Detail::Netbird {
+                        self.netbird_request(crate::netbird::Request::Refresh);
+                    }
                 }
             }
             PanelAction::Back => {
@@ -904,6 +910,7 @@ impl GlideState {
                     self.handle_qs_action(crate::topbar::TopbarAction::QsToggleBluetooth);
                     request(NetRequest::ScanBluetooth);
                 }
+                Some(Detail::Netbird) => self.toggle_netbird(),
                 Some(Detail::Battery | Detail::Sound) | None => {}
             },
             PanelAction::Row(index) => {
@@ -929,6 +936,7 @@ impl GlideState {
                     Some(Detail::Battery) => crate::system_info::open_power_settings(),
                     Some(Detail::Bluetooth) => open_settings_panel("bluetooth"),
                     Some(Detail::Sound) => open_settings_panel("sound"),
+                    Some(Detail::Netbird) => crate::netbird::open_settings(),
                     _ => open_settings_panel("network"),
                 }
             }
@@ -959,7 +967,27 @@ impl GlideState {
                 self.topbar.begin_connect(&output.name);
                 request(NetRequest::UseOutput { name: output.name });
             }
+            Some(RowTarget::Netbird(row)) => self.activate_netbird_row(row),
             Some(RowTarget::Output(_)) | None => {}
+        }
+    }
+
+    fn activate_netbird_row(&mut self, row: crate::topbar::NetbirdRow) {
+        use crate::netbird::Request;
+        use crate::topbar::NetbirdRow;
+        match row {
+            NetbirdRow::SignIn | NetbirdRow::Session { expired: true } => self.netbird_request(Request::Login),
+            NetbirdRow::Session { expired: false } => self.netbird_request(Request::Extend),
+            NetbirdRow::Profile(id) => self.netbird_request(Request::SwitchProfile(id)),
+            NetbirdRow::Exit { id, select } => self.netbird_request(Request::ExitNode { id, select }),
+            NetbirdRow::Peers => {
+                self.topbar.close_popup();
+                crate::netbird::open_settings_at(Some("peers"));
+            }
+            NetbirdRow::Resources => {
+                self.topbar.close_popup();
+                crate::netbird::open_settings_at(Some("resources"));
+            }
         }
     }
 
@@ -1248,7 +1276,8 @@ mod tests {
         let limit = pick_charge_limit(devices).expect("bat1 supports it");
         assert_eq!(limit, ChargeLimit { path: "bat1".to_string(), enabled: true, end: 80 });
         assert_eq!(pick_charge_limit(vec![battery("bat0", 2, true, false)]), None);
-        assert!(matches!(scan_for(Detail::Battery), NetRequest::ScanChargeLimit));
+        assert!(matches!(scan_for(Detail::Battery), Some(NetRequest::ScanChargeLimit)));
+        assert!(scan_for(Detail::Netbird).is_none(), "the NetBird view is pushed by its own worker");
         let request = NetRequest::SetChargeLimit { path: "bat1".into(), enabled: false };
         assert_eq!(format!("{request:?}"), "SetChargeLimit { enabled: false }");
     }
@@ -1275,7 +1304,7 @@ mod tests {
 
     #[test]
     fn the_sound_panel_scans_outputs_and_a_switch_request_names_its_sink() {
-        assert!(matches!(scan_for(Detail::Sound), NetRequest::ScanOutputs));
+        assert!(matches!(scan_for(Detail::Sound), Some(NetRequest::ScanOutputs)));
         let request = NetRequest::UseOutput { name: "hdmi".into() };
         assert_eq!(format!("{request:?}"), "UseOutput { name: \"hdmi\" }");
     }

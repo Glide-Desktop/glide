@@ -36,6 +36,7 @@ mod layout_scope;
 mod lid;
 mod logging;
 mod media_art;
+mod netbird;
 mod nm_agent;
 mod notifications;
 mod oneshot;
@@ -276,6 +277,7 @@ fn init_session_services(
     init_network_agent(event_loop);
     init_disk_space(event_loop);
     init_removable(event_loop);
+    init_netbird(event_loop, state);
     state.welcome_if_first_run();
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
@@ -314,6 +316,16 @@ fn init_removable(event_loop: &mut EventLoop<'static, GlideState>) {
         return;
     }
     watch(event_loop, receiver, "the removable drive channel", GlideState::handle_removable);
+}
+
+fn init_netbird(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    if !glide_netbird::installed() {
+        return;
+    }
+    let (send, receiver) = sink::<netbird::Event>("a NetBird update");
+    if watch(event_loop, receiver, "the NetBird channel", GlideState::handle_netbird) {
+        state.start_netbird(send);
+    }
 }
 
 fn init_disk_space(event_loop: &mut EventLoop<'static, GlideState>) {
@@ -364,7 +376,8 @@ fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mu
             let night = state.tick_night_light();
             let appearance = state.tick_appearance_schedule();
             let power = state.tick_qs_power();
-            if clock || expired || night || appearance || power {
+            let netbird = state.tick_netbird();
+            if clock || expired || night || appearance || power || netbird {
                 state.queue_redraw();
             }
             TimeoutAction::ToDuration(std::time::Duration::from_secs(1))

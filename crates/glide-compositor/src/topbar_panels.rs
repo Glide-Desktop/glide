@@ -15,6 +15,11 @@ use glide_theme::shape::{R_ROUND, R1, R2};
 use glide_theme::spacing::{SP1, SP2, SP3};
 use smithay::input::keyboard::Keysym;
 
+#[path = "topbar_netbird.rs"]
+mod netbird;
+
+pub use netbird::{NetbirdPending, NetbirdRow, NetbirdUpdate};
+
 const DETAIL_BACK: i32 = 28;
 const DETAIL_BACK_ICON: i32 = 12;
 const DETAIL_HEAD_GAP: i32 = 2;
@@ -70,6 +75,7 @@ pub enum Detail {
     Bluetooth,
     Battery,
     Sound,
+    Netbird,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +131,7 @@ pub enum RowTarget {
     Network(WifiNetwork),
     Device(BtDevice),
     Output(AudioOutput),
+    Netbird(NetbirdRow),
 }
 
 #[derive(PartialEq, Eq)]
@@ -162,6 +169,7 @@ pub(super) const fn more_slot(detail: Detail) -> Slot {
         Detail::Bluetooth => Slot::QsBluetoothMore,
         Detail::Battery => Slot::QsBattery,
         Detail::Sound => Slot::QsVolumeMore,
+        Detail::Netbird => Slot::QsNetbirdMore,
     }
 }
 
@@ -313,6 +321,7 @@ pub(super) struct DetailPanel {
     pending: Option<Pending>,
     failure: Option<Failure>,
     prompt: Option<Prompt>,
+    pub(super) netbird: netbird::NetbirdView,
     pub(super) rev: u64,
 }
 
@@ -399,6 +408,7 @@ pub(super) enum ItemKind {
     Diag(usize),
     Profile(PowerProfile),
     ChargeLimit,
+    Netbird(netbird::NbItem),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -499,6 +509,10 @@ impl Column<'_> {
         self.items.push(DetailItem { kind, rect: local_rect(self.left, self.y, self.width, height), slot });
         self.y += height;
         true
+    }
+
+    fn section_over_card(&mut self, key: Key) -> bool {
+        self.fits(DETAIL_SECTION + SP3 + DETAIL_CARD) && self.section(key)
     }
 
     fn section(&mut self, key: Key) -> bool {
@@ -677,16 +691,18 @@ pub(super) fn detail_items(
         Detail::Bluetooth => bluetooth_items(&mut column, panel, status),
         Detail::Sound => sound_items(&mut column, panel),
         Detail::Battery => battery_items(&mut column, panel, status),
+        Detail::Netbird => netbird::items(&mut column, &panel.netbird),
     }
     items
 }
 
-fn radio_on(detail: Detail, status: &crate::system_info::SystemStatus) -> bool {
+fn radio_on(detail: Detail, panel: &DetailPanel, status: &crate::system_info::SystemStatus) -> bool {
     match detail {
         Detail::Wifi => status.wifi_enabled,
         Detail::Bluetooth => status.bluetooth_on,
         Detail::Battery => status.battery_pct.is_some(),
         Detail::Sound => true,
+        Detail::Netbird => panel.netbird.switched_on(),
     }
 }
 
@@ -739,6 +755,7 @@ impl Topbar {
             Detail::Bluetooth => self.qs_panel.devices.get(index).cloned().map(RowTarget::Device),
             Detail::Sound => self.qs_panel.outputs.get(index).cloned().map(RowTarget::Output),
             Detail::Battery => None,
+            Detail::Netbird => netbird::row(&self.qs_panel.netbird, u16::try_from(index).ok()?).map(RowTarget::Netbird),
         }
     }
 
@@ -759,7 +776,7 @@ impl Topbar {
                 .position(|o| o.name == key)
                 .and_then(row)
                 .or_else(|| self.device_slot_for(super::Drawer::Input, key)),
-            Some(Detail::Battery) => None,
+            Some(Detail::Battery | Detail::Netbird) => None,
             None => self.qs_drawer.and_then(|drawer| self.device_slot_for(drawer, key)),
         }
     }
@@ -1032,7 +1049,7 @@ pub(super) fn draw_detail(
     status: &crate::system_info::SystemStatus,
 ) {
     let geometry = detail_geometry(c.h, has_radio(detail));
-    draw_detail_header(c, ctx, &geometry, detail, status);
+    draw_detail_header(c, ctx, &geometry, detail, (panel, status));
 
     for item in detail_items(panel, detail, status, geometry.body) {
         draw_item(c, ctx, (panel, status), item);
@@ -1045,6 +1062,7 @@ pub(super) fn draw_detail(
         Detail::Bluetooth => Key::QsBluetoothSettings,
         Detail::Battery => Key::TbBatterySettings,
         Detail::Sound => Key::QsSoundSettings,
+        Detail::Netbird => Key::NbSettings,
     });
     let (left, right, top, bottom) = band(settings);
     let chevron = local_rect(right - SP2 - DETAIL_CHEVRON, top, DETAIL_CHEVRON, settings.size.h);
@@ -1101,6 +1119,7 @@ fn draw_item(
                 draw_charge_card(c, ctx, rect, limit, panel.status_for(CHARGE_LIMIT_KEY));
             }
         }
+        ItemKind::Netbird(item) => netbird::draw(c, ctx, rect, item, &panel.netbird),
     }
 }
 
@@ -1110,7 +1129,7 @@ fn battery_low(theme: &TopbarTheme, status: &crate::system_info::SystemStatus) -
 
 fn draw_detail_header(
     c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &DetailGeometry, detail: Detail,
-    status: &crate::system_info::SystemStatus,
+    (panel, status): (&DetailPanel, &crate::system_info::SystemStatus),
 ) {
     let theme = ctx.theme;
     let back = geometry.back;
@@ -1126,6 +1145,7 @@ fn draw_detail_header(
         Detail::Bluetooth => Key::Bluetooth,
         Detail::Battery => Key::TbBattery,
         Detail::Sound => Key::SettingsSound,
+        Detail::Netbird => Key::Netbird,
     });
     let (top, bottom) = (back.loc.y, back.loc.y + back.size.h);
     let title_band = (geometry.title_left, geometry.title_right, top, bottom);
@@ -1142,7 +1162,7 @@ fn draw_detail_header(
         c.text(ctx.painter, pct_band, TextAlign::Right, &pct, colour, &super::QS_READOUT);
         return;
     }
-    let position = f64::from(u8::from(radio_on(detail, status)));
+    let position = f64::from(u8::from(radio_on(detail, panel, status)));
     let switch = SwitchMotion { thumb: position, track: position };
     draw_switch(c, theme, geometry.toggle, (DETAIL_SWITCH_INSET, DETAIL_SWITCH_THUMB), switch);
 }
@@ -1282,6 +1302,7 @@ fn status_trailing(theme: &TopbarTheme, status: RowStatus) -> Option<(String, Co
 enum Trailing {
     Nothing,
     Tick,
+    Chevron,
     Lock { open: bool },
 }
 
@@ -1328,6 +1349,13 @@ fn draw_card(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, spe
             let tick = local_rect(right - CARD_TRAILING, centre_y - CARD_TRAILING / 2, CARD_TRAILING, CARD_TRAILING);
             super::qs_symbol(c, tick, ("object-select", crate::paint::draw_tick_glyph_over), CARD_TRAILING, accent);
             right = tick.loc.x - CARD_GAP;
+        }
+        Trailing::Chevron => {
+            let chevron = local_rect(right - CARD_TRAILING, centre_y - CARD_TRAILING / 2, CARD_TRAILING, CARD_TRAILING);
+            if !c.icon("go-next", CARD_TRAILING, (chevron.loc.x, chevron.loc.y), theme.faint) {
+                c.text_in(ctx.painter, chevron, TextAlign::Center, "\u{203a}", theme.faint, &TextStyle::HEAD);
+            }
+            right = chevron.loc.x - CARD_GAP;
         }
         Trailing::Lock { open } => {
             let chevron = local_rect(right - CARD_TRAILING, centre_y - CARD_TRAILING / 2, CARD_TRAILING, CARD_TRAILING);
@@ -1884,7 +1912,7 @@ mod tests {
         let status =
             crate::system_info::SystemStatus { battery_pct: Some(40), battery_charging: true, ..Default::default() };
         assert_eq!(battery_state_line(&status), t(Key::TbBatteryCharging));
-        assert!(radio_on(Detail::Battery, &status));
+        assert!(radio_on(Detail::Battery, &DetailPanel::default(), &status));
         assert!(!has_radio(Detail::Battery));
         assert_eq!(more_slot(Detail::Battery), Slot::QsBattery);
     }
@@ -1987,16 +2015,94 @@ mod tests {
             }),
             ..Default::default()
         };
+        connect_netbird(&mut bar);
         let painter = crate::paint::Painter::new(14.0, None);
         let theme = TopbarTheme::default();
         let height = qs_geometry(&bar.qs_shape(None)).height;
-        for detail in [Detail::Wifi, Detail::Bluetooth, Detail::Sound, Detail::Battery] {
+        for detail in [Detail::Wifi, Detail::Bluetooth, Detail::Sound, Detail::Battery, Detail::Netbird] {
             for (scale, hovered) in [(1, None), (2, Some(Slot::QsPromptCancel)), (2, Some(Slot::QsDetailSettings))] {
                 let ctx = QsRenderContext { painter: &painter, theme: &theme, hovered };
                 let mut canvas = Canvas::new(QS_WIDTH, height, scale).expect("detail canvas");
                 draw_detail(&mut canvas, &ctx, &bar.qs_panel, detail, &status);
             }
         }
+    }
+
+    fn connect_netbird(bar: &mut Topbar) {
+        use glide_netbird as nb;
+        bar.set_netbird_installed(true);
+        let status = nb::Status {
+            state: nb::State::Connected,
+            session_expires_at: Some(std::time::SystemTime::now() + std::time::Duration::from_secs(600)),
+            peers: vec![nb::Peer { status: nb::PeerStatus::Connected, ..nb::Peer::default() }, nb::Peer::default()],
+            ..nb::Status::default()
+        };
+        bar.apply_netbird(NetbirdUpdate::Status(Box::new(status)));
+        bar.apply_netbird(NetbirdUpdate::Profiles(vec![
+            nb::Profile {
+                id: "default".into(),
+                name: "default".into(),
+                active: true,
+                email: Some("me@example.com".into()),
+            },
+            nb::Profile { id: "work".into(), name: "Work".into(), active: false, email: None },
+        ]));
+        bar.apply_netbird(NetbirdUpdate::Networks(vec![
+            nb::Network { id: "exit".into(), range: "0.0.0.0/0".into(), selected: true, ..nb::Network::default() },
+            nb::Network { id: "office".into(), range: "10.0.0.0/8".into(), selected: true, ..nb::Network::default() },
+        ]));
+    }
+
+    #[test]
+    fn the_netbird_view_shows_the_connection_the_session_the_profiles_the_exit_nodes_and_the_network() {
+        use netbird::NbItem;
+        let mut bar = Topbar::new(TopbarTheme::default());
+        connect_netbird(&mut bar);
+        let kinds_in = |height: i32| -> Vec<ItemKind> {
+            let body = detail_geometry(height, has_radio(Detail::Netbird)).body;
+            detail_items(&bar.qs_panel, Detail::Netbird, &bar.system_status, body)
+                .into_iter()
+                .map(|item| item.kind)
+                .collect()
+        };
+        let short = kinds_in(qs_geometry(&bar.qs_shape(None)).height);
+        assert!(
+            !matches!(short.last(), Some(ItemKind::Section(_))),
+            "a section never closes the panel without a card under it: {short:?}"
+        );
+        let kinds = kinds_in(900);
+        assert_eq!(
+            kinds,
+            [
+                ItemKind::Netbird(NbItem::Status),
+                ItemKind::Netbird(NbItem::Session),
+                ItemKind::Section(Key::NbProfiles),
+                ItemKind::Netbird(NbItem::Profile(0)),
+                ItemKind::Netbird(NbItem::Profile(1)),
+                ItemKind::Section(Key::NbExitNode),
+                ItemKind::Netbird(NbItem::ExitNone),
+                ItemKind::Netbird(NbItem::Exit(0)),
+                ItemKind::Section(Key::NbNetwork),
+                ItemKind::Netbird(NbItem::Peers),
+                ItemKind::Netbird(NbItem::Resources),
+            ]
+        );
+        assert!(has_radio(Detail::Netbird) && radio_on(Detail::Netbird, &bar.qs_panel, &bar.system_status));
+        assert_eq!(more_slot(Detail::Netbird), Slot::QsNetbirdMore);
+    }
+
+    #[test]
+    fn a_stopped_netbird_service_shows_only_the_status_card() {
+        let mut bar = Topbar::new(TopbarTheme::default());
+        bar.set_netbird_installed(true);
+        let body = detail_geometry(600, true).body;
+        let loading = detail_items(&bar.qs_panel, Detail::Netbird, &bar.system_status, body);
+        assert_eq!(loading.iter().map(|item| item.kind).collect::<Vec<_>>(), [ItemKind::Message(Key::NbLoading)]);
+        bar.apply_netbird(NetbirdUpdate::Status(Box::new(glide_netbird::Status::unavailable())));
+        let down = detail_items(&bar.qs_panel, Detail::Netbird, &bar.system_status, body);
+        assert_eq!(down.len(), 1);
+        assert_eq!(down[0].slot, None, "nothing to click while the daemon is away");
+        assert!(!radio_on(Detail::Netbird, &bar.qs_panel, &bar.system_status));
     }
 
     fn charge_limit(enabled: bool) -> ChargeLimit {

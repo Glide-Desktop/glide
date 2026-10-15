@@ -1437,6 +1437,7 @@ dependencies = [
  "glide-ipc",
  "glide-layout",
  "glide-media",
+ "glide-netbird",
  "glide-notify",
  "glide-paint",
  "glide-theme",
