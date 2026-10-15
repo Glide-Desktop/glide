@@ -38,6 +38,7 @@ mod tr {
         NoEntries => "No autostart entries", "Немає записів автозапуску";
         OnlyIn => "Only for", "Лише для";
         NotHere => "Not for Glide", "Не для Glide";
+        Replaced => "Glide does this itself. To start it anyway, add it under Started by Glide", "Glide робить це сам. Щоб усе одно запускати, додайте його в «Запускає Glide»";
         Missing => "The program is not installed", "Програму не встановлено";
         Conditional => "Starts only when its own condition holds, checked at login", "Запускається лише коли виконується його умова; перевіряється під час входу";
         Yours => "Added by you", "Додано вами";
@@ -333,6 +334,8 @@ impl Page {
                 } else {
                     format!("{} {}", c.t(T::OnlyIn), entry.only_in.join(", "))
                 })
+            } else if entry.replaced {
+                Some(c.t(T::Replaced).to_string())
             } else if !entry.runnable {
                 Some(c.t(T::Missing).to_string())
             } else if entry.conditional {

@@ -19,6 +19,7 @@ pub struct Entry {
     pub desktop_ok: bool,
     pub conditional: bool,
     pub runnable: bool,
+    pub replaced: bool,
     pub only_in: Vec<String>,
 }
 
@@ -30,7 +31,7 @@ impl Entry {
 
     #[must_use]
     pub const fn starts(&self) -> bool {
-        self.enabled && self.desktop_ok && !self.conditional && self.runnable
+        self.enabled && self.desktop_ok && !self.conditional && self.runnable && !self.replaced
     }
 }
 
@@ -97,6 +98,7 @@ pub fn build_entry(id: &str, fields: &Fields, lang: &str, desktops: &[String], e
         desktop_ok,
         conditional: !get("AutostartCondition").is_empty(),
         runnable: fields.is_app && !exec.is_empty() && (program.is_empty() || exists(&program)),
+        replaced: glide_config::autostart::provided_by_shell(&exec),
         only_in,
     }
 }

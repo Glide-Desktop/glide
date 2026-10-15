@@ -138,7 +138,11 @@ pub fn parse_entry(text: &str, desktops: &[String], probe: &Probe<'_>) -> Option
         return None;
     }
     let command = exec_command(&exec?);
-    (!command.is_empty()).then_some(Entry { command, phase, delay })
+    (!command.is_empty() && !glide_config::autostart::provided_by_shell(&command)).then_some(Entry {
+        command,
+        phase,
+        delay,
+    })
 }
 
 fn gsetting(schema: &str, key: &str) -> Option<bool> {
@@ -241,8 +245,16 @@ mod tests {
 
     #[test]
     fn plain_entries_run_with_field_codes_stripped() {
-        let text = "[Desktop Entry]\nType=Application\nExec=nm-applet --indicator %U\n";
-        assert_eq!(command(text, &INSTALLED).as_deref(), Some("nm-applet --indicator"));
+        let text = "[Desktop Entry]\nType=Application\nExec=syncthing serve --no-browser %U\n";
+        assert_eq!(command(text, &INSTALLED).as_deref(), Some("syncthing serve --no-browser"));
+    }
+
+    #[test]
+    fn applets_the_shell_replaces_are_not_started() {
+        for exec in ["nm-applet --indicator %U", "/usr/bin/nm-applet", "blueman-applet"] {
+            let text = format!("[Desktop Entry]\nType=Application\nExec={exec}\nNotShowIn=KDE;GNOME;\n");
+            assert_eq!(command(&text, &INSTALLED), None, "{exec}");
+        }
     }
 
     #[test]

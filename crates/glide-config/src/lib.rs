@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+pub mod autostart;
 mod keyboard;
 pub mod terminal;
 

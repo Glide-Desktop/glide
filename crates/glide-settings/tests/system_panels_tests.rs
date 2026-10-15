@@ -241,7 +241,7 @@ fn autostart_entries_parse_and_toggle_with_hidden() {
     let entry = autostart::build_entry("nm-applet.desktop", &fields, "uk", &[String::from("glide")], &|_| true);
     assert_eq!(entry.name, "Мережа");
     assert_eq!(entry.exec, "nm-applet");
-    assert!(entry.enabled && entry.runnable && !entry.desktop_ok);
+    assert!(entry.enabled && entry.runnable && !entry.desktop_ok && entry.replaced);
     assert_eq!(entry.only_in, vec!["GNOME", "XFCE"]);
     let off = autostart::enabled_text(text, false);
     assert!(off.contains("Hidden=true"));
@@ -251,6 +251,27 @@ fn autostart_entries_parse_and_toggle_with_hidden() {
         autostart::set_key("[Desktop Entry]\nName=a\n[Desktop Action x]\nName=b\n", "Hidden", Some("true")),
         "[Desktop Entry]\nName=a\nHidden=true\n[Desktop Action x]\nName=b\n"
     );
+}
+
+#[test]
+fn autostart_entries_for_applets_the_shell_replaces_do_not_count_as_starting() {
+    let build = |exec: &str| {
+        let text = format!("[Desktop Entry]\nType=Application\nName=Applet\nExec={exec}\nNotShowIn=KDE;GNOME;\n");
+        autostart::build_entry(
+            "applet.desktop",
+            &autostart::parse_fields(&text),
+            "en",
+            &[String::from("glide")],
+            &|_| true,
+        )
+    };
+    for exec in ["nm-applet", "/usr/bin/blueman-applet %U"] {
+        let entry = build(exec);
+        assert!(entry.enabled && entry.desktop_ok && entry.runnable, "{exec}");
+        assert!(entry.replaced && !entry.starts(), "{exec}");
+    }
+    let other = build("syncthing serve");
+    assert!(!other.replaced && other.starts());
 }
 
 #[test]
