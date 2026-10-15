@@ -145,10 +145,6 @@ const QS_DRAWER_GAP: i32 = 2;
 const QS_DRAWER_BOTTOM: i32 = 2;
 const QS_DRAWER_ICON: i32 = 22;
 const QS_DRAWER_TICK: i32 = 12;
-const QS_SWITCH_W: i32 = 44;
-const QS_SWITCH_H: i32 = 26;
-const QS_SWITCH_THUMB: i32 = 20;
-const QS_SWITCH_INSET: i32 = 3;
 
 const POPUP_GAP: i32 = glide_theme::spacing::SP2;
 const SHADOW_CACHE_LIMIT: usize = 48;
@@ -377,6 +373,8 @@ pub enum Slot {
     QsDetailToggle,
     QsDetailRow(u16),
     QsPasswordField,
+    QsPromptCancel,
+    QsPromptConnect,
     QsDetailSettings,
     Search,
     Privacy,
@@ -473,9 +471,10 @@ impl Slot {
             | Self::QsPowerButton(_)
             | Self::QsPowerCancel
             | Self::QsPowerConfirm(_)
+            | Self::QsPromptCancel
+            | Self::QsPromptConnect
             | Self::QsWifi
-            | Self::QsBluetooth
-            | Self::QsBack => Some(glide_theme::shape::R_ROUND),
+            | Self::QsBluetooth => Some(glide_theme::shape::R_ROUND),
             _ => Some(glide_theme::shape::R2),
         }
     }
@@ -527,6 +526,8 @@ impl Slot {
             Self::QsDetailToggle => TopbarAction::QsPanel(PanelAction::Toggle),
             Self::QsDetailRow(index) => TopbarAction::QsPanel(PanelAction::Row(index)),
             Self::QsPasswordField => TopbarAction::QsPanel(PanelAction::FocusPassword),
+            Self::QsPromptCancel => TopbarAction::QsPanel(PanelAction::PromptCancel),
+            Self::QsPromptConnect => TopbarAction::QsPanel(PanelAction::PromptSubmit),
             Self::QsDetailSettings => TopbarAction::QsPanel(PanelAction::Settings),
             Self::Search => TopbarAction::ToggleLauncher,
             Self::Privacy => TopbarAction::TogglePrivacy,
@@ -539,7 +540,7 @@ impl Slot {
 }
 
 type ScaledBuffers = std::collections::HashMap<i32, MemoryRenderBuffer>;
-type QsCacheKey = ((u64, u64, u64), QsFlags, QsMotion, Option<Slot>, QsShape);
+type QsCacheKey = ((u64, u64, String), QsFlags, QsMotion, Option<Slot>, QsShape);
 type QsPowerKey = (Option<Slot>, Option<(PowerAction, Option<u64>)>, (i32, i32));
 type NcCacheKey = (u64, bool, (u8, u8), Option<Slot>);
 type LayerKey = (u8, i32, i32, u32, i32);
@@ -1333,7 +1334,8 @@ impl Topbar {
             brightness: percent(self.brightness_anim.value()),
             profile: quantize(self.profile_anim.value(), MOTION_QUANTUM),
         };
-        let revs = (self.status_rev, self.detail_rev, self.qs_panel.rev);
+        let battery = self.system_status.battery_pct.map(|_| panels::battery_head_line(&self.system_status));
+        let revs = (self.status_rev, self.qs_panel.rev, battery.unwrap_or_default());
         (revs, flags, motion, hovered, self.qs_shape(Some(painter)))
     }
 
@@ -1789,7 +1791,7 @@ impl Topbar {
                     volume: self.system_status.volume_available,
                     brightness: self.system_status.brightness_available,
                     drawer_items: self.qs_drawer.map_or(0, |drawer| self.qs_panel.devices(drawer).len()),
-                    detail: self.detail_slots(),
+                    detail: self.detail_slots(painter),
                 },
                 popup_slots,
             )),
@@ -3149,6 +3151,8 @@ pub struct TopbarTheme {
     pub active_soft_label: Color,
     pub ok: Color,
     pub danger: Color,
+    pub ok_soft: Color,
+    pub danger_soft: Color,
     pub line: Color,
     pub line_2: Color,
     pub fill_2: Color,
@@ -3200,6 +3204,8 @@ impl TopbarTheme {
             active_soft_label: t.acc_soft_fg,
             ok: t.ok,
             danger: t.danger,
+            ok_soft: t.ok_soft,
+            danger_soft: t.danger_soft,
             line: t.line,
             line_2: t.line_2,
             fill_2: t.fill_2,
@@ -3233,6 +3239,8 @@ impl TopbarTheme {
             .color(self.active_soft_label)
             .color(self.ok)
             .color(self.danger)
+            .color(self.ok_soft)
+            .color(self.danger_soft)
             .color(self.line)
             .color(self.line_2)
             .color(self.fill_2)
@@ -4375,11 +4383,6 @@ fn draw_switch(
     let thumb_x = switch.thumb_x(track.loc.x, track.size.w, inset, thumb);
     let knob = local_rect(thumb_x, track.loc.y + inset, thumb, thumb);
     c.fill(knob, theme.thumb, R_ROUND);
-}
-
-fn draw_qs_switch(c: &mut Canvas<'_>, theme: &TopbarTheme, (sw_x, sw_y): (i32, i32), switch: SwitchMotion) {
-    let track = local_rect(sw_x, sw_y, QS_SWITCH_W, QS_SWITCH_H);
-    draw_switch(c, theme, track, (QS_SWITCH_INSET, QS_SWITCH_THUMB), switch);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6584,6 +6587,7 @@ mod tests {
             pct: 60,
             state: crate::system_info::BatteryState::Discharging,
             minutes: Some(90),
+            health: crate::system_info::BatteryHealth::default(),
             profile: None,
         };
         bar.set_system_status(crate::system_info::SystemStatus {

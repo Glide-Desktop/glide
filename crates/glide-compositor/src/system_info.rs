@@ -124,11 +124,21 @@ pub enum PowerProfile {
     Performance,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct BatteryHealth {
+    pub wear_pct: Option<u8>,
+    pub cycles: Option<u32>,
+    pub draw_dw: Option<u32>,
+    pub full_dwh: Option<u32>,
+    pub design_dwh: Option<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BatteryInfo {
     pub pct: u8,
     pub state: BatteryState,
     pub minutes: Option<u32>,
+    pub health: BatteryHealth,
     pub profile: Option<PowerProfile>,
 }
 
@@ -166,6 +176,42 @@ pub struct BatteryCell {
     pub now: f64,
     pub full: f64,
     pub rate: f64,
+    pub design: f64,
+    pub cycles: Option<u32>,
+    pub watts: Option<f64>,
+    pub watt_hours: Option<(f64, f64)>,
+}
+
+const MICRO: f64 = 1e6;
+const PICO: f64 = 1e12;
+
+fn deci(value: f64) -> Option<u32> {
+    value.is_finite().then(|| (value * 10.0).round().clamp(0.0, f64::from(u32::MAX)) as u32)
+}
+
+#[must_use]
+pub fn battery_health(cells: &[BatteryCell]) -> BatteryHealth {
+    let watts: Option<f64> = cells.iter().map(|cell| cell.watts).sum();
+    let watt_hours: Option<(f64, f64)> = cells
+        .iter()
+        .map(|cell| cell.watt_hours)
+        .try_fold((0.0, 0.0), |(full, design), cell| cell.map(|(f, d)| (full + f, design + d)));
+    let same_units = cells.windows(2).all(|pair| pair[0].energy_units == pair[1].energy_units);
+    let (full, design) = watt_hours.unwrap_or_else(|| {
+        if same_units {
+            (cells.iter().map(|cell| cell.full).sum(), cells.iter().map(|cell| cell.design).sum())
+        } else {
+            (0.0, 0.0)
+        }
+    });
+    let wear_pct = (design > 0.0 && full > 0.0).then(|| (full / design * 100.0).round().clamp(0.0, 100.0) as u8);
+    BatteryHealth {
+        wear_pct,
+        cycles: cells.iter().filter_map(|cell| cell.cycles).max(),
+        draw_dw: watts.and_then(deci),
+        full_dwh: watt_hours.and_then(|(full, _)| deci(full)),
+        design_dwh: watt_hours.and_then(|(_, design)| deci(design)).filter(|design| *design > 0),
+    }
 }
 
 #[must_use]
@@ -193,7 +239,21 @@ pub fn parse_battery_cell(text: &str) -> Option<BatteryCell> {
             uevent_number(text, "POWER_SUPPLY_CURRENT_NOW").unwrap_or(0.0),
         ),
     };
-    Some(BatteryCell { pct, state, energy_units, now, full, rate })
+    let design_key = if energy_units { "POWER_SUPPLY_ENERGY_FULL_DESIGN" } else { "POWER_SUPPLY_CHARGE_FULL_DESIGN" };
+    let design = uevent_number(text, design_key).unwrap_or(0.0);
+    let cycles = uevent_value(text, "POWER_SUPPLY_CYCLE_COUNT").and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0);
+    let volts_now = uevent_number(text, "POWER_SUPPLY_VOLTAGE_NOW").filter(|volts| *volts > 0.0);
+    let volts_design =
+        uevent_number(text, "POWER_SUPPLY_VOLTAGE_MIN_DESIGN").filter(|volts| *volts > 0.0).or(volts_now);
+    let (watts, watt_hours) = if energy_units {
+        (Some(rate / MICRO), Some((full / MICRO, design / MICRO)))
+    } else {
+        (
+            volts_now.map(|volts| rate * volts / PICO),
+            volts_design.map(|volts| (full * volts / PICO, design * volts / PICO)),
+        )
+    };
+    Some(BatteryCell { pct, state, energy_units, now, full, rate, design, cycles, watts, watt_hours })
 }
 
 #[must_use]
@@ -209,11 +269,13 @@ pub fn aggregate_batteries(cells: &[BatteryCell]) -> Option<BatteryInfo> {
     } else {
         BatteryState::Full
     };
+    let health = battery_health(cells);
     if cells.len() == 1 {
         return Some(BatteryInfo {
             pct: first.pct,
             state,
             minutes: battery_minutes(state, first.now, first.full, first.rate),
+            health,
             profile: None,
         });
     }
@@ -232,6 +294,7 @@ pub fn aggregate_batteries(cells: &[BatteryCell]) -> Option<BatteryInfo> {
         pct,
         state,
         minutes: same_units.then(|| battery_minutes(state, now, full, rate)).flatten(),
+        health,
         profile: None,
     })
 }
@@ -1382,6 +1445,35 @@ mod tests {
         pending.push(Control::ToggleMicMute, 0);
         assert!(!pending.is_empty());
         assert_eq!(pending.drain(), vec![(Control::ToggleMicMute, 0)]);
+    }
+
+    #[test]
+    fn battery_health_reads_wear_cycles_draw_and_capacity_in_either_unit() {
+        let charge = "POWER_SUPPLY_STATUS=Discharging\nPOWER_SUPPLY_CYCLE_COUNT=65\n\
+                      POWER_SUPPLY_VOLTAGE_MIN_DESIGN=11370000\nPOWER_SUPPLY_VOLTAGE_NOW=12000000\n\
+                      POWER_SUPPLY_CURRENT_NOW=700000\nPOWER_SUPPLY_CHARGE_FULL_DESIGN=4661000\n\
+                      POWER_SUPPLY_CHARGE_FULL=4615000\nPOWER_SUPPLY_CHARGE_NOW=2300000\nPOWER_SUPPLY_CAPACITY=50\n";
+        let health = parse_battery_uevent(charge).expect("battery").health;
+        assert_eq!(health.wear_pct, Some(99));
+        assert_eq!(health.cycles, Some(65));
+        assert_eq!(health.draw_dw, Some(84), "0.7 A at 12 V");
+        assert_eq!(health.full_dwh, Some(525), "4.615 Ah at the 11.37 V design voltage");
+        assert_eq!(health.design_dwh, Some(530));
+
+        let energy = "POWER_SUPPLY_STATUS=Discharging\nPOWER_SUPPLY_CYCLE_COUNT=0\n\
+                      POWER_SUPPLY_ENERGY_FULL_DESIGN=60000000\nPOWER_SUPPLY_ENERGY_FULL=48000000\n\
+                      POWER_SUPPLY_ENERGY_NOW=24000000\nPOWER_SUPPLY_POWER_NOW=9500000\nPOWER_SUPPLY_CAPACITY=50\n";
+        let health = parse_battery_uevent(energy).expect("battery").health;
+        assert_eq!(health.wear_pct, Some(80));
+        assert_eq!(health.cycles, None, "a zero count means the firmware does not keep one");
+        assert_eq!(health.draw_dw, Some(95));
+        assert_eq!((health.full_dwh, health.design_dwh), (Some(480), Some(600)));
+
+        let bare = "POWER_SUPPLY_STATUS=Full\nPOWER_SUPPLY_CAPACITY=100\n";
+        assert_eq!(
+            parse_battery_uevent(bare).expect("battery").health,
+            BatteryHealth { draw_dw: None, full_dwh: None, ..BatteryHealth::default() }
+        );
     }
 
     #[test]

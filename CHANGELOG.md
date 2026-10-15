@@ -73,6 +73,11 @@ have not been tried on real hardware or against the real system service.
   app is recording.
 - The output and input names on the volume and microphone rows unfold a
   list of devices in place; picking one makes it the default.
+- The Wi-Fi, Bluetooth, Sound and Battery views use cards under section
+  labels; a Wi-Fi password opens in a drawer under its network with
+  Cancel and Connect; Sound lists microphones too; Battery shows health,
+  cycles, power draw and capacity, and picks the power profile.
+  *rendering unverified*
 - Quick settings: an audio output picker; airplane mode; sliders for
   controls the machine lacks (no backlight, no audio tools) are dimmed
   and inert instead of showing made-up levels.

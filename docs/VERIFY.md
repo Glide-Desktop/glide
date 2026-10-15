@@ -206,3 +206,8 @@ Ctrl+Alt+F3 and a text login.
     dragging it moves `wpctl get-volume @DEFAULT_AUDIO_SOURCE@`, the mute
     button and XF86AudioMicMute both turn it red, and the dot goes green
     while a browser records. Without one the row is absent.
+57. **Detail views.** Wi-Fi: the connected network sits under its own
+    label with Disconnect; a secured one unfolds its password drawer, a
+    wrong password shows the error line. Battery: health, cycles, draw and
+    capacity agree with `upower -i` (within rounding); a profile card
+    switches `powerprofilesctl get`.

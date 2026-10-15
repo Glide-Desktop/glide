@@ -780,8 +780,12 @@ impl GlideState {
     }
 
     pub fn rescan_quick_settings_panel(&mut self) {
-        if let Some(scan) = self.topbar.detail().and_then(scan_for) {
+        let detail = self.topbar.detail();
+        if let Some(scan) = detail.and_then(scan_for) {
             request(scan);
+        }
+        if detail == Some(Detail::Sound) {
+            request(NetRequest::ScanInputs);
         }
     }
 
@@ -806,6 +810,9 @@ impl GlideState {
                     && let Some(scan) = scan_for(detail)
                 {
                     request(scan);
+                    if detail == Detail::Sound {
+                        request(NetRequest::ScanInputs);
+                    }
                 }
             }
             PanelAction::Back => {
@@ -827,6 +834,8 @@ impl GlideState {
                 self.sync_prompt_caps_lock();
             }
             PanelAction::FocusPassword => self.topbar.focus_password(),
+            PanelAction::PromptCancel => self.run_qs_field_key(crate::topbar::FieldKey::Cancel),
+            PanelAction::PromptSubmit => self.run_qs_field_key(crate::topbar::FieldKey::Submit),
             PanelAction::Settings => {
                 let detail = self.topbar.detail();
                 self.topbar.close_popup();

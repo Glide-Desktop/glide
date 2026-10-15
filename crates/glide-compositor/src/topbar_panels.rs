@@ -1,8 +1,7 @@
 use super::{
     Anim, Canvas, Color, E_OUT, GlyphPainter, LocalRect, Logical, MemoryRenderBufferRenderElement, OpenPopup, Placed,
-    Point, QS_PAD, QS_SWITCH_H, QS_SWITCH_W, QS_WIDTH, QsRenderContext, Rectangle, Scale, Slot, SwitchMotion,
-    TextAlign, TextStyle, Topbar, TopbarTheme, band, draw_qs_switch, local_rect, motion, push_placed, qs_geometry,
-    text_w,
+    Point, QS_PAD, QS_WIDTH, QsRenderContext, Rectangle, Scale, Slot, SwitchMotion, TextAlign, TextStyle, Topbar,
+    TopbarTheme, band, draw_switch, local_rect, motion, push_placed, qs_geometry, text_w,
 };
 
 use crate::i18n::{Key, t};
@@ -10,17 +9,55 @@ use crate::launcher::field::{CaretMove, TextField};
 use crate::power::PowerAction;
 use crate::qs_net::{AudioOutput, BtDevice, ConnectError, NetEvent, Security, WifiNetwork};
 use crate::system_info::{BatteryInfo, BatteryState, PowerProfile};
-use glide_theme::shape::{R_ROUND, R1};
-use glide_theme::spacing::{SP1, SP2};
+use glide_theme::shape::{R_ROUND, R1, R2};
+use glide_theme::spacing::{SP1, SP2, SP3};
 use smithay::input::keyboard::Keysym;
 
-const DETAIL_HEADER: i32 = 32;
-const DETAIL_ROW: i32 = 32;
-const DETAIL_SECTION: i32 = 16;
-const DETAIL_ICON: i32 = 16;
-const TRAILING_ICON: i32 = 14;
-const TRAILING_GLYPH: f32 = 12.0;
-const BATTERY_BAR: i32 = 6;
+const DETAIL_BACK: i32 = 28;
+const DETAIL_BACK_ICON: i32 = 12;
+const DETAIL_HEAD_GAP: i32 = 2;
+const DETAIL_SWITCH_W: i32 = 32;
+const DETAIL_SWITCH_H: i32 = 18;
+const DETAIL_SWITCH_THUMB: i32 = 14;
+const DETAIL_SWITCH_INSET: i32 = 2;
+const DETAIL_SECTION: i32 = 14;
+const DETAIL_CARD: i32 = 48;
+const DETAIL_CARD_GAP: i32 = 6;
+const DETAIL_GROUP_GAP: i32 = SP1 + SP3 - DETAIL_CARD_GAP;
+const DETAIL_SETTINGS: i32 = 32;
+const DETAIL_CHEVRON: i32 = 14;
+const DETAIL_DIAG: i32 = DIAG_PAD_Y * 2 + DIAG_LABEL + DIAG_GAP + DIAG_VALUE + 2;
+const DETAIL_PROFILE: i32 = CARD_PAD_X * 2 + PROFILE_TITLE + 2 + PROFILE_HINT + 2;
+const CARD_PAD_X: i32 = 10;
+const CARD_GAP: i32 = 10;
+const CARD_ICON: i32 = 24;
+const CARD_GLYPH: i32 = 14;
+const CARD_TRAILING: i32 = 12;
+const CARD_ACTION_H: i32 = 22;
+const CARD_ACTION_PAD: i32 = SP2;
+const CARD_PRIMARY: TextStyle = TextStyle { size_px: 12.5, line_height_px: 16.0, weight: 600, ..TextStyle::CAP };
+const CARD_ACTION: TextStyle = TextStyle { size_px: 11.0, line_height_px: 14.0, weight: 550, ..TextStyle::CAP };
+const RADIO: i32 = 16;
+const RADIO_DOT: i32 = 8;
+const PROFILE_TITLE: i32 = 16;
+const PROFILE_HINT: i32 = 14;
+const PROMPT_PAD_X: i32 = 10;
+const PROMPT_PAD_TOP: i32 = SP2;
+const PROMPT_PAD_BOTTOM: i32 = 10;
+const PROMPT_TITLE: i32 = 16;
+const PROMPT_FIELD: i32 = 32;
+const PROMPT_ERROR: i32 = 14;
+const PROMPT_PILL: i32 = 28;
+const DIAG_PAD_X: i32 = 10;
+const DIAG_PAD_Y: i32 = SP2;
+const DIAG_LABEL: i32 = 13;
+const DIAG_GAP: i32 = 2;
+const DIAG_VALUE: i32 = 18;
+const DIAG_UNIT_GAP: i32 = 6;
+const DIAG_PILL_H: i32 = 16;
+const DIAG_PILL_PAD: i32 = 6;
+const DIAG_PILL: TextStyle = TextStyle { size_px: 10.0, line_height_px: 12.0, weight: 600, ..TextStyle::CAP };
+const HEALTHY_PCT: u8 = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Detail {
@@ -37,6 +74,8 @@ pub enum PanelAction {
     Toggle,
     Row(u16),
     FocusPassword,
+    PromptCancel,
+    PromptSubmit,
     Settings,
 }
 
@@ -145,14 +184,6 @@ const fn profile_label(profile: PowerProfile) -> Key {
         PowerProfile::PowerSaver => Key::TbPowerSaver,
         PowerProfile::Balanced => Key::TbPowerBalanced,
         PowerProfile::Performance => Key::TbPowerPerformance,
-    }
-}
-
-const fn profile_icon(profile: PowerProfile) -> &'static str {
-    match profile {
-        PowerProfile::PowerSaver => "power-profile-power-saver",
-        PowerProfile::Balanced => "power-profile-balanced",
-        PowerProfile::Performance => "power-profile-performance",
     }
 }
 
@@ -306,6 +337,13 @@ impl DetailPanel {
         }
     }
 
+    fn failed(&self, index: usize) -> bool {
+        let Some(network) = self.wifi.get(index) else {
+            return false;
+        };
+        self.failure.as_ref().is_some_and(|failure| failure.key == network.ssid)
+    }
+
     pub(super) fn active_output(&self) -> Option<&AudioOutput> {
         self.outputs.iter().find(|output| output.active)
     }
@@ -330,11 +368,23 @@ impl DetailPanel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RowKind {
+pub(super) enum ItemKind {
+    Section(Key),
+    Message(Key),
     Network(usize),
     Device(usize),
     Output(usize),
-    Prompt,
+    Input(usize),
+    Prompt(usize),
+    Diag(usize),
+    Profile(PowerProfile),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DetailItem {
+    pub(super) kind: ItemKind,
+    pub(super) rect: LocalRect,
+    pub(super) slot: Option<Slot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,39 +393,260 @@ pub(super) struct DetailGeometry {
     pub(super) toggle: LocalRect,
     pub(super) title_left: i32,
     pub(super) title_right: i32,
-    pub(super) divider_top: i32,
-    pub(super) section: LocalRect,
-    pub(super) list: LocalRect,
+    pub(super) body: LocalRect,
     pub(super) divider_bottom: i32,
     pub(super) settings: LocalRect,
 }
 
-pub(super) fn detail_geometry(height: i32) -> DetailGeometry {
+pub(super) fn detail_geometry(height: i32, radio: bool) -> DetailGeometry {
     let row_w = QS_WIDTH - QS_PAD * 2;
-    let back = local_rect(QS_PAD, QS_PAD, DETAIL_HEADER, DETAIL_HEADER);
+    let back = local_rect(QS_PAD, QS_PAD, DETAIL_BACK, DETAIL_BACK);
     let toggle = local_rect(
-        QS_WIDTH - QS_PAD - QS_SWITCH_W,
-        QS_PAD + (DETAIL_HEADER - QS_SWITCH_H) / 2,
-        QS_SWITCH_W,
-        QS_SWITCH_H,
+        QS_WIDTH - QS_PAD - DETAIL_SWITCH_W,
+        QS_PAD + (DETAIL_BACK - DETAIL_SWITCH_H) / 2,
+        DETAIL_SWITCH_W,
+        DETAIL_SWITCH_H,
     );
-    let divider_top = QS_PAD + DETAIL_HEADER + SP2;
-    let section = local_rect(QS_PAD + SP2, divider_top + 1 + SP2, row_w - SP2 * 2, DETAIL_SECTION);
-    let settings = local_rect(QS_PAD, height - QS_PAD - DETAIL_ROW, row_w, DETAIL_ROW);
+    let trailing = if radio { DETAIL_SWITCH_W } else { super::QS_READOUT_W };
+    let body_top = QS_PAD + DETAIL_BACK + DETAIL_HEAD_GAP + SP3;
+    let settings = local_rect(QS_PAD, height - QS_PAD - DETAIL_SETTINGS, row_w, DETAIL_SETTINGS);
     let divider_bottom = settings.loc.y - SP1 - 1;
-    let list_y = section.loc.y + section.size.h + SP1;
-    let list = local_rect(QS_PAD, list_y, row_w, (divider_bottom - SP1 - list_y).max(0));
+    let body = local_rect(QS_PAD, body_top, row_w, (divider_bottom - SP1 - body_top).max(0));
     DetailGeometry {
         back,
         toggle,
         title_left: back.loc.x + back.size.w + SP2,
-        title_right: toggle.loc.x - SP2,
-        divider_top,
-        section,
-        list,
+        title_right: QS_WIDTH - QS_PAD - trailing - SP2,
+        body,
         divider_bottom,
         settings,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PromptParts {
+    pub(super) title: LocalRect,
+    pub(super) field: LocalRect,
+    pub(super) error: Option<LocalRect>,
+    pub(super) cancel: LocalRect,
+    pub(super) connect: LocalRect,
+}
+
+const fn prompt_height(failed: bool) -> i32 {
+    let error = if failed { PROMPT_ERROR + SP2 } else { 0 };
+    PROMPT_PAD_TOP + PROMPT_TITLE + SP2 + PROMPT_FIELD + SP2 + error + PROMPT_PILL + PROMPT_PAD_BOTTOM
+}
+
+pub(super) fn prompt_parts(rect: LocalRect, failed: bool, (cancel_w, connect_w): (i32, i32)) -> PromptParts {
+    let (left, right) = (rect.loc.x + PROMPT_PAD_X, rect.loc.x + rect.size.w - PROMPT_PAD_X);
+    let width = right - left;
+    let mut y = rect.loc.y + PROMPT_PAD_TOP;
+    let title = local_rect(left, y, width, PROMPT_TITLE);
+    y += PROMPT_TITLE + SP2;
+    let field = local_rect(left, y, width, PROMPT_FIELD);
+    y += PROMPT_FIELD + SP2;
+    let error = failed.then(|| {
+        let error = local_rect(left, y, width, PROMPT_ERROR);
+        y += PROMPT_ERROR + SP2;
+        error
+    });
+    let connect = local_rect(right - connect_w, y, connect_w, PROMPT_PILL);
+    let cancel = local_rect(connect.loc.x - SP1 - cancel_w, y, cancel_w, PROMPT_PILL);
+    PromptParts { title, field, error, cancel, connect }
+}
+
+struct Column<'a> {
+    left: i32,
+    width: i32,
+    y: i32,
+    bottom: i32,
+    items: &'a mut Vec<DetailItem>,
+}
+
+impl Column<'_> {
+    const fn fits(&self, height: i32) -> bool {
+        self.y + height <= self.bottom
+    }
+
+    fn push(&mut self, kind: ItemKind, height: i32, slot: Option<Slot>) -> bool {
+        if !self.fits(height) {
+            return false;
+        }
+        self.items.push(DetailItem { kind, rect: local_rect(self.left, self.y, self.width, height), slot });
+        self.y += height;
+        true
+    }
+
+    fn section(&mut self, key: Key) -> bool {
+        let pushed = self.push(ItemKind::Section(key), DETAIL_SECTION, None);
+        if pushed {
+            self.y += SP3;
+        }
+        pushed
+    }
+
+    fn card(&mut self, kind: ItemKind, slot: Option<Slot>) -> bool {
+        let pushed = self.push(kind, DETAIL_CARD, slot);
+        if pushed {
+            self.y += DETAIL_CARD_GAP;
+        }
+        pushed
+    }
+
+    fn message(&mut self, key: Key) {
+        self.card(ItemKind::Message(key), None);
+    }
+
+    const fn end_group(&mut self) {
+        self.y += DETAIL_GROUP_GAP;
+    }
+}
+
+fn row_slot(index: usize) -> Option<Slot> {
+    u16::try_from(index).ok().map(Slot::QsDetailRow)
+}
+
+fn push_network(column: &mut Column<'_>, panel: &DetailPanel, index: usize) -> bool {
+    let Some(network) = panel.wifi.get(index) else {
+        return false;
+    };
+    let prompt = panel.prompt.as_ref().filter(|prompt| prompt.ssid == network.ssid);
+    let failed = panel.failure.as_ref().is_some_and(|failure| failure.key == network.ssid);
+    let extra = prompt.map_or(0, |_| prompt_height(failed));
+    if !column.fits(DETAIL_CARD + extra) {
+        return false;
+    }
+    column.card(ItemKind::Network(index), row_slot(index));
+    if prompt.is_some() {
+        column.y -= DETAIL_CARD_GAP;
+        column.push(ItemKind::Prompt(index), extra, None);
+        column.y += DETAIL_CARD_GAP;
+    }
+    true
+}
+
+fn wifi_items(column: &mut Column<'_>, panel: &DetailPanel, status: &crate::system_info::SystemStatus) {
+    if !status.wifi_enabled {
+        return column.message(Key::QsWifiIsOff);
+    }
+    if panel.wifi.is_empty() {
+        return column.message(if panel.wifi_ready { Key::QsNoNetworks } else { Key::QsSearching });
+    }
+    let (connected, available): (Vec<usize>, Vec<usize>) =
+        (0..panel.wifi.len()).partition(|index| panel.wifi[*index].connected);
+    if !connected.is_empty() && column.section(Key::QsConnectedNetwork) {
+        for index in connected {
+            push_network(column, panel, index);
+        }
+        column.end_group();
+    }
+    if !available.is_empty() && column.section(Key::QsAvailableNetworks) {
+        for index in available {
+            if !push_network(column, panel, index) {
+                break;
+            }
+        }
+    }
+}
+
+fn bluetooth_items(column: &mut Column<'_>, panel: &DetailPanel, status: &crate::system_info::SystemStatus) {
+    if !status.bluetooth_on {
+        return column.message(Key::QsBluetoothIsOff);
+    }
+    if panel.devices.is_empty() {
+        return column.message(if panel.devices_ready { Key::QsNoDevices } else { Key::QsSearching });
+    }
+    let (connected, paired): (Vec<usize>, Vec<usize>) =
+        (0..panel.devices.len()).partition(|index| panel.devices[*index].connected);
+    for (key, group) in [(Key::QsConnectedDevices, connected), (Key::QsPairedDevices, paired)] {
+        if group.is_empty() || !column.section(key) {
+            continue;
+        }
+        for index in group {
+            if !column.card(ItemKind::Device(index), row_slot(index)) {
+                return;
+            }
+        }
+        column.end_group();
+    }
+}
+
+fn sound_items(column: &mut Column<'_>, panel: &DetailPanel) {
+    let groups = [
+        (Key::QsOutputDevice, super::Drawer::Output, Key::QsNoOutputs),
+        (Key::QsInputDevice, super::Drawer::Input, Key::QsNoInputs),
+    ];
+    for (section, drawer, empty) in groups {
+        if !column.section(section) {
+            return;
+        }
+        let devices = panel.devices(drawer);
+        if devices.is_empty() {
+            column.message(if panel.devices_ready(drawer) { empty } else { Key::QsSearching });
+        }
+        for index in 0..devices.len() {
+            let (kind, slot) = match drawer {
+                super::Drawer::Output => (ItemKind::Output(index), row_slot(index)),
+                super::Drawer::Input => {
+                    (ItemKind::Input(index), u16::try_from(index).ok().map(|i| Slot::QsDrawerItem(drawer, i)))
+                }
+            };
+            if !column.card(kind, slot) {
+                return;
+            }
+        }
+        column.end_group();
+    }
+}
+
+fn battery_items(column: &mut Column<'_>, status: &crate::system_info::SystemStatus) {
+    if column.section(Key::QsBatteryTelemetry) {
+        let half = (column.width - SP2) / 2;
+        for pair in 0..2 {
+            if !column.fits(DETAIL_DIAG) {
+                return;
+            }
+            for side in 0..2 {
+                let x = column.left + side * (half + SP2);
+                let rect = local_rect(x, column.y, half, DETAIL_DIAG);
+                let index = usize::try_from(pair * 2 + side).unwrap_or(0);
+                column.items.push(DetailItem { kind: ItemKind::Diag(index), rect, slot: None });
+            }
+            column.y += DETAIL_DIAG + SP2;
+        }
+        column.y -= SP2;
+        column.end_group();
+        column.y += DETAIL_CARD_GAP;
+    }
+    if status.power_profile.is_some() && column.section(Key::QsPerformanceProfile) {
+        for profile in super::QS_PROFILES {
+            if !column.fits(DETAIL_PROFILE) {
+                return;
+            }
+            column.push(ItemKind::Profile(profile), DETAIL_PROFILE, Some(Slot::QsProfile(profile)));
+            column.y += DETAIL_CARD_GAP;
+        }
+    }
+}
+
+pub(super) fn detail_items(
+    panel: &DetailPanel, detail: Detail, status: &crate::system_info::SystemStatus, body: LocalRect,
+) -> Vec<DetailItem> {
+    let mut items = Vec::new();
+    let mut column = Column {
+        left: body.loc.x,
+        width: body.size.w,
+        y: body.loc.y,
+        bottom: body.loc.y + body.size.h,
+        items: &mut items,
+    };
+    match detail {
+        Detail::Wifi => wifi_items(&mut column, panel, status),
+        Detail::Bluetooth => bluetooth_items(&mut column, panel, status),
+        Detail::Sound => sound_items(&mut column, panel),
+        Detail::Battery => battery_items(&mut column, status),
+    }
+    items
 }
 
 fn radio_on(detail: Detail, status: &crate::system_info::SystemStatus) -> bool {
@@ -389,49 +660,6 @@ fn radio_on(detail: Detail, status: &crate::system_info::SystemStatus) -> bool {
 
 const fn has_radio(detail: Detail) -> bool {
     !matches!(detail, Detail::Battery | Detail::Sound)
-}
-
-pub(super) fn detail_rows(
-    panel: &DetailPanel, detail: Detail, status: &crate::system_info::SystemStatus, list: LocalRect,
-) -> Vec<(Slot, LocalRect, RowKind)> {
-    if !radio_on(detail, status) {
-        return Vec::new();
-    }
-    let capacity = usize::try_from(list.size.h / DETAIL_ROW).unwrap_or(0);
-    let mut kinds = Vec::new();
-    match detail {
-        Detail::Wifi => {
-            let room = if panel.prompt.is_some() { capacity.saturating_sub(1) } else { capacity };
-            for (index, network) in panel.wifi.iter().enumerate().take(room) {
-                kinds.push(RowKind::Network(index));
-                if panel.prompt.as_ref().is_some_and(|prompt| prompt.ssid == network.ssid) {
-                    kinds.push(RowKind::Prompt);
-                }
-            }
-        }
-        Detail::Bluetooth => {
-            kinds.extend((0..panel.devices.len().min(capacity)).map(RowKind::Device));
-        }
-        Detail::Sound => {
-            kinds.extend((0..panel.outputs.len().min(capacity)).map(RowKind::Output));
-        }
-        Detail::Battery => {}
-    }
-    let mut y = list.loc.y;
-    kinds
-        .into_iter()
-        .filter_map(|kind| {
-            let slot = match kind {
-                RowKind::Network(index) | RowKind::Device(index) | RowKind::Output(index) => {
-                    Slot::QsDetailRow(u16::try_from(index).ok()?)
-                }
-                RowKind::Prompt => Slot::QsPasswordField,
-            };
-            let rect = local_rect(list.loc.x, y, list.size.w, DETAIL_ROW);
-            y += DETAIL_ROW;
-            Some((slot, rect, kind))
-        })
-        .collect()
 }
 
 impl Topbar {
@@ -655,21 +883,35 @@ impl Topbar {
         true
     }
 
-    pub(super) fn detail_slots(&self) -> Option<Vec<(Slot, LocalRect)>> {
+    pub(super) fn detail_slots(&self, painter: &crate::paint::Painter) -> Option<Vec<(Slot, LocalRect)>> {
         let detail = self.qs_panel.view?;
-        let geometry = detail_geometry(qs_geometry(&self.qs_shape(None)).height);
+        let radio = has_radio(detail);
+        let geometry = detail_geometry(qs_geometry(&self.qs_shape(None)).height, radio);
         let mut slots = vec![(Slot::QsBack, geometry.back)];
-        if has_radio(detail) {
+        if radio {
             slots.push((Slot::QsDetailToggle, geometry.toggle));
         }
-        slots.extend(
-            detail_rows(&self.qs_panel, detail, &self.system_status, geometry.list)
-                .into_iter()
-                .map(|(slot, rect, _)| (slot, rect)),
-        );
+        for item in detail_items(&self.qs_panel, detail, &self.system_status, geometry.body) {
+            if let Some(slot) = item.slot {
+                slots.push((slot, item.rect));
+            }
+            if let ItemKind::Prompt(index) = item.kind {
+                let parts = prompt_parts(item.rect, self.qs_panel.failed(index), prompt_pills(painter));
+                slots.push((Slot::QsPasswordField, parts.field));
+                slots.push((Slot::QsPromptCancel, parts.cancel));
+                slots.push((Slot::QsPromptConnect, parts.connect));
+            }
+        }
         slots.push((Slot::QsDetailSettings, geometry.settings));
         Some(slots)
     }
+}
+
+fn prompt_pills(painter: &crate::paint::Painter) -> (i32, i32) {
+    (
+        super::qs_confirm_pill_width(painter, t(Key::PowerCancel)),
+        super::qs_confirm_pill_width(painter, t(Key::QsConnect)),
+    )
 }
 
 type DetailKey = (u64, u64, Option<Slot>, Detail);
@@ -722,21 +964,14 @@ pub(super) fn draw_detail(
     c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, panel: &DetailPanel, detail: Detail,
     status: &crate::system_info::SystemStatus,
 ) {
-    let geometry = detail_geometry(c.h);
+    let geometry = detail_geometry(c.h, has_radio(detail));
     draw_detail_header(c, ctx, &geometry, detail, status);
 
-    let divider = |c: &mut Canvas<'_>, y: i32| {
-        c.fill(local_rect(QS_PAD, y, c.w - QS_PAD * 2, 1), ctx.theme.border, 0.0);
-    };
-    divider(c, geometry.divider_top);
-
-    if detail == Detail::Battery {
-        draw_battery_body(c, ctx, &geometry, status);
-    } else {
-        draw_list_body(c, ctx, &geometry, (panel, detail), status);
+    for item in detail_items(panel, detail, status, geometry.body) {
+        draw_item(c, ctx, (panel, status), item);
     }
 
-    divider(c, geometry.divider_bottom);
+    c.fill(local_rect(QS_PAD, geometry.divider_bottom, c.w - QS_PAD * 2, 1), ctx.theme.line, 0.0);
     let settings = geometry.settings;
     let settings_label = t(match detail {
         Detail::Wifi => Key::QsWifiSettings,
@@ -745,135 +980,74 @@ pub(super) fn draw_detail(
         Detail::Sound => Key::QsSoundSettings,
     });
     let (left, right, top, bottom) = band(settings);
+    let chevron = local_rect(right - SP2 - DETAIL_CHEVRON, top, DETAIL_CHEVRON, settings.size.h);
     c.text(
         ctx.painter,
-        (left + SP2, right - SP2, top, bottom),
+        (left + SP2, chevron.loc.x - SP2, top, bottom),
         TextAlign::Left,
         settings_label,
         ctx.theme.label,
-        &TextStyle::CALL,
+        &super::QS_LABEL,
     );
+    super::draw_qs_chevron(c, ctx, chevron, (false, ctx.hovered == Some(Slot::QsDetailSettings)));
+}
+
+fn draw_item(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, (panel, status): (&DetailPanel, &crate::system_info::SystemStatus),
+    item: DetailItem,
+) {
+    let rect = item.rect;
+    match item.kind {
+        ItemKind::Section(key) => {
+            c.text_in(ctx.painter, rect, TextAlign::Left, t(key), ctx.theme.faint, &TextStyle::MICRO);
+        }
+        ItemKind::Message(key) => {
+            c.text_in(ctx.painter, rect, TextAlign::Center, t(key), ctx.theme.faint, &TextStyle::CAP);
+        }
+        ItemKind::Network(index) => {
+            if let Some(network) = panel.wifi.get(index) {
+                let open = panel.prompt.as_ref().is_some_and(|prompt| prompt.ssid == network.ssid);
+                draw_network_card(c, ctx, rect, network, (panel.status_for(&network.ssid), open));
+            }
+        }
+        ItemKind::Prompt(index) => {
+            if let Some(prompt) = panel.prompt.as_ref() {
+                draw_prompt(c, ctx, rect, prompt, panel.failed(index));
+            }
+        }
+        ItemKind::Device(index) => {
+            if let Some(device) = panel.devices.get(index) {
+                draw_device_card(c, ctx, rect, device, panel.status_for(&device.mac));
+            }
+        }
+        ItemKind::Output(index) | ItemKind::Input(index) => {
+            let drawer =
+                if matches!(item.kind, ItemKind::Output(_)) { super::Drawer::Output } else { super::Drawer::Input };
+            if let Some(device) = panel.devices(drawer).get(index) {
+                draw_audio_card(c, ctx, rect, device, panel.status_for(&device.name));
+            }
+        }
+        ItemKind::Diag(index) => draw_diag(c, ctx, rect, index, status),
+        ItemKind::Profile(profile) => draw_profile_card(c, ctx, rect, profile, status.power_profile == Some(profile)),
+    }
 }
 
 fn battery_low(theme: &TopbarTheme, status: &crate::system_info::SystemStatus) -> bool {
     status.battery_pct.is_some_and(|pct| !status.battery_charging && pct <= theme.battery_low_pct)
 }
 
-fn draw_battery_body(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &DetailGeometry, status: &crate::system_info::SystemStatus,
-) {
-    let theme = ctx.theme;
-    let pct = status.battery_pct.unwrap_or(0);
-    let section = geometry.section;
-    let track =
-        local_rect(section.loc.x, section.loc.y + (section.size.h - BATTERY_BAR) / 2, section.size.w, BATTERY_BAR);
-    c.fill(track, theme.track, R_ROUND);
-    let fill_colour = if battery_low(theme, status) {
-        theme.danger
-    } else if status.battery_charging {
-        theme.ok
-    } else {
-        theme.active_background
-    };
-    let level_w = track.size.w * i32::from(pct.min(100)) / 100;
-    if level_w > 0 {
-        let level = local_rect(track.loc.x, track.loc.y, level_w.max(BATTERY_BAR), BATTERY_BAR);
-        c.fill(level, fill_colour, R_ROUND);
-    }
-
-    let list = geometry.list;
-    let row = |index: i32| local_rect(list.loc.x, list.loc.y + DETAIL_ROW * index, list.size.w, DETAIL_ROW);
-    let state = battery_state_line(status);
-    let icon = super::battery_icon_name(pct, status.battery_charging);
-    let spec = RowSpec {
-        icon: &icon,
-        glyph: crate::paint::draw_power_glyph_over,
-        title: &state,
-        active: false,
-        trailing: None,
-    };
-    draw_row_body(c, ctx, row(0), &spec);
-    if let Some(profile) = status.battery.as_ref().and_then(|info| info.profile) {
-        let spec = RowSpec {
-            icon: profile_icon(profile),
-            title: t(Key::TbPowerMode),
-            trailing: Some((t(profile_label(profile)).to_string(), theme.muted)),
-            ..spec
-        };
-        draw_row_body(c, ctx, row(1), &spec);
-    }
-}
-
-fn draw_list_body(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &DetailGeometry, (panel, detail): (&DetailPanel, Detail),
-    status: &crate::system_info::SystemStatus,
-) {
-    let section_label = t(match detail {
-        Detail::Wifi => Key::QsNetworks,
-        Detail::Bluetooth | Detail::Battery => Key::QsDevices,
-        Detail::Sound => Key::QsOutput,
-    });
-    let muted = ctx.theme.muted;
-    let section = band(geometry.section);
-    c.text(ctx.painter, section, TextAlign::Left, section_label, muted, &TextStyle::MICRO);
-
-    let rows = detail_rows(panel, detail, status, geometry.list);
-    if rows.is_empty() {
-        let message = t(empty_message(panel, detail, status));
-        let (left, right, top, _) = band(geometry.list);
-        let area = (left, right, top, top + DETAIL_ROW * 2);
-        c.text(ctx.painter, area, TextAlign::Center, message, muted, &TextStyle::CAP);
-    }
-    for (_, rect, kind) in rows {
-        match kind {
-            RowKind::Network(index) => {
-                if let Some(network) = panel.wifi.get(index) {
-                    draw_network_row(c, ctx, rect, network, panel.status_for(&network.ssid));
-                }
-            }
-            RowKind::Device(index) => {
-                if let Some(device) = panel.devices.get(index) {
-                    draw_device_row(c, ctx, rect, device, panel.status_for(&device.mac));
-                }
-            }
-            RowKind::Output(index) => {
-                if let Some(output) = panel.outputs.get(index) {
-                    draw_output_row(c, ctx, rect, output, panel.status_for(&output.name));
-                }
-            }
-            RowKind::Prompt => {
-                if let Some(prompt) = panel.prompt.as_ref() {
-                    draw_password_row(c, ctx, rect, &prompt.field, prompt.caps_lock);
-                }
-            }
-        }
-    }
-}
-
-fn empty_message(panel: &DetailPanel, detail: Detail, status: &crate::system_info::SystemStatus) -> Key {
-    match detail {
-        Detail::Wifi if !status.wifi_enabled => Key::QsWifiIsOff,
-        Detail::Bluetooth if !status.bluetooth_on => Key::QsBluetoothIsOff,
-        Detail::Wifi if !panel.wifi_ready => Key::QsSearching,
-        Detail::Bluetooth if !panel.devices_ready => Key::QsSearching,
-        Detail::Sound if !panel.outputs_ready => Key::QsSearching,
-        Detail::Wifi => Key::QsNoNetworks,
-        Detail::Bluetooth | Detail::Battery => Key::QsNoDevices,
-        Detail::Sound => Key::QsNoOutputs,
-    }
-}
-
 fn draw_detail_header(
     c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &DetailGeometry, detail: Detail,
     status: &crate::system_info::SystemStatus,
 ) {
+    let theme = ctx.theme;
     let back = geometry.back;
-    c.fill(back, ctx.theme.track_soft, R_ROUND);
-    let icon_at = (back.loc.x + (back.size.w - DETAIL_ICON) / 2, back.loc.y + (back.size.h - DETAIL_ICON) / 2);
-    let label = ctx.theme.label;
-    let head = &TextStyle::HEAD;
-    if !c.icon("go-previous", DETAIL_ICON, icon_at, label) {
-        c.text(ctx.painter, band(back), TextAlign::Center, "\u{2039}", label, head);
+    c.fill(back, theme.track_soft, R2);
+    let colour = if ctx.hovered == Some(Slot::QsBack) { theme.label } else { theme.muted };
+    let side = DETAIL_BACK_ICON;
+    let at = (back.loc.x + (back.size.w - side) / 2, back.loc.y + (back.size.h - side) / 2);
+    if !c.icon("go-previous", side, at, colour) {
+        c.text_in(ctx.painter, back, TextAlign::Center, "\u{2039}", colour, &TextStyle::HEAD);
     }
     let title = t(match detail {
         Detail::Wifi => Key::WiFi,
@@ -883,23 +1057,141 @@ fn draw_detail_header(
     });
     let (top, bottom) = (back.loc.y, back.loc.y + back.size.h);
     let title_band = (geometry.title_left, geometry.title_right, top, bottom);
-    c.text(ctx.painter, title_band, TextAlign::Left, title, label, head);
-    let toggle = geometry.toggle;
+    c.text(ctx.painter, title_band, TextAlign::Left, title, theme.label, &TextStyle::HEAD);
     if !has_radio(detail) {
         let (pct, colour) = if detail == Detail::Sound {
-            let colour = if status.volume_muted { ctx.theme.muted } else { label };
+            let colour = if status.volume_muted { theme.danger } else { theme.muted };
             (format!("{}%", status.volume_pct), colour)
         } else {
             let pct = status.battery_pct.map_or_else(String::new, |pct| format!("{pct}%"));
-            (pct, if battery_low(ctx.theme, status) { ctx.theme.danger } else { label })
+            (pct, if battery_low(theme, status) { theme.danger } else { theme.muted })
         };
-        let pct_band = (geometry.title_right, toggle.loc.x + toggle.size.w, top, bottom);
-        c.text(ctx.painter, pct_band, TextAlign::Right, &pct, colour, &TextStyle::NUM);
+        let pct_band = (geometry.title_right + SP2, QS_WIDTH - QS_PAD, top, bottom);
+        c.text(ctx.painter, pct_band, TextAlign::Right, &pct, colour, &super::QS_READOUT);
         return;
     }
     let position = f64::from(u8::from(radio_on(detail, status)));
     let switch = SwitchMotion { thumb: position, track: position };
-    draw_qs_switch(c, ctx.theme, (toggle.loc.x, toggle.loc.y), switch);
+    draw_switch(c, theme, geometry.toggle, (DETAIL_SWITCH_INSET, DETAIL_SWITCH_THUMB), switch);
+}
+
+fn tenths(value: u32) -> String {
+    format!("{}.{}", value / 10, value % 10)
+}
+
+fn draw_diag(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, index: usize,
+    status: &crate::system_info::SystemStatus,
+) {
+    let theme = ctx.theme;
+    c.fill(rect, theme.track_soft, R2);
+    c.stroke(rect, 1.0, R2, theme.line);
+    let health = status.battery.map(|info| info.health).unwrap_or_default();
+    let (label, value, unit) = match index {
+        0 => (Key::QsHealth, health.wear_pct.map(|pct| format!("{pct}%")), None),
+        1 => (Key::QsCycles, health.cycles.map(|cycles| cycles.to_string()), Some(t(Key::QsCyclesUnit).to_string())),
+        2 => (Key::QsDraw, health.draw_dw.map(tenths), Some(t(Key::QsWatts).to_string())),
+        _ => (
+            Key::QsCapacity,
+            health.full_dwh.map(tenths),
+            health.design_dwh.map(|design| t(Key::QsOfWattHours).replace("{}", &tenths(design))),
+        ),
+    };
+    let (left, right) = (rect.loc.x + DIAG_PAD_X, rect.loc.x + rect.size.w - DIAG_PAD_X);
+    let label_top = rect.loc.y + DIAG_PAD_Y;
+    let label_h = super::QS_SUB.line_height_px as i32;
+    c.text(
+        ctx.painter,
+        (left, right, label_top, label_top + label_h),
+        TextAlign::Left,
+        t(label),
+        theme.faint,
+        &super::QS_SUB,
+    );
+    let value_top = label_top + label_h + DIAG_GAP;
+    let band = (value_top, value_top + DIAG_VALUE);
+    let value = value.unwrap_or_else(|| "\u{2014}".to_string());
+    let value_w = text_w(ctx.painter, &value, &super::QS_BATTERY_PCT);
+    c.text(
+        ctx.painter,
+        (left, left + value_w, band.0, band.1),
+        TextAlign::Left,
+        &value,
+        theme.label,
+        &super::QS_BATTERY_PCT,
+    );
+    let after = left + value_w + DIAG_UNIT_GAP;
+    if index == 0 {
+        if let Some(pct) = health.wear_pct {
+            let worn = pct < HEALTHY_PCT;
+            let text = t(if worn { Key::QsWorn } else { Key::QsHealthy });
+            let (well, ink) = if worn { (theme.danger_soft, theme.danger) } else { (theme.ok_soft, theme.ok) };
+            let width = text_w(ctx.painter, text, &DIAG_PILL) + DIAG_PILL_PAD * 2;
+            let pill = local_rect(after, band.0 + (DIAG_VALUE - DIAG_PILL_H) / 2, width, DIAG_PILL_H);
+            c.fill(pill, well, R_ROUND);
+            c.text_in(ctx.painter, pill, TextAlign::Center, text, ink, &DIAG_PILL);
+        }
+    } else if let Some(unit) = unit {
+        c.text(ctx.painter, (after, right, band.0, band.1), TextAlign::Left, &unit, theme.faint, &TextStyle::CAP);
+    }
+}
+
+const fn profile_hint(profile: PowerProfile) -> Key {
+    match profile {
+        PowerProfile::PowerSaver => Key::QsProfileSaverHint,
+        PowerProfile::Balanced => Key::QsProfileBalancedHint,
+        PowerProfile::Performance => Key::QsProfilePerformanceHint,
+    }
+}
+
+fn draw_profile_card(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, profile: PowerProfile, active: bool,
+) {
+    let theme = ctx.theme;
+    if active {
+        c.fill(rect, theme.active_soft, R2);
+    } else {
+        c.fill(rect, theme.track_soft, R2);
+        c.stroke(rect, 1.0, R2, theme.line);
+    }
+    let radio = local_rect(rect.loc.x + CARD_PAD_X, rect.loc.y + CARD_PAD_X + 2, RADIO, RADIO);
+    c.stroke(radio, 1.5, R_ROUND, if active { theme.active_background } else { theme.line_2 });
+    if active {
+        let dot = local_rect(
+            radio.loc.x + (RADIO - RADIO_DOT) / 2,
+            radio.loc.y + (RADIO - RADIO_DOT) / 2,
+            RADIO_DOT,
+            RADIO_DOT,
+        );
+        c.fill(dot, theme.active_background, R_ROUND);
+    }
+    let left = radio.loc.x + RADIO + CARD_GAP;
+    let right = rect.loc.x + rect.size.w - CARD_PAD_X;
+    let (title_colour, hint_colour) = if active {
+        (theme.active_soft_label, super::dimmed(theme.active_soft_label, super::QS_SOFT_DIM))
+    } else {
+        (theme.label, theme.faint)
+    };
+    let top = rect.loc.y + CARD_PAD_X;
+    let title_h = CARD_PRIMARY.line_height_px as i32;
+    c.text(
+        ctx.painter,
+        (left, right, top, top + title_h),
+        TextAlign::Left,
+        t(profile_label(profile)),
+        title_colour,
+        &CARD_PRIMARY,
+    );
+    let hint_top = top + title_h + 2;
+    let hint_h = super::QS_NOTE.line_height_px as i32;
+    c.text(
+        ctx.painter,
+        (left, right, hint_top, hint_top + hint_h),
+        TextAlign::Left,
+        t(profile_hint(profile)),
+        hint_colour,
+        &super::QS_NOTE,
+    );
 }
 
 fn status_trailing(theme: &TopbarTheme, status: RowStatus) -> Option<(String, Color)> {
@@ -914,128 +1206,201 @@ fn status_trailing(theme: &TopbarTheme, status: RowStatus) -> Option<(String, Co
     Some((t(key).to_string(), colour))
 }
 
-struct RowSpec<'a> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trailing {
+    Nothing,
+    Tick,
+    Lock { open: bool },
+}
+
+struct CardSpec<'a> {
     icon: &'a str,
     glyph: GlyphPainter,
     title: &'a str,
+    subtitle: (String, Option<Color>),
     active: bool,
-    trailing: Option<(String, Color)>,
+    action: Option<&'a str>,
+    trailing: Trailing,
 }
 
-fn icon_or_glyph(c: &mut Canvas<'_>, rect: LocalRect, (name, glyph): (&str, GlyphPainter), side: f32, colour: Color) {
-    if !c.icon(name, rect.size.w, (rect.loc.x, rect.loc.y), colour) {
-        c.glyph(rect, |b, w, h, s| glyph(b, w, h, side, 1.4, s, colour));
+fn card_background(c: &mut Canvas<'_>, theme: &TopbarTheme, rect: LocalRect, active: bool) {
+    if active {
+        c.fill(rect, theme.active_soft, R2);
+    } else {
+        c.fill(rect, theme.track_soft, R2);
+        c.stroke(rect, 1.0, R2, theme.line);
     }
 }
 
-fn draw_row_body(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, spec: &RowSpec<'_>) {
-    let icon_colour = if spec.active { ctx.theme.active_background } else { ctx.theme.muted };
-    let icon_rect =
-        local_rect(rect.loc.x + SP2, rect.loc.y + (rect.size.h - DETAIL_ICON) / 2, DETAIL_ICON, DETAIL_ICON);
-    icon_or_glyph(c, icon_rect, (spec.icon, spec.glyph), 14.0, icon_colour);
-    let (_, mut right, top, bottom) = band(rect);
-    right -= SP2;
-    if let Some((text, colour)) = spec.trailing.as_ref() {
-        let cap = &TextStyle::CAP;
-        let width = text_w(ctx.painter, text, cap);
-        c.text(ctx.painter, (right - width, right, top, bottom), TextAlign::Right, text, *colour, cap);
-        right -= width + SP2;
+fn draw_card(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, spec: &CardSpec<'_>) {
+    let theme = ctx.theme;
+    let well = local_rect(rect.loc.x + CARD_PAD_X, rect.loc.y + (rect.size.h - CARD_ICON) / 2, CARD_ICON, CARD_ICON);
+    let (fill, symbol) =
+        if spec.active { (theme.active_background, theme.active_label) } else { (theme.fill_2, theme.muted) };
+    c.fill(well, fill, R1);
+    super::qs_symbol(c, well, (spec.icon, spec.glyph), CARD_GLYPH, symbol);
+
+    let mut right = rect.loc.x + rect.size.w - CARD_PAD_X;
+    let centre_y = rect.loc.y + rect.size.h / 2;
+    let accent = if spec.active { theme.active_soft_label } else { theme.faint };
+    if let Some(action) = spec.action {
+        let width = text_w(ctx.painter, action, &CARD_ACTION) + CARD_ACTION_PAD * 2;
+        let button = local_rect(right - width, centre_y - CARD_ACTION_H / 2, width, CARD_ACTION_H);
+        c.fill(button, theme.fill_2, R1);
+        c.text_in(ctx.painter, button, TextAlign::Center, action, theme.muted, &CARD_ACTION);
+        right = button.loc.x - CARD_GAP;
     }
-    let style = if spec.active { TextStyle::HEAD } else { TextStyle::CALL };
-    c.text(
-        ctx.painter,
-        (icon_rect.loc.x + DETAIL_ICON + SP2, right, top, bottom),
-        TextAlign::Left,
-        spec.title,
-        ctx.theme.label,
-        &style,
-    );
+    match spec.trailing {
+        Trailing::Nothing => {}
+        Trailing::Tick => {
+            let tick = local_rect(right - CARD_TRAILING, centre_y - CARD_TRAILING / 2, CARD_TRAILING, CARD_TRAILING);
+            super::qs_symbol(c, tick, ("object-select", crate::paint::draw_tick_glyph_over), CARD_TRAILING, accent);
+            right = tick.loc.x - CARD_GAP;
+        }
+        Trailing::Lock { open } => {
+            let chevron = local_rect(right - CARD_TRAILING, centre_y - CARD_TRAILING / 2, CARD_TRAILING, CARD_TRAILING);
+            let icon = if open { "pan-down" } else { "go-next" };
+            let colour = if open { theme.label } else { theme.faint };
+            if !c.icon(icon, CARD_TRAILING, (chevron.loc.x, chevron.loc.y), colour) {
+                c.text_in(ctx.painter, chevron, TextAlign::Center, "\u{203a}", colour, &TextStyle::HEAD);
+            }
+            let lock = local_rect(chevron.loc.x - SP1 - CARD_TRAILING, chevron.loc.y, CARD_TRAILING, CARD_TRAILING);
+            super::qs_symbol(
+                c,
+                lock,
+                ("network-wireless-encrypted", crate::paint::draw_lock_glyph_over),
+                CARD_TRAILING,
+                theme.faint,
+            );
+            right = lock.loc.x - CARD_GAP;
+        }
+    }
+
+    let left = well.loc.x + CARD_ICON + CARD_GAP;
+    let title_h = CARD_PRIMARY.line_height_px as i32;
+    let sub_h = super::QS_NOTE.line_height_px as i32;
+    let top = rect.loc.y + (rect.size.h - title_h - sub_h) / 2;
+    let title_colour = if spec.active { theme.active_soft_label } else { theme.label };
+    c.text(ctx.painter, (left, right, top, top + title_h), TextAlign::Left, spec.title, title_colour, &CARD_PRIMARY);
+    let sub_colour =
+        spec.subtitle.1.unwrap_or(if spec.active { super::dimmed(accent, super::QS_SOFT_DIM) } else { accent });
+    let band = (left, right, top + title_h, top + title_h + sub_h);
+    c.text(ctx.painter, band, TextAlign::Left, &spec.subtitle.0, sub_colour, &super::QS_NOTE);
 }
 
-fn trailing_icon(c: &mut Canvas<'_>, rect: LocalRect, right: i32, icon: (&str, GlyphPainter), colour: Color) -> i32 {
-    let at =
-        local_rect(right - TRAILING_ICON, rect.loc.y + (rect.size.h - TRAILING_ICON) / 2, TRAILING_ICON, TRAILING_ICON);
-    icon_or_glyph(c, at, icon, TRAILING_GLYPH, colour);
-    right - TRAILING_ICON - SP2
+fn subtitle_with(status: (&TopbarTheme, RowStatus), fallback: String) -> (String, Option<Color>) {
+    status_trailing(status.0, status.1).map_or((fallback, None), |(text, colour)| (text, Some(colour)))
 }
 
-fn draw_network_row(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, network: &WifiNetwork, status: RowStatus,
+fn network_subtitle(network: &WifiNetwork) -> Key {
+    if network.connected {
+        Key::Connected
+    } else if network.security == Security::Enterprise && !network.saved {
+        Key::QsEnterprise
+    } else if network.saved {
+        Key::QsSaved
+    } else if network.security.is_secured() {
+        Key::QsSecured
+    } else {
+        Key::QsOpenNetwork
+    }
+}
+
+fn draw_network_card(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, network: &WifiNetwork,
+    (status, open): (RowStatus, bool),
 ) {
-    let secured = network.security.is_secured();
-    let icons_w = (TRAILING_ICON + SP2) * (i32::from(secured) + i32::from(network.connected));
-    let inset = local_rect(rect.loc.x, rect.loc.y, rect.size.w - icons_w, rect.size.h);
-    let enterprise = (network.security == Security::Enterprise && !network.connected && !network.saved)
-        .then(|| (t(Key::QsEnterprise).to_string(), ctx.theme.muted));
-    let spec = RowSpec {
+    if open {
+        let failed = matches!(status, RowStatus::Failed(_));
+        let block = local_rect(rect.loc.x, rect.loc.y, rect.size.w, rect.size.h + prompt_height(failed));
+        c.fill(block, ctx.theme.fill_2, R2);
+        c.stroke(block, 1.0, R2, ctx.theme.line);
+    } else {
+        card_background(c, ctx.theme, rect, network.connected);
+    }
+    let secured = network.security.is_secured() && !network.connected;
+    let spec = CardSpec {
         icon: network.icon(),
         glyph: crate::paint::draw_wifi_waves_glyph_over,
         title: &network.ssid,
-        active: network.connected,
-        trailing: status_trailing(ctx.theme, status).or(enterprise),
+        subtitle: subtitle_with((ctx.theme, status), t(network_subtitle(network)).to_string()),
+        active: network.connected && !open,
+        action: network.connected.then(|| t(Key::QsDisconnect)),
+        trailing: if secured { Trailing::Lock { open } } else { Trailing::Nothing },
     };
-    draw_row_body(c, ctx, inset, &spec);
-    let mut right = rect.loc.x + rect.size.w - SP2;
-    if network.connected {
-        let tick = ("object-select", crate::paint::draw_tick_glyph_over as GlyphPainter);
-        right = trailing_icon(c, rect, right, tick, ctx.theme.active_background);
-    }
-    if secured {
-        let lock = ("network-wireless-encrypted", crate::paint::draw_lock_glyph_over as GlyphPainter);
-        trailing_icon(c, rect, right, lock, ctx.theme.muted);
-    }
+    draw_card(c, ctx, rect, &spec);
 }
 
-fn draw_device_row(
+fn draw_device_card(
     c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, device: &BtDevice, status: RowStatus,
 ) {
-    let trailing = status_trailing(ctx.theme, status).or_else(|| {
-        device.connected.then(|| {
-            let text = device.battery.map_or_else(|| t(Key::Connected).to_string(), |pct| format!("{pct}%"));
-            (text, ctx.theme.muted)
-        })
-    });
-    let spec = RowSpec {
+    card_background(c, ctx.theme, rect, device.connected);
+    let fallback = if device.connected {
+        device.battery.map_or_else(
+            || t(Key::Connected).to_string(),
+            |pct| format!("{} \u{b7} {}", t(Key::Connected), t(Key::QsBatteryLevel).replace("{}", &pct.to_string())),
+        )
+    } else {
+        t(Key::QsPaired).to_string()
+    };
+    let spec = CardSpec {
         icon: device.kind.icon(),
         glyph: crate::paint::draw_bluetooth_glyph_over,
         title: &device.name,
+        subtitle: subtitle_with((ctx.theme, status), fallback),
         active: device.connected,
-        trailing,
+        action: Some(t(if device.connected { Key::QsDisconnect } else { Key::QsConnect })),
+        trailing: Trailing::Nothing,
     };
-    draw_row_body(c, ctx, rect, &spec);
+    draw_card(c, ctx, rect, &spec);
 }
 
-fn draw_output_row(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, output: &AudioOutput, status: RowStatus,
+fn draw_audio_card(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, device: &AudioOutput, status: RowStatus,
 ) {
-    let tick_w = if output.active { TRAILING_ICON + SP2 } else { 0 };
-    let inset = local_rect(rect.loc.x, rect.loc.y, rect.size.w - tick_w, rect.size.h);
-    let spec = RowSpec {
-        icon: output.icon,
+    card_background(c, ctx.theme, rect, device.active);
+    let kind = if device.active { Key::QsDefaultDevice } else { super::qs_device_kind(device.icon) };
+    let spec = CardSpec {
+        icon: device.icon,
         glyph: |b, w, h, side, stroke, s, c| crate::paint::draw_speaker_glyph_over(b, w, h, side, stroke, false, s, c),
-        title: &output.description,
-        active: output.active,
-        trailing: status_trailing(ctx.theme, status),
+        title: &device.description,
+        subtitle: subtitle_with((ctx.theme, status), t(kind).to_string()),
+        active: device.active,
+        action: None,
+        trailing: if device.active { Trailing::Tick } else { Trailing::Nothing },
     };
-    draw_row_body(c, ctx, inset, &spec);
-    if output.active {
-        let tick = ("object-select", crate::paint::draw_tick_glyph_over as GlyphPainter);
-        trailing_icon(c, rect, rect.loc.x + rect.size.w - SP2, tick, ctx.theme.active_background);
-    }
+    draw_card(c, ctx, rect, &spec);
 }
 
-fn draw_password_row(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, field: &TextField, caps_lock: bool,
+fn draw_prompt(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, prompt: &Prompt, failed: bool) {
+    let theme = ctx.theme;
+    let parts = prompt_parts(rect, failed, prompt_pills(ctx.painter));
+    let title = t(Key::QsPasswordFor).replace("{ssid}", &prompt.ssid);
+    c.text_in(ctx.painter, parts.title, TextAlign::Left, &title, theme.label, &super::QS_TITLE);
+    draw_password_field(c, ctx, parts.field, &prompt.field, prompt.caps_lock);
+    if let Some(error) = parts.error {
+        c.text_in(ctx.painter, error, TextAlign::Left, t(Key::QsWrongPassword), theme.danger, &super::QS_NOTE);
+    }
+    let cancel_colour = if ctx.hovered == Some(Slot::QsPromptCancel) { theme.label } else { theme.muted };
+    c.fill(parts.cancel, theme.fill_2, R_ROUND);
+    c.text_in(ctx.painter, parts.cancel, TextAlign::Center, t(Key::PowerCancel), cancel_colour, &super::QS_PILL_TEXT);
+    c.fill(parts.connect, theme.active_background, R_ROUND);
+    c.text_in(
+        ctx.painter,
+        parts.connect,
+        TextAlign::Center,
+        t(Key::QsConnect),
+        theme.active_label,
+        &super::QS_PILL_TEXT,
+    );
+}
+
+fn draw_password_field(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, boxed: LocalRect, field: &TextField, caps_lock: bool,
 ) {
     let theme = ctx.theme;
-    let boxed = local_rect(
-        rect.loc.x + SP2 + DETAIL_ICON + SP2,
-        rect.loc.y + SP1,
-        rect.size.w - DETAIL_ICON - SP2 * 3,
-        rect.size.h - SP1 * 2,
-    );
-    c.fill(boxed, theme.track_soft, R1);
-    c.stroke(boxed, 1.0, R1, theme.active_background);
+    c.fill(boxed, theme.popover_bg, R2);
+    c.stroke(boxed, 1.0, R2, theme.active_background);
     let (left, mut right, top, bottom) = band(boxed);
     if caps_lock {
         let cap = &TextStyle::CAP;
@@ -1169,9 +1534,49 @@ mod tests {
         let bar = open_wifi();
         let first = bar.slot_rect(Slot::QsDetailRow(0)).expect("row 0");
         let second = bar.slot_rect(Slot::QsDetailRow(1)).expect("row 1");
-        assert_eq!(second.loc.y, first.loc.y + DETAIL_ROW);
+        let third = bar.slot_rect(Slot::QsDetailRow(2)).expect("row 2");
+        assert_eq!(first.size.h, DETAIL_CARD);
+        assert!(
+            second.loc.y > first.loc.y + DETAIL_CARD + DETAIL_CARD_GAP,
+            "a section label parts connected from available"
+        );
+        assert_eq!(third.loc.y, second.loc.y + DETAIL_CARD + DETAIL_CARD_GAP, "cards in one section sit 6 px apart");
         assert_eq!(bar.detail_row(1), Some(RowTarget::Network(network("Cafe", false, false))));
         assert_eq!(bar.detail_row(9), None);
+    }
+
+    #[test]
+    fn each_view_groups_its_cards_under_section_labels() {
+        let bar = open_wifi();
+        let geometry = detail_geometry(qs_geometry(&bar.qs_shape(None)).height, true);
+        let items = detail_items(&bar.qs_panel, Detail::Wifi, bar.system_status(), geometry.body);
+        let kinds: Vec<ItemKind> = items.iter().map(|item| item.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                ItemKind::Section(Key::QsConnectedNetwork),
+                ItemKind::Network(0),
+                ItemKind::Section(Key::QsAvailableNetworks),
+                ItemKind::Network(1),
+                ItemKind::Network(2),
+            ]
+        );
+        assert!(items.iter().all(|item| geometry.body.contains(item.rect.loc)));
+
+        let status = crate::system_info::SystemStatus {
+            battery_pct: Some(70),
+            power_profile: Some(PowerProfile::Balanced),
+            ..Default::default()
+        };
+        let battery = detail_items(&bar.qs_panel, Detail::Battery, &status, geometry.body);
+        let diag = battery.iter().filter(|item| matches!(item.kind, ItemKind::Diag(_))).count();
+        let profiles: Vec<Option<Slot>> =
+            battery.iter().filter(|item| matches!(item.kind, ItemKind::Profile(_))).map(|item| item.slot).collect();
+        assert_eq!(diag, 4, "a two by two telemetry grid");
+        assert_eq!(profiles, super::super::QS_PROFILES.map(|profile| Some(Slot::QsProfile(profile))));
+        let off = crate::system_info::SystemStatus { wifi_enabled: false, ..status };
+        let wifi_off = detail_items(&bar.qs_panel, Detail::Wifi, &off, geometry.body);
+        assert_eq!(wifi_off.iter().map(|item| item.kind).collect::<Vec<_>>(), [ItemKind::Message(Key::QsWifiIsOff)]);
     }
 
     #[test]
@@ -1206,7 +1611,12 @@ mod tests {
         relayout(&mut bar);
         let row = bar.slot_rect(Slot::QsDetailRow(2)).expect("neighbour row");
         let field = bar.slot_rect(Slot::QsPasswordField).expect("field row");
-        assert_eq!(field.loc.y, row.loc.y + DETAIL_ROW);
+        let cancel = bar.slot_rect(Slot::QsPromptCancel).expect("cancel pill");
+        let connect = bar.slot_rect(Slot::QsPromptConnect).expect("connect pill");
+        assert!(field.loc.y > row.loc.y + row.size.h, "the drawer opens under its card");
+        assert!(field.loc.y + field.size.h < cancel.loc.y && cancel.loc.x + cancel.size.w < connect.loc.x);
+        assert_eq!(bar.action_at(centre(connect)), Some(TopbarAction::QsPanel(PanelAction::PromptSubmit)));
+        assert_eq!(bar.action_at(centre(cancel)), Some(TopbarAction::QsPanel(PanelAction::PromptCancel)));
         assert_eq!(bar.qs_key_mode(), QsKeyMode::Typing);
 
         for ch in "pa55".chars() {
@@ -1301,7 +1711,13 @@ mod tests {
 
     #[test]
     fn the_battery_time_line_joins_state_and_estimate() {
-        let info = BatteryInfo { pct: 50, state: BatteryState::Discharging, minutes: Some(135), profile: None };
+        let info = BatteryInfo {
+            pct: 50,
+            state: BatteryState::Discharging,
+            minutes: Some(135),
+            health: crate::system_info::BatteryHealth::default(),
+            profile: None,
+        };
         let eta = t(Key::TbBatteryTimeLeft).replace("{}", &crate::i18n::duration_label(135));
         assert_eq!(time_line(&info), format!("{} \u{b7} {eta}", t(Key::TbBatteryOnBattery)));
         assert!(crate::i18n::duration_label(135).contains("15"));
@@ -1311,7 +1727,13 @@ mod tests {
 
     #[test]
     fn the_battery_row_shows_the_estimate_alone_when_there_is_one() {
-        let info = BatteryInfo { pct: 50, state: BatteryState::Discharging, minutes: Some(135), profile: None };
+        let info = BatteryInfo {
+            pct: 50,
+            state: BatteryState::Discharging,
+            minutes: Some(135),
+            health: crate::system_info::BatteryHealth::default(),
+            profile: None,
+        };
         let status =
             |battery| crate::system_info::SystemStatus { battery_pct: Some(50), battery, ..Default::default() };
         let left = t(Key::TbBatteryTimeLeft).replace("{}", &crate::i18n::duration_label(135));
@@ -1382,10 +1804,25 @@ mod tests {
     #[test]
     fn the_detail_list_stays_inside_the_popup() {
         let height = qs_geometry(&super::super::QsShape::default()).height;
-        let geometry = detail_geometry(height);
-        assert!(geometry.list.size.h >= DETAIL_ROW * 5);
-        assert!(geometry.list.loc.y + geometry.list.size.h < geometry.divider_bottom);
-        assert_eq!(geometry.settings.loc.y + geometry.settings.size.h, height - QS_PAD);
-        assert!(geometry.title_left < geometry.title_right);
+        for radio in [true, false] {
+            let geometry = detail_geometry(height, radio);
+            assert!(geometry.body.size.h >= (DETAIL_CARD + DETAIL_CARD_GAP) * 6, "room for a useful list");
+            assert!(geometry.body.loc.y + geometry.body.size.h < geometry.divider_bottom);
+            assert_eq!(geometry.settings.loc.y + geometry.settings.size.h, height - QS_PAD);
+            assert!(geometry.title_left < geometry.title_right);
+            assert!(geometry.body.loc.y > geometry.back.loc.y + geometry.back.size.h);
+        }
+        assert_eq!(
+            detail_geometry(height, true).toggle.size,
+            smithay::utils::Size::from((DETAIL_SWITCH_W, DETAIL_SWITCH_H))
+        );
+        assert_eq!(prompt_height(true) - prompt_height(false), PROMPT_ERROR + SP2);
+    }
+
+    #[test]
+    fn telemetry_values_read_in_tenths() {
+        assert_eq!(tenths(84), "8.4");
+        assert_eq!(tenths(525), "52.5");
+        assert_eq!(tenths(0), "0.0");
     }
 }
