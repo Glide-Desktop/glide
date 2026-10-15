@@ -131,17 +131,37 @@ action = "toggle-launcher"
 [[keybinds]]
 mods = []
 key = "XF86AudioPlay"
-action = { exec = "playerctl play-pause" }
+action = "media-play-pause"
+
+[[keybinds]]
+mods = []
+key = "XF86AudioPause"
+action = "media-pause"
+
+[[keybinds]]
+mods = []
+key = "XF86AudioStop"
+action = "media-stop"
 
 [[keybinds]]
 mods = []
 key = "XF86AudioNext"
-action = { exec = "playerctl next" }
+action = "media-next"
 
 [[keybinds]]
 mods = []
 key = "XF86AudioPrev"
-action = { exec = "playerctl previous" }
+action = "media-previous"
+
+[[keybinds]]
+mods = []
+key = "XF86AudioForward"
+action = "media-forward"
+
+[[keybinds]]
+mods = []
+key = "XF86AudioRewind"
+action = "media-rewind"
 
 [[keybinds]]
 mods = ["super"]

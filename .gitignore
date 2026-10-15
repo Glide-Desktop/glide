@@ -20,6 +20,7 @@ TEST_READY.md
 # Scratch files from debugging sessions: one-off reproducers, stray patches.
 fix.patch
 test_*.rs
+!crates/glide-compositor/src/test_bus.rs
 test_*.py
 *.orig
 *.rej

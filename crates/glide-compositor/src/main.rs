@@ -26,6 +26,7 @@ mod global_menu;
 mod grabs;
 pub mod greeter;
 mod handoff;
+mod headset;
 mod i18n;
 mod icon;
 mod idle;
@@ -278,6 +279,7 @@ fn init_session_services(
     init_disk_space(event_loop);
     init_removable(event_loop);
     init_netbird(event_loop, state);
+    init_headset(event_loop);
     state.welcome_if_first_run();
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
@@ -325,6 +327,14 @@ fn init_netbird(event_loop: &mut EventLoop<'static, GlideState>, state: &mut Gli
     let (send, receiver) = sink::<netbird::Event>("a NetBird update");
     if watch(event_loop, receiver, "the NetBird channel", GlideState::handle_netbird) {
         state.start_netbird(send);
+    }
+}
+
+fn init_headset(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<headset::Event>("a headset event");
+    if watch(event_loop, receiver, "the headset channel", GlideState::handle_headset) {
+        let send = std::sync::Arc::new(send);
+        headset::start(move |event| send(event));
     }
 }
 

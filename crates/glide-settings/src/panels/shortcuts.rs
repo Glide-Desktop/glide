@@ -83,6 +83,11 @@ mod tr {
         PlayPause => "Play or pause", "Відтворення або пауза";
         NextTrack => "Next track", "Наступний трек";
         PrevTrack => "Previous track", "Попередній трек";
+        Play => "Play", "Відтворити";
+        Pause => "Pause", "Пауза";
+        Stop => "Stop", "Зупинити";
+        SeekForward => "Skip forward 10 s", "Уперед на 10 с";
+        SeekBackward => "Skip back 10 s", "Назад на 10 с";
         RunCommand => "Run a command", "Виконати команду";
         CustomCommand => "Custom command", "Власна команда";
         Changed => "Changed", "Змінено";
@@ -140,7 +145,11 @@ fn named_key(named: iced::keyboard::key::Named) -> Option<String> {
         N::AudioVolumeUp => "XF86AudioRaiseVolume",
         N::AudioVolumeDown => "XF86AudioLowerVolume",
         N::AudioVolumeMute => "XF86AudioMute",
-        N::MediaPlayPause => "XF86AudioPlay",
+        N::MediaPlayPause | N::MediaPlay => "XF86AudioPlay",
+        N::MediaPause => "XF86AudioPause",
+        N::MediaStop => "XF86AudioStop",
+        N::MediaFastForward => "XF86AudioForward",
+        N::MediaRewind => "XF86AudioRewind",
         N::MediaTrackNext => "XF86AudioNext",
         N::MediaTrackPrevious => "XF86AudioPrev",
         N::BrightnessUp => "XF86MonBrightnessUp",
@@ -487,6 +496,14 @@ fn named_label(name: &str) -> Option<tr::Key> {
         "power-dialog" => tr::Key::PowerDialog,
         "logout" => tr::Key::Logout,
         "quit" => tr::Key::Quit,
+        "media-play-pause" => tr::Key::PlayPause,
+        "media-play" => tr::Key::Play,
+        "media-pause" => tr::Key::Pause,
+        "media-stop" => tr::Key::Stop,
+        "media-next" => tr::Key::NextTrack,
+        "media-previous" => tr::Key::PrevTrack,
+        "media-forward" => tr::Key::SeekForward,
+        "media-rewind" => tr::Key::SeekBackward,
         _ => return None,
     })
 }

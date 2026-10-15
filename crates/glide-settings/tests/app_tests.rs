@@ -958,7 +958,8 @@ fn editing_one_shortcut_writes_the_whole_list_and_round_trips() {
     assert_eq!(parsed[0].action, Action::Named(String::from("close-app")));
     assert_eq!(&parsed[1..], &defaults[1..]);
     assert!(text.contains("[[keybinds]]"));
-    assert!(text.contains("action = { exec = \"playerctl next\" }"), "{text}");
+    assert!(text.contains("action = { exec = \"brightnessctl set +5%\" }"), "{text}");
+    assert!(text.contains("key = \"XF86AudioNext\"\naction = \"media-next\""), "{text}");
     let reparsed = ConfigStore::parse(&text);
     assert_eq!(keybinds::load(&reparsed).expect("loads").binds, parsed, "writing and reading back is lossless");
 }

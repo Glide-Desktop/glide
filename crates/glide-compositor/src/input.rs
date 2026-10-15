@@ -119,10 +119,54 @@ pub enum KeyAction {
     Terminal,
     MoveWindowToNeighbour(bool),
     Shell(crate::topbar::TopbarAction),
+    Media(MediaKey),
     None,
 }
 
-const MEDIA_KEYS: [Keysym; 14] = [
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKey {
+    PlayPause,
+    Play,
+    Pause,
+    Stop,
+    Next,
+    Previous,
+    Forward,
+    Rewind,
+}
+
+impl MediaKey {
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "media-play-pause" => Self::PlayPause,
+            "media-play" => Self::Play,
+            "media-pause" => Self::Pause,
+            "media-stop" => Self::Stop,
+            "media-next" => Self::Next,
+            "media-previous" => Self::Previous,
+            "media-forward" => Self::Forward,
+            "media-rewind" => Self::Rewind,
+            _ => return None,
+        })
+    }
+
+    #[must_use]
+    pub fn from_playerctl(command: &str) -> Option<Self> {
+        let words: Vec<&str> = command.split_whitespace().collect();
+        Some(match words.as_slice() {
+            ["playerctl", "play-pause"] => Self::PlayPause,
+            ["playerctl", "play"] => Self::Play,
+            ["playerctl", "pause"] => Self::Pause,
+            ["playerctl", "stop"] => Self::Stop,
+            ["playerctl", "next"] => Self::Next,
+            ["playerctl", "previous"] => Self::Previous,
+            _ => return None,
+        })
+    }
+}
+
+const MEDIA_KEYS: [Keysym; 16] = [
     Keysym::XF86_AudioRaiseVolume,
     Keysym::XF86_AudioLowerVolume,
     Keysym::XF86_AudioMute,
@@ -132,6 +176,8 @@ const MEDIA_KEYS: [Keysym; 14] = [
     Keysym::XF86_AudioStop,
     Keysym::XF86_AudioNext,
     Keysym::XF86_AudioPrev,
+    Keysym::XF86_AudioForward,
+    Keysym::XF86_AudioRewind,
     Keysym::XF86_MonBrightnessUp,
     Keysym::XF86_MonBrightnessDown,
     Keysym::XF86_KbdBrightnessUp,
@@ -144,7 +190,7 @@ fn locked_media_shortcut(
 ) -> Option<KeyAction> {
     let media = MEDIA_KEYS.iter().any(|key| *key == modified_sym || raw_syms.contains(key));
     process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
-        .filter(|action| media && matches!(action, KeyAction::Exec(_)))
+        .filter(|action| media && matches!(action, KeyAction::Exec(_) | KeyAction::Media(_)))
 }
 
 fn power_dialog_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
@@ -1773,6 +1819,7 @@ impl GlideState {
                 }
             }
             KeyAction::Shell(action) => self.run_topbar_action(action),
+            KeyAction::Media(key) => self.run_media_key(key),
             KeyAction::MoveWindowToNeighbour(forward) => {
                 if let Some(focused) = self.layout.focused_window() {
                     let target = if forward {
@@ -2962,10 +3009,41 @@ mod tests {
         ] {
             assert!(matches!(locked(&none, sym), Some(KeyAction::Exec(_))), "{sym:?}");
         }
+        for (sym, key) in [
+            (Keysym::XF86_AudioPlay, MediaKey::PlayPause),
+            (Keysym::XF86_AudioPause, MediaKey::Pause),
+            (Keysym::XF86_AudioStop, MediaKey::Stop),
+            (Keysym::XF86_AudioNext, MediaKey::Next),
+            (Keysym::XF86_AudioPrev, MediaKey::Previous),
+            (Keysym::XF86_AudioForward, MediaKey::Forward),
+            (Keysym::XF86_AudioRewind, MediaKey::Rewind),
+        ] {
+            assert_eq!(
+                locked(&none, sym),
+                Some(KeyAction::Media(key)),
+                "headset buttons work behind the lock: {sym:?}"
+            );
+        }
         assert_eq!(locked(&logo, Keysym::Return), None, "a launcher binding must not run behind the lock");
         assert_eq!(locked(&logo, Keysym::q), None);
         assert_eq!(locked(&none, Keysym::XF86_PowerOff), None);
         assert_eq!(locked(&none, Keysym::XF86_Search), None, "the launcher stays behind the lock");
+    }
+
+    #[test]
+    fn media_actions_are_named_and_old_playerctl_bindings_turn_into_them() {
+        assert_eq!(MediaKey::from_name("media-play-pause"), Some(MediaKey::PlayPause));
+        assert_eq!(MediaKey::from_name("media-rewind"), Some(MediaKey::Rewind));
+        assert_eq!(MediaKey::from_name("media-volume-up"), None);
+        assert_eq!(MediaKey::from_playerctl("playerctl play-pause"), Some(MediaKey::PlayPause));
+        assert_eq!(MediaKey::from_playerctl("  playerctl   next "), Some(MediaKey::Next));
+        assert_eq!(MediaKey::from_playerctl("playerctl previous"), Some(MediaKey::Previous));
+        assert_eq!(
+            MediaKey::from_playerctl("playerctl --player=spotify next"),
+            None,
+            "targeted commands stay commands"
+        );
+        assert_eq!(MediaKey::from_playerctl("playerctl position 10+"), None);
     }
 
     #[test]

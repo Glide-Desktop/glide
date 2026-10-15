@@ -21,6 +21,8 @@ mod tr {
         Left => "Left", "Ліворуч";
         Right => "Right", "Праворуч";
         Centre => "Centred", "По центру";
+        PauseOnDisconnect => "Pause when headphones disconnect", "Пауза, коли навушники від'єднано";
+        PauseOnDisconnectHint => "Stops playback instead of switching it to the speakers when Bluetooth headphones disconnect or a cable is pulled out", "Зупиняє відтворення, а не перемикає його на динаміки, коли Bluetooth-навушники від'єднуються або виймається кабель";
         TestSound => "Test sound", "Перевірка звуку";
         TestSoundHint => "Plays a short sample through the current output", "Відтворює короткий зразок через поточний вихід";
         Play => "Play", "Відтворити";
@@ -65,6 +67,7 @@ pub enum Msg {
     Device(Channel, Device),
     Done(Option<Result<String, String>>),
     OverAmplify(bool),
+    PauseOnDisconnect(bool),
     Balance(f64),
     CommitBalance,
     SettleBalance(u64),
@@ -160,6 +163,7 @@ impl Pane for Page {
     #[allow(clippy::too_many_lines)] // One match arm per message; splitting would only scatter the state machine
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
+            Msg::PauseOnDisconnect(on) => config.set_bool("general", "pause-media-on-disconnect", on),
             Msg::OverAmplify(on) => {
                 config.set_int("topbar", "max-volume-pct", if on { 150 } else { 100 });
                 let over = self.state.output.is_some_and(|level| level.volume > 1.0);
@@ -341,6 +345,13 @@ impl Pane for Page {
             c.t(K::OverAmplificationHint),
             max > 1.0,
             Msg::OverAmplify,
+        ));
+        extras.push(switch_row(
+            c,
+            c.t(tr::Key::PauseOnDisconnect),
+            c.t(tr::Key::PauseOnDisconnectHint),
+            config.bool_or("general", "pause-media-on-disconnect", true),
+            Msg::PauseOnDisconnect,
         ));
         extras.extend(self.test_sound_row(&c));
         page = page

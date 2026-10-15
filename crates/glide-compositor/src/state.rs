@@ -371,6 +371,7 @@ pub struct SessionServices {
     pub lid_hidden: Vec<Output>,
     pub shortcuts: crate::shortcut_guard::ShortcutGuard,
     pub netbird: crate::netbird::Session,
+    pub headset: crate::headset::Session,
 }
 
 impl GlideState {
@@ -1422,6 +1423,26 @@ impl GlideState {
         }
     }
 
+    pub fn run_media_key(&mut self, key: crate::input::MediaKey) {
+        use crate::input::MediaKey;
+        use glide_media::Command;
+        const SEEK_STEP: std::time::Duration = std::time::Duration::from_secs(10);
+        let Some(handle) = self.media.as_ref() else {
+            tracing::debug!(?key, "no media player link; the media key does nothing");
+            return;
+        };
+        match key {
+            MediaKey::PlayPause => handle.send(Command::PlayPause),
+            MediaKey::Play => handle.send(Command::Play),
+            MediaKey::Pause => handle.send(Command::Pause),
+            MediaKey::Stop => handle.send(Command::Stop),
+            MediaKey::Next => handle.send(Command::Next),
+            MediaKey::Previous => handle.send(Command::Previous),
+            MediaKey::Forward => handle.seek_by(SEEK_STEP, true),
+            MediaKey::Rewind => handle.seek_by(SEEK_STEP, false),
+        }
+    }
+
     pub fn handle_notify_event(&mut self, event: glide_notify::NotifyEvent) {
         let dirty = match event {
             glide_notify::NotifyEvent::Added(notification) => {
@@ -1529,10 +1550,12 @@ impl GlideState {
                 self.topbar.disarm_power();
             }
             TopbarAction::QsVolumeMute => {
+                self.session.headset.local_volume_edit(std::time::Instant::now());
                 crate::system_info::toggle_volume_mute();
                 self.update_system_status(|status| status.volume_muted = !status.volume_muted);
             }
             TopbarAction::QsVolumeAdjust(pct) => {
+                self.session.headset.local_volume_edit(std::time::Instant::now());
                 let pct = pct.min(self.max_volume_pct);
                 crate::system_info::set_volume_pct(pct);
                 self.update_system_status(|status| {

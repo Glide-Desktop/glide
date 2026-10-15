@@ -932,6 +932,7 @@ pub struct GeneralConfig {
     pub autostart: Vec<String>,
     pub xdg_autostart: bool,
     pub polkit_agent: bool,
+    pub pause_media_on_disconnect: bool,
     pub wallpaper: Option<PathBuf>,
     pub wallpaper_fit: WallpaperFit,
     pub font_family: Option<String>,
@@ -964,6 +965,7 @@ impl Default for GeneralConfig {
             autostart: vec![],
             xdg_autostart: true,
             polkit_agent: true,
+            pause_media_on_disconnect: true,
             wallpaper: None,
             wallpaper_fit: WallpaperFit::default(),
             font_family: None,
@@ -1112,9 +1114,13 @@ impl Config {
             exec(&[], "XF86KbdBrightnessDown", "brightnessctl --device='*::kbd_backlight' set 33%-"),
             simple(&[], "XF86Search", "toggle-launcher"),
             simple(&[], "XF86Calculator", "toggle-launcher"),
-            exec(&[], "XF86AudioPlay", "playerctl play-pause"),
-            exec(&[], "XF86AudioNext", "playerctl next"),
-            exec(&[], "XF86AudioPrev", "playerctl previous"),
+            simple(&[], "XF86AudioPlay", "media-play-pause"),
+            simple(&[], "XF86AudioPause", "media-pause"),
+            simple(&[], "XF86AudioStop", "media-stop"),
+            simple(&[], "XF86AudioNext", "media-next"),
+            simple(&[], "XF86AudioPrev", "media-previous"),
+            simple(&[], "XF86AudioForward", "media-forward"),
+            simple(&[], "XF86AudioRewind", "media-rewind"),
             simple(&[Super], "l", "lock"),
             simple(&[Ctrl, Alt], "Delete", "power-dialog"),
             simple(&[], "XF86PowerOff", "power-dialog"),
@@ -1297,6 +1303,7 @@ impl Config {
             return;
         }
         state.session.appearance_schedule = self.topbar.appearance_schedule;
+        state.session.headset.pause_on_unplug = self.general.pause_media_on_disconnect;
         state.motion = crate::state::MotionPolicy {
             configured_scale: self.animations.motion_scale(),
             respect_system: self.animations.respect_system,
@@ -1450,9 +1457,12 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "toggle-quick-settings" => KeyAction::Shell(crate::topbar::TopbarAction::ToggleQuickSettings),
             "toggle-do-not-disturb" => KeyAction::Shell(crate::topbar::TopbarAction::ToggleDoNotDisturb),
             "toggle-caffeine" => KeyAction::Shell(crate::topbar::TopbarAction::ToggleCaffeine),
-            _ => {
-                tracing::warn!(action = cmd, "unknown simple key action");
-                return None;
+            other => {
+                let Some(key) = crate::input::MediaKey::from_name(other) else {
+                    tracing::warn!(action = cmd, "unknown simple key action");
+                    return None;
+                };
+                KeyAction::Media(key)
             }
         }),
         KeyActionConfig::Complex(action) => {
@@ -1461,7 +1471,13 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             } else if let Some(idx) = action.move_window_to_workspace {
                 Some(KeyAction::MoveWindowToWorkspace(idx.saturating_sub(1)))
             } else if let Some(cmd) = &action.exec {
-                Some(KeyAction::Exec(cmd.clone()))
+                Some(crate::input::MediaKey::from_playerctl(cmd).map_or_else(
+                    || KeyAction::Exec(cmd.clone()),
+                    |key| {
+                        tracing::info!(command = %cmd, ?key, "playerctl binding runs as a built-in media action");
+                        KeyAction::Media(key)
+                    },
+                ))
             } else if let Some(vt) = action.vt {
                 Some(KeyAction::VtSwitch(vt))
             } else {
@@ -1904,15 +1920,16 @@ position = [2560, 0]
         let general = GeneralConfig::default();
         assert_eq!(general.background, Color::from_hex("#222c3cff").unwrap());
         assert!(general.autostart.is_empty() && general.xdg_autostart && general.polkit_agent);
+        assert!(general.pause_media_on_disconnect, "headphones going away pause the music unless turned off");
         assert_eq!((general.wallpaper, general.wallpaper_fit), (None, WallpaperFit::Cover));
 
         let config: Config = toml::from_str(
-            "[general]\nbackground = \"#101020\"\npolkit-agent = false\nautostart = [\"foot\", \"waybar --config /tmp/bar.json\"]\nwallpaper = \"/home/user/Pictures/wall.png\"\nwallpaper-fit = \"contain\"\n",
+            "[general]\nbackground = \"#101020\"\npolkit-agent = false\npause-media-on-disconnect = false\nautostart = [\"foot\", \"waybar --config /tmp/bar.json\"]\nwallpaper = \"/home/user/Pictures/wall.png\"\nwallpaper-fit = \"contain\"\n",
         )
         .unwrap();
         let general = config.general;
         assert_eq!(general.background, Color::from_hex("#101020").unwrap());
-        assert!(!general.polkit_agent);
+        assert!(!general.polkit_agent && !general.pause_media_on_disconnect);
         assert_eq!(general.autostart, vec!["foot", "waybar --config /tmp/bar.json"]);
         assert_eq!(general.wallpaper, Some(PathBuf::from("/home/user/Pictures/wall.png")));
         assert_eq!(general.wallpaper_fit, WallpaperFit::Contain);
@@ -2262,6 +2279,26 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         assert!(!config.topbar.battery_percentage);
         assert_eq!(config.keybinds.len(), 6);
         assert_eq!(config.resolve_keybinds().len(), 6, "every keybind form Settings writes must resolve to an action");
+    }
+
+    #[test]
+    fn keybinds_saved_with_playerctl_run_the_built_in_media_actions() {
+        use crate::input::{KeyAction, MediaKey};
+        let text = "[[keybinds]]\nmods = []\nkey = \"XF86AudioPlay\"\naction = { exec = \"playerctl play-pause\" }\n\n\
+                    [[keybinds]]\nmods = []\nkey = \"XF86AudioNext\"\naction = { exec = \"playerctl next\" }\n\n\
+                    [[keybinds]]\nmods = []\nkey = \"XF86AudioPause\"\naction = \"media-pause\"\n\n\
+                    [[keybinds]]\nmods = []\nkey = \"F9\"\naction = { exec = \"playerctl --player=mpv next\" }\n";
+        let config: Config = toml::from_str(text).expect("parses");
+        let actions: Vec<KeyAction> = config.resolve_keybinds().into_iter().map(|bind| bind.action).collect();
+        assert_eq!(
+            actions,
+            [
+                KeyAction::Media(MediaKey::PlayPause),
+                KeyAction::Media(MediaKey::Next),
+                KeyAction::Media(MediaKey::Pause),
+                KeyAction::Exec("playerctl --player=mpv next".into()),
+            ]
+        );
     }
 
     #[test]

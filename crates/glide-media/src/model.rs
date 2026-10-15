@@ -82,6 +82,9 @@ pub enum MediaEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     PlayPause,
+    Play,
+    Pause,
+    Stop,
     Next,
     Previous,
 }

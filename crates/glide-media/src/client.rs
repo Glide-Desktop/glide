@@ -21,6 +21,8 @@ pub type Sink = Arc<dyn Fn(MediaEvent) + Send + Sync>;
 enum Request {
     Command(Command),
     Seek(f32),
+    SeekBy(i64),
+    PauseAll,
 }
 
 pub struct MediaHandle {
@@ -40,6 +42,15 @@ impl MediaHandle {
 
     pub fn seek(&self, fraction: f32) {
         self.request(Request::Seek(fraction));
+    }
+
+    pub fn seek_by(&self, offset: Duration, forward: bool) {
+        let micros = i64::try_from(offset.as_micros()).unwrap_or(i64::MAX);
+        self.request(Request::SeekBy(if forward { micros } else { -micros }));
+    }
+
+    pub fn pause_all(&self) {
+        self.request(Request::PauseAll);
     }
 
     fn request(&self, request: Request) {
@@ -73,24 +84,7 @@ fn player_call<'a>(bus: &'a str, method: &'a str) -> zbus::Result<zbus::message:
     zbus::message::Message::method_call(OBJECT_PATH, method)?.destination(bus)?.interface(PLAYER_INTERFACE)
 }
 
-fn perform(connection: &zbus::blocking::Connection, current: Option<&Track>, request: Request) {
-    let Some(track) = current else {
-        return;
-    };
-    let bus = track.bus.as_str();
-    let method = match request {
-        Request::Command(command) => format!("{command:?}"),
-        Request::Seek(_) => String::from("SetPosition"),
-    };
-    let message = match request {
-        Request::Command(_) => player_call(bus, &method).and_then(|builder| builder.build(&())),
-        Request::Seek(fraction) => {
-            let Some(arguments) = seek_arguments(track, fraction) else {
-                return;
-            };
-            player_call(bus, &method).and_then(|builder| builder.build(&arguments))
-        }
-    };
+fn deliver(connection: &zbus::blocking::Connection, method: &str, message: zbus::Result<zbus::message::Message>) {
     match message {
         Ok(message) => {
             if let Err(err) = connection.send(&message) {
@@ -98,6 +92,47 @@ fn perform(connection: &zbus::blocking::Connection, current: Option<&Track>, req
             }
         }
         Err(err) => tracing::debug!("failed to build {method}: {err}"),
+    }
+}
+
+fn playing(players: impl IntoIterator<Item = (String, Playback)>) -> Vec<String> {
+    players.into_iter().filter(|(_, status)| *status == Playback::Playing).map(|(bus, _)| bus).collect()
+}
+
+fn pause_all(connection: &zbus::blocking::Connection) {
+    let statuses = list_players(connection).into_iter().map(|bus| {
+        let status = properties(connection, &bus, PLAYER_INTERFACE)
+            .map_or(Playback::Stopped, |player| Playback::from_wire(&string_of(&player, "PlaybackStatus")));
+        (bus, status)
+    });
+    for bus in playing(statuses) {
+        deliver(connection, "Pause", player_call(&bus, "Pause").and_then(|builder| builder.build(&())));
+    }
+}
+
+fn perform(connection: &zbus::blocking::Connection, current: Option<&Track>, request: Request) {
+    if request == Request::PauseAll {
+        return pause_all(connection);
+    }
+    let Some(track) = current else {
+        return;
+    };
+    let bus = track.bus.as_str();
+    match request {
+        Request::Command(command) => {
+            let method = format!("{command:?}");
+            deliver(connection, &method, player_call(bus, &method).and_then(|builder| builder.build(&())));
+        }
+        Request::Seek(fraction) => {
+            let Some(arguments) = seek_arguments(track, fraction) else {
+                return;
+            };
+            deliver(connection, "SetPosition", player_call(bus, "SetPosition").and_then(|b| b.build(&arguments)));
+        }
+        Request::SeekBy(offset) => {
+            deliver(connection, "Seek", player_call(bus, "Seek").and_then(|builder| builder.build(&(offset,))));
+        }
+        Request::PauseAll => {}
     }
 }
 
@@ -268,6 +303,39 @@ mod tests {
         handle.seek(0.5);
         let received: Vec<Request> = inbox.try_iter().collect();
         assert_eq!(received, vec![Request::Command(Command::PlayPause), Request::Seek(0.5)]);
+    }
+
+    #[test]
+    fn relative_seeks_carry_a_signed_offset_and_pausing_everything_is_one_request() {
+        let (requests, inbox) = mpsc::channel();
+        let handle = MediaHandle { requests };
+        handle.seek_by(Duration::from_secs(10), true);
+        handle.seek_by(Duration::from_secs(10), false);
+        handle.pause_all();
+        let received: Vec<Request> = inbox.try_iter().collect();
+        assert_eq!(received, vec![Request::SeekBy(10_000_000), Request::SeekBy(-10_000_000), Request::PauseAll]);
+        assert_eq!(coalesce(received.clone()), received, "relative seeks add up, so none is dropped");
+    }
+
+    #[test]
+    fn pausing_everything_reaches_every_playing_player_and_nothing_else() {
+        let players = [
+            ("org.mpris.MediaPlayer2.spotify".to_string(), Playback::Playing),
+            ("org.mpris.MediaPlayer2.firefox".to_string(), Playback::Paused),
+            ("org.mpris.MediaPlayer2.chromium".to_string(), Playback::Playing),
+            ("org.mpris.MediaPlayer2.vlc".to_string(), Playback::Stopped),
+        ];
+        assert_eq!(playing(players), ["org.mpris.MediaPlayer2.spotify", "org.mpris.MediaPlayer2.chromium"]);
+    }
+
+    #[test]
+    fn mpris_method_names_are_the_command_names() {
+        let names: Vec<String> =
+            [Command::PlayPause, Command::Play, Command::Pause, Command::Stop, Command::Next, Command::Previous]
+                .iter()
+                .map(|command| format!("{command:?}"))
+                .collect();
+        assert_eq!(names, ["PlayPause", "Play", "Pause", "Stop", "Next", "Previous"]);
     }
 
     #[test]

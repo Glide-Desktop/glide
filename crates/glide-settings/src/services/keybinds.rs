@@ -88,6 +88,14 @@ pub const NAMED_ACTIONS: &[&str] = &[
     "power-dialog",
     "logout",
     "quit",
+    "media-play-pause",
+    "media-play",
+    "media-pause",
+    "media-stop",
+    "media-next",
+    "media-previous",
+    "media-forward",
+    "media-rewind",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +166,7 @@ impl Action {
                 | "toggle-quick-settings"
                 | "toggle-do-not-disturb"
                 | "toggle-caffeine" => Category::System,
+                media if media.starts_with("media-") => Category::Media,
                 _ => Category::Custom,
             },
             Self::SwitchWorkspace(_) | Self::MoveToWorkspace(_) => Category::Workspaces,
@@ -339,8 +348,12 @@ pub fn key_label(key: &str) -> String {
         "XF86MonBrightnessUp" => "Bright +",
         "XF86MonBrightnessDown" => "Bright −",
         "XF86AudioPlay" => "Play",
+        "XF86AudioPause" => "Pause",
+        "XF86AudioStop" => "Stop",
         "XF86AudioNext" => "Next",
         "XF86AudioPrev" => "Prev",
+        "XF86AudioForward" => "Fwd",
+        "XF86AudioRewind" => "Rew",
         "XF86PowerOff" => "Power",
         _ => "",
     };
