@@ -106,6 +106,11 @@ impl AppMenus {
     }
 
     #[must_use]
+    pub fn is_gtk_client(&self, client: &Client) -> bool {
+        self.shells.iter().any(|shell| shell.is_alive() && shell.client().as_ref() == Some(client))
+    }
+
+    #[must_use]
     pub fn cached(&self, source: &Source) -> Option<&[MenuItem]> {
         self.cache.get(source).map(Vec::as_slice)
     }

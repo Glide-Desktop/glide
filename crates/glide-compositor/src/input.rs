@@ -2152,6 +2152,7 @@ impl GlideState {
             "pointer motion (relative)"
         );
 
+        self.flush_smooth_wheel_before(new_under.as_ref().and_then(|(target, _)| target.wl_surface()).as_deref());
         pointer.motion(
             self,
             new_under.clone(),
@@ -2192,6 +2193,7 @@ impl GlideState {
 
         let under = self.overview_motion(pos);
 
+        self.flush_smooth_wheel_before(under.as_ref().and_then(|(target, _)| target.wl_surface()).as_deref());
         pointer.motion(self, under, &MotionEvent { location: pos, serial, time: event.time() });
         pointer.frame(self);
         self.hot_corner_motion(pos);
@@ -2616,6 +2618,11 @@ impl GlideState {
         let source = event.source();
         let factor =
             self.input_config.pointer_settings(crate::config::is_touchpad(&Event::device(event))).scroll_factor;
+        let notches = [Axis::Horizontal, Axis::Vertical]
+            .map(|axis| (event.amount_v120(axis).unwrap_or(0.0), axis_amount::<I>(event, axis)));
+        if self.smooth_wheel_takes(source, notches, factor) {
+            return;
+        }
 
         let mut frame = AxisFrame::new(event.time()).source(source);
         for axis in [Axis::Horizontal, Axis::Vertical] {

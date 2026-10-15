@@ -830,6 +830,7 @@ fn mouse_panel_writes_every_pointer_key() {
     };
     send(&mut app, Msg::LeftHanded(true));
     send(&mut app, Msg::MiddleEmulation(true));
+    send(&mut app, Msg::SmoothWheel(false));
     send(&mut app, Msg::TapAndDrag(false));
     send(&mut app, Msg::DisableWhileTyping(false));
     send(&mut app, Msg::Scroll(ScrollMethod::Edge));
@@ -839,6 +840,7 @@ fn mouse_panel_writes_every_pointer_key() {
     let config = app.config();
     assert_eq!(config.get_bool("input", "left-handed"), Some(true));
     assert_eq!(config.get_bool("input", "middle-emulation"), Some(true));
+    assert_eq!(config.get_bool("input", "smooth-wheel"), Some(false));
     assert_eq!(config.get_bool("input", "tap-and-drag"), Some(false));
     assert_eq!(config.get_bool("input", "disable-while-typing"), Some(false));
     assert_eq!(config.get_str("input", "scroll-method"), Some("edge"));

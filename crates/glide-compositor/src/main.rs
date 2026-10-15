@@ -56,6 +56,7 @@ mod screensaver;
 mod screenshot_ui;
 mod session_end;
 mod shortcut_guard;
+mod smooth_wheel;
 mod snap;
 mod snapshot;
 mod sound;
@@ -215,9 +216,11 @@ fn run() -> anyhow::Result<()> {
         let topbar_animating = state.topbar.is_animating();
         let flash_animating = state.screenshot_flash.tick(std::time::Instant::now());
         let osd_animating = state.session.osd.tick(std::time::Instant::now());
+        let wheel_animating = state.tick_smooth_wheel();
 
         if toasts_animating
             || osd_animating
+            || wheel_animating
             || snap_animating
             || topbar_animating
             || overview_animating

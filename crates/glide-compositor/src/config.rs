@@ -399,6 +399,8 @@ pub struct InputConfig {
     pub touchpad_accel_profile: Option<AccelProfileConfig>,
     pub touchpad_natural_scroll: Option<bool>,
     pub touchpad_scroll_factor: Option<f64>,
+    pub smooth_wheel: bool,
+    pub smooth_wheel_exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
@@ -469,6 +471,8 @@ impl Default for InputConfig {
             touchpad_accel_profile: None,
             touchpad_natural_scroll: None,
             touchpad_scroll_factor: None,
+            smooth_wheel: true,
+            smooth_wheel_exclude: Vec::new(),
         }
     }
 }
@@ -1769,6 +1773,7 @@ action = "quit"
             assert!(!input.left_handed);
             assert!(!input.middle_emulation);
             assert!(input.disable_while_typing);
+            assert!(input.smooth_wheel && input.smooth_wheel_exclude.is_empty());
             assert!(input.tap_and_drag);
             assert_eq!(input.scroll_method, ScrollMethodConfig::TwoFinger);
             assert_eq!(input.click_method, None);
@@ -1784,10 +1789,12 @@ action = "quit"
         #[test]
         fn every_new_input_key_parses() {
             let config: Config = toml::from_str(
-                "[input]\nleft-handed = true\nmiddle-emulation = true\ndisable-while-typing = false\ntap-and-drag = false\nscroll-method = \"none\"\nclick-method = \"areas\"\nscroll-factor = 2.0\ntouchpad-accel-speed = 0.5\ntouchpad-accel-profile = \"flat\"\ntouchpad-natural-scroll = true\ntouchpad-scroll-factor = 0.5\n",
+                "[input]\nleft-handed = true\nmiddle-emulation = true\ndisable-while-typing = false\ntap-and-drag = false\nscroll-method = \"none\"\nclick-method = \"areas\"\nscroll-factor = 2.0\ntouchpad-accel-speed = 0.5\ntouchpad-accel-profile = \"flat\"\ntouchpad-natural-scroll = true\ntouchpad-scroll-factor = 0.5\nsmooth-wheel = false\nsmooth-wheel-exclude = [\"org.kde.dolphin\"]\n",
             )
             .unwrap();
             let input = &config.input;
+            assert!(!input.smooth_wheel);
+            assert_eq!(input.smooth_wheel_exclude, ["org.kde.dolphin"]);
             assert!(input.left_handed && input.middle_emulation);
             assert!(!input.disable_while_typing && !input.tap_and_drag);
             assert_eq!(input.scroll_method, ScrollMethodConfig::None);

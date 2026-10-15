@@ -30,6 +30,8 @@ mod tr {
         ButtonRight => "Right", "Права";
         ScrollSpeed => "Scroll speed", "Швидкість прокрутки";
         ScrollSpeedHint => "How far one wheel notch or swipe moves content", "Наскільки зсувається вміст за один крок коліщатка чи рух пальців";
+        SmoothWheel => "Smooth wheel scrolling", "Плавна прокрутка коліщатком";
+        SmoothWheelHint => "Glide each notch instead of jumping, in apps that do not animate it themselves", "Плавно прокручувати кожен крок замість стрибка в застосунках, що не анімують його самі";
         MiddleEmulation => "Middle click by pressing both buttons", "Середній клік натисканням обох кнопок";
         MiddleEmulationHint => "For mice without a wheel button", "Для мишей без кнопки-коліщатка";
         SameSpeed => "Same speed as the mouse", "Та сама швидкість, що й у миші";
@@ -135,6 +137,7 @@ pub enum Msg {
     Tap(bool),
     LeftHanded(bool),
     MiddleEmulation(bool),
+    SmoothWheel(bool),
     Slide(Slider, f64),
     Commit(Slider),
     Settle(Slider, u64),
@@ -236,6 +239,7 @@ impl Pane for Page {
         "pointer",
         "trackpad",
         "scroll",
+        "smooth",
         "tap",
         "cursor",
         "speed",
@@ -245,6 +249,7 @@ impl Pane for Page {
         "тачпад",
         "вказівник",
         "прокрутка",
+        "плавна",
         "дотик",
         "курсор",
         "швидкість",
@@ -290,6 +295,7 @@ impl Pane for Page {
             Msg::Tap(on) => config.set_bool("input", "tap-to-click", on),
             Msg::LeftHanded(on) => config.set_bool("input", "left-handed", on),
             Msg::MiddleEmulation(on) => config.set_bool("input", "middle-emulation", on),
+            Msg::SmoothWheel(on) => config.set_bool("input", "smooth-wheel", on),
             Msg::Slide(slider, value) => {
                 self.pending[slider.index()] = Some(value);
                 return self.settles[slider.index()].schedule(move |generation| Msg::Settle(slider, generation));
@@ -464,6 +470,13 @@ impl Page {
             .push(profile_row(c, config.accel_profile(), Msg::Profile))
             .push(natural_row(c, config.natural_scroll(), Msg::Natural))
             .push(scroll_row(c, scroll, Slider::MouseScroll))
+            .push(switch_row(
+                *c,
+                c.t(T::SmoothWheel),
+                c.t(T::SmoothWheelHint),
+                config.get_bool("input", "smooth-wheel").unwrap_or(true),
+                Msg::SmoothWheel,
+            ))
             .push(switch_row(
                 *c,
                 c.t(T::MiddleEmulation),
