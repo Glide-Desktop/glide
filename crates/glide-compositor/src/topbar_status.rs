@@ -1,9 +1,10 @@
+use super::glyphs::{Glyph, glyph, svg_glyph, wifi_bars};
 use super::{
-    Anim, BUTTON_HEIGHT, BUTTON_RADIUS, COUNT_STYLE, Cache, Color, E_IO, E_OUT, HEIGHT, ITEM_GAP, Logical,
-    MOTION_QUANTUM, MemoryRenderBuffer, MemoryRenderBufferRenderElement, OpenPopup, PAD_X, POPUP_GAP, POPUP_RADIUS,
-    Point, Rectangle, STATUS_BATT_WIDTH, STATUS_SEP_WIDTH, STATUS_SPEAKER_WIDTH, STATUS_WIFI_WIDTH, Scale, Size, Slot,
-    Topbar, TopbarTheme, lerp, local_rect, motion, numeric_label_width, push_buffer, push_popup_buffer,
-    push_popup_shadow, quantize,
+    Anim, BUTTON_HEIGHT, BUTTON_RADIUS, Cache, Color, E_IO, E_OUT, HEIGHT, ITEM_GAP, Logical, MOTION_QUANTUM,
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement, OpenPopup, PAD_X, POPUP_GAP, POPUP_RADIUS, Point, Rectangle,
+    STATUS_BATT_WIDTH, STATUS_SEP_WIDTH, STATUS_SPEAKER_WIDTH, STATUS_WIFI_WIDTH, Scale, Size, Slot, Topbar,
+    TopbarTheme, lerp, local_rect, motion, numeric_label_width, push_buffer, push_popup_buffer, push_popup_shadow,
+    quantize,
 };
 use crate::i18n::{Key, t};
 use crate::paint::TextAlign;
@@ -12,11 +13,26 @@ use crate::system_info::SystemStatus;
 use glide_theme::spacing::{SP1, SP2, SP3};
 
 const CONTROL_W: i32 = 28;
-const INDICATOR_W: i32 = 18;
 const BLOCK_PAD: i32 = SP2;
-const BLOCK_GAP: i32 = 2;
+const BLOCK_PAD_END: i32 = 7;
+const BLOCK_GAP: i32 = 7;
 const ICON: i32 = 14;
-pub(super) const BATTERY_TEXT_GAP: i32 = SP1;
+const CHEVRON: i32 = 9;
+const SHELL_W: i32 = 22;
+const SHELL_H: i32 = 11;
+const TIP_W: i32 = 2;
+const TIP_H: i32 = 5;
+const TIP_GAP: i32 = 1;
+const LEVEL_INSET: i32 = 2;
+const BOLT: i32 = 8;
+pub(super) const PCT_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
+    size_px: 11.0,
+    line_height_px: 14.0,
+    weight: 500,
+    tracking_em: 0.0,
+    uppercase: false,
+    tabular: true,
+};
 const DOT: i32 = 8;
 const DOT_GAP: i32 = SP1;
 const DOT_PAD: i32 = SP2;
@@ -144,7 +160,7 @@ const fn privacy_width(dots: i32) -> i32 {
 fn battery_width(painter: &crate::paint::Painter, pct: u8, show_pct: bool) -> i32 {
     let mut width = STATUS_BATT_WIDTH;
     if show_pct {
-        width += BATTERY_TEXT_GAP + numeric_label_width(painter, &format!("{pct}%"), &COUNT_STYLE);
+        width += BLOCK_GAP + numeric_label_width(painter, &format!("{pct}%"), &PCT_STYLE);
     }
     width
 }
@@ -154,7 +170,9 @@ fn indicator_width(
 ) -> i32 {
     match indicator {
         Indicator::Battery => battery_width(painter, status.battery_pct.unwrap_or(0), show_pct),
-        _ => INDICATOR_W,
+        Indicator::Wifi => STATUS_WIFI_WIDTH,
+        Indicator::Volume => STATUS_SPEAKER_WIDTH,
+        Indicator::Bluetooth | Indicator::Vpn => ICON,
     }
 }
 
@@ -175,8 +193,12 @@ fn block_layout(painter: &crate::paint::Painter, status: &SystemStatus, show_pct
         .collect()
 }
 
+fn chevron_x(painter: &crate::paint::Painter, status: &SystemStatus, show_pct: bool) -> i32 {
+    block_layout(painter, status, show_pct).last().map_or(BLOCK_PAD, |(_, x, width)| x + width + BLOCK_GAP)
+}
+
 fn block_width(painter: &crate::paint::Painter, status: &SystemStatus, show_pct: bool) -> i32 {
-    block_layout(painter, status, show_pct).last().map_or(BLOCK_PAD * 2, |(_, x, width)| x + width + BLOCK_PAD)
+    chevron_x(painter, status, show_pct) + CHEVRON + BLOCK_PAD_END
 }
 
 fn privacy_popover_height(rows: usize) -> i32 {
@@ -362,23 +384,8 @@ const fn opens(slot: Slot) -> Option<OpenPopup> {
     }
 }
 
-fn blit_icon(c: &mut Canvas<'_>, (name, colour): (&str, Color), (x, width): (i32, i32)) -> bool {
-    c.icon(name, ICON, (x + (width - ICON) / 2, (BUTTON_HEIGHT - ICON) / 2), colour)
-}
-
-fn icon_or_glyph(
-    c: &mut Canvas<'_>, icon: (&str, Color), (x, width): (i32, i32), draw: impl FnOnce(&mut [u8], i32, i32, i32),
-) {
-    if !blit_icon(c, icon, (x, width)) {
-        c.glyph(rect(x, 0, width, BUTTON_HEIGHT), draw);
-    }
-}
-
-fn draw_magnifier(c: &mut Canvas<'_>, x: i32, width: i32, fg: Color) {
-    let gx = x + (width - ICON) / 2;
-    let gy = (BUTTON_HEIGHT - ICON) / 2;
-    c.stroke(rect(gx, gy, 10, 10), 1.5, 5.0, fg);
-    c.fill(rect(gx + 9, gy + 9, 4, 4), fg, glide_theme::shape::R1);
+fn column(x: i32, width: i32) -> Rectangle<i32, Logical> {
+    rect(x, 0, width, BUTTON_HEIGHT)
 }
 
 fn draw_dots(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, x: i32) {
@@ -415,15 +422,14 @@ fn draw_cluster(
         let fg = if open || ctx.hovered == Some(slot) { ctx.theme.label } else { ctx.theme.muted };
         match slot {
             Slot::Status => {
-                for (indicator, dx, width) in block_layout(ctx.painter, ctx.status, ctx.theme.battery_percentage) {
+                let show_pct = ctx.theme.battery_percentage;
+                for (indicator, dx, width) in block_layout(ctx.painter, ctx.status, show_pct) {
                     draw_indicator(&mut c, ctx, (indicator, x + dx, width), fg);
                 }
+                let chevron = column(x + chevron_x(ctx.painter, ctx.status, show_pct), CHEVRON);
+                glyph(&mut c, Glyph::Chevron, CHEVRON, chevron, ctx.theme.faint);
             }
-            Slot::Search => {
-                if !blit_icon(&mut c, ("system-search", fg), (x, width)) {
-                    draw_magnifier(&mut c, x, width, fg);
-                }
-            }
+            Slot::Search => glyph(&mut c, Glyph::Search, ICON, column(x, width), fg),
             Slot::Privacy => draw_dots(&mut c, ctx, x),
             _ => {}
         }
@@ -433,8 +439,17 @@ fn draw_cluster(
 
 fn draw_separator(theme: &TopbarTheme, scale: i32) -> Option<MemoryRenderBuffer> {
     let mut c = Canvas::new(STATUS_SEP_WIDTH, BUTTON_HEIGHT, scale)?;
-    c.fill(rect(6, 5, 1, 14), theme.border, 0.0);
+    c.fill(rect(STATUS_SEP_WIDTH / 2, (BUTTON_HEIGHT - 16) / 2, 1, 16), theme.border, 0.0);
     Some(c.finish())
+}
+
+const fn speaker(muted: bool, pct: u8) -> Glyph {
+    match (muted, pct) {
+        (true, _) => Glyph::SpeakerMuted,
+        (false, 0) => Glyph::SpeakerSilent,
+        (false, 1..=60) => Glyph::SpeakerLow,
+        (false, _) => Glyph::SpeakerHigh,
+    }
 }
 
 fn draw_indicator(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, (indicator, x, width): (Indicator, i32, i32), fg: Color) {
@@ -442,30 +457,13 @@ fn draw_indicator(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, (indicator, x, wid
     match indicator {
         Indicator::Battery => draw_status_battery(c, ctx, x, fg),
         Indicator::Wifi => {
-            let level = status.wifi_level;
-            let wifi_fg = if status.wifi_enabled { fg } else { ctx.theme.faint };
-            let span = (x + (width - STATUS_WIFI_WIDTH) / 2, STATUS_WIFI_WIDTH);
-            icon_or_glyph(c, (super::wifi_icon_name(level), fg), span, |buf, w, h, scale| {
-                crate::paint::draw_wifi_waves_level_over(buf, w, h, 13.0, 1.4, level, scale, wifi_fg, ctx.theme.faint);
-            });
+            let level = if status.wifi_enabled { status.wifi_level } else { 0 };
+            svg_glyph(c, &wifi_bars(level), 16, column(x, width), fg);
         }
-        Indicator::Bluetooth => {
-            let name = if status.bluetooth_connected { "bluetooth-active" } else { "bluetooth" };
-            icon_or_glyph(c, (name, fg), (x, width), |buf, w, h, scale| {
-                crate::paint::draw_bluetooth_glyph_over(buf, w, h, 13.0, 1.4, scale, fg);
-            });
-        }
-        Indicator::Vpn => {
-            if !blit_icon(c, ("network-vpn", fg), (x, width)) {
-                c.text(ctx.painter, (x, x + width, 0, BUTTON_HEIGHT), TextAlign::Center, "VPN", fg, &COUNT_STYLE);
-            }
-        }
+        Indicator::Bluetooth => glyph(c, Glyph::Bluetooth, ICON, column(x, width), fg),
+        Indicator::Vpn => glyph(c, Glyph::Shield, ICON, column(x, width), fg),
         Indicator::Volume => {
-            let muted = status.volume_muted;
-            let span = (x + (width - STATUS_SPEAKER_WIDTH) / 2, STATUS_SPEAKER_WIDTH);
-            icon_or_glyph(c, (super::volume_icon_name(muted, status.volume_pct), fg), span, |buf, w, h, scale| {
-                crate::paint::draw_speaker_glyph_over(buf, w, h, 14.0, 1.4, muted, scale, fg);
-            });
+            glyph(c, speaker(status.volume_muted, status.volume_pct), ICON, column(x, width), fg);
         }
     }
 }
@@ -475,26 +473,33 @@ fn draw_status_battery(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, x: i32, fg: C
         return;
     };
     let charging = ctx.status.battery_charging;
-    icon_or_glyph(c, (&super::battery_icon_name(pct, charging), fg), (x, STATUS_BATT_WIDTH), |buf, w, h, scale| {
-        let args = crate::paint::BatteryRenderArgs {
-            canvas_width: w,
-            canvas_height: h,
-            pct,
-            charging,
-            scale,
-            fg,
-            ok_color: ctx.theme.ok,
-            danger_color: ctx.theme.danger,
-        };
-        crate::paint::draw_battery_glyph_over(buf, &args);
-    });
+    let low = !charging && pct <= ctx.theme.battery_low_pct;
+    let top = (BUTTON_HEIGHT - SHELL_H) / 2;
+    let frame = fg.with_alpha(fg.0[3] * 0.7);
+    c.stroke(rect(x, top, SHELL_W, SHELL_H), 1.3, 3.5, frame);
+    c.fill(rect(x + SHELL_W + TIP_GAP, top + (SHELL_H - TIP_H) / 2, TIP_W, TIP_H), frame, 1.0);
+    let room = SHELL_W - LEVEL_INSET * 2;
+    let filled = ((f32::from(pct.min(100)) / 100.0) * room as f32).round() as i32;
+    let level = if charging {
+        ctx.theme.ok
+    } else if low {
+        ctx.theme.danger
+    } else {
+        fg
+    };
+    if filled > 0 {
+        let bar = rect(x + LEVEL_INSET, top + LEVEL_INSET, filled.max(2), SHELL_H - LEVEL_INSET * 2);
+        c.fill(bar, level, 1.5);
+    }
+    if charging {
+        glyph(c, Glyph::Bolt, BOLT, rect(x, top, SHELL_W, SHELL_H), ctx.theme.label);
+    }
     if ctx.theme.battery_percentage {
-        let left = x + STATUS_BATT_WIDTH + BATTERY_TEXT_GAP;
+        let left = x + STATUS_BATT_WIDTH + BLOCK_GAP;
         let text = format!("{pct}%");
-        let colour = if !charging && pct <= ctx.theme.battery_low_pct { ctx.theme.danger } else { fg };
-        let width = ctx.painter.text_width_styled(&text, &glide_theme::TextStyle::MICRO).ceil() as i32;
-        let band = (left, left + width + 2, 0, BUTTON_HEIGHT);
-        c.text(ctx.painter, band, TextAlign::Left, &text, colour, &glide_theme::TextStyle::MICRO);
+        let width = numeric_label_width(ctx.painter, &text, &PCT_STYLE);
+        let colour = if low { ctx.theme.danger } else { fg };
+        c.text(ctx.painter, (left, left + width, 0, BUTTON_HEIGHT), TextAlign::Left, &text, colour, &PCT_STYLE);
     }
 }
 
@@ -606,7 +611,8 @@ mod tests {
             assert_eq!(pair[0].1 + pair[0].2 + BLOCK_GAP, pair[1].1);
         }
         let (_, x, w) = items.last().copied().expect("battery");
-        assert_eq!(x + w + BLOCK_PAD, width);
+        assert_eq!(chevron_x(&painter, &status, true), x + w + BLOCK_GAP, "the chevron keeps the same rhythm");
+        assert_eq!(x + w + BLOCK_GAP + CHEVRON + BLOCK_PAD_END, width);
         assert!(
             block_width(&painter, &SystemStatus::default(), true) < width,
             "fewer indicators make a narrower block"

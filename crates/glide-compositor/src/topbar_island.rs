@@ -12,6 +12,7 @@ use smithay::backend::renderer::element::{
 };
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
+use super::glyphs::{Glyph, glyph};
 use super::{
     Anim, BadgePop, Cache, E_IO, E_OUT, Frame, LocalRect, MEDIA_ART, MEDIA_ART_LARGE, MediaWidget, OpenPopup, Slot,
     SwitchMotion, Topbar, TopbarTheme, calendar, draw_media_art, draw_switch, initial, local_rect, motion,
@@ -660,69 +661,6 @@ impl Topbar {
             }
             _ => None,
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Glyph {
-    Bell,
-    Quiet,
-    Play,
-    Pause,
-    Previous,
-    Next,
-    Collapse,
-    Close,
-    Moon,
-    Back,
-    Forward,
-}
-
-impl Glyph {
-    const fn source(self) -> (&'static str, u8, Option<&'static str>) {
-        match self {
-            Self::Bell => (
-                "<path d=\"M8 2.5a4 4 0 00-4 4v3l-1.5 2h11L12 9.5v-3a4 4 0 00-4-4zM6.5 13.5a1.5 1.5 0 003 0\"/>",
-                16,
-                Some("1.6"),
-            ),
-            Self::Quiet => (
-                "<path d=\"M8 3a3.5 3.5 0 00-3.5 3.5v2.5L3 11h10l-1.5-2V6.5A3.5 3.5 0 008 3z\"/><path d=\"M6.5 13a1.5 1.5 0 003 0\"/>",
-                16,
-                Some("1.3"),
-            ),
-            Self::Play => ("<path d=\"M4.5 3v10l8-5z\"/>", 16, None),
-            Self::Pause => ("<path d=\"M5 3h2v10H5zM9 3h2v10H9z\"/>", 16, None),
-            Self::Previous => ("<path d=\"M5 3h1.5v10H5zM12 3v10l-6-5z\"/>", 16, None),
-            Self::Next => ("<path d=\"M11 3h-1.5v10H11zM4 3v10l6-5z\"/>", 16, None),
-            Self::Collapse => ("<path d=\"M4 10l4-4 4 4\"/>", 16, Some("2.2")),
-            Self::Close => ("<path d=\"M4 4l8 8M12 4l-8 8\"/>", 16, Some("2.2")),
-            Self::Moon => ("<path d=\"M14.2 10.4A5.8 5.8 0 017.6 3.8a5.8 5.8 0 106.6 6.6z\"/>", 18, Some("1.5")),
-            Self::Back => ("<path d=\"M10 4l-4 4 4 4\"/>", 16, Some("1.8")),
-            Self::Forward => ("<path d=\"M6 4l4 4-4 4\"/>", 16, Some("1.8")),
-        }
-    }
-
-    fn svg(self) -> String {
-        let (body, view, stroke) = self.source();
-        let paint = stroke.map_or_else(
-            || String::from("fill=\"#000\""),
-            |width| {
-                format!(
-                    "fill=\"none\" stroke=\"#000\" stroke-width=\"{width}\" stroke-linecap=\"round\" stroke-linejoin=\"round\""
-                )
-            },
-        );
-        format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{view}\" height=\"{view}\" viewBox=\"0 0 {view} {view}\" {paint}>{body}</svg>"
-        )
-    }
-}
-
-pub(super) fn glyph(c: &mut Canvas<'_>, glyph: Glyph, side: i32, rect: LocalRect, colour: Color) {
-    let at = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
-    if let Some(pixels) = crate::paint::render_svg_tinted(glyph.svg().as_bytes(), side * c.scale, colour) {
-        crate::paint::blit_square_over(&mut c.buf, c.w, c.h, &pixels, side, at.0, at.1, c.scale);
     }
 }
 
@@ -1474,24 +1412,5 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(81)), "01:21");
         assert_eq!(format_duration(Duration::from_secs(212)), "03:32");
         assert_eq!(format_duration(Duration::from_secs(3725)), "1:02:05");
-    }
-
-    #[test]
-    fn every_glyph_is_valid_svg() {
-        for glyph in [
-            Glyph::Bell,
-            Glyph::Quiet,
-            Glyph::Play,
-            Glyph::Pause,
-            Glyph::Previous,
-            Glyph::Next,
-            Glyph::Collapse,
-            Glyph::Close,
-            Glyph::Moon,
-            Glyph::Back,
-            Glyph::Forward,
-        ] {
-            assert!(crate::paint::render_svg(glyph.svg().as_bytes(), 24).is_some(), "{glyph:?}");
-        }
     }
 }

@@ -1,4 +1,5 @@
-use super::island::{self, Glyph, glyph};
+use super::glyphs::{Glyph, glyph};
+use super::island;
 use super::{
     Anim, Cache, E_OUT, LocalRect, Logical, MemoryRenderBuffer, Point, Rectangle, Slot, Topbar, TopbarTheme,
     local_rect, motion, numeric_label_width, quantize, widest_digits,

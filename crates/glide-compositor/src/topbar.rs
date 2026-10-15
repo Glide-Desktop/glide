@@ -32,6 +32,9 @@ pub mod calendar;
 #[path = "topbar_island.rs"]
 mod island;
 
+#[path = "topbar_glyphs.rs"]
+mod glyphs;
+
 pub use island::IslandAlert;
 
 #[path = "topbar_status.rs"]
@@ -57,8 +60,14 @@ const BUTTON_RADIUS: f32 = glide_theme::shape::R2;
 const BUTTON_MIN_WIDTH: i32 = 28;
 
 const APP_ICON: i32 = 16;
-const APP_PAD_LEFT: i32 = glide_theme::spacing::SP1;
-const APP_GAP: i32 = glide_theme::spacing::SP2;
+const APP_PAD_LEFT: i32 = 5;
+const APP_PAD_RIGHT: i32 = 9;
+const APP_GAP: i32 = 7;
+const APP_STYLE: TextStyle = TextStyle {
+    size_px: TextStyle::TOPBAR.size_px,
+    line_height_px: TextStyle::TOPBAR.line_height_px,
+    ..TextStyle::HEAD
+};
 const APP_NAME_MAX: usize = 28;
 
 const SEG_HEIGHT: i32 = 20;
@@ -66,18 +75,25 @@ const SEG_INSET: i32 = 2;
 const SEG_GAP: i32 = 2;
 const SEG_MIN_WIDTH: i32 = 25;
 const SEG_RADIUS: f32 = glide_theme::shape::R1;
-const SEG_PAD_X: i32 = glide_theme::spacing::SP1;
+const SEG_PAD_X: i32 = 3;
+const SEG_TEXT_PAD: i32 = 5;
+const SEG_LIFT_DARK: f32 = 0.35;
+const SEG_LIFT_LIGHT: f32 = 0.08;
+const SEG_STYLE: TextStyle =
+    TextStyle { size_px: 10.5, line_height_px: 14.0, weight: 500, tracking_em: 0.03, ..TextStyle::CAP };
 
 const SWITCH_WIDTH: i32 = 28;
 const SWITCH_HEIGHT: i32 = 16;
 const SWITCH_THUMB: i32 = 12;
 const SWITCH_INSET: i32 = 2;
 
-const COFFEE_GLYPH: f32 = 14.0;
-const COFFEE_STROKE: f32 = 1.5;
+const COFFEE_GLYPH: i32 = 14;
+const COFFEE_PAD: i32 = 7;
+const COFFEE_GAP: i32 = 7;
+const COFFEE_PAD_END: i32 = 6;
 
 const DND_WIDTH: i32 = 28;
-const DND_GLYPH: f32 = 14.0;
+const DND_GLYPH: i32 = 14;
 
 const LANG_MENU_WIDTH: i32 = 196;
 const LANG_MENU_PAD: i32 = glide_theme::spacing::SP1;
@@ -86,7 +102,7 @@ const LANG_MENU_DIVIDER: i32 = glide_theme::spacing::SP1 * 2 + 1;
 
 const STATUS_WIFI_WIDTH: i32 = 15;
 const STATUS_SPEAKER_WIDTH: i32 = 14;
-const STATUS_BATT_WIDTH: i32 = 24;
+const STATUS_BATT_WIDTH: i32 = 25;
 const STATUS_SEP_WIDTH: i32 = 13;
 
 const QS_WIDTH: i32 = 352;
@@ -711,7 +727,7 @@ pub struct Topbar {
     menu_bar: Vec<glide_appmenu::MenuItem>,
     menu_open: MenuPath,
     menu_panels: Vec<crate::global_menu::Panel>,
-    menu_titles: HashMap<(usize, bool, i32), MemoryRenderBuffer>,
+    menu_titles: HashMap<(usize, bool, bool, i32), MemoryRenderBuffer>,
     menu_rasters: HashMap<(MenuPath, Option<usize>, i32), MemoryRenderBuffer>,
     app_chip_w: i32,
 
@@ -1719,9 +1735,8 @@ impl Topbar {
         self.layouts.get(self.layout_index).map_or("", String::as_str)
     }
 
-    fn caffeine_width() -> i32 {
-        let glyph = COFFEE_GLYPH.ceil() as i32;
-        glide_theme::spacing::SP1 * 2 + glyph + glide_theme::spacing::SP2 + SWITCH_WIDTH
+    const fn caffeine_width() -> i32 {
+        COFFEE_PAD + COFFEE_GLYPH + COFFEE_GAP + SWITCH_WIDTH + COFFEE_PAD_END
     }
 
     fn layout_slots(&mut self, painter: &crate::paint::Painter, output: Rectangle<i32, Logical>) {
@@ -2633,7 +2648,7 @@ fn button_width(painter: &crate::paint::Painter, label: &str) -> i32 {
 }
 
 fn segment_width(painter: &crate::paint::Painter, label: &str) -> i32 {
-    (text_w(painter, label, &TextStyle::TOPBAR) + SP1 * 2).max(SEG_MIN_WIDTH)
+    (text_w(painter, label, &SEG_STYLE) + SEG_TEXT_PAD * 2).max(SEG_MIN_WIDTH)
 }
 
 pub const MEDIA_ART: i32 = 16;
@@ -2823,13 +2838,6 @@ fn draw_media_art(
     c.text(painter, (x, x + side, y, y + side), TextAlign::Center, "♪", white, style);
 }
 
-const COUNT_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
-    size_px: glide_theme::TextStyle::MICRO.size_px,
-    line_height_px: glide_theme::TextStyle::MICRO.line_height_px,
-    weight: glide_theme::TextStyle::MICRO.weight,
-    ..glide_theme::TextStyle::NUM
-};
-
 fn widest_digits(text: &str) -> String {
     text.chars().map(|c| if c.is_ascii_digit() { '8' } else { c }).collect()
 }
@@ -2842,7 +2850,7 @@ fn numeric_label_width(painter: &crate::paint::Painter, text: &str, style: &glid
 
 fn app_chip_width(painter: &crate::paint::Painter, name: &str, has_icon: bool) -> i32 {
     let icon = if has_icon { APP_ICON + APP_GAP } else { 0 };
-    APP_PAD_LEFT + icon + text_w(painter, name, &TextStyle::HEAD) + BUTTON_PAD_X
+    APP_PAD_LEFT + icon + text_w(painter, name, &APP_STYLE) + APP_PAD_RIGHT
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent [topbar] switches, not a state machine
@@ -2879,6 +2887,7 @@ pub struct TopbarTheme {
     pub island_bg: Color,
     pub island_line: Color,
     pub ghost: Color,
+    pub card: Color,
     pub battery_low_pct: u8,
     pub battery_percentage: bool,
     pub clock_date: bool,
@@ -2935,6 +2944,7 @@ impl TopbarTheme {
             island_bg: t.island_bg,
             island_line: t.island_line,
             ghost: t.fg_4,
+            card: t.card_bg,
             battery_low_pct: BATTERY_LOW_PCT,
         }
     }
@@ -2973,6 +2983,7 @@ impl TopbarTheme {
             .color(self.island_bg)
             .color(self.island_line)
             .color(self.ghost)
+            .color(self.card)
             .u64(u64::from(self.battery_low_pct))
             .bool(self.battery_percentage)
             .bool(self.clock_date)
@@ -3127,7 +3138,8 @@ fn push_menu_titles<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_,
         .collect();
     for (index, rect) in titles {
         let is_open = open == Some(index);
-        let key = (index, is_open, output_scale);
+        let lit = is_open || topbar.hovered == u16::try_from(index).ok().map(Slot::MenuTitle);
+        let key = (index, is_open, lit, output_scale);
         if !topbar.menu_titles.contains_key(&key)
             && let Some(item) = topbar.menu_bar.get(index)
             && let Some(buffer) = crate::global_menu::draw_title(
@@ -3135,7 +3147,7 @@ fn push_menu_titles<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_,
                 &item.label,
                 rect.size.w,
                 rect.size.h,
-                topbar.theme.label,
+                hover_colour(&topbar.theme, lit),
                 is_open.then_some(topbar.theme.open_fill),
                 output_scale,
             )
@@ -3229,16 +3241,14 @@ fn draw_app_chip(
     painter: &crate::paint::Painter, theme: &TopbarTheme, name: &str, icon: Option<&[u8]>, width: i32, scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?;
-    c.panel(theme.track_soft, BUTTON_RADIUS);
-
     let mut text_left = APP_PAD_LEFT;
     if let Some(icon) = icon {
         let top = (BUTTON_HEIGHT - APP_ICON) / 2;
         c.blit(icon, local_rect(APP_PAD_LEFT, top, APP_ICON, APP_ICON));
         text_left += APP_ICON + APP_GAP;
     }
-    let span = (text_left, width - BUTTON_PAD_X);
-    c.label(painter, span, TextAlign::Left, name, theme.label, &TextStyle::HEAD);
+    let span = (text_left, width - APP_PAD_RIGHT);
+    c.label(painter, span, TextAlign::Left, name, theme.label, &APP_STYLE);
     Some(c.finish())
 }
 
@@ -3450,7 +3460,13 @@ fn draw_segmented(
     if let (Some(first), Some(second)) = (spans.first(), spans.get(1)) {
         let (pill_x, pill_w) = segment_pill(*first, *second, state.pill);
         let pill = local_rect(pill_x, track_top + SEG_INSET, pill_w, SEG_HEIGHT - SEG_INSET * 2);
-        c.fill(pill, theme.segment_active, SEG_RADIUS);
+        let lift = if theme.dark { SEG_LIFT_DARK } else { SEG_LIFT_LIGHT };
+        c.fill(
+            local_rect(pill.loc.x, pill.loc.y + 1, pill.size.w, pill.size.h),
+            Color([0.0, 0.0, 0.0, lift]),
+            SEG_RADIUS,
+        );
+        c.fill(pill, theme.card, SEG_RADIUS);
     }
 
     for (index, (name, (x, seg))) in layouts.iter().zip(spans).enumerate() {
@@ -3461,7 +3477,7 @@ fn draw_segmented(
         } else {
             theme.faint
         };
-        c.label(painter, (x, x + seg), TextAlign::Center, name, colour, &TextStyle::TOPBAR);
+        c.label(painter, (x, x + seg), TextAlign::Center, name, colour, &SEG_STYLE);
     }
     Some(c.finish())
 }
@@ -3492,31 +3508,12 @@ fn draw_caffeine(
 ) -> Option<MemoryRenderBuffer> {
     let mut c = Canvas::new(width, BUTTON_HEIGHT, scale)?.with_icons(icons);
     let colour = hover_colour(theme, on || hovered);
-    let side = 14;
-    if !c.icon(caffeine_icon(on), side, (SP1, (BUTTON_HEIGHT - side) / 2), colour) {
-        let (cx, cy) = (SP1 as f32 + COFFEE_GLYPH / 2.0, BUTTON_HEIGHT as f32 / 2.0);
-        let (glyph, stroke) = (COFFEE_GLYPH, COFFEE_STROKE);
-        crate::paint::draw_coffee_glyph_over(
-            &mut c.buf,
-            width,
-            BUTTON_HEIGHT,
-            cx,
-            cy,
-            glyph,
-            stroke,
-            scale,
-            colour,
-            on,
-        );
-    }
+    let cup = local_rect(COFFEE_PAD, 0, COFFEE_GLYPH, BUTTON_HEIGHT);
+    glyphs::glyph(&mut c, glyphs::Glyph::Cup, COFFEE_GLYPH, cup, colour);
     let track_y = (BUTTON_HEIGHT - SWITCH_HEIGHT) / 2;
-    let track = local_rect(width - SP1 - SWITCH_WIDTH, track_y, SWITCH_WIDTH, SWITCH_HEIGHT);
+    let track = local_rect(width - COFFEE_PAD_END - SWITCH_WIDTH, track_y, SWITCH_WIDTH, SWITCH_HEIGHT);
     draw_switch(&mut c, theme, track, (SWITCH_INSET, SWITCH_THUMB), switch);
     Some(c.finish())
-}
-
-const fn caffeine_icon(on: bool) -> &'static str {
-    if on { "caffeine-cup-full" } else { "caffeine-cup-empty" }
 }
 
 fn push_dnd<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
@@ -3547,11 +3544,7 @@ fn draw_dnd(
         c.panel(fill.with_alpha(0.0).lerp(fill, on as f32), BUTTON_RADIUS);
     }
     let colour = hover_colour(theme, hovered).lerp(theme.active_label, on as f32);
-    let side = 14;
-    let at = ((width - side) / 2, (BUTTON_HEIGHT - side) / 2);
-    if !c.icon("notifications-disabled", side, at, colour) {
-        crate::paint::draw_moon_glyph_over(&mut c.buf, width, BUTTON_HEIGHT, DND_GLYPH, scale, colour);
-    }
+    glyphs::glyph(&mut c, glyphs::Glyph::Moon, DND_GLYPH, local_rect(0, 0, width, BUTTON_HEIGHT), colour);
     Some(c.finish())
 }
 
@@ -4092,11 +4085,6 @@ fn draw_qs_header(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &QsGe
 }
 
 const AVATAR_GRADIENT_LIFT: f32 = glide_theme::motion::ST_DRAG;
-
-fn battery_icon_name(pct: u8, charging: bool) -> String {
-    let step = ((pct.min(100) + 10) / 20) * 20;
-    if charging { format!("battery-{step:03}-charging") } else { format!("battery-{step:03}") }
-}
 
 fn draw_qs_battery_glyph(c: &mut Canvas<'_>, rect: LocalRect, pct: u8, colour: Color) {
     let shell = dimmed(colour, QS_SOFT_DIM);
@@ -5048,9 +5036,10 @@ mod tests {
 
     #[test]
     fn numbers_are_set_in_tabular_figures_without_uppercase_tracking() {
-        for style in [island::TIME_STYLE, COUNT_STYLE] {
+        for style in [island::TIME_STYLE, status::PCT_STYLE] {
             assert!(style.tabular);
             assert!(!style.uppercase);
+            assert!(style.tracking_em.abs() < f32::EPSILON, "no letter-spacing between digits");
         }
         assert!((island::TIME_STYLE.size_px - island::DATE_STYLE.size_px).abs() < f32::EPSILON);
     }
@@ -5058,9 +5047,9 @@ mod tests {
     #[test]
     fn a_battery_reading_keeps_its_width_within_a_digit_count() {
         let painter = painter();
-        let reference = numeric_label_width(&painter, "88%", &COUNT_STYLE);
+        let reference = numeric_label_width(&painter, "88%", &status::PCT_STYLE);
         for pct in ["11%", "47%", "90%"] {
-            assert_eq!(numeric_label_width(&painter, pct, &COUNT_STYLE), reference, "{pct}");
+            assert_eq!(numeric_label_width(&painter, pct, &status::PCT_STYLE), reference, "{pct}");
         }
     }
 

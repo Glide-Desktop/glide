@@ -12,7 +12,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Scale, Size},
 };
 
-use super::{BUTTON_HEIGHT, HEIGHT, MenuPath, OpenPopup, Slot, Topbar, TopbarTheme};
+use super::{BUTTON_HEIGHT, HEIGHT, ITEM_GAP, MenuPath, OpenPopup, Slot, Topbar, TopbarTheme};
 use crate::{
     config::Color,
     paint::TextAlign,
@@ -20,7 +20,7 @@ use crate::{
 };
 
 pub const ICON: i32 = 16;
-pub const SLOT_WIDTH: i32 = 24;
+pub const SLOT_WIDTH: i32 = 28;
 pub const MAX_SCALE: i32 = 3;
 const TOOLTIP_HEIGHT: i32 = 26;
 const TOOLTIP_PAD_X: i32 = glide_theme::spacing::SP3;
@@ -109,6 +109,10 @@ pub fn slot_width(presence: f64) -> i32 {
     (f64::from(SLOT_WIDTH) * presence.clamp(0.0, 1.0)).round() as i32
 }
 
+fn gap_width(presence: f64) -> i32 {
+    (f64::from(ITEM_GAP) * presence.clamp(0.0, 1.0)).round() as i32
+}
+
 #[must_use]
 pub fn place(entries: &[(u16, f64)], right: i32, limit: i32, y: i32) -> Vec<(u16, Rectangle<i32, Logical>)> {
     let mut x = right;
@@ -118,10 +122,11 @@ pub fn place(entries: &[(u16, f64)], right: i32, limit: i32, y: i32) -> Vec<(u16
         if width <= 0 {
             continue;
         }
-        if x - width < limit {
+        let gap = if out.is_empty() { 0 } else { gap_width(presence) };
+        if x - gap - width < limit {
             break;
         }
-        x -= width;
+        x -= gap + width;
         out.push((id, Rectangle::new(Point::from((x, y)), Size::from((width, BUTTON_HEIGHT)))));
     }
     out
@@ -616,7 +621,7 @@ mod tests {
         let placed = place(&[(1, 1.0), (2, 1.0)], 500, 0, 5);
         assert_eq!(placed.len(), 2);
         assert_eq!(placed[0].1.loc.x, 500 - SLOT_WIDTH);
-        assert_eq!(placed[1].1.loc.x, 500 - SLOT_WIDTH * 2);
+        assert_eq!(placed[1].1.loc.x, 500 - SLOT_WIDTH * 2 - ITEM_GAP, "the same 2 px gap as every other button");
         assert_eq!(placed[0].1.size.h, BUTTON_HEIGHT);
         assert_eq!(placed[1].1.loc.y, 5);
     }
@@ -625,7 +630,7 @@ mod tests {
     fn a_half_arrived_item_only_pushes_its_neighbours_half_a_slot() {
         let placed = place(&[(1, 0.5), (2, 1.0)], 500, 0, 0);
         assert_eq!(placed[0].1.size.w, SLOT_WIDTH / 2);
-        assert_eq!(placed[1].1.loc.x, 500 - SLOT_WIDTH / 2 - SLOT_WIDTH);
+        assert_eq!(placed[1].1.loc.x, 500 - SLOT_WIDTH / 2 - ITEM_GAP - SLOT_WIDTH);
     }
 
     #[test]
@@ -753,7 +758,8 @@ mod tests {
         let dnd = bar.slot_rect(Slot::DoNotDisturb).expect("dnd");
         let clock = bar.slot_rect(Slot::Clock).expect("clock");
         assert!(first.loc.x + first.size.w <= dnd.loc.x);
-        assert_eq!(second.loc.x + second.size.w, first.loc.x, "newer items go left");
+        assert_eq!(second.loc.x + second.size.w + ITEM_GAP, first.loc.x, "newer items go left");
+        assert_eq!(first.loc.x + first.size.w + ITEM_GAP, dnd.loc.x, "one even gap all the way along");
         assert!(second.loc.x > clock.loc.x + clock.size.w);
         let hit = Point::from((f64::from(first.loc.x + first.size.w / 2), f64::from(first.loc.y + first.size.h / 2)));
         assert!(matches!(
