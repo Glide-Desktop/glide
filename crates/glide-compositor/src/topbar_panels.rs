@@ -710,20 +710,33 @@ impl Topbar {
         }
     }
 
+    fn device_slot_for(&self, drawer: super::Drawer, key: &str) -> Option<Slot> {
+        let index = self.qs_panel.devices(drawer).iter().position(|device| device.name == key)?;
+        Some(Slot::QsDrawerItem(drawer, u16::try_from(index).ok()?))
+    }
+
     fn row_slot_for(&self, key: &str) -> Option<Slot> {
-        let index = match self.qs_panel.view? {
-            Detail::Wifi => self.qs_panel.wifi.iter().position(|n| n.ssid == key)?,
-            Detail::Bluetooth => self.qs_panel.devices.iter().position(|d| d.mac == key)?,
-            Detail::Sound => self.qs_panel.outputs.iter().position(|o| o.name == key)?,
-            Detail::Battery => return None,
-        };
-        Some(Slot::QsDetailRow(u16::try_from(index).ok()?))
+        let row = |index: usize| u16::try_from(index).ok().map(Slot::QsDetailRow);
+        match self.qs_panel.view {
+            Some(Detail::Wifi) => row(self.qs_panel.wifi.iter().position(|n| n.ssid == key)?),
+            Some(Detail::Bluetooth) => row(self.qs_panel.devices.iter().position(|d| d.mac == key)?),
+            Some(Detail::Sound) => self
+                .qs_panel
+                .outputs
+                .iter()
+                .position(|o| o.name == key)
+                .and_then(row)
+                .or_else(|| self.device_slot_for(super::Drawer::Input, key)),
+            Some(Detail::Battery) => None,
+            None => self.qs_drawer.and_then(|drawer| self.device_slot_for(drawer, key)),
+        }
     }
 
     fn settle_focus_on_row(&mut self, key: &str) {
-        if self.focused.is_some() {
-            let slot = self.row_slot_for(key);
-            self.set_focused(slot);
+        if self.focused.is_some()
+            && let Some(slot) = self.row_slot_for(key)
+        {
+            self.set_focused(Some(slot));
         }
     }
 
@@ -1817,6 +1830,53 @@ mod tests {
             smithay::utils::Size::from((DETAIL_SWITCH_W, DETAIL_SWITCH_H))
         );
         assert_eq!(prompt_height(true) - prompt_height(false), PROMPT_ERROR + SP2);
+    }
+
+    #[test]
+    fn every_detail_view_draws_without_icons_at_both_scales() {
+        let mut bar = open_wifi();
+        bar.toggle_prompt("Neighbour");
+        bar.apply_net_event(NetEvent::WifiResult {
+            ssid: "Neighbour".to_string(),
+            result: Err(ConnectError::WrongPassword),
+        });
+        assert!(bar.qs_panel.prompt.is_some() && bar.qs_panel.failed(2), "the drawer reopens with its error");
+        let device = |mac: &str, connected: bool, battery: Option<u8>| BtDevice {
+            mac: mac.to_string(),
+            name: mac.to_uppercase(),
+            kind: crate::qs_net::BtKind::Headphones,
+            connected,
+            battery,
+        };
+        bar.apply_net_event(NetEvent::Bluetooth(vec![device("aa", true, Some(80)), device("bb", false, None)]));
+        bar.apply_net_event(two_sinks());
+        bar.apply_net_event(NetEvent::Inputs(Vec::new()));
+        bar.begin_connect("hdmi");
+        let status = crate::system_info::SystemStatus {
+            wifi_enabled: true,
+            bluetooth_on: true,
+            volume_muted: true,
+            battery_pct: Some(9),
+            power_profile: Some(PowerProfile::PowerSaver),
+            battery: Some(BatteryInfo {
+                pct: 9,
+                state: BatteryState::Discharging,
+                minutes: None,
+                health: crate::system_info::BatteryHealth { wear_pct: Some(91), ..Default::default() },
+                profile: None,
+            }),
+            ..Default::default()
+        };
+        let painter = crate::paint::Painter::new(14.0, None);
+        let theme = TopbarTheme::default();
+        let height = qs_geometry(&bar.qs_shape(None)).height;
+        for detail in [Detail::Wifi, Detail::Bluetooth, Detail::Sound, Detail::Battery] {
+            for (scale, hovered) in [(1, None), (2, Some(Slot::QsPromptCancel)), (2, Some(Slot::QsDetailSettings))] {
+                let ctx = QsRenderContext { painter: &painter, theme: &theme, hovered };
+                let mut canvas = Canvas::new(QS_WIDTH, height, scale).expect("detail canvas");
+                draw_detail(&mut canvas, &ctx, &bar.qs_panel, detail, &status);
+            }
+        }
     }
 
     #[test]

@@ -1319,7 +1319,9 @@ impl Topbar {
 
     fn qs_main_key(&self, painter: &crate::paint::Painter) -> QsCacheKey {
         let main_view = self.qs_panel.view.is_none();
-        let hovered = self.hovered_in(Slot::in_quick_settings).filter(|_| main_view);
+        let hovered = self.hovered_in(Slot::in_quick_settings).filter(|slot| {
+            main_view && !matches!(slot, Slot::QsPowerButton(_) | Slot::QsPowerCancel | Slot::QsPowerConfirm(_))
+        });
         let dragging = self.pressed.filter(|slot| self.slider_dragging && slot.is_slider());
         let flags = QsFlags {
             caffeinated: self.caffeinated,
@@ -4184,7 +4186,7 @@ fn push_qs_power<R: ShellRenderer>(
         let key: QsPowerKey = (lit, None, (row.size.w, row.size.h));
         if let Some(buffer) = topbar
             .qs_row_cache
-            .resolve(key, output_scale, || draw_qs_power_row(theme, &geometry, lit, (output_scale, &mut *icons)))
+            .resolve(key, output_scale, || draw_qs_power_row(theme, &geometry, lit, (output_scale, Some(&mut *icons))))
         {
             place(buffer, row, (arm * QS_ARM_RISE, row_alpha));
         }
@@ -4197,7 +4199,7 @@ fn push_qs_power<R: ShellRenderer>(
     let seconds = armed.seconds_left(std::time::Instant::now());
     let key: QsPowerKey = (lit, Some((armed.action, seconds)), (strip.rect.size.w, strip.rect.size.h));
     if let Some(buffer) = topbar.qs_confirm_cache.resolve(key, output_scale, || {
-        draw_qs_confirm(painter, theme, &strip, (armed.action, seconds, lit), (output_scale, &mut *icons))
+        draw_qs_confirm(painter, theme, &strip, (armed.action, seconds, lit), (output_scale, Some(&mut *icons)))
     }) {
         place(buffer, strip.rect, (-(1.0 - arm) * QS_ARM_RISE, arm as f32 * alpha));
     }
@@ -4641,10 +4643,11 @@ fn draw_qs_battery_glyph(c: &mut Canvas<'_>, rect: LocalRect, pct: u8, colour: C
 }
 
 fn draw_qs_power_row(
-    theme: &TopbarTheme, geometry: &QsGeometry, lit: Option<Slot>, (scale, icons): (i32, &mut crate::icon::IconLoader),
+    theme: &TopbarTheme, geometry: &QsGeometry, lit: Option<Slot>,
+    (scale, icons): (i32, Option<&mut crate::icon::IconLoader>),
 ) -> Option<MemoryRenderBuffer> {
     let row = geometry.power_row;
-    let mut c = Canvas::new(row.size.w, row.size.h, scale)?.with_icons(Some(icons));
+    let mut c = Canvas::new(row.size.w, row.size.h, scale)?.with_icons(icons);
     for (action, rect) in geometry.power {
         let button = Rectangle::new(rect.loc - row.loc, rect.size);
         let hover = lit == Some(Slot::QsPowerButton(action));
@@ -4671,12 +4674,12 @@ const fn qs_question(action: PowerAction) -> crate::i18n::Key {
 fn draw_qs_confirm(
     painter: &crate::paint::Painter, theme: &TopbarTheme, strip: &QsConfirm,
     (action, seconds, lit): (PowerAction, Option<u64>, Option<Slot>),
-    (scale, icons): (i32, &mut crate::icon::IconLoader),
+    (scale, icons): (i32, Option<&mut crate::icon::IconLoader>),
 ) -> Option<MemoryRenderBuffer> {
     use crate::i18n::{Key, t};
     let origin = strip.rect.loc;
     let local = |rect: LocalRect| Rectangle::new(rect.loc - origin, rect.size);
-    let mut c = Canvas::new(strip.rect.size.w, strip.rect.size.h, scale)?.with_icons(Some(icons));
+    let mut c = Canvas::new(strip.rect.size.w, strip.rect.size.h, scale)?.with_icons(icons);
     let tone = if is_destructive(action) { theme.danger } else { theme.active_background };
     let full = c.full();
     c.fill(full, theme.track_soft, R2);
@@ -6578,6 +6581,88 @@ mod tests {
         assert_eq!(bar.drawer(), None, "reopening starts folded");
         assert_eq!(qs_drawer_height(0), qs_drawer_height(1), "an empty list still shows its message row");
         assert_eq!(qs_drawer_height(3) - qs_drawer_height(2), QS_DRAWER_ITEM + QS_DRAWER_GAP);
+    }
+
+    #[test]
+    fn every_quick_settings_surface_draws_without_icons_at_both_scales() {
+        use crate::system_info::{BatteryHealth, BatteryInfo, BatteryState};
+        let mut bar = with_devices();
+        let mut status = bar.system_status().clone();
+        status.battery_pct = Some(4);
+        status.battery = Some(BatteryInfo {
+            pct: 4,
+            state: BatteryState::Discharging,
+            minutes: Some(75),
+            health: BatteryHealth {
+                wear_pct: Some(76),
+                cycles: Some(300),
+                draw_dw: Some(84),
+                full_dwh: Some(400),
+                design_dwh: Some(520),
+            },
+            profile: Some(PowerProfile::Balanced),
+        });
+        status.power_profile = Some(PowerProfile::Balanced);
+        status.privacy.microphone = vec!["Firefox".into()];
+        status.volume_muted = true;
+        status.wifi_enabled = true;
+        status.bluetooth_on = true;
+        bar.set_system_status(status);
+        assert!(bar.toggle_drawer(Drawer::Output));
+        std::thread::sleep(motion::t2() + Duration::from_millis(20));
+        bar.settle_motion();
+        assert!(bar.arm_power(PowerAction::ShutDown));
+        bar.layout_slots(&painter(), output());
+
+        let painter = painter();
+        let theme = bar.theme.clone();
+        let (output_label, input_label) = (bar.output_label(), bar.input_label());
+        let (_, flags, motion, _, shape) = bar.qs_main_key(&painter);
+        let geometry = qs_geometry(&shape);
+        assert!(geometry.drawer.is_some() && geometry.confirm.is_some() && geometry.mic.is_some());
+        let sliver = QsDrawerArea { drawer: Drawer::Output, rect: local_rect(25, 300, 302, 1) };
+        let hovers =
+            [None, Some(Slot::QsVolumeTrack), Some(Slot::QsWifiMore), Some(Slot::QsDrawerItem(Drawer::Output, 1))];
+        for scale in [1, 2] {
+            for hovered in hovers {
+                let ctx = QsRenderContext { painter: &painter, theme: &theme, hovered };
+                let mut canvas = Canvas::new(QS_WIDTH, geometry.height, scale).expect("main canvas");
+                let flags = QsFlags { dragging: Some(Slot::QsMicTrack), ..flags };
+                let labels = (output_label.as_str(), input_label.as_str());
+                let draw =
+                    QsDraw { status: bar.system_status(), panel: &bar.qs_panel, geometry, flags, motion, labels };
+                draw_quick_settings(&mut canvas, &ctx, &draw);
+                draw_qs_drawer(&mut canvas, &ctx, sliver, &bar.qs_panel);
+            }
+            let lit = Some(Slot::QsPowerButton(PowerAction::Restart));
+            assert!(draw_qs_power_row(&theme, &geometry, lit, (scale, None)).is_some());
+            let strip = geometry.confirm.expect("armed strip");
+            let armed = (PowerAction::ShutDown, Some(60), Some(Slot::QsPowerCancel));
+            assert!(draw_qs_confirm(&painter, &theme, &strip, armed, (scale, None)).is_some());
+            assert!(
+                draw_qs_confirm(&painter, &theme, &strip, (PowerAction::Lock, None, None), (scale, None)).is_some()
+            );
+            assert!(draw_qs_background((QS_WIDTH, geometry.height), &theme, scale).is_some());
+        }
+    }
+
+    #[test]
+    fn picking_a_device_keeps_the_focus_on_its_row() {
+        let mut bar = with_devices();
+        bar.toggle_drawer(Drawer::Output);
+        bar.set_focused(Some(Slot::QsDrawerItem(Drawer::Output, 1)));
+        bar.begin_connect("hdmi");
+        assert_eq!(bar.focused, Some(Slot::QsDrawerItem(Drawer::Output, 1)));
+        bar.close_drawer();
+        assert!(bar.open_detail(Detail::Sound));
+        bar.set_focused(Some(Slot::QsDrawerItem(Drawer::Input, 0)));
+        bar.begin_connect("mic");
+        assert_eq!(bar.focused, Some(Slot::QsDrawerItem(Drawer::Input, 0)), "a microphone card in the Sound view");
+        bar.set_focused(Some(Slot::QsDetailRow(1)));
+        bar.begin_connect("hdmi");
+        assert_eq!(bar.focused, Some(Slot::QsDetailRow(1)));
+        bar.begin_connect("nothing-like-it");
+        assert_eq!(bar.focused, Some(Slot::QsDetailRow(1)), "an unknown key leaves the focus where it was");
     }
 
     #[test]
