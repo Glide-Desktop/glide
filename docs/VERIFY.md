@@ -200,3 +200,7 @@ Ctrl+Alt+F3 and a text login.
 55. **Inline power confirmation.** Arm Shut Down: the strip counts down
     once a second and shuts down at zero; Esc or Cancel puts the row back.
     Arm Lock: no countdown, confirm locks.
+56. **Microphone row.** With a microphone, quick settings shows its level;
+    dragging it moves `wpctl get-volume @DEFAULT_AUDIO_SOURCE@`, the mute
+    button and XF86AudioMicMute both turn it red, and the dot goes green
+    while a browser records. Without one the row is absent.

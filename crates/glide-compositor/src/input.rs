@@ -1861,6 +1861,9 @@ impl GlideState {
                 crate::topbar::Slot::QsVolumeTrack => {
                     self.handle_qs_action(crate::topbar::TopbarAction::QsVolumeAdjust(pct));
                 }
+                crate::topbar::Slot::QsMicTrack => {
+                    self.handle_qs_action(crate::topbar::TopbarAction::QsMicAdjust(pct));
+                }
                 crate::topbar::Slot::QsBrightnessTrack => {
                     self.handle_qs_action(crate::topbar::TopbarAction::QsBrightnessAdjust(pct));
                 }
@@ -2289,7 +2292,7 @@ impl GlideState {
                 }
                 let slot = self.topbar.slot_at(pos);
                 if let Some(slot) = slot
-                    && matches!(slot, crate::topbar::Slot::QsVolumeTrack | crate::topbar::Slot::QsBrightnessTrack)
+                    && slot.is_slider()
                 {
                     self.active_slider_drag = Some(slot);
                     self.topbar.set_slider_dragging(true);
@@ -2523,6 +2526,10 @@ impl GlideState {
             crate::topbar::Slot::Status | crate::topbar::Slot::QsVolumeMute | crate::topbar::Slot::QsVolumeTrack => {
                 let pct = (i16::from(status.volume_pct) + step).clamp(0, i16::from(self.max_volume_pct));
                 Some(crate::topbar::TopbarAction::QsVolumeAdjust(u8::try_from(pct).unwrap_or(0)))
+            }
+            crate::topbar::Slot::QsMicMute | crate::topbar::Slot::QsMicTrack => {
+                let pct = (i16::from(status.mic_pct) + step).clamp(0, 100);
+                Some(crate::topbar::TopbarAction::QsMicAdjust(u8::try_from(pct).unwrap_or(0)))
             }
             crate::topbar::Slot::QsBrightnessTrack => {
                 let pct = (i16::from(status.brightness_pct) + step).clamp(1, 100);

@@ -1538,6 +1538,17 @@ impl GlideState {
                     status.volume_muted = false;
                 });
             }
+            TopbarAction::QsMicMute => {
+                crate::system_info::toggle_mic_mute();
+                self.update_system_status(|status| status.mic_muted = !status.mic_muted);
+            }
+            TopbarAction::QsMicAdjust(pct) => {
+                crate::system_info::set_mic_pct(pct);
+                self.update_system_status(|status| {
+                    status.mic_pct = pct;
+                    status.mic_muted = pct == 0;
+                });
+            }
             TopbarAction::QsBrightnessAdjust(pct) => {
                 crate::system_info::set_brightness_pct(pct);
                 self.update_system_status(|status| status.brightness_pct = pct);

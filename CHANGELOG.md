@@ -69,6 +69,8 @@ have not been tried on real hardware or against the real system service.
   output pill, a battery card with time left and a Saver / Balanced /
   Performance switch, and power buttons that confirm inline — Restart,
   Shut Down and Log Out count down from 60 s. *rendering unverified*
+- Quick settings has a microphone row: level, mute, and a dot while an
+  app is recording.
 - Quick settings: an audio output picker; airplane mode; sliders for
   controls the machine lacks (no backlight, no audio tools) are dimmed
   and inert instead of showing made-up levels.

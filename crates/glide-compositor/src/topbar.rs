@@ -290,6 +290,8 @@ pub enum TopbarAction {
     QsSetPowerProfile(PowerProfile),
     QsVolumeMute,
     QsVolumeAdjust(u8),
+    QsMicMute,
+    QsMicAdjust(u8),
     QsBrightnessAdjust(u8),
     QsScreenshot,
     QsOpenSettings,
@@ -339,6 +341,8 @@ pub enum Slot {
     QsCaffeine,
     QsVolumeMute,
     QsVolumeTrack,
+    QsMicMute,
+    QsMicTrack,
     QsBrightnessTrack,
     QsProfile(PowerProfile),
     QsSettings,
@@ -363,6 +367,11 @@ pub enum Slot {
 }
 
 impl Slot {
+    #[must_use]
+    pub const fn is_slider(self) -> bool {
+        matches!(self, Self::QsVolumeTrack | Self::QsMicTrack | Self::QsBrightnessTrack)
+    }
+
     const fn in_status_cluster(self) -> bool {
         matches!(self, Self::Status | Self::Search | Self::Privacy)
     }
@@ -432,6 +441,7 @@ impl Slot {
         match self {
             Self::NcDndToggle
             | Self::QsVolumeTrack
+            | Self::QsMicTrack
             | Self::QsBrightnessTrack
             | Self::QsDetailToggle
             | Self::QsPasswordField
@@ -478,6 +488,8 @@ impl Slot {
             Self::QsDarkTheme => TopbarAction::QsToggleDarkTheme,
             Self::QsVolumeMute => TopbarAction::QsVolumeMute,
             Self::QsVolumeTrack => TopbarAction::QsVolumeAdjust(50),
+            Self::QsMicMute => TopbarAction::QsMicMute,
+            Self::QsMicTrack => TopbarAction::QsMicAdjust(50),
             Self::QsBrightnessTrack => TopbarAction::QsBrightnessAdjust(50),
             Self::QsProfile(profile) => TopbarAction::QsSetPowerProfile(profile),
             Self::QsSettings => TopbarAction::QsOpenSettings,
@@ -602,6 +614,7 @@ pub struct Topbar {
     caffeine_anim: Anim,
     dnd_anim: Anim,
     volume_anim: Anim,
+    mic_anim: Anim,
     brightness_anim: Anim,
     seek_anim: Anim,
     badge_anim: Anim,
@@ -672,6 +685,7 @@ impl Topbar {
     pub fn new(theme: TopbarTheme) -> Self {
         let mut bar = Self { theme, ..Self::default() };
         bar.volume_anim.jump(f64::from(bar.system_status.volume_pct));
+        bar.mic_anim.jump(f64::from(bar.system_status.mic_pct));
         bar.brightness_anim.jump(f64::from(bar.system_status.brightness_pct));
         bar
     }
@@ -930,6 +944,7 @@ impl Topbar {
             &self.caffeine_anim,
             &self.dnd_anim,
             &self.volume_anim,
+            &self.mic_anim,
             &self.brightness_anim,
             &self.seek_anim,
             &self.badge_anim,
@@ -1031,18 +1046,27 @@ impl Topbar {
         let slot = self.focused?;
         let current = match slot {
             Slot::QsVolumeTrack => self.system_status.volume_pct,
+            Slot::QsMicTrack => self.system_status.mic_pct,
             Slot::QsBrightnessTrack => self.system_status.brightness_pct,
             _ => return None,
         };
         let pct = u8::try_from((i32::from(current) + i32::from(delta)).clamp(0, 100)).ok()?;
-        let action = if slot == Slot::QsVolumeTrack {
-            self.system_status.volume_pct = pct;
-            self.slide(|bar| &mut bar.volume_anim, pct);
-            TopbarAction::QsVolumeAdjust(pct)
-        } else {
-            self.system_status.brightness_pct = pct;
-            self.slide(|bar| &mut bar.brightness_anim, pct);
-            TopbarAction::QsBrightnessAdjust(pct)
+        let action = match slot {
+            Slot::QsVolumeTrack => {
+                self.system_status.volume_pct = pct;
+                self.slide(|bar| &mut bar.volume_anim, pct);
+                TopbarAction::QsVolumeAdjust(pct)
+            }
+            Slot::QsMicTrack => {
+                self.system_status.mic_pct = pct;
+                self.slide(|bar| &mut bar.mic_anim, pct);
+                TopbarAction::QsMicAdjust(pct)
+            }
+            _ => {
+                self.system_status.brightness_pct = pct;
+                self.slide(|bar| &mut bar.brightness_anim, pct);
+                TopbarAction::QsBrightnessAdjust(pct)
+            }
         };
         self.status_rev = self.status_rev.wrapping_add(1);
         self.touch();
@@ -1235,6 +1259,7 @@ impl Topbar {
             QsPills { output: qs_pill_width(painter, &self.output_label()), cancel, confirm }
         });
         QsShape {
+            mic: self.system_status.mic_available,
             battery: self.system_status.battery_pct.is_some(),
             profile: self.system_status.power_profile.is_some(),
             armed,
@@ -1245,12 +1270,11 @@ impl Topbar {
     fn qs_main_key(&self, painter: &crate::paint::Painter) -> QsCacheKey {
         let main_view = self.qs_panel.view.is_none();
         let hovered = self.hovered_in(Slot::in_quick_settings).filter(|_| main_view);
-        let dragging = self
-            .pressed
-            .filter(|slot| self.slider_dragging && matches!(slot, Slot::QsVolumeTrack | Slot::QsBrightnessTrack));
+        let dragging = self.pressed.filter(|slot| self.slider_dragging && slot.is_slider());
         let flags = QsFlags { caffeinated: self.caffeinated, dnd: self.dnd, dark: self.theme.dark, dragging };
         let motion = QsMotion {
             volume: percent(self.volume_anim.value()),
+            mic: percent(self.mic_anim.value()),
             brightness: percent(self.brightness_anim.value()),
             profile: quantize(self.profile_anim.value(), MOTION_QUANTUM),
         };
@@ -1323,7 +1347,7 @@ impl Topbar {
             return false;
         }
         let at_a_glance = !self.system_status.looks_like(&status);
-        let (volume, brightness) = (status.volume_pct, status.brightness_pct);
+        let (volume, mic, brightness) = (status.volume_pct, status.mic_pct, status.brightness_pct);
         match (self.system_status.power_profile, status.power_profile) {
             (Some(before), Some(after)) if before != after => {
                 self.profile_anim.retarget(profile_index(after), motion::t2(), E_OUT);
@@ -1337,6 +1361,7 @@ impl Topbar {
             return self.open_popup.is_some();
         }
         self.slide(|bar| &mut bar.volume_anim, volume);
+        self.slide(|bar| &mut bar.mic_anim, mic);
         self.slide(|bar| &mut bar.brightness_anim, brightness);
         self.status_rev = self.status_rev.wrapping_add(1);
         self.sync_indicators();
@@ -1477,6 +1502,11 @@ impl Topbar {
                 let ratio = ((pos.x - f64::from(rect.loc.x)) / f64::from(rect.size.w)).clamp(0.0, 1.0);
                 let pct = (ratio * 100.0).round() as u8;
                 TopbarAction::QsVolumeAdjust(pct)
+            }
+            Slot::QsMicTrack => {
+                let ratio = ((pos.x - f64::from(rect.loc.x)) / f64::from(rect.size.w)).clamp(0.0, 1.0);
+                let pct = (ratio * 100.0).round() as u8;
+                TopbarAction::QsMicAdjust(pct)
             }
             Slot::QsBrightnessTrack => {
                 let ratio = ((pos.x - f64::from(rect.loc.x)) / f64::from(rect.size.w)).clamp(0.0, 1.0);
@@ -1898,6 +1928,7 @@ struct QsPills {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 struct QsShape {
+    mic: bool,
     battery: bool,
     profile: bool,
     armed: Option<PowerAction>,
@@ -1943,8 +1974,8 @@ struct QsGeometry {
     tiles: [(QsTile, LocalRect); 8],
     sliders: LocalRect,
     volume: QsSliderRow,
+    mic: Option<QsSliderRow>,
     brightness: QsSliderRow,
-    slider_divider: i32,
     battery_card: Option<LocalRect>,
     battery_head: Option<LocalRect>,
     segments: Option<LocalRect>,
@@ -2048,9 +2079,10 @@ fn qs_geometry(shape: &QsShape) -> QsGeometry {
 
     let inner_x = QS_PAD + 1 + QS_CARD_PAD_X;
     let inner_w = row_w - 2 * (1 + QS_CARD_PAD_X);
+    let below = |row: &QsSliderRow| row.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y * 2 + 1;
     let volume = qs_slider_row(inner_x, y + 1 + QS_CARD_PAD_Y, inner_w, shape.pills.output);
-    let slider_divider = volume.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y;
-    let brightness = qs_slider_row(inner_x, slider_divider + 1 + QS_CARD_PAD_Y, inner_w, i32::MAX);
+    let mic = shape.mic.then(|| qs_slider_row(inner_x, below(&volume), inner_w, i32::MAX));
+    let brightness = qs_slider_row(inner_x, below(mic.as_ref().unwrap_or(&volume)), inner_w, i32::MAX);
     let sliders_bottom = brightness.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y + 1;
     let sliders = local_rect(QS_PAD, y, row_w, sliders_bottom - y);
     y = sliders_bottom + QS_GAP;
@@ -2090,8 +2122,8 @@ fn qs_geometry(shape: &QsShape) -> QsGeometry {
         tiles,
         sliders,
         volume,
+        mic,
         brightness,
-        slider_divider,
         battery_card,
         battery_head,
         segments,
@@ -2262,6 +2294,10 @@ fn layout_qs_slots(
         push(Slot::QsVolumeMute, geometry.volume.icon);
         push(Slot::QsVolumeMore, geometry.volume.label);
         push(Slot::QsVolumeTrack, geometry.volume.track);
+    }
+    if let Some(mic) = geometry.mic {
+        push(Slot::QsMicMute, mic.icon);
+        push(Slot::QsMicTrack, mic.track);
     }
     if input.brightness {
         push(Slot::QsBrightnessTrack, geometry.brightness.track);
@@ -3996,6 +4032,7 @@ struct QsFlags {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QsMotion {
     volume: u8,
+    mic: u8,
     brightness: u8,
     profile: u8,
 }
@@ -4042,6 +4079,9 @@ const QS_BATTERY_TIP: i32 = 3;
 const QS_BATTERY_FILL_INSET: i32 = 3;
 const QS_BATTERY_GAP: i32 = 10;
 const QS_SEGMENT_ICON: i32 = 14;
+const QS_MIC_DOT: i32 = 6;
+const QS_MIC_MUTED_DOT: f32 = 0.5;
+const QS_MIC_GLOW: f32 = 0.25;
 const QS_SEGMENT_GAP: i32 = 6;
 const QS_TILE_TEXT_GAP: i32 = 1;
 const QS_CHEVRON_GLYPH: i32 = 13;
@@ -4196,7 +4236,12 @@ impl QsThumb {
 }
 
 const fn same_slot(a: Slot, b: Slot) -> bool {
-    matches!((a, b), (Slot::QsVolumeTrack, Slot::QsVolumeTrack) | (Slot::QsBrightnessTrack, Slot::QsBrightnessTrack))
+    matches!(
+        (a, b),
+        (Slot::QsVolumeTrack, Slot::QsVolumeTrack)
+            | (Slot::QsMicTrack, Slot::QsMicTrack)
+            | (Slot::QsBrightnessTrack, Slot::QsBrightnessTrack)
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4475,14 +4520,14 @@ fn draw_qs_tiles(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_
 
 fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
     let (theme, geometry, status) = (ctx.theme, &draw.geometry, draw.status);
-    let card_hover = matches!(
-        ctx.hovered,
-        Some(Slot::QsVolumeMute | Slot::QsVolumeMore | Slot::QsVolumeTrack | Slot::QsBrightnessTrack)
-    );
+    let card_hover = matches!(ctx.hovered, Some(Slot::QsVolumeMute | Slot::QsVolumeMore | Slot::QsMicMute))
+        || ctx.hovered.is_some_and(Slot::is_slider);
     c.fill(geometry.sliders, theme.track_soft, R3);
     c.stroke(geometry.sliders, 1.0, R3, if card_hover { theme.line_2 } else { theme.line });
-    let divider = geometry.volume.track;
-    c.fill(local_rect(divider.loc.x, geometry.slider_divider, divider.size.w, 1), theme.line, 0.0);
+    for row in geometry.mic.iter().chain(std::iter::once(&geometry.brightness)) {
+        let divider = local_rect(row.track.loc.x, row.icon.loc.y - QS_CARD_PAD_Y - 1, row.track.size.w, 1);
+        c.fill(divider, theme.line, 0.0);
+    }
 
     let volume = geometry.volume;
     let (muted, enabled, pct) = (status.volume_muted, status.volume_available, draw.motion.volume);
@@ -4508,6 +4553,10 @@ fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<
     let thumb = QsThumb::of(Slot::QsVolumeTrack, ctx.hovered, draw.flags.dragging);
     draw_qs_track(c, theme, volume.track, QsTrack { pct, muted, enabled, thumb });
 
+    if let Some(mic) = geometry.mic {
+        draw_qs_mic_row(c, ctx, draw, mic);
+    }
+
     let brightness = geometry.brightness;
     let (enabled, pct) = (status.brightness_available, draw.motion.brightness);
     let sun: GlyphPainter = crate::paint::draw_sun_glyph_over;
@@ -4526,6 +4575,54 @@ fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<
     draw_qs_readout(c, ctx, brightness.readout, enabled.then_some(pct));
     let thumb = QsThumb::of(Slot::QsBrightnessTrack, ctx.hovered, draw.flags.dragging);
     draw_qs_track(c, theme, brightness.track, QsTrack { pct, muted: false, enabled, thumb });
+}
+
+fn draw_qs_mic_glyph(c: &mut Canvas<'_>, rect: LocalRect, (muted, colour): (bool, Color)) {
+    let side = 15;
+    let at = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
+    let name = if muted { "microphone-sensitivity-muted" } else { "audio-input-microphone" };
+    if c.icon(name, side, at, colour) {
+        return;
+    }
+    let (x, y) = at;
+    let centre = x + side / 2;
+    c.stroke(local_rect(centre - 3, y + 1, 7, 9), 1.5, R_ROUND, colour);
+    c.fill(local_rect(centre, y + 11, 1, 2), colour, 0.0);
+    c.fill(local_rect(centre - 3, y + 13, 7, 1), colour, 0.0);
+    if muted {
+        c.fill(local_rect(x + 1, y + side / 2, side - 2, 1), colour, 0.0);
+    }
+}
+
+fn draw_qs_mic_row(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>, row: QsSliderRow) {
+    use crate::i18n::{Key, t};
+    let (theme, status) = (ctx.theme, draw.status);
+    let (muted, pct) = (status.mic_muted, draw.motion.mic);
+    let icon_colour = if muted {
+        theme.danger
+    } else if ctx.hovered == Some(Slot::QsMicMute) {
+        theme.label
+    } else {
+        theme.muted
+    };
+    draw_qs_mic_glyph(c, row.icon, (muted, icon_colour));
+    let label = Rectangle::new(Point::from((row.label.loc.x + SP1, row.label.loc.y)), row.label.size);
+    c.text_in(ctx.painter, label, TextAlign::Left, t(Key::TbMicrophone), theme.label, &QS_LABEL);
+
+    let recording = !status.privacy.microphone.is_empty();
+    if muted || recording {
+        let centre = (row.readout.loc.x - SP1 - QS_MIC_DOT / 2, row.readout.loc.y + row.readout.size.h / 2);
+        let dot = |side: i32| local_rect(centre.0 - side / 2, centre.1 - side / 2, side, side);
+        if muted {
+            c.fill(dot(QS_MIC_DOT), dimmed(theme.danger, QS_MIC_MUTED_DOT), R_ROUND);
+        } else {
+            c.fill(dot(QS_MIC_DOT * 2), dimmed(theme.ok, QS_MIC_GLOW), R_ROUND);
+            c.fill(dot(QS_MIC_DOT), theme.ok, R_ROUND);
+        }
+    }
+    draw_qs_readout(c, ctx, row.readout, Some(pct));
+    let thumb = QsThumb::of(Slot::QsMicTrack, ctx.hovered, draw.flags.dragging);
+    draw_qs_track(c, theme, row.track, QsTrack { pct, muted, enabled: true, thumb });
 }
 
 fn draw_qs_battery_card(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
@@ -5259,18 +5356,26 @@ mod tests {
 
     #[test]
     fn the_slider_hit_area_matches_the_drawn_track() {
-        let geometry = qs_geometry(&QsShape::default());
-        let card = geometry.sliders;
-        for row in [geometry.volume, geometry.brightness] {
-            assert_eq!(row.track.loc.x, card.loc.x + 1 + QS_CARD_PAD_X, "0% sits at the start of the card's content");
-            assert_eq!(row.track.loc.x + row.track.size.w, row.readout.loc.x + row.readout.size.w);
-            assert_eq!(row.track.loc.y, row.icon.loc.y + QS_SLIDER_HEAD + SP1, "the track sits under its head row");
-            assert!(card.contains(row.track.loc) && card.contains(row.icon.loc));
-            assert!(row.label.loc.x + row.label.size.w <= row.readout.loc.x);
+        for shape in [QsShape::default(), QsShape { mic: true, ..QsShape::default() }] {
+            let geometry = qs_geometry(&shape);
+            let card = geometry.sliders;
+            let rows: Vec<QsSliderRow> =
+                std::iter::once(geometry.volume).chain(geometry.mic).chain([geometry.brightness]).collect();
+            assert_eq!(rows.len(), 2 + usize::from(shape.mic));
+            for row in &rows {
+                assert_eq!(row.track.loc.x, card.loc.x + 1 + QS_CARD_PAD_X, "0% sits at the card's content edge");
+                assert_eq!(row.track.loc.x + row.track.size.w, row.readout.loc.x + row.readout.size.w);
+                assert_eq!(row.track.loc.y, row.icon.loc.y + QS_SLIDER_HEAD + SP1, "the track sits under its head");
+                assert!(card.contains(row.track.loc) && card.contains(row.icon.loc));
+                assert!(row.label.loc.x + row.label.size.w <= row.readout.loc.x);
+            }
+            for pair in rows.windows(2) {
+                let gap = pair[1].icon.loc.y - (pair[0].track.loc.y + QS_SLIDER_HEIGHT);
+                assert_eq!(gap, QS_CARD_PAD_Y * 2 + 1, "a hairline between padded rows");
+            }
+            let last = rows[rows.len() - 1];
+            assert_eq!(card.loc.y + card.size.h, last.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y + 1);
         }
-        let between = geometry.volume.track.loc.y + QS_SLIDER_HEIGHT..geometry.brightness.icon.loc.y;
-        assert!(between.contains(&geometry.slider_divider));
-        assert_eq!(card.loc.y + card.size.h, geometry.brightness.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y + 1);
     }
 
     #[test]
@@ -6057,6 +6162,37 @@ mod tests {
         bar.set_system_status(status);
         assert!(bar.profile_anim.is_animating());
         assert!((bar.profile_anim.target() - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_microphone_adds_its_row_between_volume_and_brightness() {
+        let bar = quick_settings();
+        assert!(bar.slot_rect(Slot::QsMicTrack).is_none(), "no source, no row");
+        let without = bar.popup_rect().expect("popup").size.h;
+
+        let mut bar = topbar_with(&["US"]);
+        bar.set_system_status(crate::system_info::SystemStatus {
+            mic_available: true,
+            mic_pct: 30,
+            ..Default::default()
+        });
+        let mut bar = with_popup(bar, OpenPopup::QuickSettings);
+        let volume = bar.slot_rect(Slot::QsVolumeTrack).expect("volume");
+        let mic = bar.slot_rect(Slot::QsMicTrack).expect("mic");
+        let brightness = bar.slot_rect(Slot::QsBrightnessTrack).expect("brightness");
+        assert!(volume.loc.y < mic.loc.y && mic.loc.y < brightness.loc.y);
+        assert!(bar.popup_rect().expect("popup").size.h > without);
+        assert_eq!(click(&bar, Slot::QsMicMute), Some(TopbarAction::QsMicMute));
+        let quarter =
+            Point::from((f64::from(mic.loc.x) + f64::from(mic.size.w) * 0.25, f64::from(mic.loc.y + mic.size.h / 2)));
+        assert_eq!(bar.action_at(quarter), Some(TopbarAction::QsMicAdjust(25)));
+        bar.set_focused(Some(Slot::QsMicTrack));
+        assert_eq!(bar.focus_adjust(-5), Some(TopbarAction::QsMicAdjust(25)));
+        assert_eq!(bar.system_status().mic_pct, 25);
+        bar.set_focused(Some(Slot::QsVolumeTrack));
+        assert!(bar.focus_nav(0, 1));
+        assert_eq!(bar.focused, Some(Slot::QsMicTrack));
+        assert!(Slot::QsMicTrack.is_slider() && !Slot::QsMicMute.is_slider());
     }
 
     #[test]

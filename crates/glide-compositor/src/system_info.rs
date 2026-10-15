@@ -15,6 +15,9 @@ pub struct SystemStatus {
     pub brightness_pct: u8,
     pub volume_available: bool,
     pub brightness_available: bool,
+    pub mic_pct: u8,
+    pub mic_muted: bool,
+    pub mic_available: bool,
     pub keyboard_brightness: Option<u8>,
     pub airplane: bool,
     pub power_profile: Option<PowerProfile>,
@@ -41,6 +44,9 @@ impl Default for SystemStatus {
             brightness_pct: 80,
             volume_available: true,
             brightness_available: true,
+            mic_pct: 50,
+            mic_muted: false,
+            mic_available: false,
             keyboard_brightness: None,
             airplane: false,
             power_profile: None,
@@ -68,6 +74,9 @@ impl SystemStatus {
         let volume = read_volume();
         self.volume_available = volume.is_some();
         (self.volume_pct, self.volume_muted) = volume.unwrap_or((self.volume_pct, false));
+        let mic = read_mic();
+        self.mic_available = mic.is_some();
+        (self.mic_pct, self.mic_muted) = mic.unwrap_or((self.mic_pct, false));
         let backlight = read_backlight();
         self.brightness_available = backlight.is_some();
         self.brightness_pct = backlight.map_or(self.brightness_pct, |backlight| backlight.percent());
@@ -585,31 +594,73 @@ fn fetch_active_ssid() -> Option<String> {
     parse_active_ssid(&poll_stdout("nmcli", &["-t", "-f", "active,ssid", "dev", "wifi", "list", "--rescan", "no"])?)
 }
 
-fn read_volume() -> Option<(u8, bool)> {
-    if let Some(text) = poll_stdout("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]) {
-        let muted = text.contains("[MUTED]");
-        let pct = text
-            .trim()
-            .strip_prefix("Volume:")
-            .and_then(|v| v.split_whitespace().next())
-            .and_then(|v| v.parse::<f32>().ok())
-            .map_or(50, |val| (val * 100.0).round().clamp(0.0, 100.0) as u8);
-        return Some((pct, muted));
+#[derive(Debug, Clone, Copy)]
+struct AudioEndpoint {
+    wpctl: &'static str,
+    pactl_volume: &'static str,
+    pactl_mute: &'static str,
+    pactl_set_volume: &'static str,
+    pactl_set_mute: &'static str,
+    pactl_target: &'static str,
+}
+
+const SINK: AudioEndpoint = AudioEndpoint {
+    wpctl: "@DEFAULT_AUDIO_SINK@",
+    pactl_volume: "get-sink-volume",
+    pactl_mute: "get-sink-mute",
+    pactl_set_volume: "set-sink-volume",
+    pactl_set_mute: "set-sink-mute",
+    pactl_target: "@DEFAULT_SINK@",
+};
+
+const SOURCE: AudioEndpoint = AudioEndpoint {
+    wpctl: "@DEFAULT_AUDIO_SOURCE@",
+    pactl_volume: "get-source-volume",
+    pactl_mute: "get-source-mute",
+    pactl_set_volume: "set-source-volume",
+    pactl_set_mute: "set-source-mute",
+    pactl_target: "@DEFAULT_SOURCE@",
+};
+
+#[must_use]
+pub fn parse_wpctl_volume(text: &str) -> Option<(u8, bool)> {
+    let level = text.trim().strip_prefix("Volume:")?;
+    let pct = level
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map_or(50, |val| (val * 100.0).round().clamp(0.0, 100.0) as u8);
+    Some((pct, level.contains("[MUTED]")))
+}
+
+fn read_level(endpoint: AudioEndpoint) -> Option<(u8, bool)> {
+    if let Some(level) =
+        poll_stdout("wpctl", &["get-volume", endpoint.wpctl]).and_then(|text| parse_wpctl_volume(&text))
+    {
+        return Some(level);
     }
 
-    if let Some(text) = poll_stdout("pactl", &["get-sink-volume", "@DEFAULT_SINK@"]) {
+    if let Some(text) = poll_stdout("pactl", &[endpoint.pactl_volume, endpoint.pactl_target]) {
         let pct = text
             .split('/')
             .nth(1)
             .and_then(|p| p.trim().strip_suffix('%'))
             .and_then(|p| p.trim().parse::<u8>().ok())
             .unwrap_or(50);
-        let muted =
-            poll_stdout("pactl", &["get-sink-mute", "@DEFAULT_SINK@"]).is_some_and(|out| parse_pactl_mute(&out));
+        let muted = poll_stdout("pactl", &[endpoint.pactl_mute, endpoint.pactl_target])
+            .is_some_and(|out| parse_pactl_mute(&out));
         return Some((pct, muted));
     }
 
     None
+}
+
+fn read_volume() -> Option<(u8, bool)> {
+    read_level(SINK)
+}
+
+fn read_mic() -> Option<(u8, bool)> {
+    read_level(SOURCE)
 }
 
 #[must_use]
@@ -805,6 +856,8 @@ pub fn set_bluetooth(on: bool) {
 pub enum Control {
     Volume,
     ToggleMute,
+    MicVolume,
+    ToggleMicMute,
     Brightness,
 }
 
@@ -814,6 +867,8 @@ pub const CONTROL_APPLY_INTERVAL: std::time::Duration = std::time::Duration::fro
 pub struct PendingControls {
     volume: Option<u8>,
     toggle_mute: bool,
+    mic: Option<u8>,
+    toggle_mic_mute: bool,
     brightness: Option<u8>,
 }
 
@@ -825,20 +880,31 @@ impl PendingControls {
                 self.toggle_mute = false;
             }
             Control::ToggleMute => self.toggle_mute = !self.toggle_mute,
+            Control::MicVolume => {
+                self.mic = Some(value);
+                self.toggle_mic_mute = false;
+            }
+            Control::ToggleMicMute => self.toggle_mic_mute = !self.toggle_mic_mute,
             Control::Brightness => self.brightness = Some(value),
         }
     }
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.volume.is_none() && !self.toggle_mute && self.brightness.is_none()
+        self.volume.is_none()
+            && !self.toggle_mute
+            && self.mic.is_none()
+            && !self.toggle_mic_mute
+            && self.brightness.is_none()
     }
 
     pub fn drain(&mut self) -> Vec<(Control, u8)> {
         let volume = self.volume.take().map(|value| (Control::Volume, value));
         let mute = std::mem::take(&mut self.toggle_mute).then_some((Control::ToggleMute, 0));
+        let mic = self.mic.take().map(|value| (Control::MicVolume, value));
+        let mic_mute = std::mem::take(&mut self.toggle_mic_mute).then_some((Control::ToggleMicMute, 0));
         let brightness = self.brightness.take().map(|value| (Control::Brightness, value));
-        volume.into_iter().chain(mute).chain(brightness).collect()
+        volume.into_iter().chain(mute).chain(mic).chain(mic_mute).chain(brightness).collect()
     }
 }
 
@@ -905,8 +971,10 @@ fn request_control(control: Control, value: u8) {
             .name("glide-controls".to_string())
             .spawn(move || {
                 run_control_worker(&rx, CONTROL_APPLY_INTERVAL, |control, value| match control {
-                    Control::Volume => apply_volume_pct(value),
-                    Control::ToggleMute => apply_mute_toggle(),
+                    Control::Volume => apply_level(SINK, value),
+                    Control::ToggleMute => apply_mute_toggle(SINK),
+                    Control::MicVolume => apply_level(SOURCE, value),
+                    Control::ToggleMicMute => apply_mute_toggle(SOURCE),
                     Control::Brightness => apply_brightness_pct(value),
                 });
             })
@@ -939,18 +1007,22 @@ pub fn set_volume_pct(pct: u8) {
     request_control(Control::Volume, pct);
 }
 
-fn apply_volume_pct(pct: u8) {
+pub fn set_mic_pct(pct: u8) {
+    request_control(Control::MicVolume, pct);
+}
+
+fn apply_level(endpoint: AudioEndpoint, pct: u8) {
     let frac = (f32::from(pct) / 100.0).clamp(0.0, 1.5);
     let frac = format!("{frac:.2}");
     let percent = format!("{pct}%");
     run_blocking_or(
-        ("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &frac]),
-        ("pactl", &["set-sink-volume", "@DEFAULT_SINK@", &percent]),
+        ("wpctl", &["set-volume", endpoint.wpctl, &frac]),
+        ("pactl", &[endpoint.pactl_set_volume, endpoint.pactl_target, &percent]),
     );
     let mute = if pct > 0 { "0" } else { "1" };
     run_blocking_or(
-        ("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", mute]),
-        ("pactl", &["set-sink-mute", "@DEFAULT_SINK@", mute]),
+        ("wpctl", &["set-mute", endpoint.wpctl, mute]),
+        ("pactl", &[endpoint.pactl_set_mute, endpoint.pactl_target, mute]),
     );
 }
 
@@ -958,10 +1030,14 @@ pub fn toggle_volume_mute() {
     request_control(Control::ToggleMute, 0);
 }
 
-fn apply_mute_toggle() {
+pub fn toggle_mic_mute() {
+    request_control(Control::ToggleMicMute, 0);
+}
+
+fn apply_mute_toggle(endpoint: AudioEndpoint) {
     run_blocking_or(
-        ("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]),
-        ("pactl", &["set-sink-mute", "@DEFAULT_SINK@", "toggle"]),
+        ("wpctl", &["set-mute", endpoint.wpctl, "toggle"]),
+        ("pactl", &[endpoint.pactl_set_mute, endpoint.pactl_target, "toggle"]),
     );
 }
 
@@ -1291,6 +1367,30 @@ mod tests {
         pending.push(Control::ToggleMute, 0);
         pending.push(Control::ToggleMute, 0);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn the_microphone_queues_beside_the_speakers_without_touching_them() {
+        let mut pending = PendingControls::default();
+        pending.push(Control::ToggleMute, 0);
+        pending.push(Control::MicVolume, 30);
+        pending.push(Control::MicVolume, 45);
+        assert_eq!(pending.drain(), vec![(Control::ToggleMute, 0), (Control::MicVolume, 45)]);
+        pending.push(Control::ToggleMicMute, 0);
+        pending.push(Control::MicVolume, 20);
+        assert_eq!(pending.drain(), vec![(Control::MicVolume, 20)], "a level supersedes a mute");
+        pending.push(Control::ToggleMicMute, 0);
+        assert!(!pending.is_empty());
+        assert_eq!(pending.drain(), vec![(Control::ToggleMicMute, 0)]);
+    }
+
+    #[test]
+    fn a_wpctl_level_needs_its_volume_line() {
+        assert_eq!(parse_wpctl_volume("Volume: 0.65\n"), Some((65, false)));
+        assert_eq!(parse_wpctl_volume("Volume: 0.40 [MUTED]\n"), Some((40, true)));
+        assert_eq!(parse_wpctl_volume("Volume: 1.30\n"), Some((100, false)));
+        assert_eq!(parse_wpctl_volume("Node '99999' not found\n"), None, "wpctl exits 0 for a missing node");
+        assert_eq!(parse_wpctl_volume(""), None);
     }
 
     #[test]
