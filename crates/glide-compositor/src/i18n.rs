@@ -245,6 +245,10 @@ catalogue! {
     QsProfileSaverHint => "Lower clocks for longer battery life", "Знижує частоти для довшої роботи від батареї";
     QsProfileBalancedHint => "Balances power use and responsiveness", "Збалансовує споживання та швидкість відгуку";
     QsProfilePerformanceHint => "Top clocks for heavy work", "Найвищі частоти для важких задач";
+    QsChargeLimit => "Limit charging to {n}%", "Обмежити заряджання до {n}%";
+    QsChargeLimitHint => "Keeps the battery healthy on mains power", "Береже акумулятор, поки ноутбук від мережі";
+    QsWaitingForAuth => "Waiting for permission…", "Очікування дозволу…";
+    QsCouldNotChange => "Couldn\u{2019}t change it", "Не вдалося змінити";
     TbBattery => "Battery", "Акумулятор";
     TbBatteryCharging => "Charging", "Заряджається";
     TbBatteryOnBattery => "On battery", "Від акумулятора";

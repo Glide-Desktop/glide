@@ -373,8 +373,10 @@ pub enum Slot {
     QsDetailToggle,
     QsDetailRow(u16),
     QsPasswordField,
+    QsPromptReveal,
     QsPromptCancel,
     QsPromptConnect,
+    QsChargeLimit,
     QsDetailSettings,
     Search,
     Privacy,
@@ -464,7 +466,7 @@ impl Slot {
             | Self::QsDetailToggle
             | Self::QsPasswordField
             | Self::PopMediaSeek => None,
-            Self::MediaPrev | Self::MediaPlay | Self::MediaNext => Some(glide_theme::shape::R1),
+            Self::MediaPrev | Self::MediaPlay | Self::MediaNext | Self::QsPromptReveal => Some(glide_theme::shape::R1),
             Self::LayoutPick(_) | Self::QsProfile(_) => Some(SEG_RADIUS),
             Self::PopMediaPlay
             | Self::NcItemDismiss(_)
@@ -526,6 +528,8 @@ impl Slot {
             Self::QsDetailToggle => TopbarAction::QsPanel(PanelAction::Toggle),
             Self::QsDetailRow(index) => TopbarAction::QsPanel(PanelAction::Row(index)),
             Self::QsPasswordField => TopbarAction::QsPanel(PanelAction::FocusPassword),
+            Self::QsPromptReveal => TopbarAction::QsPanel(PanelAction::PromptReveal),
+            Self::QsChargeLimit => TopbarAction::QsPanel(PanelAction::ChargeLimit),
             Self::QsPromptCancel => TopbarAction::QsPanel(PanelAction::PromptCancel),
             Self::QsPromptConnect => TopbarAction::QsPanel(PanelAction::PromptSubmit),
             Self::QsDetailSettings => TopbarAction::QsPanel(PanelAction::Settings),

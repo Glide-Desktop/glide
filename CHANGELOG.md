@@ -78,6 +78,9 @@ have not been tried on real hardware or against the real system service.
   Cancel and Connect; Sound lists microphones too; Battery shows health,
   cycles, power draw and capacity, and picks the power profile.
   *rendering unverified*
+- The Battery view in quick settings has the charge limit switch where
+  the firmware supports one, and the Wi-Fi password field has an eye
+  button that shows what was typed. *unverified with a polkit agent*
 - Quick settings: an audio output picker; airplane mode; sliders for
   controls the machine lacks (no backlight, no audio tools) are dimmed
   and inert instead of showing made-up levels.

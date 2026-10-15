@@ -443,11 +443,81 @@ pub fn sort_outputs(outputs: &mut [AudioOutput]) {
     });
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChargeLimit {
+    pub path: String,
+    pub enabled: bool,
+    pub end: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpowerBattery {
+    pub path: String,
+    pub kind: u32,
+    pub power_supply: bool,
+    pub supported: bool,
+    pub enabled: bool,
+    pub end: u32,
+}
+
+const UPOWER: &str = "org.freedesktop.UPower";
+const UPOWER_DEVICE: &str = "org.freedesktop.UPower.Device";
+const UPOWER_BATTERY: u32 = 2;
+pub const CHARGE_LIMIT_KEY: &str = "charge-limit";
+
+#[must_use]
+pub fn pick_charge_limit(devices: Vec<UpowerBattery>) -> Option<ChargeLimit> {
+    devices
+        .into_iter()
+        .find(|device| device.kind == UPOWER_BATTERY && device.power_supply && device.supported)
+        .map(|device| ChargeLimit { path: device.path, enabled: device.enabled, end: device.end })
+}
+
+fn scan_charge_limit() -> Option<ChargeLimit> {
+    use zbus::blocking::{Connection, Proxy};
+    let bus = Connection::system().ok()?;
+    let manager = Proxy::new(&bus, UPOWER, "/org/freedesktop/UPower", UPOWER).ok()?;
+    let paths: Vec<zbus::zvariant::OwnedObjectPath> = manager.call("EnumerateDevices", &()).ok()?;
+    let devices = paths
+        .into_iter()
+        .filter_map(|path| {
+            let device = Proxy::new(&bus, UPOWER, path.clone(), UPOWER_DEVICE).ok()?;
+            let flag = |name: &str| device.get_property::<bool>(name).unwrap_or(false);
+            let number = |name: &str| device.get_property::<u32>(name).unwrap_or(0);
+            Some(UpowerBattery {
+                path: path.to_string(),
+                kind: number("Type"),
+                power_supply: flag("PowerSupply"),
+                supported: flag("ChargeThresholdSupported"),
+                enabled: flag("ChargeThresholdEnabled"),
+                end: number("ChargeEndThreshold"),
+            })
+        })
+        .collect();
+    pick_charge_limit(devices)
+}
+
+fn set_charge_limit(path: &str, enabled: bool) -> Result<(), ConnectError> {
+    let call = || -> zbus::Result<()> {
+        let bus = zbus::blocking::Connection::system()?;
+        let device = zbus::blocking::Proxy::new(&bus, UPOWER, path.to_string(), UPOWER_DEVICE)?;
+        let flags = zbus::proxy::MethodFlags::AllowInteractiveAuth.into();
+        device.call_with_flags::<_, _, ()>("EnableChargeThreshold", flags, &(enabled,))?;
+        Ok(())
+    };
+    call().map_err(|err| {
+        tracing::info!(enabled, "switching the charge limit failed: {err}");
+        ConnectError::Failed
+    })
+}
+
 pub enum NetRequest {
     ScanWifi,
     ScanBluetooth,
     ScanOutputs,
     ScanInputs,
+    ScanChargeLimit,
+    SetChargeLimit { path: String, enabled: bool },
     ConnectWifi { ssid: String, password: Option<String>, saved: bool },
     DisconnectWifi { ssid: String },
     Bluetooth { mac: String, connect: bool },
@@ -462,6 +532,8 @@ impl std::fmt::Debug for NetRequest {
             Self::ScanBluetooth => f.write_str("ScanBluetooth"),
             Self::ScanOutputs => f.write_str("ScanOutputs"),
             Self::ScanInputs => f.write_str("ScanInputs"),
+            Self::ScanChargeLimit => f.write_str("ScanChargeLimit"),
+            Self::SetChargeLimit { enabled, .. } => f.debug_struct("SetChargeLimit").field("enabled", enabled).finish(),
             Self::UseOutput { name } => f.debug_struct("UseOutput").field("name", name).finish(),
             Self::UseInput { name } => f.debug_struct("UseInput").field("name", name).finish(),
             Self::ConnectWifi { ssid, password, saved } => f
@@ -488,6 +560,8 @@ pub enum NetEvent {
     OutputResult { name: String, result: Result<(), ConnectError> },
     Inputs(Vec<AudioOutput>),
     InputResult { name: String, result: Result<(), ConnectError> },
+    ChargeLimit(Option<ChargeLimit>),
+    ChargeLimitResult(Result<(), ConnectError>),
 }
 
 type Sink = Box<dyn Fn(NetEvent) + Send + Sync>;
@@ -569,6 +643,11 @@ fn run_request(request: NetRequest) {
         }
         NetRequest::ScanOutputs => emit(NetEvent::Outputs(scan_outputs())),
         NetRequest::ScanInputs => emit(NetEvent::Inputs(scan_inputs())),
+        NetRequest::ScanChargeLimit => emit(NetEvent::ChargeLimit(scan_charge_limit())),
+        NetRequest::SetChargeLimit { path, enabled } => {
+            emit(NetEvent::ChargeLimitResult(set_charge_limit(&path, enabled)));
+            emit(NetEvent::ChargeLimit(scan_charge_limit()));
+        }
         NetRequest::UseOutput { name } => {
             let result = set_default("set-default-sink", &name);
             emit(NetEvent::OutputResult { name, result });
@@ -747,12 +826,19 @@ pub const fn use_device(drawer: crate::topbar::Drawer, name: String) -> NetReque
 }
 
 #[must_use]
-pub const fn scan_for(detail: Detail) -> Option<NetRequest> {
+pub const fn scan_for(detail: Detail) -> NetRequest {
     match detail {
-        Detail::Wifi => Some(NetRequest::ScanWifi),
-        Detail::Bluetooth => Some(NetRequest::ScanBluetooth),
-        Detail::Sound => Some(NetRequest::ScanOutputs),
-        Detail::Battery => None,
+        Detail::Wifi => NetRequest::ScanWifi,
+        Detail::Bluetooth => NetRequest::ScanBluetooth,
+        Detail::Sound => NetRequest::ScanOutputs,
+        Detail::Battery => NetRequest::ScanChargeLimit,
+    }
+}
+
+fn scan_detail(detail: Detail) {
+    request(scan_for(detail));
+    if detail == Detail::Sound {
+        request(NetRequest::ScanInputs);
     }
 }
 
@@ -780,12 +866,8 @@ impl GlideState {
     }
 
     pub fn rescan_quick_settings_panel(&mut self) {
-        let detail = self.topbar.detail();
-        if let Some(scan) = detail.and_then(scan_for) {
-            request(scan);
-        }
-        if detail == Some(Detail::Sound) {
-            request(NetRequest::ScanInputs);
+        if let Some(detail) = self.topbar.detail() {
+            scan_detail(detail);
         }
     }
 
@@ -806,13 +888,8 @@ impl GlideState {
     pub(crate) fn run_qs_panel_action(&mut self, action: PanelAction) {
         match action {
             PanelAction::Open(detail) => {
-                if self.topbar.open_detail(detail)
-                    && let Some(scan) = scan_for(detail)
-                {
-                    request(scan);
-                    if detail == Detail::Sound {
-                        request(NetRequest::ScanInputs);
-                    }
+                if self.topbar.open_detail(detail) {
+                    scan_detail(detail);
                 }
             }
             PanelAction::Back => {
@@ -834,6 +911,15 @@ impl GlideState {
                 self.sync_prompt_caps_lock();
             }
             PanelAction::FocusPassword => self.topbar.focus_password(),
+            PanelAction::PromptReveal => {
+                self.topbar.toggle_reveal();
+            }
+            PanelAction::ChargeLimit => {
+                if let Some(limit) = self.topbar.charge_limit() {
+                    self.topbar.begin_connect(CHARGE_LIMIT_KEY);
+                    request(NetRequest::SetChargeLimit { path: limit.path, enabled: !limit.enabled });
+                }
+            }
             PanelAction::PromptCancel => self.run_qs_field_key(crate::topbar::FieldKey::Cancel),
             PanelAction::PromptSubmit => self.run_qs_field_key(crate::topbar::FieldKey::Submit),
             PanelAction::Settings => {
@@ -1144,6 +1230,30 @@ mod tests {
     }
 
     #[test]
+    fn the_charge_limit_belongs_to_the_system_battery_that_supports_it() {
+        let battery = |path: &str, kind: u32, power_supply: bool, supported: bool| UpowerBattery {
+            path: path.to_string(),
+            kind,
+            power_supply,
+            supported,
+            enabled: true,
+            end: 80,
+        };
+        let devices = vec![
+            battery("line_power", 1, true, false),
+            battery("mouse", 2, false, true),
+            battery("bat0", 2, true, false),
+            battery("bat1", 2, true, true),
+        ];
+        let limit = pick_charge_limit(devices).expect("bat1 supports it");
+        assert_eq!(limit, ChargeLimit { path: "bat1".to_string(), enabled: true, end: 80 });
+        assert_eq!(pick_charge_limit(vec![battery("bat0", 2, true, false)]), None);
+        assert!(matches!(scan_for(Detail::Battery), NetRequest::ScanChargeLimit));
+        let request = NetRequest::SetChargeLimit { path: "bat1".into(), enabled: false };
+        assert_eq!(format!("{request:?}"), "SetChargeLimit { enabled: false }");
+    }
+
+    #[test]
     fn short_sink_lines_fall_back_to_the_sink_name() {
         let text = "56\talsa_output.pci.analog-stereo\tPipeWire\ts32le 2ch 48000Hz\tRUNNING\n\
                     71\talsa_output.pci.hdmi-stereo\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n";
@@ -1165,7 +1275,7 @@ mod tests {
 
     #[test]
     fn the_sound_panel_scans_outputs_and_a_switch_request_names_its_sink() {
-        assert!(matches!(scan_for(Detail::Sound), Some(NetRequest::ScanOutputs)));
+        assert!(matches!(scan_for(Detail::Sound), NetRequest::ScanOutputs));
         let request = NetRequest::UseOutput { name: "hdmi".into() };
         assert_eq!(format!("{request:?}"), "UseOutput { name: \"hdmi\" }");
     }

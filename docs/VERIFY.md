@@ -143,7 +143,11 @@ Ctrl+Alt+F3 and a text login.
 41. **Charge limit.** On a laptop whose UPower battery reports
     `ChargeThresholdSupported`, Settings › Power shows Preserve battery
     health; switching it on asks polkit and `ChargeThresholdEnabled` turns
-    true.
+    true. Quick settings › Battery shows the same switch: it reads
+    "Waiting for permission…" until polkit answers, then follows
+    `upower -i`; cancelling the polkit dialog shows "Couldn't change it".
+    On a laptop without support (like the development one) the card is
+    absent.
 42. **Users.** With a polkit agent running, add a user with a password:
     they can log in through the greeter. Make them administrator and back,
     change their password, remove them keeping and then deleting files.
@@ -208,6 +212,7 @@ Ctrl+Alt+F3 and a text login.
     while a browser records. Without one the row is absent.
 57. **Detail views.** Wi-Fi: the connected network sits under its own
     label with Disconnect; a secured one unfolds its password drawer, a
-    wrong password shows the error line. Battery: health, cycles, draw and
+    wrong password shows the error line, and the eye shows and hides the
+    typed text without taking the keyboard from the field. Battery: health, cycles, draw and
     capacity agree with `upower -i` (within rounding); a profile card
     switches `powerprofilesctl get`.

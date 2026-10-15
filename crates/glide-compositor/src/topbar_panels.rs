@@ -7,7 +7,9 @@ use super::{
 use crate::i18n::{Key, t};
 use crate::launcher::field::{CaretMove, TextField};
 use crate::power::PowerAction;
-use crate::qs_net::{AudioOutput, BtDevice, ConnectError, NetEvent, Security, WifiNetwork};
+use crate::qs_net::{
+    AudioOutput, BtDevice, CHARGE_LIMIT_KEY, ChargeLimit, ConnectError, NetEvent, Security, WifiNetwork,
+};
 use crate::system_info::{BatteryInfo, BatteryState, PowerProfile};
 use glide_theme::shape::{R_ROUND, R1, R2};
 use glide_theme::spacing::{SP1, SP2, SP3};
@@ -48,6 +50,8 @@ const PROMPT_TITLE: i32 = 16;
 const PROMPT_FIELD: i32 = 32;
 const PROMPT_ERROR: i32 = 14;
 const PROMPT_PILL: i32 = 28;
+const PROMPT_REVEAL: i32 = 24;
+const PROMPT_EYE: i32 = 14;
 const DIAG_PAD_X: i32 = 10;
 const DIAG_PAD_Y: i32 = SP2;
 const DIAG_LABEL: i32 = 13;
@@ -58,6 +62,7 @@ const DIAG_PILL_H: i32 = 16;
 const DIAG_PILL_PAD: i32 = 6;
 const DIAG_PILL: TextStyle = TextStyle { size_px: 10.0, line_height_px: 12.0, weight: 600, ..TextStyle::CAP };
 const HEALTHY_PCT: u8 = 80;
+const DEFAULT_CHARGE_END: u32 = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Detail {
@@ -74,8 +79,10 @@ pub enum PanelAction {
     Toggle,
     Row(u16),
     FocusPassword,
+    PromptReveal,
     PromptCancel,
     PromptSubmit,
+    ChargeLimit,
     Settings,
 }
 
@@ -258,6 +265,17 @@ struct Prompt {
     ssid: String,
     field: TextField,
     caps_lock: bool,
+    reveal: bool,
+}
+
+impl Prompt {
+    fn new(ssid: String) -> Self {
+        Self { ssid, field: TextField::default(), caps_lock: false, reveal: false }
+    }
+
+    fn shown(&self) -> String {
+        if self.reveal { self.field.text().to_string() } else { masked(self.field.text()) }
+    }
 }
 
 impl std::fmt::Debug for Prompt {
@@ -266,6 +284,7 @@ impl std::fmt::Debug for Prompt {
             .field("ssid", &self.ssid)
             .field("len", &self.field.text().chars().count())
             .field("caps_lock", &self.caps_lock)
+            .field("reveal", &self.reveal)
             .finish()
     }
 }
@@ -290,6 +309,7 @@ pub(super) struct DetailPanel {
     outputs: Vec<AudioOutput>,
     outputs_ready: bool,
     inputs: Option<Vec<AudioOutput>>,
+    charge: Option<ChargeLimit>,
     pending: Option<Pending>,
     failure: Option<Failure>,
     prompt: Option<Prompt>,
@@ -378,6 +398,7 @@ pub(super) enum ItemKind {
     Prompt(usize),
     Diag(usize),
     Profile(PowerProfile),
+    ChargeLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +448,7 @@ pub(super) fn detail_geometry(height: i32, radio: bool) -> DetailGeometry {
 pub(super) struct PromptParts {
     pub(super) title: LocalRect,
     pub(super) field: LocalRect,
+    pub(super) reveal: LocalRect,
     pub(super) error: Option<LocalRect>,
     pub(super) cancel: LocalRect,
     pub(super) connect: LocalRect,
@@ -444,6 +466,8 @@ pub(super) fn prompt_parts(rect: LocalRect, failed: bool, (cancel_w, connect_w):
     let title = local_rect(left, y, width, PROMPT_TITLE);
     y += PROMPT_TITLE + SP2;
     let field = local_rect(left, y, width, PROMPT_FIELD);
+    let reveal_x = field.loc.x + field.size.w - SP1 - PROMPT_REVEAL;
+    let reveal = local_rect(reveal_x, y + (PROMPT_FIELD - PROMPT_REVEAL) / 2, PROMPT_REVEAL, PROMPT_REVEAL);
     y += PROMPT_FIELD + SP2;
     let error = failed.then(|| {
         let error = local_rect(left, y, width, PROMPT_ERROR);
@@ -452,7 +476,7 @@ pub(super) fn prompt_parts(rect: LocalRect, failed: bool, (cancel_w, connect_w):
     });
     let connect = local_rect(right - connect_w, y, connect_w, PROMPT_PILL);
     let cancel = local_rect(connect.loc.x - SP1 - cancel_w, y, cancel_w, PROMPT_PILL);
-    PromptParts { title, field, error, cancel, connect }
+    PromptParts { title, field, reveal, error, cancel, connect }
 }
 
 struct Column<'a> {
@@ -599,7 +623,15 @@ fn sound_items(column: &mut Column<'_>, panel: &DetailPanel) {
     }
 }
 
-fn battery_items(column: &mut Column<'_>, status: &crate::system_info::SystemStatus) {
+fn battery_items(column: &mut Column<'_>, panel: &DetailPanel, status: &crate::system_info::SystemStatus) {
+    battery_health_items(column, status);
+    if panel.charge.is_some() {
+        column.y += SP1;
+        column.card(ItemKind::ChargeLimit, Some(Slot::QsChargeLimit));
+    }
+}
+
+fn battery_health_items(column: &mut Column<'_>, status: &crate::system_info::SystemStatus) {
     if column.section(Key::QsBatteryTelemetry) {
         let half = (column.width - SP2) / 2;
         for pair in 0..2 {
@@ -644,7 +676,7 @@ pub(super) fn detail_items(
         Detail::Wifi => wifi_items(&mut column, panel, status),
         Detail::Bluetooth => bluetooth_items(&mut column, panel, status),
         Detail::Sound => sound_items(&mut column, panel),
-        Detail::Battery => battery_items(&mut column, status),
+        Detail::Battery => battery_items(&mut column, panel, status),
     }
     items
 }
@@ -762,8 +794,7 @@ impl Topbar {
             self.qs_panel.prompt = None;
             self.settle_focus_on_row(ssid);
         } else {
-            self.qs_panel.prompt =
-                Some(Prompt { ssid: ssid.to_string(), field: TextField::default(), caps_lock: false });
+            self.qs_panel.prompt = Some(Prompt::new(ssid.to_string()));
             self.set_focused(Some(Slot::QsPasswordField));
         }
         self.qs_panel.failure = None;
@@ -781,6 +812,21 @@ impl Topbar {
         prompt.caps_lock = on;
         self.qs_panel.bump();
         true
+    }
+
+    pub fn toggle_reveal(&mut self) -> bool {
+        let Some(prompt) = self.qs_panel.prompt.as_mut() else {
+            return false;
+        };
+        prompt.reveal = !prompt.reveal;
+        self.qs_panel.bump();
+        self.touch();
+        true
+    }
+
+    #[must_use]
+    pub fn charge_limit(&self) -> Option<ChargeLimit> {
+        self.qs_panel.charge.clone().filter(|_| self.detail() == Some(Detail::Battery))
     }
 
     pub fn focus_password(&mut self) {
@@ -869,7 +915,7 @@ impl Topbar {
             NetEvent::WifiResult { ssid, result } => {
                 self.settle_pending(&ssid, result);
                 if result == Err(ConnectError::WrongPassword) && self.detail() == Some(Detail::Wifi) {
-                    self.qs_panel.prompt = Some(Prompt { ssid, field: TextField::default(), caps_lock: false });
+                    self.qs_panel.prompt = Some(Prompt::new(ssid));
                     self.set_focused(Some(Slot::QsPasswordField));
                 }
             }
@@ -890,6 +936,13 @@ impl Topbar {
                 }
                 self.qs_panel.inputs = Some(inputs);
             }
+            NetEvent::ChargeLimit(limit) => {
+                if self.qs_panel.charge == limit {
+                    return false;
+                }
+                self.qs_panel.charge = limit;
+            }
+            NetEvent::ChargeLimitResult(result) => self.settle_pending(CHARGE_LIMIT_KEY, result),
         }
         self.qs_panel.bump();
         self.touch();
@@ -910,6 +963,7 @@ impl Topbar {
             }
             if let ItemKind::Prompt(index) = item.kind {
                 let parts = prompt_parts(item.rect, self.qs_panel.failed(index), prompt_pills(painter));
+                slots.push((Slot::QsPromptReveal, parts.reveal));
                 slots.push((Slot::QsPasswordField, parts.field));
                 slots.push((Slot::QsPromptCancel, parts.cancel));
                 slots.push((Slot::QsPromptConnect, parts.connect));
@@ -1042,6 +1096,11 @@ fn draw_item(
         }
         ItemKind::Diag(index) => draw_diag(c, ctx, rect, index, status),
         ItemKind::Profile(profile) => draw_profile_card(c, ctx, rect, profile, status.power_profile == Some(profile)),
+        ItemKind::ChargeLimit => {
+            if let Some(limit) = panel.charge.as_ref() {
+                draw_charge_card(c, ctx, rect, limit, panel.status_for(CHARGE_LIMIT_KEY));
+            }
+        }
     }
 }
 
@@ -1390,7 +1449,7 @@ fn draw_prompt(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, p
     let parts = prompt_parts(rect, failed, prompt_pills(ctx.painter));
     let title = t(Key::QsPasswordFor).replace("{ssid}", &prompt.ssid);
     c.text_in(ctx.painter, parts.title, TextAlign::Left, &title, theme.label, &super::QS_TITLE);
-    draw_password_field(c, ctx, parts.field, &prompt.field, prompt.caps_lock);
+    draw_password_field(c, ctx, (parts.field, parts.reveal), prompt);
     if let Some(error) = parts.error {
         c.text_in(ctx.painter, error, TextAlign::Left, t(Key::QsWrongPassword), theme.danger, &super::QS_NOTE);
     }
@@ -1408,45 +1467,104 @@ fn draw_prompt(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, p
     );
 }
 
+fn draw_eye(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, revealed: bool) {
+    let colour = if ctx.hovered == Some(Slot::QsPromptReveal) { ctx.theme.label } else { ctx.theme.faint };
+    let side = PROMPT_EYE;
+    let (x, y) = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
+    let icon = if revealed { "view-conceal" } else { "view-reveal" };
+    if c.icon(icon, side, (x, y), colour) {
+        return;
+    }
+    c.stroke(local_rect(x, y + 3, side, side - 6), 1.5, R_ROUND, colour);
+    c.fill(local_rect(x + side / 2 - 2, y + side / 2 - 2, 4, 4), colour, R_ROUND);
+    if revealed {
+        c.fill(local_rect(x, y + side / 2, side, 1), colour, 0.0);
+    }
+}
+
 fn draw_password_field(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, boxed: LocalRect, field: &TextField, caps_lock: bool,
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, (boxed, reveal): (LocalRect, LocalRect), prompt: &Prompt,
 ) {
     let theme = ctx.theme;
+    let field = &prompt.field;
     c.fill(boxed, theme.popover_bg, R2);
     c.stroke(boxed, 1.0, R2, theme.active_background);
-    let (left, mut right, top, bottom) = band(boxed);
-    if caps_lock {
+    draw_eye(c, ctx, reveal, prompt.reveal);
+    let (left, _, top, bottom) = band(boxed);
+    let mut right = reveal.loc.x;
+    if prompt.caps_lock {
         let cap = &TextStyle::CAP;
         let label = t(Key::CapsLockOn);
         let width = text_w(ctx.painter, label, cap);
         c.text(
             ctx.painter,
-            (right - SP2 - width, right - SP2, top, bottom),
+            (right - SP1 - width, right - SP1, top, bottom),
             TextAlign::Right,
             label,
             theme.danger,
             cap,
         );
-        right -= width + SP2;
+        right -= width + SP1;
     }
-    let (text_left, text_right) = (left + SP2, right - SP2);
+    let (text_left, text_right) = (left + SP2, right - SP1);
     let text_band = (text_left, text_right, top, bottom);
     let style = TextStyle::CALL;
     if field.is_empty() {
         c.text(ctx.painter, text_band, TextAlign::Left, t(Key::QsPassword), theme.faint, &style);
     } else {
-        let bullets = masked(field.text());
+        let shown = prompt.shown();
         if field.selection().is_some() {
-            let width = text_w(ctx.painter, &bullets, &style).min(text_right - text_left);
+            let width = text_w(ctx.painter, &shown, &style).min(text_right - text_left);
             let selection = local_rect(text_left, top + SP1, width, boxed.size.h - SP1 * 2);
             c.fill(selection, theme.active_soft, 0.0);
         }
-        c.text(ctx.painter, text_band, TextAlign::Left, &bullets, theme.label, &style);
+        c.text(ctx.painter, text_band, TextAlign::Left, &shown, theme.label, &style);
     }
-    let before = masked(&field.text()[..field.caret()]);
+    let typed = &field.text()[..field.caret()];
+    let before = if prompt.reveal { typed.to_string() } else { masked(typed) };
     let caret_x = (text_left + text_w(ctx.painter, &before, &style)).min(text_right);
     let caret = local_rect(caret_x, top + SP1 + 2, 1, boxed.size.h - SP1 * 2 - 4);
     c.fill(caret, theme.active_background, 0.0);
+}
+
+fn draw_charge_card(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, limit: &ChargeLimit, status: RowStatus,
+) {
+    let theme = ctx.theme;
+    card_background(c, theme, rect, false);
+    let switch_x = rect.loc.x + rect.size.w - CARD_PAD_X - DETAIL_SWITCH_W;
+    let switch =
+        local_rect(switch_x, rect.loc.y + (rect.size.h - DETAIL_SWITCH_H) / 2, DETAIL_SWITCH_W, DETAIL_SWITCH_H);
+    let target = if status == RowStatus::Connecting { !limit.enabled } else { limit.enabled };
+    let position = f64::from(u8::from(target));
+    draw_switch(
+        c,
+        theme,
+        switch,
+        (DETAIL_SWITCH_INSET, DETAIL_SWITCH_THUMB),
+        SwitchMotion { thumb: position, track: position },
+    );
+
+    let (left, right) = (rect.loc.x + CARD_PAD_X, switch.loc.x - CARD_GAP);
+    let end = if limit.end == 0 { DEFAULT_CHARGE_END } else { limit.end.min(100) };
+    let title = t(Key::QsChargeLimit).replace("{n}", &end.to_string());
+    let (note, colour) = match status {
+        RowStatus::Connecting => (Key::QsWaitingForAuth, theme.muted),
+        RowStatus::Failed(_) => (Key::QsCouldNotChange, theme.danger),
+        RowStatus::Idle | RowStatus::Disconnecting => (Key::QsChargeLimitHint, theme.faint),
+    };
+    let title_h = CARD_PRIMARY.line_height_px as i32;
+    let note_h = super::QS_NOTE.line_height_px as i32;
+    let top = rect.loc.y + (rect.size.h - title_h - note_h) / 2;
+    c.text(ctx.painter, (left, right, top, top + title_h), TextAlign::Left, &title, theme.label, &CARD_PRIMARY);
+    c.text(
+        ctx.painter,
+        (left, right, top + title_h, top + title_h + note_h),
+        TextAlign::Left,
+        t(note),
+        colour,
+        &super::QS_NOTE,
+    );
 }
 
 fn masked(text: &str) -> String {
@@ -1851,6 +1969,8 @@ mod tests {
         bar.apply_net_event(NetEvent::Bluetooth(vec![device("aa", true, Some(80)), device("bb", false, None)]));
         bar.apply_net_event(two_sinks());
         bar.apply_net_event(NetEvent::Inputs(Vec::new()));
+        bar.apply_net_event(NetEvent::ChargeLimit(Some(charge_limit(true))));
+        assert!(bar.toggle_reveal());
         bar.begin_connect("hdmi");
         let status = crate::system_info::SystemStatus {
             wifi_enabled: true,
@@ -1877,6 +1997,80 @@ mod tests {
                 draw_detail(&mut canvas, &ctx, &bar.qs_panel, detail, &status);
             }
         }
+    }
+
+    fn charge_limit(enabled: bool) -> ChargeLimit {
+        ChargeLimit { path: "/org/freedesktop/UPower/devices/battery_BAT1".to_string(), enabled, end: 80 }
+    }
+
+    fn open_battery() -> Topbar {
+        let mut bar = Topbar::new(TopbarTheme::default());
+        bar.set_system_status(crate::system_info::SystemStatus {
+            battery_pct: Some(60),
+            power_profile: Some(PowerProfile::Balanced),
+            ..Default::default()
+        });
+        bar.toggle_popup(OpenPopup::QuickSettings);
+        relayout(&mut bar);
+        assert!(bar.open_detail(Detail::Battery));
+        relayout(&mut bar);
+        bar
+    }
+
+    #[test]
+    fn the_charge_limit_card_shows_only_where_upower_supports_it() {
+        let mut bar = open_battery();
+        assert!(bar.slot_rect(Slot::QsChargeLimit).is_none(), "no supported battery, no switch");
+        assert_eq!(bar.charge_limit(), None);
+        assert!(bar.apply_net_event(NetEvent::ChargeLimit(Some(charge_limit(false)))));
+        assert!(!bar.apply_net_event(NetEvent::ChargeLimit(Some(charge_limit(false)))), "an unchanged reading");
+        relayout(&mut bar);
+        let card = bar.slot_rect(Slot::QsChargeLimit).expect("charge limit card");
+        let last_profile = bar.slot_rect(Slot::QsProfile(PowerProfile::Performance)).expect("profiles");
+        assert!(card.loc.y > last_profile.loc.y + last_profile.size.h);
+        assert!(card.loc.y + card.size.h < bar.slot_rect(Slot::QsDetailSettings).expect("settings").loc.y);
+        assert_eq!(bar.action_at(centre(card)), Some(TopbarAction::QsPanel(PanelAction::ChargeLimit)));
+        assert_eq!(bar.charge_limit(), Some(charge_limit(false)));
+
+        bar.begin_connect(CHARGE_LIMIT_KEY);
+        assert_eq!(bar.qs_panel.status_for(CHARGE_LIMIT_KEY), RowStatus::Connecting);
+        bar.apply_net_event(NetEvent::ChargeLimitResult(Err(ConnectError::Failed)));
+        assert_eq!(bar.qs_panel.status_for(CHARGE_LIMIT_KEY), RowStatus::Failed(ConnectError::Failed));
+        bar.close_detail();
+        assert_eq!(bar.charge_limit(), None, "only the Battery view offers it");
+    }
+
+    #[test]
+    fn the_eye_shows_the_typed_password_and_a_new_prompt_starts_hidden() {
+        let mut bar = open_wifi();
+        bar.toggle_prompt("Neighbour");
+        relayout(&mut bar);
+        for ch in "pa55".chars() {
+            bar.prompt_key(FieldKey::Type(ch));
+        }
+        let field = bar.slot_rect(Slot::QsPasswordField).expect("field");
+        let eye = bar.slot_rect(Slot::QsPromptReveal).expect("eye");
+        assert!(field.contains(eye.loc), "the eye sits inside the field");
+        assert_eq!(
+            bar.action_at(centre(eye)),
+            Some(TopbarAction::QsPanel(PanelAction::PromptReveal)),
+            "it wins over the field"
+        );
+        let prompt = || bar.qs_panel.prompt.as_ref().expect("prompt");
+        assert_eq!(prompt().shown(), "\u{2022}".repeat(4));
+        assert!(bar.toggle_reveal());
+        assert_eq!(bar.qs_panel.prompt.as_ref().expect("prompt").shown(), "pa55");
+        assert!(format!("{:?}", bar.qs_panel.prompt.as_ref().expect("prompt")).contains("len: 4"));
+        assert!(
+            !format!("{:?}", bar.qs_panel.prompt.as_ref().expect("prompt")).contains("pa55"),
+            "Debug never prints it"
+        );
+        assert_eq!(bar.qs_key_mode(), QsKeyMode::Typing, "the field keeps the keyboard");
+        bar.prompt_key(FieldKey::Cancel);
+        bar.toggle_prompt("Neighbour");
+        assert!(!bar.qs_panel.prompt.as_ref().expect("prompt").reveal);
+        bar.prompt_key(FieldKey::Cancel);
+        assert!(!bar.toggle_reveal(), "no field, nothing to show");
     }
 
     #[test]
