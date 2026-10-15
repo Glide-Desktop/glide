@@ -15,7 +15,7 @@ const CONTROL_W: i32 = 28;
 const BLOCK_PAD: i32 = SP2;
 const BLOCK_GAP: i32 = 6;
 const PCT_GAP: i32 = SP1;
-pub(super) const ICON: i32 = 16;
+pub(super) const ICON: i32 = 14;
 pub(super) const PCT_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
     size_px: 11.0,
     line_height_px: 14.0,

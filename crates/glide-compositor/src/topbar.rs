@@ -59,7 +59,7 @@ const ITEM_GAP: i32 = 2;
 const BUTTON_RADIUS: f32 = glide_theme::shape::R2;
 const BUTTON_MIN_WIDTH: i32 = 28;
 
-const APP_ICON: i32 = 16;
+const APP_ICON: i32 = 14;
 const APP_PAD_LEFT: i32 = 5;
 const APP_PAD_RIGHT: i32 = 9;
 const APP_GAP: i32 = 7;
@@ -3492,7 +3492,7 @@ fn draw_caffeine(
     let colour = hover_colour(theme, on || hovered);
     let cup = local_rect(COFFEE_PAD, 0, COFFEE_GLYPH, BUTTON_HEIGHT);
     let name = if on { "caffeine-cup-full" } else { "caffeine-cup-empty" };
-    if !glyphs::themed(&mut c, name, COFFEE_GLYPH, cup, colour) {
+    if !glyphs::themed_on_ink(&mut c, (name, "caffeine-cup-empty"), COFFEE_GLYPH, cup, colour) {
         glyphs::glyph(&mut c, glyphs::Glyph::Cup, COFFEE_GLYPH, cup, colour);
     }
     let track_y = (BUTTON_HEIGHT - SWITCH_HEIGHT) / 2;

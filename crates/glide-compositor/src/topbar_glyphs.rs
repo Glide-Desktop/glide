@@ -160,6 +160,35 @@ pub(super) fn themed(c: &mut Canvas<'_>, name: &str, side: i32, rect: LocalRect,
     c.icon(name, side, centred(rect, side), colour)
 }
 
+pub(super) fn themed_on_ink(
+    c: &mut Canvas<'_>, (name, anchor): (&str, &str), side: i32, rect: LocalRect, colour: Color,
+) -> bool {
+    let shift = ink_shift(c, anchor, side, colour).unwrap_or(0);
+    let lifted = super::local_rect(rect.loc.x, rect.loc.y + shift, rect.size.w, rect.size.h);
+    themed(c, name, side, lifted, colour)
+}
+
+const INK_ALPHA: u8 = 32;
+
+fn ink_shift(c: &mut Canvas<'_>, name: &str, side: i32, colour: Color) -> Option<i32> {
+    let scale = c.scale;
+    let px = usize::try_from(side * scale).ok().filter(|px| *px > 0)?;
+    let pixels = c.icons.as_deref_mut()?.load_symbolic(name, side * scale, colour)?;
+    let (top, bottom) = ink_rows(pixels, px)?;
+    let slack = (px - 1 - bottom) as f32 - top as f32;
+    Some((slack / 2.0 / scale as f32).round() as i32)
+}
+
+fn ink_rows(pixels: &[u8], px: usize) -> Option<(usize, usize)> {
+    let mut inked = pixels
+        .chunks_exact(px * 4)
+        .enumerate()
+        .filter(|(_, row)| row.chunks_exact(4).any(|pixel| pixel[3] >= INK_ALPHA))
+        .map(|(y, _)| y);
+    let top = inked.next()?;
+    Some((top, inked.next_back().unwrap_or(top)))
+}
+
 pub(super) fn svg_glyph(c: &mut Canvas<'_>, svg: &str, side: i32, rect: LocalRect, colour: Color) {
     let at = centred(rect, side);
     if let Some(pixels) = crate::paint::render_svg_tinted(svg.as_bytes(), side * c.scale, colour) {
@@ -209,5 +238,16 @@ mod tests {
         for pct in [0, 37, 100, 255] {
             assert!(crate::paint::render_svg(battery_cell(pct).as_bytes(), 24).is_some(), "{pct}");
         }
+    }
+
+    #[test]
+    fn ink_rows_find_the_first_and_last_painted_row() {
+        let side = 4;
+        let mut pixels = vec![0_u8; side * side * 4];
+        pixels[(side + 2) * 4 + 3] = 255;
+        pixels[(3 * side + 1) * 4 + 3] = 200;
+        pixels[3] = INK_ALPHA - 1;
+        assert_eq!(ink_rows(&pixels, side), Some((1, 3)));
+        assert_eq!(ink_rows(&vec![0_u8; side * side * 4], side), None);
     }
 }

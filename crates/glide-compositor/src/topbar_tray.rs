@@ -19,7 +19,7 @@ use crate::{
     raster::{Canvas, ShellRenderer, buffer_from},
 };
 
-pub const ICON: i32 = 16;
+pub const ICON: i32 = 14;
 pub const SLOT_WIDTH: i32 = 28;
 pub const MAX_SCALE: i32 = 3;
 const TOOLTIP_HEIGHT: i32 = 26;
