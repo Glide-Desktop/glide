@@ -21,8 +21,6 @@ const DETAIL_ICON: i32 = 16;
 const TRAILING_ICON: i32 = 14;
 const TRAILING_GLYPH: f32 = 12.0;
 const BATTERY_BAR: i32 = 6;
-pub(super) const QS_TILE_MORE: i32 = 28;
-pub(super) const QS_POWER_BTN: i32 = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Detail {
@@ -91,32 +89,8 @@ pub enum PromptOutcome {
     Submit { ssid: String, password: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PowerDispatch {
-    Now,
-    Confirm,
-}
-
 pub const POWER_ROW: [PowerAction; 5] =
     [PowerAction::Lock, PowerAction::Sleep, PowerAction::Restart, PowerAction::ShutDown, PowerAction::LogOut];
-
-#[must_use]
-pub const fn power_dispatch(action: PowerAction) -> PowerDispatch {
-    match action {
-        PowerAction::Lock | PowerAction::Sleep => PowerDispatch::Now,
-        PowerAction::Restart | PowerAction::ShutDown | PowerAction::LogOut => PowerDispatch::Confirm,
-    }
-}
-
-pub(super) const fn power_label(action: PowerAction) -> Key {
-    match action {
-        PowerAction::Lock => Key::PowerLock,
-        PowerAction::Sleep => Key::CommandSleep,
-        PowerAction::Restart => Key::CommandRestart,
-        PowerAction::ShutDown => Key::CommandShutDown,
-        PowerAction::LogOut => Key::CommandLogOut,
-    }
-}
 
 pub(super) const fn power_icon(action: PowerAction) -> &'static str {
     match action {
@@ -187,6 +161,19 @@ fn battery_state_line(status: &crate::system_info::SystemStatus) -> String {
         || t(if status.battery_charging { Key::TbBatteryCharging } else { Key::TbBatteryOnBattery }).to_string(),
         time_line,
     )
+}
+
+pub(super) fn battery_head_line(status: &crate::system_info::SystemStatus) -> String {
+    let Some(info) = status.battery.as_ref() else {
+        return battery_state_line(status);
+    };
+    let estimate = |key: Key| info.minutes.map(|minutes| t(key).replace("{}", &crate::i18n::duration_label(minutes)));
+    let line = match info.state {
+        BatteryState::Discharging => estimate(Key::TbBatteryTimeLeft),
+        BatteryState::Charging => estimate(Key::TbBatteryTimeToFull),
+        BatteryState::Full | BatteryState::NotCharging => None,
+    };
+    line.unwrap_or_else(|| time_line(info))
 }
 
 pub fn field_key(
@@ -317,6 +304,10 @@ impl DetailPanel {
             self.bump();
         }
     }
+
+    pub(super) fn active_output(&self) -> Option<&AudioOutput> {
+        self.outputs.iter().find(|output| output.active)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,12 +415,6 @@ pub(super) fn detail_rows(
         .collect()
 }
 
-pub(super) fn split_tile(rect: LocalRect) -> (LocalRect, LocalRect) {
-    let body = local_rect(rect.loc.x, rect.loc.y, rect.size.w - QS_TILE_MORE, rect.size.h);
-    let more = local_rect(rect.loc.x + rect.size.w - QS_TILE_MORE, rect.loc.y, QS_TILE_MORE, rect.size.h);
-    (body, more)
-}
-
 impl Topbar {
     #[must_use]
     pub fn detail(&self) -> Option<Detail> {
@@ -441,6 +426,7 @@ impl Topbar {
             return false;
         }
         let keyboard = self.focused.is_some();
+        self.forget_power();
         self.qs_panel.view = Some(detail);
         self.qs_panel.shown = Some(detail);
         self.qs_panel.slide.retarget(1.0, motion::t2(), E_OUT);
@@ -643,7 +629,7 @@ impl Topbar {
 
     pub(super) fn detail_slots(&self) -> Option<Vec<(Slot, LocalRect)>> {
         let detail = self.qs_panel.view?;
-        let geometry = detail_geometry(qs_geometry().height);
+        let geometry = detail_geometry(qs_geometry(&self.qs_shape(None)).height);
         let mut slots = vec![(Slot::QsBack, geometry.back)];
         if has_radio(detail) {
             slots.push((Slot::QsDetailToggle, geometry.toggle));
@@ -681,7 +667,7 @@ pub(super) fn push_detail<R>(
     let status = &topbar.system_status;
     let panel = &topbar.qs_panel;
     let Some(buffer) = topbar.qs_detail_cache.resolve(key, output_scale, || {
-        let ctx = QsRenderContext { painter, theme, hovered, caption: None };
+        let ctx = QsRenderContext { painter, theme, hovered };
         let mut canvas = Canvas::new(rect.size.w, rect.size.h, output_scale)?.with_icons(Some(icons));
         draw_detail(&mut canvas, &ctx, panel, detail, status);
         Some(canvas.finish())
@@ -1061,16 +1047,6 @@ fn masked(text: &str) -> String {
     text.chars().map(|_| '\u{2022}').collect()
 }
 
-pub(super) fn draw_tile_more(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, on: bool) {
-    let colour = if on { ctx.theme.active_soft_label } else { ctx.theme.muted };
-    let side = 12;
-    let at = (rect.loc.x + (rect.size.w - side) / 2 - SP1 / 2, rect.loc.y + (rect.size.h - side) / 2);
-    if !c.icon("go-next", side, at, colour) {
-        let head = &TextStyle::HEAD;
-        c.text(ctx.painter, band(rect), TextAlign::Center, "\u{203a}", colour, head);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1118,9 +1094,9 @@ mod tests {
         let mut bar = Topbar::new(TopbarTheme::default());
         bar.toggle_popup(OpenPopup::QuickSettings);
         relayout(&mut bar);
-        let more = bar.slot_rect(Slot::QsWifiMore).expect("chevron slot");
-        let tile = bar.slot_rect(Slot::QsWifi).expect("tile slot");
-        assert_eq!(tile.loc.x + tile.size.w, more.loc.x, "the halves never overlap");
+        let more = bar.slot_rect(Slot::QsWifiMore).expect("card slot");
+        let badge = bar.slot_rect(Slot::QsWifi).expect("badge slot");
+        assert!(more.contains(badge.loc), "the toggle is the badge inside the card");
         assert_eq!(bar.action_at(centre(more)), Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi))));
 
         assert!(bar.open_detail(Detail::Wifi));
@@ -1282,15 +1258,6 @@ mod tests {
     }
 
     #[test]
-    fn lock_and_sleep_act_at_once_and_the_rest_ask_first() {
-        assert_eq!(power_dispatch(PowerAction::Lock), PowerDispatch::Now);
-        assert_eq!(power_dispatch(PowerAction::Sleep), PowerDispatch::Now);
-        for action in [PowerAction::Restart, PowerAction::ShutDown, PowerAction::LogOut] {
-            assert_eq!(power_dispatch(action), PowerDispatch::Confirm);
-        }
-    }
-
-    #[test]
     fn every_power_button_is_laid_out_and_reports_its_action() {
         let mut bar = Topbar::new(TopbarTheme::default());
         bar.toggle_popup(OpenPopup::QuickSettings);
@@ -1300,7 +1267,7 @@ mod tests {
             let rect = bar.slot_rect(Slot::QsPowerButton(action)).expect("power button");
             assert!(rect.loc.x > previous_right);
             previous_right = rect.loc.x + rect.size.w;
-            assert_eq!(bar.action_at(centre(rect)), Some(TopbarAction::QsPower(action)));
+            assert_eq!(bar.action_at(centre(rect)), Some(TopbarAction::QsArmPower(action)));
         }
     }
 
@@ -1312,6 +1279,23 @@ mod tests {
         assert!(crate::i18n::duration_label(135).contains("15"));
         let full = BatteryInfo { state: BatteryState::Full, minutes: Some(10), ..info };
         assert_eq!(time_line(&full), t(Key::TbBatteryFull));
+    }
+
+    #[test]
+    fn the_battery_row_shows_the_estimate_alone_when_there_is_one() {
+        let info = BatteryInfo { pct: 50, state: BatteryState::Discharging, minutes: Some(135), profile: None };
+        let status =
+            |battery| crate::system_info::SystemStatus { battery_pct: Some(50), battery, ..Default::default() };
+        let left = t(Key::TbBatteryTimeLeft).replace("{}", &crate::i18n::duration_label(135));
+        assert_eq!(battery_head_line(&status(Some(info))), left);
+        let charging = BatteryInfo { state: BatteryState::Charging, ..info };
+        let full = t(Key::TbBatteryTimeToFull).replace("{}", &crate::i18n::duration_label(135));
+        assert_eq!(battery_head_line(&status(Some(charging))), full);
+        let unknown = BatteryInfo { minutes: None, ..info };
+        assert_eq!(battery_head_line(&status(Some(unknown))), t(Key::TbBatteryOnBattery));
+        let done = BatteryInfo { state: BatteryState::Full, ..info };
+        assert_eq!(battery_head_line(&status(Some(done))), t(Key::TbBatteryFull));
+        assert_eq!(battery_head_line(&status(None)), t(Key::TbBatteryOnBattery));
     }
 
     #[test]
@@ -1369,7 +1353,7 @@ mod tests {
 
     #[test]
     fn the_detail_list_stays_inside_the_popup() {
-        let height = qs_geometry().height;
+        let height = qs_geometry(&super::super::QsShape::default()).height;
         let geometry = detail_geometry(height);
         assert!(geometry.list.size.h >= DETAIL_ROW * 5);
         assert!(geometry.list.loc.y + geometry.list.size.h < geometry.divider_bottom);

@@ -1287,6 +1287,24 @@ impl GlideState {
         glide_theme::motion::set_scale(scale);
     }
 
+    pub fn toggle_dark_theme(&mut self) {
+        let appearance = match self.shell_palette.0 {
+            glide_theme::Appearance::Dark => glide_theme::Appearance::Light,
+            glide_theme::Appearance::Light => glide_theme::Appearance::Dark,
+        };
+        match crate::config::Config::try_load() {
+            Ok(mut config) => {
+                config.topbar.appearance = appearance;
+                config.topbar.appearance_schedule = false;
+                config.apply_to_state(self);
+                crate::config::persist_appearance(appearance);
+            }
+            Err(message) => {
+                tracing::warn!(%message, "the appearance stays until glide.toml reads again");
+            }
+        }
+    }
+
     pub fn tick_appearance_schedule(&mut self) -> bool {
         if !self.session.appearance_schedule {
             return false;
@@ -1495,13 +1513,18 @@ impl GlideState {
                     }
                 });
             }
-            TopbarAction::QsCyclePowerMode => {
-                if let Some(next) =
-                    self.topbar.system_status().power_profile.map(crate::system_info::PowerProfile::next)
-                {
-                    crate::system_info::set_power_profile(next);
-                    self.update_system_status(|status| status.power_profile = Some(next));
+            TopbarAction::QsSetPowerProfile(profile) => {
+                if self.topbar.system_status().power_profile != Some(profile) {
+                    crate::system_info::set_power_profile(profile);
+                    self.update_system_status(|status| status.power_profile = Some(profile));
                 }
+            }
+            TopbarAction::QsToggleDarkTheme => self.toggle_dark_theme(),
+            TopbarAction::QsArmPower(power) => {
+                self.topbar.arm_power(power);
+            }
+            TopbarAction::QsDisarmPower => {
+                self.topbar.disarm_power();
             }
             TopbarAction::QsVolumeMute => {
                 crate::system_info::toggle_volume_mute();

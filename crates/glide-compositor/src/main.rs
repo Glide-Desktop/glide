@@ -363,7 +363,8 @@ fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mu
             let expired = state.notifications.tick();
             let night = state.tick_night_light();
             let appearance = state.tick_appearance_schedule();
-            if clock || expired || night || appearance {
+            let power = state.tick_qs_power();
+            if clock || expired || night || appearance || power {
                 state.queue_redraw();
             }
             TimeoutAction::ToDuration(std::time::Duration::from_secs(1))

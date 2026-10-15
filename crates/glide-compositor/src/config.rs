@@ -171,6 +171,66 @@ pub const fn scheduled_appearance(minute_of_day: u16) -> glide_theme::Appearance
     }
 }
 
+pub fn with_appearance(text: &str, appearance: glide_theme::Appearance) -> Result<String, String> {
+    use toml_edit::{Item, Table, value};
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|err: toml_edit::TomlError| err.to_string())?;
+    let item = doc.as_table_mut().entry("topbar").or_insert_with(|| Item::Table(Table::new()));
+    let table = item.as_table_like_mut().ok_or_else(|| "[topbar] is not a table".to_string())?;
+    let name = match appearance {
+        glide_theme::Appearance::Light => "light",
+        glide_theme::Appearance::Dark => "dark",
+    };
+    set_keeping_decor(table, "appearance", value(name));
+    if table.get("appearance-schedule").is_some() {
+        set_keeping_decor(table, "appearance-schedule", value(false));
+    }
+    Ok(doc.to_string())
+}
+
+fn set_keeping_decor(table: &mut dyn toml_edit::TableLike, key: &str, mut item: toml_edit::Item) {
+    if let (Some(old), Some(new)) = (table.get(key).and_then(toml_edit::Item::as_value), item.as_value_mut()) {
+        *new.decor_mut() = old.decor().clone();
+    }
+    table.insert(key, item);
+}
+
+pub fn write_appearance(path: &Path, appearance: glide_theme::Appearance) -> Result<(), String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err.to_string()),
+    };
+    let updated = with_appearance(&text, appearance)?;
+    if updated == text {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".glide.tmp");
+    let tmp = path.with_file_name(name);
+    let written = fs::write(&tmp, updated.as_bytes()).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written.map_err(|err| err.to_string())
+}
+
+pub fn persist_appearance(appearance: glide_theme::Appearance) {
+    let Some(path) = Config::default_path() else {
+        return;
+    };
+    let spawned = std::thread::Builder::new().name("glide-appearance".to_string()).spawn(move || {
+        if let Err(err) = write_appearance(&path, appearance) {
+            tracing::warn!(path = %path.display(), "could not save the appearance: {err}");
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::warn!("the appearance writer did not start: {err}");
+    }
+}
+
 impl TopbarConfig {
     #[must_use]
     pub fn effective_appearance(self, minute_of_day: Option<u16>) -> glide_theme::Appearance {
@@ -1418,6 +1478,33 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_dark_style_tile_rewrites_only_the_appearance() {
+        use glide_theme::Appearance;
+        let text = "# mine\n[topbar]\nappearance = \"dark\" # keep\nappearance-schedule = true\naccent = \"teal\"\n";
+        let light = with_appearance(text, Appearance::Light).expect("valid toml");
+        assert!(light.starts_with("# mine\n"));
+        assert!(light.contains("appearance = \"light\" # keep"));
+        assert!(light.contains("appearance-schedule = false"), "picking a style ends the schedule");
+        assert!(light.contains("accent = \"teal\""));
+        let parsed = Config::parse(&light).expect("still parses");
+        assert_eq!(parsed.topbar.appearance, Appearance::Light);
+        assert!(!parsed.topbar.appearance_schedule);
+
+        let fresh = with_appearance("", Appearance::Dark).expect("empty file");
+        assert!(fresh.contains("[topbar]") && fresh.contains("appearance = \"dark\""));
+        assert!(!fresh.contains("appearance-schedule"));
+        assert!(with_appearance("topbar = 3\n", Appearance::Dark).is_err());
+        assert!(with_appearance("[topbar\n", Appearance::Dark).is_err());
+
+        let dir = scratch_dir("appearance");
+        let path = dir.join("glide.toml");
+        write_appearance(&path, Appearance::Light).expect("written");
+        let written = fs::read_to_string(&path).expect("readable");
+        assert!(written.contains("appearance = \"light\""));
+        assert_eq!(file_names(&dir), vec!["glide.toml".to_owned()], "no temporary file is left behind");
+    }
 
     #[test]
     fn a_reload_rebuilds_the_keymap_only_when_the_keymap_changed() {

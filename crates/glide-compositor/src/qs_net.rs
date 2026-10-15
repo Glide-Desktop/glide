@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::power::PowerAction;
 use crate::state::GlideState;
-use crate::topbar::{Detail, PanelAction, PowerDispatch, PromptOutcome, RowTarget};
+use crate::topbar::{Detail, PanelAction, PromptOutcome, RowTarget};
 
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(10);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -678,11 +678,16 @@ impl GlideState {
 
     pub(crate) fn run_power_button(&mut self, action: PowerAction) {
         self.topbar.close_popup();
-        match crate::topbar::power_dispatch(action) {
-            PowerDispatch::Now => self.perform_power_action(action),
-            PowerDispatch::Confirm => self.open_power_dialog(Some(action)),
-        }
+        self.perform_power_action(action);
         self.queue_redraw();
+    }
+
+    pub fn tick_qs_power(&mut self) -> bool {
+        if let Some(action) = self.topbar.power_due(std::time::Instant::now()) {
+            self.run_power_button(action);
+            return true;
+        }
+        self.topbar.power_counting()
     }
 
     pub(crate) fn run_qs_panel_action(&mut self, action: PanelAction) {

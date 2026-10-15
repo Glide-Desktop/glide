@@ -62,10 +62,16 @@ have not been tried on real hardware or against the real system service.
 
 ### Shell
 
-- Quick settings: an audio output picker behind a chevron on the volume
-  slider; airplane mode and power mode tiles; sliders for controls the
-  machine lacks (no backlight, no audio tools) are dimmed and inert
-  instead of showing made-up levels.
+- Quick settings follow the new concept: a header with the user, eight
+  tiles in two columns (Do Not Disturb and Dark Style are new, Wi-Fi and
+  Bluetooth toggle from their badge and open their list from the rest of
+  the card), one card for volume and brightness with readouts and an
+  output pill, a battery card with time left and a Saver / Balanced /
+  Performance switch, and power buttons that confirm inline — Restart,
+  Shut Down and Log Out count down from 60 s. *rendering unverified*
+- Quick settings: an audio output picker; airplane mode; sliders for
+  controls the machine lacks (no backlight, no audio tools) are dimmed
+  and inert instead of showing made-up levels.
 - The launcher also finds open windows and recently used files, and Alt+F2
   turns it into a Run prompt.
 - Keyboard backlight keys step the backlight and show its level; the
@@ -121,6 +127,10 @@ have not been tried on real hardware or against the real system service.
 
 ### Fixes
 
+- A configuration reload (any change in Settings, the scheduled
+  appearance, the Dark Style tile) no longer switches the keyboard back to
+  the first layout or clears Caps Lock; the keymap is only rebuilt when
+  the layouts or options change.
 - Themed cursors are drawn with their hotspot on the pointer. The text
   I-beam used to sit about half a line below and to the right of the point
   that actually received the click, so selections started somewhere else.

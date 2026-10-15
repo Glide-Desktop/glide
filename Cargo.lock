@@ -1433,6 +1433,7 @@ dependencies = [
  "smithay-drm-extras",
  "thiserror 2.0.20",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "tracy-client",

@@ -207,6 +207,17 @@ catalogue! {
     QsWrongPassword => "Wrong password", "Неправильний пароль";
     QsCouldNotConnect => "Couldn\u{2019}t connect", "Не вдалося підключитися";
     QsDisconnecting => "Disconnecting…", "Відключення…";
+    QsOn => "On", "Увімк.";
+    QsOff => "Off", "Вимк.";
+    QsDarkTheme => "Dark Style", "Темна тема";
+    QsScreenshot => "Screenshot", "Знімок екрана";
+    QsDisplay => "Display", "Дисплей";
+    QsProfileSaver => "Saver", "Економія";
+    QsProfileBalanced => "Balanced", "Баланс";
+    QsProfilePerformance => "Performance", "Швидкодія";
+    QsAskLock => "Lock the screen?", "Заблокувати екран комп\u{2019}ютера?";
+    QsAskSleep => "Put the computer to sleep?", "Перевести комп\u{2019}ютер у режим сну?";
+    QsPowerCountdown => "Automatically in {n} s.", "Автоматично через {n} с.";
     TbBattery => "Battery", "Акумулятор";
     TbBatteryCharging => "Charging", "Заряджається";
     TbBatteryOnBattery => "On battery", "Від акумулятора";

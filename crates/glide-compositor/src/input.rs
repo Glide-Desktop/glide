@@ -1698,6 +1698,10 @@ impl GlideState {
             }
             KeyAction::Screenshot => self.request_screenshot(),
             KeyAction::TopbarClosePopup => {
+                if self.topbar.qs_escape() {
+                    self.queue_redraw();
+                    return;
+                }
                 let topbar_closed = self.topbar.close_popup();
                 let dock_closed = self.dock.close_menu();
                 if topbar_closed || dock_closed {

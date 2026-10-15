@@ -109,9 +109,9 @@ Ctrl+Alt+F3 and a text login.
 
 31. **Workspaces in a pager.** waybar with the `ext/workspaces` module shows
     every workspace, highlights the active one and switches on click.
-32. **Audio output.** Quick settings › chevron beside the volume slider lists
-    the outputs; picking HDMI or headphones moves the sound and the slider
-    follows.
+32. **Audio output.** Quick settings › the output pill on the volume row
+    lists the outputs; picking HDMI or headphones moves the sound, the pill
+    names the new output and the slider follows.
 33. **Cursor theme.** Settings › Appearance › Pointer: the shell cursor
     changes at once; a newly started GTK app uses it;
     `gsettings get org.gnome.desktop.interface cursor-theme` matches.
@@ -134,9 +134,10 @@ Ctrl+Alt+F3 and a text login.
     dock highlighted, click a window: the click lands in it.
 39. **Run prompt.** Alt+F2, type `gnome-calculator`, Enter: it starts.
 40. **Quick settings tiles.** Airplane mode on: `rfkill list` shows every
-    radio soft-blocked; off again unblocks them. Power mode: each click
-    moves `powerprofilesctl get` to the next profile. On a desktop without
-    a backlight the brightness slider is dimmed and does nothing.
+    radio soft-blocked; off again unblocks them. Each segment of the power
+    profile switch moves `powerprofilesctl get` to that profile and the pill
+    slides there. On a desktop without a backlight the brightness slider is
+    dimmed and does nothing.
 41. **Charge limit.** On a laptop whose UPower battery reports
     `ChargeThresholdSupported`, Settings › Power shows Preserve battery
     health; switching it on asks polkit and `ChargeThresholdEnabled` turns
@@ -185,3 +186,17 @@ Ctrl+Alt+F3 and a text login.
     with the I-beam's middle exactly between two letters: the caret lands
     there, and a drag selects from that point. Hover a window edge: the
     resize arrow's centre sits on the edge. Repeat at scale 2 and 1.25.
+
+## Quick settings
+
+53. **Layout.** Open quick settings in light and dark, at scale 1 and 2,
+    side by side with `design/quick-settings-concept.html`: spacing, radii,
+    the top bezel line, tile colours, slider thumbs (hover ring, drag ring)
+    and the battery card match. Click the Wi-Fi badge: the radio toggles;
+    click the rest of the card: the network list opens.
+54. **Dark Style.** The tile flips the shell and GTK apps; `glide.toml`
+    keeps its comments and gains `appearance` under `[topbar]`; the
+    keyboard layout in use does not change.
+55. **Inline power confirmation.** Arm Shut Down: the strip counts down
+    once a second and shuts down at zero; Esc or Cancel puts the row back.
+    Arm Lock: no countdown, confirm locks.

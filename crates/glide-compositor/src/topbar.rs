@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use glide_theme::TextStyle;
 use glide_theme::motion::{self, CubicBezier, E_IO, E_OUT, E_OVER, ease_io, ease_out, lerp};
-use glide_theme::shape::{R_ROUND, R1, R2, R3};
+use glide_theme::shape::{R_ROUND, R1, R2, R3, R4};
 use glide_theme::spacing::{SP1, SP2};
 use glide_ui::{Reveal, Tween};
 use smithay::{
@@ -19,7 +19,9 @@ use crate::global_menu::MenuPath;
 use crate::paint::TextAlign;
 use crate::popup_menu::text_px as text_w;
 use crate::power::PowerAction;
+use crate::power_dialog::is_destructive;
 use crate::raster::{Canvas, ShellRenderer};
+use crate::system_info::PowerProfile;
 
 #[path = "topbar_panels.rs"]
 mod panels;
@@ -35,9 +37,7 @@ mod tray;
 
 pub use tray::{ICON as TRAY_ICON, IconArt, MAX_SCALE as TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon};
 
-pub use panels::{
-    Detail, FieldKey, PanelAction, PowerDispatch, PromptOutcome, QsKeyMode, RowTarget, field_key, power_dispatch,
-};
+pub use panels::{Detail, FieldKey, PanelAction, PromptOutcome, QsKeyMode, RowTarget, field_key};
 
 pub const HEIGHT: i32 = 34;
 
@@ -96,21 +96,48 @@ const STATUS_SPEAKER_WIDTH: i32 = 14;
 const STATUS_BATT_WIDTH: i32 = 24;
 const STATUS_SEP_WIDTH: i32 = 13;
 
-const QS_WIDTH: i32 = 312;
+const QS_WIDTH: i32 = 352;
 const QS_PAD: i32 = glide_theme::spacing::SP3;
 const QS_GAP: i32 = glide_theme::spacing::SP3;
 const QS_GRID_GAP: i32 = glide_theme::spacing::SP2;
-const QS_TILE_HEIGHT: i32 = 54;
-const QS_ROW_HEIGHT: i32 = 44;
-const QS_SLIDER_HEIGHT: i32 = 22;
-const QS_SLIDER_GAP: i32 = 10;
-const QS_SLIDER_ICON: i32 = 22;
-const QS_SLIDER_TRACK_H: i32 = 6;
-const QS_SLIDER_THUMB: i32 = 14;
+const QS_RADIUS: f32 = R4;
+const QS_HEADER: i32 = 28;
+const QS_AVATAR: i32 = 28;
+const QS_TILE_HEIGHT: i32 = 52;
+const QS_TILE_ROWS: i32 = 4;
+const QS_TILE_INSET: i32 = 11;
+const QS_SPLIT_INSET: i32 = 9;
+const QS_SPLIT_GAP: i32 = 7;
+const QS_SPLIT_END: i32 = 7;
+const QS_CHEVRON: i32 = 22;
 const QS_ICON_BADGE: i32 = 28;
-const QS_ACT_BTN: i32 = 28;
-const QS_BATTERY_W: i32 = 72;
-const QS_AVATAR: i32 = 26;
+const QS_CARD_PAD_X: i32 = glide_theme::spacing::SP3;
+const QS_CARD_PAD_Y: i32 = glide_theme::spacing::SP2;
+const QS_SLIDER_HEAD: i32 = 24;
+const QS_SLIDER_HEIGHT: i32 = 22;
+const QS_SLIDER_TRACK_H: i32 = 6;
+const QS_SLIDER_THUMB: i32 = 16;
+const QS_SLIDER_ICON: i32 = 24;
+const QS_READOUT_W: i32 = 34;
+const QS_PILL_PAD: i32 = glide_theme::spacing::SP2;
+const QS_PILL_CHEVRON: i32 = 9;
+const QS_PILL_MAX: i32 = 175;
+const QS_BATTERY_HEAD: i32 = 40;
+const QS_SEGMENTS_H: i32 = 34;
+const QS_SEGMENT_INSET: i32 = 3;
+const QS_BATTERY_GLYPH_W: i32 = 24;
+const QS_BATTERY_GLYPH_H: i32 = 13;
+const QS_POWER_BTN: i32 = 36;
+const QS_POWER_ROW: i32 = 40;
+const QS_CONFIRM_PAD: i32 = 10;
+const QS_CONFIRM_BADGE: i32 = 24;
+const QS_CONFIRM_NOTE: i32 = 14;
+const QS_CONFIRM_PILL: i32 = 28;
+const QS_CONFIRM_PILL_PAD: i32 = glide_theme::spacing::SP3;
+const QS_CONFIRM_PILL_GAP: i32 = 6;
+const QS_CONFIRM_PILLS_TOP: i32 = 2;
+const QS_ARM_RISE: f64 = 6.0;
+const QS_CHEVRON_NUDGE: i32 = 2;
 const QS_SWITCH_W: i32 = 44;
 const QS_SWITCH_H: i32 = 26;
 const QS_SWITCH_THUMB: i32 = 20;
@@ -259,12 +286,15 @@ pub enum TopbarAction {
     QsToggleBluetooth,
     QsToggleNightLight,
     QsToggleAirplane,
-    QsCyclePowerMode,
+    QsToggleDarkTheme,
+    QsSetPowerProfile(PowerProfile),
     QsVolumeMute,
     QsVolumeAdjust(u8),
     QsBrightnessAdjust(u8),
     QsScreenshot,
     QsOpenSettings,
+    QsArmPower(PowerAction),
+    QsDisarmPower,
     QsPower(PowerAction),
     QsPanel(PanelAction),
     ToggleLauncher,
@@ -304,13 +334,17 @@ pub enum Slot {
     QsNightLight,
     QsScreenshot,
     QsAirplane,
-    QsPowerMode,
+    QsDnd,
+    QsDarkTheme,
     QsCaffeine,
     QsVolumeMute,
     QsVolumeTrack,
     QsBrightnessTrack,
+    QsProfile(PowerProfile),
     QsSettings,
     QsPowerButton(PowerAction),
+    QsPowerCancel,
+    QsPowerConfirm(PowerAction),
     QsWifiMore,
     QsBluetoothMore,
     QsVolumeMore,
@@ -403,10 +437,15 @@ impl Slot {
             | Self::QsPasswordField
             | Self::PopMediaSeek => None,
             Self::MediaPrev | Self::MediaPlay | Self::MediaNext => Some(glide_theme::shape::R1),
-            Self::LayoutPick(_) => Some(SEG_RADIUS),
-            Self::PopMediaPlay | Self::NcItemDismiss(_) | Self::QsPowerButton(_) | Self::QsBack => {
-                Some(glide_theme::shape::R_ROUND)
-            }
+            Self::LayoutPick(_) | Self::QsProfile(_) => Some(SEG_RADIUS),
+            Self::PopMediaPlay
+            | Self::NcItemDismiss(_)
+            | Self::QsPowerButton(_)
+            | Self::QsPowerCancel
+            | Self::QsPowerConfirm(_)
+            | Self::QsWifi
+            | Self::QsBluetooth
+            | Self::QsBack => Some(glide_theme::shape::R_ROUND),
             _ => Some(glide_theme::shape::R2),
         }
     }
@@ -425,7 +464,7 @@ impl Slot {
             Self::LayoutPick(index) | Self::LangMenuItem(index) => TopbarAction::SelectLayout(index),
             Self::LayoutDropdown => TopbarAction::ToggleLanguageMenu,
             Self::Caffeine | Self::QsCaffeine => TopbarAction::ToggleCaffeine,
-            Self::DoNotDisturb | Self::NcDndToggle => TopbarAction::ToggleDoNotDisturb,
+            Self::DoNotDisturb | Self::NcDndToggle | Self::QsDnd => TopbarAction::ToggleDoNotDisturb,
             Self::Status => TopbarAction::ToggleQuickSettings,
             Self::LangMenuSettings => TopbarAction::OpenInputSettings,
             Self::NcClearAll => TopbarAction::ClearAllNotifications,
@@ -436,12 +475,15 @@ impl Slot {
             Self::QsNightLight => TopbarAction::QsToggleNightLight,
             Self::QsScreenshot => TopbarAction::QsScreenshot,
             Self::QsAirplane => TopbarAction::QsToggleAirplane,
-            Self::QsPowerMode => TopbarAction::QsCyclePowerMode,
+            Self::QsDarkTheme => TopbarAction::QsToggleDarkTheme,
             Self::QsVolumeMute => TopbarAction::QsVolumeMute,
             Self::QsVolumeTrack => TopbarAction::QsVolumeAdjust(50),
             Self::QsBrightnessTrack => TopbarAction::QsBrightnessAdjust(50),
+            Self::QsProfile(profile) => TopbarAction::QsSetPowerProfile(profile),
             Self::QsSettings => TopbarAction::QsOpenSettings,
-            Self::QsPowerButton(action) => TopbarAction::QsPower(action),
+            Self::QsPowerButton(action) => TopbarAction::QsArmPower(action),
+            Self::QsPowerCancel => TopbarAction::QsDisarmPower,
+            Self::QsPowerConfirm(action) => TopbarAction::QsPower(action),
             Self::QsWifiMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi)),
             Self::QsBluetoothMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Bluetooth)),
             Self::QsVolumeMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Sound)),
@@ -462,7 +504,8 @@ impl Slot {
 }
 
 type ScaledBuffers = std::collections::HashMap<i32, MemoryRenderBuffer>;
-type QsCacheKey = (u64, QsFlags, ((u8, u8), u8, u8), Option<Slot>);
+type QsCacheKey = ((u64, u64, u64), QsFlags, QsMotion, Option<Slot>, QsShape);
+type QsPowerKey = (Option<Slot>, Option<(PowerAction, Option<u64>)>, (i32, i32));
 type NcCacheKey = (u64, bool, (u8, u8), Option<Slot>);
 type LayerKey = (u8, i32, i32, u32, i32);
 
@@ -564,6 +607,9 @@ pub struct Topbar {
     badge_anim: Anim,
     badge: Badge,
     segment_anim: Anim,
+    profile_anim: Anim,
+    qs_power: Option<ArmedPower>,
+    arm_anim: Anim,
     slider_dragging: bool,
     scroll: crate::system_info::ScrollAccumulator,
 
@@ -579,7 +625,7 @@ pub struct Topbar {
     layout_key: Option<(u64, Rectangle<i32, Logical>)>,
     popup_rect: Option<Rectangle<i32, Logical>>,
     panel: std::collections::HashMap<PanelKey, MemoryRenderBuffer>,
-    shadows: std::collections::HashMap<(i32, i32, i32), MemoryRenderBuffer>,
+    shadows: std::collections::HashMap<(i32, i32, i32, u32), MemoryRenderBuffer>,
     layers: HashMap<LayerKey, MemoryRenderBuffer>,
     separator_cache: Cache<()>,
     app_cache: Cache<(String, String)>,
@@ -590,6 +636,8 @@ pub struct Topbar {
     coffee_cache: Cache<(bool, bool, (u8, u8))>,
     dnd_cache: Cache<(bool, u8)>,
     qs_cache: Cache<QsCacheKey>,
+    qs_row_cache: Cache<QsPowerKey>,
+    qs_confirm_cache: Cache<QsPowerKey>,
     qs_bg_cache: Cache<(i32, i32)>,
     qs_detail_cache: Cache<(u64, u64, Option<Slot>, Detail)>,
     nc_cache: Cache<NcCacheKey>,
@@ -650,6 +698,8 @@ impl Topbar {
         self.coffee_cache.clear();
         self.dnd_cache.clear();
         self.qs_cache.clear();
+        self.qs_row_cache.clear();
+        self.qs_confirm_cache.clear();
         self.qs_bg_cache.clear();
         self.qs_detail_cache.clear();
         self.nc_cache.clear();
@@ -884,6 +934,8 @@ impl Topbar {
             &self.seek_anim,
             &self.badge_anim,
             &self.segment_anim,
+            &self.profile_anim,
+            &self.arm_anim,
         ]
         .into_iter()
         .any(Anim::is_animating);
@@ -952,6 +1004,7 @@ impl Topbar {
         self.popup_reveal.settle(duration);
         if self.closing_popup.is_some() && !self.popup_reveal.is_visible(duration) {
             self.closing_popup = None;
+            self.forget_power();
             self.touch();
         }
         let reserved = self.unread > 0 || self.badge_anim.value() > 0.0;
@@ -1043,7 +1096,7 @@ impl Topbar {
                                 spans_overlap(from.loc.y, from.size.h, rect.loc.y, rect.size.h),
                             )
                         };
-                        (along > 0 && in_lane).then_some((along + across.abs() * 2, *slot))
+                        (along > 0 && in_lane).then_some((along + across.abs(), *slot))
                     })
                     .min_by_key(|(score, _)| *score)
                     .map(|(_, slot)| slot)
@@ -1158,11 +1211,111 @@ impl Topbar {
         self.popup_reveal.open(motion::t2());
         self.set_focused(None);
         self.qs_panel.reset();
+        self.forget_power();
         if popup == OpenPopup::NotificationCenter {
             self.calendar.reset();
         }
         self.touch();
         true
+    }
+
+    fn forget_power(&mut self) {
+        self.qs_power = None;
+        self.arm_anim.jump(0.0);
+    }
+
+    fn qs_shape(&self, painter: Option<&crate::paint::Painter>) -> QsShape {
+        use crate::i18n::{Key, t};
+        let armed = self.qs_power.map(|armed| armed.action);
+        let pills = painter.map_or_else(QsPills::default, |painter| {
+            let (cancel, confirm) = armed.map_or((0, 0), |action| {
+                let confirm = t(crate::power_dialog::confirm_key(action));
+                (qs_confirm_pill_width(painter, t(Key::PowerCancel)), qs_confirm_pill_width(painter, confirm))
+            });
+            QsPills { output: qs_pill_width(painter, &self.output_label()), cancel, confirm }
+        });
+        QsShape {
+            battery: self.system_status.battery_pct.is_some(),
+            profile: self.system_status.power_profile.is_some(),
+            armed,
+            pills,
+        }
+    }
+
+    fn qs_main_key(&self, painter: &crate::paint::Painter) -> QsCacheKey {
+        let main_view = self.qs_panel.view.is_none();
+        let hovered = self.hovered_in(Slot::in_quick_settings).filter(|_| main_view);
+        let dragging = self
+            .pressed
+            .filter(|slot| self.slider_dragging && matches!(slot, Slot::QsVolumeTrack | Slot::QsBrightnessTrack));
+        let flags = QsFlags { caffeinated: self.caffeinated, dnd: self.dnd, dark: self.theme.dark, dragging };
+        let motion = QsMotion {
+            volume: percent(self.volume_anim.value()),
+            brightness: percent(self.brightness_anim.value()),
+            profile: quantize(self.profile_anim.value(), MOTION_QUANTUM),
+        };
+        let revs = (self.status_rev, self.detail_rev, self.qs_panel.rev);
+        (revs, flags, motion, hovered, self.qs_shape(Some(painter)))
+    }
+
+    fn output_label(&self) -> String {
+        self.qs_panel.active_output().map_or_else(
+            || crate::i18n::t(crate::i18n::Key::SettingsSound).to_string(),
+            |output| output.description.clone(),
+        )
+    }
+
+    #[must_use]
+    pub fn armed_power(&self) -> Option<PowerAction> {
+        self.qs_power.map(|armed| armed.action)
+    }
+
+    pub fn arm_power(&mut self, action: PowerAction) -> bool {
+        if self.open_popup != Some(OpenPopup::QuickSettings) || self.armed_power() == Some(action) {
+            return false;
+        }
+        let deadline = is_destructive(action).then(|| std::time::Instant::now() + crate::power_dialog::COUNTDOWN);
+        self.qs_power = Some(ArmedPower { action, deadline });
+        self.arm_anim.retarget(1.0, motion::t2(), E_OUT);
+        if self.focused.is_some() {
+            self.set_focused(Some(Slot::QsPowerConfirm(action)));
+        }
+        self.touch();
+        true
+    }
+
+    pub fn disarm_power(&mut self) -> bool {
+        let Some(armed) = self.qs_power.take() else {
+            return false;
+        };
+        self.arm_anim.retarget(0.0, motion::t2(), E_OUT);
+        if self.focused.is_some() {
+            self.set_focused(Some(Slot::QsPowerButton(armed.action)));
+        }
+        self.touch();
+        true
+    }
+
+    #[must_use]
+    pub fn power_counting(&self) -> bool {
+        self.open_popup == Some(OpenPopup::QuickSettings) && self.qs_power.is_some_and(|armed| armed.deadline.is_some())
+    }
+
+    pub fn power_due(&mut self, now: std::time::Instant) -> Option<PowerAction> {
+        if !self.power_counting() {
+            return None;
+        }
+        let armed = self.qs_power?;
+        if armed.seconds_left(now)? > 0 {
+            return None;
+        }
+        self.forget_power();
+        self.touch();
+        Some(armed.action)
+    }
+
+    pub fn qs_escape(&mut self) -> bool {
+        self.open_popup == Some(OpenPopup::QuickSettings) && (self.disarm_power() || self.close_detail())
     }
 
     pub fn set_system_status(&mut self, status: crate::system_info::SystemStatus) -> bool {
@@ -1171,6 +1324,13 @@ impl Topbar {
         }
         let at_a_glance = !self.system_status.looks_like(&status);
         let (volume, brightness) = (status.volume_pct, status.brightness_pct);
+        match (self.system_status.power_profile, status.power_profile) {
+            (Some(before), Some(after)) if before != after => {
+                self.profile_anim.retarget(profile_index(after), motion::t2(), E_OUT);
+            }
+            (None, Some(after)) => self.profile_anim.jump(profile_index(after)),
+            _ => {}
+        }
         self.system_status = status;
         self.detail_rev = self.detail_rev.wrapping_add(1);
         if !at_a_glance {
@@ -1456,7 +1616,7 @@ impl Topbar {
 
         let mut popup_slots = std::mem::take(&mut menu.rows);
         let popup_rect = self
-            .layout_popup(output, strip.loc.y, (lang_rect, media_rect, menu.anchor), &mut popup_slots)
+            .layout_popup(painter, (output, strip.loc.y), (lang_rect, media_rect, menu.anchor), &mut popup_slots)
             .or_else(|| self.layout_status_popup(&slots, output, strip.loc.y));
         if self.popup_reveal.is_open() {
             slots.extend(popup_slots.iter().copied());
@@ -1469,8 +1629,8 @@ impl Topbar {
     }
 
     fn layout_popup(
-        &self, output: Rectangle<i32, Logical>, strip_y: i32, anchors: (Anchor, Anchor, Anchor),
-        popup_slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
+        &self, painter: &crate::paint::Painter, (output, strip_y): (Rectangle<i32, Logical>, i32),
+        anchors: (Anchor, Anchor, Anchor), popup_slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
     ) -> Option<Rectangle<i32, Logical>> {
         let (lang_rect, media_rect, menu_anchor) = anchors;
         match self.shown_popup() {
@@ -1482,8 +1642,12 @@ impl Topbar {
             Some(OpenPopup::QuickSettings) => Some(layout_qs_slots(
                 output,
                 strip_y,
-                (self.detail_slots(), self.system_status.battery_pct.is_some()),
-                (self.system_status.volume_available, self.system_status.brightness_available),
+                QsLayoutInput {
+                    shape: self.qs_shape(Some(painter)),
+                    volume: self.system_status.volume_available,
+                    brightness: self.system_status.brightness_available,
+                    detail: self.detail_slots(),
+                },
                 popup_slots,
             )),
             Some(OpenPopup::MediaPlayer) => {
@@ -1672,19 +1836,121 @@ fn layout_nc_slots(
 
 type LocalRect = Rectangle<i32, Logical>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum QsTile {
+    Wifi,
+    Bluetooth,
+    NightLight,
+    Dnd,
+    Caffeine,
+    Airplane,
+    Screenshot,
+    DarkTheme,
+}
+
+const QS_TILES: [QsTile; 8] = [
+    QsTile::Wifi,
+    QsTile::Bluetooth,
+    QsTile::NightLight,
+    QsTile::Dnd,
+    QsTile::Caffeine,
+    QsTile::Airplane,
+    QsTile::Screenshot,
+    QsTile::DarkTheme,
+];
+
+impl QsTile {
+    const fn slot(self) -> Slot {
+        match self {
+            Self::Wifi => Slot::QsWifi,
+            Self::Bluetooth => Slot::QsBluetooth,
+            Self::NightLight => Slot::QsNightLight,
+            Self::Dnd => Slot::QsDnd,
+            Self::Caffeine => Slot::QsCaffeine,
+            Self::Airplane => Slot::QsAirplane,
+            Self::Screenshot => Slot::QsScreenshot,
+            Self::DarkTheme => Slot::QsDarkTheme,
+        }
+    }
+
+    const fn more(self) -> Option<Slot> {
+        match self {
+            Self::Wifi => Some(Slot::QsWifiMore),
+            Self::Bluetooth => Some(Slot::QsBluetoothMore),
+            _ => None,
+        }
+    }
+}
+
+const QS_PROFILES: [PowerProfile; 3] = [PowerProfile::PowerSaver, PowerProfile::Balanced, PowerProfile::Performance];
+
+fn profile_index(profile: PowerProfile) -> f64 {
+    let index = QS_PROFILES.iter().position(|candidate| *candidate == profile).unwrap_or(1);
+    f64::from(u8::try_from(index).unwrap_or(1))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+struct QsPills {
+    output: i32,
+    cancel: i32,
+    confirm: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+struct QsShape {
+    battery: bool,
+    profile: bool,
+    armed: Option<PowerAction>,
+    pills: QsPills,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ArmedPower {
+    action: PowerAction,
+    deadline: Option<std::time::Instant>,
+}
+
+impl ArmedPower {
+    fn seconds_left(self, now: std::time::Instant) -> Option<u64> {
+        let left = self.deadline?.saturating_duration_since(now);
+        Some(left.as_millis().div_ceil(1000).try_into().unwrap_or(u64::MAX))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QsSliderRow {
+    icon: LocalRect,
+    label: LocalRect,
+    readout: LocalRect,
+    track: LocalRect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QsConfirm {
+    rect: LocalRect,
+    badge: LocalRect,
+    question: LocalRect,
+    note: Option<LocalRect>,
+    cancel: LocalRect,
+    confirm: LocalRect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QsGeometry {
-    tiles: [(Slot, LocalRect); 6],
-    caffeine: LocalRect,
-    volume_icon: LocalRect,
-    volume_track: LocalRect,
-    volume_more: LocalRect,
-    brightness_icon: LocalRect,
-    brightness_track: LocalRect,
-    divider_y: i32,
-    footer: LocalRect,
-    battery: LocalRect,
+    avatar: LocalRect,
+    name: LocalRect,
     settings: LocalRect,
-    power: [(Slot, LocalRect); 5],
+    tiles: [(QsTile, LocalRect); 8],
+    sliders: LocalRect,
+    volume: QsSliderRow,
+    brightness: QsSliderRow,
+    slider_divider: i32,
+    battery_card: Option<LocalRect>,
+    battery_head: Option<LocalRect>,
+    segments: Option<LocalRect>,
+    power_row: LocalRect,
+    power: [(PowerAction, LocalRect); 5],
+    confirm: Option<QsConfirm>,
     height: i32,
 }
 
@@ -1694,61 +1960,145 @@ const fn band(rect: LocalRect) -> (i32, i32, i32, i32) {
     (rect.loc.x, rect.loc.x + rect.size.w, rect.loc.y, rect.loc.y + rect.size.h)
 }
 
-fn qs_geometry() -> QsGeometry {
+fn qs_badge(tile: QsTile, rect: LocalRect) -> LocalRect {
+    let inset = if tile.more().is_some() { QS_SPLIT_INSET } else { QS_TILE_INSET };
+    local_rect(rect.loc.x + inset, rect.loc.y + (rect.size.h - QS_ICON_BADGE) / 2, QS_ICON_BADGE, QS_ICON_BADGE)
+}
+
+fn qs_chevron(rect: LocalRect) -> LocalRect {
+    let x = rect.loc.x + rect.size.w - QS_SPLIT_END - QS_CHEVRON;
+    local_rect(x, rect.loc.y + (rect.size.h - QS_CHEVRON) / 2, QS_CHEVRON, QS_CHEVRON)
+}
+
+fn qs_slider_row(x: i32, y: i32, width: i32, label_w: i32) -> QsSliderRow {
+    let icon = local_rect(x, y, QS_SLIDER_ICON, QS_SLIDER_HEAD);
+    let readout = local_rect(x + width - QS_READOUT_W, y, QS_READOUT_W, QS_SLIDER_HEAD);
+    let label_x = x + QS_SLIDER_ICON + SP1;
+    let label_w = label_w.min(readout.loc.x - SP2 - label_x).max(0);
+    QsSliderRow {
+        icon,
+        label: local_rect(label_x, y, label_w, QS_SLIDER_HEAD),
+        readout,
+        track: local_rect(x, y + QS_SLIDER_HEAD + SP1, width, QS_SLIDER_HEIGHT),
+    }
+}
+
+fn qs_segments(track: LocalRect) -> [(PowerProfile, LocalRect); 3] {
+    let inner_w = track.size.w - QS_SEGMENT_INSET * 2;
+    let count = i32::try_from(QS_PROFILES.len()).unwrap_or(1);
+    let edge = |index: i32| track.loc.x + QS_SEGMENT_INSET + inner_w * index / count;
+    let mut index = 0;
+    QS_PROFILES.map(|profile| {
+        let (left, right) = (edge(index), edge(index + 1));
+        index += 1;
+        let rect = local_rect(left, track.loc.y + QS_SEGMENT_INSET, right - left, track.size.h - QS_SEGMENT_INSET * 2);
+        (profile, rect)
+    })
+}
+
+fn qs_confirm(row: LocalRect, countdown: bool, pills: QsPills) -> QsConfirm {
+    let inset = 1 + QS_CONFIRM_PAD;
+    let (left, right) = (row.loc.x + inset, row.loc.x + row.size.w - inset);
+    let mut y = row.loc.y + inset;
+    let badge = local_rect(left, y, QS_CONFIRM_BADGE, QS_CONFIRM_BADGE);
+    let text_x = left + QS_CONFIRM_BADGE + SP2;
+    let question = local_rect(text_x, y, right - text_x, QS_CONFIRM_BADGE);
+    y += QS_CONFIRM_BADGE + SP2;
+    let note = if countdown {
+        let note = local_rect(text_x, y, right - text_x, QS_CONFIRM_NOTE);
+        y += QS_CONFIRM_NOTE + SP2;
+        Some(note)
+    } else {
+        None
+    };
+    y += QS_CONFIRM_PILLS_TOP;
+    let confirm = local_rect(right - pills.confirm, y, pills.confirm, QS_CONFIRM_PILL);
+    let cancel_x = confirm.loc.x - QS_CONFIRM_PILL_GAP - pills.cancel;
+    let cancel = local_rect(cancel_x, y, pills.cancel, QS_CONFIRM_PILL);
+    let bottom = y + QS_CONFIRM_PILL + inset;
+    QsConfirm {
+        rect: local_rect(row.loc.x, row.loc.y, row.size.w, bottom - row.loc.y),
+        badge,
+        question,
+        note,
+        cancel,
+        confirm,
+    }
+}
+
+fn qs_geometry(shape: &QsShape) -> QsGeometry {
     let row_w = QS_WIDTH - QS_PAD * 2;
+    let mut y = QS_PAD;
+    let avatar = local_rect(QS_PAD, y, QS_AVATAR, QS_HEADER);
+    let settings = local_rect(QS_WIDTH - QS_PAD - QS_HEADER, y, QS_HEADER, QS_HEADER);
+    let name_x = QS_PAD + QS_AVATAR + SP2;
+    let name = local_rect(name_x, y, settings.loc.x - SP2 - name_x, QS_HEADER);
+    y += QS_HEADER + QS_GAP;
+
     let col_w = (row_w - QS_GRID_GAP) / 2;
-    let col2_x = QS_PAD + col_w + QS_GRID_GAP;
-    let row1_y = QS_PAD;
-    let row2_y = row1_y + QS_TILE_HEIGHT + QS_GRID_GAP;
-    let row3_y = row2_y + QS_TILE_HEIGHT + QS_GRID_GAP;
-    let tiles = [
-        (Slot::QsWifi, local_rect(QS_PAD, row1_y, col_w, QS_TILE_HEIGHT)),
-        (Slot::QsBluetooth, local_rect(col2_x, row1_y, col_w, QS_TILE_HEIGHT)),
-        (Slot::QsNightLight, local_rect(QS_PAD, row2_y, col_w, QS_TILE_HEIGHT)),
-        (Slot::QsScreenshot, local_rect(col2_x, row2_y, col_w, QS_TILE_HEIGHT)),
-        (Slot::QsAirplane, local_rect(QS_PAD, row3_y, col_w, QS_TILE_HEIGHT)),
-        (Slot::QsPowerMode, local_rect(col2_x, row3_y, col_w, QS_TILE_HEIGHT)),
-    ];
-
-    let caffeine_y = row3_y + QS_TILE_HEIGHT + QS_GAP;
-    let caffeine = local_rect(QS_PAD, caffeine_y, row_w, QS_ROW_HEIGHT);
-
-    let track_x = QS_PAD + QS_SLIDER_ICON + QS_GRID_GAP;
-    let track_w = QS_PAD + row_w - track_x;
-    let volume_y = caffeine_y + QS_ROW_HEIGHT + QS_GAP;
-    let volume_more =
-        local_rect(QS_PAD + row_w - panels::QS_TILE_MORE, volume_y, panels::QS_TILE_MORE, QS_SLIDER_HEIGHT);
-    let brightness_y = volume_y + QS_SLIDER_HEIGHT + QS_SLIDER_GAP;
-
-    let divider_y = brightness_y + QS_SLIDER_HEIGHT + QS_GAP;
-    let footer_y = divider_y + 1 + QS_GAP;
-    let footer = local_rect(QS_PAD, footer_y, row_w, QS_ACT_BTN);
-    let settings = local_rect(QS_PAD + row_w - QS_ACT_BTN, footer_y, QS_ACT_BTN, QS_ACT_BTN);
-    let battery = local_rect(settings.loc.x - QS_GRID_GAP - QS_BATTERY_W, footer_y, QS_BATTERY_W, QS_ACT_BTN);
-    let power_y = footer_y + QS_ACT_BTN + QS_GAP;
-    let power_count = i32::try_from(panels::POWER_ROW.len()).unwrap_or(1);
-    let power_gap = (row_w - panels::QS_POWER_BTN * power_count) / (power_count - 1).max(1);
-    let mut power_x = QS_PAD;
-    let power = panels::POWER_ROW.map(|action| {
-        let rect = local_rect(power_x, power_y, panels::QS_POWER_BTN, panels::QS_POWER_BTN);
-        power_x += panels::QS_POWER_BTN + power_gap;
-        (Slot::QsPowerButton(action), rect)
+    let mut index = 0;
+    let grid_y = y;
+    let tiles = QS_TILES.map(|tile| {
+        let (column, row) = (index % 2, index / 2);
+        index += 1;
+        let x = QS_PAD + column * (col_w + QS_GRID_GAP);
+        (tile, local_rect(x, grid_y + row * (QS_TILE_HEIGHT + QS_GRID_GAP), col_w, QS_TILE_HEIGHT))
     });
+    y += QS_TILE_ROWS * QS_TILE_HEIGHT + (QS_TILE_ROWS - 1) * QS_GRID_GAP + QS_GAP;
+
+    let inner_x = QS_PAD + 1 + QS_CARD_PAD_X;
+    let inner_w = row_w - 2 * (1 + QS_CARD_PAD_X);
+    let volume = qs_slider_row(inner_x, y + 1 + QS_CARD_PAD_Y, inner_w, shape.pills.output);
+    let slider_divider = volume.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y;
+    let brightness = qs_slider_row(inner_x, slider_divider + 1 + QS_CARD_PAD_Y, inner_w, i32::MAX);
+    let sliders_bottom = brightness.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y + 1;
+    let sliders = local_rect(QS_PAD, y, row_w, sliders_bottom - y);
+    y = sliders_bottom + QS_GAP;
+
+    let (mut battery_card, mut battery_head, mut segments) = (None, None, None);
+    if shape.battery || shape.profile {
+        let (x, w) = (QS_PAD + 1 + SP1, row_w - 2 * (1 + SP1));
+        let mut cursor = y + 1 + SP1;
+        if shape.battery {
+            battery_head = Some(local_rect(x, cursor, w, QS_BATTERY_HEAD));
+            cursor += QS_BATTERY_HEAD + SP1;
+        }
+        if shape.profile {
+            segments = Some(local_rect(x, cursor, w, QS_SEGMENTS_H));
+            cursor += QS_SEGMENTS_H + SP1;
+        }
+        battery_card = Some(local_rect(QS_PAD, y, row_w, cursor + 1 - y));
+        y = cursor + 1 + QS_GAP;
+    }
+
+    let power_row = local_rect(QS_PAD, y, row_w, QS_POWER_ROW);
+    let last = i32::try_from(panels::POWER_ROW.len()).unwrap_or(1) - 1;
+    let button_y = y + (QS_POWER_ROW - QS_POWER_BTN) / 2;
+    let mut index = 0;
+    let power = panels::POWER_ROW.map(|action| {
+        let x = QS_PAD + (row_w - QS_POWER_BTN) * index / last.max(1);
+        index += 1;
+        (action, local_rect(x, button_y, QS_POWER_BTN, QS_POWER_BTN))
+    });
+    let confirm = shape.armed.map(|action| qs_confirm(power_row, is_destructive(action), shape.pills));
+    let session = confirm.map_or(QS_POWER_ROW, |strip| strip.rect.size.h);
 
     QsGeometry {
-        tiles,
-        caffeine,
-        volume_icon: local_rect(QS_PAD, volume_y, QS_SLIDER_ICON, QS_SLIDER_HEIGHT),
-        volume_track: local_rect(track_x, volume_y, volume_more.loc.x - QS_GRID_GAP - track_x, QS_SLIDER_HEIGHT),
-        volume_more,
-        brightness_icon: local_rect(QS_PAD, brightness_y, QS_SLIDER_ICON, QS_SLIDER_HEIGHT),
-        brightness_track: local_rect(track_x, brightness_y, track_w, QS_SLIDER_HEIGHT),
-        divider_y,
-        footer,
-        battery,
+        avatar,
+        name,
         settings,
+        tiles,
+        sliders,
+        volume,
+        brightness,
+        slider_divider,
+        battery_card,
+        battery_head,
+        segments,
+        power_row,
         power,
-        height: power_y + panels::QS_POWER_BTN + QS_PAD,
+        confirm,
+        height: y + session + QS_PAD,
     }
 }
 
@@ -1877,49 +2227,64 @@ fn push_state_layers<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_
     }
 }
 
+struct QsLayoutInput {
+    shape: QsShape,
+    volume: bool,
+    brightness: bool,
+    detail: Option<Vec<(Slot, LocalRect)>>,
+}
+
 fn layout_qs_slots(
-    output: Rectangle<i32, Logical>, strip_y: i32, (detail, battery): (Option<Vec<(Slot, LocalRect)>>, bool),
-    (volume, brightness): (bool, bool), slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
+    output: Rectangle<i32, Logical>, strip_y: i32, input: QsLayoutInput,
+    slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
 ) -> Rectangle<i32, Logical> {
-    let geometry = qs_geometry();
+    let geometry = qs_geometry(&input.shape);
     let origin = Point::from((output.loc.x + output.size.w - PAD_X - QS_WIDTH, strip_y + HEIGHT + POPUP_GAP));
     let popup = Rectangle::new(origin, Size::from((QS_WIDTH, geometry.height)));
-    if let Some(detail) = detail {
-        slots.extend(detail.into_iter().map(|(slot, rect)| (slot, offset_rect(rect, origin))));
+    let mut push = |slot: Slot, rect: LocalRect| slots.push((slot, offset_rect(rect, origin)));
+    if let Some(detail) = input.detail {
+        for (slot, rect) in detail {
+            push(slot, rect);
+        }
         return popup;
     }
 
-    for (slot, rect) in geometry.tiles {
-        let more = match slot {
-            Slot::QsWifi => Some(Slot::QsWifiMore),
-            Slot::QsBluetooth => Some(Slot::QsBluetoothMore),
-            _ => None,
-        };
-        if let Some(more) = more {
-            let (body, chevron) = panels::split_tile(rect);
-            slots.push((slot, offset_rect(body, origin)));
-            slots.push((more, offset_rect(chevron, origin)));
+    push(Slot::QsSettings, geometry.settings);
+    for (tile, rect) in geometry.tiles {
+        if let Some(more) = tile.more() {
+            push(tile.slot(), qs_badge(tile, rect));
+            push(more, rect);
         } else {
-            slots.push((slot, offset_rect(rect, origin)));
+            push(tile.slot(), rect);
         }
     }
-    slots.push((Slot::QsCaffeine, offset_rect(geometry.caffeine, origin)));
-    if volume {
-        slots.push((Slot::QsVolumeMute, offset_rect(geometry.volume_icon, origin)));
-        slots.push((Slot::QsVolumeTrack, offset_rect(geometry.volume_track, origin)));
-        slots.push((Slot::QsVolumeMore, offset_rect(geometry.volume_more, origin)));
+    if input.volume {
+        push(Slot::QsVolumeMute, geometry.volume.icon);
+        push(Slot::QsVolumeMore, geometry.volume.label);
+        push(Slot::QsVolumeTrack, geometry.volume.track);
     }
-    if brightness {
-        slots.push((Slot::QsBrightnessTrack, offset_rect(geometry.brightness_track, origin)));
+    if input.brightness {
+        push(Slot::QsBrightnessTrack, geometry.brightness.track);
     }
-    if battery {
-        slots.push((Slot::QsBattery, offset_rect(geometry.battery, origin)));
+    if let Some(head) = geometry.battery_head {
+        push(Slot::QsBattery, head);
     }
-    slots.push((Slot::QsSettings, offset_rect(geometry.settings, origin)));
-    for (slot, rect) in geometry.power {
-        slots.push((slot, offset_rect(rect, origin)));
+    if let Some(track) = geometry.segments {
+        for (profile, rect) in qs_segments(track) {
+            push(Slot::QsProfile(profile), rect);
+        }
     }
-
+    match (geometry.confirm, input.shape.armed) {
+        (Some(strip), Some(action)) => {
+            push(Slot::QsPowerCancel, strip.cancel);
+            push(Slot::QsPowerConfirm(action), strip.confirm);
+        }
+        _ => {
+            for (action, rect) in geometry.power {
+                push(Slot::QsPowerButton(action), rect);
+            }
+        }
+    }
     popup
 }
 
@@ -2369,10 +2734,20 @@ fn push_popup_shadow<R>(
 ) where
     R: ShellRenderer,
 {
+    push_rounded_popup_shadow(topbar, renderer, (rect, POPUP_RADIUS), progress, scale, output_scale, elements);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_rounded_popup_shadow<R>(
+    topbar: &mut Topbar, renderer: &mut R, (rect, radius): (Rectangle<i32, Logical>, f32), progress: f64,
+    scale: Scale<f64>, output_scale: i32, elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) where
+    R: ShellRenderer,
+{
     let margin = popup_shadow_margin(topbar.theme.dark);
-    let key = (rect.size.w, rect.size.h, output_scale);
+    let key = (rect.size.w, rect.size.h, output_scale, radius.to_bits());
     if let std::collections::hash_map::Entry::Vacant(entry) = topbar.shadows.entry(key)
-        && let Some(buffer) = draw_popup_shadow(topbar.theme.dark, rect.size, margin, output_scale)
+        && let Some(buffer) = draw_popup_shadow(topbar.theme.dark, rect.size, (margin, radius), output_scale)
     {
         entry.insert(buffer);
     }
@@ -2396,8 +2771,10 @@ fn popup_shadow_margin(dark: bool) -> i32 {
     reach.ceil() as i32 + glide_theme::spacing::SP1
 }
 
-fn draw_popup_shadow(dark: bool, size: Size<i32, Logical>, margin: i32, scale: i32) -> Option<MemoryRenderBuffer> {
-    Some(crate::raster::shadow((size.w, size.h), margin, POPUP_RADIUS, &popup_shadow_layers(dark), scale)?.finish())
+fn draw_popup_shadow(
+    dark: bool, size: Size<i32, Logical>, (margin, radius): (i32, f32), scale: i32,
+) -> Option<MemoryRenderBuffer> {
+    Some(crate::raster::shadow((size.w, size.h), margin, radius, &popup_shadow_layers(dark), scale)?.finish())
 }
 
 fn draw_media_art(
@@ -2558,6 +2935,11 @@ pub struct TopbarTheme {
     pub active_soft_label: Color,
     pub ok: Color,
     pub danger: Color,
+    pub line: Color,
+    pub line_2: Color,
+    pub fill_2: Color,
+    pub bezel_hi: Color,
+    pub acc_ring: Color,
     pub battery_low_pct: u8,
     pub battery_percentage: bool,
     pub clock_date: bool,
@@ -2604,6 +2986,11 @@ impl TopbarTheme {
             active_soft_label: t.acc_soft_fg,
             ok: t.ok,
             danger: t.danger,
+            line: t.line,
+            line_2: t.line_2,
+            fill_2: t.fill_2,
+            bezel_hi: Color::from_rgb8(255, 255, 255, if dark { BEZEL_HI_DARK } else { BEZEL_HI_LIGHT }),
+            acc_ring: t.acc_ring,
             battery_low_pct: BATTERY_LOW_PCT,
         }
     }
@@ -2632,6 +3019,11 @@ impl TopbarTheme {
             .color(self.active_soft_label)
             .color(self.ok)
             .color(self.danger)
+            .color(self.line)
+            .color(self.line_2)
+            .color(self.fill_2)
+            .color(self.bezel_hi)
+            .color(self.acc_ring)
             .u64(u64::from(self.battery_low_pct))
             .bool(self.battery_percentage)
             .bool(self.clock_date)
@@ -3471,6 +3863,8 @@ fn push_status<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) 
 }
 
 const BATTERY_LOW_PCT: u8 = 20;
+const BEZEL_HI_DARK: f32 = 0.12;
+const BEZEL_HI_LIGHT: f32 = 0.55;
 
 fn push_quick_settings<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
     if topbar.shown_popup() != Some(OpenPopup::QuickSettings) {
@@ -3486,49 +3880,49 @@ fn push_quick_settings<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<
     }
     let slide = topbar.qs_panel.slide_progress();
     if slide < 1.0 {
+        push_qs_power(topbar, frame, rect, (reveal, slide));
         push_qs_main(topbar, frame, rect, (reveal, slide));
     }
     let (renderer, _, _, scale, output_scale, elements) = frame.parts();
     let theme = &topbar.theme;
     if let Some(background) = topbar.qs_bg_cache.resolve((rect.size.w, rect.size.h), output_scale, || {
-        let size = (rect.size.w, rect.size.h);
-        Some(Canvas::popover(size, output_scale, POPUP_RADIUS, theme.popover_bg, theme.border)?.finish())
+        draw_qs_background((rect.size.w, rect.size.h), theme, output_scale)
     }) {
         push_popup_buffer(renderer, background, rect, rect, reveal, scale, elements);
     }
-    push_popup_shadow(topbar, renderer, rect, reveal, scale, output_scale, elements);
+    push_rounded_popup_shadow(topbar, renderer, (rect, QS_RADIUS), reveal, scale, output_scale, elements);
+}
+
+fn draw_qs_background((w, h): (i32, i32), theme: &TopbarTheme, scale: i32) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::popover((w, h), scale, QS_RADIUS, theme.popover_bg, theme.line)?;
+    let inset = QS_RADIUS.ceil() as i32;
+    c.fill(local_rect(inset, 0, w - inset * 2, 1), theme.bezel_hi, 0.0);
+    Some(c.finish())
+}
+
+fn qs_main_motion(slide: f64) -> (i32, f32) {
+    ((slide * f64::from(QS_PAD)).round() as i32, (1.0 - slide) as f32)
 }
 
 fn push_qs_main<R: ShellRenderer>(
     topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: Rectangle<i32, Logical>, (reveal, slide): (f64, f64),
 ) {
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
-    let main_view = topbar.qs_panel.view.is_none();
-    let hovered = topbar.hovered_in(Slot::in_quick_settings).filter(|_| main_view);
-    let caption = hovered.or_else(|| topbar.focused_in(Slot::in_quick_settings)).filter(|_| main_view).and_then(
-        |slot| match slot {
-            Slot::QsPowerButton(action) => Some(action),
-            _ => None,
-        },
-    );
-    let flags = QsFlags { caffeinated: topbar.caffeinated, caption };
-    let motion = QsMotion {
-        caffeine: topbar.caffeine_anim.switch(),
-        volume: percent(topbar.volume_anim.value()),
-        brightness: percent(topbar.brightness_anim.value()),
-    };
+    let key = topbar.qs_main_key(painter);
+    let (_, flags, motion, hovered, shape) = key;
+    let output = topbar.output_label();
     let theme = &topbar.theme;
     let status = &topbar.system_status;
-    let Some(buffer) = topbar.qs_cache.resolve((topbar.status_rev, flags, motion.key(), hovered), output_scale, || {
-        let ctx = QsRenderContext { painter, theme, hovered, caption };
+    let Some(buffer) = topbar.qs_cache.resolve(key, output_scale, || {
+        let ctx = QsRenderContext { painter, theme, hovered };
         let mut canvas = Canvas::new(rect.size.w, rect.size.h, output_scale)?.with_icons(Some(icons));
-        draw_quick_settings(&mut canvas, &ctx, status, flags.caffeinated, motion);
+        let draw = QsDraw { status, geometry: qs_geometry(&shape), flags, motion, output: &output };
+        draw_quick_settings(&mut canvas, &ctx, &draw);
         Some(canvas.finish())
     }) else {
         return;
     };
-    let shift = (slide * f64::from(QS_PAD)).round() as i32;
-    let alpha = (1.0 - slide) as f32;
+    let (shift, alpha) = qs_main_motion(slide);
     push_placed(
         renderer,
         buffer,
@@ -3543,30 +3937,81 @@ fn push_qs_main<R: ShellRenderer>(
     );
 }
 
+fn push_qs_power<R: ShellRenderer>(
+    topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: Rectangle<i32, Logical>, (reveal, slide): (f64, f64),
+) {
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
+    let geometry = qs_geometry(&topbar.qs_shape(Some(painter)));
+    let main_view = topbar.qs_panel.view.is_none();
+    let hovered = topbar.hovered_in(Slot::in_quick_settings).filter(|_| main_view);
+    let (shift, alpha) = qs_main_motion(slide);
+    let arm = topbar.arm_anim.value().clamp(0.0, 1.0);
+    let theme = &topbar.theme;
+    let mut place = |buffer: &MemoryRenderBuffer, at: LocalRect, (rise, opacity): (f64, f32)| {
+        let loc = Point::from((rect.loc.x + at.loc.x - shift, rect.loc.y + at.loc.y + rise.round() as i32));
+        let placed = Placed { popup: rect, element: Rectangle::new(loc, at.size), progress: reveal, alpha: opacity };
+        push_placed(renderer, buffer, placed, scale, elements);
+    };
+
+    let row_alpha = (1.0 - arm) as f32 * alpha;
+    if row_alpha > 0.0 {
+        let row = geometry.power_row;
+        let lit = hovered.filter(|slot| matches!(slot, Slot::QsPowerButton(_)));
+        let key: QsPowerKey = (lit, None, (row.size.w, row.size.h));
+        if let Some(buffer) = topbar
+            .qs_row_cache
+            .resolve(key, output_scale, || draw_qs_power_row(theme, &geometry, lit, (output_scale, &mut *icons)))
+        {
+            place(buffer, row, (arm * QS_ARM_RISE, row_alpha));
+        }
+    }
+
+    let (Some(strip), Some(armed)) = (geometry.confirm, topbar.qs_power) else {
+        return;
+    };
+    let lit = hovered.filter(|slot| matches!(slot, Slot::QsPowerCancel | Slot::QsPowerConfirm(_)));
+    let seconds = armed.seconds_left(std::time::Instant::now());
+    let key: QsPowerKey = (lit, Some((armed.action, seconds)), (strip.rect.size.w, strip.rect.size.h));
+    if let Some(buffer) = topbar.qs_confirm_cache.resolve(key, output_scale, || {
+        draw_qs_confirm(painter, theme, &strip, (armed.action, seconds, lit), (output_scale, &mut *icons))
+    }) {
+        place(buffer, strip.rect, (-(1.0 - arm) * QS_ARM_RISE, arm as f32 * alpha));
+    }
+}
+
 struct QsRenderContext<'a> {
     painter: &'a crate::paint::Painter,
     theme: &'a TopbarTheme,
     hovered: Option<Slot>,
-    caption: Option<PowerAction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QsFlags {
     caffeinated: bool,
-    caption: Option<PowerAction>,
+    dnd: bool,
+    dark: bool,
+    dragging: Option<Slot>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QsMotion {
-    caffeine: SwitchMotion,
     volume: u8,
     brightness: u8,
+    profile: u8,
 }
 
 impl QsMotion {
-    fn key(self) -> ((u8, u8), u8, u8) {
-        (self.caffeine.key(), self.volume, self.brightness)
+    fn profile_position(self) -> f64 {
+        f64::from(self.profile) / MOTION_QUANTUM
     }
+}
+
+struct QsDraw<'a> {
+    status: &'a crate::system_info::SystemStatus,
+    geometry: QsGeometry,
+    flags: QsFlags,
+    motion: QsMotion,
+    output: &'a str,
 }
 
 fn percent(value: f64) -> u8 {
@@ -3575,67 +4020,128 @@ fn percent(value: f64) -> u8 {
 
 type GlyphPainter = fn(&mut [u8], i32, i32, f32, f32, i32, Color);
 
+const QS_NAME: TextStyle = TextStyle { size_px: 13.0, line_height_px: 18.0, weight: 630, ..TextStyle::CAP };
+const QS_INITIAL: TextStyle = TextStyle { weight: 650, ..TextStyle::CAP };
+const QS_TITLE: TextStyle = TextStyle { line_height_px: 15.0, weight: 600, ..TextStyle::CAP };
+const QS_SUB: TextStyle = TextStyle { size_px: 10.5, line_height_px: 13.0, weight: 400, ..TextStyle::CAP };
+const QS_LABEL: TextStyle = TextStyle { weight: 550, ..TextStyle::CAP };
+const QS_NOTE: TextStyle = TextStyle { size_px: 11.0, line_height_px: 14.0, weight: 400, ..TextStyle::CAP };
+const QS_PILL_TEXT: TextStyle = TextStyle { size_px: 11.5, line_height_px: 14.0, weight: 600, ..TextStyle::CAP };
+const QS_READOUT: TextStyle = TextStyle { size_px: 12.0, line_height_px: 16.0, weight: 500, ..TextStyle::NUM };
+const QS_BATTERY_PCT: TextStyle = TextStyle { line_height_px: 16.0, weight: 600, ..TextStyle::NUM };
+const QS_SOFT_DIM: f32 = 0.85;
+const QS_SLIDER_THUMB_HOVER: i32 = 18;
+const QS_SLIDER_THUMB_DRAG: i32 = 19;
+const QS_SLIDER_RING_HOVER: i32 = 4;
+const QS_SLIDER_RING_DRAG: i32 = 6;
+const QS_MUTED_FILL: f32 = 0.35;
+const QS_MUTED_THUMB: f32 = 0.7;
+const QS_THUMB_SHADOW: Color = Color([0.0, 0.0, 0.0, 0.18]);
+const QS_BATTERY_TIP_INSET: i32 = 4;
+const QS_BATTERY_TIP: i32 = 3;
+const QS_BATTERY_FILL_INSET: i32 = 3;
+const QS_BATTERY_GAP: i32 = 10;
+const QS_SEGMENT_ICON: i32 = 14;
+const QS_SEGMENT_GAP: i32 = 6;
+const QS_TILE_TEXT_GAP: i32 = 1;
+const QS_CHEVRON_GLYPH: i32 = 13;
+
+fn qs_symbol(c: &mut Canvas<'_>, rect: LocalRect, (icon, glyph): (&str, GlyphPainter), side: i32, colour: Color) {
+    let at = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
+    if !c.icon(icon, side, at, colour) {
+        let glyph_side = (side - 1) as f32;
+        c.glyph(rect, |b, w, h, s| glyph(b, w, h, glyph_side, 1.5, s, colour));
+    }
+}
+
+fn dimmed(colour: Color, factor: f32) -> Color {
+    colour.with_alpha(colour.0[3] * factor)
+}
+
+fn qs_pill_width(painter: &crate::paint::Painter, label: &str) -> i32 {
+    let text = text_w(painter, label, &QS_LABEL);
+    (QS_PILL_PAD * 2 + text + SP1 + QS_PILL_CHEVRON).min(QS_PILL_MAX)
+}
+
+fn qs_confirm_pill_width(painter: &crate::paint::Painter, label: &str) -> i32 {
+    text_w(painter, label, &QS_PILL_TEXT) + QS_CONFIRM_PILL_PAD * 2
+}
+
 struct QsTileSpec<'a> {
+    tile: QsTile,
     rect: LocalRect,
     on: bool,
     title: &'a str,
     subtitle: &'a str,
     icon_name: &'a str,
     glyph: GlyphPainter,
-    more: bool,
 }
 
-fn draw_qs_icon_badge(
-    c: &mut Canvas<'_>, theme: &TopbarTheme, (x, y): (i32, i32), on: bool, (icon_name, glyph): (&str, GlyphPainter),
-) {
-    let (bg, fg) = if on { (theme.active_background, theme.active_label) } else { (theme.track, theme.muted) };
-    let badge = local_rect(x, y, QS_ICON_BADGE, QS_ICON_BADGE);
-    c.fill(badge, bg, R_ROUND);
-    let side = 16;
-    let at = (x + (QS_ICON_BADGE - side) / 2, y + (QS_ICON_BADGE - side) / 2);
-    if !c.icon(icon_name, side, at, fg) {
-        c.glyph(badge, |b, w, h, s| glyph(b, w, h, 15.0, 1.5, s, fg));
-    }
-}
-
-fn draw_two_lines(
-    c: &mut Canvas<'_>, painter: &crate::paint::Painter, (left, right): (i32, i32),
-    (title_y, subtitle_y): ((i32, i32), (i32, i32)), (title, title_colour): (&str, Color),
-    (subtitle, subtitle_colour): (&str, Color),
-) {
-    let lines =
-        [(title_y, title, title_colour, &TextStyle::HEAD), (subtitle_y, subtitle, subtitle_colour, &TextStyle::CAP)];
-    for ((top, bottom), text, colour, style) in lines {
-        c.text(painter, (left, right, top, bottom), TextAlign::Left, text, colour, style);
+fn draw_qs_chevron(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, (on, hovered): (bool, bool)) {
+    let theme = ctx.theme;
+    let colour = match (hovered, on) {
+        (true, true) => theme.active_soft_label,
+        (true, false) => theme.label,
+        (false, true) => dimmed(theme.active_soft_label, QS_SOFT_DIM),
+        (false, false) => theme.faint,
+    };
+    let nudged =
+        Rectangle::new(Point::from((rect.loc.x + if hovered { QS_CHEVRON_NUDGE } else { 0 }, rect.loc.y)), rect.size);
+    let side = QS_CHEVRON_GLYPH;
+    let at = (nudged.loc.x + (nudged.size.w - side) / 2, nudged.loc.y + (nudged.size.h - side) / 2);
+    if !c.icon("go-next", side, at, colour) {
+        c.text_in(ctx.painter, nudged, TextAlign::Center, "\u{203a}", colour, &TextStyle::HEAD);
     }
 }
 
 fn draw_qs_tile(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, spec: &QsTileSpec<'_>) {
-    let rect = spec.rect;
-    let theme = ctx.theme;
-    c.fill(rect, if spec.on { theme.active_soft } else { theme.track_soft }, R2);
-
-    let ico_x = rect.loc.x + 10;
-    let ico_y = rect.loc.y + (rect.size.h - QS_ICON_BADGE) / 2;
-    draw_qs_icon_badge(c, theme, (ico_x, ico_y), spec.on, (spec.icon_name, spec.glyph));
-
-    let txt_right = if spec.more {
-        let (body, chevron) = panels::split_tile(rect);
-        panels::draw_tile_more(c, ctx, chevron, spec.on);
-        body.loc.x + body.size.w
+    let (rect, theme) = (spec.rect, ctx.theme);
+    let more = spec.tile.more();
+    let hovered = ctx.hovered.is_some_and(|slot| slot == spec.tile.slot() || Some(slot) == more);
+    if spec.on {
+        c.fill(rect, theme.active_soft, R2);
     } else {
-        rect.loc.x + rect.size.w - 6
+        c.fill(rect, theme.track_soft, R2);
+        c.stroke(rect, 1.0, R2, if hovered { theme.line_2 } else { theme.line });
+    }
+
+    let badge = qs_badge(spec.tile, rect);
+    let (well, symbol) =
+        if spec.on { (theme.active_background, theme.active_label) } else { (theme.fill_2, theme.muted) };
+    c.fill(badge, well, R_ROUND);
+    qs_symbol(c, badge, (spec.icon_name, spec.glyph), 15, symbol);
+
+    let (text_left, text_right) = if more.is_some() {
+        let chevron = qs_chevron(rect);
+        draw_qs_chevron(c, ctx, chevron, (spec.on, ctx.hovered.is_some_and(|slot| Some(slot) == more)));
+        (badge.loc.x + QS_ICON_BADGE + QS_SPLIT_GAP, chevron.loc.x - QS_SPLIT_GAP)
+    } else {
+        (badge.loc.x + QS_ICON_BADGE + SP2, rect.loc.x + rect.size.w - QS_TILE_INSET)
     };
-    let (title_colour, subtitle_colour) =
-        if spec.on { (theme.active_soft_label, theme.active_soft_label) } else { (theme.label, theme.muted) };
-    let y = rect.loc.y;
-    draw_two_lines(
-        c,
+    let (title_colour, subtitle_colour) = if spec.on {
+        (theme.active_soft_label, dimmed(theme.active_soft_label, QS_SOFT_DIM))
+    } else {
+        (theme.label, theme.faint)
+    };
+    let title_h = QS_TITLE.line_height_px as i32;
+    let sub_h = QS_SUB.line_height_px as i32;
+    let top = rect.loc.y + (rect.size.h - title_h - QS_TILE_TEXT_GAP - sub_h) / 2;
+    let sub_top = top + title_h + QS_TILE_TEXT_GAP;
+    c.text(
         ctx.painter,
-        (ico_x + QS_ICON_BADGE + SP2, txt_right),
-        ((y + 10, y + 26), (y + 28, y + 44)),
-        (spec.title, title_colour),
-        (spec.subtitle, subtitle_colour),
+        (text_left, text_right, top, top + title_h),
+        TextAlign::Left,
+        spec.title,
+        title_colour,
+        &QS_TITLE,
+    );
+    c.text(
+        ctx.painter,
+        (text_left, text_right, sub_top, sub_top + sub_h),
+        TextAlign::Left,
+        spec.subtitle,
+        subtitle_colour,
+        &QS_SUB,
     );
 }
 
@@ -3654,213 +4160,212 @@ fn draw_qs_switch(c: &mut Canvas<'_>, theme: &TopbarTheme, (sw_x, sw_y): (i32, i
     draw_switch(c, theme, track, (QS_SWITCH_INSET, QS_SWITCH_THUMB), switch);
 }
 
-fn draw_qs_caffeine_row(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, on: bool, switch: SwitchMotion,
-) {
-    use crate::i18n::{Key, t};
-    c.fill(rect, ctx.theme.track_soft, R2);
-
-    let ico_x = rect.loc.x + 10;
-    let ico_y = rect.loc.y + (rect.size.h - QS_ICON_BADGE) / 2;
-    let icon_name = if on { "caffeine-cup-full" } else { "caffeine-cup-empty" };
-    let glyph: GlyphPainter = |b, w, h, side, stroke, s, c| {
-        let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
-        crate::paint::draw_coffee_glyph_over(b, w, h, cx, cy, side, stroke, s, c, false);
-    };
-    draw_qs_icon_badge(c, ctx.theme, (ico_x, ico_y), on, (icon_name, glyph));
-
-    let subtitle = t(if on { Key::CaffeineOn } else { Key::CaffeineOff });
-    let y = rect.loc.y;
-    draw_two_lines(
-        c,
-        ctx.painter,
-        (ico_x + QS_ICON_BADGE + SP2, rect.loc.x + rect.size.w - 10 - QS_SWITCH_W - SP2),
-        ((y + 6, y + 22), (y + 22, y + 38)),
-        (t(Key::Caffeine), ctx.theme.label),
-        (subtitle, ctx.theme.muted),
-    );
-
-    let sw_x = rect.loc.x + rect.size.w - 10 - QS_SWITCH_W;
-    let sw_y = rect.loc.y + (rect.size.h - QS_SWITCH_H) / 2;
-    draw_qs_switch(c, ctx.theme, (sw_x, sw_y), switch);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QsThumb {
+    Rest,
+    Hover,
+    Drag,
 }
 
-struct QsSliderSpec<'a> {
-    icon: LocalRect,
-    track: LocalRect,
+impl QsThumb {
+    const fn of(slot: Slot, hovered: Option<Slot>, dragging: Option<Slot>) -> Self {
+        if matches!(dragging, Some(dragged) if same_slot(dragged, slot)) {
+            Self::Drag
+        } else if matches!(hovered, Some(hover) if same_slot(hover, slot)) {
+            Self::Hover
+        } else {
+            Self::Rest
+        }
+    }
+
+    const fn side(self) -> i32 {
+        match self {
+            Self::Rest => QS_SLIDER_THUMB,
+            Self::Hover => QS_SLIDER_THUMB_HOVER,
+            Self::Drag => QS_SLIDER_THUMB_DRAG,
+        }
+    }
+
+    const fn ring(self) -> i32 {
+        match self {
+            Self::Rest => 0,
+            Self::Hover => QS_SLIDER_RING_HOVER,
+            Self::Drag => QS_SLIDER_RING_DRAG,
+        }
+    }
+}
+
+const fn same_slot(a: Slot, b: Slot) -> bool {
+    matches!((a, b), (Slot::QsVolumeTrack, Slot::QsVolumeTrack) | (Slot::QsBrightnessTrack, Slot::QsBrightnessTrack))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QsTrack {
     pct: u8,
     muted: bool,
     enabled: bool,
-    icon_name: &'a str,
+    thumb: QsThumb,
 }
 
-fn draw_qs_slider(
-    c: &mut Canvas<'_>, theme: &TopbarTheme, spec: &QsSliderSpec<'_>,
-    draw_icon: impl FnOnce(&mut [u8], i32, i32, i32, Color),
-) {
-    let icon = spec.icon;
-    let side = 16;
-    let at = (icon.loc.x + (icon.size.w - side) / 2, icon.loc.y + (icon.size.h - side) / 2);
-    let icon_colour = if spec.enabled { theme.muted } else { theme.faint };
-    if !c.icon(spec.icon_name, side, at, icon_colour) {
-        c.glyph(icon, |b, w, h, s| draw_icon(b, w, h, s, icon_colour));
-    }
-
-    let track = spec.track;
-    let tr_y = track.loc.y + (track.size.h - QS_SLIDER_TRACK_H) / 2;
-    let bar = |width| local_rect(track.loc.x, tr_y, width, QS_SLIDER_TRACK_H);
-    if !spec.enabled {
-        c.fill(bar(track.size.w), theme.track_soft, R_ROUND);
+fn draw_qs_track(c: &mut Canvas<'_>, theme: &TopbarTheme, rect: LocalRect, track: QsTrack) {
+    let groove_y = rect.loc.y + (rect.size.h - QS_SLIDER_TRACK_H) / 2;
+    let bar = |width| local_rect(rect.loc.x, groove_y, width, QS_SLIDER_TRACK_H);
+    if !track.enabled {
+        c.fill(bar(rect.size.w), theme.track_soft, R1);
         return;
     }
-    c.fill(bar(track.size.w), theme.track, R_ROUND);
-
-    let fill_w = (((track.size.w as f32) * f32::from(spec.pct.min(100))) / 100.0).round() as i32;
+    let groove = if track.thumb == QsThumb::Rest { theme.fill_2 } else { theme.track };
+    c.fill(bar(rect.size.w), groove, R1);
+    let fill_w = ((f64::from(rect.size.w) * f64::from(track.pct.min(100))) / 100.0).round() as i32;
     if fill_w > 0 {
-        let colour = if spec.muted { theme.track_soft } else { theme.active_background };
-        c.fill(bar(fill_w), colour, R_ROUND);
+        let colour = if track.muted { dimmed(theme.faint, QS_MUTED_FILL) } else { theme.active_background };
+        c.fill(bar(fill_w), colour, R1);
     }
 
-    let thumb_x =
-        (track.loc.x + fill_w - QS_SLIDER_THUMB / 2).clamp(track.loc.x, track.loc.x + track.size.w - QS_SLIDER_THUMB);
-    let thumb_y = track.loc.y + (track.size.h - QS_SLIDER_THUMB) / 2;
-    let thumb = local_rect(thumb_x, thumb_y, QS_SLIDER_THUMB, QS_SLIDER_THUMB);
+    let centre = (rect.loc.x + fill_w, rect.loc.y + rect.size.h / 2);
+    let circle = |side: i32| local_rect(centre.0 - side / 2, centre.1 - side / 2, side, side);
+    if track.muted {
+        c.fill(circle(QS_SLIDER_THUMB), dimmed(theme.faint, QS_MUTED_THUMB), R_ROUND);
+        return;
+    }
+    let side = track.thumb.side();
+    if track.thumb.ring() > 0 {
+        c.fill(circle(side + track.thumb.ring() * 2), theme.acc_ring, R_ROUND);
+    }
+    let shadow = circle(side + 2);
+    c.fill(Rectangle::new(Point::from((shadow.loc.x, shadow.loc.y + 1)), shadow.size), QS_THUMB_SHADOW, R_ROUND);
+    let thumb = circle(side);
     c.fill(thumb, theme.thumb, R_ROUND);
+    c.stroke(thumb, 1.0, R_ROUND, theme.line);
+}
+
+fn draw_qs_readout(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, value: Option<u8>) {
+    let text = value.map_or_else(|| "\u{2014}".to_string(), |pct| format!("{pct}%"));
+    c.text_in(ctx.painter, rect, TextAlign::Right, &text, ctx.theme.muted, &QS_READOUT);
+}
+
+fn draw_qs_device_pill(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, label: &str) {
+    let theme = ctx.theme;
+    let text_right = rect.loc.x + rect.size.w - QS_PILL_PAD - SP1 - QS_PILL_CHEVRON;
+    let (top, bottom) = (rect.loc.y, rect.loc.y + rect.size.h);
+    c.text(
+        ctx.painter,
+        (rect.loc.x + QS_PILL_PAD, text_right, top, bottom),
+        TextAlign::Left,
+        label,
+        theme.label,
+        &QS_LABEL,
+    );
+    let chevron =
+        local_rect(text_right + SP1, top + (rect.size.h - QS_PILL_CHEVRON) / 2, QS_PILL_CHEVRON, QS_PILL_CHEVRON);
+    let colour = theme.faint;
+    if !c.icon("pan-down", QS_PILL_CHEVRON, (chevron.loc.x, chevron.loc.y), colour) {
+        let side = QS_PILL_CHEVRON as f32;
+        c.glyph(chevron, |b, w, h, s| crate::paint::draw_chevron_glyph_over(b, w, h, side, 1.8, false, s, colour));
+    }
 }
 
 fn initial(name: &str) -> String {
     name.chars().next().unwrap_or('?').to_uppercase().to_string()
 }
 
-fn draw_qs_avatar(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, x: i32, y: i32, user_name: &str) {
+fn draw_qs_header(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &QsGeometry, user_name: &str) {
     let theme = ctx.theme;
     let top = theme.active_background.state_layer(theme.active_label, AVATAR_GRADIENT_LIFT);
-    c.gradient(local_rect(x, y, QS_AVATAR, QS_AVATAR), R_ROUND, top, theme.active_background);
-    c.text(
-        ctx.painter,
-        (x, x + QS_AVATAR, y, y + QS_AVATAR),
-        TextAlign::Center,
-        &initial(user_name),
-        theme.active_label,
-        &TextStyle::OV_LABEL,
-    );
+    c.gradient(geometry.avatar, R_ROUND, top, theme.active_background);
+    c.text_in(ctx.painter, geometry.avatar, TextAlign::Center, &initial(user_name), theme.active_label, &QS_INITIAL);
+    c.text_in(ctx.painter, geometry.name, TextAlign::Left, user_name, theme.label, &QS_NAME);
+    let colour = if ctx.hovered == Some(Slot::QsSettings) { theme.label } else { theme.muted };
+    qs_symbol(c, geometry.settings, ("emblem-system", crate::paint::draw_gear_glyph_over), 16, colour);
 }
 
 const AVATAR_GRADIENT_LIFT: f32 = glide_theme::motion::ST_DRAG;
-
-fn draw_qs_footer(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &QsGeometry, status: &crate::system_info::SystemStatus,
-) {
-    let user_name = status.user_name.as_str();
-    let footer = geometry.footer;
-    let (x, y) = (footer.loc.x, footer.loc.y);
-    let avatar_y = y + (footer.size.h - QS_AVATAR) / 2;
-    draw_qs_avatar(c, ctx, x, avatar_y, user_name);
-
-    let acts_left = match status.battery_pct {
-        Some(pct) => {
-            draw_qs_battery_pill(c, ctx, geometry.battery, (pct, status.battery_charging));
-            geometry.battery.loc.x
-        }
-        None => geometry.settings.loc.x,
-    };
-    let (footer_text, footer_color) = match ctx.caption {
-        Some(action) => (crate::i18n::t(panels::power_label(action)), ctx.theme.muted),
-        None => (user_name, ctx.theme.label),
-    };
-    c.text(
-        ctx.painter,
-        (x + QS_AVATAR + SP2, acts_left - SP2, y, y + footer.size.h),
-        TextAlign::Left,
-        footer_text,
-        footer_color,
-        &TextStyle::HEAD,
-    );
-
-    let mut buttons = vec![(
-        Slot::QsSettings,
-        geometry.settings,
-        crate::paint::draw_gear_glyph_over as GlyphPainter,
-        "emblem-system",
-    )];
-    buttons.extend(geometry.power.iter().filter_map(|(slot, rect)| match slot {
-        Slot::QsPowerButton(action) => Some((*slot, *rect, panels::power_glyph(*action), panels::power_icon(*action))),
-        _ => None,
-    }));
-
-    for (slot, rect, draw_glyph, icon_name) in buttons {
-        draw_qs_action_button(c, ctx, slot, rect, (draw_glyph, icon_name));
-    }
-}
-
-fn draw_battery(
-    c: &mut Canvas<'_>, theme: &TopbarTheme, rect: LocalRect, (pct, charging): (u8, bool),
-    (side, icon_fg, fg): (i32, Color, Color),
-) {
-    let at = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
-    if c.icon(&battery_icon_name(pct, charging), side, at, icon_fg) {
-        return;
-    }
-    c.glyph(rect, |buf, canvas_width, canvas_height, scale| {
-        crate::paint::draw_battery_glyph_over(
-            buf,
-            &crate::paint::BatteryRenderArgs {
-                canvas_width,
-                canvas_height,
-                pct,
-                charging,
-                scale,
-                fg,
-                ok_color: theme.ok,
-                danger_color: theme.danger,
-            },
-        );
-    });
-}
-
-fn draw_qs_battery_pill(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, (pct, charging): (u8, bool)) {
-    let theme = ctx.theme;
-    c.fill(rect, theme.track_soft, R_ROUND);
-    let low = !charging && pct <= theme.battery_low_pct;
-    let fg = if low {
-        theme.danger
-    } else if ctx.hovered == Some(Slot::QsBattery) {
-        theme.label
-    } else {
-        theme.muted
-    };
-    let glyph_x = rect.loc.x + SP1;
-    let glyph = local_rect(glyph_x, rect.loc.y, STATUS_BATT_WIDTH, rect.size.h);
-    draw_battery(c, theme, glyph, (pct, charging), (16, fg, fg));
-    let text_x = glyph_x + STATUS_BATT_WIDTH + status::BATTERY_TEXT_GAP;
-    c.text(
-        ctx.painter,
-        (text_x, rect.loc.x + rect.size.w - SP1, rect.loc.y, rect.loc.y + rect.size.h),
-        TextAlign::Left,
-        &format!("{pct}%"),
-        fg,
-        &TextStyle::NUM,
-    );
-}
 
 fn battery_icon_name(pct: u8, charging: bool) -> String {
     let step = ((pct.min(100) + 10) / 20) * 20;
     if charging { format!("battery-{step:03}-charging") } else { format!("battery-{step:03}") }
 }
 
-fn draw_qs_action_button(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, slot: Slot, rect: LocalRect,
-    (draw_glyph, icon_name): (GlyphPainter, &str),
-) {
-    if matches!(slot, Slot::QsPowerButton(_)) {
-        c.fill(rect, ctx.theme.track_soft, R_ROUND);
+fn draw_qs_battery_glyph(c: &mut Canvas<'_>, rect: LocalRect, pct: u8, colour: Color) {
+    let shell = dimmed(colour, QS_SOFT_DIM);
+    c.stroke(rect, 1.5, R1, shell);
+    let tip_h = rect.size.h - QS_BATTERY_TIP_INSET * 2;
+    let tip = local_rect(rect.loc.x + rect.size.w + 1, rect.loc.y + QS_BATTERY_TIP_INSET, QS_BATTERY_TIP - 1, tip_h);
+    c.fill(tip, shell, 0.0);
+    let inner_w = rect.size.w - QS_BATTERY_FILL_INSET * 2;
+    let fill_w = inner_w * i32::from(pct.min(100)) / 100;
+    if fill_w > 0 {
+        let fill = local_rect(
+            rect.loc.x + QS_BATTERY_FILL_INSET,
+            rect.loc.y + QS_BATTERY_FILL_INSET,
+            fill_w,
+            rect.size.h - QS_BATTERY_FILL_INSET * 2,
+        );
+        c.fill(fill, colour, R1);
     }
-    let fg = if ctx.hovered == Some(slot) { ctx.theme.label } else { ctx.theme.muted };
-    let side = 16;
-    let at = (rect.loc.x + (rect.size.w - side) / 2, rect.loc.y + (rect.size.h - side) / 2);
-    if !c.icon(icon_name, side, at, fg) {
-        c.glyph(rect, |b, w, h, s| draw_glyph(b, w, h, 15.0, 1.4, s, fg));
+}
+
+fn draw_qs_power_row(
+    theme: &TopbarTheme, geometry: &QsGeometry, lit: Option<Slot>, (scale, icons): (i32, &mut crate::icon::IconLoader),
+) -> Option<MemoryRenderBuffer> {
+    let row = geometry.power_row;
+    let mut c = Canvas::new(row.size.w, row.size.h, scale)?.with_icons(Some(icons));
+    for (action, rect) in geometry.power {
+        let button = Rectangle::new(rect.loc - row.loc, rect.size);
+        let hover = lit == Some(Slot::QsPowerButton(action));
+        c.fill(button, theme.track_soft, R_ROUND);
+        c.stroke(button, 1.0, R_ROUND, if hover { theme.line_2 } else { theme.line });
+        let colour = match (hover, is_destructive(action)) {
+            (true, true) => theme.danger,
+            (true, false) => theme.label,
+            (false, _) => theme.muted,
+        };
+        qs_symbol(&mut c, button, (panels::power_icon(action), panels::power_glyph(action)), 16, colour);
     }
+    Some(c.finish())
+}
+
+const fn qs_question(action: PowerAction) -> crate::i18n::Key {
+    match action {
+        PowerAction::Lock => crate::i18n::Key::QsAskLock,
+        PowerAction::Sleep => crate::i18n::Key::QsAskSleep,
+        other => crate::power_dialog::question_key(other),
+    }
+}
+
+fn draw_qs_confirm(
+    painter: &crate::paint::Painter, theme: &TopbarTheme, strip: &QsConfirm,
+    (action, seconds, lit): (PowerAction, Option<u64>, Option<Slot>),
+    (scale, icons): (i32, &mut crate::icon::IconLoader),
+) -> Option<MemoryRenderBuffer> {
+    use crate::i18n::{Key, t};
+    let origin = strip.rect.loc;
+    let local = |rect: LocalRect| Rectangle::new(rect.loc - origin, rect.size);
+    let mut c = Canvas::new(strip.rect.size.w, strip.rect.size.h, scale)?.with_icons(Some(icons));
+    let tone = if is_destructive(action) { theme.danger } else { theme.active_background };
+    let full = c.full();
+    c.fill(full, theme.track_soft, R2);
+    c.stroke(full, 1.0, R2, theme.line);
+
+    let badge = local(strip.badge);
+    c.fill(badge, tone, R_ROUND);
+    qs_symbol(&mut c, badge, (panels::power_icon(action), panels::power_glyph(action)), 14, theme.active_label);
+    c.text_in(painter, local(strip.question), TextAlign::Left, t(qs_question(action)), theme.label, &QS_LABEL);
+    if let (Some(note), Some(seconds)) = (strip.note, seconds) {
+        let text = t(Key::QsPowerCountdown).replace("{n}", &seconds.to_string());
+        c.text_in(painter, local(note), TextAlign::Left, &text, theme.faint, &QS_NOTE);
+    }
+
+    let cancel = local(strip.cancel);
+    let cancel_hover = lit == Some(Slot::QsPowerCancel);
+    c.fill(cancel, if cancel_hover { theme.track } else { theme.fill_2 }, R_ROUND);
+    let cancel_colour = if cancel_hover { theme.label } else { theme.muted };
+    c.text_in(painter, cancel, TextAlign::Center, t(Key::PowerCancel), cancel_colour, &QS_PILL_TEXT);
+    let confirm = local(strip.confirm);
+    c.fill(confirm, tone, R_ROUND);
+    let label = t(crate::power_dialog::confirm_key(action));
+    c.text_in(painter, confirm, TextAlign::Center, label, theme.active_label, &QS_PILL_TEXT);
+    Some(c.finish())
 }
 
 const fn wifi_icon_name(level: u8) -> &'static str {
@@ -3885,138 +4390,213 @@ const fn volume_icon_name(muted: bool, pct: u8) -> &'static str {
     }
 }
 
-const fn power_profile_label(profile: crate::system_info::PowerProfile) -> crate::i18n::Key {
+const fn power_profile_label(profile: PowerProfile) -> crate::i18n::Key {
     match profile {
-        crate::system_info::PowerProfile::PowerSaver => crate::i18n::Key::TbPowerSaver,
-        crate::system_info::PowerProfile::Balanced => crate::i18n::Key::TbPowerBalanced,
-        crate::system_info::PowerProfile::Performance => crate::i18n::Key::TbPowerPerformance,
+        PowerProfile::PowerSaver => crate::i18n::Key::QsProfileSaver,
+        PowerProfile::Balanced => crate::i18n::Key::QsProfileBalanced,
+        PowerProfile::Performance => crate::i18n::Key::QsProfilePerformance,
     }
 }
 
-const fn power_profile_icon(profile: Option<crate::system_info::PowerProfile>) -> &'static str {
+const fn power_profile_icon(profile: PowerProfile) -> &'static str {
     match profile {
-        Some(crate::system_info::PowerProfile::PowerSaver) => "power-profile-power-saver-symbolic",
-        Some(crate::system_info::PowerProfile::Performance) => "power-profile-performance-symbolic",
-        _ => "power-profile-balanced-symbolic",
+        PowerProfile::PowerSaver => "power-profile-power-saver-symbolic",
+        PowerProfile::Balanced => "power-profile-balanced-symbolic",
+        PowerProfile::Performance => "power-profile-performance-symbolic",
     }
 }
 
-fn draw_qs_tiles(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &QsGeometry, status: &crate::system_info::SystemStatus,
-) {
+fn wifi_subtitle(status: &crate::system_info::SystemStatus) -> &str {
     use crate::i18n::{Key, t};
-    let wifi_sub =
-        if status.wifi_level > 0 && status.wifi_ssid.is_empty() { t(Key::Connected) } else { &status.wifi_ssid };
-    let bt_icon = if status.bluetooth_on { "bluetooth-active" } else { "bluetooth-disabled" };
-    let night = status.night_light_on;
-    let specs = [
-        QsTileSpec {
-            rect: geometry.tiles[0].1,
-            on: status.wifi_enabled,
-            title: t(Key::WiFi),
-            subtitle: wifi_sub,
-            icon_name: wifi_icon_name(status.wifi_level),
-            glyph: crate::paint::draw_wifi_waves_glyph_over,
-            more: true,
-        },
-        QsTileSpec {
-            rect: geometry.tiles[1].1,
-            on: status.bluetooth_on,
-            title: t(Key::Bluetooth),
-            subtitle: t(if status.bluetooth_on { Key::On } else { Key::Off }),
-            icon_name: bt_icon,
-            glyph: crate::paint::draw_bluetooth_glyph_over,
-            more: true,
-        },
-        QsTileSpec {
-            rect: geometry.tiles[2].1,
-            on: night,
-            title: t(Key::NightLight),
-            subtitle: t(if night { Key::On } else { Key::LessBlue }),
-            icon_name: "night-light",
-            glyph: |b, w, h, side, _, s, c| crate::paint::draw_moon_glyph_over(b, w, h, side, s, c),
-            more: false,
-        },
-        QsTileSpec {
-            rect: geometry.tiles[3].1,
-            on: false,
-            title: t(Key::Screenshot),
-            subtitle: t(Key::WholeScreen),
-            icon_name: "accessories-screenshot",
-            glyph: crate::paint::draw_camera_glyph_over,
-            more: false,
-        },
-        QsTileSpec {
-            rect: geometry.tiles[4].1,
-            on: status.airplane,
-            title: t(Key::AirplaneMode),
-            subtitle: t(if status.airplane { Key::On } else { Key::Off }),
-            icon_name: "airplane-mode-symbolic",
-            glyph: crate::paint::draw_wifi_waves_glyph_over,
-            more: false,
-        },
-        QsTileSpec {
-            rect: geometry.tiles[5].1,
-            on: status.power_profile.is_some_and(|profile| profile != crate::system_info::PowerProfile::Balanced),
-            title: t(Key::TbPowerMode),
-            subtitle: t(status.power_profile.map_or(Key::Unavailable, power_profile_label)),
-            icon_name: power_profile_icon(status.power_profile),
-            glyph: crate::paint::draw_power_glyph_over,
-            more: false,
-        },
-    ];
-    for spec in &specs {
-        draw_qs_tile(c, ctx, spec);
+    if !status.wifi_enabled {
+        t(Key::QsOff)
+    } else if status.wifi_ssid.is_empty() {
+        t(if status.wifi_level > 0 { Key::Connected } else { Key::QsOn })
+    } else {
+        &status.wifi_ssid
     }
 }
 
-fn draw_qs_sliders(
-    c: &mut Canvas<'_>, theme: &TopbarTheme, geometry: &QsGeometry, status: &crate::system_info::SystemStatus,
-    motion: QsMotion,
-) {
-    let muted = status.volume_muted;
-    draw_qs_slider(
-        c,
-        theme,
-        &QsSliderSpec {
-            icon: geometry.volume_icon,
-            track: geometry.volume_track,
-            pct: motion.volume,
-            muted,
-            enabled: status.volume_available,
-            icon_name: volume_icon_name(muted, motion.volume),
-        },
-        |b, w, h, s, c| crate::paint::draw_speaker_glyph_over(b, w, h, 15.0, 1.4, muted, s, c),
-    );
-    draw_qs_slider(
-        c,
-        theme,
-        &QsSliderSpec {
-            icon: geometry.brightness_icon,
-            track: geometry.brightness_track,
-            pct: motion.brightness,
-            muted: false,
-            enabled: status.brightness_available,
-            icon_name: "display-brightness",
-        },
-        |b, w, h, s, c| crate::paint::draw_sun_glyph_over(b, w, h, 15.0, 1.4, s, c),
-    );
+fn draw_qs_tiles(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
+    use crate::i18n::{Key, t};
+    let (status, flags) = (draw.status, draw.flags);
+    let on_off = |on: bool| t(if on { Key::QsOn } else { Key::QsOff });
+    let bluetooth_sub =
+        if status.bluetooth_on && status.bluetooth_connected { t(Key::Connected) } else { on_off(status.bluetooth_on) };
+    let moon: GlyphPainter = |b, w, h, side, _, s, c| crate::paint::draw_moon_glyph_over(b, w, h, side, s, c);
+    let coffee: GlyphPainter = |b, w, h, side, stroke, s, c| {
+        let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+        crate::paint::draw_coffee_glyph_over(b, w, h, cx, cy, side, stroke, s, c, false);
+    };
+    for (tile, rect) in draw.geometry.tiles {
+        let (on, title, subtitle, icon_name, glyph): (bool, &str, &str, &str, GlyphPainter) = match tile {
+            QsTile::Wifi => (
+                status.wifi_enabled,
+                t(Key::WiFi),
+                wifi_subtitle(status),
+                wifi_icon_name(status.wifi_level),
+                crate::paint::draw_wifi_waves_glyph_over,
+            ),
+            QsTile::Bluetooth => (
+                status.bluetooth_on,
+                t(Key::Bluetooth),
+                bluetooth_sub,
+                if status.bluetooth_on { "bluetooth-active" } else { "bluetooth-disabled" },
+                crate::paint::draw_bluetooth_glyph_over,
+            ),
+            QsTile::NightLight => {
+                let on = status.night_light_on;
+                (on, t(Key::NightLight), on_off(on), "night-light", moon)
+            }
+            QsTile::Dnd => (flags.dnd, t(Key::DoNotDisturb), on_off(flags.dnd), "notifications-disabled", moon),
+            QsTile::Caffeine => {
+                let icon = if flags.caffeinated { "caffeine-cup-full" } else { "caffeine-cup-empty" };
+                (flags.caffeinated, t(Key::Caffeine), on_off(flags.caffeinated), icon, coffee)
+            }
+            QsTile::Airplane => (
+                status.airplane,
+                t(Key::AirplaneMode),
+                on_off(status.airplane),
+                "airplane-mode",
+                crate::paint::draw_wifi_waves_glyph_over,
+            ),
+            QsTile::Screenshot => (
+                false,
+                t(Key::QsScreenshot),
+                t(Key::WholeScreen),
+                "accessories-screenshot",
+                crate::paint::draw_camera_glyph_over,
+            ),
+            QsTile::DarkTheme => (flags.dark, t(Key::QsDarkTheme), on_off(flags.dark), "dark-mode", moon),
+        };
+        draw_qs_tile(c, ctx, &QsTileSpec { tile, rect, on, title, subtitle, icon_name, glyph });
+    }
 }
 
-fn draw_quick_settings(
-    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, status: &crate::system_info::SystemStatus, caffeinated: bool,
-    motion: QsMotion,
-) {
-    let geometry = qs_geometry();
-    draw_qs_tiles(c, ctx, &geometry, status);
-    draw_qs_caffeine_row(c, ctx, geometry.caffeine, caffeinated, motion.caffeine);
-    draw_qs_sliders(c, ctx.theme, &geometry, status, motion);
-    if status.volume_available {
-        panels::draw_tile_more(c, ctx, geometry.volume_more, false);
+fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
+    let (theme, geometry, status) = (ctx.theme, &draw.geometry, draw.status);
+    let card_hover = matches!(
+        ctx.hovered,
+        Some(Slot::QsVolumeMute | Slot::QsVolumeMore | Slot::QsVolumeTrack | Slot::QsBrightnessTrack)
+    );
+    c.fill(geometry.sliders, theme.track_soft, R3);
+    c.stroke(geometry.sliders, 1.0, R3, if card_hover { theme.line_2 } else { theme.line });
+    let divider = geometry.volume.track;
+    c.fill(local_rect(divider.loc.x, geometry.slider_divider, divider.size.w, 1), theme.line, 0.0);
+
+    let volume = geometry.volume;
+    let (muted, enabled, pct) = (status.volume_muted, status.volume_available, draw.motion.volume);
+    let icon_colour = if !enabled {
+        theme.faint
+    } else if muted {
+        theme.danger
+    } else if ctx.hovered == Some(Slot::QsVolumeMute) {
+        theme.label
+    } else {
+        theme.muted
+    };
+    let speaker: GlyphPainter = if muted {
+        |b, w, h, side, stroke, s, c| crate::paint::draw_speaker_glyph_over(b, w, h, side, stroke, true, s, c)
+    } else {
+        |b, w, h, side, stroke, s, c| crate::paint::draw_speaker_glyph_over(b, w, h, side, stroke, false, s, c)
+    };
+    qs_symbol(c, volume.icon, (volume_icon_name(muted, pct), speaker), 15, icon_colour);
+    if enabled {
+        draw_qs_device_pill(c, ctx, volume.label, draw.output);
     }
-    let divider = local_rect(QS_PAD, geometry.divider_y, c.w - QS_PAD * 2, 1);
-    c.fill(divider, ctx.theme.border, 0.0);
-    draw_qs_footer(c, ctx, &geometry, status);
+    draw_qs_readout(c, ctx, volume.readout, enabled.then_some(pct));
+    let thumb = QsThumb::of(Slot::QsVolumeTrack, ctx.hovered, draw.flags.dragging);
+    draw_qs_track(c, theme, volume.track, QsTrack { pct, muted, enabled, thumb });
+
+    let brightness = geometry.brightness;
+    let (enabled, pct) = (status.brightness_available, draw.motion.brightness);
+    let sun: GlyphPainter = crate::paint::draw_sun_glyph_over;
+    qs_symbol(c, brightness.icon, ("display-brightness", sun), 15, if enabled { theme.muted } else { theme.faint });
+    let label =
+        Rectangle::new(Point::from((brightness.label.loc.x + SP1, brightness.label.loc.y)), brightness.label.size);
+    let label_colour = if enabled { theme.label } else { theme.faint };
+    c.text_in(
+        ctx.painter,
+        label,
+        TextAlign::Left,
+        crate::i18n::t(crate::i18n::Key::QsDisplay),
+        label_colour,
+        &QS_LABEL,
+    );
+    draw_qs_readout(c, ctx, brightness.readout, enabled.then_some(pct));
+    let thumb = QsThumb::of(Slot::QsBrightnessTrack, ctx.hovered, draw.flags.dragging);
+    draw_qs_track(c, theme, brightness.track, QsTrack { pct, muted: false, enabled, thumb });
+}
+
+fn draw_qs_battery_card(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
+    let (theme, geometry, status) = (ctx.theme, &draw.geometry, draw.status);
+    let Some(card) = geometry.battery_card else {
+        return;
+    };
+    c.fill(card, theme.track_soft, R3);
+    c.stroke(card, 1.0, R3, theme.line);
+    if let (Some(head), Some(pct)) = (geometry.battery_head, status.battery_pct) {
+        let low = !status.battery_charging && pct <= theme.battery_low_pct;
+        let (top, bottom) = (head.loc.y, head.loc.y + head.size.h);
+        let mut x = head.loc.x + SP2;
+        let glyph_y = top + (head.size.h - QS_BATTERY_GLYPH_H) / 2;
+        let glyph = local_rect(x, glyph_y, QS_BATTERY_GLYPH_W, QS_BATTERY_GLYPH_H);
+        draw_qs_battery_glyph(c, glyph, pct, if low { theme.danger } else { theme.ok });
+        x += QS_BATTERY_GLYPH_W + QS_BATTERY_TIP + QS_BATTERY_GAP;
+        let pct_text = format!("{pct}%");
+        let pct_w = text_w(ctx.painter, &pct_text, &QS_BATTERY_PCT);
+        c.text(ctx.painter, (x, x + pct_w, top, bottom), TextAlign::Left, &pct_text, theme.label, &QS_BATTERY_PCT);
+        x += pct_w + QS_BATTERY_GAP;
+        let chevron =
+            local_rect(head.loc.x + head.size.w - SP2 - QS_CHEVRON_GLYPH - 1, top, QS_CHEVRON_GLYPH + 1, head.size.h);
+        let eta = panels::battery_head_line(status);
+        c.text(
+            ctx.painter,
+            (x, chevron.loc.x - QS_BATTERY_GAP, top, bottom),
+            TextAlign::Left,
+            &eta,
+            theme.muted,
+            &TextStyle::CAP,
+        );
+        let hover = ctx.hovered == Some(Slot::QsBattery);
+        draw_qs_chevron(c, ctx, chevron, (false, hover));
+    }
+    if let Some(track) = geometry.segments {
+        draw_qs_segments(c, ctx, track, (status.power_profile, draw.motion.profile_position()));
+    }
+}
+
+fn draw_qs_segments(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, track: LocalRect, (active, position): (Option<PowerProfile>, f64),
+) {
+    let theme = ctx.theme;
+    c.fill(track, theme.track_soft, R2);
+    let segments = qs_segments(track);
+    if active.is_some() {
+        let (first, second) = (segments[0].1, segments[1].1);
+        let step = f64::from(second.loc.x - first.loc.x);
+        let x = first.loc.x + (step * position.clamp(0.0, 2.0)).round() as i32;
+        c.fill(local_rect(x, first.loc.y, first.size.w, first.size.h), theme.track, R1);
+    }
+    for (profile, rect) in segments {
+        let lit = active == Some(profile) || ctx.hovered == Some(Slot::QsProfile(profile));
+        let colour = if lit { theme.label } else { theme.muted };
+        let label = crate::i18n::t(power_profile_label(profile));
+        let content = QS_SEGMENT_ICON + QS_SEGMENT_GAP + text_w(ctx.painter, label, &QS_LABEL);
+        let x = (rect.loc.x + (rect.size.w - content) / 2).max(rect.loc.x + SP1);
+        let icon = local_rect(x, rect.loc.y + (rect.size.h - QS_SEGMENT_ICON) / 2, QS_SEGMENT_ICON, QS_SEGMENT_ICON);
+        qs_symbol(c, icon, (power_profile_icon(profile), crate::paint::draw_power_glyph_over), QS_SEGMENT_ICON, colour);
+        let text_left = x + QS_SEGMENT_ICON + QS_SEGMENT_GAP;
+        let band = (text_left, rect.loc.x + rect.size.w - SP1, rect.loc.y, rect.loc.y + rect.size.h);
+        c.text(ctx.painter, band, TextAlign::Left, label, colour, &QS_LABEL);
+    }
+}
+
+fn draw_quick_settings(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
+    draw_qs_header(c, ctx, &draw.geometry, &draw.status.user_name);
+    draw_qs_tiles(c, ctx, draw);
+    draw_qs_sliders(c, ctx, draw);
+    draw_qs_battery_card(c, ctx, draw);
 }
 
 const fn scale_or_one(scale: i32) -> i32 {
@@ -4609,6 +5189,8 @@ mod tests {
         for slot in [
             Slot::QsBluetooth,
             Slot::QsNightLight,
+            Slot::QsDnd,
+            Slot::QsDarkTheme,
             Slot::QsVolumeMute,
             Slot::QsBrightnessTrack,
             Slot::QsSettings,
@@ -4622,15 +5204,20 @@ mod tests {
         {
             assert!(bar.slot_rect(slot).is_some(), "{slot:?}");
         }
+        assert!(bar.slot_rect(Slot::QsProfile(PowerProfile::Balanced)).is_none(), "no profiles daemon, no segments");
         for (slot, action) in [
             (Slot::QsWifi, TopbarAction::QsToggleWifi),
+            (Slot::QsWifiMore, TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi))),
             (Slot::QsScreenshot, TopbarAction::QsScreenshot),
             (Slot::QsCaffeine, TopbarAction::ToggleCaffeine),
+            (Slot::QsDnd, TopbarAction::ToggleDoNotDisturb),
+            (Slot::QsDarkTheme, TopbarAction::QsToggleDarkTheme),
             (Slot::QsVolumeMore, TopbarAction::QsPanel(PanelAction::Open(Detail::Sound))),
             (Slot::QsAirplane, TopbarAction::QsToggleAirplane),
-            (Slot::QsPowerMode, TopbarAction::QsCyclePowerMode),
+            (Slot::QsSettings, TopbarAction::QsOpenSettings),
+            (Slot::QsPowerButton(PowerAction::Lock), TopbarAction::QsArmPower(PowerAction::Lock)),
         ] {
-            assert_eq!(click(&bar, slot), Some(action));
+            assert_eq!(click(&bar, slot), Some(action), "{slot:?}");
         }
         let centre = centre(bar.slot_rect(Slot::QsWifi).expect("wifi slot"));
 
@@ -4672,36 +5259,57 @@ mod tests {
 
     #[test]
     fn the_slider_hit_area_matches_the_drawn_track() {
-        let geometry = qs_geometry();
-        let track = geometry.volume_track;
-        assert_eq!(
-            track.loc.x,
-            geometry.volume_icon.loc.x + QS_SLIDER_ICON + QS_GRID_GAP,
-            "clicking the visual start of the track must read as 0%"
-        );
-        assert_eq!(track.loc.x + track.size.w + QS_GRID_GAP, geometry.volume_more.loc.x);
-        assert_eq!(geometry.volume_more.loc.x + geometry.volume_more.size.w, QS_WIDTH - QS_PAD);
-        assert_eq!(geometry.brightness_track.loc.x, track.loc.x);
-        assert_eq!(geometry.brightness_track.loc.x + geometry.brightness_track.size.w, QS_WIDTH - QS_PAD);
+        let geometry = qs_geometry(&QsShape::default());
+        let card = geometry.sliders;
+        for row in [geometry.volume, geometry.brightness] {
+            assert_eq!(row.track.loc.x, card.loc.x + 1 + QS_CARD_PAD_X, "0% sits at the start of the card's content");
+            assert_eq!(row.track.loc.x + row.track.size.w, row.readout.loc.x + row.readout.size.w);
+            assert_eq!(row.track.loc.y, row.icon.loc.y + QS_SLIDER_HEAD + SP1, "the track sits under its head row");
+            assert!(card.contains(row.track.loc) && card.contains(row.icon.loc));
+            assert!(row.label.loc.x + row.label.size.w <= row.readout.loc.x);
+        }
+        let between = geometry.volume.track.loc.y + QS_SLIDER_HEIGHT..geometry.brightness.icon.loc.y;
+        assert!(between.contains(&geometry.slider_divider));
+        assert_eq!(card.loc.y + card.size.h, geometry.brightness.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y + 1);
     }
 
     #[test]
     fn the_quick_settings_popup_is_exactly_as_tall_as_its_content() {
-        let geometry = qs_geometry();
-        let power_bottom = geometry.power[0].1.loc.y + geometry.power[0].1.size.h;
-        assert_eq!(geometry.height, power_bottom + QS_PAD);
-        assert!(geometry.footer.loc.y + geometry.footer.size.h < geometry.power[0].1.loc.y);
-        let settings = (Slot::QsSettings, geometry.settings);
-        for (_, rect) in geometry.tiles.iter().chain(geometry.power.iter()).chain(std::iter::once(&settings)) {
-            assert!(rect.loc.x >= QS_PAD);
-            assert!(rect.loc.x + rect.size.w <= QS_WIDTH - QS_PAD);
-            assert!(rect.loc.y + rect.size.h <= geometry.height - QS_PAD);
+        let pills = QsPills { output: 60, cancel: 80, confirm: 100 };
+        let plain = QsShape { pills, ..QsShape::default() };
+        let battery = QsShape { battery: true, profile: true, ..plain };
+        let lock = QsShape { armed: Some(PowerAction::Lock), ..battery };
+        let shut_down = QsShape { armed: Some(PowerAction::ShutDown), ..battery };
+        for shape in [plain, battery, lock, shut_down] {
+            let geometry = qs_geometry(&shape);
+            let session = geometry.confirm.map_or(geometry.power_row, |strip| strip.rect);
+            assert_eq!(geometry.height, session.loc.y + session.size.h + QS_PAD, "{shape:?}");
+            let rects = geometry
+                .tiles
+                .iter()
+                .map(|(_, rect)| *rect)
+                .chain(geometry.power.iter().map(|(_, rect)| *rect))
+                .chain([geometry.avatar, geometry.settings, geometry.sliders, session])
+                .chain(geometry.battery_card);
+            for rect in rects {
+                assert!(rect.loc.x >= QS_PAD && rect.loc.x + rect.size.w <= QS_WIDTH - QS_PAD, "{rect:?}");
+                assert!(rect.loc.y >= QS_PAD && rect.loc.y + rect.size.h <= geometry.height - QS_PAD, "{rect:?}");
+            }
         }
+        let card = |shape: QsShape| qs_geometry(&shape).battery_card.map(|card| card.size.h);
+        assert_eq!(card(plain), None);
+        assert_eq!(card(battery), Some(2 + SP1 * 3 + QS_BATTERY_HEAD + QS_SEGMENTS_H));
+        assert_eq!(card(QsShape { profile: false, ..battery }), Some(2 + SP1 * 2 + QS_BATTERY_HEAD));
+        assert_eq!(card(QsShape { battery: false, ..battery }), Some(2 + SP1 * 2 + QS_SEGMENTS_H));
+        let strip = |shape: QsShape| qs_geometry(&shape).confirm.map(|strip| strip.rect.size.h);
+        assert!(strip(shut_down) > strip(lock), "the countdown line takes a row");
+        assert!(strip(lock).is_some_and(|h| h > QS_POWER_ROW));
+
         let mut bar = topbar_with(&["US", "UA"]);
         bar.toggle_popup(OpenPopup::QuickSettings);
         bar.layout_slots(&painter(), output());
         let popup = bar.popup_rect().expect("popup rect");
-        assert_eq!(popup.size.h, geometry.height);
+        assert_eq!(popup.size, Size::from((QS_WIDTH, qs_geometry(&bar.qs_shape(None)).height)));
     }
 
     #[test]
@@ -4813,26 +5421,21 @@ mod tests {
     }
 
     #[test]
-    fn the_battery_lives_in_quick_settings_behind_its_pill() {
+    fn the_battery_card_sits_under_the_sliders_and_opens_its_view() {
         let mut bar = topbar_with(&["US"]);
         bar.toggle_popup(OpenPopup::QuickSettings);
         bar.layout_slots(&painter(), output());
-        assert_eq!(bar.slot_rect(Slot::QsBattery), None, "no battery, no pill");
+        assert_eq!(bar.slot_rect(Slot::QsBattery), None, "no battery, no card");
 
         bar.set_system_status(crate::system_info::SystemStatus { battery_pct: Some(50), ..Default::default() });
         bar.layout_slots(&painter(), output());
-        let pill = bar.slot_rect(Slot::QsBattery).expect("battery pill");
-        let gear = bar.slot_rect(Slot::QsSettings).expect("settings");
-        assert!(pill.loc.x + pill.size.w <= gear.loc.x);
-        assert_eq!(pill.loc.y, gear.loc.y);
-        assert!(bar.popup_rect().expect("qs").contains(pill.loc));
-        assert_eq!(
-            bar.action_at(Point::from((
-                f64::from(pill.loc.x + pill.size.w / 2),
-                f64::from(pill.loc.y + pill.size.h / 2),
-            ))),
-            Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Battery)))
-        );
+        let head = bar.slot_rect(Slot::QsBattery).expect("battery row");
+        let brightness = bar.slot_rect(Slot::QsBrightnessTrack).expect("brightness");
+        let lock = bar.slot_rect(Slot::QsPowerButton(PowerAction::Lock)).expect("lock");
+        assert!(brightness.loc.y + brightness.size.h < head.loc.y && head.loc.y + head.size.h < lock.loc.y);
+        assert_eq!(head.size.h, QS_BATTERY_HEAD);
+        assert!(bar.popup_rect().expect("qs").contains(head.loc));
+        assert_eq!(click(&bar, Slot::QsBattery), Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Battery))));
 
         bar.set_focused(Some(Slot::QsBattery));
         assert!(bar.open_detail(Detail::Battery));
@@ -4914,21 +5517,23 @@ mod tests {
         assert!(!bar.has_focus());
         assert_eq!(bar.focused_action(), None);
         for (dx, dy, slot, action) in [
-            (1, 0, Slot::QsWifi, Some(TopbarAction::QsToggleWifi)),
-            (1, 0, Slot::QsWifiMore, Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi)))),
-            (1, 0, Slot::QsBluetooth, Some(TopbarAction::QsToggleBluetooth)),
-            (0, 1, Slot::QsScreenshot, Some(TopbarAction::QsScreenshot)),
-            (-1, 0, Slot::QsNightLight, None),
-            (0, -1, Slot::QsWifi, None),
+            (0, 1, Slot::QsSettings, Some(TopbarAction::QsOpenSettings)),
+            (0, 1, Slot::QsBluetoothMore, Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Bluetooth)))),
+            (-1, 0, Slot::QsBluetooth, Some(TopbarAction::QsToggleBluetooth)),
+            (-1, 0, Slot::QsWifiMore, Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi)))),
+            (-1, 0, Slot::QsWifi, Some(TopbarAction::QsToggleWifi)),
         ] {
             assert!(bar.focus_nav(dx, dy));
             assert_eq!(bar.focused, Some(slot));
-            if action.is_some() {
-                assert_eq!(bar.focused_action(), action);
-            }
+            assert_eq!(bar.focused_action(), action);
         }
         assert!(!bar.focus_nav(-1, 0), "nothing lies left of the first tile");
-        assert!(!bar.focus_nav(0, -1), "nothing lies above the first row");
+        assert!(!bar.focus_nav(0, -1), "nothing lies above the first tile but the header's far end");
+        assert!(bar.focus_nav(0, 1));
+        assert_eq!(bar.focused, Some(Slot::QsNightLight));
+        assert!(bar.focus_nav(1, 0));
+        assert_eq!(bar.focused_action(), Some(TopbarAction::ToggleDoNotDisturb));
+        assert!(!bar.focus_nav(1, 0), "the grid has two columns");
         assert!(bar.close_popup());
         assert!(!bar.has_focus() && bar.focused_action().is_none());
 
@@ -4949,10 +5554,11 @@ mod tests {
         assert_eq!(
             visited,
             [
-                Slot::QsWifi,
-                Slot::QsNightLight,
+                Slot::QsSettings,
+                Slot::QsBluetoothMore,
+                Slot::QsDnd,
                 Slot::QsAirplane,
-                Slot::QsCaffeine,
+                Slot::QsDarkTheme,
                 Slot::QsVolumeTrack,
                 Slot::QsBrightnessTrack,
                 Slot::QsPowerButton(PowerAction::Restart),
@@ -4976,8 +5582,9 @@ mod tests {
                 Slot::QsPowerButton(PowerAction::LogOut),
             ]
         );
+        bar.set_focused(Some(Slot::QsPowerButton(PowerAction::Restart)));
         assert!(bar.focus_nav(0, -1));
-        assert_eq!(bar.focused, Some(Slot::QsSettings));
+        assert_eq!(bar.focused, Some(Slot::QsBrightnessTrack));
     }
 
     #[test]
@@ -5059,8 +5666,8 @@ mod tests {
         let mut bar = quick_settings();
         bar.focus_nav(1, 0);
         let popup = bar.popup_rect().expect("popup rect");
-        let slot = bar.slot_rect(Slot::QsWifi).expect("wifi slot");
-        let ring = bar.focus_ring_in(Slot::in_quick_settings).expect("ring for the focused tile");
+        let slot = bar.slot_rect(Slot::QsSettings).expect("settings slot");
+        let ring = bar.focus_ring_in(Slot::in_quick_settings).expect("ring for the focused button");
         assert_eq!(ring.loc, slot.loc - popup.loc);
         assert_eq!(ring.size, slot.size);
         assert!(ring.loc.x >= FOCUS_RING);
@@ -5077,7 +5684,7 @@ mod tests {
         let tile = centre(bar.slot_rect(Slot::QsBluetooth).expect("bluetooth tile"));
         assert!(bar.set_hover(Some(tile)));
         assert_eq!(bar.hovered_in(Slot::in_quick_settings), Some(Slot::QsBluetooth));
-        assert_eq!(bar.focused_in(Slot::in_quick_settings), Some(Slot::QsWifi));
+        assert_eq!(bar.focused_in(Slot::in_quick_settings), Some(Slot::QsSettings));
     }
 
     const _: () = assert!(FOCUS_RING == 2 && FOCUS_RING_STROKE == 2.0);
@@ -5309,7 +5916,7 @@ mod tests {
     #[test]
     fn hovering_a_tile_raises_a_layer_job_over_that_tile_only() {
         let mut bar = quick_settings();
-        let tile = bar.slot_rect(Slot::QsWifi).expect("wifi tile");
+        let tile = bar.slot_rect(Slot::QsNightLight).expect("night light tile");
         bar.set_hover(Some(centre(tile)));
         std::thread::sleep(motion::t1() + Duration::from_millis(20));
         let jobs = bar.layer_jobs();
@@ -5319,7 +5926,7 @@ mod tests {
         assert!(jobs[0].in_popup);
         assert!((jobs[0].alpha - 1.0).abs() < f32::EPSILON);
 
-        bar.focus_nav(1, 0);
+        bar.set_focused(Some(Slot::QsNightLight));
         std::thread::sleep(motion::t1() + Duration::from_millis(20));
         let jobs = bar.layer_jobs();
         assert_eq!(jobs.len(), 2);
@@ -5333,7 +5940,7 @@ mod tests {
         bar.focus_nav(1, 0);
         bar.settle_motion();
         let ring = bar.focus_ring_last.expect("ring recorded");
-        assert_eq!(Some(ring), bar.slot_rect(Slot::QsWifi));
+        assert_eq!(Some(ring), bar.slot_rect(Slot::QsSettings));
         bar.set_focused(None);
         assert!(bar.focus_anim.is_animating());
         assert_eq!(bar.focus_ring_rect(), None);
@@ -5359,11 +5966,138 @@ mod tests {
     }
 
     #[test]
-    fn hovering_a_power_button_captions_it_in_the_footer() {
+    fn a_power_button_arms_an_inline_confirmation_in_place_of_the_row() {
         let mut bar = quick_settings();
-        let restart = Slot::QsPowerButton(PowerAction::Restart);
-        bar.set_hover(Some(centre(bar.slot_rect(restart).expect("restart"))));
-        assert_eq!(bar.hovered, Some(Slot::QsPowerButton(PowerAction::Restart)));
-        assert_eq!(panels::power_label(PowerAction::Restart), crate::i18n::Key::CommandRestart);
+        let restart = bar.slot_rect(Slot::QsPowerButton(PowerAction::Restart)).expect("restart");
+        let height = bar.popup_rect().expect("popup").size.h;
+        assert!(bar.arm_power(PowerAction::Restart));
+        assert!(!bar.arm_power(PowerAction::Restart), "already armed");
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::QsPowerButton(PowerAction::Restart)).is_none(), "the row gives way");
+        let confirm = bar.slot_rect(Slot::QsPowerConfirm(PowerAction::Restart)).expect("confirm pill");
+        let cancel = bar.slot_rect(Slot::QsPowerCancel).expect("cancel pill");
+        assert!(cancel.loc.x + cancel.size.w < confirm.loc.x);
+        assert!(confirm.loc.y > restart.loc.y);
+        assert!(bar.popup_rect().expect("popup").size.h > height);
+        assert_eq!(
+            click(&bar, Slot::QsPowerConfirm(PowerAction::Restart)),
+            Some(TopbarAction::QsPower(PowerAction::Restart))
+        );
+        assert_eq!(click(&bar, Slot::QsPowerCancel), Some(TopbarAction::QsDisarmPower));
+        assert!(bar.is_animating(), "the strip fades in");
+        assert!(bar.qs_escape(), "Esc disarms before it closes");
+        assert_eq!(bar.armed_power(), None);
+        assert!(!bar.qs_escape());
+        assert!(bar.has_open_popup());
+    }
+
+    #[test]
+    fn only_the_session_ending_actions_count_down() {
+        let mut bar = quick_settings();
+        bar.arm_power(PowerAction::Lock);
+        assert!(!bar.power_counting());
+        let later = std::time::Instant::now() + crate::power_dialog::COUNTDOWN * 2;
+        assert_eq!(bar.power_due(later), None, "lock waits for a click");
+        bar.arm_power(PowerAction::ShutDown);
+        let now = std::time::Instant::now();
+        assert!(bar.power_counting());
+        assert_eq!(bar.power_due(now), None);
+        assert_eq!(bar.qs_power.and_then(|armed| armed.seconds_left(now)), Some(60));
+        let due = now + crate::power_dialog::COUNTDOWN + Duration::from_millis(5);
+        assert_eq!(bar.power_due(due), Some(PowerAction::ShutDown));
+        assert_eq!(bar.armed_power(), None);
+    }
+
+    #[test]
+    fn leaving_the_main_view_forgets_an_armed_action() {
+        let mut bar = quick_settings();
+        bar.set_focused(Some(Slot::QsPowerButton(PowerAction::Sleep)));
+        bar.arm_power(PowerAction::Sleep);
+        assert_eq!(bar.focused, Some(Slot::QsPowerConfirm(PowerAction::Sleep)), "Enter on the button lands on Confirm");
+        assert!(bar.disarm_power());
+        assert_eq!(bar.focused, Some(Slot::QsPowerButton(PowerAction::Sleep)));
+
+        bar.arm_power(PowerAction::LogOut);
+        assert!(bar.open_detail(Detail::Wifi));
+        assert_eq!(bar.armed_power(), None);
+        bar.close_detail();
+        bar.arm_power(PowerAction::LogOut);
+        bar.close_popup();
+        assert!(!bar.power_counting(), "a closed popup never ends the session");
+        bar.toggle_popup(OpenPopup::QuickSettings);
+        assert_eq!(bar.armed_power(), None);
+    }
+
+    #[test]
+    fn the_power_profile_is_a_segmented_control_under_the_battery() {
+        let mut bar = topbar_with(&["US"]);
+        bar.set_system_status(crate::system_info::SystemStatus {
+            battery_pct: Some(70),
+            power_profile: Some(PowerProfile::Balanced),
+            ..Default::default()
+        });
+        assert!((bar.profile_anim.value() - 1.0).abs() < f64::EPSILON, "the first reading jumps");
+        let bar = with_popup(bar, OpenPopup::QuickSettings);
+        let head = bar.slot_rect(Slot::QsBattery).expect("battery row");
+        let mut previous: Option<Rectangle<i32, Logical>> = None;
+        for profile in QS_PROFILES {
+            let rect = bar.slot_rect(Slot::QsProfile(profile)).expect("segment");
+            assert!(rect.loc.y > head.loc.y + head.size.h);
+            if let Some(previous) = previous {
+                assert!(previous.loc.x + previous.size.w <= rect.loc.x);
+                assert!((previous.size.w - rect.size.w).abs() <= 1);
+            }
+            previous = Some(rect);
+            assert_eq!(click(&bar, Slot::QsProfile(profile)), Some(TopbarAction::QsSetPowerProfile(profile)));
+        }
+
+        let mut bar = bar;
+        let mut status = bar.system_status().clone();
+        status.power_profile = Some(PowerProfile::Performance);
+        bar.set_system_status(status);
+        assert!(bar.profile_anim.is_animating());
+        assert!((bar.profile_anim.target() - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_new_battery_estimate_repaints_the_main_view() {
+        let mut bar = quick_settings();
+        let battery = crate::system_info::BatteryInfo {
+            pct: 60,
+            state: crate::system_info::BatteryState::Discharging,
+            minutes: Some(90),
+            profile: None,
+        };
+        bar.set_system_status(crate::system_info::SystemStatus {
+            battery_pct: Some(60),
+            battery: Some(battery),
+            ..Default::default()
+        });
+        let before = bar.qs_main_key(&painter());
+        let mut status = bar.system_status().clone();
+        status.battery = Some(crate::system_info::BatteryInfo { minutes: Some(80), ..battery });
+        bar.set_system_status(status);
+        assert_ne!(bar.qs_main_key(&painter()), before, "the estimate is drawn on the main view");
+    }
+
+    #[test]
+    fn the_badge_toggles_and_the_rest_of_a_split_tile_opens_its_view() {
+        let bar = quick_settings();
+        for (badge, card, toggle, detail) in [
+            (Slot::QsWifi, Slot::QsWifiMore, TopbarAction::QsToggleWifi, Detail::Wifi),
+            (Slot::QsBluetooth, Slot::QsBluetoothMore, TopbarAction::QsToggleBluetooth, Detail::Bluetooth),
+        ] {
+            let badge_rect = bar.slot_rect(badge).expect("badge");
+            let card_rect = bar.slot_rect(card).expect("card");
+            assert!(card_rect.contains(badge_rect.loc), "the badge sits inside its card");
+            assert_eq!(bar.action_at(centre(badge_rect)), Some(toggle));
+            let open = Some(TopbarAction::QsPanel(PanelAction::Open(detail)));
+            assert_eq!(bar.action_at(centre(card_rect)), open);
+            let chevron = Point::from((
+                f64::from(card_rect.loc.x + card_rect.size.w - QS_SPLIT_END - QS_CHEVRON / 2),
+                f64::from(card_rect.loc.y + card_rect.size.h / 2),
+            ));
+            assert_eq!(bar.action_at(chevron), open);
+        }
     }
 }
