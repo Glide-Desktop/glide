@@ -374,6 +374,69 @@ pub fn parse_sinks_short(text: &str, default: &str) -> Vec<AudioOutput> {
         .collect()
 }
 
+#[must_use]
+pub fn input_icon(form_factor: Option<&str>, bus: Option<&str>, port: &str) -> &'static str {
+    let port = port.to_ascii_lowercase();
+    match form_factor {
+        Some("headset" | "hands-free") => return "audio-headset",
+        Some("webcam") => return "camera-web",
+        _ => {}
+    }
+    if port.contains("headset") || bus == Some("bluetooth") || port.contains("bluez") {
+        "audio-headset"
+    } else {
+        "audio-input-microphone"
+    }
+}
+
+fn is_monitor(source: &serde_json::Value, name: &str) -> bool {
+    let monitor_of = source.get("monitor_source").and_then(serde_json::Value::as_str).unwrap_or_default();
+    let class = source.get("properties").and_then(|map| map.get("device.class")).and_then(serde_json::Value::as_str);
+    !monitor_of.is_empty() || class == Some("monitor") || name.ends_with(".monitor")
+}
+
+#[must_use]
+pub fn parse_sources_json(text: &str, default: &str) -> Vec<AudioOutput> {
+    use serde_json::Value;
+    let Ok(Value::Array(sources)) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    sources
+        .iter()
+        .filter_map(|source| {
+            let name = source.get("name")?.as_str()?.to_string();
+            if is_monitor(source, &name) {
+                return None;
+            }
+            let property = |key: &str| source.get("properties").and_then(|map| map.get(key)).and_then(Value::as_str);
+            let description =
+                source.get("description").and_then(Value::as_str).filter(|text| !text.is_empty()).unwrap_or(&name);
+            let port = source.get("active_port").and_then(Value::as_str).unwrap_or(&name);
+            Some(AudioOutput {
+                description: description.to_string(),
+                icon: input_icon(property("device.form_factor"), property("device.bus"), port),
+                active: name == default,
+                name,
+            })
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn parse_sources_short(text: &str, default: &str) -> Vec<AudioOutput> {
+    text.lines()
+        .filter_map(|line| {
+            let name = line.split('\t').nth(1)?.trim();
+            (!name.is_empty() && !name.ends_with(".monitor")).then(|| AudioOutput {
+                name: name.to_string(),
+                description: name.to_string(),
+                icon: input_icon(None, None, name),
+                active: name == default,
+            })
+        })
+        .collect()
+}
+
 pub fn sort_outputs(outputs: &mut [AudioOutput]) {
     outputs.sort_by(|a, b| {
         b.active.cmp(&a.active).then_with(|| a.description.to_lowercase().cmp(&b.description.to_lowercase()))
@@ -384,10 +447,12 @@ pub enum NetRequest {
     ScanWifi,
     ScanBluetooth,
     ScanOutputs,
+    ScanInputs,
     ConnectWifi { ssid: String, password: Option<String>, saved: bool },
     DisconnectWifi { ssid: String },
     Bluetooth { mac: String, connect: bool },
     UseOutput { name: String },
+    UseInput { name: String },
 }
 
 impl std::fmt::Debug for NetRequest {
@@ -396,7 +461,9 @@ impl std::fmt::Debug for NetRequest {
             Self::ScanWifi => f.write_str("ScanWifi"),
             Self::ScanBluetooth => f.write_str("ScanBluetooth"),
             Self::ScanOutputs => f.write_str("ScanOutputs"),
+            Self::ScanInputs => f.write_str("ScanInputs"),
             Self::UseOutput { name } => f.debug_struct("UseOutput").field("name", name).finish(),
+            Self::UseInput { name } => f.debug_struct("UseInput").field("name", name).finish(),
             Self::ConnectWifi { ssid, password, saved } => f
                 .debug_struct("ConnectWifi")
                 .field("ssid", ssid)
@@ -419,6 +486,8 @@ pub enum NetEvent {
     BluetoothResult { mac: String, result: Result<(), ConnectError> },
     Outputs(Vec<AudioOutput>),
     OutputResult { name: String, result: Result<(), ConnectError> },
+    Inputs(Vec<AudioOutput>),
+    InputResult { name: String, result: Result<(), ConnectError> },
 }
 
 type Sink = Box<dyn Fn(NetEvent) + Send + Sync>;
@@ -427,6 +496,7 @@ static SINK: OnceLock<Sink> = OnceLock::new();
 static WIFI_SCANNING: AtomicBool = AtomicBool::new(false);
 static BLUETOOTH_SCANNING: AtomicBool = AtomicBool::new(false);
 static OUTPUTS_SCANNING: AtomicBool = AtomicBool::new(false);
+static INPUTS_SCANNING: AtomicBool = AtomicBool::new(false);
 
 pub fn install(sink: impl Fn(NetEvent) + Send + Sync + 'static) {
     if SINK.set(Box::new(sink)).is_err() {
@@ -448,6 +518,7 @@ pub fn request(request: NetRequest) {
         NetRequest::ScanWifi => Some(&WIFI_SCANNING),
         NetRequest::ScanBluetooth => Some(&BLUETOOTH_SCANNING),
         NetRequest::ScanOutputs => Some(&OUTPUTS_SCANNING),
+        NetRequest::ScanInputs => Some(&INPUTS_SCANNING),
         _ => None,
     };
     if let Some(flag) = flag
@@ -497,19 +568,41 @@ fn run_request(request: NetRequest) {
             emit(NetEvent::Bluetooth(scan_bluetooth()));
         }
         NetRequest::ScanOutputs => emit(NetEvent::Outputs(scan_outputs())),
+        NetRequest::ScanInputs => emit(NetEvent::Inputs(scan_inputs())),
         NetRequest::UseOutput { name } => {
-            let result = run_with_timeout("pactl", &["set-default-sink", &name], SCAN_TIMEOUT)
-                .filter(|output| output.status.success())
-                .map(|_| ())
-                .ok_or(ConnectError::Failed);
-            if result.is_err() {
-                tracing::info!(name, "switching the audio output failed");
-            }
-            crate::system_info::poke();
+            let result = set_default("set-default-sink", &name);
             emit(NetEvent::OutputResult { name, result });
             emit(NetEvent::Outputs(scan_outputs()));
         }
+        NetRequest::UseInput { name } => {
+            let result = set_default("set-default-source", &name);
+            emit(NetEvent::InputResult { name, result });
+            emit(NetEvent::Inputs(scan_inputs()));
+        }
     }
+}
+
+fn set_default(verb: &str, name: &str) -> Result<(), ConnectError> {
+    let result = run_with_timeout("pactl", &[verb, name], SCAN_TIMEOUT)
+        .filter(|output| output.status.success())
+        .map(|_| ())
+        .ok_or(ConnectError::Failed);
+    if result.is_err() {
+        tracing::info!(name, verb, "switching the audio device failed");
+    }
+    crate::system_info::poke();
+    result
+}
+
+fn scan_inputs() -> Vec<AudioOutput> {
+    let default = stdout_of("pactl", &["get-default-source"]).map(|text| text.trim().to_string()).unwrap_or_default();
+    let mut inputs = stdout_of("pactl", &["--format=json", "list", "sources"])
+        .map(|text| parse_sources_json(&text, &default))
+        .filter(|inputs| !inputs.is_empty())
+        .or_else(|| stdout_of("pactl", &["list", "short", "sources"]).map(|text| parse_sources_short(&text, &default)))
+        .unwrap_or_default();
+    sort_outputs(&mut inputs);
+    inputs
 }
 
 fn scan_outputs() -> Vec<AudioOutput> {
@@ -635,6 +728,22 @@ fn scan_bluetooth() -> Vec<BtDevice> {
         .collect();
     sort_devices(&mut devices);
     devices
+}
+
+#[must_use]
+pub const fn scan_drawer(drawer: crate::topbar::Drawer) -> NetRequest {
+    match drawer {
+        crate::topbar::Drawer::Output => NetRequest::ScanOutputs,
+        crate::topbar::Drawer::Input => NetRequest::ScanInputs,
+    }
+}
+
+#[must_use]
+pub const fn use_device(drawer: crate::topbar::Drawer, name: String) -> NetRequest {
+    match drawer {
+        crate::topbar::Drawer::Output => NetRequest::UseOutput { name },
+        crate::topbar::Drawer::Input => NetRequest::UseInput { name },
+    }
 }
 
 #[must_use]
@@ -989,6 +1098,40 @@ mod tests {
         assert_eq!(outputs[0].name, "bluez_output.AA_BB.1");
         assert!(parse_sinks_json("not json", "").is_empty());
         assert!(parse_sinks_json("{}", "").is_empty());
+    }
+
+    const SOURCES_JSON: &str = r#"[
+        {"index":51,"name":"alsa_output.pci.HiFi__Speaker__sink.monitor","description":"Monitor of Speaker",
+         "monitor_source":"alsa_output.pci.HiFi__Speaker__sink","active_port":"[Out] Speaker",
+         "properties":{"device.bus":"pci","device.class":"monitor"}},
+        {"index":52,"name":"alsa_input.pci.HiFi__Mic1__source","description":"Digital Microphone",
+         "monitor_source":"","active_port":"[In] Mic1","properties":{"device.bus":"pci","device.class":"sound"}},
+        {"index":60,"name":"bluez_input.AA_BB.0","description":"WH-1000XM4","monitor_source":"",
+         "active_port":null,"properties":{"device.bus":"bluetooth","device.form_factor":"headset"}},
+        {"index":61,"name":"v4l2_input.cam","description":"HD Webcam","monitor_source":"",
+         "properties":{"device.form_factor":"webcam"}}
+    ]"#;
+
+    #[test]
+    fn pactl_json_sources_leave_out_the_monitors() {
+        let mut inputs = parse_sources_json(SOURCES_JSON, "alsa_input.pci.HiFi__Mic1__source");
+        sort_outputs(&mut inputs);
+        let summary: Vec<(&str, &str, bool)> =
+            inputs.iter().map(|input| (input.description.as_str(), input.icon, input.active)).collect();
+        assert_eq!(
+            summary,
+            [
+                ("Digital Microphone", "audio-input-microphone", true),
+                ("HD Webcam", "camera-web", false),
+                ("WH-1000XM4", "audio-headset", false),
+            ]
+        );
+        let short = "51\tspeaker.monitor\tPipeWire\ts32le\tSUSPENDED\n52\tmic\tPipeWire\ts32le\tSUSPENDED\n";
+        let inputs = parse_sources_short(short, "mic");
+        assert_eq!(inputs.len(), 1);
+        assert!(inputs[0].active);
+        assert!(matches!(use_device(crate::topbar::Drawer::Input, "mic".into()), NetRequest::UseInput { .. }));
+        assert!(matches!(scan_drawer(crate::topbar::Drawer::Output), NetRequest::ScanOutputs));
     }
 
     #[test]

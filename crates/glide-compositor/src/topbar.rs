@@ -138,12 +138,20 @@ const QS_CONFIRM_PILL_GAP: i32 = 6;
 const QS_CONFIRM_PILLS_TOP: i32 = 2;
 const QS_ARM_RISE: f64 = 6.0;
 const QS_CHEVRON_NUDGE: i32 = 2;
+const QS_DRILL: i32 = 22;
+const QS_DRAWER_TOP: i32 = SP1 * 2 + 1;
+const QS_DRAWER_ITEM: i32 = 36;
+const QS_DRAWER_GAP: i32 = 2;
+const QS_DRAWER_BOTTOM: i32 = 2;
+const QS_DRAWER_ICON: i32 = 22;
+const QS_DRAWER_TICK: i32 = 12;
 const QS_SWITCH_W: i32 = 44;
 const QS_SWITCH_H: i32 = 26;
 const QS_SWITCH_THUMB: i32 = 20;
 const QS_SWITCH_INSET: i32 = 3;
 
 const POPUP_GAP: i32 = glide_theme::spacing::SP2;
+const SHADOW_CACHE_LIMIT: usize = 48;
 const POPUP_RADIUS: f32 = glide_theme::shape::R3;
 const POPUP_RISE: f64 = 6.0;
 const POPUP_SCALE_FROM: f64 = 0.94;
@@ -254,6 +262,12 @@ pub enum OpenPopup {
     Privacy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Drawer {
+    Output,
+    Input,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuRowOutcome {
     Submenu,
@@ -292,6 +306,8 @@ pub enum TopbarAction {
     QsVolumeAdjust(u8),
     QsMicMute,
     QsMicAdjust(u8),
+    QsToggleDrawer(Drawer),
+    QsUseDevice(Drawer, u16),
     QsBrightnessAdjust(u8),
     QsScreenshot,
     QsOpenSettings,
@@ -343,6 +359,10 @@ pub enum Slot {
     QsVolumeTrack,
     QsMicMute,
     QsMicTrack,
+    QsMicMore,
+    QsOutputPill,
+    QsInputPill,
+    QsDrawerItem(Drawer, u16),
     QsBrightnessTrack,
     QsProfile(PowerProfile),
     QsSettings,
@@ -490,6 +510,9 @@ impl Slot {
             Self::QsVolumeTrack => TopbarAction::QsVolumeAdjust(50),
             Self::QsMicMute => TopbarAction::QsMicMute,
             Self::QsMicTrack => TopbarAction::QsMicAdjust(50),
+            Self::QsOutputPill => TopbarAction::QsToggleDrawer(Drawer::Output),
+            Self::QsInputPill => TopbarAction::QsToggleDrawer(Drawer::Input),
+            Self::QsDrawerItem(drawer, index) => TopbarAction::QsUseDevice(drawer, index),
             Self::QsBrightnessTrack => TopbarAction::QsBrightnessAdjust(50),
             Self::QsProfile(profile) => TopbarAction::QsSetPowerProfile(profile),
             Self::QsSettings => TopbarAction::QsOpenSettings,
@@ -498,7 +521,7 @@ impl Slot {
             Self::QsPowerConfirm(action) => TopbarAction::QsPower(action),
             Self::QsWifiMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Wifi)),
             Self::QsBluetoothMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Bluetooth)),
-            Self::QsVolumeMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Sound)),
+            Self::QsVolumeMore | Self::QsMicMore => TopbarAction::QsPanel(PanelAction::Open(Detail::Sound)),
             Self::QsBattery => TopbarAction::QsPanel(PanelAction::Open(Detail::Battery)),
             Self::QsBack => TopbarAction::QsPanel(PanelAction::Back),
             Self::QsDetailToggle => TopbarAction::QsPanel(PanelAction::Toggle),
@@ -623,6 +646,10 @@ pub struct Topbar {
     profile_anim: Anim,
     qs_power: Option<ArmedPower>,
     arm_anim: Anim,
+    qs_drawer: Option<Drawer>,
+    drawer_shown: Option<Drawer>,
+    drawer_anim: Anim,
+    drawer_extent: Option<(Drawer, i32)>,
     slider_dragging: bool,
     scroll: crate::system_info::ScrollAccumulator,
 
@@ -951,6 +978,7 @@ impl Topbar {
             &self.segment_anim,
             &self.profile_anim,
             &self.arm_anim,
+            &self.drawer_anim,
         ]
         .into_iter()
         .any(Anim::is_animating);
@@ -1020,6 +1048,15 @@ impl Topbar {
         if self.closing_popup.is_some() && !self.popup_reveal.is_visible(duration) {
             self.closing_popup = None;
             self.forget_power();
+            self.forget_drawer();
+            self.touch();
+        }
+        if self.qs_drawer.is_none() && self.drawer_shown.is_some() && !self.drawer_anim.is_animating() {
+            self.drawer_shown = None;
+        }
+        let extent = self.drawer_extent_now();
+        if extent != self.drawer_extent {
+            self.drawer_extent = extent;
             self.touch();
         }
         let reserved = self.unread > 0 || self.badge_anim.value() > 0.0;
@@ -1107,10 +1144,11 @@ impl Topbar {
                     .filter_map(|(slot, rect)| {
                         let centre = rect_centre(*rect);
                         let (step_x, step_y) = (centre.x - origin.x, centre.y - origin.y);
+                        let beneath = slot.is_slider() && spans_overlap(rect.loc.x, rect.size.w, origin.x, 1);
                         let (along, across, in_lane) = if dx == 0 {
                             (
                                 step_y * dy.signum(),
-                                step_x,
+                                if beneath { 0 } else { step_x },
                                 spans_overlap(from.loc.x, from.size.w, rect.loc.x, rect.size.w),
                             )
                         } else {
@@ -1236,6 +1274,7 @@ impl Topbar {
         self.set_focused(None);
         self.qs_panel.reset();
         self.forget_power();
+        self.forget_drawer();
         if popup == OpenPopup::NotificationCenter {
             self.calendar.reset();
         }
@@ -1256,22 +1295,38 @@ impl Topbar {
                 let confirm = t(crate::power_dialog::confirm_key(action));
                 (qs_confirm_pill_width(painter, t(Key::PowerCancel)), qs_confirm_pill_width(painter, confirm))
             });
-            QsPills { output: qs_pill_width(painter, &self.output_label()), cancel, confirm }
+            let output = qs_pill_width(painter, &self.output_label());
+            let input = qs_pill_width(painter, &self.input_label());
+            QsPills { output, input, cancel, confirm }
         });
         QsShape {
             mic: self.system_status.mic_available,
             battery: self.system_status.battery_pct.is_some(),
             profile: self.system_status.power_profile.is_some(),
             armed,
+            drawer: self.drawer_extent_now(),
             pills,
         }
+    }
+
+    fn input_label(&self) -> String {
+        self.qs_panel.active_input().map_or_else(
+            || crate::i18n::t(crate::i18n::Key::TbMicrophone).to_string(),
+            |input| input.description.clone(),
+        )
     }
 
     fn qs_main_key(&self, painter: &crate::paint::Painter) -> QsCacheKey {
         let main_view = self.qs_panel.view.is_none();
         let hovered = self.hovered_in(Slot::in_quick_settings).filter(|_| main_view);
         let dragging = self.pressed.filter(|slot| self.slider_dragging && slot.is_slider());
-        let flags = QsFlags { caffeinated: self.caffeinated, dnd: self.dnd, dark: self.theme.dark, dragging };
+        let flags = QsFlags {
+            caffeinated: self.caffeinated,
+            dnd: self.dnd,
+            dark: self.theme.dark,
+            dragging,
+            drawer: self.qs_drawer,
+        };
         let motion = QsMotion {
             volume: percent(self.volume_anim.value()),
             mic: percent(self.mic_anim.value()),
@@ -1339,7 +1394,64 @@ impl Topbar {
     }
 
     pub fn qs_escape(&mut self) -> bool {
-        self.open_popup == Some(OpenPopup::QuickSettings) && (self.disarm_power() || self.close_detail())
+        self.open_popup == Some(OpenPopup::QuickSettings)
+            && (self.close_drawer() || self.disarm_power() || self.close_detail())
+    }
+
+    fn forget_drawer(&mut self) {
+        self.qs_drawer = None;
+        self.drawer_shown = None;
+        self.drawer_anim.jump(0.0);
+    }
+
+    #[must_use]
+    pub const fn drawer(&self) -> Option<Drawer> {
+        self.qs_drawer
+    }
+
+    pub fn toggle_drawer(&mut self, drawer: Drawer) -> bool {
+        if self.open_popup != Some(OpenPopup::QuickSettings) || self.qs_panel.view.is_some() {
+            return false;
+        }
+        if self.qs_drawer == Some(drawer) {
+            return self.close_drawer();
+        }
+        if self.drawer_shown != Some(drawer) {
+            self.drawer_anim.jump(0.0);
+        }
+        self.qs_drawer = Some(drawer);
+        self.drawer_shown = Some(drawer);
+        self.drawer_anim.retarget(1.0, motion::t2(), E_OUT);
+        self.touch();
+        true
+    }
+
+    pub fn close_drawer(&mut self) -> bool {
+        let Some(drawer) = self.qs_drawer.take() else {
+            return false;
+        };
+        self.drawer_anim.retarget(0.0, motion::t2(), E_OUT);
+        if matches!(self.focused, Some(Slot::QsDrawerItem(..))) {
+            self.set_focused(Some(match drawer {
+                Drawer::Output => Slot::QsOutputPill,
+                Drawer::Input => Slot::QsInputPill,
+            }));
+        }
+        self.touch();
+        true
+    }
+
+    #[must_use]
+    pub fn drawer_device(&self, drawer: Drawer, index: u16) -> Option<crate::qs_net::AudioOutput> {
+        self.qs_panel.devices(drawer).get(usize::from(index)).cloned()
+    }
+
+    fn drawer_extent_now(&self) -> Option<(Drawer, i32)> {
+        let drawer = self.drawer_shown?;
+        let full = qs_drawer_height(self.qs_panel.devices(drawer).len());
+        let progress = f64::from(quantize(self.drawer_anim.value(), MOTION_QUANTUM)) / MOTION_QUANTUM;
+        let visible = (f64::from(full) * progress.clamp(0.0, 1.0)).round() as i32;
+        (visible > 0).then_some((drawer, visible))
     }
 
     pub fn set_system_status(&mut self, status: crate::system_info::SystemStatus) -> bool {
@@ -1676,6 +1788,7 @@ impl Topbar {
                     shape: self.qs_shape(Some(painter)),
                     volume: self.system_status.volume_available,
                     brightness: self.system_status.brightness_available,
+                    drawer_items: self.qs_drawer.map_or(0, |drawer| self.qs_panel.devices(drawer).len()),
                     detail: self.detail_slots(),
                 },
                 popup_slots,
@@ -1922,6 +2035,7 @@ fn profile_index(profile: PowerProfile) -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 struct QsPills {
     output: i32,
+    input: i32,
     cancel: i32,
     confirm: i32,
 }
@@ -1932,7 +2046,34 @@ struct QsShape {
     battery: bool,
     profile: bool,
     armed: Option<PowerAction>,
+    drawer: Option<(Drawer, i32)>,
     pills: QsPills,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QsDrawerArea {
+    drawer: Drawer,
+    rect: LocalRect,
+}
+
+impl QsDrawerArea {
+    fn items(self, count: usize) -> impl Iterator<Item = (u16, LocalRect)> {
+        let top = self.rect.loc.y + QS_DRAWER_TOP;
+        (0..count.max(1)).filter_map(move |index| {
+            let index = u16::try_from(index).ok()?;
+            let y = top + i32::from(index) * (QS_DRAWER_ITEM + QS_DRAWER_GAP);
+            Some((index, local_rect(self.rect.loc.x, y, self.rect.size.w, QS_DRAWER_ITEM)))
+        })
+    }
+
+    fn visible(self, rect: LocalRect) -> bool {
+        rect.loc.y + rect.size.h <= self.rect.loc.y + self.rect.size.h
+    }
+}
+
+fn qs_drawer_height(items: usize) -> i32 {
+    let rows = i32::try_from(items.max(1)).unwrap_or(1);
+    QS_DRAWER_TOP + rows * QS_DRAWER_ITEM + (rows - 1) * QS_DRAWER_GAP + QS_DRAWER_BOTTOM
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1953,6 +2094,7 @@ struct QsSliderRow {
     icon: LocalRect,
     label: LocalRect,
     readout: LocalRect,
+    drill: Option<LocalRect>,
     track: LocalRect,
 }
 
@@ -1976,6 +2118,7 @@ struct QsGeometry {
     volume: QsSliderRow,
     mic: Option<QsSliderRow>,
     brightness: QsSliderRow,
+    drawer: Option<QsDrawerArea>,
     battery_card: Option<LocalRect>,
     battery_head: Option<LocalRect>,
     segments: Option<LocalRect>,
@@ -2001,15 +2144,19 @@ fn qs_chevron(rect: LocalRect) -> LocalRect {
     local_rect(x, rect.loc.y + (rect.size.h - QS_CHEVRON) / 2, QS_CHEVRON, QS_CHEVRON)
 }
 
-fn qs_slider_row(x: i32, y: i32, width: i32, label_w: i32) -> QsSliderRow {
+fn qs_slider_row(x: i32, y: i32, width: i32, (label_w, drill): (i32, bool)) -> QsSliderRow {
     let icon = local_rect(x, y, QS_SLIDER_ICON, QS_SLIDER_HEAD);
-    let readout = local_rect(x + width - QS_READOUT_W, y, QS_READOUT_W, QS_SLIDER_HEAD);
+    let right = x + width;
+    let drill = drill.then(|| local_rect(right - QS_DRILL, y + (QS_SLIDER_HEAD - QS_DRILL) / 2, QS_DRILL, QS_DRILL));
+    let readout_right = drill.map_or(right, |drill| drill.loc.x - SP1);
+    let readout = local_rect(readout_right - QS_READOUT_W, y, QS_READOUT_W, QS_SLIDER_HEAD);
     let label_x = x + QS_SLIDER_ICON + SP1;
-    let label_w = label_w.min(readout.loc.x - SP2 - label_x).max(0);
+    let label_w = label_w.min(readout.loc.x - SP2 - QS_MIC_DOT - SP1 - label_x).max(0);
     QsSliderRow {
         icon,
         label: local_rect(label_x, y, label_w, QS_SLIDER_HEAD),
         readout,
+        drill,
         track: local_rect(x, y + QS_SLIDER_HEAD + SP1, width, QS_SLIDER_HEIGHT),
     }
 }
@@ -2079,10 +2226,22 @@ fn qs_geometry(shape: &QsShape) -> QsGeometry {
 
     let inner_x = QS_PAD + 1 + QS_CARD_PAD_X;
     let inner_w = row_w - 2 * (1 + QS_CARD_PAD_X);
-    let below = |row: &QsSliderRow| row.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y * 2 + 1;
-    let volume = qs_slider_row(inner_x, y + 1 + QS_CARD_PAD_Y, inner_w, shape.pills.output);
-    let mic = shape.mic.then(|| qs_slider_row(inner_x, below(&volume), inner_w, i32::MAX));
-    let brightness = qs_slider_row(inner_x, below(mic.as_ref().unwrap_or(&volume)), inner_w, i32::MAX);
+    let opened = |which: Drawer| shape.drawer.filter(|(drawer, _)| *drawer == which).map_or(0, |(_, h)| h);
+    let below =
+        |row: &QsSliderRow, drawer: Drawer| row.track.loc.y + QS_SLIDER_HEIGHT + opened(drawer) + QS_CARD_PAD_Y * 2 + 1;
+    let area = |row: &QsSliderRow, drawer: Drawer| {
+        let height = opened(drawer);
+        (height > 0).then(|| QsDrawerArea {
+            drawer,
+            rect: local_rect(inner_x, row.track.loc.y + QS_SLIDER_HEIGHT, inner_w, height),
+        })
+    };
+    let volume = qs_slider_row(inner_x, y + 1 + QS_CARD_PAD_Y, inner_w, (shape.pills.output, true));
+    let mic =
+        shape.mic.then(|| qs_slider_row(inner_x, below(&volume, Drawer::Output), inner_w, (shape.pills.input, true)));
+    let brightness_y = mic.as_ref().map_or_else(|| below(&volume, Drawer::Output), |mic| below(mic, Drawer::Input));
+    let brightness = qs_slider_row(inner_x, brightness_y, inner_w, (i32::MAX, false));
+    let drawer = area(&volume, Drawer::Output).or_else(|| mic.as_ref().and_then(|mic| area(mic, Drawer::Input)));
     let sliders_bottom = brightness.track.loc.y + QS_SLIDER_HEIGHT + QS_CARD_PAD_Y + 1;
     let sliders = local_rect(QS_PAD, y, row_w, sliders_bottom - y);
     y = sliders_bottom + QS_GAP;
@@ -2124,6 +2283,7 @@ fn qs_geometry(shape: &QsShape) -> QsGeometry {
         volume,
         mic,
         brightness,
+        drawer,
         battery_card,
         battery_head,
         segments,
@@ -2263,6 +2423,7 @@ struct QsLayoutInput {
     shape: QsShape,
     volume: bool,
     brightness: bool,
+    drawer_items: usize,
     detail: Option<Vec<(Slot, LocalRect)>>,
 }
 
@@ -2292,12 +2453,26 @@ fn layout_qs_slots(
     }
     if input.volume {
         push(Slot::QsVolumeMute, geometry.volume.icon);
-        push(Slot::QsVolumeMore, geometry.volume.label);
+        push(Slot::QsOutputPill, geometry.volume.label);
+        if let Some(drill) = geometry.volume.drill {
+            push(Slot::QsVolumeMore, drill);
+        }
         push(Slot::QsVolumeTrack, geometry.volume.track);
     }
     if let Some(mic) = geometry.mic {
         push(Slot::QsMicMute, mic.icon);
+        push(Slot::QsInputPill, mic.label);
+        if let Some(drill) = mic.drill {
+            push(Slot::QsMicMore, drill);
+        }
         push(Slot::QsMicTrack, mic.track);
+    }
+    if let Some(area) = geometry.drawer {
+        for (index, rect) in area.items(input.drawer_items).take(input.drawer_items) {
+            if area.visible(rect) {
+                push(Slot::QsDrawerItem(area.drawer, index), rect);
+            }
+        }
     }
     if input.brightness {
         push(Slot::QsBrightnessTrack, geometry.brightness.track);
@@ -2782,6 +2957,9 @@ fn push_rounded_popup_shadow<R>(
 {
     let margin = popup_shadow_margin(topbar.theme.dark);
     let key = (rect.size.w, rect.size.h, output_scale, radius.to_bits());
+    if topbar.shadows.len() >= SHADOW_CACHE_LIMIT && !topbar.shadows.contains_key(&key) {
+        topbar.shadows.clear();
+    }
     if let std::collections::hash_map::Entry::Vacant(entry) = topbar.shadows.entry(key)
         && let Some(buffer) = draw_popup_shadow(topbar.theme.dark, rect.size, (margin, radius), output_scale)
     {
@@ -3946,13 +4124,15 @@ fn push_qs_main<R: ShellRenderer>(
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     let key = topbar.qs_main_key(painter);
     let (_, flags, motion, hovered, shape) = key;
-    let output = topbar.output_label();
+    let (output, input) = (topbar.output_label(), topbar.input_label());
     let theme = &topbar.theme;
     let status = &topbar.system_status;
+    let panel = &topbar.qs_panel;
     let Some(buffer) = topbar.qs_cache.resolve(key, output_scale, || {
         let ctx = QsRenderContext { painter, theme, hovered };
         let mut canvas = Canvas::new(rect.size.w, rect.size.h, output_scale)?.with_icons(Some(icons));
-        let draw = QsDraw { status, geometry: qs_geometry(&shape), flags, motion, output: &output };
+        let geometry = qs_geometry(&shape);
+        let draw = QsDraw { status, panel, geometry, flags, motion, labels: (&output, &input) };
         draw_quick_settings(&mut canvas, &ctx, &draw);
         Some(canvas.finish())
     }) else {
@@ -4027,6 +4207,7 @@ struct QsFlags {
     dnd: bool,
     dark: bool,
     dragging: Option<Slot>,
+    drawer: Option<Drawer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4045,10 +4226,11 @@ impl QsMotion {
 
 struct QsDraw<'a> {
     status: &'a crate::system_info::SystemStatus,
+    panel: &'a panels::DetailPanel,
     geometry: QsGeometry,
     flags: QsFlags,
     motion: QsMotion,
-    output: &'a str,
+    labels: (&'a str, &'a str),
 }
 
 fn percent(value: f64) -> u8 {
@@ -4289,25 +4471,130 @@ fn draw_qs_readout(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRec
     c.text_in(ctx.painter, rect, TextAlign::Right, &text, ctx.theme.muted, &QS_READOUT);
 }
 
-fn draw_qs_device_pill(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, label: &str) {
+fn draw_qs_device_pill(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, (label, open): (&str, bool)) {
     let theme = ctx.theme;
+    if open {
+        c.fill(rect, theme.active_soft, R2);
+    }
     let text_right = rect.loc.x + rect.size.w - QS_PILL_PAD - SP1 - QS_PILL_CHEVRON;
     let (top, bottom) = (rect.loc.y, rect.loc.y + rect.size.h);
+    let text_colour = if open { theme.active_soft_label } else { theme.label };
     c.text(
         ctx.painter,
         (rect.loc.x + QS_PILL_PAD, text_right, top, bottom),
         TextAlign::Left,
         label,
-        theme.label,
+        text_colour,
         &QS_LABEL,
     );
     let chevron =
         local_rect(text_right + SP1, top + (rect.size.h - QS_PILL_CHEVRON) / 2, QS_PILL_CHEVRON, QS_PILL_CHEVRON);
-    let colour = theme.faint;
-    if !c.icon("pan-down", QS_PILL_CHEVRON, (chevron.loc.x, chevron.loc.y), colour) {
+    let colour = if open { theme.active_soft_label } else { theme.faint };
+    let icon = if open { "pan-up" } else { "pan-down" };
+    if !c.icon(icon, QS_PILL_CHEVRON, (chevron.loc.x, chevron.loc.y), colour) {
         let side = QS_PILL_CHEVRON as f32;
-        c.glyph(chevron, |b, w, h, s| crate::paint::draw_chevron_glyph_over(b, w, h, side, 1.8, false, s, colour));
+        c.glyph(chevron, |b, w, h, s| crate::paint::draw_chevron_glyph_over(b, w, h, side, 1.8, open, s, colour));
     }
+}
+
+fn qs_device_kind(icon: &str) -> crate::i18n::Key {
+    use crate::i18n::Key;
+    match icon {
+        "audio-headset" => Key::QsKindHeadset,
+        "audio-headphones" => Key::QsKindHeadphones,
+        "video-display" => Key::QsDisplay,
+        "audio-input-microphone" => Key::TbMicrophone,
+        "camera-web" => Key::QsKindWebcam,
+        _ => Key::QsKindSpeakers,
+    }
+}
+
+fn draw_qs_drawer_item(
+    c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, device: &crate::qs_net::AudioOutput,
+) {
+    use crate::i18n::{Key, t};
+    let theme = ctx.theme;
+    if device.active {
+        c.fill(rect, theme.active_soft, R2);
+    }
+    let icon =
+        local_rect(rect.loc.x + SP2, rect.loc.y + (rect.size.h - QS_DRAWER_ICON) / 2, QS_DRAWER_ICON, QS_DRAWER_ICON);
+    let (well, symbol) =
+        if device.active { (theme.active_background, theme.active_label) } else { (theme.fill_2, theme.muted) };
+    c.fill(icon, well, R1);
+    let speaker: GlyphPainter =
+        |b, w, h, side, stroke, s, c| crate::paint::draw_speaker_glyph_over(b, w, h, side, stroke, false, s, c);
+    qs_symbol(c, icon, (device.icon, speaker), 12, symbol);
+
+    let mut right = rect.loc.x + rect.size.w - SP2;
+    if device.active {
+        let tick = local_rect(
+            right - QS_DRAWER_TICK,
+            rect.loc.y + (rect.size.h - QS_DRAWER_TICK) / 2,
+            QS_DRAWER_TICK,
+            QS_DRAWER_TICK,
+        );
+        qs_symbol(
+            c,
+            tick,
+            ("object-select", crate::paint::draw_tick_glyph_over),
+            QS_DRAWER_TICK,
+            theme.active_soft_label,
+        );
+        right = tick.loc.x - SP2;
+    }
+    let (title_colour, sub_colour) = if device.active {
+        (theme.active_soft_label, dimmed(theme.active_soft_label, QS_SOFT_DIM))
+    } else {
+        (theme.label, theme.faint)
+    };
+    let left = icon.loc.x + QS_DRAWER_ICON + SP2;
+    let title_h = QS_LABEL.line_height_px as i32;
+    let sub_h = QS_SUB.line_height_px as i32 + 1;
+    let top = rect.loc.y + (rect.size.h - title_h - sub_h) / 2;
+    c.text(
+        ctx.painter,
+        (left, right, top, top + title_h),
+        TextAlign::Left,
+        &device.description,
+        title_colour,
+        &QS_LABEL,
+    );
+    let kind = if device.active { Key::QsDefaultDevice } else { qs_device_kind(device.icon) };
+    c.text(
+        ctx.painter,
+        (left, right, top + title_h, top + title_h + sub_h),
+        TextAlign::Left,
+        t(kind),
+        sub_colour,
+        &QS_SUB,
+    );
+}
+
+fn draw_qs_drawer(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, area: QsDrawerArea, panel: &panels::DetailPanel) {
+    use crate::i18n::{Key, t};
+    let (theme, origin) = (ctx.theme, area.rect.loc);
+    let devices = panel.devices(area.drawer);
+    let Some(sub) = Canvas::new(area.rect.size.w, area.rect.size.h, c.scale) else {
+        return;
+    };
+    let mut sub = sub.with_icons(c.icons.as_deref_mut());
+    sub.fill(local_rect(0, SP1, area.rect.size.w, 1), theme.line, 0.0);
+    for (index, rect) in area.items(devices.len()) {
+        let local = Rectangle::new(rect.loc - origin, rect.size);
+        if let Some(device) = devices.get(usize::from(index)) {
+            draw_qs_drawer_item(&mut sub, ctx, local, device);
+        } else {
+            let message = match (panel.devices_ready(area.drawer), area.drawer) {
+                (false, _) => Key::QsSearching,
+                (true, Drawer::Output) => Key::QsNoOutputs,
+                (true, Drawer::Input) => Key::QsNoInputs,
+            };
+            sub.text_in(ctx.painter, local, TextAlign::Center, t(message), theme.faint, &TextStyle::CAP);
+        }
+    }
+    let pixels = sub.buf;
+    c.blit(&pixels, area.rect);
 }
 
 fn initial(name: &str) -> String {
@@ -4520,13 +4807,26 @@ fn draw_qs_tiles(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_
 
 fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
     let (theme, geometry, status) = (ctx.theme, &draw.geometry, draw.status);
-    let card_hover = matches!(ctx.hovered, Some(Slot::QsVolumeMute | Slot::QsVolumeMore | Slot::QsMicMute))
-        || ctx.hovered.is_some_and(Slot::is_slider);
+    let card_hover = matches!(
+        ctx.hovered,
+        Some(
+            Slot::QsVolumeMute
+                | Slot::QsVolumeMore
+                | Slot::QsOutputPill
+                | Slot::QsMicMute
+                | Slot::QsMicMore
+                | Slot::QsInputPill
+                | Slot::QsDrawerItem(..)
+        )
+    ) || ctx.hovered.is_some_and(Slot::is_slider);
     c.fill(geometry.sliders, theme.track_soft, R3);
     c.stroke(geometry.sliders, 1.0, R3, if card_hover { theme.line_2 } else { theme.line });
     for row in geometry.mic.iter().chain(std::iter::once(&geometry.brightness)) {
         let divider = local_rect(row.track.loc.x, row.icon.loc.y - QS_CARD_PAD_Y - 1, row.track.size.w, 1);
         c.fill(divider, theme.line, 0.0);
+    }
+    if let Some(area) = geometry.drawer {
+        draw_qs_drawer(c, ctx, area, draw.panel);
     }
 
     let volume = geometry.volume;
@@ -4547,7 +4847,8 @@ fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<
     };
     qs_symbol(c, volume.icon, (volume_icon_name(muted, pct), speaker), 15, icon_colour);
     if enabled {
-        draw_qs_device_pill(c, ctx, volume.label, draw.output);
+        draw_qs_device_pill(c, ctx, volume.label, (draw.labels.0, draw.flags.drawer == Some(Drawer::Output)));
+        draw_qs_drill(c, ctx, volume.drill, Slot::QsVolumeMore);
     }
     draw_qs_readout(c, ctx, volume.readout, enabled.then_some(pct));
     let thumb = QsThumb::of(Slot::QsVolumeTrack, ctx.hovered, draw.flags.dragging);
@@ -4594,8 +4895,13 @@ fn draw_qs_mic_glyph(c: &mut Canvas<'_>, rect: LocalRect, (muted, colour): (bool
     }
 }
 
+fn draw_qs_drill(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, drill: Option<LocalRect>, slot: Slot) {
+    if let Some(drill) = drill {
+        draw_qs_chevron(c, ctx, drill, (false, ctx.hovered == Some(slot)));
+    }
+}
+
 fn draw_qs_mic_row(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>, row: QsSliderRow) {
-    use crate::i18n::{Key, t};
     let (theme, status) = (ctx.theme, draw.status);
     let (muted, pct) = (status.mic_muted, draw.motion.mic);
     let icon_colour = if muted {
@@ -4606,8 +4912,8 @@ fn draw_qs_mic_row(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<
         theme.muted
     };
     draw_qs_mic_glyph(c, row.icon, (muted, icon_colour));
-    let label = Rectangle::new(Point::from((row.label.loc.x + SP1, row.label.loc.y)), row.label.size);
-    c.text_in(ctx.painter, label, TextAlign::Left, t(Key::TbMicrophone), theme.label, &QS_LABEL);
+    draw_qs_device_pill(c, ctx, row.label, (draw.labels.1, draw.flags.drawer == Some(Drawer::Input)));
+    draw_qs_drill(c, ctx, row.drill, Slot::QsMicMore);
 
     let recording = !status.privacy.microphone.is_empty();
     if muted || recording {
@@ -5364,7 +5670,12 @@ mod tests {
             assert_eq!(rows.len(), 2 + usize::from(shape.mic));
             for row in &rows {
                 assert_eq!(row.track.loc.x, card.loc.x + 1 + QS_CARD_PAD_X, "0% sits at the card's content edge");
-                assert_eq!(row.track.loc.x + row.track.size.w, row.readout.loc.x + row.readout.size.w);
+                let track_right = row.track.loc.x + row.track.size.w;
+                let head_right = row.drill.map_or(row.readout.loc.x + row.readout.size.w, |drill| {
+                    assert_eq!(drill.loc.x, row.readout.loc.x + row.readout.size.w + SP1);
+                    drill.loc.x + drill.size.w
+                });
+                assert_eq!(track_right, head_right, "the head row ends where the track does");
                 assert_eq!(row.track.loc.y, row.icon.loc.y + QS_SLIDER_HEAD + SP1, "the track sits under its head");
                 assert!(card.contains(row.track.loc) && card.contains(row.icon.loc));
                 assert!(row.label.loc.x + row.label.size.w <= row.readout.loc.x);
@@ -5380,7 +5691,7 @@ mod tests {
 
     #[test]
     fn the_quick_settings_popup_is_exactly_as_tall_as_its_content() {
-        let pills = QsPills { output: 60, cancel: 80, confirm: 100 };
+        let pills = QsPills { output: 60, input: 70, cancel: 80, confirm: 100 };
         let plain = QsShape { pills, ..QsShape::default() };
         let battery = QsShape { battery: true, profile: true, ..plain };
         let lock = QsShape { armed: Some(PowerAction::Lock), ..battery };
@@ -6193,6 +6504,77 @@ mod tests {
         assert!(bar.focus_nav(0, 1));
         assert_eq!(bar.focused, Some(Slot::QsMicTrack));
         assert!(Slot::QsMicTrack.is_slider() && !Slot::QsMicMute.is_slider());
+    }
+
+    fn device(name: &str, active: bool, icon: &'static str) -> crate::qs_net::AudioOutput {
+        crate::qs_net::AudioOutput { name: name.to_string(), description: name.to_uppercase(), icon, active }
+    }
+
+    fn with_devices() -> Topbar {
+        let mut bar = topbar_with(&["US"]);
+        bar.set_system_status(crate::system_info::SystemStatus { mic_available: true, ..Default::default() });
+        let mut bar = with_popup(bar, OpenPopup::QuickSettings);
+        bar.apply_net_event(crate::qs_net::NetEvent::Outputs(vec![
+            device("speakers", true, "audio-speakers"),
+            device("hdmi", false, "video-display"),
+        ]));
+        bar.apply_net_event(crate::qs_net::NetEvent::Inputs(vec![device("mic", true, "audio-input-microphone")]));
+        bar.layout_slots(&painter(), output());
+        bar
+    }
+
+    #[test]
+    fn a_device_pill_unfolds_its_list_inside_the_sliders_card() {
+        let mut bar = with_devices();
+        assert_eq!(click(&bar, Slot::QsOutputPill), Some(TopbarAction::QsToggleDrawer(Drawer::Output)));
+        assert_eq!(click(&bar, Slot::QsInputPill), Some(TopbarAction::QsToggleDrawer(Drawer::Input)));
+        assert_eq!(click(&bar, Slot::QsVolumeMore), Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Sound))));
+        assert_eq!(click(&bar, Slot::QsMicMore), Some(TopbarAction::QsPanel(PanelAction::Open(Detail::Sound))));
+        let mic_before = bar.slot_rect(Slot::QsMicTrack).expect("mic");
+        let height_before = bar.popup_rect().expect("popup").size.h;
+
+        assert!(bar.toggle_drawer(Drawer::Output));
+        assert!(bar.is_animating(), "the drawer grows over t2");
+        std::thread::sleep(motion::t2() + Duration::from_millis(20));
+        bar.settle_motion();
+        bar.layout_slots(&painter(), output());
+        let full = qs_drawer_height(2);
+        assert_eq!(bar.popup_rect().expect("popup").size.h, height_before + full);
+        assert_eq!(bar.slot_rect(Slot::QsMicTrack).expect("mic").loc.y, mic_before.loc.y + full);
+        let volume = bar.slot_rect(Slot::QsVolumeTrack).expect("volume");
+        let first = bar.slot_rect(Slot::QsDrawerItem(Drawer::Output, 0)).expect("first device");
+        let second = bar.slot_rect(Slot::QsDrawerItem(Drawer::Output, 1)).expect("second device");
+        assert!(volume.loc.y + volume.size.h <= first.loc.y && first.loc.y + first.size.h <= second.loc.y);
+        assert!(bar.slot_rect(Slot::QsDrawerItem(Drawer::Output, 2)).is_none());
+        assert_eq!(
+            click(&bar, Slot::QsDrawerItem(Drawer::Output, 1)),
+            Some(TopbarAction::QsUseDevice(Drawer::Output, 1))
+        );
+        assert_eq!(bar.drawer_device(Drawer::Output, 1).map(|device| device.name), Some("hdmi".to_string()));
+
+        assert!(bar.toggle_drawer(Drawer::Input), "one drawer at a time");
+        assert_eq!(bar.drawer(), Some(Drawer::Input));
+        bar.set_focused(Some(Slot::QsDrawerItem(Drawer::Input, 0)));
+        assert!(bar.qs_escape(), "Esc folds the drawer first");
+        assert_eq!(bar.drawer(), None);
+        assert_eq!(bar.focused, Some(Slot::QsInputPill));
+        assert!(bar.has_open_popup());
+    }
+
+    #[test]
+    fn a_drawer_never_outlives_the_main_view() {
+        let mut bar = with_devices();
+        bar.toggle_drawer(Drawer::Output);
+        assert!(bar.open_detail(Detail::Wifi));
+        assert_eq!(bar.drawer(), None);
+        assert!(!bar.toggle_drawer(Drawer::Output), "no drawers over a detail view");
+        bar.close_detail();
+        bar.toggle_drawer(Drawer::Input);
+        bar.toggle_popup(OpenPopup::QuickSettings);
+        bar.toggle_popup(OpenPopup::QuickSettings);
+        assert_eq!(bar.drawer(), None, "reopening starts folded");
+        assert_eq!(qs_drawer_height(0), qs_drawer_height(1), "an empty list still shows its message row");
+        assert_eq!(qs_drawer_height(3) - qs_drawer_height(2), QS_DRAWER_ITEM + QS_DRAWER_GAP);
     }
 
     #[test]

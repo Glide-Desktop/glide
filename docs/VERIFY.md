@@ -110,8 +110,10 @@ Ctrl+Alt+F3 and a text login.
 31. **Workspaces in a pager.** waybar with the `ext/workspaces` module shows
     every workspace, highlights the active one and switches on click.
 32. **Audio output.** Quick settings › the output pill on the volume row
-    lists the outputs; picking HDMI or headphones moves the sound, the pill
-    names the new output and the slider follows.
+    unfolds the outputs under it; picking HDMI or headphones moves the
+    sound, the pill names the new output and the slider follows. The input
+    pill does the same for microphones (`pactl get-default-source`), and
+    no `Monitor of …` entry appears in it.
 33. **Cursor theme.** Settings › Appearance › Pointer: the shell cursor
     changes at once; a newly started GTK app uses it;
     `gsettings get org.gnome.desktop.interface cursor-theme` matches.

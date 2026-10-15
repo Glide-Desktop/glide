@@ -258,6 +258,7 @@ pub(super) struct DetailPanel {
     devices_ready: bool,
     outputs: Vec<AudioOutput>,
     outputs_ready: bool,
+    inputs: Option<Vec<AudioOutput>>,
     pending: Option<Pending>,
     failure: Option<Failure>,
     prompt: Option<Prompt>,
@@ -307,6 +308,24 @@ impl DetailPanel {
 
     pub(super) fn active_output(&self) -> Option<&AudioOutput> {
         self.outputs.iter().find(|output| output.active)
+    }
+
+    pub(super) fn active_input(&self) -> Option<&AudioOutput> {
+        self.inputs.iter().flatten().find(|input| input.active)
+    }
+
+    pub(super) const fn devices_ready(&self, drawer: super::Drawer) -> bool {
+        match drawer {
+            super::Drawer::Output => self.outputs_ready,
+            super::Drawer::Input => self.inputs.is_some(),
+        }
+    }
+
+    pub(super) fn devices(&self, drawer: super::Drawer) -> &[AudioOutput] {
+        match drawer {
+            super::Drawer::Output => &self.outputs,
+            super::Drawer::Input => self.inputs.as_deref().unwrap_or_default(),
+        }
     }
 }
 
@@ -427,6 +446,7 @@ impl Topbar {
         }
         let keyboard = self.focused.is_some();
         self.forget_power();
+        self.forget_drawer();
         self.qs_panel.view = Some(detail);
         self.qs_panel.shown = Some(detail);
         self.qs_panel.slide.retarget(1.0, motion::t2(), E_OUT);
@@ -620,7 +640,15 @@ impl Topbar {
                 self.qs_panel.outputs = outputs;
                 self.qs_panel.outputs_ready = true;
             }
-            NetEvent::OutputResult { name, result } => self.settle_pending(&name, result),
+            NetEvent::OutputResult { name, result } | NetEvent::InputResult { name, result } => {
+                self.settle_pending(&name, result);
+            }
+            NetEvent::Inputs(inputs) => {
+                if self.qs_panel.inputs.as_ref() == Some(&inputs) {
+                    return false;
+                }
+                self.qs_panel.inputs = Some(inputs);
+            }
         }
         self.qs_panel.bump();
         self.touch();

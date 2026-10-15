@@ -218,6 +218,12 @@ catalogue! {
     QsAskLock => "Lock the screen?", "Заблокувати екран комп\u{2019}ютера?";
     QsAskSleep => "Put the computer to sleep?", "Перевести комп\u{2019}ютер у режим сну?";
     QsPowerCountdown => "Automatically in {n} s.", "Автоматично через {n} с.";
+    QsDefaultDevice => "Default device", "Типовий пристрій";
+    QsKindSpeakers => "Speakers", "Динаміки";
+    QsKindHeadphones => "Headphones", "Навушники";
+    QsKindHeadset => "Headset", "Гарнітура";
+    QsKindWebcam => "Webcam", "Вебкамера";
+    QsNoInputs => "No input devices", "Немає пристроїв вводу";
     TbBattery => "Battery", "Акумулятор";
     TbBatteryCharging => "Charging", "Заряджається";
     TbBatteryOnBattery => "On battery", "Від акумулятора";

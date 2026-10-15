@@ -1549,6 +1549,17 @@ impl GlideState {
                     status.mic_muted = pct == 0;
                 });
             }
+            TopbarAction::QsToggleDrawer(drawer) => {
+                if self.topbar.toggle_drawer(drawer) && self.topbar.drawer().is_some() {
+                    crate::qs_net::request(crate::qs_net::scan_drawer(drawer));
+                }
+            }
+            TopbarAction::QsUseDevice(drawer, index) => {
+                if let Some(device) = self.topbar.drawer_device(drawer, index).filter(|device| !device.active) {
+                    self.topbar.begin_connect(&device.name);
+                    crate::qs_net::request(crate::qs_net::use_device(drawer, device.name));
+                }
+            }
             TopbarAction::QsBrightnessAdjust(pct) => {
                 crate::system_info::set_brightness_pct(pct);
                 self.update_system_status(|status| status.brightness_pct = pct);
@@ -1617,6 +1628,10 @@ impl GlideState {
             }
             TopbarAction::ToggleQuickSettings => {
                 self.topbar.toggle_popup(OpenPopup::QuickSettings);
+                if self.topbar.open_popup() == Some(OpenPopup::QuickSettings) {
+                    crate::qs_net::request(crate::qs_net::NetRequest::ScanOutputs);
+                    crate::qs_net::request(crate::qs_net::NetRequest::ScanInputs);
+                }
             }
             TopbarAction::ClearAllNotifications => {
                 self.notifications.clear_all();
