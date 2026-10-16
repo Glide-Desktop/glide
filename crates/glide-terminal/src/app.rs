@@ -21,12 +21,14 @@ use crate::input;
 use crate::marks::{self, Mark};
 use crate::profile::Profile;
 use crate::session::{self, Bus, Feed, Launch, Pane, PaneId};
+use crate::sound;
 use crate::style::Paint;
 use crate::terminal::{Action, Flash, Fonts, Look};
 
 pub const FIND_ID: &str = "find";
 const BLINK: Duration = Duration::from_millis(530);
 const POLL: Duration = Duration::from_secs(1);
+const BELL_GAP: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -156,6 +158,8 @@ pub struct App {
     pub prefs: Preferences,
     pub paint: Paint,
     pub lang: Lang,
+    sounds: bool,
+    rung: Option<Instant>,
     pub tabs: Vec<Tab>,
     pub active: usize,
     pub find: Option<Find>,
@@ -361,6 +365,8 @@ impl App {
         let app = Self {
             paint: Paint::new(look.appearance, look.accent),
             lang: look.language.unwrap_or_else(Lang::from_env),
+            sounds: look.sounds,
+            rung: None,
             font: family(&prefs),
             modifiers: Modifiers::empty(),
             prefs,
@@ -677,6 +683,7 @@ impl App {
         motion::set_scale(look.motion_scale);
         self.paint = Paint::new(look.appearance, look.accent);
         self.lang = look.language.unwrap_or_else(Lang::from_env);
+        self.sounds = look.sounds;
         let prefs = config::load();
         if prefs.profile != self.prefs.profile {
             let previous = self.prefs.profile;
@@ -838,6 +845,15 @@ impl App {
         }
         if index != self.active {
             self.tabs[index].bell = true;
+        }
+        let quiet = self.rung.is_some_and(|at| at.elapsed() < BELL_GAP);
+        if self.prefs.audible_bell
+            && self.sounds
+            && !quiet
+            && let Some(file) = sound::bell_file(self.prefs.bell_sound.as_deref())
+        {
+            self.rung = Some(Instant::now());
+            sound::play(file);
         }
         if self.focused_window {
             Task::none()

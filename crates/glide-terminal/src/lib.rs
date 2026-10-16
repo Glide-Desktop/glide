@@ -8,6 +8,7 @@ pub mod input;
 pub mod marks;
 pub mod profile;
 pub mod session;
+pub mod sound;
 mod style;
 pub mod terminal;
 

@@ -37,6 +37,7 @@ for f in glide-session glide-lock glide.desktop glide.service glide-shutdown.tar
     cp -p "$REPO/data/$f" "$STAGE/data/$f"
 done
 install -Dm644 "$REPO/data/pam.d/glide-lock" "$STAGE/data/pam.d/glide-lock"
+install -Dm644 "$REPO/data/sounds/terminal-bell.mp3" "$STAGE/data/sounds/terminal-bell.mp3"
 install -m755 "$REPO/scripts/install.sh" "$STAGE/scripts/install.sh"
 cp "$REPO/README.md" "$STAGE/README.md"
 [ -f "$REPO/LICENSE" ] && cp "$REPO/LICENSE" "$STAGE/LICENSE"

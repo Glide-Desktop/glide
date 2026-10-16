@@ -15,6 +15,7 @@ pub struct Look {
     pub accent: Accent,
     pub language: Option<Lang>,
     pub motion_scale: f32,
+    pub sounds: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -23,6 +24,19 @@ struct Shell {
     general: General,
     topbar: Topbar,
     animations: Animations,
+    notifications: Notifications,
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct Notifications {
+    sounds: bool,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Self { sounds: true }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -63,6 +77,7 @@ impl Look {
             accent: shell.topbar.accent,
             language: shell.general.language.as_deref().and_then(Lang::from_key),
             motion_scale: if still { 0.0 } else { animations.speed },
+            sounds: shell.notifications.sounds,
         }
     }
 }
@@ -101,6 +116,9 @@ pub struct Preferences {
     pub alt_sends_escape: bool,
     pub copy_on_select: bool,
     pub visual_bell: bool,
+    pub audible_bell: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bell_sound: Option<String>,
     pub on_exit: OnExit,
     pub confirm_close: bool,
     pub mark_prompts: bool,
@@ -122,6 +140,8 @@ impl Default for Preferences {
             alt_sends_escape: true,
             copy_on_select: true,
             visual_bell: true,
+            audible_bell: true,
+            bell_sound: None,
             on_exit: OnExit::CloseClean,
             confirm_close: true,
             mark_prompts: true,
@@ -223,6 +243,8 @@ mod tests {
         let look = Look::parse("[topbar]\nappearance = \"light\"\n[general]\nlanguage = \"en\"\n", false);
         assert_eq!(look.appearance, Appearance::Light);
         assert_eq!(look.language, Some(Lang::En));
+        assert!(look.sounds);
+        assert!(!Look::parse("[notifications]\nsounds = false\n", false).sounds);
         assert_eq!(Look::parse("[animations]\nenabled = false\n", false).motion_scale, 0.0);
         assert_eq!(Look::parse("", true).motion_scale, 0.0);
     }
