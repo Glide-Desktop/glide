@@ -62,6 +62,33 @@ fn images_get_a_cached_thumbnail_that_tracks_changes() {
 }
 
 #[test]
+fn the_thumbnail_cache_drops_what_is_stale_or_over_its_limit() {
+    use glide_files::fs::thumbs::prune_in;
+    use std::time::{Duration, SystemTime};
+    let dir = scratch("prune");
+    let now = SystemTime::now();
+    let day = Duration::from_secs(24 * 60 * 60);
+    let put = |name: &str, age: Duration| {
+        let path = dir.join(name);
+        std::fs::write(&path, [0_u8; 10]).expect("thumb");
+        let when = now - age;
+        let file = std::fs::File::options().write(true).open(&path).expect("open");
+        file.set_times(std::fs::FileTimes::new().set_accessed(when).set_modified(when)).expect("times");
+    };
+    put("ancient.png", day * 200);
+    put("old.png", day * 3);
+    put("recent.png", day);
+    put("fresh.png", Duration::ZERO);
+    prune_in(&dir, now, day * 90, 1000);
+    assert!(!dir.join("ancient.png").exists(), "unused for longer than the keep period");
+    assert!(dir.join("old.png").exists());
+    prune_in(&dir, now, day * 90, 25);
+    assert!(!dir.join("old.png").exists(), "over the limit, the least recently used go first");
+    assert!(dir.join("recent.png").exists() && dir.join("fresh.png").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_pipe_named_like_an_image_is_not_read_for_a_thumbnail() {
     let dir = scratch("fifo-thumb");
     let pipe = dir.join("photo.png");

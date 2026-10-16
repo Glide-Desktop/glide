@@ -3,8 +3,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, Once, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
 
@@ -14,6 +14,8 @@ pub const SIZE: u32 = 128;
 const WORKERS: usize = 2;
 const BUILTIN_LIMIT: u64 = 64 << 20;
 const TIMEOUT: Duration = Duration::from_secs(8);
+const KEEP_FOR: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+const CACHE_LIMIT: u64 = 256 << 20;
 const BUILTIN: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,12 +159,50 @@ pub fn make_in(dir: &Path, input: &Path, mime: &str, thumbnailers: &[Thumbnailer
     None
 }
 
+pub fn prune_in(dir: &Path, now: SystemTime, keep_for: Duration, limit: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(SystemTime, u64, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok().filter(std::fs::Metadata::is_file)?;
+            let modified = meta.modified().ok()?;
+            let used = meta.accessed().map_or(modified, |accessed| accessed.max(modified));
+            Some((used, meta.len(), entry.path()))
+        })
+        .collect();
+    files.sort();
+    let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
+    for (used, len, path) in files {
+        let stale = now.duration_since(used).is_ok_and(|age| age > keep_for);
+        if !stale && total <= limit {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(len);
+        }
+    }
+}
+
+fn prune_once() {
+    static PRUNED: Once = Once::new();
+    PRUNED.call_once(|| {
+        let _ = std::thread::Builder::new().name(String::from("glide-files-prune")).spawn(|| {
+            if let Some(dir) = cache_dir() {
+                prune_in(&dir, SystemTime::now(), KEEP_FOR, CACHE_LIMIT);
+            }
+        });
+    });
+}
+
 pub type Result = (PathBuf, Option<PathBuf>);
 
 #[must_use]
 pub fn generate(
     requests: Vec<(PathBuf, String)>, thumbnailers: &Arc<Vec<Thumbnailer>>, latest: &Arc<AtomicU64>, generation: u64,
 ) -> UnboundedReceiver<Result> {
+    prune_once();
     let (sender, receiver) = unbounded();
     let queue = Arc::new(Mutex::new(VecDeque::from(requests)));
     for _ in 0..WORKERS {
