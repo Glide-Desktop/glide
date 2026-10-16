@@ -176,6 +176,73 @@ fn escape_unwinds_one_layer_at_a_time() {
 }
 
 #[test]
+fn escape_closes_the_search_the_path_field_and_a_dialog_in_one_press() {
+    let mut app = listed_app();
+    let _ = app.update(Message::TypeToSearch(String::from("o")));
+    assert!(app.search.is_some());
+    let _ = app.update(Message::Escape);
+    assert!(app.search.is_none(), "one Escape leaves the search");
+    let _ = app.update(Message::EditPath);
+    assert!(app.path_edit.is_some());
+    let _ = app.update(Message::Escape);
+    assert!(app.path_edit.is_none(), "one Escape leaves the path field");
+    let _ = app.update(Message::NewFolder);
+    assert!(app.modal.is_some());
+    let _ = app.update(Message::Escape);
+    assert!(app.modal.is_none(), "one Escape closes the dialog");
+}
+
+#[test]
+fn stop_and_quit_waits_for_the_cancelled_job_then_exits() {
+    use glide_files::app::{Dialog, JobEvent};
+    use glide_files::fs::{ClipboardAction, FileClipboard};
+    let mut app = listed_app();
+    let scratch = std::env::temp_dir().join(format!("glide-quit-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("scratch");
+    app.current = scratch.clone();
+    app.clipboard = Some(FileClipboard { action: ClipboardAction::Copy, paths: vec![path(9)] });
+    let _ = app.update(Message::Paste);
+    assert_eq!(app.jobs.len(), 1);
+    let _ = app.update(Message::Quit);
+    assert!(matches!(app.modal.as_ref().map(|modal| &modal.dialog), Some(Dialog::Quit)), "quitting mid-job asks first");
+    let _ = app.update(Message::ModalSubmit);
+    assert!(app.is_quitting());
+    assert_eq!(app.jobs.len(), 1, "the job is told to stop, not dropped");
+    let _ = app.update(Message::Quit);
+    assert!(app.modal.is_none(), "asking again while stopping is pointless");
+    let exit = app.update(Message::Job(1, JobEvent::Done(Box::default())));
+    assert!(app.jobs.is_empty());
+    assert_eq!(exit.units(), 1, "the last job to finish hands back the exit task");
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn ctrl_z_inside_a_text_field_never_reverts_a_file_operation() {
+    use glide_files::app::{Outcome, Undo};
+    let mut app = listed_app();
+    let done = Outcome {
+        text: Some(String::from("moved")),
+        select: Vec::new(),
+        undo: Some(Undo::Restore(Vec::new())),
+        clear_clipboard: false,
+    };
+    let _ = app.update(Message::Done(done));
+    assert!(app.notice.is_some());
+    let _ = app.update(Message::Pressed(path(2)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Rename);
+    let _ = app.update(Message::Undo);
+    assert!(app.notice.is_some(), "Ctrl+Z while renaming leaves the undo alone");
+    let _ = app.update(Message::Escape);
+    let _ = app.update(Message::EditPath);
+    let _ = app.update(Message::Undo);
+    assert!(app.notice.is_some(), "and so does Ctrl+Z in the path field");
+    let _ = app.update(Message::Escape);
+    let _ = app.update(Message::Undo);
+    assert!(app.notice.is_none(), "outside a field it undoes");
+}
+
+#[test]
 fn leaving_the_folder_by_keyboard_ends_an_inline_rename() {
     for leave in [Message::GoHome, Message::KeyMenu] {
         let mut app = listed_app();

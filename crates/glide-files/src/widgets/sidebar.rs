@@ -3,7 +3,7 @@ use iced::widget::{Column, button, column, container, mouse_area, row, scrollabl
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 use super::header::window_control;
-use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, fit, icon};
+use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, fit, hint, icon};
 use crate::app::{App, Device, Hover, MenuKind, Message, volume_icon};
 use crate::fs::{Place, Volume};
 use crate::i18n::Key;
@@ -63,7 +63,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     let top = mouse_area(
-        container(window_control(app, Icon::Maximize, Message::WindowMaximize))
+        container(hint(t, window_control(app, Icon::Maximize, Message::WindowMaximize), Key::Maximize.text(lang)))
             .padding(Padding::from([0.0, theme::SP3]))
             .height(HEADER_HEIGHT)
             .width(Fill)
@@ -112,14 +112,14 @@ impl<'a> Line<'a> {
             .spacing(theme::SP2)
             .align_y(Alignment::Center);
         if let Some(message) = self.eject {
-            content = content.push(
-                button(container(icon(Icon::Eject, 12.0, t.fg_2())).center(Fill))
-                    .on_press(message)
-                    .width(Length::Fixed(EJECT))
-                    .height(Length::Fixed(EJECT))
-                    .padding(0)
-                    .style(move |_, status| theme::action(t, Tone::Ghost, status)),
-            );
+            let label = if matches!(message, Message::Unmount(_)) { Key::Unmount } else { Key::Eject };
+            let eject = button(container(icon(Icon::Eject, 12.0, t.fg_2())).center(Fill))
+                .on_press(message)
+                .width(Length::Fixed(EJECT))
+                .height(Length::Fixed(EJECT))
+                .padding(0)
+                .style(move |_, status| theme::action(t, Tone::Ghost, status));
+            content = content.push(hint(t, eject, label.text(self.app.lang)));
         }
         let (selected, hover) = (self.selected, self.app.hover(&self.key));
         let row = button(container(content).height(Fill).align_y(Alignment::Center))

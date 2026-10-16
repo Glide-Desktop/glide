@@ -1388,6 +1388,7 @@ impl App {
                     self.notice = None;
                 }
             }
+            Message::Undo if self.renaming.is_some() || self.path_edit.is_some() => {}
             Message::Undo => {
                 if self.notice.as_ref().is_some_and(|notice| notice.action == Some(NoticeAction::Undo)) {
                     self.notice = None;
@@ -1494,6 +1495,11 @@ impl App {
     #[must_use]
     pub fn view(&self) -> Element<'_, Message> {
         widgets::window(self)
+    }
+
+    #[must_use]
+    pub const fn is_quitting(&self) -> bool {
+        self.quit_requested.is_some()
     }
 
     #[must_use]

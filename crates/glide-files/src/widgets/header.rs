@@ -3,7 +3,7 @@ use std::time::Instant;
 use iced::widget::{button, container, mouse_area, row, space, stack, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
-use super::{CONTROL, HEADER_HEIGHT, icon, icon_button};
+use super::{CONTROL, HEADER_HEIGHT, hint, icon, icon_button};
 use crate::app::{App, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
@@ -53,10 +53,10 @@ pub fn bar_background(app: &App) -> iced::Color {
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
-    let nav = row![
-        icon_button(t, Icon::ChevronLeft, app.can_go_back().then_some(Message::Back), false),
-        icon_button(t, Icon::ChevronRight, app.can_go_forward().then_some(Message::Forward), false),
-    ];
+    let lang = app.lang;
+    let back = icon_button(t, Icon::ChevronLeft, app.can_go_back().then_some(Message::Back), false);
+    let forward = icon_button(t, Icon::ChevronRight, app.can_go_forward().then_some(Message::Forward), false);
+    let nav = row![hint(t, back, Key::Back.text(lang)), hint(t, forward, Key::Forward.text(lang))];
 
     let heading: Element<'_, Message> = match &app.path_edit {
         Some(input) => text_input(Key::PathPlaceholder.text(app.lang), input)
@@ -92,9 +92,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
             nav,
             container(heading).width(Fill).clip(true),
             views,
-            icon_button(t, Icon::More, Some(Message::ToggleOptions), options_open),
+            hint(
+                t,
+                icon_button(t, Icon::More, Some(Message::ToggleOptions), options_open),
+                Key::MoreActions.text(lang)
+            ),
             search_field(app),
-            window_control(app, Icon::Close, Message::Quit),
+            hint(t, window_control(app, Icon::Close, Message::Quit), Key::Close.text(lang)),
         ]
         .spacing(GAP)
         .align_y(Alignment::Center),
@@ -111,13 +115,18 @@ pub fn view(app: &App) -> Element<'_, Message> {
 fn segment(app: &App, mode: ViewMode, glyph: Icon) -> Element<'_, Message> {
     let t = &app.theme;
     let active = app.view == mode;
-    button(container(icon(glyph, 15.0, if active { t.fg_1() } else { t.fg_2() })).center_x(Fill).center_y(Fill))
-        .on_press(Message::SetView(mode))
-        .width(Length::Fixed(SEGMENT_WIDTH))
-        .height(Length::Fixed(CONTROL - 4.0))
-        .padding(0)
-        .style(move |_, status| theme::segment(t, active, status))
-        .into()
+    let label = match mode {
+        ViewMode::Grid => Key::ViewGrid,
+        ViewMode::List => Key::ViewList,
+    };
+    let control =
+        button(container(icon(glyph, 15.0, if active { t.fg_1() } else { t.fg_2() })).center_x(Fill).center_y(Fill))
+            .on_press(Message::SetView(mode))
+            .width(Length::Fixed(SEGMENT_WIDTH))
+            .height(Length::Fixed(CONTROL - 4.0))
+            .padding(0)
+            .style(move |_, status| theme::segment(t, active, status));
+    hint(t, control, label.text(app.lang))
 }
 
 fn search_field(app: &App) -> Element<'_, Message> {
@@ -133,14 +142,13 @@ fn search_field(app: &App) -> Element<'_, Message> {
     let mut overlay =
         row![container(icon(Icon::Search, 14.0, t.fg_3())).center(Length::Fixed(CONTROL)), space::horizontal()];
     if !query.is_empty() {
-        overlay = overlay.push(
-            button(container(icon(Icon::Close, 12.0, t.fg_2())).center(Fill))
-                .on_press(Message::SearchChanged(String::new()))
-                .width(Length::Fixed(CONTROL))
-                .height(Length::Fixed(CONTROL))
-                .padding(0)
-                .style(move |_, status| theme::action(t, Tone::Ghost, status)),
-        );
+        let clear = button(container(icon(Icon::Close, 12.0, t.fg_2())).center(Fill))
+            .on_press(Message::SearchChanged(String::new()))
+            .width(Length::Fixed(CONTROL))
+            .height(Length::Fixed(CONTROL))
+            .padding(0)
+            .style(move |_, status| theme::action(t, Tone::Ghost, status));
+        overlay = overlay.push(hint(t, clear, Key::ClearSearch.text(app.lang)));
     }
     container(stack![input, overlay.height(CONTROL).align_y(Alignment::Center)])
         .width(Length::Fixed(SEARCH_WIDTH))

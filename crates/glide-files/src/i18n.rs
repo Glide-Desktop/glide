@@ -90,6 +90,13 @@ catalogue! {
     ColType => "Kind", "Тип";
     ColLocation => "Location", "Розташування";
     Search => "Search", "Пошук";
+    Back => "Back", "Назад";
+    Forward => "Forward", "Уперед";
+    MoreActions => "More", "Інші дії";
+    Maximize => "Maximize", "Розгорнути";
+    ClearSearch => "Clear", "Очистити";
+    PauseJob => "Pause", "Призупинити";
+    ResumeJob => "Resume", "Продовжити";
     ViewGrid => "Icons", "Значки";
     ViewList => "List", "Список";
     Open => "Open", "Відкрити";

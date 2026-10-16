@@ -8,7 +8,9 @@ pub mod sidebar;
 
 use std::time::Instant;
 
-use iced::widget::{Stack, button, column, container, float, image, mouse_area, opaque, row, rule, space, svg, text};
+use iced::widget::{
+    Stack, button, column, container, float, image, mouse_area, opaque, row, rule, space, svg, text, tooltip,
+};
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector, mouse};
 
 use crate::app::{App, Edge, Message, Notice, NoticeAction};
@@ -208,13 +210,14 @@ fn job_detail(app: &App, job: &crate::app::Job) -> String {
 pub fn jobs(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let lang = app.lang;
-    let small = |glyph: Icon, message: Option<Message>| {
-        button(container(icon(glyph, 14.0, t.fg_2())).center(Fill))
+    let small = |glyph: Icon, label: Key, message: Option<Message>| {
+        let control = button(container(icon(glyph, 14.0, t.fg_2())).center(Fill))
             .on_press_maybe(message)
             .width(Length::Fixed(CONTROL))
             .height(Length::Fixed(CONTROL))
             .padding(0)
-            .style(move |_, status| theme::action(t, Tone::Ghost, status))
+            .style(move |_, status| theme::action(t, Tone::Ghost, status));
+        hint(t, control, label.text(lang))
     };
     let cards = app.jobs.iter().map(|job| {
         let (label, glyph) = match job.op {
@@ -231,7 +234,7 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
         }
         let paused = job.meter.is_paused();
         let fraction = (progress.total_items > 0 || job.launch.is_some()).then(|| progress.fraction());
-        let toggle = if paused { Icon::Play } else { Icon::Pause };
+        let toggle = if paused { (Icon::Play, Key::ResumeJob) } else { (Icon::Pause, Key::PauseJob) };
         let head = row![
             icon(glyph, 14.0, t.acc_text()),
             space().width(theme::SP2),
@@ -241,8 +244,8 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
                 .color(t.fg_1())
                 .wrapping(text::Wrapping::None)
                 .width(Fill),
-            small(toggle, job.launch.is_none().then_some(Message::JobPause(job.id))),
-            small(Icon::Close, Some(Message::JobCancel(job.id))),
+            small(toggle.0, toggle.1, job.launch.is_none().then_some(Message::JobPause(job.id))),
+            small(Icon::Close, Key::StopJob, Some(Message::JobCancel(job.id))),
         ]
         .align_y(Alignment::Center);
         let mut card = column![head].spacing(theme::SP1);
@@ -419,6 +422,17 @@ pub fn icon_button(t: &ThemeState, glyph: Icon, message: Option<Message>, active
         .style(move |_, status| theme::action(t, if active { Tone::Open } else { Tone::Ghost }, status))
         .into()
 }
+
+#[must_use]
+pub fn hint<'a>(t: &ThemeState, content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
+    let t = *t;
+    let bubble = container(text(label).size(theme::CAP))
+        .padding(Padding::from([theme::SP1, theme::SP2]))
+        .style(move |_| theme::tooltip(&t));
+    tooltip(content, bubble, tooltip::Position::Bottom).gap(theme::SP2).delay(HINT_DELAY).into()
+}
+
+const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(550);
 
 #[must_use]
 pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Option<Message>) -> Element<'a, Message> {
