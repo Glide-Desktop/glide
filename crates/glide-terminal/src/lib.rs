@@ -2,6 +2,7 @@ pub mod app;
 pub mod boxes;
 mod chrome;
 pub mod config;
+pub mod find;
 pub mod i18n;
 mod icons;
 pub mod input;

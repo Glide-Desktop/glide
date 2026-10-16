@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant, SystemTime};
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
+use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{ClipboardType, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use glide_theme::motion;
@@ -16,6 +18,7 @@ use iced::widget::{operation, pane_grid};
 use iced::{Point, Size, Subscription, Task, clipboard, window};
 
 use crate::config::{self, OnExit, Preferences};
+use crate::find;
 use crate::i18n::{Key as Text, Lang};
 use crate::input;
 use crate::marks::{self, Mark};
@@ -96,6 +99,7 @@ pub struct Confirm {
     pub opened: Instant,
 }
 
+#[derive(Default)]
 pub struct Find {
     pub query: String,
     pub case: bool,
@@ -104,6 +108,16 @@ pub struct Find {
     current: Option<Match>,
     pub total: usize,
     pub index: usize,
+    pub counting: bool,
+    generation: u64,
+    latest: Arc<AtomicU64>,
+}
+
+fn select(term: &mut alacritty_terminal::term::Term<session::Listener>, found: &Match) {
+    let mut selection = Selection::new(SelectionType::Simple, *found.start(), Side::Left);
+    selection.update(*found.end(), Side::Right);
+    term.selection = Some(selection);
+    term.scroll_to_point(*found.start());
 }
 
 pub struct Tab {
@@ -138,6 +152,7 @@ pub enum Message {
     FindSubmit,
     FindCase,
     FindClose,
+    Found(Option<find::Outcome>),
     Pasted(Option<String>),
     Open(String),
     CopyText(String),
@@ -570,9 +585,11 @@ impl App {
                 self.hovered_tab = index;
                 Task::none()
             }
-            Message::FindInput(_) | Message::FindSubmit | Message::FindCase | Message::FindClose => {
-                self.on_find(message)
-            }
+            Message::FindInput(_)
+            | Message::FindSubmit
+            | Message::FindCase
+            | Message::FindClose
+            | Message::Found(_) => self.on_find(message),
             Message::Focused(_)
             | Message::Resized(_)
             | Message::CloseRequested
@@ -617,7 +634,7 @@ impl App {
                 if let Some(find) = &mut self.find {
                     find.query = query;
                 }
-                self.rebuild_find();
+                return self.rebuild_find();
             }
             Message::FindSubmit => {
                 return self.command(if self.modifiers.shift() { Command::FindDown } else { Command::FindUp });
@@ -626,8 +643,10 @@ impl App {
                 if let Some(find) = &mut self.find {
                     find.case = !find.case;
                 }
-                self.rebuild_find();
+                return self.rebuild_find();
             }
+            Message::Found(Some(outcome)) => self.found(outcome),
+            Message::Found(None) => {}
             _ => self.find = None,
         }
         Task::none()
@@ -1004,44 +1023,69 @@ impl App {
         pane.write(bytes.into_bytes());
     }
 
-    fn rebuild_find(&mut self) {
-        let Some(find) = &mut self.find else { return };
+    fn rebuild_find(&mut self) -> Task<Message> {
+        let Some(find) = &mut self.find else { return Task::none() };
         let flag = if find.case { "(?-i)" } else { "(?i)" };
         find.pattern = if find.query.is_empty() { String::new() } else { format!("{flag}{}", escape(&find.query)) };
         find.regex = (!find.query.is_empty()).then(|| RegexSearch::new(&find.pattern).ok()).flatten();
         find.current = None;
         find.total = 0;
         find.index = 0;
-        self.find_step(Direction::Left);
+        find.counting = false;
+        find.generation += 1;
+        find.latest.store(find.generation, std::sync::atomic::Ordering::Relaxed);
+        self.find_step(Direction::Left)
     }
 
-    fn find_step(&mut self, direction: Direction) {
-        let Some(tab) = self.tabs.get(self.active) else { return };
-        let Some(pane) = tab.focused() else { return };
-        let Some(find) = &mut self.find else { return };
-        let Some(regex) = &mut find.regex else { return };
+    fn find_step(&mut self, direction: Direction) -> Task<Message> {
+        let Some(pane) = self.tabs.get(self.active).and_then(Tab::focused) else { return Task::none() };
+        let Some(find) = &mut self.find else { return Task::none() };
+        let Some(regex) = &mut find.regex else { return Task::none() };
         let mut term = pane.term.lock();
         let origin = match (&find.current, direction) {
             (Some(found), Direction::Right) => found.end().add(&*term, Boundary::None, 1),
             (Some(found), Direction::Left) => found.start().sub(&*term, Boundary::None, 1),
             (None, _) => GridPoint::new(term.bottommost_line(), term.last_column()),
         };
-        let Some(found) = term.search_next(regex, origin, direction, Side::Left, None) else {
-            find.current = None;
-            find.total = 0;
-            find.index = 0;
-            return;
+        let near = term.screen_lines() * 2;
+        let ahead = |found: &Match| match direction {
+            Direction::Right => *found.start() >= origin,
+            Direction::Left => *found.start() <= origin,
         };
-        let top = GridPoint::new(term.topmost_line(), Column(0));
-        let bottom = GridPoint::new(term.bottommost_line(), term.last_column());
-        let all: Vec<Match> = RegexIter::new(top, bottom, Direction::Right, &term, regex).take(9999).collect();
-        find.total = all.len();
-        find.index = all.iter().position(|candidate| candidate == &found).map_or(0, |position| position + 1);
-        let mut selection = Selection::new(SelectionType::Simple, *found.start(), Side::Left);
-        selection.update(*found.end(), Side::Right);
-        term.selection = Some(selection);
-        term.scroll_to_point(*found.start());
-        find.current = Some(found);
+        let target = match term.search_next(regex, origin, direction, Side::Left, Some(near)).filter(ahead) {
+            Some(found) => {
+                select(&mut term, &found);
+                find.current = Some(found.clone());
+                find::Target::Current(found)
+            }
+            None => find::Target::Seek(origin, direction),
+        };
+        drop(term);
+        find.generation += 1;
+        find.latest.store(find.generation, std::sync::atomic::Ordering::Relaxed);
+        find.counting = true;
+        let job = find::Job {
+            generation: find.generation,
+            latest: Arc::clone(&find.latest),
+            term: Arc::clone(&pane.term),
+            regex: regex.clone(),
+            target,
+        };
+        Task::perform(find::spawn(job), |outcome| Message::Found(outcome.ok()))
+    }
+
+    fn found(&mut self, outcome: find::Outcome) {
+        let Some(pane) = self.tabs.get(self.active).and_then(Tab::focused) else { return };
+        let Some(find) = self.find.as_mut().filter(|find| find.generation == outcome.generation) else { return };
+        find.counting = false;
+        find.total = outcome.total;
+        find.index = outcome.index;
+        if let Some(found) = outcome.found {
+            select(&mut pane.term.lock(), &found);
+            find.current = Some(found);
+        } else if outcome.total == 0 {
+            find.current = None;
+        }
     }
 
     fn command(&mut self, command: Command) -> Task<Message> {
@@ -1140,20 +1184,12 @@ impl App {
             }
             Command::Find => {
                 if self.find.is_none() {
-                    self.find = Some(Find {
-                        query: String::new(),
-                        case: false,
-                        pattern: String::new(),
-                        regex: None,
-                        current: None,
-                        total: 0,
-                        index: 0,
-                    });
+                    self.find = Some(Find::default());
                 }
                 return Task::batch([operation::focus(FIND_ID), operation::select_all(FIND_ID)]);
             }
             Command::FindUp | Command::FindDown if self.find.is_some() => {
-                self.find_step(if command == Command::FindUp { Direction::Left } else { Direction::Right });
+                return self.find_step(if command == Command::FindUp { Direction::Left } else { Direction::Right });
             }
             Command::FindUp | Command::FindDown => return self.command(Command::Find),
             Command::UseSelectionForFind => {
@@ -1163,8 +1199,7 @@ impl App {
                     if let Some(find) = &mut self.find {
                         find.query = query;
                     }
-                    self.rebuild_find();
-                    return focus;
+                    return Task::batch([focus, self.rebuild_find()]);
                 }
             }
             Command::ClearScrollback => {

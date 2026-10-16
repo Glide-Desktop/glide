@@ -161,6 +161,8 @@ fn find_bar(app: &App) -> Element<'_, Message> {
     .style(move |_| style::rounded(paint.fill_1(), R2));
     let count = if find.query.is_empty() {
         String::new()
+    } else if find.counting && find.index == 0 {
+        String::from("…")
     } else if find.total == 0 {
         Key::NoMatches.text(app.lang).to_string()
     } else {
