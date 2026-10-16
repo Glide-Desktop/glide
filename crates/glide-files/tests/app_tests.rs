@@ -251,6 +251,17 @@ fn grid_labels_are_shortened_to_two_wrapped_lines() {
 }
 
 #[test]
+fn a_sentence_that_does_not_fit_ends_in_an_ellipsis() {
+    use glide_files::widgets::{fit_sentence, text_width};
+    let sentence = "Items in the Trash can be restored or erased.";
+    assert_eq!(fit_sentence(sentence, 1000.0, 12.0), sentence);
+    let short = fit_sentence(sentence, 120.0, 12.0);
+    assert!(short.ends_with('…') && sentence.starts_with(short.trim_end_matches('…')), "{short:?}");
+    assert!(text_width(&short, 12.0) <= 120.0);
+    assert_eq!(fit_sentence(sentence, 2.0, 12.0), "", "no room at all leaves nothing rather than a lone ellipsis");
+}
+
+#[test]
 fn grid_labels_prefer_to_break_before_the_extension() {
     use glide_files::widgets::content::breakable;
     assert_eq!(breakable("wallpaper.png"), "wallpaper\u{200B}.png");

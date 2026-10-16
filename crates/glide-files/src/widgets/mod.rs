@@ -124,22 +124,38 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let lang = app.lang;
     let restorable = app.selected_entries().any(|e| app.trash.is_top_level(&e.path));
+    let title = Key::Trash.text(lang);
+    let mut buttons = vec![Key::EmptyTrash];
+    if restorable {
+        buttons.insert(0, Key::Restore);
+    }
+    let taken: f32 = buttons
+        .iter()
+        .map(|key| text_width(key.text(lang), SMALL_LABEL) / header::SEMIBOLD_SPREAD + 2.0 * theme::SP3 + theme::SP2)
+        .sum();
+    let room = app.pane.width
+        - 2.0 * theme::SP4
+        - text_width(title, theme::CALL) / header::SEMIBOLD_SPREAD
+        - theme::SP2
+        - taken
+        - theme::SP2;
+    let blurb = text(fit_sentence(Key::TrashBanner.text(lang), room, theme::CAP))
+        .size(theme::CAP)
+        .color(t.fg_3())
+        .wrapping(text::Wrapping::None);
     let mut content = row![
-        text(Key::Trash.text(lang)).size(theme::CALL).font(theme::SEMIBOLD),
-        text(Key::TrashBanner.text(lang)).size(theme::CAP).color(t.fg_3()),
-        space::horizontal(),
+        text(title).size(theme::CALL).font(theme::SEMIBOLD).wrapping(text::Wrapping::None),
+        container(blurb).width(Fill).clip(true),
     ]
     .spacing(theme::SP2)
     .align_y(Alignment::Center);
-    if restorable {
-        content = content.push(labelled(t, Key::Restore.text(lang), Tone::Neutral, Some(Message::Restore)));
+    for key in buttons {
+        let message = match key {
+            Key::Restore => Some(Message::Restore),
+            _ => (app.trash_count > 0).then_some(Message::EmptyTrash),
+        };
+        content = content.push(labelled(t, key.text(lang), Tone::Neutral, message));
     }
-    content = content.push(labelled(
-        t,
-        Key::EmptyTrash.text(lang),
-        Tone::Neutral,
-        (app.trash_count > 0).then_some(Message::EmptyTrash),
-    ));
     container(content)
         .padding(Padding::from([0.0, theme::SP4]))
         .width(Fill)
@@ -458,7 +474,7 @@ const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(550);
 
 #[must_use]
 pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Option<Message>) -> Element<'a, Message> {
-    button(container(text(label).size(SMALL_LABEL).font(theme::SEMIBOLD)).center_y(Fill))
+    button(container(text(label).size(SMALL_LABEL).font(theme::SEMIBOLD).wrapping(text::Wrapping::None)).center_y(Fill))
         .on_press_maybe(message)
         .height(Length::Fixed(CONTROL))
         .padding(Padding::from([0.0, theme::SP3]))
@@ -563,6 +579,22 @@ pub fn fit(name: &str, width: f32, size: f32) -> String {
 }
 
 const FIT_FLOOR: usize = 6;
+
+#[must_use]
+pub fn fit_sentence(sentence: &str, width: f32, size: f32) -> String {
+    if text_width(sentence, size) <= width {
+        return sentence.to_string();
+    }
+    let mut kept: String = sentence.to_string();
+    while kept.pop().is_some() {
+        let trimmed = kept.trim_end();
+        let shortened = format!("{trimmed}…");
+        if text_width(&shortened, size) <= width || trimmed.is_empty() {
+            return if trimmed.is_empty() { String::new() } else { shortened };
+        }
+    }
+    String::new()
+}
 
 #[must_use]
 pub fn ellipsize(name: &str, max: usize) -> String {
