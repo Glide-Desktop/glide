@@ -47,6 +47,14 @@ const SEP_H: i32 = 13;
 const BARS_W: i32 = 12;
 const BARS_H: i32 = 11;
 const BAR_W: i32 = 3;
+const BAR_PAUSED: i32 = 3;
+const BARS_STILL: [i32; 3] = [4, BARS_H, 7];
+const BAR_SWINGS: [(i32, i32, Duration); 3] = [
+    (3, 10, Duration::from_millis(600)),
+    (BARS_H, 4, Duration::from_millis(500)),
+    (5, BARS_H, Duration::from_millis(700)),
+];
+const BARS_LIVE: Duration = Duration::from_millis(100);
 const TITLE_MAX: i32 = 90;
 const BADGE_H: i32 = 17;
 const BADGE_PAD: i32 = 6;
@@ -195,6 +203,10 @@ pub(super) struct Island {
     alert_cache: Cache<u64>,
     media: Cache<MediaKey>,
     nc: Cache<NcKey>,
+    epoch: Instant,
+    bars_drawn: Option<Instant>,
+    bar_ink: Option<Color>,
+    bars: HashMap<(i32, i32), MemoryRenderBuffer>,
 }
 
 impl Default for Island {
@@ -218,6 +230,10 @@ impl Default for Island {
             alert_cache: Cache::default(),
             media: Cache::default(),
             nc: Cache::default(),
+            epoch: Instant::now(),
+            bars_drawn: None,
+            bar_ink: None,
+            bars: HashMap::new(),
         }
     }
 }
@@ -240,10 +256,16 @@ impl Island {
         self.alert_cache.clear();
         self.media.clear();
         self.nc.clear();
+        self.bar_ink = None;
+        self.bars.clear();
     }
 
     pub(super) fn is_animating(&self) -> bool {
-        self.fade.is_animating() || self.morph.is_animating() || self.scrim.is_animating()
+        self.fade.is_animating() || self.morph.is_animating() || self.scrim.is_animating() || self.bars_live()
+    }
+
+    fn bars_live(&self) -> bool {
+        self.bars_drawn.is_some_and(|at| at.elapsed() < BARS_LIVE)
     }
 
     fn size(&self) -> Size<i32, Logical> {
@@ -687,14 +709,64 @@ fn draw_collapse(c: &mut Canvas<'_>, ink: &Ink<'_>, rect: LocalRect) {
     glyph(c, Glyph::Collapse, MINI_ICON, rect, ink.theme.muted);
 }
 
-fn draw_bars(c: &mut Canvas<'_>, x: i32, playing: bool, accent: Color) {
-    let heights: [i32; 3] = if playing { [4, BARS_H, 7] } else { [3, 3, 3] };
-    let colour = if playing { accent } else { accent.with_alpha(0.5) };
+fn bars_clock(elapsed: Duration, motion_scale: f32) -> Option<Duration> {
+    (motion_scale > 0.0).then(|| elapsed.div_f32(motion_scale))
+}
+
+fn bar_heights(playing: bool, clock: Option<Duration>) -> [i32; 3] {
+    if !playing {
+        return [BAR_PAUSED; 3];
+    }
+    let Some(clock) = clock else {
+        return BARS_STILL;
+    };
+    BAR_SWINGS.map(|(from, to, period)| {
+        let sweep = (clock.as_secs_f64() / period.as_secs_f64()) % 2.0;
+        let t = if sweep > 1.0 { 2.0 - sweep } else { sweep };
+        motion::lerp(f64::from(from), f64::from(to), E_IO.ease_f64(t)).round() as i32
+    })
+}
+
+fn bar_colour(media: &MediaWidget) -> Color {
+    if media.playing { media.accent } else { media.accent.with_alpha(0.5) }
+}
+
+const fn bars_x(media: LocalRect) -> i32 {
+    media.loc.x + SUB_PAD + MEDIA_ART + SUB_GAP
+}
+
+fn draw_bar(height: i32, ink: Color, scale: i32) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::new(BAR_W, height, scale)?;
+    c.fill(c.full(), ink, 1.0);
+    Some(c.finish())
+}
+
+fn push_bars<R: ShellRenderer>(
+    renderer: &mut R, island: &mut Island, media: &MediaWidget, (x, content, clip): (i32, LocalRect, LocalRect),
+    (alpha, scale, output_scale): (f32, Scale<f64>, i32), elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) {
+    let now = Instant::now();
+    let clock = bars_clock(now.saturating_duration_since(island.epoch), motion::scale());
+    island.bars_drawn = (media.playing && clock.is_some()).then_some(now);
+    let ink = bar_colour(media);
+    if island.bar_ink != Some(ink) {
+        island.bar_ink = Some(ink);
+        island.bars.clear();
+    }
     let bottom = i32::midpoint(COMPACT_H, BARS_H);
-    let mut bar_x = x;
-    for height in heights {
-        c.fill(local_rect(bar_x, bottom - height, BAR_W, height), colour, 1.0);
-        bar_x += BAR_W + 1;
+    let mut left = content.loc.x + x;
+    for height in bar_heights(media.playing, clock) {
+        let rect = local_rect(left, content.loc.y + bottom - height, BAR_W, height);
+        left += BAR_W + 1;
+        let key = (height, output_scale);
+        if !island.bars.contains_key(&key)
+            && let Some(buffer) = draw_bar(height, ink, output_scale)
+        {
+            island.bars.insert(key, buffer);
+        }
+        if let Some(buffer) = island.bars.get(&key) {
+            push_clipped(renderer, buffer, (rect, clip), alpha, scale, elements);
+        }
     }
 }
 
@@ -702,9 +774,7 @@ fn draw_compact_media(c: &mut Canvas<'_>, ink: &Ink<'_>, media: &MediaWidget, re
     let art = local_rect(rect.loc.x + SUB_PAD, (COMPACT_H - MEDIA_ART) / 2, MEDIA_ART, MEDIA_ART);
     draw_media_art(c, ink.painter, media, (media.art.as_deref(), (art.loc.x, art.loc.y, MEDIA_ART)), R1);
     c.stroke(art, 1.0, R1, Color([1.0, 1.0, 1.0, INSET_HIGHLIGHT]));
-    let bars_x = art.loc.x + MEDIA_ART + SUB_GAP;
-    draw_bars(c, bars_x, media.playing, media.accent);
-    let left = bars_x + BARS_W + SUB_GAP;
+    let left = bars_x(rect) + BARS_W + SUB_GAP;
     let right = (rect.loc.x + rect.size.w - SUB_PAD).min(left + TITLE_MAX);
     if right > left {
         c.label(ink.painter, (left, right), TextAlign::Left, &media.title, ink.theme.label, &TITLE_STYLE);
@@ -1112,9 +1182,16 @@ fn push_compact<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>,
     let key: CompactKey =
         (topbar.track_rev, topbar.date.clone(), topbar.clock.clone(), badge.count, badge.key(), width, widths);
     let content = spot.content(width, COMPACT_H);
+    let media = topbar.media.as_ref();
+    match (media, compact_layout(width, widths, media.is_some()).media) {
+        (Some(media), Some(rect)) => {
+            let place = (bars_x(rect), content, clip);
+            push_bars(renderer, &mut topbar.island, media, place, (alpha, scale, output_scale), elements);
+        }
+        _ => topbar.island.bars_drawn = None,
+    }
     let ink = Ink { painter, theme: &topbar.theme };
     let text = ClockText { date: &topbar.date, clock: &topbar.clock, badge, widths };
-    let media = topbar.media.as_ref();
     let Some(buffer) = topbar
         .island
         .compact
@@ -1462,6 +1539,41 @@ mod tests {
         assert_eq!((bare.heading.as_str(), bare.summary.as_str()), ("Olena", "Call at 15:00?"));
         let quiet = IslandAlert::from_item(&NcItem { body: String::new(), ..item });
         assert_eq!(quiet.summary, "Olena");
+    }
+
+    #[test]
+    fn the_equaliser_holds_still_without_motion_and_rests_low_when_paused() {
+        assert_eq!(bar_heights(true, None), BARS_STILL);
+        assert_eq!(bar_heights(false, Some(Duration::from_millis(250))), [BAR_PAUSED; 3]);
+        assert_eq!(bars_clock(Duration::from_secs(3), 0.0), None, "animations off stop the bars");
+        assert_eq!(bars_clock(Duration::from_secs(3), 2.0), Some(Duration::from_millis(1500)), "speed slows them");
+    }
+
+    #[test]
+    fn equaliser_bars_swing_between_the_concept_keyframes_inside_their_box() {
+        assert_eq!(bar_heights(true, Some(Duration::ZERO)), [3, BARS_H, 5]);
+        for (index, (from, to, period)) in BAR_SWINGS.into_iter().enumerate() {
+            assert_eq!(bar_heights(true, Some(period))[index], to, "bar {index} reaches its far keyframe");
+            assert_eq!(bar_heights(true, Some(period * 2))[index], from, "bar {index} swings back");
+        }
+        let mut seen = std::collections::HashSet::new();
+        for ms in (0..1400).step_by(10) {
+            let heights = bar_heights(true, Some(Duration::from_millis(ms)));
+            assert!(heights.iter().all(|h| (BAR_PAUSED..=BARS_H).contains(h)), "{heights:?} at {ms} ms");
+            seen.insert(heights);
+        }
+        assert!(seen.len() > 20, "the bars move while playing");
+        const { assert!(3 * (BAR_W + 1) - 1 <= BARS_W, "the bars fit the room the title leaves them") };
+    }
+
+    #[test]
+    fn the_equaliser_pumps_frames_only_while_its_bars_are_being_drawn() {
+        let mut island = Island::default();
+        assert!(!island.is_animating());
+        island.bars_drawn = Some(Instant::now());
+        assert!(island.is_animating());
+        island.bars_drawn = Instant::now().checked_sub(BARS_LIVE * 2);
+        assert!(!island.is_animating(), "a hidden or locked bar stops the pump");
     }
 
     #[test]
