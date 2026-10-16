@@ -121,6 +121,7 @@ pub enum Hover {
     Crumb(PathBuf),
     Column(ListColumn),
     Bookmarks,
+    Toast,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +319,7 @@ pub enum Message {
     ModalCancel,
     Done(Outcome),
     DismissNotice(u64),
+    NoticeExpired(u64),
     Undo,
     Volumes(Vec<Volume>),
     Mount(String, bool),
@@ -449,6 +451,7 @@ impl Message {
                 | Self::Escape
                 | Self::Done(_)
                 | Self::DismissNotice(_)
+                | Self::NoticeExpired(_)
                 | Self::Volumes(_)
                 | Self::Disk(_)
                 | Self::SearchResults(..)
@@ -729,6 +732,10 @@ fn blocking<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> impl
 
 fn run(job: impl FnOnce() -> Outcome + Send + 'static) -> Task<Message> {
     Task::perform(blocking(job), |outcome| Message::Done(outcome.unwrap_or_default()))
+}
+
+fn expire(id: u64) -> Task<Message> {
+    Task::perform(blocking(|| std::thread::sleep(NOTICE_TIMEOUT)), move |_| Message::NoticeExpired(id))
 }
 
 fn terminal(dir: PathBuf, lang: Lang) -> Task<Message> {
@@ -1012,6 +1019,9 @@ impl App {
     }
 
     fn sync_motion(&mut self, now: Instant) {
+        if self.notice.is_none() && self.hover_target == Some(Hover::Toast) {
+            self.hover_target = None;
+        }
         let active = self.sidebar_active().map(Path::to_path_buf);
         let motion = &mut self.motion;
         motion.set_active(active.as_deref(), now);
@@ -1450,6 +1460,12 @@ impl App {
                     self.notice = None;
                 }
             }
+            Message::NoticeExpired(id) if self.notice.as_ref().is_some_and(|notice| notice.id == id) => {
+                if self.hover_target == Some(Hover::Toast) {
+                    return expire(id);
+                }
+                self.notice = None;
+            }
             Message::Undo if self.renaming.is_some() || self.path_edit.is_some() => {}
             Message::Undo => {
                 if self.notice.as_ref().is_some_and(|notice| notice.action == Some(NoticeAction::Undo)) {
@@ -1548,6 +1564,7 @@ impl App {
             | Message::CreateLink
             | Message::TypeToSearch(_)
             | Message::SearchResults(..)
+            | Message::NoticeExpired(_)
             | Message::Quit
             | Message::Frame(_) => {}
         }
@@ -3050,7 +3067,7 @@ impl App {
         self.notices += 1;
         let id = self.notices;
         self.notice = Some(Notice { id, text, action });
-        Task::perform(blocking(|| std::thread::sleep(NOTICE_TIMEOUT)), move |_| Message::DismissNotice(id))
+        expire(id)
     }
 
     fn scan(&mut self) -> Task<Message> {

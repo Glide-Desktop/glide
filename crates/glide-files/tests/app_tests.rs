@@ -371,6 +371,27 @@ fn going_up_from_the_trash_does_not_open_its_internals() {
 }
 
 #[test]
+fn a_toast_stays_while_the_pointer_rests_on_it() {
+    use glide_files::app::{Hover, Notice, NoticeAction};
+    let mut app = listed_app();
+    app.notice = Some(Notice { id: 7, text: String::from("Moved"), action: Some(NoticeAction::Undo) });
+    let _ = app.update(Message::Hover(Hover::Toast, true));
+    let again = app.update(Message::NoticeExpired(7));
+    assert!(app.notice.is_some(), "the Undo button does not vanish from under the pointer");
+    assert_eq!(again.units(), 1, "the timeout starts over instead");
+    let _ = app.update(Message::Hover(Hover::Toast, false));
+    let _ = app.update(Message::NoticeExpired(7));
+    assert!(app.notice.is_none(), "once the pointer leaves, the next timeout closes it");
+    let _ = app.update(Message::Hover(Hover::Toast, true));
+    app.notice = Some(Notice { id: 8, text: String::from("Copied"), action: None });
+    let _ = app.update(Message::DismissNotice(8));
+    let _ = app.update(Message::Tick);
+    app.notice = Some(Notice { id: 9, text: String::from("Deleted"), action: None });
+    let _ = app.update(Message::NoticeExpired(9));
+    assert!(app.notice.is_none(), "a toast closed under the pointer does not hold the next one open");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

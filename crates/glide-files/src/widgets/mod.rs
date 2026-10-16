@@ -13,7 +13,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector, mouse};
 
-use crate::app::{App, Edge, Message, Notice, NoticeAction};
+use crate::app::{App, Edge, Hover, Message, Notice, NoticeAction};
 use crate::fs::FileEntry;
 use crate::fs::jobs::Op;
 use crate::i18n::Key;
@@ -373,7 +373,14 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
     )
     .scale(scale)
     .translate(move |_, _| Vector::new(0.0, drop));
-    let card: Element<'a, Message> = if live { opaque(card) } else { card.into() };
+    let card: Element<'a, Message> = if live {
+        mouse_area(opaque(card))
+            .on_enter(Message::Hover(Hover::Toast, true))
+            .on_exit(Message::Hover(Hover::Toast, false))
+            .into()
+    } else {
+        card.into()
+    };
     container(card)
         .width(Fill)
         .height(Fill)
