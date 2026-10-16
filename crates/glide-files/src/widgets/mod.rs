@@ -276,7 +276,7 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
     let count = drag.paths.len();
     let art: Element<'_, Message> = if count > 1 {
         Stack::with_children([
-            container(art).padding(6).into(),
+            container(art).padding(theme::SP2).into(),
             container(
                 container(text(count.to_string()).size(theme::MICRO).font(theme::SEMIBOLD).color(t.acc_fg()))
                     .padding(Padding::from([1.0, theme::SP2]))

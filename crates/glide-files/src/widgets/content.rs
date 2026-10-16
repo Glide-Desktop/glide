@@ -18,9 +18,9 @@ use crate::theme::{self, R1};
 const HOVER_LIFT: f32 = 4.0;
 const HOVER_GROWTH: f32 = 0.06;
 
-pub const GRID_PADDING: f32 = 20.0;
-pub const TILE_GAP: f32 = 12.0;
-pub const LIST_PADDING: f32 = 4.0;
+pub const GRID_PADDING: f32 = theme::SP4;
+pub const TILE_GAP: f32 = theme::SP3;
+pub const LIST_PADDING: f32 = theme::SP1;
 const LOCATION_WIDTH: f32 = 220.0;
 const HEADER_HEIGHT: f32 = 26.0;
 const DOT: f32 = theme::SP2;
@@ -343,7 +343,7 @@ fn list(app: &App) -> Element<'_, Message> {
     let body = std::iter::once(spacer(shown.start as f32 * metrics.row))
         .chain(rows)
         .chain(std::iter::once(spacer((total - shown.end) as f32 * metrics.row)));
-    let rows = Column::with_children(body).padding(Padding::from([LIST_PADDING, 8.0])).width(Fill);
+    let rows = Column::with_children(body).padding(Padding::from([LIST_PADDING, theme::SP2])).width(Fill);
     column![list_header(app), divider(&app.theme), files(app, rows)].into()
 }
 
@@ -357,7 +357,7 @@ fn list_header(app: &App) -> Element<'_, Message> {
     if app.is_searching() {
         header = header.push(header_cell(app, Key::ColLocation.text(lang), None, None, Length::Fixed(LOCATION_WIDTH)));
     }
-    let header = header.padding(Padding::from([0, 16])).height(HEADER_HEIGHT).align_y(Alignment::Center);
+    let header = header.padding(Padding::from([0.0, theme::SP4])).height(HEADER_HEIGHT).align_y(Alignment::Center);
     mouse_area(header).on_right_press(Message::MenuTarget(MenuKind::Columns)).into()
 }
 
@@ -377,7 +377,7 @@ fn header_cell<'a>(
         let highlighted = active || target || theme::highlighted(status);
         theme::plain(if highlighted { t.fg_1() } else { t.fg_2() })
     };
-    let padding = Padding::from([4, 8]).left(if separated { 8.0 } else { 0.0 });
+    let padding = Padding::from([theme::SP1, theme::SP2]).left(if separated { theme::SP2 } else { 0.0 });
     let cell: Element<'a, Message> = match column {
         Some(column) => mouse_area(
             container(content)
@@ -455,7 +455,7 @@ fn list_row<'a>(
         button(container(cells).height(Fill).align_y(Alignment::Center))
             .width(Fill)
             .height(Length::Fixed(metrics.row))
-            .padding(Padding::from([0, 8]))
+            .padding(Padding::from([0.0, theme::SP2]))
             .style(move |_, status| theme::list_row(t, selected, stripe, hover, status)),
     )
     .on_press(Message::Pressed(entry.path.clone()))

@@ -64,7 +64,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .on_input(Message::PathChanged)
             .on_submit(Message::PathSubmitted)
             .size(theme::CALL)
-            .padding(Padding::from([4, 10]))
+            .padding(Padding::from([5.0, SP3]))
             .width(Fill)
             .style(move |_, status| theme::field(t, status))
             .into(),
