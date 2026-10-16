@@ -199,6 +199,9 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 .filter(|path| single && bookmarkable(app, path))
                 .map(|path| item(Key::AddBookmark, Message::AddBookmark(path.clone())));
             let mut entries: Vec<Entry> = vec![item(Key::Open, Message::OpenSelection).keys("Enter").into()];
+            if let (true, [found]) = (app.is_searching(), selected.as_slice()) {
+                entries.push(item(Key::ShowInFolder, Message::Reveal(found.clone())).into());
+            }
             if menu.open_with {
                 entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith)).submenu().into());
             }

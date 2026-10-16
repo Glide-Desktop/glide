@@ -141,6 +141,9 @@ fn path(index: usize) -> std::path::PathBuf {
 fn listed_app() -> glide_files::App {
     use glide_files::fs::{FileCategory, FileEntry};
     let (mut app, _) = glide_files::App::new();
+    let empty = std::env::temp_dir().join(format!("glide-files-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).expect("scratch");
+    app.current = empty;
     app.view = ViewMode::List;
     app.entries = (0..6)
         .map(|index| FileEntry {
@@ -230,6 +233,33 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
     let _ = app.update(Message::Dnd(Dnd::Drop { paths: vec![path(4)], at: (5.0, 5.0), moved: true }));
     assert_eq!(app.jobs.len(), 1, "a foreign file starts a transfer");
     let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn a_search_result_offers_its_folder() {
+    let labels = |app: &glide_files::App| -> Vec<String> {
+        let menu = app.menu.as_ref().expect("menu");
+        menu::entries(app, menu)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                menu::Entry::Item(item) => Some(item.label.into_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    let show = Key::ShowInFolder.text(Lang::Uk);
+    let mut app = listed_app();
+    app.lang = Lang::Uk;
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::KeyMenu);
+    assert!(!labels(&app).iter().any(|label| label == show), "a plain folder view needs no detour");
+    let _ = app.update(Message::Escape);
+    let _ = app.update(Message::TypeToSearch(String::from("1")));
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::KeyMenu);
+    assert!(labels(&app).iter().any(|label| label == show));
 }
 
 #[test]

@@ -261,6 +261,7 @@ pub struct Listed {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     Navigate(PathBuf),
+    Reveal(PathBuf),
     GoHome,
     Back,
     Forward,
@@ -1031,6 +1032,13 @@ impl App {
             Message::KeyMenu => return self.key_menu(),
             Message::Navigate(path) => return self.navigate(path),
             Message::GoHome => return home_dir().map_or_else(Task::none, |home| self.navigate(home)),
+            Message::Reveal(path) => {
+                let Some(parent) = path.parent().map(Path::to_path_buf) else {
+                    return Task::none();
+                };
+                let arrival = if parent == self.current { Arrival::Jump(self.history_index) } else { Arrival::Push };
+                return self.list(parent, arrival, Some(path));
+            }
             Message::Back if self.history_index > 0 => {
                 return self.jump(self.history_index - 1);
             }

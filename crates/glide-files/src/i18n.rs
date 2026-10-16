@@ -100,6 +100,7 @@ catalogue! {
     ViewGrid => "Icons", "Значки";
     ViewList => "List", "Список";
     Open => "Open", "Відкрити";
+    ShowInFolder => "Show in Folder", "Показати в папці";
     OpenInTerminal => "Open in Terminal", "Відкрити в терміналі";
     NewFolder => "New Folder", "Нова папка";
     NewFile => "New File", "Новий файл";
