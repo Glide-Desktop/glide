@@ -223,7 +223,7 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
         let (label, glyph) = match job.op {
             Op::Copy => (Key::Copying, Icon::Copy),
             Op::Move => (Key::Moving, Icon::Move),
-            Op::Delete => (Key::Deleting, Icon::Close),
+            Op::Delete => (Key::Deleting, Icon::Trash),
             Op::Trash => (Key::Trashing, Icon::Trash),
         };
         let progress = &job.progress;

@@ -288,6 +288,18 @@ fn a_bookmark_shows_its_press_until_the_button_is_released() {
 }
 
 #[test]
+fn list_names_leave_room_for_their_tag_dots_and_link_mark() {
+    use glide_files::widgets::content::marks_width;
+    let mut entry = listed_app().entries.remove(0);
+    assert!(marks_width(&entry).abs() < f32::EPSILON, "a plain file needs no room");
+    entry.tags = vec![String::from("Red"), String::from("Blue"), String::from("project")];
+    let dots = marks_width(&entry);
+    assert!(dots > 2.0 * 8.0, "two colour dots and their gap are kept clear of the name");
+    entry.is_symlink = true;
+    assert!(marks_width(&entry) > dots, "so is the link arrow");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

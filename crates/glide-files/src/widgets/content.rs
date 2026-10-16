@@ -26,6 +26,8 @@ const NAME_MIN: f32 = 64.0;
 const NAME_ROOM: f32 = 200.0;
 const HEADER_HEIGHT: f32 = 26.0;
 const DOT: f32 = theme::SP2;
+const DOT_GAP: f32 = 2.0;
+const LINK_MARK: f32 = 11.0;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
 const LIST_ROWS: [(f32, f32); crate::config::LIST_ZOOMS] = [(22.0, 14.0), (26.0, 16.0), (32.0, 22.0), (40.0, 28.0)];
 
@@ -172,9 +174,16 @@ fn dots<'a>(entry: &FileEntry) -> Option<Element<'a, Message>> {
             let fill = tag_color(color);
             container(space().width(DOT).height(DOT)).style(move |_| theme::rounded(fill, theme::R_ROUND)).into()
         }))
-        .spacing(2)
+        .spacing(DOT_GAP)
         .into()
     })
+}
+
+#[must_use]
+pub fn marks_width(entry: &FileEntry) -> f32 {
+    let dots = tags::colors(&entry.tags).len() as f32;
+    let dots = if dots > 0.0 { theme::SP2 + dots * DOT + (dots - 1.0) * DOT_GAP } else { 0.0 };
+    dots + if entry.is_symlink { theme::SP2 + LINK_MARK } else { 0.0 }
 }
 
 #[must_use]
@@ -437,14 +446,17 @@ fn list_row<'a>(
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
     let title: Element<'a, Message> = match rename_field(app, theme::CALL).filter(|_| editing) {
         Some(field) => field,
-        None => text(fit(&entry.name, room, theme::CALL)).size(theme::CALL).wrapping(text::Wrapping::None).into(),
+        None => text(fit(&entry.name, room - marks_width(entry), theme::CALL))
+            .size(theme::CALL)
+            .wrapping(text::Wrapping::None)
+            .into(),
     };
     let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(theme::SP2).align_y(Alignment::Center);
     if let Some(dots) = dots(entry) {
         name = name.push(dots);
     }
     if entry.is_symlink {
-        name = name.push(icon(Icon::Link, 11.0, secondary));
+        name = name.push(icon(Icon::Link, LINK_MARK, secondary));
     }
 
     let mut cells = row![container(name).width(Fill).clip(true)].align_y(Alignment::Center);
