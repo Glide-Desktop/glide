@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 pub mod elevation;
+pub mod font;
 pub mod motion;
 mod palette;
 pub mod shape;

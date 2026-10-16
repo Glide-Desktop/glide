@@ -12,6 +12,7 @@ pub struct Look {
     pub accent: Accent,
     pub language: Option<Lang>,
     pub icon_theme: Option<String>,
+    pub font_family: Option<String>,
     pub motion_scale: f32,
 }
 
@@ -23,6 +24,7 @@ impl Default for Look {
             accent: Accent::default(),
             language: None,
             icon_theme: None,
+            font_family: None,
             motion_scale: 1.0,
         }
     }
@@ -73,9 +75,10 @@ pub fn reduced_motion() -> bool {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 struct General {
     language: Option<String>,
+    font_family: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -108,6 +111,7 @@ impl Look {
             accent: file.topbar.accent,
             language: file.general.language.as_deref().and_then(Lang::from_key),
             icon_theme: file.dock.icon_theme.filter(|name| !name.trim().is_empty()),
+            font_family: file.general.font_family.filter(|name| !name.trim().is_empty()),
         }
     }
 }

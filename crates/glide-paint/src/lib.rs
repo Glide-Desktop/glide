@@ -41,10 +41,7 @@ pub use border::{
 
 static EMBEDDED_FONT_BYTES: &[u8] = include_bytes!("fonts/LiberationSans-Regular.ttf");
 
-const DEFAULT_FAMILY: &str = "Adwaita Sans";
-
-const FALLBACK_FAMILIES: &[&str] =
-    &[DEFAULT_FAMILY, "Cantarell", "Inter", "Noto Sans", "Ubuntu", "DejaVu Sans", "Liberation Sans"];
+pub use glide_theme::font::ui_family;
 
 fn single_line(text: &str) -> std::borrow::Cow<'_, str> {
     if text.contains(|c: char| c.is_whitespace() && c != ' ') {
@@ -52,20 +49,6 @@ fn single_line(text: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(text)
     }
-}
-
-#[must_use]
-pub fn ui_family<'a>(requested: Option<&str>, available: impl IntoIterator<Item = &'a str>) -> String {
-    let available: Vec<&str> = available.into_iter().map(str::trim).collect();
-    let installed = |name: &str| available.iter().any(|family| family.eq_ignore_ascii_case(name));
-    requested
-        .map(str::trim)
-        .filter(|name| !name.is_empty() && installed(name))
-        .into_iter()
-        .chain(FALLBACK_FAMILIES.iter().copied().filter(|name| installed(name)))
-        .next()
-        .unwrap_or(DEFAULT_FAMILY)
-        .to_string()
 }
 
 const NEVER_POISONED: &str = "single-threaded event loop, this lock is never poisoned";
@@ -1824,15 +1807,6 @@ mod tests {
         let wide = painter.text_width_styled("00:00", &TextStyle::NUM);
         let narrow = painter.text_width_styled("11:11", &TextStyle::NUM);
         assert!((wide - narrow).abs() < 0.5, "{wide} vs {narrow}");
-    }
-
-    #[test]
-    fn the_ui_family_falls_back_to_an_installed_face() {
-        assert_eq!(ui_family(None, ["Noto Sans", "Adwaita Sans"]), DEFAULT_FAMILY);
-        assert_eq!(ui_family(None, ["DejaVu Sans", "Noto Sans"]), "Noto Sans");
-        assert_eq!(ui_family(Some("Inter"), ["Inter", "Adwaita Sans"]), "Inter");
-        assert_eq!(ui_family(Some("Missing Font"), ["Cantarell", "Liberation Sans"]), "Cantarell");
-        assert_eq!(ui_family(Some("  "), std::iter::empty()), DEFAULT_FAMILY);
     }
 
     #[test]

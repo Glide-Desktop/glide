@@ -11,6 +11,7 @@ fn main() -> iced::Result {
     if let glide_files::service::Claim::Forwarded = glide_files::service::claim(target.as_deref()) {
         return Ok(());
     }
+    glide_files::theme::use_ui_family(glide_files::config::load().font_family.as_deref());
     let window = iced::window::Settings {
         size: requested_size().unwrap_or(iced::Size::new(1000.0, 650.0)),
         min_size: Some(iced::Size::new(720.0, 480.0)),
