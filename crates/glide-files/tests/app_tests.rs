@@ -871,6 +871,16 @@ fn a_properties_card_stays_inside_a_small_window() {
 }
 
 #[test]
+fn a_search_title_shortens_the_query_and_keeps_its_quotes() {
+    use glide_files::widgets::header::search_title;
+    assert_eq!(search_title("Search", "quarterly", 400.0), "Search «quarterly»");
+    let full = glide_files::widgets::text_width("Search «quarterly»", glide_files::theme::TITLE);
+    let narrow = search_title("Search", "quarterly", full - 20.0);
+    assert!(narrow.starts_with("Search «q") && narrow.ends_with("…»"), "the query is cut at its end: {narrow:?}");
+    assert_eq!(search_title("Пошук", "quarterly", 40.0), "Пошук", "with no room for the query only the label stays");
+}
+
+#[test]
 fn every_catalogue_entry_is_translated() {
     for key in Key::ALL {
         assert!(!key.en().trim().is_empty(), "{key:?} lacks English");

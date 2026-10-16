@@ -3,7 +3,7 @@ use std::time::Instant;
 use iced::widget::{button, container, mouse_area, row, space, stack, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
-use super::{CONTROL, HEADER_HEIGHT, fit, hint, icon, icon_button};
+use super::{CONTROL, HEADER_HEIGHT, fit, fit_sentence, hint, icon, icon_button, text_width};
 use crate::app::{App, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
@@ -29,6 +29,13 @@ const CHROME: f32 = SP2
 pub const SEMIBOLD_SPREAD: f32 = 0.94;
 const CLEAR: f32 = 24.0;
 const CLEAR_INSET: f32 = (CONTROL - CLEAR) / 2.0;
+
+#[must_use]
+pub fn search_title(label: &str, query: &str, room: f32) -> String {
+    let frame = text_width(&format!("{label} «»"), theme::TITLE);
+    let shown = fit_sentence(query, room - frame, theme::TITLE);
+    if shown.is_empty() { label.to_string() } else { format!("{label} «{shown}»") }
+}
 
 #[must_use]
 pub fn window_control(app: &App, glyph: Icon, message: Message) -> Element<'_, Message> {
@@ -83,7 +90,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .into()
     } else {
         let room = (app.pane.width - CHROME) * SEMIBOLD_SPREAD;
-        text(fit(&app.place_title(), room, theme::TITLE))
+        let query = app.search.as_ref().map(|search| search.query.trim()).filter(|query| !query.is_empty());
+        let title = match query {
+            Some(query) => search_title(Key::Search.text(lang), query, room),
+            None => fit(&app.place_title(), room, theme::TITLE),
+        };
+        text(title)
             .size(theme::TITLE)
             .font(theme::SEMIBOLD)
             .color(if app.is_idle() { t.fg_3() } else { t.fg_1() })
