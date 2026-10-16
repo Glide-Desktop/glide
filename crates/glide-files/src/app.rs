@@ -261,6 +261,7 @@ pub struct Listed {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     Navigate(PathBuf),
+    GoHome,
     Back,
     Forward,
     Up,
@@ -430,6 +431,7 @@ impl Message {
                 | Self::Back
                 | Self::Forward
                 | Self::Up
+                | Self::GoHome
                 | Self::TypeToSearch(_)
         )
     }
@@ -1028,6 +1030,7 @@ impl App {
             Message::OpenSelection if self.menu.is_some() => return self.activate_menu(),
             Message::KeyMenu => return self.key_menu(),
             Message::Navigate(path) => return self.navigate(path),
+            Message::GoHome => return home_dir().map_or_else(Task::none, |home| self.navigate(home)),
             Message::Back if self.history_index > 0 => {
                 return self.jump(self.history_index - 1);
             }
@@ -3175,6 +3178,8 @@ pub fn window_events(event: iced::Event, _status: iced::event::Status, _window: 
         iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocus(true)),
         iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocus(false)),
         iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::Released),
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => Some(Message::Back),
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Forward)) => Some(Message::Forward),
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(Named::Escape), .. }) => {
             Some(Message::Escape)
         }
@@ -3228,6 +3233,7 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::ArrowDown) => Message::Move(Step::Down, shift),
         Key::Named(Named::ArrowLeft) => Message::Move(Step::Left, shift),
         Key::Named(Named::ArrowRight) => Message::Move(Step::Right, shift),
+        Key::Named(Named::Home) if alt => Message::GoHome,
         Key::Named(Named::Home) => Message::Move(Step::First, shift),
         Key::Named(Named::End) => Message::Move(Step::Last, shift),
         Key::Named(Named::Delete) if shift => Message::Delete,

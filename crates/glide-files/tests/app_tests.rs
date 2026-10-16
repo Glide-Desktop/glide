@@ -41,6 +41,7 @@ fn keyboard_shortcuts_map_to_intended_messages() {
         (named(Named::ArrowLeft, alt), Message::Back),
         (named(Named::ArrowRight, alt), Message::Forward),
         (named(Named::ArrowUp, alt), Message::Up),
+        (named(Named::Home, alt), Message::GoHome),
         (named(Named::ArrowDown, alt), Message::OpenSelection),
         (named(Named::ArrowDown, none), Message::Move(Step::Down, false)),
         (named(Named::ArrowUp, shift), Message::Move(Step::Up, true)),
@@ -216,6 +217,17 @@ fn escape_reaches_the_app_even_when_a_text_field_captured_it() {
         let window = iced::window::Id::unique();
         assert_eq!(window_events(escape.clone(), status, window), Some(Message::Escape));
     }
+}
+
+#[test]
+fn the_mouse_side_buttons_walk_the_history() {
+    use iced::event::Status;
+    use iced::mouse::{Button, Event as Mouse};
+    let window = iced::window::Id::unique();
+    let pressed = |button| window_events(iced::Event::Mouse(Mouse::ButtonPressed(button)), Status::Ignored, window);
+    assert_eq!(pressed(Button::Back), Some(Message::Back));
+    assert_eq!(pressed(Button::Forward), Some(Message::Forward));
+    assert_eq!(pressed(Button::Middle), None);
 }
 
 #[test]
