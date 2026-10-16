@@ -468,7 +468,15 @@ fn panel<'a>(
                         container(space().width(10).height(10)).style(move |_| theme::rounded(color, theme::R_ROUND)),
                     );
                 }
-                content = content.push(text(item.label).size(theme::MENU_ITEM)).push(space::horizontal());
+                let mut room = WIDTH - 2.0 * (PADDING + SP3) - 2.0 * SP2;
+                room -= if checks { MARK + SP2 } else { 0.0 };
+                room -= if item.swatch.is_some() { 10.0 + SP2 } else { 0.0 };
+                room -= item.shortcut.map_or(0.0, |keys| super::text_width(keys, theme::CAP) + SP2);
+                room -= if item.submenu { 12.0 + SP2 } else { 0.0 };
+                let label = super::fit(&item.label, room, theme::MENU_ITEM);
+                content = content
+                    .push(text(label).size(theme::MENU_ITEM).wrapping(text::Wrapping::None))
+                    .push(space::horizontal());
                 if let Some(keys) = item.shortcut {
                     content = content.push(text(keys).size(theme::CAP).color(t.fg_3()));
                 }
