@@ -1,4 +1,4 @@
-use glide_files::app::{Message, Step, ViewMode, handle_shortcut};
+use glide_files::app::{Message, Step, ViewMode, handle_shortcut, window_events};
 use glide_files::config::Look;
 use glide_files::i18n::{self, Key, Lang};
 use glide_files::theme::ThemeState;
@@ -48,7 +48,6 @@ fn keyboard_shortcuts_map_to_intended_messages() {
         (named(Named::End, none), Message::Move(Step::Last, false)),
         (named(Named::Enter, none), Message::OpenSelection),
         (named(Named::Enter, alt), Message::Properties),
-        (named(Named::Escape, none), Message::Escape),
         (named(Named::F2, none), Message::Rename),
         (named(Named::F5, none), Message::Reload),
         (named(Named::Delete, none), Message::Trash),
@@ -71,6 +70,45 @@ fn keyboard_shortcuts_map_to_intended_messages() {
         assert_eq!(actual, Some(expected.clone()), "{expected:?}");
     }
     assert_eq!(chord("n", ctrl), None);
+}
+
+#[test]
+fn shortcuts_follow_the_physical_key_on_cyrillic_layouts() {
+    let typed = |c: &str, code: Code, modifiers: Modifiers| {
+        handle_shortcut(Event::KeyPressed {
+            key: IcedKey::Character(c.into()),
+            modified_key: IcedKey::Character(c.into()),
+            physical_key: Physical::Code(code),
+            location: Location::Standard,
+            modifiers,
+            repeat: false,
+            text: Some(c.into()),
+        })
+    };
+    assert_eq!(typed("с", Code::KeyC, Modifiers::COMMAND), Some(Message::Copy));
+    assert_eq!(typed("м", Code::KeyV, Modifiers::COMMAND), Some(Message::Paste));
+    assert_eq!(typed("Т", Code::KeyN, Modifiers::COMMAND | Modifiers::SHIFT), Some(Message::NewFolder));
+    assert_eq!(typed("й", Code::KeyQ, Modifiers::COMMAND), Some(Message::Quit));
+    assert_eq!(typed("ф", Code::KeyA, Modifiers::empty()), Some(Message::TypeToSearch(String::from("ф"))));
+}
+
+#[test]
+fn escape_reaches_the_app_even_when_a_text_field_captured_it() {
+    use iced::event::Status;
+    assert_eq!(named(Named::Escape, Modifiers::empty()), None, "handled once, by window_events");
+    let escape = iced::Event::Keyboard(Event::KeyPressed {
+        key: IcedKey::Named(Named::Escape),
+        modified_key: IcedKey::Named(Named::Escape),
+        physical_key: Physical::Code(Code::Escape),
+        location: Location::Standard,
+        modifiers: Modifiers::empty(),
+        repeat: false,
+        text: None,
+    });
+    for status in [Status::Captured, Status::Ignored] {
+        let window = iced::window::Id::unique();
+        assert_eq!(window_events(escape.clone(), status, window), Some(Message::Escape));
+    }
 }
 
 #[test]

@@ -16,6 +16,7 @@ fn main() -> iced::Result {
         min_size: Some(iced::Size::new(720.0, 480.0)),
         decorations: false,
         transparent: true,
+        exit_on_close_request: false,
         platform_specific: iced::window::settings::PlatformSpecific {
             application_id: String::from("glide-files"),
             ..iced::window::settings::PlatformSpecific::default()

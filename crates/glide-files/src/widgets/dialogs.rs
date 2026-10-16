@@ -27,6 +27,7 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
             confirm(app, Key::DeleteTitle, Key::DeletePrompt, Some(subject(app, paths)), Key::DeletePermanently)
         }
         Dialog::EmptyTrash => confirm(app, Key::EmptyTrashTitle, Key::EmptyTrashPrompt, None, Key::EmptyTrash),
+        Dialog::Quit => confirm(app, Key::QuitTitle, Key::QuitPrompt, None, Key::QuitConfirm),
         Dialog::Properties(properties) => details(app, properties),
         Dialog::Repair(object) => confirm(
             app,

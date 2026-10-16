@@ -69,6 +69,9 @@ macro_rules! catalogue {
 
 catalogue! {
     AppName => "Files", "Файли";
+    QuitTitle => "Stop operations and quit?", "Зупинити операції й закрити?";
+    QuitPrompt => "Some operations are still running. Stopped now, they stay unfinished.", "Деякі операції ще тривають. Якщо зупинити їх зараз, вони залишаться незавершеними.";
+    QuitConfirm => "Stop and Quit", "Зупинити й закрити";
     Home => "Home", "Домівка";
     Documents => "Documents", "Документи";
     Downloads => "Downloads", "Завантаження";
@@ -86,12 +89,9 @@ catalogue! {
     ColModified => "Modified", "Змінено";
     ColType => "Kind", "Тип";
     ColLocation => "Location", "Розташування";
-    Back => "Back", "Назад";
-    Forward => "Forward", "Уперед";
     Search => "Search", "Пошук";
     ViewGrid => "Icons", "Значки";
     ViewList => "List", "Список";
-    MoreActions => "More actions", "Інші дії";
     Open => "Open", "Відкрити";
     OpenInTerminal => "Open in Terminal", "Відкрити в терміналі";
     NewFolder => "New Folder", "Нова папка";
@@ -115,7 +115,6 @@ catalogue! {
     SortBy => "Sort by", "Упорядкувати";
     Reversed => "Reverse Order", "У зворотному порядку";
     ShowHidden => "Show Hidden Files", "Приховані файли";
-    SearchPlaceholder => "Search in this folder", "Пошук у цій папці";
     PathPlaceholder => "Go to folder", "Перейти до папки";
     Create => "Create", "Створити";
     Cancel => "Cancel", "Скасувати";
@@ -164,20 +163,17 @@ catalogue! {
     StopJob => "Stop", "Зупинити";
     Trashing => "Moving to Trash", "Переміщення до смітника";
     Preparing => "Preparing…", "Підготовка…";
-    PauseJob => "Pause", "Призупинити";
-    ResumeJob => "Resume", "Продовжити";
     Paused => "Paused", "Призупинено";
     TimeLeft => "left", "залишилось";
     OfTotal => "of", "з";
     DropCopy => "Copy here", "Копіювати сюди";
     DropMove => "Move here", "Перемістити сюди";
-    JobsTitle => "Operations", "Операції";
     Duplicate => "Duplicate", "Дублювати";
     CreateLink => "Create Link", "Створити посилання";
     LinkTo => "Link to", "Посилання на";
     NewDocument => "New Document", "Новий документ";
     NoTemplates => "No templates yet", "Шаблонів поки немає";
-    OpenTemplates => "Open Templates Folder", "Відкрити теку шаблонів";
+    OpenTemplates => "Open Templates Folder", "Відкрити папку шаблонів";
     NewDocumentTitle => "New Document", "Новий документ";
     Tags => "Tags", "Мітки";
     EditTags => "Edit Tags…", "Змінити мітки…";
@@ -208,12 +204,12 @@ catalogue! {
     PhoneHint => "Unlock the phone and allow file transfer", "Розблокуйте телефон і дозвольте передавання файлів";
     NoMtpTool => "Install gvfs-mtp, jmtpfs or simple-mtpfs to open phones", "Встановіть gvfs-mtp, jmtpfs або simple-mtpfs, щоб відкривати телефони";
     CantOpenPhone => "Can’t open the device", "Не вдалося відкрити пристрій";
-    FileExists => "already exists here", "вже є в цій теці";
-    FolderExists => "A folder with this name already exists here", "Тека з такою назвою вже є тут";
+    FileExists => "already exists here", "вже є в цій папці";
+    FolderExists => "A folder with this name already exists here", "Папка з такою назвою вже є тут";
     FileExistsHint => "Replace it, keep both, or skip this one?", "Замінити, залишити обидва чи пропустити?";
-    FolderExistsHint => "Merge the contents, keep both, or skip this one?", "Об'єднати вміст, залишити обидві чи пропустити?";
+    FolderExistsHint => "Merge the contents, keep both, or skip this one?", "Об’єднати вміст, залишити обидві чи пропустити?";
     Replace => "Replace", "Замінити";
-    Merge => "Merge", "Об'єднати";
+    Merge => "Merge", "Об’єднати";
     Skip => "Skip", "Пропустити";
     KeepBoth => "Keep both", "Залишити обидва";
     ApplyToAll => "Do this for every conflict", "Так для всіх конфліктів";

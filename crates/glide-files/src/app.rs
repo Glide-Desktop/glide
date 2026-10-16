@@ -42,6 +42,7 @@ const OPEN_WITH_LIMIT: usize = 6;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_secs(2);
+const QUIT_GRACE: Duration = Duration::from_secs(5);
 const DRAG_THRESHOLD: f32 = 6.0;
 const SPRING_DELAY: Duration = Duration::from_millis(900);
 const DRAG_TICK: Duration = Duration::from_millis(120);
@@ -69,6 +70,7 @@ pub enum Dialog {
     Unlock(String),
     NewFromTemplate(PathBuf),
     Tags(Vec<PathBuf>),
+    Quit,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +101,7 @@ pub enum MenuKind {
     Templates,
     Tags,
     Columns,
+    OpenWith,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +109,7 @@ pub struct Menu {
     pub kind: MenuKind,
     pub at: Point,
     pub offers: Vec<Offer>,
+    pub open_with: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -151,6 +155,14 @@ pub struct Job {
     pub launch: Option<Launch>,
     answers: mpsc::Sender<Answer>,
     question: Option<Question>,
+}
+
+impl Job {
+    fn stop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.question = None;
+        let _ = self.answers.send(Answer { choice: Choice::Cancel, for_all: false });
+    }
 }
 
 struct ChannelSink {
@@ -331,7 +343,6 @@ pub enum Message {
     EditTags,
     RenameInput(String),
     RenameSubmit,
-    RenameCancel,
     Zoom(i8),
     ToggleColumn(ListColumn),
     ColumnPressed(ListColumn),
@@ -559,6 +570,7 @@ pub struct App {
     drop_target: Option<PathBuf>,
     pub jobs: Vec<Job>,
     next_job: u64,
+    quit_requested: Option<Instant>,
     last_undo: Option<Undo>,
     thumbs: HashMap<ThumbKey, Option<PathBuf>>,
     thumb_generation: Arc<AtomicU64>,
@@ -721,6 +733,7 @@ impl App {
             drop_target: None,
             jobs: Vec::new(),
             next_job: 0,
+            quit_requested: None,
             last_undo: None,
             thumbs: HashMap::new(),
             thumb_generation: Arc::new(AtomicU64::new(0)),
@@ -872,11 +885,9 @@ impl App {
             subscriptions.push(Subscription::run_with(handles, dnd::events).map(Message::Dnd));
         }
         subscriptions.push(iced::event::listen_with(window_events));
+        subscriptions.push(window::close_requests().map(|_| Message::Quit));
         if self.drag_arm.is_some() || self.band.is_some() || self.drag.is_some() {
             subscriptions.push(iced::event::listen_with(drag_motion));
-        }
-        if self.renaming.is_some() {
-            subscriptions.push(iced::event::listen_with(rename_keys));
         }
         if self.drag.is_some() {
             subscriptions.push(iced::time::every(DRAG_TICK).map(|_| Message::DragTick));
@@ -977,16 +988,14 @@ impl App {
                     if kind == MenuKind::Background {
                         self.selection.clear();
                     }
-                    let offers = if kind == MenuKind::Selection && !self.in_trash() {
+                    let (offers, open_with) = if kind == MenuKind::Selection && !self.in_trash() {
                         let targets = self.targets();
-                        let mut offers = self.open_with_offers(&targets);
-                        offers.extend(self.extensions.offers(&targets));
-                        offers
+                        (self.extensions.offers(&targets), !self.open_with_offers(&targets).is_empty())
                     } else {
-                        Vec::new()
+                        (Vec::new(), false)
                     };
                     self.menu_at = at;
-                    self.menu = Some(Menu { kind, at, offers });
+                    self.menu = Some(Menu { kind, at, offers, open_with });
                 }
             }
             Message::RunAction(offer) => return self.run_action(*offer),
@@ -1036,7 +1045,9 @@ impl App {
                 self.menu_at = Point::new((self.window_size.width - 480.0).max(8.0), widgets::HEADER_HEIGHT);
                 self.menu = match &self.menu {
                     Some(Menu { kind: MenuKind::Options, .. }) => None,
-                    _ => Some(Menu { kind: MenuKind::Options, at: Point::ORIGIN, offers: Vec::new() }),
+                    _ => {
+                        Some(Menu { kind: MenuKind::Options, at: Point::ORIGIN, offers: Vec::new(), open_with: false })
+                    }
                 };
             }
             Message::CloseMenu => self.menu = None,
@@ -1121,7 +1132,6 @@ impl App {
                 }
             }
             Message::RenameSubmit => return self.commit_rename(),
-            Message::RenameCancel => self.renaming = None,
             Message::Duplicate if !self.in_trash() => {
                 let mut by_parent: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
                 for path in self.selected() {
@@ -1153,7 +1163,9 @@ impl App {
                 if kind == MenuKind::Templates {
                     self.templates = templates_dir().map(|dir| templates_in(&dir)).unwrap_or_default();
                 }
-                self.menu = Some(Menu { kind, at: self.menu_at, offers: Vec::new() });
+                let offers =
+                    if kind == MenuKind::OpenWith { self.open_with_offers(&self.targets()) } else { Vec::new() };
+                self.menu = Some(Menu { kind, at: self.menu_at, offers, open_with: false });
             }
             Message::NewFromTemplate(template) => {
                 let name = file_name(&template);
@@ -1300,9 +1312,8 @@ impl App {
                 if let Some(index) = self.jobs.iter().position(|job| job.id == id && job.launch.is_some()) {
                     self.jobs.remove(index);
                     self.sync_dock();
-                } else if let Some(job) = self.jobs.iter().find(|job| job.id == id) {
-                    job.cancel.store(true, Ordering::Relaxed);
-                    let _ = job.answers.send(Answer { choice: Choice::Cancel, for_all: false });
+                } else if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
+                    job.stop();
                 }
             }
             Message::Resolve(choice) => self.resolve(choice),
@@ -1333,7 +1344,8 @@ impl App {
             Message::PaneResized(size) => self.pane = size,
             Message::Tick => return self.poll(),
             Message::Escape => return self.escape(),
-            Message::Quit => return iced::exit(),
+            Message::Quit if self.jobs.is_empty() => return iced::exit(),
+            Message::Quit if self.quit_requested.is_none() => return self.prompt(Dialog::Quit, String::new(), None),
             Message::WindowDrag => {
                 self.menu = None;
                 return window::latest().and_then(window::drag);
@@ -1379,6 +1391,7 @@ impl App {
             | Message::CreateLink
             | Message::TypeToSearch(_)
             | Message::SearchResults(..)
+            | Message::Quit
             | Message::Frame(_) => {}
         }
         Task::none()
@@ -2333,6 +2346,9 @@ impl App {
                     return Task::none();
                 };
                 let job = self.jobs.remove(index);
+                if self.quit_requested.is_some() {
+                    return if self.jobs.is_empty() { iced::exit() } else { Task::none() };
+                }
                 self.start_queued();
                 self.sync_dock();
                 if matches!(&self.modal, Some(Modal { dialog: Dialog::Conflict { job, .. }, .. }) if *job == id) {
@@ -2657,6 +2673,13 @@ impl App {
                 });
             }
             Dialog::Properties(_) | Dialog::Conflict { .. } => return Task::none(),
+            Dialog::Quit => {
+                self.quit_requested = Some(Instant::now());
+                self.jobs.retain(|job| job.launch.is_none());
+                self.jobs.iter_mut().for_each(Job::stop);
+                self.sync_dock();
+                return if self.jobs.is_empty() { iced::exit() } else { Task::none() };
+            }
             Dialog::Repair(object) => return self.disk_job(object, DiskAction::Repair),
             Dialog::Unlock(object) => {
                 let Some(volume) = self.volume(object).cloned() else {
@@ -2832,6 +2855,9 @@ impl App {
     }
 
     fn poll(&mut self) -> Task<Message> {
+        if self.quit_requested.is_some_and(|since| since.elapsed() >= QUIT_GRACE) {
+            return iced::exit();
+        }
         self.trash_count = self.trash.count();
         let drives = mounted_drives(self.lang);
         if drives != self.drives {
@@ -2875,6 +2901,9 @@ impl App {
     fn escape(&mut self) -> Task<Message> {
         if self.drag.take().is_some() {
             self.drop_target = None;
+            return Task::none();
+        }
+        if self.renaming.take().is_some() {
             return Task::none();
         }
         if self.modal.is_some() {
@@ -2928,22 +2957,16 @@ fn same_device(source: &Path, target: &Path) -> bool {
     device(source).is_some_and(|dev| Some(dev) == device(target))
 }
 
+#[must_use]
 #[allow(clippy::needless_pass_by_value)] // iced::event::listen_with fixes this signature
-fn window_events(event: iced::Event, _status: iced::event::Status, _window: window::Id) -> Option<Message> {
+pub fn window_events(event: iced::Event, _status: iced::event::Status, _window: window::Id) -> Option<Message> {
     match event {
         iced::Event::Window(window::Event::Opened { size, .. } | window::Event::Resized(size)) => {
             Some(Message::WindowSize(size))
         }
         iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::Released),
-        _ => None,
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)] // iced::event::listen_with fixes this signature
-fn rename_keys(event: iced::Event, _status: iced::event::Status, _window: window::Id) -> Option<Message> {
-    match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(Named::Escape), .. }) => {
-            Some(Message::RenameCancel)
+            Some(Message::Escape)
         }
         _ => None,
     }
@@ -2970,11 +2993,11 @@ fn expand_path(input: &str) -> PathBuf {
 pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
     use keyboard::Key;
 
-    let (key, modifiers, text) = match event {
+    let (key, physical, modifiers, text) = match event {
         keyboard::Event::ModifiersChanged(modifiers) => {
             return Some(Message::Modifiers(modifiers));
         }
-        keyboard::Event::KeyPressed { key, modifiers, text, .. } => (key, modifiers, text),
+        keyboard::Event::KeyPressed { key, physical_key, modifiers, text, .. } => (key, physical_key, modifiers, text),
         keyboard::Event::KeyReleased { .. } => return None,
     };
     let command = modifiers.command();
@@ -2982,7 +3005,6 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
     let alt = modifiers.alt();
 
     let message = match key.as_ref() {
-        Key::Named(Named::Escape) => Message::Escape,
         Key::Named(Named::Enter) if alt => Message::Properties,
         Key::Named(Named::Enter) => Message::OpenSelection,
         Key::Named(Named::ArrowLeft) if alt => Message::Back,
@@ -3000,25 +3022,25 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::Delete) => Message::Trash,
         Key::Named(Named::F2) => Message::Rename,
         Key::Named(Named::F5) => Message::Reload,
-        Key::Character(c) if command => match c.to_lowercase().as_str() {
-            "r" => Message::Reload,
-            "h" => Message::ToggleHidden,
-            "l" => Message::EditPath,
-            "f" => Message::ToggleSearch,
-            "a" => Message::SelectAll,
-            "c" => Message::Copy,
-            "x" => Message::Cut,
-            "v" => Message::Paste,
-            "i" => Message::Properties,
-            "z" => Message::Undo,
-            "d" => Message::Duplicate,
-            "=" | "+" => Message::Zoom(1),
-            "-" => Message::Zoom(-1),
-            "0" => Message::Zoom(0),
-            "n" if shift => Message::NewFolder,
-            "1" => Message::SetView(ViewMode::Grid),
-            "2" => Message::SetView(ViewMode::List),
-            "w" | "q" => Message::Quit,
+        Key::Character(_) if command => match key.to_latin(physical)?.to_ascii_lowercase() {
+            'r' => Message::Reload,
+            'h' => Message::ToggleHidden,
+            'l' => Message::EditPath,
+            'f' => Message::ToggleSearch,
+            'a' => Message::SelectAll,
+            'c' => Message::Copy,
+            'x' => Message::Cut,
+            'v' => Message::Paste,
+            'i' => Message::Properties,
+            'z' => Message::Undo,
+            'd' => Message::Duplicate,
+            '=' | '+' => Message::Zoom(1),
+            '-' => Message::Zoom(-1),
+            '0' => Message::Zoom(0),
+            'n' if shift => Message::NewFolder,
+            '1' => Message::SetView(ViewMode::Grid),
+            '2' => Message::SetView(ViewMode::List),
+            'w' | 'q' => Message::Quit,
             _ => return None,
         },
         _ if !command && !alt => {

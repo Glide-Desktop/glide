@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use iced::widget::{
-    Column, button, container, float, mouse_area, opaque, pin, responsive, row, rule, space, stack, text,
+    Column, button, container, float, mouse_area, opaque, pin, responsive, row, rule, scrollable, space, stack, text,
 };
 use iced::{Alignment, Element, Fill, Length, Padding, Point, Size, Vector, mouse};
 
@@ -140,10 +140,11 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 .first()
                 .filter(|path| single && bookmarkable(app, path))
                 .map(|path| item(Key::AddBookmark, Message::AddBookmark(path.clone())));
-            let mut entries: Vec<Entry> = vec![
-                item(Key::Open, Message::OpenSelection).keys("Enter").into(),
-                item(Key::OpenInTerminal, Message::Terminal).enabled(single_dir).into(),
-            ];
+            let mut entries: Vec<Entry> = vec![item(Key::Open, Message::OpenSelection).keys("Enter").into()];
+            if menu.open_with {
+                entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith)).submenu().into());
+            }
+            entries.push(item(Key::OpenInTerminal, Message::Terminal).enabled(single_dir).into());
             entries.extend(offered(&menu.offers));
             entries.extend([
                 Entry::Separator,
@@ -272,6 +273,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags).into()]);
             entries
         }
+        MenuKind::OpenWith => offered(&menu.offers).into_iter().skip(1).collect(),
         MenuKind::Columns => {
             let mut entries = vec![Entry::Header(Key::Columns.text(app.lang).into())];
             entries.extend(crate::config::ListColumn::ALL.into_iter().map(|column| {
@@ -341,15 +343,17 @@ pub fn place(at: Point, height: f32, window: Size) -> Point {
 pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> Element<'a, Message> {
     responsive(move |window| {
         let entries = entries(app, menu);
+        let full = height(&entries);
         let at = match menu.kind {
             MenuKind::Options => {
                 Point::new((window.width - OPTIONS_RIGHT_INSET - WIDTH).max(MARGIN), HEADER_HEIGHT - 6.0)
             }
-            _ => place(menu.at, height(&entries), window),
+            _ => place(menu.at, full, window),
         };
+        let fit = full.min(window.height - at.y - MARGIN);
         let rise = (1.0 - progress) * -RISE;
         let panel =
-            float(panel(&app.theme.faded(progress), entries, live)).translate(move |_, _| Vector::new(0.0, rise));
+            float(panel(&app.theme.faded(progress), entries, live, fit)).translate(move |_, _| Vector::new(0.0, rise));
         let panel: Element<'_, Message> = if live { opaque(panel) } else { panel.into() };
         let positioned = pin(panel).position(at);
         if live {
@@ -365,7 +369,7 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
     .into()
 }
 
-fn panel<'a>(theme: &ThemeState, entries: Vec<Entry>, live: bool) -> Element<'a, Message> {
+fn panel<'a>(theme: &ThemeState, entries: Vec<Entry>, live: bool, fit: f32) -> Element<'a, Message> {
     let t = *theme;
     let checks = entries.iter().any(|entry| matches!(entry, Entry::Item(Item { checked: Some(_), .. })));
     let rows = entries.into_iter().map(|entry| -> Element<'a, Message> {
@@ -412,9 +416,10 @@ fn panel<'a>(theme: &ThemeState, entries: Vec<Entry>, live: bool) -> Element<'a,
             }
         }
     });
-    container(Column::with_children(rows))
+    container(scrollable(Column::with_children(rows)).height(Fill).style(move |_, status| theme::scroller(&t, status)))
         .padding(PADDING)
         .width(Length::Fixed(WIDTH))
+        .height(Length::Fixed(fit))
         .style(move |_| theme::popover(&t))
         .into()
 }
