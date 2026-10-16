@@ -343,9 +343,12 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
     ]
     .spacing(theme::SP3)
     .align_y(Alignment::Center);
-    let action = notice.action.as_ref().map(|action| match action {
-        NoticeAction::Undo => (Key::Undo, Message::Undo),
-        NoticeAction::Repair(object) => (Key::RepairAction, Message::Repair(object.clone())),
+    let action = notice.action.as_ref().map(|action| {
+        let label = match action {
+            NoticeAction::Undo => Key::Undo,
+            NoticeAction::Repair(_) => Key::RepairAction,
+        };
+        (label, Message::NoticeChosen(action.clone()))
     });
     if let Some((label, message)) = action {
         content = content.push(

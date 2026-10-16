@@ -490,6 +490,21 @@ fn file_shortcuts_wait_while_a_name_or_path_is_being_typed() {
 }
 
 #[test]
+fn the_toast_undo_button_works_while_a_name_is_being_typed() {
+    use glide_files::app::{Notice, NoticeAction};
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(3)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Rename);
+    app.notice = Some(Notice { id: 4, text: String::from("Moved"), action: Some(NoticeAction::Undo) });
+    let _ = app.update(Message::Undo);
+    assert!(app.notice.is_some(), "Ctrl+Z typed into the field is not an undo");
+    let _ = app.update(Message::NoticeChosen(NoticeAction::Undo));
+    assert!(app.renaming.is_none(), "clicking the toast leaves the field like any click");
+    assert!(app.notice.is_none(), "and the undo runs");
+}
+
+#[test]
 fn pressing_f2_again_keeps_the_name_being_typed() {
     let mut app = listed_app();
     let _ = app.update(Message::Pressed(path(3)));

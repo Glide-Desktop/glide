@@ -320,6 +320,7 @@ pub enum Message {
     Done(Outcome),
     DismissNotice(u64),
     NoticeExpired(u64),
+    NoticeChosen(NoticeAction),
     Undo,
     Volumes(Vec<Volume>),
     Mount(String, bool),
@@ -1017,6 +1018,7 @@ impl App {
                 | Message::ContextMenu(_)
                 | Message::KeyMenu
                 | Message::ToggleOptions
+                | Message::NoticeChosen(_)
         );
         if self.renaming.is_some() && ends_rename {
             let committed = self.commit_rename();
@@ -1229,6 +1231,13 @@ impl App {
                 self.menu = None;
                 self.path_edit = None;
                 return self.handle(*message);
+            }
+            Message::NoticeChosen(action) => {
+                self.path_edit = None;
+                return self.handle(match action {
+                    NoticeAction::Undo => Message::Undo,
+                    NoticeAction::Repair(object) => Message::Repair(object),
+                });
             }
             Message::OpenSelection => return self.open_selection(),
             Message::SelectAll => {
