@@ -1037,6 +1037,14 @@ impl App {
         if self.notice.is_none() && self.hover_target == Some(Hover::Toast) {
             self.hover_target = None;
         }
+        let stale = self.menu.as_ref().is_some_and(|menu| {
+            menu.highlight.is_some_and(|index| {
+                widgets::menu::entries(self, menu).get(index).is_none_or(|entry| entry.clone().into_message().is_none())
+            })
+        });
+        if let Some(menu) = self.menu.as_mut().filter(|_| stale) {
+            menu.highlight = None;
+        }
         let active = self.sidebar_active().map(Path::to_path_buf);
         let motion = &mut self.motion;
         motion.set_active(active.as_deref(), now);
@@ -1958,7 +1966,8 @@ impl App {
     }
 
     fn key_menu(&mut self) -> Task<Message> {
-        self.menu_target = Some(if self.selection.is_empty() { MenuKind::Background } else { MenuKind::Selection });
+        self.menu_target =
+            Some(if self.selected_entries().next().is_none() { MenuKind::Background } else { MenuKind::Selection });
         let task = self.handle(Message::ContextMenu(self.cursor_point()));
         self.highlight_first();
         task

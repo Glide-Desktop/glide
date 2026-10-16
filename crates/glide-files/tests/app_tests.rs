@@ -495,6 +495,35 @@ fn a_rename_whose_file_vanished_does_not_hold_the_window_hostage() {
 }
 
 #[test]
+fn a_menu_highlight_does_not_stay_on_a_row_that_became_disabled() {
+    use glide_files::widgets::menu::{Entry, entries};
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::KeyMenu);
+    let rename = Key::Rename.text(app.lang);
+    let open = app.menu.clone().expect("menu");
+    let index = entries(&app, &open)
+        .iter()
+        .position(|entry| matches!(entry, Entry::Item(item) if item.label == rename))
+        .expect("rename row");
+    let _ = app.update(Message::MenuHover(index, true));
+    assert_eq!(app.menu.as_ref().and_then(|menu| menu.highlight), Some(index));
+    app.selection.insert(path(2));
+    let _ = app.update(Message::Frame(std::time::Instant::now()));
+    assert_eq!(app.menu.as_ref().and_then(|menu| menu.highlight), None, "Rename is disabled for two items");
+}
+
+#[test]
+fn the_menu_key_ignores_a_selection_that_is_not_shown() {
+    use glide_files::app::MenuKind;
+    let mut app = listed_app();
+    app.selection.insert(std::path::PathBuf::from("/nowhere/.hidden-folder"));
+    let _ = app.update(Message::KeyMenu);
+    assert_eq!(app.menu.as_ref().map(|menu| menu.kind.clone()), Some(MenuKind::Background));
+}
+
+#[test]
 fn a_new_press_replaces_the_pending_click_on_a_selected_item() {
     let mut app = listed_app();
     let _ = app.update(Message::Pressed(path(1)));
