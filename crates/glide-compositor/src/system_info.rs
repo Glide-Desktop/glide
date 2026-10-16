@@ -494,13 +494,18 @@ fn tidy(mut names: Vec<String>) -> Vec<String> {
 
 #[must_use]
 pub fn parse_pw_dump(text: &str) -> Privacy {
-    let Ok(serde_json::Value::Array(objects)) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Privacy::default();
-    };
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Array(objects)) => privacy_from(&objects),
+        _ => Privacy::default(),
+    }
+}
+
+#[must_use]
+pub fn privacy_from<'a>(objects: impl IntoIterator<Item = &'a serde_json::Value>) -> Privacy {
     let null = serde_json::Value::Null;
     let mut nodes = std::collections::HashMap::new();
     let mut links = Vec::new();
-    for object in &objects {
+    for object in objects {
         let kind = object.get("type").and_then(serde_json::Value::as_str).unwrap_or_default();
         let id = object.get("id").and_then(serde_json::Value::as_u64);
         let info = object.get("info").unwrap_or(&null);

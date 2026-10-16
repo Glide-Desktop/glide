@@ -61,6 +61,7 @@ mod snap;
 mod snapshot;
 mod sound;
 mod state;
+mod status_hooks;
 mod super_keys;
 mod switcher;
 pub mod system_info;
@@ -451,7 +452,9 @@ fn watch<T: 'static>(
 fn init_system_status(event_loop: &mut EventLoop<'static, GlideState>) {
     let (send, receiver) = sink::<system_info::SystemStatus>("a system status sample");
     system_info::start_poller(send);
-    watch(event_loop, receiver, "the system status channel", GlideState::handle_system_status);
+    if watch(event_loop, receiver, "the system status channel", GlideState::handle_system_status) {
+        status_hooks::start();
+    }
 }
 
 fn init_quick_settings_network(event_loop: &mut EventLoop<'static, GlideState>) {
