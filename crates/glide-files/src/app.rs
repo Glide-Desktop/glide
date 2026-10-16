@@ -235,6 +235,27 @@ pub enum Step {
     Last,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Survey {
+    pub current: PathBuf,
+    pub fallback: Option<PathBuf>,
+    pub trash_count: usize,
+    pub elsewhere: Vec<PathBuf>,
+}
+
+#[must_use]
+pub fn survey(trash: &Trash, mounts: &[PathBuf], current: PathBuf) -> Survey {
+    let elsewhere = trash.on_volumes(mounts);
+    let fallback = (!current.is_dir())
+        .then(|| current.ancestors().find(|dir| dir.is_dir()).map_or_else(|| PathBuf::from("/"), Path::to_path_buf));
+    Survey {
+        trash_count: trash.count() + elsewhere.iter().map(Trash::count).sum::<usize>(),
+        elsewhere: elsewhere.iter().map(Trash::files).collect(),
+        fallback,
+        current,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Outcome {
     pub text: Option<String>,
@@ -348,6 +369,7 @@ pub enum Message {
     WindowMaximized(bool),
     FocusProbe,
     SearchFocus(bool),
+    Surveyed(Option<Box<Survey>>),
     JobPause(u64),
     Duplicate,
     CreateLink,
@@ -480,6 +502,7 @@ impl Message {
                 | Self::WindowMaximized(_)
                 | Self::FocusProbe
                 | Self::SearchFocus(_)
+                | Self::Surveyed(_)
                 | Self::JobPause(_)
                 | Self::Phones(_)
                 | Self::PhoneOpened(_)
@@ -633,6 +656,7 @@ pub struct App {
     pub trash: Trash,
     pub trash_count: usize,
     trash_elsewhere: Vec<PathBuf>,
+    surveying: Arc<AtomicBool>,
     pub extensions: Arc<Extensions>,
     roots: Roots,
     extensions_stamp: Vec<Option<SystemTime>>,
@@ -815,6 +839,7 @@ impl App {
             disk_watch: DiskWatch::default(),
             trash_count: trash.count(),
             trash_elsewhere: Vec::new(),
+            surveying: Arc::new(AtomicBool::new(false)),
             trash,
             extensions: Arc::default(),
             roots: Roots::system(),
@@ -1625,6 +1650,7 @@ impl App {
             Message::WindowFocus(focused) => self.window.focused = focused,
             Message::FocusProbe => return operation::is_focused(SEARCH_ID).map(Message::SearchFocus),
             Message::SearchFocus(focused) => self.window.search_focused = focused,
+            Message::Surveyed(Some(survey)) => return self.surveyed(*survey),
             Message::JobPause(id) => {
                 if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
                     let paused = !job.pause.load(Ordering::Relaxed);
@@ -1641,6 +1667,7 @@ impl App {
             | Message::SearchResults(..)
             | Message::NoticeExpired(_)
             | Message::Quit
+            | Message::Surveyed(None)
             | Message::Frame(_) => {}
         }
         Task::none()
@@ -1699,13 +1726,12 @@ impl App {
         let generation = self.nav_generation;
         let (hidden, sort, lang) = (self.show_hidden, self.sort, self.lang);
         let dir = path.clone();
-        let elsewhere: Vec<PathBuf> = if path == self.trash.files() {
-            self.volume_trashes().iter().map(Trash::files).collect()
-        } else {
-            Vec::new()
-        };
+        let merged = (path == self.trash.files()).then(|| (self.trash.clone(), self.mounts()));
         Task::perform(
             blocking(move || {
+                let elsewhere: Vec<PathBuf> = merged
+                    .map(|(trash, mounts)| trash.on_volumes(&mounts).iter().map(Trash::files).collect())
+                    .unwrap_or_default();
                 read_directory(&dir, hidden, sort)
                     .map(|mut entries| {
                         if !elsewhere.is_empty() {
@@ -1809,20 +1835,33 @@ impl App {
         self.anchor.as_deref()
     }
 
-    fn volume_trashes(&self) -> Vec<Trash> {
-        let mounts: Vec<PathBuf> = self
-            .drives
+    fn mounts(&self) -> Vec<PathBuf> {
+        self.drives
             .iter()
             .map(|place| place.path.clone())
             .chain(self.volumes.iter().filter_map(|volume| volume.mount.clone()))
-            .collect();
-        self.trash.on_volumes(&mounts)
+            .collect()
     }
 
-    fn refresh_trash(&mut self) {
-        let elsewhere = self.volume_trashes();
-        self.trash_count = self.trash.count() + elsewhere.iter().map(Trash::count).sum::<usize>();
-        self.trash_elsewhere = elsewhere.iter().map(Trash::files).collect();
+    fn start_survey(&self) -> Task<Message> {
+        if self.surveying.swap(true, Ordering::AcqRel) {
+            return Task::none();
+        }
+        let (trash, mounts, current) = (self.trash.clone(), self.mounts(), self.current.clone());
+        let done = Arc::clone(&self.surveying);
+        Task::perform(blocking(move || survey(&trash, &mounts, current)), move |found| {
+            done.store(false, Ordering::Release);
+            Message::Surveyed(found.map(Box::new))
+        })
+    }
+
+    fn surveyed(&mut self, survey: Survey) -> Task<Message> {
+        self.trash_count = survey.trash_count;
+        self.trash_elsewhere = survey.elsewhere;
+        match survey.fallback {
+            Some(fallback) if survey.current == self.current => self.navigate(fallback),
+            _ => Task::none(),
+        }
     }
 
     #[must_use]
@@ -1835,11 +1874,11 @@ impl App {
     }
 
     fn reload(&mut self) -> Task<Message> {
-        self.refresh_trash();
+        let survey = self.start_survey();
         if self.is_searching() {
-            return Task::none();
+            return survey;
         }
-        self.list(self.current.clone(), Arrival::Refresh, None)
+        Task::batch([survey, self.list(self.current.clone(), Arrival::Refresh, None)])
     }
 
     fn show(&mut self, path: PathBuf) -> Task<Message> {
@@ -3155,11 +3194,10 @@ impl App {
                 return self.spawn_job(Op::Delete, paths.clone(), current, false);
             }
             Dialog::EmptyTrash => {
-                let trashes: Vec<Trash> = std::iter::once(self.trash.clone()).chain(self.volume_trashes()).collect();
-                let lang = self.lang;
+                let (trash, mounts, lang) = (self.trash.clone(), self.mounts(), self.lang);
                 return run(move || Outcome {
-                    text: trashes
-                        .iter()
+                    text: std::iter::once(trash.clone())
+                        .chain(trash.on_volumes(&mounts))
                         .filter_map(|trash| trash.empty().err())
                         .collect::<Vec<_>>()
                         .first()
@@ -3193,8 +3231,7 @@ impl App {
                 {
                     self.last_undo = Some(Undo::Rename(path.clone(), original.clone()));
                 }
-                self.refresh_trash();
-                self.show(path)
+                Task::batch([self.start_survey(), self.show(path)])
             }
             Err(err) => {
                 self.modal = Some(Modal { error: Some(i18n::io_error(&err, self.lang)), ..modal });
@@ -3359,7 +3396,7 @@ impl App {
         if drives != self.drives {
             self.drives = drives;
         }
-        self.refresh_trash();
+        let survey = self.start_survey();
         let config_stamp = config::path().as_deref().and_then(stamp);
         let lang = self.lang;
         if config_stamp != self.config_stamp {
@@ -3377,13 +3414,7 @@ impl App {
         };
         let volumes = if self.disk_watch.live { Task::none() } else { self.scan() };
         let phones = self.scan_phones();
-        let extensions = Task::batch([extensions, volumes, phones]);
-        if !self.current.is_dir() {
-            let fallback =
-                self.current.ancestors().find(|dir| dir.is_dir()).map_or_else(|| PathBuf::from("/"), Path::to_path_buf);
-            return Task::batch([extensions, self.navigate(fallback)]);
-        }
-        extensions
+        Task::batch([survey, extensions, volumes, phones])
     }
 
     fn apply_look(&mut self, look: &Look) {
