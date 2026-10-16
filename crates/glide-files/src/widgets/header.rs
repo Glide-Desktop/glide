@@ -3,7 +3,7 @@ use std::time::Instant;
 use iced::widget::{button, container, mouse_area, row, space, stack, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
-use super::{CONTROL, HEADER_HEIGHT, hint, icon, icon_button};
+use super::{CONTROL, HEADER_HEIGHT, fit, hint, icon, icon_button};
 use crate::app::{App, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
@@ -16,6 +16,17 @@ pub const INSET: f32 = SP3;
 const IDLE_CONTROLS: f32 = 0.45;
 const SEGMENT_WIDTH: f32 = 30.0;
 const SEGMENT_GAP: f32 = 2.0;
+const CHROME: f32 = SP2
+    + 2.0 * CONTROL
+    + 4.0
+    + 2.0 * SEGMENT_WIDTH
+    + SEGMENT_GAP
+    + CONTROL
+    + SEARCH_WIDTH
+    + WINDOW_CONTROL
+    + 5.0 * GAP
+    + INSET;
+const SEMIBOLD_SPREAD: f32 = 0.94;
 
 #[must_use]
 pub fn window_control(app: &App, glyph: Icon, message: Message) -> Element<'_, Message> {
@@ -58,8 +69,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let forward = icon_button(t, Icon::ChevronRight, app.can_go_forward().then_some(Message::Forward), false);
     let nav = row![hint(t, back, Key::Back.text(lang)), hint(t, forward, Key::Forward.text(lang))];
 
-    let heading: Element<'_, Message> = match &app.path_edit {
-        Some(input) => text_input(Key::PathPlaceholder.text(app.lang), input)
+    let heading: Element<'_, Message> = if let Some(input) = &app.path_edit {
+        text_input(Key::PathPlaceholder.text(app.lang), input)
             .id(PATH_ID)
             .on_input(Message::PathChanged)
             .on_submit(Message::PathSubmitted)
@@ -67,8 +78,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .padding(Padding::from([5.0, SP3]))
             .width(Fill)
             .style(move |_, status| theme::field(t, status))
-            .into(),
-        None => text(app.place_title()).size(theme::TITLE).font(theme::SEMIBOLD).wrapping(text::Wrapping::None).into(),
+            .into()
+    } else {
+        let room = (app.pane.width - CHROME) * SEMIBOLD_SPREAD;
+        text(fit(&app.place_title(), room, theme::TITLE))
+            .size(theme::TITLE)
+            .font(theme::SEMIBOLD)
+            .wrapping(text::Wrapping::None)
+            .into()
     };
 
     let offset = app.motion.thumb.progress(Instant::now()) * (SEGMENT_WIDTH + SEGMENT_GAP);
