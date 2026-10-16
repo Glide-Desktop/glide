@@ -495,6 +495,16 @@ fn a_rename_whose_file_vanished_does_not_hold_the_window_hostage() {
 }
 
 #[test]
+fn the_status_line_counts_only_selected_items_that_are_shown() {
+    use glide_files::widgets::pathbar::status;
+    let mut app = listed_app();
+    app.selection.insert(std::path::PathBuf::from("/nowhere/.hidden-folder"));
+    assert_eq!(status(&app), i18n::items(6, app.lang), "a hidden item kept selected is not counted");
+    app.selection.insert(path(2));
+    assert!(status(&app).starts_with(&i18n::selected(1, 6, app.lang)));
+}
+
+#[test]
 fn file_shortcuts_wait_while_a_name_or_path_is_being_typed() {
     let mut app = listed_app();
     let _ = app.update(Message::Pressed(path(3)));

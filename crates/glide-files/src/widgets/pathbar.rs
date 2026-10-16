@@ -61,15 +61,17 @@ fn width(crumb: &Crumb) -> f32 {
     super::text_width(&crumb.label, theme::CALL) + CRUMB_CHROME
 }
 
-fn status(app: &App) -> String {
+#[must_use]
+pub fn status(app: &App) -> String {
     let lang = app.lang;
     if app.search.as_ref().is_some_and(|search| search.pending) {
         return Key::Searching.text(lang).to_string();
     }
-    let mut parts = vec![if app.selection.is_empty() {
+    let selected = app.selected_entries().count();
+    let mut parts = vec![if selected == 0 {
         i18n::items(app.entries.len(), lang)
     } else {
-        i18n::selected(app.selection.len(), app.entries.len(), lang)
+        i18n::selected(selected, app.entries.len(), lang)
     }];
     let bytes: u64 = app.selected_entries().filter(|entry| !entry.is_dir).map(|entry| entry.size).sum();
     if bytes > 0 {

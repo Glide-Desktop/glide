@@ -1288,7 +1288,7 @@ impl App {
                 sort_entries(&mut found, self.sort);
                 self.entries = found;
                 self.selection.clear();
-                self.forget_vanished_rename();
+                self.forget_vanished();
                 if let Some(search) = &mut self.search {
                     search.pending = false;
                 }
@@ -1720,7 +1720,7 @@ impl App {
         }
         self.entries = entries;
         self.free_bytes = free;
-        self.forget_vanished_rename();
+        self.forget_vanished();
         if !refresh {
             let current = &self.current;
             self.thumbs.retain(|(path, _), _| path.parent() == Some(current.as_path()));
@@ -1728,7 +1728,7 @@ impl App {
             self.thumb_generation.fetch_add(1, Ordering::Relaxed);
         }
         let thumbs = self.request_thumbs();
-        match listed.select {
+        match listed.select.filter(|path| self.index_of(path).is_some()) {
             Some(path) => {
                 self.select_only(path);
                 Task::batch([thumbs, self.reveal_cursor()])
@@ -1737,10 +1737,26 @@ impl App {
         }
     }
 
-    fn forget_vanished_rename(&mut self) {
+    fn forget_vanished(&mut self) {
         if self.renaming.as_ref().is_some_and(|renaming| self.index_of(&renaming.path).is_none()) {
             self.renaming = None;
         }
+        if self.cursor.as_deref().is_some_and(|cursor| self.index_of(cursor).is_none()) {
+            self.cursor = None;
+        }
+        if self.anchor.as_deref().is_some_and(|anchor| self.index_of(anchor).is_none()) {
+            self.anchor = None;
+        }
+    }
+
+    #[must_use]
+    pub fn cursor(&self) -> Option<&Path> {
+        self.cursor.as_deref()
+    }
+
+    #[must_use]
+    pub fn anchor(&self) -> Option<&Path> {
+        self.anchor.as_deref()
     }
 
     fn volume_trashes(&self) -> Vec<Trash> {
