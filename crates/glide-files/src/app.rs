@@ -1016,6 +1016,7 @@ impl App {
                 | Message::Move(..)
                 | Message::ContextMenu(_)
                 | Message::KeyMenu
+                | Message::ToggleOptions
         );
         if self.renaming.is_some() && ends_rename {
             let committed = self.commit_rename();
@@ -1087,6 +1088,13 @@ impl App {
             self.menu = None;
         }
         match message {
+            Message::Undo
+            | Message::Duplicate
+            | Message::Delete
+            | Message::Trash
+            | Message::Properties
+            | Message::NewFolder
+                if self.renaming.is_some() || self.path_edit.is_some() => {}
             Message::Move(step, _) if self.menu.is_some() => return self.step_menu(step),
             Message::OpenSelection if self.menu.is_some() => return self.activate_menu(),
             Message::KeyMenu => return self.key_menu(),
@@ -1219,6 +1227,7 @@ impl App {
             }
             Message::Menu(message) => {
                 self.menu = None;
+                self.path_edit = None;
                 return self.handle(*message);
             }
             Message::OpenSelection => return self.open_selection(),
@@ -1483,7 +1492,6 @@ impl App {
                 }
                 self.notice = None;
             }
-            Message::Undo if self.renaming.is_some() || self.path_edit.is_some() => {}
             Message::Undo => {
                 if self.notice.as_ref().is_some_and(|notice| notice.action == Some(NoticeAction::Undo)) {
                     self.notice = None;
@@ -2287,6 +2295,9 @@ impl App {
     }
 
     fn start_rename(&mut self) -> Task<Message> {
+        if self.renaming.is_some() {
+            return Task::none();
+        }
         let Some(target) = self.primary().filter(|_| !self.in_trash()) else {
             return Task::none();
         };

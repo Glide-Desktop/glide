@@ -471,6 +471,36 @@ fn a_rename_that_fails_keeps_its_field_instead_of_retrying_forever() {
 }
 
 #[test]
+fn file_shortcuts_wait_while_a_name_or_path_is_being_typed() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(3)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Rename);
+    for shortcut in [Message::Duplicate, Message::Properties, Message::NewFolder, Message::Trash, Message::Delete] {
+        let _ = app.update(shortcut);
+        assert!(app.modal.is_none() && app.jobs.is_empty(), "Ctrl+D, Ctrl+I, Ctrl+Shift+N and Del stay in the field");
+    }
+    let _ = app.update(Message::Escape);
+    let _ = app.update(Message::EditPath);
+    let _ = app.update(Message::Secondary(path(3)));
+    let _ = app.update(Message::ContextMenu(Point::new(400.0, 200.0)));
+    let _ = app.update(Message::Menu(Box::new(Message::Delete)));
+    assert!(app.path_edit.is_none(), "choosing from a menu leaves the path field");
+    assert!(app.modal.is_some(), "and the chosen action still runs");
+}
+
+#[test]
+fn pressing_f2_again_keeps_the_name_being_typed() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(3)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Rename);
+    let _ = app.update(Message::RenameInput(String::from("draft")));
+    let _ = app.update(Message::Rename);
+    assert_eq!(app.renaming.as_ref().map(|renaming| renaming.text.as_str()), Some("draft"));
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();
