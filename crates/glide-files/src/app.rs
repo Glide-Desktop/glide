@@ -491,6 +491,7 @@ impl Message {
 
 pub struct Surfaces {
     hover: HashMap<Hover, (Fade, Fade)>,
+    side: HashMap<PathBuf, Fade>,
     pub menu: Fade,
     pub menu_ghost: Option<Menu>,
     pub toast: Fade,
@@ -504,6 +505,7 @@ impl Surfaces {
     fn new(view: ViewMode) -> Self {
         Self {
             hover: HashMap::new(),
+            side: HashMap::new(),
             menu: Fade::asymmetric(false, (Speed::T2, Curve::Out), (Speed::T2, Curve::InOut)),
             menu_ghost: None,
             toast: Fade::asymmetric(false, (Speed::T4, Curve::Out), (Speed::T2, Curve::InOut)),
@@ -555,13 +557,32 @@ impl Surfaces {
     }
 
     #[must_use]
+    pub fn indicator(&self, path: &Path, now: Instant) -> f32 {
+        self.side.get(path).map_or(0.0, |fade| fade.progress(now))
+    }
+
+    fn set_active(&mut self, active: Option<&Path>, now: Instant) {
+        for (path, fade) in &mut self.side {
+            fade.set(Some(path.as_path()) == active, now);
+        }
+        if let Some(path) = active {
+            self.side
+                .entry(path.to_path_buf())
+                .or_insert_with(|| Fade::new(false, Speed::T3, Curve::Over))
+                .set(true, now);
+        }
+    }
+
+    #[must_use]
     pub fn is_animating(&self, now: Instant) -> bool {
         self.hover.values().any(|(layer, lift)| layer.is_animating(now) || lift.is_animating(now))
+            || self.side.values().any(|fade| fade.is_animating(now))
             || [&self.menu, &self.toast, &self.modal, &self.thumb].into_iter().any(|fade| fade.is_animating(now))
     }
 
     fn prune(&mut self, now: Instant) {
         self.hover.retain(|_, (layer, lift)| !layer.is_settled_off(now) || !lift.is_settled_off(now));
+        self.side.retain(|_, fade| !fade.is_settled_off(now));
         if self.menu.is_settled_off(now) {
             self.menu_ghost = None;
         }
@@ -992,7 +1013,9 @@ impl App {
     }
 
     fn sync_motion(&mut self, now: Instant) {
+        let active = self.sidebar_active().map(Path::to_path_buf);
         let motion = &mut self.motion;
+        motion.set_active(active.as_deref(), now);
         motion.menu.set(self.menu.is_some(), now);
         if self.menu.is_some() {
             motion.menu_ghost.clone_from(&self.menu);
@@ -1012,6 +1035,21 @@ impl App {
     #[must_use]
     pub fn hover(&self, key: &Hover) -> f32 {
         self.motion.hover(key, Instant::now())
+    }
+
+    #[must_use]
+    pub fn sidebar_active(&self) -> Option<&Path> {
+        if self.search.is_some() {
+            return None;
+        }
+        let phone =
+            self.phones.iter().filter_map(|phone| phone.mount.as_deref()).find(|mount| self.current.starts_with(mount));
+        Some(phone.unwrap_or(&self.current))
+    }
+
+    #[must_use]
+    pub fn indicator(&self, path: &Path) -> f32 {
+        self.motion.indicator(path, Instant::now())
     }
 
     #[must_use]

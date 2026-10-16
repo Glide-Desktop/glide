@@ -321,6 +321,20 @@ fn the_pointer_and_the_keyboard_share_one_menu_highlight() {
 }
 
 #[test]
+fn the_sidebar_marks_the_current_place_until_a_search_takes_over() {
+    let mut app = listed_app();
+    let here = app.current.clone();
+    let _ = app.update(Message::Frame(std::time::Instant::now()));
+    assert_eq!(app.sidebar_active(), Some(here.as_path()));
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    assert!((app.indicator(&here) - 1.0).abs() < 0.01, "the indicator grows to its full height");
+    let _ = app.update(Message::TypeToSearch(String::from("o")));
+    assert_eq!(app.sidebar_active(), None, "search results belong to no sidebar place");
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    assert!(app.indicator(&here) < 0.01, "and the indicator shrinks away");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

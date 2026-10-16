@@ -1,19 +1,24 @@
-use iced::widget::{Column, button, column, container, mouse_area, row, scrollable, space, text};
+use std::path::Path;
+
+use iced::border::Radius;
+use iced::widget::{Column, button, column, container, mouse_area, row, scrollable, space, stack, text};
 
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
-use super::header::window_control;
+use super::header::{SEMIBOLD_SPREAD, window_control};
 use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, fit, hint, icon};
 use crate::app::{App, Device, Hover, MenuKind, Message, volume_icon};
 use crate::fs::{Place, Volume};
 use crate::i18n::Key;
 use crate::icons::Icon;
-use crate::theme::{self, Tone};
+use crate::theme::{self, R1, Tone};
 
-pub const ITEM_HEIGHT: f32 = theme::SMALL_CONTROL;
-const EJECT: f32 = ITEM_HEIGHT;
+pub const ITEM_HEIGHT: f32 = theme::CONTROL;
+const EJECT: f32 = theme::SMALL_CONTROL;
 const JOBS_HEIGHT: f32 = 320.0;
 const GLYPH: f32 = 16.0;
+const INDICATOR: (f32, f32) = (3.0, 18.0);
+const ROW_GAP: f32 = 2.0;
 
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -59,7 +64,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         } else {
             header.into()
         };
-        sections = sections.push(column![header, Column::with_children(rows)].spacing(theme::SP1));
+        sections = sections.push(column![header, Column::with_children(rows).spacing(ROW_GAP)].spacing(theme::SP1));
     }
 
     let top = mouse_area(
@@ -94,6 +99,8 @@ struct Line<'a> {
     eject: Option<Message>,
     press: Option<Message>,
     selected: bool,
+    active: bool,
+    indicator: f32,
     held: bool,
     key: Hover,
     menu: Option<MenuKind>,
@@ -104,12 +111,19 @@ struct Line<'a> {
 impl<'a> Line<'a> {
     fn view(self) -> Element<'a, Message> {
         let t = &self.app.theme;
-        let room = SIDEBAR_WIDTH - 4.0 * theme::SP2 - GLYPH - if self.eject.is_some() { EJECT } else { 0.0 };
+        let active = self.active;
+        let mut room = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - GLYPH - 2.0 * theme::SP2;
+        room -= if self.eject.is_some() { EJECT } else { 0.0 };
+        room *= if active { SEMIBOLD_SPREAD } else { 1.0 };
         let mut label = text(fit(&self.label, room, theme::CALL)).size(theme::CALL).wrapping(text::Wrapping::None);
+        if active {
+            label = label.font(theme::SEMIBOLD);
+        }
         if let Some(color) = self.dim {
             label = label.color(color);
         }
-        let mut content = row![icon(self.glyph, GLYPH, self.tint), label, space::horizontal()]
+        let tint = if self.selected { t.acc_soft_fg() } else { self.tint };
+        let mut content = row![icon(self.glyph, GLYPH, tint), label, space::horizontal()]
             .spacing(theme::SP2)
             .align_y(Alignment::Center);
         if let Some(message) = self.eject {
@@ -128,10 +142,17 @@ impl<'a> Line<'a> {
             .on_press_maybe(self.press)
             .width(Fill)
             .height(Length::Fixed(ITEM_HEIGHT))
-            .padding(Padding::ZERO.left(theme::SP2))
+            .padding(Padding::ZERO.left(theme::SP3).right(theme::SP1))
             .style(move |_, status| {
                 theme::sidebar_row(t, selected, hover, if held { button::Status::Pressed } else { status })
             });
+        let row: Element<'a, Message> = if self.indicator > 0.0 {
+            let bar = container(space().width(INDICATOR.0).height(INDICATOR.1 * self.indicator))
+                .style(move |_| theme::rounded(t.acc_bg(), Radius::default().top_right(R1).bottom_right(R1)));
+            stack![row, container(bar).height(Fill).align_y(Alignment::Center)].into()
+        } else {
+            row.into()
+        };
         let mut area =
             mouse_area(row).on_enter(Message::Hover(self.key.clone(), true)).on_exit(Message::Hover(self.key, false));
         if let Some(kind) = self.menu {
@@ -144,17 +165,26 @@ impl<'a> Line<'a> {
     }
 }
 
+fn is_active(app: &App, path: Option<&Path>) -> bool {
+    path.is_some_and(|path| app.sidebar_active() == Some(path))
+}
+
+fn reach(app: &App, path: Option<&Path>) -> f32 {
+    path.map_or(0.0, |path| app.indicator(path))
+}
+
 fn item<'a>(app: &'a App, place: &'a Place, bookmark: bool) -> Element<'a, Message> {
+    let active = is_active(app, Some(&place.path));
     Line {
         glyph: place.icon,
-        tint: app.theme.acc_text(),
+        tint: app.theme.fg_3(),
         label: place.name.clone(),
         dim: None,
         eject: None,
         press: (!bookmark).then(|| Message::Navigate(place.path.clone())),
-        selected: (place.path == app.current && app.search.is_none())
-            || app.is_drop_target(&place.path)
-            || app.is_bookmark_target(&place.path),
+        selected: active || app.is_drop_target(&place.path) || app.is_bookmark_target(&place.path),
+        active,
+        indicator: reach(app, Some(&place.path)),
         held: bookmark && app.is_bookmark_pressed(&place.path),
         key: Hover::Place(place.path.clone()),
         menu: Some(MenuKind::Location(place.path.clone())),
@@ -168,18 +198,21 @@ fn phone_item<'a>(app: &'a App, phone: &'a crate::fs::mtp::Phone) -> Element<'a,
     let t = &app.theme;
     let busy = app.busy.contains(&phone.id);
     let fallback = if phone.camera { Key::Camera } else { Key::Phone };
+    let active = is_active(app, phone.mount.as_deref());
     Line {
         glyph: if phone.camera { Icon::Camera } else { Icon::Phone },
-        tint: match (busy, phone.mount.is_some()) {
-            (true, _) => t.fg_4(),
-            (false, true) => t.acc_text(),
-            (false, false) => t.fg_3(),
-        },
+        tint: if busy { t.fg_4() } else { t.fg_3() },
         label: if phone.name.is_empty() { fallback.text(app.lang).to_string() } else { phone.name.clone() },
-        dim: None,
+        dim: match (busy, phone.mount.is_some()) {
+            (true, _) => Some(t.fg_4()),
+            (false, true) => None,
+            (false, false) => Some(t.fg_3()),
+        },
         eject: (phone.mount.is_some() && !busy).then(|| Message::ClosePhone(phone.id.clone())),
         press: (!busy).then(|| Message::OpenPhone(phone.id.clone())),
-        selected: app.search.is_none() && phone.mount.as_ref().is_some_and(|mount| app.current.starts_with(mount)),
+        selected: active,
+        active,
+        indicator: reach(app, phone.mount.as_deref()),
         held: false,
         key: Hover::Place(phone.mount.clone().unwrap_or_else(|| std::path::PathBuf::from(&phone.id))),
         menu: None,
@@ -193,12 +226,13 @@ fn volume_item<'a>(app: &'a App, volume: &'a Volume) -> Element<'a, Message> {
     let t = &app.theme;
     let busy = app.busy.contains(&volume.object);
     let (tint, dim) = if busy {
-        (t.fg_4(), Some(t.fg_3()))
+        (t.fg_4(), Some(t.fg_4()))
     } else if volume.mount.is_some() {
-        (t.acc_text(), None)
+        (t.fg_3(), None)
     } else {
-        (t.fg_3(), Some(t.fg_2()))
+        (t.fg_3(), Some(t.fg_3()))
     };
+    let active = is_active(app, volume.mount.as_deref());
     let eject = if volume.can_remove() {
         Some(Message::Eject(volume.object.clone()))
     } else {
@@ -215,7 +249,9 @@ fn volume_item<'a>(app: &'a App, volume: &'a Volume) -> Element<'a, Message> {
             Some(path) => Some(Message::Navigate(path.clone())),
             None => Some(Message::Mount(volume.object.clone(), false)),
         },
-        selected: app.search.is_none() && volume.mount.as_ref() == Some(&app.current),
+        selected: active,
+        active,
+        indicator: reach(app, volume.mount.as_deref()),
         held: false,
         key: Hover::Place(volume.mount.clone().unwrap_or_else(|| volume.device.clone())),
         menu: Some(MenuKind::Volume(volume.object.clone())),

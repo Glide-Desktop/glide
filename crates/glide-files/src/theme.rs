@@ -228,8 +228,11 @@ fn interactive(theme: &ThemeState, base: Color, hover: f32, status: button::Stat
 
 #[must_use]
 pub fn sidebar_row(theme: &ThemeState, selected: bool, hover: f32, status: button::Status) -> button::Style {
-    let (base, text) =
-        if selected { (theme.acc_soft(), theme.acc_soft_fg()) } else { (Color::TRANSPARENT, theme.fg_1()) };
+    let (base, text) = match (selected, hover > 0.5 || status == button::Status::Pressed) {
+        (true, _) => (theme.acc_soft(), theme.acc_soft_fg()),
+        (false, true) => (Color::TRANSPARENT, theme.fg_1()),
+        (false, false) => (Color::TRANSPARENT, theme.fg_2()),
+    };
     flat(interactive(theme, base, hover, status), text, R2)
 }
 
@@ -380,7 +383,7 @@ pub fn popover(theme: &ThemeState) -> container::Style {
 
 #[must_use]
 pub fn scrim(progress: f32) -> container::Style {
-    surface(Color::from_rgba(0.0, 0.0, 0.0, 0.4 * progress.clamp(0.0, 1.0)))
+    surface(Color::from_rgba8(16, 15, 14, 0.4 * progress.clamp(0.0, 1.0)))
 }
 
 #[must_use]

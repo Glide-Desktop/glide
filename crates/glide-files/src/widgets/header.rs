@@ -26,7 +26,7 @@ const CHROME: f32 = SP2
     + WINDOW_CONTROL
     + 5.0 * GAP
     + INSET;
-const SEMIBOLD_SPREAD: f32 = 0.94;
+pub const SEMIBOLD_SPREAD: f32 = 0.94;
 
 #[must_use]
 pub fn window_control(app: &App, glyph: Icon, message: Message) -> Element<'_, Message> {
