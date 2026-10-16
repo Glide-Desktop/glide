@@ -1047,6 +1047,9 @@ impl App {
         let task = self.handle(message);
         self.surface_question();
         self.sync_motion(Instant::now());
+        if let Some(link) = &self.dnd {
+            link.set_accepting(!self.in_trash());
+        }
         task
     }
 

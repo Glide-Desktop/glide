@@ -335,6 +335,34 @@ fn a_drag_that_only_offers_text_is_refused() {
 }
 
 #[test]
+fn a_view_that_takes_no_drops_refuses_files_until_it_takes_them_again() {
+    let (mut harness, link) = Harness::start();
+    link.set_accepting(false);
+    let offer = harness.offer("file:///tmp/a.txt\r\n", &[URI_LIST]);
+    offer.source_actions(DndAction::Copy | DndAction::Move);
+    let surface = harness.state.surface.clone().expect("surface");
+    let device = harness.state.device.clone().expect("device");
+    device.enter(9, &surface, 4.0, 4.0, Some(&offer));
+    harness.wait(|harness| (!harness.state.accepted.is_empty()).then_some(()));
+    assert_eq!(harness.state.accepted, [None], "the Trash view shows no drop cursor");
+    assert_eq!(harness.state.actions.first().map(|(all, _)| *all), Some(DndAction::empty()));
+
+    link.set_accepting(true);
+    harness.wait(|harness| (harness.state.accepted.len() > 1).then_some(()));
+    assert_eq!(harness.state.accepted.last(), Some(&Some(String::from(URI_LIST))), "a folder that takes drops again");
+    link.set_accepting(false);
+    harness.wait(|harness| (harness.state.accepted.len() > 2).then_some(()));
+    device.drop();
+    harness.pump();
+    std::thread::sleep(Duration::from_millis(100));
+    harness.pump();
+    assert!(
+        !harness.seen.iter().any(|event| matches!(event, Event::Drop { .. })),
+        "a drop on a refusing view reaches nothing"
+    );
+}
+
+#[test]
 fn dragging_out_of_files_offers_uris_and_ends_when_the_target_finishes() {
     let (mut harness, link) = Harness::start();
     assert!(link.send(Command::StartDrag(vec![PathBuf::from("/tmp/x y.png")])));

@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -44,17 +45,24 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone)]
-pub struct Link(Arc<Mutex<mpsc::Sender<Command>>>);
+pub struct Link {
+    commands: Arc<Mutex<mpsc::Sender<Command>>>,
+    accepting: Arc<AtomicBool>,
+}
 
 impl Link {
     pub fn send(&self, command: Command) -> bool {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).send(command).is_ok()
+        self.commands.lock().unwrap_or_else(PoisonError::into_inner).send(command).is_ok()
+    }
+
+    pub fn set_accepting(&self, accepting: bool) {
+        self.accepting.store(accepting, Ordering::Relaxed);
     }
 }
 
 impl PartialEq for Link {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.commands, &other.commands)
     }
 }
 
@@ -131,6 +139,8 @@ struct State {
     hover: (f64, f64),
     selection: Option<WlDataOffer>,
     own_selection: Option<WlDataSource>,
+    accepting: Arc<AtomicBool>,
+    answered: Option<(u32, bool)>,
 }
 
 #[must_use]
@@ -172,7 +182,9 @@ pub fn serve(
     seat.get_keyboard(&qh, ());
     let device = manager.get_data_device(&seat, &qh, ());
     let (commands, inbox) = mpsc::channel();
-    events.unbounded_send(Event::Ready(Link(Arc::new(Mutex::new(commands))))).map_err(|err| err.to_string())?;
+    let accepting = Arc::new(AtomicBool::new(true));
+    let link = Link { commands: Arc::new(Mutex::new(commands)), accepting: Arc::clone(&accepting) };
+    events.unbounded_send(Event::Ready(link)).map_err(|err| err.to_string())?;
     let mut state = State {
         events,
         connection,
@@ -185,9 +197,12 @@ pub fn serve(
         hover: (0.0, 0.0),
         selection: None,
         own_selection: None,
+        accepting,
+        answered: None,
     };
     loop {
         queue.dispatch_pending(&mut state).map_err(|err| err.to_string())?;
+        state.answer_hover();
         loop {
             match inbox.try_recv() {
                 Ok(command) => state.handle(command, &qh),
@@ -293,12 +308,24 @@ impl State {
         });
     }
 
+    fn answer_hover(&mut self) {
+        let (Some(offer), Some((serial, answered))) = (&self.drag, self.answered) else {
+            return;
+        };
+        let accepting = self.accepting.load(Ordering::Relaxed);
+        if accepting != answered {
+            answer(offer, serial, accepting);
+            self.answered = Some((serial, accepting));
+        }
+    }
+
     fn drop_offer(&mut self) {
+        self.answered = None;
         let Some(offer) = self.drag.take() else {
             return;
         };
         let info = offer_info(&offer);
-        if !info.mimes.iter().any(|mime| mime == URI_LIST) {
+        if !self.accepting.load(Ordering::Relaxed) || !info.mimes.iter().any(|mime| mime == URI_LIST) {
             offer.destroy();
             return;
         }
@@ -318,6 +345,15 @@ impl State {
             finishing.destroy();
             let _ = connection.flush();
         });
+    }
+}
+
+fn answer(offer: &WlDataOffer, serial: u32, accepting: bool) {
+    let accepts = accepting && offer_info(offer).mimes.iter().any(|mime| mime == URI_LIST);
+    offer.accept(serial, accepts.then(|| URI_LIST.to_string()));
+    if offer.version() >= 3 {
+        let actions = if accepts { DndAction::Copy | DndAction::Move } else { DndAction::empty() };
+        offer.set_actions(actions, DndAction::Copy);
     }
 }
 
@@ -392,14 +428,11 @@ impl Dispatch<WlDataDevice, ()> for State {
         match event {
             wl_data_device::Event::Enter { serial, x, y, id, .. } => {
                 state.hover = (x, y);
+                let accepting = state.accepting.load(Ordering::Relaxed);
                 if let Some(offer) = &id {
-                    let accepts = offer_info(offer).mimes.iter().any(|mime| mime == URI_LIST);
-                    offer.accept(serial, accepts.then(|| URI_LIST.to_string()));
-                    if offer.version() >= 3 {
-                        let actions = if accepts { DndAction::Copy | DndAction::Move } else { DndAction::empty() };
-                        offer.set_actions(actions, DndAction::Copy);
-                    }
+                    answer(offer, serial, accepting);
                 }
+                state.answered = id.as_ref().map(|_| (serial, accepting));
                 state.drag = id;
                 let _ = state.events.unbounded_send(Event::Hover(Some((x, y))));
             }
@@ -408,6 +441,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                 let _ = state.events.unbounded_send(Event::Hover(Some((x, y))));
             }
             wl_data_device::Event::Leave => {
+                state.answered = None;
                 if let Some(offer) = state.drag.take() {
                     offer.destroy();
                 }
