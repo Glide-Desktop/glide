@@ -90,6 +90,7 @@ fn watch_child(name: &str, topics: Topics, argv: &'static [&'static str], read: 
                 return End::Retry;
             }
         };
+        let started = Instant::now();
         if let Some(stdout) = child.stdout.take() {
             system_info::hook(topics);
             read(stdout);
@@ -97,7 +98,11 @@ fn watch_child(name: &str, topics: Topics, argv: &'static [&'static str], read: 
         }
         let _ = child.kill();
         let _ = child.wait();
-        tracing::info!("{} ended; {topics:?} is polled until it is back", argv[0]);
+        if started.elapsed() >= HEALTHY_RUN {
+            tracing::info!("{} ended; {topics:?} is polled until it is back", argv[0]);
+        } else {
+            tracing::debug!("{} ended at once; {topics:?} stays polled", argv[0]);
+        }
         End::Retry
     });
 }
@@ -126,10 +131,13 @@ impl Graph {
             return false;
         };
         let mut changed = false;
-        for object in objects {
+        for mut object in objects {
             let Some(id) = object.get("id").and_then(serde_json::Value::as_u64) else {
                 continue;
             };
+            if let Some(info) = object.get_mut("info").and_then(serde_json::Value::as_object_mut) {
+                info.remove("params");
+            }
             if object.get("info").is_none_or(serde_json::Value::is_null) {
                 changed |= self.objects.remove(&id).is_some();
                 continue;
