@@ -1141,6 +1141,15 @@ impl GlideState {
     }
 
     #[must_use]
+    pub fn active_layout_index(&mut self) -> Option<usize> {
+        let keyboard = self.seat.get_keyboard()?;
+        Some(keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().expect("single-threaded event loop, this lock is never poisoned");
+            xkb.active_layout().0 as usize
+        }))
+    }
+
+    #[must_use]
     pub fn keyboard_layouts(&mut self) -> Option<(Vec<String>, usize)> {
         let keyboard = self.seat.get_keyboard()?;
         Some(keyboard.with_xkb_state(self, |context| {
@@ -1155,7 +1164,20 @@ impl GlideState {
             return;
         };
         keyboard.with_xkb_state(self, |mut context| edit(&mut context));
+        self.layout_switched();
+    }
+
+    pub fn layout_switched(&mut self) {
         self.broadcast_layout();
+        self.sync_topbar_layout();
+    }
+
+    pub fn sync_topbar_layout(&mut self) {
+        if let Some((names, active)) = self.keyboard_layouts()
+            && self.topbar.set_layouts(names, active)
+        {
+            self.queue_redraw();
+        }
     }
 
     pub fn cycle_keyboard_layout(&mut self) {
@@ -1218,15 +1240,11 @@ impl GlideState {
         }
         let now = crate::topbar::calendar::LocalNow::now();
         let (app_id, app_name) = self.focused_app();
-        let layouts = self.keyboard_layouts();
 
         let mut dirty = now.is_some_and(|now| self.topbar.set_now(now));
         dirty |= self.topbar.tick_island(std::time::Instant::now());
         let recording = self.screencopy.recording_clients(std::time::Instant::now());
         dirty |= self.topbar.set_screen_capture(recording);
-        if let Some((names, active)) = layouts {
-            dirty |= self.topbar.set_layouts(names, active);
-        }
         dirty |= self.topbar.set_app(app_id, app_name);
         dirty |= self.topbar.set_dnd(self.notifications.dnd());
         dirty |= self.topbar.set_unread(self.notifications.unread());
@@ -1744,6 +1762,9 @@ impl GlideState {
         if let Some(keyboard) = self.seat.get_keyboard() {
             if rebuild && let Err(err) = keyboard.set_xkb_config(self, self.input_config.clone().xkb()) {
                 tracing::error!(?err, "failed to apply the xkb config");
+            }
+            if rebuild {
+                self.sync_topbar_layout();
             }
             if self.input_config.numlock && (rebuild || numlock) {
                 let mods = smithay::input::keyboard::ModifiersState { num_lock: true, ..keyboard.modifier_state() };

@@ -379,6 +379,7 @@ fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mu
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
     state.refresh_topbar();
+    state.sync_topbar_layout();
 
     event_loop
         .handle()

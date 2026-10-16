@@ -1422,7 +1422,7 @@ impl GlideState {
         let switcher_open = self.switcher_open();
         let switcher_mode = self.switcher.as_ref().map_or(crate::switcher::Mode::Apps, crate::switcher::Switcher::mode);
         let greeter_active = self.greeter.is_some();
-        let greeter_layout_before = if greeter_active { self.active_layout().map(|(index, _)| index) } else { None };
+        let layout_before = self.active_layout_index();
         let locked = self.session_lock.is_some();
         let handoff_blocking = self.handoff_blocks_input() || waking;
         if locked {
@@ -1552,12 +1552,15 @@ impl GlideState {
 
         let mut action = action;
         self.sync_prompt_caps_lock();
+        let switched_by_xkb = self.active_layout_index() != layout_before;
+        if switched_by_xkb {
+            self.layout_switched();
+        }
         if greeter_active {
             let caps_lock = keyboard.modifier_state().caps_lock;
             if self.greeter.as_mut().is_some_and(|greeter| greeter.set_caps_lock(caps_lock)) {
                 self.queue_redraw();
             }
-            let switched_by_xkb = self.active_layout().map(|(index, _)| index) != greeter_layout_before;
             if switched_by_xkb {
                 if action == Some(KeyAction::GreeterToggleLayout) {
                     action = None;
