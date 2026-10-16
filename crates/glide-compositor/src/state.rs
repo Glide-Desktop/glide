@@ -1043,6 +1043,7 @@ impl GlideState {
     }
 
     pub fn tick_overview(&mut self) -> bool {
+        self.watch_overview_close();
         let swipe_animating = self.tick_workspace_swipe();
         let Some(ui) = self.overview.as_mut() else {
             return swipe_animating;
@@ -2648,6 +2649,49 @@ impl GlideState {
     pub fn refresh_painter_font(&self) {
         let font_px = (f64::from(self.decoration_theme.height).max(14.0) * 0.45) as f32;
         crate::paint::init_or_replace(font_px.clamp(10.0, 18.0), self.font_family.as_deref());
+    }
+
+    pub fn close_from_overview(&mut self, id: glide_layout::WindowId) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        tracing::info!(window = ?id, "closing from the overview");
+        self.send_close_to(id);
+        let newest = self.window_map.keys().max().copied().unwrap_or(id);
+        let Some(ui) = self.overview.as_mut() else {
+            return;
+        };
+        ui.watch_close(id, newest);
+        let timer = Timer::from_duration(crate::overview::close::GRACE);
+        let inserted = self.loop_handle.insert_source(timer, |_, (), state| {
+            state.watch_overview_close();
+            TimeoutAction::Drop
+        });
+        if let Err(err) = inserted {
+            tracing::warn!(?err, "failed to schedule the overview close check");
+        }
+    }
+
+    fn watch_overview_close(&mut self) {
+        if !self.overview.as_ref().is_some_and(crate::overview::OverviewUi::awaits_close) {
+            return;
+        }
+        let live: Vec<crate::overview::close::Live> = self
+            .window_map
+            .iter()
+            .map(|(id, window)| crate::overview::close::Live {
+                id: *id,
+                parent: window
+                    .toplevel()
+                    .and_then(smithay::wayland::shell::xdg::ToplevelSurface::parent)
+                    .and_then(|parent| self.window_id_for_surface(&parent)),
+                pid: self.window_pid(window),
+            })
+            .collect();
+        let Some(id) = self.overview.as_mut().and_then(|ui| ui.refused_close(&live)) else {
+            return;
+        };
+        tracing::info!(window = ?id, "a window closed from the overview is still open; focusing it");
+        self.begin_close_overview(Some(id));
+        self.queue_redraw();
     }
 
     #[must_use]

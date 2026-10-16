@@ -24,6 +24,9 @@ use crate::{
 #[path = "overview_strip.rs"]
 mod strip;
 
+#[path = "overview_close.rs"]
+pub mod close;
+
 type OverviewEntry = (WindowId, Rectangle<i32, Logical>, bool, Option<Tile>);
 
 #[derive(Debug, Clone)]
@@ -145,6 +148,7 @@ pub struct OverviewUi {
     area: Rectangle<i32, Logical>,
     focused: Option<WindowId>,
     strip: strip::Strip,
+    close_watch: close::Watch,
 
     scrim: SolidColorBuffer,
 }
@@ -202,8 +206,25 @@ impl OverviewUi {
             area,
             focused,
             strip: strip::Strip::default(),
+            close_watch: close::Watch::default(),
             scrim: SolidColorBuffer::default(),
         }
+    }
+
+    pub fn watch_close(&mut self, id: WindowId, newest: WindowId) {
+        self.close_watch.ask(id, newest, Instant::now());
+    }
+
+    #[must_use]
+    pub fn awaits_close(&self) -> bool {
+        self.close_watch.is_waiting()
+    }
+
+    pub fn refused_close(&mut self, live: &[close::Live]) -> Option<WindowId> {
+        if self.is_closing() {
+            return None;
+        }
+        self.close_watch.poll(Instant::now(), live)
     }
 
     fn grid_area(&self) -> Rectangle<i32, Logical> {

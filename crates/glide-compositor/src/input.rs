@@ -2522,13 +2522,12 @@ impl GlideState {
         }
         let close = self.overview.as_ref().and_then(|ui| ui.close_button_at(pos));
         if let Some(id) = close {
-            tracing::info!(window = ?id, "closing from the overview");
-            self.send_close_to(id);
+            self.close_from_overview(id);
             return true;
         }
 
         match self.overview.as_ref().and_then(|ui| ui.preview_at(pos)) {
-            Some(id) if button == BTN_MIDDLE => self.send_close_to(id),
+            Some(id) if button == BTN_MIDDLE => self.close_from_overview(id),
             hit => {
                 self.begin_close_overview(hit);
             }
