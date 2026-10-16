@@ -103,7 +103,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .height(HEADER_HEIGHT)
     .width(Fill)
     .align_y(Alignment::Center)
-    .style(move |_| theme::rounded(background, theme::window_corners(theme::Side::TopRight)));
+    .style(move |_| theme::rounded(background, theme::window_corners(theme::Side::TopRight, app.corner())));
 
     mouse_area(bar).on_press(Message::WindowDrag).on_double_click(Message::WindowMaximize).into()
 }

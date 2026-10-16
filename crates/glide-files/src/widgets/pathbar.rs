@@ -115,6 +115,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .width(Fill)
     .height(PATHBAR_HEIGHT)
     .align_y(Alignment::Center)
-    .style(move |_| theme::rounded(super::header::bar_background(app), theme::window_corners(theme::Side::BottomRight)))
+    .style(move |_| {
+        let corners = theme::window_corners(theme::Side::BottomRight, app.corner());
+        theme::rounded(super::header::bar_background(app), corners)
+    })
     .into()
 }

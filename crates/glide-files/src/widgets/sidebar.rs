@@ -12,6 +12,7 @@ use crate::theme::{self, Tone};
 
 pub const ITEM_HEIGHT: f32 = theme::SMALL_CONTROL;
 const EJECT: f32 = ITEM_HEIGHT;
+const JOBS_HEIGHT: f32 = 320.0;
 
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -73,12 +74,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let mut panel =
         column![top, scrollable(sections).width(Fill).height(Fill).style(move |_, status| theme::scroller(t, status)),];
     if !app.jobs.is_empty() {
-        panel = panel.push(super::divider(t)).push(super::jobs(app));
+        let jobs = scrollable(super::jobs(app)).style(move |_, status| theme::scroller(t, status));
+        panel = panel.push(super::divider(t)).push(container(jobs).max_height(JOBS_HEIGHT));
     }
+    let corners = theme::window_corners(theme::Side::Left, app.corner());
     container(panel)
         .width(Length::Fixed(SIDEBAR_WIDTH))
         .height(Fill)
-        .style(move |_| theme::rounded(t.sidebar_bg(), theme::window_corners(theme::Side::Left)))
+        .style(move |_| theme::rounded(t.sidebar_bg(), corners))
         .into()
 }
 

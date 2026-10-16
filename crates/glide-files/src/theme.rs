@@ -348,20 +348,20 @@ pub enum Side {
 }
 
 #[must_use]
-pub fn window_corners(side: Side) -> Radius {
+pub fn window_corners(side: Side, corner: f32) -> Radius {
     let none = Radius::default();
     match side {
-        Side::Left => none.top_left(R3).bottom_left(R3),
-        Side::Right => none.top_right(R3).bottom_right(R3),
-        Side::TopRight => none.top_right(R3),
-        Side::BottomRight => none.bottom_right(R3),
+        Side::Left => none.top_left(corner).bottom_left(corner),
+        Side::Right => none.top_right(corner).bottom_right(corner),
+        Side::TopRight => none.top_right(corner),
+        Side::BottomRight => none.bottom_right(corner),
     }
 }
 
 #[must_use]
-pub fn window_frame(theme: &ThemeState) -> container::Style {
+pub fn window_frame(theme: &ThemeState, corner: f32) -> container::Style {
     container::Style {
-        border: Border { color: theme.line_2(), width: 1.0, radius: Radius::from(R3) },
+        border: Border { color: theme.line(), width: 1.0, radius: Radius::from(corner) },
         ..container::Style::default()
     }
 }

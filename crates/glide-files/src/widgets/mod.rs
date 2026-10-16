@@ -33,6 +33,7 @@ pub fn window(app: &App) -> Element<'_, Message> {
     }
     let body = body.push(content::view(app)).push(divider(t));
     let body = body.push(pathbar::view(app));
+    let corner = app.corner();
 
     let base = container(row![
         sidebar::view(app),
@@ -40,17 +41,20 @@ pub fn window(app: &App) -> Element<'_, Message> {
         container(body)
             .width(Fill)
             .height(Fill)
-            .style(move |_| theme::rounded(t.view_bg(), theme::window_corners(Side::Right))),
+            .style(move |_| theme::rounded(t.view_bg(), theme::window_corners(Side::Right, corner))),
     ])
     .width(Fill)
     .height(Fill)
-    .style(move |_| theme::rounded(t.win_bg(), theme::R3));
+    .style(move |_| theme::rounded(t.win_bg(), corner));
     let base = pointer::context_area(base, Message::ContextMenu).on_zoom(Message::Zoom);
 
     let now = Instant::now();
     let motion = &app.motion;
-    let frame = container(space().width(Fill).height(Fill)).style(move |_| theme::window_frame(t));
-    let mut layers: Vec<Element<'_, Message>> = vec![base.into(), frame.into(), resize_handles()];
+    let mut layers: Vec<Element<'_, Message>> = vec![base.into()];
+    if !app.is_maximized() {
+        let frame = container(space().width(Fill).height(Fill)).style(move |_| theme::window_frame(t, corner));
+        layers.extend([frame.into(), resize_handles()]);
+    }
     if let Some(rect) = app.band_rect() {
         let accent = t.acc_bg();
         let fill = accent.scale_alpha(glide_theme::motion::ST_PRESS);

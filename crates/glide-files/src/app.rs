@@ -337,6 +337,7 @@ pub enum Message {
     DragTick,
     WindowSize(Size),
     WindowFocus(bool),
+    WindowMaximized(bool),
     JobPause(u64),
     Duplicate,
     CreateLink,
@@ -464,6 +465,7 @@ impl Message {
                 | Self::DragTick
                 | Self::WindowSize(_)
                 | Self::WindowFocus(_)
+                | Self::WindowMaximized(_)
                 | Self::JobPause(_)
                 | Self::Phones(_)
                 | Self::PhoneOpened(_)
@@ -681,6 +683,7 @@ pub struct Band {
 struct WindowState {
     size: Size,
     focused: bool,
+    maximized: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -794,7 +797,7 @@ impl App {
             band: None,
             drag: None,
             hover_target: None,
-            window: WindowState { size: Size::ZERO, focused: true },
+            window: WindowState { size: Size::ZERO, focused: true, maximized: false },
             pending_select: None,
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
@@ -1454,7 +1457,11 @@ impl App {
                 return self.release();
             }
             Message::DragTick => return self.drag_tick(),
-            Message::WindowSize(size) => self.window.size = size,
+            Message::WindowSize(size) => {
+                self.window.size = size;
+                return window::latest().and_then(window::is_maximized).map(Message::WindowMaximized);
+            }
+            Message::WindowMaximized(maximized) => self.window.maximized = maximized,
             Message::WindowFocus(focused) => self.window.focused = focused,
             Message::JobPause(id) => {
                 if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
@@ -1484,6 +1491,16 @@ impl App {
     #[must_use]
     pub const fn is_idle(&self) -> bool {
         !self.window.focused
+    }
+
+    #[must_use]
+    pub const fn is_maximized(&self) -> bool {
+        self.window.maximized
+    }
+
+    #[must_use]
+    pub const fn corner(&self) -> f32 {
+        if self.window.maximized { 0.0 } else { crate::theme::R3 }
     }
 
     #[must_use]
