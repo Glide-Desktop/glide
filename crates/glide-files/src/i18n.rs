@@ -248,7 +248,7 @@ catalogue! {
     UnitMb => "MB", "МБ";
     UnitGb => "GB", "ГБ";
     UnitTb => "TB", "ТБ";
-    VolumeFallbackName => "Volume", "том";
+    VolumeFallbackName => "{} Volume", "Том {}";
     MountReadOnly => "Mount Read-Only", "Змонтувати лише для читання";
     Unmount => "Unmount", "Відмонтувати";
     Eject => "Safely Remove", "Безпечно вилучити";

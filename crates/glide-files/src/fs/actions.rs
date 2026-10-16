@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
 use super::mime::{MimeDb, glob_match};
-use super::uri::encode_path;
+use super::uri::file_uri;
 use crate::i18n::{Key, Lang};
 
 const SERVICE_MENU_DIRS: [&str; 3] = ["kio/servicemenus", "kservices5/ServiceMenus", "kservices6/ServiceMenus"];
@@ -749,7 +749,7 @@ fn field(code: char, items: &[&Target], desktop: &Path) -> Vec<OsString> {
     };
     match code.to_ascii_lowercase() {
         'f' => each(&|target| target.path.clone().into()),
-        'u' => each(&|target| format!("file://{}", encode_path(&target.path)).into()),
+        'u' => each(&|target| file_uri(&target.path).into()),
         'd' => each(&|target| target.path.parent().map(|parent| parent.as_os_str().to_owned()).unwrap_or_default()),
         'b' => each(&|target| target.path.file_name().map(ToOwned::to_owned).unwrap_or_default()),
         'w' => each(&|target| target.path.file_stem().map(ToOwned::to_owned).unwrap_or_default()),

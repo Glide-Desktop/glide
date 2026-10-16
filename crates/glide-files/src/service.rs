@@ -59,15 +59,12 @@ pub enum Claim {
     Unavailable,
 }
 
-fn uri(path: &Path) -> String {
-    format!("file://{}", crate::fs::encode_path(path))
-}
-
 fn forward(connection: &Connection, target: Option<&Path>) -> bool {
     let home = crate::fs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     let target = target.unwrap_or(&home);
     let method = if target.is_dir() { "ShowFolders" } else { "ShowItems" };
-    connection.call_method(Some(OWN_NAME), OBJECT, Some(FILE_MANAGER), method, &(vec![uri(target)], "")).is_ok()
+    let uris = vec![crate::fs::file_uri(target)];
+    connection.call_method(Some(OWN_NAME), OBJECT, Some(FILE_MANAGER), method, &(uris, "")).is_ok()
 }
 
 #[must_use]

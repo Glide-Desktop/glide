@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -13,7 +13,7 @@ use wayland_client::protocol::wl_data_source::{self, WlDataSource};
 use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 
-use crate::fs::{encode_path, path_from_arg};
+use crate::fs::{file_uri, path_from_arg};
 
 pub const URI_LIST: &str = "text/uri-list";
 pub const GNOME_FILES: &str = "x-special/gnome-copied-files";
@@ -69,13 +69,9 @@ pub enum Event {
     SelectionLost,
 }
 
-fn uri(path: &Path) -> String {
-    format!("file://{}", encode_path(path))
-}
-
 #[must_use]
 pub fn uri_list(paths: &[PathBuf]) -> String {
-    paths.iter().map(|path| uri(path)).collect::<Vec<_>>().join("\r\n") + "\r\n"
+    paths.iter().map(|path| file_uri(path)).collect::<Vec<_>>().join("\r\n") + "\r\n"
 }
 
 #[must_use]
@@ -86,7 +82,7 @@ pub fn parse_uri_list(text: &str) -> Vec<PathBuf> {
 #[must_use]
 pub fn gnome_files(paths: &[PathBuf], cut: bool) -> String {
     std::iter::once(String::from(if cut { "cut" } else { "copy" }))
-        .chain(paths.iter().map(|path| uri(path)))
+        .chain(paths.iter().map(|path| file_uri(path)))
         .collect::<Vec<_>>()
         .join("\n")
 }

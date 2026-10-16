@@ -17,7 +17,7 @@ use crate::fs::jobs::{Answer, Choice, Meter, Op, Progress, Question, Report, Sin
 use crate::fs::tags;
 use crate::fs::{
     ClipboardAction, DiskError, Disks, Extensions, FileClipboard, FileEntry, MountMode, Mounted, Offer, Place, Roots,
-    Run, SortBy, SortConfig, Target, Trash, Volume, bookmarks_file, create_directory, create_empty_file, encode_path,
+    Run, SortBy, SortConfig, Target, Trash, Volume, bookmarks_file, create_directory, create_empty_file, file_uri,
     home_dir, load_bookmarks, mounted_drives, open_in_terminal, open_with_default, path_from_arg, query_disk_space,
     read_directory, rename_item, search_recursive, sort_entries, standard_places, templates_dir, templates_in,
     unique_path,
@@ -1105,7 +1105,7 @@ impl App {
             Message::CopyText(text) => return iced::clipboard::write(text),
             Message::AddBookmark(path) => {
                 return self.edit_bookmarks(|lines| {
-                    lines.push(format!("file://{}", encode_path(&path)));
+                    lines.push(file_uri(&path));
                 });
             }
             Message::RemoveBookmark(path) => {
@@ -2384,7 +2384,7 @@ impl App {
         if drag.action == DropAction::Bookmark {
             let fresh: Vec<PathBuf> = drag.paths.into_iter().filter(|path| !self.is_bookmarked(path)).collect();
             return self.edit_bookmarks(|lines| {
-                lines.extend(fresh.iter().map(|path| format!("file://{}", encode_path(path))));
+                lines.extend(fresh.iter().map(|path| file_uri(path)));
             });
         }
         let Some(target) = self.drop_target.take() else {

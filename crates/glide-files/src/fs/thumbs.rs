@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
 
-use super::uri::encode_path;
+use super::uri::file_uri;
 
 pub const SIZE: u32 = 128;
 const WORKERS: usize = 2;
@@ -77,7 +77,7 @@ pub fn cache_name(path: &Path, modified_nanos: u128, len: u64) -> String {
 }
 
 fn run_thumbnailer(thumbnailer: &Thumbnailer, input: &Path, output: &Path) -> bool {
-    let uri = format!("file://{}", encode_path(input));
+    let uri = file_uri(input);
     let size = SIZE.to_string();
     let command: Vec<String> = thumbnailer
         .exec

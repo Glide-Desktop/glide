@@ -46,7 +46,7 @@ impl Volume {
     #[must_use]
     pub fn name(&self, lang: Lang) -> String {
         if self.label.trim().is_empty() {
-            format!("{} {}", format_bytes(self.size, lang), Key::VolumeFallbackName.text(lang))
+            Key::VolumeFallbackName.text(lang).replace("{}", &format_bytes(self.size, lang))
         } else {
             self.label.clone()
         }

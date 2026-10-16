@@ -184,7 +184,7 @@ pub fn close(phone: &Phone) -> Result<(), String> {
         return Ok(());
     };
     if mount.starts_with(gvfs_root()) {
-        return quiet("gio", &["mount", "-u", &format!("file://{}", super::encode_path(&mount))]);
+        return quiet("gio", &["mount", "-u", &super::file_uri(&mount)]);
     }
     let target = mount.to_string_lossy().into_owned();
     let unmounted = quiet("fusermount3", &["-u", &target]).or_else(|_| quiet("fusermount", &["-u", &target]));

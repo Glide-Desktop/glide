@@ -17,6 +17,11 @@ pub fn encode_path(path: &Path) -> String {
 }
 
 #[must_use]
+pub fn file_uri(path: &Path) -> String {
+    format!("file://{}", encode_path(path))
+}
+
+#[must_use]
 pub fn decode_path(encoded: &str) -> PathBuf {
     let bytes = encoded.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

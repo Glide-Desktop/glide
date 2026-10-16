@@ -97,6 +97,7 @@ fn udisks_objects_become_user_visible_volumes_only() {
     assert_eq!(card.drive, None, "the root object path means no drive");
     assert!(!card.can_remove());
     assert!(card.name(Lang::En).ends_with(" Volume"), "{}", card.name(Lang::En));
+    assert!(card.name(Lang::Uk).starts_with("Том "), "the noun leads in Ukrainian: {}", card.name(Lang::Uk));
 }
 
 #[test]

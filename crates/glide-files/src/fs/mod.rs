@@ -25,5 +25,5 @@ pub use places::{
     Place, bookmarks_file, home_dir, load_bookmarks, mounted_drives, standard_places, templates_dir, templates_in,
 };
 pub use trash::Trash;
-pub use uri::{decode_path, encode_path, path_from_arg};
+pub use uri::{decode_path, encode_path, file_uri, path_from_arg};
 pub use volumes::{DiskError, Disks, MountMode, Mounted, Volume, mount_attempts, volumes_from};
