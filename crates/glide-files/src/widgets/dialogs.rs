@@ -1,11 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use iced::widget::{Column, button, checkbox, column, container, float, opaque, row, rule, space, text, text_input};
+use iced::widget::{
+    Column, button, checkbox, column, container, float, opaque, row, rule, scrollable, space, text, text_input,
+};
 use iced::{Alignment, Element, Fill, Length, Padding, Vector};
 
+use super::content::{FIT_SLACK, breakable};
 use super::header::SEMIBOLD_SPREAD;
-use super::{file_icon, text_width};
+use super::{file_icon, fit_lines, text_width};
 use crate::app::{App, Dialog, MODAL_ID, Message, Modal, Properties};
 use crate::fs::jobs::{Choice, Question};
 use crate::fs::{format_bytes, format_time, home_dir, permissions_string};
@@ -16,6 +19,8 @@ const WIDTH: f32 = 400.0;
 const WIDE: f32 = 520.0;
 const LABEL_WIDTH: f32 = 112.0;
 const BUTTON_TEXT: f32 = 13.5;
+const ICON: f32 = 56.0;
+const NAME_LINES: usize = 3;
 
 #[derive(Clone, Copy)]
 struct Ctx<'a> {
@@ -58,9 +63,16 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
     let width = card_width(&modal.dialog, app.lang);
     let rise = (1.0 - progress) * 12.0;
     let t = c.theme();
-    let card =
-        float(container(body).width(Length::Fixed(width)).padding(theme::SP5).style(move |_| theme::popover(&t)))
-            .translate(move |_, _| Vector::new(0.0, rise));
+    let room = app.window_size().height - 2.0 * theme::SP4;
+    let body = scrollable(body).width(Fill).style(move |_, status| theme::scroller(&t, status));
+    let card = float(
+        container(body)
+            .width(Length::Fixed(width))
+            .max_height(if room > 0.0 { room } else { f32::INFINITY })
+            .padding(theme::SP5)
+            .style(move |_| theme::popover(&t)),
+    )
+    .translate(move |_, _| Vector::new(0.0, rise));
     let layer = container(card).center(Fill).style(move |_| theme::scrim(progress));
     if live { opaque(layer) } else { layer.into() }
 }
@@ -75,6 +87,12 @@ pub fn card_width(dialog: &Dialog, lang: Lang) -> f32 {
         .map(|key| text_width(key.text(lang), BUTTON_TEXT) / SEMIBOLD_SPREAD + 2.0 * theme::SP4 + theme::SP2)
         .sum();
     WIDE.max(row + theme::SP4 + 2.0 * theme::SP5)
+}
+
+#[must_use]
+pub fn shown_name(name: &str) -> String {
+    let room = (WIDTH - 2.0 * theme::SP5 - ICON - theme::SP4) * SEMIBOLD_SPREAD * FIT_SLACK;
+    breakable(&fit_lines(name, room, theme::T3, NAME_LINES))
 }
 
 fn choices(folders: bool) -> [(Key, Choice); 3] {
@@ -234,9 +252,10 @@ fn details<'a>(c: Ctx<'a>, properties: &'a Properties) -> Element<'a, Message> {
     let entry = &properties.entry;
     let now = SystemTime::now();
 
+    let name = text(shown_name(&entry.name)).size(theme::T3).font(theme::SEMIBOLD).wrapping(WRAP);
     let heading = row![
-        file_icon(c.app, entry, 56.0),
-        column![title(&entry.name), text(entry.category.name(lang)).size(theme::CAP).color(t.fg_3()),].spacing(2),
+        file_icon(c.app, entry, ICON),
+        column![name, text(entry.category.name(lang)).size(theme::CAP).color(t.fg_3()),].spacing(2),
     ]
     .spacing(theme::SP4)
     .align_y(Alignment::Center);

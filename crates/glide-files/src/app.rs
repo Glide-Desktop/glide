@@ -1635,6 +1635,11 @@ impl App {
     }
 
     #[must_use]
+    pub const fn window_size(&self) -> Size {
+        self.window.size
+    }
+
+    #[must_use]
     pub const fn corner(&self) -> f32 {
         if self.window.maximized { 0.0 } else { crate::theme::R3 }
     }

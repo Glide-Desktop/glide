@@ -856,6 +856,21 @@ fn a_conflict_dialog_is_wide_enough_for_its_buttons_in_every_language() {
 }
 
 #[test]
+fn a_properties_card_stays_inside_a_small_window() {
+    use glide_files::widgets::dialogs::shown_name;
+    let huge = "quarterly-summary-for-the-board-meeting-with-appendices-".repeat(5) + ".md";
+    let shown = shown_name(&huge);
+    assert!(shown.chars().count() < huge.chars().count() / 2, "a 285-character name is shortened: {shown:?}");
+    let extension = std::path::Path::new(&shown).extension().and_then(|ext| ext.to_str());
+    assert!(extension == Some("md") && shown.contains('…'), "{shown:?}");
+    assert_eq!(shown_name("notes.txt").replace('\u{200B}', ""), "notes.txt");
+
+    let mut app = listed_app();
+    let _ = app.update(Message::WindowSize(Size::new(720.0, 480.0)));
+    assert_eq!(app.window_size(), Size::new(720.0, 480.0), "the card is capped to the window it opens in");
+}
+
+#[test]
 fn every_catalogue_entry_is_translated() {
     for key in Key::ALL {
         assert!(!key.en().trim().is_empty(), "{key:?} lacks English");
