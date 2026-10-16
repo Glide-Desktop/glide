@@ -4,7 +4,7 @@ use iced::widget::{button, container, mouse_area, row, space, stack, text, text_
 use iced::{Alignment, Element, Fill, Length, Padding};
 
 use super::{CONTROL, HEADER_HEIGHT, fit, fit_sentence, hint, icon, icon_button, text_width};
-use crate::app::{App, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
+use crate::app::{App, Hover, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::theme::{self, R2, SP2, SP3};
@@ -171,21 +171,21 @@ fn search_field(app: &App) -> Element<'_, Message> {
         .padding(Padding { top: 5.0, bottom: 5.0, left: CONTROL, right: if query.is_empty() { SP2 } else { CONTROL } })
         .width(Fill)
         .style(move |_, status| theme::search_field(t, status));
+    let lead = if app.is_search_focused() { t.acc_text() } else { t.fg_3() };
     let mut overlay =
-        row![container(icon(Icon::Search, 14.0, t.fg_3())).center(Length::Fixed(CONTROL)), space::horizontal()];
+        row![container(icon(Icon::Search, 14.0, lead)).center(Length::Fixed(CONTROL)), space::horizontal()];
     if !query.is_empty() {
-        let field = theme::flatten(t.fill_1(), bar_background(app));
-        let (rest, lit) =
-            (theme::flatten(t.fg_3(), field), theme::flatten(t.fg_1(), theme::flatten(t.fill_2(), field)));
-        let glyph = iced::widget::svg(Icon::Close.handle()).width(Fill).height(Fill).style(move |_, status| {
-            theme::glyph(if status == iced::widget::svg::Status::Hovered { lit } else { rest })
-        });
-        let clear = button(glyph)
+        let lit = app.hover(&Hover::ClearSearch) > 0.5;
+        let glyph = icon(Icon::Close, CLEAR - 4.0, if lit { t.fg_1() } else { t.fg_3() });
+        let clear = button(container(glyph).center(Fill))
             .on_press(Message::SearchChanged(String::new()))
             .width(Length::Fixed(CLEAR))
             .height(Length::Fixed(CLEAR))
-            .padding(2)
+            .padding(0)
             .style(move |_, status| theme::clear_button(t, status));
+        let clear = mouse_area(clear)
+            .on_enter(Message::Hover(Hover::ClearSearch, true))
+            .on_exit(Message::Hover(Hover::ClearSearch, false));
         overlay = overlay.push(hint(t, clear, Key::ClearSearch.text(app.lang))).push(space().width(CLEAR_INSET));
     }
     container(stack![input, overlay.height(CONTROL).align_y(Alignment::Center)])

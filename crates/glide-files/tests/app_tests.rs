@@ -871,6 +871,27 @@ fn a_properties_card_stays_inside_a_small_window() {
 }
 
 #[test]
+fn the_search_field_knows_when_it_has_the_keyboard() {
+    let mut app = listed_app();
+    assert!(!app.is_search_focused());
+    let _ = app.update(Message::ToggleSearch);
+    assert!(app.is_search_focused(), "Ctrl+F puts the caret in the field, so its lead glyph turns accent");
+    let _ = app.update(Message::Escape);
+    assert!(!app.is_search_focused());
+    let _ = app.update(Message::TypeToSearch(String::from("n")));
+    assert!(app.is_search_focused(), "typing to search does too");
+    let _ = app.update(Message::EditPath);
+    assert!(!app.is_search_focused(), "the path field takes the keyboard away");
+    let _ = app.update(Message::SearchFocus(true));
+    assert!(app.is_search_focused(), "a click is answered by asking the field itself");
+    let press = iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left));
+    assert!(matches!(
+        window_events(press, iced::event::Status::Ignored, iced::window::Id::unique()),
+        Some(Message::FocusProbe)
+    ));
+}
+
+#[test]
 fn a_typed_path_is_read_from_the_folder_on_screen() {
     use glide_files::app::expand_path;
     use std::path::PathBuf;
