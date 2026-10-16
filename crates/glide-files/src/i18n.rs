@@ -232,7 +232,7 @@ catalogue! {
     ExtractTo => "Extract To…", "Розпакувати до…";
     ErrExists => "An item with this name already exists", "Об’єкт із такою назвою вже існує";
     ErrName => "This name can’t be used", "Цю назву використати не можна";
-    ErrIntoItself => "A folder can’t be placed inside itself", "Папку не можна вкласти саму в себе";
+    ErrIntoItself => "An item can’t be copied or moved into or over itself", "Об’єкт не можна скопіювати чи перемістити в себе або поверх себе";
     ErrPermission => "Permission denied", "Недостатньо прав доступу";
     ErrNotFound => "The item no longer exists", "Об’єкта більше не існує";
     ErrNoSpace => "Not enough disk space", "Недостатньо місця на диску";

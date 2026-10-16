@@ -166,6 +166,42 @@ fn a_replace_that_cannot_copy_keeps_the_file_it_would_have_replaced() {
 }
 
 #[test]
+fn replacing_an_item_with_itself_or_its_own_folder_is_refused() {
+    let root = scratch("self-replace");
+    write(&root.join("box/box/inner.txt"), "keep");
+    write(&root.join("box/other.txt"), "other");
+    let sink = Script::answering(&[(Choice::Replace, false)]);
+    let report = run(Op::Copy, &[root.join("box/box")], &root, &sink);
+    assert_eq!(report.failures.len(), 1, "a folder can't replace the folder that holds it");
+    assert_eq!(read(&root.join("box/box/inner.txt")), "keep");
+    assert_eq!(read(&root.join("box/other.txt")), "other");
+
+    write(&root.join("shelf/shelf"), "file");
+    let sink = Script::answering(&[(Choice::Replace, false)]);
+    let report = run(Op::Move, &[root.join("shelf/shelf")], &root, &sink);
+    assert_eq!(report.failures.len(), 1, "nor can a file");
+    assert_eq!(read(&root.join("shelf/shelf")), "file");
+
+    write(&root.join("real/doc.txt"), "content");
+    std::fs::create_dir(root.join("links")).expect("links");
+    std::os::unix::fs::symlink(root.join("real/doc.txt"), root.join("links/doc.txt")).expect("symlink");
+    for op in [Op::Copy, Op::Move] {
+        let sink = Script::answering(&[(Choice::Replace, false)]);
+        let report = run(op, &[root.join("links/doc.txt")], &root.join("real"), &sink);
+        assert_eq!(report.failures.len(), 1, "{op:?}: a link can't replace the file it points to");
+        assert_eq!(read(&root.join("real/doc.txt")), "content", "{op:?}");
+    }
+
+    std::os::unix::fs::symlink(root.join("real"), root.join("alias")).expect("alias");
+    write(&root.join("real/sub/deep.txt"), "deep");
+    let sink = Script::answering(&[(Choice::Replace, false)]);
+    let report = run(Op::Copy, &[root.join("alias/sub")], &root.join("real"), &sink);
+    assert_eq!(report.failures.len(), 1, "nor a folder reached through another path");
+    assert_eq!(read(&root.join("real/sub/deep.txt")), "deep");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn keep_both_renames_and_merge_combines_folders() {
     let root = scratch("merge");
     write(&root.join("src/box/one.txt"), "1");

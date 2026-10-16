@@ -286,6 +286,10 @@ impl Worker<'_> {
                 }
                 Choice::KeepBoth => dest = unique_beside(&dest, meta.is_dir()),
                 Choice::Merge if folders => return self.merge(source, dest),
+                Choice::Replace | Choice::Merge if inside(source, &dest) => {
+                    self.fail(source, &io::Error::new(ErrorKind::InvalidInput, "item over itself"));
+                    return None;
+                }
                 Choice::Replace | Choice::Merge if !meta.is_dir() && !existing.is_dir() => swap = true,
                 Choice::Replace | Choice::Merge => {
                     if let Err(err) = remove_recursive(&dest) {
