@@ -27,6 +27,9 @@ const NAME_ROOM: f32 = 200.0;
 const HEADER_HEIGHT: f32 = 26.0;
 const DOT: f32 = theme::SP2;
 const DOT_GAP: f32 = 2.0;
+const FIT_SLACK: f32 = 0.96;
+const EMPTY_WELL: f32 = 44.0;
+const EMPTY_GLYPH: f32 = 22.0;
 const LINK_MARK: f32 = 11.0;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
 const LIST_ROWS: [(f32, f32); crate::config::LIST_ZOOMS] = [(22.0, 14.0), (26.0, 16.0), (32.0, 22.0), (40.0, 28.0)];
@@ -210,7 +213,10 @@ fn empty_state(app: &App) -> Element<'_, Message> {
     } else {
         (Key::EmptyFolder, Icon::Folder)
     };
-    let body = column![icon(glyph, 48.0, t.fg_4()), text(key.text(app.lang)).size(theme::CALL).color(t.fg_3())]
+    let well = container(icon(glyph, EMPTY_GLYPH, t.fg_3()))
+        .center(Length::Fixed(EMPTY_WELL))
+        .style(move |_| theme::rounded(t.fill_1(), theme::R3));
+    let body = column![well, text(key.text(app.lang)).size(theme::CALL).color(t.fg_2())]
         .spacing(theme::SP3)
         .align_x(Alignment::Center);
     container(body).center(Fill).into()
@@ -370,7 +376,9 @@ fn list_header(app: &App) -> Element<'_, Message> {
     if app.is_searching() {
         header = header.push(header_cell(app, Key::ColLocation.text(lang), None, None, Length::Fixed(LOCATION_WIDTH)));
     }
+    let t = &app.theme;
     let header = header.padding(Padding::from([0.0, theme::SP4])).height(HEADER_HEIGHT).align_y(Alignment::Center);
+    let header = container(header).width(Fill).style(move |_| theme::surface(t.fill_1()));
     mouse_area(header).on_right_press(Message::MenuTarget(MenuKind::Columns)).into()
 }
 
@@ -380,28 +388,28 @@ fn header_cell<'a>(
     let t = &app.theme;
     let active = sort.is_some() && sort == Some(app.sort.by);
     let target = column.is_some_and(|column| app.is_column_target(column));
-    let mut content = row![text(label).size(theme::CAP)].spacing(theme::SP1).align_y(Alignment::Center);
+    let hovered = column.is_some_and(|column| app.hover(&Hover::Column(column)) > 0.5);
+    let ink = move |lit: bool| if lit { t.acc_text() } else { t.fg_3() };
+    let label = text(label.to_uppercase()).size(theme::MICRO).font(theme::SEMIBOLD).wrapping(text::Wrapping::None);
+    let mut content = row![label].spacing(theme::SP1).align_y(Alignment::Center);
     if active {
         let arrow = if app.sort.ascending { Icon::ArrowUp } else { Icon::ArrowDown };
         content = content.push(iced::widget::space::horizontal()).push(icon(arrow, 11.0, t.fg_3()));
     }
     let separated = column.is_some() || sort.is_none();
-    let style = move |_: &iced::Theme, status| {
-        let highlighted = active || target || theme::highlighted(status);
-        theme::plain(if highlighted { t.fg_1() } else { t.fg_2() })
-    };
+    let style = move |_: &iced::Theme, status| theme::plain(ink(sort.is_some() && theme::highlighted(status)));
     let padding = Padding::from([theme::SP1, theme::SP2]).left(if separated { theme::SP2 } else { 0.0 });
     let cell: Element<'a, Message> = match column {
-        Some(column) => mouse_area(
-            container(content)
-                .padding(padding)
-                .width(Fill)
-                .style(move |_| if target { theme::rounded(t.fill_2(), R1) } else { container::Style::default() }),
-        )
-        .on_press(Message::ColumnPressed(column))
-        .on_enter(Message::Hover(Hover::Column(column), true))
-        .on_exit(Message::Hover(Hover::Column(column), false))
-        .into(),
+        Some(column) => {
+            mouse_area(container(content).padding(padding).width(Fill).clip(true).style(move |_| container::Style {
+                text_color: Some(ink(hovered || target)),
+                ..if target { theme::rounded(t.fill_2(), R1) } else { container::Style::default() }
+            }))
+            .on_press(Message::ColumnPressed(column))
+            .on_enter(Message::Hover(Hover::Column(column), true))
+            .on_exit(Message::Hover(Hover::Column(column), false))
+            .into()
+        }
         None => {
             button(content).on_press_maybe(sort.map(Message::SortBy)).padding(padding).width(Fill).style(style).into()
         }
@@ -444,12 +452,12 @@ fn list_row<'a>(
     };
 
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
-    let title: Element<'a, Message> = match rename_field(app, theme::CALL).filter(|_| editing) {
-        Some(field) => field,
-        None => text(fit(&entry.name, room - marks_width(entry), theme::CALL))
-            .size(theme::CALL)
-            .wrapping(text::Wrapping::None)
-            .into(),
+    let title: Element<'a, Message> = if let Some(field) = rename_field(app, theme::CALL).filter(|_| editing) {
+        field
+    } else {
+        let room = room - marks_width(entry);
+        let shown = fit(&entry.name, room * FIT_SLACK, theme::CALL);
+        container(text(shown).size(theme::CALL).wrapping(text::Wrapping::None)).max_width(room).clip(true).into()
     };
     let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(theme::SP2).align_y(Alignment::Center);
     if let Some(dots) = dots(entry) {

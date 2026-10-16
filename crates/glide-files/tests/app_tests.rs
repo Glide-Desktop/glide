@@ -335,6 +335,34 @@ fn the_sidebar_marks_the_current_place_until_a_search_takes_over() {
 }
 
 #[test]
+fn a_rubber_band_in_the_trash_selects_the_row_under_it() {
+    use glide_files::widgets::content::LIST_HEADER;
+    use glide_files::widgets::{HEADER_HEIGHT, SIDEBAR_WIDTH, TRASH_BANNER};
+    let mut app = listed_app();
+    app.current = app.trash.files();
+    app.pane = Size::new(700.0, 400.0);
+    let row = Metrics::default().row;
+    let top = HEADER_HEIGHT + 1.0 + TRASH_BANNER + 1.0 + LIST_HEADER + 4.0;
+    assert!((app.content_top() - (HEADER_HEIGHT + 1.0 + TRASH_BANNER + 1.0)).abs() < f32::EPSILON);
+    let middle = top + 2.5 * row;
+    let _ = app.update(Message::PressedBackground);
+    let _ = app.update(Message::Cursor(Point::new(SIDEBAR_WIDTH + 60.0, middle - 2.0)));
+    let _ = app.update(Message::Cursor(Point::new(SIDEBAR_WIDTH + 90.0, middle + 2.0)));
+    assert_eq!(app.selection.len(), 1);
+    assert!(app.selection.contains(&path(2)), "the banner above the list is not part of the rows");
+}
+
+#[test]
+fn the_indeterminate_bar_sweeps_a_third_of_the_track_from_edge_to_edge() {
+    use glide_files::widgets::{SWEEP, sweep};
+    assert_eq!(sweep(0.0), (0.0, 0.0), "it starts hidden past the left edge");
+    assert_eq!(sweep(1.0), (1.0, 1.0), "and ends hidden past the right edge");
+    let widths: Vec<f32> = (0..=100).map(|step| sweep(step as f32 / 100.0)).map(|(start, end)| end - start).collect();
+    assert!(widths.iter().all(|&width| width <= SWEEP + 1e-4), "it is never wider than its 34%");
+    assert!(widths.iter().any(|&width| (width - SWEEP).abs() < 1e-4), "and shows all of it on the way across");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

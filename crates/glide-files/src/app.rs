@@ -1832,8 +1832,8 @@ impl App {
 
     fn cursor_point(&self) -> Point {
         let left = widgets::SIDEBAR_WIDTH + 1.0;
-        let top = CONTENT_TOP + if self.view == ViewMode::List { content::LIST_HEADER } else { 0.0 };
-        let centre = Point::new(left + self.pane.width / 2.0, CONTENT_TOP + self.pane.height / 2.0);
+        let top = self.content_top() + if self.view == ViewMode::List { content::LIST_HEADER } else { 0.0 };
+        let centre = Point::new(left + self.pane.width / 2.0, self.content_top() + self.pane.height / 2.0);
         let Some(index) = self.cursor.as_deref().and_then(|cursor| self.index_of(cursor)) else {
             return centre;
         };
@@ -1843,8 +1843,14 @@ impl App {
             ViewMode::Grid => (metrics.tile_w / 2.0, metrics.tile_h),
             ViewMode::List => (KEY_MENU_INSET, metrics.row),
         };
-        let y = (top + y + dy - self.scroll_y).clamp(top, CONTENT_TOP + self.pane.height);
+        let y = (top + y + dy - self.scroll_y).clamp(top, self.content_top() + self.pane.height);
         Point::new(left + x + dx, y)
+    }
+
+    #[must_use]
+    pub fn content_top(&self) -> f32 {
+        let banner = if self.in_trash() { widgets::TRASH_BANNER + 1.0 } else { 0.0 };
+        CONTENT_TOP + banner
     }
 
     fn key_menu(&mut self) -> Task<Message> {
@@ -2354,7 +2360,7 @@ impl App {
     }
 
     fn content_point(&self, x: f32, y: f32) -> (f32, f32) {
-        let mut top = widgets::HEADER_HEIGHT + 1.0;
+        let mut top = self.content_top();
         if self.view == ViewMode::List {
             top += content::LIST_HEADER;
         }
@@ -2434,7 +2440,7 @@ impl App {
     }
 
     fn in_content(&self, at: Point) -> bool {
-        let top = CONTENT_TOP;
+        let top = self.content_top();
         at.x > widgets::SIDEBAR_WIDTH && at.y >= top && at.y < top + self.pane.height
     }
 
@@ -2522,7 +2528,7 @@ impl App {
             self.drop_target = None;
             return self.navigate(path);
         }
-        let top = CONTENT_TOP;
+        let top = self.content_top();
         let bottom = top + self.pane.height;
         let step = if !self.in_content(at) {
             0.0

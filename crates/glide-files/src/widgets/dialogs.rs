@@ -72,7 +72,7 @@ const WRAP: text::Wrapping = text::Wrapping::WordOrGlyph;
 
 fn action(c: Ctx<'_>, label: Key, tone: Tone, message: Option<Message>) -> Element<'_, Message> {
     let t = c.theme();
-    button(container(text(label.text(c.app.lang)).size(BUTTON_TEXT)).center_y(Fill))
+    button(container(text(label.text(c.app.lang)).size(BUTTON_TEXT).font(theme::SEMIBOLD)).center_y(Fill))
         .on_press_maybe(message)
         .height(Length::Fixed(theme::CONTROL))
         .padding(Padding::from([0.0, theme::SP4]))
@@ -173,7 +173,7 @@ fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool) -> Element<'a
         .on_toggle(|_| Message::ToggleForAll)
         .size(20)
         .spacing(theme::SP2)
-        .text_size(theme::CAP)
+        .text_size(BUTTON_TEXT)
         .style(move |_, status| theme::checkbox(&t, status));
     column![
         text(heading).size(theme::T3).font(theme::SEMIBOLD).wrapping(WRAP),

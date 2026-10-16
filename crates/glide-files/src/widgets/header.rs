@@ -84,6 +84,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         text(fit(&app.place_title(), room, theme::TITLE))
             .size(theme::TITLE)
             .font(theme::SEMIBOLD)
+            .color(if app.is_idle() { t.fg_3() } else { t.fg_1() })
             .wrapping(text::Wrapping::None)
             .into()
     };

@@ -24,6 +24,7 @@ use crate::theme::{self, Side, ThemeState, Tone};
 pub const SIDEBAR_WIDTH: f32 = 208.0;
 pub const HEADER_HEIGHT: f32 = 48.0;
 pub const PATHBAR_HEIGHT: f32 = 28.0;
+pub const TRASH_BANNER: f32 = CONTROL + 2.0 * theme::SP1;
 pub const CONTROL: f32 = theme::SMALL_CONTROL;
 
 #[must_use]
@@ -140,8 +141,10 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
         (app.trash_count > 0).then_some(Message::EmptyTrash),
     ));
     container(content)
-        .padding(Padding::from([theme::SP1, theme::SP4]))
+        .padding(Padding::from([0.0, theme::SP4]))
         .width(Fill)
+        .height(TRASH_BANNER)
+        .align_y(Alignment::Center)
         .style(move |_| theme::surface(t.view_bg()))
         .into()
 }
@@ -150,26 +153,33 @@ fn portion(value: f32) -> Length {
     Length::FillPortion((value.clamp(0.0, 1.0) * 1000.0).round().max(1.0) as u16)
 }
 
-fn progress_bar<'a>(t: &'a ThemeState, fraction: Option<f32>, paused: bool) -> Element<'a, Message> {
+pub const SWEEP: f32 = 0.34;
+
+#[must_use]
+pub fn sweep(phase: f32) -> (f32, f32) {
+    let left = SWEEP * (4.4 * glide_theme::motion::E_IO.ease(phase.clamp(0.0, 1.0)) - 1.1);
+    (left.clamp(0.0, 1.0), (left + SWEEP).clamp(0.0, 1.0))
+}
+
+fn progress_bar(t: &ThemeState, fraction: Option<f32>, paused: bool) -> Element<'_, Message> {
     const BAR: f32 = 6.0;
+    const PERIOD: u128 = 1400;
     let fill = if paused { t.fg_3() } else { t.acc_bg() };
-    let segment = |width: Length, color: Color| {
-        container(space().height(BAR)).width(width).style(move |_| theme::rounded(color, theme::R1)).into()
+    let (start, end) = match fraction {
+        Some(fraction) => (0.0, fraction.clamp(0.0, 1.0)),
+        None if glide_theme::motion::is_disabled() => ((1.0 - SWEEP) / 2.0, f32::midpoint(1.0, SWEEP)),
+        None => {
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis() % PERIOD);
+            sweep(millis as f32 / PERIOD as f32)
+        }
     };
-    let parts: Vec<Element<'a, Message>> = if let Some(fraction) = fraction {
-        vec![segment(portion(fraction), fill), segment(portion(1.0 - fraction), t.fill_2())]
-    } else {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() % 1400);
-        let start = millis as f32 / 1400.0 * 0.75;
-        vec![
-            segment(portion(start), t.fill_2()),
-            segment(portion(0.25), fill),
-            segment(portion(0.75 - start), t.fill_2()),
-        ]
-    };
-    row(parts).width(Fill).into()
+    let gap = |value: f32| space().width(portion(value)).height(BAR);
+    let bar =
+        container(space().height(BAR)).width(portion(end - start)).style(move |_| theme::rounded(fill, theme::R1));
+    let track = container(space().width(Fill).height(BAR)).style(move |_| theme::rounded(t.fill_2(), theme::R1));
+    Stack::with_children([track.into(), row![gap(start), bar, gap(1.0 - end)].width(Fill).into()]).into()
 }
 
 fn job_detail(app: &App, job: &crate::app::Job) -> String {
@@ -324,13 +334,14 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
 fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Element<'a, Message> {
     const RISE: f32 = 16.0;
     const SHRINK: f32 = 0.04;
-    const TOAST_TEXT: f32 = 360.0;
+    const TOAST_WIDTH: f32 = 470.0;
+    const TOAST_TEXT: f32 = 320.0;
     let t = app.theme.faded(progress);
     let mut content = row![
-        container(text(&notice.text).size(theme::CALL).color(t.fg_1()).wrapping(text::Wrapping::WordOrGlyph))
+        container(text(&notice.text).size(LABEL).color(t.fg_1()).wrapping(text::Wrapping::WordOrGlyph))
             .max_width(TOAST_TEXT)
     ]
-    .spacing(theme::SP1)
+    .spacing(theme::SP3)
     .align_y(Alignment::Center);
     let action = notice.action.as_ref().map(|action| match action {
         NoticeAction::Undo => (Key::Undo, Message::Undo),
@@ -338,15 +349,11 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
     });
     if let Some((label, message)) = action {
         content = content.push(
-            button(container(text(label.text(app.lang)).size(theme::CALL).font(theme::SEMIBOLD)).center_y(Fill))
+            button(container(text(label.text(app.lang)).size(SMALL_LABEL).font(theme::SEMIBOLD)).center_y(Fill))
                 .on_press_maybe(live.then_some(message))
                 .height(Length::Fixed(CONTROL))
-                .padding(Padding::from([0.0, theme::SP2]))
-                .style(move |_, status| {
-                    let mut style = theme::action(&t, Tone::Ghost, status);
-                    style.text_color = t.acc_text();
-                    style
-                }),
+                .padding(Padding::from([0.0, theme::SP3]))
+                .style(move |_, status| theme::action(&t, Tone::Neutral, status)),
         );
     }
     content = content.push(
@@ -360,8 +367,8 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
     let (drop, scale) = if live { ((1.0 - progress) * RISE, 1.0) } else { (0.0, 1.0 - (1.0 - progress) * SHRINK) };
     let card = float(
         container(content)
-            .padding(Padding::from(theme::SP1).left(theme::SP3))
-            .max_width(520)
+            .padding(Padding::from(theme::SP2).left(theme::SP3))
+            .max_width(TOAST_WIDTH)
             .style(move |_| theme::popover(&t)),
     )
     .scale(scale)
@@ -441,7 +448,7 @@ const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(550);
 
 #[must_use]
 pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Option<Message>) -> Element<'a, Message> {
-    button(container(text(label).size(SMALL_LABEL)).center_y(Fill))
+    button(container(text(label).size(SMALL_LABEL).font(theme::SEMIBOLD)).center_y(Fill))
         .on_press_maybe(message)
         .height(Length::Fixed(CONTROL))
         .padding(Padding::from([0.0, theme::SP3]))
@@ -450,6 +457,7 @@ pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Opti
 }
 
 const SMALL_LABEL: f32 = 12.5;
+const LABEL: f32 = 13.5;
 const JOB_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - theme::SP1;
 
 #[must_use]

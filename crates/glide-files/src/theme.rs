@@ -255,7 +255,7 @@ pub fn tile_plate(theme: &ThemeState, selected: bool, hover: f32) -> container::
 #[must_use]
 pub fn crumb(theme: &ThemeState, current: bool, hover: f32, status: button::Status) -> button::Style {
     let text = if current || hover > 0.5 { theme.fg_1() } else { theme.fg_2() };
-    flat(interactive(theme, Color::TRANSPARENT, hover, status), text, R2)
+    flat(interactive(theme, Color::TRANSPARENT, hover, status), text, R1)
 }
 
 #[must_use]
@@ -317,14 +317,13 @@ pub fn checkbox(theme: &ThemeState, status: iced::widget::checkbox::Status) -> i
     let background = if checked { theme.acc_bg() } else { theme.view_bg() };
     let border = match (checked, hovered) {
         (true, _) => theme.acc_bg(),
-        (false, true) => theme.fill_3(),
+        (false, true) => theme.fg_3(),
         (false, false) => theme.line_2(),
     };
-    let state = if hovered { button::Status::Hovered } else { button::Status::Active };
     iced::widget::checkbox::Style {
-        background: Background::Color(theme.layered(background, state)),
+        background: Background::Color(background),
         icon_color: theme.acc_fg(),
-        border: Border { color: border, width: 1.0, radius: Radius::from(R2) },
+        border: Border { color: border, width: 1.5, radius: Radius::from(R2) },
         text_color: Some(theme.fg_1()),
     }
 }

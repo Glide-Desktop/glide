@@ -50,14 +50,14 @@ fn crumbs(app: &App) -> Vec<Crumb> {
     let mut crumbs = vec![Crumb { glyph, label, path: root.clone() }];
     for component in current.strip_prefix(&root).unwrap_or(Path::new("")) {
         path.push(component);
-        let label = super::fit(&app.location_name(&path), CRUMB_LABEL, theme::CAP);
+        let label = super::fit(&app.location_name(&path), CRUMB_LABEL, theme::CALL);
         crumbs.push(Crumb { glyph: Icon::Folder, label, path: path.clone() });
     }
     crumbs
 }
 
 fn width(crumb: &Crumb) -> f32 {
-    super::text_width(&crumb.label, theme::CAP) + CRUMB_CHROME
+    super::text_width(&crumb.label, theme::CALL) + CRUMB_CHROME
 }
 
 fn status(app: &App) -> String {
@@ -89,7 +89,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     for (index, crumb) in crumbs.into_iter().enumerate() {
         let current = index == last;
         if index > 0 {
-            trail = trail.push(icon(Icon::ChevronRight, 10.0, t.fg_3()));
+            trail = trail.push(icon(Icon::ChevronRight, 10.0, t.fg_4()));
         }
         let tint = if crumb.glyph == Icon::Folder { t.acc_bg() } else { t.fg_2() };
         let key = Hover::Crumb(crumb.path.clone());
@@ -97,7 +97,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         let target = MenuKind::Location(crumb.path.clone());
         let mut face = Row::new().spacing(theme::SP1).align_y(Alignment::Center).push(icon(crumb.glyph, 13.0, tint));
         if !crumb.label.is_empty() {
-            face = face.push(text(crumb.label).size(theme::CAP).wrapping(text::Wrapping::None));
+            let label = text(crumb.label).size(theme::CALL).wrapping(text::Wrapping::None);
+            face = face.push(if current { label.font(theme::SEMIBOLD) } else { label });
         }
         trail = trail.push(
             mouse_area(
