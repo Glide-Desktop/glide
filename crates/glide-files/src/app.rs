@@ -49,6 +49,7 @@ const DRAG_TICK: Duration = Duration::from_millis(120);
 const EDGE_SCROLL: f32 = 36.0;
 const SCROLL_STEP: f32 = 32.0;
 const CONTENT_TOP: f32 = widgets::HEADER_HEIGHT + 1.0;
+const KEY_MENU_INSET: f32 = 48.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -110,6 +111,7 @@ pub struct Menu {
     pub at: Point,
     pub offers: Vec<Offer>,
     pub open_with: bool,
+    pub highlight: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -279,6 +281,7 @@ pub enum Message {
     RemoveBookmark(PathBuf),
     ToggleOptions,
     CloseMenu,
+    KeyMenu,
     Menu(Box<Message>),
     OpenSelection,
     SelectAll,
@@ -403,6 +406,33 @@ impl From<Edge> for window::Direction {
 }
 
 impl Message {
+    #[must_use]
+    pub const fn dismisses_menu(&self) -> bool {
+        matches!(
+            self,
+            Self::Trash
+                | Self::Delete
+                | Self::Rename
+                | Self::Cut
+                | Self::Copy
+                | Self::Paste
+                | Self::SelectAll
+                | Self::Duplicate
+                | Self::Undo
+                | Self::Reload
+                | Self::ToggleHidden
+                | Self::Properties
+                | Self::NewFolder
+                | Self::SetView(_)
+                | Self::Zoom(_)
+                | Self::ToggleSearch
+                | Self::Back
+                | Self::Forward
+                | Self::Up
+                | Self::TypeToSearch(_)
+        )
+    }
+
     #[must_use]
     pub fn passes_modal(&self) -> bool {
         matches!(
@@ -983,7 +1013,13 @@ impl App {
         if self.modal.is_some() && !message.passes_modal() {
             return Task::none();
         }
+        if message.dismisses_menu() {
+            self.menu = None;
+        }
         match message {
+            Message::Move(step, _) if self.menu.is_some() => return self.step_menu(step),
+            Message::OpenSelection if self.menu.is_some() => return self.activate_menu(),
+            Message::KeyMenu => return self.key_menu(),
             Message::Navigate(path) => return self.navigate(path),
             Message::Back if self.history_index > 0 => {
                 return self.jump(self.history_index - 1);
@@ -1011,6 +1047,7 @@ impl App {
             }
             Message::PressedBackground => {
                 self.menu = None;
+                self.path_edit = None;
                 if !self.modifiers.command() && !self.modifiers.shift() {
                     self.selection.clear();
                 }
@@ -1028,7 +1065,7 @@ impl App {
                         (Vec::new(), false)
                     };
                     self.menu_at = at;
-                    self.menu = Some(Menu { kind, at, offers, open_with });
+                    self.menu = Some(Menu { kind, at, offers, open_with, highlight: None });
                 }
             }
             Message::RunAction(offer) => return self.run_action(*offer),
@@ -1075,12 +1112,16 @@ impl App {
                 });
             }
             Message::ToggleOptions => {
-                self.menu_at = Point::new((self.window.size.width - 480.0).max(8.0), widgets::HEADER_HEIGHT);
+                self.menu_at = widgets::menu::options_at(self.window.size);
                 self.menu = match &self.menu {
                     Some(Menu { kind: MenuKind::Options, .. }) => None,
-                    _ => {
-                        Some(Menu { kind: MenuKind::Options, at: Point::ORIGIN, offers: Vec::new(), open_with: false })
-                    }
+                    _ => Some(Menu {
+                        kind: MenuKind::Options,
+                        at: self.menu_at,
+                        offers: Vec::new(),
+                        open_with: false,
+                        highlight: None,
+                    }),
                 };
             }
             Message::CloseMenu => self.menu = None,
@@ -1115,7 +1156,11 @@ impl App {
             Message::ToggleSearch => {
                 return Task::batch([operation::focus(SEARCH_ID), operation::select_all(SEARCH_ID)]);
             }
-            Message::TypeToSearch(text) if self.modal.is_none() && self.path_edit.is_none() => {
+            Message::TypeToSearch(text)
+                if self.modal.is_none()
+                    && self.path_edit.is_none()
+                    && (self.search.is_some() || !text.trim().is_empty()) =>
+            {
                 let query = self.search.as_ref().map_or(text.clone(), |search| format!("{}{text}", search.query));
                 return self.open_search(query);
             }
@@ -1198,7 +1243,7 @@ impl App {
                 }
                 let offers =
                     if kind == MenuKind::OpenWith { self.open_with_offers(&self.targets()) } else { Vec::new() };
-                self.menu = Some(Menu { kind, at: self.menu_at, offers, open_with: false });
+                self.menu = Some(Menu { kind, at: self.menu_at, offers, open_with: false, highlight: None });
             }
             Message::NewFromTemplate(template) => {
                 let name = file_name(&template);
@@ -1517,6 +1562,10 @@ impl App {
         }
         self.entries = entries;
         self.free_bytes = free;
+        if !refresh {
+            let current = &self.current;
+            self.thumbs.retain(|(path, _), _| path.parent() == Some(current.as_path()));
+        }
         let thumbs = self.request_thumbs();
         match listed.select {
             Some(path) => {
@@ -1583,6 +1632,7 @@ impl App {
 
     fn press(&mut self, path: PathBuf) -> Task<Message> {
         self.menu = None;
+        self.path_edit = None;
         let now = Instant::now();
         let double = self
             .last_click
@@ -1665,6 +1715,73 @@ impl App {
         widgets::pointer::reveal(Id::new(FILES_ID), top, bottom)
     }
 
+    fn anchor_point(&self) -> Point {
+        let left = widgets::SIDEBAR_WIDTH + 1.0;
+        let top = CONTENT_TOP + if self.view == ViewMode::List { content::LIST_HEADER } else { 0.0 };
+        let centre = Point::new(left + self.pane.width / 2.0, CONTENT_TOP + self.pane.height / 2.0);
+        let Some(index) = self.anchor.as_deref().and_then(|a| self.index_of(a)) else {
+            return centre;
+        };
+        let metrics = self.metrics();
+        let (x, y) = metrics.origin(self.view, index, self.pane.width);
+        let (dx, dy) = match self.view {
+            ViewMode::Grid => (metrics.tile_w / 2.0, metrics.tile_h),
+            ViewMode::List => (KEY_MENU_INSET, metrics.row),
+        };
+        let y = (top + y + dy - self.scroll_y).clamp(top, CONTENT_TOP + self.pane.height);
+        Point::new(left + x + dx, y)
+    }
+
+    fn key_menu(&mut self) -> Task<Message> {
+        self.menu_target = Some(if self.selection.is_empty() { MenuKind::Background } else { MenuKind::Selection });
+        let task = self.handle(Message::ContextMenu(self.anchor_point()));
+        self.highlight_first();
+        task
+    }
+
+    fn highlight_first(&mut self) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        let first = widgets::menu::next_highlight(&widgets::menu::entries(self, menu), None, Step::First);
+        if let Some(menu) = &mut self.menu {
+            menu.highlight = first;
+        }
+    }
+
+    fn step_menu(&mut self, step: Step) -> Task<Message> {
+        let Some(menu) = &self.menu else {
+            return Task::none();
+        };
+        let entries = widgets::menu::entries(self, menu);
+        if step == Step::Right {
+            let opens = menu.highlight.and_then(|index| entries.get(index)).is_some_and(widgets::menu::Entry::opens);
+            return if opens { self.activate_menu() } else { Task::none() };
+        }
+        let next = widgets::menu::next_highlight(&entries, menu.highlight, step);
+        if let Some(menu) = &mut self.menu {
+            menu.highlight = next;
+        }
+        Task::none()
+    }
+
+    fn activate_menu(&mut self) -> Task<Message> {
+        let Some(menu) = &self.menu else {
+            return Task::none();
+        };
+        let chosen = menu
+            .highlight
+            .and_then(|index| widgets::menu::entries(self, menu).into_iter().nth(index))
+            .and_then(widgets::menu::Entry::into_message);
+        let Some(message) = chosen else {
+            self.menu = None;
+            return Task::none();
+        };
+        let task = self.handle(Message::Menu(Box::new(message)));
+        self.highlight_first();
+        task
+    }
+
     fn open_selection(&mut self) -> Task<Message> {
         let selected = self.selected();
         match selected.as_slice() {
@@ -1676,22 +1793,30 @@ impl App {
 
     fn open_files(&self, paths: Vec<PathBuf>) -> Task<Message> {
         let lang = self.lang;
-        let cwd = self.current.clone();
-        Task::batch(paths.into_iter().take(OPEN_LIMIT).map(|path| {
+        let mut groups: Vec<(Option<Run>, Vec<Target>)> = Vec::new();
+        for path in paths.into_iter().take(OPEN_LIMIT) {
             let target = self.extensions.target(&path, false);
             let app = self
                 .extensions
                 .apps_for(std::slice::from_ref(&target))
                 .first()
                 .map(|app| Run::Exec { line: app.exec.clone(), desktop: app.desktop.clone() });
-            let cwd = cwd.clone();
+            match groups.iter_mut().find(|(run, _)| run.is_some() && *run == app) {
+                Some((_, targets)) => targets.push(target),
+                None => groups.push((app, vec![target])),
+            }
+        }
+        Task::batch(groups.into_iter().map(|(app, targets)| {
+            let cwd = self.current.clone();
             run(move || {
                 let opened = match app {
-                    Some(run) => run.launch(std::slice::from_ref(&target), &cwd),
-                    None => open_with_default(&path),
+                    Some(run) => run.launch(&targets, &cwd),
+                    None => open_with_default(&targets[0].path),
                 };
                 Outcome {
-                    text: opened.err().map(|_| format!("{} «{}»", Key::CantOpen.text(lang), file_name(&path))),
+                    text: opened
+                        .err()
+                        .map(|_| format!("{} «{}»", Key::CantOpen.text(lang), file_name(&targets[0].path))),
                     ..Outcome::default()
                 }
             })
@@ -3046,6 +3171,8 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
     let alt = modifiers.alt();
 
     let message = match key.as_ref() {
+        Key::Named(Named::ContextMenu) => Message::KeyMenu,
+        Key::Named(Named::F10) if shift => Message::KeyMenu,
         Key::Named(Named::Enter) if alt => Message::Properties,
         Key::Named(Named::Enter) => Message::OpenSelection,
         Key::Named(Named::ArrowLeft) if alt => Message::Back,

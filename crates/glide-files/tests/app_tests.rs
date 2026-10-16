@@ -93,6 +93,47 @@ fn shortcuts_follow_the_physical_key_on_cyrillic_layouts() {
 }
 
 #[test]
+fn the_menu_key_and_shift_f10_open_the_context_menu_and_shortcuts_close_it() {
+    assert_eq!(named(Named::ContextMenu, Modifiers::empty()), Some(Message::KeyMenu));
+    assert_eq!(named(Named::F10, Modifiers::SHIFT), Some(Message::KeyMenu));
+    assert_eq!(named(Named::F10, Modifiers::empty()), None);
+    for closing in [Message::Trash, Message::Copy, Message::Back, Message::TypeToSearch(String::from("a"))] {
+        assert!(closing.dismisses_menu(), "{closing:?}");
+    }
+    for kept in [Message::Move(Step::Down, false), Message::OpenSelection, Message::Escape, Message::KeyMenu] {
+        assert!(!kept.dismisses_menu(), "{kept:?}");
+    }
+}
+
+#[test]
+fn keyboard_highlight_walks_enabled_menu_rows_and_wraps() {
+    use glide_files::app::{Menu, MenuKind};
+    use menu::{Entry, next_highlight};
+    let item = |enabled: bool| {
+        Entry::Item(menu::Item {
+            label: "row".into(),
+            message: enabled.then_some(Message::SelectAll),
+            shortcut: None,
+            submenu: false,
+            danger: false,
+            checked: None,
+            swatch: None,
+        })
+    };
+    let entries = [Entry::Header("h".into()), item(true), Entry::Separator, item(false), item(true)];
+    assert_eq!(next_highlight(&entries, None, Step::Down), Some(1));
+    assert_eq!(next_highlight(&entries, Some(1), Step::Down), Some(4), "skips separators and disabled rows");
+    assert_eq!(next_highlight(&entries, Some(4), Step::Down), Some(1), "wraps");
+    assert_eq!(next_highlight(&entries, None, Step::Up), Some(4));
+    assert_eq!(next_highlight(&entries, Some(1), Step::Up), Some(4));
+    assert_eq!(next_highlight(&entries, Some(4), Step::Left), Some(4));
+    assert_eq!(next_highlight(&[Entry::Separator], None, Step::Down), None);
+    let menu =
+        Menu { kind: MenuKind::Options, at: Point::ORIGIN, offers: Vec::new(), open_with: false, highlight: None };
+    assert_eq!(menu.highlight, None);
+}
+
+#[test]
 fn escape_reaches_the_app_even_when_a_text_field_captured_it() {
     use iced::event::Status;
     assert_eq!(named(Named::Escape, Modifiers::empty()), None, "handled once, by window_events");

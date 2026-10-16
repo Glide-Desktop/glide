@@ -103,19 +103,29 @@ impl Metrics {
     }
 
     #[must_use]
+    pub fn origin(&self, view: ViewMode, index: usize, width: f32) -> (f32, f32) {
+        match view {
+            ViewMode::Grid => {
+                let columns = self.columns(width);
+                let (column, row) = ((index % columns) as f32, (index / columns) as f32);
+                (GRID_PADDING + column * (self.tile_w + TILE_GAP), GRID_PADDING + row * (self.tile_h + TILE_GAP))
+            }
+            ViewMode::List => (0.0, LIST_PADDING + index as f32 * self.row),
+        }
+    }
+
+    #[must_use]
     pub fn entries_in(&self, view: ViewMode, width: f32, count: usize, from: (f32, f32), to: (f32, f32)) -> Vec<usize> {
         let (left, right) = (from.0.min(to.0), from.0.max(to.0));
         let (top, bottom) = (from.1.min(to.1), from.1.max(to.1));
-        let overlaps = |x: f32, y: f32, w: f32, h: f32| x < right && x + w > left && y < bottom && y + h > top;
-        let columns = self.columns(width);
+        let (w, h) = match view {
+            ViewMode::Grid => (self.tile_w, self.tile_h),
+            ViewMode::List => (width, self.row),
+        };
         (0..count)
-            .filter(|&index| match view {
-                ViewMode::Grid => {
-                    let (column, row) = ((index % columns) as f32, (index / columns) as f32);
-                    let x = GRID_PADDING + column * (self.tile_w + TILE_GAP);
-                    overlaps(x, GRID_PADDING + row * (self.tile_h + TILE_GAP), self.tile_w, self.tile_h)
-                }
-                ViewMode::List => overlaps(0.0, LIST_PADDING + index as f32 * self.row, width, self.row),
+            .filter(|&index| {
+                let (x, y) = self.origin(view, index, width);
+                x < right && x + w > left && y < bottom && y + h > top
             })
             .collect()
     }

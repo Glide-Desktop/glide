@@ -8,7 +8,7 @@ use iced::{Alignment, Element, Fill, Length, Padding, Point, Size, Vector, mouse
 
 use super::header::{GAP, INSET, SEARCH_WIDTH, WINDOW_CONTROL};
 use super::{CONTROL, HEADER_HEIGHT, icon};
-use crate::app::{App, Menu, MenuKind, Message, ViewMode};
+use crate::app::{App, Menu, MenuKind, Message, Step, ViewMode};
 use crate::fs::{Offer, SortBy, Volume};
 use crate::i18n::Key;
 use crate::icons::Icon;
@@ -104,6 +104,49 @@ impl Entry {
             Self::Header(_) => HEADER,
         }
     }
+
+    const fn enabled(&self) -> bool {
+        matches!(self, Self::Item(Item { message: Some(_), .. }))
+    }
+
+    #[must_use]
+    pub const fn opens(&self) -> bool {
+        matches!(self, Self::Item(Item { message: Some(_), submenu: true, .. }))
+    }
+
+    #[must_use]
+    pub fn into_message(self) -> Option<Message> {
+        match self {
+            Self::Item(item) => item.message,
+            Self::Separator | Self::Header(_) => None,
+        }
+    }
+}
+
+#[must_use]
+pub fn next_highlight(entries: &[Entry], current: Option<usize>, step: Step) -> Option<usize> {
+    let enabled: Vec<usize> = entries.iter().enumerate().filter(|(_, entry)| entry.enabled()).map(|(i, _)| i).collect();
+    let last = enabled.len().checked_sub(1)?;
+    let at = current.and_then(|current| enabled.iter().position(|&index| index == current));
+    let pick = match (step, at) {
+        (Step::First, _) | (Step::Down, None) => 0,
+        (Step::Last, _) | (Step::Up, None) => last,
+        (Step::Down, Some(at)) => {
+            if at == last {
+                0
+            } else {
+                at + 1
+            }
+        }
+        (Step::Up, Some(at)) => at.checked_sub(1).unwrap_or(last),
+        (Step::Left | Step::Right, at) => return at.map(|at| enabled[at]),
+    };
+    Some(enabled[pick])
+}
+
+#[must_use]
+pub fn options_at(window: Size) -> Point {
+    Point::new((window.width - OPTIONS_RIGHT_INSET - WIDTH).max(MARGIN), OPTIONS_TOP)
 }
 
 fn bookmarkable(app: &App, path: &Path) -> bool {
@@ -362,12 +405,12 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
         let entries = entries(app, menu);
         let full = height(&entries);
         let at = match menu.kind {
-            MenuKind::Options => Point::new((window.width - OPTIONS_RIGHT_INSET - WIDTH).max(MARGIN), OPTIONS_TOP),
+            MenuKind::Options => options_at(window),
             _ => place(menu.at, full, window),
         };
         let fit = full.min(window.height - at.y - MARGIN);
         let rise = (1.0 - progress) * -RISE;
-        let panel = float(panel(&app.theme.faded(progress), entries, live, fit))
+        let panel = float(panel(&app.theme.faded(progress), entries, live, fit, menu.highlight))
             .scale(1.0 - (1.0 - progress) * SHRINK)
             .translate(move |_, _| Vector::new(0.0, rise));
         let panel: Element<'_, Message> = if live { opaque(panel) } else { panel.into() };
@@ -385,10 +428,13 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
     .into()
 }
 
-fn panel<'a>(theme: &ThemeState, entries: Vec<Entry>, live: bool, fit: f32) -> Element<'a, Message> {
+fn panel<'a>(
+    theme: &ThemeState, entries: Vec<Entry>, live: bool, fit: f32, highlight: Option<usize>,
+) -> Element<'a, Message> {
     let t = *theme;
     let checks = entries.iter().any(|entry| matches!(entry, Entry::Item(Item { checked: Some(_), .. })));
-    let rows = entries.into_iter().map(|entry| -> Element<'a, Message> {
+    let rows = entries.into_iter().enumerate().map(|(index, entry)| -> Element<'a, Message> {
+        let keyed = highlight == Some(index);
         match entry {
             Entry::Separator => {
                 container(rule::horizontal(1).style(move |_| theme::line(&t))).padding(Padding::from([SP1, SP3])).into()
@@ -437,6 +483,7 @@ fn panel<'a>(theme: &ThemeState, entries: Vec<Entry>, live: bool, fit: f32) -> E
                         let status = match (enabled, live) {
                             (false, _) => button::Status::Disabled,
                             (true, false) => button::Status::Active,
+                            (true, true) if keyed && status == button::Status::Active => button::Status::Hovered,
                             (true, true) => status,
                         };
                         theme::menu_item(&t, danger, status)
