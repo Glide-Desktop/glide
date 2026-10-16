@@ -705,6 +705,33 @@ fn ctrl_z_inside_a_text_field_never_reverts_a_file_operation() {
 }
 
 #[test]
+fn undoing_a_move_recreates_the_folders_it_came_from() {
+    use glide_files::app::{Outcome, Undo};
+    let scratch = std::env::temp_dir().join(format!("glide-undo-merge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(scratch.join("dst/box")).expect("dst");
+    std::fs::write(scratch.join("dst/box/one.txt"), "1").expect("moved file");
+    let mut app = listed_app();
+    let pair = (scratch.join("src/box/one.txt"), scratch.join("dst/box/one.txt"));
+    let done = Outcome {
+        text: Some(String::from("moved")),
+        select: Vec::new(),
+        undo: Some(Undo::MoveBack(vec![pair])),
+        clear_clipboard: false,
+    };
+    let _ = app.update(Message::Done(done));
+    let _ = app.update(Message::Undo);
+    let back = scratch.join("src/box/one.txt");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !back.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(back.exists(), "the merged file went back although its folder had been removed");
+    assert!(scratch.join("dst/box").is_dir(), "the folder it was merged into stays");
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[test]
 fn leaving_the_folder_by_keyboard_ends_an_inline_rename() {
     for leave in [Message::GoHome, Message::KeyMenu] {
         let mut app = listed_app();

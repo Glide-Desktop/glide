@@ -163,6 +163,7 @@ struct Worker<'a> {
     remember_folders: Option<Choice>,
     failures: Vec<Failure>,
     known: HashMap<PathBuf, Size>,
+    placed: Vec<(PathBuf, PathBuf)>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -285,7 +286,7 @@ impl Worker<'_> {
                     return None;
                 }
                 Choice::KeepBoth => dest = unique_beside(&dest, meta.is_dir()),
-                Choice::Merge if folders => return self.merge(source, dest),
+                Choice::Merge if folders => return self.merge(source, &dest),
                 Choice::Replace | Choice::Merge if inside(source, &dest) => {
                     self.fail(source, &io::Error::new(ErrorKind::InvalidInput, "item over itself"));
                     return None;
@@ -339,7 +340,7 @@ impl Worker<'_> {
         Some(dest)
     }
 
-    fn merge(&mut self, source: &Path, dest: PathBuf) -> Option<PathBuf> {
+    fn merge(&mut self, source: &Path, dest: &Path) -> Option<PathBuf> {
         let children = match std::fs::read_dir(source) {
             Ok(children) => children,
             Err(err) => {
@@ -349,8 +350,10 @@ impl Worker<'_> {
         };
         self.advance(0, 1);
         for child in children.flatten() {
-            let name = child.file_name();
-            self.transfer(&child.path(), dest.join(name));
+            let path = child.path();
+            if let Some(placed) = self.transfer(&path, dest.join(child.file_name())) {
+                self.placed.push((path, placed));
+            }
             if self.cancelled() {
                 break;
             }
@@ -358,7 +361,7 @@ impl Worker<'_> {
         if self.op == Op::Move && !self.cancelled() {
             let _ = std::fs::remove_dir(source);
         }
-        Some(dest)
+        None
     }
 
     fn copy_tree(&mut self, source: &Path, dest: &Path) -> bool {
@@ -467,9 +470,9 @@ pub fn transfer(op: Op, sources: &[PathBuf], target: &Path, sink: &dyn Sink, can
         remember_folders: None,
         failures: Vec::new(),
         known,
+        placed: Vec::new(),
     };
     sink.progress(worker.progress.clone());
-    let mut done = Vec::new();
     for source in sources {
         if worker.cancelled() {
             break;
@@ -489,12 +492,12 @@ pub fn transfer(op: Op, sources: &[PathBuf], target: &Path, sink: &dyn Sink, can
         }
         let dest = if dest == *source { unique_beside(&dest, is_dir) } else { dest };
         if let Some(final_dest) = worker.transfer(source, dest) {
-            done.push((source.clone(), final_dest));
+            worker.placed.push((source.clone(), final_dest));
         }
     }
     sink.progress(worker.progress.clone());
     let cancelled = worker.cancelled();
-    Report { done, failures: worker.failures, cancelled }
+    Report { done: worker.placed, failures: worker.failures, cancelled }
 }
 
 struct Silent;
@@ -519,6 +522,7 @@ pub fn copy_exact(source: &Path, dest: &Path) -> io::Result<()> {
         remember_folders: None,
         failures: Vec::new(),
         known: HashMap::new(),
+        placed: Vec::new(),
     };
     worker.copy_tree(source, dest);
     match worker.failures.first() {

@@ -220,12 +220,22 @@ fn keep_both_renames_and_merge_combines_folders() {
     write(&root.join("dst/box/two.txt"), "2");
     write(&root.join("dst/box/same.txt"), "old");
     let sink = Script::answering(&[(Choice::Merge, false), (Choice::KeepBoth, false)]);
-    run(Op::Copy, &[root.join("src/box")], &root.join("dst"), &sink);
+    let report = run(Op::Copy, &[root.join("src/box")], &root.join("dst"), &sink);
     assert!(sink.asked.borrow()[0].folders);
     assert_eq!(read(&root.join("dst/box/one.txt")), "1");
     assert_eq!(read(&root.join("dst/box/two.txt")), "2");
     assert_eq!(read(&root.join("dst/box/same.txt")), "old");
     assert_eq!(read(&root.join("dst/box/same (1).txt")), "new");
+    let mut done = report.done;
+    done.sort();
+    assert_eq!(
+        done,
+        vec![
+            (root.join("src/box/one.txt"), root.join("dst/box/one.txt")),
+            (root.join("src/box/same.txt"), root.join("dst/box/same (1).txt")),
+        ],
+        "a merge reports what it placed, never the folder that was already there"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

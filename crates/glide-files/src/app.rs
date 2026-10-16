@@ -2885,7 +2885,11 @@ impl App {
                     if crate::fs::operations::occupied(original) {
                         Some(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "name taken"))
                     } else {
-                        crate::fs::operations::move_path(now, original).err()
+                        original
+                            .parent()
+                            .map_or(Ok(()), std::fs::create_dir_all)
+                            .and_then(|()| crate::fs::operations::move_path(now, original))
+                            .err()
                     }
                 });
                 Outcome { text: error.map(|err| i18n::io_error(&err, lang)), ..Outcome::default() }
