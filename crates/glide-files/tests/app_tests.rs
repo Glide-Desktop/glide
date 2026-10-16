@@ -236,6 +236,21 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
 }
 
 #[test]
+fn grid_labels_are_shortened_to_two_wrapped_lines() {
+    use glide_files::widgets::{fit_lines, wrapped_lines};
+    assert_eq!(wrapped_lines("notes.txt", 90.0, 12.0), 1);
+    assert_eq!(wrapped_lines("quarterly-summary-for-the-board", 90.0, 12.0), 3, "lines break after hyphens");
+    assert_eq!(wrapped_lines("customer_archive_two", 90.0, 12.0), 2, "a long word breaks between glyphs");
+    for name in ["quarterly-summary-for-the-board-meeting.md", "a b c d e f g h i j k l m n o p q r s t.txt"] {
+        let shown = fit_lines(name, 70.0, 12.0, 2);
+        assert!(wrapped_lines(&shown, 70.0, 12.0) <= 2, "{shown:?} still needs more than two lines");
+        let kept = std::path::Path::new(&shown).extension() == std::path::Path::new(name).extension();
+        assert!(kept, "{shown:?} kept its extension");
+    }
+    assert_eq!(fit_lines("wallpaper.png", 90.0, 12.0, 2), "wallpaper.png", "a short name is left alone");
+}
+
+#[test]
 fn grid_labels_prefer_to_break_before_the_extension() {
     use glide_files::widgets::content::breakable;
     assert_eq!(breakable("wallpaper.png"), "wallpaper\u{200B}.png");

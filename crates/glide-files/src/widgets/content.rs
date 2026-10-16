@@ -6,7 +6,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
-use super::{divider, ellipsize, file_icon, fit, icon};
+use super::{divider, file_icon, fit, icon};
 use crate::app::{App, FILES_ID, Hover, MenuKind, Message, RENAME_ID, ViewMode};
 use crate::config::ListColumn;
 use crate::fs::tags;
@@ -28,6 +28,7 @@ const HEADER_HEIGHT: f32 = 26.0;
 const DOT: f32 = theme::SP2;
 const DOT_GAP: f32 = 2.0;
 const FIT_SLACK: f32 = 0.96;
+const LABEL_LINES: usize = 2;
 const EMPTY_WELL: f32 = 44.0;
 const EMPTY_GLYPH: f32 = 22.0;
 const LINK_MARK: f32 = 11.0;
@@ -40,7 +41,6 @@ pub struct Metrics {
     pub plate: f32,
     pub tile_w: f32,
     pub tile_h: f32,
-    pub label_chars: usize,
     pub row: f32,
     pub row_icon: f32,
 }
@@ -58,7 +58,7 @@ impl Metrics {
         let (row, row_icon) = LIST_ROWS[usize::from(list_zoom).min(LIST_ROWS.len() - 1)];
         let plate = icon + 2.0 * theme::SP2;
         let tile_w = (icon * 1.2 + 32.0).round();
-        Self { icon, plate, tile_w, tile_h: plate + 46.0, label_chars: (tile_w / 4.0) as usize, row, row_icon }
+        Self { icon, plate, tile_w, tile_h: plate + 46.0, row, row_icon }
     }
 
     #[must_use]
@@ -311,7 +311,10 @@ fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a
     let label: Element<'a, Message> = if let Some(field) = rename_field(app, 12.0).filter(|_| editing) {
         container(field).width(Length::Fixed(tile_w)).into()
     } else {
-        let name = text(breakable(&ellipsize(&entry.name, metrics.label_chars)))
+        let dotted = tags::colors(&entry.tags).len() as f32;
+        let marks = if dotted > 0.0 { dotted * DOT + (dotted - 1.0) * DOT_GAP + theme::SP1 } else { 0.0 };
+        let room = (tile_w - 2.0 * theme::SP1 - marks) * FIT_SLACK;
+        let name = text(breakable(&super::fit_lines(&entry.name, room, theme::CAP, LABEL_LINES)))
             .size(theme::CAP)
             .wrapping(text::Wrapping::WordOrGlyph)
             .align_x(Alignment::Center)

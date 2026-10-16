@@ -475,11 +475,70 @@ pub fn text_width(text: &str, size: f32) -> f32 {
         'm' | 'w' | 'M' | 'W' | 'м' | 'ш' | 'щ' | 'ж' | 'ю' | 'ф' | 'Ш' | 'Щ' | 'Ж' | 'Ю' | 'Ф' | 'Ы' => {
             0.82
         }
+        '\u{200B}' => 0.0,
         c if c.is_uppercase() => 0.66,
         c if c.is_ascii_digit() => 0.56,
         _ => 0.55,
     };
     text.chars().map(|c| em(c) * size).sum()
+}
+
+fn break_runs(text: &str) -> Vec<String> {
+    let mut runs = Vec::new();
+    let mut current = String::new();
+    for c in text.chars() {
+        if c == '\u{200B}' && !current.is_empty() {
+            runs.push(std::mem::take(&mut current));
+            continue;
+        }
+        current.push(c);
+        if c == ' ' || c == '-' {
+            runs.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        runs.push(current);
+    }
+    runs
+}
+
+#[must_use]
+pub fn wrapped_lines(text: &str, width: f32, size: f32) -> usize {
+    let width = width.max(1.0);
+    let mut lines = 1;
+    let mut used = 0.0_f32;
+    for run in break_runs(text) {
+        let ink = text_width(run.trim_end_matches(' '), size);
+        if used > 0.0 && used + ink > width {
+            lines += 1;
+            used = 0.0;
+        }
+        let mut rest = ink;
+        while rest > width {
+            lines += 1;
+            rest -= width;
+        }
+        used += rest + text_width(&run, size) - ink;
+    }
+    lines
+}
+
+#[must_use]
+pub fn fit_lines(name: &str, width: f32, size: f32, lines: usize) -> String {
+    let fits = |text: &str| wrapped_lines(&content::breakable(text), width, size) <= lines;
+    if fits(name) {
+        return name.to_string();
+    }
+    let (mut low, mut high) = (FIT_FLOOR, name.chars().count());
+    while high - low > 1 {
+        let middle = low.midpoint(high);
+        if fits(&ellipsize(name, middle)) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    ellipsize(name, low)
 }
 
 #[must_use]
