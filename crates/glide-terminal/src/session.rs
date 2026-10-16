@@ -197,3 +197,34 @@ impl Drop for Pane {
         let _ = self.notifier.0.send(Msg::Shutdown);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::index::{Column, Line, Point};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_command_runs_in_its_directory_and_its_output_reaches_the_grid() {
+        let (sender, mut receiver) = mpsc::unbounded();
+        let launch = Launch {
+            command: Some(("sh".into(), vec!["-c".into(), "printf 'glide\\n'; pwd".into()])),
+            directory: Some(PathBuf::from("/tmp")),
+        };
+        let pane = Pane::spawn(PaneId(7), &Bus(sender), &launch, Config::default()).expect("sh starts");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut exit = None;
+        while exit.is_none() && Instant::now() < deadline {
+            match receiver.try_recv() {
+                Ok((id, Event::ChildExit(status))) => exit = Some((id, status)),
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        let (id, status) = exit.expect("the child exits");
+        assert_eq!(id, PaneId(7));
+        assert!(status.success());
+        let text = pane.term.lock().bounds_to_string(Point::new(Line(0), Column(0)), Point::new(Line(1), Column(79)));
+        assert!(text.starts_with("glide\n/tmp"), "{text:?}");
+    }
+}

@@ -349,6 +349,10 @@ fn menu_entries(app: &App, paint: &Paint, kind: &MenuKind) -> (Vec<Element<'stat
             push(command(app, paint, Key::Copy, Command::Copy, has_selection), ITEM);
             push(command(app, paint, Key::Paste, Command::Paste, true), ITEM);
             push(command(app, paint, Key::SelectAll, Command::SelectAll, true), ITEM);
+            if app.man_topic().is_some() {
+                push(separator(paint), sep);
+                push(command(app, paint, Key::ManPage, Command::ManPage, true), ITEM);
+            }
             if let Some(link) = link {
                 push(separator(paint), sep);
                 let open = Some(Message::Open(link.clone()));

@@ -78,14 +78,20 @@ pub struct Terminal<'a> {
     focused: bool,
     blink: bool,
     find: Option<&'a str>,
-    flash: f32,
+    flash: Option<(Flash, f32)>,
     corners: Radius,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flash {
+    Bell,
+    Mark,
 }
 
 impl<'a> Terminal<'a> {
     #[must_use]
     pub fn new(pane: &'a Pane, look: Look, focused: bool) -> Self {
-        Self { pane, look, focused, blink: true, find: None, flash: 0.0, corners: Radius::default() }
+        Self { pane, look, focused, blink: true, find: None, flash: None, corners: Radius::default() }
     }
 
     #[must_use]
@@ -107,8 +113,8 @@ impl<'a> Terminal<'a> {
     }
 
     #[must_use]
-    pub fn flash(mut self, amount: f32) -> Self {
-        self.flash = amount;
+    pub fn flash(mut self, flash: Option<(Flash, f32)>) -> Self {
+        self.flash = flash;
         self
     }
 }
@@ -284,8 +290,9 @@ impl Terminal<'_> {
             _ => return None,
         }
         if state.modifiers.control()
-            && let Some(link) = state.hover.take()
+            && let Some(link) = link_at(&term, hit.point, state.urls.get_or_insert_with(url_search))
         {
+            state.hover = None;
             return Some(Action::Open(link.uri().to_string()));
         }
         let now = Instant::now();
@@ -595,7 +602,11 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
         let action = match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 state.modifiers = *modifiers;
-                if !modifiers.control() && state.hover.take().is_some() {
+                let changed = match local {
+                    Some(local) if over && state.drag == Drag::None => self.moved(state, local, bounds, over),
+                    _ => state.hover.take().is_some(),
+                };
+                if changed {
                     shell.request_redraw();
                 }
                 None
@@ -691,8 +702,16 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
                 color(palette.foreground, alpha),
             );
         }
-        if self.flash > 0.0 {
-            painter.renderer.fill_quad(backdrop, color(palette.foreground, 0.14 * self.flash));
+        match self.flash {
+            Some((Flash::Bell, amount)) => {
+                painter.renderer.fill_quad(backdrop, color(palette.foreground, 0.14 * amount));
+            }
+            Some((Flash::Mark, amount)) => {
+                let row = painter.rect(Span::new(0, 0, metrics.cells(bounds).columns));
+                let band = Rectangle { x: bounds.x, width: bounds.width, ..row };
+                painter.quad(band, Color { a: 0.22 * amount, ..self.look.accent });
+            }
+            None => {}
         }
     }
 }

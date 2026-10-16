@@ -22,7 +22,7 @@ use crate::marks::{self, Mark};
 use crate::profile::Profile;
 use crate::session::{self, Bus, Feed, Launch, Pane, PaneId};
 use crate::style::Paint;
-use crate::terminal::{Action, Fonts, Look};
+use crate::terminal::{Action, Flash, Fonts, Look};
 
 pub const FIND_ID: &str = "find";
 const BLINK: Duration = Duration::from_millis(530);
@@ -32,6 +32,7 @@ const POLL: Duration = Duration::from_secs(1);
 pub enum Command {
     NewWindow,
     NewTab,
+    ManPage,
     SplitDown,
     SplitRight,
     ClosePane,
@@ -168,7 +169,7 @@ pub struct App {
     modifiers: Modifiers,
     focused_window: bool,
     typed: Instant,
-    flashes: HashMap<PaneId, Instant>,
+    flashes: HashMap<PaneId, (Instant, Flash)>,
     launch: Launch,
     bus: Option<Bus>,
     next_id: u64,
@@ -438,6 +439,14 @@ impl App {
     }
 
     #[must_use]
+    pub fn man_topic(&self) -> Option<String> {
+        let selected = self.focused()?.term.lock().selection_to_string()?;
+        let topic = selected.trim();
+        let word = |c: char| c.is_alphanumeric() || "-_.:+".contains(c);
+        (!topic.is_empty() && topic.len() <= 64 && topic.chars().all(word)).then(|| topic.to_string())
+    }
+
+    #[must_use]
     pub fn blink_visible(&self) -> bool {
         !self.focused_window
             || motion::is_disabled()
@@ -445,9 +454,11 @@ impl App {
     }
 
     #[must_use]
-    pub fn flash(&self, id: PaneId) -> f32 {
+    pub fn flash(&self, id: PaneId) -> Option<(Flash, f32)> {
         let duration = motion::t3().max(Duration::from_millis(1));
-        self.flashes.get(&id).map_or(0.0, |at| 1.0 - (at.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0))
+        let (at, kind) = self.flashes.get(&id)?;
+        let left = 1.0 - (at.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0);
+        (left > 0.0).then_some((*kind, left))
     }
 
     #[must_use]
@@ -461,7 +472,7 @@ impl App {
 
     fn animating(&self) -> bool {
         let opening = |opened: Instant| opened.elapsed() < motion::t2();
-        self.flashes.values().any(|at| at.elapsed() < motion::t3())
+        self.flashes.values().any(|(at, _)| at.elapsed() < motion::t3())
             || self.menu.as_ref().is_some_and(|menu| opening(menu.opened))
             || self.confirm.as_ref().is_some_and(|confirm| opening(confirm.opened))
     }
@@ -643,7 +654,7 @@ impl App {
                 Task::none()
             }
             Message::Blink | Message::Frame => {
-                self.flashes.retain(|_, at| at.elapsed() < motion::t3());
+                self.flashes.retain(|_, (at, _)| at.elapsed() < motion::t3());
                 Task::none()
             }
             Message::WindowDrag => window::latest().and_then(window::drag),
@@ -820,7 +831,7 @@ impl App {
 
     fn bell(&mut self, id: PaneId, index: usize) -> Task<Message> {
         if self.prefs.visual_bell {
-            self.flashes.insert(id, Instant::now());
+            self.flashes.insert(id, (Instant::now(), Flash::Bell));
         }
         if index != self.active {
             self.tabs[index].bell = true;
@@ -1025,6 +1036,16 @@ impl App {
                 let launch = self.here();
                 self.open_tab(&launch);
             }
+            Command::ManPage => {
+                if let Some(topic) = self.man_topic() {
+                    let launch =
+                        Launch { command: Some(("man".into(), vec![topic])), directory: self.here().directory };
+                    self.open_tab(&launch);
+                    if let Some(tab) = self.tab_mut() {
+                        tab.profile = Profile::ManPage;
+                    }
+                }
+            }
             Command::SplitDown => self.split(pane_grid::Axis::Horizontal),
             Command::SplitRight => self.split(pane_grid::Axis::Vertical),
             Command::ClosePane => {
@@ -1147,7 +1168,7 @@ impl App {
                 if let Some(pane) = self.focused() {
                     let id = pane.id;
                     if marks::jump(&mut pane.term.lock(), direction, bookmarks) {
-                        self.flashes.insert(id, Instant::now());
+                        self.flashes.insert(id, (Instant::now(), Flash::Mark));
                     }
                 }
             }
