@@ -43,14 +43,13 @@ impl Trash {
 
     #[must_use]
     pub fn contains(&self, path: &Path) -> bool {
-        path.starts_with(&self.root) || path.ancestors().any(|dir| Self::new(dir.to_path_buf()).top().is_some())
+        path.starts_with(&self.root) || path.ancestors().any(is_volume_root)
     }
 
     #[must_use]
     pub fn is_files_dir(&self, path: &Path) -> bool {
         path == self.files()
-            || (path.file_name().is_some_and(|name| name == "files")
-                && path.parent().is_some_and(|root| Self::new(root.to_path_buf()).top().is_some()))
+            || (path.file_name().is_some_and(|name| name == "files") && path.parent().is_some_and(is_volume_root))
     }
 
     #[must_use]
@@ -60,8 +59,7 @@ impl Trash {
 
     #[must_use]
     pub fn on_volumes(&self, mounts: &[PathBuf]) -> Vec<Self> {
-        // SAFETY: `getuid` has no preconditions and cannot fail.
-        let uid = unsafe { libc::getuid() };
+        let uid = uid();
         let mut found: Vec<Self> = Vec::new();
         for top in mounts {
             for root in [top.join(format!(".Trash-{uid}")), top.join(".Trash").join(uid.to_string())] {
@@ -90,8 +88,7 @@ impl Trash {
             return Ok((self.clone(), None));
         }
         let top = mount_top(parent, target);
-        // SAFETY: `getuid` has no preconditions and cannot fail.
-        let uid = unsafe { libc::getuid() };
+        let uid = uid();
         let shared = top.join(".Trash");
         let root = match std::fs::symlink_metadata(&shared) {
             Ok(meta) if meta.is_dir() && meta.permissions().mode() & 0o1000 != 0 => shared.join(uid.to_string()),
@@ -194,6 +191,20 @@ impl Trash {
         }
         Ok(())
     }
+}
+
+fn uid() -> u32 {
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
+}
+
+fn is_volume_root(dir: &Path) -> bool {
+    let uid = uid().to_string();
+    let Some(name) = dir.file_name().map(|name| name.to_string_lossy()) else {
+        return false;
+    };
+    name.strip_prefix(".Trash-") == Some(uid.as_str())
+        || (name == uid.as_str() && dir.parent().and_then(Path::file_name).is_some_and(|parent| parent == ".Trash"))
 }
 
 fn device(path: &Path) -> Option<u64> {

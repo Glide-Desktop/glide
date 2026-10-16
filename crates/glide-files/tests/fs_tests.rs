@@ -308,6 +308,11 @@ fn trash_on_mounted_volumes_is_found_counted_restorable_and_emptied() {
     let trashed = private.put(&file).expect("trash on the stick");
     assert!(trashed.starts_with(usb.join(format!(".Trash-{uid}"))));
 
+    assert!(home.contains(&usb.join(format!(".Trash-{uid}/files/Archive"))));
+    assert!(home.contains(&usb.join(format!(".Trash/{uid}/files"))));
+    assert!(!home.contains(&usb.join(".Trash/someone-else/files/x")), "another user's trash is not ours");
+    assert!(!home.contains(&usb.join(".Trash-backup/files")), "nor a folder that only looks like a trash");
+    assert!(!home.contains(&usb.join("Synced/.Trash/notes")), "nor a stray .Trash folder from another system");
     let found = home.on_volumes(&[usb, scratch.dir("empty-stick")]);
     assert_eq!(found, vec![private.clone()], "only volumes that hold a trash of ours are listed");
     assert!(home.is_top_level(&trashed), "an item in a volume trash can be restored from the Trash view");
