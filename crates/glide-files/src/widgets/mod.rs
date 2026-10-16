@@ -460,6 +460,23 @@ pub fn icon_button(t: &ThemeState, glyph: Icon, message: Option<Message>, active
         .into()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ring {
+    Off,
+    Focus,
+    Invalid,
+}
+
+#[must_use]
+pub fn ringed<'a>(t: &ThemeState, field: impl Into<Element<'a, Message>>, ring: Ring) -> Element<'a, Message> {
+    let color = match ring {
+        Ring::Off => Color::TRANSPARENT,
+        Ring::Focus => t.acc_ring(),
+        Ring::Invalid => t.danger_soft(),
+    };
+    container(field).padding(theme::RING).style(move |_| theme::ring(color)).into()
+}
+
 #[must_use]
 pub fn hint<'a>(t: &ThemeState, content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
     let t = *t;

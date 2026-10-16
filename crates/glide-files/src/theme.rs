@@ -43,6 +43,7 @@ pub const TITLE: f32 = TextStyle::WIN_TITLE.size_px;
 pub const T3: f32 = TextStyle::T3.size_px;
 
 pub const CONTROL: f32 = 34.0;
+pub const RING: f32 = 3.0;
 pub const SMALL_CONTROL: f32 = 28.0;
 
 pub const SP1: f32 = glide_theme::spacing::SP1 as f32;
@@ -92,6 +93,7 @@ colors!(
     acc_text,
     acc_soft,
     acc_soft_fg,
+    acc_ring,
     danger,
     danger_soft,
 );
@@ -415,6 +417,14 @@ pub fn popover(theme: &ThemeState) -> container::Style {
 #[must_use]
 pub fn scrim(progress: f32) -> container::Style {
     surface(Color::from_rgba8(16, 15, 14, 0.4 * progress.clamp(0.0, 1.0)))
+}
+
+#[must_use]
+pub fn ring(color: Color) -> container::Style {
+    container::Style {
+        border: Border { color, width: RING, radius: Radius::from(R2 + RING) },
+        ..container::Style::default()
+    }
 }
 
 #[must_use]

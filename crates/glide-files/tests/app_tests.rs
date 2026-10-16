@@ -1,4 +1,4 @@
-use glide_files::app::{Message, Step, ViewMode, handle_shortcut, window_events};
+use glide_files::app::{Field, Message, Step, ViewMode, handle_shortcut, window_events};
 use glide_files::config::Look;
 use glide_files::i18n::{self, Key, Lang};
 use glide_files::theme::ThemeState;
@@ -933,13 +933,21 @@ fn the_search_field_knows_when_it_has_the_keyboard() {
     assert!(app.is_search_focused(), "typing to search does too");
     let _ = app.update(Message::EditPath);
     assert!(!app.is_search_focused(), "the path field takes the keyboard away");
-    let _ = app.update(Message::SearchFocus(true));
-    assert!(app.is_search_focused(), "a click is answered by asking the field itself");
+    assert_eq!(app.focused_field(), Some(Field::Path), "and wears the focus ring");
+    let _ = app.update(Message::FieldFocus(Field::Search, true));
+    assert!(app.is_search_focused(), "a click is answered by asking each field itself");
+    let _ = app.update(Message::FieldFocus(Field::Path, false));
+    assert!(app.is_search_focused(), "a field that lost nothing keeps the ring where it is");
     let press = iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left));
     assert!(matches!(
         window_events(press, iced::event::Status::Ignored, iced::window::Id::unique()),
         Some(Message::FocusProbe)
     ));
+    let _ = app.update(Message::Escape);
+    let _ = app.update(Message::NewFolder);
+    assert_eq!(app.focused_field(), Some(Field::Modal), "a dialog's name field starts focused");
+    let _ = app.update(Message::ModalCancel);
+    assert_eq!(app.focused_field(), None, "and its ring goes with the dialog");
 }
 
 #[test]

@@ -8,8 +8,8 @@ use iced::{Alignment, Element, Fill, Length, Padding, Vector};
 
 use super::content::{FIT_SLACK, breakable};
 use super::header::SEMIBOLD_SPREAD;
-use super::{file_icon, fit_lines, text_width};
-use crate::app::{App, Dialog, MODAL_ID, Message, Modal, Properties};
+use super::{Ring, file_icon, fit_lines, ringed, text_width};
+use crate::app::{App, Dialog, Field, MODAL_ID, Message, Modal, Properties};
 use crate::fs::jobs::{Choice, Question};
 use crate::fs::{format_bytes, format_time, home_dir, permissions_string};
 use crate::i18n::{self, Key, Lang};
@@ -125,12 +125,13 @@ fn buttons<'a>(c: Ctx<'a>, confirm: Element<'a, Message>) -> Element<'a, Message
         .into()
 }
 
-fn field<'a>(c: Ctx<'a>, modal: &'a Modal) -> text_input::TextInput<'a, Message> {
+fn field<'a>(c: Ctx<'a>, modal: &'a Modal, secure: bool) -> Element<'a, Message> {
     let t = c.theme();
-    text_input("", &modal.input)
+    let input = text_input("", &modal.input)
         .id(MODAL_ID)
         .on_input(Message::ModalInput)
         .on_submit(Message::ModalSubmit)
+        .secure(secure)
         .padding(Padding::from([7.0, theme::SP3]))
         .size(BUTTON_TEXT)
         .style(move |_, status| {
@@ -139,7 +140,15 @@ fn field<'a>(c: Ctx<'a>, modal: &'a Modal) -> text_input::TextInput<'a, Message>
                 style.border.color = t.danger();
             }
             style
-        })
+        });
+    let ring = if modal.error.is_some() {
+        Ring::Invalid
+    } else if c.app.focused_field() == Some(Field::Modal) {
+        Ring::Focus
+    } else {
+        Ring::Off
+    };
+    ringed(&t, input, ring)
 }
 
 fn input<'a>(c: Ctx<'a>, modal: &'a Modal, (heading, prompt): (Key, Key), submit: Key) -> Element<'a, Message> {
@@ -148,7 +157,7 @@ fn input<'a>(c: Ctx<'a>, modal: &'a Modal, (heading, prompt): (Key, Key), submit
     let mut body = column![
         title(heading.text(lang)),
         text(prompt.text(lang)).size(theme::CAP).color(c.theme().fg_2()),
-        field(c, modal),
+        field(c, modal, false),
     ]
     .spacing(theme::SP2);
     if let Some(error) = &modal.error {
@@ -166,7 +175,7 @@ fn unlock<'a>(c: Ctx<'a>, modal: &'a Modal, object: &'a str) -> Element<'a, Mess
         title(Key::UnlockTitle.text(lang)),
         text(name).size(theme::CALL).font(theme::SEMIBOLD).wrapping(WRAP),
         text(Key::UnlockPrompt.text(lang)).size(theme::CAP).color(c.theme().fg_2()),
-        field(c, modal).secure(true),
+        field(c, modal, true),
         space().height(theme::SP2),
         buttons(c, action(c, Key::Unlock, Tone::Primary, (!modal.input.is_empty()).then_some(Message::ModalSubmit))),
     ]

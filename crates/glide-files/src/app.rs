@@ -368,7 +368,7 @@ pub enum Message {
     WindowFocus(bool),
     WindowMaximized(bool),
     FocusProbe,
-    SearchFocus(bool),
+    FieldFocus(Field, bool),
     Surveyed(Option<Box<Survey>>),
     JobPause(u64),
     Duplicate,
@@ -501,7 +501,7 @@ impl Message {
                 | Self::WindowFocus(_)
                 | Self::WindowMaximized(_)
                 | Self::FocusProbe
-                | Self::SearchFocus(_)
+                | Self::FieldFocus(..)
                 | Self::Surveyed(_)
                 | Self::JobPause(_)
                 | Self::Phones(_)
@@ -745,7 +745,14 @@ struct WindowState {
     size: Size,
     focused: bool,
     maximized: bool,
-    search_focused: bool,
+    field: Option<Field>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Search,
+    Modal,
+    Path,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -871,7 +878,7 @@ impl App {
             band: None,
             drag: None,
             hover_target: None,
-            window: WindowState { size: Size::ZERO, focused: false, maximized: false, search_focused: false },
+            window: WindowState { size: Size::ZERO, focused: false, maximized: false, field: None },
             pending_select: None,
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
@@ -1329,7 +1336,7 @@ impl App {
                 return self.refresh_listing();
             }
             Message::ToggleSearch => {
-                self.window.search_focused = true;
+                self.window.field = Some(Field::Search);
                 return Task::batch([operation::focus(SEARCH_ID), operation::select_all(SEARCH_ID)]);
             }
             Message::TypeToSearch(text)
@@ -1354,7 +1361,7 @@ impl App {
             }
             Message::EditPath => {
                 self.menu = None;
-                self.window.search_focused = false;
+                self.window.field = Some(Field::Path);
                 self.path_edit = Some(self.current.display().to_string());
                 return Task::batch([operation::focus(PATH_ID), operation::select_all(PATH_ID)]);
             }
@@ -1639,7 +1646,7 @@ impl App {
                 } else {
                     self.release()
                 };
-                return Task::batch([released, operation::is_focused(SEARCH_ID).map(Message::SearchFocus)]);
+                return Task::batch([released, probe_focus()]);
             }
             Message::DragTick => return self.drag_tick(),
             Message::WindowSize(size) => {
@@ -1648,8 +1655,14 @@ impl App {
             }
             Message::WindowMaximized(maximized) => self.window.maximized = maximized,
             Message::WindowFocus(focused) => self.window.focused = focused,
-            Message::FocusProbe => return operation::is_focused(SEARCH_ID).map(Message::SearchFocus),
-            Message::SearchFocus(focused) => self.window.search_focused = focused,
+            Message::FocusProbe => return probe_focus(),
+            Message::FieldFocus(field, focused) => {
+                if focused {
+                    self.window.field = Some(field);
+                } else if self.window.field == Some(field) {
+                    self.window.field = None;
+                }
+            }
             Message::Surveyed(Some(survey)) => return self.surveyed(*survey),
             Message::JobPause(id) => {
                 if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
@@ -1699,8 +1712,17 @@ impl App {
     }
 
     #[must_use]
-    pub const fn is_search_focused(&self) -> bool {
-        self.window.search_focused
+    pub fn focused_field(&self) -> Option<Field> {
+        self.window.field.filter(|field| match field {
+            Field::Search => true,
+            Field::Modal => self.modal.is_some(),
+            Field::Path => self.path_edit.is_some(),
+        })
+    }
+
+    #[must_use]
+    pub fn is_search_focused(&self) -> bool {
+        self.focused_field() == Some(Field::Search)
     }
 
     #[must_use]
@@ -2221,13 +2243,15 @@ impl App {
     fn open_search(&mut self, query: String) -> Task<Message> {
         self.menu = None;
         self.path_edit = None;
-        self.window.search_focused = true;
+        self.window.field = Some(Field::Search);
         Task::batch([self.set_query(query), operation::focus(SEARCH_ID), operation::move_cursor_to_end(SEARCH_ID)])
     }
 
     fn close_search(&mut self) -> Task<Message> {
         self.search = None;
-        self.window.search_focused = false;
+        if self.window.field == Some(Field::Search) {
+            self.window.field = None;
+        }
         self.search_generation.fetch_add(1, Ordering::Relaxed);
         self.reload()
     }
@@ -2450,7 +2474,7 @@ impl App {
             return self.prompt(Dialog::Rename(target), name, Some(stem));
         }
         self.renaming = Some(Renaming { path: target, text: name });
-        self.window.search_focused = false;
+        self.window.field = None;
         Task::batch([self.reveal_cursor(), operation::focus(RENAME_ID), operation::select_range(RENAME_ID, 0, stem)])
     }
 
@@ -3156,7 +3180,7 @@ impl App {
         if !takes_input {
             return Task::none();
         }
-        self.window.search_focused = false;
+        self.window.field = Some(Field::Modal);
         let select = match selected {
             Some(end) => operation::select_range(MODAL_ID, 0, end),
             None => operation::select_all(MODAL_ID),
@@ -3432,7 +3456,7 @@ impl App {
     }
 
     fn escape(&mut self) -> Task<Message> {
-        self.window.search_focused = false;
+        self.window.field = None;
         if self.drag.take().is_some() {
             self.drop_target = None;
             return Task::none();
@@ -3489,6 +3513,13 @@ fn same_device(source: &Path, target: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let device = |path: &Path| std::fs::symlink_metadata(path).map(|meta| meta.dev()).ok();
     device(source).is_some_and(|dev| Some(dev) == device(target))
+}
+
+fn probe_focus() -> Task<Message> {
+    Task::batch(
+        [(SEARCH_ID, Field::Search), (MODAL_ID, Field::Modal), (PATH_ID, Field::Path)]
+            .map(|(id, field)| operation::is_focused(id).map(move |on| Message::FieldFocus(field, on))),
+    )
 }
 
 #[must_use]

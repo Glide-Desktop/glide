@@ -3,8 +3,8 @@ use std::time::Instant;
 use iced::widget::{button, container, mouse_area, row, space, stack, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
-use super::{CONTROL, HEADER_HEIGHT, fit, fit_sentence, hint, icon, icon_button, text_width};
-use crate::app::{App, Hover, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
+use super::{CONTROL, HEADER_HEIGHT, Ring, fit, fit_sentence, hint, icon, icon_button, ringed, text_width};
+use crate::app::{App, Field, Hover, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::theme::{self, R2, SP2, SP3};
@@ -78,16 +78,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let forward = icon_button(t, Icon::ChevronRight, app.can_go_forward().then_some(Message::Forward), false);
     let nav = row![hint(t, back, Key::Back.text(lang)), hint(t, forward, Key::Forward.text(lang))];
 
-    let heading: Element<'_, Message> = if let Some(input) = &app.path_edit {
-        text_input(Key::PathPlaceholder.text(app.lang), input)
+    let heading: Element<'_, Message> = if let Some(path) = &app.path_edit {
+        let input = text_input(Key::PathPlaceholder.text(app.lang), path)
             .id(PATH_ID)
             .on_input(Message::PathChanged)
             .on_submit(Message::PathSubmitted)
             .size(theme::CALL)
             .padding(Padding::from([5.0, SP3]))
             .width(Fill)
-            .style(move |_, status| theme::field(t, status))
-            .into()
+            .style(move |_, status| theme::field(t, status));
+        let ring = if app.focused_field() == Some(Field::Path) { Ring::Focus } else { Ring::Off };
+        ringed(t, input, ring)
     } else {
         let room = (app.pane.width - CHROME) * SEMIBOLD_SPREAD;
         let query = app.search.as_ref().map(|search| search.query.trim()).filter(|query| !query.is_empty());
@@ -188,8 +189,8 @@ fn search_field(app: &App) -> Element<'_, Message> {
             .on_exit(Message::Hover(Hover::ClearSearch, false));
         overlay = overlay.push(hint(t, clear, Key::ClearSearch.text(app.lang))).push(space().width(CLEAR_INSET));
     }
-    container(stack![input, overlay.height(CONTROL).align_y(Alignment::Center)])
-        .width(Length::Fixed(SEARCH_WIDTH))
-        .height(CONTROL)
-        .into()
+    let field = container(stack![input, overlay.height(CONTROL).align_y(Alignment::Center)])
+        .width(Length::Fixed(SEARCH_WIDTH - 2.0 * theme::RING))
+        .height(CONTROL);
+    ringed(t, field, if app.is_search_focused() { Ring::Focus } else { Ring::Off })
 }
