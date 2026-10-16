@@ -170,7 +170,7 @@ catalogue! {
     Moving => "Moving", "Переміщення";
     Deleting => "Deleting", "Видалення";
     StopJob => "Stop", "Зупинити";
-    Trashing => "Moving to Trash", "Переміщення до смітника";
+    Trashing => "Moving to Trash", "До смітника";
     Preparing => "Preparing…", "Підготовка…";
     Paused => "Paused", "Призупинено";
     TimeLeft => "left", "залишилось";

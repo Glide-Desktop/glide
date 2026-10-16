@@ -211,6 +211,9 @@ fn job_detail(app: &App, job: &crate::app::Job) -> String {
         return Key::Preparing.text(lang).to_string();
     }
     let mut parts = Vec::new();
+    if progress.total_items > 1 {
+        parts.push(format!("{}/{}", (progress.items + 1).min(progress.total_items), progress.total_items));
+    }
     if progress.total_bytes > 0 {
         let of = Key::OfTotal.text(lang);
         parts.push(format!(
@@ -253,11 +256,7 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
             Op::Trash => (Key::Trashing, Icon::Trash),
         };
         let progress = &job.progress;
-        let mut title = label.text(lang).to_string();
-        if progress.total_items > 1 {
-            let done = (progress.items + 1).min(progress.total_items);
-            title = format!("{title} {done}/{}", progress.total_items);
-        }
+        let title = fit_sentence(label.text(lang), JOB_TITLE * header::SEMIBOLD_SPREAD, theme::CAP);
         let paused = job.meter.is_paused();
         let fraction = (progress.total_items > 0 || job.launch.is_some()).then(|| progress.fraction());
         let toggle = if paused { (Icon::Play, Key::ResumeJob) } else { (Icon::Pause, Key::PauseJob) };
@@ -485,6 +484,8 @@ pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Opti
 const SMALL_LABEL: f32 = 12.5;
 const LABEL: f32 = 13.5;
 const JOB_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - theme::SP1;
+const JOB_TITLE: f32 = JOB_TEXT - JOB_GLYPH - theme::SP2 - 2.0 * CONTROL;
+const JOB_GLYPH: f32 = 14.0;
 
 #[must_use]
 pub fn text_width(text: &str, size: f32) -> f32 {
