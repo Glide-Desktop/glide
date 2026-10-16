@@ -236,6 +236,15 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
 }
 
 #[test]
+fn nothing_new_is_created_inside_the_trash() {
+    let mut app = listed_app();
+    app.current = app.trash.files();
+    let _ = app.update(Message::NewFolder);
+    let _ = app.update(Message::NewFile);
+    assert!(app.modal.is_none(), "Ctrl+Shift+N in the Trash asks for nothing");
+}
+
+#[test]
 fn a_search_result_offers_its_folder() {
     let labels = |app: &glide_files::App| -> Vec<String> {
         let menu = app.menu.as_ref().expect("menu");

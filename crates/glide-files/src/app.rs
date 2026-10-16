@@ -1210,6 +1210,7 @@ impl App {
             Message::Cut => self.fill_clipboard(ClipboardAction::Cut),
             Message::Copy => self.fill_clipboard(ClipboardAction::Copy),
             Message::Paste => return self.paste(),
+            Message::NewFolder | Message::NewFile | Message::NewFromTemplate(_) if self.in_trash() => {}
             Message::NewFolder => {
                 let name = unique_path(
                     &self.current,
