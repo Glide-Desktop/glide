@@ -1614,10 +1614,23 @@ impl App {
         let generation = self.nav_generation;
         let (hidden, sort, lang) = (self.show_hidden, self.sort, self.lang);
         let dir = path.clone();
+        let elsewhere: Vec<PathBuf> = if path == self.trash.files() {
+            self.volume_trashes().iter().map(Trash::files).collect()
+        } else {
+            Vec::new()
+        };
         Task::perform(
             blocking(move || {
                 read_directory(&dir, hidden, sort)
-                    .map(|entries| (entries, query_disk_space(&dir).map(|(free, _)| free)))
+                    .map(|mut entries| {
+                        if !elsewhere.is_empty() {
+                            for files in &elsewhere {
+                                entries.extend(read_directory(files, hidden, sort).unwrap_or_default());
+                            }
+                            sort_entries(&mut entries, sort);
+                        }
+                        (entries, query_disk_space(&dir).map(|(free, _)| free))
+                    })
                     .map_err(|err| i18n::io_error(&err, lang))
             }),
             move |result| {
@@ -1688,8 +1701,22 @@ impl App {
         }
     }
 
+    fn volume_trashes(&self) -> Vec<Trash> {
+        let mounts: Vec<PathBuf> = self
+            .drives
+            .iter()
+            .map(|place| place.path.clone())
+            .chain(self.volumes.iter().filter_map(|volume| volume.mount.clone()))
+            .collect();
+        self.trash.on_volumes(&mounts)
+    }
+
+    fn count_trash(&self) -> usize {
+        self.trash.count() + self.volume_trashes().iter().map(Trash::count).sum::<usize>()
+    }
+
     fn reload(&mut self) -> Task<Message> {
-        self.trash_count = self.trash.count();
+        self.trash_count = self.count_trash();
         if self.is_searching() {
             return Task::none();
         }
@@ -2991,10 +3018,15 @@ impl App {
                 return self.spawn_job(Op::Delete, paths.clone(), current, false);
             }
             Dialog::EmptyTrash => {
-                let trash = self.trash.clone();
+                let trashes: Vec<Trash> = std::iter::once(self.trash.clone()).chain(self.volume_trashes()).collect();
                 let lang = self.lang;
                 return run(move || Outcome {
-                    text: trash.empty().err().map(|err| i18n::io_error(&err, lang)),
+                    text: trashes
+                        .iter()
+                        .filter_map(|trash| trash.empty().err())
+                        .collect::<Vec<_>>()
+                        .first()
+                        .map(|err| i18n::io_error(err, lang)),
                     ..Outcome::default()
                 });
             }
@@ -3024,7 +3056,7 @@ impl App {
                 {
                     self.last_undo = Some(Undo::Rename(path.clone(), original.clone()));
                 }
-                self.trash_count = self.trash.count();
+                self.trash_count = self.count_trash();
                 self.show(path)
             }
             Err(err) => {
@@ -3184,11 +3216,11 @@ impl App {
         if self.quit_requested.is_some_and(|since| since.elapsed() >= QUIT_GRACE) {
             return iced::exit();
         }
-        self.trash_count = self.trash.count();
         let drives = mounted_drives(self.lang);
         if drives != self.drives {
             self.drives = drives;
         }
+        self.trash_count = self.count_trash();
         let config_stamp = config::path().as_deref().and_then(stamp);
         let lang = self.lang;
         if config_stamp != self.config_stamp {

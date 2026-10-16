@@ -295,6 +295,31 @@ fn trashing_on_another_volume_stays_on_that_volume() {
 }
 
 #[test]
+fn trash_on_mounted_volumes_is_found_counted_restorable_and_emptied() {
+    let scratch = Scratch::new("volume-trash");
+    let home = Trash::new(scratch.dir("home/Trash"));
+    let usb = scratch.dir("usb");
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let private = Trash::new(usb.join(format!(".Trash-{uid}")));
+    std::fs::create_dir_all(private.files()).expect("files");
+    let file = usb.join("photo.jpg");
+    std::fs::write(&file, "x").expect("file");
+    let trashed = private.put(&file).expect("trash on the stick");
+    assert!(trashed.starts_with(usb.join(format!(".Trash-{uid}"))));
+
+    let found = home.on_volumes(&[usb, scratch.dir("empty-stick")]);
+    assert_eq!(found, vec![private.clone()], "only volumes that hold a trash of ours are listed");
+    assert!(home.is_top_level(&trashed), "an item in a volume trash can be restored from the Trash view");
+    assert_eq!(found[0].count(), 1);
+    assert_eq!(home.restore(&trashed).expect("restore"), file, "it goes back to the stick");
+    let trashed = private.put(&file).expect("trash again");
+    found[0].empty().expect("empty");
+    assert!(!trashed.exists());
+    assert_eq!(found[0].count(), 0, "emptying the Trash frees the space on the stick");
+}
+
+#[test]
 fn trash_round_trip_preserves_paths_and_never_overwrites() {
     let scratch = Scratch::new("trash");
     let trash = Trash::new(scratch.0.join("Trash"));

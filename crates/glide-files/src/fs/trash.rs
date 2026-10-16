@@ -48,7 +48,23 @@ impl Trash {
 
     #[must_use]
     pub fn is_top_level(&self, path: &Path) -> bool {
-        path.parent() == Some(self.files().as_path())
+        path.parent() == Some(self.files().as_path()) || Self::owner(path).is_some_and(|trash| trash.top().is_some())
+    }
+
+    #[must_use]
+    pub fn on_volumes(&self, mounts: &[PathBuf]) -> Vec<Self> {
+        // SAFETY: `getuid` has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let mut found: Vec<Self> = Vec::new();
+        for top in mounts {
+            for root in [top.join(format!(".Trash-{uid}")), top.join(".Trash").join(uid.to_string())] {
+                let trash = Self::new(root);
+                if trash != *self && trash.files().is_dir() && !found.contains(&trash) {
+                    found.push(trash);
+                }
+            }
+        }
+        found
     }
 
     #[must_use]
