@@ -10,6 +10,16 @@ pub enum Appearance {
     Dark,
 }
 
+pub const DARK_FROM_MINUTE: u16 = 19 * 60;
+pub const DARK_UNTIL_MINUTE: u16 = 7 * 60;
+
+impl Appearance {
+    #[must_use]
+    pub const fn scheduled(minute_of_day: u16) -> Self {
+        if minute_of_day >= DARK_FROM_MINUTE || minute_of_day < DARK_UNTIL_MINUTE { Self::Dark } else { Self::Light }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
     pub appearance: Appearance,

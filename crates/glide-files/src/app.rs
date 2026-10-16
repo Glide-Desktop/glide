@@ -668,6 +668,7 @@ pub struct App {
     menu_at: Point,
     pub templates: Vec<PathBuf>,
     pub phones: Vec<crate::fs::mtp::Phone>,
+    look: Look,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -734,6 +735,10 @@ fn run(job: impl FnOnce() -> Outcome + Send + 'static) -> Task<Message> {
     Task::perform(blocking(job), |outcome| Message::Done(outcome.unwrap_or_default()))
 }
 
+fn minute_now() -> Option<u16> {
+    crate::fs::LocalTime::of(SystemTime::now()).map(|now| u16::from(now.hour) * 60 + u16::from(now.minute))
+}
+
 fn expire(id: u64) -> Task<Message> {
     Task::perform(blocking(|| std::thread::sleep(NOTICE_TIMEOUT)), move |_| Message::NoticeExpired(id))
 }
@@ -775,7 +780,7 @@ impl App {
             _ => (fallback, None),
         };
         let mut app = Self {
-            theme: ThemeState::new(look.appearance, look.accent),
+            theme: ThemeState::new(look.appearance_at(minute_now()), look.accent),
             icons: IconTheme::new(look.icon_theme.as_deref(), look.accent),
             lang,
             current: current.clone(),
@@ -844,6 +849,7 @@ impl App {
             menu_at: Point::ORIGIN,
             templates: Vec::new(),
             phones: Vec::new(),
+            look,
         };
         app.bookmarks = app.fresh_bookmarks();
         let task = app.list(app.current.clone(), Arrival::Initial, focus);
@@ -3227,6 +3233,10 @@ impl App {
             self.config_stamp = config_stamp;
             self.apply_look(&config::load());
         }
+        let appearance = self.look.appearance_at(minute_now());
+        if appearance != self.theme.tokens.appearance {
+            self.theme = ThemeState::new(appearance, self.look.accent);
+        }
         let extensions = if lang != self.lang || self.roots.stamp() != self.extensions_stamp {
             self.load_extensions()
         } else {
@@ -3245,7 +3255,8 @@ impl App {
 
     fn apply_look(&mut self, look: &Look) {
         glide_theme::motion::set_scale(look.motion_scale);
-        self.theme = ThemeState::new(look.appearance, look.accent);
+        self.theme = ThemeState::new(look.appearance_at(minute_now()), look.accent);
+        self.look = look.clone();
         self.icons = IconTheme::new(look.icon_theme.as_deref(), look.accent);
         let lang = look.language.unwrap_or_else(Lang::from_env);
         if lang != self.lang {

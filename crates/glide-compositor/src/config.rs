@@ -159,16 +159,9 @@ impl Default for TopbarConfig {
     }
 }
 
-pub const DARK_FROM_MINUTE: u16 = 19 * 60;
-pub const DARK_UNTIL_MINUTE: u16 = 7 * 60;
-
 #[must_use]
 pub const fn scheduled_appearance(minute_of_day: u16) -> glide_theme::Appearance {
-    if minute_of_day >= DARK_FROM_MINUTE || minute_of_day < DARK_UNTIL_MINUTE {
-        glide_theme::Appearance::Dark
-    } else {
-        glide_theme::Appearance::Light
-    }
+    glide_theme::Appearance::scheduled(minute_of_day)
 }
 
 pub fn with_appearance(text: &str, appearance: glide_theme::Appearance) -> Result<String, String> {

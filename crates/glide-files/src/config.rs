@@ -8,6 +8,7 @@ use crate::i18n::Lang;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Look {
     pub appearance: Appearance,
+    pub appearance_schedule: bool,
     pub accent: Accent,
     pub language: Option<Lang>,
     pub icon_theme: Option<String>,
@@ -18,10 +19,21 @@ impl Default for Look {
     fn default() -> Self {
         Self {
             appearance: Appearance::default(),
+            appearance_schedule: false,
             accent: Accent::default(),
             language: None,
             icon_theme: None,
             motion_scale: 1.0,
+        }
+    }
+}
+
+impl Look {
+    #[must_use]
+    pub fn appearance_at(&self, minute_of_day: Option<u16>) -> Appearance {
+        match minute_of_day.filter(|_| self.appearance_schedule) {
+            Some(minute) => Appearance::scheduled(minute),
+            None => self.appearance,
         }
     }
 }
@@ -67,9 +79,10 @@ struct General {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 struct Topbar {
     appearance: Appearance,
+    appearance_schedule: bool,
     accent: Accent,
 }
 
@@ -91,6 +104,7 @@ impl Look {
         Self {
             motion_scale: file.animations.scale(reduced_motion),
             appearance: file.topbar.appearance,
+            appearance_schedule: file.topbar.appearance_schedule,
             accent: file.topbar.accent,
             language: file.general.language.as_deref().and_then(Lang::from_key),
             icon_theme: file.dock.icon_theme.filter(|name| !name.trim().is_empty()),

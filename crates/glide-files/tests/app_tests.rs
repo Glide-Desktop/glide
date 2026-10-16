@@ -392,6 +392,17 @@ fn a_toast_stays_while_the_pointer_rests_on_it() {
 }
 
 #[test]
+fn the_appearance_schedule_turns_files_dark_in_the_evening_like_the_shell() {
+    let scheduled = Look::parse_with("[topbar]\nappearance = \"light\"\nappearance-schedule = true\n", false);
+    assert_eq!(scheduled.appearance_at(Some(20 * 60)), Appearance::Dark);
+    assert_eq!(scheduled.appearance_at(Some(6 * 60 + 59)), Appearance::Dark);
+    assert_eq!(scheduled.appearance_at(Some(12 * 60)), Appearance::Light);
+    let fixed = Look::parse_with("[topbar]\nappearance = \"light\"\n", false);
+    assert_eq!(fixed.appearance_at(Some(20 * 60)), Appearance::Light, "without the schedule the stored style holds");
+    assert_eq!(scheduled.appearance_at(None), Appearance::Light, "and it is the fallback when the clock is unknown");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();
