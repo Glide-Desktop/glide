@@ -173,7 +173,11 @@ pub fn encode(
     {
         return Some(if meta { vec![0x1b, byte] } else { vec![byte] });
     }
-    let text = text.filter(|text| !text.is_empty() && !text.chars().any(char::is_control))?;
+    let typed = match key {
+        Key::Character(typed) => Some(typed.as_str()),
+        _ => None,
+    };
+    let text = text.or(typed).filter(|text| !text.is_empty() && !text.chars().any(char::is_control))?;
     let mut bytes = if meta { vec![0x1b] } else { Vec::new() };
     if meta && let Key::Character(typed) = key {
         bytes.extend_from_slice(typed.as_bytes());

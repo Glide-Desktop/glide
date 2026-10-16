@@ -1,5 +1,7 @@
+use std::time::{Duration, Instant};
+
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Direction, Line};
+use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::term::cell::Hyperlink;
 use alacritty_terminal::term::{Term, TermMode};
 
@@ -47,13 +49,53 @@ fn cursor_line<T>(term: &Term<T>) -> Line {
     term.grid().cursor.point.line
 }
 
-pub fn prompt<T>(term: &mut Term<T>) {
+const SETTLE: Duration = Duration::from_secs(1);
+const REACH: i32 = 64;
+
+#[derive(Debug, Clone)]
+pub struct Prompt {
+    prefix: String,
+    line: Line,
+    history: usize,
+    until: Instant,
+}
+
+fn text<T>(term: &Term<T>, line: Line) -> String {
+    term.bounds_to_string(Point::new(line, Column(0)), Point::new(line, term.last_column()))
+}
+
+#[must_use]
+pub fn prompt<T>(term: &mut Term<T>) -> Option<Prompt> {
     if term.mode().contains(TermMode::ALT_SCREEN) {
-        return;
+        return None;
     }
-    let line = cursor_line(term);
-    if at(term, line).is_none() {
-        set(term, line, Some(Mark::Line));
+    let cursor = term.grid().cursor.point;
+    let mut prefix = text(term, cursor.line);
+    prefix.truncate(prefix.char_indices().nth(cursor.column.0).map_or(prefix.len(), |(index, _)| index));
+    let prompt = Prompt {
+        prefix: prefix.trim_end().to_string(),
+        line: cursor.line,
+        history: term.history_size(),
+        until: Instant::now() + SETTLE,
+    };
+    prompt.settle(term);
+    Some(prompt)
+}
+
+impl Prompt {
+    pub fn settle<T>(&self, term: &mut Term<T>) -> bool {
+        let shift = term.history_size().saturating_sub(self.history) as i32;
+        let expected = Line((self.line.0 - shift).min(term.bottommost_line().0));
+        let top = term.topmost_line().0;
+        let found = (0..REACH).map(|up| Line(expected.0 - up)).take_while(|line| line.0 >= top).find(|&line| {
+            if self.prefix.is_empty() { line == expected } else { text(term, line).starts_with(&self.prefix) }
+        });
+        if let Some(line) = found
+            && at(term, line).is_none()
+        {
+            set(term, line, Some(Mark::Line));
+        }
+        Instant::now() < self.until
     }
 }
 
@@ -144,8 +186,21 @@ mod tests {
     #[test]
     fn prompt_marks_skip_the_alternate_screen() {
         let mut term = term("\x1b[?1049h$ ");
-        prompt(&mut term);
+        assert!(prompt(&mut term).is_none());
         assert_eq!(at(&term, cursor_line(&term)), None);
+    }
+
+    #[test]
+    fn a_prompt_mark_survives_the_shell_repainting_its_line_and_output_scrolling_it_away() {
+        let mut term = term("$ ls");
+        let pending = prompt(&mut term).expect("outside the alternate screen");
+        assert_eq!(at(&term, Line(0)), Some(Mark::Line));
+        feed(&mut term, "\r\x1b[K$ ls\r\na\r\nb\r\nc\r\nd\r\n");
+        assert!(pending.settle(&mut term));
+        let marked: Vec<Line> =
+            (term.topmost_line().0..=term.bottommost_line().0).map(Line).filter(|&l| at(&term, l).is_some()).collect();
+        assert_eq!(marked.len(), 1);
+        assert!(text(&term, marked[0]).starts_with("$ ls"));
     }
 
     #[test]

@@ -19,7 +19,7 @@ use iced::futures::{SinkExt, Stream, StreamExt};
 pub struct PaneId(pub u64);
 
 #[derive(Debug, Clone)]
-pub struct Bus(UnboundedSender<(PaneId, Event)>);
+pub struct Bus(pub(crate) UnboundedSender<(PaneId, Event)>);
 
 #[derive(Clone)]
 pub struct Listener {

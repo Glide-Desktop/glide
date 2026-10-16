@@ -170,6 +170,7 @@ pub struct App {
     focused_window: bool,
     typed: Instant,
     flashes: HashMap<PaneId, (Instant, Flash)>,
+    prompts: HashMap<PaneId, marks::Prompt>,
     launch: Launch,
     bus: Option<Bus>,
     next_id: u64,
@@ -345,10 +346,13 @@ fn open_detached(program: &str, args: &[&str]) {
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
+        Self::with_launch(parse_args(std::env::args().skip(1)))
+    }
+
+    pub fn with_launch(mut launch: Launch) -> (Self, Task<Message>) {
         let look = config::load_look();
         motion::set_scale(look.motion_scale);
         let prefs = config::load();
-        let mut launch = parse_args(std::env::args().skip(1));
         if launch.command.is_none()
             && let Some(shell) = prefs.shell.clone()
         {
@@ -372,6 +376,7 @@ impl App {
             focused_window: true,
             typed: Instant::now(),
             flashes: HashMap::new(),
+            prompts: HashMap::new(),
             launch,
             bus: None,
             next_id: 1,
@@ -392,11 +397,6 @@ impl App {
     #[must_use]
     pub fn focused(&self) -> Option<&Pane> {
         self.tab()?.focused()
-    }
-
-    fn focused_mut(&mut self) -> Option<&mut Pane> {
-        let tab = self.tab_mut()?;
-        tab.panes.get_mut(tab.focus)
     }
 
     fn locate(&self, id: PaneId) -> Option<(usize, pane_grid::Pane)> {
@@ -541,7 +541,9 @@ impl App {
                 Task::none()
             }
             Message::Feed(Feed::Events(events)) => {
-                Task::batch(events.into_iter().map(|(id, event)| self.on_event(id, event)).collect::<Vec<_>>())
+                let tasks: Vec<_> = events.into_iter().map(|(id, event)| self.on_event(id, event)).collect();
+                self.settle_prompts();
+                Task::batch(tasks)
             }
             Message::Terminal(action) => self.on_action(action),
             Message::Key(event, captured) => self.on_key(&event, captured),
@@ -650,6 +652,7 @@ impl App {
                         pane.refresh();
                     }
                 }
+                self.settle_prompts();
                 self.reload();
                 Task::none()
             }
@@ -940,26 +943,35 @@ impl App {
         }
         let mark_prompts = self.prefs.mark_prompts;
         let alt_is_meta = self.prefs.alt_sends_escape;
-        let close = {
-            let Some(pane) = self.focused_mut() else { return Task::none() };
-            if pane.exit.is_some() {
-                matches!(key, Key::Named(Named::Enter)).then_some(pane.id)
-            } else {
-                let mut term = pane.term.lock();
-                let mode = *term.mode();
-                if let Some(bytes) = input::encode(key, *physical_key, *modifiers, text.as_deref(), mode, alt_is_meta) {
-                    if mark_prompts && matches!(key, Key::Named(Named::Enter)) {
-                        marks::prompt(&mut term);
-                    }
-                    term.scroll_display(Scroll::Bottom);
-                    drop(term);
-                    pane.write(bytes);
-                }
-                None
-            }
-        };
         self.typed = Instant::now();
-        close.map_or_else(Task::none, |id| self.close(Scope::Pane(id)))
+        let Some(pane) = self.focused() else { return Task::none() };
+        let id = pane.id;
+        let enter = matches!(key, Key::Named(Named::Enter));
+        if pane.exit.is_some() {
+            return if enter { self.close(Scope::Pane(id)) } else { Task::none() };
+        }
+        let mut term = pane.term.lock();
+        let mode = *term.mode();
+        if let Some(bytes) = input::encode(key, *physical_key, *modifiers, text.as_deref(), mode, alt_is_meta) {
+            let prompt = (mark_prompts && enter).then(|| marks::prompt(&mut term)).flatten();
+            term.scroll_display(Scroll::Bottom);
+            drop(term);
+            pane.write(bytes);
+            if let Some(prompt) = prompt {
+                self.prompts.insert(id, prompt);
+            }
+        }
+        Task::none()
+    }
+
+    fn settle_prompts(&mut self) {
+        let mut prompts = std::mem::take(&mut self.prompts);
+        prompts.retain(|id, prompt| {
+            self.locate(*id)
+                .and_then(|(index, handle)| self.tabs[index].panes.get(handle))
+                .is_some_and(|pane| prompt.settle(&mut pane.term.lock()))
+        });
+        self.prompts = prompts;
     }
 
     fn paste(&mut self, text: &str) {
@@ -1284,5 +1296,54 @@ mod tests {
     fn find_queries_are_literal() {
         assert_eq!(escape("a.b*(c)"), "a\\.b\\*\\(c\\)");
         assert!(RegexSearch::new(&format!("(?i){}", escape("[x]+?"))).is_ok());
+    }
+
+    fn press(key: Key, text: Option<&str>) -> Message {
+        Message::Key(
+            keyboard::Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: unidentified(),
+                location: keyboard::Location::Standard,
+                modifiers: Modifiers::empty(),
+                text: text.map(Into::into),
+                repeat: false,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn typed_keys_reach_the_program_and_return_marks_the_prompt_line() {
+        let (sender, mut receiver) = iced::futures::channel::mpsc::unbounded();
+        let (mut app, _) = App::with_launch(Launch { command: Some(("cat".into(), Vec::new())), directory: None });
+        app.prefs = Preferences::default();
+        let _ = app.update(Message::Feed(Feed::Connected(Bus(sender))));
+        for (key, text) in [("h", Some("h")), ("i", None)] {
+            let _ = app.update(press(Key::Character(key.into()), text));
+        }
+        let _ = app.update(press(Key::Named(Named::Enter), None));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let screen = |app: &App| {
+            let term = app.focused().expect("a pane").term.lock();
+            term.bounds_to_string(GridPoint::new(Line(0), Column(0)), GridPoint::new(Line(1), term.last_column()))
+        };
+        let mut pump = |app: &mut App| {
+            let mut events = Vec::new();
+            while let Ok(event) = receiver.try_recv() {
+                events.push(event);
+            }
+            let _ = app.update(Message::Feed(Feed::Events(events)));
+        };
+        while !screen(&app).starts_with("hi\nhi") && Instant::now() < deadline {
+            pump(&mut app);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        pump(&mut app);
+        assert!(screen(&app).starts_with("hi\nhi"), "{:?}", screen(&app));
+        let term = app.focused().expect("a pane").term.lock();
+        assert_eq!(marks::at(&term, Line(0)), Some(Mark::Line));
+        assert_eq!(marks::at(&term, Line(1)), None);
     }
 }
