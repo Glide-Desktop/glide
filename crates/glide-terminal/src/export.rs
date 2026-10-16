@@ -84,7 +84,7 @@ pub fn spawn<T: Send + 'static>(request: Request<T>) -> oneshot::Receiver<Saved>
         let destination = match choose(&request.title, &request.name, request.folder.as_deref()) {
             Ok(Some(path)) => Some(path),
             Ok(None) => None,
-            Err(_) => request.folder.as_deref().map(|folder| unused(folder, &request.name)),
+            Err(_) => glide_config::home().map(|home| unused(&home, &request.name)),
         };
         let saved = destination.map_or(Saved::Cancelled, |path| match std::fs::write(&path, content) {
             Ok(()) => Saved::Written(path),
