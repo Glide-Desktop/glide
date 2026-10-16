@@ -252,6 +252,12 @@ fn content(app: &App) -> Element<'_, Message> {
         let terminal = Terminal::new(pane, look, focused && app.window_focused())
             .blink(blink)
             .find(if focused { pattern } else { None })
+            .hints(
+                app.hint_mode
+                    .as_ref()
+                    .filter(|mode| mode.pane == pane.id)
+                    .map(|mode| (mode.items.as_slice(), mode.typed.as_str())),
+            )
             .flash(app.flash(pane.id))
             .corners(regions.get(&handle).copied().map_or_else(Radius::default, corners));
         pane_grid::Content::new(Element::from(terminal).map(Message::Terminal))
@@ -346,6 +352,7 @@ fn menu_entries(app: &App, paint: &Paint, kind: &MenuKind) -> (Vec<Element<'stat
             push(command(app, paint, Key::SplitRight, Command::SplitRight, true), ITEM);
             push(separator(paint), sep);
             push(command(app, paint, Key::Find, Command::Find, true), ITEM);
+            push(command(app, paint, Key::OpenHints, Command::Hints, true), ITEM);
             push(command(app, paint, Key::ClearScrollback, Command::ClearScrollback, true), ITEM);
             push(command(app, paint, Key::Reset, Command::Reset, true), ITEM);
             push(separator(paint), sep);

@@ -19,6 +19,7 @@ use iced::{Point, Size, Subscription, Task, clipboard, window};
 
 use crate::config::{self, OnExit, Preferences};
 use crate::find;
+use crate::hints;
 use crate::i18n::{Key as Text, Lang};
 use crate::input;
 use crate::marks::{self, Mark};
@@ -63,6 +64,7 @@ pub enum Command {
     FindUp,
     FindDown,
     UseSelectionForFind,
+    Hints,
     ClearScrollback,
     Reset,
     Mark(Mark),
@@ -105,6 +107,12 @@ pub struct Confirm {
     pub scope: Scope,
     pub processes: Vec<String>,
     pub opened: Instant,
+}
+
+pub struct HintMode {
+    pub pane: PaneId,
+    pub items: Vec<hints::Hint>,
+    pub typed: String,
 }
 
 #[derive(Default)]
@@ -189,6 +197,7 @@ pub struct App {
     pub tabs: Vec<Tab>,
     pub active: usize,
     pub find: Option<Find>,
+    pub hint_mode: Option<HintMode>,
     pub menu: Option<Menu>,
     pub confirm: Option<Confirm>,
     pub hovered_tab: Option<usize>,
@@ -315,6 +324,7 @@ fn shortcut(key: &Key, physical: keyboard::key::Physical, modifiers: Modifiers) 
         (true, true, false, 'f') => Command::Find,
         (true, true, false, 'g') => Command::FindUp,
         (true, true, false, 'e') => Command::UseSelectionForFind,
+        (true, true, false, 'o') => Command::Hints,
         (true, true, false, 'k') => Command::ClearScrollback,
         (true, true, false, 'u') => Command::Mark(Mark::Line),
         (true, true, false, 'm') => Command::Mark(Mark::Bookmark),
@@ -336,6 +346,7 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::SelectAll => "Ctrl+Shift+A",
         Command::Find => "Ctrl+Shift+F",
         Command::ClearScrollback => "Ctrl+Shift+K",
+        Command::Hints => "Ctrl+Shift+O",
         Command::Mark(Mark::Line) => "Ctrl+Shift+U",
         Command::Mark(Mark::Bookmark) => "Ctrl+Shift+M",
         Command::Jump(Direction::Left, false) => "Ctrl+Shift+↑",
@@ -400,6 +411,7 @@ impl App {
             tabs: Vec::new(),
             active: 0,
             find: None,
+            hint_mode: None,
             menu: None,
             confirm: None,
             hovered_tab: None,
@@ -945,6 +957,7 @@ impl App {
             }
             Action::Focus(id) => {
                 self.menu = None;
+                self.hint_mode = None;
                 if let Some((index, handle)) = self.locate(id) {
                     self.tabs[index].focus = handle;
                 }
@@ -1002,6 +1015,9 @@ impl App {
             }
             return Task::none();
         }
+        if self.hint_mode.is_some() {
+            return self.hint_key(key, *physical_key, modifiers.shift());
+        }
         if let Some(command) = shortcut(key, *physical_key, *modifiers) {
             return self.command(command);
         }
@@ -1028,6 +1044,42 @@ impl App {
                 self.prompts.insert(id, prompt);
             }
         }
+        Task::none()
+    }
+
+    fn hint_key(&mut self, key: &Key, physical: keyboard::key::Physical, copy: bool) -> Task<Message> {
+        let Some(mode) = &mut self.hint_mode else { return Task::none() };
+        match key {
+            Key::Named(Named::Escape) => self.hint_mode = None,
+            Key::Named(Named::Backspace) => {
+                mode.typed.pop();
+            }
+            _ => {
+                let Some(letter) = input::character(key, physical).filter(char::is_ascii_lowercase) else {
+                    return Task::none();
+                };
+                mode.typed.push(letter);
+                let mut matching = mode.items.iter().filter(|hint| hint.label.starts_with(&mode.typed));
+                match (matching.next().cloned(), matching.next()) {
+                    (None, _) => mode.typed.clear(),
+                    (Some(hint), None) if hint.label == mode.typed => {
+                        let pane = mode.pane;
+                        self.hint_mode = None;
+                        return self.use_hint(pane, &hint, copy);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn use_hint(&self, pane: PaneId, hint: &hints::Hint, copy: bool) -> Task<Message> {
+        if copy {
+            return clipboard::write(hint.text.clone());
+        }
+        let cwd = self.locate(pane).and_then(|(index, handle)| self.tabs[index].panes.get(handle)?.directory.clone());
+        open_detached("xdg-open", &[&hints::target(hint, home().as_deref(), cwd.as_deref())]);
         Task::none()
     }
 
@@ -1211,7 +1263,8 @@ impl App {
             | Command::ClearScrollback
             | Command::Reset
             | Command::Mark(_)
-            | Command::Jump(..) => return self.edit(command),
+            | Command::Jump(..)
+            | Command::Hints => return self.edit(command),
             _ => return self.adjust(command),
         }
         Task::none()
@@ -1275,6 +1328,13 @@ impl App {
                     let mut processor: Processor = Processor::new();
                     processor.advance(&mut *pane.term.lock(), b"\x1bc");
                     pane.write(&b"\x0c"[..]);
+                }
+            }
+            Command::Hints => {
+                if let Some(pane) = self.focused() {
+                    let items = hints::scan(&pane.term.lock());
+                    let id = pane.id;
+                    self.hint_mode = (!items.is_empty()).then(|| HintMode { pane: id, items, typed: String::new() });
                 }
             }
             Command::Mark(mark) => {
@@ -1405,13 +1465,17 @@ mod tests {
     }
 
     fn press(key: Key, text: Option<&str>) -> Message {
+        press_with(key, text, Modifiers::empty())
+    }
+
+    fn press_with(key: Key, text: Option<&str>, modifiers: Modifiers) -> Message {
         Message::Key(
             keyboard::Event::KeyPressed {
                 modified_key: key.clone(),
                 key,
                 physical_key: unidentified(),
                 location: keyboard::Location::Standard,
-                modifiers: Modifiers::empty(),
+                modifiers,
                 text: text.map(Into::into),
                 repeat: false,
             },
@@ -1451,6 +1515,37 @@ mod tests {
         let term = app.focused().expect("a pane").term.lock();
         assert_eq!(marks::at(&term, Line(0)), Some(Mark::Line));
         assert_eq!(marks::at(&term, Line(1)), None);
+    }
+
+    #[test]
+    fn hint_mode_narrows_by_typed_labels_resets_on_a_miss_and_ends_on_a_pick() {
+        let (sender, mut receiver) = iced::futures::channel::mpsc::unbounded();
+        let script = "printf 'https://a.example ~/one\\n'; exec cat";
+        let launch = Launch { command: Some(("sh".into(), vec!["-c".into(), script.into()])), directory: None };
+        let (mut app, _) = App::with_launch(launch);
+        let _ = app.update(Message::Feed(Feed::Connected(Bus(sender))));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let mut events = Vec::new();
+            while let Ok(event) = receiver.try_recv() {
+                events.push(event);
+            }
+            let _ = app.update(Message::Feed(Feed::Events(events)));
+            let _ = app.update(Message::Command(Command::Hints));
+            if app.hint_mode.as_ref().is_some_and(|mode| mode.items.len() == 2) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let labels = |app: &App| app.hint_mode.as_ref().map(|mode| mode.typed.clone());
+        assert_eq!(app.hint_mode.as_ref().map(|mode| mode.items.len()), Some(2));
+        let _ = app.update(press(Key::Character("x".into()), Some("x")));
+        assert_eq!(labels(&app), Some(String::new()), "a letter no label starts with clears the input");
+        let _ = app.update(press(Key::Named(Named::Escape), None));
+        assert!(app.hint_mode.is_none());
+        let _ = app.update(Message::Command(Command::Hints));
+        let _ = app.update(press_with(Key::Character("S".into()), Some("S"), Modifiers::SHIFT));
+        assert!(app.hint_mode.is_none(), "a full label picks its hint, Shift copies instead of opening");
     }
 
     #[test]

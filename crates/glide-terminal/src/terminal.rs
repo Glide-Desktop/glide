@@ -20,6 +20,7 @@ use iced::{
 };
 
 use crate::boxes;
+use crate::hints::Hint;
 use crate::input::{self, Button};
 use crate::marks::{self, Mark};
 use crate::profile::{Palette, color, mix};
@@ -27,8 +28,6 @@ use crate::session::{Cells, Listener, Pane, PaneId};
 
 pub const PAD: f32 = 8.0;
 const SAMPLE: &str = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
-const URLS: &str = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file:|git://|ssh:|ftp://)\
-                    [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\"\\s{-}\\^⟨⟩`]+";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const BAR_ZONE: f32 = 12.0;
 
@@ -43,7 +42,7 @@ pub enum Action {
 }
 
 fn url_search() -> RegexSearch {
-    RegexSearch::new(URLS).expect("the URL pattern compiles")
+    RegexSearch::new(crate::hints::URLS).expect("the URL pattern compiles")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -78,6 +77,7 @@ pub struct Terminal<'a> {
     focused: bool,
     blink: bool,
     find: Option<&'a str>,
+    hints: Option<(&'a [Hint], &'a str)>,
     flash: Option<(Flash, f32)>,
     corners: Radius,
 }
@@ -91,7 +91,13 @@ pub enum Flash {
 impl<'a> Terminal<'a> {
     #[must_use]
     pub fn new(pane: &'a Pane, look: Look, focused: bool) -> Self {
-        Self { pane, look, focused, blink: true, find: None, flash: None, corners: Radius::default() }
+        Self { pane, look, focused, blink: true, find: None, hints: None, flash: None, corners: Radius::default() }
+    }
+
+    #[must_use]
+    pub fn hints(mut self, hints: Option<(&'a [Hint], &'a str)>) -> Self {
+        self.hints = hints;
+        self
     }
 
     #[must_use]
@@ -713,10 +719,66 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             }
             None => {}
         }
+        if let Some((hints, typed)) = self.hints {
+            self.paint_hints(&mut painter, hints, typed, offset as i32, lines);
+        }
     }
 }
 
 impl Terminal<'_> {
+    fn paint_hints(&self, painter: &mut Painter<'_>, hints: &[Hint], typed: &str, offset: i32, lines: usize) {
+        let visible = |line: Line| {
+            let row = line.0 + offset;
+            (row >= 0 && (row as usize) < lines).then_some(row as usize)
+        };
+        let columns = self.pane.cells.columns;
+        let accent = self.look.accent;
+        let mut labels = Vec::new();
+        for hint in hints.iter().filter(|hint| hint.label.starts_with(typed)) {
+            let (start, end) = (*hint.range.start(), *hint.range.end());
+            for line in (start.line.0..=end.line.0).map(Line) {
+                let Some(row) = visible(line) else { continue };
+                let from = if line == start.line { start.column.0 } else { 0 };
+                let to = if line == end.line { end.column.0 + 1 } else { columns };
+                painter.underline(Span::new(row, from, to.saturating_sub(from)), Flags::UNDERLINE, accent);
+            }
+            if let Some(row) = visible(start.line) {
+                labels.push((painter.rect(Span::new(row, start.column.0, hint.label.len())), hint.label.clone()));
+            }
+        }
+        let (fonts, cell) = (self.look.fonts, painter.metrics.cell);
+        let clip = painter.clip;
+        painter.renderer.with_layer(clip, |renderer| {
+            for (rect, label) in labels {
+                let pill = Rectangle { x: rect.x - 2.0, width: rect.width + 4.0, ..rect };
+                renderer.fill_quad(
+                    Quad {
+                        bounds: pill,
+                        border: Border { radius: 3.0.into(), ..Border::default() },
+                        ..Quad::default()
+                    },
+                    accent,
+                );
+                renderer.fill_text(
+                    text::Text {
+                        content: label,
+                        bounds: Size::new(pill.width + cell.width, pill.height),
+                        size: Pixels(fonts.size),
+                        line_height: text::LineHeight::Absolute(Pixels(cell.height)),
+                        font: Font { weight: iced::font::Weight::Bold, ..fonts.regular },
+                        align_x: text::Alignment::Left,
+                        align_y: Vertical::Top,
+                        shaping: text::Shaping::Basic,
+                        wrapping: text::Wrapping::None,
+                    },
+                    Point::new(rect.x, rect.y),
+                    Color::WHITE,
+                    clip,
+                );
+            }
+        });
+    }
+
     fn paint_cells(
         &self, painter: &mut Painter<'_>, state: &State, term: &Term<Listener>, bounds: Rectangle,
     ) -> Option<(Span, CursorShape)> {

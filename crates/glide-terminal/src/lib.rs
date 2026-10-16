@@ -3,6 +3,7 @@ pub mod boxes;
 mod chrome;
 pub mod config;
 pub mod find;
+pub mod hints;
 pub mod i18n;
 mod icons;
 pub mod input;
