@@ -298,6 +298,12 @@ pub fn search_field(theme: &ThemeState, status: text_input::Status) -> text_inpu
 }
 
 #[must_use]
+pub fn clear_button(theme: &ThemeState, status: button::Status) -> button::Style {
+    let background = if highlighted(status) { theme.fill_2() } else { Color::TRANSPARENT };
+    flat(background, theme.fg_3(), R1)
+}
+
+#[must_use]
 pub fn tooltip(theme: &ThemeState) -> container::Style {
     let base = popover(theme);
     container::Style {

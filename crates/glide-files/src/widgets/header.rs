@@ -7,7 +7,7 @@ use super::{CONTROL, HEADER_HEIGHT, fit, hint, icon, icon_button};
 use crate::app::{App, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
-use crate::theme::{self, R2, SP2, SP3, Tone};
+use crate::theme::{self, R2, SP2, SP3};
 
 pub const SEARCH_WIDTH: f32 = 200.0;
 pub const WINDOW_CONTROL: f32 = 26.0;
@@ -27,6 +27,8 @@ const CHROME: f32 = SP2
     + 5.0 * GAP
     + INSET;
 pub const SEMIBOLD_SPREAD: f32 = 0.94;
+const CLEAR: f32 = 24.0;
+const CLEAR_INSET: f32 = (CONTROL - CLEAR) / 2.0;
 
 #[must_use]
 pub fn window_control(app: &App, glyph: Icon, message: Message) -> Element<'_, Message> {
@@ -160,13 +162,19 @@ fn search_field(app: &App) -> Element<'_, Message> {
     let mut overlay =
         row![container(icon(Icon::Search, 14.0, t.fg_3())).center(Length::Fixed(CONTROL)), space::horizontal()];
     if !query.is_empty() {
-        let clear = button(container(icon(Icon::Close, 12.0, t.fg_2())).center(Fill))
+        let field = theme::flatten(t.fill_1(), bar_background(app));
+        let (rest, lit) =
+            (theme::flatten(t.fg_3(), field), theme::flatten(t.fg_1(), theme::flatten(t.fill_2(), field)));
+        let glyph = iced::widget::svg(Icon::Close.handle()).width(Fill).height(Fill).style(move |_, status| {
+            theme::glyph(if status == iced::widget::svg::Status::Hovered { lit } else { rest })
+        });
+        let clear = button(glyph)
             .on_press(Message::SearchChanged(String::new()))
-            .width(Length::Fixed(CONTROL))
-            .height(Length::Fixed(CONTROL))
-            .padding(0)
-            .style(move |_, status| theme::action(t, Tone::Ghost, status));
-        overlay = overlay.push(hint(t, clear, Key::ClearSearch.text(app.lang)));
+            .width(Length::Fixed(CLEAR))
+            .height(Length::Fixed(CLEAR))
+            .padding(2)
+            .style(move |_, status| theme::clear_button(t, status));
+        overlay = overlay.push(hint(t, clear, Key::ClearSearch.text(app.lang))).push(space().width(CLEAR_INSET));
     }
     container(stack![input, overlay.height(CONTROL).align_y(Alignment::Center)])
         .width(Length::Fixed(SEARCH_WIDTH))
