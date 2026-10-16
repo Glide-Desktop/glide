@@ -1655,6 +1655,9 @@ impl App {
         self.path_edit = None;
         self.renaming = None;
         self.menu = None;
+        if !self.in_conflict() {
+            self.modal = None;
+        }
         self.scroll_y = 0.0;
         self.motion.clear_hover(Instant::now());
     }
