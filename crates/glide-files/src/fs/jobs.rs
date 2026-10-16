@@ -477,7 +477,7 @@ pub fn transfer(op: Op, sources: &[PathBuf], target: &Path, sink: &dyn Sink, can
         let Some(name) = source.file_name() else {
             continue;
         };
-        let is_dir = source.is_dir();
+        let is_dir = std::fs::symlink_metadata(source).is_ok_and(|meta| meta.is_dir());
         if is_dir && inside(target, source) {
             let err = io::Error::new(ErrorKind::InvalidInput, "folder into itself");
             worker.fail(source, &err);

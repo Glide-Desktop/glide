@@ -108,6 +108,17 @@ fn copying_a_folder_into_itself_through_a_symlink_is_refused() {
 }
 
 #[test]
+fn a_link_to_a_folder_can_be_copied_into_that_folder() {
+    let root = scratch("link-in");
+    write(&root.join("real/a.txt"), "a");
+    std::os::unix::fs::symlink(root.join("real"), root.join("link")).expect("symlink");
+    let report = run(Op::Copy, &[root.join("link")], &root.join("real"), &Script::default());
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(std::fs::read_link(root.join("real/link")).expect("copied link"), root.join("real"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn copying_into_the_same_folder_duplicates_without_asking() {
     let root = scratch("dup");
     write(&root.join("note.txt"), "n");
