@@ -51,6 +51,7 @@ pub fn path_from_arg(arg: &str) -> Option<PathBuf> {
             Some(decode_path(path))
         }
         None if arg.contains("://") => None,
-        None => Some(PathBuf::from(arg)),
+        None if Path::new(arg).is_absolute() => Some(PathBuf::from(arg)),
+        None => std::fs::canonicalize(arg).or_else(|_| std::path::absolute(arg)).ok(),
     }
 }

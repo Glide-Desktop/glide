@@ -177,7 +177,11 @@ fn uris_and_trash_paths_round_trip() {
     assert_eq!(path_from_arg("file:///tmp/My%20Dir"), Some(PathBuf::from("/tmp/My Dir")));
     assert_eq!(path_from_arg("file://localhost/etc"), Some(PathBuf::from("/etc")));
     assert_eq!(path_from_arg("https://example.com"), None);
-    assert_eq!(path_from_arg("docs"), Some(PathBuf::from("docs")));
+    let here = std::env::current_dir().expect("cwd");
+    assert_eq!(path_from_arg("docs"), Some(here.join("docs")), "a relative argument starts where the app did");
+    assert_eq!(path_from_arg("."), Some(here.clone()));
+    assert_eq!(path_from_arg("src/.."), Some(here));
+    assert_eq!(path_from_arg("/tmp/../etc"), Some(PathBuf::from("/tmp/../etc")), "an absolute one is kept as given");
 }
 
 #[test]
