@@ -33,7 +33,10 @@ pub(super) const ALERT_HOLD: Duration = Duration::from_millis(3500);
 const COMPACT_W: i32 = 330;
 const COMPACT_H: i32 = 28;
 const COMPACT_PAD: i32 = 10;
-const ALERT_H: i32 = 42;
+const ALERT_W: i32 = WIDE * 2;
+const ALERT_H: i32 = 84;
+const ALERT_PAD: i32 = SP4;
+const ALERT_LINES: usize = 2;
 const PAD: i32 = SP3;
 const SUB_H: i32 = 24;
 const SUB_PAD: i32 = 6;
@@ -46,8 +49,8 @@ const BAR_W: i32 = 3;
 const TITLE_MAX: i32 = 90;
 const BADGE_H: i32 = 16;
 const BADGE_PAD: i32 = 6;
-const ALERT_ICON: i32 = 26;
-const ALERT_CLOSE: i32 = 22;
+const ALERT_ICON: i32 = 52;
+const ALERT_CLOSE: i32 = 28;
 const HEADER_H: i32 = 24;
 const NC_HEADER_H: i32 = 26;
 const MINI_H: i32 = 22;
@@ -96,8 +99,8 @@ pub(super) const DATE_STYLE: TextStyle = style(11.5, 14.0, 500, false);
 pub(super) const TIME_STYLE: TextStyle = style(11.5, 14.0, 550, true);
 const TITLE_STYLE: TextStyle = style(11.5, 14.0, 550, false);
 const BADGE_STYLE: TextStyle = style(10.0, 13.0, 600, true);
-const ALERT_TITLE_STYLE: TextStyle = style(12.0, 16.0, 650, false);
-const ALERT_BODY_STYLE: TextStyle = style(11.5, 15.0, 400, false);
+const ALERT_TITLE_STYLE: TextStyle = style(15.0, 20.0, 650, false);
+const ALERT_BODY_STYLE: TextStyle = style(13.5, 18.0, 400, false);
 const PILL_STYLE: TextStyle = style(11.0, 14.0, 600, false);
 const MINI_STYLE: TextStyle = style(11.0, 14.0, 550, false);
 const TRACK_TITLE_STYLE: TextStyle = style(13.5, 18.0, 640, false);
@@ -343,9 +346,9 @@ struct AlertLayout {
 }
 
 fn alert_layout() -> AlertLayout {
-    let icon = local_rect(PAD, (ALERT_H - ALERT_ICON) / 2, ALERT_ICON, ALERT_ICON);
-    let close = local_rect(WIDE - PAD - ALERT_CLOSE, (ALERT_H - ALERT_CLOSE) / 2, ALERT_CLOSE, ALERT_CLOSE);
-    AlertLayout { icon, text: (PAD + ALERT_ICON + SP3, WIDE - PAD - ALERT_CLOSE - SP3), close }
+    let icon = local_rect(ALERT_PAD, (ALERT_H - ALERT_ICON) / 2, ALERT_ICON, ALERT_ICON);
+    let close = local_rect(ALERT_W - ALERT_PAD - ALERT_CLOSE, ALERT_PAD, ALERT_CLOSE, ALERT_CLOSE);
+    AlertLayout { icon, text: (ALERT_PAD + ALERT_ICON + SP4, ALERT_W - ALERT_PAD - ALERT_CLOSE - SP3), close }
 }
 
 fn mini_width(painter: &Painter, label: &str) -> i32 {
@@ -586,7 +589,7 @@ impl Topbar {
                 self.island.compact_w = width;
                 (width, COMPACT_H)
             }
-            View::Alert => (WIDE, ALERT_H),
+            View::Alert => (ALERT_W, ALERT_H),
             View::Media => (WIDE, MEDIA_H),
             View::Calendar => (WIDE, calendar_height(self.nc_items.len())),
         }
@@ -752,37 +755,53 @@ fn draw_compact(
 fn draw_alert(
     ink: &Ink<'_>, alert: &IslandAlert, scale: i32, icons: Option<&mut crate::icon::IconLoader>,
 ) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(WIDE, ALERT_H, scale)?.with_icons(icons);
+    let mut c = Canvas::new(ALERT_W, ALERT_H, scale)?.with_icons(icons);
+    paint_alert(&mut c, ink, alert);
+    Some(c.finish())
+}
+
+fn paint_alert(c: &mut Canvas<'_>, ink: &Ink<'_>, alert: &IslandAlert) {
     let layout = alert_layout();
     if let Some(icon) = alert.icon.as_deref() {
         let source = crate::notifications::ICON_SOURCE_PX;
         let (x, y) = (layout.icon.loc.x, layout.icon.loc.y);
         crate::paint::blit_icon_over(&mut c.buf, c.w, c.h, icon, source, ALERT_ICON, x, y, c.scale);
     } else {
-        c.fill(layout.icon, ink.theme.active_background, R1);
-        glyph(&mut c, Glyph::Bell, 14, layout.icon, ink.theme.active_label);
+        c.fill(layout.icon, ink.theme.active_background, R2);
+        glyph(c, Glyph::Bell, 26, layout.icon, ink.theme.active_label);
     }
     let (left, right) = layout.text;
-    let mid = ALERT_H / 2;
+    let lines = alert_lines(ink.painter, alert, right - left);
+    let title_h = ALERT_TITLE_STYLE.line_height_px.ceil() as i32;
+    let body_h = ALERT_BODY_STYLE.line_height_px.ceil() as i32;
+    let mut top = (ALERT_H - title_h - body_h * lines.len() as i32) / 2;
+    let heading_right = right.min(layout.close.loc.x - SP3);
     c.text(
         ink.painter,
-        (left, right, mid - 16, mid),
+        (left, heading_right, top, top + title_h),
         TextAlign::Left,
         &alert.heading,
         ink.theme.label,
         &ALERT_TITLE_STYLE,
     );
-    c.text(
-        ink.painter,
-        (left, right, mid, mid + 16),
-        TextAlign::Left,
-        &alert.summary,
-        ink.theme.muted,
-        &ALERT_BODY_STYLE,
-    );
+    top += title_h;
+    for line in &lines {
+        c.text(
+            ink.painter,
+            (left, right, top, top + body_h),
+            TextAlign::Left,
+            line,
+            ink.theme.muted,
+            &ALERT_BODY_STYLE,
+        );
+        top += body_h;
+    }
     c.fill(layout.close, ink.theme.fill_2, R1);
-    glyph(&mut c, Glyph::Close, 10, layout.close, ink.theme.muted);
-    Some(c.finish())
+    glyph(c, Glyph::Close, 12, layout.close, ink.theme.muted);
+}
+
+fn alert_lines(painter: &Painter, alert: &IslandAlert, width: i32) -> Vec<String> {
+    crate::notifications::wrap_lines(painter, &alert.summary, &ALERT_BODY_STYLE, width, ALERT_LINES)
 }
 
 fn draw_media_header(c: &mut Canvas<'_>, ink: &Ink<'_>, media: &MediaWidget, layout: &MediaLayout) {
@@ -1111,7 +1130,7 @@ fn push_alert<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
         return;
     };
     let clip = topbar.island.rect(spot.strip);
-    let content = spot.content(WIDE, ALERT_H);
+    let content = spot.content(ALERT_W, ALERT_H);
     let ink = Ink { painter, theme: &topbar.theme };
     let Some(buffer) = topbar
         .island
@@ -1355,11 +1374,33 @@ mod tests {
     }
 
     #[test]
-    fn the_alert_holds_its_icon_text_and_close_button_on_one_line() {
+    fn the_alert_is_twice_the_size_of_the_old_banner_and_keeps_its_parts_apart() {
+        assert_eq!((ALERT_W, ALERT_H), (2 * 356, 2 * 42));
         let layout = alert_layout();
-        assert_eq!(layout.icon.loc.x, PAD);
-        assert_eq!(layout.close.loc.x + ALERT_CLOSE, WIDE - PAD);
+        assert_eq!(layout.icon.loc.x, ALERT_PAD);
+        assert_eq!(layout.icon.loc.y * 2 + ALERT_ICON, ALERT_H);
+        assert_eq!(layout.close.loc.x + ALERT_CLOSE, ALERT_W - ALERT_PAD);
         assert!(layout.text.0 >= layout.icon.loc.x + ALERT_ICON && layout.text.1 <= layout.close.loc.x);
+        let title = ALERT_TITLE_STYLE.line_height_px.ceil() as i32;
+        let body = ALERT_BODY_STYLE.line_height_px.ceil() as i32;
+        assert!(title + body * ALERT_LINES as i32 + 2 * SP2 <= ALERT_H, "the heading and two body lines fit");
+    }
+
+    #[test]
+    fn alert_bodies_wrap_onto_two_lines_and_never_keep_their_newlines() {
+        let painter = crate::paint::Painter::new(13.0, None);
+        let alert = IslandAlert {
+            id: 1,
+            heading: String::from("Mail"),
+            summary: String::from("first\nsecond line of a body long enough to need wrapping across the alert ")
+                + &"word ".repeat(80),
+            icon: None,
+        };
+        let lines = alert_lines(&painter, &alert, 400);
+        assert_eq!(lines.len(), ALERT_LINES);
+        assert!(lines.iter().all(|line| !line.contains('\n')));
+        assert!(lines[0].starts_with("first second"));
+        assert!(lines[1].ends_with('…'));
     }
 
     #[test]
@@ -1383,9 +1424,9 @@ mod tests {
         let (left, right) = (local_rect(0, 0, 1920, 34), local_rect(1920, 0, 2560, 34));
         let mut island = Island::default();
         island.aim(Size::from((COMPACT_W, COMPACT_H)));
-        island.aim(Size::from((WIDE, ALERT_H)));
+        island.aim(Size::from((ALERT_W, ALERT_H)));
         let animating = island.morph.is_animating();
-        island.aim(Size::from((WIDE, ALERT_H)));
+        island.aim(Size::from((ALERT_W, ALERT_H)));
         assert_eq!(island.morph.is_animating(), animating, "laying out for another output does not restart it");
         let (a, b) = (island.rect(left), island.rect(right));
         assert_eq!(a.size, b.size);

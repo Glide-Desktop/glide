@@ -46,6 +46,14 @@ const DEFAULT_FAMILY: &str = "Adwaita Sans";
 const FALLBACK_FAMILIES: &[&str] =
     &[DEFAULT_FAMILY, "Cantarell", "Inter", "Noto Sans", "Ubuntu", "DejaVu Sans", "Liberation Sans"];
 
+fn single_line(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains(|c: char| c.is_whitespace() && c != ' ') {
+        std::borrow::Cow::Owned(text.split_whitespace().collect::<Vec<_>>().join(" "))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 #[must_use]
 pub fn ui_family<'a>(requested: Option<&str>, available: impl IntoIterator<Item = &'a str>) -> String {
     let available: Vec<&str> = available.into_iter().map(str::trim).collect();
@@ -211,7 +219,7 @@ impl Painter {
             features.disable(FeatureTag::KERNING);
             attrs = attrs.font_features(features);
         }
-        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.set_text(&single_line(text), &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(font_system, false);
         buffer
     }
@@ -260,6 +268,7 @@ impl Painter {
     fn fit_text_at(
         &self, text: &str, avail_w: i32, font_size: f32, weight: u16, tracking_em: f32, tabular: bool,
     ) -> String {
+        let text = &*single_line(text);
         let avail_w = avail_w as f32;
         if avail_w <= 0.0 {
             return String::new();
@@ -1758,6 +1767,17 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(fit(&painter, long, avail_w), linear, "avail_w={avail_w}");
         }
+    }
+
+    #[test]
+    fn labels_stay_on_one_line_whatever_whitespace_they_carry() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let flat = painter.text_width("first line second line");
+        assert_eq!(painter.text_width("first line\nsecond line"), flat);
+        assert_eq!(painter.text_width("first line\r\n\tsecond  line"), flat);
+        assert_ne!(painter.text_width("two  spaces"), painter.text_width("two spaces"));
+        assert_eq!(fit(&painter, "short\nnote", 1000), "short note");
+        assert!(!fit(&painter, "a much longer first line\nand more", 60).contains('\n'));
     }
 
     #[test]
