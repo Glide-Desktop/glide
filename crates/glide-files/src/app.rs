@@ -1623,6 +1623,13 @@ impl App {
         self.list(self.current.clone(), Arrival::Refresh, None)
     }
 
+    fn show(&mut self, path: PathBuf) -> Task<Message> {
+        if self.is_searching() {
+            return self.refresh_listing();
+        }
+        self.list(self.current.clone(), Arrival::Refresh, Some(path))
+    }
+
     fn refresh_listing(&mut self) -> Task<Message> {
         match self.search.as_ref().map(|search| search.query.clone()) {
             Some(query) if !query.trim().is_empty() => self.set_query(query),
@@ -2178,7 +2185,7 @@ impl App {
         match rename_item(&renaming.path, &renaming.text) {
             Ok(path) => {
                 self.last_undo = Some(Undo::Rename(path.clone(), renaming.path.clone()));
-                self.list(self.current.clone(), Arrival::Refresh, Some(path))
+                self.show(path)
             }
             Err(err) => {
                 let text = i18n::io_error(&err, self.lang);
@@ -2510,6 +2517,9 @@ impl App {
     }
 
     fn spawn_job(&mut self, op: Op, sources: Vec<PathBuf>, target: PathBuf, from_clipboard: bool) -> Task<Message> {
+        if self.quit_requested.is_some() {
+            return Task::none();
+        }
         self.next_job += 1;
         let id = self.next_job;
         let (cancel, pause) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
@@ -2931,7 +2941,7 @@ impl App {
                     self.last_undo = Some(Undo::Rename(path.clone(), original.clone()));
                 }
                 self.trash_count = self.trash.count();
-                self.list(self.current.clone(), Arrival::Refresh, Some(path))
+                self.show(path)
             }
             Err(err) => {
                 self.modal = Some(Modal { error: Some(i18n::io_error(&err, self.lang)), ..modal });

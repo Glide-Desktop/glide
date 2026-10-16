@@ -210,6 +210,8 @@ fn stop_and_quit_waits_for_the_cancelled_job_then_exits() {
     assert_eq!(app.jobs.len(), 1, "the job is told to stop, not dropped");
     let _ = app.update(Message::Quit);
     assert!(app.modal.is_none(), "asking again while stopping is pointless");
+    let _ = app.update(Message::Paste);
+    assert_eq!(app.jobs.len(), 1, "no new work starts while quitting");
     let exit = app.update(Message::Job(1, JobEvent::Done(Box::default())));
     assert!(app.jobs.is_empty());
     assert_eq!(exit.units(), 1, "the last job to finish hands back the exit task");
@@ -227,6 +229,30 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
     assert!(app.jobs.is_empty(), "dropping a folder's own file back into it does nothing");
     let _ = app.update(Message::Dnd(Dnd::Drop { paths: vec![path(4)], at: (5.0, 5.0), moved: true }));
     assert_eq!(app.jobs.len(), 1, "a foreign file starts a transfer");
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn renaming_a_search_result_runs_the_search_again() {
+    use glide_files::fs::FileEntry;
+    let mut app = listed_app();
+    let scratch = std::env::temp_dir().join(format!("glide-search-rename-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("scratch");
+    std::fs::write(scratch.join("old.txt"), b"x").expect("file");
+    app.current = scratch.clone();
+    app.entries = FileEntry::from_path(scratch.join("old.txt")).into_iter().collect();
+    let _ = app.update(Message::TypeToSearch(String::from("o")));
+    app.entries = FileEntry::from_path(scratch.join("old.txt")).into_iter().collect();
+    if let Some(search) = app.search.as_mut() {
+        search.pending = false;
+    }
+    let _ = app.update(Message::Pressed(scratch.join("old.txt")));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Rename);
+    let _ = app.update(Message::RenameInput(String::from("new.txt")));
+    let _ = app.update(Message::RenameSubmit);
+    assert!(scratch.join("new.txt").exists());
+    assert!(app.search.as_ref().is_some_and(|search| search.pending), "the results are fetched again");
     let _ = std::fs::remove_dir_all(scratch);
 }
 
