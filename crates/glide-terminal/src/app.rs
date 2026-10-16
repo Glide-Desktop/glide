@@ -18,6 +18,7 @@ use iced::widget::{operation, pane_grid};
 use iced::{Point, Size, Subscription, Task, clipboard, window};
 
 use crate::config::{self, OnExit, Preferences};
+use crate::dnd;
 use crate::export;
 use crate::find;
 use crate::hints;
@@ -176,6 +177,8 @@ pub enum Message {
     FindClose,
     Found(Option<find::Outcome>),
     Exported(Option<export::Saved>),
+    Handles(Option<dnd::Handles>),
+    Dropped(dnd::Dropped),
     Pasted(Option<String>),
     Open(String),
     CopyText(String),
@@ -203,6 +206,8 @@ pub struct App {
     pub find: Option<Find>,
     pub hint_mode: Option<HintMode>,
     pub notice: Option<(String, Instant)>,
+    pub drop_at: Option<(f32, f32)>,
+    handles: Option<dnd::Handles>,
     pub menu: Option<Menu>,
     pub confirm: Option<Confirm>,
     pub hovered_tab: Option<usize>,
@@ -381,6 +386,19 @@ pub fn directory_label(directory: Option<&Path>) -> String {
     directory.file_name().map_or_else(|| directory.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
+fn wayland_handles(window: &dyn iced::window::Window) -> Option<dnd::Handles> {
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    let display = window.display_handle().ok()?.as_raw();
+    let surface = window.window_handle().ok()?.as_raw();
+    match (display, surface) {
+        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => Some(dnd::Handles {
+            display: display.display.as_ptr() as usize,
+            surface: surface.surface.as_ptr() as usize,
+        }),
+        _ => None,
+    }
+}
+
 fn family(prefs: &Preferences) -> iced::Font {
     match prefs.font_family.as_deref().map(str::trim) {
         Some(name) if !name.is_empty() => iced::Font::with_name(Box::leak(name.to_string().into_boxed_str())),
@@ -421,6 +439,8 @@ impl App {
             find: None,
             hint_mode: None,
             notice: None,
+            handles: None,
+            drop_at: None,
             menu: None,
             confirm: None,
             hovered_tab: None,
@@ -437,7 +457,8 @@ impl App {
             next_id: 1,
             stamps: (config::stamp(config::shell_path().as_deref()), config::stamp(config::path().as_deref())),
         };
-        (app, Task::none())
+        let handles = window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles);
+        (app, handles)
     }
 
     #[must_use]
@@ -580,6 +601,9 @@ impl App {
         if self.focused_window && self.prefs.cursor_blink && !motion::is_disabled() {
             subscriptions.push(iced::time::every(BLINK).map(|_| Message::Blink));
         }
+        if let Some(handles) = self.handles {
+            subscriptions.push(Subscription::run_with(handles, dnd::events).map(Message::Dropped));
+        }
         if self.tab_drag.is_some() {
             subscriptions.push(iced::event::listen_with(|event, _, _| {
                 let released = iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left));
@@ -608,47 +632,18 @@ impl App {
                 Task::batch(tasks)
             }
             Message::Terminal(action) => self.on_action(action),
-            Message::Exported(saved) => {
-                let lang = self.lang;
-                self.notice = match saved {
-                    Some(export::Saved::Written(path)) => {
-                        Some(format!("{} {}", Text::SavedTo.text(lang), path.display()))
-                    }
-                    Some(export::Saved::Failed(error)) => Some(format!("{}: {error}", Text::SaveFailed.text(lang))),
-                    Some(export::Saved::Cancelled) | None => None,
-                }
-                .map(|text| (text, Instant::now()));
-                Task::none()
-            }
             Message::Key(event, captured) => self.on_key(&event, captured),
             Message::Command(command) => self.command(command),
-            Message::PaneClicked(handle) => {
-                if let Some(tab) = self.tab_mut() {
-                    tab.focus = handle;
-                }
-                Task::none()
-            }
-            Message::SplitResized(event) => {
-                if let Some(tab) = self.tab_mut() {
-                    tab.panes.resize(event.split, event.ratio);
-                }
-                Task::none()
-            }
-            Message::TabPressed(index) => {
-                self.select(index);
-                self.tab_drag = Some(TabDrag { index, start: None, moved: false });
-                Task::none()
-            }
-            Message::TabMoved(x) => {
-                self.drag_tab(x);
-                Task::none()
-            }
-            Message::TabReleased => {
-                self.tab_drag = None;
-                Task::none()
-            }
-            Message::TabHovered(index) => {
-                self.hovered_tab = index;
+            Message::Handles(_)
+            | Message::Dropped(_)
+            | Message::Exported(_)
+            | Message::PaneClicked(_)
+            | Message::SplitResized(_)
+            | Message::TabPressed(_)
+            | Message::TabMoved(_)
+            | Message::TabReleased
+            | Message::TabHovered(_) => {
+                self.on_layout(message);
                 Task::none()
             }
             Message::FindInput(_)
@@ -691,6 +686,42 @@ impl App {
                     _ => Task::none(),
                 }
             }
+        }
+    }
+
+    fn on_layout(&mut self, message: Message) {
+        match message {
+            Message::Handles(handles) => self.handles = handles,
+            Message::Dropped(dropped) => self.dropped(dropped),
+            Message::Exported(saved) => {
+                let lang = self.lang;
+                self.notice = match saved {
+                    Some(export::Saved::Written(path)) => {
+                        Some(format!("{} {}", Text::SavedTo.text(lang), path.display()))
+                    }
+                    Some(export::Saved::Failed(error)) => Some(format!("{}: {error}", Text::SaveFailed.text(lang))),
+                    Some(export::Saved::Cancelled) | None => None,
+                }
+                .map(|text| (text, Instant::now()));
+            }
+            Message::PaneClicked(handle) => {
+                if let Some(tab) = self.tab_mut() {
+                    tab.focus = handle;
+                }
+            }
+            Message::SplitResized(event) => {
+                if let Some(tab) = self.tab_mut() {
+                    tab.panes.resize(event.split, event.ratio);
+                }
+            }
+            Message::TabPressed(index) => {
+                self.select(index);
+                self.tab_drag = Some(TabDrag { index, start: None, moved: false });
+            }
+            Message::TabMoved(x) => self.drag_tab(x),
+            Message::TabReleased => self.tab_drag = None,
+            Message::TabHovered(index) => self.hovered_tab = index,
+            _ => {}
         }
     }
 
@@ -1137,6 +1168,27 @@ impl App {
                 .is_some_and(|pane| prompt.settle(&mut pane.term.lock()))
         });
         self.prompts = prompts;
+    }
+
+    fn dropped(&mut self, dropped: dnd::Dropped) {
+        let (text, at) = match dropped {
+            dnd::Dropped::Hover(at) => {
+                self.drop_at = at;
+                return;
+            }
+            dnd::Dropped::Paths(paths, at) => {
+                let quoted: Vec<String> = paths.iter().map(|path| dnd::quote(path)).collect();
+                (quoted.join(" ") + " ", at)
+            }
+            dnd::Dropped::Text(text, at) => (text, at),
+        };
+        self.drop_at = None;
+        if let Some(handle) = crate::chrome::pane_at(self, at)
+            && let Some(tab) = self.tab_mut()
+        {
+            tab.focus = handle;
+        }
+        self.paste(&text);
     }
 
     fn paste(&mut self, text: &str) {

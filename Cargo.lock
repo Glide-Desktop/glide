@@ -1607,9 +1607,12 @@ dependencies = [
  "glide-config",
  "glide-theme",
  "iced",
+ "raw-window-handle",
  "rustix 1.1.5",
  "serde",
  "toml",
+ "wayland-backend",
+ "wayland-client",
  "zbus",
 ]
 

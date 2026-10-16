@@ -80,6 +80,7 @@ pub struct Terminal<'a> {
     hints: Option<(&'a [Hint], &'a str)>,
     flash: Option<(Flash, f32)>,
     corners: Radius,
+    drop_target: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +92,23 @@ pub enum Flash {
 impl<'a> Terminal<'a> {
     #[must_use]
     pub fn new(pane: &'a Pane, look: Look, focused: bool) -> Self {
-        Self { pane, look, focused, blink: true, find: None, hints: None, flash: None, corners: Radius::default() }
+        Self {
+            pane,
+            look,
+            focused,
+            blink: true,
+            find: None,
+            hints: None,
+            flash: None,
+            corners: Radius::default(),
+            drop_target: false,
+        }
+    }
+
+    #[must_use]
+    pub fn drop_target(mut self, target: bool) -> Self {
+        self.drop_target = target;
+        self
     }
 
     #[must_use]
@@ -721,6 +738,12 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
         }
         if let Some((hints, typed)) = self.hints {
             self.paint_hints(&mut painter, hints, typed, offset as i32, lines);
+        }
+        if self.drop_target {
+            let border = Border { color: self.look.accent, width: 2.0, radius: self.corners };
+            painter
+                .renderer
+                .fill_quad(Quad { bounds, border, ..Quad::default() }, Color { a: 0.08, ..self.look.accent });
         }
     }
 }

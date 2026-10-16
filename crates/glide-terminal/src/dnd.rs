@@ -1,0 +1,231 @@
+use std::io::Read;
+use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
+
+use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use wayland_backend::client::{Backend, ObjectId};
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
+use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
+use wayland_client::protocol::wl_data_offer::{self, WlDataOffer};
+use wayland_client::protocol::{wl_registry, wl_seat, wl_surface};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+
+const URI_LIST: &str = "text/uri-list";
+const TEXTS: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Handles {
+    pub display: usize,
+    pub surface: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dropped {
+    Hover(Option<(f32, f32)>),
+    Paths(Vec<PathBuf>, (f32, f32)),
+    Text(String, (f32, f32)),
+}
+
+#[must_use]
+pub fn quote(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    let plain = |c: char| c.is_alphanumeric() || "/._-+,:@%~=".contains(c);
+    if !text.is_empty() && text.chars().all(plain) {
+        return text.into_owned();
+    }
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+#[must_use]
+pub fn parse(mime: &str, bytes: &[u8], at: (f32, f32)) -> Option<Dropped> {
+    let text = String::from_utf8_lossy(bytes);
+    if mime != URI_LIST {
+        return (!text.is_empty()).then(|| Dropped::Text(text.into_owned(), at));
+    }
+    let entries: Vec<&str> =
+        text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect();
+    if entries.is_empty() {
+        return None;
+    }
+    if entries.iter().all(|entry| entry.starts_with("file://")) {
+        return Some(Dropped::Paths(entries.into_iter().map(crate::app::uri_path).collect(), at));
+    }
+    Some(Dropped::Text(entries.join(" "), at))
+}
+
+#[derive(Default)]
+struct Offer {
+    mimes: Vec<String>,
+}
+
+struct State {
+    events: UnboundedSender<Dropped>,
+    connection: Connection,
+    drag: Option<WlDataOffer>,
+    hover: (f32, f32),
+}
+
+#[must_use]
+pub fn events(handles: &Handles) -> UnboundedReceiver<Dropped> {
+    let (sender, receiver) = unbounded();
+    let handles = *handles;
+    let _ = std::thread::Builder::new().name(String::from("glide-terminal-dnd")).spawn(move || run(handles, sender));
+    receiver
+}
+
+fn run(handles: Handles, events: UnboundedSender<Dropped>) -> Result<(), String> {
+    // SAFETY: `display` is the live `wl_display` iced's window was created on, and the window lives for the
+    // rest of the process.
+    let backend = unsafe { Backend::from_foreign_display(handles.display as *mut _) };
+    let connection = Connection::from_backend(backend);
+    // SAFETY: `surface` is the live `wl_surface` of that same window, owned by winit.
+    let surface_id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), handles.surface as *mut _) }
+        .map_err(|error| error.to_string())?;
+    wl_surface::WlSurface::from_id(&connection, surface_id).map_err(|error| error.to_string())?;
+    let (globals, mut queue): (_, EventQueue<State>) =
+        registry_queue_init(&connection).map_err(|error| error.to_string())?;
+    let qh = queue.handle();
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).map_err(|error| error.to_string())?;
+    let manager: WlDataDeviceManager = globals.bind(&qh, 3..=3, ()).map_err(|error| error.to_string())?;
+    manager.get_data_device(&seat, &qh, ());
+    let mut state = State { events, connection, drag: None, hover: (0.0, 0.0) };
+    loop {
+        queue.blocking_dispatch(&mut state).map_err(|error| error.to_string())?;
+        if state.events.is_closed() {
+            return Ok(());
+        }
+    }
+}
+
+fn mimes(offer: &WlDataOffer) -> Vec<String> {
+    offer
+        .data::<Mutex<Offer>>()
+        .map(|offer| offer.lock().unwrap_or_else(PoisonError::into_inner).mimes.clone())
+        .unwrap_or_default()
+}
+
+fn wanted(offer: &WlDataOffer) -> Option<&'static str> {
+    let offered = mimes(offer);
+    std::iter::once(URI_LIST).chain(TEXTS).find(|mime| offered.iter().any(|offered| offered == mime))
+}
+
+impl State {
+    fn drop_offer(&mut self) {
+        let Some(offer) = self.drag.take() else { return };
+        let Some(mime) = wanted(&offer) else {
+            offer.destroy();
+            return;
+        };
+        let Ok((reader, writer)) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) else {
+            offer.destroy();
+            return;
+        };
+        offer.receive(mime.to_string(), std::os::fd::AsFd::as_fd(&writer));
+        drop(writer);
+        let _ = self.connection.flush();
+        let (events, connection, at) = (self.events.clone(), self.connection.clone(), self.hover);
+        let _ = std::thread::Builder::new().name(String::from("glide-terminal-drop")).spawn(move || {
+            let mut bytes = Vec::new();
+            if std::fs::File::from(reader).read_to_end(&mut bytes).is_ok()
+                && let Some(dropped) = parse(mime, &bytes, at)
+            {
+                let _ = events.unbounded_send(dropped);
+            }
+            if offer.version() >= 3 {
+                offer.finish();
+            }
+            offer.destroy();
+            let _ = connection.flush();
+        });
+    }
+}
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
+    fn event(
+        _: &mut Self, _: &wl_registry::WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+wayland_client::delegate_noop!(State: ignore wl_seat::WlSeat);
+wayland_client::delegate_noop!(State: ignore WlDataDeviceManager);
+
+impl Dispatch<WlDataDevice, ()> for State {
+    fn event(
+        state: &mut Self, _: &WlDataDevice, event: wl_data_device::Event, (): &(), _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_device::Event::Enter { serial, x, y, id, .. } => {
+                state.hover = (x as f32, y as f32);
+                if let Some(offer) = &id {
+                    let mime = wanted(offer);
+                    offer.accept(serial, mime.map(str::to_string));
+                    if offer.version() >= 3 {
+                        let actions = if mime.is_some() { DndAction::Copy } else { DndAction::empty() };
+                        offer.set_actions(actions, DndAction::Copy);
+                    }
+                }
+                state.drag = id;
+                let _ = state.events.unbounded_send(Dropped::Hover(Some(state.hover)));
+            }
+            wl_data_device::Event::Motion { x, y, .. } => {
+                state.hover = (x as f32, y as f32);
+                let _ = state.events.unbounded_send(Dropped::Hover(Some(state.hover)));
+            }
+            wl_data_device::Event::Leave => {
+                if let Some(offer) = state.drag.take() {
+                    offer.destroy();
+                }
+                let _ = state.events.unbounded_send(Dropped::Hover(None));
+            }
+            wl_data_device::Event::Drop => {
+                state.drop_offer();
+                let _ = state.events.unbounded_send(Dropped::Hover(None));
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(State, WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, Mutex::new(Offer::default())),
+    ]);
+}
+
+impl Dispatch<WlDataOffer, Mutex<Offer>> for State {
+    fn event(
+        _: &mut Self, _: &WlDataOffer, event: wl_data_offer::Event, data: &Mutex<Offer>, _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            data.lock().unwrap_or_else(PoisonError::into_inner).mimes.push(mime_type);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn dropped_paths_are_quoted_only_when_the_shell_would_split_them() {
+        assert_eq!(quote(Path::new("/home/me/notes.txt")), "/home/me/notes.txt");
+        assert_eq!(quote(Path::new("/home/me/My Files/a b.txt")), "'/home/me/My Files/a b.txt'");
+        assert_eq!(quote(Path::new("/tmp/it's")), r"'/tmp/it'\''s'");
+        assert_eq!(quote(Path::new("/tmp/$x;rm")), "'/tmp/$x;rm'");
+    }
+
+    #[test]
+    fn file_lists_become_paths_and_anything_else_text() {
+        let at = (1.0, 2.0);
+        let files = parse(URI_LIST, b"# comment\r\nfile:///tmp/a%20b\r\nfile:///etc/hosts\r\n", at);
+        assert_eq!(files, Some(Dropped::Paths(vec![PathBuf::from("/tmp/a b"), PathBuf::from("/etc/hosts")], at)));
+        let link = parse(URI_LIST, b"https://glide.dev/\r\n", at);
+        assert_eq!(link, Some(Dropped::Text(String::from("https://glide.dev/"), at)));
+        assert_eq!(parse(TEXTS[0], "ls -la".as_bytes(), at), Some(Dropped::Text(String::from("ls -la"), at)));
+        assert_eq!(parse(URI_LIST, b"\r\n", at), None);
+    }
+}

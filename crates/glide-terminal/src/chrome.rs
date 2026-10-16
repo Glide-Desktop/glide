@@ -211,6 +211,26 @@ fn find_bar(app: &App) -> Element<'_, Message> {
     .into()
 }
 
+#[must_use]
+pub fn pane_at(app: &App, (x, y): (f32, f32)) -> Option<pane_grid::Pane> {
+    let tab = app.tab()?;
+    let mut top = HEADER + 1.0;
+    if app.tabs.len() > 1 {
+        top += TABS + 1.0;
+    }
+    if app.find.is_some() {
+        top += FIND + 1.0;
+    }
+    let size = Size::new(app.window.width, (app.window.height - top).max(0.0));
+    let point = iced::Point::new(x, y - top);
+    tab.panes
+        .layout()
+        .pane_regions(1.0, 0.0, size)
+        .into_iter()
+        .find(|(_, region)| region.contains(point))
+        .map(|(pane, _)| pane)
+}
+
 fn corners(region: Rectangle) -> Radius {
     let bottom = region.y + region.height >= 0.999;
     let mut radius = Radius::default();
@@ -247,6 +267,7 @@ fn content(app: &App) -> Element<'_, Message> {
     let regions = tab.panes.layout().pane_regions(0.0, 0.0, Size::new(1.0, 1.0));
     let blink = app.blink_visible();
     let pattern = app.find.as_ref().map(|find| find.pattern.as_str());
+    let target = app.drop_at.and_then(|at| pane_at(app, at));
     let grid = pane_grid(&tab.panes, |handle, pane, _| {
         let focused = handle == tab.focus;
         let terminal = Terminal::new(pane, look, focused && app.window_focused())
@@ -259,6 +280,7 @@ fn content(app: &App) -> Element<'_, Message> {
                     .map(|mode| (mode.items.as_slice(), mode.typed.as_str())),
             )
             .flash(app.flash(pane.id))
+            .drop_target(target == Some(handle))
             .corners(regions.get(&handle).copied().map_or_else(Radius::default, corners));
         pane_grid::Content::new(Element::from(terminal).map(Message::Terminal))
     })
