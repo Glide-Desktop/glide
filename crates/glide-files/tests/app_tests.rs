@@ -495,6 +495,21 @@ fn a_rename_whose_file_vanished_does_not_hold_the_window_hostage() {
 }
 
 #[test]
+fn a_new_press_replaces_the_pending_click_on_a_selected_item() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Modifiers(iced::keyboard::Modifiers::CTRL));
+    let _ = app.update(Message::Pressed(path(2)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Modifiers(iced::keyboard::Modifiers::empty()));
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Pressed(path(4)));
+    let _ = app.update(Message::Released);
+    assert!(app.selection.contains(&path(4)) && app.selection.len() == 1, "the last press decides the selection");
+}
+
+#[test]
 fn a_late_result_does_not_select_items_in_a_folder_already_left() {
     use glide_files::app::Outcome;
     let mut app = listed_app();

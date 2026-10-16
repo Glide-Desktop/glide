@@ -1821,6 +1821,8 @@ impl App {
         self.anchor = None;
         self.cursor = None;
         self.last_click = None;
+        self.pending_select = None;
+        self.band = None;
         self.search = None;
         self.search_generation.fetch_add(1, Ordering::Relaxed);
         self.path_edit = None;
@@ -1847,6 +1849,7 @@ impl App {
     fn press(&mut self, path: PathBuf) -> Task<Message> {
         self.menu = None;
         self.path_edit = None;
+        self.pending_select = None;
         let now = Instant::now();
         let double = self
             .last_click
