@@ -236,6 +236,15 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
 }
 
 #[test]
+fn grid_labels_prefer_to_break_before_the_extension() {
+    use glide_files::widgets::content::breakable;
+    assert_eq!(breakable("wallpaper.png"), "wallpaper\u{200B}.png");
+    assert_eq!(breakable("archive.tar.gz"), "archive.tar\u{200B}.gz");
+    assert_eq!(breakable(".bashrc"), ".bashrc", "a leading dot is not an extension");
+    assert_eq!(breakable("Makefile"), "Makefile");
+}
+
+#[test]
 fn columns_that_do_not_fit_give_way_to_the_name() {
     use glide_files::config::ListColumn;
     use glide_files::widgets::content::{column_width, shown_columns};

@@ -296,7 +296,7 @@ fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a
     let label: Element<'a, Message> = if let Some(field) = rename_field(app, 12.0).filter(|_| editing) {
         container(field).width(Length::Fixed(tile_w)).into()
     } else {
-        let name = text(ellipsize(&entry.name, metrics.label_chars))
+        let name = text(breakable(&ellipsize(&entry.name, metrics.label_chars)))
             .size(theme::CAP)
             .wrapping(text::Wrapping::WordOrGlyph)
             .align_x(Alignment::Center)
@@ -487,6 +487,14 @@ fn location(app: &App, entry: &FileEntry) -> String {
         })
         .collect();
     names.join("/")
+}
+
+#[must_use]
+pub fn breakable(name: &str) -> String {
+    match name.rfind('.').filter(|&dot| dot > 0) {
+        Some(dot) => format!("{}\u{200B}{}", &name[..dot], &name[dot..]),
+        None => name.to_string(),
+    }
 }
 
 fn name_width(app: &App, metrics: &Metrics) -> f32 {
