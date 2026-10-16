@@ -871,6 +871,25 @@ fn a_properties_card_stays_inside_a_small_window() {
 }
 
 #[test]
+fn the_trash_view_watches_the_trash_of_every_mounted_volume() {
+    use glide_files::fs::Place;
+    use glide_files::icons::Icon;
+    let usb = std::env::temp_dir().join(format!("glide-watch-usb-{}", std::process::id()));
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let files = usb.join(format!(".Trash-{uid}/files"));
+    std::fs::create_dir_all(&files).expect("volume trash");
+    let mut app = listed_app();
+    app.drives = vec![Place { name: String::from("USB"), path: usb.clone(), icon: Icon::Drive }];
+    app.current = app.trash.files();
+    let _ = app.update(Message::Reload);
+    assert_eq!(app.watched(), vec![app.trash.files(), files], "the merged view refreshes for both");
+    app.current = usb.clone();
+    assert_eq!(app.watched(), vec![usb.clone()], "any other folder watches only itself");
+    let _ = std::fs::remove_dir_all(usb);
+}
+
+#[test]
 fn a_bookmark_of_a_listed_device_is_not_shown_twice() {
     use glide_files::fs::Place;
     use glide_files::icons::Icon;

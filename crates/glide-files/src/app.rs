@@ -632,6 +632,7 @@ pub struct App {
     disk_watch: DiskWatch,
     pub trash: Trash,
     pub trash_count: usize,
+    trash_elsewhere: Vec<PathBuf>,
     pub extensions: Arc<Extensions>,
     roots: Roots,
     extensions_stamp: Vec<Option<SystemTime>>,
@@ -813,6 +814,7 @@ impl App {
             disks: Arc::default(),
             disk_watch: DiskWatch::default(),
             trash_count: trash.count(),
+            trash_elsewhere: Vec::new(),
             trash,
             extensions: Arc::default(),
             roots: Roots::system(),
@@ -1003,9 +1005,8 @@ impl App {
         }
         subscriptions.push(Subscription::run(crate::service::requests).map(Message::Service));
         subscriptions.push(Subscription::run(crate::fs::volumes::changes).map(|()| Message::VolumesChanged));
-        subscriptions.push(
-            Subscription::run_with(self.current.clone(), crate::fs::watch::changes).map(|()| Message::DirChanged),
-        );
+        subscriptions
+            .push(Subscription::run_with(self.watched(), crate::fs::watch::changes).map(|()| Message::DirChanged));
         if let Some(handles) = self.handles {
             subscriptions.push(Subscription::run_with(handles, dnd::events).map(Message::Dnd));
         }
@@ -1818,12 +1819,23 @@ impl App {
         self.trash.on_volumes(&mounts)
     }
 
-    fn count_trash(&self) -> usize {
-        self.trash.count() + self.volume_trashes().iter().map(Trash::count).sum::<usize>()
+    fn refresh_trash(&mut self) {
+        let elsewhere = self.volume_trashes();
+        self.trash_count = self.trash.count() + elsewhere.iter().map(Trash::count).sum::<usize>();
+        self.trash_elsewhere = elsewhere.iter().map(Trash::files).collect();
+    }
+
+    #[must_use]
+    pub fn watched(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.current.clone()];
+        if self.current == self.trash.files() {
+            dirs.extend(self.trash_elsewhere.iter().cloned());
+        }
+        dirs
     }
 
     fn reload(&mut self) -> Task<Message> {
-        self.trash_count = self.count_trash();
+        self.refresh_trash();
         if self.is_searching() {
             return Task::none();
         }
@@ -3181,7 +3193,7 @@ impl App {
                 {
                     self.last_undo = Some(Undo::Rename(path.clone(), original.clone()));
                 }
-                self.trash_count = self.count_trash();
+                self.refresh_trash();
                 self.show(path)
             }
             Err(err) => {
@@ -3347,7 +3359,7 @@ impl App {
         if drives != self.drives {
             self.drives = drives;
         }
-        self.trash_count = self.count_trash();
+        self.refresh_trash();
         let config_stamp = config::path().as_deref().and_then(stamp);
         let lang = self.lang;
         if config_stamp != self.config_stamp {

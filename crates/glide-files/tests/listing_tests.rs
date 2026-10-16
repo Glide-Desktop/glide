@@ -11,8 +11,8 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-fn next_change(dir: &PathBuf, act: impl FnOnce()) -> bool {
-    let mut stream = changes(dir);
+fn next_change(dirs: &[PathBuf], act: impl FnOnce()) -> bool {
+    let mut stream = changes(&dirs.to_vec());
     std::thread::sleep(Duration::from_millis(50));
     act();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -29,9 +29,19 @@ fn next_change(dir: &PathBuf, act: impl FnOnce()) -> bool {
 fn the_watcher_reports_files_created_and_removed() {
     let dir = scratch("watch");
     let file = dir.join("new.txt");
-    assert!(next_change(&dir, || std::fs::write(&file, b"x").expect("write")));
-    assert!(next_change(&dir, || std::fs::remove_file(&file).expect("remove")));
+    assert!(next_change(std::slice::from_ref(&dir), || std::fs::write(&file, b"x").expect("write")));
+    assert!(next_change(std::slice::from_ref(&dir), || std::fs::remove_file(&file).expect("remove")));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_trash_view_hears_a_trash_on_another_volume() {
+    let home = scratch("watch-home-trash");
+    let usb = scratch("watch-usb-trash");
+    let trashed = usb.join("photo.jpg");
+    assert!(next_change(&[home.clone(), usb.clone()], || std::fs::write(&trashed, b"x").expect("write")));
+    let _ = std::fs::remove_dir_all(home);
+    let _ = std::fs::remove_dir_all(usb);
 }
 
 #[test]
