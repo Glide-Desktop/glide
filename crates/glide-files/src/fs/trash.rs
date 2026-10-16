@@ -141,6 +141,9 @@ impl Trash {
 
     #[must_use]
     pub fn original_path(&self, trashed: &Path) -> Option<PathBuf> {
+        if !self.is_top_level(trashed) {
+            return None;
+        }
         let trash = Self::owner(trashed).unwrap_or_else(|| self.clone());
         let info = std::fs::read_to_string(trash.info_file(trashed.file_name()?)).ok()?;
         let recorded = info.lines().find_map(|line| line.strip_prefix("Path=")).map(|path| decode_path(path.trim()))?;

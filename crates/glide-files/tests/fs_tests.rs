@@ -386,6 +386,20 @@ fn restoring_a_nested_trash_item_reports_not_found() {
 }
 
 #[test]
+fn a_file_outside_the_trash_is_never_restored() {
+    let scratch = Scratch::new("trash-outside");
+    let trash = Trash::new(scratch.0.join("Trash"));
+    let old = scratch.file("old/notes.txt");
+    trash.put(&old).expect("trash");
+    let current = scratch.file("work/notes.txt");
+    let err = trash.restore(&current).expect_err("a file that was never trashed has nothing to restore");
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert!(current.exists(), "it stays where it is");
+    assert!(!old.exists());
+    assert_eq!(trash.count(), 1, "and the trashed namesake keeps its record");
+}
+
+#[test]
 fn disk_space_and_root_drive_are_reported() {
     let (free, total) = query_disk_space(Path::new("/")).expect("statvfs /");
     assert!(total > 0);
