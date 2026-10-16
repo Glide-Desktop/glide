@@ -217,6 +217,20 @@ fn stop_and_quit_waits_for_the_cancelled_job_then_exits() {
 }
 
 #[test]
+fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
+    use glide_files::dnd::Event as Dnd;
+    let mut app = listed_app();
+    let scratch = std::env::temp_dir().join(format!("glide-drop-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("scratch");
+    app.current = scratch.clone();
+    let _ = app.update(Message::Dnd(Dnd::Drop { paths: vec![scratch.join("here.txt")], at: (5.0, 5.0), moved: false }));
+    assert!(app.jobs.is_empty(), "dropping a folder's own file back into it does nothing");
+    let _ = app.update(Message::Dnd(Dnd::Drop { paths: vec![path(4)], at: (5.0, 5.0), moved: true }));
+    assert_eq!(app.jobs.len(), 1, "a foreign file starts a transfer");
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[test]
 fn ctrl_z_inside_a_text_field_never_reverts_a_file_operation() {
     use glide_files::app::{Outcome, Undo};
     let mut app = listed_app();

@@ -157,6 +157,12 @@ fn run(handles: Handles, events: UnboundedSender<Event>) -> Result<(), String> {
     let surface_id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), handles.surface as *mut _) }
         .map_err(|err| err.to_string())?;
     let surface = wl_surface::WlSurface::from_id(&connection, surface_id).map_err(|err| err.to_string())?;
+    serve(connection, surface, events)
+}
+
+pub fn serve(
+    connection: Connection, surface: wl_surface::WlSurface, events: UnboundedSender<Event>,
+) -> Result<(), String> {
     let (globals, mut queue): (_, EventQueue<State>) =
         registry_queue_init(&connection).map_err(|err| err.to_string())?;
     let qh = queue.handle();
