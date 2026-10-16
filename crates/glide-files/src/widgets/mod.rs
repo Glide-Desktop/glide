@@ -261,7 +261,7 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
         let fraction = (progress.total_items > 0 || job.launch.is_some()).then(|| progress.fraction());
         let toggle = if paused { (Icon::Play, Key::ResumeJob) } else { (Icon::Pause, Key::PauseJob) };
         let head = row![
-            icon(glyph, 14.0, t.acc_text()),
+            icon(glyph, JOB_GLYPH, t.acc_text()),
             space().width(theme::SP2),
             text(title)
                 .size(theme::CAP)
