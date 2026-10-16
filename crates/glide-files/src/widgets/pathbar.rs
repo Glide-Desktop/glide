@@ -12,6 +12,7 @@ use crate::theme;
 
 const STATUS_BUDGET: f32 = 240.0;
 const CRUMB_CHROME: f32 = 44.0;
+const CRUMB_LABEL: f32 = 200.0;
 
 struct Crumb {
     glyph: Icon,
@@ -33,7 +34,8 @@ fn crumbs(app: &App) -> Vec<Crumb> {
     let mut crumbs = vec![Crumb { glyph, label, path: root.clone() }];
     for component in current.strip_prefix(&root).unwrap_or(Path::new("")) {
         path.push(component);
-        crumbs.push(Crumb { glyph: Icon::Folder, label: app.location_name(&path), path: path.clone() });
+        let label = super::fit(&app.location_name(&path), CRUMB_LABEL, theme::CAP);
+        crumbs.push(Crumb { glyph: Icon::Folder, label, path: path.clone() });
     }
     crumbs
 }

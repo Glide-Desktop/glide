@@ -297,6 +297,7 @@ fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a
     } else {
         let name = text(ellipsize(&entry.name, metrics.label_chars))
             .size(theme::CAP)
+            .wrapping(text::Wrapping::WordOrGlyph)
             .align_x(Alignment::Center)
             .color(if selected { t.acc_soft_fg() } else { t.fg_1() });
         let mut line = row![].spacing(theme::SP1).align_y(Alignment::Center);
