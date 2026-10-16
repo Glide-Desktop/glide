@@ -132,7 +132,7 @@ pub fn make(input: &Path, mime: &str, thumbnailers: &[Thumbnailer]) -> Option<Pa
 
 #[must_use]
 pub fn make_in(dir: &Path, input: &Path, mime: &str, thumbnailers: &[Thumbnailer]) -> Option<PathBuf> {
-    let meta = std::fs::metadata(input).ok()?;
+    let meta = std::fs::metadata(input).ok().filter(std::fs::Metadata::is_file)?;
     let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
     let output = dir.join(cache_name(input, modified, meta.len()));
     if output.is_file() {

@@ -60,3 +60,20 @@ fn images_get_a_cached_thumbnail_that_tracks_changes() {
     assert_ne!(cache_name(&photo, 1, 10), cache_name(&photo, 2, 10), "a modified file gets a fresh thumbnail");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_pipe_named_like_an_image_is_not_read_for_a_thumbnail() {
+    let dir = scratch("fifo-thumb");
+    let pipe = dir.join("photo.png");
+    let raw = std::ffi::CString::new(pipe.to_string_lossy().as_bytes()).expect("path");
+    // SAFETY: `raw` is a NUL-terminated path string.
+    assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+    let cache = dir.join("cache");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(make_in(&cache, &pipe, "image/png", &[]));
+    });
+    let made = receiver.recv_timeout(std::time::Duration::from_secs(3));
+    assert_eq!(made, Ok(None), "the worker would otherwise wait for a writer forever");
+    let _ = std::fs::remove_dir_all(dir);
+}
