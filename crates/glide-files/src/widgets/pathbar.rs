@@ -38,16 +38,16 @@ pub fn trail(app: &App) -> Vec<Crumb> {
 
 fn crumbs(app: &App) -> Vec<Crumb> {
     let current = &app.current;
-    let trash = app.trash.files();
-    let (glyph, label, root) = if current.starts_with(&trash) {
-        (Icon::Trash, Key::Trash.text(app.lang).to_string(), trash)
+    let trash = current.ancestors().find(|dir| app.trash.is_files_dir(dir)).map(Path::to_path_buf);
+    let (glyph, label, root, first) = if let Some(files) = trash {
+        (Icon::Trash, Key::Trash.text(app.lang).to_string(), files, app.trash.files())
     } else if let Some(home) = home_dir().filter(|home| current.starts_with(home)) {
-        (Icon::Home, Key::Home.text(app.lang).to_string(), home)
+        (Icon::Home, Key::Home.text(app.lang).to_string(), home.clone(), home)
     } else {
-        (Icon::Drive, Key::Root.text(app.lang).to_string(), PathBuf::from("/"))
+        (Icon::Drive, Key::Root.text(app.lang).to_string(), PathBuf::from("/"), PathBuf::from("/"))
     };
     let mut path = root.clone();
-    let mut crumbs = vec![Crumb { glyph, label, path: root.clone() }];
+    let mut crumbs = vec![Crumb { glyph, label, path: first }];
     for component in current.strip_prefix(&root).unwrap_or(Path::new("")) {
         path.push(component);
         let label = super::fit(&app.location_name(&path), CRUMB_LABEL, theme::CALL);

@@ -418,6 +418,30 @@ fn the_appearance_schedule_turns_files_dark_in_the_evening_like_the_shell() {
 }
 
 #[test]
+fn a_volume_trash_is_treated_as_the_trash() {
+    use glide_files::icons::Icon;
+    use glide_files::widgets::pathbar::trail;
+    let mut app = listed_app();
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let stick = std::env::temp_dir().join(format!("glide-stick-{}", std::process::id()));
+    let files = stick.join(format!(".Trash-{uid}/files"));
+    std::fs::create_dir_all(files.join("Archive")).expect("volume trash");
+    app.current = files.join("Archive");
+    assert!(app.in_trash(), "a folder inside a stick's trash is still the Trash");
+    let _ = app.update(Message::NewFolder);
+    assert!(app.modal.is_none(), "so nothing is created there");
+    let crumbs = trail(&app);
+    assert_eq!(crumbs[0].glyph, Icon::Trash);
+    assert_eq!(crumbs[0].path, app.trash.files(), "the first crumb leads back to the whole Trash");
+    assert_eq!(crumbs[1].path, files.join("Archive"));
+    app.current = files.clone();
+    assert_eq!(app.update(Message::Up).units(), 0, "its files folder has no parent to show either");
+    assert_eq!(app.location_name(&files), Key::Trash.text(app.lang));
+    let _ = std::fs::remove_dir_all(stick);
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

@@ -881,6 +881,9 @@ impl App {
         if let Some(volume) = self.volume_at(path) {
             return volume.name(self.lang);
         }
+        if self.trash.is_files_dir(path) {
+            return Key::Trash.text(self.lang).to_string();
+        }
         self.places
             .iter()
             .chain(&self.drives)
@@ -1100,7 +1103,7 @@ impl App {
                 return self.jump(self.history_index + 1);
             }
             Message::Up => {
-                if let Some(parent) = self.current.parent().filter(|_| self.current != self.trash.files()) {
+                if let Some(parent) = self.current.parent().filter(|_| !self.trash.is_files_dir(&self.current)) {
                     let child = self.current.clone();
                     return self.navigate_select(parent.to_path_buf(), Some(child));
                 }
@@ -2512,8 +2515,8 @@ impl App {
             self.drop_target = None;
             return;
         }
-        let candidate = self.drop_candidate(at);
         let trash = self.trash.files();
+        let candidate = self.drop_candidate(at).filter(|target| *target == trash || !self.trash.contains(target));
         let bookmarking = self.hover_target == Some(Hover::Bookmarks) && self.bookmark_drop_offered();
         let Some(drag) = self.drag.as_mut() else {
             return;

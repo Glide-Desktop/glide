@@ -43,7 +43,14 @@ impl Trash {
 
     #[must_use]
     pub fn contains(&self, path: &Path) -> bool {
-        path.starts_with(&self.root)
+        path.starts_with(&self.root) || path.ancestors().any(|dir| Self::new(dir.to_path_buf()).top().is_some())
+    }
+
+    #[must_use]
+    pub fn is_files_dir(&self, path: &Path) -> bool {
+        path == self.files()
+            || (path.file_name().is_some_and(|name| name == "files")
+                && path.parent().is_some_and(|root| Self::new(root.to_path_buf()).top().is_some()))
     }
 
     #[must_use]
