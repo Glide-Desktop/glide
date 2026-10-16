@@ -22,6 +22,7 @@ pub const GRID_PADDING: f32 = theme::SP4;
 pub const TILE_GAP: f32 = theme::SP3;
 pub const LIST_PADDING: f32 = theme::SP1;
 const LOCATION_WIDTH: f32 = 220.0;
+const NAME_MIN: f32 = 64.0;
 const HEADER_HEIGHT: f32 = 26.0;
 const DOT: f32 = theme::SP2;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
@@ -487,5 +488,5 @@ fn location(app: &App, entry: &FileEntry) -> String {
 fn name_width(app: &App, metrics: &Metrics) -> f32 {
     let columns: f32 = app.columns.iter().map(|&column| column_width(column)).sum();
     let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
-    app.pane.width - 5.0 * theme::SP2 - columns - location - metrics.row_icon
+    (app.pane.width - 5.0 * theme::SP2 - columns - location - metrics.row_icon).max(NAME_MIN)
 }

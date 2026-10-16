@@ -454,16 +454,18 @@ pub fn fit(name: &str, width: f32, size: f32) -> String {
         return name.to_string();
     }
     let count = name.chars().count();
-    let mut chars = ((width / (full / count as f32)) as usize + 2).min(count);
-    while chars > 4 {
+    let mut chars = ((width.max(0.0) / (full / count as f32)) as usize + 2).min(count);
+    while chars > FIT_FLOOR {
         chars -= 1;
         let shortened = ellipsize(name, chars);
         if text_width(&shortened, size) <= width {
             return shortened;
         }
     }
-    ellipsize(name, 4)
+    ellipsize(name, FIT_FLOOR)
 }
+
+const FIT_FLOOR: usize = 6;
 
 #[must_use]
 pub fn ellipsize(name: &str, max: usize) -> String {
@@ -472,7 +474,7 @@ pub fn ellipsize(name: &str, max: usize) -> String {
         return name.to_string();
     }
     let tail =
-        name.rfind('.').filter(|&dot| dot > 0).map_or(0, |dot| name[dot..].chars().count() + 4).clamp(3, max / 2);
+        name.rfind('.').filter(|&dot| dot > 0).map_or(0, |dot| name[dot..].chars().count() + 4).max(3).min(max / 2);
     let head = max.saturating_sub(tail + 1);
     let start: String = name.chars().take(head).collect();
     let end: String = name.chars().skip(count - tail).collect();

@@ -198,6 +198,11 @@ fn shift_arrows_grow_and_shrink_the_range_from_where_it_started() {
     assert_eq!(selected(&app), [path(0), path(1), path(2)], "and it crosses its starting point");
     let _ = app.update(Message::Move(Step::Down, false));
     assert_eq!(selected(&app), [path(1)], "a plain arrow moves from the cursor, not the anchor");
+    let _ = app.update(Message::SelectAll);
+    let _ = app.update(Message::Move(Step::Down, true));
+    assert_eq!(selected(&app).len(), 6, "Shift+Down after Select All keeps everything");
+    let _ = app.update(Message::Move(Step::Up, true));
+    assert_eq!(selected(&app).len(), 5, "and Shift+Up gives back the last row");
 }
 
 #[test]
@@ -369,6 +374,13 @@ fn long_names_keep_their_extension_when_shortened() {
     assert!(glide_files::widgets::text_width(&fitted, 13.0) <= 120.0, "{fitted}");
     assert!(fitted.rsplit('.').next() == Some("jpeg") && fitted.contains('…'), "{fitted}");
     assert_eq!(glide_files::widgets::fit("Звіт.odt", 120.0, 13.0), "Звіт.odt");
+    for max in 0..6 {
+        assert!(ellipsize("abcdef.txt", max).chars().count() <= max.max(1), "max {max}");
+    }
+    for width in [-80.0, 0.0, 1.0, 20.0] {
+        let tight = glide_files::widgets::fit("quarterly report.odt", width, 13.0);
+        assert!(tight.contains('…'), "{width}: {tight}");
+    }
     let no_extension = ellipsize("LICENSE-APACHE-VERSION-TWO-POINT-ZERO", 12);
     assert_eq!(no_extension.chars().count(), 12);
 }

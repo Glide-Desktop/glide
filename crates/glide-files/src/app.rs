@@ -1142,6 +1142,8 @@ impl App {
             Message::OpenSelection => return self.open_selection(),
             Message::SelectAll => {
                 self.selection = self.entries.iter().map(|e| e.path.clone()).collect();
+                self.anchor = self.entries.first().map(|entry| entry.path.clone());
+                self.cursor = self.entries.last().map(|entry| entry.path.clone());
             }
             Message::Move(step, extend) => return self.step(step, extend),
             Message::SetView(view) => {
