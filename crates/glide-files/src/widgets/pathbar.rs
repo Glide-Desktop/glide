@@ -10,7 +10,7 @@ use crate::i18n::{self, Key};
 use crate::icons::Icon;
 use crate::theme;
 
-const STATUS_BUDGET: f32 = 240.0;
+const STATUS_SLACK: f32 = 0.9;
 const CRUMB_CHROME: f32 = 44.0;
 const CRUMB_LABEL: f32 = 200.0;
 
@@ -23,7 +23,8 @@ pub struct Crumb {
 #[must_use]
 pub fn trail(app: &App) -> Vec<Crumb> {
     let mut crumbs = crumbs(app);
-    let budget = app.pane.width - STATUS_BUDGET;
+    let status = super::text_width(&status(app), theme::CAP) / STATUS_SLACK;
+    let budget = app.pane.width - theme::SP2 - 2.0 * theme::SP3 - status;
     if crumbs.iter().map(width).sum::<f32>() > budget {
         let mut hidden = None;
         while crumbs.len() > 2 && CRUMB_CHROME + crumbs.iter().map(width).sum::<f32>() > budget {

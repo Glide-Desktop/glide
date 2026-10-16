@@ -290,6 +290,12 @@ fn a_collapsed_path_bar_keeps_a_way_to_the_hidden_folders() {
     assert_eq!(crumbs[1].glyph, Icon::More, "hidden folders leave an ellipsis instead of vanishing");
     assert_eq!(crumbs.last().map(|crumb| &crumb.path), Some(&app.current));
     assert_eq!(Some(crumbs[1].path.as_path()), crumbs[2].path.parent(), "the ellipsis opens the deepest hidden folder");
+    app.current = std::path::PathBuf::from("/srv/projects/october");
+    app.pane = Size::new(512.0, 400.0);
+    assert!(
+        trail(&app).iter().all(|crumb| crumb.glyph != Icon::More),
+        "a path that fits beside the short status is not collapsed"
+    );
 }
 
 #[test]
