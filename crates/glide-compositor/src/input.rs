@@ -1697,7 +1697,7 @@ impl GlideState {
                 if let Err(err) = crate::spawn_shell_command(&cmd) {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
                 }
-                crate::system_info::poke();
+                crate::system_info::poke(crate::system_info::Topics::AUDIO | crate::system_info::Topics::BACKLIGHT);
             }
             KeyAction::ToggleLauncher => self.toggle_launcher(),
             KeyAction::LauncherPage(forward) => self.edit_launcher(|l| l.turn_page(forward)),

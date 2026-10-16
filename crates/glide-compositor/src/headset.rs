@@ -309,7 +309,7 @@ impl crate::GlideState {
                     return;
                 }
                 self.session.osd.expect(crate::osd::Kind::Volume, now);
-                crate::system_info::poke();
+                crate::system_info::poke(crate::system_info::Topics::AUDIO);
             }
             Event::Unplugged(output) => {
                 if !self.session.headset.pause_on_unplug {

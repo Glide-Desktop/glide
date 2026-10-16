@@ -1040,6 +1040,16 @@ impl Topbar {
         self.slider_dragging = on;
     }
 
+    pub const fn keep_dragged_levels(&self, sample: &mut crate::system_info::SystemStatus) {
+        if !self.slider_dragging {
+            return;
+        }
+        let shown = &self.system_status;
+        (sample.volume_pct, sample.volume_muted) = (shown.volume_pct, shown.volume_muted);
+        (sample.mic_pct, sample.mic_muted) = (shown.mic_pct, shown.mic_muted);
+        sample.brightness_pct = shown.brightness_pct;
+    }
+
     fn slide(&mut self, which: fn(&mut Self) -> &mut Anim, pct: u8) {
         let target = f64::from(pct);
         let dragging = self.slider_dragging;

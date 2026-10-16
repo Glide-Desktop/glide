@@ -669,7 +669,7 @@ fn set_default(verb: &str, name: &str) -> Result<(), ConnectError> {
     if result.is_err() {
         tracing::info!(name, verb, "switching the audio device failed");
     }
-    crate::system_info::poke();
+    crate::system_info::poke(crate::system_info::Topics::AUDIO);
     result
 }
 

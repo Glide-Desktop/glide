@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 #[allow(clippy::struct_excessive_bools)] // Independent toggle states across distinct subsystems
@@ -64,37 +64,73 @@ impl Default for SystemStatus {
     }
 }
 
-impl SystemStatus {
-    fn refresh_fast(&mut self) {
-        let profile = self.battery.and_then(|info| info.profile);
-        let battery = read_battery().map(|info| BatteryInfo { profile, ..info });
-        self.battery_pct = battery.as_ref().map(|info| info.pct);
-        self.battery_charging = battery.as_ref().is_some_and(|info| info.state == BatteryState::Charging);
-        self.battery = battery;
-        let volume = read_volume();
-        self.volume_available = volume.is_some();
-        (self.volume_pct, self.volume_muted) = volume.unwrap_or((self.volume_pct, false));
-        let mic = read_mic();
-        self.mic_available = mic.is_some();
-        (self.mic_pct, self.mic_muted) = mic.unwrap_or((self.mic_pct, false));
-        let backlight = read_backlight();
-        self.brightness_available = backlight.is_some();
-        self.brightness_pct = backlight.map_or(self.brightness_pct, |backlight| backlight.percent());
-        self.keyboard_brightness = read_keyboard_backlight(Path::new("/sys/class/leds"));
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct Topics: u16 {
+        const AUDIO = 1;
+        const BACKLIGHT = 1 << 1;
+        const BATTERY = 1 << 2;
+        const NETWORK = 1 << 3;
+        const BLUETOOTH = 1 << 4;
+        const RADIOS = 1 << 5;
+        const POWER = 1 << 6;
+        const PRIVACY = 1 << 7;
+        const CAMERA = 1 << 8;
+        const MOTION = 1 << 9;
     }
+}
 
-    fn refresh_slow(&mut self) {
-        self.power_profile = poll_stdout("powerprofilesctl", &["get"]).and_then(|text| parse_power_profile(&text));
-        if let Some(battery) = self.battery.as_mut() {
+impl Topics {
+    const FAST: Self = Self::AUDIO.union(Self::BACKLIGHT).union(Self::BATTERY);
+}
+
+impl SystemStatus {
+    fn refresh(&mut self, topics: Topics, privacy: &mut PrivacySources, pipewire: Option<Privacy>) {
+        if topics.contains(Topics::BATTERY) {
+            let battery = read_battery();
+            self.battery_pct = battery.as_ref().map(|info| info.pct);
+            self.battery_charging = battery.as_ref().is_some_and(|info| info.state == BatteryState::Charging);
+            self.battery = battery;
+        }
+        if topics.contains(Topics::AUDIO) {
+            let volume = read_volume();
+            self.volume_available = volume.is_some();
+            (self.volume_pct, self.volume_muted) = volume.unwrap_or((self.volume_pct, false));
+            let mic = read_mic();
+            self.mic_available = mic.is_some();
+            (self.mic_pct, self.mic_muted) = mic.unwrap_or((self.mic_pct, false));
+        }
+        if topics.contains(Topics::BACKLIGHT) {
+            let backlight = read_backlight();
+            self.brightness_available = backlight.is_some();
+            self.brightness_pct = backlight.map_or(self.brightness_pct, |backlight| backlight.percent());
+            self.keyboard_brightness = read_keyboard_backlight(Path::new("/sys/class/leds"));
+        }
+        if topics.contains(Topics::POWER) {
+            self.power_profile = poll_stdout("powerprofilesctl", &["get"]).and_then(|text| parse_power_profile(&text));
+        }
+        if topics.intersects(Topics::POWER | Topics::BATTERY)
+            && let Some(battery) = self.battery.as_mut()
+        {
             battery.profile = self.power_profile;
         }
-        self.airplane = airplane_from(&read_radios(Path::new("/sys/class/rfkill")));
-        (self.wifi_enabled, self.wifi_level, self.wifi_ssid) = read_wifi();
-        self.bluetooth_on = read_bluetooth();
-        self.bluetooth_connected = self.bluetooth_on && read_bluetooth_connected();
-        self.vpn_active = read_vpn_active();
-        self.privacy = read_privacy();
-        self.reduced_motion = reduced_motion();
+        if topics.contains(Topics::RADIOS) {
+            self.airplane = airplane_from(&read_radios(Path::new("/sys/class/rfkill")));
+        }
+        if topics.contains(Topics::NETWORK) {
+            (self.wifi_enabled, self.wifi_level, self.wifi_ssid) = read_wifi();
+            self.vpn_active = read_vpn_active();
+        }
+        if topics.intersects(Topics::BLUETOOTH | Topics::RADIOS) {
+            self.bluetooth_on = read_bluetooth();
+            self.bluetooth_connected = self.bluetooth_on && read_bluetooth_connected();
+        }
+        if topics.intersects(Topics::PRIVACY | Topics::CAMERA) {
+            self.privacy = privacy.refresh(topics, pipewire);
+        }
+        if topics.contains(Topics::MOTION) {
+            self.reduced_motion = reduced_motion();
+        }
     }
 
     #[must_use]
@@ -548,16 +584,35 @@ fn camera_openers() -> Vec<String> {
     names
 }
 
-fn read_privacy() -> Privacy {
-    let mut privacy = poll_stdout("pw-dump", &[]).map(|text| parse_pw_dump(&text)).unwrap_or_default();
-    let openers: Vec<String> =
-        camera_openers().into_iter().filter(|name| !matches!(name.as_str(), "pipewire" | "wireplumber")).collect();
+#[must_use]
+pub fn merge_privacy(mut privacy: Privacy, openers: &[String]) -> Privacy {
+    let openers = openers.iter().filter(|name| !matches!(name.as_str(), "pipewire" | "wireplumber"));
+    let openers: Vec<String> = openers.cloned().collect();
     if !openers.is_empty() {
         privacy.camera.retain(|name| !name.is_empty());
         privacy.camera.extend(openers);
         privacy.camera = tidy(std::mem::take(&mut privacy.camera));
     }
     privacy
+}
+
+#[derive(Debug, Default)]
+struct PrivacySources {
+    pipewire: Privacy,
+    openers: Vec<String>,
+}
+
+impl PrivacySources {
+    fn refresh(&mut self, topics: Topics, pipewire: Option<Privacy>) -> Privacy {
+        if topics.contains(Topics::PRIVACY) {
+            self.pipewire = pipewire
+                .unwrap_or_else(|| poll_stdout("pw-dump", &[]).map(|text| parse_pw_dump(&text)).unwrap_or_default());
+        }
+        if topics.contains(Topics::CAMERA) {
+            self.openers = camera_openers();
+        }
+        merge_privacy(self.pipewire.clone(), &self.openers)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -820,48 +875,164 @@ fn read_bluetooth() -> bool {
 
 pub const FAST_INTERVAL: Duration = Duration::from_secs(1);
 pub const SLOW_INTERVAL: Duration = Duration::from_secs(6);
+pub const BATTERY_DRIFT: Duration = Duration::from_secs(30);
+pub const NETWORK_SPACING: Duration = Duration::from_secs(1);
 const POKE_SETTLE: Duration = Duration::from_millis(120);
+const TOPIC_SLOTS: usize = 16;
 
-static POKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+#[derive(Debug, Default)]
+struct Schedule {
+    last: [Option<Instant>; TOPIC_SLOTS],
+}
 
-pub fn poke() {
-    if let Ok(mut poked) = POKE.0.lock() {
-        *poked = true;
-        POKE.1.notify_one();
+const fn slot(topic: Topics) -> usize {
+    topic.bits().trailing_zeros() as usize
+}
+
+impl Schedule {
+    fn interval(topic: Topics, hooked: Topics) -> Option<Duration> {
+        if hooked.contains(topic) {
+            (topic == Topics::BATTERY).then_some(BATTERY_DRIFT)
+        } else if Topics::FAST.contains(topic) {
+            Some(FAST_INTERVAL)
+        } else {
+            Some(SLOW_INTERVAL)
+        }
+    }
+
+    fn spacing(topic: Topics) -> Duration {
+        if topic == Topics::NETWORK { NETWORK_SPACING } else { Duration::ZERO }
+    }
+
+    fn due(&self, hooked: Topics, now: Instant) -> Topics {
+        Topics::all()
+            .iter()
+            .filter(|topic| match self.last[slot(*topic)] {
+                None => true,
+                Some(at) => Self::interval(*topic, hooked).is_some_and(|interval| now >= at + interval),
+            })
+            .collect()
+    }
+
+    fn held(&self, dirty: Topics, now: Instant) -> Topics {
+        dirty
+            .iter()
+            .filter(|topic| self.last[slot(*topic)].is_some_and(|at| now < at + Self::spacing(*topic)))
+            .collect()
+    }
+
+    fn next(&self, hooked: Topics, held: Topics) -> Option<Instant> {
+        let polled = Topics::all().iter().filter_map(|topic| {
+            let at = self.last[slot(topic)]?;
+            Some(at + Self::interval(topic, hooked)?)
+        });
+        let spaced = held.iter().filter_map(|topic| Some(self.last[slot(topic)]? + Self::spacing(topic)));
+        polled.chain(spaced).min()
+    }
+
+    fn done(&mut self, topics: Topics, now: Instant) {
+        for topic in topics.iter() {
+            self.last[slot(topic)] = Some(now);
+        }
     }
 }
 
-fn wait_for_poke(timeout: Duration) {
-    let (lock, cvar) = &POKE;
-    let Ok(guard) = lock.lock() else {
-        std::thread::sleep(timeout);
-        return;
-    };
-    let (mut poked, _) =
-        cvar.wait_timeout_while(guard, timeout, |poked| !*poked).unwrap_or_else(std::sync::PoisonError::into_inner);
-    if std::mem::take(&mut *poked) {
-        drop(poked);
-        std::thread::sleep(POKE_SETTLE);
+#[derive(Debug)]
+struct Hub {
+    dirty: Topics,
+    hooked: Topics,
+    pipewire: Option<Privacy>,
+}
+
+static HUB: (Mutex<Hub>, Condvar) =
+    (Mutex::new(Hub { dirty: Topics::empty(), hooked: Topics::empty(), pipewire: None }), Condvar::new());
+
+fn hub() -> MutexGuard<'static, Hub> {
+    HUB.0.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn edit_hub(edit: impl FnOnce(&mut Hub)) {
+    edit(&mut hub());
+    HUB.1.notify_one();
+}
+
+pub fn poke(topics: Topics) {
+    edit_hub(|hub| hub.dirty |= topics);
+}
+
+pub fn hook(topics: Topics) {
+    edit_hub(|hub| {
+        hub.hooked |= topics;
+        hub.dirty |= topics;
+    });
+}
+
+pub fn unhook(topics: Topics) {
+    edit_hub(|hub| {
+        hub.hooked -= topics;
+        hub.dirty |= topics;
+        if topics.contains(Topics::PRIVACY) {
+            hub.pipewire = None;
+        }
+    });
+}
+
+pub fn publish_pipewire(privacy: Privacy) {
+    edit_hub(|hub| {
+        hub.pipewire = Some(privacy);
+        hub.dirty |= Topics::PRIVACY;
+    });
+}
+
+struct Batch {
+    topics: Topics,
+    pipewire: Option<Privacy>,
+}
+
+fn next_batch(schedule: &Schedule) -> Batch {
+    let mut hub = hub();
+    let mut settled = false;
+    loop {
+        let now = Instant::now();
+        let held = schedule.held(hub.dirty, now);
+        let ready = hub.dirty - held;
+        if !ready.is_empty() && !settled {
+            drop(hub);
+            std::thread::sleep(POKE_SETTLE);
+            hub = self::hub();
+            settled = true;
+            continue;
+        }
+        let topics = ready | schedule.due(hub.hooked, now);
+        if !topics.is_empty() {
+            hub.dirty -= topics;
+            let pipewire = if hub.hooked.contains(Topics::PRIVACY) { hub.pipewire.clone() } else { None };
+            return Batch { topics, pipewire };
+        }
+        hub = match schedule.next(hub.hooked, held) {
+            Some(at) => HUB
+                .1
+                .wait_timeout(hub, at.saturating_duration_since(now))
+                .map_or_else(|poisoned| poisoned.into_inner().0, |(guard, _)| guard),
+            None => HUB.1.wait(hub).unwrap_or_else(PoisonError::into_inner),
+        };
     }
 }
 
 pub fn start_poller(sink: impl Fn(SystemStatus) + Send + 'static) {
     let spawned = std::thread::Builder::new().name("glide-system-status".to_string()).spawn(move || {
         let mut status = SystemStatus { user_name: read_user_name(), ..SystemStatus::default() };
+        let mut schedule = Schedule::default();
+        let mut privacy = PrivacySources::default();
         let mut sent = None;
-        let mut slow_at: Option<Instant> = None;
         loop {
-            let now = Instant::now();
-            status.refresh_fast();
-            if slow_at.is_none_or(|at| now.duration_since(at) >= SLOW_INTERVAL) {
-                status.refresh_slow();
-                slow_at = Some(now);
-            }
+            let batch = next_batch(&schedule);
+            status.refresh(batch.topics, &mut privacy, batch.pipewire);
+            schedule.done(batch.topics, Instant::now());
             if sent.as_ref() != Some(&status) {
                 sink(status.clone());
                 sent = Some(status.clone());
             }
-            wait_for_poke(FAST_INTERVAL);
         }
     });
     if let Err(err) = spawned {
@@ -1707,6 +1878,45 @@ mod tests {
         let lonely = r#"[{"id": 5, "type": "PipeWire:Interface:Node", "info": {"state": "running",
             "props": {"media.class": "Video/Source", "node.name": "libcamera_input"}}}]"#;
         assert_eq!(parse_pw_dump(lonely).camera, vec![String::new()]);
+    }
+
+    #[test]
+    fn camera_openers_name_the_camera_unless_they_are_pipewire_itself() {
+        let pipewire = Privacy { camera: vec![String::new()], ..Privacy::default() };
+        let openers = ["zoom".to_string(), "wireplumber".to_string(), "zoom".to_string()];
+        assert_eq!(merge_privacy(pipewire.clone(), &openers).camera, vec!["zoom".to_string()]);
+        let plumbing = ["pipewire".to_string()];
+        assert_eq!(merge_privacy(pipewire.clone(), &plumbing), pipewire, "PipeWire probing its own devices");
+    }
+
+    #[test]
+    fn unhooked_topics_poll_at_the_old_rates_and_hooked_ones_wait_for_their_hook() {
+        let start = Instant::now();
+        let mut schedule = Schedule::default();
+        assert_eq!(schedule.due(Topics::empty(), start), Topics::all(), "the first sample reads everything");
+        schedule.done(Topics::all(), start);
+        assert_eq!(schedule.due(Topics::empty(), start + FAST_INTERVAL), Topics::FAST);
+        assert_eq!(schedule.due(Topics::empty(), start + SLOW_INTERVAL), Topics::all());
+        assert_eq!(schedule.next(Topics::empty(), Topics::empty()), Some(start + FAST_INTERVAL));
+
+        let hooked = Topics::all();
+        assert_eq!(schedule.due(hooked, start + SLOW_INTERVAL), Topics::empty(), "hooks replace the polling");
+        assert_eq!(schedule.due(hooked, start + BATTERY_DRIFT), Topics::BATTERY, "the estimate drifts without events");
+        assert_eq!(schedule.next(hooked, Topics::empty()), Some(start + BATTERY_DRIFT));
+        let some = Topics::AUDIO | Topics::PRIVACY;
+        assert_eq!(schedule.due(some, start + FAST_INTERVAL), Topics::FAST - Topics::AUDIO);
+    }
+
+    #[test]
+    fn a_burst_of_network_signals_is_read_at_most_once_a_second() {
+        let start = Instant::now();
+        let mut schedule = Schedule::default();
+        schedule.done(Topics::NETWORK | Topics::AUDIO, start);
+        let soon = start + Duration::from_millis(200);
+        let dirty = Topics::NETWORK | Topics::AUDIO;
+        assert_eq!(schedule.held(dirty, soon), Topics::NETWORK, "other topics are never held back");
+        assert_eq!(schedule.held(dirty, start + NETWORK_SPACING), Topics::empty());
+        assert_eq!(schedule.next(Topics::all(), Topics::NETWORK), Some(start + NETWORK_SPACING));
     }
 
     fn appearance() -> DesktopAppearance {

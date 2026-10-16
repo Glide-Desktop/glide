@@ -1257,6 +1257,7 @@ impl GlideState {
 
     pub fn handle_system_status(&mut self, mut status: crate::system_info::SystemStatus) {
         status.night_light_on = self.topbar.system_status().night_light_on;
+        self.topbar.keep_dragged_levels(&mut status);
         if let Some(handoff) = self.handoff.as_mut() {
             handoff.mark_status();
         }
@@ -1544,7 +1545,6 @@ impl GlideState {
         let mut status = self.topbar.system_status().clone();
         update(&mut status);
         self.topbar.set_system_status(status);
-        crate::system_info::poke();
     }
 
     pub(crate) fn handle_qs_action(&mut self, action: crate::topbar::TopbarAction) {
