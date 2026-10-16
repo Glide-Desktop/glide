@@ -176,6 +176,19 @@ fn escape_unwinds_one_layer_at_a_time() {
 }
 
 #[test]
+fn leaving_the_folder_by_keyboard_ends_an_inline_rename() {
+    for leave in [Message::GoHome, Message::KeyMenu] {
+        let mut app = listed_app();
+        let _ = app.update(Message::Pressed(path(3)));
+        let _ = app.update(Message::Released);
+        let _ = app.update(Message::Rename);
+        assert!(app.renaming.is_some());
+        let _ = app.update(leave.clone());
+        assert!(app.renaming.is_none(), "{leave:?}");
+    }
+}
+
+#[test]
 fn shift_arrows_grow_and_shrink_the_range_from_where_it_started() {
     use std::path::PathBuf;
     let mut app = listed_app();

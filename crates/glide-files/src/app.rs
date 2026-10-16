@@ -801,7 +801,7 @@ impl App {
             band: None,
             drag: None,
             hover_target: None,
-            window: WindowState { size: Size::ZERO, focused: true, maximized: false },
+            window: WindowState { size: Size::ZERO, focused: false, maximized: false },
             pending_select: None,
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
@@ -969,12 +969,14 @@ impl App {
             Message::Pressed(_)
                 | Message::PressedBackground
                 | Message::Navigate(_)
+                | Message::GoHome
                 | Message::Back
                 | Message::Forward
                 | Message::Up
                 | Message::SetView(_)
                 | Message::Move(..)
                 | Message::ContextMenu(_)
+                | Message::KeyMenu
         );
         if self.renaming.is_some() && ends_rename {
             let committed = self.commit_rename();
@@ -1645,6 +1647,7 @@ impl App {
         self.search = None;
         self.search_generation.fetch_add(1, Ordering::Relaxed);
         self.path_edit = None;
+        self.renaming = None;
         self.menu = None;
         self.scroll_y = 0.0;
         self.motion.clear_hover(Instant::now());
