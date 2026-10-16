@@ -132,35 +132,13 @@ pub fn open_with_default(path: &Path) -> io::Result<()> {
     if status.success() { Ok(()) } else { Err(io::Error::other(format!("xdg-open exited with {status}"))) }
 }
 
-const TERMINALS: [&str; 11] = [
-    "glide-terminal",
-    "alacritty",
-    "foot",
-    "kitty",
-    "ptyxis",
-    "kgx",
-    "gnome-terminal",
-    "konsole",
-    "wezterm",
-    "xfce4-terminal",
-    "xterm",
-];
-
 pub fn open_in_terminal(dir: &Path) -> io::Result<()> {
-    let preferred = std::env::var("TERMINAL").unwrap_or_default();
-    let preferred: Vec<&str> = preferred.split_whitespace().collect();
-    let candidates = preferred
-        .split_first()
-        .map(|(program, args)| (*program, args))
-        .into_iter()
-        .chain(TERMINALS.iter().map(|program| (*program, &[][..])));
-    for (program, args) in candidates {
-        if let Ok(mut child) = Command::new(program).args(args).current_dir(dir).stdin(Stdio::null()).spawn() {
-            std::thread::spawn(move || child.wait());
-            return Ok(());
-        }
-    }
-    Err(io::Error::new(ErrorKind::NotFound, "no terminal emulator"))
+    let terminal = glide_config::terminal::current();
+    let mut words = terminal.split_whitespace();
+    let program = words.next().ok_or_else(|| io::Error::new(ErrorKind::NotFound, "no terminal emulator"))?;
+    let mut child = Command::new(program).args(words).current_dir(dir).stdin(Stdio::null()).spawn()?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 #[must_use]
