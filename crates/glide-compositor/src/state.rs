@@ -1243,8 +1243,7 @@ impl GlideState {
 
         let mut dirty = now.is_some_and(|now| self.topbar.set_now(now));
         dirty |= self.topbar.tick_island(std::time::Instant::now());
-        let recording = self.screencopy.recording_clients(std::time::Instant::now());
-        dirty |= self.topbar.set_screen_capture(recording);
+        dirty |= self.sync_screen_capture();
         dirty |= self.topbar.set_app(app_id, app_name);
         dirty |= self.topbar.set_dnd(self.notifications.dnd());
         dirty |= self.topbar.set_unread(self.notifications.unread());
@@ -1253,6 +1252,11 @@ impl GlideState {
         }
         dirty |= self.refresh_app_menu();
         dirty
+    }
+
+    pub fn sync_screen_capture(&mut self) -> bool {
+        let recording = self.screencopy.recording_clients(std::time::Instant::now());
+        self.topbar.set_screen_capture(recording)
     }
 
     pub fn handle_system_status(&mut self, mut status: crate::system_info::SystemStatus) {

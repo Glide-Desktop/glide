@@ -240,6 +240,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameState> for GlideState {
         });
         if let Ok(credentials) = client.get_credentials(dh) {
             state.screencopy.record_copy(credentials.pid, std::time::Instant::now());
+            state.sync_screen_capture();
         }
         state.queue_redraw();
     }
