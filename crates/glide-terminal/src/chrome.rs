@@ -353,6 +353,7 @@ fn menu_entries(app: &App, paint: &Paint, kind: &MenuKind) -> (Vec<Element<'stat
             push(separator(paint), sep);
             push(command(app, paint, Key::Find, Command::Find, true), ITEM);
             push(command(app, paint, Key::OpenHints, Command::Hints, true), ITEM);
+            push(command(app, paint, Key::ExportText, Command::Export, true), ITEM);
             push(command(app, paint, Key::ClearScrollback, Command::ClearScrollback, true), ITEM);
             push(command(app, paint, Key::Reset, Command::Reset, true), ITEM);
             push(separator(paint), sep);
@@ -560,6 +561,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     body = body.push(rule(&paint)).push(content(app));
     let frame = container(Space::new().width(Fill).height(Fill)).style(move |_| style::frame(&paint));
     let mut layers: Vec<Element<'_, Message>> = vec![body.into(), frame.into(), resize_handles()];
+    if let Some((text, at)) = &app.notice {
+        layers.push(notice(app, text, *at));
+    }
     if let Some(menu) = &app.menu {
         layers.push(menu_layer(app, menu));
     }
@@ -567,6 +571,23 @@ pub fn view(app: &App) -> Element<'_, Message> {
         layers.push(dialog(app, confirm));
     }
     iced::widget::stack(layers).into()
+}
+
+fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element<'a, Message> {
+    let progress = App::reveal(at);
+    let paint = app.paint.faded(progress);
+    let pill = container(text(message).size(12.5).wrapping(text::Wrapping::None))
+        .padding(Padding::from([8, 14]))
+        .max_width(app.window.width - 48.0)
+        .clip(true)
+        .style(move |_| style::popover(&paint));
+    container(pill)
+        .width(Fill)
+        .height(Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::End)
+        .padding(Padding::from([0.0, 24.0]).bottom(18.0 + (1.0 - progress) * 6.0))
+        .into()
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ use iced::widget::{operation, pane_grid};
 use iced::{Point, Size, Subscription, Task, clipboard, window};
 
 use crate::config::{self, OnExit, Preferences};
+use crate::export;
 use crate::find;
 use crate::hints;
 use crate::i18n::{Key as Text, Lang};
@@ -34,6 +35,7 @@ const BLINK: Duration = Duration::from_millis(530);
 const POLL: Duration = Duration::from_secs(1);
 const BELL_GAP: Duration = Duration::from_millis(250);
 const DRAG_SLOP: f32 = 6.0;
+const NOTICE: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Copy)]
 struct TabDrag {
@@ -65,6 +67,7 @@ pub enum Command {
     FindDown,
     UseSelectionForFind,
     Hints,
+    Export,
     ClearScrollback,
     Reset,
     Mark(Mark),
@@ -172,6 +175,7 @@ pub enum Message {
     FindCase,
     FindClose,
     Found(Option<find::Outcome>),
+    Exported(Option<export::Saved>),
     Pasted(Option<String>),
     Open(String),
     CopyText(String),
@@ -198,6 +202,7 @@ pub struct App {
     pub active: usize,
     pub find: Option<Find>,
     pub hint_mode: Option<HintMode>,
+    pub notice: Option<(String, Instant)>,
     pub menu: Option<Menu>,
     pub confirm: Option<Confirm>,
     pub hovered_tab: Option<usize>,
@@ -217,7 +222,8 @@ pub struct App {
     stamps: (Option<SystemTime>, Option<SystemTime>),
 }
 
-fn uri_path(arg: &str) -> PathBuf {
+#[must_use]
+pub fn uri_path(arg: &str) -> PathBuf {
     let Some(rest) = arg.strip_prefix("file://") else { return PathBuf::from(arg) };
     let path = rest.find('/').map_or(rest, |slash| &rest[slash..]);
     let bytes = path.as_bytes();
@@ -325,6 +331,7 @@ fn shortcut(key: &Key, physical: keyboard::key::Physical, modifiers: Modifiers) 
         (true, true, false, 'g') => Command::FindUp,
         (true, true, false, 'e') => Command::UseSelectionForFind,
         (true, true, false, 'o') => Command::Hints,
+        (true, true, false, 's') => Command::Export,
         (true, true, false, 'k') => Command::ClearScrollback,
         (true, true, false, 'u') => Command::Mark(Mark::Line),
         (true, true, false, 'm') => Command::Mark(Mark::Bookmark),
@@ -347,6 +354,7 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::Find => "Ctrl+Shift+F",
         Command::ClearScrollback => "Ctrl+Shift+K",
         Command::Hints => "Ctrl+Shift+O",
+        Command::Export => "Ctrl+Shift+S",
         Command::Mark(Mark::Line) => "Ctrl+Shift+U",
         Command::Mark(Mark::Bookmark) => "Ctrl+Shift+M",
         Command::Jump(Direction::Left, false) => "Ctrl+Shift+↑",
@@ -412,6 +420,7 @@ impl App {
             active: 0,
             find: None,
             hint_mode: None,
+            notice: None,
             menu: None,
             confirm: None,
             hovered_tab: None,
@@ -519,6 +528,7 @@ impl App {
     fn animating(&self) -> bool {
         let opening = |opened: Instant| opened.elapsed() < motion::t2();
         self.flashes.values().any(|(at, _)| at.elapsed() < motion::t3())
+            || self.notice.as_ref().is_some_and(|(_, at)| opening(*at))
             || self.menu.as_ref().is_some_and(|menu| opening(menu.opened))
             || self.confirm.as_ref().is_some_and(|confirm| opening(confirm.opened))
     }
@@ -598,6 +608,18 @@ impl App {
                 Task::batch(tasks)
             }
             Message::Terminal(action) => self.on_action(action),
+            Message::Exported(saved) => {
+                let lang = self.lang;
+                self.notice = match saved {
+                    Some(export::Saved::Written(path)) => {
+                        Some(format!("{} {}", Text::SavedTo.text(lang), path.display()))
+                    }
+                    Some(export::Saved::Failed(error)) => Some(format!("{}: {error}", Text::SaveFailed.text(lang))),
+                    Some(export::Saved::Cancelled) | None => None,
+                }
+                .map(|text| (text, Instant::now()));
+                Task::none()
+            }
             Message::Key(event, captured) => self.on_key(&event, captured),
             Message::Command(command) => self.command(command),
             Message::PaneClicked(handle) => {
@@ -722,6 +744,7 @@ impl App {
                     }
                 }
                 self.settle_prompts();
+                self.notice.take_if(|(_, at)| at.elapsed() >= NOTICE);
                 self.reload();
                 Task::none()
             }
@@ -1264,7 +1287,8 @@ impl App {
             | Command::Reset
             | Command::Mark(_)
             | Command::Jump(..)
-            | Command::Hints => return self.edit(command),
+            | Command::Hints
+            | Command::Export => return self.edit(command),
             _ => return self.adjust(command),
         }
         Task::none()
@@ -1328,6 +1352,17 @@ impl App {
                     let mut processor: Processor = Processor::new();
                     processor.advance(&mut *pane.term.lock(), b"\x1bc");
                     pane.write(&b"\x0c"[..]);
+                }
+            }
+            Command::Export => {
+                if let Some(pane) = self.focused() {
+                    let request = export::Request {
+                        term: Arc::clone(&pane.term),
+                        title: Text::ExportText.text(self.lang).trim_end_matches('…').to_string(),
+                        name: Text::ExportName.text(self.lang).to_string(),
+                        folder: pane.directory.clone().or_else(home),
+                    };
+                    return Task::perform(export::spawn(request), |saved| Message::Exported(saved.ok()));
                 }
             }
             Command::Hints => {

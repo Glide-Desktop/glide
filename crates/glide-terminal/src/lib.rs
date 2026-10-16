@@ -2,6 +2,7 @@ pub mod app;
 pub mod boxes;
 mod chrome;
 pub mod config;
+pub mod export;
 pub mod find;
 pub mod hints;
 pub mod i18n;

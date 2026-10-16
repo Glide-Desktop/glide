@@ -34,3 +34,4 @@ glide-theme = { path = "../glide-theme" }
 rustix = { version = "1", default-features = false, features = ["std", "termios"] }
 serde.workspace = true
 toml.workspace = true
+zbus = "5"
