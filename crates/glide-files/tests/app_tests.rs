@@ -141,7 +141,7 @@ fn path(index: usize) -> std::path::PathBuf {
 fn listed_app() -> glide_files::App {
     use glide_files::fs::{FileCategory, FileEntry};
     let (mut app, _) = glide_files::App::new();
-    let empty = std::env::temp_dir().join(format!("glide-files-tests-{}", std::process::id()));
+    let empty = std::env::temp_dir().join("glide-files-tests");
     std::fs::create_dir_all(&empty).expect("scratch");
     app.current = empty;
     app.view = ViewMode::List;
