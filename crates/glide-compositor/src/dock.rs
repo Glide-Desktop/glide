@@ -88,7 +88,7 @@ fn app_key(app_id: &str) -> String {
     app_id.to_lowercase()
 }
 
-fn is_pinnable(app_id: &str) -> bool {
+pub(crate) fn is_pinnable(app_id: &str) -> bool {
     !app_id.trim().is_empty() && !app_id.starts_with(WINDOW_KEY_PREFIX)
 }
 

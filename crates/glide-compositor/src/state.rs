@@ -2650,6 +2650,17 @@ impl GlideState {
         crate::paint::init_or_replace(font_px.clamp(10.0, 18.0), self.font_family.as_deref());
     }
 
+    #[must_use]
+    pub fn overview_apps(&self) -> HashMap<glide_layout::WindowId, String> {
+        let Some(ui) = self.overview.as_ref() else {
+            return HashMap::new();
+        };
+        ui.windows()
+            .filter_map(|id| Some((id, self.dock_key(id)?)))
+            .filter(|(_, app)| crate::dock::is_pinnable(app))
+            .collect()
+    }
+
     pub fn refresh_overview(&mut self) {
         if self.overview.is_none() {
             return;

@@ -523,9 +523,9 @@ fn push_wallpaper_elements(
 }
 
 fn overview_elements(
-    gles_renderer: &mut GlesRenderer, overview: &mut crate::overview::OverviewUi,
-    window_map: &HashMap<glide_layout::WindowId, GlideWindow>, scale: Scale<f64>, output: &Output,
-    output_geometry: smithay::utils::Rectangle<i32, Logical>,
+    gles_renderer: &mut GlesRenderer, overview: &mut crate::overview::OverviewUi, icons: &mut crate::icon::IconLoader,
+    scale: Scale<f64>, output: &Output, output_geometry: smithay::utils::Rectangle<i32, Logical>,
+    lookup: impl FnMut(glide_layout::WindowId) -> Option<crate::overview::Tile>,
 ) -> Vec<GlideRenderElements> {
     let mut elements: Vec<GlideRenderElements> = Vec::new();
 
@@ -535,9 +535,7 @@ fn overview_elements(
     let output_scale = output.current_scale().integer_scale();
     elements.extend(
         overview
-            .render(gles_renderer, output_geometry, scale, output_scale, &painter, |id| {
-                window_map.get(&id).map(|window| (window.clone(), window.display_name()))
-            })
+            .render(gles_renderer, output_geometry, scale, output_scale, &painter, icons, lookup)
             .into_iter()
             .map(GlideRenderElements::Overview),
     );
@@ -1115,6 +1113,7 @@ impl GlideState {
         let fullscreen_center = self.focused_fullscreen_center();
         let topbar_popup_open = self.topbar.has_open_popup();
         let dock_suppressed = self.dock_suppressed();
+        let overview_apps = self.overview_apps();
 
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
@@ -1262,13 +1261,21 @@ impl GlideState {
                 Kind::Unspecified,
             )));
         } else if let Some(overview) = self.overview.as_mut() {
+            let window_map = &self.window_map;
             elements.extend(overview_elements(
                 gles_renderer,
                 overview,
-                &self.window_map,
+                &mut self.launcher_icons,
                 scale,
                 &output,
                 output_geometry,
+                |id| {
+                    window_map.get(&id).map(|window| crate::overview::Tile {
+                        window: window.clone(),
+                        title: window.display_name(),
+                        app: overview_apps.get(&id).cloned(),
+                    })
+                },
             ));
         } else {
             let Some(space_elements) = build_render_elements(gles_renderer, &self.space, &output) else {

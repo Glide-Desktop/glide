@@ -24,7 +24,14 @@ use crate::{
 #[path = "overview_strip.rs"]
 mod strip;
 
-type OverviewEntry = (WindowId, Rectangle<i32, Logical>, bool, Option<(GlideWindow, String)>);
+type OverviewEntry = (WindowId, Rectangle<i32, Logical>, bool, Option<Tile>);
+
+#[derive(Debug, Clone)]
+pub struct Tile {
+    pub window: GlideWindow,
+    pub title: String,
+    pub app: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Phase {
@@ -87,7 +94,16 @@ impl RasterKey {
     }
 }
 
-type CachedLabel = (String, i32, RasterKey, MemoryRenderBuffer);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LabelKey {
+    title: String,
+    app: Option<String>,
+    width: i32,
+    raster: RasterKey,
+    icons: u64,
+}
+
+type CachedLabel = (LabelKey, MemoryRenderBuffer);
 type CachedHighlight = (i32, i32, RasterKey, MemoryRenderBuffer);
 type CachedClose = (u8, RasterKey, MemoryRenderBuffer);
 type PerScale<T> = std::collections::HashMap<i32, T>;
@@ -265,6 +281,10 @@ impl OverviewUi {
 
     fn contains(&self, id: WindowId) -> bool {
         self.previews.iter().any(|p| p.id == id)
+    }
+
+    pub fn windows(&self) -> impl Iterator<Item = WindowId> + '_ {
+        self.previews.iter().map(|p| p.id)
     }
 
     fn elapsed_fraction(&self, started: Instant) -> f64 {
@@ -495,6 +515,8 @@ pub enum Direction {
 }
 
 const LABEL_PADDING: i32 = 12;
+const LABEL_ICON_INSET: i32 = 5;
+const LABEL_ICON_GAP: i32 = 6;
 const LABEL_RISE: f64 = 4.0;
 const OV_CLOSE_SIZE: i32 = 26;
 const OV_CLOSE_OUTSET: i32 = 10;
@@ -532,6 +554,22 @@ fn close_button_rect(preview: Rectangle<i32, Logical>) -> Rectangle<i32, Logical
 
 pub(crate) const fn label_offset(label_height: i32) -> i32 {
     -label_height / 2
+}
+
+const fn label_icon_side(label_height: i32) -> i32 {
+    label_height - LABEL_ICON_INSET * 2
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LabelMetrics {
+    width: i32,
+    text: (i32, i32),
+}
+
+fn label_metrics(text_w: i32, label_height: i32, icon: bool, max_w: i32) -> LabelMetrics {
+    let lead = if icon { LABEL_ICON_INSET + label_icon_side(label_height) + LABEL_ICON_GAP } else { LABEL_PADDING };
+    let width = (lead + text_w + LABEL_PADDING).clamp(1, max_w.max(1));
+    LabelMetrics { width, text: (lead, (width - LABEL_PADDING).max(lead)) }
 }
 
 fn centre_x(rect: Rectangle<i32, Logical>) -> f64 {
@@ -580,6 +618,22 @@ fn draw_close_button(theme: &OverviewTheme, hover_t: f32, output_scale: i32) -> 
     let (glyph, stroke) = (OV_CLOSE_GLYPH, OV_CLOSE_GLYPH_STROKE);
     crate::paint::draw_close_glyph_over(&mut c.buf, c.w, c.h, glyph, stroke, output_scale, fg);
     Some(c.finish())
+}
+
+fn paint_label(
+    c: &mut crate::raster::Canvas<'_>, theme: &OverviewTheme, painter: &crate::paint::Painter, icon: Option<&[u8]>,
+    title: &str, text: (i32, i32),
+) {
+    let (height, scale) = (c.h, c.scale);
+    let (radius, s) = (height as f32 / 2.0, scale as f32);
+    c.panel(theme.label_background, radius);
+    crate::paint::draw_inset_border(&mut c.buf, c.w * scale, c.h * scale, s, radius * s, theme.label_border);
+    if let Some(pixels) = icon {
+        let side = label_icon_side(height);
+        c.blit_square(pixels, side, (LABEL_ICON_INSET, (height - side) / 2));
+    }
+    let align = if icon.is_some() { crate::paint::TextAlign::Left } else { crate::paint::TextAlign::Center };
+    c.label(painter, text, align, title, theme.label_color, &glide_theme::TextStyle::OV_LABEL);
 }
 
 fn place<R>(
@@ -650,7 +704,7 @@ fn push_close_buttons<R>(
 impl OverviewUi {
     fn render_labels<R>(
         &mut self, renderer: &mut R, entries: &[OverviewEntry], scale: Scale<f64>, output_scale: i32,
-        painter: &crate::paint::Painter,
+        painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader,
     ) -> Vec<OverviewRenderElement<R>>
     where
         R: ShellRenderer + ClipCapableRenderer,
@@ -664,47 +718,43 @@ impl OverviewUi {
 
         let alpha = t.clamp(0.0, 1.0) as f32;
         let rise = ((1.0 - t) * LABEL_RISE).round() as i32;
+        let height = theme.label_height;
+        let side = label_icon_side(height);
+        icons.expire_missing();
 
         let mut elements = Vec::new();
         for (id, rect, _, resolved) in entries {
-            let Some((_, title)) = resolved else {
+            let Some(tile) = resolved else {
                 continue;
             };
             let Some(preview) = self.previews.iter_mut().find(|p| p.id == *id) else {
                 continue;
             };
 
-            let height = theme.label_height;
-            let text_w = painter.text_width_styled(title.as_str(), &glide_theme::TextStyle::OV_LABEL) as i32;
-            let width = (text_w + LABEL_PADDING * 2).clamp(1, rect.size.w.max(1));
+            let app = tile.app.as_deref().filter(|app| side > 0 && icons.load(app, side * output_scale).is_some());
+            let text_w = painter.text_width_styled(&tile.title, &glide_theme::TextStyle::OV_LABEL).ceil() as i32;
+            let metrics = label_metrics(text_w, height, app.is_some(), rect.size.w);
 
-            let key = RasterKey::new(&theme, output_scale);
-            let needs_redraw =
-                preview.label.get(&output_scale).is_none_or(|(cached_title, cached_width, cached_key, _)| {
-                    cached_title != title || *cached_width != width || *cached_key != key
-                });
-            if needs_redraw {
-                let Some(mut c) = crate::raster::Canvas::new(width, height, output_scale) else {
+            let key = LabelKey {
+                title: tile.title.clone(),
+                app: app.map(str::to_string),
+                width: metrics.width,
+                raster: RasterKey::new(&theme, output_scale),
+                icons: icons.generation(),
+            };
+            if preview.label.get(&output_scale).is_none_or(|(cached, _)| *cached != key) {
+                let Some(mut c) = crate::raster::Canvas::new(metrics.width, height, output_scale) else {
                     continue;
                 };
-                let (radius, s) = (height as f32 / 2.0, output_scale as f32);
-                c.panel(theme.label_background, radius);
-                crate::paint::draw_inset_border(
-                    &mut c.buf,
-                    c.w * output_scale,
-                    c.h * output_scale,
-                    s,
-                    radius * s,
-                    theme.label_border,
-                );
-                let (band, style) = ((LABEL_PADDING, width - LABEL_PADDING), &glide_theme::TextStyle::OV_LABEL);
-                c.label(painter, band, crate::paint::TextAlign::Center, title, theme.label_color, style);
-                preview.label.insert(output_scale, (title.clone(), width, key, c.finish()));
+                let icon = app.and_then(|app| icons.load(app, side * output_scale));
+                paint_label(&mut c, &theme, painter, icon, &tile.title, metrics.text);
+                preview.label.insert(output_scale, (key, c.finish()));
             }
 
-            let Some((_, _, _, memory)) = preview.label.get(&output_scale) else {
+            let Some((_, memory)) = preview.label.get(&output_scale) else {
                 continue;
             };
+            let width = metrics.width;
 
             let pos = Point::from((
                 rect.loc.x + (rect.size.w - width) / 2,
@@ -721,12 +771,12 @@ impl OverviewUi {
     #[profiling::function]
     pub fn render<R, F>(
         &mut self, renderer: &mut R, output_rect: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
-        painter: &crate::paint::Painter, mut lookup: F,
+        painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader, mut lookup: F,
     ) -> Vec<OverviewRenderElement<R>>
     where
         R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
-        F: FnMut(WindowId) -> Option<(GlideWindow, String)>,
+        F: FnMut(WindowId) -> Option<Tile>,
     {
         let t = self.progress();
         let mut elements = Vec::new();
@@ -737,7 +787,7 @@ impl OverviewUi {
         let entries: Vec<OverviewEntry> =
             self.previews.iter().map(|p| (p.id, p.rect_at(t), hover == Some(p.id), lookup(p.id))).collect();
 
-        elements.extend(self.render_labels(renderer, &entries, scale, output_scale, painter));
+        elements.extend(self.render_labels(renderer, &entries, scale, output_scale, painter, icons));
         self.strip.render(renderer, &theme, (self.area, t), (scale, output_scale), &mut elements);
 
         if t > 0.0 {
@@ -802,7 +852,7 @@ impl OverviewUi {
         let stacked: Vec<&OverviewEntry> =
             self.paint_order().into_iter().filter_map(|id| entries.iter().find(|(entry, ..)| *entry == id)).collect();
         for (id, rect, _, resolved) in stacked {
-            let Some((window, _)) = resolved else {
+            let Some(Tile { window, .. }) = resolved else {
                 continue;
             };
             let Some(preview) = self.previews.iter().find(|p| p.id == *id) else {
@@ -992,6 +1042,15 @@ mod tests {
         moving.phase = Phase::opening(ago(40));
         let button = close_button_rect(moving.previews[0].rect_at(moving.progress()));
         assert_eq!(moving.close_button_at(centre(button)), None);
+    }
+
+    #[test]
+    fn the_label_pill_makes_room_for_the_app_icon_and_ellipsises_inside_its_padding() {
+        assert_eq!(label_icon_side(28), 18);
+        assert_eq!(label_metrics(100, 28, false, 1000), LabelMetrics { width: 124, text: (12, 112) });
+        assert_eq!(label_metrics(100, 28, true, 1000), LabelMetrics { width: 141, text: (29, 129) });
+        assert_eq!(label_metrics(400, 28, true, 200), LabelMetrics { width: 200, text: (29, 188) });
+        assert_eq!(label_metrics(400, 28, true, 20).text, (29, 29));
     }
 
     #[test]
