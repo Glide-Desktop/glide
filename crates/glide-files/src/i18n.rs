@@ -238,6 +238,7 @@ catalogue! {
     ErrNoSpace => "Not enough disk space", "Недостатньо місця на диску";
     ErrReadOnly => "The file system is read-only", "Файлова система доступна лише для читання";
     ErrNotInTrash => "Only top-level Trash items can be restored", "Відновити можна лише об’єкти верхнього рівня смітника";
+    ErrUnsupported => "Pipes, sockets and devices can’t be copied", "Канали, сокети й пристрої не копіюються";
     CatFolder => "Folder", "Папка";
     CatDocument => "Document", "Документ";
     CatText => "Plain Text", "Текстовий файл";
@@ -275,7 +276,7 @@ catalogue! {
     ErrBusy => "the device is in use", "пристрій використовується";
     ErrNotAuthorized => "not authorized", "немає дозволу";
     ErrNoDisks => "the disk service (udisks2) is unavailable", "служба дисків (udisks2) недоступна";
-    ErrMissingTool => "this tool isn’t installed:", "не встановлено програму";
+    ErrMissingTool => "this tool isn’t installed:", "не встановлено програму:";
     ErrUnrepaired => "the file system couldn’t be fully repaired", "файлову систему не вдалося повністю виправити";
 }
 
@@ -354,6 +355,7 @@ pub fn io_error(err: &std::io::Error, lang: Lang) -> String {
         ErrorKind::NotFound => Key::ErrNotFound,
         ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Key::ErrNoSpace,
         ErrorKind::ReadOnlyFilesystem => Key::ErrReadOnly,
+        ErrorKind::Unsupported => Key::ErrUnsupported,
         _ => return err.to_string(),
     };
     key.text(lang).to_string()

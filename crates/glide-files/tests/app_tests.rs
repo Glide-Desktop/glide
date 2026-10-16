@@ -442,6 +442,13 @@ fn a_volume_trash_is_treated_as_the_trash() {
 }
 
 #[test]
+fn a_special_file_that_cannot_be_copied_is_reported_in_the_interface_language() {
+    let err = std::io::Error::new(std::io::ErrorKind::Unsupported, "special file");
+    assert_eq!(i18n::io_error(&err, Lang::Uk), Key::ErrUnsupported.text(Lang::Uk));
+    assert!(!i18n::io_error(&err, Lang::Uk).contains("special"), "no English leaks into the Ukrainian toast");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();
