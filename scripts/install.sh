@@ -5,9 +5,9 @@
 #
 #   --prefix DIR   install prefix (default /usr/local)
 #   --destdir DIR  stage into DIR instead of / (for distribution packages)
-#   --from DIR     directory holding the glide, glidectl, glide-settings and
-#                  glide-files binaries (default: bin/ of a release tarball,
-#                  else target/release of the source tree)
+#   --from DIR     directory holding the glide, glidectl, glide-settings,
+#                  glide-files and glide-terminal binaries (default: bin/ of a
+#                  release tarball, else target/release of the source tree)
 #   --dm           install and configure glide-dm (via greetd) as system display manager
 #   --uninstall    remove every file this script installs
 #
@@ -51,9 +51,9 @@ else
     UNITDIR="$PREFIX/lib/systemd/user"
 fi
 
-BINARIES="glide glidectl glide-settings glide-files"
-FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-session $BINDIR/glide-lock
-$APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
+BINARIES="glide glidectl glide-settings glide-files glide-terminal"
+FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-session $BINDIR/glide-lock
+$APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $UNITDIR/glide.service $UNITDIR/glide-shutdown.target $PAMDIR/glide-lock"
 
 if [ -z "$DESTDIR" ] && [ "$(id -u)" -ne 0 ]; then
@@ -106,6 +106,7 @@ install -Dm755 "$ROOT/data/glide-session" "$DESTDIR$BINDIR/glide-session"
 install -Dm755 "$ROOT/data/glide-lock" "$DESTDIR$BINDIR/glide-lock"
 install -Dm644 "$ROOT/data/glide-settings.desktop" "$DESTDIR$APPDIR/glide-settings.desktop"
 install -Dm644 "$ROOT/data/glide-files.desktop" "$DESTDIR$APPDIR/glide-files.desktop"
+install -Dm644 "$ROOT/data/glide-terminal.desktop" "$DESTDIR$APPDIR/glide-terminal.desktop"
 install -Dm644 "$ROOT/data/glide-portals.conf" "$DESTDIR$PORTALDIR/glide-portals.conf"
 install -Dm644 "$ROOT/data/pam.d/glide-lock" "$DESTDIR$PAMDIR/glide-lock"
 

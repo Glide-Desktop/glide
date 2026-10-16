@@ -3,7 +3,8 @@ use std::{
     sync::{PoisonError, RwLock},
 };
 
-const KNOWN: [(&str, &[&str]); 12] = [
+const KNOWN: [(&str, &[&str]); 13] = [
+    ("glide-terminal", &["-e"]),
     ("xdg-terminal-exec", &[]),
     ("ptyxis", &["--"]),
     ("kgx", &["-e"]),

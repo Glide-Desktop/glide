@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Name[uk]=Термінал
+Comment=Use the command line
+Comment[uk]=Командний рядок
+Exec=glide-terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;Utility;
+Keywords=terminal;console;shell;prompt;command;термінал;консоль;оболонка;команда;
+StartupNotify=true
+StartupWMClass=glide-terminal
+X-ExecArg=-e
+X-TerminalArgExec=-e
+X-TerminalArgDir=--working-directory
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Name[uk]=Нове вікно
+Exec=glide-terminal

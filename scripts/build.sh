@@ -103,7 +103,7 @@ OUT="$REPO/target/release"
 
 echo
 echo "built:"
-for bin in glide glidectl glide-settings glide-files; do
+for bin in glide glidectl glide-settings glide-files glide-terminal; do
     echo "  $OUT/$bin"
 done
 echo

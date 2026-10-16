@@ -1,0 +1,36 @@
+[package]
+name = "glide-terminal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "glide_terminal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "glide-terminal"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "wayland",
+    "tokio",
+    "svg",
+    "web-colors",
+    "advanced",
+] }
+alacritty_terminal = { version = "0.26", default-features = false }
+glide-config = { path = "../glide-config" }
+glide-theme = { path = "../glide-theme" }
+rustix = { version = "1", default-features = false, features = ["std", "termios"] }
+serde.workspace = true
+toml.workspace = true

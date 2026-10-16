@@ -13,6 +13,7 @@ members = [
     "crates/glide-notify",
     "crates/glide-paint",
     "crates/glide-settings",
+    "crates/glide-terminal",
     "crates/glide-theme",
     "crates/glide-tray",
     "crates/glide-ui",

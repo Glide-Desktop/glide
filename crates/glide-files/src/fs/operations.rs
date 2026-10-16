@@ -126,8 +126,19 @@ pub fn open_with_default(path: &Path) -> io::Result<()> {
     if status.success() { Ok(()) } else { Err(io::Error::other(format!("xdg-open exited with {status}"))) }
 }
 
-const TERMINALS: [&str; 10] =
-    ["alacritty", "foot", "kitty", "ptyxis", "kgx", "gnome-terminal", "konsole", "wezterm", "xfce4-terminal", "xterm"];
+const TERMINALS: [&str; 11] = [
+    "glide-terminal",
+    "alacritty",
+    "foot",
+    "kitty",
+    "ptyxis",
+    "kgx",
+    "gnome-terminal",
+    "konsole",
+    "wezterm",
+    "xfce4-terminal",
+    "xterm",
+];
 
 pub fn open_in_terminal(dir: &Path) -> io::Result<()> {
     let preferred = std::env::var("TERMINAL").unwrap_or_default();
