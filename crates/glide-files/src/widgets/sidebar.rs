@@ -43,13 +43,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
             continue;
         }
         let active = bookmarks && app.bookmark_drop_active();
-        let color = if active { t.acc_text() } else { t.fg_3() };
+        let color = if active { t.acc_soft_fg() } else { t.fg_3() };
         let header =
             container(text(title.text(lang).to_uppercase()).size(theme::MICRO).font(theme::SEMIBOLD).color(color))
                 .padding(Padding::from([2.0, theme::SP2]))
                 .width(Fill)
                 .style(
-                    move |_| if active { theme::rounded(t.fill_2(), theme::R1) } else { container::Style::default() },
+                    move |_| if active { theme::rounded(t.acc_soft(), theme::R2) } else { container::Style::default() },
                 );
         let header: Element<'_, Message> = if bookmarks {
             mouse_area(header)
