@@ -23,6 +23,7 @@ pub const TILE_GAP: f32 = theme::SP3;
 pub const LIST_PADDING: f32 = theme::SP1;
 const LOCATION_WIDTH: f32 = 220.0;
 const NAME_MIN: f32 = 64.0;
+const NAME_ROOM: f32 = 200.0;
 const HEADER_HEIGHT: f32 = 26.0;
 const DOT: f32 = theme::SP2;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
@@ -335,13 +336,14 @@ fn list(app: &App) -> Element<'_, Message> {
     let height = app.pane.height - LIST_HEADER;
     let shown = visible_rows(total, metrics.row, LIST_PADDING, app.scroll_offset(), height);
     let room = name_width(app, &metrics);
+    let columns = shown_columns(app);
     let rows = app
         .entries
         .iter()
         .enumerate()
         .skip(shown.start)
         .take(shown.len())
-        .map(|(index, entry)| list_row(app, entry, index % 2 == 1, now, &metrics, room));
+        .map(|(index, entry)| list_row(app, entry, index % 2 == 1, now, &metrics, room, &columns));
     let body = std::iter::once(spacer(shown.start as f32 * metrics.row))
         .chain(rows)
         .chain(std::iter::once(spacer((total - shown.end) as f32 * metrics.row)));
@@ -352,7 +354,7 @@ fn list(app: &App) -> Element<'_, Message> {
 fn list_header(app: &App) -> Element<'_, Message> {
     let lang = app.lang;
     let mut header = row![header_cell(app, SortBy::Name.label(lang), Some(SortBy::Name), None, Fill)];
-    for &column in &app.columns {
+    for column in shown_columns(app) {
         let width = Length::Fixed(column_width(column));
         header = header.push(header_cell(app, column_label(column, lang), column.sort(), Some(column), width));
     }
@@ -418,6 +420,7 @@ fn column_value(app: &App, entry: &FileEntry, column: ListColumn, now: SystemTim
 
 fn list_row<'a>(
     app: &'a App, entry: &'a FileEntry, stripe: bool, now: SystemTime, metrics: &Metrics, room: f32,
+    columns: &[ListColumn],
 ) -> Element<'a, Message> {
     let t = &app.theme;
     let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
@@ -445,7 +448,7 @@ fn list_row<'a>(
     }
 
     let mut cells = row![container(name).width(Fill).clip(true)].align_y(Alignment::Center);
-    for &column in &app.columns {
+    for &column in columns {
         cells = cells.push(cell(column_value(app, entry, column, now), column_width(column)));
     }
     if app.is_searching() {
@@ -487,7 +490,21 @@ fn location(app: &App, entry: &FileEntry) -> String {
 }
 
 fn name_width(app: &App, metrics: &Metrics) -> f32 {
-    let columns: f32 = app.columns.iter().map(|&column| column_width(column)).sum();
+    let columns: f32 = shown_columns(app).iter().map(|&column| column_width(column)).sum();
     let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
     (app.pane.width - 5.0 * theme::SP2 - columns - location - metrics.row_icon).max(NAME_MIN)
+}
+
+#[must_use]
+pub fn shown_columns(app: &App) -> Vec<ListColumn> {
+    let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
+    let mut room = app.pane.width - 4.0 * theme::SP2 - location - NAME_ROOM;
+    app.columns
+        .iter()
+        .copied()
+        .take_while(|&column| {
+            room -= column_width(column);
+            room >= 0.0
+        })
+        .collect()
 }

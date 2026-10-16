@@ -236,6 +236,22 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
 }
 
 #[test]
+fn columns_that_do_not_fit_give_way_to_the_name() {
+    use glide_files::config::ListColumn;
+    use glide_files::widgets::content::{column_width, shown_columns};
+    let mut app = listed_app();
+    app.columns = ListColumn::ALL.to_vec();
+    app.pane = Size::new(791.0, 560.0);
+    let shown = shown_columns(&app);
+    assert!(shown.len() < ListColumn::ALL.len(), "six columns cannot fit beside a name");
+    assert_eq!(shown, ListColumn::ALL[..shown.len()], "they drop from the right, in the chosen order");
+    let used: f32 = shown.iter().map(|&column| column_width(column)).sum();
+    assert!(app.pane.width - used >= 200.0, "the name keeps at least 200 px");
+    app.pane = Size::new(1600.0, 560.0);
+    assert_eq!(shown_columns(&app).len(), ListColumn::ALL.len(), "a wide window shows them all");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();
