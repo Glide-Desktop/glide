@@ -57,6 +57,7 @@ pub struct DesktopApp {
     pub name: String,
     pub exec: String,
     pub desktop: PathBuf,
+    pub listed: bool,
     mimes: Vec<String>,
 }
 
@@ -126,7 +127,8 @@ fn desktop_apps(roots: &Roots, lang: Lang) -> Vec<DesktopApp> {
                 let exec = exec_line(exec, entry.get("Terminal").is_some_and(|value| value == "true"), &|| {
                     glide_config::terminal::current()
                 });
-                apps.push(DesktopApp { id, name, exec, desktop: file, mimes });
+                let listed = flag(entry, "NoDisplay") != Some(true);
+                apps.push(DesktopApp { id, name, exec, desktop: file, listed, mimes });
             }
         }
     }
@@ -335,6 +337,12 @@ impl Extensions {
             targets.iter().all(|target| app.mimes.iter().any(|declared| self.mime.is_a(&target.mime, declared)))
         });
         ranked
+    }
+
+    #[must_use]
+    pub fn listed_apps_for(&self, targets: &[Target]) -> Vec<&DesktopApp> {
+        let mut seen = HashSet::new();
+        self.apps_for(targets).into_iter().filter(|app| app.listed && seen.insert(app.exec.as_str())).collect()
     }
 
     #[must_use]

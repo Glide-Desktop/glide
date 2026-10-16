@@ -234,6 +234,7 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
         let toggle = if paused { Icon::Play } else { Icon::Pause };
         let head = row![
             icon(glyph, 14.0, t.acc_text()),
+            space().width(theme::SP2),
             text(title)
                 .size(theme::CAP)
                 .font(theme::SEMIBOLD)

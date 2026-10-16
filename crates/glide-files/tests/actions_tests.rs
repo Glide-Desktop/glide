@@ -254,6 +254,27 @@ fn open_with_lists_apps_that_handle_every_selected_type() {
 }
 
 #[test]
+fn open_with_hides_no_display_entries_and_repeated_launchers() {
+    let scratch = scratch_with_mime("open-with-listed");
+    scratch.write("share/applications/browser.desktop", &app("browser", "image/png;"));
+    scratch.write(
+        "share/applications/com.vendor.Browser.desktop",
+        "[Desktop Entry]\nName=browser\nExec=browser %F\nMimeType=image/png;\nNoDisplay=true\n",
+    );
+    scratch
+        .write("share/applications/copy.desktop", "[Desktop Entry]\nName=Copy\nExec=browser %F\nMimeType=image/png;\n");
+    scratch.write("share/applications/viewer.desktop", &app("viewer", "image/png;"));
+    let extensions = Extensions::load(&scratch.roots(), Lang::En);
+    let png = extensions.target(Path::new("/x/a.png"), false);
+    let all = extensions.apps_for(std::slice::from_ref(&png)).len();
+    let listed: Vec<String> =
+        extensions.listed_apps_for(std::slice::from_ref(&png)).iter().map(|app| app.name.clone()).collect();
+    assert_eq!(all, 4, "every entry can still open the file");
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    assert!(listed.contains(&String::from("viewer")));
+}
+
+#[test]
 fn choosing_a_default_app_rewrites_only_that_mime_line() {
     use glide_files::fs::actions::with_default;
     let before = "[Added Associations]\nimage/png=a.desktop;\n[Default Applications]\nimage/png=old.desktop;\ntext/plain=ed.desktop;\n";

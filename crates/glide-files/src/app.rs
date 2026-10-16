@@ -494,14 +494,12 @@ pub struct Surfaces {
     pub toast_ghost: Option<Notice>,
     pub modal: Fade,
     pub modal_ghost: Option<Modal>,
-    pub modal_theme: ThemeState,
     pub thumb: Fade,
 }
 
 impl Surfaces {
-    fn new(view: ViewMode, theme: &ThemeState) -> Self {
+    fn new(view: ViewMode) -> Self {
         Self {
-            modal_theme: *theme,
             hover: HashMap::new(),
             menu: Fade::asymmetric(false, (Speed::T2, Curve::Out), (Speed::T2, Curve::InOut)),
             menu_ghost: None,
@@ -780,7 +778,7 @@ impl App {
             modal: None,
             menu: None,
             menu_target: None,
-            motion: Surfaces::new(prefs.view, &ThemeState::new(look.appearance, look.accent)),
+            motion: Surfaces::new(prefs.view),
             notice: None,
             notices: 0,
             modifiers: Modifiers::empty(),
@@ -1002,7 +1000,6 @@ impl App {
         if self.modal.is_some() {
             motion.modal_ghost.clone_from(&self.modal);
         }
-        motion.modal_theme = self.theme.faded(motion.modal.progress(now));
         motion.thumb.set(self.view == ViewMode::List, now);
         motion.prune(now);
     }
@@ -1867,7 +1864,7 @@ impl App {
         if targets.iter().any(|target| target.mime == crate::fs::mime::DIRECTORY) {
             return Vec::new();
         }
-        let apps = self.extensions.apps_for(targets);
+        let apps = self.extensions.listed_apps_for(targets);
         let lang = self.lang;
         let group = Some(Key::OpenWith.text(lang).to_string());
         let mut offers: Vec<Offer> = apps
@@ -1880,9 +1877,13 @@ impl App {
             })
             .collect();
         if let [target] = targets {
-            let current = self.extensions.default_app(&target.mime);
+            let current = self
+                .extensions
+                .default_app(&target.mime)
+                .and_then(|id| self.extensions.apps.iter().find(|app| app.id == id))
+                .map(|app| app.exec.as_str());
             let group = Some(Key::AlwaysOpenWith.text(lang).to_string());
-            offers.extend(apps.iter().take(OPEN_WITH_LIMIT).filter(|app| Some(app.id.as_str()) != current).map(
+            offers.extend(apps.iter().take(OPEN_WITH_LIMIT).filter(|app| Some(app.exec.as_str()) != current).map(
                 |app| Offer {
                     label: app.name.clone(),
                     group: group.clone(),
