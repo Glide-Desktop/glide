@@ -491,7 +491,7 @@ fn dock_preview<'a>(t: &ThemeState, names: &[&str], size: f64, scale: f64, lift:
     let shell = t.popover_bg();
     let line = t.line_2();
     let dock = container(tiles).padding(6).style(move |_: &iced::Theme| iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color { a: 0.82, ..shell })),
+        background: Some(iced::Background::Color(iced::Color { a: 0.74, ..shell })),
         border: iced::Border { color: line, width: 1.0, radius: theme::radius_r4() },
         ..iced::widget::container::Style::default()
     });

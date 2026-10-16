@@ -68,7 +68,7 @@
   --switch-thumb: #ffffff;
   --switch-thumb-on: #ffffff;
 
-  --shell-bg: rgba(251, 250, 248, .82);
+  --shell-bg: rgba(251, 250, 248, .74);
   --shell-fg: #1b1a17;
   --shell-line: rgba(27, 26, 23, .12);
 
@@ -135,7 +135,7 @@
   --switch-thumb: #cfccc7;
   --switch-thumb-on: #ffffff;
 
-  --shell-bg: rgba(38, 37, 42, .84);
+  --shell-bg: rgba(38, 37, 42, .76);
   --shell-fg: #f2f0ed;
   --shell-line: rgba(255, 255, 255, .12);
 

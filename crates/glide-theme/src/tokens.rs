@@ -118,7 +118,7 @@ impl Tokens {
                 danger: Color::from_hex("#bf372c").unwrap(),
                 danger_soft: Color::from_hex("#fae3e0").unwrap(),
 
-                shell_bg: Color::from_rgb8(251, 250, 248, 0.82),
+                shell_bg: Color::from_rgb8(251, 250, 248, 0.74),
                 shell_fg: Color::from_hex("#1b1a17").unwrap(),
                 shell_line: Color::from_rgb8(27, 26, 23, 0.12),
 
@@ -174,7 +174,7 @@ impl Tokens {
                 danger: Color::from_hex("#f0796f").unwrap(),
                 danger_soft: Color::from_rgb8(240, 121, 111, 0.16),
 
-                shell_bg: Color::from_rgb8(38, 37, 42, 0.84),
+                shell_bg: Color::from_rgb8(38, 37, 42, 0.76),
                 shell_fg: Color::from_hex("#f2f0ed").unwrap(),
                 shell_line: Color::from_rgb8(255, 255, 255, 0.12),
 

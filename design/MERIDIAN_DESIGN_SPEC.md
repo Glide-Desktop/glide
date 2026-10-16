@@ -463,7 +463,7 @@ Meridian підтримує **8 акцентних кольорів**, коже�
 |-------------|----------|
 | Висота | 34px |
 | z-index | 45 |
-| Background | `--shell-bg` (82–84% opacity + blur) |
+| Background | `--shell-bg` (74–76% opacity + blur) |
 | Backdrop-filter | `blur(20px) saturate(1.6)` |
 | Кнопки | `.tb-btn` — 24px height, `--r-2` radius |
 
@@ -552,7 +552,7 @@ Meridian підтримує **8 акцентних кольорів**, коже�
 
 | Токен | Light | Dark |
 |-------|-------|------|
-| `--shell-bg` | `rgba(251,250,248,.82)` | `rgba(38,37,42,.84)` |
+| `--shell-bg` | `rgba(251,250,248,.74)` | `rgba(38,37,42,.76)` |
 | `--shell-fg` | `#1b1a17` | `#f2f0ed` |
 | `--shell-line` | `rgba(27,26,23,.12)` | `rgba(255,255,255,.12)` |
 
