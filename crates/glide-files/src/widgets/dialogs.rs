@@ -26,7 +26,8 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
         Dialog::Tags(_) => input(app, modal, (Key::TagsTitle, Key::TagsPrompt), Key::Save),
         Dialog::Rename(_) => input(app, modal, (Key::RenameTitle, Key::NamePrompt), Key::RenameConfirm),
         Dialog::Delete(paths) => {
-            confirm(app, Key::DeleteTitle, Key::DeletePrompt, Some(subject(app, paths)), Key::DeletePermanently)
+            let prompt = if paths.len() == 1 { Key::DeletePromptOne } else { Key::DeletePrompt };
+            confirm(app, Key::DeleteTitle, prompt, Some(subject(app, paths)), Key::DeletePermanently)
         }
         Dialog::EmptyTrash => confirm(app, Key::EmptyTrashTitle, Key::EmptyTrashPrompt, None, Key::EmptyTrash),
         Dialog::Quit => confirm(app, Key::QuitTitle, Key::QuitPrompt, None, Key::QuitConfirm),

@@ -246,8 +246,12 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
         .align_y(Alignment::Center);
         let mut card = column![head].spacing(theme::SP1);
         if let Some(current) = &progress.current {
-            card = card
-                .push(text(ellipsize(current, 30)).size(theme::MICRO).color(t.fg_2()).wrapping(text::Wrapping::None));
+            card = card.push(
+                text(fit(current, JOB_TEXT, theme::MICRO))
+                    .size(theme::MICRO)
+                    .color(t.fg_2())
+                    .wrapping(text::Wrapping::None),
+            );
         }
         card = card
             .push(progress_bar(t, fraction, paused))
@@ -426,6 +430,40 @@ pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Opti
 }
 
 const SMALL_LABEL: f32 = 12.5;
+const JOB_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - theme::SP1;
+
+#[must_use]
+pub fn text_width(text: &str, size: f32) -> f32 {
+    let em = |c: char| match c {
+        'i' | 'l' | 'j' | 'I' | 'і' | 'ї' | '.' | ',' | ':' | ';' | '!' | '|' | '\'' => 0.28,
+        ' ' | 'f' | 't' | 'r' | 'г' | 'т' | '(' | ')' | '[' | ']' | '-' | '/' => 0.36,
+        'm' | 'w' | 'M' | 'W' | 'м' | 'ш' | 'щ' | 'ж' | 'ю' | 'ф' | 'Ш' | 'Щ' | 'Ж' | 'Ю' | 'Ф' | 'Ы' => {
+            0.82
+        }
+        c if c.is_uppercase() => 0.66,
+        c if c.is_ascii_digit() => 0.56,
+        _ => 0.55,
+    };
+    text.chars().map(|c| em(c) * size).sum()
+}
+
+#[must_use]
+pub fn fit(name: &str, width: f32, size: f32) -> String {
+    let full = text_width(name, size);
+    if full <= width {
+        return name.to_string();
+    }
+    let count = name.chars().count();
+    let mut chars = ((width / (full / count as f32)) as usize + 2).min(count);
+    while chars > 4 {
+        chars -= 1;
+        let shortened = ellipsize(name, chars);
+        if text_width(&shortened, size) <= width {
+            return shortened;
+        }
+    }
+    ellipsize(name, 4)
+}
 
 #[must_use]
 pub fn ellipsize(name: &str, max: usize) -> String {

@@ -11,7 +11,6 @@ use crate::icons::Icon;
 use crate::theme;
 
 const STATUS_BUDGET: f32 = 240.0;
-const CHAR_WIDTH: f32 = 6.8;
 const CRUMB_CHROME: f32 = 44.0;
 
 struct Crumb {
@@ -40,7 +39,7 @@ fn crumbs(app: &App) -> Vec<Crumb> {
 }
 
 fn width(crumb: &Crumb) -> f32 {
-    crumb.label.chars().count() as f32 * CHAR_WIDTH + CRUMB_CHROME
+    super::text_width(&crumb.label, theme::CAP) + CRUMB_CHROME
 }
 
 fn status(app: &App) -> String {

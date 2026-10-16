@@ -3,7 +3,7 @@ use iced::widget::{Column, button, column, container, mouse_area, row, scrollabl
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 use super::header::window_control;
-use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, ellipsize, icon};
+use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, fit, icon};
 use crate::app::{App, Device, Hover, MenuKind, Message, volume_icon};
 use crate::fs::{Place, Volume};
 use crate::i18n::Key;
@@ -13,6 +13,7 @@ use crate::theme::{self, Tone};
 pub const ITEM_HEIGHT: f32 = theme::SMALL_CONTROL;
 const EJECT: f32 = ITEM_HEIGHT;
 const JOBS_HEIGHT: f32 = 320.0;
+const GLYPH: f32 = 16.0;
 
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -102,11 +103,12 @@ struct Line<'a> {
 impl<'a> Line<'a> {
     fn view(self) -> Element<'a, Message> {
         let t = &self.app.theme;
-        let mut label = text(ellipsize(&self.label, 22)).size(theme::CALL).wrapping(text::Wrapping::None);
+        let room = SIDEBAR_WIDTH - 4.0 * theme::SP2 - GLYPH - if self.eject.is_some() { EJECT } else { 0.0 };
+        let mut label = text(fit(&self.label, room, theme::CALL)).size(theme::CALL).wrapping(text::Wrapping::None);
         if let Some(color) = self.dim {
             label = label.color(color);
         }
-        let mut content = row![icon(self.glyph, 16.0, self.tint), label, space::horizontal()]
+        let mut content = row![icon(self.glyph, GLYPH, self.tint), label, space::horizontal()]
             .spacing(theme::SP2)
             .align_y(Alignment::Center);
         if let Some(message) = self.eject {

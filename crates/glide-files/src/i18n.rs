@@ -127,6 +127,7 @@ catalogue! {
     NamePrompt => "Name", "Назва";
     DeleteTitle => "Delete permanently?", "Видалити назавжди?";
     DeletePrompt => "These items will be erased and can’t be restored.", "Ці об’єкти буде стерто без можливості відновлення.";
+    DeletePromptOne => "This item will be erased and can’t be restored.", "Цей об’єкт буде стерто без можливості відновлення.";
     EmptyTrashTitle => "Empty the Trash?", "Очистити смітник?";
     EmptyTrashPrompt => "All items in the Trash will be erased and can’t be restored.", "Усі об’єкти в смітнику буде стерто без можливості відновлення.";
     TrashBanner => "Items in the Trash can be restored or erased.", "Об’єкти в смітнику можна відновити або стерти.";

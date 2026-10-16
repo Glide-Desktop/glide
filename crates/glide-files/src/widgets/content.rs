@@ -6,7 +6,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
-use super::{divider, ellipsize, file_icon, icon};
+use super::{divider, ellipsize, file_icon, fit, icon};
 use crate::app::{App, FILES_ID, Hover, MenuKind, Message, RENAME_ID, ViewMode};
 use crate::config::ListColumn;
 use crate::fs::tags;
@@ -332,13 +332,14 @@ fn list(app: &App) -> Element<'_, Message> {
     let total = app.entries.len();
     let height = app.pane.height - LIST_HEADER;
     let shown = visible_rows(total, metrics.row, LIST_PADDING, app.scroll_offset(), height);
+    let room = name_width(app, &metrics);
     let rows = app
         .entries
         .iter()
         .enumerate()
         .skip(shown.start)
         .take(shown.len())
-        .map(|(index, entry)| list_row(app, entry, index % 2 == 1, now, &metrics));
+        .map(|(index, entry)| list_row(app, entry, index % 2 == 1, now, &metrics, room));
     let body = std::iter::once(spacer(shown.start as f32 * metrics.row))
         .chain(rows)
         .chain(std::iter::once(spacer((total - shown.end) as f32 * metrics.row)));
@@ -414,7 +415,7 @@ fn column_value(app: &App, entry: &FileEntry, column: ListColumn, now: SystemTim
 }
 
 fn list_row<'a>(
-    app: &'a App, entry: &'a FileEntry, stripe: bool, now: SystemTime, metrics: &Metrics,
+    app: &'a App, entry: &'a FileEntry, stripe: bool, now: SystemTime, metrics: &Metrics, room: f32,
 ) -> Element<'a, Message> {
     let t = &app.theme;
     let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
@@ -431,7 +432,7 @@ fn list_row<'a>(
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
     let title: Element<'a, Message> = match rename_field(app, theme::CALL).filter(|_| editing) {
         Some(field) => field,
-        None => text(&entry.name).size(theme::CALL).wrapping(text::Wrapping::None).into(),
+        None => text(fit(&entry.name, room, theme::CALL)).size(theme::CALL).wrapping(text::Wrapping::None).into(),
     };
     let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(theme::SP2).align_y(Alignment::Center);
     if let Some(dots) = dots(entry) {
@@ -446,7 +447,8 @@ fn list_row<'a>(
         cells = cells.push(cell(column_value(app, entry, column, now), column_width(column)));
     }
     if app.is_searching() {
-        cells = cells.push(cell(location(app, entry), LOCATION_WIDTH));
+        let room = LOCATION_WIDTH - 2.0 * theme::SP2;
+        cells = cells.push(cell(fit(&location(app, entry), room, theme::CAP), LOCATION_WIDTH));
     }
 
     mouse_area(
@@ -465,9 +467,25 @@ fn list_row<'a>(
 
 fn location(app: &App, entry: &FileEntry) -> String {
     let parent = entry.path.parent().unwrap_or(&app.current);
-    match parent.strip_prefix(&app.current) {
-        Ok(relative) if relative.as_os_str().is_empty() => app.location_name(&app.current),
-        Ok(relative) => relative.display().to_string(),
-        Err(_) => parent.display().to_string(),
+    let Ok(relative) = parent.strip_prefix(&app.current) else {
+        return parent.display().to_string();
+    };
+    if relative.as_os_str().is_empty() {
+        return app.location_name(&app.current);
     }
+    let mut dir = app.current.clone();
+    let names: Vec<String> = relative
+        .iter()
+        .map(|component| {
+            dir.push(component);
+            app.location_name(&dir)
+        })
+        .collect();
+    names.join("/")
+}
+
+fn name_width(app: &App, metrics: &Metrics) -> f32 {
+    let columns: f32 = app.columns.iter().map(|&column| column_width(column)).sum();
+    let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
+    app.pane.width - 5.0 * theme::SP2 - columns - location - metrics.row_icon
 }

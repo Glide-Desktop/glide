@@ -287,6 +287,10 @@ fn long_names_keep_their_extension_when_shortened() {
     assert_eq!(shortened.chars().count(), 20);
     assert_eq!(shortened.chars().rev().take(5).collect::<String>(), "gepj.", "{shortened}");
     assert!(shortened.contains('…'));
+    let fitted = glide_files::widgets::fit("a-very-long-holiday-photo-from-the-beach.jpeg", 120.0, 13.0);
+    assert!(glide_files::widgets::text_width(&fitted, 13.0) <= 120.0, "{fitted}");
+    assert!(fitted.rsplit('.').next() == Some("jpeg") && fitted.contains('…'), "{fitted}");
+    assert_eq!(glide_files::widgets::fit("Звіт.odt", 120.0, 13.0), "Звіт.odt");
     let no_extension = ellipsize("LICENSE-APACHE-VERSION-TWO-POINT-ZERO", 12);
     assert_eq!(no_extension.chars().count(), 12);
 }
