@@ -14,10 +14,26 @@ const STATUS_BUDGET: f32 = 240.0;
 const CRUMB_CHROME: f32 = 44.0;
 const CRUMB_LABEL: f32 = 200.0;
 
-struct Crumb {
-    glyph: Icon,
-    label: String,
-    path: PathBuf,
+pub struct Crumb {
+    pub glyph: Icon,
+    pub label: String,
+    pub path: PathBuf,
+}
+
+#[must_use]
+pub fn trail(app: &App) -> Vec<Crumb> {
+    let mut crumbs = crumbs(app);
+    let budget = app.pane.width - STATUS_BUDGET;
+    if crumbs.iter().map(width).sum::<f32>() > budget {
+        let mut hidden = None;
+        while crumbs.len() > 2 && CRUMB_CHROME + crumbs.iter().map(width).sum::<f32>() > budget {
+            hidden = Some(crumbs.remove(1).path);
+        }
+        if let Some(path) = hidden {
+            crumbs.insert(1, Crumb { glyph: Icon::More, label: String::new(), path });
+        }
+    }
+    crumbs
 }
 
 fn crumbs(app: &App) -> Vec<Crumb> {
@@ -67,12 +83,7 @@ fn status(app: &App) -> String {
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
-    let mut crumbs = crumbs(app);
-    let budget = app.pane.width - STATUS_BUDGET;
-    while crumbs.len() > 2 && crumbs.iter().map(width).sum::<f32>() > budget {
-        crumbs.remove(1);
-    }
-
+    let crumbs = trail(app);
     let last = crumbs.len() - 1;
     let mut trail = Row::new().align_y(Alignment::Center);
     for (index, crumb) in crumbs.into_iter().enumerate() {
@@ -84,19 +95,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
         let key = Hover::Crumb(crumb.path.clone());
         let hover = if app.is_drop_target(&crumb.path) { 1.0 } else { app.hover(&key) };
         let target = MenuKind::Location(crumb.path.clone());
+        let mut face = Row::new().spacing(theme::SP1).align_y(Alignment::Center).push(icon(crumb.glyph, 13.0, tint));
+        if !crumb.label.is_empty() {
+            face = face.push(text(crumb.label).size(theme::CAP).wrapping(text::Wrapping::None));
+        }
         trail = trail.push(
             mouse_area(
-                button(
-                    row![
-                        icon(crumb.glyph, 13.0, tint),
-                        text(crumb.label).size(theme::CAP).wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(theme::SP1)
-                    .align_y(Alignment::Center),
-                )
-                .on_press(Message::Navigate(crumb.path))
-                .padding(Padding::from([theme::SP1, theme::SP2]))
-                .style(move |_, status| theme::crumb(t, current, hover, status)),
+                button(face)
+                    .on_press(Message::Navigate(crumb.path))
+                    .padding(Padding::from([theme::SP1, theme::SP2]))
+                    .style(move |_, status| theme::crumb(t, current, hover, status)),
             )
             .on_right_press(Message::MenuTarget(target))
             .on_enter(Message::Hover(key.clone(), true))

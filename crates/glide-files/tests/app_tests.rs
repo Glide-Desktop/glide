@@ -261,6 +261,23 @@ fn columns_that_do_not_fit_give_way_to_the_name() {
 }
 
 #[test]
+fn a_collapsed_path_bar_keeps_a_way_to_the_hidden_folders() {
+    use glide_files::icons::Icon;
+    use glide_files::widgets::pathbar::trail;
+    let mut app = listed_app();
+    app.current =
+        std::path::PathBuf::from("/srv/projects/customer-archive/two-thousand-twenty-six/quarterly-reports/october");
+    app.pane = Size::new(1600.0, 560.0);
+    assert!(trail(&app).iter().all(|crumb| crumb.glyph != Icon::More), "a wide bar shows every folder");
+    app.pane = Size::new(520.0, 560.0);
+    let crumbs = trail(&app);
+    assert_eq!(crumbs[0].path, std::path::PathBuf::from("/"));
+    assert_eq!(crumbs[1].glyph, Icon::More, "hidden folders leave an ellipsis instead of vanishing");
+    assert_eq!(crumbs.last().map(|crumb| &crumb.path), Some(&app.current));
+    assert_eq!(Some(crumbs[1].path.as_path()), crumbs[2].path.parent(), "the ellipsis opens the deepest hidden folder");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();
