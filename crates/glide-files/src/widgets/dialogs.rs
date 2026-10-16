@@ -4,11 +4,12 @@ use std::time::SystemTime;
 use iced::widget::{Column, button, checkbox, column, container, float, opaque, row, rule, space, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding, Vector};
 
-use super::file_icon;
+use super::header::SEMIBOLD_SPREAD;
+use super::{file_icon, text_width};
 use crate::app::{App, Dialog, MODAL_ID, Message, Modal, Properties};
 use crate::fs::jobs::{Choice, Question};
 use crate::fs::{format_bytes, format_time, home_dir, permissions_string};
-use crate::i18n::{self, Key};
+use crate::i18n::{self, Key, Lang};
 use crate::theme::{self, ThemeState, Tone};
 
 const WIDTH: f32 = 400.0;
@@ -54,7 +55,7 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
         Dialog::Conflict { question, for_all, .. } => conflict(c, question, *for_all),
         Dialog::Unlock(object) => unlock(c, modal, object),
     };
-    let width = if matches!(modal.dialog, Dialog::Conflict { .. }) { WIDE } else { WIDTH };
+    let width = card_width(&modal.dialog, app.lang);
     let rise = (1.0 - progress) * 12.0;
     let t = c.theme();
     let card =
@@ -62,6 +63,26 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
             .translate(move |_, _| Vector::new(0.0, rise));
     let layer = container(card).center(Fill).style(move |_| theme::scrim(progress));
     if live { opaque(layer) } else { layer.into() }
+}
+
+#[must_use]
+pub fn card_width(dialog: &Dialog, lang: Lang) -> f32 {
+    let Dialog::Conflict { question, .. } = dialog else {
+        return WIDTH;
+    };
+    let labels = std::iter::once(Key::StopJob).chain(choices(question.folders).map(|(key, _)| key));
+    let row: f32 = labels
+        .map(|key| text_width(key.text(lang), BUTTON_TEXT) / SEMIBOLD_SPREAD + 2.0 * theme::SP4 + theme::SP2)
+        .sum();
+    WIDE.max(row + theme::SP4 + 2.0 * theme::SP5)
+}
+
+fn choices(folders: bool) -> [(Key, Choice); 3] {
+    if folders {
+        [(Key::Skip, Choice::Skip), (Key::KeepBothFolders, Choice::KeepBoth), (Key::Merge, Choice::Merge)]
+    } else {
+        [(Key::Skip, Choice::Skip), (Key::KeepBoth, Choice::KeepBoth), (Key::Replace, Choice::Replace)]
+    }
 }
 
 fn title(label: &str) -> Element<'_, Message> {
@@ -159,15 +180,12 @@ fn confirm(c: Ctx<'_>, heading: Key, prompt: Key, subject: Option<String>, submi
 
 fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool) -> Element<'a, Message> {
     let (t, lang) = (c.theme(), c.app.lang);
-    let (heading, hint, primary) = if question.folders {
-        (Key::FolderExists.text(lang).to_string(), Key::FolderExistsHint, (Key::Merge, Choice::Merge))
+    let (heading, hint) = if question.folders {
+        (Key::FolderExists.text(lang).to_string(), Key::FolderExistsHint)
     } else {
-        (
-            format!("«{}» {}", display_name(&question.dest), Key::FileExists.text(lang)),
-            Key::FileExistsHint,
-            (Key::Replace, Choice::Replace),
-        )
+        (format!("«{}» {}", display_name(&question.dest), Key::FileExists.text(lang)), Key::FileExistsHint)
     };
+    let [(skip, skipped), (both, kept), (primary, chosen)] = choices(question.folders);
     let check = checkbox(for_all)
         .label(Key::ApplyToAll.text(lang))
         .on_toggle(|_| Message::ToggleForAll)
@@ -184,9 +202,9 @@ fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool) -> Element<'a
         row![
             action(c, Key::StopJob, Tone::Ghost, Some(Message::Resolve(Choice::Cancel))),
             space::horizontal(),
-            action(c, Key::Skip, Tone::Neutral, Some(Message::Resolve(Choice::Skip))),
-            action(c, Key::KeepBoth, Tone::Neutral, Some(Message::Resolve(Choice::KeepBoth))),
-            action(c, primary.0, Tone::Primary, Some(Message::Resolve(primary.1))),
+            action(c, skip, Tone::Neutral, Some(Message::Resolve(skipped))),
+            action(c, both, Tone::Neutral, Some(Message::Resolve(kept))),
+            action(c, primary, Tone::Primary, Some(Message::Resolve(chosen))),
         ]
         .spacing(theme::SP2),
     ]

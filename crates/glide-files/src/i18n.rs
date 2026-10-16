@@ -221,7 +221,8 @@ catalogue! {
     Merge => "Merge", "Об’єднати";
     Skip => "Skip", "Пропустити";
     KeepBoth => "Keep both", "Залишити обидва";
-    ApplyToAll => "Do this for every conflict", "Так для всіх конфліктів";
+    KeepBothFolders => "Keep both", "Залишити обидві";
+    ApplyToAll => "Do this for every conflict", "Застосувати до всіх конфліктів";
     Restored => "Restored", "Відновлено";
     PathNotFound => "Folder not found", "Папку не знайдено";
     CantOpen => "Can’t open", "Не вдалося відкрити";

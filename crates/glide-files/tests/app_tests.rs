@@ -829,6 +829,33 @@ fn modal_dialogs_swallow_shortcut_actions() {
 }
 
 #[test]
+fn a_conflict_dialog_is_wide_enough_for_its_buttons_in_every_language() {
+    use glide_files::app::Dialog;
+    use glide_files::fs::jobs::Question;
+    use glide_files::widgets::dialogs::card_width;
+    use glide_files::widgets::header::SEMIBOLD_SPREAD;
+    use glide_files::widgets::text_width;
+    let side = 2.0 * glide_files::theme::SP5;
+    for lang in [Lang::Uk, Lang::En] {
+        for (folders, both, primary) in [(true, Key::KeepBothFolders, Key::Merge), (false, Key::KeepBoth, Key::Replace)]
+        {
+            let question = Question { source: path(1), dest: path(2), folders };
+            let width = card_width(&Dialog::Conflict { job: 1, question, for_all: false }, lang);
+            let row: f32 = [Key::StopJob, Key::Skip, both, primary]
+                .iter()
+                .map(|key| {
+                    text_width(key.text(lang), 13.5) / SEMIBOLD_SPREAD
+                        + 2.0 * glide_files::theme::SP4
+                        + glide_files::theme::SP2
+                })
+                .sum();
+            assert!(row <= width - side, "{lang:?} folders={folders}: {row} px of buttons in a {width} px card");
+        }
+    }
+    assert_eq!(Key::KeepBothFolders.uk(), "Залишити обидві", "folders take the feminine form, like the hint");
+}
+
+#[test]
 fn every_catalogue_entry_is_translated() {
     for key in Key::ALL {
         assert!(!key.en().trim().is_empty(), "{key:?} lacks English");
