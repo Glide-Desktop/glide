@@ -114,7 +114,8 @@ fn phones_and_cameras_are_found_in_sysfs_and_hubs_are_ignored() {
 #[test]
 fn zoom_levels_scale_the_grid_and_list_geometry() {
     let normal = Metrics::default();
-    assert_eq!((normal.tile_w, normal.tile_h, normal.icon), (104.0, 118.0, 60.0), "the default look is unchanged");
+    assert_eq!((normal.tile_w, normal.tile_h, normal.icon), (104.0, 122.0, 60.0), "the default look is unchanged");
+    assert_eq!(normal.plate - normal.icon, 16.0, "an 8 px margin leaves room for the hover lift");
     let big = Metrics::new(5, 3);
     let small = Metrics::new(0, 0);
     assert!(big.columns(1200.0) < normal.columns(1200.0));

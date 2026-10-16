@@ -12,7 +12,7 @@ use crate::theme;
 
 const STATUS_BUDGET: f32 = 240.0;
 const CHAR_WIDTH: f32 = 6.8;
-const CRUMB_CHROME: f32 = 40.0;
+const CRUMB_CHROME: f32 = 44.0;
 
 struct Crumb {
     glyph: Icon,
@@ -34,7 +34,7 @@ fn crumbs(app: &App) -> Vec<Crumb> {
     let mut crumbs = vec![Crumb { glyph, label, path: root.clone() }];
     for component in current.strip_prefix(&root).unwrap_or(Path::new("")) {
         path.push(component);
-        crumbs.push(Crumb { glyph: Icon::Folder, label: component.to_string_lossy().into_owned(), path: path.clone() });
+        crumbs.push(Crumb { glyph: Icon::Folder, label: app.location_name(&path), path: path.clone() });
     }
     crumbs
 }
@@ -86,12 +86,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
         trail = trail.push(
             mouse_area(
                 button(
-                    row![icon(crumb.glyph, 13.0, tint), text(crumb.label).size(12).wrapping(text::Wrapping::None),]
-                        .spacing(5)
-                        .align_y(Alignment::Center),
+                    row![
+                        icon(crumb.glyph, 13.0, tint),
+                        text(crumb.label).size(theme::CAP).wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(theme::SP1)
+                    .align_y(Alignment::Center),
                 )
                 .on_press(Message::Navigate(crumb.path))
-                .padding(Padding::from([2, 6]))
+                .padding(Padding::from([theme::SP1, theme::SP2]))
                 .style(move |_, status| theme::crumb(t, current, hover, status)),
             )
             .on_right_press(Message::MenuTarget(target))
@@ -103,15 +106,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
     container(
         row![
             container(trail).width(Fill).clip(true),
-            space().width(12),
-            text(status(app)).size(12).color(t.fg_2()).wrapping(text::Wrapping::None),
+            space().width(theme::SP3),
+            text(status(app)).size(theme::CAP).color(t.fg_2()).wrapping(text::Wrapping::None),
         ]
         .align_y(Alignment::Center),
     )
-    .padding(Padding::from([0, 10]))
+    .padding(Padding::from([0.0, theme::SP2]).right(theme::SP3))
     .width(Fill)
     .height(PATHBAR_HEIGHT)
     .align_y(Alignment::Center)
-    .style(move |_| theme::rounded(t.bar_bg(), theme::window_corners(theme::Side::BottomRight)))
+    .style(move |_| theme::rounded(super::header::bar_background(app), theme::window_corners(theme::Side::BottomRight)))
     .into()
 }

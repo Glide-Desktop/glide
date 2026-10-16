@@ -15,15 +15,15 @@ use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::theme::{self, R1};
 
-const HOVER_LIFT: f32 = 2.0;
-const HOVER_GROWTH: f32 = 0.05;
+const HOVER_LIFT: f32 = 4.0;
+const HOVER_GROWTH: f32 = 0.06;
 
 pub const GRID_PADDING: f32 = 20.0;
 pub const TILE_GAP: f32 = 12.0;
 pub const LIST_PADDING: f32 = 4.0;
 const LOCATION_WIDTH: f32 = 220.0;
 const HEADER_HEIGHT: f32 = 26.0;
-const DOT: f32 = 7.0;
+const DOT: f32 = theme::SP2;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
 const LIST_ROWS: [(f32, f32); crate::config::LIST_ZOOMS] = [(22.0, 14.0), (26.0, 16.0), (32.0, 22.0), (40.0, 28.0)];
 
@@ -49,7 +49,7 @@ impl Metrics {
     pub fn new(grid_zoom: u8, list_zoom: u8) -> Self {
         let icon = GRID_ICONS[usize::from(grid_zoom).min(GRID_ICONS.len() - 1)];
         let (row, row_icon) = LIST_ROWS[usize::from(list_zoom).min(LIST_ROWS.len() - 1)];
-        let plate = icon + 12.0;
+        let plate = icon + 2.0 * theme::SP2;
         let tile_w = (icon * 1.2 + 32.0).round();
         Self { icon, plate, tile_w, tile_h: plate + 46.0, label_chars: (tile_w / 4.0) as usize, row, row_icon }
     }
@@ -158,7 +158,7 @@ fn dots<'a>(entry: &FileEntry) -> Option<Element<'a, Message>> {
     (!colors.is_empty()).then(|| {
         Row::with_children(colors.into_iter().map(|color| {
             let fill = tag_color(color);
-            container(space().width(DOT).height(DOT)).style(move |_| theme::rounded(fill, DOT / 2.0)).into()
+            container(space().width(DOT).height(DOT)).style(move |_| theme::rounded(fill, theme::R_ROUND)).into()
         }))
         .spacing(2)
         .into()
@@ -182,14 +182,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
 fn empty_state(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
-    let key = if app.search.as_ref().is_some_and(|search| search.pending) {
-        Key::Searching
+    let (key, glyph) = if app.search.as_ref().is_some_and(|search| search.pending) {
+        (Key::Searching, Icon::Search)
     } else if app.is_searching() {
-        Key::NoSearchResults
+        (Key::NoSearchResults, Icon::Search)
     } else {
-        Key::EmptyFolder
+        (Key::EmptyFolder, Icon::Folder)
     };
-    container(text(key.text(app.lang)).size(14).color(t.fg_3())).center(Fill).into()
+    let body = column![icon(glyph, 48.0, t.fg_4()), text(key.text(app.lang)).size(theme::CALL).color(t.fg_3())]
+        .spacing(theme::SP3)
+        .align_x(Alignment::Center);
+    container(body).center(Fill).into()
 }
 
 fn files<'a>(app: &'a App, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
@@ -253,9 +256,10 @@ fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a
     let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
     let key = Hover::Entry(entry.path.clone());
     let hover = app.hover(&key);
-    let lift = hover * HOVER_LIFT;
+    let raised = app.lift(&key);
+    let lift = raised * HOVER_LIFT;
     let art = float(file_icon(app, entry, metrics.icon))
-        .scale(1.0 + hover * HOVER_GROWTH)
+        .scale(1.0 + raised * HOVER_GROWTH)
         .translate(move |_, _| Vector::new(0.0, -lift));
     let art: Element<'a, Message> = art.into();
     let art: Element<'a, Message> = if entry.is_symlink {
@@ -273,30 +277,31 @@ fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a
     } else {
         art
     };
-    let plate = container(art)
-        .center(Length::Fixed(metrics.plate))
-        .style(move |_| theme::tile_plate(t, selected, hover, false));
+    let plate =
+        container(art).center(Length::Fixed(metrics.plate)).style(move |_| theme::tile_plate(t, selected, hover));
     let tile_w = metrics.tile_w;
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
     let label: Element<'a, Message> = if let Some(field) = rename_field(app, 12.0).filter(|_| editing) {
         container(field).width(Length::Fixed(tile_w)).into()
     } else {
         let name = text(ellipsize(&entry.name, metrics.label_chars))
-            .size(12)
+            .size(theme::CAP)
             .align_x(Alignment::Center)
-            .color(if selected { t.acc_fg() } else { t.fg_1() });
-        let mut line = row![].spacing(4).align_y(Alignment::Center);
+            .color(if selected { t.acc_soft_fg() } else { t.fg_1() });
+        let mut line = row![].spacing(theme::SP1).align_y(Alignment::Center);
         if let Some(dots) = dots(entry) {
             line = line.push(dots);
         }
         container(line.push(name))
-            .padding(Padding::from([1, 5]))
+            .padding(Padding::from([1.0, theme::SP1]))
             .max_width(tile_w)
-            .style(move |_| if selected { theme::rounded(t.acc_bg(), R1) } else { container::Style::default() })
+            .style(move |_| if selected { theme::rounded(t.acc_soft(), R1) } else { container::Style::default() })
             .into()
     };
-    let body =
-        container(column![plate, label].spacing(4).align_x(Alignment::Center)).center_x(Fill).height(Fill).clip(true);
+    let body = container(column![plate, label].spacing(theme::SP1).align_x(Alignment::Center))
+        .center_x(Fill)
+        .height(Fill)
+        .clip(true);
     mouse_area(
         button(body)
             .width(Length::Fixed(tile_w))
@@ -351,7 +356,7 @@ fn header_cell<'a>(
     let t = &app.theme;
     let active = sort.is_some() && sort == Some(app.sort.by);
     let target = column.is_some_and(|column| app.is_column_target(column));
-    let mut content = row![text(label).size(12)].spacing(4).align_y(Alignment::Center);
+    let mut content = row![text(label).size(theme::CAP)].spacing(theme::SP1).align_y(Alignment::Center);
     if active {
         let arrow = if app.sort.ascending { Icon::ArrowUp } else { Icon::ArrowDown };
         content = content.push(iced::widget::space::horizontal()).push(icon(arrow, 11.0, t.fg_3()));
@@ -405,20 +410,20 @@ fn list_row<'a>(
     let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
     let key = Hover::Entry(entry.path.clone());
     let hover = app.hover(&key);
-    let secondary = if selected { t.acc_fg() } else { t.fg_2() };
+    let secondary = if selected { t.acc_soft_fg() } else { t.fg_2() };
     let cell = move |value: String, width: f32| {
-        container(text(value).size(12).color(secondary).wrapping(text::Wrapping::None))
-            .padding(Padding::from([0, 9]))
+        container(text(value).size(theme::CAP).color(secondary).wrapping(text::Wrapping::None))
+            .padding(Padding::from([0.0, theme::SP2]))
             .width(Length::Fixed(width))
             .clip(true)
     };
 
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
-    let title: Element<'a, Message> = match rename_field(app, 13.0).filter(|_| editing) {
+    let title: Element<'a, Message> = match rename_field(app, theme::CALL).filter(|_| editing) {
         Some(field) => field,
-        None => text(&entry.name).size(13).wrapping(text::Wrapping::None).into(),
+        None => text(&entry.name).size(theme::CALL).wrapping(text::Wrapping::None).into(),
     };
-    let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(8).align_y(Alignment::Center);
+    let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(theme::SP2).align_y(Alignment::Center);
     if let Some(dots) = dots(entry) {
         name = name.push(dots);
     }

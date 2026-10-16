@@ -61,6 +61,7 @@ pub enum Icon {
     Move,
     Phone,
     Camera,
+    Check,
 }
 
 impl Icon {
@@ -132,6 +133,7 @@ impl Icon {
             Self::Camera => glyph!(
                 "<path d='M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z'/><circle cx='12' cy='13' r='3.5'/>"
             ),
+            Self::Check => glyph!("<path d='m5 12.5 4.5 4.5L19 7.5'/>"),
         };
         svg::Handle::from_memory(bytes)
     }

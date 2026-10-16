@@ -1,13 +1,29 @@
 use glide_theme::elevation::{self, Level};
 use glide_theme::motion::{ST_HOVER, ST_PRESS};
-use glide_theme::{Accent, Appearance, Tokens};
+use glide_theme::{Accent, Appearance, TextStyle, Tokens};
 use iced::border::Radius;
 use iced::widget::{button, container, rule, scrollable, svg, text_input};
 use iced::{Background, Border, Color, Shadow};
 
-pub use glide_theme::shape::{R1, R2, R3};
+pub use glide_theme::shape::{R_ROUND, R1, R2, R3};
 
 pub const SEMIBOLD: iced::Font = iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT };
+
+pub const MICRO: f32 = TextStyle::MICRO.size_px;
+pub const CAP: f32 = TextStyle::CAP.size_px;
+pub const CALL: f32 = TextStyle::CALL.size_px;
+pub const MENU_ITEM: f32 = TextStyle::MENU_ITEM.size_px;
+pub const TITLE: f32 = TextStyle::WIN_TITLE.size_px;
+pub const T3: f32 = TextStyle::T3.size_px;
+
+pub const CONTROL: f32 = 34.0;
+pub const SMALL_CONTROL: f32 = 28.0;
+
+pub const SP1: f32 = glide_theme::spacing::SP1 as f32;
+pub const SP2: f32 = glide_theme::spacing::SP2 as f32;
+pub const SP3: f32 = glide_theme::spacing::SP3 as f32;
+pub const SP4: f32 = glide_theme::spacing::SP4 as f32;
+pub const SP5: f32 = glide_theme::spacing::SP5 as f32;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeState {
@@ -33,6 +49,7 @@ colors!(
     view_bg,
     sidebar_bg,
     bar_bg,
+    bar_bg_idle,
     popover_bg,
     fg_1,
     fg_2,
@@ -137,6 +154,7 @@ pub enum Tone {
     Primary,
     Neutral,
     Ghost,
+    Open,
     Danger,
 }
 
@@ -166,6 +184,7 @@ pub fn action(theme: &ThemeState, tone: Tone, status: button::Status) -> button:
             flat(background, theme.acc_fg(), R2)
         }
         Tone::Neutral => flat(theme.layered(theme.fill_1(), status), theme.fg_1(), R2),
+        Tone::Open => flat(theme.layered(theme.fill_2(), status), theme.fg_1(), R2),
         Tone::Ghost => {
             let text = if active { theme.fg_1() } else { theme.fg_2() };
             flat(theme.layered(Color::TRANSPARENT, status), text, R2)
@@ -208,30 +227,31 @@ fn interactive(theme: &ThemeState, base: Color, hover: f32, status: button::Stat
 
 #[must_use]
 pub fn sidebar_row(theme: &ThemeState, selected: bool, hover: f32, status: button::Status) -> button::Style {
-    let base = if selected { theme.fill_2() } else { Color::TRANSPARENT };
-    flat(interactive(theme, base, hover, status), theme.fg_1(), R2)
+    let (base, text) =
+        if selected { (theme.acc_soft(), theme.acc_soft_fg()) } else { (Color::TRANSPARENT, theme.fg_1()) };
+    flat(interactive(theme, base, hover, status), text, R2)
 }
 
 #[must_use]
 pub fn list_row(theme: &ThemeState, selected: bool, stripe: bool, hover: f32, status: button::Status) -> button::Style {
-    match (selected, stripe) {
-        (true, _) => flat(interactive(theme, theme.acc_bg(), hover * 0.5, status), theme.acc_fg(), R2),
-        (false, true) => flat(interactive(theme, theme.fill_1(), hover, status), theme.fg_1(), R2),
-        (false, false) => flat(interactive(theme, Color::TRANSPARENT, hover, status), theme.fg_1(), R2),
-    }
+    let (base, text) = match (selected, stripe) {
+        (true, _) => (theme.acc_soft(), theme.acc_soft_fg()),
+        (false, true) => (theme.fill_1(), theme.fg_1()),
+        (false, false) => (Color::TRANSPARENT, theme.fg_1()),
+    };
+    flat(interactive(theme, base, hover, status), text, R2)
 }
 
 #[must_use]
-pub fn tile_plate(theme: &ThemeState, selected: bool, hover: f32, pressed: bool) -> container::Style {
-    let base = if selected { theme.fill_2() } else { theme.hover(Color::TRANSPARENT, hover) };
-    let background = if pressed { theme.layer(base, ST_PRESS) } else { base };
-    rounded(background, R2)
+pub fn tile_plate(theme: &ThemeState, selected: bool, hover: f32) -> container::Style {
+    let base = if selected { theme.acc_soft() } else { Color::TRANSPARENT };
+    rounded(theme.hover(base, hover), R2)
 }
 
 #[must_use]
 pub fn crumb(theme: &ThemeState, current: bool, hover: f32, status: button::Status) -> button::Style {
     let text = if current || hover > 0.5 { theme.fg_1() } else { theme.fg_2() };
-    flat(interactive(theme, Color::TRANSPARENT, hover, status), text, R1)
+    flat(interactive(theme, Color::TRANSPARENT, hover, status), text, R2)
 }
 
 #[must_use]
@@ -241,12 +261,12 @@ pub fn highlighted(status: button::Status) -> bool {
 
 #[must_use]
 pub fn menu_item(theme: &ThemeState, danger: bool, status: button::Status) -> button::Style {
+    let text = if danger { theme.danger() } else { theme.fg_1() };
     match status {
         button::Status::Disabled => plain(theme.fg_4()),
-        _ if highlighted(status) && danger => flat(theme.danger(), theme.acc_fg(), R1),
-        _ if highlighted(status) => flat(theme.acc_bg(), theme.acc_fg(), R1),
-        _ if danger => plain(theme.danger()),
-        _ => plain(theme.fg_1()),
+        button::Status::Pressed => flat(theme.layer(theme.fill_2(), ST_PRESS - ST_HOVER), text, R2),
+        button::Status::Hovered => flat(theme.fill_2(), text, R2),
+        button::Status::Active => plain(text),
     }
 }
 
@@ -260,8 +280,49 @@ pub fn window_control(theme: &ThemeState, danger: bool, status: button::Status) 
 }
 
 #[must_use]
-pub fn search_well(theme: &ThemeState) -> container::Style {
-    rounded(theme.fill_1(), R2)
+pub fn search_field(theme: &ThemeState, status: text_input::Status) -> text_input::Style {
+    let (background, border) = match status {
+        text_input::Status::Focused { .. } => (theme.view_bg(), theme.acc_bg()),
+        text_input::Status::Hovered => (theme.fill_2(), Color::TRANSPARENT),
+        text_input::Status::Active | text_input::Status::Disabled => (theme.fill_1(), Color::TRANSPARENT),
+    };
+    text_input::Style {
+        background: Background::Color(background),
+        border: Border { color: border, width: 1.0, radius: Radius::from(R2) },
+        ..field(theme, status)
+    }
+}
+
+#[must_use]
+pub fn tooltip(theme: &ThemeState) -> container::Style {
+    let base = popover(theme);
+    container::Style {
+        border: Border { radius: Radius::from(R2), ..base.border },
+        shadow: theme.shadow(Level::El2),
+        ..base
+    }
+}
+
+#[must_use]
+pub fn checkbox(theme: &ThemeState, status: iced::widget::checkbox::Status) -> iced::widget::checkbox::Style {
+    use iced::widget::checkbox::Status;
+    let (checked, hovered) = match status {
+        Status::Active { is_checked } | Status::Disabled { is_checked } => (is_checked, false),
+        Status::Hovered { is_checked } => (is_checked, true),
+    };
+    let background = if checked { theme.acc_bg() } else { theme.view_bg() };
+    let border = match (checked, hovered) {
+        (true, _) => theme.acc_bg(),
+        (false, true) => theme.fill_3(),
+        (false, false) => theme.line_2(),
+    };
+    let state = if hovered { button::Status::Hovered } else { button::Status::Active };
+    iced::widget::checkbox::Style {
+        background: Background::Color(theme.layered(background, state)),
+        icon_color: theme.acc_fg(),
+        border: Border { color: border, width: 1.0, radius: Radius::from(R2) },
+        text_color: Some(theme.fg_1()),
+    }
 }
 
 #[must_use]
@@ -383,4 +444,10 @@ pub fn line(theme: &ThemeState) -> rule::Style {
 #[must_use]
 pub fn glyph(color: Color) -> svg::Style {
     svg::Style { color: Some(color) }
+}
+
+#[must_use]
+pub fn flatten(top: Color, bottom: Color) -> Color {
+    let mix = |over: f32, under: f32| under + (over - under) * top.a;
+    Color { r: mix(top.r, bottom.r), g: mix(top.g, bottom.g), b: mix(top.b, bottom.b), a: bottom.a }
 }

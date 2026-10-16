@@ -20,9 +20,9 @@ use crate::native_icons::Art;
 use crate::theme::{self, Side, ThemeState, Tone};
 
 pub const SIDEBAR_WIDTH: f32 = 208.0;
-pub const HEADER_HEIGHT: f32 = 52.0;
+pub const HEADER_HEIGHT: f32 = 48.0;
 pub const PATHBAR_HEIGHT: f32 = 28.0;
-pub const CONTROL: f32 = 28.0;
+pub const CONTROL: f32 = theme::SMALL_CONTROL;
 
 #[must_use]
 pub fn window(app: &App) -> Element<'_, Message> {
@@ -53,11 +53,10 @@ pub fn window(app: &App) -> Element<'_, Message> {
     let mut layers: Vec<Element<'_, Message>> = vec![base.into(), frame.into(), resize_handles()];
     if let Some(rect) = app.band_rect() {
         let accent = t.acc_bg();
-        let mut fill = accent;
-        fill.a *= 0.15;
+        let fill = accent.scale_alpha(glide_theme::motion::ST_PRESS);
         let marquee = container(space().width(rect.width).height(rect.height)).style(move |_| container::Style {
             background: Some(iced::Background::Color(fill)),
-            border: iced::Border { color: accent, width: 1.0, radius: 2.0.into() },
+            border: iced::Border { color: accent, width: 1.0, radius: theme::R1.into() },
             ..container::Style::default()
         });
         layers.push(
@@ -119,11 +118,11 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
     let lang = app.lang;
     let restorable = app.selected_entries().any(|e| app.trash.is_top_level(&e.path));
     let mut content = row![
-        text(Key::Trash.text(lang)).size(13).font(theme::SEMIBOLD),
-        text(Key::TrashBanner.text(lang)).size(12).color(t.fg_3()),
+        text(Key::Trash.text(lang)).size(theme::CALL).font(theme::SEMIBOLD),
+        text(Key::TrashBanner.text(lang)).size(theme::CAP).color(t.fg_3()),
         space::horizontal(),
     ]
-    .spacing(10)
+    .spacing(theme::SP2)
     .align_y(Alignment::Center);
     if restorable {
         content = content.push(labelled(t, Key::Restore.text(lang), Tone::Neutral, Some(Message::Restore)));
@@ -134,7 +133,11 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
         Tone::Neutral,
         (app.trash_count > 0).then_some(Message::EmptyTrash),
     ));
-    container(content).padding(Padding::from([6, 16])).width(Fill).style(move |_| theme::surface(t.view_bg())).into()
+    container(content)
+        .padding(Padding::from([theme::SP1, theme::SP4]))
+        .width(Fill)
+        .style(move |_| theme::surface(t.view_bg()))
+        .into()
 }
 
 fn portion(value: f32) -> Length {
@@ -142,9 +145,10 @@ fn portion(value: f32) -> Length {
 }
 
 fn progress_bar<'a>(t: &'a ThemeState, fraction: Option<f32>, paused: bool) -> Element<'a, Message> {
+    const BAR: f32 = 6.0;
     let fill = if paused { t.fg_3() } else { t.acc_bg() };
     let segment = |width: Length, color: Color| {
-        container(space().height(4)).width(width).style(move |_| theme::rounded(color, 2.0)).into()
+        container(space().height(BAR)).width(width).style(move |_| theme::rounded(color, theme::R1)).into()
     };
     let parts: Vec<Element<'a, Message>> = if let Some(fraction) = fraction {
         vec![segment(portion(fraction), fill), segment(portion(1.0 - fraction), t.fill_2())]
@@ -201,10 +205,10 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let lang = app.lang;
     let small = |glyph: Icon, message: Option<Message>| {
-        button(container(icon(glyph, 12.0, t.fg_2())).center(Fill))
+        button(container(icon(glyph, 14.0, t.fg_2())).center(Fill))
             .on_press_maybe(message)
-            .width(Length::Fixed(20.0))
-            .height(Length::Fixed(20.0))
+            .width(Length::Fixed(CONTROL))
+            .height(Length::Fixed(CONTROL))
             .padding(0)
             .style(move |_, status| theme::action(t, Tone::Ghost, status))
     };
@@ -226,20 +230,31 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
         let toggle = if paused { Icon::Play } else { Icon::Pause };
         let head = row![
             icon(glyph, 14.0, t.acc_text()),
-            text(title).size(12).font(theme::SEMIBOLD).color(t.fg_1()).wrapping(text::Wrapping::None).width(Fill),
+            text(title)
+                .size(theme::CAP)
+                .font(theme::SEMIBOLD)
+                .color(t.fg_1())
+                .wrapping(text::Wrapping::None)
+                .width(Fill),
             small(toggle, job.launch.is_none().then_some(Message::JobPause(job.id))),
             small(Icon::Close, Some(Message::JobCancel(job.id))),
         ]
-        .spacing(6)
         .align_y(Alignment::Center);
-        let mut card = column![head].spacing(5);
+        let mut card = column![head].spacing(theme::SP1);
         if let Some(current) = &progress.current {
-            card = card.push(text(ellipsize(current, 30)).size(11).color(t.fg_2()).wrapping(text::Wrapping::None));
+            card = card
+                .push(text(ellipsize(current, 30)).size(theme::MICRO).color(t.fg_2()).wrapping(text::Wrapping::None));
         }
-        card = card.push(progress_bar(t, fraction, paused)).push(text(job_detail(app, job)).size(11).color(t.fg_3()));
-        container(card).padding(8).width(Fill).style(move |_| theme::rounded(t.fill_1(), theme::R2)).into()
+        card = card
+            .push(progress_bar(t, fraction, paused))
+            .push(text(job_detail(app, job)).size(theme::MICRO).color(t.fg_3()));
+        container(card)
+            .padding(Padding::from([theme::SP2, theme::SP3]).right(theme::SP1))
+            .width(Fill)
+            .style(move |_| theme::rounded(t.fill_1(), theme::R3))
+            .into()
     });
-    container(column(cards).spacing(6)).padding(Padding::from([8, 10])).width(Fill).into()
+    container(column(cards).spacing(theme::SP2)).padding(theme::SP2).width(Fill).into()
 }
 
 fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Message> {
@@ -255,9 +270,9 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
         Stack::with_children([
             container(art).padding(6).into(),
             container(
-                container(text(count.to_string()).size(11).font(theme::SEMIBOLD).color(t.acc_fg()))
-                    .padding(Padding::from([1, 6]))
-                    .style(move |_| theme::rounded(t.acc_bg(), 9.0)),
+                container(text(count.to_string()).size(theme::MICRO).font(theme::SEMIBOLD).color(t.acc_fg()))
+                    .padding(Padding::from([1.0, theme::SP2]))
+                    .style(move |_| theme::rounded(t.acc_bg(), theme::R_ROUND)),
             )
             .align_right(Length::Fixed(52.0))
             .into(),
@@ -275,14 +290,14 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
             crate::app::DropAction::Bookmark => (Key::AddBookmark, Icon::Folder),
         };
         container(
-            row![icon(glyph, 12.0, t.fg_1()), text(key.text(lang)).size(12).color(t.fg_1())]
-                .spacing(5)
+            row![icon(glyph, 12.0, t.fg_1()), text(key.text(lang)).size(theme::CAP).color(t.fg_1())]
+                .spacing(theme::SP1)
                 .align_y(Alignment::Center),
         )
-        .padding(Padding::from([3, 8]))
-        .style(move |_| theme::popover(t))
+        .padding(Padding::from([theme::SP1, theme::SP2]))
+        .style(move |_| theme::tooltip(t))
     });
-    let mut ghost = column![art].spacing(2).align_x(Alignment::Start);
+    let mut ghost = column![art].spacing(theme::SP1).align_x(Alignment::Start);
     if let Some(hint) = hint {
         ghost = ghost.push(hint);
     }
@@ -295,17 +310,21 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
 }
 
 fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Element<'a, Message> {
+    const RISE: f32 = 16.0;
+    const SHRINK: f32 = 0.04;
     let t = app.theme.faded(progress);
-    let mut content = row![text(&notice.text).size(13).color(t.fg_1())].spacing(6).align_y(Alignment::Center);
+    let mut content =
+        row![text(&notice.text).size(theme::CALL).color(t.fg_1())].spacing(theme::SP1).align_y(Alignment::Center);
     let action = notice.action.as_ref().map(|action| match action {
         NoticeAction::Undo => (Key::Undo, Message::Undo),
         NoticeAction::Repair(object) => (Key::RepairAction, Message::Repair(object.clone())),
     });
     if let Some((label, message)) = action {
         content = content.push(
-            button(text(label.text(app.lang)).size(13).font(theme::SEMIBOLD))
+            button(container(text(label.text(app.lang)).size(theme::CALL).font(theme::SEMIBOLD)).center_y(Fill))
                 .on_press_maybe(live.then_some(message))
-                .padding(Padding::from([4, 8]))
+                .height(Length::Fixed(CONTROL))
+                .padding(Padding::from([0.0, theme::SP2]))
                 .style(move |_, status| {
                     let mut style = theme::action(&t, Tone::Ghost, status);
                     style.text_color = t.acc_text();
@@ -321,13 +340,14 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
             .padding(0)
             .style(move |_, status| theme::action(&t, Tone::Ghost, status)),
     );
-    let drop = (1.0 - progress) * 16.0;
+    let (drop, scale) = if live { ((1.0 - progress) * RISE, 1.0) } else { (0.0, 1.0 - (1.0 - progress) * SHRINK) };
     let card = float(
         container(content)
-            .padding(Padding { top: 4.0, right: 4.0, bottom: 4.0, left: 14.0 })
+            .padding(Padding::from(theme::SP1).left(theme::SP3))
             .max_width(520)
             .style(move |_| theme::popover(&t)),
     )
+    .scale(scale)
     .translate(move |_, _| Vector::new(0.0, drop));
     let card: Element<'a, Message> = if live { opaque(card) } else { card.into() };
     container(card)
@@ -341,7 +361,8 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
 
 #[must_use]
 pub fn icon<'a>(icon: Icon, size: f32, color: Color) -> Element<'a, Message> {
-    svg(icon.handle()).width(size).height(size).style(move |_, _| theme::glyph(color)).into()
+    let opaque = Color { a: 1.0, ..color };
+    svg(icon.handle()).width(size).height(size).opacity(color.a).style(move |_, _| theme::glyph(opaque)).into()
 }
 
 #[must_use]
@@ -386,22 +407,21 @@ pub fn icon_button(t: &ThemeState, glyph: Icon, message: Option<Message>, active
         .width(Length::Fixed(CONTROL))
         .height(Length::Fixed(CONTROL))
         .padding(0)
-        .style(
-            move |_, status| {
-                if active { theme::action(t, Tone::Neutral, status) } else { theme::action(t, Tone::Ghost, status) }
-            },
-        )
+        .style(move |_, status| theme::action(t, if active { Tone::Open } else { Tone::Ghost }, status))
         .into()
 }
 
 #[must_use]
 pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Option<Message>) -> Element<'a, Message> {
-    button(text(label).size(12))
+    button(container(text(label).size(SMALL_LABEL)).center_y(Fill))
         .on_press_maybe(message)
-        .padding(Padding::from([4, 12]))
+        .height(Length::Fixed(CONTROL))
+        .padding(Padding::from([0.0, theme::SP3]))
         .style(move |_, status| theme::action(t, tone, status))
         .into()
 }
+
+const SMALL_LABEL: f32 = 12.5;
 
 #[must_use]
 pub fn ellipsize(name: &str, max: usize) -> String {
@@ -409,7 +429,8 @@ pub fn ellipsize(name: &str, max: usize) -> String {
     if count <= max {
         return name.to_string();
     }
-    let tail = name.rfind('.').filter(|&dot| dot > 0).map_or(0, |dot| name[dot..].chars().count()).clamp(3, max / 2);
+    let tail =
+        name.rfind('.').filter(|&dot| dot > 0).map_or(0, |dot| name[dot..].chars().count() + 4).clamp(3, max / 2);
     let head = max.saturating_sub(tail + 1);
     let start: String = name.chars().take(head).collect();
     let end: String = name.chars().skip(count - tail).collect();

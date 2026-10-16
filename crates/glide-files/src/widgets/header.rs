@@ -7,20 +7,32 @@ use super::{CONTROL, HEADER_HEIGHT, icon, icon_button};
 use crate::app::{App, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
-use crate::theme::{self, R2, ThemeState, Tone};
+use crate::theme::{self, R2, SP2, SP3, Tone};
 
 pub const SEARCH_WIDTH: f32 = 200.0;
 pub const WINDOW_CONTROL: f32 = 26.0;
+pub const GAP: f32 = SP2;
+pub const INSET: f32 = SP3;
+const IDLE_CONTROLS: f32 = 0.45;
 const SEGMENT_WIDTH: f32 = 30.0;
 const SEGMENT_GAP: f32 = 2.0;
 
 #[must_use]
-pub fn window_control(t: &ThemeState, glyph: Icon, message: Message) -> Element<'_, Message> {
+pub fn window_control(app: &App, glyph: Icon, message: Message) -> Element<'_, Message> {
+    let t = if app.is_idle() { app.theme.faded(IDLE_CONTROLS) } else { app.theme };
+    let bar = bar_background(app);
     let danger = glyph == Icon::Close;
-    let tint = move |status| match (status, danger) {
-        (iced::widget::svg::Status::Hovered, true) => iced::Color::WHITE,
-        (iced::widget::svg::Status::Hovered, false) => t.acc_fg(),
-        (iced::widget::svg::Status::Idle, _) => t.fg_2(),
+    let tint = move |status| {
+        let state = match status {
+            iced::widget::svg::Status::Hovered => button::Status::Hovered,
+            iced::widget::svg::Status::Idle => button::Status::Active,
+        };
+        let style = theme::window_control(&t, danger, state);
+        let fill = match style.background {
+            Some(iced::Background::Color(color)) => color,
+            _ => iced::Color::TRANSPARENT,
+        };
+        theme::flatten(style.text_color, theme::flatten(fill, bar))
     };
     button(
         iced::widget::svg(glyph.handle()).width(Fill).height(Fill).style(move |_, status| theme::glyph(tint(status))),
@@ -29,8 +41,13 @@ pub fn window_control(t: &ThemeState, glyph: Icon, message: Message) -> Element<
     .width(Length::Fixed(WINDOW_CONTROL))
     .height(Length::Fixed(WINDOW_CONTROL))
     .padding(0)
-    .style(move |_, status| theme::window_control(t, danger, status))
+    .style(move |_, status| theme::window_control(&t, danger, status))
     .into()
+}
+
+#[must_use]
+pub fn bar_background(app: &App) -> iced::Color {
+    if app.is_idle() { app.theme.bar_bg_idle() } else { app.theme.bar_bg() }
 }
 
 #[must_use]
@@ -46,12 +63,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .id(PATH_ID)
             .on_input(Message::PathChanged)
             .on_submit(Message::PathSubmitted)
-            .size(13)
-            .padding(Padding::from([5, 10]))
+            .size(theme::CALL)
+            .padding(Padding::from([4, 10]))
             .width(Fill)
             .style(move |_, status| theme::field(t, status))
             .into(),
-        None => text(title(app)).size(15).font(theme::SEMIBOLD).wrapping(text::Wrapping::None).into(),
+        None => text(app.place_title()).size(theme::TITLE).font(theme::SEMIBOLD).wrapping(text::Wrapping::None).into(),
     };
 
     let offset = app.motion.thumb.progress(Instant::now()) * (SEGMENT_WIDTH + SEGMENT_GAP);
@@ -69,6 +86,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .style(move |_| theme::rounded(t.fill_1(), R2));
 
     let options_open = app.menu.as_ref().is_some_and(|menu| menu.kind == MenuKind::Options);
+    let background = bar_background(app);
     let bar = container(
         row![
             nav,
@@ -76,28 +94,18 @@ pub fn view(app: &App) -> Element<'_, Message> {
             views,
             icon_button(t, Icon::More, Some(Message::ToggleOptions), options_open),
             search_field(app),
-            space().width(2),
-            window_control(t, Icon::Close, Message::Quit),
+            window_control(app, Icon::Close, Message::Quit),
         ]
-        .spacing(10)
+        .spacing(GAP)
         .align_y(Alignment::Center),
     )
-    .padding(Padding::from([0, 12]).left(8))
+    .padding(Padding::from([0.0, INSET]).left(SP2))
     .height(HEADER_HEIGHT)
     .width(Fill)
     .align_y(Alignment::Center)
-    .style(move |_| theme::rounded(t.bar_bg(), theme::window_corners(theme::Side::TopRight)));
+    .style(move |_| theme::rounded(background, theme::window_corners(theme::Side::TopRight)));
 
     mouse_area(bar).on_press(Message::WindowDrag).on_double_click(Message::WindowMaximize).into()
-}
-
-fn title(app: &App) -> String {
-    match &app.search {
-        Some(search) if !search.query.trim().is_empty() => {
-            format!("{} «{}»", Key::Search.text(app.lang), search.query.trim())
-        }
-        _ => app.location_name(&app.current),
-    }
 }
 
 fn segment(app: &App, mode: ViewMode, glyph: Icon) -> Element<'_, Message> {
@@ -115,31 +123,27 @@ fn segment(app: &App, mode: ViewMode, glyph: Icon) -> Element<'_, Message> {
 fn search_field(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let query = app.search.as_ref().map_or("", |search| search.query.as_str());
-    let mut content = row![
-        icon(Icon::Search, 14.0, t.fg_3()),
-        text_input(Key::Search.text(app.lang), query)
-            .id(SEARCH_ID)
-            .on_input(Message::SearchChanged)
-            .size(13)
-            .padding(Padding::from([5, 0]))
-            .width(Fill)
-            .style(move |_, status| theme::bare_field(t, status)),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
+    let input = text_input(Key::Search.text(app.lang), query)
+        .id(SEARCH_ID)
+        .on_input(Message::SearchChanged)
+        .size(theme::CALL)
+        .padding(Padding { top: 5.0, bottom: 5.0, left: CONTROL, right: if query.is_empty() { SP2 } else { CONTROL } })
+        .width(Fill)
+        .style(move |_, status| theme::search_field(t, status));
+    let mut overlay =
+        row![container(icon(Icon::Search, 14.0, t.fg_3())).center(Length::Fixed(CONTROL)), space::horizontal()];
     if !query.is_empty() {
-        content = content.push(
-            button(icon(Icon::Close, 12.0, t.fg_2()))
+        overlay = overlay.push(
+            button(container(icon(Icon::Close, 12.0, t.fg_2())).center(Fill))
                 .on_press(Message::SearchChanged(String::new()))
-                .padding(3)
+                .width(Length::Fixed(CONTROL))
+                .height(Length::Fixed(CONTROL))
+                .padding(0)
                 .style(move |_, status| theme::action(t, Tone::Ghost, status)),
         );
     }
-    container(content)
-        .padding(Padding::from([0, 4]).left(8))
+    container(stack![input, overlay.height(CONTROL).align_y(Alignment::Center)])
         .width(Length::Fixed(SEARCH_WIDTH))
         .height(CONTROL)
-        .align_y(Alignment::Center)
-        .style(move |_| theme::search_well(t))
         .into()
 }

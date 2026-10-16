@@ -333,6 +333,7 @@ pub enum Message {
     Released,
     DragTick,
     WindowSize(Size),
+    WindowFocus(bool),
     JobPause(u64),
     Duplicate,
     CreateLink,
@@ -432,6 +433,7 @@ impl Message {
                 | Self::Released
                 | Self::DragTick
                 | Self::WindowSize(_)
+                | Self::WindowFocus(_)
                 | Self::JobPause(_)
                 | Self::Phones(_)
                 | Self::PhoneOpened(_)
@@ -451,7 +453,7 @@ impl Message {
 }
 
 pub struct Surfaces {
-    hover: HashMap<Hover, Fade>,
+    hover: HashMap<Hover, (Fade, Fade)>,
     pub menu: Fade,
     pub menu_ghost: Option<Menu>,
     pub toast: Fade,
@@ -467,11 +469,11 @@ impl Surfaces {
         Self {
             modal_theme: *theme,
             hover: HashMap::new(),
-            menu: Fade::new(false, Speed::T2, Curve::Out),
+            menu: Fade::asymmetric(false, (Speed::T2, Curve::Out), (Speed::T2, Curve::InOut)),
             menu_ghost: None,
-            toast: Fade::new(false, Speed::T4, Curve::Out),
+            toast: Fade::asymmetric(false, (Speed::T4, Curve::Out), (Speed::T2, Curve::InOut)),
             toast_ghost: None,
-            modal: Fade::new(false, Speed::T2, Curve::Out),
+            modal: Fade::asymmetric(false, (Speed::T3, Curve::Out), (Speed::T2, Curve::InOut)),
             modal_ghost: None,
             thumb: Fade::new(view == ViewMode::List, Speed::T2, Curve::Out),
         }
@@ -479,36 +481,52 @@ impl Surfaces {
 
     #[must_use]
     pub fn hover(&self, key: &Hover, now: Instant) -> f32 {
-        self.hover.get(key).map_or(0.0, |fade| fade.progress(now))
+        self.hover.get(key).map_or(0.0, |(layer, _)| layer.progress(now))
+    }
+
+    #[must_use]
+    pub fn lift(&self, key: &Hover, now: Instant) -> f32 {
+        self.hover.get(key).map_or(0.0, |(_, lift)| lift.progress(now))
     }
 
     fn set_hover(&mut self, key: Hover, on: bool, now: Instant) {
         if on {
-            for (other, fade) in &mut self.hover {
+            for (other, (layer, lift)) in &mut self.hover {
                 if other != &key {
-                    fade.set(false, now);
+                    layer.set(false, now);
+                    lift.set(false, now);
                 }
             }
-            self.hover.entry(key).or_insert_with(|| Fade::new(false, Speed::T1, Curve::InOut)).set(true, now);
-        } else if let Some(fade) = self.hover.get_mut(&key) {
-            fade.set(false, now);
         }
+        let (layer, lift) = match self.hover.get_mut(&key) {
+            Some(fades) => fades,
+            None if on => self.hover.entry(key).or_insert_with(|| {
+                (
+                    Fade::new(false, Speed::T1, Curve::InOut),
+                    Fade::asymmetric(false, (Speed::T2, Curve::Over), (Speed::T2, Curve::Out)),
+                )
+            }),
+            None => return,
+        };
+        layer.set(on, now);
+        lift.set(on, now);
     }
 
     fn clear_hover(&mut self, now: Instant) {
-        for fade in self.hover.values_mut() {
-            fade.set(false, now);
+        for (layer, lift) in self.hover.values_mut() {
+            layer.set(false, now);
+            lift.set(false, now);
         }
     }
 
     #[must_use]
     pub fn is_animating(&self, now: Instant) -> bool {
-        self.hover.values().any(|fade| fade.is_animating(now))
+        self.hover.values().any(|(layer, lift)| layer.is_animating(now) || lift.is_animating(now))
             || [&self.menu, &self.toast, &self.modal, &self.thumb].into_iter().any(|fade| fade.is_animating(now))
     }
 
     fn prune(&mut self, now: Instant) {
-        self.hover.retain(|_, fade| !fade.is_settled_off(now));
+        self.hover.retain(|_, (layer, lift)| !layer.is_settled_off(now) || !lift.is_settled_off(now));
         if self.menu.is_settled_off(now) {
             self.menu_ghost = None;
         }
@@ -577,7 +595,7 @@ pub struct App {
     band: Option<Band>,
     pub drag: Option<Drag>,
     hover_target: Option<Hover>,
-    window_size: Size,
+    window: WindowState,
     pending_select: Option<PathBuf>,
     grid_zoom: u8,
     list_zoom: u8,
@@ -627,6 +645,12 @@ pub struct Band {
     start: Option<Point>,
     end: Point,
     base: HashSet<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WindowState {
+    size: Size,
+    focused: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -740,7 +764,7 @@ impl App {
             band: None,
             drag: None,
             hover_target: None,
-            window_size: Size::ZERO,
+            window: WindowState { size: Size::ZERO, focused: true },
             pending_select: None,
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
@@ -765,13 +789,17 @@ impl App {
 
     #[must_use]
     pub fn title(&self) -> String {
-        let place = match &self.search {
+        format!("{} — {}", self.place_title(), Key::AppName.text(self.lang))
+    }
+
+    #[must_use]
+    pub fn place_title(&self) -> String {
+        match &self.search {
             Some(search) if !search.query.trim().is_empty() => {
                 format!("{} «{}»", Key::Search.text(self.lang), search.query.trim())
             }
             _ => self.location_name(&self.current),
-        };
-        format!("{place} — {}", Key::AppName.text(self.lang))
+        }
     }
 
     #[must_use]
@@ -945,6 +973,11 @@ impl App {
         self.motion.hover(key, Instant::now())
     }
 
+    #[must_use]
+    pub fn lift(&self, key: &Hover) -> f32 {
+        self.motion.lift(key, Instant::now())
+    }
+
     #[allow(clippy::too_many_lines)] // One arm per message; each arm delegates to a helper
     fn handle(&mut self, message: Message) -> Task<Message> {
         if self.modal.is_some() && !message.passes_modal() {
@@ -1042,7 +1075,7 @@ impl App {
                 });
             }
             Message::ToggleOptions => {
-                self.menu_at = Point::new((self.window_size.width - 480.0).max(8.0), widgets::HEADER_HEIGHT);
+                self.menu_at = Point::new((self.window.size.width - 480.0).max(8.0), widgets::HEADER_HEIGHT);
                 self.menu = match &self.menu {
                     Some(Menu { kind: MenuKind::Options, .. }) => None,
                     _ => {
@@ -1376,7 +1409,8 @@ impl App {
                 return self.release();
             }
             Message::DragTick => return self.drag_tick(),
-            Message::WindowSize(size) => self.window_size = size,
+            Message::WindowSize(size) => self.window.size = size,
+            Message::WindowFocus(focused) => self.window.focused = focused,
             Message::JobPause(id) => {
                 if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
                     let paused = !job.pause.load(Ordering::Relaxed);
@@ -1400,6 +1434,11 @@ impl App {
     #[must_use]
     pub fn view(&self) -> Element<'_, Message> {
         widgets::window(self)
+    }
+
+    #[must_use]
+    pub const fn is_idle(&self) -> bool {
+        !self.window.focused
     }
 
     #[must_use]
@@ -2128,7 +2167,7 @@ impl App {
     }
 
     fn outside_window(&self, at: Point) -> bool {
-        let size = self.window_size;
+        let size = self.window.size;
         size.width > 0.0 && (at.x < 0.0 || at.y < 0.0 || at.x >= size.width || at.y >= size.height)
     }
 
@@ -2964,6 +3003,8 @@ pub fn window_events(event: iced::Event, _status: iced::event::Status, _window: 
         iced::Event::Window(window::Event::Opened { size, .. } | window::Event::Resized(size)) => {
             Some(Message::WindowSize(size))
         }
+        iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocus(true)),
+        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocus(false)),
         iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::Released),
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(Named::Escape), .. }) => {
             Some(Message::Escape)

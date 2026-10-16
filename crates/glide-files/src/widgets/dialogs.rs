@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use iced::widget::{Column, button, column, container, float, opaque, row, space, text, text_input};
+use iced::widget::{Column, button, checkbox, column, container, float, opaque, row, space, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding, Vector};
 
 use super::{divider, file_icon};
@@ -11,8 +11,10 @@ use crate::fs::{format_bytes, format_time, home_dir, permissions_string};
 use crate::i18n::{self, Key};
 use crate::theme::{self, Tone};
 
-const WIDTH: f32 = 380.0;
+const WIDTH: f32 = 400.0;
+const WIDE: f32 = 520.0;
 const LABEL_WIDTH: f32 = 112.0;
+const BUTTON_TEXT: f32 = 13.5;
 
 #[must_use]
 pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> Element<'a, Message> {
@@ -39,30 +41,49 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
         Dialog::Conflict { question, for_all, .. } => conflict(app, question, *for_all),
         Dialog::Unlock(object) => unlock(app, modal, object),
     };
+    let width = if matches!(modal.dialog, Dialog::Conflict { .. }) { WIDE } else { WIDTH };
     let rise = (1.0 - progress) * 12.0;
-    let card = float(container(body).width(Length::Fixed(WIDTH)).padding(20).style(move |_| theme::popover(t)))
+    let card = float(container(body).width(Length::Fixed(width)).padding(theme::SP5).style(move |_| theme::popover(t)))
         .translate(move |_, _| Vector::new(0.0, rise));
     let layer = container(card).center(Fill).style(move |_| theme::scrim(progress));
     if live { opaque(layer) } else { layer.into() }
 }
 
 fn title(label: &str) -> Element<'_, Message> {
-    text(label).size(15).font(theme::SEMIBOLD).into()
+    text(label).size(theme::T3).font(theme::SEMIBOLD).into()
 }
 
 fn action(app: &App, label: Key, tone: Tone, message: Option<Message>) -> Element<'_, Message> {
     let t = &app.motion.modal_theme;
-    button(text(label.text(app.lang)).size(13))
+    button(container(text(label.text(app.lang)).size(BUTTON_TEXT)).center_y(Fill))
         .on_press_maybe(message)
-        .padding(Padding::from([5, 16]))
+        .height(Length::Fixed(theme::CONTROL))
+        .padding(Padding::from([0.0, theme::SP4]))
         .style(move |_, status| theme::action(t, tone, status))
         .into()
 }
 
 fn buttons<'a>(app: &'a App, confirm: Element<'a, Message>) -> Element<'a, Message> {
     row![space::horizontal(), action(app, Key::Cancel, Tone::Neutral, Some(Message::ModalCancel)), confirm,]
-        .spacing(8)
+        .spacing(theme::SP2)
         .into()
+}
+
+fn field<'a>(app: &'a App, modal: &'a Modal) -> text_input::TextInput<'a, Message> {
+    let t = &app.motion.modal_theme;
+    text_input("", &modal.input)
+        .id(MODAL_ID)
+        .on_input(Message::ModalInput)
+        .on_submit(Message::ModalSubmit)
+        .padding(Padding::from([7.0, theme::SP3]))
+        .size(BUTTON_TEXT)
+        .style(move |_, status| {
+            let mut style = theme::field(t, status);
+            if modal.error.is_some() {
+                style.border.color = t.danger();
+            }
+            style
+        })
 }
 
 fn input<'a>(app: &'a App, modal: &'a Modal, (heading, prompt): (Key, Key), submit: Key) -> Element<'a, Message> {
@@ -70,26 +91,14 @@ fn input<'a>(app: &'a App, modal: &'a Modal, (heading, prompt): (Key, Key), subm
     let valid = prompt == Key::TagsPrompt || !modal.input.trim().is_empty();
     let mut body = column![
         title(heading.text(app.lang)),
-        text(prompt.text(app.lang)).size(12).color(t.fg_2()),
-        text_input("", &modal.input)
-            .id(MODAL_ID)
-            .on_input(Message::ModalInput)
-            .on_submit(Message::ModalSubmit)
-            .padding(Padding::from([8, 12]))
-            .size(13)
-            .style(move |_, status| {
-                let mut style = theme::field(t, status);
-                if modal.error.is_some() {
-                    style.border.color = t.danger();
-                }
-                style
-            }),
+        text(prompt.text(app.lang)).size(theme::CAP).color(t.fg_2()),
+        field(app, modal),
     ]
-    .spacing(8);
+    .spacing(theme::SP2);
     if let Some(error) = &modal.error {
-        body = body.push(text(error).size(12).color(t.danger()));
+        body = body.push(text(error).size(theme::CAP).color(t.danger()));
     }
-    body.push(space().height(8))
+    body.push(space().height(theme::SP2))
         .push(buttons(app, action(app, submit, Tone::Primary, valid.then_some(Message::ModalSubmit))))
         .into()
 }
@@ -100,23 +109,16 @@ fn unlock<'a>(app: &'a App, modal: &'a Modal, object: &'a str) -> Element<'a, Me
     let name = app.volume(object).map(|volume| format!("«{}»", volume.name(lang))).unwrap_or_default();
     column![
         title(Key::UnlockTitle.text(lang)),
-        text(name).size(13).font(theme::SEMIBOLD),
-        text(Key::UnlockPrompt.text(lang)).size(12).color(t.fg_2()),
-        text_input("", &modal.input)
-            .id(MODAL_ID)
-            .secure(true)
-            .on_input(Message::ModalInput)
-            .on_submit(Message::ModalSubmit)
-            .padding(Padding::from([8, 12]))
-            .size(13)
-            .style(move |_, status| theme::field(t, status)),
-        space().height(8),
+        text(name).size(theme::CALL).font(theme::SEMIBOLD),
+        text(Key::UnlockPrompt.text(lang)).size(theme::CAP).color(t.fg_2()),
+        field(app, modal).secure(true),
+        space().height(theme::SP2),
         buttons(
             app,
             action(app, Key::Unlock, Tone::Primary, (!modal.input.is_empty()).then_some(Message::ModalSubmit),),
         ),
     ]
-    .spacing(8)
+    .spacing(theme::SP2)
     .into()
 }
 
@@ -133,12 +135,12 @@ fn display_name(path: &Path) -> String {
 
 fn confirm(app: &App, heading: Key, prompt: Key, subject: Option<String>, submit: Key) -> Element<'_, Message> {
     let t = &app.motion.modal_theme;
-    let mut body = column![title(heading.text(app.lang))].spacing(12);
+    let mut body = column![title(heading.text(app.lang))].spacing(theme::SP3);
     if let Some(subject) = subject {
-        body = body.push(text(subject).size(13).font(theme::SEMIBOLD));
+        body = body.push(text(subject).size(theme::CALL).font(theme::SEMIBOLD));
     }
-    body.push(text(prompt.text(app.lang)).size(13).color(t.fg_2()))
-        .push(space().height(4))
+    body.push(text(prompt.text(app.lang)).size(theme::CALL).color(t.fg_2()))
+        .push(space().height(theme::SP1))
         .push(buttons(app, action(app, submit, Tone::Danger, Some(Message::ModalSubmit))))
         .into()
 }
@@ -155,34 +157,29 @@ fn conflict<'a>(app: &'a App, question: &'a Question, for_all: bool) -> Element<
             (Key::Replace, Choice::Replace),
         )
     };
-    let check =
-        button(
-            row![
-                text(if for_all { "☑" } else { "☐" }).size(14),
-                text(Key::ApplyToAll.text(lang)).size(12).color(t.fg_2()),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        )
-        .on_press(Message::ToggleForAll)
-        .padding(0)
-        .style(move |_, _| theme::plain(t.fg_1()));
+    let check = checkbox(for_all)
+        .label(Key::ApplyToAll.text(lang))
+        .on_toggle(|_| Message::ToggleForAll)
+        .size(20)
+        .spacing(theme::SP2)
+        .text_size(theme::CAP)
+        .style(move |_, status| theme::checkbox(t, status));
     column![
-        text(heading).size(15).font(theme::SEMIBOLD),
-        text(hint.text(lang)).size(13).color(t.fg_2()),
-        text(tilde(&question.dest)).size(12).color(t.fg_3()),
+        text(heading).size(theme::T3).font(theme::SEMIBOLD),
+        text(hint.text(lang)).size(theme::CALL).color(t.fg_2()),
+        text(tilde(&question.dest)).size(theme::CAP).color(t.fg_3()),
         check,
-        space().height(4),
+        space().height(theme::SP1),
         row![
-            action(app, Key::StopJob, Tone::Neutral, Some(Message::Resolve(Choice::Cancel))),
+            action(app, Key::StopJob, Tone::Ghost, Some(Message::Resolve(Choice::Cancel))),
             space::horizontal(),
             action(app, Key::Skip, Tone::Neutral, Some(Message::Resolve(Choice::Skip))),
             action(app, Key::KeepBoth, Tone::Neutral, Some(Message::Resolve(Choice::KeepBoth))),
             action(app, primary.0, Tone::Primary, Some(Message::Resolve(primary.1))),
         ]
-        .spacing(8),
+        .spacing(theme::SP2),
     ]
-    .spacing(10)
+    .spacing(theme::SP3)
     .into()
 }
 
@@ -203,12 +200,12 @@ fn details<'a>(app: &'a App, properties: &'a Properties) -> Element<'a, Message>
     let heading = row![
         file_icon(app, entry, 56.0),
         column![
-            text(&entry.name).size(15).font(theme::SEMIBOLD),
-            text(entry.category.name(lang)).size(12).color(t.fg_3()),
+            text(&entry.name).size(theme::T3).font(theme::SEMIBOLD),
+            text(entry.category.name(lang)).size(theme::CAP).color(t.fg_3()),
         ]
         .spacing(2),
     ]
-    .spacing(16)
+    .spacing(theme::SP4)
     .align_y(Alignment::Center);
 
     let mut facts: Vec<(Key, String)> = Vec::new();
@@ -241,17 +238,21 @@ fn details<'a>(app: &'a App, properties: &'a Properties) -> Element<'a, Message>
 
     let rows = Column::with_children(facts.into_iter().map(|(label, value)| {
         row![
-            text(label.text(lang)).size(12).color(t.fg_2()).align_x(Alignment::End).width(Length::Fixed(LABEL_WIDTH)),
-            text(value).size(12).width(Fill),
+            text(label.text(lang))
+                .size(theme::CAP)
+                .color(t.fg_2())
+                .align_x(Alignment::End)
+                .width(Length::Fixed(LABEL_WIDTH)),
+            text(value).size(theme::CAP).width(Fill),
         ]
-        .spacing(10)
+        .spacing(theme::SP3)
         .into()
     }))
-    .spacing(8);
+    .spacing(theme::SP2);
 
-    let mut body = column![heading, divider(t), rows, permissions(app, properties)].spacing(16);
+    let mut body = column![heading, divider(t), rows, permissions(app, properties)].spacing(theme::SP4);
     if let Some(error) = &properties.error {
-        body = body.push(text(error).size(12).color(t.danger()));
+        body = body.push(text(error).size(theme::CAP).color(t.danger()));
     }
     body.push(row![space::horizontal(), action(app, Key::Close, Tone::Neutral, Some(Message::ModalCancel)),]).into()
 }
@@ -266,19 +267,28 @@ fn permissions<'a>(app: &'a App, properties: &'a Properties) -> Element<'a, Mess
         let bits = [('r', 4), ('w', 2), ('x', 1)].into_iter().map(move |(letter, value)| {
             let bit = value << shift;
             let on = mode & bit != 0;
-            button(text(if on { letter } else { '-' }.to_string()).size(12).font(theme::SEMIBOLD))
-                .on_press(Message::Permission(bit))
-                .padding(Padding::from([2, 8]))
-                .style(move |_, status| theme::action(t, if on { Tone::Primary } else { Tone::Neutral }, status))
-                .into()
+            button(
+                container(text(if on { letter } else { '-' }.to_string()).size(theme::CAP).font(theme::SEMIBOLD))
+                    .center(Fill),
+            )
+            .on_press(Message::Permission(bit))
+            .width(Length::Fixed(theme::SMALL_CONTROL))
+            .height(Length::Fixed(theme::SMALL_CONTROL))
+            .padding(0)
+            .style(move |_, status| theme::action(t, if on { Tone::Primary } else { Tone::Neutral }, status))
+            .into()
         });
         row![
-            text(label.text(lang)).size(12).color(t.fg_2()).align_x(Alignment::End).width(Length::Fixed(LABEL_WIDTH)),
-            iced::widget::Row::with_children(bits).spacing(4),
+            text(label.text(lang))
+                .size(theme::CAP)
+                .color(t.fg_2())
+                .align_x(Alignment::End)
+                .width(Length::Fixed(LABEL_WIDTH)),
+            iced::widget::Row::with_children(bits).spacing(theme::SP1),
         ]
-        .spacing(10)
+        .spacing(theme::SP3)
         .align_y(Alignment::Center)
         .into()
     });
-    Column::with_children(rows).spacing(6).into()
+    Column::with_children(rows).spacing(theme::SP1).into()
 }

@@ -26,6 +26,7 @@ impl Curve {
 pub enum Speed {
     T1,
     T2,
+    T3,
     T4,
 }
 
@@ -34,6 +35,7 @@ impl Speed {
         match self {
             Self::T1 => motion::t1(),
             Self::T2 => motion::t2(),
+            Self::T3 => motion::t3(),
             Self::T4 => motion::t4(),
         }
         .max(MIN)
@@ -43,22 +45,28 @@ impl Speed {
 #[derive(Debug, Clone)]
 pub struct Fade {
     animation: Animation<bool>,
-    speed: Speed,
-    curve: Curve,
+    enter: (Speed, Curve),
+    leave: (Speed, Curve),
 }
 
 impl Fade {
     #[must_use]
     pub fn new(on: bool, speed: Speed, curve: Curve) -> Self {
-        Self { animation: Animation::new(on), speed, curve }
+        Self::asymmetric(on, (speed, curve), (speed, curve))
+    }
+
+    #[must_use]
+    pub fn asymmetric(on: bool, enter: (Speed, Curve), leave: (Speed, Curve)) -> Self {
+        Self { animation: Animation::new(on), enter, leave }
     }
 
     pub fn set(&mut self, on: bool, now: Instant) {
         if self.animation.value() == on {
             return;
         }
+        let (speed, curve) = if on { self.enter } else { self.leave };
         let animation = std::mem::replace(&mut self.animation, Animation::new(on));
-        self.animation = animation.duration(self.speed.duration()).easing(self.curve.easing()).go(on, now);
+        self.animation = animation.duration(speed.duration()).easing(curve.easing()).go(on, now);
     }
 
     #[must_use]

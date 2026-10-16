@@ -6,26 +6,32 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Fill, Length, Padding, Point, Size, Vector, mouse};
 
-use super::HEADER_HEIGHT;
+use super::header::{GAP, INSET, SEARCH_WIDTH, WINDOW_CONTROL};
+use super::{CONTROL, HEADER_HEIGHT, icon};
 use crate::app::{App, Menu, MenuKind, Message, ViewMode};
 use crate::fs::{Offer, SortBy, Volume};
 use crate::i18n::Key;
-use crate::theme::{self, ThemeState};
+use crate::icons::Icon;
+use crate::theme::{self, SP1, SP2, SP3, ThemeState};
 
-pub const WIDTH: f32 = 232.0;
-pub const ROW: f32 = 26.0;
-const SEPARATOR: f32 = 9.0;
-const HEADER: f32 = 24.0;
-const PADDING: f32 = 5.0;
-const MARGIN: f32 = 8.0;
+pub const WIDTH: f32 = 248.0;
+pub const ROW: f32 = theme::CONTROL;
+const SEPARATOR: f32 = 2.0 * SP1 + 1.0;
+const HEADER: f32 = 28.0;
+const PADDING: f32 = SP1;
+const MARGIN: f32 = SP2;
 const RISE: f32 = 6.0;
-const OPTIONS_RIGHT_INSET: f32 = 12.0 + super::header::WINDOW_CONTROL + 2.0 + 3.0 * 10.0 + super::header::SEARCH_WIDTH;
+const SHRINK: f32 = 0.06;
+const MARK: f32 = 16.0;
+const OPTIONS_RIGHT_INSET: f32 = INSET + WINDOW_CONTROL + GAP + SEARCH_WIDTH + GAP;
+const OPTIONS_TOP: f32 = HEADER_HEIGHT.midpoint(CONTROL) + SP2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub label: Cow<'static, str>,
     pub message: Option<Message>,
     pub shortcut: Option<&'static str>,
+    pub submenu: bool,
     pub danger: bool,
     pub checked: Option<bool>,
     pub swatch: Option<iced::Color>,
@@ -33,7 +39,15 @@ pub struct Item {
 
 impl Item {
     fn new(label: impl Into<Cow<'static, str>>, message: Message) -> Self {
-        Self { label: label.into(), message: Some(message), shortcut: None, danger: false, checked: None, swatch: None }
+        Self {
+            label: label.into(),
+            message: Some(message),
+            shortcut: None,
+            submenu: false,
+            danger: false,
+            checked: None,
+            swatch: None,
+        }
     }
 
     fn swatch(mut self, color: iced::Color) -> Self {
@@ -41,8 +55,9 @@ impl Item {
         self
     }
 
-    fn submenu(self) -> Self {
-        self.keys("›")
+    fn submenu(mut self) -> Self {
+        self.submenu = true;
+        self
     }
 
     fn keys(mut self, shortcut: &'static str) -> Self {
@@ -144,7 +159,9 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             if menu.open_with {
                 entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith)).submenu().into());
             }
-            entries.push(item(Key::OpenInTerminal, Message::Terminal).enabled(single_dir).into());
+            if single_dir {
+                entries.push(item(Key::OpenInTerminal, Message::Terminal).into());
+            }
             entries.extend(offered(&menu.offers));
             entries.extend([
                 Entry::Separator,
@@ -345,15 +362,14 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
         let entries = entries(app, menu);
         let full = height(&entries);
         let at = match menu.kind {
-            MenuKind::Options => {
-                Point::new((window.width - OPTIONS_RIGHT_INSET - WIDTH).max(MARGIN), HEADER_HEIGHT - 6.0)
-            }
+            MenuKind::Options => Point::new((window.width - OPTIONS_RIGHT_INSET - WIDTH).max(MARGIN), OPTIONS_TOP),
             _ => place(menu.at, full, window),
         };
         let fit = full.min(window.height - at.y - MARGIN);
         let rise = (1.0 - progress) * -RISE;
-        let panel =
-            float(panel(&app.theme.faded(progress), entries, live, fit)).translate(move |_, _| Vector::new(0.0, rise));
+        let panel = float(panel(&app.theme.faded(progress), entries, live, fit))
+            .scale(1.0 - (1.0 - progress) * SHRINK)
+            .translate(move |_, _| Vector::new(0.0, rise));
         let panel: Element<'_, Message> = if live { opaque(panel) } else { panel.into() };
         let positioned = pin(panel).position(at);
         if live {
@@ -375,35 +391,48 @@ fn panel<'a>(theme: &ThemeState, entries: Vec<Entry>, live: bool, fit: f32) -> E
     let rows = entries.into_iter().map(|entry| -> Element<'a, Message> {
         match entry {
             Entry::Separator => {
-                container(rule::horizontal(1).style(move |_| theme::line(&t))).padding(Padding::from([4, 8])).into()
+                container(rule::horizontal(1).style(move |_| theme::line(&t))).padding(Padding::from([SP1, SP3])).into()
             }
-            Entry::Header(label) => container(text(label).size(11).font(theme::SEMIBOLD).color(t.fg_3()))
-                .padding(Padding::from([0, 8]))
+            Entry::Header(label) => container(text(label).size(theme::CAP).color(t.fg_3()))
+                .padding(Padding::from([0.0, SP3]))
                 .height(Length::Fixed(HEADER))
                 .align_y(Alignment::Center)
                 .into(),
             Entry::Item(item) => {
-                let mut content = row![].spacing(6).align_y(Alignment::Center);
+                let enabled = item.message.is_some();
+                let ink = match (enabled, item.danger) {
+                    (false, _) => t.fg_4(),
+                    (true, true) => t.danger(),
+                    (true, false) => t.fg_1(),
+                };
+                let mut content = row![].spacing(SP2).align_y(Alignment::Center);
                 if checks {
-                    let mark = if item.checked == Some(true) { "✓" } else { "" };
-                    content = content.push(text(mark).size(13).width(Length::Fixed(14.0)));
+                    let mark: Element<'a, Message> = if item.checked == Some(true) {
+                        icon(Icon::Check, MARK, ink)
+                    } else {
+                        space().width(MARK).into()
+                    };
+                    content = content.push(mark);
                 }
                 if let Some(color) = item.swatch {
-                    content = content
-                        .push(container(space().width(10).height(10)).style(move |_| theme::rounded(color, 5.0)));
+                    content = content.push(
+                        container(space().width(10).height(10)).style(move |_| theme::rounded(color, theme::R_ROUND)),
+                    );
                 }
-                content = content.push(text(item.label).size(13)).push(space::horizontal());
+                content = content.push(text(item.label).size(theme::MENU_ITEM)).push(space::horizontal());
                 if let Some(keys) = item.shortcut {
-                    content = content.push(text(keys).size(12));
+                    content = content.push(text(keys).size(theme::CAP).color(t.fg_3()));
+                }
+                if item.submenu {
+                    content = content.push(icon(Icon::ChevronRight, 12.0, t.fg_3()));
                 }
                 let danger = item.danger;
-                let enabled = item.message.is_some();
                 let message = item.message.filter(|_| live).map(|message| Message::Menu(Box::new(message)));
                 button(container(content).height(Fill).align_y(Alignment::Center))
                     .on_press_maybe(message)
                     .width(Fill)
                     .height(Length::Fixed(ROW))
-                    .padding(Padding::from([0, 8]))
+                    .padding(Padding::from([0.0, SP3]))
                     .style(move |_, status| {
                         let status = match (enabled, live) {
                             (false, _) => button::Status::Disabled,
