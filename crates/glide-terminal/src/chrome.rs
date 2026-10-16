@@ -1,4 +1,6 @@
 use alacritty_terminal::index::Direction;
+use glide_theme::elevation::Level;
+use glide_theme::motion::ST_HOVER;
 use iced::border::Radius;
 use iced::widget::{
     Space, button, column, container, mouse_area, opaque, pane_grid, pin, row, space, stack, svg, text, text_input,
@@ -15,6 +17,8 @@ use crate::terminal::Terminal;
 
 pub const HEADER: f32 = 40.0;
 const TABS: f32 = 34.0;
+const TAB_PAD: f32 = 8.0;
+const TAB_GAP: f32 = 4.0;
 const FIND: f32 = 42.0;
 const CONTROL: f32 = 26.0;
 const MENU_WIDTH: f32 = 264.0;
@@ -101,36 +105,43 @@ fn tab_button<'a>(app: &'a App, index: usize, tab: &'a Tab) -> Element<'a, Messa
         container(label).center_x(Fill).center_y(Fill).padding(Padding::from([0, 26])).clip(true),
         container(close).padding(Padding::from([0, 6])).height(Fill).align_y(Alignment::Center),
     ];
-    let tab =
-        button(inner).on_press(Message::Command(Command::SelectTab(index))).width(Fill).height(Fill).padding(0).style(
-            move |_, status| {
-                if active {
-                    button::Style {
-                        shadow: paint.shadow(glide_theme::elevation::Level::El1),
-                        ..style::flat(paint.fill_2(), paint.fg_1(), R2)
-                    }
-                } else {
-                    style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_2(), R2)
-                }
-            },
-        );
+    let lifted = app.dragged_tab() == Some(index);
+    let tab = container(inner).width(Fill).height(Fill).style(move |_| {
+        let (background, text, level) = match (active, hovered) {
+            (true, _) => (paint.fill_2(), paint.fg_1(), Some(if lifted { Level::El2 } else { Level::El1 })),
+            (false, true) => (paint.layer(Color::TRANSPARENT, ST_HOVER), paint.fg_1(), None),
+            (false, false) => (Color::TRANSPARENT, paint.fg_2(), None),
+        };
+        container::Style {
+            text_color: Some(text),
+            shadow: level.map_or_else(Default::default, |level| paint.shadow(level)),
+            ..style::rounded(background, R2)
+        }
+    });
     mouse_area(tab)
+        .on_press(Message::TabPressed(index))
         .on_enter(Message::TabHovered(Some(index)))
         .on_exit(Message::TabHovered(None))
         .on_middle_press(Message::Command(Command::CloseTab(index)))
         .into()
 }
 
+#[must_use]
+pub fn tab_slot(x: f32, width: f32, count: usize) -> usize {
+    let slot = (width - 2.0 * TAB_PAD + TAB_GAP) / count.max(1) as f32;
+    (((x - TAB_PAD) / slot.max(1.0)).floor().max(0.0) as usize).min(count.saturating_sub(1))
+}
+
 fn tab_bar(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let tabs: Vec<Element<'_, Message>> =
         app.tabs.iter().enumerate().map(|(index, tab)| tab_button(app, index, tab)).collect();
-    container(iced::widget::row(tabs).spacing(4).height(Fill))
-        .padding(Padding::from([4, 8]))
+    let bar = container(iced::widget::row(tabs).spacing(TAB_GAP).height(Fill))
+        .padding(Padding::from([4.0, TAB_PAD]))
         .width(Fill)
         .height(TABS)
-        .style(move |_| style::rounded(paint.bar_bg(), 0.0))
-        .into()
+        .style(move |_| style::rounded(paint.bar_bg(), 0.0));
+    mouse_area(bar).on_move(|point| Message::TabMoved(point.x)).into()
 }
 
 fn find_bar(app: &App) -> Element<'_, Message> {
@@ -549,4 +560,28 @@ pub fn view(app: &App) -> Element<'_, Message> {
         layers.push(dialog(app, confirm));
     }
     iced::widget::stack(layers).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dragged_tab_lands_in_the_slot_under_the_pointer_and_never_outside_the_strip() {
+        let width = 2.0 * TAB_PAD + 4.0 * 197.0 + 3.0 * TAB_GAP;
+        assert_eq!(tab_slot(TAB_PAD + 1.0, width, 4), 0);
+        assert_eq!(tab_slot(TAB_PAD + 197.0 + TAB_GAP + 1.0, width, 4), 1);
+        assert_eq!(tab_slot(width - TAB_PAD - 1.0, width, 4), 3);
+        assert_eq!(tab_slot(-40.0, width, 4), 0);
+        assert_eq!(tab_slot(width + 400.0, width, 4), 3);
+        assert_eq!(tab_slot(100.0, width, 0), 0);
+    }
+
+    #[test]
+    fn only_the_bottom_corners_of_the_window_are_rounded() {
+        let whole = corners(Rectangle { x: 0.0, y: 0.0, width: 1.0, height: 1.0 });
+        assert_eq!((whole.bottom_left, whole.bottom_right, whole.top_left), (R3, R3, 0.0));
+        let top_right = corners(Rectangle { x: 0.5, y: 0.0, width: 0.5, height: 0.5 });
+        assert_eq!(top_right, Radius::default());
+    }
 }

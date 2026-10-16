@@ -32,6 +32,14 @@ pub const FIND_ID: &str = "find";
 const BLINK: Duration = Duration::from_millis(530);
 const POLL: Duration = Duration::from_secs(1);
 const BELL_GAP: Duration = Duration::from_millis(250);
+const DRAG_SLOP: f32 = 6.0;
+
+#[derive(Debug, Clone, Copy)]
+struct TabDrag {
+    index: usize,
+    start: Option<f32>,
+    moved: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -148,6 +156,9 @@ pub enum Message {
     PaneClicked(pane_grid::Pane),
     SplitResized(pane_grid::ResizeEvent),
     TabHovered(Option<usize>),
+    TabPressed(usize),
+    TabMoved(f32),
+    TabReleased,
     FindInput(String),
     FindSubmit,
     FindCase,
@@ -181,6 +192,7 @@ pub struct App {
     pub menu: Option<Menu>,
     pub confirm: Option<Confirm>,
     pub hovered_tab: Option<usize>,
+    tab_drag: Option<TabDrag>,
     pub window: Size,
     pub error: Option<String>,
     zoom: f32,
@@ -391,6 +403,7 @@ impl App {
             menu: None,
             confirm: None,
             hovered_tab: None,
+            tab_drag: None,
             window: Size::new(960.0, 600.0),
             error: None,
             zoom: 0.0,
@@ -545,6 +558,12 @@ impl App {
         if self.focused_window && self.prefs.cursor_blink && !motion::is_disabled() {
             subscriptions.push(iced::time::every(BLINK).map(|_| Message::Blink));
         }
+        if self.tab_drag.is_some() {
+            subscriptions.push(iced::event::listen_with(|event, _, _| {
+                let released = iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left));
+                (event == released).then_some(Message::TabReleased)
+            }));
+        }
         if self.animating() {
             subscriptions.push(window::frames().map(|_| Message::Frame));
         }
@@ -579,6 +598,19 @@ impl App {
                 if let Some(tab) = self.tab_mut() {
                     tab.panes.resize(event.split, event.ratio);
                 }
+                Task::none()
+            }
+            Message::TabPressed(index) => {
+                self.select(index);
+                self.tab_drag = Some(TabDrag { index, start: None, moved: false });
+                Task::none()
+            }
+            Message::TabMoved(x) => {
+                self.drag_tab(x);
+                Task::none()
+            }
+            Message::TabReleased => {
+                self.tab_drag = None;
                 Task::none()
             }
             Message::TabHovered(index) => {
@@ -999,6 +1031,29 @@ impl App {
         Task::none()
     }
 
+    #[must_use]
+    pub fn dragged_tab(&self) -> Option<usize> {
+        self.tab_drag.filter(|drag| drag.moved).map(|drag| drag.index)
+    }
+
+    fn drag_tab(&mut self, x: f32) {
+        let count = self.tabs.len();
+        let Some(drag) = &mut self.tab_drag else { return };
+        let start = *drag.start.get_or_insert(x);
+        if !drag.moved && (x - start).abs() < DRAG_SLOP {
+            return;
+        }
+        drag.moved = true;
+        let target = crate::chrome::tab_slot(x, self.window.width, count);
+        if target != drag.index && drag.index < count {
+            let tab = self.tabs.remove(drag.index);
+            self.tabs.insert(target, tab);
+            drag.index = target;
+            self.active = target;
+            self.hovered_tab = Some(target);
+        }
+    }
+
     fn settle_prompts(&mut self) {
         let mut prompts = std::mem::take(&mut self.prompts);
         prompts.retain(|id, prompt| {
@@ -1396,5 +1451,26 @@ mod tests {
         let term = app.focused().expect("a pane").term.lock();
         assert_eq!(marks::at(&term, Line(0)), Some(Mark::Line));
         assert_eq!(marks::at(&term, Line(1)), None);
+    }
+
+    #[test]
+    fn dragging_a_tab_past_the_slop_moves_it_and_keeps_it_selected() {
+        let (sender, _receiver) = iced::futures::channel::mpsc::unbounded();
+        let (mut app, _) = App::with_launch(Launch { command: Some(("cat".into(), Vec::new())), directory: None });
+        let _ = app.update(Message::Feed(Feed::Connected(Bus(sender))));
+        let _ = app.update(Message::Command(Command::NewTab));
+        let _ = app.update(Message::Command(Command::NewTab));
+        app.window = Size::new(616.0, 400.0);
+        let ids = |app: &App| app.tabs.iter().map(|tab| tab.focused().expect("a pane").id).collect::<Vec<_>>();
+        let before = ids(&app);
+        let _ = app.update(Message::TabPressed(0));
+        let _ = app.update(Message::TabMoved(20.0));
+        let _ = app.update(Message::TabMoved(23.0));
+        assert_eq!(ids(&app), before, "a wobble under the slop is still a click");
+        let _ = app.update(Message::TabMoved(600.0));
+        let _ = app.update(Message::TabReleased);
+        assert_eq!(ids(&app), vec![before[1], before[2], before[0]]);
+        assert_eq!(app.active, 2);
+        assert_eq!(app.dragged_tab(), None);
     }
 }
