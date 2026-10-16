@@ -59,6 +59,7 @@ pub enum Icon {
     TopBar,
     Grid,
     Command,
+    Terminal,
     Accessibility,
     Hand,
     Users,
@@ -202,6 +203,9 @@ impl Icon {
             Self::Grid => glyph!(
                 "<rect x='3' y='5' width='8' height='6' rx='1.5'/><rect x='13' y='5' width='8' height='6' rx='1.5'/><rect x='3' y='13' width='8' height='6' rx='1.5'/><rect x='13' y='13' width='8' height='6' rx='1.5'/>"
             ),
+            Self::Terminal => {
+                glyph!("<rect x='3' y='4' width='18' height='16' rx='2.5'/><path d='m7.5 9.5 3 2.5-3 2.5M12.5 15h4'/>")
+            }
             Self::Command => glyph!(
                 "<path d='M9 9V6.5A2.5 2.5 0 1 0 6.5 9H17.5A2.5 2.5 0 1 0 15 6.5V17.5A2.5 2.5 0 1 0 17.5 15H6.5A2.5 2.5 0 1 0 9 17.5z'/>"
             ),

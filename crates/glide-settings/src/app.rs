@@ -8,7 +8,7 @@ use crate::icons::Icon;
 use crate::panels::{
     Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop, displays,
     gestures, keyboard, mouse, multitasking, netbird, network, night_light, notifications, power, printers, privacy,
-    region, shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
+    region, shortcuts, sound, startup, storage, terminal, topbar, users, vpn, wallpaper, windows, with_panels,
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;

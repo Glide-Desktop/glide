@@ -139,6 +139,7 @@ catalogue! {
     PanelWindows => "Windows", "Вікна";
     PanelPower => "Power & Battery", "Живлення й батарея";
     PanelApps => "Default Apps", "Типові програми";
+    PanelTerminal => "Terminal", "Термінал";
     PanelVpn => "VPN", "VPN";
     PanelNetbird => "NetBird", "NetBird";
     PanelNotifications => "Notifications", "Сповіщення";
@@ -176,6 +177,7 @@ catalogue! {
     AboutMouse => "Pointer speed, scrolling and tapping", "Швидкість вказівника, прокрутка й дотики";
     AboutGestures => "Touchpad swipes for workspaces and the overview, and a place to practise them", "Свайпи тачпадом для робочих просторів і огляду та місце, щоб їх випробувати";
     AboutApps => "Which apps open links, mail, files and media", "Які програми відкривають посилання, пошту, файли й медіа";
+    AboutTerminal => "Profile, font and behaviour of the Glide terminal", "Профіль, шрифт і поведінка термінала Glide";
     AboutSystem => "This computer and the Glide session", "Цей комп'ютер і сеанс Glide";
     AboutVpn => "Virtual private networks and WireGuard tunnels", "Віртуальні приватні мережі та тунелі WireGuard";
     AboutNetbird => "Your NetBird mesh network: peers, resources, exit nodes and profiles", "Ваша мережа NetBird: вузли, ресурси, вихідні вузли та профілі";

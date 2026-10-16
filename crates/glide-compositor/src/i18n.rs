@@ -151,6 +151,7 @@ catalogue! {
     SettingsKeyboard => "Keyboard", "Клавіатура";
     SettingsMouse => "Mouse & Touchpad", "Миша і тачпад";
     SettingsApps => "Apps", "Програми за замовчуванням";
+    SettingsTerminal => "Terminal", "Термінал";
     SettingsAbout => "About", "Про систему";
     SettingsVpn => "VPN connections", "З\u{2019}єднання VPN";
     SettingsNotifications => "Notifications", "Сповіщення";

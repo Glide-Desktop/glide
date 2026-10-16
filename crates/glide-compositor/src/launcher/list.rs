@@ -256,11 +256,15 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
     use crate::paint as p;
     let (w, h) = (ROW_ICON, ROW_ICON);
     let stroked: fn(&mut [u8], i32, i32, f32, f32, i32, glide_theme::Color) = match glyph {
-        RowGlyph::Calculator | RowGlyph::Window | RowGlyph::File | RowGlyph::Run => {
+        RowGlyph::Calculator
+        | RowGlyph::Window
+        | RowGlyph::File
+        | RowGlyph::Run
+        | RowGlyph::Settings(SettingsPanel::Terminal) => {
             let label = match glyph {
                 RowGlyph::Window => "\u{25a1}",
                 RowGlyph::File => "\u{2261}",
-                RowGlyph::Run => ">_",
+                RowGlyph::Run | RowGlyph::Settings(_) => ">_",
                 _ => "=",
             };
             return painter.draw_label_over_styled(

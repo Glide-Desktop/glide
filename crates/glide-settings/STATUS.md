@@ -83,6 +83,8 @@ Rows inside a group sit in a 4 px padded card so their R2 hover layer is concent
 | Sound | `[topbar] max-volume-pct` (100 or 150) |
 | Apps | `[general] autostart`; default handlers through `xdg-mime default` |
 
+Terminal is the one panel that does not touch `glide.toml`: it edits `$XDG_CONFIG_HOME/glide/terminal.toml` with `toml_edit` (comments kept) and reads it back through `glide_terminal::config::Preferences`, so the keys and defaults are the terminal's own. `glide-terminal` re-reads the file on its 1 s tick; no `Reload` is sent. The file is never written when it fails to parse.
+
 `crates/glide-compositor/src/config.rs::every_key_written_by_glide_settings_is_accepted` parses one file containing every key above, so a rename on either side fails the build instead of silently resetting the user's config (the compositor uses `deny_unknown_fields`).
 
 Only keys the compositor already deserializes are written. The compositor now ignores a key it does not know (with a notification naming it) instead of rejecting the file, so a newer Settings next to an older compositor no longer resets the session to the last good config. If `glide.toml` fails to parse or cannot be read, the app shows a banner naming which, and every config-backed control is made inert (`widgets::inert`) instead of overwriting the file. Before each config-changing message the file's mtime is checked and an externally edited file is re-read first; saves go through the canonical path, so a symlinked `glide.toml` stays a symlink. Sliders commit on release or 400 ms after the last change (keyboard arrows and Ctrl+wheel never fire a release); volume sliders stream to `wpctl` with at most one command in flight.
@@ -109,7 +111,7 @@ crates/glide-settings/
 │   ├── icons.rs           inline SVG glyphs
 │   ├── i18n.rs            uk / en catalogue (follows `[general] language`)
 │   ├── theme.rs           Meridian tokens and Iced styles
-│   ├── panels/            27 panels; mod.rs holds the `Pane` trait, the `with_panels!` registry and sidebar groups
+│   ├── panels/            30 panels; mod.rs holds the `Pane` trait, the `with_panels!` registry and sidebar groups
 │   └── services/          config, ipc, display, audio, network, bluetooth, input, system, wallpaper, run
 └── tests/
     ├── theme_tests.rs, adversarial_theme_tests.rs, theme_adversarial_tests.rs

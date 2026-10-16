@@ -23,6 +23,7 @@ pub mod shortcuts;
 pub mod sound;
 pub mod startup;
 pub mod storage;
+pub mod terminal;
 pub mod topbar;
 pub mod users;
 pub mod vpn;
@@ -116,6 +117,7 @@ macro_rules! with_panels {
             DateTime => date_time,
             Region => region,
             Apps => apps,
+            Terminal => terminal,
             Startup => startup,
             Storage => storage,
             Printers => printers,
@@ -222,6 +224,7 @@ panel_meta! {
     DateTime: PanelDateTime, AboutDateTime, "datetime", Clock, Cinnabar 5;
     Region: PanelRegion, AboutRegion, "region", Globe, Conifer 4;
     Apps: PanelApps, AboutApps, "default-apps", Apps, Amber 3;
+    Terminal: PanelTerminal, AboutTerminal, "terminal", Terminal, Graphite 2;
     Startup: PanelStartup, AboutStartup, "startup", Rocket, Terracotta 5;
     Storage: PanelStorage, AboutStorage, "storage", Drive, Conifer 5;
     Printers: PanelPrinters, AboutPrinters, "printers", Printer, Graphite 4;
@@ -254,7 +257,15 @@ impl Panel {
         Group { title: Key::GroupPeople, panels: &[Self::Accessibility, Self::Privacy, Self::Users] },
         Group {
             title: Key::GroupSystem,
-            panels: &[Self::DateTime, Self::Region, Self::Apps, Self::Startup, Self::Storage, Self::About],
+            panels: &[
+                Self::DateTime,
+                Self::Region,
+                Self::Apps,
+                Self::Terminal,
+                Self::Startup,
+                Self::Storage,
+                Self::About,
+            ],
         },
     ];
 
