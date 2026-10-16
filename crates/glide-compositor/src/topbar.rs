@@ -2635,7 +2635,7 @@ fn segment_width(painter: &crate::paint::Painter, label: &str) -> i32 {
     (text_w(painter, label, &SEG_STYLE) + SEG_TEXT_PAD * 2).max(SEG_MIN_WIDTH)
 }
 
-pub const MEDIA_ART: i32 = 16;
+pub const MEDIA_ART: i32 = 17;
 pub const MEDIA_ART_LARGE: i32 = 56;
 
 #[derive(Debug, Clone, PartialEq)]

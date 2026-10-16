@@ -25,29 +25,30 @@ use crate::paint::{Painter, TextAlign};
 use crate::popup_menu::text_px as text_w;
 use crate::raster::{Canvas, ShellRenderer};
 
-pub(super) const TOP: i32 = 3;
+pub(super) const TOP: i32 = (super::HEIGHT - HAIRLINE - COMPACT_H) / 2;
 pub(super) const WIDE: i32 = 356;
 pub(super) const VISIBLE_ITEMS: usize = 4;
 pub(super) const ALERT_HOLD: Duration = Duration::from_millis(3500);
 
-const COMPACT_W: i32 = 330;
-const COMPACT_H: i32 = 28;
-const COMPACT_PAD: i32 = 10;
+const HAIRLINE: i32 = 1;
+const COMPACT_W: i32 = 344;
+const COMPACT_H: i32 = 29;
+const COMPACT_PAD: i32 = 11;
 const ALERT_W: i32 = WIDE * 2;
 const ALERT_H: i32 = 84;
 const ALERT_PAD: i32 = SP4;
 const ALERT_LINES: usize = 2;
 const PAD: i32 = SP3;
-const SUB_H: i32 = 24;
+const SUB_H: i32 = 25;
 const SUB_PAD: i32 = 6;
 const SUB_GAP: i32 = 7;
 const SEP_GAP: i32 = SP2;
-const SEP_H: i32 = 12;
+const SEP_H: i32 = 13;
 const BARS_W: i32 = 12;
 const BARS_H: i32 = 11;
 const BAR_W: i32 = 3;
 const TITLE_MAX: i32 = 90;
-const BADGE_H: i32 = 16;
+const BADGE_H: i32 = 17;
 const BADGE_PAD: i32 = 6;
 const ALERT_ICON: i32 = 52;
 const ALERT_CLOSE: i32 = 28;
@@ -95,9 +96,9 @@ const fn style(size_px: f32, line_height_px: f32, weight: u16, tabular: bool) ->
     TextStyle { size_px, line_height_px, weight, tracking_em: 0.0, uppercase: false, tabular }
 }
 
-pub(super) const DATE_STYLE: TextStyle = style(11.5, 14.0, 500, false);
-pub(super) const TIME_STYLE: TextStyle = style(11.5, 14.0, 550, true);
-const TITLE_STYLE: TextStyle = style(11.5, 14.0, 550, false);
+pub(super) const DATE_STYLE: TextStyle = style(12.0, 15.0, 500, false);
+pub(super) const TIME_STYLE: TextStyle = style(12.0, 15.0, 550, true);
+const TITLE_STYLE: TextStyle = style(12.0, 15.0, 550, false);
 const BADGE_STYLE: TextStyle = style(10.0, 13.0, 600, true);
 const ALERT_TITLE_STYLE: TextStyle = style(15.0, 20.0, 650, false);
 const ALERT_BODY_STYLE: TextStyle = style(13.5, 18.0, 400, false);
@@ -721,7 +722,7 @@ fn draw_compact_clock(c: &mut Canvas<'_>, ink: &Ink<'_>, text: &ClockText<'_>, r
     let mut x = rect.loc.x + SUB_PAD;
     if text.widths.date > 0 {
         let span = (x, x + text.widths.date);
-        c.label(ink.painter, span, TextAlign::Left, text.date, ink.theme.muted, &DATE_STYLE);
+        c.label(ink.painter, span, TextAlign::Left, text.date, ink.theme.label, &DATE_STYLE);
         x += text.widths.date + SUB_GAP;
     }
     c.label(ink.painter, (x, x + text.widths.time), TextAlign::Left, text.clock, ink.theme.label, &TIME_STYLE);
@@ -1323,6 +1324,15 @@ mod tests {
     }
 
     #[test]
+    fn the_compact_island_is_centred_between_the_top_edge_and_the_bars_hairline() {
+        assert_eq!(TOP * 2 + COMPACT_H, super::super::HEIGHT - HAIRLINE);
+        const { assert!(COMPACT_W <= WIDE, "the bar reserves WIDE for the island") };
+        for inner in [SUB_H, SEP_H, BADGE_H, MEDIA_ART] {
+            assert_eq!((COMPACT_H - inner) % 2, 0, "a {inner} px part centres on whole pixels");
+        }
+    }
+
+    #[test]
     fn compact_controls_sit_inside_the_island_with_the_clock_on_the_right() {
         let layout = compact_layout(COMPACT_W, widths(), true);
         let media = layout.media.expect("a media button when something plays");
@@ -1408,7 +1418,8 @@ mod tests {
         let strip = local_rect(0, 0, 1920, 34);
         let mut island = Island::default();
         island.aim(Size::from((COMPACT_W, COMPACT_H)));
-        assert_eq!(island.rect(strip), local_rect(795, TOP, COMPACT_W, COMPACT_H), "the first size is taken at once");
+        let first = local_rect(960 - COMPACT_W / 2, TOP, COMPACT_W, COMPACT_H);
+        assert_eq!(island.rect(strip), first, "the first size is taken at once");
         assert!(island.show(View::Calendar));
         assert!(!island.show(View::Calendar));
         assert_eq!(island.previous, View::Compact);
