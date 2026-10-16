@@ -207,6 +207,16 @@ fn inside(target: &Path, source: &Path) -> bool {
     canonical(target).starts_with(canonical(source))
 }
 
+fn staging_for(dest: &Path) -> PathBuf {
+    let (Some(dir), Some(name)) = (dest.parent(), dest.file_name()) else {
+        return dest.to_path_buf();
+    };
+    let mut hidden = std::ffi::OsString::from(".");
+    hidden.push(name);
+    hidden.push(".part");
+    unique_path(dir, &hidden, false, occupied)
+}
+
 fn unique_beside(dest: &Path, is_dir: bool) -> PathBuf {
     let (Some(dir), Some(name)) = (dest.parent(), dest.file_name()) else {
         return dest.to_path_buf();
@@ -264,6 +274,7 @@ impl Worker<'_> {
             }
         };
         let mut dest = dest;
+        let mut swap = false;
         if let Ok(existing) = std::fs::symlink_metadata(&dest) {
             let folders = meta.is_dir() && existing.is_dir();
             match self.resolve(source, &dest, folders) {
@@ -275,6 +286,7 @@ impl Worker<'_> {
                 }
                 Choice::KeepBoth => dest = unique_beside(&dest, meta.is_dir()),
                 Choice::Merge if folders => return self.merge(source, dest),
+                Choice::Replace | Choice::Merge if !meta.is_dir() && !existing.is_dir() => swap = true,
                 Choice::Replace | Choice::Merge => {
                     if let Err(err) = remove_recursive(&dest) {
                         self.fail(&dest, &err);
@@ -301,11 +313,17 @@ impl Worker<'_> {
                 }
             }
         }
+        let staging = if swap { staging_for(&dest) } else { dest.clone() };
         let failures = self.failures.len();
-        let copied = self.copy_tree(source, &dest);
+        let copied = self.copy_tree(source, &staging);
         let clean = copied && self.failures.len() == failures;
-        if !copied || self.cancelled() {
-            let _ = remove_recursive(&dest);
+        if !copied || self.cancelled() || (swap && !clean) {
+            let _ = remove_recursive(&staging);
+            return None;
+        }
+        if swap && let Err(err) = std::fs::rename(&staging, &dest) {
+            let _ = remove_recursive(&staging);
+            self.fail(&dest, &err);
             return None;
         }
         if self.op == Op::Move

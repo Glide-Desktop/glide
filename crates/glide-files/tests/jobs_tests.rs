@@ -137,6 +137,35 @@ fn conflicts_follow_the_answer_and_for_all_is_remembered() {
 }
 
 #[test]
+fn a_replace_that_cannot_copy_keeps_the_file_it_would_have_replaced() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let root = scratch("replace");
+    write(&root.join("src/a.txt"), "new");
+    write(&root.join("dst/a.txt"), "old");
+    write(&root.join("src/b.txt"), "fresh");
+    write(&root.join("dst/b.txt"), "stale");
+    std::fs::set_permissions(root.join("src/a.txt"), std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let sources = [root.join("src/a.txt"), root.join("src/b.txt")];
+    let sink = Script::answering(&[(Choice::Replace, true)]);
+    let report = run(Op::Copy, &sources, &root.join("dst"), &sink);
+    assert_eq!(report.failures.len(), 1, "the unreadable source is reported");
+    assert_eq!(read(&root.join("dst/a.txt")), "old", "and the file it would have replaced is still there");
+    assert_eq!(read(&root.join("dst/b.txt")), "fresh", "a readable one replaces as before");
+    let names: Vec<String> = std::fs::read_dir(root.join("dst"))
+        .expect("dst")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 2, "no staging file is left behind: {names:?}");
+    let _ = std::fs::set_permissions(root.join("src/a.txt"), std::fs::Permissions::from_mode(0o600));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn keep_both_renames_and_merge_combines_folders() {
     let root = scratch("merge");
     write(&root.join("src/box/one.txt"), "1");
