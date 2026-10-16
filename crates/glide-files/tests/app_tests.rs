@@ -495,6 +495,18 @@ fn a_rename_whose_file_vanished_does_not_hold_the_window_hostage() {
 }
 
 #[test]
+fn a_late_result_does_not_select_items_in_a_folder_already_left() {
+    use glide_files::app::Outcome;
+    let mut app = listed_app();
+    let elsewhere = std::path::PathBuf::from("/somewhere/else/link");
+    let _ = app.update(Message::Done(Outcome { select: vec![elsewhere.clone()], ..Outcome::default() }));
+    assert!(!app.selection.contains(&elsewhere), "the folder it was made in is no longer shown");
+    let here = app.current.join("made-here.txt");
+    let _ = app.update(Message::Done(Outcome { select: vec![here.clone()], ..Outcome::default() }));
+    assert!(app.selection.contains(&here), "an item made in the shown folder is selected for the coming refresh");
+}
+
+#[test]
 fn the_status_line_counts_only_selected_items_that_are_shown() {
     use glide_files::widgets::pathbar::status;
     let mut app = listed_app();

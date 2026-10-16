@@ -3138,8 +3138,10 @@ impl App {
             }
         }
         let task = self.refresh_listing();
-        if let Some(last) = outcome.select.last().cloned() {
-            self.selection = outcome.select.iter().cloned().collect();
+        let here: Vec<PathBuf> =
+            outcome.select.into_iter().filter(|path| path.parent() == Some(self.current.as_path())).collect();
+        if let Some(last) = here.last().cloned() {
+            self.selection = here.into_iter().collect();
             self.place_cursor(last);
         }
         if let Some(text) = outcome.text {
