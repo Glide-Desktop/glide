@@ -871,6 +871,27 @@ fn a_properties_card_stays_inside_a_small_window() {
 }
 
 #[test]
+fn a_bookmark_of_a_listed_device_is_not_shown_twice() {
+    use glide_files::fs::Place;
+    use glide_files::icons::Icon;
+    use std::path::PathBuf;
+    let mut app = listed_app();
+    let mount = PathBuf::from("/run/media/user/KINGSTON");
+    app.drives = vec![
+        Place { name: String::from("File System"), path: PathBuf::from("/"), icon: Icon::Drive },
+        Place { name: String::from("KINGSTON"), path: mount.clone(), icon: Icon::Drive },
+    ];
+    let music = path(1);
+    app.bookmarks = [PathBuf::from("/"), mount.clone(), music.clone()]
+        .into_iter()
+        .map(|path| Place { name: String::from("mark"), path, icon: Icon::Folder })
+        .collect();
+    let shown: Vec<PathBuf> = app.shown_bookmarks().map(|mark| mark.path.clone()).collect();
+    assert_eq!(shown, vec![music], "a device row and its bookmark would light up together");
+    assert!(app.is_device(&mount) && !app.is_device(&path(2)));
+}
+
+#[test]
 fn the_search_field_knows_when_it_has_the_keyboard() {
     let mut app = listed_app();
     assert!(!app.is_search_focused());

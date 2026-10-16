@@ -153,6 +153,7 @@ fn bookmarkable(app: &App, path: &Path) -> bool {
     path.is_dir()
         && !app.is_bookmarked(path)
         && !app.places.iter().any(|place| place.path == path)
+        && !app.is_device(path)
         && !app.trash.contains(path)
 }
 

@@ -29,7 +29,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let devices = app.devices();
     for (title, rows) in [
         (Key::Places, app.places.iter().map(|place| item(app, place, false)).collect()),
-        (Key::Bookmarks, app.bookmarks.iter().map(|place| item(app, place, true)).collect()),
+        (Key::Bookmarks, app.shown_bookmarks().map(|place| item(app, place, true)).collect()),
         (
             Key::Devices,
             devices

@@ -907,6 +907,17 @@ impl App {
         self.volumes.iter().find(|volume| volume.object == object)
     }
 
+    pub fn shown_bookmarks(&self) -> impl Iterator<Item = &Place> {
+        self.bookmarks.iter().filter(|mark| !self.is_device(&mark.path))
+    }
+
+    #[must_use]
+    pub fn is_device(&self, path: &Path) -> bool {
+        self.drives.iter().any(|drive| drive.path == path)
+            || self.volumes.iter().any(|volume| volume.mount.as_deref() == Some(path))
+            || self.phones.iter().any(|phone| phone.mount.as_deref() == Some(path))
+    }
+
     #[must_use]
     pub fn devices(&self) -> Vec<Device<'_>> {
         let (root, mounts) = self.drives.split_at(self.drives.len().min(1));
