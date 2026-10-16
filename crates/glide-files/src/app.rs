@@ -289,6 +289,7 @@ pub enum Message {
     Move(Step, bool),
     SetView(ViewMode),
     SortBy(SortBy),
+    SortKey(SortBy),
     ToggleReverse,
     ToggleHidden,
     ToggleSearch,
@@ -1151,6 +1152,11 @@ impl App {
             }
             Message::SortBy(by) => {
                 self.sort = SortConfig { by, ascending: self.sort.by != by || !self.sort.ascending };
+                sort_entries(&mut self.entries, self.sort);
+                self.save_prefs();
+            }
+            Message::SortKey(by) => {
+                self.sort.by = by;
                 sort_entries(&mut self.entries, self.sort);
                 self.save_prefs();
             }

@@ -180,8 +180,9 @@ pub fn action(theme: &ThemeState, tone: Tone, status: button::Status) -> button:
     }
     match tone {
         Tone::Primary => {
-            let background = if active { theme.acc_bg_hover() } else { theme.acc_bg() };
-            flat(background, theme.acc_fg(), R2)
+            let (background, level) =
+                if active { (theme.acc_bg_hover(), Level::El2) } else { (theme.acc_bg(), Level::El1) };
+            button::Style { shadow: theme.shadow(level), ..flat(background, theme.acc_fg(), R2) }
         }
         Tone::Neutral => flat(theme.layered(theme.fill_1(), status), theme.fg_1(), R2),
         Tone::Open => flat(theme.layered(theme.fill_2(), status), theme.fg_1(), R2),

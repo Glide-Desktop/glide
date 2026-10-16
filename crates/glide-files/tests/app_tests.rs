@@ -231,6 +231,19 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
 }
 
 #[test]
+fn the_sort_menu_picks_a_key_and_only_the_column_header_flips_the_order() {
+    use glide_files::fs::SortBy;
+    let mut app = listed_app();
+    let ascending = app.sort.ascending;
+    let _ = app.update(Message::SortKey(app.sort.by));
+    assert_eq!(app.sort.ascending, ascending, "choosing the checked key again keeps the order");
+    let _ = app.update(Message::SortKey(SortBy::Size));
+    assert_eq!((app.sort.by, app.sort.ascending), (SortBy::Size, ascending));
+    let _ = app.update(Message::SortBy(SortBy::Size));
+    assert_eq!(app.sort.ascending, !ascending, "a second click on the header reverses");
+}
+
+#[test]
 fn ctrl_z_inside_a_text_field_never_reverts_a_file_operation() {
     use glide_files::app::{Outcome, Undo};
     let mut app = listed_app();

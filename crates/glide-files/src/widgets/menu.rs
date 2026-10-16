@@ -279,7 +279,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             entries.extend(
                 SortBy::ALL
                     .into_iter()
-                    .map(|by| Item::new(by.label(app.lang), Message::SortBy(by)).checked(app.sort.by == by).into()),
+                    .map(|by| Item::new(by.label(app.lang), Message::SortKey(by)).checked(app.sort.by == by).into()),
             );
             entries.extend([
                 item(Key::Reversed, Message::ToggleReverse).checked(!app.sort.ascending).into(),

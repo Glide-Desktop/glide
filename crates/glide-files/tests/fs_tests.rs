@@ -204,6 +204,12 @@ fn names_are_validated_before_touching_disk() {
     let err = rename_item(&file, "taken.txt").expect_err("existing name must fail");
     assert_eq!(err.kind(), ErrorKind::AlreadyExists);
     assert_eq!(rename_item(&file, "keep.txt").expect("same name"), file);
+    std::fs::hard_link(&file, scratch.0.join("KEEP.txt")).expect("alias");
+    assert!(
+        rename_item(&file, "KEEP.txt").is_ok(),
+        "a name that already is this file (case-insensitive FS) is not taken"
+    );
+    assert!(scratch.0.join("KEEP.txt").exists());
     let err = create_directory(&scratch.0, "taken.txt").expect_err("occupied");
     assert_eq!(err.kind(), ErrorKind::AlreadyExists);
 }

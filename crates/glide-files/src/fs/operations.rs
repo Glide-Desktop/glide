@@ -28,6 +28,12 @@ pub fn occupied(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let id = |path: &Path| std::fs::symlink_metadata(path).map(|meta| (meta.dev(), meta.ino())).ok();
+    id(a).is_some_and(|first| Some(first) == id(b))
+}
+
 pub fn create_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
     let target = parent.join(validate_name(name)?);
     std::fs::create_dir(&target)?;
@@ -47,7 +53,7 @@ pub fn rename_item(target: &Path, new_name: &str) -> io::Result<PathBuf> {
     if renamed == target {
         return Ok(renamed);
     }
-    if occupied(&renamed) {
+    if occupied(&renamed) && !same_file(target, &renamed) {
         return Err(io::Error::new(ErrorKind::AlreadyExists, "name taken"));
     }
     std::fs::rename(target, &renamed)?;
