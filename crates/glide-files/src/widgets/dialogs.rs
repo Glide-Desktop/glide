@@ -113,7 +113,7 @@ fn input<'a>(c: Ctx<'a>, modal: &'a Modal, (heading, prompt): (Key, Key), submit
     ]
     .spacing(theme::SP2);
     if let Some(error) = &modal.error {
-        body = body.push(text(error).size(theme::CAP).color(c.theme().danger()));
+        body = body.push(text(error).size(theme::CAP).color(c.theme().danger()).wrapping(WRAP));
     }
     body.push(space().height(theme::SP2))
         .push(buttons(c, action(c, submit, Tone::Primary, valid.then_some(Message::ModalSubmit))))
@@ -259,7 +259,7 @@ fn details<'a>(c: Ctx<'a>, properties: &'a Properties) -> Element<'a, Message> {
     let divider = rule::horizontal(1).style(move |_| theme::line(&t));
     let mut body = column![heading, divider, rows, permissions(c, properties)].spacing(theme::SP4);
     if let Some(error) = &properties.error {
-        body = body.push(text(error).size(theme::CAP).color(t.danger()));
+        body = body.push(text(error).size(theme::CAP).color(t.danger()).wrapping(WRAP));
     }
     body.push(row![space::horizontal(), action(c, Key::Close, Tone::Neutral, Some(Message::ModalCancel))]).into()
 }

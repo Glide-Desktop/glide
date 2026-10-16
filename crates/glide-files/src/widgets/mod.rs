@@ -324,9 +324,14 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
 fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Element<'a, Message> {
     const RISE: f32 = 16.0;
     const SHRINK: f32 = 0.04;
+    const TOAST_TEXT: f32 = 360.0;
     let t = app.theme.faded(progress);
-    let mut content =
-        row![text(&notice.text).size(theme::CALL).color(t.fg_1())].spacing(theme::SP1).align_y(Alignment::Center);
+    let mut content = row![
+        container(text(&notice.text).size(theme::CALL).color(t.fg_1()).wrapping(text::Wrapping::WordOrGlyph))
+            .max_width(TOAST_TEXT)
+    ]
+    .spacing(theme::SP1)
+    .align_y(Alignment::Center);
     let action = notice.action.as_ref().map(|action| match action {
         NoticeAction::Undo => (Key::Undo, Message::Undo),
         NoticeAction::Repair(object) => (Key::RepairAction, Message::Repair(object.clone())),
