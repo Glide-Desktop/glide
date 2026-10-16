@@ -213,6 +213,21 @@ fn replacing_an_item_with_itself_or_its_own_folder_is_refused() {
 }
 
 #[test]
+fn a_link_in_the_way_is_replaced_even_when_it_points_at_the_source() {
+    let root = scratch("replace-link");
+    write(&root.join("a/x/link"), "data");
+    std::fs::create_dir(root.join("b")).expect("b");
+    std::os::unix::fs::symlink(root.join("a/x"), root.join("b/link")).expect("symlink");
+    let sink = Script::answering(&[(Choice::Replace, false)]);
+    let report = run(Op::Copy, &[root.join("a/x/link")], &root.join("b"), &sink);
+    assert!(report.failures.is_empty(), "only the link is removed, never what it points to: {:?}", report.failures);
+    assert_eq!(read(&root.join("b/link")), "data");
+    assert!(!std::fs::symlink_metadata(root.join("b/link")).expect("b/link").file_type().is_symlink());
+    assert_eq!(read(&root.join("a/x/link")), "data");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn keep_both_renames_and_merge_combines_folders() {
     let root = scratch("merge");
     write(&root.join("src/box/one.txt"), "1");

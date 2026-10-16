@@ -203,9 +203,20 @@ fn is_special(meta: &std::fs::Metadata) -> bool {
     !(kind.is_file() || kind.is_dir() || kind.is_symlink())
 }
 
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn inside(target: &Path, source: &Path) -> bool {
-    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     canonical(target).starts_with(canonical(source))
+}
+
+fn removing_takes(dest: &Path, source: &Path) -> bool {
+    let dest = match (dest.parent(), dest.file_name()) {
+        (Some(parent), Some(name)) => canonical(parent).join(name),
+        _ => dest.to_path_buf(),
+    };
+    canonical(source).starts_with(dest)
 }
 
 fn staging_for(dest: &Path) -> PathBuf {
@@ -287,7 +298,7 @@ impl Worker<'_> {
                 }
                 Choice::KeepBoth => dest = unique_beside(&dest, meta.is_dir()),
                 Choice::Merge if folders => return self.merge(source, &dest),
-                Choice::Replace | Choice::Merge if inside(source, &dest) => {
+                Choice::Replace | Choice::Merge if removing_takes(&dest, source) => {
                     self.fail(source, &io::Error::new(ErrorKind::InvalidInput, "item over itself"));
                     return None;
                 }
