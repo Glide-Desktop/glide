@@ -2127,6 +2127,11 @@ impl App {
     }
 
     #[must_use]
+    pub fn is_bookmark_pressed(&self, path: &Path) -> bool {
+        self.bookmark_drag.as_deref() == Some(path)
+    }
+
+    #[must_use]
     pub fn is_bookmark_target(&self, path: &Path) -> bool {
         self.bookmark_drag.as_deref().is_some_and(|dragged| dragged != path)
             && self.hover_target.as_ref() == Some(&Hover::Place(path.to_path_buf()))

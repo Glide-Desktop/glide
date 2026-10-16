@@ -278,6 +278,16 @@ fn a_collapsed_path_bar_keeps_a_way_to_the_hidden_folders() {
 }
 
 #[test]
+fn a_bookmark_shows_its_press_until_the_button_is_released() {
+    let mut app = listed_app();
+    let mark = std::path::PathBuf::from("/nowhere/mark");
+    let _ = app.update(Message::BookmarkPressed(mark.clone()));
+    assert!(app.is_bookmark_pressed(&mark), "a bookmark has no button press of its own, so the app keeps it");
+    let _ = app.update(Message::Released);
+    assert!(!app.is_bookmark_pressed(&mark));
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

@@ -94,6 +94,7 @@ struct Line<'a> {
     eject: Option<Message>,
     press: Option<Message>,
     selected: bool,
+    held: bool,
     key: Hover,
     menu: Option<MenuKind>,
     drag: Option<Message>,
@@ -122,12 +123,15 @@ impl<'a> Line<'a> {
             content = content.push(hint(t, eject, label.text(self.app.lang)));
         }
         let (selected, hover) = (self.selected, self.app.hover(&self.key));
+        let held = self.held;
         let row = button(container(content).height(Fill).align_y(Alignment::Center))
             .on_press_maybe(self.press)
             .width(Fill)
             .height(Length::Fixed(ITEM_HEIGHT))
             .padding(Padding::ZERO.left(theme::SP2))
-            .style(move |_, status| theme::sidebar_row(t, selected, hover, status));
+            .style(move |_, status| {
+                theme::sidebar_row(t, selected, hover, if held { button::Status::Pressed } else { status })
+            });
         let mut area =
             mouse_area(row).on_enter(Message::Hover(self.key.clone(), true)).on_exit(Message::Hover(self.key, false));
         if let Some(kind) = self.menu {
@@ -151,6 +155,7 @@ fn item<'a>(app: &'a App, place: &'a Place, bookmark: bool) -> Element<'a, Messa
         selected: (place.path == app.current && app.search.is_none())
             || app.is_drop_target(&place.path)
             || app.is_bookmark_target(&place.path),
+        held: bookmark && app.is_bookmark_pressed(&place.path),
         key: Hover::Place(place.path.clone()),
         menu: Some(MenuKind::Location(place.path.clone())),
         drag: bookmark.then(|| Message::BookmarkPressed(place.path.clone())),
@@ -175,6 +180,7 @@ fn phone_item<'a>(app: &'a App, phone: &'a crate::fs::mtp::Phone) -> Element<'a,
         eject: (phone.mount.is_some() && !busy).then(|| Message::ClosePhone(phone.id.clone())),
         press: (!busy).then(|| Message::OpenPhone(phone.id.clone())),
         selected: app.search.is_none() && phone.mount.as_ref().is_some_and(|mount| app.current.starts_with(mount)),
+        held: false,
         key: Hover::Place(phone.mount.clone().unwrap_or_else(|| std::path::PathBuf::from(&phone.id))),
         menu: None,
         drag: None,
@@ -210,6 +216,7 @@ fn volume_item<'a>(app: &'a App, volume: &'a Volume) -> Element<'a, Message> {
             None => Some(Message::Mount(volume.object.clone(), false)),
         },
         selected: app.search.is_none() && volume.mount.as_ref() == Some(&app.current),
+        held: false,
         key: Hover::Place(volume.mount.clone().unwrap_or_else(|| volume.device.clone())),
         menu: Some(MenuKind::Volume(volume.object.clone())),
         drag: None,
