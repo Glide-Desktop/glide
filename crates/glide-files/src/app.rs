@@ -1425,7 +1425,9 @@ impl App {
                 if let Some(mount) = phone.mount.clone() {
                     return self.navigate(mount);
                 }
-                self.busy.insert(phone.id.clone());
+                if !self.busy.insert(phone.id.clone()) {
+                    return Task::none();
+                }
                 let lang = self.lang;
                 return Task::perform(
                     blocking(move || {
