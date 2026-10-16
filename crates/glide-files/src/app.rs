@@ -2171,7 +2171,7 @@ impl App {
         let Some(text) = self.path_edit.clone() else {
             return Task::none();
         };
-        let target = expand_path(&text);
+        let target = expand_path(&text, &self.current);
         if target.is_dir() {
             self.path_edit = None;
             return self.navigate(target);
@@ -3434,13 +3434,25 @@ fn drag_motion(event: iced::Event, _status: iced::event::Status, _window: window
     }
 }
 
-fn expand_path(input: &str) -> PathBuf {
+#[must_use]
+pub fn expand_path(input: &str, base: &Path) -> PathBuf {
     let trimmed = input.trim();
-    let home = home_dir();
-    match (trimmed.strip_prefix('~'), home) {
+    let typed = match (trimmed.strip_prefix('~'), home_dir()) {
         (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
-        _ => path_from_arg(trimmed).unwrap_or_else(|| PathBuf::from(trimmed)),
+        _ if trimmed.contains("://") => path_from_arg(trimmed).unwrap_or_else(|| PathBuf::from(trimmed)),
+        _ => base.join(trimmed),
+    };
+    let mut normal = PathBuf::new();
+    for part in typed.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normal.pop();
+            }
+            other => normal.push(other),
+        }
     }
+    normal
 }
 
 #[must_use]

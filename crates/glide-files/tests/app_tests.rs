@@ -871,6 +871,20 @@ fn a_properties_card_stays_inside_a_small_window() {
 }
 
 #[test]
+fn a_typed_path_is_read_from_the_folder_on_screen() {
+    use glide_files::app::expand_path;
+    use std::path::PathBuf;
+    let here = PathBuf::from("/srv/media/Documents");
+    assert_eq!(expand_path("Projects", &here), here.join("Projects"));
+    assert_eq!(expand_path("../Music/./Live", &here), PathBuf::from("/srv/media/Music/Live"));
+    assert_eq!(expand_path("/etc/../usr/", &here), PathBuf::from("/usr"));
+    assert_eq!(expand_path("..", &PathBuf::from("/")), PathBuf::from("/"), "nothing above the root");
+    assert_eq!(expand_path("file:///tmp/My%20Dir", &here), PathBuf::from("/tmp/My Dir"));
+    let home = glide_files::fs::home_dir().expect("home");
+    assert_eq!(expand_path("~/Downloads", &here), home.join("Downloads"));
+}
+
+#[test]
 fn a_search_title_shortens_the_query_and_keeps_its_quotes() {
     use glide_files::widgets::header::search_title;
     assert_eq!(search_title("Search", "quarterly", 400.0), "Search «quarterly»");
