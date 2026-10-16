@@ -455,6 +455,22 @@ fn a_special_file_that_cannot_be_copied_is_reported_in_the_interface_language() 
 }
 
 #[test]
+fn a_rename_that_fails_keeps_its_field_instead_of_retrying_forever() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Rename);
+    assert!(app.renaming.is_some());
+    let _ = app.update(Message::RenameInput(String::from("a/b")));
+    let _ = app.update(Message::Pressed(path(2)));
+    assert!(app.renaming.is_some(), "the field stays open so the name can be fixed");
+    assert!(app.notice.is_some(), "and the reason is shown");
+    assert!(!app.selection.contains(&path(2)), "the click that tried to leave is not carried out");
+    let _ = app.update(Message::Escape);
+    assert!(app.renaming.is_none(), "Escape still gives up on the rename");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

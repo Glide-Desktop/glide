@@ -1019,6 +1019,9 @@ impl App {
         );
         if self.renaming.is_some() && ends_rename {
             let committed = self.commit_rename();
+            if self.renaming.is_some() {
+                return committed;
+            }
             return Task::batch([committed, self.update(message)]);
         }
         let task = self.handle(message);
@@ -1201,10 +1204,15 @@ impl App {
             }
             Message::CloseMenu => self.menu = None,
             Message::MenuHover(index, inside) => {
+                let enabled = self.menu.as_ref().is_some_and(|menu| {
+                    widgets::menu::entries(self, menu)
+                        .get(index)
+                        .is_some_and(|entry| entry.clone().into_message().is_some())
+                });
                 if let Some(menu) = &mut self.menu {
-                    if inside {
+                    if inside && enabled {
                         menu.highlight = Some(index);
-                    } else if menu.highlight == Some(index) {
+                    } else if !inside && menu.highlight == Some(index) {
                         menu.highlight = None;
                     }
                 }
