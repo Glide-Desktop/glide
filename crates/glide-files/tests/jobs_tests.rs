@@ -165,10 +165,13 @@ fn cancelling_removes_the_partial_copy_and_moving_removes_the_source() {
     assert!(!root.join("dst/big.bin").exists(), "no half-written file is left behind");
 
     write(&root.join("move/me.txt"), "m");
-    let report = run(Op::Move, &[root.join("move")], &root.join("dst"), &Script::default());
+    let sink = Script::default();
+    let report = run(Op::Move, &[root.join("move")], &root.join("dst"), &sink);
     assert_eq!(report.done.len(), 1);
     assert!(!root.join("move").exists());
     assert_eq!(read(&root.join("dst/move/me.txt")), "m");
+    let last = sink.last.borrow().clone();
+    assert_eq!((last.bytes, last.items), (last.total_bytes, last.total_items), "a renamed folder counts in full");
     let _ = std::fs::remove_dir_all(root);
 }
 

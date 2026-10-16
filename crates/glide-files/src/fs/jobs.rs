@@ -162,6 +162,7 @@ struct Worker<'a> {
     remember_files: Option<Choice>,
     remember_folders: Option<Choice>,
     failures: Vec<Failure>,
+    known: HashMap<PathBuf, Size>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -285,8 +286,11 @@ impl Worker<'_> {
         if self.op == Op::Move {
             match std::fs::rename(source, &dest) {
                 Ok(()) => {
-                    let size =
-                        if meta.is_dir() { Size { bytes: 0, items: 1 } } else { Size { bytes: meta.len(), items: 1 } };
+                    let size = match self.known.remove(source) {
+                        Some(size) => size,
+                        None if meta.is_dir() => measure(&dest, self.cancel),
+                        None => Size { bytes: meta.len(), items: 1 },
+                    };
                     self.advance(size.bytes, size.items);
                     return Some(dest);
                 }
@@ -425,20 +429,22 @@ impl Worker<'_> {
 }
 
 pub fn transfer(op: Op, sources: &[PathBuf], target: &Path, sink: &dyn Sink, cancel: &AtomicBool) -> Report {
-    let sizes: HashMap<&PathBuf, Size> = sources.iter().map(|source| (source, measure(source, cancel))).collect();
+    let known: HashMap<PathBuf, Size> =
+        sources.iter().map(|source| (source.clone(), measure(source, cancel))).collect();
     let mut worker = Worker {
         op,
         sink,
         cancel,
         progress: Progress {
-            total_bytes: sizes.values().map(|size| size.bytes).sum(),
-            total_items: sizes.values().map(|size| size.items).sum(),
+            total_bytes: known.values().map(|size| size.bytes).sum(),
+            total_items: known.values().map(|size| size.items).sum(),
             ..Progress::default()
         },
         reported: Instant::now().checked_sub(REPORT_EVERY).unwrap_or_else(Instant::now),
         remember_files: None,
         remember_folders: None,
         failures: Vec::new(),
+        known,
     };
     sink.progress(worker.progress.clone());
     let mut done = Vec::new();
@@ -490,6 +496,7 @@ pub fn copy_exact(source: &Path, dest: &Path) -> io::Result<()> {
         remember_files: None,
         remember_folders: None,
         failures: Vec::new(),
+        known: HashMap::new(),
     };
     worker.copy_tree(source, dest);
     match worker.failures.first() {
