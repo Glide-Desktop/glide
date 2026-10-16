@@ -65,8 +65,10 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
 }
 
 fn title(label: &str) -> Element<'_, Message> {
-    text(label).size(theme::T3).font(theme::SEMIBOLD).into()
+    text(label).size(theme::T3).font(theme::SEMIBOLD).wrapping(WRAP).into()
 }
+
+const WRAP: text::Wrapping = text::Wrapping::WordOrGlyph;
 
 fn action(c: Ctx<'_>, label: Key, tone: Tone, message: Option<Message>) -> Element<'_, Message> {
     let t = c.theme();
@@ -123,7 +125,7 @@ fn unlock<'a>(c: Ctx<'a>, modal: &'a Modal, object: &'a str) -> Element<'a, Mess
     let name = c.app.volume(object).map(|volume| format!("«{}»", volume.name(lang))).unwrap_or_default();
     column![
         title(Key::UnlockTitle.text(lang)),
-        text(name).size(theme::CALL).font(theme::SEMIBOLD),
+        text(name).size(theme::CALL).font(theme::SEMIBOLD).wrapping(WRAP),
         text(Key::UnlockPrompt.text(lang)).size(theme::CAP).color(c.theme().fg_2()),
         field(c, modal).secure(true),
         space().height(theme::SP2),
@@ -147,7 +149,7 @@ fn display_name(path: &Path) -> String {
 fn confirm(c: Ctx<'_>, heading: Key, prompt: Key, subject: Option<String>, submit: Key) -> Element<'_, Message> {
     let mut body = column![title(heading.text(c.app.lang))].spacing(theme::SP3);
     if let Some(subject) = subject {
-        body = body.push(text(subject).size(theme::CALL).font(theme::SEMIBOLD));
+        body = body.push(text(subject).size(theme::CALL).font(theme::SEMIBOLD).wrapping(WRAP));
     }
     body.push(text(prompt.text(c.app.lang)).size(theme::CALL).color(c.theme().fg_2()))
         .push(space().height(theme::SP1))
@@ -174,9 +176,9 @@ fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool) -> Element<'a
         .text_size(theme::CAP)
         .style(move |_, status| theme::checkbox(&t, status));
     column![
-        text(heading).size(theme::T3).font(theme::SEMIBOLD),
+        text(heading).size(theme::T3).font(theme::SEMIBOLD).wrapping(WRAP),
         text(hint.text(lang)).size(theme::CALL).color(t.fg_2()),
-        text(tilde(&question.dest)).size(theme::CAP).color(t.fg_3()),
+        text(tilde(&question.dest)).size(theme::CAP).color(t.fg_3()).wrapping(WRAP),
         check,
         space().height(theme::SP1),
         row![
@@ -216,11 +218,7 @@ fn details<'a>(c: Ctx<'a>, properties: &'a Properties) -> Element<'a, Message> {
 
     let heading = row![
         file_icon(c.app, entry, 56.0),
-        column![
-            text(&entry.name).size(theme::T3).font(theme::SEMIBOLD),
-            text(entry.category.name(lang)).size(theme::CAP).color(t.fg_3()),
-        ]
-        .spacing(2),
+        column![title(&entry.name), text(entry.category.name(lang)).size(theme::CAP).color(t.fg_3()),].spacing(2),
     ]
     .spacing(theme::SP4)
     .align_y(Alignment::Center);
@@ -253,11 +251,10 @@ fn details<'a>(c: Ctx<'a>, properties: &'a Properties) -> Element<'a, Message> {
     }
     facts.push((Key::Permissions, permissions_string(entry.mode)));
 
-    let rows =
-        Column::with_children(facts.into_iter().map(|(key, value)| {
-            row![label(c, key), text(value).size(theme::CAP).width(Fill)].spacing(theme::SP3).into()
-        }))
-        .spacing(theme::SP2);
+    let rows = Column::with_children(facts.into_iter().map(|(key, value)| {
+        row![label(c, key), text(value).size(theme::CAP).width(Fill).wrapping(WRAP)].spacing(theme::SP3).into()
+    }))
+    .spacing(theme::SP2);
 
     let divider = rule::horizontal(1).style(move |_| theme::line(&t));
     let mut body = column![heading, divider, rows, permissions(c, properties)].spacing(theme::SP4);
