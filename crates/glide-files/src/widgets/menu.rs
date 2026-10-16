@@ -485,21 +485,29 @@ fn panel<'a>(
                 }
                 let danger = item.danger;
                 let message = item.message.filter(|_| live).map(|message| Message::Menu(Box::new(message)));
-                button(container(content).height(Fill).align_y(Alignment::Center))
+                let row = button(container(content).height(Fill).align_y(Alignment::Center))
                     .on_press_maybe(message)
                     .width(Fill)
                     .height(Length::Fixed(ROW))
                     .padding(Padding::from([0.0, SP3]))
                     .style(move |_, status| {
-                        let status = match (enabled, live) {
-                            (false, _) => button::Status::Disabled,
-                            (true, false) => button::Status::Active,
-                            (true, true) if keyed && status == button::Status::Active => button::Status::Hovered,
-                            (true, true) => status,
+                        let status = match (enabled, live, status) {
+                            (false, ..) => button::Status::Disabled,
+                            (true, true, button::Status::Pressed) => button::Status::Pressed,
+                            (true, true, _) if keyed => button::Status::Hovered,
+                            (true, true, button::Status::Hovered) if highlight.is_none() => button::Status::Hovered,
+                            (true, ..) => button::Status::Active,
                         };
                         theme::menu_item(&t, danger, status)
-                    })
-                    .into()
+                    });
+                if enabled && live {
+                    mouse_area(row)
+                        .on_enter(Message::MenuHover(index, true))
+                        .on_exit(Message::MenuHover(index, false))
+                        .into()
+                } else {
+                    row.into()
+                }
             }
         }
     });

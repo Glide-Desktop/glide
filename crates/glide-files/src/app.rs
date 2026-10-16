@@ -284,6 +284,7 @@ pub enum Message {
     ToggleOptions,
     CloseMenu,
     KeyMenu,
+    MenuHover(usize, bool),
     Menu(Box<Message>),
     OpenSelection,
     SelectAll,
@@ -1143,6 +1144,15 @@ impl App {
                 };
             }
             Message::CloseMenu => self.menu = None,
+            Message::MenuHover(index, inside) => {
+                if let Some(menu) = &mut self.menu {
+                    if inside {
+                        menu.highlight = Some(index);
+                    } else if menu.highlight == Some(index) {
+                        menu.highlight = None;
+                    }
+                }
+            }
             Message::Menu(message) => {
                 self.menu = None;
                 return self.handle(*message);

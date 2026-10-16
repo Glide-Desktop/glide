@@ -300,6 +300,27 @@ fn list_names_leave_room_for_their_tag_dots_and_link_mark() {
 }
 
 #[test]
+fn the_pointer_and_the_keyboard_share_one_menu_highlight() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::KeyMenu);
+    let highlight = |app: &glide_files::App| app.menu.as_ref().and_then(|menu| menu.highlight);
+    let first = highlight(&app);
+    assert!(first.is_some());
+    let _ = app.update(Message::MenuHover(5, true));
+    assert_eq!(highlight(&app), Some(5), "the row under the pointer takes the highlight");
+    let _ = app.update(Message::Move(Step::Down, false));
+    assert!(highlight(&app) > Some(5), "arrows carry on from where the pointer left it");
+    let moved = highlight(&app);
+    let _ = app.update(Message::MenuHover(5, false));
+    assert_eq!(highlight(&app), moved, "leaving a row the keyboard already left changes nothing");
+    let _ = app.update(Message::MenuHover(2, true));
+    let _ = app.update(Message::MenuHover(2, false));
+    assert_eq!(highlight(&app), None, "leaving the menu clears the highlight");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();
