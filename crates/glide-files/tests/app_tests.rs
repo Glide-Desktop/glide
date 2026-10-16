@@ -363,6 +363,14 @@ fn the_indeterminate_bar_sweeps_a_third_of_the_track_from_edge_to_edge() {
 }
 
 #[test]
+fn going_up_from_the_trash_does_not_open_its_internals() {
+    let mut app = listed_app();
+    assert!(app.update(Message::Up).units() > 0, "an ordinary folder lists its parent");
+    app.current = app.trash.files();
+    assert_eq!(app.update(Message::Up).units(), 0, "the Trash has no parent folder to show");
+}
+
+#[test]
 fn nothing_new_is_created_inside_the_trash() {
     let mut app = listed_app();
     app.current = app.trash.files();

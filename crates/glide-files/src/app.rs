@@ -962,7 +962,9 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions =
             vec![keyboard::listen().filter_map(handle_shortcut), iced::time::every(POLL).map(|_| Message::Tick)];
-        if self.motion.is_animating(Instant::now()) {
+        let sweeping =
+            self.jobs.iter().any(|job| job.progress.total_items == 0 && job.launch.is_none() && !job.meter.is_paused());
+        if sweeping || self.motion.is_animating(Instant::now()) {
             subscriptions.push(window::frames().map(Message::Frame));
         }
         subscriptions.push(Subscription::run(crate::service::requests).map(Message::Service));
@@ -980,9 +982,6 @@ impl App {
         }
         if self.drag.is_some() {
             subscriptions.push(iced::time::every(DRAG_TICK).map(|_| Message::DragTick));
-        }
-        if self.jobs.iter().any(|job| job.progress.total_items == 0 && job.launch.is_none()) {
-            subscriptions.push(iced::time::every(DRAG_TICK).map(|_| Message::Frame(Instant::now())));
         }
         Subscription::batch(subscriptions)
     }
@@ -1085,7 +1084,7 @@ impl App {
                 return self.jump(self.history_index + 1);
             }
             Message::Up => {
-                if let Some(parent) = self.current.parent() {
+                if let Some(parent) = self.current.parent().filter(|_| self.current != self.trash.files()) {
                     let child = self.current.clone();
                     return self.navigate_select(parent.to_path_buf(), Some(child));
                 }
