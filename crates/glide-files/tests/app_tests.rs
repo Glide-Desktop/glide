@@ -133,6 +133,72 @@ fn keyboard_highlight_walks_enabled_menu_rows_and_wraps() {
     assert_eq!(menu.highlight, None);
 }
 
+fn path(index: usize) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("/nowhere/{index}.txt"))
+}
+
+fn listed_app() -> glide_files::App {
+    use glide_files::fs::{FileCategory, FileEntry};
+    let (mut app, _) = glide_files::App::new();
+    app.view = ViewMode::List;
+    app.entries = (0..6)
+        .map(|index| FileEntry {
+            name: format!("{index}.txt"),
+            path: path(index),
+            is_dir: false,
+            is_symlink: false,
+            size: 0,
+            modified: None,
+            mode: 0o644,
+            category: FileCategory::Text,
+            created: None,
+            tags: Vec::new(),
+        })
+        .collect();
+    app
+}
+
+#[test]
+fn escape_unwinds_one_layer_at_a_time() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::KeyMenu);
+    assert!(app.menu.as_ref().is_some_and(|menu| menu.highlight.is_some()), "the keyboard menu starts highlighted");
+    let _ = app.update(Message::Move(Step::Down, false));
+    assert_eq!(app.selection.len(), 1, "arrows walk the menu, not the files");
+    let _ = app.update(Message::Escape);
+    assert!(app.menu.is_none());
+    assert_eq!(app.selection.len(), 1, "the first Escape only closes the menu");
+    let _ = app.update(Message::Escape);
+    assert!(app.selection.is_empty());
+}
+
+#[test]
+fn shift_arrows_grow_and_shrink_the_range_from_where_it_started() {
+    use std::path::PathBuf;
+    let mut app = listed_app();
+    let selected = |app: &glide_files::App| {
+        let mut picked: Vec<PathBuf> = app.selection.iter().cloned().collect();
+        picked.sort();
+        picked
+    };
+    let _ = app.update(Message::Pressed(path(2)));
+    let _ = app.update(Message::Released);
+    for _ in 0..2 {
+        let _ = app.update(Message::Move(Step::Down, true));
+    }
+    assert_eq!(selected(&app), [path(2), path(3), path(4)]);
+    let _ = app.update(Message::Move(Step::Up, true));
+    assert_eq!(selected(&app), [path(2), path(3)], "moving back shrinks the range");
+    for _ in 0..3 {
+        let _ = app.update(Message::Move(Step::Up, true));
+    }
+    assert_eq!(selected(&app), [path(0), path(1), path(2)], "and it crosses its starting point");
+    let _ = app.update(Message::Move(Step::Down, false));
+    assert_eq!(selected(&app), [path(1)], "a plain arrow moves from the cursor, not the anchor");
+}
+
 #[test]
 fn escape_reaches_the_app_even_when_a_text_field_captured_it() {
     use iced::event::Status;

@@ -581,6 +581,7 @@ pub struct App {
     pub entries: Vec<FileEntry>,
     pub selection: HashSet<PathBuf>,
     anchor: Option<PathBuf>,
+    cursor: Option<PathBuf>,
     last_click: Option<(PathBuf, Instant)>,
     pub clipboard: Option<FileClipboard>,
     pub view: ViewMode,
@@ -751,6 +752,7 @@ impl App {
             entries: Vec::new(),
             selection: HashSet::new(),
             anchor: None,
+            cursor: None,
             last_click: None,
             clipboard: None,
             view: prefs.view,
@@ -925,9 +927,9 @@ impl App {
     }
 
     fn primary(&self) -> Option<PathBuf> {
-        self.anchor
+        self.cursor
             .clone()
-            .filter(|anchor| self.selection.contains(anchor))
+            .filter(|cursor| self.selection.contains(cursor))
             .or_else(|| self.selected().into_iter().next())
     }
 
@@ -1587,7 +1589,7 @@ impl App {
         match listed.select {
             Some(path) => {
                 self.select_only(path);
-                Task::batch([thumbs, self.reveal_anchor()])
+                Task::batch([thumbs, self.reveal_cursor()])
             }
             None => thumbs,
         }
@@ -1632,6 +1634,7 @@ impl App {
         self.selection.clear();
         self.current = path;
         self.anchor = None;
+        self.cursor = None;
         self.last_click = None;
         self.search = None;
         self.search_generation.fetch_add(1, Ordering::Relaxed);
@@ -1644,7 +1647,12 @@ impl App {
     fn select_only(&mut self, path: PathBuf) {
         self.selection.clear();
         self.selection.insert(path.clone());
-        self.anchor = Some(path);
+        self.place_cursor(path);
+    }
+
+    fn place_cursor(&mut self, path: PathBuf) {
+        self.anchor = Some(path.clone());
+        self.cursor = Some(path);
     }
 
     fn press(&mut self, path: PathBuf) -> Task<Message> {
@@ -1671,13 +1679,14 @@ impl App {
                 self.selection.clear();
             }
             self.selection.extend(range);
+            self.cursor = Some(path);
         } else if self.modifiers.command() {
             if !self.selection.remove(&path) {
                 self.selection.insert(path.clone());
             }
-            self.anchor = Some(path);
+            self.place_cursor(path);
         } else if self.selection.contains(&path) && self.drag_arm.is_some() {
-            self.anchor = Some(path.clone());
+            self.place_cursor(path.clone());
             self.pending_select = Some(path);
         } else {
             self.select_only(path);
@@ -1704,7 +1713,7 @@ impl App {
             ViewMode::Grid => self.metrics().columns(self.pane.width),
             ViewMode::List => 1,
         };
-        let current = self.anchor.as_deref().and_then(|a| self.index_of(a));
+        let current = self.cursor.as_deref().and_then(|cursor| self.index_of(cursor));
         let next = match (current, step) {
             (_, Step::First) | (None, Step::Down | Step::Right) => 0,
             (_, Step::Last) | (None, Step::Up | Step::Left) => last,
@@ -1715,28 +1724,29 @@ impl App {
             (Some(index), Step::Left | Step::Right) => index,
         };
         let path = self.entries[next].path.clone();
-        if extend {
-            self.selection.insert(path.clone());
-            self.anchor = Some(path);
-        } else {
-            self.select_only(path);
+        match self.range_to(&path).filter(|_| extend) {
+            Some(range) => {
+                self.selection = range.into_iter().collect();
+                self.cursor = Some(path);
+            }
+            None => self.select_only(path),
         }
-        self.reveal_anchor()
+        self.reveal_cursor()
     }
 
-    fn reveal_anchor(&self) -> Task<Message> {
-        let Some(index) = self.anchor.as_deref().and_then(|a| self.index_of(a)) else {
+    fn reveal_cursor(&self) -> Task<Message> {
+        let Some(index) = self.cursor.as_deref().and_then(|cursor| self.index_of(cursor)) else {
             return Task::none();
         };
         let (top, bottom) = self.metrics().span(self.view, index, self.pane.width);
         widgets::pointer::reveal(Id::new(FILES_ID), top, bottom)
     }
 
-    fn anchor_point(&self) -> Point {
+    fn cursor_point(&self) -> Point {
         let left = widgets::SIDEBAR_WIDTH + 1.0;
         let top = CONTENT_TOP + if self.view == ViewMode::List { content::LIST_HEADER } else { 0.0 };
         let centre = Point::new(left + self.pane.width / 2.0, CONTENT_TOP + self.pane.height / 2.0);
-        let Some(index) = self.anchor.as_deref().and_then(|a| self.index_of(a)) else {
+        let Some(index) = self.cursor.as_deref().and_then(|cursor| self.index_of(cursor)) else {
             return centre;
         };
         let metrics = self.metrics();
@@ -1751,7 +1761,7 @@ impl App {
 
     fn key_menu(&mut self) -> Task<Message> {
         self.menu_target = Some(if self.selection.is_empty() { MenuKind::Background } else { MenuKind::Selection });
-        let task = self.handle(Message::ContextMenu(self.anchor_point()));
+        let task = self.handle(Message::ContextMenu(self.cursor_point()));
         self.highlight_first();
         task
     }
@@ -2114,7 +2124,7 @@ impl App {
             return self.prompt(Dialog::Rename(target), name, Some(stem));
         }
         self.renaming = Some(Renaming { path: target, text: name });
-        Task::batch([self.reveal_anchor(), operation::focus(RENAME_ID), operation::select_range(RENAME_ID, 0, stem)])
+        Task::batch([self.reveal_cursor(), operation::focus(RENAME_ID), operation::select_range(RENAME_ID, 0, stem)])
     }
 
     fn commit_rename(&mut self) -> Task<Message> {
@@ -2897,9 +2907,9 @@ impl App {
             }
         }
         let task = self.refresh_listing();
-        if !outcome.select.is_empty() {
+        if let Some(last) = outcome.select.last().cloned() {
             self.selection = outcome.select.iter().cloned().collect();
-            self.anchor = outcome.select.last().cloned();
+            self.place_cursor(last);
         }
         if let Some(text) = outcome.text {
             return Task::batch([task, self.notify(text, outcome.undo)]);
