@@ -40,7 +40,7 @@ fn icon_button<'a>(paint: &Paint, icon: Icon, message: Message, on: bool) -> Ele
 
 fn rule<'a>(paint: &Paint) -> Element<'a, Message> {
     let paint = *paint;
-    container(Space::new().width(Fill).height(1)).style(move |_| style::rounded(paint.line(), 0.0)).into()
+    container(Space::new().width(Fill).height(1)).style(move |_| style::rounded(paint.hairline(), 0.0)).into()
 }
 
 fn header(app: &App) -> Element<'_, Message> {
@@ -257,7 +257,7 @@ fn content(app: &App) -> Element<'_, Message> {
             hovered_split: split,
         }
     });
-    container(grid).width(Fill).height(Fill).style(move |_| style::rounded(paint.line_2(), bottom)).into()
+    container(grid).width(Fill).height(Fill).style(move |_| style::rounded(paint.divider(), bottom)).into()
 }
 
 fn item<'a>(paint: &Paint, label: &'a str, hint: Option<&'a str>, message: Option<Message>) -> Element<'a, Message> {

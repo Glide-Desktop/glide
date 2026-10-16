@@ -52,6 +52,12 @@ colors!(
 );
 
 #[must_use]
+pub fn over(top: Color, base: Color) -> Color {
+    let blend = |a: f32, b: f32| a * top.a + b * (1.0 - top.a);
+    Color { r: blend(top.r, base.r), g: blend(top.g, base.g), b: blend(top.b, base.b), a: base.a }
+}
+
+#[must_use]
 pub fn to_iced(color: glide_theme::Color) -> Color {
     let [r, g, b, a] = color.0;
     Color { r, g, b, a }
@@ -61,6 +67,16 @@ impl Paint {
     #[must_use]
     pub fn new(appearance: Appearance, accent: Accent) -> Self {
         Self { tokens: Tokens::new(appearance, accent), alpha: 1.0 }
+    }
+
+    #[must_use]
+    pub fn hairline(&self) -> Color {
+        over(self.line(), self.bar_bg())
+    }
+
+    #[must_use]
+    pub fn divider(&self) -> Color {
+        over(self.line_2(), self.bar_bg())
     }
 
     #[must_use]
@@ -220,4 +236,21 @@ pub fn field(paint: &Paint, status: text_input::Status) -> text_input::Style {
 #[must_use]
 pub fn glyph(color: Color) -> svg::Style {
     svg::Style { color: Some(color) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hairlines_are_opaque_so_the_desktop_never_shows_through_the_chrome() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let paint = Paint::new(appearance, Accent::Blue);
+            assert!(paint.line().a < 1.0, "the token itself is translucent");
+            for line in [paint.hairline(), paint.divider()] {
+                assert!((line.a - 1.0).abs() < f32::EPSILON);
+                assert_ne!(line, paint.bar_bg());
+            }
+        }
+    }
 }
