@@ -482,6 +482,19 @@ fn a_rename_that_fails_keeps_its_field_instead_of_retrying_forever() {
 }
 
 #[test]
+fn a_rename_whose_file_vanished_does_not_hold_the_window_hostage() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::Rename);
+    let _ = app.update(Message::RenameInput(String::from("kept.txt")));
+    app.entries.retain(|entry| entry.path != path(1));
+    let _ = app.update(Message::Pressed(path(2)));
+    assert!(app.renaming.is_none(), "an item that left the listing takes its hidden field with it");
+    assert!(app.selection.contains(&path(2)), "so the click goes through");
+}
+
+#[test]
 fn file_shortcuts_wait_while_a_name_or_path_is_being_typed() {
     let mut app = listed_app();
     let _ = app.update(Message::Pressed(path(3)));

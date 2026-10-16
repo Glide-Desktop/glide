@@ -1288,6 +1288,7 @@ impl App {
                 sort_entries(&mut found, self.sort);
                 self.entries = found;
                 self.selection.clear();
+                self.forget_vanished_rename();
                 if let Some(search) = &mut self.search {
                     search.pending = false;
                 }
@@ -1719,6 +1720,7 @@ impl App {
         }
         self.entries = entries;
         self.free_bytes = free;
+        self.forget_vanished_rename();
         if !refresh {
             let current = &self.current;
             self.thumbs.retain(|(path, _), _| path.parent() == Some(current.as_path()));
@@ -1732,6 +1734,12 @@ impl App {
                 Task::batch([thumbs, self.reveal_cursor()])
             }
             None => thumbs,
+        }
+    }
+
+    fn forget_vanished_rename(&mut self) {
+        if self.renaming.as_ref().is_some_and(|renaming| self.index_of(&renaming.path).is_none()) {
+            self.renaming = None;
         }
     }
 
@@ -2337,6 +2345,9 @@ impl App {
             }
             Err(err) => {
                 let text = i18n::io_error(&err, self.lang);
+                if self.index_of(&renaming.path).is_none() {
+                    return self.notify(text, None);
+                }
                 self.renaming = Some(renaming);
                 Task::batch([self.notify(text, None), operation::focus(RENAME_ID)])
             }
