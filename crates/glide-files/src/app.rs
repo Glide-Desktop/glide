@@ -624,6 +624,7 @@ pub struct App {
     quit_requested: Option<Instant>,
     last_undo: Option<Undo>,
     thumbs: HashMap<ThumbKey, Option<PathBuf>>,
+    thumbs_asked: HashSet<ThumbKey>,
     thumb_generation: Arc<AtomicU64>,
     band: Option<Band>,
     pub drag: Option<Drag>,
@@ -795,6 +796,7 @@ impl App {
             quit_requested: None,
             last_undo: None,
             thumbs: HashMap::new(),
+            thumbs_asked: HashSet::new(),
             thumb_generation: Arc::new(AtomicU64::new(0)),
             band: None,
             drag: None,
@@ -1584,6 +1586,8 @@ impl App {
         if !refresh {
             let current = &self.current;
             self.thumbs.retain(|(path, _), _| path.parent() == Some(current.as_path()));
+            self.thumbs_asked.clear();
+            self.thumb_generation.fetch_add(1, Ordering::Relaxed);
         }
         let thumbs = self.request_thumbs();
         match listed.select {
@@ -2017,17 +2021,30 @@ impl App {
 
     fn request_thumbs(&mut self) -> Task<Message> {
         let thumbnailers = Arc::clone(&self.extensions.thumbnailers);
-        let requests: Vec<(PathBuf, String)> = self
+        let wanted: Vec<(ThumbKey, String)> = self
             .entries
             .iter()
-            .filter(|entry| !entry.is_dir && !self.thumbs.contains_key(&thumb_key(entry)))
-            .map(|entry| (entry.path.clone(), self.extensions.mime.of(&entry.path, false)))
+            .filter(|entry| !entry.is_dir)
+            .map(thumb_key)
+            .filter(|key| !self.thumbs.contains_key(key) && !self.thumbs_asked.contains(key))
+            .map(|key| {
+                let mime = self.extensions.mime.of(&key.0, false);
+                (key, mime)
+            })
             .filter(|(_, mime)| crate::fs::thumbs::can_thumbnail(mime, &thumbnailers))
             .collect();
-        let generation = self.thumb_generation.fetch_add(1, Ordering::Relaxed) + 1;
-        if requests.is_empty() {
+        if wanted.is_empty() {
             return Task::none();
         }
+        let requests = wanted
+            .into_iter()
+            .map(|(key, mime)| {
+                let path = key.0.clone();
+                self.thumbs_asked.insert(key);
+                (path, mime)
+            })
+            .collect();
+        let generation = self.thumb_generation.load(Ordering::Relaxed);
         let modified: HashMap<PathBuf, Option<SystemTime>> =
             self.entries.iter().map(|entry| (entry.path.clone(), entry.modified)).collect();
         let stream = crate::fs::thumbs::generate(requests, &thumbnailers, &self.thumb_generation, generation);
