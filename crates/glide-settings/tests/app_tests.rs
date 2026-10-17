@@ -1004,6 +1004,23 @@ fn editing_one_shortcut_writes_the_whole_list_and_round_trips() {
 }
 
 #[test]
+fn page_down_shortcuts_from_the_defaults_can_be_edited_and_match_their_alias() {
+    use glide_settings::panels::shortcuts::{Draft, validate};
+    use glide_settings::services::keybinds::{self, Action};
+    let defaults = keybinds::defaults();
+    let index = defaults
+        .iter()
+        .position(|bind| bind.action == Action::Named(String::from("move-window-to-next-workspace")))
+        .expect("the default exists");
+    let bind = &defaults[index];
+    assert_eq!(bind.key, "Page_Down");
+    let draft =
+        Draft { index: Some(index), mods: bind.mods.clone(), key: bind.key.clone(), action: bind.action.clone() };
+    let saved = validate(&draft).expect("an unchanged default validates");
+    assert!(saved.same_combo(bind), "Page_Down and Next are one key");
+}
+
+#[test]
 fn restoring_the_default_combo_removes_the_keybinds_list() {
     let mut app = app("");
     shortcuts_edit(&mut app, 2, &["super"], "F9");

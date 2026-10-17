@@ -563,7 +563,7 @@ pub fn keycaps<'a, M: 'a>(c: Ctx, mods: &[Mod], key: Option<&str>) -> Element<'a
         .spacing(4)
         .align_y(Alignment::Center)
         .push(match key {
-            Some(key) => widgets::key_cap(t, &keybinds::key_label(key)),
+            Some(key) => widgets::key_cap(t, &widgets::key_symbol(key)),
             None => text(c.t(tr::Key::NoKey)).size(12).color(t.fg_3()).into(),
         })
         .into()

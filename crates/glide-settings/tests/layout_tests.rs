@@ -242,8 +242,11 @@ fn key_names_render_as_keycap_symbols() {
     assert_eq!(key_symbol("Ctrl"), "Ctrl");
     assert_eq!(key_symbol("Return"), "↵");
     assert_eq!(key_symbol("q"), "Q");
-    assert_eq!(key_symbol("XF86AudioMute"), "AudioMute");
+    assert_eq!(key_symbol("XF86AudioMute"), "Mute");
     assert_eq!(key_symbol(" Left "), "←");
+    assert_eq!(key_symbol("Tab"), "⇥", "the shortcuts list and multitasking draw Tab the same way");
+    assert_eq!(key_symbol("Page_Down"), "PgDn");
+    assert_eq!(key_symbol("Next"), "PgDn");
 }
 
 #[test]

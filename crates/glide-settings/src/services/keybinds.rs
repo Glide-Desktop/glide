@@ -203,7 +203,8 @@ impl Keybind {
 
     #[must_use]
     pub fn same_combo(&self, other: &Self) -> bool {
-        self.sorted_mods() == other.sorted_mods() && self.key.eq_ignore_ascii_case(&other.key)
+        let key = |bind: &Self| normalize_key(&bind.key).unwrap_or_else(|| bind.key.to_ascii_lowercase());
+        self.sorted_mods() == other.sorted_mods() && key(self) == key(other)
     }
 }
 
@@ -247,8 +248,10 @@ const ALIASES: &[(&str, &str)] = &[
     ("ins", "Insert"),
     ("pgup", "Prior"),
     ("pageup", "Prior"),
+    ("page_up", "Prior"),
     ("pgdn", "Next"),
     ("pagedown", "Next"),
+    ("page_down", "Next"),
     ("printscreen", "Print"),
     ("prtsc", "Print"),
     ("`", "grave"),
@@ -500,7 +503,10 @@ pub fn store(config: &mut ConfigStore, binds: &[Keybind]) {
     if binds.is_empty() {
         return;
     }
-    if binds == defaults() {
+    let defaults = defaults();
+    let unchanged = binds.len() == defaults.len()
+        && binds.iter().zip(defaults).all(|(bind, default)| bind.action == default.action && bind.same_combo(default));
+    if unchanged {
         config.remove_root_item(CONFIG_KEY);
     } else {
         config.set_root_item(CONFIG_KEY, to_item(binds));

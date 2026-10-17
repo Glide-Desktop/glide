@@ -580,36 +580,14 @@ pub fn key_symbol(name: &str) -> String {
         "alt" | "mod1" | "option" => "Alt",
         "return" | "enter" => "↵",
         "tab" => "⇥",
-        "escape" | "esc" => "Esc",
-        "space" => "Space",
         "backspace" => "⌫",
         "delete" | "del" => "Del",
-        "left" => "←",
-        "right" => "→",
-        "up" => "↑",
-        "down" => "↓",
         "page_up" | "pageup" | "prior" => "PgUp",
         "page_down" | "pagedown" | "next" => "PgDn",
-        "print" => "PrtSc",
         "plus" => "+",
-        "minus" => "−",
-        "equal" => "=",
-        "grave" => "`",
-        "comma" => ",",
-        "period" => ".",
-        "slash" => "/",
-        "backslash" => "\\",
-        "semicolon" => ";",
-        "apostrophe" => "'",
-        "bracketleft" => "[",
-        "bracketright" => "]",
-        _ => "",
+        _ => return crate::services::keybinds::key_label(trimmed),
     };
-    if !symbol.is_empty() {
-        return symbol.to_string();
-    }
-    let bare = trimmed.strip_prefix("XF86").unwrap_or(trimmed);
-    if bare.chars().count() == 1 { bare.to_uppercase() } else { bare.to_string() }
+    symbol.to_string()
 }
 
 #[must_use]
