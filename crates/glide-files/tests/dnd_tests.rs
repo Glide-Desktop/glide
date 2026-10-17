@@ -5,6 +5,29 @@ use glide_files::dnd::{gnome_files, parse_gnome_files, parse_uri_list, uri_list}
 use glide_files::widgets::content::{GRID_PADDING, LIST_PADDING, Metrics, TILE_GAP};
 
 #[test]
+fn a_drop_takes_files_first_then_named_contents_then_images_then_text() {
+    use glide_files::dnd::{Dropped, dropped, named_payload};
+    let mimes = |list: &[&str]| list.iter().map(|mime| (*mime).to_string()).collect::<Vec<_>>();
+    let all = dropped(&mimes(&[
+        "text/plain",
+        "image/png",
+        "application/octet-stream;name=\"a.svg\"",
+        glide_files::dnd::URI_LIST,
+    ]));
+    assert_eq!(all.len(), 4);
+    assert_eq!(all[0], Dropped::Files);
+    assert!(matches!(all[1], Dropped::Named { .. }));
+    assert!(matches!(all[2], Dropped::Data { image: true, extension: "png", .. }));
+    assert!(matches!(all[3], Dropped::Data { image: false, .. }));
+    assert!(dropped(&mimes(&["chromium/x-web-custom-data", "text/html"])).is_empty(), "nothing Files can save");
+    assert_eq!(named_payload("application/octet-stream;name=\"logo.YcYY.svg\""), Some(String::from("logo.YcYY.svg")));
+    assert_eq!(named_payload("application/octet-stream; name=photo.jpg"), Some(String::from("photo.jpg")));
+    assert_eq!(named_payload("application/octet-stream;name=\"../../.bashrc\""), Some(String::from(".bashrc")));
+    assert_eq!(named_payload("application/octet-stream;name=\"..\""), None, "no name that leaves the folder");
+    assert_eq!(named_payload("application/octet-stream"), None);
+}
+
+#[test]
 fn the_drag_icon_is_the_items_art_in_shm_byte_order() {
     use glide_files::drag_icon::{SCALE, SIZE, render};
     let dir = std::env::temp_dir().join(format!("glide-drag-icon-{}", std::process::id()));

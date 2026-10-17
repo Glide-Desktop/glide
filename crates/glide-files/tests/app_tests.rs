@@ -236,6 +236,41 @@ fn a_drop_from_another_app_copies_into_the_folder_unless_it_is_already_there() {
 }
 
 #[test]
+fn web_content_dropped_from_another_app_becomes_a_file() {
+    use glide_files::dnd::{Dropped, Event as Dnd};
+    let scratch = std::env::temp_dir().join(format!("glide-drop-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("scratch");
+    let mut app = listed_app();
+    app.current = scratch.clone();
+    app.lang = Lang::En;
+    let named = Dropped::Named {
+        mime: String::from("application/octet-stream;name=\"logo.svg\""),
+        name: Some(String::from("logo.svg")),
+    };
+    let text = Dropped::Data { mime: "text/plain", extension: "txt", image: false };
+    let _ = app.update(Message::Dnd(Dnd::DroppedData { at: (5.0, 5.0), bytes: b"<svg/>".to_vec(), kind: named }));
+    let _ = app.update(Message::Dnd(Dnd::DroppedData {
+        at: (5.0, 5.0),
+        bytes: b"https://example.com/".to_vec(),
+        kind: text,
+    }));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (logo, note) = (scratch.join("logo.svg"), scratch.join("Dropped text.txt"));
+    while !(logo.exists() && note.exists()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read(&logo).expect("logo"), b"<svg/>", "the offered name is kept");
+    assert_eq!(std::fs::read(&note).expect("text"), b"https://example.com/");
+
+    app.current = app.trash.files();
+    let image = Dropped::Data { mime: "image/png", extension: "png", image: true };
+    let task = app.update(Message::Dnd(Dnd::DroppedData { at: (5.0, 5.0), bytes: vec![1, 2, 3], kind: image }));
+    assert_eq!(task.units(), 0, "nothing is written into the Trash");
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[test]
 fn grid_labels_are_shortened_to_two_wrapped_lines() {
     use glide_files::widgets::{fit_lines, wrapped_lines};
     assert_eq!(wrapped_lines("notes.txt", 90.0, 12.0), 1);

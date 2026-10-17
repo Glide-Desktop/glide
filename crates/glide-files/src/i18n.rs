@@ -199,6 +199,9 @@ catalogue! {
     TagsUnsupported => "This file system can’t store tags", "Ця файлова система не зберігає мітки";
     PastedImage => "Pasted image", "Вставлене зображення";
     PastedText => "Pasted text", "Вставлений текст";
+    DroppedImage => "Dropped image", "Перетягнуте зображення";
+    DroppedText => "Dropped text", "Перетягнутий текст";
+    DroppedFile => "Dropped file", "Перетягнутий файл";
     Columns => "Columns", "Колонки";
     ColCreated => "Created", "Створено";
     ColPermissions => "Permissions", "Права";

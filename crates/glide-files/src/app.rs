@@ -2809,6 +2809,26 @@ impl App {
                     return self.paste_into(FileClipboard { action, paths }, target, false);
                 }
             }
+            dnd::Event::DroppedData { at, bytes, kind } => {
+                self.drop_target = None;
+                if self.in_trash() {
+                    return Task::none();
+                }
+                let target = self.folder_at(at.0, at.1).unwrap_or_else(|| self.current.clone());
+                let lang = self.lang;
+                let name = match kind {
+                    dnd::Dropped::Named { name: Some(name), .. } => name,
+                    dnd::Dropped::Named { name: None, .. } => Key::DroppedFile.text(lang).to_string(),
+                    dnd::Dropped::Data { extension, image: true, .. } => {
+                        format!("{}.{extension}", Key::DroppedImage.text(lang))
+                    }
+                    dnd::Dropped::Data { extension, image: false, .. } => {
+                        format!("{}.{extension}", Key::DroppedText.text(lang))
+                    }
+                    dnd::Dropped::Files => return Task::none(),
+                };
+                return self.save_pasted(name, bytes, target);
+            }
             dnd::Event::Pasted { paths, target, cut } => {
                 let action = if cut { ClipboardAction::Cut } else { ClipboardAction::Copy };
                 return self.paste_into(FileClipboard { action, paths }, target, true);

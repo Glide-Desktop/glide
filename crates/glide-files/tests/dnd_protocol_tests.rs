@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use glide_files::dnd::{Command, Event, Link, serve};
+use glide_files::dnd::{Command, Dropped, Event, Link, serve};
 use iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use wayland_server::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
@@ -377,16 +377,55 @@ fn a_file_dropped_from_another_app_arrives_with_its_position_and_action() {
     assert!(harness.seen.contains(&Event::Hover(Some((10.0, 20.0)))));
 }
 
-#[test]
-fn a_drag_that_only_offers_text_is_refused() {
+fn drop_data(payload: &str, mimes: &[&str]) -> (Harness, (Vec<u8>, Dropped)) {
     let (mut harness, _link) = Harness::start();
-    let offer = harness.offer("hello", &["text/plain"]);
+    let offer = harness.offer(payload, mimes);
+    offer.source_actions(DndAction::Copy | DndAction::Move);
     let surface = harness.state.surface.clone().expect("surface");
     let device = harness.state.device.clone().expect("device");
     device.enter(3, &surface, 5.0, 5.0, Some(&offer));
-    harness.wait(|harness| (!harness.state.accepted.is_empty()).then_some(()));
-    assert_eq!(harness.state.accepted, [None], "nothing to accept");
-    assert_eq!(harness.state.actions.first().map(|(all, _)| *all), Some(DndAction::empty()));
+    harness.pump();
+    device.drop();
+    let dropped = harness.wait(|harness| {
+        harness.seen.iter().find_map(|event| match event {
+            Event::DroppedData { bytes, kind, .. } => Some((bytes.clone(), kind.clone())),
+            _ => None,
+        })
+    });
+    harness.wait(|harness| harness.state.finished.then_some(()));
+    (harness, dropped)
+}
+
+#[test]
+fn a_browser_image_is_saved_under_the_name_it_offers() {
+    let chrome = [
+        "text/x-moz-url",
+        "text/html",
+        "text/plain;charset=utf-8",
+        "application/octet-stream;name=\"logo.YcYY.svg\"",
+        "chromium/x-web-custom-data",
+    ];
+    let (harness, (bytes, kind)) = drop_data("<svg/>", &chrome);
+    assert_eq!(bytes, b"<svg/>");
+    assert!(matches!(kind, Dropped::Named { name: Some(ref name), .. } if name == "logo.YcYY.svg"), "{kind:?}");
+    assert_eq!(
+        harness.state.accepted.first(),
+        Some(&Some(String::from("application/octet-stream;name=\"logo.YcYY.svg\""))),
+        "Chrome offers no uri-list for an image, so the file contents are accepted"
+    );
+    assert_eq!(harness.state.actions.first().map(|(all, _)| *all), Some(DndAction::Copy), "data is only copied");
+}
+
+#[test]
+fn text_and_web_links_are_saved_as_text() {
+    let (_, (bytes, kind)) = drop_data("hello", &["text/plain"]);
+    assert_eq!(
+        (bytes.as_slice(), kind),
+        (b"hello".as_slice(), Dropped::Data { mime: "text/plain", extension: "txt", image: false })
+    );
+    let (_, (bytes, kind)) = drop_data("https://example.com/\r\n", &[URI_LIST, "text/plain;charset=utf-8"]);
+    assert_eq!(bytes, b"https://example.com/\r\n", "a uri-list with no local file falls back to the text");
+    assert!(matches!(kind, Dropped::Data { image: false, .. }), "{kind:?}");
 }
 
 #[test]

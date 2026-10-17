@@ -76,8 +76,55 @@ pub enum Event {
     Drop { paths: Vec<PathBuf>, at: (f64, f64), moved: bool },
     Pasted { paths: Vec<PathBuf>, target: PathBuf, cut: bool },
     PastedData { target: PathBuf, bytes: Vec<u8>, extension: &'static str, image: bool },
+    DroppedData { at: (f64, f64), bytes: Vec<u8>, kind: Dropped },
     DragEnded,
     SelectionLost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dropped {
+    Files,
+    Named { mime: String, name: Option<String> },
+    Data { mime: &'static str, extension: &'static str, image: bool },
+}
+
+impl Dropped {
+    fn mime(&self) -> &str {
+        match self {
+            Self::Files => URI_LIST,
+            Self::Named { mime, .. } => mime,
+            Self::Data { mime, .. } => mime,
+        }
+    }
+}
+
+const NAMED: &str = "application/octet-stream;";
+
+#[must_use]
+pub fn dropped(mimes: &[String]) -> Vec<Dropped> {
+    let mut found = Vec::new();
+    if mimes.iter().any(|mime| mime == URI_LIST) {
+        found.push(Dropped::Files);
+    }
+    if let Some(mime) = mimes.iter().find(|mime| mime.starts_with(NAMED)) {
+        found.push(Dropped::Named { mime: mime.clone(), name: named_payload(mime) });
+    }
+    for wanted in [true, false] {
+        found.extend(
+            PASTABLE
+                .iter()
+                .find(|(mime, _, image)| *image == wanted && mimes.iter().any(|offered| offered == mime))
+                .map(|&(mime, extension, image)| Dropped::Data { mime, extension, image }),
+        );
+    }
+    found
+}
+
+#[must_use]
+pub fn named_payload(mime: &str) -> Option<String> {
+    let value = mime.strip_prefix(NAMED)?.split(';').map(str::trim).find_map(|part| part.strip_prefix("name="))?;
+    let base = std::path::Path::new(value.trim_matches('"')).file_name()?.to_str()?;
+    crate::fs::validate_name(base).ok().map(str::to_string)
 }
 
 #[must_use]
@@ -367,34 +414,60 @@ impl State {
             return;
         };
         let info = offer_info(&offer);
-        if !self.accepting.load(Ordering::Relaxed) || !info.mimes.iter().any(|mime| mime == URI_LIST) {
+        let choices = dropped(&info.mimes);
+        if !self.accepting.load(Ordering::Relaxed) || choices.is_empty() {
             offer.destroy();
             return;
         }
-        let moved = info.moved;
-        let at = self.hover;
-        let events = self.events.clone();
-        let connection = self.connection.clone();
-        let finishing = offer.clone();
-        self.receive(&offer, URI_LIST, move |bytes| {
-            let paths = parse_uri_list(&String::from_utf8_lossy(&bytes));
-            if !paths.is_empty() {
-                let _ = events.unbounded_send(Event::Drop { paths, at, moved });
+        let (moved, at) = (info.moved, self.hover);
+        let (events, connection) = (self.events.clone(), self.connection.clone());
+        let _ = std::thread::Builder::new().name(String::from("glide-files-drop")).spawn(move || {
+            for choice in choices {
+                let Some(bytes) = read_offer(&offer, choice.mime(), &connection) else {
+                    continue;
+                };
+                let event = match choice {
+                    Dropped::Files => {
+                        let paths = parse_uri_list(&String::from_utf8_lossy(&bytes));
+                        if paths.is_empty() {
+                            continue;
+                        }
+                        Event::Drop { paths, at, moved }
+                    }
+                    _ if bytes.is_empty() => continue,
+                    kind => Event::DroppedData { at, bytes, kind },
+                };
+                let _ = events.unbounded_send(event);
+                break;
             }
-            if finishing.version() >= 3 {
-                finishing.finish();
+            if offer.version() >= 3 {
+                offer.finish();
             }
-            finishing.destroy();
+            offer.destroy();
             let _ = connection.flush();
         });
     }
 }
 
+fn read_offer(offer: &WlDataOffer, mime: &str, connection: &Connection) -> Option<Vec<u8>> {
+    let (reader, writer) = pipe()?;
+    offer.receive(mime.to_string(), std::os::fd::AsFd::as_fd(&writer));
+    drop(writer);
+    connection.flush().ok()?;
+    let mut bytes = Vec::new();
+    std::fs::File::from(reader).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
 fn answer(offer: &WlDataOffer, serial: u32, accepting: bool) {
-    let accepts = accepting && offer_info(offer).mimes.iter().any(|mime| mime == URI_LIST);
-    offer.accept(serial, accepts.then(|| URI_LIST.to_string()));
+    let choice = dropped(&offer_info(offer).mimes).into_iter().next().filter(|_| accepting);
+    offer.accept(serial, choice.as_ref().map(|choice| choice.mime().to_string()));
     if offer.version() >= 3 {
-        let actions = if accepts { DndAction::Copy | DndAction::Move } else { DndAction::empty() };
+        let actions = match choice {
+            Some(Dropped::Files) => DndAction::Copy | DndAction::Move,
+            Some(_) => DndAction::Copy,
+            None => DndAction::empty(),
+        };
         offer.set_actions(actions, DndAction::Copy);
     }
 }
