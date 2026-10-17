@@ -97,6 +97,7 @@ pub fn keep_grip_reachable(frame: Rectangle, grip_height: i32, area: Rectangle) 
 pub struct Layout {
     workspaces: Vec<Workspace>,
     active: WorkspaceId,
+    recent: Vec<WorkspaceId>,
     windows: HashMap<WindowId, WindowState>,
     focused: Option<WindowId>,
     outputs: Vec<OutputInfo>,
@@ -119,6 +120,7 @@ impl Layout {
         Self {
             workspaces: vec![Workspace::new(initial_ws)],
             active: initial_ws,
+            recent: Vec::new(),
             windows: HashMap::new(),
             focused: None,
             outputs: Vec::new(),
@@ -230,6 +232,7 @@ impl Layout {
             self.workspaces.push(last);
             return;
         };
+        self.recent.retain(|&seen| seen != last.id);
         for id in &last.windows {
             if let Some(state) = self.windows.get_mut(id) {
                 state.workspace_id = into;
@@ -239,6 +242,7 @@ impl Layout {
             target.windows.extend(last.windows.iter().copied());
         }
         if self.active == last.id {
+            self.recent.retain(|&seen| seen != into);
             self.active = into;
             self.focused = self.pick_new_focus();
         }
@@ -397,6 +401,16 @@ impl Layout {
         }
     }
 
+    fn activate(&mut self, id: WorkspaceId) {
+        if self.active == id {
+            return;
+        }
+        let left = self.active;
+        self.recent.retain(|&seen| seen != left && seen != id);
+        self.recent.insert(0, left);
+        self.active = id;
+    }
+
     pub fn switch_to_workspace(&mut self, target: WorkspaceTarget) -> bool {
         let Some(target_id) = self.resolve_or_create(target) else {
             return false;
@@ -408,7 +422,7 @@ impl Layout {
 
         self.remember_focus();
         let left = self.active;
-        self.active = target_id;
+        self.activate(target_id);
         self.leave_workspace(left);
         self.focused = self.pick_new_focus();
         true
@@ -442,7 +456,7 @@ impl Layout {
 
         let old_ws_vanishes = self.fixed.is_none() && self.workspace_is_empty(old_ws_id) && self.workspaces.len() > 1;
         if old_ws_vanishes && self.active == old_ws_id && self.focused == Some(w) {
-            self.active = target_id;
+            self.activate(target_id);
         }
 
         let active_changed = old_ws_vanishes && self.remove_workspace_if_empty(old_ws_id);
@@ -461,7 +475,7 @@ impl Layout {
                 let at = self.active_index().unwrap_or(0) + 1;
                 self.remember_focus();
                 self.workspaces.insert(at, Workspace::new(new_ws));
-                self.active = new_ws;
+                self.activate(new_ws);
                 new_ws
             }
             _ => self.active,
@@ -691,7 +705,7 @@ impl Layout {
         if self.active != target_ws {
             self.remember_focus();
             let left = self.active;
-            self.active = target_ws;
+            self.activate(target_ws);
             self.leave_workspace(left);
         }
 
@@ -819,9 +833,12 @@ impl Layout {
             && self.workspaces.len() > 1
         {
             self.workspaces.remove(idx);
+            self.recent.retain(|&seen| seen != ws_id);
             if self.active == ws_id {
-                let next_idx = idx.min(self.workspaces.len() - 1);
-                self.active = self.workspaces[next_idx].id;
+                let neighbour = self.workspaces[idx.min(self.workspaces.len() - 1)].id;
+                let back = self.recent.first().copied().unwrap_or(neighbour);
+                self.recent.retain(|&seen| seen != back);
+                self.active = back;
                 return true;
             }
         }

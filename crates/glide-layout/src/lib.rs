@@ -356,6 +356,36 @@ mod tests {
     }
 
     #[test]
+    fn closing_a_window_returns_to_the_workspace_it_was_opened_from() {
+        let mut layout = Layout::new();
+        let (terminal, browser, files) = (WindowId::next(), WindowId::next(), WindowId::next());
+        let home = layout.add_window(terminal, SIZE);
+        layout.add_window(browser, SIZE);
+        assert!(layout.focus_window(terminal));
+        layout.add_window(files, SIZE);
+        assert_eq!(layout.workspace_ids()[1], layout.active_workspace(), "opened right after the terminal's");
+        assert!(layout.remove_window(files));
+        assert_eq!(layout.active_workspace(), home, "not the neighbour that took the index");
+        assert_eq!(layout.focused_window(), Some(terminal));
+    }
+
+    #[test]
+    fn closing_windows_one_after_another_walks_back_in_the_order_they_were_visited() {
+        let mut layout = Layout::new();
+        let ids = windows(&mut layout, 3, SIZE);
+        let workspaces = layout.workspace_ids();
+        assert!(layout.focus_window(ids[2]));
+        assert!(layout.focus_window(ids[0]));
+        assert!(layout.focus_window(ids[1]));
+        assert!(layout.remove_window(ids[1]));
+        assert_eq!(layout.active_workspace(), workspaces[0]);
+        assert_eq!(layout.focused_window(), Some(ids[0]));
+        assert!(layout.remove_window(ids[0]));
+        assert_eq!(layout.active_workspace(), workspaces[2]);
+        assert_eq!(layout.focused_window(), Some(ids[2]));
+    }
+
+    #[test]
     fn test_switching_to_a_new_workspace_appends_one_empty_workspace() {
         let mut layout = Layout::new();
         let ws1 = layout.add_window(WindowId::next(), SIZE);
