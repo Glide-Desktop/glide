@@ -7,7 +7,10 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         buffer::BufferHandler,
-        compositor::{CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface},
+        compositor::{
+            CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, get_parent,
+            is_sync_subsurface, with_states,
+        },
         shm::{ShmHandler, ShmState},
     },
 };
@@ -31,6 +34,13 @@ impl CompositorHandler for GlideState {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.queue_redraw();
+        if self.drag.icon.as_ref() == Some(surface)
+            && let Some(delta) = with_states(surface, |states| {
+                states.cached_state.get::<SurfaceAttributes>().current().buffer_delta.take()
+            })
+        {
+            self.drag.move_icon(delta);
+        }
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {

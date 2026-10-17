@@ -27,6 +27,7 @@ struct Compositor {
     dragged: Option<WlDataSource>,
     icon: Option<wl_surface::WlSurface>,
     shown: Vec<(wl_surface::WlSurface, i32, i32)>,
+    moved: (i32, i32),
     scales: Vec<i32>,
     selection: Option<WlDataSource>,
     accepted: Vec<Option<String>>,
@@ -70,10 +71,13 @@ impl Dispatch<wl_surface::WlSurface, ()> for Compositor {
         _: &DisplayHandle, _: &mut DataInit<'_, Self>,
     ) {
         match request {
-            wl_surface::Request::Attach { buffer: Some(buffer), .. } => {
+            wl_surface::Request::Attach { buffer: Some(buffer), x, y } => {
+                assert!(surface.version() < 5 || (x, y) == (0, 0), "attach takes no offset from version 5");
                 let &(width, height) = buffer.data::<(i32, i32)>().expect("buffer size");
                 state.shown.push((surface.clone(), width, height));
+                state.moved = (state.moved.0 + x, state.moved.1 + y);
             }
+            wl_surface::Request::Offset { x, y } => state.moved = (state.moved.0 + x, state.moved.1 + y),
             wl_surface::Request::SetBufferScale { scale } => state.scales.push(scale),
             _ => {}
         }
@@ -246,9 +250,13 @@ struct Harness {
 
 impl Harness {
     fn start() -> (Self, Link) {
+        Self::with_compositor(4)
+    }
+
+    fn with_compositor(version: u32) -> (Self, Link) {
         let display: Display<Compositor> = Display::new().expect("display");
         let handle = display.handle();
-        handle.create_global::<Compositor, wl_compositor::WlCompositor, ()>(4, ());
+        handle.create_global::<Compositor, wl_compositor::WlCompositor, ()>(version, ());
         handle.create_global::<Compositor, wl_seat::WlSeat, ()>(7, ());
         handle.create_global::<Compositor, WlDataDeviceManager, ()>(3, ());
         handle.create_global::<Compositor, wl_shm::WlShm, ()>(1, ());
@@ -475,6 +483,30 @@ fn a_drag_out_of_files_carries_the_items_icon_under_the_pointer() {
             harness.state.scales.last(),
             Some(&SCALE.cast_signed()),
             "drawn at twice the size for sharp scaling"
+        );
+        harness.state.dragged.clone().expect("source").dnd_finished();
+        harness.wait(|harness| harness.seen.contains(&Event::DragEnded).then_some(()));
+    }
+    let _ = std::fs::remove_file(art);
+}
+
+#[test]
+fn the_drag_icon_sits_beside_the_pointer_where_the_in_window_ghost_does() {
+    let art = std::env::temp_dir().join(format!("glide-drag-offset-{}.svg", std::process::id()));
+    std::fs::write(
+        &art,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16"/></svg>"#,
+    )
+    .expect("art");
+    for version in [4, 6] {
+        let (mut harness, link) = Harness::with_compositor(version);
+        assert!(link.send(Command::StartDrag { paths: vec![PathBuf::from("/tmp/a.txt")], art: Some(art.clone()) }));
+        harness.wait(|harness| harness.state.shown.last().cloned());
+        harness.wait(|harness| (harness.state.moved != (0, 0)).then_some(()));
+        assert_eq!(
+            harness.state.moved,
+            glide_files::drag_icon::OFFSET,
+            "wl_compositor v{version}: the icon's corner is moved off the hotspot"
         );
         harness.state.dragged.clone().expect("source").dnd_finished();
         harness.wait(|harness| harness.seen.contains(&Event::DragEnded).then_some(()));

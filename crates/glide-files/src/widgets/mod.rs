@@ -340,8 +340,9 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
         ghost = ghost.push(hint);
     }
     let at = drag.at;
+    let (x, y) = crate::drag_icon::OFFSET;
     container(float(ghost).scale(1.0).translate(|_, _| Vector::ZERO))
-        .padding(Padding { top: at.y + 8.0, left: at.x + 10.0, ..Padding::ZERO })
+        .padding(Padding { top: at.y + y as f32, left: at.x + x as f32, ..Padding::ZERO })
         .width(Fill)
         .height(Fill)
         .into()

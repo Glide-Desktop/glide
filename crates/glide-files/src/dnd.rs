@@ -296,10 +296,16 @@ impl State {
                 let icon = self.icon.as_ref().map(|(surface, _)| surface);
                 self.device.start_drag(Some(&source), &self.surface, icon, self.pointer_serial);
                 if let Some((surface, buffer)) = &self.icon {
+                    let (x, y) = crate::drag_icon::OFFSET;
                     if surface.version() >= 3 {
                         surface.set_buffer_scale(crate::drag_icon::SCALE.cast_signed());
                     }
-                    surface.attach(Some(buffer), 0, 0);
+                    if surface.version() >= 5 {
+                        surface.attach(Some(buffer), 0, 0);
+                        surface.offset(x, y);
+                    } else {
+                        surface.attach(Some(buffer), x, y);
+                    }
                     surface.damage(0, 0, i32::MAX, i32::MAX);
                     surface.commit();
                 }

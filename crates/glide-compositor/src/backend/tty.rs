@@ -1492,7 +1492,8 @@ impl GlideState {
         if let Some(icon) = self.drag.icon.as_ref().filter(|icon| IsAlive::alive(*icon))
             && let Some(local) = icon_at
         {
-            ordered.extend(dnd_icon_elements(gles_renderer, icon, local, scale));
+            let corner = local + self.drag.icon_offset().to_f64();
+            ordered.extend(dnd_icon_elements(gles_renderer, icon, corner, scale));
         }
         prepend(&mut elements, ordered);
 

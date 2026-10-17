@@ -5,6 +5,7 @@ use resvg::usvg;
 
 pub const SIZE: u32 = 48;
 pub const SCALE: u32 = 2;
+pub const OFFSET: (i32, i32) = (10, 8);
 const STACKED: f32 = 0.55;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

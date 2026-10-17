@@ -21,6 +21,25 @@ pub struct DragState {
     pub active: bool,
     dwell: DragDwell,
     pointer: Point<f64, Logical>,
+    icon_offset: Point<i32, Logical>,
+}
+
+impl DragState {
+    pub fn set_icon(
+        &mut self, icon: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    ) -> Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
+        self.icon_offset = Point::default();
+        std::mem::replace(&mut self.icon, icon)
+    }
+
+    pub fn move_icon(&mut self, delta: Point<i32, Logical>) {
+        self.icon_offset += delta;
+    }
+
+    #[must_use]
+    pub fn icon_offset(&self) -> Point<i32, Logical> {
+        self.icon_offset
+    }
 }
 
 #[derive(Debug, Default)]
@@ -179,6 +198,16 @@ mod tests {
             dwell.update(Some(DragTarget::DockItem(2)), t0 + DWELL * 2),
             DwellStep::Fire(DragTarget::DockItem(2))
         );
+    }
+
+    #[test]
+    fn the_icon_offset_adds_up_and_starts_over_with_the_next_icon() {
+        let mut drag = DragState::default();
+        drag.move_icon((10, 8).into());
+        drag.move_icon((-4, 0).into());
+        assert_eq!(drag.icon_offset(), (6, 8).into());
+        assert!(drag.set_icon(None).is_none());
+        assert_eq!(drag.icon_offset(), Point::default(), "a new icon starts with its corner on the hotspot");
     }
 
     #[test]
