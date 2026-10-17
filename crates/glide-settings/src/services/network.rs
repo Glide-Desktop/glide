@@ -33,6 +33,7 @@ pub struct NetworkState {
     pub networks: Vec<AccessPoint>,
     pub wired: Vec<Wired>,
     pub profiles: Vec<Profile>,
+    pub hotspot_ssid: Option<String>,
     pub airplane: bool,
     pub rfkill: bool,
 }
@@ -456,12 +457,6 @@ pub struct KnownNetwork {
 }
 
 #[must_use]
-pub fn parse_ssid(text: &str) -> Option<String> {
-    let ssid = text.strip_suffix('\n').unwrap_or(text);
-    (!ssid.is_empty()).then(|| ssid.to_string())
-}
-
-#[must_use]
 pub fn parse_networks(text: &str, known: &[KnownNetwork]) -> Vec<AccessPoint> {
     let mut networks: Vec<AccessPoint> = Vec::new();
     for line in text.lines() {
@@ -546,7 +541,12 @@ pub fn read(rescan: Rescan) -> NetworkState {
         .unwrap_or_default();
     let profiles = read_profiles();
     let rfkill = read_rfkill();
-    let known = known_networks(&profiles);
+    let hotspot = profiles.iter().find(|profile| profile.name == HOTSPOT_NAME);
+    let (hotspot, known): (Vec<KnownNetwork>, Vec<KnownNetwork>) = known_networks(&profiles)
+        .into_iter()
+        .partition(|network| hotspot.is_some_and(|profile| profile.uuid == network.uuid));
+    let hotspot_ssid = hotspot.into_iter().next().map(|network| network.ssid);
+    let sharing = profiles.iter().any(|profile| profile.name == HOTSPOT_NAME && profile.active);
     let networks = if wifi_enabled {
         run::output(
             "nmcli",
@@ -562,9 +562,10 @@ pub fn read(rescan: Rescan) -> NetworkState {
         wifi_enabled,
         wifi_hardware: radios.wifi_hardware,
         wifi_device,
-        networks: networks.into_iter().filter(|point| point.ssid != HOTSPOT_NAME).collect(),
+        networks: networks.into_iter().filter(|point| !sharing || Some(&point.ssid) != hotspot_ssid.as_ref()).collect(),
         wired,
         profiles,
+        hotspot_ssid,
         airplane: airplane_mode(&rfkill),
         rfkill: !rfkill.is_empty(),
     }
@@ -576,18 +577,41 @@ fn read_profiles() -> Vec<Profile> {
         .unwrap_or_default()
 }
 
+#[must_use]
+pub fn parse_ssid_records(text: &str) -> Vec<String> {
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.split("\n\n").map(str::to_string).collect()
+}
+
+#[must_use]
+pub fn profile_field(field: &str, uuids: &[&str]) -> Vec<String> {
+    let lookup = |batch: &[&str]| {
+        let mut args = vec!["-e", "no", "-g", field, "connection", "show"];
+        for uuid in batch {
+            args.extend(["uuid", uuid]);
+        }
+        run::output("nmcli", &args).map(|text| parse_ssid_records(&text)).filter(|values| values.len() == batch.len())
+    };
+    if uuids.is_empty() {
+        return Vec::new();
+    }
+    lookup(uuids).unwrap_or_else(|| {
+        uuids.iter().map(|uuid| lookup(&[uuid]).and_then(|mut one| one.pop()).unwrap_or_default()).collect()
+    })
+}
+
 fn known_networks(profiles: &[Profile]) -> Vec<KnownNetwork> {
-    profiles
-        .iter()
-        .filter(|profile| profile.kind == WIFI_KIND && profile.name != HOTSPOT_NAME)
-        .map(|profile| {
-            let ssid = run::output(
-                "nmcli",
-                &["-e", "no", "-g", "802-11-wireless.ssid", "connection", "show", "uuid", &profile.uuid],
-            )
-            .and_then(|text| parse_ssid(&text))
-            .unwrap_or_else(|| profile.name.clone());
-            KnownNetwork { uuid: profile.uuid.clone(), ssid }
+    let wifi: Vec<&Profile> = profiles.iter().filter(|profile| profile.kind == WIFI_KIND).collect();
+    let uuids: Vec<&str> = wifi.iter().map(|profile| profile.uuid.as_str()).collect();
+    let ssids = profile_field("802-11-wireless.ssid", &uuids);
+    wifi.iter()
+        .zip(ssids)
+        .map(|(profile, ssid)| KnownNetwork {
+            uuid: profile.uuid.clone(),
+            ssid: if ssid.is_empty() { profile.name.clone() } else { ssid },
         })
         .collect()
 }

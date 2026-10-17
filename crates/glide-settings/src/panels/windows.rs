@@ -382,7 +382,7 @@ fn window_mock<'a>(t: &ThemeState, title: &'a str, mock: Mock) -> Element<'a, Ms
         .clip(true)
         .style(move |_: &iced::Theme| iced::widget::container::Style {
             background: Some(iced::Background::Color(body)),
-            border: iced::Border { color: ring, width: if border { 1.0 } else { 0.0 }, radius: theme::radius_r2() },
+            border: iced::Border { color: ring, width: if border { 1.0 } else { 0.0 }, radius: theme::radius_r3() },
             shadow: if shadow {
                 iced::Shadow {
                     color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35),

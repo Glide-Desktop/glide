@@ -229,6 +229,12 @@ impl Page {
             (Tab::Troubleshoot, c.t(T::TabTroubleshoot).to_string()),
             (Tab::About, c.t(T::TabAbout).to_string()),
         ]);
+        if c.theme.compact {
+            let chips = options.into_iter().map(|(tab, label)| {
+                widgets::chip(c.theme, label, tab == self.tab, (tab != self.tab).then_some(Msg::Tab(tab)))
+            });
+            return iced::widget::Row::with_children(chips).spacing(6).wrap().vertical_spacing(6).into();
+        }
         container(widgets::segmented(c.theme, options, self.tab, Msg::Tab)).center_x(Fill).into()
     }
 
@@ -1100,7 +1106,13 @@ fn resource_sheet<'a>(c: &Ctx, network: &nb::Network) -> Element<'a, Msg> {
     if info.is_empty() {
         info.push((c.t(T::ResolvedIps).to_string(), "\u{2014}".to_string()));
     }
-    sheet(t, vec![widgets::micro_label(t, c.t(T::ResolvedIps)), lines(t, info)])
+    sheet(
+        t,
+        vec![
+            container(widgets::micro_label(t, c.t(T::ResolvedIps))).padding([4.0, theme::ROW_PADDING_X]).into(),
+            lines(t, info),
+        ],
+    )
 }
 
 fn bundle_sheet<'a>(c: &Ctx, result: &nb::BundleResult) -> Element<'a, Msg> {

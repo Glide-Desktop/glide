@@ -49,7 +49,6 @@ mod tr {
         MissingPlugin => "The NetworkManager plugin for this type is not installed", "Не встановлено плагін NetworkManager для цього типу";
         Plugins => "Installed VPN plugins", "Встановлені плагіни VPN";
         PluginsHint => "WireGuard is built into NetworkManager. Other types need a plugin such as network-manager-openvpn.", "WireGuard вбудовано в NetworkManager. Іншим типам потрібен плагін, наприклад network-manager-openvpn.";
-        NoPlugins => "Only WireGuard", "Лише WireGuard";
         Imported => "Imported. The connection is listed above.", "Імпортовано. З'єднання з'явилося у списку вище.";
         SecretsHint => "If a connection needs a password that is not saved, you are asked for it here. It is used for that connection attempt only.", "Якщо з'єднанню потрібен незбережений пароль, його буде запитано тут. Він використовується лише для цієї спроби з'єднання.";
         PasswordNeeded => "This connection needs a password", "Для цього з'єднання потрібен пароль";
@@ -58,6 +57,8 @@ mod tr {
         Otp => "One-time code", "Одноразовий код";
         OtpHint => "Leave empty if not required", "Залиште порожнім, якщо не потрібен";
         ConnectButton => "Connect", "Під'єднати";
+        External => "Managed elsewhere", "Керується ззовні";
+        ExternalHint => "Another program, such as NetBird, set this tunnel up, so it can only be changed there", "Цей тунель налаштувала інша програма, наприклад NetBird, тож змінити його можна лише там";
     }
 }
 
@@ -449,7 +450,7 @@ impl Page {
                 list = list.push(self.connection_sheet(&c, vpn));
             }
         }
-        if !self.state.connections.is_empty() {
+        if self.state.connections.iter().any(|vpn| !vpn.is_wireguard() && !vpn.external) {
             list = list.push(note(t, Icon::Info, c.t(T::SecretsHint)));
         }
         page.push(list.build()).push(self.import(&c)).push(self.plugins(&c)).into()
@@ -469,6 +470,15 @@ impl Page {
         let uuid = vpn.uuid.clone();
         let toggle_uuid = uuid.clone();
         let open = self.expanded.as_deref() == Some(vpn.uuid.as_str());
+        let control = if vpn.external {
+            widgets::pill(t, Tone::Neutral, c.t(T::External))
+        } else if idle {
+            widgets::switch(t, vpn.active || vpn.activating(), move |on| {
+                if on { Msg::Connect(toggle_uuid.clone()) } else { Msg::Disconnect(toggle_uuid.clone()) }
+            })
+        } else {
+            widgets::switch_disabled(t, vpn.active)
+        };
         Row::new(t, vpn.name.clone())
             .subtitle(subtitle)
             .prefix(if vpn.active {
@@ -477,18 +487,9 @@ impl Page {
                 container(widgets::icon(Icon::Shield, 18.0, t.fg_2())).center_x(28.0).center_y(28.0).into()
             })
             .suffix(
-                row![
-                    if idle {
-                        widgets::switch(t, vpn.active || vpn.activating(), move |on| {
-                            if on { Msg::Connect(toggle_uuid.clone()) } else { Msg::Disconnect(toggle_uuid.clone()) }
-                        })
-                    } else {
-                        widgets::switch_disabled(t, vpn.active)
-                    },
-                    widgets::icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, 14.0, t.fg_3()),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
+                row![control, widgets::icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, 14.0, t.fg_3()),]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
             )
             .on_press(Msg::Expand(uuid))
             .build()
@@ -518,6 +519,10 @@ impl Page {
             info.push((c.t(T::Interface).to_string(), vpn.device.clone()));
         }
         let mut rows: Vec<Element<'a, Msg>> = vec![lines(t, info)];
+        if vpn.external {
+            rows.push(note(t, Icon::Info, c.t(T::ExternalHint)));
+            return sheet(t, rows);
+        }
         let valid = !self.name.trim().is_empty() && self.name.trim() != vpn.name;
         let rename = valid.then(|| Msg::Rename(vpn.uuid.clone()));
         rows.push(form_row(
@@ -607,26 +612,31 @@ impl Page {
             .title(c.t(T::Import))
             .description(c.t(T::ImportHint))
             .suffix(widgets::icon_button(t, Icon::Refresh, Some(Msg::Rescan)))
-            .push(form_row(
-                t,
-                c.t(T::Path),
-                None,
-                row![
-                    widgets::field(
-                        t,
-                        c.t(T::PathPlaceholder),
-                        &self.path,
-                        Msg::PathInput,
-                        (!self.path.trim().is_empty()).then_some(Msg::Inspect),
-                        false,
-                    )
-                    .width(Fill),
-                    widgets::secondary(t, c.t(T::Check), (!self.path.trim().is_empty()).then_some(Msg::Inspect)),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into(),
-            ));
+            .push(
+                Row::new(t, c.t(T::Path))
+                    .suffix(widgets::flexible(
+                        row![
+                            widgets::field(
+                                t,
+                                c.t(T::PathPlaceholder),
+                                &self.path,
+                                Msg::PathInput,
+                                (!self.path.trim().is_empty()).then_some(Msg::Inspect),
+                                false,
+                            )
+                            .width(Fill),
+                            widgets::secondary(
+                                t,
+                                c.t(T::Check),
+                                (!self.path.trim().is_empty()).then_some(Msg::Inspect)
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                        420.0,
+                    ))
+                    .build(),
+            );
         if let Some((path, kind)) = &self.selected {
             let supported = self.state.supports(kind);
             let file = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
@@ -674,15 +684,10 @@ impl Page {
         for plugin in &self.state.plugins {
             chips = chips.push(widgets::pill(t, Tone::Neutral, vpn::protocol_label(&plugin.name)));
         }
-        let subtitle = if self.state.plugins.is_empty() { c.t(T::NoPlugins) } else { "" };
         Group::new(t)
             .title(c.t(T::Plugins))
             .description(c.t(T::PluginsHint))
-            .push(
-                container(column![chips.wrap(), widgets::caption(t, subtitle)].spacing(6))
-                    .padding([10.0, theme::ROW_PADDING_X])
-                    .width(Fill),
-            )
+            .push(container(chips.wrap().vertical_spacing(6)).padding([12.0, theme::ROW_PADDING_X]).width(Fill))
             .build()
     }
 }

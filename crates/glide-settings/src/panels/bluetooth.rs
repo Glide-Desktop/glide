@@ -44,7 +44,7 @@ mod tr {
         Other => "Device", "Пристрій";
         Searching => "Searching…", "Пошук…";
         SearchHint => "Searching for 20 seconds. New devices appear as they are found.", "Пошук триває 20 секунд. Нові пристрої з'являються щойно їх знайдено.";
-        PinHint => "Devices that ask for a PIN code cannot be paired here yet", "Пристрої, що просять PIN-код, поки не можна спарити тут";
+        PinHint => "Glide is not running, so devices that ask for a PIN code cannot be paired", "Glide не запущено, тож пристрої, що просять PIN-код, не вдасться спарити";
         Paired => "Paired", "Спарений";
         NameInvalid => "Enter a name", "Введіть назву";
     }
@@ -273,7 +273,7 @@ impl Pane for Page {
         for device in others {
             nearby = nearby.push(self.device_row(&c, device));
         }
-        if self.scanning || self.state.nearby().next().is_some() {
+        if !c.online && (self.scanning || self.state.nearby().next().is_some()) {
             nearby = nearby.push(note(t, Icon::Info, c.t(T::PinHint)));
         }
         page.push(mine.build()).push(nearby.build()).into()

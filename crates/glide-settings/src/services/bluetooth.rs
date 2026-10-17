@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::time::Duration;
+
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 use super::run;
 
@@ -59,40 +62,74 @@ pub fn is_anonymous(device: &BtDevice) -> bool {
     name.is_empty() || name.eq_ignore_ascii_case(&device.address)
 }
 
-fn hex_or_decimal(text: &str) -> Option<u32> {
-    if let Some(inner) = text.split_once('(').and_then(|(_, rest)| rest.split_once(')')).map(|(inner, _)| inner.trim())
-    {
-        return inner.parse().ok();
-    }
-    let text = text.trim();
-    match text.strip_prefix("0x") {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => text.parse().ok(),
-    }
+pub type Properties = HashMap<String, OwnedValue>;
+pub type Objects = HashMap<OwnedObjectPath, HashMap<String, Properties>>;
+
+fn text(props: &Properties, key: &str) -> Option<String> {
+    props.get(key).and_then(|value| <&str>::try_from(value).ok()).map(str::to_string)
+}
+
+fn flag(props: &Properties, key: &str) -> bool {
+    props.get(key).and_then(|value| bool::try_from(value).ok()).unwrap_or(false)
 }
 
 #[must_use]
-pub fn parse_adapter(text: &str) -> Option<Adapter> {
-    let first = text.trim_start().lines().next()?;
-    let address = first.strip_prefix("Controller ")?;
-    let address = address.split_whitespace().next().unwrap_or_default();
-    let (powered, blocked, alias) = parse_show(text)?;
-    Some(Adapter {
-        address: address.to_string(),
-        name: field(text, "Name").unwrap_or_default().to_string(),
-        alias,
-        powered,
-        blocked,
-        discoverable: yes(text, "Discoverable"),
-        pairable: yes(text, "Pairable"),
-        discoverable_timeout: field(text, "DiscoverableTimeout").and_then(hex_or_decimal).unwrap_or(0),
-    })
-}
-
-#[must_use]
-pub fn parse_battery(text: &str) -> Option<u8> {
-    let value = field(text, "Battery Percentage").and_then(hex_or_decimal)?;
-    u8::try_from(value.min(100)).ok()
+pub fn from_objects(objects: &Objects) -> BluetoothState {
+    let mut adapters: Vec<(&OwnedObjectPath, &Properties)> = objects
+        .iter()
+        .filter_map(|(path, interfaces)| interfaces.get("org.bluez.Adapter1").map(|props| (path, props)))
+        .collect();
+    adapters.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    let Some((adapter_path, props)) = adapters.first().copied() else {
+        return BluetoothState::default();
+    };
+    let name = text(props, "Name").unwrap_or_default();
+    let adapter = Adapter {
+        address: text(props, "Address").unwrap_or_default(),
+        alias: text(props, "Alias").unwrap_or_else(|| name.clone()),
+        name,
+        powered: flag(props, "Powered"),
+        blocked: text(props, "PowerState").is_some_and(|state| state.contains("blocked")),
+        discoverable: flag(props, "Discoverable"),
+        pairable: flag(props, "Pairable"),
+        discoverable_timeout: props.get("DiscoverableTimeout").and_then(|v| u32::try_from(v).ok()).unwrap_or(0),
+    };
+    let mut devices: Vec<BtDevice> = objects
+        .values()
+        .filter_map(|interfaces| {
+            let props = interfaces.get("org.bluez.Device1")?;
+            if let Some(Value::ObjectPath(owner)) = props.get("Adapter").map(|value| &**value)
+                && owner.as_str() != adapter_path.as_str()
+            {
+                return None;
+            }
+            let address = text(props, "Address")?;
+            let battery = interfaces
+                .get("org.bluez.Battery1")
+                .and_then(|battery| battery.get("Percentage"))
+                .and_then(|value| u8::try_from(value).ok())
+                .map(|level| level.min(100));
+            Some(BtDevice {
+                name: text(props, "Alias").or_else(|| text(props, "Name")).unwrap_or_else(|| address.clone()),
+                icon: text(props, "Icon").unwrap_or_default(),
+                paired: flag(props, "Paired"),
+                connected: flag(props, "Connected"),
+                trusted: flag(props, "Trusted"),
+                blocked: flag(props, "Blocked"),
+                battery,
+                address,
+            })
+        })
+        .collect();
+    devices.sort_by(|a, b| b.connected.cmp(&a.connected).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    BluetoothState {
+        available: true,
+        powered: adapter.powered,
+        blocked: adapter.blocked,
+        alias: adapter.alias.clone(),
+        adapter,
+        devices,
+    }
 }
 
 #[must_use]
@@ -123,88 +160,21 @@ pub enum DeviceKind {
     Other,
 }
 
-fn field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-    text.lines().find_map(|line| line.trim().strip_prefix(key).and_then(|rest| rest.strip_prefix(':')).map(str::trim))
-}
-
-fn yes(text: &str, key: &str) -> bool {
-    field(text, key) == Some("yes")
-}
-
-#[must_use]
-pub fn parse_show(text: &str) -> Option<(bool, bool, String)> {
-    if !text.trim_start().starts_with("Controller") {
-        return None;
-    }
-    let powered = yes(text, "Powered");
-    let blocked = field(text, "PowerState").is_some_and(|state| state.contains("blocked"));
-    let alias = field(text, "Alias").or_else(|| field(text, "Name")).unwrap_or_default().to_string();
-    Some((powered, blocked, alias))
-}
-
-#[must_use]
-pub fn parse_devices(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .filter_map(|line| {
-            let rest = line.trim().strip_prefix("Device ")?;
-            let (address, name) = rest.split_once(' ').unwrap_or((rest, rest));
-            (address.len() == 17).then(|| (address.to_string(), name.trim().to_string()))
-        })
-        .collect()
-}
-
-#[must_use]
-pub fn parse_info(address: &str, fallback: &str, text: &str) -> BtDevice {
-    BtDevice {
-        address: address.to_string(),
-        name: field(text, "Alias").or_else(|| field(text, "Name")).unwrap_or(fallback).to_string(),
-        icon: field(text, "Icon").unwrap_or_default().to_string(),
-        paired: yes(text, "Paired"),
-        connected: yes(text, "Connected"),
-        trusted: yes(text, "Trusted"),
-        blocked: yes(text, "Blocked"),
-        battery: parse_battery(text),
-    }
-}
-
-const QUERY_DEADLINE: Duration = Duration::from_secs(10);
 const ACTION_DEADLINE: Duration = Duration::from_secs(30);
-
-fn query(args: &[&str]) -> Option<String> {
-    run::output_within("bluetoothctl", args, QUERY_DEADLINE)
-}
 
 fn act(args: &[&str]) -> Result<String, String> {
     run::status_within("bluetoothctl", args, ACTION_DEADLINE)
 }
 
-fn bluez_running() -> bool {
-    zbus::blocking::Connection::system()
-        .and_then(|bus| zbus::blocking::fdo::DBusProxy::new(&bus))
-        .and_then(|proxy| proxy.name_has_owner(zbus::names::BusName::try_from("org.bluez")?).map_err(zbus::Error::from))
-        .unwrap_or(false)
+fn managed_objects() -> zbus::Result<Objects> {
+    let bus = zbus::blocking::Connection::system()?;
+    let manager = zbus::blocking::Proxy::new(&bus, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager")?;
+    manager.call("GetManagedObjects", &())
 }
 
 #[must_use]
 pub fn read() -> BluetoothState {
-    if !bluez_running() {
-        return BluetoothState::default();
-    }
-    let Some(adapter) = query(&["show"]).as_deref().and_then(parse_adapter) else {
-        return BluetoothState::default();
-    };
-    let (powered, blocked, alias) = (adapter.powered, adapter.blocked, adapter.alias.clone());
-    let mut devices: Vec<BtDevice> = query(&["devices"])
-        .map(|text| parse_devices(&text))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(address, name)| {
-            let info = query(&["info", &address]).unwrap_or_default();
-            parse_info(&address, &name, &info)
-        })
-        .collect();
-    devices.sort_by(|a, b| b.connected.cmp(&a.connected).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
-    BluetoothState { available: true, powered, blocked, alias, adapter, devices }
+    managed_objects().map(|objects| from_objects(&objects)).unwrap_or_default()
 }
 
 pub fn set_trusted(address: &str, trusted: bool) -> Result<String, String> {
@@ -240,16 +210,10 @@ pub fn set_adapter_alias(name: &str) -> Result<String, String> {
 }
 
 pub fn set_device_alias(address: &str, name: &str) -> Result<String, String> {
-    use zbus::zvariant::{OwnedObjectPath, OwnedValue};
-    type Objects = std::collections::HashMap<
-        OwnedObjectPath,
-        std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>>,
-    >;
     let name = clean_alias(name).ok_or_else(|| "Enter a name".to_string())?;
     let result = (|| -> zbus::Result<()> {
+        let objects = managed_objects()?;
         let bus = zbus::blocking::Connection::system()?;
-        let manager = zbus::blocking::Proxy::new(&bus, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager")?;
-        let objects: Objects = manager.call("GetManagedObjects", &())?;
         let path = objects
             .iter()
             .find(|(_, interfaces)| {

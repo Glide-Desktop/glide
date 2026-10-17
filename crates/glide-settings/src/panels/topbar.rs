@@ -62,17 +62,9 @@ impl TimeFormat {
         match self {
             Self::Hours24 => true,
             Self::Hours12 => false,
-            Self::Auto => !region_is_us(),
+            Self::Auto => !crate::services::timedate::env_uses_12_hour(),
         }
     }
-}
-
-fn region_is_us() -> bool {
-    ["LC_ALL", "LC_TIME", "LANG"]
-        .iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .find(|value| !value.trim().is_empty())
-        .is_some_and(|value| value.starts_with("en_US"))
 }
 
 #[derive(Debug, Clone, Copy)]

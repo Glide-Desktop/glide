@@ -640,36 +640,6 @@ pub fn device_icon(name: &str, fallback: Icon) -> Icon {
     }
 }
 
-#[must_use]
-pub fn app_color(name: &str) -> Color {
-    let accents = [
-        theme::Accent::Azurit,
-        theme::Accent::Malachite,
-        theme::Accent::Conifer,
-        theme::Accent::Amber,
-        theme::Accent::Terracotta,
-        theme::Accent::Cinnabar,
-        theme::Accent::Amethyst,
-        theme::Accent::Graphite,
-    ];
-    let hash =
-        name.to_lowercase().bytes().fold(0usize, |acc, byte| acc.wrapping_mul(31).wrapping_add(usize::from(byte)));
-    theme::ramp_color(accents[hash % accents.len()], 3)
-}
-
-fn letter_tile<'a>(name: &str, size: f32) -> Element<'a, Msg> {
-    let initial = name
-        .chars()
-        .find(|ch| ch.is_alphanumeric())
-        .map_or_else(|| String::from("?"), |ch| ch.to_uppercase().collect());
-    let color = app_color(name);
-    container(text(initial).size((size * 0.5).round()).font(theme::SEMIBOLD).color(Color::WHITE))
-        .center_x(size)
-        .center_y(size)
-        .style(move |_: &iced::Theme| theme::tile_style(color))
-        .into()
-}
-
 fn bar_segment<'a>(portion: u16, color: Option<Color>) -> Element<'a, Msg> {
     let segment = container(space()).width(Length::FillPortion(portion)).height(6);
     match color {
@@ -725,7 +695,7 @@ fn stream_row<'a>(c: &Ctx, stream: &'a Stream, slider: StreamSlider) -> Element<
     );
     Row::new(t, stream.app.clone())
         .subtitle(if muted { c.t(K::Muted).to_string() } else { stream.title.clone() })
-        .prefix(letter_tile(&stream.app, theme::SMALL_CONTROL_HEIGHT))
+        .prefix(super::apps::app_icon(&t, None, &stream.app, theme::SMALL_CONTROL_HEIGHT))
         .suffix(widgets::flexible(control, 320.0))
         .build()
 }

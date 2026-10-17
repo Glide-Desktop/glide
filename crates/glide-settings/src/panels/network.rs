@@ -333,7 +333,13 @@ impl Page {
                 }
             }
             Msg::Refresh => return self.refresh(Rescan::Auto),
-            Msg::Rescan => return self.refresh(Rescan::Yes),
+            Msg::Rescan => {
+                if self.pending == 0 {
+                    self.generation.bump();
+                    self.loading = false;
+                }
+                return self.refresh(Rescan::Yes);
+            }
             Msg::ToggleWifi(on) => {
                 self.state.wifi_enabled = on;
                 return self.run(None, move || network::set_wifi(on));
@@ -536,6 +542,10 @@ impl Page {
         self.state.networks.iter().find(|point| point.ssid == ssid)
     }
 
+    fn sharing_as(&self) -> &str {
+        self.state.hotspot_ssid.as_deref().unwrap_or(&self.hotspot_ssid)
+    }
+
     fn view(&self, c: &Ctx) -> Element<'_, Msg> {
         let t = c.theme;
         if !self.state.available {
@@ -552,7 +562,7 @@ impl Page {
         } else if !self.state.wifi_enabled {
             c.t(K::WifiOff).to_string()
         } else if self.state.hotspot().is_some() {
-            format!("{} “{}”", c.t(T::HotspotOn), self.hotspot_ssid)
+            format!("{} “{}”", c.t(T::HotspotOn), self.sharing_as())
         } else if let Some(active) = self.state.active() {
             format!("{} {}", c.t(K::ConnectedTo), active.ssid)
         } else {
@@ -598,7 +608,7 @@ impl Page {
         if self.state.wifi_device.is_some() {
             let hotspot = self.state.hotspot();
             let subtitle = match hotspot {
-                Some(_) => format!("{} “{}”", c.t(T::HotspotOn), self.hotspot_ssid),
+                Some(_) => format!("{} “{}”", c.t(T::HotspotOn), self.sharing_as()),
                 None => c.t(T::HotspotHint).to_string(),
             };
             let busy = self.busy.as_deref() == Some(network::HOTSPOT_NAME);
@@ -1136,7 +1146,7 @@ fn saved_dns(details: Option<&Details>) -> String {
 }
 
 fn loading_row<'a>(c: &Ctx) -> Element<'a, Msg> {
-    container(widgets::spinner_label(c.theme, c.t(K::Loading))).padding([4, 8]).into()
+    container(widgets::spinner_label(c.theme, c.t(K::Loading))).padding([4.0, theme::ROW_PADDING_X]).into()
 }
 
 fn address_lines(c: &Ctx, details: &Details) -> Vec<(String, String)> {
@@ -1206,7 +1216,7 @@ pub fn lines<'a, M: 'a>(t: theme::ThemeState, info: Vec<(String, String)>) -> El
                 .spacing(12)
                 .align_y(Alignment::Center),
             )
-            .padding([5.0, 8.0]),
+            .padding([5.0, theme::ROW_PADDING_X]),
         );
     }
     list.into()
@@ -1216,7 +1226,7 @@ pub fn lines<'a, M: 'a>(t: theme::ThemeState, info: Vec<(String, String)>) -> El
 pub fn form_row<'a, M: 'a>(
     t: theme::ThemeState, label: &str, hint: Option<&str>, control: Element<'a, M>,
 ) -> Element<'a, M> {
-    let mut labels = column![text(label.to_string()).size(13.5).color(t.fg_1())].spacing(1);
+    let mut labels = column![text(label.to_string()).size(14).color(t.fg_1())].spacing(1);
     if let Some(hint) = hint.filter(|hint| !hint.is_empty()) {
         labels = labels.push(text(hint.to_string()).size(12).color(t.fg_2()));
     }
@@ -1225,7 +1235,7 @@ pub fn form_row<'a, M: 'a>(
             .spacing(12)
             .align_y(Alignment::Center),
     )
-    .padding([4.0, 8.0])
+    .padding([theme::ROW_PADDING_Y, theme::ROW_PADDING_X])
     .into()
 }
 
@@ -1236,7 +1246,7 @@ pub fn note<'a, M: 'a>(t: theme::ThemeState, glyph: Icon, message: &str) -> Elem
             .spacing(8)
             .align_y(Alignment::Center),
     )
-    .padding([4.0, 8.0])
+    .padding([4.0, theme::ROW_PADDING_X])
     .into()
 }
 
@@ -1244,6 +1254,6 @@ pub fn note<'a, M: 'a>(t: theme::ThemeState, glyph: Icon, message: &str) -> Elem
 pub fn actions<'a, M: 'a>(buttons: Vec<Element<'a, M>>) -> Element<'a, M> {
     container(iced::widget::Row::with_children(buttons).spacing(8).align_y(Alignment::Center))
         .align_right(Fill)
-        .padding([4.0, 8.0])
+        .padding([4.0, theme::ROW_PADDING_X])
         .into()
 }

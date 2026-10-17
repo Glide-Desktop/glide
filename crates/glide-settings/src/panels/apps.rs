@@ -80,7 +80,11 @@ impl Catalog {
 
     #[must_use]
     pub fn describe(&self, file: &FileType) -> String {
-        self.descriptions.get(file.mime).cloned().unwrap_or_else(|| file.mime.to_string())
+        let Some(description) = self.descriptions.get(file.mime) else {
+            return file.mime.to_string();
+        };
+        let mut chars = description.chars();
+        chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
     }
 }
 
@@ -396,7 +400,7 @@ impl Page {
             let current = self.current(mime);
             group = group.push(
                 Row::new(t, self.catalog.describe(file))
-                    .subtitle(format!("{} · {}", file.extension, file.mime))
+                    .subtitle(file.extension)
                     .prefix(self.prefix_for(&t, current.as_ref(), Icon::Apps))
                     .suffix(self.app_dropdown(c, &[mime], current.as_deref(), move |app| Msg::SetType(mime, app)))
                     .build(),

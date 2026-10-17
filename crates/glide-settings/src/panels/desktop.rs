@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use iced::widget::{Column, Row as IcedRow, container, row, text};
 use iced::{Alignment, Element, Length, Padding, Task};
 
+use super::apps::app_icon;
 use super::common::{gated, switch_row};
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
@@ -146,7 +150,7 @@ pub enum Msg {
     Commit,
     Settle(u64),
     Pins(u64, Result<Option<Vec<Pin>>, String>),
-    Apps(Vec<DesktopApp>),
+    Apps(Vec<DesktopApp>, HashMap<String, PathBuf>),
     MovePin(usize, bool),
     Unpin(usize),
     AddPin(DesktopApp),
@@ -162,6 +166,7 @@ pub struct Page {
     pins_loaded: bool,
     generation: Generation,
     apps: Vec<DesktopApp>,
+    icons: HashMap<String, PathBuf>,
 }
 
 impl Pane for Page {
@@ -182,12 +187,21 @@ impl Pane for Page {
     ];
     const POLLS: bool = true;
 
-    fn open(&mut self, c: Ctx, _config: &ConfigStore) -> Task<Msg> {
+    fn open(&mut self, c: Ctx, config: &ConfigStore) -> Task<Msg> {
         let lang = c.lang.key().to_string();
+        let theme = config.optional_str("dock", "icon-theme");
         let apps = if self.apps.is_empty() {
-            Task::perform(blocking(move || apps::visible(&apps::installed(&lang))), |apps| {
-                Msg::Apps(apps.unwrap_or_default())
-            })
+            Task::perform(
+                blocking(move || {
+                    let apps = apps::visible(&apps::installed(&lang));
+                    let icons = apps::icon_paths(apps.iter().map(|app| app.icon.as_str()), theme.as_deref());
+                    (apps, icons)
+                }),
+                |loaded| {
+                    let (apps, icons) = loaded.unwrap_or_default();
+                    Msg::Apps(apps, icons)
+                },
+            )
         } else {
             Task::none()
         };
@@ -224,7 +238,10 @@ impl Pane for Page {
                     Err(err) => self.pins_error = Some(err),
                 }
             }
-            Msg::Apps(apps) => self.apps = apps,
+            Msg::Apps(apps, icons) => {
+                self.apps = apps;
+                self.icons = icons;
+            }
             Msg::MovePin(index, up) => {
                 if let Some(pins) = &self.pins {
                     let next = dock::moved(pins, index, up);
@@ -266,6 +283,11 @@ impl Pane for Page {
 }
 
 impl Page {
+    fn icon_of(&self, pin: &Pin) -> Option<&PathBuf> {
+        let app = self.apps.iter().find(|app| dock::same_app(&pin.app_id, app.id.trim_end_matches(".desktop")))?;
+        self.icons.get(&app.icon)
+    }
+
     fn load_pins(&mut self) -> Task<Msg> {
         let generation = self.generation.current();
         Task::perform(blocking(dock::load), move |pins| {
@@ -306,9 +328,10 @@ impl Page {
         let scale = self.value(Knob::Magnification, config);
         let lift = self.value(Knob::Lift, config);
         let margin = self.value(Knob::Margin, config);
-        let names: Vec<&str> = self.pins.iter().flatten().map(|pin| pin.name.as_str()).collect();
+        let pins: Vec<(&str, Option<&PathBuf>)> =
+            self.pins.iter().flatten().map(|pin| (pin.name.as_str(), self.icon_of(pin))).collect();
         let illustration: Element<'a, Msg> = if on {
-            dock_preview(&t, &names, size, scale, lift, margin)
+            dock_preview(&t, &pins, size, scale, lift, margin)
         } else {
             sketch::screen(
                 t,
@@ -420,7 +443,7 @@ impl Page {
             group = group.push(
                 Row::new(t, pin.name.clone())
                     .subtitle(pin.app_id.clone())
-                    .prefix(letter_tile(&t, &pin.name, 32.0, index))
+                    .prefix(app_icon(&t, self.icon_of(pin), &pin.name, 32.0))
                     .suffix(controls)
                     .build(),
             );
@@ -458,35 +481,18 @@ impl Page {
 
 pub const PREVIEW_HEIGHT: f32 = 150.0;
 
-fn initial(name: &str) -> String {
-    name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| String::from("•"), |c| c.to_uppercase().collect())
-}
-
-fn letter_tile<'a>(t: &ThemeState, name: &str, size: f32, index: usize) -> Element<'a, Msg> {
-    let ramp = t.accent().ramp();
-    let top = theme::to_iced_color(ramp[1 + index % 3]);
-    let bottom = theme::to_iced_color(ramp[3 + index % 3]);
-    container(text(initial(name)).size((size * 0.44).round()).font(theme::SEMIBOLD).color(iced::Color::WHITE))
-        .center_x(Length::Fixed(size))
-        .center_y(Length::Fixed(size))
-        .style(move |_: &iced::Theme| sketch::gradient(top, bottom, theme::R3))
-        .into()
-}
-
-fn dock_preview<'a>(t: &ThemeState, names: &[&str], size: f64, scale: f64, lift: f64, margin: f64) -> Element<'a, Msg> {
+fn dock_preview<'a>(
+    t: &ThemeState, pins: &[(&str, Option<&PathBuf>)], size: f64, scale: f64, lift: f64, margin: f64,
+) -> Element<'a, Msg> {
     let unit = (size * 0.62) as f32;
-    let labels = if names.is_empty() {
-        vec!["Files", "Terminal", "Web", "Mail", "Music"]
-    } else {
-        names.iter().take(8).copied().collect()
-    };
-    let hovered = labels.len() / 2;
+    let placeholder = ["Files", "Terminal", "Web", "Mail", "Music"].map(|name| (name, None));
+    let shown = if pins.is_empty() { &placeholder[..] } else { &pins[..pins.len().min(8)] };
+    let hovered = shown.len() / 2;
     let mut tiles = IcedRow::new().spacing(5.0).align_y(Alignment::End);
-    for (index, name) in labels.into_iter().enumerate() {
+    for (index, (name, icon)) in shown.iter().enumerate() {
         let (tile_size, rise) =
             if index == hovered { ((f64::from(unit) * scale) as f32, (lift * 0.62) as f32) } else { (unit, 0.0) };
-        tiles =
-            tiles.push(container(letter_tile(t, name, tile_size.round(), index)).padding(Padding::ZERO.bottom(rise)));
+        tiles = tiles.push(container(app_icon(t, *icon, name, tile_size.round())).padding(Padding::ZERO.bottom(rise)));
     }
     let shell = t.popover_bg();
     let line = t.line_2();

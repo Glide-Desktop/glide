@@ -16,7 +16,7 @@ mod tr {
         Dnd => "Do Not Disturb", "Не турбувати";
         DndOn => "Banners are silenced. Everything still lands in the notification centre.", "Банери вимкнено. Усе й далі потрапляє до центру сповіщень.";
         DndOff => "Banners appear as notifications arrive", "Банери з'являються, щойно надходять сповіщення";
-        DndHint => "The bell in the top bar toggles it too", "Також вмикається дзвіночком на верхній панелі";
+        DndHint => "Quick settings and the notification centre toggle it too", "Також вмикається у швидких налаштуваннях і центрі сповіщень";
         Schedule => "Turn on automatically", "Вмикати автоматично";
         ScheduleHint => "Every day between these times. A manual toggle holds until the next change.", "Щодня в цьому проміжку. Ручне перемикання діє до наступної зміни.";
         From => "From", "З";
@@ -163,12 +163,12 @@ impl Pane for Page {
     const KEYWORDS: &'static [&'static str] =
         &["notification", "banner", "dnd", "disturb", "toast", "сповіщення", "банер", "турбувати"];
 
-    fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
+    fn open(&mut self, c: Ctx, _config: &ConfigStore) -> Task<Msg> {
         if self.requested {
             return Task::none();
         }
         self.requested = true;
-        let lang = std::env::var("LANG").unwrap_or_default();
+        let lang = c.lang.key().to_string();
         Task::perform(blocking(move || apps::visible(&apps::installed(&lang))), |apps| {
             Msg::AppsLoaded(apps.unwrap_or_default())
         })

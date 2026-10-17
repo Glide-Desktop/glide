@@ -296,33 +296,78 @@ fn hotspot_and_hidden_settings_carry_the_right_modes() {
     assert!(!network::hidden_settings("Open", None).contains_key("802-11-wireless-security"));
 }
 
-#[test]
-fn bluetooth_adapter_and_battery_are_read_from_bluetoothctl() {
-    let adapter = bluetooth::parse_adapter(
-        "Controller 50:FE:0C:12:B7:86 (public)\n\
-         \tName: laptop\n\
-         \tAlias: Artem's laptop\n\
-         \tPowered: yes\n\
-         \tPowerState: on\n\
-         \tDiscoverable: yes\n\
-         \tDiscoverableTimeout: 0x000000b4 (180)\n\
-         \tPairable: no\n",
-    )
-    .expect("a controller block parses");
-    assert_eq!(adapter.address, "50:FE:0C:12:B7:86");
-    assert_eq!(adapter.alias, "Artem's laptop");
-    assert!(adapter.powered && adapter.discoverable && !adapter.pairable);
-    assert_eq!(adapter.discoverable_timeout, 180);
+fn props(pairs: Vec<(&str, zbus::zvariant::Value<'static>)>) -> bluetooth::Properties {
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), zbus::zvariant::OwnedValue::try_from(value).expect("owned value")))
+        .collect()
+}
 
-    let device = bluetooth::parse_info(
-        "AC:3E:B1:98:2D:BF",
-        "Buds",
-        "\tAlias: Pixel Buds\n\tIcon: audio-headset\n\tPaired: yes\n\tTrusted: yes\n\
-         \tBlocked: no\n\tConnected: yes\n\tBattery Percentage: 0x55 (85)\n",
-    );
-    assert_eq!(device.battery, Some(85));
-    assert!(device.trusted && !device.blocked);
-    assert_eq!(bluetooth::device_kind(&device.icon), bluetooth::DeviceKind::Headphones);
+fn object(interfaces: Vec<(&str, bluetooth::Properties)>) -> std::collections::HashMap<String, bluetooth::Properties> {
+    interfaces.into_iter().map(|(name, props)| (name.to_string(), props)).collect()
+}
+
+#[test]
+fn bluetooth_state_comes_from_one_bluez_object_listing() {
+    use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
+    let path = |text: &str| OwnedObjectPath::try_from(text).expect("path");
+    let adapter = || Value::from(ObjectPath::try_from("/org/bluez/hci0").expect("path"));
+    let objects: bluetooth::Objects = [
+        (
+            path("/org/bluez/hci0"),
+            object(vec![(
+                "org.bluez.Adapter1",
+                props(vec![
+                    ("Address", Value::from("50:FE:0C:12:B7:86")),
+                    ("Name", Value::from("laptop")),
+                    ("Alias", Value::from("Artem's laptop")),
+                    ("Powered", Value::from(true)),
+                    ("PowerState", Value::from("on")),
+                    ("Discoverable", Value::from(true)),
+                    ("DiscoverableTimeout", Value::from(180u32)),
+                    ("Pairable", Value::from(false)),
+                ]),
+            )]),
+        ),
+        (
+            path("/org/bluez/hci0/dev_AC_3E_B1_98_2D_BF"),
+            object(vec![
+                (
+                    "org.bluez.Device1",
+                    props(vec![
+                        ("Address", Value::from("AC:3E:B1:98:2D:BF")),
+                        ("Alias", Value::from("Pixel Buds")),
+                        ("Icon", Value::from("audio-headset")),
+                        ("Paired", Value::from(true)),
+                        ("Trusted", Value::from(true)),
+                        ("Connected", Value::from(true)),
+                        ("Adapter", adapter()),
+                    ]),
+                ),
+                ("org.bluez.Battery1", props(vec![("Percentage", Value::from(85u8))])),
+            ]),
+        ),
+        (
+            path("/org/bluez/hci0/dev_11_22_33_44_55_66"),
+            object(vec![(
+                "org.bluez.Device1",
+                props(vec![("Address", Value::from("11:22:33:44:55:66")), ("Adapter", adapter())]),
+            )]),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let state = bluetooth::from_objects(&objects);
+    assert!(state.available && state.powered && !state.blocked);
+    assert_eq!(state.alias, "Artem's laptop");
+    assert!(state.adapter.discoverable && !state.adapter.pairable);
+    assert_eq!(state.adapter.discoverable_timeout, 180);
+    let buds = state.device("AC:3E:B1:98:2D:BF").expect("the paired headset is listed");
+    assert_eq!(buds.battery, Some(85));
+    assert!(buds.trusted && !buds.blocked && buds.paired);
+    assert_eq!(bluetooth::device_kind(&buds.icon), bluetooth::DeviceKind::Headphones);
+    assert_eq!(state.nearby().count(), 0, "a device that only has an address is not offered");
+    assert!(!bluetooth::from_objects(&bluetooth::Objects::new()).available);
 }
 
 #[test]
@@ -342,15 +387,18 @@ fn nameless_nearby_devices_are_hidden_and_aliases_are_cleaned() {
 #[test]
 fn vpn_connections_are_filtered_and_sorted_active_first() {
     let list = vpn::parse_connections(
-        "Home:1111:802-11-wireless:wlan0:yes:activated:yes\n\
-         office:2222:vpn::no::no\n\
-         Mullvad:3333:wireguard:wg0:yes:activated:yes\n",
+        "Home:1111:802-11-wireless:wlan0:yes:activated:yes:/etc/NetworkManager/system-connections/Home.nmconnection\n\
+         office:2222:vpn::no::no:/etc/NetworkManager/system-connections/office.nmconnection\n\
+         Mullvad:3333:wireguard:wg0:yes:activated:yes:/etc/NetworkManager/system-connections/Mullvad.nmconnection\n\
+         wt0:4444:wireguard:wt0:yes:activated:yes:/run/NetworkManager/system-connections/wt0.nmconnection\n",
     );
-    assert_eq!(list.len(), 2);
+    assert_eq!(list.len(), 3);
     assert_eq!(list[0].name, "Mullvad");
     assert!(list[0].is_wireguard());
+    assert!(!list[0].external);
     assert_eq!(list[0].protocol(), "WireGuard");
-    let mut office = list[1].clone();
+    assert!(list[1].external, "a tunnel NetworkManager only mirrors (NetBird's wt0) cannot be toggled or deleted");
+    let mut office = list[2].clone();
     office.service = "org.freedesktop.NetworkManager.openvpn".to_string();
     assert_eq!(office.protocol(), "OpenVPN");
 }

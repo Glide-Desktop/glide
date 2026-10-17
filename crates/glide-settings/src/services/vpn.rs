@@ -17,6 +17,7 @@ pub struct Vpn {
     pub state: String,
     pub autoconnect: bool,
     pub service: String,
+    pub external: bool,
 }
 
 impl Vpn {
@@ -93,7 +94,7 @@ pub fn parse_connections(text: &str) -> Vec<Vpn> {
     let mut list: Vec<Vpn> = text
         .lines()
         .filter_map(|line| match split_terse(line).as_slice() {
-            [name, uuid, kind, device, active, state, autoconnect]
+            [name, uuid, kind, device, active, state, autoconnect, rest @ ..]
                 if !uuid.is_empty() && (kind == WIREGUARD || kind == PLUGIN) =>
             {
                 Some(Vpn {
@@ -105,6 +106,7 @@ pub fn parse_connections(text: &str) -> Vec<Vpn> {
                     state: state.clone(),
                     autoconnect: autoconnect == "yes",
                     service: String::new(),
+                    external: rest.first().is_some_and(|file| file.starts_with("/run/")),
                 })
             }
             _ => None,
@@ -275,16 +277,18 @@ pub fn find_candidates() -> Vec<Candidate> {
 
 #[must_use]
 pub fn read() -> VpnState {
-    let Some(text) =
-        run::output("nmcli", &["-t", "-f", "NAME,UUID,TYPE,DEVICE,ACTIVE,STATE,AUTOCONNECT", "connection", "show"])
-    else {
+    let Some(text) = run::output(
+        "nmcli",
+        &["-t", "-f", "NAME,UUID,TYPE,DEVICE,ACTIVE,STATE,AUTOCONNECT,FILENAME", "connection", "show"],
+    ) else {
         return VpnState::default();
     };
     let mut connections = parse_connections(&text);
-    for vpn in connections.iter_mut().filter(|vpn| !vpn.is_wireguard()) {
-        vpn.service = run::output("nmcli", &["-g", "vpn.service-type", "connection", "show", "uuid", &vpn.uuid])
-            .map(|text| text.trim().to_string())
-            .unwrap_or_default();
+    let plugins: Vec<&str> =
+        connections.iter().filter(|vpn| !vpn.is_wireguard()).map(|vpn| vpn.uuid.as_str()).collect();
+    let services = super::network::profile_field("vpn.service-type", &plugins);
+    for (vpn, service) in connections.iter_mut().filter(|vpn| !vpn.is_wireguard()).zip(services) {
+        vpn.service = service.trim().to_string();
     }
     VpnState { available: true, connections, plugins: read_plugins() }
 }

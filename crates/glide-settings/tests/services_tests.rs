@@ -1,7 +1,7 @@
 use glide_settings::services::config::{
     AccelProfile, ConfigStore, WallpaperFit, accent_key, parse_clock, parse_error_summary, round_to,
 };
-use glide_settings::services::{audio, bluetooth, display, input, network, system};
+use glide_settings::services::{audio, display, input, network, system};
 use glide_settings::{Accent, Appearance, Lang};
 
 const WPCTL_STATUS: &str = "PipeWire 'pipewire-0' [1.6.8, artem@laptop, cookie:1976157988]
@@ -83,9 +83,9 @@ fn nmcli_networks_are_deduplicated_and_sorted_active_first() {
 
 #[test]
 fn nmcli_profiles_are_matched_by_ssid_not_by_profile_name() {
-    assert_eq!(network::parse_ssid("HomeNet\n").as_deref(), Some("HomeNet"));
-    assert_eq!(network::parse_ssid("a:b\\c\n").as_deref(), Some("a:b\\c"));
-    assert_eq!(network::parse_ssid("\n"), None);
+    assert_eq!(network::parse_ssid_records("HomeNet\n"), ["HomeNet"]);
+    assert_eq!(network::parse_ssid_records("a:b\\c\n\nOffice\n\nCafe 5G\n"), ["a:b\\c", "Office", "Cafe 5G"]);
+    assert!(network::parse_ssid_records("").is_empty(), "one SSID per profile, from a single nmcli call");
     let known = vec![network::KnownNetwork { uuid: String::from("1111-aaaa"), ssid: String::from("HomeNet") }];
     let networks = network::parse_networks(" :HomeNet:50:WPA2\n :Home Wi-Fi:40:WPA2\n", &known);
     assert!(networks.iter().any(|n| n.ssid == "HomeNet" && n.known));
@@ -167,31 +167,6 @@ fn nmcli_devices_pick_wifi_and_usable_ethernet() {
     assert_eq!(wired.len(), 1);
     assert_eq!(wired[0].device, "enp3s0");
     assert!(wired[0].connected);
-}
-
-#[test]
-fn bluetoothctl_show_detects_power_and_rfkill_block() {
-    let text = "Controller 50:FE:0C:12:B7:86 (public)\n\tName: laptop\n\tAlias: laptop\n\tPowered: no\n\tPowerState: off-blocked\n";
-    let (powered, blocked, alias) = bluetooth::parse_show(text).expect("controller");
-    assert!(!powered);
-    assert!(blocked);
-    assert_eq!(alias, "laptop");
-    assert!(bluetooth::parse_show("No default controller available").is_none());
-}
-
-#[test]
-fn bluetoothctl_devices_and_info_parse() {
-    let devices = bluetooth::parse_devices("Device AC:3E:B1:98:2D:BF Buds Pro\nDevice bogus\n");
-    assert_eq!(devices, vec![(String::from("AC:3E:B1:98:2D:BF"), String::from("Buds Pro"))]);
-    let info = bluetooth::parse_info(
-        "AC:3E:B1:98:2D:BF",
-        "Buds Pro",
-        "Device AC:3E:B1:98:2D:BF\n\tAlias: My Buds\n\tIcon: audio-headset\n\tPaired: yes\n\tConnected: no\n",
-    );
-    assert_eq!(info.name, "My Buds");
-    assert!(info.paired);
-    assert!(!info.connected);
-    assert_eq!(info.icon, "audio-headset");
 }
 
 #[test]
