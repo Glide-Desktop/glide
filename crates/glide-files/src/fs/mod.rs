@@ -13,7 +13,7 @@ pub mod uri;
 pub mod volumes;
 pub mod watch;
 
-pub use actions::{Extensions, Offer, Roots, Run, Target};
+pub use actions::{Codes, Extensions, Offer, Roots, Run, Target};
 pub use entry::{FileCategory, FileEntry, LocalTime, days_from_civil, format_bytes, format_time, permissions_string};
 pub use listing::{SortBy, SortConfig, natural_cmp, read_directory, search_recursive, sort_entries};
 pub use operations::{

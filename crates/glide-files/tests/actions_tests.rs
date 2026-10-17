@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use glide_files::fs::mime::{MimeDb, glob_match};
-use glide_files::fs::{Extensions, Offer, Roots, Run, Target};
+use glide_files::fs::{Codes, Extensions, Offer, Roots, Run, Target};
 use glide_files::i18n::{Key, Lang};
 
 struct Scratch(PathBuf);
@@ -188,13 +188,17 @@ fn thunar_archive_plugin_scripts_become_compress_and_extract() {
     assert_eq!(commands, [expected]);
 }
 
-fn exec(line: &str, targets: &[Target]) -> Vec<Vec<String>> {
-    Run::Exec { line: line.to_string(), desktop: PathBuf::from("/d/menu.desktop") }
+fn exec_with(line: &str, targets: &[Target], codes: Codes) -> Vec<Vec<String>> {
+    Run::Exec { line: line.to_string(), desktop: PathBuf::from("/d/menu.desktop"), codes }
         .commands(targets, Path::new("/"))
         .expect("valid Exec")
         .into_iter()
         .map(|argv| argv.into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect())
         .collect()
+}
+
+fn exec(line: &str, targets: &[Target]) -> Vec<Vec<String>> {
+    exec_with(line, targets, Codes::Action)
 }
 
 #[test]
@@ -220,10 +224,29 @@ fn exec_field_codes_expand_per_desktop_entry_rules() {
     assert_eq!(exec(r#""my tool" "arg \"q\"" %U"#, &files[..1]), [["my tool", "arg \"q\"", "file:///a/one%20two.txt"]]);
     assert_eq!(exec("tool %k %i", &files[..1]), [["tool", "/d/menu.desktop"]]);
     assert!(
-        Run::Exec { line: "tool \"open".to_string(), desktop: PathBuf::new() }
+        Run::Exec { line: "tool \"open".to_string(), desktop: PathBuf::new(), codes: Codes::Action }
             .commands(&files, Path::new("/"))
             .is_err()
     );
+}
+
+#[test]
+fn an_application_exec_line_follows_the_desktop_entry_codes() {
+    let extensions = Extensions::default();
+    let files = [target(&extensions, "/a/one.txt", false), target(&extensions, "/b/two.txt", false)];
+    let viewer = || Codes::Entry { name: String::from("Image Viewer"), icon: Some(String::from("viewer")) };
+    assert_eq!(
+        exec_with("viewer --title %c %i %F", &files, viewer()),
+        [["viewer", "--title", "Image Viewer", "--icon", "viewer", "/a/one.txt", "/b/two.txt"]],
+        "%c is the app's name and %i its icon, not a count"
+    );
+    assert_eq!(
+        exec_with("viewer %d %D %n %N %v %m %f", &files, viewer()),
+        [["viewer", "/a/one.txt"], ["viewer", "/b/two.txt"]],
+        "deprecated codes are dropped and do not split the launch"
+    );
+    let plain = Codes::Entry { name: String::from("Viewer"), icon: None };
+    assert_eq!(exec_with("viewer %i %U", &files[..1], plain), [["viewer", "file:///a/one.txt"]], "no icon, no --icon");
 }
 
 fn app(name: &str, mimes: &str) -> String {

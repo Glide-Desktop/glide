@@ -46,19 +46,37 @@ impl Roots {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Run {
-    Exec { line: String, desktop: PathBuf },
+    Exec { line: String, desktop: PathBuf, codes: Codes },
     Tap { script: PathBuf, verb: &'static str },
     SetDefault { mime: String, app: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Codes {
+    Entry { name: String, icon: Option<String> },
+    Action,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopApp {
     pub id: String,
     pub name: String,
+    pub icon: Option<String>,
     pub exec: String,
     pub desktop: PathBuf,
     pub listed: bool,
     mimes: Vec<String>,
+}
+
+impl DesktopApp {
+    #[must_use]
+    pub fn run(&self) -> Run {
+        Run::Exec {
+            line: self.exec.clone(),
+            desktop: self.desktop.clone(),
+            codes: Codes::Entry { name: self.name.clone(), icon: self.icon.clone() },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -128,7 +146,8 @@ fn desktop_apps(roots: &Roots, lang: Lang) -> Vec<DesktopApp> {
                     glide_config::terminal::current()
                 });
                 let listed = flag(entry, "NoDisplay") != Some(true);
-                apps.push(DesktopApp { id, name, exec, desktop: file, listed, mimes });
+                let icon = entry.get("Icon").filter(|icon| !icon.trim().is_empty()).cloned();
+                apps.push(DesktopApp { id, name, icon, exec, desktop: file, listed, mimes });
             }
         }
     }
@@ -539,12 +558,16 @@ fn service_menu(file: &Path, lang: Lang) -> Vec<Action> {
             if !usable(section) {
                 return None;
             }
+            let label = localized(section, "Name", lang)?;
+            let icon =
+                section.get("Icon").or_else(|| entry.get("Icon")).filter(|icon| !icon.trim().is_empty()).cloned();
+            let codes = Codes::Entry { name: label.clone(), icon };
             Some(Action {
-                label: localized(section, "Name", lang)?,
+                label,
                 group: group.clone(),
                 profiles: vec![Profile {
                     filter: filter.clone(),
-                    run: Run::Exec { line: section.get("Exec")?.clone(), desktop: file.to_path_buf() },
+                    run: Run::Exec { line: section.get("Exec")?.clone(), desktop: file.to_path_buf(), codes },
                 }],
             })
         })
@@ -595,7 +618,8 @@ fn file_manager_action(file: &Path, lang: Lang) -> Option<Action> {
             if let Some(spec) = section.get("SelectionCount") {
                 selection_count(spec, &mut filter);
             }
-            Some(Profile { filter, run: Run::Exec { line: section.get("Exec")?.clone(), desktop: file.to_path_buf() } })
+            let line = section.get("Exec")?.clone();
+            Some(Profile { filter, run: Run::Exec { line, desktop: file.to_path_buf(), codes: Codes::Action } })
         })
         .collect();
     if profiles.is_empty() {
@@ -671,19 +695,23 @@ impl Run {
                 argv.extend(targets.iter().map(|target| target.path.clone().into()));
                 Ok(vec![argv])
             }
-            Self::Exec { line, desktop } => {
+            Self::Exec { line, desktop, codes } => {
                 let args = split_exec(line)
                     .filter(|args| !args.is_empty())
                     .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "malformed Exec"))?;
-                let codes: String = args.iter().flat_map(|arg| field_codes(arg)).collect();
+                let found: String = args.iter().flat_map(|arg| field_codes(arg)).collect();
+                let (plural, singular) = match codes {
+                    Codes::Entry { .. } => ("FU", "fu"),
+                    Codes::Action => (PLURAL, SINGULAR),
+                };
                 let items: Vec<&Target> = targets.iter().collect();
                 let runs: Vec<&[&Target]> =
-                    if !codes.contains(|c| PLURAL.contains(c)) && codes.contains(|c| SINGULAR.contains(c)) {
+                    if !found.contains(|c| plural.contains(c)) && found.contains(|c| singular.contains(c)) {
                         items.chunks(1).collect()
                     } else {
                         vec![&items[..]]
                     };
-                Ok(runs.into_iter().map(|run| expand(&args, run, desktop)).collect())
+                Ok(runs.into_iter().map(|run| expand(&args, run, desktop, codes)).collect())
             }
         }
     }
@@ -750,11 +778,21 @@ fn field_codes(arg: &str) -> Vec<char> {
     codes
 }
 
-fn field(code: char, items: &[&Target], desktop: &Path) -> Vec<OsString> {
+fn field(code: char, items: &[&Target], desktop: &Path, codes: &Codes) -> Vec<OsString> {
     let each = |value: &dyn Fn(&Target) -> OsString| -> Vec<OsString> {
         let values = items.iter().map(|target| value(target));
         if code.is_ascii_lowercase() { values.take(1).collect() } else { values.collect() }
     };
+    if let Codes::Entry { name, icon } = codes {
+        return match code {
+            'f' | 'F' => each(&|target| target.path.clone().into()),
+            'u' | 'U' => each(&|target| file_uri(&target.path).into()),
+            'c' => vec![name.into()],
+            'i' => icon.iter().flat_map(|icon| [OsString::from("--icon"), icon.into()]).collect(),
+            'k' => vec![desktop.into()],
+            _ => Vec::new(),
+        };
+    }
     match code.to_ascii_lowercase() {
         'f' => each(&|target| target.path.clone().into()),
         'u' => each(&|target| file_uri(&target.path).into()),
@@ -779,14 +817,14 @@ fn field(code: char, items: &[&Target], desktop: &Path) -> Vec<OsString> {
     }
 }
 
-fn expand(words: &[String], items: &[&Target], desktop: &Path) -> Vec<OsString> {
+fn expand(words: &[String], items: &[&Target], desktop: &Path, codes: &Codes) -> Vec<OsString> {
     let mut argv = Vec::new();
     for arg in words {
         let mut chars = arg.chars();
         if let (Some('%'), Some(code), None) = (chars.next(), chars.next(), chars.next())
             && code != '%'
         {
-            argv.extend(field(code, items, desktop));
+            argv.extend(field(code, items, desktop, codes));
             continue;
         }
         let mut out = OsString::new();
@@ -799,7 +837,7 @@ fn expand(words: &[String], items: &[&Target], desktop: &Path) -> Vec<OsString> 
             match chars.next() {
                 Some('%') => out.push("%"),
                 Some(code) => {
-                    let values = field(code, items, desktop);
+                    let values = field(code, items, desktop, codes);
                     for (index, value) in values.iter().enumerate() {
                         if index > 0 {
                             out.push(" ");

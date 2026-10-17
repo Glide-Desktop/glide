@@ -2144,11 +2144,7 @@ impl App {
         let mut groups: Vec<(Option<Run>, Vec<Target>)> = Vec::new();
         for path in paths.into_iter().take(OPEN_LIMIT) {
             let target = self.extensions.target(&path, false);
-            let app = self
-                .extensions
-                .apps_for(std::slice::from_ref(&target))
-                .first()
-                .map(|app| Run::Exec { line: app.exec.clone(), desktop: app.desktop.clone() });
+            let app = self.extensions.apps_for(std::slice::from_ref(&target)).first().map(|app| app.run());
             match groups.iter_mut().find(|(run, _)| run.is_some() && *run == app) {
                 Some((_, targets)) => targets.push(target),
                 None => groups.push((app, vec![target])),
@@ -2185,11 +2181,7 @@ impl App {
         let mut offers: Vec<Offer> = apps
             .iter()
             .take(OPEN_WITH_LIMIT)
-            .map(|app| Offer {
-                label: app.name.clone(),
-                group: group.clone(),
-                run: Run::Exec { line: app.exec.clone(), desktop: app.desktop.clone() },
-            })
+            .map(|app| Offer { label: app.name.clone(), group: group.clone(), run: app.run() })
             .collect();
         if let [target] = targets {
             let current = self
