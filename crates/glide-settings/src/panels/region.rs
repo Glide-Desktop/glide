@@ -2,8 +2,8 @@ use iced::widget::{column, row, text};
 use iced::{Alignment, Element, Fill, Task};
 
 use super::common::{error_banner, gated};
-use super::keyboard::LangChoice;
 use super::{Ctx, Pane};
+use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::services::config::ConfigStore;
 use crate::services::locale::{self, FORMAT_CATEGORIES, Formats, SystemLocale};
@@ -53,6 +53,38 @@ mod tr {
 }
 
 use tr::Key as T;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LangChoice {
+    System { detected: Lang, ui: Lang },
+    Explicit(Lang),
+}
+
+impl LangChoice {
+    #[must_use]
+    pub const fn lang(self) -> Option<Lang> {
+        match self {
+            Self::System { .. } => None,
+            Self::Explicit(lang) => Some(lang),
+        }
+    }
+
+    #[must_use]
+    pub fn options(config: &ConfigStore) -> (Vec<Self>, Self) {
+        let system = Self::System { detected: config.system_language(), ui: config.language() };
+        let current = config.language_choice().map_or(system, Self::Explicit);
+        (vec![system, Self::Explicit(Lang::Uk), Self::Explicit(Lang::En)], current)
+    }
+}
+
+impl std::fmt::Display for LangChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System { detected, ui } => write!(f, "{} ({})", K::LanguageSystem.text(*ui), detected.native_name()),
+            Self::Explicit(lang) => f.write_str(lang.native_name()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocaleChoice {
@@ -125,7 +157,13 @@ impl Snapshot {
     #[must_use]
     pub fn label(&self, code: &str) -> String {
         let name = locale::display_name(self.formats_for(code), code);
-        if name == code { name } else { format!("{name} · {code}") }
+        let shared = self
+            .installed
+            .iter()
+            .filter(|other| locale::display_name(self.formats_for(other), other) == name)
+            .nth(1)
+            .is_some();
+        if shared && name != code { format!("{name} · {code}") } else { name }
     }
 
     #[must_use]

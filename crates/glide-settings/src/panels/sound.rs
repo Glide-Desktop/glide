@@ -446,7 +446,7 @@ impl Page {
         };
         let muted = self.state.output.is_some_and(|level| level.muted);
         let big = text(percent).size(28).font(theme::SEMIBOLD).color(if muted { t.fg_3() } else { t.fg_1() });
-        widgets::hero(
+        widgets::section_hero(
             t,
             if muted { Icon::VolumeMute } else { glyph },
             Panel::Sound.color(),
@@ -518,12 +518,8 @@ impl Page {
             let buttons = iced::widget::Row::with_children(buttons).spacing(8).align_y(Alignment::Center);
             Row::new(t, c.t(tr::Key::TestSound))
                 .subtitle(if busy { c.t(tr::Key::Playing) } else { c.t(tr::Key::TestSoundHint) })
-                .prefix(widgets::tile(
-                    Icon::Headphones,
-                    theme::ramp_color(theme::Accent::Cinnabar, 3),
-                    theme::SMALL_CONTROL_HEIGHT,
-                ))
                 .suffix(buttons)
+                .wide()
                 .build()
         })
     }

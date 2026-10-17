@@ -107,15 +107,24 @@ pub fn input_choices(
     (choices, selected)
 }
 
-fn shortcut_row<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
-    let shortcut = |option: &'static str| Shortcut { option, label: shortcut_label(option) };
-    let options = config.xkb_options();
-    let current = input::switch_option(&options).map(|option| {
-        let known = SWITCH_OPTIONS.iter().find(|known| **known == option);
-        Shortcut { label: shortcut_label(option), ..shortcut(known.copied().unwrap_or("")) }
+#[must_use]
+pub fn shortcut_choices(c: Ctx, options: &str) -> (Vec<Shortcut>, Shortcut) {
+    let off = Shortcut { option: String::new(), label: c.t(tr::Key::Off).to_string() };
+    let shortcut = |option: &str| Shortcut { option: option.to_string(), label: shortcut_label(option).to_string() };
+    let mut shortcuts: Vec<Shortcut> =
+        std::iter::once(off).chain(SWITCH_OPTIONS.iter().map(|option| shortcut(option))).collect();
+    let option = input::switch_option(options).unwrap_or_default();
+    let current = shortcuts.iter().find(|known| known.option == option).cloned().unwrap_or_else(|| {
+        let unknown = Shortcut { option: option.to_string(), label: option.to_string() };
+        shortcuts.push(unknown.clone());
+        unknown
     });
-    let shortcuts = SWITCH_OPTIONS.iter().map(|option| shortcut(option)).collect();
-    let dropdown = widgets::dropdown(c.theme, shortcuts, current, Msg::Shortcut, 160.0);
+    (shortcuts, current)
+}
+
+fn shortcut_row<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
+    let (shortcuts, current) = shortcut_choices(*c, &config.xkb_options());
+    let dropdown = widgets::dropdown(c.theme, shortcuts, Some(current), Msg::Shortcut, 200.0);
     Row::new(c.theme, c.t(K::SwitchLayouts)).subtitle(c.t(K::SwitchLayoutsHint)).suffix(gated(*c, dropdown)).build()
 }
 
@@ -128,13 +137,13 @@ fn pick_row<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortcut {
-    pub option: &'static str,
-    pub label: &'static str,
+    pub option: String,
+    pub label: String,
 }
 
 impl std::fmt::Display for Shortcut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label)
+        f.write_str(&self.label)
     }
 }
 
@@ -231,38 +240,6 @@ fn option_choices(
     (choices, selected)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LangChoice {
-    System { detected: Lang, ui: Lang },
-    Explicit(Lang),
-}
-
-impl LangChoice {
-    #[must_use]
-    pub const fn lang(self) -> Option<Lang> {
-        match self {
-            Self::System { .. } => None,
-            Self::Explicit(lang) => Some(lang),
-        }
-    }
-
-    #[must_use]
-    pub fn options(config: &ConfigStore) -> (Vec<Self>, Self) {
-        let system = Self::System { detected: config.system_language(), ui: config.language() };
-        let current = config.language_choice().map_or(system, Self::Explicit);
-        (vec![system, Self::Explicit(Lang::Uk), Self::Explicit(Lang::En)], current)
-    }
-}
-
-impl std::fmt::Display for LangChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::System { detected, ui } => write!(f, "{} ({})", K::LanguageSystem.text(*ui), detected.native_name()),
-            Self::Explicit(lang) => f.write_str(lang.native_name()),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Msg {
     MoveUp(usize),
@@ -281,7 +258,6 @@ pub enum Msg {
     Rate(f64),
     CommitRepeat,
     SettleRepeat(u64),
-    Language(LangChoice),
     TestInput(String),
     ResetRepeat,
     Layouts(Vec<Layout>),
@@ -305,12 +281,10 @@ impl Pane for Page {
         "input source",
         "repeat",
         "xkb",
-        "language",
         "compose",
         "caps lock",
         "num lock",
         "розкладка",
-        "мова",
         "повтор",
         "клавіші",
     ];
@@ -354,7 +328,7 @@ impl Pane for Page {
                 }
             }
             Msg::Shortcut(shortcut) => {
-                Self::set_options(config, |options| input::replace_switch_option(options, shortcut.option));
+                Self::set_options(config, |options| input::replace_switch_option(options, &shortcut.option));
             }
             Msg::Pick(choice) if choice.first => config.remove("input", choice.key),
             Msg::Pick(choice) => config.set_str("input", choice.key, choice.value),
@@ -399,7 +373,6 @@ impl Pane for Page {
                 config.set_int("input", "repeat-delay", DEFAULT_REPEAT_DELAY);
                 config.set_int("input", "repeat-rate", DEFAULT_REPEAT_RATE);
             }
-            Msg::Language(choice) => config.set_language(choice.lang()),
             Msg::TestInput(value) => self.test = value,
             Msg::Layouts(layouts) => {
                 self.loading_layouts = false;
@@ -415,7 +388,6 @@ impl Pane for Page {
             self.sources_group(&c, config),
             Page::special_group(&c, config),
             self.repeat_group(&c, config),
-            Page::language_group(&c, config),
         ]
         .spacing(theme::SECTION_GAP)
         .into()
@@ -626,24 +598,6 @@ impl Page {
                     .align_y(Alignment::Center),
                 )
                 .padding([8.0, theme::ROW_PADDING_X]),
-            )
-            .build()
-    }
-
-    fn language_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        let t = c.theme;
-        let (choices, current) = LangChoice::options(config);
-        Group::new(t)
-            .title(c.t(K::Language))
-            .push(
-                Row::new(t, c.t(K::InterfaceLanguage))
-                    .subtitle(c.t(K::InterfaceLanguageHint))
-                    .suffix(gated(
-                        *c,
-                        row![widgets::dropdown(t, choices, Some(current), Msg::Language, 240.0,)]
-                            .align_y(Alignment::Center),
-                    ))
-                    .build(),
             )
             .build()
     }

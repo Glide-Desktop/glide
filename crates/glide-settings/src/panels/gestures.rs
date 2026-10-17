@@ -424,7 +424,7 @@ impl Page {
         } else {
             tr::Key::SummaryThree
         };
-        widgets::hero(
+        widgets::section_hero(
             t,
             Icon::Gesture,
             Panel::Gestures.color(),

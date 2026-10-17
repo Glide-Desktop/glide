@@ -226,11 +226,38 @@ pub fn radius_round() -> iced::border::Radius {
     iced::border::Radius::from(R_ROUND)
 }
 
+pub fn use_ui_family(requested: Option<&str>) -> String {
+    use iced::advanced::graphics::text::cosmic_text::fontdb::{Family, Query, Style, Weight};
+    let mut system =
+        iced::advanced::graphics::text::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let db = system.raw().db_mut();
+    let family = glide_theme::font::ui_family(
+        requested,
+        db.faces().flat_map(|face| face.families.iter().map(|(name, _)| name.as_str())),
+    );
+    db.set_sans_serif_family(family.clone());
+    for weight in [Weight::MEDIUM, Weight::SEMIBOLD, Weight::BOLD] {
+        let exact = db.faces().any(|face| {
+            face.weight == weight
+                && face.style == Style::Normal
+                && face.families.iter().any(|(name, _)| *name == family)
+        });
+        let query = Query { families: &[Family::Name(&family)], weight, ..Query::default() };
+        let nearest = db.query(&query).and_then(|id| db.face(id)).cloned();
+        if let Some(mut face) = nearest.filter(|_| !exact) {
+            face.weight = weight;
+            db.push_face_info(face);
+        }
+    }
+    family
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeState {
     pub appearance: Appearance,
     pub accent: Accent,
     pub tokens: glide_theme::Tokens,
+    pub compact: bool,
 }
 
 impl ThemeState {
@@ -239,7 +266,12 @@ impl ThemeState {
         let appearance = appearance.into();
         let accent = accent.into();
         let tokens = glide_theme::Tokens::new(appearance.into(), accent.into());
-        Self { appearance, accent, tokens }
+        Self { appearance, accent, tokens, compact: false }
+    }
+
+    #[must_use]
+    pub const fn compact(self, compact: bool) -> Self {
+        Self { compact, ..self }
     }
 
     #[must_use]
@@ -546,8 +578,6 @@ pub fn content_container_style(theme: &ThemeState) -> container::Style {
 }
 
 pub const SEMIBOLD: iced::Font = iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT };
-
-pub const BOLD: iced::Font = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
 
 pub const CONTROL_HEIGHT: f32 = 34.0;
 pub const SMALL_CONTROL_HEIGHT: f32 = 28.0;

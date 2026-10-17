@@ -151,12 +151,28 @@ pub struct Row<'a, M> {
     suffix: Option<Element<'a, M>>,
     on_press: Option<M>,
     dimmed: bool,
+    wide: bool,
 }
 
 impl<'a, M: Clone + 'a> Row<'a, M> {
     #[must_use]
     pub fn new(theme: ThemeState, title: impl Into<String>) -> Self {
-        Self { theme, title: title.into(), subtitle: None, prefix: None, suffix: None, on_press: None, dimmed: false }
+        Self {
+            theme,
+            title: title.into(),
+            subtitle: None,
+            prefix: None,
+            suffix: None,
+            on_press: None,
+            dimmed: false,
+            wide: false,
+        }
+    }
+
+    #[must_use]
+    pub fn wide(mut self) -> Self {
+        self.wide = true;
+        self
     }
 
     #[must_use]
@@ -205,12 +221,20 @@ impl<'a, M: Clone + 'a> Row<'a, M> {
             line = line.push(prefix);
         }
         line = line.push(labels);
+        let stacked = self.wide && t.compact;
+        let mut below = None;
         if let Some(suffix) = self.suffix {
-            line = line.push(suffix);
+            if stacked {
+                below = Some(suffix);
+            } else {
+                line = line.push(suffix);
+            }
         }
-        let body = container(min_height(line, theme::row_content_height()))
-            .padding([theme::ROW_PADDING_Y, theme::ROW_PADDING_X])
-            .width(Fill);
+        let mut content = Column::new().spacing(8).push(min_height(line, theme::row_content_height()));
+        if let Some(suffix) = below {
+            content = content.push(container(suffix).padding(Padding::ZERO.bottom(theme::ROW_PADDING_Y)));
+        }
+        let body = container(content).padding([theme::ROW_PADDING_Y, theme::ROW_PADDING_X]).width(Fill);
         match self.on_press {
             Some(message) => button(body)
                 .on_press(message)
@@ -441,25 +465,6 @@ pub fn banner<'a, M: Clone + 'a>(
 }
 
 #[must_use]
-pub fn hero<'a, M: 'a>(
-    t: ThemeState, glyph: Icon, color: Color, heading: impl text::IntoFragment<'a>,
-    description: impl text::IntoFragment<'a>, suffix: Option<Element<'a, M>>,
-) -> Element<'a, M> {
-    let mut line = row![
-        tile(glyph, color, 52.0),
-        column![text(heading).size(19).font(theme::SEMIBOLD), text(description).size(13).color(t.fg_2()),]
-            .spacing(2)
-            .width(Fill),
-    ]
-    .spacing(16)
-    .align_y(Alignment::Center);
-    if let Some(suffix) = suffix {
-        line = line.push(suffix);
-    }
-    container(line).padding(16).width(Fill).style(move |_: &iced::Theme| theme::group_style(&t)).into()
-}
-
-#[must_use]
 pub fn empty_state<'a, M: 'a>(
     t: ThemeState, glyph: Icon, heading: impl text::IntoFragment<'a>, description: impl text::IntoFragment<'a>,
 ) -> Element<'a, M> {
@@ -474,6 +479,19 @@ pub fn empty_state<'a, M: 'a>(
     )
     .padding(32)
     .center_x(Fill)
+    .into()
+}
+
+#[must_use]
+pub fn sample_well<'a, M: 'a>(t: ThemeState, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let well = t.sunken_bg();
+    container(
+        container(content)
+            .padding([12, 16])
+            .width(Fill)
+            .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2())),
+    )
+    .padding([6.0, theme::ROW_PADDING_X])
     .into()
 }
 
@@ -713,8 +731,26 @@ pub fn stat_tile<'a, M: 'a>(
 }
 
 #[must_use]
-pub fn stat_row<'a, M: 'a>(tiles: impl IntoIterator<Item = Element<'a, M>>) -> Element<'a, M> {
-    iced::widget::Row::with_children(tiles).spacing(12).into()
+pub fn stat_row<'a, M: 'a>(t: ThemeState, tiles: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let per_line = if t.compact { 2 } else { tiles.len() };
+    grid(tiles, per_line, 12.0)
+}
+
+#[must_use]
+pub fn grid<'a, M: 'a>(cells: Vec<Element<'a, M>>, per_line: usize, spacing: f32) -> Element<'a, M> {
+    let per_line = per_line.max(1);
+    let mut lines = Column::new().spacing(spacing);
+    let mut cells = cells.into_iter().peekable();
+    while cells.peek().is_some() {
+        let line: Vec<Element<'a, M>> = cells.by_ref().take(per_line).collect();
+        let missing = per_line - line.len();
+        lines = lines.push(
+            iced::widget::Row::with_children(line)
+                .extend((0..missing).map(|_| space().width(Fill).into()))
+                .spacing(spacing),
+        );
+    }
+    lines.into()
 }
 
 fn portion(fraction: f32) -> u16 {
@@ -857,18 +893,19 @@ pub fn section_hero<'a, M: 'a>(
     t: ThemeState, glyph: Icon, color: Color, heading: impl text::IntoFragment<'a>,
     description: impl text::IntoFragment<'a>, trailing: Option<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let mut line = row![
-        tile(glyph, color, 64.0),
-        column![
-            text(heading).size(22).font(theme::SEMIBOLD).color(t.fg_1()),
-            text(description).size(13).color(t.fg_2()),
-        ]
-        .spacing(4)
-        .width(Fill),
+    let mut labels = column![
+        text(heading).size(22).font(theme::SEMIBOLD).color(t.fg_1()).wrapping(text::Wrapping::WordOrGlyph),
+        text(description).size(13).color(t.fg_2()),
     ]
-    .spacing(18)
-    .align_y(Alignment::Center);
-    if let Some(trailing) = trailing {
+    .spacing(4)
+    .width(Fill);
+    let mut end = None;
+    match trailing {
+        Some(trailing) if t.compact => labels = labels.push(container(trailing).padding(Padding::ZERO.top(4))),
+        other => end = other,
+    }
+    let mut line = row![tile(glyph, color, 64.0), labels].spacing(18).align_y(Alignment::Center);
+    if let Some(trailing) = end {
         line = line.push(trailing);
     }
     container(line).padding(20).width(Fill).style(move |_: &iced::Theme| theme::hero_card_style(&t, color)).into()

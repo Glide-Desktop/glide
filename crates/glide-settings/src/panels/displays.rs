@@ -561,6 +561,7 @@ impl Page {
                         c.writable,
                         widgets::segmented(t, options, scale_id(scale), |id| Msg::Scale(f64::from(id) / 100.0)),
                     ))
+                    .wide()
                     .build(),
             );
         let internal = display::is_internal(&output.name) || self.state.outputs.len() == 1;

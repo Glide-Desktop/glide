@@ -214,7 +214,7 @@ impl Page {
             c.t(T::JobsCount),
             self.state.jobs.len()
         );
-        widgets::hero(
+        widgets::section_hero(
             t,
             Icon::Printer,
             Panel::Printers.color(),

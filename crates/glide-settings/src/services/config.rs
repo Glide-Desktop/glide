@@ -420,6 +420,19 @@ impl ConfigStore {
     }
 
     #[must_use]
+    pub fn appearance_scheduled(&self) -> bool {
+        self.bool_or("topbar", "appearance-schedule", false)
+    }
+
+    #[must_use]
+    pub fn appearance_at(&self, minute_of_day: Option<u16>) -> Appearance {
+        match minute_of_day.filter(|_| self.appearance_scheduled()) {
+            Some(minute) => glide_theme::Appearance::scheduled(minute).into(),
+            None => self.appearance(),
+        }
+    }
+
+    #[must_use]
     pub fn accent(&self) -> Accent {
         let key = self.get_str("topbar", "accent").unwrap_or("blue");
         Accent::ALL.iter().copied().find(|accent| accent_key(*accent) == key).unwrap_or_default()

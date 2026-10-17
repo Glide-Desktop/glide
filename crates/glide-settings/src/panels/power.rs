@@ -530,7 +530,7 @@ fn stats<'a>(c: &Ctx, details: &BatteryDetails) -> Option<Element<'a, Msg>> {
         widgets::stat_tile(c.theme, glyph, theme::ramp_color(accent, 3), value, c.t(label))
     })
     .collect();
-    (!tiles.is_empty()).then(|| widgets::stat_row(tiles))
+    (!tiles.is_empty()).then(|| widgets::stat_row(c.theme, tiles))
 }
 
 fn info<'a>(c: &Ctx, details: &BatteryDetails) -> Option<Element<'a, Msg>> {

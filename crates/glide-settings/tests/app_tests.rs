@@ -1,6 +1,6 @@
 use glide_settings::app::Message;
 use glide_settings::panels::keyboard::shortcut_label;
-use glide_settings::panels::{appearance, displays, keyboard, mouse};
+use glide_settings::panels::{appearance, displays, keyboard, mouse, region};
 use glide_settings::services::config::ConfigStore;
 use glide_settings::services::input::SWITCH_OPTIONS;
 use glide_settings::services::ipc::ReloadError;
@@ -127,7 +127,7 @@ fn appearance_changes_retheme_the_app_immediately() {
 fn language_switch_changes_the_interface_language() {
     let mut app = App::with_config(ConfigStore::parse("").with_system_language(Lang::Uk));
     assert_eq!(app.lang(), Lang::Uk);
-    let _ = app.update(Message::Keyboard(keyboard::Msg::Language(keyboard::LangChoice::Explicit(Lang::En))));
+    let _ = app.update(Message::Region(region::Msg::Interface(region::LangChoice::Explicit(Lang::En))));
     assert_eq!(app.lang(), Lang::En);
     assert_eq!(app.config().language(), Lang::En);
     assert_eq!(app.config().language_choice(), Some(Lang::En));
@@ -158,9 +158,9 @@ fn an_unset_language_follows_the_system_locale() {
 fn picking_system_removes_the_language_key() {
     let mut app = App::with_config(ConfigStore::parse("[general]\nlanguage = \"uk\"\n").with_system_language(Lang::En));
     assert_eq!(app.lang(), Lang::Uk);
-    let (_, current) = keyboard::LangChoice::options(app.config());
-    assert_eq!(current, keyboard::LangChoice::Explicit(Lang::Uk));
-    let _ = app.update(Message::Keyboard(keyboard::Msg::Language(keyboard::LangChoice::System {
+    let (_, current) = region::LangChoice::options(app.config());
+    assert_eq!(current, region::LangChoice::Explicit(Lang::Uk));
+    let _ = app.update(Message::Region(region::Msg::Interface(region::LangChoice::System {
         detected: Lang::En,
         ui: Lang::Uk,
     })));
@@ -172,13 +172,13 @@ fn picking_system_removes_the_language_key() {
 #[test]
 fn the_system_choice_names_the_detected_language() {
     let config = ConfigStore::parse("").with_system_language(Lang::Uk);
-    let (options, current) = keyboard::LangChoice::options(&config);
+    let (options, current) = region::LangChoice::options(&config);
     assert_eq!(options.len(), 3);
     assert_eq!(current, options[0]);
     assert_eq!(current.lang(), None);
     assert_eq!(current.to_string(), "Системна (Українська)");
     let english = ConfigStore::parse("").with_system_language(Lang::En);
-    let (_, current) = keyboard::LangChoice::options(&english);
+    let (_, current) = region::LangChoice::options(&english);
     assert_eq!(current.to_string(), "System (English)");
 }
 
@@ -228,6 +228,43 @@ fn switch_shortcut_labels_cover_every_offered_option() {
     for option in SWITCH_OPTIONS {
         assert_ne!(shortcut_label(option), "—", "{option}");
     }
+}
+
+#[test]
+fn the_layout_switch_shows_off_and_keeps_an_unknown_option_when_picked_again() {
+    let mut app = app("[input]\nxkb-layout = \"us,ua\"\nxkb-options = \"grp:lwin_toggle,compose:ralt\"\n");
+    let ctx =
+        |app: &App| glide_settings::panels::Ctx { theme: app.theme, lang: Lang::En, writable: true, online: false };
+    let (options, current) = keyboard::shortcut_choices(ctx(&app), &app.config().xkb_options());
+    assert_eq!(current.label, "grp:lwin_toggle");
+    assert_eq!(options[0].label, "Off");
+    let _ = app.update(Message::Keyboard(keyboard::Msg::Shortcut(current)));
+    assert_eq!(app.config().xkb_options(), "grp:lwin_toggle,compose:ralt");
+    let _ = app.update(Message::Keyboard(keyboard::Msg::Shortcut(options[0].clone())));
+    assert_eq!(app.config().xkb_options(), "compose:ralt");
+    let (_, current) = keyboard::shortcut_choices(ctx(&app), &app.config().xkb_options());
+    assert_eq!(current, options[0], "no grp: option reads as Off instead of an empty box");
+}
+
+#[test]
+fn the_window_turns_compact_below_the_breakpoint() {
+    let mut app = app("");
+    assert!(!app.compact());
+    let _ = app.update(Message::Resized(glide_settings::app::COMPACT_BELOW - 1.0));
+    assert!(app.compact());
+    let _ = app.update(Message::Resized(1000.0));
+    assert!(!app.compact());
+}
+
+#[test]
+fn a_scheduled_appearance_follows_the_clock_like_the_shell() {
+    let scheduled = ConfigStore::parse("[topbar]\nappearance = \"light\"\nappearance-schedule = true\n");
+    assert_eq!(scheduled.appearance_at(Some(20 * 60)), Appearance::Dark);
+    assert_eq!(scheduled.appearance_at(Some(6 * 60 + 59)), Appearance::Dark);
+    assert_eq!(scheduled.appearance_at(Some(12 * 60)), Appearance::Light);
+    assert_eq!(scheduled.appearance_at(None), Appearance::Light);
+    let fixed = ConfigStore::parse("[topbar]\nappearance = \"light\"\n");
+    assert_eq!(fixed.appearance_at(Some(20 * 60)), Appearance::Light);
 }
 
 #[test]
@@ -668,7 +705,7 @@ fn date_time_helpers_format_both_languages() {
 fn region_language_row_writes_the_interface_language() {
     use glide_settings::panels::region::Msg;
     let mut app = App::with_config(ConfigStore::parse("").with_system_language(Lang::Uk));
-    let _ = app.update(Message::Region(Msg::Interface(keyboard::LangChoice::Explicit(Lang::En))));
+    let _ = app.update(Message::Region(Msg::Interface(region::LangChoice::Explicit(Lang::En))));
     assert_eq!(app.config().language_choice(), Some(Lang::En));
     assert_eq!(app.lang(), Lang::En);
 }

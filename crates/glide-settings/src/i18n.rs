@@ -173,7 +173,7 @@ catalogue! {
     AboutDisplays => "Arrangement, resolution and scale", "Розташування, роздільність і масштаб";
     AboutSound => "Output and input devices and their volume", "Пристрої виводу й вводу та їхня гучність";
     AboutPower => "Screen blanking, battery and power mode", "Вимкнення екрана, батарея та режим живлення";
-    AboutKeyboard => "Input sources, key repeat and language", "Джерела вводу, повтор клавіш і мова";
+    AboutKeyboard => "Input sources, special keys and key repeat", "Джерела вводу, особливі клавіші й повтор";
     AboutMouse => "Pointer speed, scrolling and tapping", "Швидкість вказівника, прокрутка й дотики";
     AboutGestures => "Touchpad swipes for workspaces and the overview, and a place to practise them", "Свайпи тачпадом для робочих просторів і огляду та місце, щоб їх випробувати";
     AboutApps => "Which apps open links, mail, files and media", "Які програми відкривають посилання, пошту, файли й медіа";
@@ -388,9 +388,6 @@ catalogue! {
     Milliseconds => "ms", "мс";
     PerSecond => "per second", "за секунду";
     TestHere => "Type here to test", "Надрукуйте тут для перевірки";
-    Language => "Language", "Мова";
-    InterfaceLanguage => "Interface language", "Мова інтерфейсу";
-    InterfaceLanguageHint => "Used by the shell and by Settings", "Використовується оболонкою та налаштуваннями";
     LanguageSystem => "System", "Системна";
 
     Pointer => "Pointer", "Вказівник";

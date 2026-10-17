@@ -239,13 +239,10 @@ impl Page {
                     .subtitle(c.t(T::TextSizeHint))
                     .prefix(widgets::icon(Icon::TextSize, 18.0, t.fg_2()))
                     .suffix(widgets::segmented(t, options, scale, Msg::TextScale))
+                    .wide()
                     .build(),
             )
-            .push(
-                container(text(c.t(T::TextPreview)).size(preview_size).color(t.fg_1()))
-                    .padding([8.0, theme::ROW_PADDING_X])
-                    .width(Fill),
-            )
+            .push(widgets::sample_well(t, text(c.t(T::TextPreview)).size(preview_size).color(t.fg_1())))
             .push(
                 Row::new(t, c.t(T::Scrollbars))
                     .subtitle(c.t(T::ScrollbarsHint))
@@ -266,10 +263,11 @@ impl Page {
             .or_else(|| self.snapshot.int(INTERFACE, "cursor-size"))
             .unwrap_or(CURSOR_SIZES[0]);
         let labels = [T::Default, T::Medium, T::Large, T::Larger, T::Largest];
-        let mut cards = row![].spacing(8);
-        for (size, label) in CURSOR_SIZES.into_iter().zip(labels) {
-            let glyph = (size as f32 * 0.5).clamp(12.0, 40.0);
-            cards = cards.push(
+        let cards = CURSOR_SIZES
+            .into_iter()
+            .zip(labels)
+            .map(|(size, label)| {
+                let glyph = (size as f32 * 0.5).clamp(12.0, 40.0);
                 container(widgets::radio_card(
                     t,
                     container(widgets::icon(Icon::Pointer, glyph, t.fg_1()))
@@ -280,9 +278,11 @@ impl Page {
                     current == size,
                     Msg::CursorSize(size),
                 ))
-                .width(Fill),
-            );
-        }
+                .width(Fill)
+                .into()
+            })
+            .collect();
+        let cards = widgets::grid(cards, if t.compact { 3 } else { CURSOR_SIZES.len() }, 8.0);
         let mut group = Group::new(t)
             .title(c.t(T::Pointer))
             .push(

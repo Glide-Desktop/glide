@@ -444,7 +444,7 @@ fn stats<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
             t,
             Icon::Memory,
             ramp_color(Accent::Amethyst, 3),
-            format!("{}/{}", format_bytes(used), format_bytes(info.memory_bytes)),
+            format!("{:.0}%", used as f64 * 100.0 / info.memory_bytes.max(1) as f64),
             c.t(T::MemoryInUse),
         ),
     ];
@@ -464,7 +464,7 @@ fn stats<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
         format_uptime(info.uptime_secs, c),
         c.t(T::Running),
     ));
-    widgets::stat_row(tiles)
+    widgets::stat_row(t, tiles)
 }
 
 fn info_row<'a>(c: &Ctx, title: impl Into<String>, value: String) -> Row<'a, Msg> {

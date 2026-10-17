@@ -148,7 +148,7 @@ impl Pane for Page {
         match msg {
             Msg::SetAppearance(appearance) => {
                 config.set_appearance(appearance);
-                if config.bool_or("topbar", "appearance-schedule", false) {
+                if config.appearance_scheduled() {
                     config.set_bool("topbar", "appearance-schedule", false);
                 }
             }
@@ -244,7 +244,7 @@ impl Page {
     }
 
     fn style_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        let current = config.appearance();
+        let current = c.theme.appearance();
         let accent = config.accent();
         let t = c.theme;
         let option = |appearance: Appearance, label: &'static str| -> Element<'a, Msg> {
@@ -266,7 +266,7 @@ impl Page {
                 *c,
                 c.t(tr::Key::Schedule),
                 c.t(tr::Key::ScheduleHint),
-                config.bool_or("topbar", "appearance-schedule", false),
+                config.appearance_scheduled(),
                 Msg::Schedule,
             ))
             .build()
@@ -291,8 +291,8 @@ impl Page {
             crate::i18n::Lang::En => current.name(),
         };
         let sample = row![
-            widgets::primary(t, name, None::<Msg>),
-            widgets::switch_disabled(t, true),
+            widgets::primary(t, name, Some(Msg::SetAccent(current))),
+            widgets::switch(t, true, move |_| Msg::SetAccent(current)),
             widgets::pill(t, theme::Tone::Accent, current.primary_hex()),
         ]
         .spacing(12)
@@ -317,7 +317,6 @@ impl Page {
                 .align_y(Alignment::Center)
                 .into()
         };
-        let well = t.sunken_bg();
         let (cursors, cursor) =
             pick(choices(c.t(K::SystemDefault), &self.cursor_themes), config.optional_str("general", "cursor-theme"));
         Group::new(t)
@@ -329,15 +328,7 @@ impl Page {
                     .suffix(gated(*c, widgets::dropdown(t, options, selected, Msg::IconTheme, 240.0)))
                     .build(),
             )
-            .push(
-                container(
-                    container(strip)
-                        .padding([14, 16])
-                        .center_x(Fill)
-                        .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2())),
-                )
-                .padding([6.0, theme::ROW_PADDING_X]),
-            )
+            .push(widgets::sample_well(t, container(strip).center_x(Fill)))
             .push(
                 Row::new(t, c.t(tr::Key::CursorTheme))
                     .subtitle(c.t(tr::Key::CursorThemeHint))
@@ -352,7 +343,6 @@ impl Page {
         let current = config.optional_str("general", "font-family");
         let (options, selected) = pick(choices(c.t(K::SystemDefault), &self.fonts), current.clone());
         let font = current.as_deref().map_or(iced::Font::DEFAULT, |name| iced::Font::with_name(interned(name)));
-        let well = t.sunken_bg();
         Group::new(t)
             .title(c.t(K::InterfaceFont))
             .description(c.t(K::InterfaceFontHint))
@@ -361,21 +351,14 @@ impl Page {
                     .suffix(gated(*c, widgets::dropdown(t, options, selected, Msg::Font, 240.0)))
                     .build(),
             )
-            .push(
-                container(
-                    container(
-                        column![
-                            text("Aa").size(30).font(font).color(t.fg_1()),
-                            text(c.t(tr::Key::FontSample)).size(14).font(font).color(t.fg_2()),
-                        ]
-                        .spacing(4),
-                    )
-                    .padding([12, 16])
-                    .width(Fill)
-                    .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2())),
-                )
-                .padding([6.0, theme::ROW_PADDING_X]),
-            )
+            .push(widgets::sample_well(
+                t,
+                column![
+                    text("Aa").size(30).font(font).color(t.fg_1()),
+                    text(c.t(tr::Key::FontSample)).size(14).font(font).color(t.fg_2()),
+                ]
+                .spacing(4),
+            ))
             .build()
     }
 
@@ -399,12 +382,14 @@ impl Page {
                 Row::new(t, c.t(tr::Key::Smoothing))
                     .subtitle(c.t(tr::Key::SmoothingHint))
                     .suffix(widgets::segmented(t, smoothing, rendering.smoothing, Msg::Smoothing))
+                    .wide()
                     .build(),
             )
             .push(
                 Row::new(t, c.t(tr::Key::Hinting))
                     .subtitle(c.t(tr::Key::HintingHint))
                     .suffix(widgets::segmented(t, hinting, rendering.hinting, Msg::Hinting))
+                    .wide()
                     .build(),
             );
         group

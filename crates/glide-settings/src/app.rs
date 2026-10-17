@@ -37,6 +37,8 @@ macro_rules! declare_pages {
             Reloaded(Option<Result<(), ReloadError>>),
             Ipc(IpcEvent),
             Tick,
+            Clock,
+            Resized(f32),
             DismissNotice,
             $($variant($module::Msg),)*
         }
@@ -116,13 +118,24 @@ pub struct App {
     online: bool,
     notice: Option<Notice>,
     user_name: String,
-    host_name: String,
+    login: String,
     pages: Pages,
     synced: Option<DesktopLook>,
     netbird: bool,
+    width: f32,
 }
 
 type DesktopLook = (theme::Appearance, theme::Accent, Option<String>);
+
+pub const COMPACT_BELOW: f32 = 940.0;
+
+const CLOCK: Duration = Duration::from_secs(2);
+
+#[must_use]
+pub fn minute_now() -> Option<u16> {
+    let now = crate::services::tz::Zone::system().local(crate::services::tz::now());
+    Some(u16::from(now.hour) * 60 + u16::from(now.minute))
+}
 
 impl Default for App {
     fn default() -> Self {
@@ -133,7 +146,7 @@ impl Default for App {
 impl App {
     #[must_use]
     pub fn with_config(config: ConfigStore) -> Self {
-        let theme = ThemeState::new(config.appearance(), config.accent());
+        let theme = ThemeState::new(config.appearance_at(minute_now()), config.accent());
         Self {
             theme,
             lang: config.language(),
@@ -143,11 +156,17 @@ impl App {
             online: false,
             notice: None,
             user_name: String::new(),
-            host_name: String::new(),
+            login: String::new(),
             pages: Pages::default(),
             synced: None,
             netbird: false,
+            width: 1000.0,
         }
+    }
+
+    #[must_use]
+    pub const fn compact(&self) -> bool {
+        self.width < COMPACT_BELOW
     }
 
     #[must_use]
@@ -160,7 +179,7 @@ impl App {
         let mut app = Self::with_config(ConfigStore::load()).with_netbird(glide_netbird::installed());
         app.online = ipc::socket_path().is_some();
         app.user_name = system::user_name();
-        app.host_name = system::hostname();
+        app.login = std::env::var("USER").unwrap_or_default();
         let initial = std::env::args().nth(1).and_then(|arg| Panel::from_slug(&arg)).unwrap_or(Panel::Appearance);
         if initial == Panel::Netbird
             && let Some(section) = std::env::args().nth(2)
@@ -222,7 +241,18 @@ impl App {
     }
 
     const fn ctx(&self) -> Ctx {
-        Ctx { theme: self.theme, lang: self.lang, writable: self.config.writable(), online: self.online }
+        Ctx {
+            theme: self.theme.compact(self.compact()),
+            lang: self.lang,
+            writable: self.config.writable(),
+            online: self.online,
+        }
+    }
+
+    fn apply_look(&mut self) {
+        self.theme.set_appearance(self.config.appearance_at(minute_now()));
+        self.theme.set_accent(self.config.accent());
+        self.lang = self.config.language();
     }
 
     fn select(&mut self, panel: Panel) -> Task<Message> {
@@ -245,7 +275,7 @@ impl App {
 
     fn sync_desktop(&mut self) -> Task<Message> {
         let wanted: DesktopLook =
-            (self.config.appearance(), self.config.accent(), self.config.optional_str("dock", "icon-theme"));
+            (self.theme.appearance(), self.config.accent(), self.config.optional_str("dock", "icon-theme"));
         if self.config.path().is_none() || self.synced.as_ref() == Some(&wanted) {
             return Task::none();
         }
@@ -257,9 +287,7 @@ impl App {
     }
 
     fn commit(&mut self, task: Task<Message>) -> Task<Message> {
-        self.theme.set_appearance(self.config.appearance());
-        self.theme.set_accent(self.config.accent());
-        self.lang = self.config.language();
+        self.apply_look();
         if !self.config.take_dirty() {
             return task;
         }
@@ -322,6 +350,15 @@ impl App {
                 IpcEvent::LayoutChanged(_) => Task::none(),
             },
             Message::Tick => self.tick_page(self.active_panel),
+            Message::Clock => {
+                let changed = self.config.refresh_if_changed();
+                self.apply_look();
+                if changed { self.broadcast(PageEvent::Reloaded) } else { Task::none() }
+            }
+            Message::Resized(width) => {
+                self.width = width;
+                Task::none()
+            }
             Message::DismissNotice => {
                 self.notice = None;
                 Task::none()
@@ -338,6 +375,13 @@ impl App {
         let mut subscriptions = vec![
             Subscription::run(ipc::events).map(Message::Ipc),
             iced::keyboard::listen().filter_map(shortcut),
+            iced::window::events().filter_map(|(_, event)| match event {
+                iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size) => {
+                    Some(Message::Resized(size.width))
+                }
+                _ => None,
+            }),
+            iced::time::every(CLOCK).map(|_| Message::Clock),
             self.page_subscription(),
         ];
         if self.active_panel.polls() {
@@ -350,13 +394,11 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let t = self.theme;
         let divider = rule::vertical(1).style(move |_: &iced::Theme| theme::rule_style(&t));
-        container(
-            row![sidebar::view(self, self.ctx(), &self.user_name, &self.host_name), divider, self.view_content(),],
-        )
-        .width(Fill)
-        .height(Fill)
-        .style(move |_: &iced::Theme| theme::window_container_style(&t))
-        .into()
+        container(row![sidebar::view(self, self.ctx(), &self.user_name, &self.login), divider, self.view_content(),])
+            .width(Fill)
+            .height(Fill)
+            .style(move |_: &iced::Theme| theme::window_container_style(&t))
+            .into()
     }
 
     fn view_content(&self) -> Element<'_, Message> {
