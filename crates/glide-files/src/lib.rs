@@ -1,6 +1,7 @@
 pub mod app;
 pub mod config;
 pub mod dnd;
+pub mod drag_icon;
 pub mod fs;
 pub mod i18n;
 pub mod icons;

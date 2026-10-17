@@ -1502,6 +1502,7 @@ dependencies = [
  "image",
  "libc",
  "raw-window-handle",
+ "resvg 0.48.1",
  "serde",
  "toml",
  "wayland-backend",

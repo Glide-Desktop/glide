@@ -5,6 +5,31 @@ use glide_files::dnd::{gnome_files, parse_gnome_files, parse_uri_list, uri_list}
 use glide_files::widgets::content::{GRID_PADDING, LIST_PADDING, Metrics, TILE_GAP};
 
 #[test]
+fn the_drag_icon_is_the_items_art_in_shm_byte_order() {
+    use glide_files::drag_icon::{SCALE, SIZE, render};
+    let dir = std::env::temp_dir().join(format!("glide-drag-icon-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let svg = dir.join("doc.svg");
+    std::fs::write(&svg, r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#3b82f6"/></svg>"##)
+        .expect("svg");
+    let png = dir.join("doc.png");
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([0x3b, 0x82, 0xf6, 0xff])).save(&png).expect("png");
+    let side = SIZE * SCALE;
+    for art in [&svg, &png] {
+        let one = render(art, 1).expect("rendered");
+        assert_eq!((one.width, one.height, one.bgra.len()), (side, side, (side * side * 4) as usize));
+        let middle = ((side / 2 * side + side / 2) * 4) as usize;
+        assert_eq!(&one.bgra[middle..middle + 4], &[0xf6, 0x82, 0x3b, 0xff], "{art:?}: blue, stored B G R A");
+    }
+    let many = render(&svg, 4).expect("rendered");
+    assert_eq!(many.width, side + side / 8, "a selection draws a second icon behind the first");
+    let corner = ((many.width * many.height - 1) * 4) as usize;
+    assert!(many.bgra[corner + 3] > 0 && many.bgra[corner + 3] < 255, "the one behind is translucent");
+    assert!(render(&dir.join("missing.svg"), 1).is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn uri_lists_round_trip_awkward_names() {
     let paths = vec![PathBuf::from("/home/me/Фото 2024/кіт.png"), PathBuf::from("/tmp/a b#c%d.txt")];
     let text = uri_list(&paths);

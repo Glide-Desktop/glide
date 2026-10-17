@@ -12,8 +12,8 @@ use wayland_server::protocol::wl_data_device_manager::{DndAction, WlDataDeviceMa
 use wayland_server::protocol::wl_data_offer::WlDataOffer;
 use wayland_server::protocol::wl_data_source::WlDataSource;
 use wayland_server::protocol::{
-    wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_keyboard, wl_pointer,
-    wl_seat, wl_surface,
+    wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_keyboard,
+    wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_server::{Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource};
 
@@ -25,6 +25,9 @@ struct Compositor {
     surface: Option<wl_surface::WlSurface>,
     device: Option<wl_data_device::WlDataDevice>,
     dragged: Option<WlDataSource>,
+    icon: Option<wl_surface::WlSurface>,
+    shown: Vec<(wl_surface::WlSurface, i32, i32)>,
+    scales: Vec<i32>,
     selection: Option<WlDataSource>,
     accepted: Vec<Option<String>>,
     actions: Vec<(DndAction, DndAction)>,
@@ -55,14 +58,62 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for Compositor {
         _: &DisplayHandle, init: &mut DataInit<'_, Self>,
     ) {
         if let wl_compositor::Request::CreateSurface { id } = request {
-            state.surface = Some(init.init(id, ()));
+            let surface = init.init(id, ());
+            state.surface.get_or_insert(surface);
         }
     }
 }
 
 impl Dispatch<wl_surface::WlSurface, ()> for Compositor {
     fn request(
-        _: &mut Self, _: &Client, _: &wl_surface::WlSurface, _: wl_surface::Request, (): &(), _: &DisplayHandle,
+        state: &mut Self, _: &Client, surface: &wl_surface::WlSurface, request: wl_surface::Request, (): &(),
+        _: &DisplayHandle, _: &mut DataInit<'_, Self>,
+    ) {
+        match request {
+            wl_surface::Request::Attach { buffer: Some(buffer), .. } => {
+                let &(width, height) = buffer.data::<(i32, i32)>().expect("buffer size");
+                state.shown.push((surface.clone(), width, height));
+            }
+            wl_surface::Request::SetBufferScale { scale } => state.scales.push(scale),
+            _ => {}
+        }
+    }
+}
+
+impl GlobalDispatch<wl_shm::WlShm, ()> for Compositor {
+    fn bind(
+        _: &mut Self, _: &DisplayHandle, _: &Client, resource: New<wl_shm::WlShm>, (): &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        init.init(resource, ());
+    }
+}
+
+impl Dispatch<wl_shm::WlShm, ()> for Compositor {
+    fn request(
+        _: &mut Self, _: &Client, _: &wl_shm::WlShm, request: wl_shm::Request, (): &(), _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let wl_shm::Request::CreatePool { id, .. } = request {
+            init.init(id, ());
+        }
+    }
+}
+
+impl Dispatch<wl_shm_pool::WlShmPool, ()> for Compositor {
+    fn request(
+        _: &mut Self, _: &Client, _: &wl_shm_pool::WlShmPool, request: wl_shm_pool::Request, (): &(),
+        _: &DisplayHandle, init: &mut DataInit<'_, Self>,
+    ) {
+        if let wl_shm_pool::Request::CreateBuffer { id, width, height, .. } = request {
+            init.init(id, (width, height));
+        }
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, (i32, i32)> for Compositor {
+    fn request(
+        _: &mut Self, _: &Client, _: &wl_buffer::WlBuffer, _: wl_buffer::Request, _: &(i32, i32), _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
     }
@@ -151,7 +202,10 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Compositor {
         _: &DisplayHandle, _: &mut DataInit<'_, Self>,
     ) {
         match request {
-            wl_data_device::Request::StartDrag { source, .. } => state.dragged = source,
+            wl_data_device::Request::StartDrag { source, icon, .. } => {
+                state.dragged = source;
+                state.icon = icon;
+            }
             wl_data_device::Request::SetSelection { source, .. } => state.selection = source,
             _ => {}
         }
@@ -197,6 +251,7 @@ impl Harness {
         handle.create_global::<Compositor, wl_compositor::WlCompositor, ()>(4, ());
         handle.create_global::<Compositor, wl_seat::WlSeat, ()>(7, ());
         handle.create_global::<Compositor, WlDataDeviceManager, ()>(3, ());
+        handle.create_global::<Compositor, wl_shm::WlShm, ()>(1, ());
         let (ours, theirs) = UnixStream::pair().expect("socket pair");
         let client = display.handle().insert_client(ours, Arc::new(Peer)).expect("client");
         let (sender, events) = unbounded();
@@ -363,10 +418,37 @@ fn a_view_that_takes_no_drops_refuses_files_until_it_takes_them_again() {
 }
 
 #[test]
+fn a_drag_out_of_files_carries_the_items_icon_under_the_pointer() {
+    use glide_files::drag_icon::{SCALE, SIZE};
+    let art = std::env::temp_dir().join(format!("glide-drag-art-{}.svg", std::process::id()));
+    std::fs::write(&art, r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#3b82f6"/></svg>"##)
+        .expect("art");
+    let side = (SIZE * SCALE).cast_signed();
+    for (count, expected) in [(1, side), (3, side + side / 8)] {
+        let (mut harness, link) = Harness::start();
+        let paths = (0..count).map(|index| PathBuf::from(format!("/tmp/{index}.txt"))).collect();
+        assert!(link.send(Command::StartDrag { paths, art: Some(art.clone()) }));
+        let icon = harness.wait(|harness| harness.state.icon.clone());
+        let (surface, width, height) = harness.wait(|harness| harness.state.shown.last().cloned());
+        assert_eq!(surface, icon, "the buffer goes on the surface handed to start_drag");
+        assert_eq!((width, height), (expected, expected), "{count} items: a stack draws a second icon behind");
+        assert_eq!(
+            harness.state.scales.last(),
+            Some(&SCALE.cast_signed()),
+            "drawn at twice the size for sharp scaling"
+        );
+        harness.state.dragged.clone().expect("source").dnd_finished();
+        harness.wait(|harness| harness.seen.contains(&Event::DragEnded).then_some(()));
+    }
+    let _ = std::fs::remove_file(art);
+}
+
+#[test]
 fn dragging_out_of_files_offers_uris_and_ends_when_the_target_finishes() {
     let (mut harness, link) = Harness::start();
-    assert!(link.send(Command::StartDrag(vec![PathBuf::from("/tmp/x y.png")])));
+    assert!(link.send(Command::StartDrag { paths: vec![PathBuf::from("/tmp/x y.png")], art: None }));
     let source = harness.wait(|harness| harness.state.dragged.clone());
+    assert!(harness.state.icon.is_none(), "no art, no icon surface");
     let offered = source.data::<Offered>().expect("offers").lock().expect("offers").clone();
     assert_eq!(offered, [URI_LIST, GNOME, "text/plain;charset=utf-8"]);
     assert_eq!(harness.read_source(&source, URI_LIST), "file:///tmp/x%20y.png\r\n");

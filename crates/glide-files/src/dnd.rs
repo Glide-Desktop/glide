@@ -7,11 +7,14 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use wayland_backend::client::{Backend, ObjectId};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_buffer::WlBuffer;
+use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
 use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
 use wayland_client::protocol::wl_data_offer::{self, WlDataOffer};
 use wayland_client::protocol::wl_data_source::{self, WlDataSource};
-use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::wl_shm::{self, WlShm};
+use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm_pool, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 
 use crate::fs::{file_uri, path_from_arg};
@@ -38,7 +41,7 @@ pub struct Handles {
 
 #[derive(Debug)]
 pub enum Command {
-    StartDrag(Vec<PathBuf>),
+    StartDrag { paths: Vec<PathBuf>, art: Option<PathBuf> },
     SetSelection { paths: Vec<PathBuf>, cut: bool },
     ClearSelection,
     Paste(PathBuf),
@@ -141,6 +144,9 @@ struct State {
     own_selection: Option<WlDataSource>,
     accepting: Arc<AtomicBool>,
     answered: Option<(u32, bool)>,
+    compositor: Option<WlCompositor>,
+    shm: Option<WlShm>,
+    icon: Option<(wl_surface::WlSurface, WlBuffer)>,
 }
 
 #[must_use]
@@ -181,6 +187,8 @@ pub fn serve(
     seat.get_pointer(&qh, ());
     seat.get_keyboard(&qh, ());
     let device = manager.get_data_device(&seat, &qh, ());
+    let compositor: Option<WlCompositor> = globals.bind(&qh, 3..=6, ()).ok();
+    let shm: Option<WlShm> = globals.bind(&qh, 1..=1, ()).ok();
     let (commands, inbox) = mpsc::channel();
     let accepting = Arc::new(AtomicBool::new(true));
     let link = Link { commands: Arc::new(Mutex::new(commands)), accepting: Arc::clone(&accepting) };
@@ -199,6 +207,9 @@ pub fn serve(
         own_selection: None,
         accepting,
         answered: None,
+        compositor,
+        shm,
+        icon: None,
     };
     loop {
         queue.dispatch_pending(&mut state).map_err(|err| err.to_string())?;
@@ -229,12 +240,24 @@ pub fn serve(
 impl State {
     fn handle(&mut self, command: Command, qh: &QueueHandle<Self>) {
         match command {
-            Command::StartDrag(paths) if !paths.is_empty() => {
+            Command::StartDrag { paths, art } if !paths.is_empty() => {
                 let source = self.source(&paths, false, false, qh);
                 source.set_actions(DndAction::Copy | DndAction::Move | DndAction::Ask);
-                self.device.start_drag(Some(&source), &self.surface, None, self.pointer_serial);
+                self.drop_icon();
+                let image = art.as_deref().and_then(|art| crate::drag_icon::render(art, paths.len()));
+                self.icon = image.and_then(|image| self.icon_surface(&image, qh));
+                let icon = self.icon.as_ref().map(|(surface, _)| surface);
+                self.device.start_drag(Some(&source), &self.surface, icon, self.pointer_serial);
+                if let Some((surface, buffer)) = &self.icon {
+                    if surface.version() >= 3 {
+                        surface.set_buffer_scale(crate::drag_icon::SCALE.cast_signed());
+                    }
+                    surface.attach(Some(buffer), 0, 0);
+                    surface.damage(0, 0, i32::MAX, i32::MAX);
+                    surface.commit();
+                }
             }
-            Command::StartDrag(_) => {}
+            Command::StartDrag { .. } => {}
             Command::SetSelection { paths, cut } => {
                 let source = self.source(&paths, cut, true, qh);
                 self.device.set_selection(Some(&source), self.input_serial);
@@ -246,6 +269,25 @@ impl State {
                 }
             }
             Command::Paste(target) => self.paste(target),
+        }
+    }
+
+    fn icon_surface(
+        &self, image: &crate::drag_icon::DragImage, qh: &QueueHandle<Self>,
+    ) -> Option<(wl_surface::WlSurface, WlBuffer)> {
+        let (compositor, shm) = (self.compositor.as_ref()?, self.shm.as_ref()?);
+        let memory = shared_memory(&image.bgra)?;
+        let (width, height) = (image.width.cast_signed(), image.height.cast_signed());
+        let pool = shm.create_pool(std::os::fd::AsFd::as_fd(&memory), i32::try_from(image.bgra.len()).ok()?, qh, ());
+        let buffer = pool.create_buffer(0, width, height, width * 4, wl_shm::Format::Argb8888, qh, ());
+        pool.destroy();
+        Some((compositor.create_surface(qh, ()), buffer))
+    }
+
+    fn drop_icon(&mut self) {
+        if let Some((surface, buffer)) = self.icon.take() {
+            surface.destroy();
+            buffer.destroy();
         }
     }
 
@@ -367,6 +409,19 @@ fn offer_info(offer: &WlDataOffer) -> OfferInfo {
         .unwrap_or_default()
 }
 
+fn shared_memory(bytes: &[u8]) -> Option<OwnedFd> {
+    // SAFETY: the name is a NUL-terminated literal and the flags are valid for `memfd_create`.
+    let raw = unsafe { libc::memfd_create(c"glide-files-drag".as_ptr(), libc::MFD_CLOEXEC) };
+    if raw < 0 {
+        return None;
+    }
+    // SAFETY: `memfd_create` succeeded, so `raw` is an open descriptor owned by nobody else.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut file = std::fs::File::from(fd);
+    file.write_all(bytes).ok()?;
+    Some(OwnedFd::from(file))
+}
+
 fn pipe() -> Option<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     // SAFETY: `fds` has room for the two descriptors `pipe2` writes on success.
@@ -392,6 +447,11 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
 
 wayland_client::delegate_noop!(State: ignore wl_seat::WlSeat);
 wayland_client::delegate_noop!(State: ignore WlDataDeviceManager);
+wayland_client::delegate_noop!(State: WlCompositor);
+wayland_client::delegate_noop!(State: ignore wl_surface::WlSurface);
+wayland_client::delegate_noop!(State: ignore WlShm);
+wayland_client::delegate_noop!(State: wl_shm_pool::WlShmPool);
+wayland_client::delegate_noop!(State: ignore WlBuffer);
 
 impl Dispatch<wl_pointer::WlPointer, ()> for State {
     fn event(
@@ -501,11 +561,13 @@ impl Dispatch<WlDataSource, Payload> for State {
                         let _ = state.events.unbounded_send(Event::SelectionLost);
                     }
                 } else {
+                    state.drop_icon();
                     let _ = state.events.unbounded_send(Event::DragEnded);
                 }
                 source.destroy();
             }
             wl_data_source::Event::DndFinished => {
+                state.drop_icon();
                 let _ = state.events.unbounded_send(Event::DragEnded);
                 source.destroy();
             }

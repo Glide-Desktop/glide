@@ -37,6 +37,7 @@ libc = "0.2"
 zbus = "5"
 raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+resvg = { version = "0.48.1", default-features = false }
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-client = "0.31"
 

@@ -2684,12 +2684,29 @@ impl App {
         self.folder_at(f64::from(at.x), f64::from(at.y)).or_else(|| (!self.in_trash()).then(|| self.current.clone()))
     }
 
+    #[must_use]
+    pub fn drag_art(&self, path: &Path) -> Option<PathBuf> {
+        let entry = self.entries.iter().find(|entry| entry.path == path)?;
+        if let Some(thumb) = self.thumbnail(entry) {
+            return Some(thumb.clone());
+        }
+        match self.art(entry)? {
+            Art::Vector(handle) => match handle.data() {
+                iced::advanced::svg::Data::Path(file) => Some(file.clone()),
+                iced::advanced::svg::Data::Bytes(_) => None,
+            },
+            Art::Raster(iced::advanced::image::Handle::Path(_, file)) => Some(file),
+            Art::Raster(_) => None,
+        }
+    }
+
     fn track_drag(&mut self, at: Point) {
         if self.outside_window(at)
             && let Some(link) = &self.dnd
             && let Some(drag) = self.drag.take()
         {
-            link.send(dnd::Command::StartDrag(drag.paths));
+            let art = drag.paths.first().and_then(|path| self.drag_art(path));
+            link.send(dnd::Command::StartDrag { paths: drag.paths, art });
             self.drop_target = None;
             return;
         }
