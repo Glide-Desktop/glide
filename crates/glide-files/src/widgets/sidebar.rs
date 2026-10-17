@@ -134,7 +134,7 @@ impl<'a> Line<'a> {
                 .height(Length::Fixed(EJECT))
                 .padding(0)
                 .style(move |_, status| theme::action(t, Tone::Ghost, status));
-            content = content.push(hint(t, eject, label.text(self.app.lang)));
+            content = content.push(hint(t, super::pressable(eject), label.text(self.app.lang)));
         }
         let (selected, hover) = (self.selected, self.app.hover(&self.key));
         let held = self.held;

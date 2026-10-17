@@ -8,7 +8,7 @@ use iced::{Alignment, Element, Fill, Length, Padding, Vector};
 
 use super::content::{FIT_SLACK, breakable};
 use super::header::SEMIBOLD_SPREAD;
-use super::{Ring, file_icon, fit_lines, ringed, text_width};
+use super::{Ring, file_icon, fit_lines, pressable, ringed, text_width};
 use crate::app::{App, Dialog, Field, MODAL_ID, Message, Modal, Properties};
 use crate::fs::jobs::{Choice, Question};
 use crate::fs::{format_bytes, format_time, home_dir, permissions_string};
@@ -111,12 +111,13 @@ const WRAP: text::Wrapping = text::Wrapping::WordOrGlyph;
 
 fn action(c: Ctx<'_>, label: Key, tone: Tone, message: Option<Message>) -> Element<'_, Message> {
     let t = c.theme();
-    button(container(text(label.text(c.app.lang)).size(BUTTON_TEXT).font(theme::SEMIBOLD)).center_y(Fill))
-        .on_press_maybe(message)
-        .height(Length::Fixed(theme::CONTROL))
-        .padding(Padding::from([0.0, theme::SP4]))
-        .style(move |_, status| theme::action(&t, tone, status))
-        .into()
+    pressable(
+        button(container(text(label.text(c.app.lang)).size(BUTTON_TEXT).font(theme::SEMIBOLD)).center_y(Fill))
+            .on_press_maybe(message)
+            .height(Length::Fixed(theme::CONTROL))
+            .padding(Padding::from([0.0, theme::SP4]))
+            .style(move |_, status| theme::action(&t, tone, status)),
+    )
 }
 
 fn buttons<'a>(c: Ctx<'a>, confirm: Element<'a, Message>) -> Element<'a, Message> {
@@ -319,16 +320,17 @@ fn permissions<'a>(c: Ctx<'a>, properties: &'a Properties) -> Element<'a, Messag
         let bits = [('r', 4), ('w', 2), ('x', 1)].into_iter().map(move |(letter, value)| {
             let bit = value << shift;
             let on = mode & bit != 0;
-            button(
-                container(text(if on { letter } else { '-' }.to_string()).size(theme::CAP).font(theme::SEMIBOLD))
-                    .center(Fill),
+            pressable(
+                button(
+                    container(text(if on { letter } else { '-' }.to_string()).size(theme::CAP).font(theme::SEMIBOLD))
+                        .center(Fill),
+                )
+                .on_press(Message::Permission(bit))
+                .width(Length::Fixed(theme::SMALL_CONTROL))
+                .height(Length::Fixed(theme::SMALL_CONTROL))
+                .padding(0)
+                .style(move |_, status| theme::action(&t, if on { Tone::Primary } else { Tone::Neutral }, status)),
             )
-            .on_press(Message::Permission(bit))
-            .width(Length::Fixed(theme::SMALL_CONTROL))
-            .height(Length::Fixed(theme::SMALL_CONTROL))
-            .padding(0)
-            .style(move |_, status| theme::action(&t, if on { Tone::Primary } else { Tone::Neutral }, status))
-            .into()
         });
         row![label(c, key), iced::widget::Row::with_children(bits).spacing(theme::SP1)]
             .spacing(theme::SP3)

@@ -5,6 +5,7 @@ pub mod menu;
 pub mod pathbar;
 pub mod pointer;
 pub mod sidebar;
+pub mod squish;
 
 use std::time::Instant;
 
@@ -246,7 +247,7 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
             .height(Length::Fixed(CONTROL))
             .padding(0)
             .style(move |_, status| theme::action(t, Tone::Ghost, status));
-        hint(t, control, label.text(lang))
+        hint(t, pressable(control), label.text(lang))
     };
     let cards = app.jobs.iter().map(|job| {
         let (label, glyph) = match job.op {
@@ -366,22 +367,22 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
         (label, Message::NoticeChosen(action.clone()))
     });
     if let Some((label, message)) = action {
-        content = content.push(
+        content = content.push(pressable(
             button(container(text(label.text(app.lang)).size(SMALL_LABEL).font(theme::SEMIBOLD)).center_y(Fill))
                 .on_press_maybe(live.then_some(message))
                 .height(Length::Fixed(CONTROL))
                 .padding(Padding::from([0.0, theme::SP3]))
                 .style(move |_, status| theme::action(&t, Tone::Neutral, status)),
-        );
+        ));
     }
-    content = content.push(
+    content = content.push(pressable(
         button(container(icon(Icon::Close, 14.0, t.fg_2())).center(Fill))
             .on_press_maybe(live.then_some(Message::DismissNotice(notice.id)))
             .width(Length::Fixed(CONTROL))
             .height(Length::Fixed(CONTROL))
             .padding(0)
             .style(move |_, status| theme::action(&t, Tone::Ghost, status)),
-    );
+    ));
     let (drop, scale) = if live { ((1.0 - progress) * RISE, 1.0) } else { (0.0, 1.0 - (1.0 - progress) * SHRINK) };
     let card = float(
         container(content)
@@ -451,13 +452,14 @@ pub fn icon_button(t: &ThemeState, glyph: Icon, message: Option<Message>, active
         (Some(_), true) => t.fg_1(),
         (Some(_), false) => t.fg_2(),
     };
-    button(container(icon(glyph, 16.0, color)).center_x(Fill).center_y(Fill))
-        .on_press_maybe(message)
-        .width(Length::Fixed(CONTROL))
-        .height(Length::Fixed(CONTROL))
-        .padding(0)
-        .style(move |_, status| theme::action(t, if active { Tone::Open } else { Tone::Ghost }, status))
-        .into()
+    pressable(
+        button(container(icon(glyph, 16.0, color)).center_x(Fill).center_y(Fill))
+            .on_press_maybe(message)
+            .width(Length::Fixed(CONTROL))
+            .height(Length::Fixed(CONTROL))
+            .padding(0)
+            .style(move |_, status| theme::action(t, if active { Tone::Open } else { Tone::Ghost }, status)),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,13 +491,22 @@ pub fn hint<'a>(t: &ThemeState, content: impl Into<Element<'a, Message>>, label:
 const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(550);
 
 #[must_use]
+pub fn pressable<'a>(control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    squish::Squish::new(control, squish::BUTTON).into()
+}
+
+#[must_use]
 pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Option<Message>) -> Element<'a, Message> {
-    button(container(text(label).size(SMALL_LABEL).font(theme::SEMIBOLD).wrapping(text::Wrapping::None)).center_y(Fill))
+    pressable(
+        button(
+            container(text(label).size(SMALL_LABEL).font(theme::SEMIBOLD).wrapping(text::Wrapping::None))
+                .center_y(Fill),
+        )
         .on_press_maybe(message)
         .height(Length::Fixed(CONTROL))
         .padding(Padding::from([0.0, theme::SP3]))
-        .style(move |_, status| theme::action(t, tone, status))
-        .into()
+        .style(move |_, status| theme::action(t, tone, status)),
+    )
 }
 
 const SMALL_LABEL: f32 = 12.5;
