@@ -156,6 +156,10 @@ impl crate::GlideState {
                 crate::system_info::open_storage_settings();
                 continue;
             }
+            if let LocalEvent::Action { id: crate::screenshot_ui::NOTICE_ID, key } = &event {
+                self.open_screenshot(key == crate::screenshot_ui::SHOW);
+                continue;
+            }
             if let LocalEvent::Action { id: crate::welcome::NOTICE_ID, key } = &event {
                 let page =
                     if key == crate::welcome::OPEN_SHORTCUTS { "glide-settings shortcuts" } else { "glide-settings" };

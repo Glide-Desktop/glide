@@ -14,21 +14,38 @@ use smithay::{
 use super::tty::GlideRenderElements;
 
 pub struct Saved {
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
     pub png: Vec<u8>,
 }
 
 pub fn save(mut pixels: Vec<u8>, width: i32, height: i32) -> anyhow::Result<Saved> {
     bgra_to_rgba_in_place(&mut pixels);
-    let png = encode_png(width, height, &pixels)?;
+    let (width, height) = (u32::try_from(width)?, u32::try_from(height)?);
+    save_rgba(&pixels, width, height, true)
+}
+
+pub fn save_rgba(rgba: &[u8], width: u32, height: u32, write: bool) -> anyhow::Result<Saved> {
+    let png = encode_png(i32::try_from(width)?, i32::try_from(height)?, rgba)?;
+    if !write {
+        return Ok(Saved { path: None, png });
+    }
     let path = screenshot_path().context("failed to determine where to save the screenshot")?;
     std::fs::write(&path, &png).with_context(|| format!("failed to write the screenshot to {}", path.display()))?;
-    Ok(Saved { path, png })
+    Ok(Saved { path: Some(path), png })
 }
 
 pub(super) fn capture_frame(
     renderer: &mut GlesRenderer, elements: &[GlideRenderElements], size: (i32, i32), scale: f64, transform: Transform,
 ) -> anyhow::Result<Vec<u8>> {
+    capture_elements(renderer, elements, size, scale, transform, [0.0, 0.0, 0.0, 1.0])
+}
+
+pub(super) fn capture_elements<E>(
+    renderer: &mut GlesRenderer, elements: &[E], size: (i32, i32), scale: f64, transform: Transform, clear: [f32; 4],
+) -> anyhow::Result<Vec<u8>>
+where
+    E: smithay::backend::renderer::element::RenderElement<GlesRenderer>,
+{
     let (width, height) = size;
     if width <= 0 || height <= 0 {
         return Err(anyhow!("output has no usable size ({width}x{height}), nothing to capture"));
@@ -41,7 +58,7 @@ pub(super) fn capture_frame(
 
     let mut tracker = OutputDamageTracker::new((width, height), scale, transform);
     tracker
-        .render_output(renderer, &mut target, 0, elements, [0.0, 0.0, 0.0, 1.0])
+        .render_output(renderer, &mut target, 0, elements, clear)
         .map_err(|err| anyhow!("failed to render the frame: {err:?}"))?;
 
     let region = Rectangle::<i32, Buffer>::from_size((width, height).into());

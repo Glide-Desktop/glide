@@ -1110,6 +1110,8 @@ impl Config {
             simple(&[Alt], "F4", "close-window"),
             simple(&[Alt], "space", "open-window-menu"),
             simple(&[], "Print", "screenshot"),
+            simple(&[Shift], "Print", "screenshot-screen"),
+            simple(&[Alt], "Print", "screenshot-window"),
             simple(&[Super], "a", "toggle-launcher"),
             exec(
                 &[],
@@ -1456,6 +1458,8 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "open-window-menu" => KeyAction::OpenWindowMenu,
             "toggle-overview" => KeyAction::ToggleOverview,
             "screenshot" => KeyAction::Screenshot,
+            "screenshot-screen" => KeyAction::ScreenshotScreen,
+            "screenshot-window" => KeyAction::ScreenshotWindow,
             "toggle-launcher" => KeyAction::ToggleLauncher,
             "switch-windows" => KeyAction::SwitchWindows(false),
             "switch-windows-backward" => KeyAction::SwitchWindows(true),

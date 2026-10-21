@@ -313,7 +313,7 @@ impl GlideState {
             DesktopCommand::OpenHome => {
                 let _ = self.spawn_user_command("xdg-open \"$HOME\"");
             }
-            DesktopCommand::Screenshot => self.request_screenshot(),
+            DesktopCommand::Screenshot => self.open_shot_after_menus(),
             DesktopCommand::Overview => self.run_key_action(KeyAction::ToggleOverview),
             DesktopCommand::Launcher => self.run_key_action(KeyAction::ToggleLauncher),
             DesktopCommand::DoNotDisturb => {

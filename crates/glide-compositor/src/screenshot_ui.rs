@@ -11,6 +11,8 @@ use smithay::{
 use crate::{backend::screenshot::Saved, state::GlideState};
 
 pub const NOTICE_ID: u32 = u32::MAX - 1;
+pub const OPEN: &str = "open-screenshot";
+pub const SHOW: &str = "show-screenshot";
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(4);
 const PEAK: f32 = 0.6;
 const RISE: f32 = 0.25;
@@ -63,9 +65,17 @@ impl Flash {
 }
 
 pub fn save_in_background(loop_handle: &LoopHandle<'static, GlideState>, pixels: Vec<u8>, size: (i32, i32)) {
+    run_in_background(loop_handle, move || {
+        crate::backend::screenshot::save(pixels, size.0, size.1).map_err(|err| format!("{err:#}"))
+    });
+}
+
+pub fn run_in_background(
+    loop_handle: &LoopHandle<'static, GlideState>, work: impl FnOnce() -> Result<Saved, String> + Send + 'static,
+) {
     let (sender, receiver) = channel::channel::<Result<Saved, String>>();
     let spawned = std::thread::Builder::new().name("glide-screenshot".into()).spawn(move || {
-        let result = crate::backend::screenshot::save(pixels, size.0, size.1).map_err(|err| format!("{err:#}"));
+        let result = work();
         if sender.send(result).is_err() {
             tracing::debug!("the compositor went away before the screenshot was saved");
         }
@@ -109,29 +119,77 @@ impl GlideState {
         self.queue_redraw();
     }
 
+    pub fn open_screenshot(&mut self, in_folder: bool) {
+        self.notifications.dismiss(NOTICE_ID);
+        self.queue_redraw();
+        let Some(path) = self.session.last_screenshot.clone() else {
+            return;
+        };
+        let token = self.mint_granted_token(None);
+        if in_folder {
+            let spawned = std::thread::Builder::new().name("glide-show-screenshot".into()).spawn(move || {
+                if let Err(err) = glide_app::integration::show_in_files(&path, &token) {
+                    tracing::warn!(%err, "no file manager showed the screenshot");
+                    let folder = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+                    let mut command = std::process::Command::new("xdg-open");
+                    command.arg(folder).env("XDG_ACTIVATION_TOKEN", &token).env("DESKTOP_STARTUP_ID", &token);
+                    if let Err(err) = crate::spawn_detached(command) {
+                        tracing::warn!(%err, "could not open the screenshot folder");
+                    }
+                }
+            });
+            if let Err(err) = spawned {
+                tracing::warn!(%err, "could not start the file manager call");
+            }
+            return;
+        }
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path);
+        if let Err(err) = self.spawn_user_process(command) {
+            tracing::warn!(%err, "could not open the screenshot");
+        }
+    }
+
     pub fn request_screenshot_for(&mut self, waiter: std::os::unix::net::UnixStream) {
         self.session.screenshot_waiters.push(waiter);
         self.request_screenshot();
     }
 
     fn screenshot_finished(&mut self, result: Result<Saved, String>) {
+        use crate::i18n::{Key, t};
         let answer = match &result {
-            Ok(saved) => glide_ipc::Response::Screenshot { path: saved.path.display().to_string() },
+            Ok(Saved { path: Some(path), .. }) => glide_ipc::Response::Screenshot { path: path.display().to_string() },
+            Ok(Saved { path: None, .. }) => {
+                glide_ipc::Response::Error { message: "the screenshot was not saved".into() }
+            }
             Err(err) => glide_ipc::Response::Error { message: err.clone() },
         };
         for waiter in std::mem::take(&mut self.session.screenshot_waiters) {
             crate::ipc::reply(&waiter, &answer);
         }
+        let mut actions = Vec::new();
+        let mut image_path = String::new();
         let (summary, body) = match result {
             Ok(Saved { path, png }) => {
-                tracing::info!(path = %path.display(), "screenshot saved");
                 smithay::wayland::selection::data_device::set_data_device_selection(
                     &self.display_handle,
                     &self.seat,
                     vec![crate::clipboard::PNG_MIME.to_string()],
                     crate::clipboard::Owned::Png(Arc::from(png)),
                 );
-                (crate::i18n::screenshot_saved(), path.display().to_string())
+                if let Some(path) = path {
+                    tracing::info!(path = %path.display(), "screenshot saved");
+                    actions = vec![
+                        glide_notify::Action { key: OPEN.into(), label: t(Key::ShotOpen).into() },
+                        glide_notify::Action { key: SHOW.into(), label: t(Key::ShotShowInFolder).into() },
+                    ];
+                    image_path = path.display().to_string();
+                    self.session.last_screenshot = Some(path.clone());
+                    (crate::i18n::screenshot_saved(), path.display().to_string())
+                } else {
+                    tracing::info!("screenshot copied to the clipboard");
+                    (t(Key::ShotCopied), t(Key::ShotCopiedBody).to_string())
+                }
             }
             Err(err) => {
                 tracing::error!(%err, "failed to save the screenshot");
@@ -141,8 +199,11 @@ impl GlideState {
         let notice = glide_notify::Notification {
             id: NOTICE_ID,
             app_name: "Glide".to_string(),
+            app_icon: "applets-screenshooter".to_string(),
             summary: summary.to_string(),
             body,
+            actions,
+            image_path,
             transient: true,
             timeout: Some(NOTICE_TIMEOUT),
             ..glide_notify::Notification::default()

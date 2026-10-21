@@ -290,8 +290,8 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     if let Ok(request @ (Request::Screenshot | Request::ScreenshotArea | Request::PickColor)) = &request {
         match stream.try_clone() {
             Ok(waiter) => match request {
-                Request::ScreenshotArea => state.start_picker(crate::screen_picker::PickMode::Area, waiter),
-                Request::PickColor => state.start_picker(crate::screen_picker::PickMode::Color, waiter),
+                Request::ScreenshotArea => state.open_shot(Some(waiter)),
+                Request::PickColor => state.start_picker(waiter),
                 _ => state.request_screenshot_for(waiter),
             },
             Err(err) => reply(stream, &Response::Error { message: err.to_string() }),

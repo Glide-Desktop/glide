@@ -61,6 +61,7 @@ mod screenshot_ui;
 mod session_end;
 mod shell_bus;
 mod shortcut_guard;
+mod shot;
 mod smooth_wheel;
 mod snap;
 mod snapshot;
@@ -224,8 +225,10 @@ fn run() -> anyhow::Result<()> {
         let flash_animating = state.screenshot_flash.tick(std::time::Instant::now());
         let osd_animating = state.session.osd.tick(std::time::Instant::now());
         let wheel_animating = state.tick_smooth_wheel();
+        let shot_animating = state.tick_shot();
 
         if toasts_animating
+            || shot_animating
             || osd_animating
             || wheel_animating
             || snap_animating

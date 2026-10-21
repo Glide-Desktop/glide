@@ -80,6 +80,8 @@ pub const NAMED_ACTIONS: &[&str] = &[
     "run-command",
     "terminal",
     "screenshot",
+    "screenshot-screen",
+    "screenshot-window",
     "toggle-notification-center",
     "toggle-quick-settings",
     "toggle-do-not-disturb",
@@ -158,6 +160,8 @@ impl Action {
                 | "run-command"
                 | "terminal"
                 | "screenshot"
+                | "screenshot-screen"
+                | "screenshot-window"
                 | "lock"
                 | "power-dialog"
                 | "logout"

@@ -39,7 +39,6 @@ const BTN_MIDDLE: u32 = 0x112;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyAction {
     PickerCancel,
-    PickerConfirm,
     Quit,
     VtSwitch(i32),
     SwitchWorkspace(usize),
@@ -57,6 +56,9 @@ pub enum KeyAction {
     OverviewNav(Direction),
     Exec(String),
     Screenshot,
+    ScreenshotScreen,
+    ScreenshotWindow,
+    Shot(crate::shot::ShotKey),
     ToggleLauncher,
     LauncherPage(bool),
     LauncherNav(i32, i32),
@@ -228,9 +230,6 @@ fn picker_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
     let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
     if matches(Keysym::Escape) {
         return KeyAction::PickerCancel;
-    }
-    if matches(Keysym::Return) || matches(Keysym::KP_Enter) {
-        return KeyAction::PickerConfirm;
     }
     vt_switch_shortcut(raw_syms, modified_sym).unwrap_or(KeyAction::None)
 }
@@ -445,7 +444,14 @@ fn vt_switch_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> Option<KeyAc
 }
 
 fn is_global_shortcut(action: &KeyAction) -> bool {
-    matches!(action, KeyAction::Screenshot | KeyAction::Lock | KeyAction::PowerDialog)
+    matches!(
+        action,
+        KeyAction::Screenshot
+            | KeyAction::ScreenshotScreen
+            | KeyAction::ScreenshotWindow
+            | KeyAction::Lock
+            | KeyAction::PowerDialog
+    )
 }
 
 fn is_power_key(raw_syms: &[Keysym], modified_sym: Keysym) -> bool {
@@ -775,6 +781,7 @@ impl GlideState {
             }
             InputEvent::PointerButton { event, .. } => self.handle_pointer_button::<I>(&event),
             InputEvent::PointerAxis { event, .. } => self.handle_pointer_axis::<I>(&event),
+            InputEvent::TouchDown { .. } if self.shot_active() => {}
             InputEvent::TouchDown { event } => self.handle_touch_down::<I>(&event),
             InputEvent::TouchUp { event } => self.handle_touch_up::<I>(&event),
             InputEvent::TouchMotion { event } => self.handle_touch_motion::<I>(&event),
@@ -809,7 +816,7 @@ impl GlideState {
     }
 
     fn can_handle_shell_gesture(&self) -> bool {
-        if self.screen_locked() {
+        if self.screen_locked() || self.shot_active() {
             return false;
         }
         if let Some(pointer) = self.seat.get_pointer()
@@ -1504,6 +1511,9 @@ impl GlideState {
         let dock_keys = self.dock.keyboard_active();
         let power_open = self.power_dialog_open();
         let picker_open = self.picker_active();
+        let shot_open = self.shot_active();
+        let shot_typing = self.shot_typing();
+        let shot_editing = self.shot_editing();
         let switcher_open = self.switcher_open();
         let switcher_mode = self.switcher.as_ref().map_or(crate::switcher::Mode::Apps, crate::switcher::Switcher::mode);
         let greeter_active = self.greeter.is_some();
@@ -1576,7 +1586,11 @@ impl GlideState {
                         return FilterResult::Forward;
                     }
                     let (syms, sym) = (&binding_syms, shell_sym);
-                    let action = if picker_open {
+                    let action = if shot_open {
+                        Some(vt_switch_shortcut(syms, sym).unwrap_or_else(|| {
+                            KeyAction::Shot(crate::shot::shortcut(modifiers, syms, sym, shot_typing, shot_editing))
+                        }))
+                    } else if picker_open {
                         Some(picker_shortcut(syms, sym))
                     } else if power_open {
                         Some(power_dialog_shortcut(modifiers, syms, sym))
@@ -1785,7 +1799,6 @@ impl GlideState {
             KeyAction::PowerActivate => self.activate_power_dialog(),
             KeyAction::PowerCancel => self.cancel_power_dialog(),
             KeyAction::PickerCancel => self.cancel_picker(),
-            KeyAction::PickerConfirm => self.confirm_picker(),
             KeyAction::ToggleOverview => {
                 if self.layout.overview_active() {
                     self.begin_close_overview(None);
@@ -1846,7 +1859,10 @@ impl GlideState {
                     self.toggle_launcher();
                 }
             }
-            KeyAction::Screenshot => self.request_screenshot(),
+            KeyAction::Screenshot => self.open_shot(None),
+            KeyAction::ScreenshotScreen => self.request_screenshot(),
+            KeyAction::ScreenshotWindow => self.screenshot_window_now(),
+            KeyAction::Shot(key) => self.shot_key(key),
             KeyAction::TopbarClosePopup => {
                 if self.topbar.qs_escape() {
                     self.queue_redraw();
@@ -2099,6 +2115,10 @@ impl GlideState {
         &mut self, pos: Point<f64, Logical>,
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
         self.shell_cursor = self.shell_text_field_at(pos).then_some(smithay::input::pointer::CursorIcon::Text);
+        if self.shot_motion(pos) {
+            self.clear_shell_hover();
+            return None;
+        }
         if self.picker_motion(pos) || self.power_dialog_motion(pos) {
             self.clear_shell_hover();
             return None;
@@ -2314,7 +2334,9 @@ impl GlideState {
         let button_state = event.state();
 
         if button_state == ButtonState::Released {
-            if self.picker_release(pointer.current_location()) {
+            let shot_released = self.shot_release(pointer.current_location());
+            let picker_released = self.picker_release(pointer.current_location());
+            if shot_released || picker_released {
                 pointer.frame(self);
                 return;
             }
@@ -2387,6 +2409,9 @@ impl GlideState {
             return true;
         }
         if self.greeter_button(pos, button) {
+            return true;
+        }
+        if self.shot_button(pos, button) {
             return true;
         }
         if self.picker_button(pos) || self.power_dialog_button(pos) {
@@ -2725,7 +2750,7 @@ impl GlideState {
     }
 
     fn handle_pointer_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
-        if self.greeter.is_some() || self.topbar_scroll::<I>(event) {
+        if self.greeter.is_some() || self.shot_active() || self.picker_active() || self.topbar_scroll::<I>(event) {
             return;
         }
         if self.launcher.as_ref().is_some_and(|launcher| !launcher.is_closing()) {

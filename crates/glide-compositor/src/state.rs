@@ -367,6 +367,10 @@ pub struct SessionServices {
     pub last_user_input: Option<std::time::Instant>,
     pub screenshot_waiters: Vec<std::os::unix::net::UnixStream>,
     pub picker: Option<crate::screen_picker::Picker>,
+    pub shot: Option<crate::shot::Session>,
+    pub shot_memory: crate::shot::model::Memory,
+    pub window_capture: Option<crate::shot::WindowCapture>,
+    pub last_screenshot: Option<std::path::PathBuf>,
     pub search_providers: Option<crate::launcher::providers::Handle>,
     pub search_providers_started: bool,
     pub quicklists: HashMap<String, crate::launcher_entry::Quicklist>,
@@ -1660,7 +1664,7 @@ impl GlideState {
             }
             TopbarAction::QsScreenshot => {
                 self.topbar.close_popup();
-                self.request_screenshot();
+                self.open_shot_after_menus();
             }
             TopbarAction::QsOpenSettings => {
                 self.topbar.close_popup();

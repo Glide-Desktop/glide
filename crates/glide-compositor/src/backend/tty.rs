@@ -1476,24 +1476,31 @@ impl GlideState {
             surface.power_blur = None;
         }
 
-        if let Some(picker) = self.session.picker.as_ref().filter(|picker| picker.output == output) {
-            let (dim, border) = crate::screen_picker::overlay_rects(picker, scale.x);
-            let accent = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1).acc_bg.0;
-            let overlay = border
+        if let Some(session) = self.session.shot.as_mut().filter(|session| session.shows_on(&output)) {
+            let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
+            let palette = crate::shot::render::Palette::from_tokens(&tokens);
+            let painter = crate::paint::current();
+            let integer_scale = output.current_scale().integer_scale();
+            let mut cache = std::mem::take(&mut session.cache);
+            let pieces = session.scene().map_or_else(Vec::new, |scene| {
+                crate::shot::render::render(
+                    &mut cache,
+                    &scene,
+                    gles_renderer,
+                    &painter,
+                    &palette,
+                    self.launcher_theme.revision(),
+                    integer_scale,
+                )
+            });
+            session.cache = cache;
+            let overlay: Vec<GlideRenderElements> = pieces
                 .into_iter()
-                .zip(&picker.ids[4..])
-                .map(|(rect, id)| (rect, id, accent))
-                .chain(dim.into_iter().zip(&picker.ids[..4]).map(|(rect, id)| (rect, id, crate::screen_picker::DIM)))
-                .map(|(rect, id, color)| {
-                    GlideRenderElements::LockBackdrop(SolidColorRenderElement::new(
-                        id.clone(),
-                        rect,
-                        smithay::backend::renderer::utils::CommitCounter::default(),
-                        color,
-                        Kind::Unspecified,
-                    ))
+                .map(|piece| match piece {
+                    crate::shot::render::Piece::Memory(element) => GlideRenderElements::Memory(element),
+                    crate::shot::render::Piece::Solid(element) => GlideRenderElements::LockBackdrop(element),
                 })
-                .collect::<Vec<_>>();
+                .collect();
             prepend(&mut elements, overlay);
         }
 
@@ -1634,10 +1641,15 @@ impl GlideState {
                 output.current_transform(),
             ) {
                 Ok(pixels) => {
+                    let fractional = output.current_scale().fractional_scale();
                     if let Some(capture) = self.session.capture.take().filter(|capture| capture.output == output) {
-                        let fractional = output.current_scale().fractional_scale();
                         self.loop_handle.insert_idle(move |state| {
-                            state.deliver_capture(capture, pixels, output_mode, fractional);
+                            state.deliver_capture(&capture, &pixels, output_mode, fractional);
+                        });
+                    } else if self.session.shot.as_ref().is_some_and(|session| session.awaiting_freeze(&output)) {
+                        let frozen = output.clone();
+                        self.loop_handle.insert_idle(move |state| {
+                            state.shot_frozen(&frozen, pixels, output_mode, fractional);
                         });
                     } else {
                         self.screenshot_flash.start(
@@ -1649,6 +1661,36 @@ impl GlideState {
                     }
                 }
                 Err(err) => tracing::error!(?err, "failed to capture screenshot"),
+            }
+        }
+
+        if let Some(capture) = self.session.window_capture.take_if(|capture| capture.output == output) {
+            let fractional = output.current_scale().fractional_scale();
+            let window = &capture.window;
+            let geometry = window.geometry();
+            let header = window.header_height();
+            let frame = smithay::utils::Size::<i32, Logical>::from((geometry.size.w, geometry.size.h + header));
+            let physical = frame.to_f64().to_physical(fractional).to_i32_ceil::<i32>();
+            let location = Point::<i32, Logical>::from((-geometry.loc.x, header - geometry.loc.y))
+                .to_f64()
+                .to_physical(fractional)
+                .to_i32_round();
+            let shape = crate::window::PreviewShape { radius: capture.clip, scale: 1.0 };
+            let alone = window.preview_render_elements(gles_renderer, location, scale, 1.0, shape);
+            match super::screenshot::capture_elements(
+                gles_renderer,
+                &alone,
+                (physical.w, physical.h),
+                fractional,
+                Transform::Normal,
+                [0.0; 4],
+            ) {
+                Ok(pixels) => {
+                    let size = (physical.w, physical.h);
+                    self.loop_handle
+                        .insert_idle(move |state| state.window_captured(&capture, pixels, size, fractional));
+                }
+                Err(err) => tracing::error!(?err, "failed to capture the window"),
             }
         }
 

@@ -74,6 +74,16 @@ key = "Print"
 action = "screenshot"
 
 [[keybinds]]
+mods = ["shift"]
+key = "Print"
+action = "screenshot-screen"
+
+[[keybinds]]
+mods = ["alt"]
+key = "Print"
+action = "screenshot-window"
+
+[[keybinds]]
 mods = ["super"]
 key = "a"
 action = "toggle-launcher"

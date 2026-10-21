@@ -69,6 +69,8 @@ mod tr {
         SwitchWindowsBack => "Switch windows of the app backwards", "Перемкнути вікна програми назад";
         Launcher => "Show the launcher", "Показати лаунчер";
         Screenshot => "Take a screenshot", "Зробити знімок екрана";
+        ScreenshotScreen => "Screenshot the whole screen", "Знімок усього екрана";
+        ScreenshotWindow => "Screenshot the active window", "Знімок активного вікна";
         PowerDialog => "Power off, restart or log out", "Вимкнення, перезапуск або вихід";
         Logout => "Log out", "Вийти із сеансу";
         Quit => "Quit Glide immediately", "Негайно закрити Glide";
@@ -594,6 +596,8 @@ fn named_label(name: &str) -> Option<tr::Key> {
         "switch-app-windows-backward" => tr::Key::SwitchWindowsBack,
         "toggle-launcher" => tr::Key::Launcher,
         "screenshot" => tr::Key::Screenshot,
+        "screenshot-screen" => tr::Key::ScreenshotScreen,
+        "screenshot-window" => tr::Key::ScreenshotWindow,
         "lock" => tr::Key::LockScreen,
         "power-dialog" => tr::Key::PowerDialog,
         "logout" => tr::Key::Logout,
