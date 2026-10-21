@@ -404,8 +404,21 @@ fn titlebutton_rules(out: &mut String, p: &Paint, gtk: Gtk) {
     );
 }
 
+fn press_rules(out: &mut String, p: &Paint) {
+    let Paint { fill_1, .. } = p;
+    let plain = ":not(.suggested-action):not(.destructive-action):not(.osd):not(:checked):not(:disabled)";
+    let _ = write!(
+        out,
+        "
+button:not(.flat){plain}:active {{ background-color: {fill_1}; background-image: image({PRESS}); }}
+button.flat{plain}:active {{ background-color: transparent; background-image: image({PRESS}); }}
+"
+    );
+}
+
 fn component_rules(out: &mut String, p: &Paint, gtk: Gtk) {
     window_rules(out);
+    press_rules(out, p);
     titlebutton_rules(out, p, gtk);
     toggle_rules(out, p);
     entry_rules(out, p, gtk);
@@ -852,6 +865,20 @@ mod tests {
             assert!(body("notebook.frame").contains("border-color: transparent"));
             assert!(body(".navigation-sidebar > row:selected").contains("background-size: 3px 18px"));
             assert!(body("switch > slider").contains("background-color"));
+            let pressed = all
+                .iter()
+                .filter(|(selectors, _)| {
+                    selectors.iter().any(|s| s.starts_with("button") && s.ends_with(":not(:disabled):active"))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(pressed.len(), 2, "plain and flat buttons press with the 13 % layer");
+            for (selectors, body) in pressed {
+                assert!(body.contains(PRESS), "{selectors:?}");
+                assert!(
+                    selectors.iter().all(|s| s.contains(":not(.suggested-action)") && s.contains(":not(:checked)")),
+                    "accent, destructive, OSD and toggled buttons keep the toolkit's own press"
+                );
+            }
         }
     }
 

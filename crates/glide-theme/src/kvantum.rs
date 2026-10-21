@@ -498,6 +498,8 @@ pub fn svg(tokens: &Tokens) -> String {
     for id in ["toolbar-handle", "toolbar-separator", "header-separator"] {
         svg.group(id, 8.0, 10.0, |x, y| Svg::rect(x + 3.5, y, 1.0, 10.0, rule));
     }
+    let divider = over(t.line, t.popover_bg);
+    svg.group("arrow-separator", 100.0, 7.0, |x, y| Svg::rect(x + 3.0, y + 3.0, 94.0, 1.0, divider));
     let layers = crate::elevation::layers(crate::elevation::Level::El3, t.appearance);
     let tint = layers.first().map_or(Color([0.0, 0.0, 0.0, 1.0]), |layer| layer.color.with_alpha(1.0));
     let peak = layers.iter().map(|layer| layer.color.0[3]).sum::<f32>() / 2.0;
@@ -897,6 +899,20 @@ mod tests {
             assert!(group(&svg, &format!("menu-shadow-{part}")).contains(&format!("url(#menu-shadow-{part}-fade)")));
             assert!(svg.contains(&format!("id=\"menu-shadow-{part}-fade\"")), "{part} has its gradient");
         }
+    }
+
+    #[test]
+    fn menu_separators_use_the_menu_items_indicator_element() {
+        let tokens = Tokens::new(Appearance::Light, Accent::Blue);
+        let (config, svg) = (config(&tokens), svg(&tokens));
+        let indicator = section_of(&config, "MenuItem")
+            .lines()
+            .find_map(|line| line.strip_prefix("indicator.element="))
+            .expect("menu items name an indicator");
+        assert!(
+            group(&svg, &format!("{indicator}-separator")).contains(&hex(over(tokens.line, tokens.popover_bg))),
+            "Kvantum draws separators from <indicator>-separator"
+        );
     }
 
     #[test]
