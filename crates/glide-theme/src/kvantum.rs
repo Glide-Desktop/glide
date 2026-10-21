@@ -166,6 +166,24 @@ impl Svg {
         }
     }
 
+    fn tab(&mut self, id: &str, fill: Color, bar: Color) {
+        let (r, b) = (R2, TAB_BAR);
+        let base = |x: f32, y: f32, w: f32| Self::rect(x, y, w, b, fill) + &Self::rect(x, y, w, b, bar);
+        self.group(id, EDGE, EDGE, |x, y| Self::rect(x, y, EDGE, EDGE, fill));
+        self.group(&format!("{id}-top"), EDGE, r, |x, y| Self::rect(x, y, EDGE, r, fill));
+        self.group(&format!("{id}-right"), r, EDGE, |x, y| Self::rect(x, y, r, EDGE, fill));
+        self.group(&format!("{id}-bottom"), EDGE, b, |x, y| base(x, y, EDGE));
+        self.group(&format!("{id}-bottomright"), r, b, |x, y| base(x, y, r));
+        self.group(&format!("{id}-left"), r, EDGE, |x, y| Self::rect(x, y, r, EDGE, fill));
+        self.group(&format!("{id}-bottomleft"), r, b, |x, y| base(x, y, r));
+        self.group(&format!("{id}-topleft"), r, r, |x, y| {
+            Self::path(&format!("M{},{} H{x} A{r},{r} 0 0 1 {},{y} Z", x + r, y + r, x + r), fill)
+        });
+        self.group(&format!("{id}-topright"), r, r, |x, y| {
+            Self::path(&format!("M{x},{} V{y} A{r},{r} 0 0 1 {},{} Z", y + r, x + r, y + r), fill)
+        });
+    }
+
     fn finish(self) -> String {
         let height = self.y + self.tallest;
         format!(
@@ -414,13 +432,12 @@ pub fn svg(tokens: &Tokens) -> String {
     svg.frames("menuitem", p.menu_item(), R2, 1.0);
     svg.frames("itemview", p.row(t.view_bg, p.layer(ST_HOVER)), R1, 1.0);
     for (state, (fill, bar)) in STATES.into_iter().zip(p.tab()) {
-        svg.edges(&format!("tab-{state}"), TAB_BAR, fill, [CLEAR, CLEAR, bar, CLEAR]);
+        svg.tab(&format!("tab-{state}"), fill, bar);
         svg.edges(&format!("tabframe-{state}"), 1.0, CLEAR, [p.on_win(t.line), CLEAR, CLEAR, CLEAR]);
     }
     svg.frames("group", p.card(t.card_bg), R3, 1.0);
     svg.frames("common", [Look::new(CLEAR, p.on_win(t.line)); 5], R2, 1.0);
     svg.frames("tooltip", p.card(t.popover_bg), R2, 1.0);
-    svg.frame("focus", Look::new(CLEAR, t.acc_ring), R2, 2.0);
     svg.frames("header", p.header(), 1.0, 1.0);
     svg.frames("slider", p.groove(), 3.0, 1.0);
     svg.frames("progress", p.groove(), 3.0, 1.0);
@@ -512,6 +529,7 @@ pub fn config(tokens: &Tokens) -> String {
             ("progressbar_thickness", PROGRESS.to_string()),
             ("spread_progressbar", "true".into()),
             ("attach_active_tab", "false".into()),
+            ("joined_inactive_tabs", "false".into()),
             ("tooltip_delay", "550".into()),
             ("small_icon_size", "16".into()),
             ("large_icon_size", "32".into()),
@@ -636,8 +654,10 @@ fn widget_sections(out: &mut String, p: &Palette) {
     let mut rows = framed("itemview", R1, true);
     rows.extend(text(fg, soft));
     section(out, "ItemView", &rows);
-    let mut tab = framed("tab", TAB_BAR, true);
+    let mut tab = framed("tab", R2, true);
+    tab.retain(|(key, _)| *key != "frame.bottom");
     tab.extend([
+        ("frame.bottom", TAB_BAR.to_string()),
         ("text.normal.color", hex(p.on_win(t.fg_2))),
         ("text.focus.color", hex(fg)),
         ("text.press.color", hex(fg)),
@@ -661,7 +681,7 @@ fn widget_sections(out: &mut String, p: &Palette) {
     let mut tooltip = framed("tooltip", R2, true);
     tooltip.extend(text(fg, fg));
     section(out, "ToolTip", &tooltip);
-    section(out, "Focus", &framed("focus", 2.0, false));
+    section(out, "Focus", &bare());
     let mut header = framed("header", 1.0, true);
     header.extend(text(p.on_win(t.fg_2), fg));
     section(out, "HeaderSection", &header);
@@ -746,12 +766,7 @@ mod tests {
             let tokens = Tokens::new(appearance, Accent::default());
             let (config, svg) = (config(&tokens), svg(&tokens));
             for (element, frame) in elements(&config) {
-                let ids: Vec<String> = if element == "focus" {
-                    vec![element.clone()]
-                } else {
-                    STATES.iter().map(|state| format!("{element}-{state}")).collect()
-                };
-                for id in ids {
+                for id in STATES.iter().map(|state| format!("{element}-{state}")) {
                     assert!(svg.contains(&format!("id=\"{id}\"")), "{id}");
                     if frame {
                         for side in
@@ -762,7 +777,10 @@ mod tests {
                     }
                 }
             }
-            assert!(!svg.contains("id=\"focus-normal"), "Kvantum reads the focus frame without a state");
+            assert!(
+                section_of(&config, "Focus").contains("frame=false"),
+                "Kvantum draws the focus frame on mouse focus too, which the spec reserves for the keyboard"
+            );
             for indicator in ["arrow-down", "spin-plus", "tree-minus", "checkbox-checked", "radio", "slidercursor"] {
                 assert!(svg.contains(&format!("id=\"{indicator}-normal\"")), "{indicator}");
             }
