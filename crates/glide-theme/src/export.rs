@@ -379,8 +379,25 @@ toast {{ background: {popover}; color: {fg_1}; border-radius: {r3}px; box-shadow
     );
 }
 
+fn titlebutton_rules(out: &mut String, p: &Paint, gtk: Gtk) {
+    let Paint { fill_1, fg_2, acc, danger, .. } = p;
+    let button = match gtk {
+        Gtk::Three => "button.titlebutton",
+        Gtk::Four => "windowcontrols > button",
+    };
+    let _ = write!(
+        out,
+        "
+{button} > image {{ background-color: {fill_1}; color: {fg_2}; box-shadow: none; }}
+{button}:hover > image, {button}:active > image {{ background-color: {acc}; color: #ffffff; }}
+{button}.close:hover > image, {button}.close:active > image {{ background-color: {danger}; color: #ffffff; }}
+"
+    );
+}
+
 fn component_rules(out: &mut String, p: &Paint, gtk: Gtk) {
     window_rules(out);
+    titlebutton_rules(out, p, gtk);
     toggle_rules(out, p);
     entry_rules(out, p, gtk);
     range_rules(out, p);
