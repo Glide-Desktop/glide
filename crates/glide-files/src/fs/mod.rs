@@ -14,7 +14,10 @@ pub mod volumes;
 pub mod watch;
 
 pub use actions::{Codes, DesktopApp, Extensions, Offer, Roots, Run, Target};
-pub use entry::{FileCategory, FileEntry, LocalTime, days_from_civil, format_bytes, format_time, permissions_string};
+pub use entry::{
+    FileCategory, FileEntry, LocalTime, days_from_civil, format_bytes, format_time, permissions_string, widest_sizes,
+    widest_times,
+};
 pub use listing::{SortBy, SortConfig, natural_cmp, read_directory, search_recursive, sort_entries};
 pub use operations::{
     ClipboardAction, FileClipboard, create_directory, create_empty_file, create_from_template, create_link,

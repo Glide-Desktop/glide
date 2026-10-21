@@ -10,9 +10,9 @@ use crate::icons::Icon;
 use crate::theme::{self, Side, Tone};
 
 pub const NAME_ID: &str = "chooser-name";
-const PREVIEW_ICON: f32 = 160.0;
-const PREVIEW_WIDTH: f32 = 240.0;
-const NAME_WIDTH: f32 = 360.0;
+const PREVIEW_ICON: f32 = 128.0;
+const PREVIEW_WIDTH: f32 = 216.0;
+const NAME_ROW: f32 = 560.0;
 
 #[must_use]
 pub fn preview(app: &App) -> Option<Element<'_, Message>> {
@@ -26,11 +26,14 @@ pub fn preview(app: &App) -> Option<Element<'_, Message>> {
         return None;
     }
     let t = &app.theme;
-    let size = crate::fs::format_bytes(entry.size, app.lang);
+    let kind = format!("{} · {}", entry.category.name(app.lang), crate::fs::format_bytes(entry.size, app.lang));
+    let modified = entry.modified.map(|time| crate::fs::format_time(time, std::time::SystemTime::now(), app.lang));
     let body = column![
         container(super::file_icon(app, entry, PREVIEW_ICON)).center_x(Fill),
         text(entry.name.clone()).size(13.5).font(theme::SEMIBOLD).color(t.fg_1()).wrapping(text::Wrapping::WordOrGlyph),
-        text(size).size(12.0).color(t.fg_2()),
+        column![text(kind).size(theme::CAP).color(t.fg_2())]
+            .push(modified.map(|modified| text(modified).size(theme::CAP).color(t.fg_3())))
+            .spacing(theme::SP1),
     ]
     .spacing(theme::SP2)
     .padding(theme::SP3)
@@ -114,7 +117,7 @@ fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>
         .on_submit(Message::ChooserAccept)
         .padding(Padding::from([7.0, theme::SP3]))
         .size(13.5)
-        .width(Length::Fixed(NAME_WIDTH))
+        .width(Fill)
         .style(move |_, status| theme::field(&style, status));
     let ring = if chooser.name.trim().is_empty() || crate::chooser::valid_name(&chooser.name) {
         Ring::Off
@@ -128,7 +131,7 @@ fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>
     .spacing(theme::SP3)
     .align_y(Alignment::Center);
     Some(
-        container(row)
+        container(container(row).max_width(NAME_ROW))
             .padding(Padding::from([theme::SP2, theme::SP4]))
             .width(Fill)
             .center_x(Fill)
@@ -184,9 +187,10 @@ fn footer<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> 
     }
     let corners = theme::window_corners(Side::BottomRight, app.corner());
     Some(
-        container(bar.wrap().vertical_spacing(theme::SP2))
+        container(bar.wrap().vertical_spacing(theme::SP2).align_x(Alignment::End))
             .padding(Padding::from([theme::SP2, INSET]))
             .width(Fill)
+            .align_x(Alignment::End)
             .style(move |_| theme::rounded(bar_background(app), corners))
             .into(),
     )

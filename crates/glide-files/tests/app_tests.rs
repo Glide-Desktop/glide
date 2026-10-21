@@ -315,10 +315,28 @@ fn columns_that_do_not_fit_give_way_to_the_name() {
     let shown = shown_columns(&app);
     assert!(shown.len() < ListColumn::ALL.len(), "six columns cannot fit beside a name");
     assert_eq!(shown, ListColumn::ALL[..shown.len()], "they drop from the right, in the chosen order");
-    let used: f32 = shown.iter().map(|&column| column_width(column)).sum();
+    let used: f32 = shown.iter().map(|&column| column_width(column, app.lang)).sum();
     assert!(app.pane.width - used >= 200.0, "the name keeps at least 200 px");
     app.pane = Size::new(1600.0, 560.0);
     assert_eq!(shown_columns(&app).len(), ListColumn::ALL.len(), "a wide window shows them all");
+}
+
+#[test]
+fn list_columns_are_as_wide_as_their_longest_value_in_either_language() {
+    use glide_files::config::ListColumn;
+    use glide_files::fs::{widest_sizes, widest_times};
+    use glide_files::widgets::content::column_width;
+    use glide_files::widgets::text_width;
+    for lang in [Lang::En, Lang::Uk] {
+        let modified = column_width(ListColumn::Modified, lang);
+        for sample in widest_times(lang) {
+            assert!(text_width(&sample, glide_files::theme::CAP) + 16.0 <= modified, "{sample} fits");
+        }
+        assert!(modified < 168.0, "{lang:?}: a date column no longer reserves 168 px");
+        let size = column_width(ListColumn::Size, lang);
+        assert!(widest_sizes(lang).iter().all(|sample| text_width(sample, glide_files::theme::CAP) + 16.0 <= size));
+        assert!(size < 92.0 && column_width(ListColumn::Kind, lang) < 128.0, "{lang:?}");
+    }
 }
 
 #[test]

@@ -6,12 +6,14 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
-use super::{divider, file_icon, fit, icon};
+use super::{divider, file_icon, fit, icon, text_width};
 use crate::app::{App, FILES_ID, Hover, MenuKind, Message, RENAME_ID, ViewMode};
 use crate::config::ListColumn;
 use crate::fs::tags;
-use crate::fs::{FileEntry, SortBy, format_bytes, format_time, permissions_string};
-use crate::i18n::Key;
+use crate::fs::{
+    FileCategory, FileEntry, SortBy, format_bytes, format_time, permissions_string, widest_sizes, widest_times,
+};
+use crate::i18n::{Key, Lang};
 use crate::icons::Icon;
 use crate::theme::{self, R1};
 
@@ -140,15 +142,21 @@ impl Metrics {
 
 pub const LIST_HEADER: f32 = HEADER_HEIGHT + 1.0;
 
+const TAGS_WIDTH: f32 = 140.0;
+const SORT_ARROW: f32 = 11.0 + theme::SP1;
+
 #[must_use]
-pub const fn column_width(column: ListColumn) -> f32 {
-    match column {
-        ListColumn::Size => 92.0,
-        ListColumn::Modified | ListColumn::Created => 168.0,
-        ListColumn::Kind => 128.0,
-        ListColumn::Permissions => 118.0,
-        ListColumn::Tags => 140.0,
-    }
+pub fn column_width(column: ListColumn, lang: Lang) -> f32 {
+    let widest = |samples: &[String]| samples.iter().map(|sample| text_width(sample, theme::CAP)).fold(0.0, f32::max);
+    let values = match column {
+        ListColumn::Size => widest(&widest_sizes(lang)),
+        ListColumn::Modified | ListColumn::Created => widest(&widest_times(lang)),
+        ListColumn::Kind => widest(&FileCategory::ALL.map(|category| category.name(lang).to_string())),
+        ListColumn::Permissions => text_width(&permissions_string(0o40777), theme::CAP),
+        ListColumn::Tags => return TAGS_WIDTH,
+    };
+    let label = text_width(&column_label(column, lang).to_uppercase(), theme::MICRO) + SORT_ARROW;
+    (values.max(label) / FIT_SLACK + 2.0 * theme::SP2 + 1.0).ceil()
 }
 
 #[must_use]
@@ -354,7 +362,7 @@ fn list(app: &App) -> Element<'_, Message> {
     let height = app.pane.height - LIST_HEADER;
     let shown = visible_rows(total, metrics.row, LIST_PADDING, app.scroll_offset(), height);
     let room = name_width(app, &metrics);
-    let columns = shown_columns(app);
+    let columns = sized_columns(app);
     let rows = app
         .entries
         .iter()
@@ -372,8 +380,8 @@ fn list(app: &App) -> Element<'_, Message> {
 fn list_header(app: &App) -> Element<'_, Message> {
     let lang = app.lang;
     let mut header = row![header_cell(app, SortBy::Name.label(lang), Some(SortBy::Name), None, Fill)];
-    for column in shown_columns(app) {
-        let width = Length::Fixed(column_width(column));
+    for (column, width) in sized_columns(app) {
+        let width = Length::Fixed(width);
         header = header.push(header_cell(app, column_label(column, lang), column.sort(), Some(column), width));
     }
     if app.is_searching() {
@@ -440,7 +448,7 @@ fn column_value(app: &App, entry: &FileEntry, column: ListColumn, now: SystemTim
 
 fn list_row<'a>(
     app: &'a App, entry: &'a FileEntry, stripe: bool, now: SystemTime, metrics: &Metrics, room: f32,
-    columns: &[ListColumn],
+    columns: &[(ListColumn, f32)],
 ) -> Element<'a, Message> {
     let t = &app.theme;
     let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
@@ -471,8 +479,8 @@ fn list_row<'a>(
     }
 
     let mut cells = row![container(name).width(Fill).clip(true)].align_y(Alignment::Center);
-    for &column in columns {
-        cells = cells.push(cell(column_value(app, entry, column, now), column_width(column)));
+    for &(column, width) in columns {
+        cells = cells.push(cell(column_value(app, entry, column, now), width));
     }
     if app.is_searching() {
         let room = LOCATION_WIDTH - 2.0 * theme::SP2;
@@ -521,20 +529,24 @@ pub fn breakable(name: &str) -> String {
 }
 
 fn name_width(app: &App, metrics: &Metrics) -> f32 {
-    let columns: f32 = shown_columns(app).iter().map(|&column| column_width(column)).sum();
+    let columns: f32 = sized_columns(app).iter().map(|&(_, width)| width).sum();
     let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
     (app.pane.width - 5.0 * theme::SP2 - columns - location - metrics.row_icon).max(NAME_MIN)
 }
 
 #[must_use]
 pub fn shown_columns(app: &App) -> Vec<ListColumn> {
+    sized_columns(app).into_iter().map(|(column, _)| column).collect()
+}
+
+fn sized_columns(app: &App) -> Vec<(ListColumn, f32)> {
     let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
     let mut room = app.pane.width - 4.0 * theme::SP2 - location - NAME_ROOM;
     app.columns
         .iter()
-        .copied()
-        .take_while(|&column| {
-            room -= column_width(column);
+        .map(|&column| (column, column_width(column, app.lang)))
+        .take_while(|&(_, width)| {
+            room -= width;
             room >= 0.0
         })
         .collect()

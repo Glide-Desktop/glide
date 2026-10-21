@@ -21,6 +21,20 @@ pub enum FileCategory {
 }
 
 impl FileCategory {
+    pub const ALL: [Self; 11] = [
+        Self::Folder,
+        Self::Document,
+        Self::Text,
+        Self::Code,
+        Self::Image,
+        Self::Audio,
+        Self::Video,
+        Self::Archive,
+        Self::Pdf,
+        Self::Binary,
+        Self::Unknown,
+    ];
+
     #[must_use]
     pub fn icon(self) -> Icon {
         match self {
@@ -229,6 +243,22 @@ pub fn format_time(time: SystemTime, now: SystemTime, lang: Lang) -> String {
     match today.day_number() - at.day_number() {
         0 => format!("{}, {clock}", Key::Today.text(lang)),
         1 => format!("{}, {clock}", Key::Yesterday.text(lang)),
-        _ => format!("{} {} {}, {clock}", at.day, i18n::month(at.month, lang), at.year),
+        _ => dated(at.day, at.month, at.year, &clock, lang),
     }
+}
+
+fn dated(day: impl std::fmt::Display, month: u8, year: impl std::fmt::Display, clock: &str, lang: Lang) -> String {
+    format!("{day} {} {year}, {clock}", i18n::month(month, lang))
+}
+
+#[must_use]
+pub fn widest_times(lang: Lang) -> Vec<String> {
+    let mut samples: Vec<String> = (1..=12).map(|month| dated(28, month, 2026, "23:59", lang)).collect();
+    samples.extend([Key::Today, Key::Yesterday].map(|key| format!("{}, 23:59", key.text(lang))));
+    samples
+}
+
+#[must_use]
+pub fn widest_sizes(lang: Lang) -> Vec<String> {
+    [999, 999_949, 999_949_000, 999_949_000_000, 999_949_000_000_000].map(|bytes| format_bytes(bytes, lang)).to_vec()
 }
