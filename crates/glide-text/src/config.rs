@@ -96,7 +96,6 @@ pub struct Preferences {
     pub font_family: Option<String>,
     pub font_size: f32,
     pub monospace: bool,
-    pub wrap: bool,
     pub tab_width: usize,
     pub spaces: bool,
     pub auto_indent: bool,
@@ -113,7 +112,6 @@ impl Default for Preferences {
             font_family: None,
             font_size: 14.0,
             monospace: true,
-            wrap: true,
             tab_width: 4,
             spaces: true,
             auto_indent: true,
@@ -259,10 +257,10 @@ mod tests {
 
     #[test]
     fn preferences_read_kebab_case_and_clamp_nonsense() {
-        let prefs = Preferences::parse("font-size = 900\ntab-width = 0\nwrap = false\nspaces = false\n");
+        let prefs = Preferences::parse("font-size = 900\ntab-width = 0\nsidebar = false\nspaces = false\n");
         assert_eq!(prefs.font_size, 72.0);
         assert_eq!(prefs.tab_width, 1);
-        assert!(!prefs.wrap && !prefs.spaces);
+        assert!(!prefs.sidebar && !prefs.spaces);
         assert!(prefs.monospace, "unset keys keep their defaults");
     }
 
@@ -271,11 +269,11 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("glide-text-prefs-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("text.toml");
-        std::fs::write(&path, "# mine\nwrap = true\nfuture-key = 3\n").unwrap();
-        let prefs = Preferences { wrap: false, ..Preferences::default() };
+        std::fs::write(&path, "# mine\nsidebar = true\nfuture-key = 3\n").unwrap();
+        let prefs = Preferences { sidebar: false, ..Preferences::default() };
         save_to(&path, &prefs).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("# mine") && text.contains("future-key = 3") && text.contains("wrap = false"));
+        assert!(text.contains("# mine") && text.contains("future-key = 3") && text.contains("sidebar = false"));
         assert_eq!(Preferences::parse(&text), prefs);
         std::fs::remove_dir_all(&folder).unwrap();
     }

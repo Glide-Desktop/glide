@@ -112,7 +112,6 @@ pub enum Command {
     GoToLine,
     ToggleSidebar,
     ToggleStatusBar,
-    ToggleWrap,
     ToggleMonospace,
     TogglePreview,
     ZoomIn,
@@ -407,7 +406,6 @@ pub fn shortcut(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<C
         ('g', true, true, false) => Command::FindPrevious,
         ('e', true, false, false) => Command::UseSelection,
         ('i' | 'l', true, false, false) => Command::GoToLine,
-        ('z', false, false, true) => Command::ToggleWrap,
         ('p', true, false, true) => Command::TogglePreview,
         _ => return None,
     };
@@ -449,7 +447,6 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::UseSelection => "Ctrl+E",
         Command::GoToLine => "Ctrl+I",
         Command::ToggleSidebar => "F9",
-        Command::ToggleWrap => "Alt+Z",
         Command::TogglePreview => "Ctrl+Alt+P",
         Command::ZoomIn => "Ctrl++",
         Command::ZoomOut => "Ctrl+−",
@@ -479,7 +476,7 @@ pub fn binding(press: KeyPress) -> Option<Binding<Message>> {
             Command::Indent
         }))),
         Key::Named(Named::Enter) if plain => Some(Binding::Custom(Message::Command(Command::Newline))),
-        Key::Named(Named::Escape) => Some(Binding::Custom(Message::Escape)),
+        Key::Named(Named::Escape) => Some(Binding::Custom(Message::Noop)),
         _ => Binding::from_key_press(press),
     }
 }
@@ -1312,11 +1309,11 @@ impl App {
         {
             return task;
         }
-        if captured {
-            return Task::none();
-        }
         if let Key::Named(Named::Escape) = key.as_ref() {
             return self.escape();
+        }
+        if captured {
+            return Task::none();
         }
         match shortcut(key, *physical_key, *modifiers) {
             Some(command) => self.command(command),
@@ -1526,11 +1523,6 @@ impl App {
             }
             Command::ToggleStatusBar => {
                 self.prefs.status_bar = !self.prefs.status_bar;
-                self.store_prefs();
-                Task::none()
-            }
-            Command::ToggleWrap => {
-                self.prefs.wrap = !self.prefs.wrap;
                 self.store_prefs();
                 Task::none()
             }
@@ -2380,20 +2372,48 @@ mod tests {
         let mut app = app();
         let _ = app.update(Message::BarPressed(Bar::Edit));
         assert_eq!(app.menu.as_ref().map(|menu| menu.kind.clone()), Some(MenuKind::Bar(Bar::Edit)));
-        let _ = app.update(Message::Key(
+        let _ = app.update(named(Named::ArrowRight, Code::ArrowRight, false));
+        assert_eq!(app.menu.as_ref().map(|menu| menu.kind.clone()), Some(MenuKind::Bar(Bar::View)));
+        let _ = app.update(Message::Escape);
+        assert!(!app.menu_open());
+    }
+
+    fn named(key: Named, code: Code, captured: bool) -> Message {
+        Message::Key(
             keyboard::Event::KeyPressed {
-                key: Key::Named(Named::ArrowRight),
-                modified_key: Key::Named(Named::ArrowRight),
-                physical_key: Physical::Code(Code::ArrowRight),
+                key: Key::Named(key),
+                modified_key: Key::Named(key),
+                physical_key: Physical::Code(code),
                 location: keyboard::Location::Standard,
                 modifiers: Modifiers::empty(),
                 text: None,
                 repeat: false,
             },
-            false,
-        ));
-        assert_eq!(app.menu.as_ref().map(|menu| menu.kind.clone()), Some(MenuKind::Bar(Bar::View)));
-        let _ = app.update(Message::Escape);
-        assert!(!app.menu_open());
+            captured,
+        )
+    }
+
+    #[test]
+    fn escape_captured_by_the_find_field_still_closes_one_bar_at_a_time() {
+        let mut app = app();
+        let _ = app.update(Message::Command(Command::Find));
+        let _ = app.update(Message::Command(Command::GoToLine));
+        let _ = app.update(named(Named::Escape, Code::Escape, true));
+        assert!(app.goto.is_none() && app.find.is_some(), "the first Escape closes only the newest bar");
+        let _ = app.update(named(Named::Escape, Code::Escape, true));
+        assert!(app.find.is_none());
+    }
+
+    #[test]
+    fn keys_under_a_dialog_answer_it_without_reaching_the_document() {
+        let mut app = app();
+        typed(&mut app, "draft");
+        let _ = app.update(Message::Command(Command::Close));
+        assert!(app.dialog.is_some());
+        let _ = app.update(named(Named::ArrowDown, Code::ArrowDown, false));
+        let _ = app.update(named(Named::Escape, Code::Escape, true));
+        assert!(app.dialog.is_none());
+        assert_eq!(app.doc().unwrap().text, "draft");
+        assert_eq!(app.docs.len(), 1, "cancel keeps the document");
     }
 }

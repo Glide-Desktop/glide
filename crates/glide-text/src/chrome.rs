@@ -683,17 +683,17 @@ fn editor(app: &App) -> Element<'_, Message> {
         .center(Fill)
         .into();
     };
-    let wrapping = if app.prefs.wrap { Wrapping::WordOrGlyph } else { Wrapping::None };
+    let blocked = app.dialog.is_some() || app.menu_open();
     let editor = text_editor(&doc.content)
         .id(EDITOR)
         .on_action(Message::Edit)
-        .key_binding(crate::app::binding)
+        .key_binding(move |press| if blocked { None } else { crate::app::binding(press) })
         .font(app.font())
         .size(app.font_size())
         .line_height(iced::widget::text::LineHeight::Relative(1.5))
         .padding(Padding { top: SP3, bottom: SP6, left: SP5, right: SP4 })
         .height(Fill)
-        .wrapping(wrapping)
+        .wrapping(Wrapping::WordOrGlyph)
         .style(editor_style(&paint))
         .highlight_with::<Bridge>(app.settings(doc), Highlight::to_format);
     let editor = mouse_area(editor).on_right_press(Message::Command(Command::ContextMenu));
@@ -884,7 +884,6 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             check(app, Key::Sidebar, Command::ToggleSidebar, app.prefs.sidebar, true),
             check(app, Key::StatusBar, Command::ToggleStatusBar, app.prefs.status_bar, true),
             Item::Separator,
-            check(app, Key::Wrap, Command::ToggleWrap, app.prefs.wrap, true),
             check(app, Key::Monospace, Command::ToggleMonospace, app.prefs.monospace, true),
             check(
                 app,

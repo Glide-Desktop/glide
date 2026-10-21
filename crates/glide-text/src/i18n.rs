@@ -98,7 +98,6 @@ keys! {
     GoToLine => ("Перейти до рядка…", "Go to Line…"),
     Sidebar => ("Бічна панель", "Sidebar"),
     StatusBar => ("Рядок стану", "Status Bar"),
-    Wrap => ("Переносити рядки", "Wrap Lines"),
     Monospace => ("Моноширинний шрифт", "Monospace Font"),
     Preview => ("Перегляд Markdown", "Markdown Preview"),
     ZoomIn => ("Збільшити", "Zoom In"),

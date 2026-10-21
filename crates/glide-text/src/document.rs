@@ -10,8 +10,6 @@ use crate::detect;
 use crate::history::{Diff, History, Kind};
 use crate::syntax::{self, Language, Lines};
 
-pub const LARGE: usize = 256 * 1024;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Encoding {
     #[default]
@@ -231,6 +229,7 @@ pub struct Document {
     pub highlighted: u64,
     pub detect_pending: bool,
     pub draft: Option<PathBuf>,
+    counted: std::cell::Cell<(u64, usize)>,
 }
 
 impl Document {
@@ -257,6 +256,7 @@ impl Document {
             highlighted: u64::MAX,
             detect_pending: false,
             draft: None,
+            counted: std::cell::Cell::new((u64::MAX, 0)),
         }
     }
 
@@ -474,7 +474,13 @@ impl Document {
 
     #[must_use]
     pub fn words(&self) -> usize {
-        self.text.split_whitespace().count()
+        let (revision, words) = self.counted.get();
+        if revision == self.revision {
+            return words;
+        }
+        let words = self.text.split_whitespace().count();
+        self.counted.set((self.revision, words));
+        words
     }
 }
 
