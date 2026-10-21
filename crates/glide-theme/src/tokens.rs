@@ -101,6 +101,14 @@ impl Tokens {
     }
 
     #[must_use]
+    pub fn switch_thumb(&self) -> Color {
+        match self.appearance {
+            Appearance::Light => Color([1.0, 1.0, 1.0, 1.0]),
+            Appearance::Dark => Color::from_hex("#cfccc7").expect("valid hex"),
+        }
+    }
+
+    #[must_use]
     pub fn terminal_ansi(&self) -> [Color; 16] {
         let dark = self.appearance == Appearance::Dark;
         let mut colors = if dark {

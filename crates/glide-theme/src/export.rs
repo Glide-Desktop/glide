@@ -136,8 +136,10 @@ struct Paint {
     view: String,
     popover: String,
     thumb: String,
+    switch_thumb: String,
     fg_1: String,
     fg_2: String,
+    fg_3: String,
     acc: String,
     acc_text: String,
     soft: String,
@@ -166,8 +168,10 @@ impl Paint {
             view: pick("view-bg", css_color(t.view_bg)),
             popover: pick("popover-bg", css_color(t.popover_bg)),
             thumb: pick("segment-thumb", css_color(t.segment_thumb())),
+            switch_thumb: pick("switch-thumb", css_color(t.switch_thumb())),
             fg_1: pick("fg-1", css_color(t.fg_1)),
             fg_2: pick("fg-2", css_color(t.fg_2)),
+            fg_3: pick("fg-3", css_color(t.fg_3)),
             acc: pick("acc-bg", css_color(t.acc_bg)),
             acc_text: pick("acc-text", css_color(t.acc_text)),
             soft: pick("acc-soft", css_color(t.acc_soft)),
@@ -276,7 +280,7 @@ entry.flat{focus}, spinbutton.flat{focus}, spinbutton > entry{focus} {{ backgrou
 }
 
 fn range_rules(out: &mut String, p: &Paint) {
-    let Paint { acc, ring, .. } = p;
+    let Paint { acc, ring, switch_thumb, .. } = p;
     let r1 = shape::R1;
     let _ = write!(
         out,
@@ -284,14 +288,43 @@ fn range_rules(out: &mut String, p: &Paint) {
 check {{ border-radius: {r2}px; }}
 scale:not(.color) slider {{ background-color: {acc}; background-image: none; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); }}
 scale:not(.color) slider:hover {{ box-shadow: 0 0 0 4px {ring}, 0 1px 3px rgba(0, 0, 0, 0.25); }}
+scale.horizontal:not(.color) > trough {{ min-height: {TRACK}px; }}
+scale.vertical:not(.color) > trough {{ min-width: {TRACK}px; }}
 progressbar:not(.osd) > trough, progressbar:not(.osd) > trough > progress {{ border-radius: {r1}px; }}
+progressbar.horizontal:not(.osd) > trough, progressbar.horizontal:not(.osd) > trough > progress {{ min-height: {TRACK}px; }}
+progressbar.vertical:not(.osd) > trough, progressbar.vertical:not(.osd) > trough > progress {{ min-width: {TRACK}px; }}
+switch > slider {{ background-color: {switch_thumb}; }}
+switch:checked > slider {{ background-color: #ffffff; }}
 ",
         r2 = shape::R2
     );
 }
 
+const TRACK: u32 = 6;
+
+fn notebook_rules(out: &mut String, p: &Paint) {
+    let Paint { line, fill_1, fg_1, fg_2, .. } = p;
+    let r2 = shape::R2;
+    let _ = write!(
+        out,
+        "
+notebook.frame {{ border-color: transparent; }}
+notebook > header {{ background-color: transparent; border-color: transparent; }}
+notebook > header.top {{ box-shadow: inset 0 -1px {line}; }}
+notebook > header.bottom {{ box-shadow: inset 0 1px {line}; }}
+notebook > header.left {{ box-shadow: inset -1px 0 {line}; }}
+notebook > header.right {{ box-shadow: inset 1px 0 {line}; }}
+notebook > header > tabs > tab {{ color: {fg_2}; }}
+notebook > header > tabs > tab:hover {{ color: {fg_1}; background-color: {fill_1}; }}
+notebook > header.top > tabs > tab {{ border-radius: {r2}px {r2}px 0 0; }}
+notebook > header.bottom > tabs > tab {{ border-radius: 0 0 {r2}px {r2}px; }}
+notebook > stack:not(:only-child) {{ background-color: transparent; }}
+"
+    );
+}
+
 fn list_rules(out: &mut String, p: &Paint) {
-    let Paint { line, soft, soft_fg, acc_text, el_1, el_2, .. } = p;
+    let Paint { line, soft, soft_fg, acc, acc_text, el_1, el_2, .. } = p;
     let r2 = shape::R2;
     let _ = write!(
         out,
@@ -300,6 +333,9 @@ row:selected, .navigation-sidebar > row:selected, placessidebar row:selected, tr
 row:selected:hover {{ background-image: image({HOVER}); }}
 row:selected:active {{ background-image: image({PRESS}); }}
 .navigation-sidebar > row, placessidebar row {{ border-radius: {r2}px; min-height: 34px; }}
+.navigation-sidebar > row:selected, placessidebar row:selected {{ background-image: linear-gradient({acc}, {acc}); background-size: 3px 18px; background-position: left center; background-repeat: no-repeat; }}
+.navigation-sidebar > row:selected:hover, placessidebar row:selected:hover {{ background-image: linear-gradient({acc}, {acc}), image({HOVER}); background-size: 3px 18px, auto; }}
+.navigation-sidebar > row:selected:active, placessidebar row:selected:active {{ background-image: linear-gradient({acc}, {acc}), image({PRESS}); background-size: 3px 18px, auto; }}
 selection {{ background-color: {soft}; color: {soft_fg}; }}
 .card, list.boxed-list, .boxed-list, list.boxed-list-separate > row {{ box-shadow: 0 0 0 1px {line}, {el_1}; }}
 button.card:hover, .card.activatable:hover {{ box-shadow: 0 0 0 1px {line}, {el_2}; }}
@@ -328,11 +364,14 @@ tooltip label {{ color: {fg_1}; }}
 }
 
 fn gtk4_only_rules(out: &mut String, p: &Paint) {
-    let Paint { line, popover, fg_1, ring, acc_text, danger, warn, ok, el_3, .. } = p;
+    let Paint { line, line_2, view, popover, fg_1, fg_3, ring, acc_text, danger, warn, warn_soft, ok, el_3, .. } = p;
     let r3 = shape::R3;
     let _ = write!(
         out,
         "
+banner > revealer > widget {{ background-color: {warn_soft}; color: {warn}; box-shadow: inset 3px 0 {warn}; }}
+check:not(:checked):not(:indeterminate), radio:not(:checked):not(:indeterminate) {{ background-color: {view}; box-shadow: inset 0 0 0 1.5px {line_2}; }}
+check:not(:checked):not(:indeterminate):hover, radio:not(:checked):not(:indeterminate):hover {{ box-shadow: inset 0 0 0 1.5px {fg_3}; }}
 *:focus-visible {{ outline-color: {ring}; }}
 headerbar .title, windowtitle > .title {{ font-weight: 640; }}
 toast {{ background: {popover}; color: {fg_1}; border-radius: {r3}px; box-shadow: 0 0 0 1px {line}, {el_3}; --accent-color: {acc_text}; --destructive-color: {danger}; --error-color: {danger}; --warning-color: {warn}; --success-color: {ok}; }}
@@ -345,6 +384,7 @@ fn component_rules(out: &mut String, p: &Paint, gtk: Gtk) {
     toggle_rules(out, p);
     entry_rules(out, p, gtk);
     range_rules(out, p);
+    notebook_rules(out, p);
     list_rules(out, p);
     overlay_rules(out, p, gtk);
     if gtk == Gtk::Four {
@@ -755,7 +795,7 @@ mod tests {
 
     #[test]
     fn controls_keep_the_toolkit_height_because_min_height_excludes_padding() {
-        let padded = ["modelbutton", "row", "stackswitcher > button.toggle"];
+        let padded = ["modelbutton", "row", "stackswitcher > button.toggle", "> trough", "> progress"];
         for (css, _) in both_dialects() {
             for (selectors, body) in rules(&css) {
                 if !body.contains("min-height") {
@@ -768,6 +808,24 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn notebooks_draw_underlined_tabs_and_sidebars_mark_the_selected_row_like_the_spec() {
+        for (css, _) in both_dialects() {
+            let all = rules(&css);
+            let body = |selector: &str| {
+                all.iter()
+                    .filter(|(selectors, _)| selectors.iter().any(|s| s == selector))
+                    .map(|(_, body)| body.as_str())
+                    .collect::<String>()
+            };
+            assert!(body("notebook > header").contains("background-color: transparent"));
+            assert!(body("notebook > header.top").contains("inset 0 -1px"));
+            assert!(body("notebook.frame").contains("border-color: transparent"));
+            assert!(body(".navigation-sidebar > row:selected").contains("background-size: 3px 18px"));
+            assert!(body("switch > slider").contains("background-color"));
         }
     }
 
