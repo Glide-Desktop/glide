@@ -1,4 +1,5 @@
 pub mod app;
+pub mod chooser;
 pub mod config;
 pub mod dnd;
 pub mod drag_icon;

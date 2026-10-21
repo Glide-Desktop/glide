@@ -29,7 +29,7 @@ use smithay::{
                 memory::MemoryRenderBuffer,
                 solid::{SolidColorBuffer, SolidColorRenderElement},
                 surface::WaylandSurfaceRenderElement,
-                utils::{Relocate, RelocateRenderElement},
+                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             },
             gles::GlesRenderer,
         },
@@ -285,6 +285,7 @@ pub fn init_tty(
                 InputEvent::DeviceAdded { device } => {
                     state.configure_input_device(device);
                     state.input_devices.push(device.clone());
+                    state.sync_keyboard_leds();
                 }
                 InputEvent::DeviceRemoved { device } => {
                     state.input_devices.retain(|known| known != device);
@@ -312,6 +313,7 @@ pub fn init_tty(
                 if let Err(err) = libinput_context.resume() {
                     tracing::error!("failed to resume libinput context: {:?}", err);
                 }
+                state.release_held_keys("session resumed");
 
                 let Some(device) = state.backend_data.device.as_mut() else {
                     return;
@@ -461,6 +463,8 @@ fn present_feedback(
 }
 
 const OVERVIEW_WALLPAPER_ZOOM: f64 = 1.06;
+
+const MIRROR_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 const OVERVIEW_WALLPAPER_SATURATION: f32 = 0.9;
 
@@ -779,7 +783,10 @@ impl GlideState {
         self.sync_layout_outputs();
         self.reconcile_space();
         self.session.lid_hidden.retain(|panel| panel != &surface.output);
-        self.apply_lid();
+        self.session.mirrors.retain(|mirror| mirror != &surface.output);
+        if !self.apply_lid() {
+            self.apply_output_configs();
+        }
 
         let Some(global) = surface.global else {
             return;
@@ -1128,7 +1135,13 @@ impl GlideState {
             self.loop_handle.remove(token);
         }
 
-        let output = surface.output.clone();
+        let target = surface.output.clone();
+        let mirroring = self.session.mirrors.contains(&target);
+        let output = if mirroring {
+            self.space.outputs().next().cloned().unwrap_or_else(|| target.clone())
+        } else {
+            target.clone()
+        };
         if self.space.output_geometry(&output).is_none() {
             if !surface.switched_off {
                 if let Err(err) =
@@ -1219,6 +1232,7 @@ impl GlideState {
 
         let unlocking = self.greeter.as_ref().is_some_and(|greeter| greeter.is_lock() && greeter.is_leaving());
         let mut elements = Vec::new();
+        let mut blur_patches: Vec<Rectangle<i32, Logical>> = Vec::new();
         if let Some(greeter) = self.greeter.as_mut().filter(|_| !unlocking) {
             let painter = crate::paint::current();
             elements.extend(
@@ -1282,6 +1296,7 @@ impl GlideState {
                 return;
             };
             elements.extend(space_elements);
+            blur_patches = crate::background_effect::blur_rects(&self.space, output_geometry);
             if let Some(preview) = self.snap_preview.as_mut()
                 && output_geometry.overlaps(preview.rect)
             {
@@ -1366,18 +1381,6 @@ impl GlideState {
         );
 
         let output_rect = Rectangle::from_size(logical_size.into());
-        if !locked {
-            let toasts = crate::notifications::render(
-                &mut self.notifications,
-                gles_renderer,
-                &crate::paint::current(),
-                output_rect,
-                scale,
-                output.current_scale().integer_scale(),
-            );
-            prepend(&mut elements, toasts.into_iter().map(GlideRenderElements::Memory));
-        }
-
         if !locked && !topbar_hidden {
             let topbar = crate::topbar::render(
                 &mut self.topbar,
@@ -1390,6 +1393,18 @@ impl GlideState {
                 dock_backdrop.as_ref(),
             );
             prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
+        }
+
+        if !locked {
+            let toasts = crate::notifications::render(
+                &mut self.notifications,
+                gles_renderer,
+                &crate::paint::current(),
+                output_rect,
+                scale,
+                output.current_scale().integer_scale(),
+            );
+            prepend(&mut elements, toasts.into_iter().map(GlideRenderElements::Memory));
         }
 
         if let Some(switcher) = self.switcher.as_mut().filter(|_| !locked && primary) {
@@ -1459,6 +1474,27 @@ impl GlideState {
             }
         } else {
             surface.power_blur = None;
+        }
+
+        if let Some(picker) = self.session.picker.as_ref().filter(|picker| picker.output == output) {
+            let (dim, border) = crate::screen_picker::overlay_rects(picker, scale.x);
+            let accent = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1).acc_bg.0;
+            let overlay = border
+                .into_iter()
+                .zip(&picker.ids[4..])
+                .map(|(rect, id)| (rect, id, accent))
+                .chain(dim.into_iter().zip(&picker.ids[..4]).map(|(rect, id)| (rect, id, crate::screen_picker::DIM)))
+                .map(|(rect, id, color)| {
+                    GlideRenderElements::LockBackdrop(SolidColorRenderElement::new(
+                        id.clone(),
+                        rect,
+                        smithay::backend::renderer::utils::CommitCounter::default(),
+                        color,
+                        Kind::Unspecified,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            prepend(&mut elements, overlay);
         }
 
         let osd_alpha = self.session.osd.alpha(std::time::Instant::now());
@@ -1541,7 +1577,52 @@ impl GlideState {
             prepend(&mut elements, covered);
         }
 
+        if let Some(buffer) = surface.wallpaper_blur_buf.as_mut() {
+            let fractional = output.current_scale().fractional_scale();
+            for rect in blur_patches {
+                let local = Rectangle::new(rect.loc - output_geometry.loc, rect.size);
+                let src = Rectangle::<f64, Logical>::new(
+                    (f64::from(local.loc.x) * fractional, f64::from(local.loc.y) * fractional).into(),
+                    (f64::from(local.size.w) * fractional, f64::from(local.size.h) * fractional).into(),
+                );
+                if let Ok(element) =
+                    smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+                        gles_renderer,
+                        local.loc.to_f64().to_physical(scale),
+                        buffer,
+                        Some(1.0),
+                        Some(src),
+                        Some(local.size),
+                        Kind::Unspecified,
+                    )
+                {
+                    elements.push(GlideRenderElements::Memory(element));
+                }
+            }
+        }
         push_wallpaper_elements(gles_renderer, surface, (phys_w, phys_h), logical_size, backdrop_t, &mut elements);
+
+        if mirroring {
+            let target_mode = target.current_mode().map_or(output_mode, |mode| (mode.size.w, mode.size.h));
+            let (factor, offset) = crate::mirror::fit(output_mode, target_mode);
+            let copied: Vec<_> = elements
+                .into_iter()
+                .map(|element| relocate(RescaleRenderElement::from_element(element, (0, 0).into(), factor), offset))
+                .collect();
+            let failed =
+                match surface.drm_output.render_frame(gles_renderer, &copied, MIRROR_CLEAR, FrameFlags::DEFAULT) {
+                    Ok(result) if !result.is_empty => surface.drm_output.queue_frame(None).is_err(),
+                    Ok(_) => false,
+                    Err(err) => {
+                        tracing::error!(output = %target.name(), ?err, "failed to render a mirrored frame");
+                        true
+                    }
+                };
+            if failed {
+                self.schedule_repaint(crtc, &target);
+            }
+            return;
+        }
 
         if self.pending_screenshot.as_ref() == Some(&output) {
             self.pending_screenshot = None;
@@ -1553,8 +1634,19 @@ impl GlideState {
                 output.current_transform(),
             ) {
                 Ok(pixels) => {
-                    self.screenshot_flash.start(output.clone(), std::time::Instant::now(), glide_theme::motion::t2());
-                    crate::screenshot_ui::save_in_background(&self.loop_handle, pixels, output_mode);
+                    if let Some(capture) = self.session.capture.take().filter(|capture| capture.output == output) {
+                        let fractional = output.current_scale().fractional_scale();
+                        self.loop_handle.insert_idle(move |state| {
+                            state.deliver_capture(capture, pixels, output_mode, fractional);
+                        });
+                    } else {
+                        self.screenshot_flash.start(
+                            output.clone(),
+                            std::time::Instant::now(),
+                            glide_theme::motion::t2(),
+                        );
+                        crate::screenshot_ui::save_in_background(&self.loop_handle, pixels, output_mode);
+                    }
                 }
                 Err(err) => tracing::error!(?err, "failed to capture screenshot"),
             }

@@ -226,31 +226,7 @@ pub fn radius_round() -> iced::border::Radius {
     iced::border::Radius::from(R_ROUND)
 }
 
-pub fn use_ui_family(requested: Option<&str>) -> String {
-    use iced::advanced::graphics::text::cosmic_text::fontdb::{Family, Query, Style, Weight};
-    let mut system =
-        iced::advanced::graphics::text::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let db = system.raw().db_mut();
-    let family = glide_theme::font::ui_family(
-        requested,
-        db.faces().flat_map(|face| face.families.iter().map(|(name, _)| name.as_str())),
-    );
-    db.set_sans_serif_family(family.clone());
-    for weight in [Weight::MEDIUM, Weight::SEMIBOLD, Weight::BOLD] {
-        let exact = db.faces().any(|face| {
-            face.weight == weight
-                && face.style == Style::Normal
-                && face.families.iter().any(|(name, _)| *name == family)
-        });
-        let query = Query { families: &[Family::Name(&family)], weight, ..Query::default() };
-        let nearest = db.query(&query).and_then(|id| db.face(id)).cloned();
-        if let Some(mut face) = nearest.filter(|_| !exact) {
-            face.weight = weight;
-            db.push_face_info(face);
-        }
-    }
-    family
-}
+pub use glide_iced::font::use_ui_family;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeState {
@@ -409,18 +385,18 @@ fn state_fill(base: iced::Color, layer: iced::Color, status: button::Status) -> 
     }
 }
 
-fn filled_button(theme: &ThemeState, fill: iced::Color, status: button::Status) -> button::Style {
-    let (bg, text) = if status == button::Status::Disabled {
-        (theme.fill_2(), theme.fg_4())
-    } else {
-        (state_fill(fill, iced::Color::WHITE, status), theme.acc_fg())
-    };
-    flat_button(Some(bg), text, radius_r2())
-}
-
 #[must_use]
 pub fn button_primary(theme: &ThemeState, status: button::Status) -> button::Style {
-    filled_button(theme, theme.acc_bg(), status)
+    use glide_theme::elevation::Level;
+    let (bg, text, shadow) = match status {
+        button::Status::Active => (theme.acc_bg(), theme.acc_fg(), elevation(theme, Level::El1)),
+        button::Status::Hovered => (theme.acc_bg_hover(), theme.acc_fg(), elevation(theme, Level::El2)),
+        button::Status::Pressed => {
+            (press_layer(theme.acc_bg(), iced::Color::WHITE), theme.acc_fg(), elevation(theme, Level::El1))
+        }
+        button::Status::Disabled => (theme.fill_2(), theme.fg_4(), iced::Shadow::default()),
+    };
+    button::Style { shadow, ..flat_button(Some(bg), text, radius_r2()) }
 }
 
 #[must_use]
@@ -579,8 +555,8 @@ pub fn content_container_style(theme: &ThemeState) -> container::Style {
 
 pub const SEMIBOLD: iced::Font = iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT };
 
-pub const CONTROL_HEIGHT: f32 = 34.0;
-pub const SMALL_CONTROL_HEIGHT: f32 = 28.0;
+pub const CONTROL_HEIGHT: f32 = glide_theme::component::CONTROL;
+pub const SMALL_CONTROL_HEIGHT: f32 = glide_theme::component::SMALL_CONTROL;
 pub const SIDEBAR_WIDTH: f32 = 256.0;
 pub const CONTENT_MAX_WIDTH: f32 = 680.0;
 pub const ROW_MIN_HEIGHT: f32 = 44.0;
@@ -594,7 +570,7 @@ pub const PAGE_TITLE_SIZE: f32 = 26.0;
 pub const SWITCH_SIZE: f32 = 24.0;
 pub const SWITCH_PADDING_RATIO: f32 = 0.125;
 pub const RING_GAP: f32 = 4.0;
-pub const RING_WIDTH: f32 = 2.0;
+pub const RING_WIDTH: f32 = glide_theme::component::FOCUS_RING;
 
 #[must_use]
 pub fn row_content_height() -> f32 {
@@ -664,9 +640,7 @@ pub fn row_button_style(theme: &ThemeState, status: button::Status) -> button::S
 
 #[must_use]
 pub fn icon_button_style(theme: &ThemeState, status: button::Status) -> button::Style {
-    let mut style = button_ghost(theme, status);
-    style.border.radius = radius_round();
-    style
+    button_ghost(theme, status)
 }
 
 #[must_use]
@@ -698,10 +672,7 @@ pub fn segmented_track_style(theme: &ThemeState) -> container::Style {
 
 #[must_use]
 pub fn segment_thumb(theme: &ThemeState) -> iced::Color {
-    match theme.appearance {
-        Appearance::Light => theme.card_bg(),
-        Appearance::Dark => theme.fill_3(),
-    }
+    to_iced_color(theme.tokens.segment_thumb())
 }
 
 #[must_use]
@@ -726,7 +697,17 @@ pub fn badge_style(background: iced::Color, text: iced::Color) -> container::Sty
 
 #[must_use]
 pub fn banner_style(theme: &ThemeState, tone: iced::Color) -> container::Style {
-    let soft = iced::Color { a: 0.14, ..tone };
+    let soft = if tone == theme.danger() {
+        theme.danger_soft()
+    } else if tone == theme.warn() {
+        theme.warn_soft()
+    } else if tone == theme.ok() {
+        theme.ok_soft()
+    } else if tone == theme.acc_bg() {
+        theme.acc_soft()
+    } else {
+        iced::Color { a: 0.14, ..tone }
+    };
     container::Style {
         text_color: Some(theme.fg_1()),
         background: Some(iced::Background::Color(soft)),
@@ -755,21 +736,11 @@ pub fn pick_list_style(theme: &ThemeState, status: pick_list::Status) -> pick_li
 pub fn menu_style(theme: &ThemeState) -> iced::overlay::menu::Style {
     iced::overlay::menu::Style {
         background: iced::Background::Color(theme.popover_bg()),
-        border: iced::Border { color: theme.line_2(), width: 1.0, radius: radius_r3() },
+        border: iced::Border { color: theme.line(), width: 1.0, radius: radius_r3() },
         text_color: theme.fg_1(),
-        selected_text_color: theme.acc_soft_fg(),
-        selected_background: iced::Background::Color(theme.acc_soft()),
-        shadow: iced::Shadow {
-            color: iced::Color {
-                a: match theme.appearance {
-                    Appearance::Light => 0.16,
-                    Appearance::Dark => 0.55,
-                },
-                ..iced::Color::BLACK
-            },
-            offset: iced::Vector::new(0.0, 8.0),
-            blur_radius: 24.0,
-        },
+        selected_text_color: theme.fg_1(),
+        selected_background: iced::Background::Color(theme.fill_2()),
+        shadow: elevation(theme, glide_theme::elevation::Level::El3),
     }
 }
 
@@ -946,10 +917,14 @@ pub fn keycap_style(theme: &ThemeState) -> container::Style {
 
 #[must_use]
 pub fn chip_style(theme: &ThemeState, selected: bool, status: button::Status) -> button::Style {
-    let (base, text) = if selected { (theme.acc_soft(), theme.acc_soft_fg()) } else { (theme.fill_1(), theme.fg_1()) };
-    let background = state_fill(base, text, status);
+    let (base, text, state) = if selected {
+        (theme.acc_soft(), theme.acc_soft_fg(), theme.acc_soft_fg())
+    } else {
+        (theme.fill_1(), theme.fg_1(), theme.state())
+    };
+    let background = state_fill(base, state, status);
     let text = if matches!(status, button::Status::Disabled) { theme.fg_4() } else { text };
-    flat_button(Some(background), text, radius_round())
+    flat_button(Some(background), text, radius_r2())
 }
 
 #[must_use]

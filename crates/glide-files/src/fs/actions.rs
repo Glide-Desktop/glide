@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
-use super::mime::{MimeDb, glob_match};
+use super::mime::{MimeDb, OCTET_STREAM, glob_match};
 use super::uri::file_uri;
 use crate::i18n::{Key, Lang};
 
@@ -39,6 +39,7 @@ impl Roots {
             .iter()
             .flat_map(|dir| watched.clone().map(move |sub| dir.join(sub)))
             .chain(self.taps.iter().cloned())
+            .chain(mimeapps_files(self))
             .map(|dir| std::fs::metadata(dir).and_then(|meta| meta.modified()).ok())
             .collect()
     }
@@ -141,7 +142,7 @@ fn desktop_apps(roots: &Roots, lang: Lang) -> Vec<DesktopApp> {
             let (Some(exec), Some(name)) = (entry.get("Exec"), localized(entry, "Name", lang)) else {
                 continue;
             };
-            if application && usable(entry) && !mimes.is_empty() {
+            if application && usable(entry) {
                 let exec = exec_line(exec, entry.get("Terminal").is_some_and(|value| value == "true"), &|| {
                     glide_config::terminal::current()
                 });
@@ -328,14 +329,43 @@ impl Extensions {
         }
     }
 
+    fn association_lineage(&self, mime: &str) -> Vec<String> {
+        let canonical = self.mime.canonical(mime);
+        self.mime
+            .lineage(canonical)
+            .into_iter()
+            .filter(|ancestor| canonical == OCTET_STREAM || ancestor != OCTET_STREAM)
+            .collect()
+    }
+
+    fn app_handles(&self, app: &DesktopApp, mime: &str) -> bool {
+        let lineage = self.association_lineage(mime);
+        if lineage.iter().any(|m| self.associations.removed.get(m).is_some_and(|list| list.contains(&app.id))) {
+            return false;
+        }
+        let in_associations = lineage.iter().any(|m| {
+            self.associations.defaults.get(m).is_some_and(|list| list.contains(&app.id))
+                || self.associations.added.get(m).is_some_and(|list| list.contains(&app.id))
+        });
+        if in_associations {
+            return true;
+        }
+        let canonical = self.mime.canonical(mime);
+        app.mimes.iter().any(|declared| {
+            let declared_canonical = self.mime.canonical(declared);
+            if declared_canonical == OCTET_STREAM && canonical != OCTET_STREAM {
+                return false;
+            }
+            self.mime.is_a(mime, declared)
+        })
+    }
+
     #[must_use]
     pub fn apps_for(&self, targets: &[Target]) -> Vec<&DesktopApp> {
         let Some(first) = targets.first() else {
             return Vec::new();
         };
-        let lineage = self.mime.lineage(&first.mime);
-        let removed: HashSet<&String> =
-            lineage.iter().filter_map(|mime| self.associations.removed.get(mime)).flatten().collect();
+        let lineage = self.association_lineage(&first.mime);
         let by_id = |id: &String| self.apps.iter().find(|app| &app.id == id);
         let mut ranked: Vec<&DesktopApp> = Vec::new();
         for mime in &lineage {
@@ -347,14 +377,12 @@ impl Extensions {
             let declared =
                 self.apps.iter().filter(|app| app.mimes.iter().any(|declared| self.mime.canonical(declared) == mime));
             for app in listed.chain(declared) {
-                if !removed.contains(&app.id) && !ranked.iter().any(|known| known.id == app.id) {
+                if !ranked.iter().any(|known| known.id == app.id) {
                     ranked.push(app);
                 }
             }
         }
-        ranked.retain(|app| {
-            targets.iter().all(|target| app.mimes.iter().any(|declared| self.mime.is_a(&target.mime, declared)))
-        });
+        ranked.retain(|app| targets.iter().all(|target| self.app_handles(app, &target.mime)));
         ranked
     }
 
@@ -365,14 +393,37 @@ impl Extensions {
     }
 
     #[must_use]
+    pub fn all_listed_apps(&self) -> Vec<&DesktopApp> {
+        let mut seen = HashSet::new();
+        let mut apps: Vec<&DesktopApp> =
+            self.apps.iter().filter(|app| app.listed && seen.insert(app.exec.as_str())).collect();
+        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
+        apps
+    }
+
+    #[must_use]
     pub fn default_app(&self, mime: &str) -> Option<&str> {
-        self.mime.lineage(mime).iter().find_map(|mime| {
+        let lineage = self.association_lineage(mime);
+        let removed: HashSet<&String> =
+            lineage.iter().filter_map(|mime| self.associations.removed.get(mime)).flatten().collect();
+        lineage.iter().find_map(|mime| {
             self.associations
                 .defaults
                 .get(mime)
-                .and_then(|ids| ids.iter().find(|id| self.apps.iter().any(|app| &app.id == *id)))
+                .and_then(|ids| {
+                    ids.iter().find(|id| !removed.contains(id) && self.apps.iter().any(|app| &app.id == *id))
+                })
                 .map(String::as_str)
         })
+    }
+
+    pub fn set_default(&mut self, mime: &str, app: &str) {
+        let list = self.associations.defaults.entry(mime.to_string()).or_default();
+        list.retain(|existing| existing != app);
+        list.insert(0, app.to_string());
+        if let Some(removed) = self.associations.removed.get_mut(mime) {
+            removed.retain(|existing| existing != app);
+        }
     }
 
     #[must_use]
@@ -722,6 +773,7 @@ fn spawn(command: &[OsString], cwd: &Path) -> io::Result<()> {
         command.split_first().ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "empty command"))?;
     let mut child = Command::new(program)
         .args(args)
+        .envs(glide_ipc::client::activation_env(None))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -849,6 +901,11 @@ fn expand(words: &[String], items: &[&Target], desktop: &Path, codes: &Codes) ->
             }
         }
         argv.push(out);
+    }
+    if matches!(codes, Codes::Entry { .. })
+        && !words.iter().flat_map(|arg| field_codes(arg)).any(|c| matches!(c, 'f' | 'F' | 'u' | 'U'))
+    {
+        argv.extend(items.iter().map(|target| target.path.clone().into()));
     }
     argv
 }

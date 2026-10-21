@@ -26,7 +26,7 @@ use crate::marks::{self, Mark};
 use crate::profile::{Palette, color, mix};
 use crate::session::{Cells, Listener, Pane, PaneId};
 
-pub const PAD: f32 = 8.0;
+pub const PAD: f32 = glide_theme::spacing::SP2 as f32;
 const SAMPLE: &str = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const BAR_ZONE: f32 = 12.0;
@@ -222,6 +222,13 @@ struct State {
     find: RefCell<Option<(String, Option<RegexSearch>)>>,
 }
 
+fn releases_grab(state: &State, button: mouse::Button) -> bool {
+    match state.held {
+        Some(held) => [mouse::Button::Left, mouse::Button::Middle, mouse::Button::Right][usize::from(held)] == button,
+        None => state.drag == Drag::None || button == mouse::Button::Left,
+    }
+}
+
 struct Hit {
     row: usize,
     column: usize,
@@ -253,7 +260,7 @@ fn link_at(term: &Term<Listener>, point: GridPoint, urls: &mut RegexSearch) -> O
     let end = term.line_search_right(point);
     RegexIter::new(start, end, Direction::Right, term, urls).find(|found| found.contains(&point)).map(|found| {
         let uri = term.bounds_to_string(*found.start(), *found.end());
-        Link::Text(found, uri)
+        Link::Text(found, crate::hints::clean_url(&uri).to_string())
     })
 }
 
@@ -396,6 +403,9 @@ impl Terminal<'_> {
 
     fn released(&self, state: &mut State, button: mouse::Button, local: Point) -> Option<Action> {
         let metrics = state.metrics?;
+        if !releases_grab(state, button) {
+            return None;
+        }
         let drag = std::mem::take(&mut state.drag);
         let mut term = self.pane.term.lock();
         let mode = *term.mode();
@@ -642,7 +652,7 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             }
             Event::Mouse(mouse::Event::ButtonReleased(button)) if state.drag != Drag::None || state.held.is_some() => {
                 shell.request_redraw();
-                local.and_then(|local| self.released(state, *button, local))
+                self.released(state, *button, local.unwrap_or(Point::ORIGIN))
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let tracked = over || state.drag != Drag::None || state.held.is_some() || state.near_bar;
@@ -657,6 +667,21 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             Event::Mouse(mouse::Event::CursorLeft) => {
                 state.near_bar = false;
                 state.hover = None;
+                None
+            }
+            Event::Window(iced::window::Event::Unfocused) => {
+                if let Some(held) = state.held.take() {
+                    let hit = locate(Point::ORIGIN, &metrics, self.pane.cells, 0);
+                    self.report(
+                        *self.pane.term.lock().mode(),
+                        [Button::Left, Button::Middle, Button::Right][usize::from(held)],
+                        false,
+                        &hit,
+                        state.modifiers,
+                    );
+                }
+                state.drag = Drag::None;
+                state.modifiers = keyboard::Modifiers::empty();
                 None
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if over => {
@@ -697,58 +722,115 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
         let state = tree.state.downcast_ref::<State>();
         let Some(metrics) = state.metrics else { return };
         let bounds = layout.bounds();
-        let term = self.pane.term.lock();
-        let palette = &self.look.palette;
-        let backdrop = Quad { bounds, border: Border { radius: self.corners, ..Border::default() }, ..Quad::default() };
-        renderer.fill_quad(backdrop, color(palette.background, palette.opacity));
-        let mut painter = Painter {
-            renderer,
-            origin: Point::new(bounds.x + PAD, bounds.y + PAD),
-            metrics,
-            clip: bounds,
-            run: String::new(),
-            run_at: Span::new(0, 0, 0),
-            run_style: (palette.foreground, self.look.fonts.regular),
-            background: None,
-        };
-        let cursor = self.paint_cells(&mut painter, state, &term, bounds);
-        if let Some((span, shape)) = cursor {
-            self.paint_cursor(&mut painter, span, shape);
-        }
-        let offset = term.grid().display_offset();
-        let (lines, history) = (term.screen_lines(), term.history_size());
-        if history > 0 && (offset > 0 || state.near_bar || state.drag == Drag::Scrollbar) {
-            let bar = thumb(bounds, lines, history, offset);
-            let alpha = if state.near_bar || state.drag == Drag::Scrollbar { 0.55 } else { 0.32 };
-            painter.renderer.fill_quad(
-                Quad { bounds: bar, border: Border { radius: 2.0.into(), ..Border::default() }, ..Quad::default() },
-                color(palette.foreground, alpha),
-            );
-        }
-        match self.flash {
-            Some((Flash::Bell, amount)) => {
-                painter.renderer.fill_quad(backdrop, color(palette.foreground, 0.14 * amount));
+        renderer.with_layer(bounds, |renderer| {
+            let term = self.pane.term.lock();
+            let palette = &self.look.palette;
+            let backdrop =
+                Quad { bounds, border: Border { radius: self.corners, ..Border::default() }, ..Quad::default() };
+            renderer.fill_quad(backdrop, color(palette.query(term.colors(), 257), palette.opacity));
+            let mut painter = Painter {
+                renderer,
+                origin: Point::new(bounds.x + PAD, bounds.y + PAD),
+                metrics,
+                clip: bounds,
+                run: String::new(),
+                run_at: Span::new(0, 0, 0),
+                run_style: (palette.foreground, self.look.fonts.regular),
+                background: None,
+            };
+            let cursor = self.paint_cells(&mut painter, state, &term, bounds);
+            if let Some((span, shape)) = cursor {
+                self.paint_cursor(&mut painter, span, shape, palette.query(term.colors(), 258));
             }
-            Some((Flash::Mark, amount)) => {
-                let row = painter.rect(Span::new(0, 0, metrics.cells(bounds).columns));
-                let band = Rectangle { x: bounds.x, width: bounds.width, ..row };
-                painter.quad(band, Color { a: 0.22 * amount, ..self.look.accent });
+            let offset = term.grid().display_offset();
+            let (lines, history) = (term.screen_lines(), term.history_size());
+            if history > 0 && (offset > 0 || state.near_bar || state.drag == Drag::Scrollbar) {
+                let bar = thumb(bounds, lines, history, offset);
+                let alpha = if state.near_bar || state.drag == Drag::Scrollbar { 0.55 } else { 0.32 };
+                painter.renderer.fill_quad(
+                    Quad {
+                        bounds: bar,
+                        border: Border { radius: glide_theme::shape::R1.into(), ..Border::default() },
+                        ..Quad::default()
+                    },
+                    color(palette.foreground, alpha),
+                );
             }
-            None => {}
-        }
-        if let Some((hints, typed)) = self.hints {
-            self.paint_hints(&mut painter, hints, typed, offset as i32, lines);
-        }
-        if self.drop_target {
-            let border = Border { color: self.look.accent, width: 2.0, radius: self.corners };
-            painter
-                .renderer
-                .fill_quad(Quad { bounds, border, ..Quad::default() }, Color { a: 0.08, ..self.look.accent });
-        }
+            match self.flash {
+                Some((Flash::Bell, amount)) => {
+                    painter.renderer.fill_quad(backdrop, color(palette.foreground, 0.14 * amount));
+                }
+                Some((Flash::Mark, amount)) => {
+                    let row = painter.rect(Span::new(0, 0, metrics.cells(bounds).columns));
+                    let band = Rectangle { x: bounds.x, width: bounds.width, ..row };
+                    painter.quad(band, Color { a: 0.22 * amount, ..self.look.accent });
+                }
+                None => {}
+            }
+            if let Some((hints, typed)) = self.hints {
+                self.paint_hints(&mut painter, hints, typed, offset as i32, lines);
+            }
+            if self.drop_target {
+                let border = Border { color: self.look.accent, width: 2.0, radius: self.corners };
+                painter
+                    .renderer
+                    .fill_quad(Quad { bounds, border, ..Quad::default() }, Color { a: 0.08, ..self.look.accent });
+            }
+            if let Some(Link::Osc(link)) = &state.hover {
+                let ink = color(palette.query(term.colors(), 257), 1.0);
+                self.paint_link_target(&mut painter, link.uri(), bounds, color(palette.foreground, 0.92), ink);
+            }
+        });
     }
 }
 
 impl Terminal<'_> {
+    fn paint_link_target(&self, painter: &mut Painter<'_>, uri: &str, bounds: Rectangle, fill: Color, ink: Color) {
+        let (fonts, cell) = (self.look.fonts, painter.metrics.cell);
+        let pad = glide_theme::spacing::SP2 as f32;
+        let room = ((bounds.width - PAD * 2.0 - pad * 2.0) / cell.width.max(1.0)).floor().max(1.0) as usize;
+        let shown: String = if uri.chars().count() > room {
+            uri.chars().take(room.saturating_sub(1)).chain(std::iter::once('…')).collect()
+        } else {
+            uri.to_string()
+        };
+        let width = shown.chars().count() as f32 * cell.width + pad * 2.0;
+        let height = cell.height + pad;
+        let pill = Rectangle {
+            x: bounds.x + PAD,
+            y: bounds.y + bounds.height - PAD - height,
+            width: width.min(bounds.width - PAD * 2.0),
+            height,
+        };
+        let clip = painter.clip;
+        painter.renderer.with_layer(clip, |renderer| {
+            renderer.fill_quad(
+                Quad {
+                    bounds: pill,
+                    border: Border { radius: glide_theme::shape::R2.into(), ..Border::default() },
+                    ..Quad::default()
+                },
+                fill,
+            );
+            renderer.fill_text(
+                text::Text {
+                    content: shown,
+                    bounds: Size::new(pill.width, cell.height),
+                    size: Pixels(fonts.size),
+                    line_height: text::LineHeight::Absolute(Pixels(cell.height)),
+                    font: fonts.regular,
+                    align_x: text::Alignment::Left,
+                    align_y: Vertical::Top,
+                    shaping: text::Shaping::Advanced,
+                    wrapping: text::Wrapping::None,
+                },
+                Point::new(pill.x + pad, pill.y + pad / 2.0),
+                ink,
+                clip,
+            );
+        });
+    }
+
     fn paint_hints(&self, painter: &mut Painter<'_>, hints: &[Hint], typed: &str, offset: i32, lines: usize) {
         let visible = |line: Line| {
             let row = line.0 + offset;
@@ -777,7 +859,7 @@ impl Terminal<'_> {
                 renderer.fill_quad(
                     Quad {
                         bounds: pill,
-                        border: Border { radius: 3.0.into(), ..Border::default() },
+                        border: Border { radius: glide_theme::shape::R1.into(), ..Border::default() },
                         ..Quad::default()
                     },
                     accent,
@@ -813,9 +895,46 @@ impl Terminal<'_> {
         let steady = !term.cursor_style().blinking || !self.focused;
         let cursor_visible = cursor.shape != CursorShape::Hidden && (self.blink || steady);
         let block = self.focused && cursor_visible && cursor.shape == CursorShape::Block;
-        let found_bg = mix(palette.background, Rgb { r: 0xf2, g: 0xc1, b: 0x4e }, 0.55);
+        let warning = self.look.bookmark;
+        let found_bg = mix(
+            palette.background,
+            Rgb {
+                r: (warning.r * 255.0).round() as u8,
+                g: (warning.g * 255.0).round() as u8,
+                b: (warning.b * 255.0).round() as u8,
+            },
+            0.55,
+        );
         let mut cursor_span = None;
-        for indexed in content.display_iter {
+        let cells: Vec<_> = content.display_iter.collect();
+        let tint = |indexed: &Indexed<&Cell>| {
+            let point = indexed.point;
+            let (mut fg, mut bg) = palette.cell(content.colors, indexed.cell, self.look.bold_bright);
+            if content.selection.is_some_and(|range| range.contains_cell(indexed, cursor.point, cursor.shape)) {
+                bg = palette.selection;
+            } else if found.iter().any(|range| range.contains(&point)) {
+                bg = found_bg;
+            }
+            if block && point == cursor.point {
+                (fg, bg) = (palette.cursor_text, palette.query(content.colors, 258));
+            }
+            (fg, bg)
+        };
+        for indexed in &cells {
+            let cell = indexed.cell;
+            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+            let at = Span::new(
+                (indexed.point.line.0 + offset) as usize,
+                indexed.point.column.0,
+                if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 },
+            );
+            let (_, bg) = tint(indexed);
+            painter.fill((bg != palette.query(content.colors, 257)).then_some((at, bg)));
+        }
+        painter.fill(None);
+        for indexed in cells {
             let Indexed { point, cell } = indexed;
             let at = Span::new((point.line.0 + offset) as usize, point.column.0, 1);
             if at.column == 0
@@ -836,16 +955,7 @@ impl Terminal<'_> {
             if cursor_visible && !block && point == cursor.point {
                 cursor_span = Some((at, cursor.shape));
             }
-            let (mut fg, mut bg) = palette.cell(content.colors, cell, self.look.bold_bright);
-            if content.selection.is_some_and(|range| range.contains_cell(&indexed, cursor.point, cursor.shape)) {
-                bg = palette.selection;
-            } else if found.iter().any(|range| range.contains(&point)) {
-                bg = found_bg;
-            }
-            if block && point == cursor.point {
-                (fg, bg) = (palette.cursor_text, palette.cursor);
-            }
-            painter.fill((bg != palette.background).then_some((at, bg)));
+            let (fg, _) = tint(&indexed);
             if cell.flags.contains(Flags::HIDDEN) {
                 painter.flush();
                 continue;
@@ -884,9 +994,9 @@ impl Terminal<'_> {
         }
     }
 
-    fn paint_cursor(&self, painter: &mut Painter<'_>, at: Span, shape: CursorShape) {
+    fn paint_cursor(&self, painter: &mut Painter<'_>, at: Span, shape: CursorShape, cursor: Rgb) {
         let rect = painter.rect(at);
-        let tint = color(self.look.palette.cursor, 1.0);
+        let tint = color(cursor, 1.0);
         let stroke = 2.0_f32.min(rect.width);
         match (self.focused, shape) {
             (true, CursorShape::Beam) => painter.quad(Rectangle { width: stroke, ..rect }, tint),
@@ -923,5 +1033,88 @@ impl Terminal<'_> {
 impl<'a> From<Terminal<'a>> for Element<'a, Action> {
     fn from(terminal: Terminal<'a>) -> Self {
         Element::new(terminal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{Bus, Launch};
+    use alacritty_terminal::term::Config;
+    use alacritty_terminal::vte::ansi::Processor;
+    use glide_theme::{Accent, Appearance, Tokens};
+
+    fn rendered(output: &str, bounds: Rectangle) -> Vec<iced_tiny_skia::Layer> {
+        let (sender, _receiver) = iced::futures::channel::mpsc::unbounded();
+        let pane = Pane::spawn(
+            PaneId(1),
+            &Bus(sender),
+            &Launch { command: Some(("cat".into(), Vec::new())), directory: None },
+            Config::default(),
+        )
+        .unwrap();
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut *pane.term.lock(), output.as_bytes());
+        let palette = crate::profile::Profile::Meridian.palette(&Tokens::new(Appearance::Dark, Accent::Blue));
+        let fonts = Fonts { regular: crate::MONO, size: 13.0, line_height: 1.25 };
+        let look = Look { palette, fonts, bold_bright: true, accent: Color::WHITE, bookmark: Color::WHITE };
+        let terminal = Terminal::new(&pane, look, true);
+        let mut tree = Tree::new(&terminal as &dyn Widget<Action, Theme, Renderer>);
+        tree.state.downcast_mut::<State>().metrics =
+            Some(Metrics { fonts, cell: Size::new(8.0, 16.0), baseline: 13.0 });
+        let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(crate::MONO, Pixels(13.0)));
+        renderer.reset(bounds);
+        let node = layout::Node::new(bounds.size());
+        terminal.draw(
+            &tree,
+            &mut renderer,
+            &Theme::Dark,
+            &renderer::Style { text_color: Color::WHITE },
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &bounds,
+        );
+        let Renderer::Secondary(mut renderer) = renderer else { unreachable!() };
+        renderer.layers().to_vec()
+    }
+
+    #[test]
+    fn colored_backgrounds_precede_block_glyphs_and_underlines() {
+        let bounds = Rectangle::with_size(Size::new(656.0, 400.0));
+        let palette = crate::profile::Profile::Meridian.palette(&Tokens::new(Appearance::Dark, Accent::Blue));
+        for (output, point) in [
+            ("\x1b[?25l\x1b[41m█\x1b[0m", Point::new(12.0, 16.0)),
+            ("\x1b[?25l\x1b[41;4mA\x1b[0m", Point::new(12.0, 23.5)),
+        ] {
+            let layers = rendered(output, bounds);
+            let colors: Vec<_> = layers
+                .iter()
+                .flat_map(|layer| &layer.quads)
+                .filter(|(quad, _)| quad.bounds.contains(point))
+                .map(|(_, background)| *background)
+                .collect();
+            assert!(colors.contains(&iced::Background::Color(color(palette.ansi[1], 1.0))));
+            assert_eq!(colors.last(), Some(&iced::Background::Color(color(palette.foreground, 1.0))));
+        }
+    }
+
+    #[test]
+    fn osc_background_and_cursor_colors_reach_the_renderer_and_every_layer_is_clipped() {
+        let bounds = Rectangle::with_size(Size::new(40.0, 40.0));
+        let layers = rendered("\x1b]11;#112233\x07\x1b]12;#445566\x07", bounds);
+        let colors: Vec<_> = layers.iter().flat_map(|layer| &layer.quads).map(|(_, background)| *background).collect();
+        assert!(colors.contains(&iced::Background::Color(Color::from_rgb8(0x11, 0x22, 0x33))));
+        assert!(colors.contains(&iced::Background::Color(Color::from_rgb8(0x44, 0x55, 0x66))));
+        assert!(layers.iter().all(|layer| layer.bounds.intersection(&bounds) == Some(layer.bounds)));
+    }
+
+    #[test]
+    fn only_the_button_that_started_a_grab_can_release_it() {
+        let mut state = State { drag: Drag::Select { moved: true, option: false }, ..State::default() };
+        assert!(!releases_grab(&state, mouse::Button::Right));
+        assert!(releases_grab(&state, mouse::Button::Left));
+        state.held = Some(2);
+        assert!(!releases_grab(&state, mouse::Button::Left));
+        assert!(releases_grab(&state, mouse::Button::Right));
     }
 }

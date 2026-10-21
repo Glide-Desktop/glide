@@ -26,6 +26,7 @@ pub struct Reveal {
     phase: Phase,
     from: f64,
     started: Instant,
+    duration: Duration,
     ease: Ease,
 }
 
@@ -37,7 +38,7 @@ impl Default for Reveal {
 
 impl Reveal {
     fn at_rest(phase: Phase, from: f64) -> Self {
-        Self { phase, from, started: Instant::now(), ease: linear_ease }
+        Self { phase, from, started: Instant::now(), duration: Duration::ZERO, ease: linear_ease }
     }
 
     #[must_use]
@@ -93,9 +94,10 @@ impl Reveal {
         if self.is_open() {
             return false;
         }
-        self.from = self.value(duration);
+        self.from = self.value(self.duration);
         self.phase = if duration.is_zero() { Phase::Open } else { Phase::Opening };
         self.started = Instant::now();
+        self.duration = duration;
         true
     }
 
@@ -103,9 +105,10 @@ impl Reveal {
         if !self.is_open() {
             return false;
         }
-        self.from = self.value(duration);
+        self.from = self.value(self.duration);
         self.phase = if duration.is_zero() { Phase::Closed } else { Phase::Closing };
         self.started = Instant::now();
+        self.duration = duration;
         true
     }
 
@@ -226,6 +229,21 @@ mod tests {
         assert!((before - after).abs() < 0.05, "reversal must continue from where it was: {before} vs {after}");
         assert!(!r.is_open());
         assert!(r.is_visible(D), "still fading out");
+    }
+
+    #[test]
+    fn reversing_with_a_shorter_duration_continues_from_the_drawn_value() {
+        let (long, short) = (Duration::from_millis(400), Duration::from_millis(100));
+        let mut r = Reveal::closed();
+        r.open(long);
+        std::thread::sleep(Duration::from_millis(60));
+        let before = r.value(long);
+        assert!(r.close(short));
+        let after = r.value(short);
+        assert!((before - after).abs() < 0.05, "reversal must continue from where it was: {before} vs {after}");
+        assert!(r.open(long));
+        let reopened = r.value(long);
+        assert!((after - reopened).abs() < 0.05, "second reversal must not jump: {after} vs {reopened}");
     }
 
     #[test]

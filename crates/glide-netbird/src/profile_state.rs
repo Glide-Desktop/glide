@@ -23,7 +23,11 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("no parent directory"))?;
     fs::create_dir_all(dir)?;
     let temp = dir.join(format!(".{}.tmp", path.file_name().and_then(|name| name.to_str()).unwrap_or("state")));
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp)?;
+    match fs::remove_file(&temp) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
     file.write_all(contents)?;
     file.sync_all()?;
     fs::rename(&temp, path)
@@ -112,6 +116,21 @@ mod tests {
         }
         mark_active_in(&dir, "work-2").expect("valid id");
         assert_eq!(fs::read_to_string(dir.join("active_profile.txt")).expect("read"), "work-2");
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_leftover_world_readable_temp_file_does_not_leak_its_mode_into_the_state_file() {
+        let dir = scratch("leftover");
+        fs::create_dir_all(&dir).expect("mkdir");
+        let temp = dir.join(".default.state.json.tmp");
+        fs::write(&temp, b"stale").expect("leftover");
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o644)).expect("chmod");
+        store_email_in(&dir, "default", "me@example.com").expect("store");
+        let mode = fs::metadata(dir.join("default.state.json")).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(!temp.exists());
+        assert_eq!(email_in(&dir, "default").as_deref(), Some("me@example.com"));
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

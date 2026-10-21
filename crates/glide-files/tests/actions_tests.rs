@@ -309,3 +309,37 @@ fn choosing_a_default_app_rewrites_only_that_mime_line() {
     let fresh = with_default("", "image/png", "new.desktop");
     assert_eq!(fresh, "[Default Applications]\nimage/png=new.desktop;\n");
 }
+
+#[test]
+fn setting_default_app_associates_arbitrary_apps_and_updates_in_memory() {
+    let scratch = scratch_with_mime("set-default");
+    scratch.write("share/applications/generic.desktop", "[Desktop Entry]\nName=Generic\nExec=generic %F\n");
+    let mut extensions = Extensions::load(&scratch.roots(), Lang::En);
+    let custom = extensions.target(Path::new("/x/file.xyz"), false);
+    assert!(extensions.apps_for(std::slice::from_ref(&custom)).is_empty());
+    extensions.set_default(&custom.mime, "generic.desktop");
+    assert_eq!(extensions.default_app(&custom.mime), Some("generic.desktop"));
+    let apps = extensions.apps_for(std::slice::from_ref(&custom));
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].id, "generic.desktop");
+}
+
+#[test]
+fn all_usable_apps_are_discoverable_for_other_applications() {
+    let scratch = scratch_with_mime("all-apps");
+    scratch.write("share/applications/generic.desktop", "[Desktop Entry]\nName=Generic\nExec=generic\n");
+    scratch.write("share/applications/hidden.desktop", "[Desktop Entry]\nName=Hidden\nExec=hidden\nNoDisplay=true\n");
+    let extensions = Extensions::load(&scratch.roots(), Lang::En);
+    let all = extensions.all_listed_apps();
+    assert!(all.iter().any(|app| app.id == "generic.desktop"));
+    assert!(!all.iter().any(|app| app.id == "hidden.desktop"));
+}
+
+#[test]
+fn expand_without_field_codes_appends_file_targets() {
+    let extensions = Extensions::default();
+    let files = [target(&extensions, "/a/one.txt", false), target(&extensions, "/b/two.txt", false)];
+    let plain = Codes::Entry { name: String::from("Tool"), icon: None };
+    let args = exec_with("my-tool --option", &files, plain);
+    assert_eq!(args, [["my-tool", "--option", "/a/one.txt", "/b/two.txt"]]);
+}

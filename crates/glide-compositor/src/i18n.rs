@@ -134,6 +134,7 @@ catalogue! {
     SectionWindows => "Windows", "Вікна";
     SectionRecentFiles => "Recent Files", "Недавні файли";
     SectionRun => "Command", "Команда";
+    SectionProvided => "From Apps", "У програмах";
     RunPrefix => "Run", "Виконати";
     RunHint => "Press Enter to run", "Натисніть Enter, щоб виконати";
     CommandLogOut => "Log Out", "Вийти з сеансу";

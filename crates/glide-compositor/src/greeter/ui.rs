@@ -29,16 +29,16 @@ use crate::{
 
 const PAD_X: i32 = 36;
 const PAD_Y: i32 = 32;
-const DATE_H: i32 = 26;
-const TIME_H: i32 = 110;
-const CLOCK_H: i32 = DATE_H + 2 + TIME_H;
-const AVATAR: i32 = 82;
-const NAME_H: i32 = 22;
-const FIELD_W: i32 = 240;
-const FIELD_H: i32 = 38;
-const SUBMIT: i32 = 32;
+const DATE_H: i32 = 28;
+const TIME_H: i32 = 132;
+const CLOCK_H: i32 = DATE_H + 4 + TIME_H;
+const AVATAR: i32 = 108;
+const NAME_H: i32 = 24;
+const FIELD_W: i32 = 260;
+const FIELD_H: i32 = 40;
+const SUBMIT: i32 = 34;
 const HINT_H: i32 = 24;
-const AUTH_H: i32 = AVATAR + 12 + NAME_H + 12 + FIELD_H + 10 + HINT_H;
+const AUTH_H: i32 = AVATAR + 14 + NAME_H + 14 + FIELD_H + 10 + HINT_H;
 const PILL_H: i32 = 42;
 const ITEM_H: i32 = 34;
 const ICON: i32 = 16;
@@ -53,6 +53,7 @@ const MENU_GAP: i32 = 2;
 const MENU_PAD: i32 = 6;
 const MAX_DOTS: usize = 24;
 const MAX_PASSWORD_CHARS: usize = 512;
+const PASSWORD_CAPACITY: usize = MAX_PASSWORD_CHARS * 4;
 const ERROR_HOLD: Duration = Duration::from_millis(2500);
 const SPINNER_PERIOD: Duration = Duration::from_millis(600);
 const SPINNER_STEPS: u32 = 36;
@@ -62,11 +63,11 @@ const fn style(size_px: f32, line_height_px: f32, weight: u16, tracking_em: f32)
     TextStyle { size_px, line_height_px, weight, tracking_em, uppercase: false, tabular: false }
 }
 
-const TIME_STYLE: TextStyle = style(114.0, 110.0, 560, -0.045);
-const DATE_STYLE: TextStyle = style(21.0, 26.0, 500, -0.02);
-const INITIAL_STYLE: TextStyle = style(30.0, 36.0, 650, 0.0);
-const NAME_STYLE: TextStyle = style(17.0, 22.0, 620, -0.015);
-const FIELD_STYLE: TextStyle = style(13.5, 20.0, 400, 0.0);
+const TIME_STYLE: TextStyle = style(138.0, 132.0, 600, -0.05);
+const DATE_STYLE: TextStyle = style(21.0, 28.0, 550, -0.015);
+const INITIAL_STYLE: TextStyle = style(42.0, 48.0, 680, 0.0);
+const NAME_STYLE: TextStyle = style(18.0, 24.0, 630, -0.015);
+const FIELD_STYLE: TextStyle = style(14.0, 20.0, 400, 0.0);
 const HINT_STYLE: TextStyle = style(12.0, 18.0, 450, 0.0);
 const HINT_STRONG_STYLE: TextStyle = style(12.0, 18.0, 550, 0.0);
 const POWER_STYLE: TextStyle = style(12.0, 16.0, 500, -0.01);
@@ -320,24 +321,24 @@ impl Palette {
         let tokens = Tokens::new(Appearance::Dark, accent);
         let white = Color([1.0, 1.0, 1.0, 1.0]);
         let mut palette = Self {
-            fg_1: Color::from_rgb8(242, 240, 237, 1.0),
-            fg_2: Color::from_rgb8(242, 240, 237, 0.72),
-            fg_3: Color::from_rgb8(242, 240, 237, 0.48),
+            fg_1: tokens.fg_1,
+            fg_2: tokens.fg_2,
+            fg_3: tokens.fg_3,
             white,
-            glass: Color::from_rgb8(30, 29, 34, 0.45),
-            glass_border: white.with_alpha(0.14),
-            glass_card: Color::from_rgb8(26, 25, 30, 0.65),
-            popover: Color::from_rgb8(37, 36, 41, 1.0),
-            line: white.with_alpha(0.10),
-            line_2: white.with_alpha(0.18),
-            item_hover: white.with_alpha(0.12),
+            glass: tokens.shell_bg,
+            glass_border: tokens.shell_line,
+            glass_card: tokens.card_bg,
+            popover: tokens.popover_bg,
+            line: tokens.line,
+            line_2: tokens.line_2,
+            item_hover: tokens.fill_2,
             acc_bg: tokens.acc_bg,
             acc_bg_hover: tokens.acc_bg_hover,
-            acc_ring: tokens.ramp[1].with_alpha(0.45),
+            acc_ring: tokens.ramp[1].with_alpha(0.40),
             avatar_from: tokens.ramp[2],
             avatar_to: tokens.ramp[4],
             danger: tokens.danger,
-            danger_soft: tokens.danger.with_alpha(0.20),
+            danger_soft: tokens.danger_soft,
             revision: 0,
         };
         palette.revision = Revision::new()
@@ -399,6 +400,7 @@ pub struct GreeterUi {
     needs_session: bool,
     message: Option<(String, Tone)>,
     error_at: Option<Instant>,
+    error_held: bool,
     unavailable: bool,
     arm: Option<PowerAction>,
     arm_shown: PowerAction,
@@ -446,7 +448,7 @@ impl GreeterUi {
             active_user: 0,
             sessions,
             active_session: 0,
-            password: String::new(),
+            password: String::with_capacity(PASSWORD_CAPACITY),
             pending_dots: 0,
             auth: AuthState::Idle,
             prompt: None,
@@ -454,6 +456,7 @@ impl GreeterUi {
             needs_session: false,
             message: None,
             error_at: None,
+            error_held: false,
             unavailable: false,
             arm: None,
             arm_shown: PowerAction::ShutDown,
@@ -555,6 +558,7 @@ impl GreeterUi {
             self.message = None;
         }
         self.error_at = None;
+        self.error_held = false;
     }
 
     pub fn type_char(&mut self, ch: char) -> bool {
@@ -572,16 +576,21 @@ impl GreeterUi {
             return false;
         }
         self.clear_error();
-        let popped = self.password.pop().is_some();
+        let popped = self.password.pop();
+        if let Some(ch) = popped {
+            let len = self.password.len();
+            self.password.extend(std::iter::repeat_n('\0', ch.len_utf8()));
+            self.password.truncate(len);
+        }
         self.dirty = true;
-        popped
+        popped.is_some()
     }
 
     pub fn clear_password(&mut self) -> bool {
         if !self.editable() || self.password.is_empty() {
             return false;
         }
-        self.password.clear();
+        wipe(&mut self.password);
         self.dirty = true;
         true
     }
@@ -595,7 +604,7 @@ impl GreeterUi {
             return None;
         }
         self.active_user = (self.active_user + 1) % self.users.len();
-        self.password.clear();
+        wipe(&mut self.password);
         self.prompt = None;
         self.queued = None;
         self.needs_session = false;
@@ -678,7 +687,7 @@ impl GreeterUi {
         self.clear_error();
         self.message = None;
         self.pending_dots = self.password.chars().count();
-        let password = std::mem::take(&mut self.password);
+        let password = std::mem::replace(&mut self.password, String::with_capacity(PASSWORD_CAPACITY));
         self.auth = AuthState::Authenticating;
         self.spinner_epoch = Instant::now();
         self.dirty = true;
@@ -720,13 +729,20 @@ impl GreeterUi {
     pub fn set_auth_error(&mut self, message: String, recreate_later: bool) {
         self.auth = AuthState::Error;
         self.error_at = Some(Instant::now());
-        self.password.clear();
+        wipe(&mut self.password);
         self.pending_dots = 0;
         self.queued = None;
         self.prompt = None;
         self.needs_session = recreate_later;
         self.message = Some((message, Tone::Error));
+        self.error_held = false;
         self.dirty = true;
+    }
+
+    pub fn set_auth_denied(&mut self, reason: Option<String>, fallback: &str) {
+        let held = reason.is_some();
+        self.set_auth_error(reason.unwrap_or_else(|| fallback.to_string()), false);
+        self.error_held = held;
     }
 
     pub fn set_auth_success(&mut self) {
@@ -833,7 +849,7 @@ impl GreeterUi {
 
     pub fn tick(&mut self) -> bool {
         self.refresh_clock();
-        if self.error_at.is_some_and(|since| since.elapsed() >= ERROR_HOLD) && !self.unavailable {
+        if self.error_at.is_some_and(|since| since.elapsed() >= ERROR_HOLD) && !self.unavailable && !self.error_held {
             self.clear_error();
             self.dirty = true;
         }
@@ -911,8 +927,8 @@ impl GreeterUi {
         let top = (clock.bottom() + free / 2 - 10).max(clock.bottom() + 8);
 
         let avatar = Rect::new((w - AVATAR) / 2, top, AVATAR, AVATAR);
-        let name = Rect::new((w - 320) / 2, avatar.bottom() + 12, 320, NAME_H);
-        let field = Rect::new((w - FIELD_W) / 2, name.bottom() + 12, FIELD_W, FIELD_H);
+        let name = Rect::new((w - 320) / 2, avatar.bottom() + 14, 320, NAME_H);
+        let field = Rect::new((w - FIELD_W) / 2, name.bottom() + 14, FIELD_W, FIELD_H);
         let submit = Rect::new(field.right() - 3 - SUBMIT, field.y + 3, SUBMIT, SUBMIT);
         let hint = Rect::new((w - 420) / 2, field.bottom() + 10, 420, HINT_H);
 
@@ -1147,16 +1163,17 @@ impl GreeterUi {
             Part::Clock => {
                 let full = Rect::new(0, 0, frame.w, DATE_H);
                 canvas.text(full, &self.date, p.fg_2, &DATE_STYLE, TextAlign::Center);
-                let time = Rect::new(0, DATE_H + 2, frame.w, TIME_H);
+                let time = Rect::new(0, DATE_H + 4, frame.w, TIME_H);
                 canvas.text(time, &self.time, p.fg_1, &TIME_STYLE, TextAlign::Center);
             }
             Part::Status => self.draw_status(layout, frame, canvas),
             Part::Avatar => {
                 let avatar = local(layout.avatar);
                 let radius = shape::R_ROUND;
-                canvas.shadow(avatar, radius, 8, 24.0, Color([0.0, 0.0, 0.0, 0.30]));
+                canvas.shadow(avatar, radius, 12, 36.0, Color([0.0, 0.0, 0.0, 0.35]));
                 if self.hover == GreeterHit::UserAvatar {
-                    canvas.stroke(avatar.inflate(3), 3.0, radius, p.acc_ring);
+                    canvas.stroke(avatar.inflate(4), 3.0, radius, p.acc_ring);
+                    canvas.stroke(avatar.inflate(2), 2.0, radius, p.glass_border);
                 } else {
                     canvas.stroke(avatar.inflate(2), 2.0, radius, p.glass_border);
                 }
@@ -1191,11 +1208,11 @@ impl GreeterUi {
         let p = &self.palette;
         let pill = layout.session.local_to(frame);
         let hovered = self.hover == GreeterHit::Session || self.menu_reveal.is_open();
-        canvas.shadow(pill, shape::R_ROUND, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
+        canvas.shadow(pill, shape::R2, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
         let (fill, border, fg) =
             if hovered { (p.glass_card, p.line_2, p.fg_1) } else { (p.glass, p.glass_border, p.fg_2) };
-        canvas.fill(pill, shape::R_ROUND, fill);
-        canvas.stroke(pill, 1.0, shape::R_ROUND, border);
+        canvas.fill(pill, shape::R2, fill);
+        canvas.stroke(pill, 1.0, shape::R2, border);
         let icon_x = pill.x + 1 + 16;
         let icon_y = pill.y + (PILL_H - SMALL_ICON) / 2;
         canvas.icon(&svg(2.0, icon::LAYERS), icon_x, icon_y, SMALL_ICON, fg);
@@ -1238,10 +1255,10 @@ impl GreeterUi {
     fn draw_status(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
         let p = &self.palette;
         let pill = |canvas: &mut Canvas<'_>, rect: Rect, hovered: bool| {
-            canvas.shadow(rect, shape::R_ROUND, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
+            canvas.shadow(rect, shape::R2, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
             let (fill, border) = if hovered { (p.glass_card, p.line_2) } else { (p.glass, p.glass_border) };
-            canvas.fill(rect, shape::R_ROUND, fill);
-            canvas.stroke(rect, 1.0, shape::R_ROUND, border);
+            canvas.fill(rect, shape::R2, fill);
+            canvas.stroke(rect, 1.0, shape::R2, border);
         };
         if layout.kbd.w > 0 {
             let kbd = layout.kbd.local_to(frame);
@@ -1303,9 +1320,9 @@ impl GreeterUi {
             GreeterHit::Power(_) | GreeterHit::PowerCapsule | GreeterHit::PowerConfirm | GreeterHit::PowerCancel
         );
         let (fill, border) = if hovered { (p.glass_card, p.line_2) } else { (p.glass, p.glass_border) };
-        canvas.shadow(capsule, shape::R_ROUND, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
-        canvas.fill(capsule, shape::R_ROUND, fill);
-        canvas.stroke(capsule, 1.0, shape::R_ROUND, border);
+        canvas.shadow(capsule, shape::R2, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
+        canvas.fill(capsule, shape::R2, fill);
+        canvas.stroke(capsule, 1.0, shape::R2, border);
 
         let arm = layout.arm;
         canvas.clipped(capsule.x + 1, capsule.right() - 1, |canvas| {
@@ -1330,7 +1347,7 @@ impl GreeterUi {
             };
             if active {
                 let bg = if action.danger() { p.danger_soft } else { p.item_hover };
-                canvas.fill(item, shape::R_ROUND, fade(bg, alpha));
+                canvas.fill(item, shape::R1, fade(bg, alpha));
             }
             let icon_y = item.y + (ITEM_H - ICON) / 2;
             canvas.icon(&svg(2.0, action.icon()), item.x + 10, icon_y, ICON, fade(fg, alpha));
@@ -1354,18 +1371,18 @@ impl GreeterUi {
         canvas.text(question, action.question(), fade(p.fg_1, alpha), &QUESTION_STYLE, TextAlign::Left);
         let confirm = layout.confirm.local_to(frame);
         let base = if action.danger() { p.danger } else { p.acc_bg };
-        canvas.fill(confirm, shape::R_ROUND, fade(base, alpha));
+        canvas.fill(confirm, shape::R1, fade(base, alpha));
         if self.hover == GreeterHit::PowerConfirm {
-            canvas.fill(confirm, shape::R_ROUND, fade(p.white.with_alpha(motion::ST_HOVER), alpha));
+            canvas.fill(confirm, shape::R1, fade(p.white.with_alpha(motion::ST_HOVER), alpha));
         }
         canvas.text(confirm, action.confirm(), fade(p.white, alpha), &CONFIRM_STYLE, TextAlign::Center);
         let cancel = layout.cancel.local_to(frame);
         let (bg, fg) = if self.hover == GreeterHit::PowerCancel {
-            (p.white.with_alpha(0.16), p.fg_1)
+            (p.white.with_alpha(motion::ST_HOVER + motion::ST_HOVER), p.fg_1)
         } else {
-            (p.white.with_alpha(0.08), p.fg_2)
+            (p.white.with_alpha(motion::ST_HOVER), p.fg_2)
         };
-        canvas.fill(cancel, shape::R_ROUND, fade(bg, alpha));
+        canvas.fill(cancel, shape::R1, fade(bg, alpha));
         let (x, y) = cancel.centre_square(12);
         canvas.icon(&svg(2.5, icon::CLOSE), x, y, 12, fade(fg, alpha));
     }
@@ -1573,6 +1590,13 @@ impl<'a> Canvas<'a> {
     }
 }
 
+fn wipe(secret: &mut String) {
+    let len = secret.len();
+    secret.clear();
+    secret.extend(std::iter::repeat_n('\0', len));
+    secret.clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1673,6 +1697,24 @@ mod tests {
         assert!(ui.message.is_none());
         assert_eq!(ui.submit(), Submit::CreateSession("artem".into()));
         assert_eq!(ui.take_queued(), Some("a".into()));
+    }
+
+    #[test]
+    fn a_reason_from_pam_stays_until_the_next_key_but_a_wrong_password_fades() {
+        let aged = Instant::now().checked_sub(ERROR_HOLD * 2).expect("the clock is past the hold");
+        let mut ui = GreeterUi::lock(users().remove(0), Accent::Blue);
+        ui.set_auth_denied(Some("The account is locked due to 3 failed logins.".into()), "Wrong password");
+        ui.error_at = Some(aged);
+        ui.tick();
+        assert_eq!(ui.hint().0, "The account is locked due to 3 failed logins.");
+        ui.type_char('a');
+        assert!(ui.message.is_none(), "typing dismisses it");
+
+        ui.set_auth_denied(None, "Wrong password");
+        assert_eq!(ui.hint().0, "Wrong password");
+        ui.error_at = Some(aged);
+        ui.tick();
+        assert!(ui.message.is_none());
     }
 
     #[test]

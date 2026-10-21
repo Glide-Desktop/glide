@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -287,6 +288,7 @@ impl Worker<'_> {
         };
         let mut dest = dest;
         let mut swap = false;
+        let mut aside = None;
         if let Ok(existing) = std::fs::symlink_metadata(&dest) {
             let folders = meta.is_dir() && existing.is_dir();
             match self.resolve(source, &dest, folders) {
@@ -304,13 +306,34 @@ impl Worker<'_> {
                 }
                 Choice::Replace | Choice::Merge if !meta.is_dir() && !existing.is_dir() => swap = true,
                 Choice::Replace | Choice::Merge => {
-                    if let Err(err) = remove_recursive(&dest) {
+                    let backup = staging_for(&dest);
+                    if let Err(err) = std::fs::rename(&dest, &backup) {
                         self.fail(&dest, &err);
                         return None;
                     }
+                    aside = Some(backup);
                 }
             }
         }
+        let strict = swap || aside.is_some() || self.op == Op::Move;
+        let placed = self.place(source, dest.clone(), &meta, swap, strict);
+        if let Some(backup) = aside {
+            if placed.is_some() {
+                if let Err(err) = remove_recursive(&backup) {
+                    self.fail(&backup, &err);
+                }
+            } else if !occupied(&dest)
+                && let Err(err) = std::fs::rename(&backup, &dest)
+            {
+                self.fail(&dest, &err);
+            }
+        }
+        placed
+    }
+
+    fn place(
+        &mut self, source: &Path, dest: PathBuf, meta: &std::fs::Metadata, swap: bool, strict: bool,
+    ) -> Option<PathBuf> {
         if self.op == Op::Move {
             match std::fs::rename(source, &dest) {
                 Ok(()) => {
@@ -331,10 +354,16 @@ impl Worker<'_> {
         }
         let staging = if swap { staging_for(&dest) } else { dest.clone() };
         let failures = self.failures.len();
-        let copied = self.copy_tree(source, &staging);
+        let mut created = false;
+        let copied = self.copy_tree(source, &staging, &mut created);
         let clean = copied && self.failures.len() == failures;
-        if !copied || self.cancelled() || (swap && !clean) {
-            let _ = remove_recursive(&staging);
+        if !copied || self.cancelled() || (strict && !clean) {
+            if created {
+                let _ = remove_recursive(&staging);
+            }
+            return None;
+        }
+        if !created {
             return None;
         }
         if swap && let Err(err) = std::fs::rename(&staging, &dest) {
@@ -360,7 +389,14 @@ impl Worker<'_> {
             }
         };
         self.advance(0, 1);
-        for child in children.flatten() {
+        for child in children {
+            let child = match child {
+                Ok(child) => child,
+                Err(err) => {
+                    self.fail(source, &err);
+                    break;
+                }
+            };
             let path = child.path();
             if let Some(placed) = self.transfer(&path, dest.join(child.file_name())) {
                 self.placed.push((path, placed));
@@ -375,7 +411,8 @@ impl Worker<'_> {
         None
     }
 
-    fn copy_tree(&mut self, source: &Path, dest: &Path) -> bool {
+    fn copy_tree(&mut self, source: &Path, dest: &Path, created: &mut bool) -> bool {
+        *created = false;
         if self.cancelled() {
             return false;
         }
@@ -388,6 +425,7 @@ impl Worker<'_> {
         };
         if meta.file_type().is_symlink() {
             let linked = std::fs::read_link(source).and_then(|target| std::os::unix::fs::symlink(target, dest));
+            *created = linked.is_ok();
             if let Err(err) = linked {
                 self.fail(source, &err);
             }
@@ -401,12 +439,15 @@ impl Worker<'_> {
             return true;
         }
         if meta.is_dir() {
-            return self.copy_dir(source, dest, &meta);
+            return self.copy_dir(source, dest, &meta, created);
         }
-        match self.copy_file(source, dest, &meta) {
+        match self.copy_file(source, dest, &meta, created) {
             Ok(()) => true,
             Err(err) => {
-                let _ = std::fs::remove_file(dest);
+                if *created {
+                    let _ = std::fs::remove_file(dest);
+                    *created = false;
+                }
                 if self.cancelled() {
                     return false;
                 }
@@ -416,16 +457,25 @@ impl Worker<'_> {
         }
     }
 
-    fn copy_dir(&mut self, source: &Path, dest: &Path, meta: &std::fs::Metadata) -> bool {
-        if let Err(err) = std::fs::create_dir(dest) {
+    fn copy_dir(&mut self, source: &Path, dest: &Path, meta: &std::fs::Metadata, created: &mut bool) -> bool {
+        if let Err(err) = std::fs::DirBuilder::new().mode(0o700).create(dest) {
             self.fail(dest, &err);
             return true;
         }
+        *created = true;
         self.advance(0, 1);
         match std::fs::read_dir(source) {
             Ok(children) => {
-                for child in children.flatten() {
-                    if !self.copy_tree(&child.path(), &dest.join(child.file_name())) {
+                for child in children {
+                    let child = match child {
+                        Ok(child) => child,
+                        Err(err) => {
+                            self.fail(source, &err);
+                            break;
+                        }
+                    };
+                    let mut child_created = false;
+                    if !self.copy_tree(&child.path(), &dest.join(child.file_name()), &mut child_created) {
                         return false;
                     }
                 }
@@ -439,10 +489,13 @@ impl Worker<'_> {
         true
     }
 
-    fn copy_file(&mut self, source: &Path, dest: &Path, meta: &std::fs::Metadata) -> io::Result<()> {
+    fn copy_file(
+        &mut self, source: &Path, dest: &Path, meta: &std::fs::Metadata, created: &mut bool,
+    ) -> io::Result<()> {
         self.progress.current = name_of(source);
         let mut input = File::open(source)?;
-        let mut output = OpenOptions::new().write(true).create_new(true).open(dest)?;
+        let mut output = OpenOptions::new().write(true).create_new(true).mode(0o600).open(dest)?;
+        *created = true;
         let mut buffer = vec![0_u8; CHUNK];
         loop {
             if self.cancelled() {
@@ -535,11 +588,14 @@ pub fn copy_exact(source: &Path, dest: &Path) -> io::Result<()> {
         known: HashMap::new(),
         placed: Vec::new(),
     };
-    worker.copy_tree(source, dest);
+    let mut created = false;
+    worker.copy_tree(source, dest, &mut created);
     match worker.failures.first() {
         None => Ok(()),
         Some(failure) => {
-            let _ = remove_recursive(dest);
+            if created {
+                let _ = remove_recursive(dest);
+            }
             Err(failure.error())
         }
     }

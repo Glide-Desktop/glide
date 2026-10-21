@@ -446,6 +446,13 @@ fn login_sessions_and_names_parse() {
     assert_eq!(session.kind, "wayland");
     assert_eq!(session.tty, "tty2");
     assert!(!session.remote);
+    let utc = glide_settings::services::tz::Zone::utc();
+    assert_eq!(
+        accounts::parse_timestamp("Sat 2026-10-17 08:46:47 EEST", &utc),
+        Some(glide_settings::services::tz::from_civil(2026, 10, 17, 8, 46, 47)),
+        "logind's local timestamp becomes a time Settings can show as \"2 h ago\""
+    );
+    assert_eq!(accounts::parse_timestamp("n/a", &utc), None);
     assert_eq!(accounts::initials("Артем Шевченко"), "АШ");
     assert_eq!(accounts::initials("artem"), "A");
     assert_eq!(accounts::clean_real_name("  Artem \t Shevchenko: ").as_deref(), Some("Artem Shevchenko"));
@@ -472,9 +479,6 @@ fn pw_dump_reports_capture_streams_per_kind() {
 }
 
 #[test]
-fn recent_files_and_sizes_are_counted_readably() {
+fn recent_files_are_counted() {
     assert_eq!(privacy::count_bookmarks("<xbel><bookmark href='a'/><bookmark href='b'/></xbel>"), 2);
-    assert_eq!(privacy::human_size(512), "512 B");
-    assert_eq!(privacy::human_size(1_500), "1.5 KB");
-    assert_eq!(privacy::human_size(25_000_000), "25 MB");
 }

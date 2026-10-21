@@ -59,6 +59,10 @@ impl WlrOutputManagerHandler for GlideState {
             switched.push((output.clone(), previous));
         }
         arrange(&mut self.space, &outputs, &config.heads);
+        let disabled: Vec<&str> =
+            config.heads.iter().filter(|head| !head.enabled).map(|head| head.output_name.as_str()).collect();
+        self.session.mirrors.retain(|mirror| !disabled.contains(&mirror.name().as_str()));
+        self.apply_arrangement();
         self.sync_layout_outputs();
         self.reconcile_space();
         self.queue_redraw();
@@ -69,8 +73,21 @@ impl WlrOutputManagerHandler for GlideState {
 impl GlideState {
     #[must_use]
     pub fn output_heads(&self) -> Vec<HeadInfo> {
-        let mut heads: Vec<HeadInfo> =
-            self.connected_outputs().iter().map(|output| HeadInfo::of(output, &self.space)).collect();
+        let primary = self.space.outputs().next().and_then(|output| self.space.output_geometry(output));
+        let mut heads: Vec<HeadInfo> = self
+            .connected_outputs()
+            .iter()
+            .map(|output| {
+                let mut head = HeadInfo::of(output, &self.space);
+                if self.session.mirrors.contains(output) {
+                    head.enabled = true;
+                    if let Some(primary) = primary {
+                        head.position = primary.loc.into();
+                    }
+                }
+                head
+            })
+            .collect();
         heads.sort_by(|a, b| a.name.cmp(&b.name));
         heads
     }

@@ -145,6 +145,7 @@ fn named_key(named: iced::keyboard::key::Named) -> Option<String> {
         N::AudioVolumeUp => "XF86AudioRaiseVolume",
         N::AudioVolumeDown => "XF86AudioLowerVolume",
         N::AudioVolumeMute => "XF86AudioMute",
+        N::MicrophoneToggle => "XF86AudioMicMute",
         N::MediaPlayPause | N::MediaPlay => "XF86AudioPlay",
         N::MediaPause => "XF86AudioPause",
         N::MediaStop => "XF86AudioStop",
@@ -154,6 +155,7 @@ fn named_key(named: iced::keyboard::key::Named) -> Option<String> {
         N::MediaTrackPrevious => "XF86AudioPrev",
         N::BrightnessUp => "XF86MonBrightnessUp",
         N::BrightnessDown => "XF86MonBrightnessDown",
+        N::PowerOff => "XF86PowerOff",
         other => {
             let debug = format!("{other:?}");
             return debug
@@ -166,9 +168,65 @@ fn named_key(named: iced::keyboard::key::Named) -> Option<String> {
     Some(name.to_string())
 }
 
-#[must_use]
-pub fn capture(key: &iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) -> Capture {
-    use iced::keyboard::Key;
+fn physical_key_name(physical: iced::keyboard::key::Physical) -> Option<String> {
+    use iced::keyboard::key::{Code, Physical};
+    let Physical::Code(code) = physical else {
+        return None;
+    };
+    let name = match code {
+        Code::KeyA => "a",
+        Code::KeyB => "b",
+        Code::KeyC => "c",
+        Code::KeyD => "d",
+        Code::KeyE => "e",
+        Code::KeyF => "f",
+        Code::KeyG => "g",
+        Code::KeyH => "h",
+        Code::KeyI => "i",
+        Code::KeyJ => "j",
+        Code::KeyK => "k",
+        Code::KeyL => "l",
+        Code::KeyM => "m",
+        Code::KeyN => "n",
+        Code::KeyO => "o",
+        Code::KeyP => "p",
+        Code::KeyQ => "q",
+        Code::KeyR => "r",
+        Code::KeyS => "s",
+        Code::KeyT => "t",
+        Code::KeyU => "u",
+        Code::KeyV => "v",
+        Code::KeyW => "w",
+        Code::KeyX => "x",
+        Code::KeyY => "y",
+        Code::KeyZ => "z",
+        Code::Digit0 => "0",
+        Code::Digit1 => "1",
+        Code::Digit2 => "2",
+        Code::Digit3 => "3",
+        Code::Digit4 => "4",
+        Code::Digit5 => "5",
+        Code::Digit6 => "6",
+        Code::Digit7 => "7",
+        Code::Digit8 => "8",
+        Code::Digit9 => "9",
+        Code::Backquote => "grave",
+        Code::Minus => "minus",
+        Code::Equal => "equal",
+        Code::BracketLeft => "bracketleft",
+        Code::BracketRight => "bracketright",
+        Code::Backslash => "backslash",
+        Code::Semicolon => "semicolon",
+        Code::Quote => "apostrophe",
+        Code::Comma => "comma",
+        Code::Period => "period",
+        Code::Slash => "slash",
+        _ => return None,
+    };
+    Some(name.to_string())
+}
+
+fn active_mods(modifiers: iced::keyboard::Modifiers) -> Vec<Mod> {
     let mut mods = Vec::new();
     for (held, m) in [
         (modifiers.logo(), Mod::Super),
@@ -180,6 +238,13 @@ pub fn capture(key: &iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) 
             mods.push(m);
         }
     }
+    mods
+}
+
+#[must_use]
+pub fn capture(key: &iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) -> Capture {
+    use iced::keyboard::Key;
+    let mods = active_mods(modifiers);
     let name = match key {
         Key::Named(iced::keyboard::key::Named::Escape) if mods.is_empty() => return Capture::Stop,
         Key::Named(named) => named_key(*named),
@@ -189,11 +254,23 @@ pub fn capture(key: &iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) 
     name.map_or(Capture::Ignore, |name| Capture::Combo(mods, name))
 }
 
+#[must_use]
+pub fn capture_event(
+    key: &iced::keyboard::Key, physical_key: iced::keyboard::key::Physical, modifiers: iced::keyboard::Modifiers,
+) -> Capture {
+    match capture(key, modifiers) {
+        Capture::Ignore => {
+            physical_key_name(physical_key).map_or(Capture::Ignore, |name| Capture::Combo(active_mods(modifiers), name))
+        }
+        other => other,
+    }
+}
+
 fn recorded(event: iced::keyboard::Event) -> Option<Msg> {
-    let iced::keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+    let iced::keyboard::Event::KeyPressed { key, physical_key, modifiers, .. } = event else {
         return None;
     };
-    match capture(&key, modifiers) {
+    match capture_event(&key, physical_key, modifiers) {
         Capture::Ignore => None,
         Capture::Stop => Some(Msg::StopRecording),
         Capture::Combo(mods, key) => Some(Msg::Captured(mods, key)),
@@ -327,6 +404,13 @@ pub struct Page {
     recording: bool,
 }
 
+impl Page {
+    #[must_use]
+    pub const fn is_recording(&self) -> bool {
+        self.recording
+    }
+}
+
 impl Pane for Page {
     type Msg = Msg;
 
@@ -342,6 +426,15 @@ impl Pane for Page {
         "скорочення",
     ];
 
+    fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
+        self.recording = false;
+        Task::none()
+    }
+
+    fn leave(&mut self) {
+        self.recording = false;
+    }
+
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
             Msg::Record => self.recording = self.draft.is_some(),
@@ -354,7 +447,16 @@ impl Pane for Page {
                 self.recording = false;
             }
             other => {
-                if matches!(other, Msg::Save | Msg::Cancel | Msg::Remove | Msg::Edit(_)) {
+                if matches!(
+                    other,
+                    Msg::Save
+                        | Msg::Cancel
+                        | Msg::Remove
+                        | Msg::Edit(_)
+                        | Msg::AddCommand
+                        | Msg::AddAction(_)
+                        | Msg::ResetAll
+                ) {
                     self.recording = false;
                 }
                 self.apply(other, config);

@@ -1,0 +1,22 @@
+[package]
+name = "glide-portal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "glide-portal"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+glide-app = { path = "../glide-app" }
+glide-ipc = { path = "../glide-ipc" }
+futures-channel = "0.3"
+libc = "0.2"
+serde.workspace = true
+zbus = "5"

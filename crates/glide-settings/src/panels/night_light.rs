@@ -303,7 +303,7 @@ impl Page {
                     .build()
             };
             group = group.push(time_row(K::From, &from, Msg::NightFrom)).push(time_row(K::To, &to, Msg::NightTo));
-            let window = parse_clock(&config.night_light_from()).zip(parse_clock(&config.night_light_to()));
+            let window = parse_clock(&from).zip(parse_clock(&to));
             if let Some((start, end)) = window {
                 group = group.push(timeline(c, start, end, self.kelvin(config)));
             }

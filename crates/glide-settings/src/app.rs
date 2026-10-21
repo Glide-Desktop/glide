@@ -21,11 +21,13 @@ use crate::theme::{self, ThemeState};
 use crate::widgets;
 
 pub const SEARCH_ID: &str = "glide-settings-search";
+pub const CONTENT_SCROLL_ID: &str = "glide-settings-content";
 
 macro_rules! declare_pages {
     ($($variant:ident => $module:ident,)*) => {
         #[derive(Debug, Clone)]
         pub enum Message {
+            ShellLook(glide_app::Look),
             PanelSelected(Panel),
             SearchChanged(String),
             SearchSubmitted,
@@ -53,6 +55,12 @@ macro_rules! declare_pages {
                 let c = self.ctx();
                 match panel {
                     $(Panel::$variant => Pane::open(&mut self.pages.$module, c, &self.config).map(Message::$variant),)*
+                }
+            }
+
+            fn leave_page(&mut self, panel: Panel) {
+                match panel {
+                    $(Panel::$variant => Pane::leave(&mut self.pages.$module),)*
                 }
             }
 
@@ -121,6 +129,7 @@ pub struct App {
     login: String,
     pages: Pages,
     synced: Option<DesktopLook>,
+    shell: Option<glide_app::Look>,
     netbird: bool,
     width: f32,
 }
@@ -159,6 +168,7 @@ impl App {
             login: String::new(),
             pages: Pages::default(),
             synced: None,
+            shell: None,
             netbird: false,
             width: 1000.0,
         }
@@ -187,6 +197,12 @@ impl App {
             app.pages.netbird.show_tab(&section);
         }
         let task = app.select(initial);
+        let task = if initial == Panel::Users {
+            task
+        } else {
+            let c = app.ctx();
+            Task::batch([task, Pane::open(&mut app.pages.users, c, &app.config).map(Message::Users)])
+        };
         (app, task)
     }
 
@@ -231,6 +247,16 @@ impl App {
     }
 
     #[must_use]
+    pub const fn is_recording(&self) -> bool {
+        matches!(self.active_panel, Panel::Shortcuts) && self.pages.shortcuts.is_recording()
+    }
+
+    #[must_use]
+    pub fn current_account(&self) -> Option<&crate::services::accounts::Account> {
+        self.pages.users.state().me.as_ref()
+    }
+
+    #[must_use]
     pub fn visible_panels(&self) -> Vec<Panel> {
         Panel::GROUPS
             .iter()
@@ -250,14 +276,35 @@ impl App {
     }
 
     fn apply_look(&mut self) {
-        self.theme.set_appearance(self.config.appearance_at(minute_now()));
-        self.theme.set_accent(self.config.accent());
-        self.lang = self.config.language();
+        if let Some(shell) = &self.shell {
+            self.theme.set_appearance(shell.appearance);
+            self.theme.set_accent(shell.accent);
+            self.lang = shell.language.as_deref().and_then(Lang::from_key).unwrap_or_else(|| self.config.language());
+        } else {
+            self.theme.set_appearance(self.config.appearance_at(minute_now()));
+            self.theme.set_accent(self.config.accent());
+            self.lang = self.config.language();
+        }
+        if self.config.path().is_some() {
+            theme::use_ui_family(self.config.optional_str("general", "font-family").as_deref());
+        }
     }
 
     fn select(&mut self, panel: Panel) -> Task<Message> {
+        let switched = self.active_panel != panel;
+        if switched {
+            self.leave_page(self.active_panel);
+        }
         self.active_panel = panel;
-        self.open_page(panel)
+        let open = self.open_page(panel);
+        if switched {
+            Task::batch([
+                open,
+                iced::widget::operation::snap_to(CONTENT_SCROLL_ID, iced::widget::scrollable::RelativeOffset::START),
+            ])
+        } else {
+            open
+        }
     }
 
     fn step(&mut self, forward: bool) -> Task<Message> {
@@ -350,6 +397,11 @@ impl App {
                 IpcEvent::LayoutChanged(_) => Task::none(),
             },
             Message::Tick => self.tick_page(self.active_panel),
+            Message::ShellLook(look) => {
+                self.shell = Some(look);
+                self.apply_look();
+                Task::none()
+            }
             Message::Clock => {
                 let changed = self.config.refresh_if_changed();
                 self.apply_look();
@@ -374,7 +426,7 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             Subscription::run(ipc::events).map(Message::Ipc),
-            iced::keyboard::listen().filter_map(shortcut),
+            Subscription::run(glide_app::look_changes).map(Message::ShellLook),
             iced::window::events().filter_map(|(_, event)| match event {
                 iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size) => {
                     Some(Message::Resized(size.width))
@@ -384,6 +436,9 @@ impl App {
             iced::time::every(CLOCK).map(|_| Message::Clock),
             self.page_subscription(),
         ];
+        if !self.is_recording() {
+            subscriptions.push(iced::keyboard::listen().filter_map(shortcut));
+        }
         if self.active_panel.polls() {
             subscriptions.push(iced::time::every(Duration::from_secs(4)).map(|_| Message::Tick));
         }
@@ -443,7 +498,10 @@ impl App {
             .center_x(Fill);
 
         container(
-            scrollable(clamp).height(Fill).style(move |_: &iced::Theme, status| theme::scrollable_style(&t, status)),
+            scrollable(clamp)
+                .id(CONTENT_SCROLL_ID)
+                .height(Fill)
+                .style(move |_: &iced::Theme, status| theme::scrollable_style(&t, status)),
         )
         .width(Fill)
         .height(Length::Fill)
@@ -454,12 +512,19 @@ impl App {
 
 #[must_use]
 pub fn shortcut(event: iced::keyboard::Event) -> Option<Message> {
-    use iced::keyboard::{Event, Key, key::Named};
-    let Event::KeyPressed { key, modifiers, .. } = event else {
+    use iced::keyboard::{
+        Event, Key,
+        key::{Code, Named, Physical},
+    };
+    let Event::KeyPressed { key, physical_key, modifiers, .. } = event else {
         return None;
     };
+    let search_key = matches!(key.as_ref(), Key::Character("f" | "k" | "F" | "K"))
+        || matches!(physical_key, Physical::Code(Code::KeyF | Code::KeyK));
+    if search_key && modifiers.command() && !modifiers.shift() && !modifiers.alt() {
+        return Some(Message::FocusSearch);
+    }
     let forward = match key.as_ref() {
-        Key::Character("f" | "k") if modifiers.command() => return Some(Message::FocusSearch),
         Key::Named(Named::Escape) => return Some(Message::ClearSearch),
         Key::Named(Named::PageDown) if modifiers.command() => true,
         Key::Named(Named::PageUp) if modifiers.command() => false,

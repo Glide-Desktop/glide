@@ -42,6 +42,7 @@ mod tr {
         WindowSize => "Maximize and minimize", "Розгортання і згортання";
         WindowSizeThree => "Swipe up with three fingers to maximize, down to restore or minimize", "Проведіть трьома пальцями вгору, щоб розгорнути, вниз — щоб відновити чи згорнути";
         WindowSizeFour => "Swipe up with four fingers to maximize, down to restore or minimize", "Проведіть чотирма пальцями вгору, щоб розгорнути, вниз — щоб відновити чи згорнути";
+        WithApps => "With app switching", "Разом із перемиканням програм";
         PinchShell => "Pinch with three or more fingers", "Щипок трьома й більше пальцями";
         PinchShellHint => "Pinch in for all apps, spread out to show the desktop", "Зведіть пальці — всі програми, розведіть — робочий стіл";
         TouchEdges => "Touchscreen edges", "Краї сенсорного екрана";
@@ -312,6 +313,11 @@ impl Pane for Page {
         Task::perform(blocking(pointer::read), |state| Msg::Devices(state.unwrap_or_default()))
     }
 
+    fn leave(&mut self) {
+        self.session = Session::Idle;
+        self.live = None;
+    }
+
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
             Msg::Enabled(on) => config.set_bool(TABLE, "enabled", on),
@@ -577,6 +583,7 @@ fn window_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
             Row::new(t, c.t(tr::Key::WindowSize))
                 .subtitle(c.t(up))
                 .prefix(art(&t, Art::Up(other)))
+                .suffix(widgets::pill(t, Tone::Neutral, c.t(tr::Key::WithApps)))
                 .dimmed(!enabled || !apps)
                 .build(),
         )

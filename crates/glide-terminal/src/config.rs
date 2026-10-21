@@ -1,4 +1,7 @@
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use alacritty_terminal::term::Config;
@@ -9,13 +12,15 @@ use serde::{Deserialize, Serialize};
 use crate::i18n::Lang;
 use crate::profile::Profile;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Look {
     pub appearance: Appearance,
+    pub appearance_schedule: bool,
     pub accent: Accent,
     pub language: Option<Lang>,
     pub motion_scale: f32,
     pub sounds: bool,
+    pub ui_family: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -40,16 +45,18 @@ impl Default for Notifications {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 struct General {
     language: Option<String>,
+    font_family: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 struct Topbar {
     appearance: Appearance,
     accent: Accent,
+    appearance_schedule: bool,
 }
 
 #[derive(Deserialize)]
@@ -74,11 +81,18 @@ impl Look {
         let still = !animations.enabled || (animations.respect_system && reduced_motion);
         Self {
             appearance: shell.topbar.appearance,
+            appearance_schedule: shell.topbar.appearance_schedule,
             accent: shell.topbar.accent,
             language: shell.general.language.as_deref().and_then(Lang::from_key),
             motion_scale: if still { 0.0 } else { animations.speed },
             sounds: shell.notifications.sounds,
+            ui_family: shell.general.font_family,
         }
+    }
+
+    #[must_use]
+    pub fn appearance_at(&self, minute: Option<u16>) -> Appearance {
+        minute.filter(|_| self.appearance_schedule).map_or(self.appearance, Appearance::scheduled)
     }
 }
 
@@ -177,7 +191,34 @@ impl Preferences {
 
 #[must_use]
 pub fn reduced_motion() -> bool {
-    std::env::var("GLIDE_REDUCED_MOTION").is_ok_and(|value| value.trim() == "1")
+    SYSTEM_REDUCED.load(Ordering::Relaxed)
+        || std::env::var("GLIDE_REDUCED_MOTION").is_ok_and(|value| value.trim() == "1")
+}
+
+static SYSTEM_REDUCED: AtomicBool = AtomicBool::new(false);
+static WRITES: AtomicU64 = AtomicU64::new(0);
+
+#[must_use]
+pub fn motion_changes() -> iced::futures::channel::mpsc::UnboundedReceiver<bool> {
+    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+    let _ = std::thread::Builder::new().name("glide-terminal-motion".into()).spawn(move || {
+        let mut previous = None;
+        while !sender.is_closed() {
+            let reduced = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+                .output()
+                .is_ok_and(|output| output.status.success() && output.stdout.trim_ascii() == b"false");
+            if previous != Some(reduced) {
+                SYSTEM_REDUCED.store(reduced, Ordering::Relaxed);
+                if sender.unbounded_send(reduced).is_err() {
+                    break;
+                }
+                previous = Some(reduced);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+    receiver
 }
 
 #[must_use]
@@ -210,11 +251,46 @@ pub fn load() -> Preferences {
 
 pub fn save(prefs: &Preferences) -> std::io::Result<()> {
     let path = path().ok_or_else(|| std::io::Error::other("no config directory"))?;
+    save_profile(&path, prefs.profile)
+}
+
+fn save_profile(path: &Path, profile: Profile) -> std::io::Result<()> {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let mut document: toml_edit::DocumentMut = text.parse().map_err(std::io::Error::other)?;
+    let _: Preferences = toml::from_str(&text).map_err(std::io::Error::other)?;
+    let serialized =
+        toml::to_string(&Preferences { profile, ..Preferences::default() }).map_err(std::io::Error::other)?;
+    let source: toml_edit::DocumentMut = serialized.parse().map_err(std::io::Error::other)?;
+    document["profile"] = source["profile"].clone();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = toml::to_string_pretty(prefs).map_err(std::io::Error::other)?;
-    std::fs::write(path, text)
+    let id = WRITES.fetch_add(1, Ordering::Relaxed);
+    let temporary = path.with_extension(format!("toml.{}.{id}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
+    let result = (|| {
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.write_all(document.to_string().as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result
+}
+
+#[must_use]
+pub fn shell_command(command: &str) -> Option<(String, Vec<String>)> {
+    let mut words = shlex::split(command)?.into_iter();
+    Some((words.next()?, words.collect()))
 }
 
 #[cfg(test)]
@@ -247,5 +323,47 @@ mod tests {
         assert!(!Look::parse("[notifications]\nsounds = false\n", false).sounds);
         assert_eq!(Look::parse("[animations]\nenabled = false\n", false).motion_scale, 0.0);
         assert_eq!(Look::parse("", true).motion_scale, 0.0);
+    }
+
+    #[test]
+    fn shell_commands_keep_quoted_arguments_and_reject_unclosed_quotes() {
+        assert_eq!(
+            shell_command("env FOO='a b' zsh -l"),
+            Some(("env".into(), vec!["FOO=a b".into(), "zsh".into(), "-l".into()]))
+        );
+        assert_eq!(shell_command("zsh '"), None);
+        assert_eq!(shell_command("   "), None);
+    }
+
+    #[test]
+    fn scheduled_appearance_uses_the_shared_rule_and_manual_appearance_remains_available() {
+        let scheduled = Look::parse("[topbar]\nappearance = 'dark'\nappearance-schedule = true\n", false);
+        for minute in [0, 419, 420, 720, 1139, 1140, 1439] {
+            assert_eq!(scheduled.appearance_at(Some(minute)), Appearance::scheduled(minute));
+        }
+        assert_eq!(scheduled.appearance_at(None), Appearance::Dark);
+        let manual = Look::parse("[topbar]\nappearance = 'light'\nappearance-schedule = false\n", false);
+        assert_eq!(manual.appearance_at(Some(0)), Appearance::Light);
+    }
+
+    #[test]
+    fn saving_a_profile_preserves_comments_unknown_keys_and_rejects_invalid_preferences() {
+        let folder =
+            std::env::temp_dir().join(format!("glide-terminal-config-{}", WRITES.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("terminal.toml");
+        let text = "# preserve me\nfont-size = 17.0\nfuture-option = true\n";
+        std::fs::write(&path, text).unwrap();
+        save_profile(&path, Profile::Ocean).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# preserve me") && saved.contains("future-option = true"));
+        assert_eq!(Preferences::parse(&saved).font_size, 17.0);
+        assert_eq!(Preferences::parse(&saved).profile, Profile::Ocean);
+        for invalid in ["font-size = [", "on-exit = 'not-an-option'"] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(save_profile(&path, Profile::Basic).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        }
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

@@ -309,11 +309,9 @@ impl GlideState {
         match command {
             DesktopCommand::SystemSettings => crate::system_info::open_settings(),
             DesktopCommand::LockScreen => self.lock_screen(),
-            DesktopCommand::NewTerminal => {
-                let _ = crate::spawn_shell_command(&crate::global_menu::terminal_command());
-            }
+            DesktopCommand::NewTerminal => self.open_terminal_tab(),
             DesktopCommand::OpenHome => {
-                let _ = crate::spawn_shell_command("xdg-open \"$HOME\"");
+                let _ = self.spawn_user_command("xdg-open \"$HOME\"");
             }
             DesktopCommand::Screenshot => self.request_screenshot(),
             DesktopCommand::Overview => self.run_key_action(KeyAction::ToggleOverview),

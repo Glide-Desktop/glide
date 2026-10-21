@@ -103,9 +103,9 @@ fn function_key(number: u8, modifiers: Modifiers) -> Vec<u8> {
     }
 }
 
-fn named(key: Named, modifiers: Modifiers, mode: TermMode) -> Option<Vec<u8>> {
+fn named(key: Named, modifiers: Modifiers, mode: TermMode, alt_is_meta: bool) -> Option<Vec<u8>> {
     let alt = |bytes: &[u8]| {
-        let mut out = if modifiers.alt() { vec![0x1b] } else { Vec::new() };
+        let mut out = if modifiers.alt() && alt_is_meta { vec![0x1b] } else { Vec::new() };
         out.extend_from_slice(bytes);
         out
     };
@@ -162,8 +162,17 @@ const fn control(letter: char) -> Option<u8> {
 pub fn encode(
     key: &Key, physical: Physical, modifiers: Modifiers, text: Option<&str>, mode: TermMode, alt_is_meta: bool,
 ) -> Option<Vec<u8>> {
+    if modifiers.logo() {
+        return None;
+    }
+    if mode.contains(TermMode::APP_KEYPAD)
+        && modifier_code(modifiers) == 1
+        && let Some(code) = keypad(physical)
+    {
+        return Some(vec![0x1b, b'O', code]);
+    }
     if let Key::Named(name) = key
-        && let Some(bytes) = named(*name, modifiers, mode)
+        && let Some(bytes) = named(*name, modifiers, mode, alt_is_meta)
     {
         return Some(bytes);
     }
@@ -179,12 +188,32 @@ pub fn encode(
     };
     let text = text.or(typed).filter(|text| !text.is_empty() && !text.chars().any(char::is_control))?;
     let mut bytes = if meta { vec![0x1b] } else { Vec::new() };
-    if meta && let Key::Character(typed) = key {
-        bytes.extend_from_slice(typed.as_bytes());
-    } else {
-        bytes.extend_from_slice(text.as_bytes());
-    }
+    bytes.extend_from_slice(text.as_bytes());
     Some(bytes)
+}
+
+fn keypad(physical: Physical) -> Option<u8> {
+    let Physical::Code(code) = physical else { return None };
+    Some(match code {
+        Code::Numpad0 => b'p',
+        Code::Numpad1 => b'q',
+        Code::Numpad2 => b'r',
+        Code::Numpad3 => b's',
+        Code::Numpad4 => b't',
+        Code::Numpad5 => b'u',
+        Code::Numpad6 => b'v',
+        Code::Numpad7 => b'w',
+        Code::Numpad8 => b'x',
+        Code::Numpad9 => b'y',
+        Code::NumpadDecimal => b'n',
+        Code::NumpadDivide => b'o',
+        Code::NumpadMultiply => b'j',
+        Code::NumpadSubtract => b'm',
+        Code::NumpadAdd => b'k',
+        Code::NumpadEnter => b'M',
+        Code::NumpadEqual => b'X',
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +277,7 @@ mod tests {
     #[test]
     fn space_and_printable_text_reach_the_shell() {
         assert_eq!(press(&Key::Named(Named::Space), NONE, Some(" ")), Some(b" ".to_vec()));
+        assert_eq!(press(&Key::Named(Named::Space), Modifiers::LOGO, Some(" ")), None);
         assert_eq!(press(&char_key("ї"), NONE, Some("ї")), Some("ї".as_bytes().to_vec()));
         assert_eq!(press(&char_key("A"), Modifiers::SHIFT, Some("A")), Some(b"A".to_vec()));
     }
@@ -265,6 +295,50 @@ mod tests {
     fn alt_prefixes_escape_when_meta() {
         assert_eq!(press(&char_key("b"), Modifiers::ALT, Some("b")), Some(b"\x1bb".to_vec()));
         assert_eq!(press(&Key::Named(Named::Backspace), Modifiers::ALT, None), Some(b"\x1b\x7f".to_vec()));
+    }
+
+    #[test]
+    fn disabling_meta_applies_to_named_keys_and_shifted_text_keeps_its_case() {
+        let physical = Physical::Code(Code::Backspace);
+        assert_eq!(
+            encode(&Key::Named(Named::Backspace), physical, Modifiers::ALT, None, TermMode::default(), false),
+            Some(vec![0x7f])
+        );
+        assert_eq!(
+            encode(
+                &char_key("b"),
+                Physical::Code(Code::KeyB),
+                Modifiers::ALT | Modifiers::SHIFT,
+                Some("B"),
+                TermMode::default(),
+                true
+            ),
+            Some(b"\x1bB".to_vec())
+        );
+    }
+
+    #[test]
+    fn application_keypad_uses_ss3_only_for_numpad_keys() {
+        let key = char_key("1");
+        assert_eq!(
+            encode(&key, Physical::Code(Code::Numpad1), NONE, Some("1"), TermMode::APP_KEYPAD, true),
+            Some(b"\x1bOq".to_vec())
+        );
+        assert_eq!(
+            encode(&key, Physical::Code(Code::Digit1), NONE, Some("1"), TermMode::APP_KEYPAD, true),
+            Some(b"1".to_vec())
+        );
+        assert_eq!(
+            encode(
+                &Key::Named(Named::Enter),
+                Physical::Code(Code::NumpadEnter),
+                NONE,
+                None,
+                TermMode::APP_KEYPAD,
+                true
+            ),
+            Some(b"\x1bOM".to_vec())
+        );
     }
 
     #[test]

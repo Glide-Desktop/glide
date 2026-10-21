@@ -79,6 +79,7 @@ pub struct Page {
     command: String,
     error: Option<String>,
     lang: Option<Lang>,
+    icon_theme: Option<String>,
     busy: bool,
     generation: Generation,
 }
@@ -97,8 +98,9 @@ impl Page {
     fn refresh(&mut self, lang: Lang, config: &ConfigStore) -> Task<Msg> {
         self.loading = true;
         self.lang = Some(lang);
-        let generation = self.generation.bump();
         let theme = config.optional_str("dock", "icon-theme");
+        self.icon_theme.clone_from(&theme);
+        let generation = self.generation.bump();
         Task::perform(blocking(move || load(lang, theme.as_deref())), move |catalog| {
             Msg::Loaded(generation, lang, Box::new(catalog.unwrap_or_default()))
         })
@@ -138,7 +140,10 @@ impl Pane for Page {
         &["autostart", "startup", "login", "sign in", "session", "автозапуск", "запуск", "вхід", "сеанс"];
 
     fn open(&mut self, c: Ctx, config: &ConfigStore) -> Task<Msg> {
-        if (self.loaded || self.loading) && self.lang == Some(c.lang) {
+        if (self.loaded || self.loading)
+            && self.lang == Some(c.lang)
+            && self.icon_theme == config.optional_str("dock", "icon-theme")
+        {
             return Task::none();
         }
         self.refresh(c.lang, config)
@@ -222,19 +227,8 @@ impl Page {
         let total = commands + entries;
         let description =
             if total == 0 { c.t(T::Nothing).to_string() } else { format!("{total} {}", c.t(T::Starting)) };
-        let trailing: Element<'a, Msg> = if self.loading || self.busy {
-            widgets::spinner_label(t, c.t(T::Loading))
-        } else {
-            widgets::pill(t, Tone::Accent, total.to_string())
-        };
-        widgets::section_hero(
-            t,
-            Icon::Rocket,
-            super::Panel::Startup.color(),
-            c.t(T::Heading),
-            description,
-            Some(trailing),
-        )
+        let trailing = (self.loading || self.busy).then(|| widgets::spinner_label(t, c.t(T::Loading)));
+        widgets::section_hero(t, Icon::Rocket, super::Panel::Startup.color(), c.t(T::Heading), description, trailing)
     }
 
     fn commands_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {

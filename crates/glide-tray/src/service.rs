@@ -96,6 +96,9 @@ const SIGNAL_RULES: [&str; 3] = [
 ];
 
 const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+const FIRST_BACKOFF: Duration = Duration::from_secs(5);
+const MAX_BACKOFF: Duration = Duration::from_secs(120);
+const MAX_PENDING: usize = 64;
 const COALESCE: Duration = Duration::from_millis(40);
 const MAX_BATCH: Duration = Duration::from_millis(200);
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
@@ -195,10 +198,69 @@ fn collect_batch(
     (changed, pending)
 }
 
+fn next_backoff(previous: Option<Duration>) -> Duration {
+    previous.map_or(FIRST_BACKOFF, |previous| previous.saturating_mul(2).clamp(FIRST_BACKOFF, MAX_BACKOFF))
+}
+
+fn stalls(err: &zbus::Error) -> bool {
+    match err {
+        zbus::Error::InputOutput(io) => io.kind() == std::io::ErrorKind::TimedOut,
+        zbus::Error::MethodError(name, _, _) => matches!(
+            name.as_str(),
+            "org.freedesktop.DBus.Error.NoReply"
+                | "org.freedesktop.DBus.Error.Timeout"
+                | "org.freedesktop.DBus.Error.TimedOut"
+        ),
+        zbus::Error::FDO(fdo) => {
+            matches!(**fdo, zbus::fdo::Error::NoReply(_) | zbus::fdo::Error::Timeout(_) | zbus::fdo::Error::TimedOut(_))
+        }
+        _ => false,
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Stall {
+    until: Option<Instant>,
+    backoff: Option<Duration>,
+}
+
+impl Stall {
+    fn active(&self, now: Instant) -> bool {
+        self.until.is_some_and(|until| now < until)
+    }
+
+    fn record(&mut self, err: &zbus::Error, now: Instant) {
+        if stalls(err) {
+            let backoff = next_backoff(self.backoff);
+            self.backoff = Some(backoff);
+            self.until = Some(now + backoff);
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+struct Pending {
+    address: Address,
+    owner: String,
+    stall: Stall,
+}
+
+fn remember(pending: &mut Vec<Pending>, entry: Pending) {
+    pending.retain(|p| p.address != entry.address);
+    if pending.len() >= MAX_PENDING {
+        pending.remove(0);
+    }
+    pending.push(entry);
+}
+
 struct Tracked {
     address: Address,
     owner: String,
     props: ItemProps,
+    stall: Stall,
 }
 
 impl Tracked {
@@ -219,6 +281,7 @@ struct Worker {
     unique: String,
     watcher: bool,
     items: Vec<Tracked>,
+    pending: Vec<Pending>,
 }
 
 impl Worker {
@@ -247,7 +310,8 @@ impl Worker {
         if let Err(err) = connection.request_name(host.as_str()) {
             tracing::debug!("could not own {host}: {err}");
         }
-        let mut worker = Self { connection, sink, registry, host, unique, watcher: false, items: Vec::new() };
+        let mut worker =
+            Self { connection, sink, registry, host, unique, watcher: false, items: Vec::new(), pending: Vec::new() };
         if !worker.claim() {
             worker.join();
         }
@@ -279,6 +343,7 @@ impl Worker {
                 if added {
                     self.register(address, None);
                 } else {
+                    self.pending.retain(|p| p.address != address);
                     self.forget(|tracked| tracked.address == address);
                 }
             }
@@ -289,6 +354,7 @@ impl Worker {
                         self.emit("StatusNotifierItemUnregistered", &address.key());
                     }
                 }
+                self.pending.retain(|p| p.owner != name && p.address.bus != name);
                 self.forget(|tracked| tracked.owner == name || tracked.address.bus == name);
             }
             Request::WatcherOwner(owner) => {
@@ -400,16 +466,26 @@ impl Worker {
             self.refresh(index);
             return;
         }
-        let owner = self.owner_of(&address.bus, sender);
+        let now = Instant::now();
+        let (owner, mut stall) = match self.pending.iter().position(|p| p.address == address) {
+            Some(index) if self.pending[index].stall.active(now) => return,
+            Some(index) => {
+                let waiting = self.pending.remove(index);
+                (waiting.owner, waiting.stall)
+            }
+            None => (self.owner_of(&address.bus, sender), Stall::default()),
+        };
         match self.fetch(&address) {
             Ok(props) => {
                 tracing::info!(key = %address.key(), id = %props.id, "tray item registered");
-                let tracked = Tracked { address, owner, props };
+                let tracked = Tracked { address, owner, props, stall: Stall::default() };
                 (self.sink)(tracked.event());
                 self.items.push(tracked);
             }
             Err(err) => {
-                tracing::debug!(key = %address.key(), "tray item has no readable properties: {err}");
+                tracing::debug!(key = %address.key(), "tray item has no readable properties yet: {err}");
+                stall.record(&err, Instant::now());
+                remember(&mut self.pending, Pending { address, owner, stall });
             }
         }
     }
@@ -434,17 +510,34 @@ impl Worker {
                 self.refresh(index);
             }
         }
+        let waiting: Vec<Address> = self
+            .pending
+            .iter()
+            .filter(|p| p.owner == sender || p.address.bus == sender)
+            .map(|p| p.address.clone())
+            .collect();
+        for address in waiting {
+            self.register(address, None);
+        }
     }
 
     fn refresh(&mut self, index: usize) {
-        match self.fetch(&self.items[index].address) {
-            Ok(props) if props == self.items[index].props => {}
+        if self.items[index].stall.active(Instant::now()) {
+            return;
+        }
+        let fetched = self.fetch(&self.items[index].address);
+        let tracked = &mut self.items[index];
+        match fetched {
             Ok(props) => {
-                self.items[index].props = props;
-                (self.sink)(self.items[index].event());
+                tracked.stall.clear();
+                if props != tracked.props {
+                    tracked.props = props;
+                    (self.sink)(tracked.event());
+                }
             }
             Err(err) => {
-                let key = self.items[index].address.key();
+                tracked.stall.record(&err, Instant::now());
+                let key = tracked.address.key();
                 tracing::debug!(%key, "tray item refresh failed: {err}");
             }
         }
@@ -556,6 +649,53 @@ mod tests {
         assert!(!get_all_unsupported(&timeout));
         let gone = zbus::Error::from(zbus::fdo::Error::ServiceUnknown("gone".into()));
         assert!(!get_all_unsupported(&gone));
+    }
+
+    #[test]
+    fn backoff_starts_at_five_seconds_doubles_and_caps_at_two_minutes() {
+        assert_eq!(next_backoff(None), Duration::from_secs(5));
+        assert_eq!(next_backoff(Some(Duration::from_secs(5))), Duration::from_secs(10));
+        assert_eq!(next_backoff(Some(Duration::from_secs(80))), Duration::from_secs(120));
+        assert_eq!(next_backoff(Some(Duration::from_secs(120))), Duration::from_secs(120));
+        assert_eq!(next_backoff(Some(Duration::MAX)), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn only_hangs_stall_an_item_and_success_resets_the_backoff() {
+        let now = Instant::now();
+        let mut stall = Stall::default();
+        assert!(!stall.active(now));
+        stall.record(&zbus::Error::from(zbus::fdo::Error::ServiceUnknown("gone".into())), now);
+        assert!(!stall.active(now));
+        let timeout = zbus::Error::from(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        stall.record(&timeout, now);
+        assert!(stall.active(now + Duration::from_secs(4)));
+        assert!(!stall.active(now + Duration::from_secs(5)));
+        stall.record(&zbus::Error::from(zbus::fdo::Error::NoReply("hung".into())), now);
+        assert!(stall.active(now + Duration::from_secs(9)));
+        assert!(!stall.active(now + Duration::from_secs(10)));
+        stall.clear();
+        assert!(!stall.active(now));
+        stall.record(&timeout, now);
+        assert_eq!(stall.backoff, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn pending_registrations_are_deduplicated_and_capped() {
+        let entry = |n: usize| Pending {
+            address: Address::parse(&format!("org.kde.StatusNotifierItem-{n}-1"), None).expect("valid address"),
+            owner: format!(":1.{n}"),
+            stall: Stall::default(),
+        };
+        let mut pending = Vec::new();
+        remember(&mut pending, entry(1));
+        remember(&mut pending, entry(1));
+        assert_eq!(pending.len(), 1);
+        for n in 0..MAX_PENDING * 2 {
+            remember(&mut pending, entry(n));
+        }
+        assert_eq!(pending.len(), MAX_PENDING);
+        assert_eq!(pending.last().map(|p| p.owner.as_str()), Some(format!(":1.{}", MAX_PENDING * 2 - 1).as_str()));
     }
 
     #[test]

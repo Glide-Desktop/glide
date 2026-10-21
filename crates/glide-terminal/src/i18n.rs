@@ -65,7 +65,16 @@ pub enum Key {
     Cancel,
     Completed,
     CompletedWithCode,
+    CompletedWithSignal,
     SpawnFailed,
+    Maximize,
+    Minimize,
+    CloseWindow,
+    CloseTab,
+    CaseSensitive,
+    FindPrevious,
+    FindNext,
+    Options,
 }
 
 impl Key {
@@ -110,7 +119,16 @@ impl Key {
             Self::Cancel => ("Скасувати", "Cancel"),
             Self::Completed => ("[Процес завершено]", "[Process completed]"),
             Self::CompletedWithCode => ("[Процес завершено з кодом", "[Process completed with code"),
+            Self::CompletedWithSignal => ("[Процес завершено сигналом", "[Process terminated by signal"),
             Self::SpawnFailed => ("Не вдалося запустити оболонку", "Couldn't start the shell"),
+            Self::Maximize => ("Розгорнути / Відновити", "Maximize / Restore"),
+            Self::Minimize => ("Згорнути", "Minimize"),
+            Self::CloseWindow => ("Закрити вікно", "Close Window"),
+            Self::CloseTab => ("Закрити вкладку", "Close Tab"),
+            Self::CaseSensitive => ("Враховувати регістр", "Match Case"),
+            Self::FindPrevious => ("Попередній збіг", "Previous Match"),
+            Self::FindNext => ("Наступний збіг", "Next Match"),
+            Self::Options => ("Параметри", "Options"),
         };
         match lang {
             Lang::Uk => uk,

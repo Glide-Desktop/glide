@@ -23,9 +23,9 @@ pub struct GestureConfig {
 
 pub const GESTURE_FINGERS: std::ops::RangeInclusive<u32> = 3..=4;
 pub const GESTURE_SENSITIVITY: std::ops::RangeInclusive<f64> = 0.5..=2.0;
-pub const SWIPE_DISTANCE: f64 = 400.0;
-pub const OVERVIEW_DISTANCE: f64 = 300.0;
-pub const APP_STEP: f64 = 100.0;
+pub const SWIPE_DISTANCE: f64 = 420.0;
+pub const OVERVIEW_DISTANCE: f64 = 315.0;
+pub const APP_STEP: f64 = 105.0;
 pub const PINCH_FINGERS: u32 = 3;
 
 impl Default for GestureConfig {
@@ -408,7 +408,7 @@ pub enum PinchAction {
 
 #[must_use]
 pub fn pinch_progress(scale: f64) -> f64 {
-    ((1.0 - scale) / 0.4).clamp(-1.0, 1.0)
+    ((1.0 - scale) / 0.42).clamp(-1.0, 1.0)
 }
 
 #[must_use]
@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(decide_pinch(1.3, false), Some(PinchAction::Desktop));
         assert_eq!(decide_pinch(0.95, false), None);
         assert_eq!(decide_pinch(0.5, true), None);
-        assert!((pinch_progress(0.8) - 0.5).abs() < 1e-9);
+        assert!((pinch_progress(0.79) - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -981,8 +981,8 @@ mod tests {
         for (base, dy, position) in [
             (0.4, -0.3 * OVERVIEW_DISTANCE, 0.7),
             (0.4, OVERVIEW_DISTANCE, 0.0),
-            (SHELL_DESKTOP, -150.0, 0.5),
-            (SHELL_OVERVIEW, 150.0, 0.5),
+            (SHELL_DESKTOP, -0.5 * OVERVIEW_DISTANCE, 0.5),
+            (SHELL_OVERVIEW, 0.5 * OVERVIEW_DISTANCE, 0.5),
             (SHELL_OVERVIEW, -0.5 * OVERVIEW_DISTANCE, 1.5),
             (SHELL_DESKTOP, -9.0 * OVERVIEW_DISTANCE, SHELL_LAUNCHER),
         ] {

@@ -38,7 +38,7 @@ mod tr {
         AudibleBell => "Play a sound", "Відтворювати звук";
         AudibleBellHint => "Muted together with notification sounds", "Вимикається разом зі звуками сповіщень";
         Shell => "Shell", "Оболонка";
-        ShellHint => "Command for new tabs and splits; press Enter to apply", "Команда для нових вкладок і панелей; Enter, щоб застосувати";
+        ShellHint => "Command for new tabs and splits", "Команда для нових вкладок і панелей";
         ShellPlaceholder => "Login shell ($SHELL)", "Оболонка входу ($SHELL)";
         OnExit => "When the shell exits", "Коли оболонка завершується";
         CloseAlways => "Close the pane", "Закрити панель";
@@ -154,7 +154,8 @@ impl Store {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        std::fs::write(&self.path, &text).map_err(|error| error.to_string())?;
+        let target = std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
+        crate::services::config::write_atomic(&target, text.as_bytes()).map_err(|error| error.to_string())?;
         self.prefs = Preferences::parse(&text);
         Ok(())
     }
@@ -273,7 +274,7 @@ fn swatch<'a>(profile: Profile, t: &ThemeState) -> Element<'a, Msg> {
 
 fn profiles_group<'a>(c: &Ctx, prefs: &Preferences) -> Element<'a, Msg> {
     let t = c.theme;
-    let rows = Profile::ALL.chunks(4).map(|chunk| {
+    let rows = Profile::ALL.chunks(if t.compact { 3 } else { 4 }).map(|chunk| {
         row(chunk.iter().map(|profile| {
             widgets::preview_card(
                 t,
@@ -351,21 +352,21 @@ impl Page {
             .map(|lines| Labelled { value: *lines, label: format!("{} {}", grouped(*lines), c.t(tr::Key::Lines)) })
             .collect();
         let scrollback = lines.iter().min_by_key(|option| option.value.abs_diff(prefs.scrollback as u32)).cloned();
-        let field = widgets::field(
-            t,
-            c.t(tr::Key::ShellPlaceholder),
-            &self.shell,
-            Msg::ShellInput,
-            Some(Msg::ShellSubmit),
-            false,
-        );
+        let changed = self.shell.trim() != prefs.shell.as_deref().unwrap_or_default();
+        let apply = changed.then_some(Msg::ShellSubmit);
+        let field = row![
+            widgets::field(t, c.t(tr::Key::ShellPlaceholder), &self.shell, Msg::ShellInput, apply.clone(), false)
+                .width(Fill),
+            widgets::secondary(t, c.t(crate::i18n::Key::Apply), apply),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
         Group::new(t)
-            .title(c.t(tr::Key::Shell))
-            .description(c.t(tr::Key::Behaviour))
+            .title(c.t(tr::Key::Behaviour))
             .push(
                 Row::new(t, c.t(tr::Key::Shell))
                     .subtitle(c.t(tr::Key::ShellHint))
-                    .suffix(widgets::flexible(field, 260.0))
+                    .suffix(widgets::flexible(field, 340.0))
                     .build(),
             )
             .push(

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use glide_config::toolkits::{QtTheme, Support};
 use iced::widget::{column, container, row, space, text};
 use iced::{Alignment, Element, Fill, Length, Task};
 
@@ -41,6 +42,25 @@ mod tr {
         Faster => "Faster", "Швидше";
         Instant => "Everything appears instantly", "Усе з'являється миттєво";
         SpeedNormal => "Standard speed", "Стандартна швидкість";
+        OtherApps => "Other apps", "Інші програми";
+        OtherAppsHint => "How GTK and Qt apps take Glide's colours and shapes; install what is missing with your package manager", "Як програми GTK і Qt беруть кольори й форми Glide; відсутнє встановіть менеджером пакетів";
+        Gtk4 => "GTK 4 and libadwaita", "GTK 4 і libadwaita";
+        Gtk4Hint => "Follow Glide without extra packages", "Слідують за Glide без додаткових пакетів";
+        Gtk3 => "GTK 3, Chrome, Electron", "GTK 3, Chrome, Electron";
+        Gtk3Ready => "Through the adw-gtk3 theme", "Через тему adw-gtk3";
+        Gtk3Missing => "Needs the adw-gtk3 theme (adw-gtk-theme)", "Потрібна тема adw-gtk3 (adw-gtk-theme)";
+        Qt => "Qt apps", "Програми Qt";
+        QtReady => "Through qt6ct or qt5ct", "Через qt6ct або qt5ct";
+        QtBridge => "Through the GTK 3 theme; qt6ct gives the full palette", "Через тему GTK 3; повну палітру дає qt6ct";
+        QtMissing => "Needs qt6ct (and qt5ct for Qt 5 apps)", "Потрібен qt6ct (і qt5ct для програм Qt 5)";
+        Kvantum => "Qt control shapes", "Форми елементів Qt";
+        KvantumReady => "Kvantum draws them in the Glide style", "Kvantum малює їх у стилі Glide";
+        KvantumMissing => "Install kvantum for rounded Glide controls", "Встановіть kvantum для заокруглених елементів Glide";
+        Relogin => "Log out and back in so Qt apps pick it up", "Вийдіть і увійдіть знову, щоб програми Qt це підхопили";
+        Ready => "Ready", "Готово";
+        Partly => "Partly", "Частково";
+        Missing => "Not installed", "Не встановлено";
+        Optional => "Optional", "Необов'язково";
     }
 }
 
@@ -63,6 +83,7 @@ pub enum Msg {
     Smoothing(Smoothing),
     Hinting(Hinting),
     RenderingApplied(Result<String, String>),
+    Toolkits(Option<Support>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +117,7 @@ pub struct Page {
     preview: Vec<PathBuf>,
     rendering: Option<FontRendering>,
     rendering_error: Option<String>,
+    toolkits: Option<Support>,
 }
 
 impl Pane for Page {
@@ -110,6 +132,9 @@ impl Pane for Page {
         "colour",
         "icons",
         "font",
+        "gtk",
+        "qt",
+        "kvantum",
         "animation",
         "motion",
         "hinting",
@@ -130,12 +155,14 @@ impl Pane for Page {
 
     fn open(&mut self, _c: Ctx, config: &ConfigStore) -> Task<Msg> {
         let preview = self.refresh_preview(config);
+        let toolkits = Task::perform(blocking(Support::detect), Msg::Toolkits);
         if self.loaded {
-            return preview;
+            return Task::batch([preview, toolkits]);
         }
         self.loaded = true;
         Task::batch([
             preview,
+            toolkits,
             Task::perform(blocking(|| (apps::icon_themes(), apps::cursor_themes(), apps::font_families())), |assets| {
                 let (icons, cursors, fonts) = assets.unwrap_or_default();
                 Msg::Assets(icons, cursors, fonts)
@@ -180,7 +207,9 @@ impl Pane for Page {
                 config.set_optional_str("general", "cursor-theme", choice.value.as_deref());
             }
             Msg::Font(choice) => {
-                config.set_optional_str("general", "font-family", choice.value.as_deref());
+                let name = choice.value.as_deref();
+                config.set_optional_str("general", "font-family", name);
+                theme::use_ui_family(name);
             }
             Msg::IconPreview(theme, icons) => {
                 if self.preview_theme == theme {
@@ -201,6 +230,7 @@ impl Pane for Page {
                 return apply_rendering(move || look::set_hinting(mode));
             }
             Msg::RenderingApplied(result) => self.rendering_error = result.err(),
+            Msg::Toolkits(toolkits) => self.toolkits = toolkits,
         }
         Task::none()
     }
@@ -212,6 +242,7 @@ impl Pane for Page {
             self.icons_group(&c, config),
             self.font_group(&c, config),
             self.rendering.map(|rendering| self.rendering_group(&c, rendering)),
+            self.toolkits.map(|toolkits| toolkits_group(&c, toolkits)),
             self.motion_group(&c, config),
         ]
         .spacing(theme::SECTION_GAP)
@@ -445,6 +476,51 @@ impl Page {
 
 pub const SWATCH_SIZE: f32 = 24.0;
 
+type ToolkitRow = (tr::Key, tr::Key, theme::Tone, tr::Key);
+
+fn toolkit_rows(toolkits: Support) -> [ToolkitRow; 4] {
+    use theme::Tone;
+    use tr::Key;
+    let gtk3 = if toolkits.adw_gtk3 {
+        (Key::Gtk3, Key::Gtk3Ready, Tone::Ok, Key::Ready)
+    } else {
+        (Key::Gtk3, Key::Gtk3Missing, Tone::Warn, Key::Missing)
+    };
+    let qt = match toolkits.qt {
+        Some(QtTheme::Gtk3) => (Key::Qt, Key::QtBridge, Tone::Neutral, Key::Partly),
+        Some(_) => (Key::Qt, Key::QtReady, Tone::Ok, Key::Ready),
+        None => (Key::Qt, Key::QtMissing, Tone::Warn, Key::Missing),
+    };
+    let kvantum = if toolkits.kvantum {
+        (Key::Kvantum, Key::KvantumReady, Tone::Ok, Key::Ready)
+    } else {
+        (Key::Kvantum, Key::KvantumMissing, Tone::Neutral, Key::Optional)
+    };
+    [(Key::Gtk4, Key::Gtk4Hint, Tone::Ok, Key::Ready), gtk3, qt, kvantum]
+}
+
+fn needs_relogin(detected: Option<&str>, session: Option<&str>) -> bool {
+    let chosen_by_glide =
+        |value: &str| [QtTheme::Qt6ct, QtTheme::Qt5ct, QtTheme::Gtk3].map(QtTheme::plugin).contains(&value);
+    detected.is_some() && detected != session && session.is_none_or(chosen_by_glide)
+}
+
+fn toolkits_group<'a>(c: &Ctx, toolkits: Support) -> Element<'a, Msg> {
+    let t = c.theme;
+    let rows = toolkit_rows(toolkits).map(|(label, hint, tone, status)| {
+        Row::new(t, c.t(label)).subtitle(c.t(hint)).suffix(widgets::pill(t, tone, c.t(status))).build()
+    });
+    let session = std::env::var("QT_QPA_PLATFORMTHEME").ok();
+    let relogin = needs_relogin(toolkits.qt_platform_theme(), session.as_deref())
+        .then(|| Row::new(t, c.t(tr::Key::Relogin)).build());
+    Group::new(t)
+        .title(c.t(tr::Key::OtherApps))
+        .description(c.t(tr::Key::OtherAppsHint))
+        .extend(rows)
+        .extend(relogin)
+        .build()
+}
+
 fn pick(options: Vec<Choice>, current: Option<String>) -> (Vec<Choice>, Option<Choice>) {
     let selected = options
         .iter()
@@ -519,4 +595,32 @@ fn mockup<'a>(t: &ThemeState) -> Element<'a, Msg> {
         .height(Length::Fixed(124.0))
         .style(move |_: &iced::Theme| theme::solid(t.sunken_bg(), theme::radius_r2()))
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn statuses(toolkits: Support) -> Vec<tr::Key> {
+        toolkit_rows(toolkits).iter().map(|row| row.3).collect()
+    }
+
+    #[test]
+    fn missing_toolkit_packages_are_named_and_the_gtk3_bridge_counts_as_partial() {
+        use tr::Key::{Missing, Optional, Partly, Ready};
+        assert_eq!(statuses(Support::default()), [Ready, Missing, Missing, Optional]);
+        let bridge = Support { qt: Some(QtTheme::Gtk3), ..Support::default() };
+        assert_eq!(statuses(bridge), [Ready, Missing, Partly, Optional]);
+        let full = Support { adw_gtk3: true, kvantum: true, qt: Some(QtTheme::Qt6ct) };
+        assert_eq!(statuses(full), [Ready; 4]);
+    }
+
+    #[test]
+    fn a_relogin_is_asked_only_when_the_session_lacks_what_glide_would_export() {
+        assert!(needs_relogin(Some("qt6ct"), None));
+        assert!(needs_relogin(Some("qt6ct"), Some("gtk3")), "qt6ct installed after the gtk3 bridge");
+        assert!(!needs_relogin(Some("qt6ct"), Some("qt6ct")));
+        assert!(!needs_relogin(Some("qt6ct"), Some("kde")), "a value the user chose stays");
+        assert!(!needs_relogin(None, None));
+    }
 }

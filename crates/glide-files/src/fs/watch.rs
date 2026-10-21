@@ -2,12 +2,13 @@ use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 const SETTLE: Duration = Duration::from_millis(120);
 const POLL_MS: i32 = 500;
+const FALLBACK: Duration = Duration::from_secs(1);
 const MASK: u32 = libc::IN_CREATE
     | libc::IN_DELETE
     | libc::IN_MOVED_FROM
@@ -63,12 +64,39 @@ fn watch(fd: &OwnedFd, sender: &UnboundedSender<()>) {
     }
 }
 
+fn stamps(dirs: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
+    dirs.iter()
+        .map(|dir| std::fs::metadata(dir).ok().and_then(|meta| meta.modified().ok().map(|time| (time, meta.len()))))
+        .collect()
+}
+
+fn follow(dirs: &[PathBuf], sender: &UnboundedSender<()>) {
+    let mut seen = stamps(dirs);
+    while !sender.is_closed() {
+        if let Some(fd) = inotify(dirs) {
+            let missed = stamps(dirs) != seen;
+            if missed && sender.unbounded_send(()).is_err() {
+                return;
+            }
+            watch(&fd, sender);
+            return;
+        }
+        std::thread::sleep(FALLBACK);
+        let now = stamps(dirs);
+        if now != seen {
+            seen = now;
+            if sender.unbounded_send(()).is_err() {
+                return;
+            }
+        }
+    }
+}
+
 #[must_use]
 #[allow(clippy::ptr_arg)] // Subscription::run_with hands the keyed data back as `&Vec<PathBuf>`
 pub fn changes(dirs: &Vec<PathBuf>) -> UnboundedReceiver<()> {
     let (sender, receiver) = unbounded();
-    if let Some(fd) = inotify(dirs) {
-        let _ = std::thread::Builder::new().name(String::from("glide-files-watch")).spawn(move || watch(&fd, &sender));
-    }
+    let dirs = dirs.clone();
+    let _ = std::thread::Builder::new().name(String::from("glide-files-watch")).spawn(move || follow(&dirs, &sender));
     receiver
 }

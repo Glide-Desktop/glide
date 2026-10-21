@@ -79,7 +79,6 @@ impl std::fmt::Display for Blank {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Loaded(u64, PowerState),
-    Refresh,
     Blank(Blank),
     Suspend(Blank),
     SuspendOnBattery(Blank),
@@ -168,7 +167,6 @@ impl Pane for Page {
                 self.loaded = true;
                 self.loading = false;
             }
-            Msg::Refresh => return self.refresh(),
             Msg::Blank(choice) => config.set_int("general", "blank-after-seconds", choice.seconds),
             Msg::Suspend(choice) => config.set_int("general", "suspend-after-seconds", choice.seconds),
             Msg::SuspendOnBattery(choice) => {
@@ -292,32 +290,31 @@ impl Page {
             (c.t(K::OnBattery), if is_low { Tone::Danger } else { Tone::Neutral })
         };
         let color = if is_low { theme::ramp_color(Accent::Cinnabar, 3) } else { Panel::Power.color() };
-        let mut subtitle = status.to_string();
-        if let Some(hours) = self.state.details.as_ref().and_then(BatteryDetails::hours_left) {
+        let estimate = self.state.details.as_ref().and_then(BatteryDetails::hours_left).map(|hours| {
             let suffix = if battery.charging { c.t(tr::Key::UntilFull) } else { c.t(tr::Key::Left) };
-            subtitle = format!("{subtitle} · {} {suffix}", duration_label(hours, *c));
-        }
+            format!("{} {suffix}", duration_label(hours, *c))
+        });
+        let source = if self.state.on_ac { K::PluggedIn } else { K::OnBattery };
+        let subtitle = estimate.unwrap_or_else(|| c.t(source).to_string());
         let meter = battery_meter(&t, f32::from(battery.percent) / 100.0, color);
-        let body = column![
+        let mut body = column![
             row![
                 text(format!("{}%", battery.percent)).size(34).font(theme::SEMIBOLD).color(t.fg_1()),
                 widgets::status_pill(t, tone, status),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
-            text(subtitle).size(13).color(t.fg_2()),
         ]
         .spacing(4)
         .width(Fill);
-        container(
-            row![meter, body, widgets::icon_button(t, Icon::Refresh, Some(Msg::Refresh))]
-                .spacing(20)
-                .align_y(Alignment::Center),
-        )
-        .padding(20)
-        .width(Fill)
-        .style(move |_: &iced::Theme| theme::hero_card_style(&t, color))
-        .into()
+        if subtitle != status {
+            body = body.push(text(subtitle).size(13).color(t.fg_2()));
+        }
+        container(row![meter, body].spacing(20).align_y(Alignment::Center))
+            .padding(20)
+            .width(Fill)
+            .style(move |_: &iced::Theme| theme::hero_card_style(&t, color))
+            .into()
     }
 
     fn profile_group(&self, c: &Ctx) -> Element<'_, Msg> {

@@ -5,6 +5,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use alacritty_terminal::event::{Event, EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
@@ -25,10 +26,14 @@ pub struct Bus(pub(crate) UnboundedSender<(PaneId, Event)>);
 pub struct Listener {
     pane: PaneId,
     bus: Bus,
+    revision: Arc<AtomicU64>,
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
+        if matches!(event, Event::Wakeup) {
+            self.revision.fetch_add(1, Ordering::Release);
+        }
         let _ = self.bus.0.unbounded_send((self.pane, event));
     }
 }
@@ -89,6 +94,8 @@ pub struct Pane {
     notifier: Notifier,
     master: File,
     shell: i32,
+    shell_name: Option<String>,
+    pub revision: Arc<AtomicU64>,
     pub cells: Cells,
     pub cell_size: iced::Size,
     pub title: Option<String>,
@@ -120,7 +127,11 @@ impl Pane {
         ]);
         let options = Options {
             shell: launch.command.clone().map(|(program, args)| Shell::new(program, args)),
-            working_directory: launch.directory.clone().filter(|directory| directory.is_dir()),
+            working_directory: launch
+                .directory
+                .clone()
+                .filter(|directory| directory.is_dir())
+                .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from).filter(|home| home.is_dir())),
             drain_on_exit: true,
             env,
         };
@@ -128,7 +139,8 @@ impl Pane {
         let pty = tty::new(&options, window_size(DEFAULT_CELLS, cell_size), id.0)?;
         let master = pty.file().try_clone()?;
         let shell = i32::try_from(pty.child().id()).unwrap_or(-1);
-        let listener = Listener { pane: id, bus: bus.clone() };
+        let revision = Arc::new(AtomicU64::new(0));
+        let listener = Listener { pane: id, bus: bus.clone(), revision: Arc::clone(&revision) };
         let term = Arc::new(FairMutex::new(Term::new(config, &DEFAULT_CELLS, listener.clone())));
         let event_loop = EventLoop::new(Arc::clone(&term), listener, pty, true, false)?;
         let notifier = Notifier(event_loop.channel());
@@ -139,6 +151,8 @@ impl Pane {
             notifier,
             master,
             shell,
+            shell_name: shell_name(launch),
+            revision,
             cells: DEFAULT_CELLS,
             cell_size,
             title: None,
@@ -163,7 +177,10 @@ impl Pane {
         }
         self.cells = cells;
         self.cell_size = cell_size;
-        self.term.lock().resize(cells);
+        let mut term = self.term.lock();
+        term.resize(cells);
+        self.revision.fetch_add(1, Ordering::Release);
+        drop(term);
         self.notifier.on_resize(window_size(cells, cell_size));
     }
 
@@ -188,8 +205,63 @@ impl Pane {
         if let Ok(directory) = std::fs::read_link(format!("/proc/{}/cwd", self.shell)) {
             self.directory = Some(directory);
         }
-        self.busy = pid != self.shell;
+        self.busy = running_program(pid, self.shell, self.shell_name.as_deref(), &self.process);
     }
+}
+
+fn program_name(program: &str) -> Option<String> {
+    Some(std::path::Path::new(program).file_name()?.to_str()?.to_string())
+}
+
+fn passwd_shell() -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata("/proc/self").ok()?.uid().to_string();
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        (fields.len() >= 7 && fields[2] == uid).then(|| fields[6].to_string())
+    })
+}
+
+fn shell_name(launch: &Launch) -> Option<String> {
+    let login_shell = std::env::var("SHELL")
+        .ok()
+        .filter(|shell| !shell.is_empty())
+        .or_else(passwd_shell)
+        .and_then(|shell| program_name(&shell));
+    let Some((program, _)) = launch.command.as_ref() else {
+        return login_shell;
+    };
+    let name = program_name(program)?;
+    let known = matches!(
+        name.as_str(),
+        "sh" | "bash"
+            | "zsh"
+            | "fish"
+            | "dash"
+            | "ksh"
+            | "mksh"
+            | "nu"
+            | "tcsh"
+            | "csh"
+            | "elvish"
+            | "xonsh"
+            | "pwsh"
+            | "ion"
+            | "osh"
+            | "ysh"
+            | "yash"
+            | "rc"
+            | "es"
+            | "oksh"
+            | "loksh"
+            | "murex"
+    );
+    (known || login_shell.as_deref() == Some(name.as_str())).then_some(name)
+}
+
+fn running_program(pid: i32, child: i32, shell: Option<&str>, process: &str) -> bool {
+    pid != child || shell.is_none_or(|shell| process.trim_start_matches('-') != shell)
 }
 
 impl Drop for Pane {
@@ -203,6 +275,15 @@ mod tests {
     use super::*;
     use alacritty_terminal::index::{Column, Line, Point};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn explicit_programs_and_exec_replacements_are_busy_but_an_idle_shell_is_not() {
+        assert!(running_program(12, 12, None, "vim"));
+        assert!(running_program(12, 12, Some("bash"), "vim"));
+        assert!(running_program(13, 12, Some("bash"), "sleep"));
+        assert!(!running_program(12, 12, Some("bash"), "bash"));
+        assert!(!running_program(12, 12, Some("bash"), "-bash"));
+    }
 
     #[test]
     fn a_command_runs_in_its_directory_and_its_output_reaches_the_grid() {

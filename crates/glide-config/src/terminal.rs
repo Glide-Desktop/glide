@@ -36,8 +36,12 @@ pub fn configured() -> Option<String> {
     CONFIGURED.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+fn command_word(terminal: &str) -> &str {
+    terminal.split_whitespace().next().unwrap_or_default()
+}
+
 fn program(terminal: &str) -> &str {
-    let word = terminal.split_whitespace().next().unwrap_or_default();
+    let word = command_word(terminal);
     Path::new(word).file_name().and_then(|name| name.to_str()).unwrap_or(word)
 }
 
@@ -49,14 +53,13 @@ pub fn exec_args(terminal: &str) -> &'static [&'static str] {
 
 #[must_use]
 pub fn pick(configured: Option<&str>, environment: Option<&str>, installed: impl Fn(&str) -> bool) -> String {
-    let named = usable(configured).or_else(|| usable(environment).filter(|terminal| installed(program(terminal))));
+    let named = usable(configured).or_else(|| usable(environment).filter(|terminal| installed(command_word(terminal))));
     named.or_else(|| KNOWN.iter().map(|(name, _)| *name).find(|name| installed(name))).unwrap_or(FALLBACK).to_string()
 }
 
 fn on_path(name: &str) -> bool {
-    let path = Path::new(name);
-    if path.is_absolute() {
-        return path.is_file();
+    if name.contains('/') {
+        return Path::new(name).is_file();
     }
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
 }
@@ -78,7 +81,7 @@ mod tests {
 
     #[test]
     fn the_configured_terminal_wins_then_the_environment_then_the_first_installed() {
-        let installed = |name: &str| ["foot", "kitty", "xterm"].contains(&name);
+        let installed = |name: &str| ["foot", "kitty", "xterm", "/usr/bin/kitty"].contains(&name);
         assert_eq!(pick(Some("wezterm"), Some("foot"), installed), "wezterm");
         assert_eq!(pick(Some("  "), Some("kitty"), installed), "kitty");
         assert_eq!(pick(None, Some("missing-term"), installed), "foot", "a stale TERMINAL is ignored");
@@ -86,6 +89,16 @@ mod tests {
         assert_eq!(pick(None, None, installed), "foot");
         assert_eq!(pick(None, None, |_| false), "xterm");
         assert_eq!(pick(None, None, |name| name == "xdg-terminal-exec"), "xdg-terminal-exec");
+    }
+
+    #[test]
+    fn a_terminal_named_by_path_is_checked_at_that_path() {
+        let installed = |name: &str| ["/opt/x/kitty", "foot"].contains(&name);
+        assert_eq!(pick(None, Some("/opt/x/kitty"), installed), "/opt/x/kitty");
+        assert_eq!(pick(None, Some("/opt/y/kitty"), installed), "foot", "same name elsewhere is not enough");
+        assert!(!on_path("/nonexistent/glide-terminal-test"));
+        assert!(!on_path("./nonexistent-glide-terminal-test"));
+        assert!(on_path("/bin/sh") || on_path("/usr/bin/sh"));
     }
 
     #[test]

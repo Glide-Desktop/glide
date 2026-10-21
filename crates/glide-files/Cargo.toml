@@ -31,6 +31,9 @@ iced = { version = "0.14.0", default-features = false, features = [
 ] }
 glide-config = { path = "../glide-config" }
 glide-theme = { path = "../glide-theme" }
+glide-iced = { path = "../glide-iced" }
+glide-ipc = { path = "../glide-ipc" }
+glide-app = { path = "../glide-app" }
 serde.workspace = true
 toml.workspace = true
 libc = "0.2"
@@ -40,6 +43,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 resvg = { version = "0.48.1", default-features = false }
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 
 [dev-dependencies]
 wayland-server = "0.31"

@@ -385,6 +385,7 @@ pub enum Section {
     Actions,
     Commands,
     Settings,
+    Provided,
 }
 
 impl Section {
@@ -399,6 +400,7 @@ impl Section {
             Self::Actions => Key::SectionActions,
             Self::Commands => Key::SectionCommands,
             Self::Settings => Key::SectionSettings,
+            Self::Provided => Key::SectionProvided,
         })
     }
 }
@@ -420,6 +422,7 @@ pub enum Entry {
     Calculator { expression: String, value: String },
     Command(SystemCommand),
     Settings(SettingsPanel),
+    Provided { index: usize, app: Option<usize> },
 }
 
 impl Entry {
@@ -434,6 +437,7 @@ impl Entry {
             Self::Calculator { .. } => Section::Calculator,
             Self::Command(_) => Section::Commands,
             Self::Settings(_) => Section::Settings,
+            Self::Provided { .. } => Section::Provided,
         }
     }
 }

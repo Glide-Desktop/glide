@@ -608,15 +608,7 @@ fn touch_rows<'a>(c: &Ctx, config: &ConfigStore) -> Vec<Element<'a, Msg>> {
     let t = c.theme;
     let tap = config.tap_to_click();
     vec![
-        Row::new(t, c.t(K::TapToClick))
-            .subtitle(c.t(K::TapToClickHint))
-            .prefix(widgets::tile(
-                Icon::Mouse,
-                theme::ramp_color(theme::Accent::Terracotta, 3),
-                theme::SMALL_CONTROL_HEIGHT,
-            ))
-            .suffix(toggle(*c, tap, Msg::Tap))
-            .build(),
+        Row::new(t, c.t(K::TapToClick)).subtitle(c.t(K::TapToClickHint)).suffix(toggle(*c, tap, Msg::Tap)).build(),
         Row::new(t, c.t(T::TapAndDrag))
             .subtitle(c.t(T::TapAndDragHint))
             .dimmed(!tap)

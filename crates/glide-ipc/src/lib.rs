@@ -15,6 +15,8 @@ pub enum WindowSelector {
     Id(u64),
 }
 
+pub mod client;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Request {
@@ -35,6 +37,10 @@ pub enum Request {
     NightLight { on: Option<bool> },
     Lock,
     PracticeGestures,
+    ActivationToken { app_id: Option<String> },
+    Screenshot,
+    ScreenshotArea,
+    PickColor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +157,17 @@ pub enum Response {
     },
     NightLight {
         on: bool,
+    },
+    ActivationToken {
+        token: String,
+    },
+    Screenshot {
+        path: String,
+    },
+    Color {
+        red: f64,
+        green: f64,
+        blue: f64,
     },
     #[serde(other)]
     Unknown,

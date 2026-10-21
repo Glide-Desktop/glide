@@ -25,6 +25,7 @@ impl GlideState {
             if self.outputs_blanked {
                 self.set_outputs_blanked(false);
             }
+            self.release_held_keys("lid opened");
         }
         if self.session.lid_closed != closed {
             tracing::info!(closed, "lid switch");
@@ -33,7 +34,7 @@ impl GlideState {
         }
     }
 
-    pub fn apply_lid(&mut self) {
+    pub fn apply_lid(&mut self) -> bool {
         let outputs = self.connected_outputs();
         let names: Vec<String> = outputs.iter().map(Output::name).collect();
         let mut changed = false;
@@ -60,6 +61,7 @@ impl GlideState {
         if changed {
             self.apply_output_configs();
         }
+        changed
     }
 }
 

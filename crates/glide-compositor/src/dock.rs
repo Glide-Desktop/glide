@@ -110,8 +110,8 @@ const LAUNCHER_HOVER_LIFT: i32 = 0;
 const LAUNCHER_HOVER_SCALE: f64 = 1.0;
 
 const SEPARATOR_WIDTH: i32 = 1;
-const SEPARATOR_MARGIN: i32 = 3;
-const SEPARATOR_HEIGHT: i32 = 22;
+const SEPARATOR_MARGIN: i32 = glide_theme::spacing::SP1;
+const SEPARATOR_HEIGHT: i32 = 28;
 
 pub const TOOLTIP_DELAY: Duration = Duration::from_millis(550);
 const TOOLTIP_HEIGHT: i32 = 26;
@@ -119,7 +119,7 @@ const TOOLTIP_PAD_X: i32 = glide_theme::spacing::SP3;
 const TOOLTIP_GAP: i32 = glide_theme::spacing::SP2;
 const TOOLTIP_RADIUS: f32 = glide_theme::shape::R2;
 const DRAG_THRESHOLD: f64 = 6.0;
-const DRAG_LIFT: i32 = 6;
+const DRAG_LIFT: i32 = 8;
 
 const MENU_RISE: i32 = 6;
 const MENU_SCALE_FROM: f64 = 0.94;
@@ -482,6 +482,7 @@ pub struct MenuWindow {
 pub struct MenuContext {
     pub windows: Vec<MenuWindow>,
     pub actions: Vec<String>,
+    pub quick: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -499,7 +500,9 @@ impl MenuEntry {
 }
 
 fn fit_menu_entries(mut entries: Vec<MenuEntry>, max_rows: usize) -> Vec<MenuEntry> {
-    let droppable = |entry: &MenuEntry| matches!(entry.item, DockMenuItem::Window(_) | DockMenuItem::Action(_));
+    let droppable = |entry: &MenuEntry| {
+        matches!(entry.item, DockMenuItem::Window(_) | DockMenuItem::Action(_) | DockMenuItem::Quick(_))
+    };
     while entries.len() > max_rows {
         let last_window = entries.iter().rposition(|entry| matches!(entry.item, DockMenuItem::Window(_)));
         let Some(drop) = last_window.or_else(|| entries.iter().rposition(droppable)) else {
@@ -563,6 +566,8 @@ struct Rasters {
     shell: Buffers<(i32, i32, i32)>,
     shadow: Buffers<(i32, i32, i32)>,
     tile_layer: Buffers<i32>,
+    drag_layer: Buffers<i32>,
+    drag_shadow: Buffers<(i32, i32)>,
     runs: Buffers<(i32, RunIndicator, i32)>,
     menu_row_layer: Buffers<i32>,
     press_layer: Buffers<i32>,
@@ -1199,6 +1204,12 @@ impl Dock {
                 muted: false,
             },
         ));
+        entries.extend(context.quick.iter().enumerate().map(|(slot, name)| MenuEntry {
+            item: DockMenuItem::Quick(slot),
+            label: name.clone(),
+            danger: false,
+            muted: false,
+        }));
         if self.is_pinned(index) {
             entries.push(MenuEntry::fixed(DockMenuItem::Unpin));
         } else if is_pinnable(&item.app_id) {
@@ -1661,6 +1672,7 @@ pub enum DockMenuItem {
     Open,
     NewWindow,
     Action(usize),
+    Quick(usize),
     Pin,
     Unpin,
     Hide,
@@ -1672,7 +1684,7 @@ impl DockMenuItem {
     pub fn label(self) -> &'static str {
         use crate::i18n::{Key, t};
         match self {
-            Self::Window(_) | Self::Action(_) => "",
+            Self::Window(_) | Self::Action(_) | Self::Quick(_) => "",
             Self::ShowAllWindows => t(Key::DockShowAllWindows),
             Self::Open => t(Key::Open),
             Self::NewWindow => t(Key::NewWindow),
@@ -1821,6 +1833,7 @@ fn push_tiles<R: ShellRenderer>(
         let hover_t = dock.hover_level(index);
         let is_hovered = hover_t > 0.0;
         let is_launcher = dock.items[index].action == DockAction::OpenLauncher;
+        let dragging = dragged.is_some_and(|(drag_index, _)| drag_index == index);
         let (mut hover, well) = match dragged {
             Some((drag_index, position)) if drag_index == index => {
                 (HoverGeometry::lifted(theme, position), HoverGeometry::lifted(theme, position))
@@ -1843,6 +1856,11 @@ fn push_tiles<R: ShellRenderer>(
                 draw_launcher_tile(theme, icon.as_deref(), scale, true)
             });
             frame.push_tile(buffer, &hover, opacity * layer.clamp(0.0, 1.0));
+        } else if dragging {
+            let buffer = cached(&mut dock.rasters.drag_layer, scale, || {
+                draw_panel(tile, drag_layer_color(theme), theme.item_radius, scale)
+            });
+            frame.push_tile(buffer, &well, opacity);
         } else if !is_launcher && layer > 0.0 {
             let buffer = cached(&mut dock.rasters.tile_layer, scale, || {
                 draw_panel(tile, theme.hover_layer, theme.item_radius, scale)
@@ -1862,7 +1880,28 @@ fn push_tiles<R: ShellRenderer>(
             frame.push_tile(buffer, &well, opacity * unit_alpha(focus));
         }
         push_run_indicator(dock, frame, index, *rect, run, opacity);
+        if dragging {
+            let side = hover.side;
+            let shadow = cached(&mut dock.rasters.drag_shadow, (side, scale), || {
+                crate::popup_menu::draw_elevation(
+                    Size::from((side, side)),
+                    theme.item_radius,
+                    scale_or_one(scale),
+                    glide_theme::elevation::Level::El2,
+                    theme.appearance,
+                )
+            });
+            let margin = f64::from(crate::popup_menu::shadow_margin());
+            let at = Point::from((hover.position.x - margin, hover.position.y - margin));
+            frame.push(shadow, at, opacity, None);
+        }
     }
+}
+
+fn drag_layer_color(theme: &DockTheme) -> crate::config::Color {
+    let hover = theme.hover_layer;
+    let scale = glide_theme::motion::ST_DRAG / glide_theme::motion::ST_HOVER;
+    hover.with_alpha((hover.0[3] * scale).min(1.0))
 }
 
 fn unit_alpha(value: f64) -> f32 {
@@ -2788,6 +2827,7 @@ mod tests {
                     MenuWindow { id: 9, title: String::new(), minimized: true },
                 ],
                 actions: vec!["Private Window".to_string()],
+                quick: vec!["Recent Folder".to_string()],
             };
             let entries = dock.menu_entries(index, &context);
             let items: Vec<DockMenuItem> = entries.iter().map(|entry| entry.item).collect();
@@ -2798,17 +2838,19 @@ mod tests {
                     DockMenuItem::Window(9),
                     DockMenuItem::ShowAllWindows,
                     DockMenuItem::Action(0),
+                    DockMenuItem::Quick(0),
                     DockMenuItem::Pin,
                     DockMenuItem::Hide,
                     DockMenuItem::Quit,
                 ]
             );
+            assert_eq!(entries[4].label, "Recent Folder", "the app's own quicklist follows its actions");
             assert_eq!(entries[0].label, "Inbox");
             assert!(!entries[0].muted);
             assert_eq!(entries[1].label, "firefox", "an untitled window shows the app");
             assert!(entries[1].muted, "a minimized window is marked");
             assert_eq!(entries[3].label, "Private Window");
-            assert!(entries[6].danger, "quit is the destructive row");
+            assert!(entries[7].danger, "quit is the destructive row");
         }
 
         #[test]
@@ -2827,6 +2869,7 @@ mod tests {
             let context = MenuContext {
                 windows: (0..40).map(|id| MenuWindow { id, title: format!("w{id}"), minimized: false }).collect(),
                 actions: Vec::new(),
+                quick: Vec::new(),
             };
             let windows = dock
                 .menu_entries(index, &context)

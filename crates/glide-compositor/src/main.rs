@@ -12,6 +12,7 @@ mod launcher_entry;
 mod logind;
 
 mod backend;
+mod background_effect;
 mod clip;
 mod clipboard;
 mod config;
@@ -20,6 +21,7 @@ mod cursor;
 mod decoration;
 mod disk_space;
 mod dock;
+mod dock_drop;
 mod focus;
 mod force_quit;
 mod global_menu;
@@ -37,6 +39,7 @@ mod layout_scope;
 mod lid;
 mod logging;
 mod media_art;
+mod mirror;
 mod netbird;
 mod nm_agent;
 mod notifications;
@@ -51,10 +54,12 @@ mod power_dialog;
 mod qs_net;
 mod raster;
 mod removable;
+mod screen_picker;
 mod screencopy;
 mod screensaver;
 mod screenshot_ui;
 mod session_end;
+mod shell_bus;
 mod shortcut_guard;
 mod smooth_wheel;
 mod snap;
@@ -67,6 +72,7 @@ mod switcher;
 pub mod system_info;
 #[cfg(test)]
 mod test_bus;
+mod theme_export;
 mod tiling;
 mod topbar;
 mod tray;
@@ -244,6 +250,7 @@ fn run() -> anyhow::Result<()> {
         state.tick_session_end();
         state.tick_local_notifications();
         state.sync_session_hints();
+        state.sync_shell_bus();
         let _ = state.display_handle.flush_clients();
     })?;
 
@@ -278,6 +285,7 @@ fn init_session_services(
     init_dock_services(event_loop, state);
     init_logind(event_loop, state);
     init_screensaver(event_loop, state);
+    init_shell_bus(event_loop, state);
     init_bluetooth_agent(event_loop);
     init_network_agent(event_loop);
     init_disk_space(event_loop);
@@ -289,6 +297,18 @@ fn init_session_services(
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
     }
     Ok(())
+}
+
+fn init_shell_bus(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<shell_bus::Event>("a shell bus request");
+    match shell_bus::start(state.shell_snapshot(), send) {
+        Ok(handle) => state.session.shell_bus = Some(handle),
+        Err(err) => {
+            tracing::warn!("{} is unavailable ({err}); apps fall back to reading glide.toml", glide_app::BUS_NAME);
+            return;
+        }
+    }
+    watch(event_loop, receiver, "the shell bus channel", GlideState::handle_shell_bus_event);
 }
 
 fn init_screensaver(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
@@ -370,6 +390,7 @@ fn init_logind(event_loop: &mut EventLoop<'static, GlideState>, state: &mut Glid
     watch(event_loop, receiver, "the logind channel", |state, event| match event {
         logind::LoginEvent::Lock | logind::LoginEvent::Sleep => state.lock_screen(),
         logind::LoginEvent::Unlock => state.unlock_screen(),
+        logind::LoginEvent::Wake => state.release_held_keys("woke from sleep"),
     });
     if locked_at_start.recv_timeout(logind::STARTUP_WAIT).unwrap_or(false) {
         state.lock_screen();
@@ -614,42 +635,37 @@ fn update_session_managers_environment() {
     let vars: Vec<String> =
         SESSION_ENV_VARS.iter().filter(|name| std::env::var_os(name).is_some()).map(ToString::to_string).collect();
 
-    let dbus = std::process::Command::new("dbus-update-activation-environment").arg("--systemd").args(&vars).spawn();
-    match dbus {
-        Ok(child) => {
-            if !wait_with_timeout(child, SESSION_ENV_TIMEOUT) {
-                tracing::warn!("dbus-update-activation-environment timed out and was killed");
+    let deadline = std::time::Instant::now() + SESSION_ENV_BUDGET;
+    let mut dbus = std::process::Command::new("dbus-update-activation-environment");
+    dbus.arg("--systemd").args(&vars);
+    let mut systemd = std::process::Command::new("systemctl");
+    systemd.args(["--user", "import-environment"]).args(&vars);
+    for (name, mut command) in [("dbus-update-activation-environment", dbus), ("systemctl import-environment", systemd)]
+    {
+        match command.spawn() {
+            Ok(child) => {
+                if let Some(child) = wait_until(child, deadline) {
+                    tracing::warn!("{name} is still running; the session starts without waiting for it");
+                    if let Ok(mut children) = DETACHED_CHILDREN.lock() {
+                        children.push(child);
+                    }
+                }
             }
+            Err(err) => tracing::info!("{name} unavailable: {err}"),
         }
-        Err(err) => tracing::info!("dbus-update-activation-environment unavailable: {err}"),
-    }
-
-    let systemd = std::process::Command::new("systemctl").args(["--user", "import-environment"]).args(&vars).spawn();
-    match systemd {
-        Ok(child) => {
-            if !wait_with_timeout(child, SESSION_ENV_TIMEOUT) {
-                tracing::warn!("systemctl import-environment timed out and was killed");
-            }
-        }
-        Err(err) => tracing::info!("systemctl import-environment unavailable: {err}"),
     }
 }
 
-const SESSION_ENV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const SESSION_ENV_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 
-fn wait_with_timeout(mut child: std::process::Child, timeout: std::time::Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
+fn wait_until(mut child: std::process::Child, deadline: std::time::Instant) -> Option<std::process::Child> {
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return true,
+            Ok(Some(_)) | Err(_) => return None,
             Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
+            Ok(None) => return Some(child),
         }
     }
 }
@@ -685,6 +701,14 @@ pub fn spawn_detached(mut command: std::process::Command) -> std::io::Result<u32
     }
     if let Some(size) = cursor::configured_size() {
         command.env("XCURSOR_SIZE", size.to_string());
+    }
+    if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none()
+        && let Some(theme) = theme_export::qt_platform_theme()
+    {
+        command.env("QT_QPA_PLATFORMTHEME", theme);
+    }
+    if let Some(style) = theme_export::qt_style_override() {
+        command.env("QT_STYLE_OVERRIDE", style);
     }
     let child = command.spawn()?;
     let pid = child.id();
@@ -734,17 +758,21 @@ mod tests {
     }
 
     #[test]
-    fn a_hung_session_env_helper_is_killed_after_the_timeout() {
+    fn a_hung_session_env_helper_is_handed_back_at_the_deadline() {
         let started = std::time::Instant::now();
         let child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        assert!(!wait_with_timeout(child, std::time::Duration::from_millis(100)));
+        let deadline = started + std::time::Duration::from_millis(100);
+        let mut left = wait_until(child, deadline).expect("still running at the deadline");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let _ = left.kill();
+        let _ = left.wait();
     }
 
     #[test]
-    fn a_finished_session_env_helper_reports_success() {
+    fn a_finished_session_env_helper_is_not_kept() {
         let child = std::process::Command::new("true").spawn().unwrap();
-        assert!(wait_with_timeout(child, std::time::Duration::from_secs(5)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        assert!(wait_until(child, deadline).is_none());
     }
 
     #[test]

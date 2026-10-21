@@ -38,6 +38,8 @@ const BTN_MIDDLE: u32 = 0x112;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyAction {
+    PickerCancel,
+    PickerConfirm,
     Quit,
     VtSwitch(i32),
     SwitchWorkspace(usize),
@@ -185,6 +187,35 @@ const MEDIA_KEYS: [Keysym; 16] = [
     Keysym::XF86_KbdLightOnOff,
 ];
 
+#[must_use]
+pub fn libinput_leds(state: smithay::input::keyboard::LedState) -> smithay::reexports::input::Led {
+    use smithay::reexports::input::Led;
+    let mut leds = Led::empty();
+    for (on, led) in [(state.num, Led::NUMLOCK), (state.caps, Led::CAPSLOCK), (state.scroll, Led::SCROLLLOCK)] {
+        if on == Some(true) {
+            leds |= led;
+        }
+    }
+    leds
+}
+
+#[must_use]
+pub const fn keypad_navigation(sym: Keysym) -> Keysym {
+    match sym {
+        Keysym::KP_Left => Keysym::Left,
+        Keysym::KP_Right => Keysym::Right,
+        Keysym::KP_Up => Keysym::Up,
+        Keysym::KP_Down => Keysym::Down,
+        Keysym::KP_Home => Keysym::Home,
+        Keysym::KP_End => Keysym::End,
+        Keysym::KP_Prior => Keysym::Prior,
+        Keysym::KP_Next => Keysym::Next,
+        Keysym::KP_Insert => Keysym::Insert,
+        Keysym::KP_Delete => Keysym::Delete,
+        other => other,
+    }
+}
+
 fn locked_media_shortcut(
     keybinds: &[ResolvedKeybind], modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym,
 ) -> Option<KeyAction> {
@@ -193,12 +224,24 @@ fn locked_media_shortcut(
         .filter(|action| media && matches!(action, KeyAction::Exec(_) | KeyAction::Media(_)))
 }
 
+fn picker_shortcut(raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
+    let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+    if matches(Keysym::Escape) {
+        return KeyAction::PickerCancel;
+    }
+    if matches(Keysym::Return) || matches(Keysym::KP_Enter) {
+        return KeyAction::PickerConfirm;
+    }
+    vt_switch_shortcut(raw_syms, modified_sym).unwrap_or(KeyAction::None)
+}
+
 fn power_dialog_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
     let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+    let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.logo;
     if matches(Keysym::Escape) {
         return KeyAction::PowerCancel;
     }
-    if matches(Keysym::Return) || matches(Keysym::KP_Enter) || matches(Keysym::space) {
+    if matches(Keysym::Return) || matches(Keysym::KP_Enter) || (plain && matches(Keysym::space)) {
         return KeyAction::PowerActivate;
     }
     if matches(Keysym::ISO_Left_Tab) || (matches(Keysym::Tab) && modifiers.shift) {
@@ -262,8 +305,8 @@ fn topbar_popup_shortcut(
 ) -> Option<KeyAction> {
     use crate::topbar::QsKeyMode;
     let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+    let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.logo;
     if qs_mode == QsKeyMode::Typing {
-        let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.logo;
         let ctrl_only = modifiers.ctrl && !modifiers.alt && !modifiers.logo;
         if let Some(key) = crate::topbar::field_key(ctrl_only, plain, modified_sym.key_char(), matches) {
             return Some(KeyAction::QsField(key));
@@ -297,7 +340,7 @@ fn topbar_popup_shortcut(
         let step = if modifiers.shift { -1 } else { 1 };
         return Some(KeyAction::TopbarNav(step, 0));
     }
-    if matches(Keysym::Return) || matches(Keysym::KP_Enter) || matches(Keysym::space) {
+    if matches(Keysym::Return) || matches(Keysym::KP_Enter) || (plain && matches(Keysym::space)) {
         return Some(KeyAction::TopbarActivate);
     }
     process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym)
@@ -461,6 +504,43 @@ fn typed_char(modifiers: &ModifiersState, modified_sym: Keysym) -> Option<char> 
     modified_sym.key_char().filter(|ch| !ch.is_control())
 }
 
+fn wake_typed_char(modifiers: &ModifiersState, modified_sym: Keysym) -> Option<KeyAction> {
+    typed_char(modifiers, modified_sym).filter(|ch| !ch.is_whitespace()).map(KeyAction::GreeterType)
+}
+
+fn is_layout_switch_key(modified_sym: Keysym) -> bool {
+    matches!(
+        modified_sym,
+        Keysym::ISO_Next_Group | Keysym::ISO_Prev_Group | Keysym::ISO_First_Group | Keysym::ISO_Last_Group
+    )
+}
+
+fn is_modifier_key(raw_syms: &[Keysym]) -> bool {
+    raw_syms.iter().any(|sym| {
+        matches!(
+            *sym,
+            Keysym::Shift_L
+                | Keysym::Shift_R
+                | Keysym::Control_L
+                | Keysym::Control_R
+                | Keysym::Alt_L
+                | Keysym::Alt_R
+                | Keysym::Meta_L
+                | Keysym::Meta_R
+                | Keysym::Super_L
+                | Keysym::Super_R
+                | Keysym::Hyper_L
+                | Keysym::Hyper_R
+                | Keysym::ISO_Level3_Shift
+                | Keysym::ISO_Level5_Shift
+        )
+    })
+}
+
+fn intercepts_layout_switch(raw_syms: &[Keysym], modified_sym: Keysym) -> bool {
+    is_layout_switch_key(modified_sym) && !is_modifier_key(raw_syms)
+}
+
 fn greeter_active_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
     let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
 
@@ -470,7 +550,8 @@ fn greeter_active_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modi
     if is_power_key(raw_syms, modified_sym) {
         return KeyAction::LockedPowerKey;
     }
-    if (modifiers.logo && matches(Keysym::space))
+    if is_layout_switch_key(modified_sym)
+        || (modifiers.logo && matches(Keysym::space))
         || (modifiers.alt && modifiers.shift)
         || (modifiers.ctrl && matches(Keysym::space))
     {
@@ -503,7 +584,7 @@ fn launcher_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_s
     if matches(Keysym::BackSpace) {
         return Some(if ctrl_only { KeyAction::LauncherDeleteWord } else { KeyAction::LauncherBackspace });
     }
-    if matches(Keysym::Delete) || matches(Keysym::KP_Delete) {
+    if matches(Keysym::Delete) {
         return Some(KeyAction::LauncherDelete);
     }
     if ctrl_only && (matches(Keysym::a) || matches(Keysym::A)) {
@@ -521,10 +602,10 @@ fn launcher_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_s
     if matches(Keysym::Page_Down) {
         return Some(KeyAction::LauncherPage(true));
     }
-    if matches(Keysym::Home) || matches(Keysym::KP_Home) {
+    if matches(Keysym::Home) {
         return Some(KeyAction::LauncherCaret(CaretMove::Home));
     }
-    if matches(Keysym::End) || matches(Keysym::KP_End) {
+    if matches(Keysym::End) {
         return Some(KeyAction::LauncherCaret(CaretMove::End));
     }
     if matches(Keysym::Left) {
@@ -659,6 +740,9 @@ impl GlideState {
         }
         self.protocols.idle_notifier_state.notify_activity(&self.seat);
         self.idle.activity(std::time::Instant::now());
+        if crate::handlers::xdg_activation::user_pressed(&event) {
+            self.session.last_user_input = Some(std::time::Instant::now());
+        }
         let waking = self.outputs_blanked;
         if waking {
             self.set_outputs_blanked(false);
@@ -1419,12 +1503,15 @@ impl GlideState {
         let dock_menu = self.dock.menu_rect().is_some();
         let dock_keys = self.dock.keyboard_active();
         let power_open = self.power_dialog_open();
+        let picker_open = self.picker_active();
         let switcher_open = self.switcher_open();
         let switcher_mode = self.switcher.as_ref().map_or(crate::switcher::Mode::Apps, crate::switcher::Switcher::mode);
         let greeter_active = self.greeter.is_some();
         let layout_before = self.active_layout_index();
         let locked = self.session_lock.is_some();
-        let handoff_blocking = self.handoff_blocks_input() || waking;
+        let handoff = self.handoff_blocks_input();
+        let handoff_blocking = handoff || waking;
+        let wake_types = waking && !handoff && greeter_active;
         if locked {
             self.focus_lock_surface();
         }
@@ -1463,14 +1550,20 @@ impl GlideState {
                     osd_kind = crate::osd::kind_for_key(&binding_syms, keysym);
                     if handoff_blocking {
                         suppressed_keys.push(keycode);
-                        let action = vt_switch_shortcut(&binding_syms, keysym);
+                        let action = vt_switch_shortcut(&binding_syms, keysym)
+                            .or_else(|| wake_types.then(|| wake_typed_char(modifiers, keysym)).flatten());
                         return FilterResult::Intercept(action.unwrap_or(KeyAction::None));
                     }
+                    let shell_sym = keypad_navigation(keysym);
                     if greeter_active {
                         let action = locked_media_shortcut(&keybinds, modifiers, &binding_syms, keysym)
-                            .unwrap_or_else(|| greeter_active_shortcut(modifiers, &binding_syms, keysym));
+                            .unwrap_or_else(|| greeter_active_shortcut(modifiers, &binding_syms, shell_sym));
                         suppressed_keys.push(keycode);
                         return FilterResult::Intercept(action);
+                    }
+                    if intercepts_layout_switch(&binding_syms, keysym) {
+                        suppressed_keys.push(keycode);
+                        return FilterResult::Intercept(KeyAction::None);
                     }
                     if locked {
                         let action = vt_switch_shortcut(&binding_syms, keysym)
@@ -1482,22 +1575,25 @@ impl GlideState {
                         }
                         return FilterResult::Forward;
                     }
-                    let action = if power_open {
-                        Some(power_dialog_shortcut(modifiers, &binding_syms, keysym))
+                    let (syms, sym) = (&binding_syms, shell_sym);
+                    let action = if picker_open {
+                        Some(picker_shortcut(syms, sym))
+                    } else if power_open {
+                        Some(power_dialog_shortcut(modifiers, syms, sym))
                     } else if switcher_open {
-                        Some(switcher_active_shortcut(modifiers, &binding_syms, keysym, switcher_mode))
+                        Some(switcher_active_shortcut(modifiers, syms, sym, switcher_mode))
                     } else if replying && !exclusive {
-                        Some(reply_active_shortcut(&keybinds, modifiers, &binding_syms, keysym))
+                        Some(reply_active_shortcut(&keybinds, modifiers, syms, sym))
                     } else if launcher_open && !exclusive {
-                        Some(launcher_active_shortcut(&keybinds, modifiers, &binding_syms, keysym))
+                        Some(launcher_active_shortcut(&keybinds, modifiers, syms, sym))
                     } else if overview_active {
-                        Some(overview_active_shortcut(&keybinds, modifiers, &binding_syms, keysym))
+                        Some(overview_active_shortcut(&keybinds, modifiers, syms, sym))
                     } else if topbar_popup && !exclusive {
-                        topbar_popup_shortcut(&keybinds, modifiers, &binding_syms, keysym, qs_mode)
+                        topbar_popup_shortcut(&keybinds, modifiers, syms, sym, qs_mode)
                     } else if dock_menu && !exclusive {
-                        dock_menu_shortcut(&keybinds, modifiers, &binding_syms, keysym, dock_keys)
+                        dock_menu_shortcut(&keybinds, modifiers, syms, sym, dock_keys)
                     } else if dock_keys && !exclusive {
-                        dock_keys_shortcut(&keybinds, modifiers, &binding_syms, keysym)
+                        dock_keys_shortcut(&keybinds, modifiers, syms, sym)
                     } else {
                         process_keyboard_shortcut(&keybinds, modifiers, &binding_syms, keysym)
                     };
@@ -1554,6 +1650,9 @@ impl GlideState {
         self.sync_prompt_caps_lock();
         let switched_by_xkb = self.active_layout_index() != layout_before;
         if switched_by_xkb {
+            if action.is_some() {
+                keyboard.advertise_modifier_state(self);
+            }
             self.layout_switched();
         }
         if greeter_active {
@@ -1685,6 +1784,8 @@ impl GlideState {
             KeyAction::PowerStep(delta) => self.step_power_dialog(delta),
             KeyAction::PowerActivate => self.activate_power_dialog(),
             KeyAction::PowerCancel => self.cancel_power_dialog(),
+            KeyAction::PickerCancel => self.cancel_picker(),
+            KeyAction::PickerConfirm => self.confirm_picker(),
             KeyAction::ToggleOverview => {
                 if self.layout.overview_active() {
                     self.begin_close_overview(None);
@@ -1694,7 +1795,7 @@ impl GlideState {
             }
             KeyAction::Exec(cmd) => {
                 tracing::info!(command = %cmd, "executing keybind command");
-                if let Err(err) = crate::spawn_shell_command(&cmd) {
+                if let Err(err) = self.spawn_user_command(&cmd) {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
                 }
                 crate::system_info::poke(crate::system_info::Topics::AUDIO | crate::system_info::Topics::BACKLIGHT);
@@ -1817,7 +1918,7 @@ impl GlideState {
             KeyAction::MoveToOutput(side) => self.move_focused_to_output(side),
             KeyAction::Terminal => {
                 let terminal = crate::global_menu::terminal_command();
-                if let Err(err) = crate::spawn_shell_command(&terminal) {
+                if let Err(err) = self.spawn_user_command(&terminal) {
                     tracing::error!(terminal, ?err, "failed to open a terminal");
                 }
             }
@@ -1998,7 +2099,7 @@ impl GlideState {
         &mut self, pos: Point<f64, Logical>,
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
         self.shell_cursor = self.shell_text_field_at(pos).then_some(smithay::input::pointer::CursorIcon::Text);
-        if self.power_dialog_motion(pos) {
+        if self.picker_motion(pos) || self.power_dialog_motion(pos) {
             self.clear_shell_hover();
             return None;
         }
@@ -2213,6 +2314,10 @@ impl GlideState {
         let button_state = event.state();
 
         if button_state == ButtonState::Released {
+            if self.picker_release(pointer.current_location()) {
+                pointer.frame(self);
+                return;
+            }
             self.shell_release(pointer.current_location(), button);
         }
 
@@ -2284,7 +2389,7 @@ impl GlideState {
         if self.greeter_button(pos, button) {
             return true;
         }
-        if self.power_dialog_button(pos) {
+        if self.picker_button(pos) || self.power_dialog_button(pos) {
             return true;
         }
         if self.switcher_button(pos) {
@@ -2706,6 +2811,55 @@ mod tests {
         ModifiersState::default()
     }
 
+    #[test]
+    fn keyboard_leds_follow_the_xkb_lock_state_and_unknown_leds_stay_dark() {
+        use smithay::{input::keyboard::LedState, reexports::input::Led};
+        let state = |num, caps, scroll| LedState { num, caps, scroll };
+        assert_eq!(libinput_leds(state(Some(true), Some(false), None)), Led::NUMLOCK);
+        assert_eq!(libinput_leds(state(Some(true), Some(true), Some(true))), Led::all());
+        assert_eq!(libinput_leds(state(None, Some(true), None)), Led::CAPSLOCK);
+        assert_eq!(libinput_leds(LedState::default()), Led::empty());
+    }
+
+    #[test]
+    fn keypad_navigation_works_in_shell_fields_while_num_lock_is_off() {
+        for (keypad, plain) in [
+            (Keysym::KP_Left, Keysym::Left),
+            (Keysym::KP_End, Keysym::End),
+            (Keysym::KP_Next, Keysym::Next),
+            (Keysym::KP_Delete, Keysym::Delete),
+        ] {
+            assert_eq!(keypad_navigation(keypad), plain);
+        }
+        assert_eq!(keypad_navigation(Keysym::KP_4), Keysym::KP_4, "digits stay digits");
+        let raw = [Keysym::KP_Home];
+        let caret = launcher_active_shortcut(&[], &no_modifiers(), &raw, keypad_navigation(Keysym::KP_Home));
+        assert_eq!(caret, KeyAction::LauncherCaret(crate::launcher::field::CaretMove::Home));
+    }
+
+    #[test]
+    fn keypad_keys_type_digits_while_num_lock_is_on_although_their_raw_level_is_navigation() {
+        let plain = no_modifiers();
+        for (raw, digit, ch) in [
+            (Keysym::KP_Home, Keysym::KP_7, '7'),
+            (Keysym::KP_Up, Keysym::KP_8, '8'),
+            (Keysym::KP_Left, Keysym::KP_4, '4'),
+            (Keysym::KP_Begin, Keysym::KP_5, '5'),
+            (Keysym::KP_Right, Keysym::KP_6, '6'),
+            (Keysym::KP_End, Keysym::KP_1, '1'),
+            (Keysym::KP_Next, Keysym::KP_3, '3'),
+            (Keysym::KP_Insert, Keysym::KP_0, '0'),
+            (Keysym::KP_Delete, Keysym::KP_Decimal, '.'),
+        ] {
+            let sym = keypad_navigation(digit);
+            assert_eq!(launcher_active_shortcut(&[], &plain, &[raw], sym), KeyAction::LauncherType(ch), "{digit:?}");
+            assert_eq!(greeter_active_shortcut(&plain, &[raw], sym), KeyAction::GreeterType(ch), "{digit:?}");
+            let matches = |want: Keysym| sym == want || raw == want;
+            let field = crate::topbar::field_key(false, true, sym.key_char(), matches);
+            assert_eq!(field, Some(crate::topbar::FieldKey::Type(ch)), "{digit:?}");
+        }
+    }
+
     mod launcher_keys {
         use super::*;
 
@@ -2997,6 +3151,19 @@ mod tests {
     }
 
     #[test]
+    fn a_character_that_wakes_the_lock_screen_is_typed_but_other_keys_only_wake_it() {
+        let plain = no_modifiers();
+        let shift = ModifiersState { shift: true, ..ModifiersState::default() };
+        let ctrl = ModifiersState { ctrl: true, ..ModifiersState::default() };
+        assert_eq!(wake_typed_char(&plain, Keysym::p), Some(KeyAction::GreeterType('p')));
+        assert_eq!(wake_typed_char(&shift, Keysym::P), Some(KeyAction::GreeterType('P')));
+        for sym in [Keysym::Return, Keysym::space, Keysym::Escape, Keysym::BackSpace, Keysym::Shift_L] {
+            assert_eq!(wake_typed_char(&plain, sym), None, "{sym:?}");
+        }
+        assert_eq!(wake_typed_char(&ctrl, Keysym::p), None);
+    }
+
+    #[test]
     fn the_power_key_and_lock_reach_the_shell_from_every_overlay() {
         let binds = default_binds();
         let (none, logo) = (no_modifiers(), ModifiersState { logo: true, ..ModifiersState::default() });
@@ -3114,5 +3281,34 @@ mod tests {
         assert!(!survives_inhibit(&KeyAction::Exec("true".into()), false));
         assert!(is_power_key(&[Keysym::XF86_PowerOff], Keysym::NoSymbol));
         assert!(!is_power_key(&[Keysym::q], Keysym::q));
+    }
+
+    #[test]
+    fn layout_switch_keys_are_intercepted_without_typing_space_or_activating_popups() {
+        let logo = ModifiersState { logo: true, ..ModifiersState::default() };
+        assert!(intercepts_layout_switch(&[Keysym::space], Keysym::ISO_Next_Group));
+        assert!(intercepts_layout_switch(&[Keysym::ISO_Next_Group], Keysym::ISO_Next_Group));
+        assert!(!intercepts_layout_switch(&[Keysym::Shift_L], Keysym::ISO_Next_Group));
+        assert!(!intercepts_layout_switch(&[Keysym::space], Keysym::space));
+        assert_eq!(power_dialog_shortcut(&logo, &[Keysym::space], Keysym::ISO_Next_Group), KeyAction::None);
+        assert_eq!(power_dialog_shortcut(&logo, &[Keysym::space], Keysym::space), KeyAction::None);
+        assert_eq!(
+            topbar_popup_shortcut(
+                &[],
+                &logo,
+                &[Keysym::space],
+                Keysym::ISO_Next_Group,
+                crate::topbar::QsKeyMode::Typing
+            ),
+            None
+        );
+        assert_eq!(
+            topbar_popup_shortcut(&[], &logo, &[Keysym::space], Keysym::space, crate::topbar::QsKeyMode::Normal),
+            None
+        );
+        assert_eq!(
+            greeter_active_shortcut(&no_modifiers(), &[Keysym::ISO_Next_Group], Keysym::ISO_Next_Group),
+            KeyAction::GreeterToggleLayout
+        );
     }
 }

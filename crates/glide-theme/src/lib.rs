@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+pub mod component;
 pub mod elevation;
 pub mod font;
 pub mod motion;
@@ -14,6 +15,9 @@ pub use palette::Accent;
 pub use tokens::{Appearance, Tokens};
 pub use typography::TextStyle;
 pub use wallpaper::WallpaperFit;
+
+pub mod export;
+pub mod kvantum;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color(pub [f32; 4]);
@@ -54,6 +58,22 @@ impl Color {
         let mut out = [0.0; 4];
         for (o, (&from, &to)) in out.iter_mut().zip(self.0.iter().zip(other.0.iter())) {
             *o = from + (to - from) * t;
+        }
+        Self(out)
+    }
+
+    #[must_use]
+    pub fn lerp_premultiplied(self, other: Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        let alpha = self.0[3] + (other.0[3] - self.0[3]) * t;
+        if alpha <= f32::EPSILON {
+            return Self([0.0; 4]);
+        }
+        let mut out = [0.0, 0.0, 0.0, alpha];
+        for (index, channel) in out.iter_mut().take(3).enumerate() {
+            let from = self.0[index] * self.0[3];
+            let to = other.0[index] * other.0[3];
+            *channel = (from + (to - from) * t) / alpha;
         }
         Self(out)
     }
@@ -196,7 +216,7 @@ impl DecorationTheme {
     #[must_use]
     pub fn from_tokens(t: &Tokens) -> Self {
         Self {
-            height: 48,
+            height: 20,
             title_align: TitleAlign::Left,
             double_click: TitlebarAction::Maximize,
             button_layout: ButtonLayout::MaximizeClose,
@@ -437,6 +457,9 @@ impl OverviewTheme {
             .color(self.close_hover_foreground)
             .color(self.dim)
             .color(self.highlight)
+            .color(self.strip_from)
+            .color(self.strip_to)
+            .color(self.strip_pick)
             .i32(self.border)
             .f32(self.corner_radius)
             .bool(self.appearance == Appearance::Dark)
@@ -631,5 +654,19 @@ mod tests {
         assert!(!theme.shadow);
         assert_eq!(theme.shadow_color_focused, Color::from_hex("#000000bb").unwrap());
         assert!(toml::from_str::<DecorationTheme>("bogus = 1").is_err());
+    }
+
+    #[test]
+    fn overview_revision_covers_the_workspace_strip_colours() {
+        let base = OverviewTheme::default();
+        let other = Color::from_hex("#123456").unwrap();
+        let variants = [
+            OverviewTheme { strip_from: other, ..base },
+            OverviewTheme { strip_to: other, ..base },
+            OverviewTheme { strip_pick: other, ..base },
+        ];
+        for variant in variants {
+            assert_ne!(variant.revision(), base.revision());
+        }
     }
 }

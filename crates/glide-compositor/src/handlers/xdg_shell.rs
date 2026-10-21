@@ -70,6 +70,7 @@ impl XdgShellHandler for GlideState {
         self.ipc_subscribers
             .broadcast(&glide_ipc::Event::TitleChanged { id: id.as_u64(), title: title.unwrap_or_default() });
         self.refresh_dock();
+        self.refresh_topbar();
         self.queue_redraw();
     }
 
@@ -85,6 +86,7 @@ impl XdgShellHandler for GlideState {
         }
         self.ipc_subscribers.broadcast(&glide_ipc::Event::AppIdChanged { id: id.as_u64(), app_id });
 
+        self.refresh_topbar();
         if self.refresh_dock() {
             self.queue_redraw();
         }
@@ -431,6 +433,14 @@ impl KdeDecorationHandler for GlideState {
 impl XdgDialogHandler for GlideState {
     fn dialog_hint_changed(&mut self, toplevel: ToplevelSurface, hint: ToplevelDialogHint) {
         tracing::info!(?hint, "toplevel dialog hint changed");
+
+        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
+            if hint == ToplevelDialogHint::Modal {
+                self.session.modal_windows.insert(id);
+            } else {
+                self.session.modal_windows.remove(&id);
+            }
+        }
 
         if !matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal) {
             return;

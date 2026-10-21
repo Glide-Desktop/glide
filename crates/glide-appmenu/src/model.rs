@@ -47,6 +47,7 @@ pub struct MenuItem {
     pub accel: Option<String>,
     pub activation: Activation,
     pub children: Vec<MenuItem>,
+    pub opens_submenu: bool,
 }
 
 impl MenuItem {
@@ -60,6 +61,7 @@ impl MenuItem {
             accel: None,
             activation,
             children: Vec::new(),
+            opens_submenu: false,
         }
     }
 
@@ -75,7 +77,7 @@ impl MenuItem {
 
     #[must_use]
     pub fn is_submenu(&self) -> bool {
-        !self.children.is_empty()
+        self.opens_submenu || !self.children.is_empty()
     }
 }
 
@@ -215,22 +217,23 @@ fn gtk_toggle(action: Option<&ActionInfo>, target: Option<&OwnedValue>) -> Toggl
 pub fn build_gtk_menu(
     menus: &GtkMenus, root: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>,
 ) -> Vec<MenuItem> {
-    build_gtk_level(menus, root, actions, 0)
+    build_gtk_level(menus, root, actions, &mut Vec::new())
 }
 
 fn build_gtk_level(
-    menus: &GtkMenus, at: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>, depth: usize,
+    menus: &GtkMenus, at: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>, path: &mut Vec<(u32, u32)>,
 ) -> Vec<MenuItem> {
-    if depth > MAX_DEPTH {
+    if path.len() > MAX_DEPTH || path.contains(&at) {
         return Vec::new();
     }
     let Some(entries) = menus.get(&at) else {
         return Vec::new();
     };
+    path.push(at);
     let mut out: Vec<MenuItem> = Vec::new();
     for entry in entries {
         if let Some(section) = pair_of(entry, ":section") {
-            let items = build_gtk_level(menus, section, actions, depth + 1);
+            let items = build_gtk_level(menus, section, actions, path);
             if items.is_empty() {
                 continue;
             }
@@ -244,7 +247,7 @@ fn build_gtk_level(
 
         let label = string_of(entry, "label").map(|label| strip_mnemonic(&label)).unwrap_or_default();
         if let Some(submenu) = pair_of(entry, ":submenu") {
-            let children = build_gtk_level(menus, submenu, actions, depth + 1);
+            let children = build_gtk_level(menus, submenu, actions, path);
             if !children.is_empty() {
                 out.push(MenuItem::submenu(&label, children));
             }
@@ -271,6 +274,7 @@ fn build_gtk_level(
             ..MenuItem::action(&label, action.map_or(Activation::None, |action| Activation::Gtk { action, target }))
         });
     }
+    path.pop();
     tidy_separators(&mut out);
     out
 }
@@ -350,6 +354,7 @@ fn build_dbusmenu_node(node: &DbusMenuNode, depth: usize) -> Option<MenuItem> {
             .and_then(|value| Vec::<Vec<String>>::try_from(value.clone()).ok())
             .and_then(|shortcut| format_dbusmenu_shortcut(&shortcut)),
         children,
+        opens_submenu: is_submenu,
         ..MenuItem::action(&label, Activation::DbusMenu(*id))
     })
 }
@@ -495,5 +500,35 @@ mod tests {
         assert!(children[1].separator);
         assert_eq!(children[2].toggle, Toggle::Check(true));
         assert!(!children[2].enabled);
+    }
+
+    #[test]
+    fn a_self_referencing_gtk_menu_builds_quickly_and_finitely() {
+        let mut menus = GtkMenus::new();
+        menus.insert((0, 0), vec![entry(&[("label", value("_Loop")), (":submenu", value((1u32, 0u32)))])]);
+        let mut looping: Vec<HashMap<String, OwnedValue>> =
+            (0..6).map(|_| entry(&[(":section", value((1u32, 0u32)))])).collect();
+        looping.push(entry(&[("label", value("Again")), (":submenu", value((1u32, 0u32)))]));
+        looping.push(entry(&[("label", value("_Leaf")), ("action", value("app.leaf"))]));
+        menus.insert((1, 0), looping);
+
+        let started = std::time::Instant::now();
+        let bar = build_gtk_menu(&menus, (0, 0), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(bar.len(), 1);
+        let labels: Vec<&str> = bar[0].children.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["Leaf"]);
+    }
+
+    #[test]
+    fn an_unfilled_dbusmenu_submenu_can_still_be_opened() {
+        let lazy = node(9, &[("label", value("_Recent")), ("children-display", value("submenu"))], Vec::new());
+        let root: DbusMenuNode = (0, HashMap::new(), vec![lazy]);
+
+        let bar = build_dbusmenu(&root);
+        assert_eq!(bar.len(), 1);
+        assert!(bar[0].children.is_empty());
+        assert!(bar[0].is_submenu());
+        assert_eq!(bar[0].activation, Activation::DbusMenu(9));
     }
 }

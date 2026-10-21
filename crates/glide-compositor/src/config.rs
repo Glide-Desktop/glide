@@ -9,7 +9,7 @@ use smithay::input::keyboard::{Keysym, ModifiersState, keysyms, xkb};
 pub use crate::input::GestureConfig;
 use crate::{GlideState, input::ResolvedKeybind};
 
-pub use glide_theme::{Color, DecorationTheme, DockTheme, OverviewTheme, TitleAlign, WallpaperFit};
+pub use glide_theme::{Color, DecorationTheme, DockTheme, OverviewTheme, WallpaperFit};
 
 pub trait OverviewThemeExt {
     fn options(&self) -> glide_layout::OverviewOptions;
@@ -45,12 +45,27 @@ pub struct Config {
     pub animations: AnimationConfig,
     pub notifications: NotificationsConfig,
     pub accessibility: AccessibilityConfig,
+    pub displays: DisplaysConfig,
     #[serde(rename = "output")]
     pub outputs: Vec<OutputConfig>,
     #[serde(skip)]
     pub ignored_keys: Vec<String>,
     #[serde(skip)]
     pub load_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Arrangement {
+    #[default]
+    Extend,
+    Mirror,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DisplaysConfig {
+    pub arrangement: Arrangement,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
@@ -200,14 +215,7 @@ pub fn write_appearance(path: &Path, appearance: glide_theme::Appearance) -> Res
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|err| err.to_string())?;
     }
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".glide.tmp");
-    let tmp = path.with_file_name(name);
-    let written = fs::write(&tmp, updated.as_bytes()).and_then(|()| fs::rename(&tmp, path));
-    if written.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    written.map_err(|err| err.to_string())
+    write_atomic(path, updated.as_bytes()).map_err(|err| err.to_string())
 }
 
 pub fn persist_appearance(appearance: glide_theme::Appearance) {
@@ -448,7 +456,7 @@ impl Default for InputConfig {
             xkb_rules: String::new(),
             repeat_delay: 200,
             repeat_rate: 25,
-            numlock: false,
+            numlock: true,
             tap_to_click: true,
             natural_scroll: false,
             accel_profile: AccelProfileConfig::default(),
@@ -818,17 +826,35 @@ fn save_pins(pinned: impl Iterator<Item = PinnedApp>) {
 }
 
 fn temp_sibling(target: &Path) -> PathBuf {
-    let mut name = target.file_name().unwrap_or_default().to_os_string();
-    name.push(".glide.tmp");
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = std::ffi::OsString::from(".");
+    name.push(target.file_name().unwrap_or_default());
+    name.push(format!(".{}.{serial}.glide.tmp", std::process::id()));
     target.with_file_name(name)
+}
+
+fn resolve_symlinks(target: &Path) -> PathBuf {
+    let mut resolved = target.to_path_buf();
+    for _ in 0..40 {
+        let Ok(link) = fs::read_link(&resolved) else {
+            break;
+        };
+        resolved = match resolved.parent() {
+            Some(parent) if link.is_relative() => parent.join(link),
+            _ => link,
+        };
+    }
+    resolved
 }
 
 pub fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
+    let target = &resolve_symlinks(target);
     let tmp = temp_sibling(target);
     let written = (|| {
-        let mut file = fs::File::create(&tmp)?;
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(contents)?;
         file.sync_all()?;
         fs::rename(&tmp, target)
@@ -1338,6 +1364,7 @@ impl Config {
             cursor_size: self.accessibility.cursor_size,
             font_family: self.general.font_family.clone(),
             wallpaper: self.general.wallpaper.clone(),
+            toolkits: glide_config::toolkits::Support::detect(),
         });
         state.max_volume_pct = self.topbar.max_volume_pct.clamp(100, 150);
         state.app_menus.registrar = self.topbar.appmenu_registrar;
@@ -1364,6 +1391,7 @@ impl Config {
         glide_config::terminal::set_configured(self.general.terminal.as_deref());
         state.input_config.clone_from(&self.input);
         state.output_configs.clone_from(&self.outputs);
+        state.session.arrangement = self.displays.arrangement;
         state.apply_device_configs();
         state.refresh_painter_font();
 
@@ -1535,6 +1563,21 @@ mod tests {
         assert!(applied.numlock_changed(false));
         assert!(!applied.numlock_changed(false));
         assert!(applied.numlock_changed(true));
+    }
+
+    #[test]
+    fn displays_extend_unless_the_config_asks_for_a_mirror() {
+        assert_eq!(Config::default().displays.arrangement, Arrangement::Extend);
+        let mirror: Config = toml::from_str("[displays]\narrangement = \"mirror\"\n").expect("config");
+        assert_eq!(mirror.displays.arrangement, Arrangement::Mirror);
+        assert!(toml::from_str::<Config>("[displays]\narrangement = \"clone\"\n").is_err());
+    }
+
+    #[test]
+    fn num_lock_is_on_unless_the_config_turns_it_off_so_the_keypad_types_digits() {
+        assert!(InputConfig::default().numlock);
+        let off: Config = toml::from_str("[input]\nnumlock = false\n").expect("config");
+        assert!(!off.input.numlock);
     }
 
     #[test]
@@ -1945,7 +1988,7 @@ position = [2560, 0]
         )
         .unwrap();
         let d = &config.decorations;
-        assert_eq!((d.height, d.title_align, d.border_width), (40, TitleAlign::Center, 2));
+        assert_eq!((d.height, d.title_align, d.border_width), (40, glide_theme::TitleAlign::Center, 2));
         assert_eq!(d.close_icon, Color::from_hex("#cccccc").unwrap());
         assert!(!d.shadow);
         assert_eq!(d.shadow_color, Color::from_hex("#000000aa").unwrap());

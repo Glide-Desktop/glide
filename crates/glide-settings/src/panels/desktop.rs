@@ -7,7 +7,7 @@ use iced::{Alignment, Element, Length, Padding, Task};
 use super::apps::app_icon;
 use super::common::{gated, switch_row};
 use super::{Ctx, Pane};
-use crate::i18n::Key as K;
+use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::services::apps::{self, DesktopApp};
 use crate::services::config::{ConfigStore, DEFAULT_ITEM_SIZE, icon_size_for};
@@ -165,6 +165,7 @@ pub struct Page {
     pins_error: Option<String>,
     pins_loaded: bool,
     generation: Generation,
+    apps_key: Option<(Lang, Option<String>)>,
     apps: Vec<DesktopApp>,
     icons: HashMap<String, PathBuf>,
 }
@@ -190,7 +191,11 @@ impl Pane for Page {
     fn open(&mut self, c: Ctx, config: &ConfigStore) -> Task<Msg> {
         let lang = c.lang.key().to_string();
         let theme = config.optional_str("dock", "icon-theme");
-        let apps = if self.apps.is_empty() {
+        let key = (c.lang, theme.clone());
+        let apps = if self.apps_key.as_ref() == Some(&key) {
+            Task::none()
+        } else {
+            self.apps_key = Some(key);
             Task::perform(
                 blocking(move || {
                     let apps = apps::visible(&apps::installed(&lang));
@@ -202,8 +207,6 @@ impl Pane for Page {
                     Msg::Apps(apps, icons)
                 },
             )
-        } else {
-            Task::none()
         };
         Task::batch([self.load_pins(), apps])
     }

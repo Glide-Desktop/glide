@@ -459,23 +459,10 @@ pub fn reset_defaults(mimes: &[&str]) -> Result<usize, String> {
 }
 
 pub fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".glide-settings.tmp");
-    let tmp = path.with_file_name(name);
-    let written = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written
+    super::config::write_atomic(path, contents.as_bytes())
 }
 
 #[must_use]

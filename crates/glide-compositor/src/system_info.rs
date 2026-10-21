@@ -1377,6 +1377,7 @@ pub struct DesktopAppearance {
     pub cursor_size: Option<u32>,
     pub font_family: Option<String>,
     pub wallpaper: Option<std::path::PathBuf>,
+    pub toolkits: glide_config::toolkits::Support,
 }
 
 const INTERFACE: &str = "org.gnome.desktop.interface";
@@ -1510,16 +1511,27 @@ pub fn sync_desktop_appearance(wanted: DesktopAppearance) {
             .output()
             .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
             .unwrap_or_default();
-        if let Some(theme) = gtk_theme_for(&current, wanted.appearance) {
+        let theme = crate::theme_export::gtk3_theme(&current, wanted.appearance, wanted.toolkits)
+            .or_else(|| gtk_theme_for(&current, wanted.appearance).map(ToString::to_string));
+        if let Some(theme) = theme.as_deref() {
             gsettings_set("gtk-theme", theme);
         }
+        crate::theme_export::export(&wanted, theme.as_deref());
         if let Some(icons) = wanted.icon_theme.as_deref().filter(|name| !name.is_empty()) {
             gsettings_set("icon-theme", icons);
         }
         for (schema, key, value) in gsettings_extras(&wanted) {
             gsettings_set_in(schema, key, &value);
         }
-        let environment = activation_environment(&wanted);
+        let mut environment = activation_environment(&wanted);
+        if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none()
+            && let Some(theme) = crate::theme_export::qt_platform_theme()
+        {
+            environment.push(format!("QT_QPA_PLATFORMTHEME={theme}"));
+        }
+        if let Some(style) = crate::theme_export::qt_style_override() {
+            environment.push(format!("QT_STYLE_OVERRIDE={style}"));
+        }
         if !environment.is_empty() {
             let _ = Command::new("dbus-update-activation-environment")
                 .arg("--systemd")
@@ -1933,6 +1945,7 @@ mod tests {
             cursor_size: None,
             font_family: None,
             wallpaper: None,
+            toolkits: glide_config::toolkits::Support::default(),
         }
     }
 

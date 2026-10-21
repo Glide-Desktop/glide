@@ -11,10 +11,12 @@ mod icons;
 pub mod input;
 pub mod marks;
 pub mod profile;
+pub mod service;
 pub mod session;
 pub mod sound;
 mod style;
 pub mod terminal;
+mod widgets;
 
 pub use app::App;
 

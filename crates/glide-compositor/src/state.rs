@@ -87,6 +87,8 @@ pub struct Protocols {
     pub wlr_gamma_control_state: crate::handlers::wlr_gamma_control::WlrGammaControlState,
     pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
     pub system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState,
+    pub toplevel_icon_manager: smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager,
+    pub background_effect_state: smithay::wayland::background_effect::BackgroundEffectState,
     pub single_pixel_buffer_state: smithay::wayland::single_pixel_buffer::SinglePixelBufferState,
     pub content_type_state: smithay::wayland::content_type::ContentTypeState,
 }
@@ -169,6 +171,8 @@ impl Protocols {
             session_lock_state: SessionLockManagerState::new::<GlideState, _>(dh, unrestricted),
             xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState::new::<GlideState>(dh),
             system_bell_state: smithay::wayland::xdg_system_bell::XdgSystemBellState::new::<GlideState>(dh),
+            toplevel_icon_manager: smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager::new::<GlideState>(dh),
+            background_effect_state: smithay::wayland::background_effect::BackgroundEffectState::new::<GlideState>(dh),
             single_pixel_buffer_state: smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<GlideState>(
                 dh,
             ),
@@ -358,6 +362,16 @@ pub struct GlideState {
 pub struct SessionServices {
     pub logind: Option<crate::logind::Handle>,
     pub screensaver: Option<crate::screensaver::Handle>,
+    pub shell_bus: Option<crate::shell_bus::Handle>,
+    pub launch_intent: Option<std::time::Instant>,
+    pub last_user_input: Option<std::time::Instant>,
+    pub screenshot_waiters: Vec<std::os::unix::net::UnixStream>,
+    pub picker: Option<crate::screen_picker::Picker>,
+    pub search_providers: Option<crate::launcher::providers::Handle>,
+    pub search_providers_started: bool,
+    pub quicklists: HashMap<String, crate::launcher_entry::Quicklist>,
+    pub modal_windows: std::collections::HashSet<glide_layout::WindowId>,
+    pub capture: Option<crate::screen_picker::Capture>,
     pub end: crate::session_end::SessionEnd,
     pub battery_alert: crate::battery_alert::BatteryAlert,
     pub announced_config_keys: Vec<String>,
@@ -370,6 +384,8 @@ pub struct SessionServices {
     pub lid_closed: bool,
     pub appearance_schedule: bool,
     pub lid_hidden: Vec<Output>,
+    pub arrangement: crate::config::Arrangement,
+    pub mirrors: Vec<Output>,
     pub shortcuts: crate::shortcut_guard::ShortcutGuard,
     pub netbird: crate::netbird::Session,
     pub headset: crate::headset::Session,
@@ -559,7 +575,8 @@ impl GlideState {
             Self::apply_window_state(&window, state, is_focused, work_area);
 
             let decoration_height = if state.fullscreen { 0 } else { state.insets.top };
-            window.sync_decoration(&self.decoration_theme, decoration_height, is_focused, state.maximized);
+            let framed = !state.fullscreen && decoration_height == 0 && window.frames_itself();
+            window.sync_decoration(&self.decoration_theme, decoration_height, is_focused, state.maximized, framed);
         }
 
         self.apply_keyboard_focus();
@@ -1065,6 +1082,7 @@ impl GlideState {
     }
 
     pub fn apply_output_configs(&mut self) {
+        self.apply_arrangement();
         let mut outputs: Vec<Output> = self.space.outputs().cloned().collect();
         outputs.sort_by_key(|output| (!crate::lid::is_internal(&output.name()), output.name()));
         let mut next_x = 0;
@@ -1523,13 +1541,14 @@ impl GlideState {
         use crate::notifications::NotificationAction;
         match action {
             NotificationAction::Activate(id) => {
-                self.notifications.activate(id, None);
+                self.activate_notification(id);
             }
             NotificationAction::Dismiss(id) => {
                 self.notifications.remove(id, glide_notify::CloseReason::Dismissed, true);
             }
             NotificationAction::Button(id, index) => {
-                self.notifications.press_button(id, index, None);
+                let token = self.mint_granted_token(None);
+                self.notifications.press_button(id, index, Some(&token));
             }
             NotificationAction::OpenReply(id) => {
                 self.notifications.open_reply(id);
@@ -1713,7 +1732,7 @@ impl GlideState {
                 self.refresh_topbar();
             }
             TopbarAction::ActivateNotification(id) => {
-                self.notifications.activate(id, None);
+                self.activate_notification(id);
                 self.refresh_topbar();
             }
             TopbarAction::DismissNotification(id) => {
@@ -1762,7 +1781,7 @@ impl GlideState {
     pub fn apply_input_config(&mut self) {
         self.layout_memory.set_policy(self.input_config.layout_scope, self.input_config.new_window_layout);
         let rebuild = self.applied_config.keymap_changed(&self.input_config);
-        let numlock = self.applied_config.numlock_changed(self.input_config.numlock);
+        let numlock_changed = self.applied_config.numlock_changed(self.input_config.numlock);
         if let Some(keyboard) = self.seat.get_keyboard() {
             if rebuild && let Err(err) = keyboard.set_xkb_config(self, self.input_config.clone().xkb()) {
                 tracing::error!(?err, "failed to apply the xkb config");
@@ -1770,11 +1789,11 @@ impl GlideState {
             if rebuild {
                 self.sync_topbar_layout();
             }
-            if self.input_config.numlock && (rebuild || numlock) {
-                let mods = smithay::input::keyboard::ModifiersState { num_lock: true, ..keyboard.modifier_state() };
-                if keyboard.set_modifier_state(mods) != 0 {
-                    keyboard.advertise_modifier_state(self);
-                }
+            if rebuild || numlock_changed {
+                let current = keyboard.modifier_state();
+                let kept = if rebuild { locks_only(current) } else { current };
+                let mods = smithay::input::keyboard::ModifiersState { num_lock: self.input_config.numlock, ..kept };
+                replace_modifiers(&keyboard, self, mods, !rebuild);
             }
             keyboard.change_repeat_info(self.input_config.repeat_rate, self.input_config.repeat_delay);
         }
@@ -1783,6 +1802,32 @@ impl GlideState {
             self.configure_input_device(device);
         }
         self.input_devices = devices;
+        self.sync_keyboard_leds();
+    }
+
+    pub fn sync_keyboard_leds(&mut self) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let leds = crate::input::libinput_leds(keyboard.led_state());
+        for device in &mut self.input_devices {
+            if device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard) {
+                device.led_update(leds);
+            }
+        }
+    }
+
+    pub fn release_held_keys(&mut self, reason: &'static str) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let Some((held, stuck)) = release_keyboard(&keyboard, self) else {
+            return;
+        };
+        tracing::info!(held, stuck, reason, "released keys the keyboard still counted as pressed");
+        self.suppressed_keys.clear();
+        self.sync_greeter_layout();
+        self.queue_redraw();
     }
 
     pub fn configure_input_device(&self, device: &mut smithay::reexports::input::Device) {
@@ -1917,6 +1962,7 @@ impl GlideState {
             let area = self.launcher_area();
             let mut launcher = crate::launcher::Launcher::new(Vec::new(), area);
             launcher.set_windows(self.open_windows_for_search());
+            launcher.set_providers(self.search_providers());
             self.launcher = Some(launcher);
             self.spawn_launcher_loader();
             self.arm_launcher_caret();
@@ -1936,6 +1982,7 @@ impl GlideState {
                 let area = self.launcher_area();
                 let mut launcher = crate::launcher::Launcher::new(Vec::new(), area);
                 launcher.set_windows(self.open_windows_for_search());
+                launcher.set_providers(self.search_providers());
                 self.launcher = Some(launcher);
                 self.spawn_launcher_loader();
             }
@@ -2742,7 +2789,27 @@ impl GlideState {
         }
     }
 
+    #[must_use]
+    pub fn modal_child_of(&self, id: glide_layout::WindowId) -> Option<glide_layout::WindowId> {
+        self.session.modal_windows.iter().copied().find(|child| {
+            *child != id
+                && self
+                    .window_map
+                    .get(child)
+                    .and_then(|window| window.toplevel()?.parent())
+                    .and_then(|parent| self.window_id_for_surface(&parent))
+                    == Some(id)
+        })
+    }
+
     pub fn focus_window(&mut self, id: glide_layout::WindowId) {
+        let mut id = id;
+        for _ in 0..8 {
+            match self.modal_child_of(id) {
+                Some(child) => id = child,
+                None => break,
+            }
+        }
         self.layer_focus = None;
         let closed = self.close_overview();
         if self.layout.focus_window(id) || closed {
@@ -3216,6 +3283,7 @@ impl GlideState {
         self.sync_greeter_layout();
         self.break_grabs_for_lock();
         self.apply_keyboard_focus();
+        self.release_held_keys("screen locked");
         if let Some(pointer) = self.seat.get_pointer() {
             let location = pointer.current_location();
             pointer.motion(
@@ -3237,6 +3305,57 @@ impl GlideState {
             greeter.set_auth_success();
             greeter.leave();
             self.queue_redraw();
+        }
+    }
+
+    #[must_use]
+    pub fn shell_snapshot(&self) -> crate::shell_bus::Snapshot {
+        crate::shell_bus::Snapshot {
+            appearance: self.shell_palette.0,
+            accent: self.shell_palette.1,
+            language: match crate::i18n::language() {
+                crate::i18n::Lang::Uk => "uk",
+                crate::i18n::Lang::En => "en",
+            },
+            animation_scale: f64::from(glide_theme::motion::scale()),
+            reduced_motion: self.motion.respect_system && self.topbar.system_status().reduced_motion,
+            font_family: self.font_family.clone().unwrap_or_default(),
+            icon_theme: self.dock.icon_theme().unwrap_or_default(),
+            locked: self.screen_locked(),
+            active_workspace: self.active_workspace_index().and_then(|index| u32::try_from(index).ok()).unwrap_or(0),
+        }
+    }
+
+    pub fn sync_shell_bus(&mut self) {
+        if self.session.shell_bus.is_none() {
+            return;
+        }
+        let snapshot = self.shell_snapshot();
+        if let Some(handle) = self.session.shell_bus.as_mut() {
+            handle.publish(snapshot);
+        }
+    }
+
+    pub fn handle_shell_bus_event(&mut self, event: crate::shell_bus::Event) {
+        match event {
+            crate::shell_bus::Event::Token { pid, reply } => reply.send(self.mint_activation_token_for(pid, None)),
+            crate::shell_bus::Event::Lock => self.lock_screen(),
+            crate::shell_bus::Event::Osd(reading) => {
+                self.session.osd.show(reading, std::time::Instant::now());
+                self.queue_redraw();
+            }
+            crate::shell_bus::Event::QuickSettings(detail) => {
+                if self.screen_locked() {
+                    return;
+                }
+                if self.topbar.open_popup() != Some(crate::topbar::OpenPopup::QuickSettings) {
+                    self.run_topbar_action(crate::topbar::TopbarAction::ToggleQuickSettings);
+                }
+                if let Some(detail) = detail {
+                    self.run_qs_panel_action(crate::topbar::PanelAction::Open(detail));
+                }
+                self.queue_redraw();
+            }
         }
     }
 
@@ -3339,8 +3458,7 @@ impl GlideState {
             }
             Verdict::Denied(message) => {
                 tracing::info!("lock screen authentication failed");
-                let message = message.unwrap_or_else(|| t(Key::GreeterWrongPassword).to_string());
-                greeter.set_auth_error(message, false);
+                greeter.set_auth_denied(message, t(Key::GreeterWrongPassword));
             }
             Verdict::Unavailable => {
                 tracing::error!("lock screen authentication is unavailable");
@@ -3508,6 +3626,56 @@ pub fn tiled_edges(frame: glide_layout::Rectangle, area: glide_layout::Rectangle
     if top && bottom && left != right { [left, right, true, true] } else { [false; 4] }
 }
 
+#[must_use]
+pub fn locks_only(mods: smithay::input::keyboard::ModifiersState) -> smithay::input::keyboard::ModifiersState {
+    smithay::input::keyboard::ModifiersState {
+        caps_lock: mods.caps_lock,
+        num_lock: mods.num_lock,
+        ..Default::default()
+    }
+}
+
+#[must_use]
+pub const fn holds_modifiers(mods: &smithay::input::keyboard::ModifiersState) -> bool {
+    mods.ctrl || mods.alt || mods.shift || mods.logo || mods.iso_level3_shift || mods.iso_level5_shift
+}
+
+fn layout_of<D: smithay::input::SeatHandler + 'static>(
+    keyboard: &smithay::input::keyboard::KeyboardHandle<D>, data: &mut D,
+) -> u32 {
+    keyboard.with_xkb_state(data, |context| {
+        context.xkb().lock().expect("single-threaded event loop, this lock is never poisoned").active_layout().0
+    })
+}
+
+pub fn replace_modifiers<D: smithay::input::SeatHandler + 'static>(
+    keyboard: &smithay::input::keyboard::KeyboardHandle<D>, data: &mut D,
+    mods: smithay::input::keyboard::ModifiersState, keep_layout: bool,
+) {
+    let layout = keep_layout.then(|| layout_of(keyboard, data));
+    if keyboard.set_modifier_state(mods) != 0 {
+        keyboard.advertise_modifier_state(data);
+    }
+    if let Some(layout) = layout
+        && layout_of(keyboard, data) != layout
+    {
+        keyboard.with_xkb_state(data, |mut context| context.set_layout(smithay::input::keyboard::Layout(layout)));
+    }
+}
+
+pub fn release_keyboard<D: smithay::input::SeatHandler + 'static>(
+    keyboard: &smithay::input::keyboard::KeyboardHandle<D>, data: &mut D,
+) -> Option<(usize, bool)> {
+    let held = keyboard.pressed_keys().len();
+    let stuck = holds_modifiers(&keyboard.modifier_state());
+    if held == 0 && !stuck {
+        return None;
+    }
+    keyboard.release_source(data, smithay::input::keyboard::KeyboardSource::MAIN);
+    replace_modifiers(keyboard, data, locks_only(keyboard.modifier_state()), true);
+    Some((held, stuck))
+}
+
 fn set_state_flag(pending: &mut ToplevelState, flag: XdgState, wanted: bool) -> bool {
     if wanted == pending.states.contains(flag) {
         return false;
@@ -3609,6 +3777,98 @@ pub fn auto_output_scale(physical_mm: (i32, i32), mode_px: (i32, i32)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod keyboard_state {
+        use super::super::{layout_of, release_keyboard, replace_modifiers};
+        use smithay::backend::input::{InputTime, KeyState};
+        use smithay::input::keyboard::{
+            FilterResult, KeyboardHandle, Keycode, Keysym, Layout, ModifiersState, XkbConfig,
+        };
+        use smithay::input::{Seat, SeatHandler, SeatState};
+        use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+
+        const SHIFT: u32 = 50;
+        const A: u32 = 38;
+
+        struct Probe {
+            seat_state: SeatState<Self>,
+        }
+
+        impl SeatHandler for Probe {
+            type KeyboardFocus = WlSurface;
+            type PointerFocus = WlSurface;
+            type TouchFocus = WlSurface;
+
+            fn seat_state(&mut self) -> &mut SeatState<Self> {
+                &mut self.seat_state
+            }
+        }
+
+        impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for Probe {}
+
+        impl smithay::wayland::compositor::CompositorHandler for Probe {
+            fn compositor_state(&mut self) -> &mut smithay::wayland::compositor::CompositorState {
+                unreachable!("keyboard probes have no surfaces")
+            }
+
+            fn client_compositor_state<'a>(
+                &self, _client: &'a smithay::reexports::wayland_server::Client,
+            ) -> &'a smithay::wayland::compositor::CompositorClientState {
+                unreachable!("keyboard probes have no clients")
+            }
+
+            fn commit(&mut self, _surface: &WlSurface) {}
+        }
+
+        fn keyboard() -> (Probe, Seat<Probe>, KeyboardHandle<Probe>) {
+            let mut probe = Probe { seat_state: SeatState::new() };
+            let mut seat = probe.seat_state.new_seat("probe");
+            let config = XkbConfig { layout: "us,ua", ..XkbConfig::default() };
+            let keyboard = seat.add_keyboard(config, 200, 25).expect("the us,ua keymap compiles");
+            (probe, seat, keyboard)
+        }
+
+        fn key(probe: &mut Probe, keyboard: &KeyboardHandle<Probe>, code: u32, state: KeyState) -> Option<Keysym> {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            keyboard.input(probe, Keycode::new(code), state, serial, InputTime::now(), |_, _, handle| {
+                FilterResult::Intercept(handle.modified_sym())
+            })
+        }
+
+        #[test]
+        fn a_shift_whose_release_was_lost_shifts_every_key_until_the_keyboard_is_released() {
+            let (mut probe, _seat, keyboard) = keyboard();
+            key(&mut probe, &keyboard, SHIFT, KeyState::Pressed);
+            assert_eq!(key(&mut probe, &keyboard, A, KeyState::Pressed), Some(Keysym::A));
+            key(&mut probe, &keyboard, A, KeyState::Released);
+            assert_eq!(release_keyboard(&keyboard, &mut probe), Some((1, true)));
+            assert_eq!(key(&mut probe, &keyboard, A, KeyState::Pressed), Some(Keysym::a));
+            key(&mut probe, &keyboard, A, KeyState::Released);
+            assert_eq!(release_keyboard(&keyboard, &mut probe), None, "nothing is held any more");
+        }
+
+        #[test]
+        fn a_key_whose_release_was_lost_swallows_its_next_press_until_the_keyboard_is_released() {
+            let (mut probe, _seat, keyboard) = keyboard();
+            key(&mut probe, &keyboard, A, KeyState::Pressed);
+            assert_eq!(key(&mut probe, &keyboard, A, KeyState::Pressed), None, "smithay absorbs a press of a held key");
+            assert_eq!(release_keyboard(&keyboard, &mut probe), Some((1, false)));
+            assert_eq!(key(&mut probe, &keyboard, A, KeyState::Pressed), Some(Keysym::a));
+        }
+
+        #[test]
+        fn replacing_modifiers_keeps_the_layout_that_smithay_resets() {
+            let (mut probe, _seat, keyboard) = keyboard();
+            keyboard.with_xkb_state(&mut probe, |mut context| context.set_layout(Layout(1)));
+            let num_lock = ModifiersState { num_lock: true, ..keyboard.modifier_state() };
+            replace_modifiers(&keyboard, &mut probe, num_lock, true);
+            assert_eq!(layout_of(&keyboard, &mut probe), 1);
+            assert!(keyboard.modifier_state().num_lock);
+            let off = ModifiersState { num_lock: false, ..keyboard.modifier_state() };
+            replace_modifiers(&keyboard, &mut probe, off, false);
+            assert_eq!(layout_of(&keyboard, &mut probe), 0, "set_modifier_state drops the locked layout");
+        }
+    }
 
     #[test]
     fn a_half_of_the_work_area_is_tiled_on_its_outer_edges_only() {

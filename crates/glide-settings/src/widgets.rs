@@ -9,10 +9,12 @@ use crate::theme::{self, ThemeState};
 
 #[must_use]
 pub fn icon<'a, M: 'a>(glyph: Icon, size: f32, color: Color) -> Element<'a, M> {
+    let opaque = Color { a: 1.0, ..color };
     svg(glyph.handle())
         .width(size)
         .height(size)
-        .style(move |_: &iced::Theme, _| svg::Style { color: Some(color) })
+        .opacity(color.a)
+        .style(move |_: &iced::Theme, _| svg::Style { color: Some(opaque) })
         .into()
 }
 

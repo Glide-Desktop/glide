@@ -1,0 +1,18 @@
+[package]
+name = "glide-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glide-theme = { path = "../glide-theme" }
+futures-channel = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+zbus = "5"

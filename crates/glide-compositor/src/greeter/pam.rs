@@ -51,6 +51,21 @@ type HandleFn = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 struct Conversation {
     secret: Vec<u8>,
     errors: Vec<String>,
+    notices: Vec<String>,
+}
+
+impl Conversation {
+    fn new(secret: Vec<u8>) -> Self {
+        Self { secret, errors: Vec::new(), notices: Vec::new() }
+    }
+
+    fn denial(&mut self) -> Option<String> {
+        if let Some(error) = self.errors.pop().filter(|text| !text.is_empty()) {
+            return Some(error);
+        }
+        let notice = self.notices.join(" ");
+        (!notice.is_empty()).then_some(notice)
+    }
 }
 
 unsafe fn free_replies(replies: *mut PamResponse, count: usize) {
@@ -110,10 +125,14 @@ unsafe extern "C" fn converse(
                 unsafe { (*replies.add(index)).resp = copy };
             }
             PAM_ERROR_MSG | PAM_TEXT_INFO => {
-                if style == PAM_ERROR_MSG && !text.is_null() {
+                if !text.is_null() {
                     // SAFETY: non-null PAM message text is a C string.
-                    let text = unsafe { CStr::from_ptr(text) };
-                    conversation.errors.push(text.to_string_lossy().trim().to_string());
+                    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().trim().to_string();
+                    if style == PAM_ERROR_MSG {
+                        conversation.errors.push(text);
+                    } else if !text.is_empty() {
+                        conversation.notices.push(text);
+                    }
                 }
             }
             _ => {
@@ -172,13 +191,17 @@ impl Library {
     }
 
     fn authenticate(&self, service: &CStr, user: &CStr, password: String) -> Verdict {
-        let mut secret = password.into_bytes();
+        let mut password = password.into_bytes();
+        let mut secret = Vec::with_capacity(password.len() + 1);
+        secret.extend_from_slice(&password);
+        password.fill(0);
+        drop(password);
         if secret.contains(&0) {
             secret.fill(0);
             return Verdict::Denied(None);
         }
         secret.push(0);
-        let mut conversation = Box::new(Conversation { secret, errors: Vec::new() });
+        let mut conversation = Box::new(Conversation::new(secret));
         let conv = PamConv { conv: Some(converse), appdata_ptr: std::ptr::from_mut(conversation.as_mut()).cast() };
         let mut handle: *mut c_void = std::ptr::null_mut();
         // SAFETY: `service` and `user` are C strings, `conv` and the boxed
@@ -196,11 +219,7 @@ impl Library {
             }
             // SAFETY: as above; the handle is not used afterwards.
             let _ = unsafe { (self.end)(handle, status) };
-            if status == PAM_SUCCESS {
-                Verdict::Granted
-            } else {
-                Verdict::Denied(conversation.errors.pop().filter(|text| !text.is_empty()))
-            }
+            if status == PAM_SUCCESS { Verdict::Granted } else { Verdict::Denied(conversation.denial()) }
         };
         conversation.secret.fill(0);
         verdict
@@ -252,10 +271,10 @@ impl Authenticator {
 mod tests {
     use super::*;
 
-    fn converse_with(messages: &[(c_int, &CStr)], secret: &str) -> (c_int, Vec<Option<String>>, Vec<String>) {
+    fn converse_with(messages: &[(c_int, &CStr)], secret: &str) -> (c_int, Vec<Option<String>>, Conversation) {
         let mut secret = secret.as_bytes().to_vec();
         secret.push(0);
-        let mut conversation = Conversation { secret, errors: Vec::new() };
+        let mut conversation = Conversation::new(secret);
         let owned: Vec<PamMessage> =
             messages.iter().map(|(style, text)| PamMessage { msg_style: *style, msg: text.as_ptr() }).collect();
         let mut pointers: Vec<*const PamMessage> = owned.iter().map(std::ptr::from_ref).collect();
@@ -278,12 +297,12 @@ mod tests {
             // SAFETY: `out` came from `converse` and is released once.
             unsafe { free_replies(out, messages.len()) };
         }
-        (status, answers, conversation.errors)
+        (status, answers, conversation)
     }
 
     #[test]
     fn every_prompt_is_answered_with_the_password_and_errors_are_kept() {
-        let (status, answers, errors) = converse_with(
+        let (status, answers, conversation) = converse_with(
             &[
                 (PAM_TEXT_INFO, c"Welcome"),
                 (PAM_PROMPT_ECHO_OFF, c"Password: "),
@@ -293,7 +312,35 @@ mod tests {
         );
         assert_eq!(status, PAM_SUCCESS);
         assert_eq!(answers, vec![None, Some("hunter2".into()), None]);
-        assert_eq!(errors, vec!["The account is locked".to_string()]);
+        assert_eq!(conversation.errors, vec!["The account is locked".to_string()]);
+    }
+
+    #[test]
+    fn a_faillock_lockout_explains_the_denial_instead_of_a_wrong_password() {
+        let (status, _, mut conversation) = converse_with(
+            &[
+                (PAM_TEXT_INFO, c"The account is locked due to 3 failed logins."),
+                (PAM_TEXT_INFO, c"(10 minutes left to unlock)"),
+                (PAM_PROMPT_ECHO_OFF, c"Password: "),
+            ],
+            "hunter2",
+        );
+        assert_eq!(status, PAM_SUCCESS);
+        assert_eq!(
+            conversation.denial().as_deref(),
+            Some("The account is locked due to 3 failed logins. (10 minutes left to unlock)")
+        );
+    }
+
+    #[test]
+    fn an_error_message_outranks_notices_and_silence_means_no_reason() {
+        let (_, _, mut conversation) = converse_with(
+            &[(PAM_TEXT_INFO, c"Welcome"), (PAM_ERROR_MSG, c"Authentication token is no longer valid")],
+            "x",
+        );
+        assert_eq!(conversation.denial().as_deref(), Some("Authentication token is no longer valid"));
+        let (_, _, mut quiet) = converse_with(&[(PAM_PROMPT_ECHO_OFF, c"Password: ")], "x");
+        assert_eq!(quiet.denial(), None);
     }
 
     #[test]

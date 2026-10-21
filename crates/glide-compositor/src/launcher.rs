@@ -3,6 +3,7 @@ pub mod field;
 mod glue;
 pub mod history;
 mod list;
+pub mod providers;
 pub mod recent;
 pub mod search;
 
@@ -476,6 +477,10 @@ pub struct Launcher {
     entries: Vec<search::Entry>,
     windows: Vec<search::OpenWindow>,
     recent: Vec<recent::RecentFile>,
+    providers: Option<providers::Handle>,
+    provided: Vec<providers::Found>,
+    provider_query: String,
+    provider_generation: u64,
     prompt: Prompt,
     selected: Option<usize>,
     history: history::LaunchHistory,
@@ -580,6 +585,10 @@ impl Launcher {
             entries: Vec::new(),
             windows: Vec::new(),
             recent: Vec::new(),
+            providers: None,
+            provided: Vec::new(),
+            provider_query: String::new(),
+            provider_generation: 0,
             prompt: Prompt::Search,
             selected: None,
             history: history::LaunchHistory::default(),
@@ -793,6 +802,50 @@ impl Launcher {
         self.recent.get(index)
     }
 
+    pub fn set_providers(&mut self, handle: Option<providers::Handle>) {
+        self.providers = handle;
+    }
+
+    pub fn set_provided(&mut self, generation: u64, found: Vec<providers::Found>) {
+        if generation != self.provider_generation {
+            return;
+        }
+        self.provided = found;
+        self.refilter();
+    }
+
+    #[must_use]
+    pub fn provided(&self, index: usize) -> Option<(&providers::Found, &providers::Handle, Vec<String>)> {
+        let handle = self.providers.as_ref()?;
+        Some((self.provided.get(index)?, handle, providers::terms(self.field.text())))
+    }
+
+    fn ask_providers(&mut self) {
+        let query = self.field.text().trim().to_string();
+        if query == self.provider_query {
+            return;
+        }
+        self.provider_query.clone_from(&query);
+        self.provided.clear();
+        self.provider_generation += 1;
+        if let Some(handle) = self.providers.as_ref()
+            && query.chars().count() >= providers::MIN_QUERY
+        {
+            handle.query(self.provider_generation, providers::terms(&query));
+        }
+    }
+
+    fn provided_entries(&self) -> Vec<search::Entry> {
+        self.provided
+            .iter()
+            .enumerate()
+            .map(|(index, found)| search::Entry::Provided {
+                index,
+                app: self.apps.iter().position(|app| app.id.trim_end_matches(".desktop") == found.desktop_id),
+            })
+            .collect()
+    }
+
     pub fn record_launch(&mut self, app_id: &str) -> history::LaunchHistory {
         self.history.record(app_id, history::now_unix());
         self.history.clone()
@@ -896,6 +949,11 @@ impl Launcher {
             let sources = search::Sources { windows: &self.windows, files: &self.recent };
             search::build_entries(&self.apps, &self.results, &sources, self.field.text())
         };
+        if !self.run_mode() {
+            self.ask_providers();
+            let provided = self.provided_entries();
+            self.entries.extend(provided);
+        }
         self.page = 0;
         if self.page_is_sliding() {
             self.page_offset.retarget(0.0, page_anim(), ease_out);

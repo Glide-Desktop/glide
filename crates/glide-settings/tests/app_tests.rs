@@ -1103,3 +1103,32 @@ fn an_unreadable_keybinds_list_is_left_alone() {
     let _ = app.update(Message::PanelSelected(Panel::Shortcuts));
     let _ = app.view();
 }
+
+#[test]
+fn search_shortcuts_work_on_non_latin_keyboard_layouts_and_recording_stops_on_panel_switch() {
+    use glide_settings::app::shortcut;
+    use glide_settings::panels::shortcuts::Msg;
+    use iced::keyboard::{
+        Event, Key, Location, Modifiers,
+        key::{Code, Physical},
+    };
+    let press = |ch: &str, code: Code, modifiers: Modifiers| Event::KeyPressed {
+        key: Key::Character(ch.into()),
+        modified_key: Key::Character(ch.into()),
+        physical_key: Physical::Code(code),
+        location: Location::Standard,
+        modifiers,
+        text: None,
+        repeat: false,
+    };
+    assert!(matches!(shortcut(press("а", Code::KeyF, Modifiers::CTRL)), Some(Message::FocusSearch)));
+    assert!(matches!(shortcut(press("л", Code::KeyK, Modifiers::CTRL)), Some(Message::FocusSearch)));
+
+    let mut app = app("");
+    let _ = app.update(Message::PanelSelected(Panel::Shortcuts));
+    let _ = app.update(Message::Shortcuts(Msg::Edit(0)));
+    let _ = app.update(Message::Shortcuts(Msg::Record));
+    assert!(app.is_recording());
+    let _ = app.update(Message::PanelSelected(Panel::Appearance));
+    assert!(!app.is_recording());
+}

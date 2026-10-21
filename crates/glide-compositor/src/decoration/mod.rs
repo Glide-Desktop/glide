@@ -24,15 +24,16 @@ use header::{DecorationAction, HitZone, button_colors};
 #[cfg(test)]
 use menu::MenuItem;
 
-pub const BUTTON_SIZE: i32 = 26;
 pub const BUTTON_PAD_X: i32 = glide_theme::spacing::SP2;
-pub const BUTTON_PAD_Y: i32 = 11;
 
 pub const BUTTON_HIT_WIDTH: i32 = 34;
 
 pub const RESIZE_BORDER: i32 = 8;
 
-const TITLE_PADDING: i32 = glide_theme::spacing::SP3;
+#[must_use]
+pub fn glide_csd_app(app_id: &str) -> bool {
+    matches!(app_id, "glide-files" | "glide-terminal")
+}
 
 const MENU_WIDTH: i32 = 224;
 
@@ -147,10 +148,11 @@ impl GlideWindow {
         }
     }
 
-    pub fn sync_decoration(&self, theme: &DecorationTheme, height: i32, focused: bool, maximized: bool) {
+    pub fn sync_decoration(&self, theme: &DecorationTheme, height: i32, focused: bool, maximized: bool, framed: bool) {
         let content = self.geometry().size;
         if let Some(mut state) = self.try_decoration_state_mut() {
             state.header.set_height(height);
+            state.header.outline = if framed { header::Outline::Drawn } else { header::Outline::None };
             state.header.width = content.w;
             state.header.content_height = content.h;
             state.header.sync(theme, focused, maximized);
@@ -542,6 +544,19 @@ mod tests {
             let theme = DecorationTheme { double_click: action, ..DecorationTheme::default() };
             h.sync(&theme, false, false);
             assert_eq!(presses(&mut h, &[(400.0, 0), (400.0, 120)])[1], Some(want));
+        }
+    }
+
+    #[test]
+    fn buttons_grow_with_the_strip_up_to_the_window_control_and_stay_inside_their_hit_zone() {
+        for (height, want) in [(16, 12), (20, 14), (35, 21), (44, 26), (48, 26), (96, 26)] {
+            let h = HeaderBar { height, ..header() };
+            assert_eq!(h.button_size(), want, "height {height}");
+            assert!(h.button_size() <= height, "height {height}");
+            assert!(BUTTON_PAD_X + h.button_size() <= BUTTON_HIT_WIDTH, "height {height}");
+            let centre = f64::from(BUTTON_PAD_X + h.button_size() / 2);
+            assert_eq!(h.zone_at(centre, f64::from(height) / 2.0), HitZone::Maximize);
+            assert_eq!(h.zone_at(800.0 - centre, f64::from(height) / 2.0), HitZone::Close);
         }
     }
 

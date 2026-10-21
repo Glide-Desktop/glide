@@ -1,31 +1,21 @@
 use std::time::Instant;
 
-use iced::widget::{button, container, mouse_area, row, space, stack, text, text_input};
+use iced::widget::{button, container, mouse_area, row, space, stack, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
-use super::{CONTROL, HEADER_HEIGHT, Ring, fit, fit_sentence, hint, icon, icon_button, ringed, text_width};
+use super::{CONTROL, HEADER_HEIGHT, Ring, fit_sentence, hint, icon, icon_button, ringed, text_width};
 use crate::app::{App, Field, Hover, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::theme::{self, R2, SP2, SP3};
 
 pub const SEARCH_WIDTH: f32 = 200.0;
-pub const WINDOW_CONTROL: f32 = 26.0;
+pub const WINDOW_CONTROL: f32 = glide_theme::component::SMALL_CONTROL;
 pub const GAP: f32 = SP2;
 pub const INSET: f32 = SP3;
-const IDLE_CONTROLS: f32 = 0.45;
+const IDLE_CONTROLS: f32 = glide_theme::component::IDLE_CONTROLS;
 const SEGMENT_WIDTH: f32 = 30.0;
 const SEGMENT_GAP: f32 = 2.0;
-const CHROME: f32 = SP2
-    + 2.0 * CONTROL
-    + 4.0
-    + 2.0 * SEGMENT_WIDTH
-    + SEGMENT_GAP
-    + CONTROL
-    + SEARCH_WIDTH
-    + WINDOW_CONTROL
-    + 5.0 * GAP
-    + INSET;
 pub const SEMIBOLD_SPREAD: f32 = 0.94;
 const CLEAR: f32 = 24.0;
 const CLEAR_INSET: f32 = (CONTROL - CLEAR) / 2.0;
@@ -40,29 +30,16 @@ pub fn search_title(label: &str, query: &str, room: f32) -> String {
 #[must_use]
 pub fn window_control(app: &App, glyph: Icon, message: Message) -> Element<'_, Message> {
     let t = if app.is_idle() { app.theme.faded(IDLE_CONTROLS) } else { app.theme };
-    let bar = bar_background(app);
     let danger = glyph == Icon::Close;
-    let tint = move |status| {
-        let state = match status {
-            iced::widget::svg::Status::Hovered => button::Status::Hovered,
-            iced::widget::svg::Status::Idle => button::Status::Active,
-        };
-        let style = theme::window_control(&t, danger, state);
-        let fill = match style.background {
-            Some(iced::Background::Color(color)) => color,
-            _ => iced::Color::TRANSPARENT,
-        };
-        theme::flatten(style.text_color, theme::flatten(fill, bar))
-    };
-    button(
-        iced::widget::svg(glyph.handle()).width(Fill).height(Fill).style(move |_, status| theme::glyph(tint(status))),
-    )
-    .on_press(message)
-    .width(Length::Fixed(WINDOW_CONTROL))
-    .height(Length::Fixed(WINDOW_CONTROL))
-    .padding(0)
-    .style(move |_, status| theme::window_control(&t, danger, status))
-    .into()
+    let glyph =
+        if danger { glide_iced::glyph::window_close() } else { glide_iced::glyph::window_control(app.is_maximized()) };
+    button(glyph)
+        .on_press(message)
+        .width(Length::Fixed(WINDOW_CONTROL))
+        .height(Length::Fixed(WINDOW_CONTROL))
+        .padding(0)
+        .style(move |_, status| theme::window_control(&t, danger, status))
+        .into()
 }
 
 #[must_use]
@@ -78,31 +55,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let forward = icon_button(t, Icon::ChevronRight, app.can_go_forward().then_some(Message::Forward), false);
     let nav = row![hint(t, back, Key::Back.text(lang)), hint(t, forward, Key::Forward.text(lang))];
 
-    let heading: Element<'_, Message> = if let Some(path) = &app.path_edit {
-        let input = text_input(Key::PathPlaceholder.text(app.lang), path)
-            .id(PATH_ID)
-            .on_input(Message::PathChanged)
-            .on_submit(Message::PathSubmitted)
-            .size(theme::CALL)
-            .padding(Padding::from([5.0, SP3]))
-            .width(Fill)
-            .style(move |_, status| theme::field(t, status));
-        let ring = if app.focused_field() == Some(Field::Path) { Ring::Focus } else { Ring::Off };
-        ringed(t, input, ring)
-    } else {
-        let room = (app.pane.width - CHROME) * SEMIBOLD_SPREAD;
-        let query = app.search.as_ref().map(|search| search.query.trim()).filter(|query| !query.is_empty());
-        let title = match query {
-            Some(query) => search_title(Key::Search.text(lang), query, room),
-            None => fit(&app.place_title(), room, theme::TITLE),
-        };
-        text(title)
-            .size(theme::TITLE)
-            .font(theme::SEMIBOLD)
-            .color(if app.is_idle() { t.fg_3() } else { t.fg_1() })
-            .wrapping(text::Wrapping::None)
-            .into()
-    };
+    let heading = path_field(app).unwrap_or_else(|| space().width(Fill).into());
 
     let offset = app.motion.thumb.progress(Instant::now()) * (SEGMENT_WIDTH + SEGMENT_GAP);
     let thumb = row![
@@ -145,6 +98,22 @@ pub fn view(app: &App) -> Element<'_, Message> {
     mouse_area(bar).on_press(Message::WindowDrag).on_double_click(Message::WindowMaximize).into()
 }
 
+#[must_use]
+pub fn path_field(app: &App) -> Option<Element<'_, Message>> {
+    let t = &app.theme;
+    let path = app.path_edit.as_ref()?;
+    let input = text_input(Key::PathPlaceholder.text(app.lang), path)
+        .id(PATH_ID)
+        .on_input(Message::PathChanged)
+        .on_submit(Message::PathSubmitted)
+        .size(theme::CALL)
+        .padding(Padding::from([5.0, SP3]))
+        .width(Fill)
+        .style(move |_, status| theme::field(t, status));
+    let ring = if app.focused_field() == Some(Field::Path) { Ring::Focus } else { Ring::Off };
+    Some(ringed(t, input, ring))
+}
+
 fn segment(app: &App, mode: ViewMode, glyph: Icon) -> Element<'_, Message> {
     let t = &app.theme;
     let active = app.view == mode;
@@ -162,7 +131,7 @@ fn segment(app: &App, mode: ViewMode, glyph: Icon) -> Element<'_, Message> {
     hint(t, control, label.text(app.lang))
 }
 
-fn search_field(app: &App) -> Element<'_, Message> {
+pub fn search_field(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let query = app.search.as_ref().map_or("", |search| search.query.as_str());
     let input = text_input(Key::Search.text(app.lang), query)

@@ -109,7 +109,19 @@ impl GlideState {
         self.queue_redraw();
     }
 
+    pub fn request_screenshot_for(&mut self, waiter: std::os::unix::net::UnixStream) {
+        self.session.screenshot_waiters.push(waiter);
+        self.request_screenshot();
+    }
+
     fn screenshot_finished(&mut self, result: Result<Saved, String>) {
+        let answer = match &result {
+            Ok(saved) => glide_ipc::Response::Screenshot { path: saved.path.display().to_string() },
+            Err(err) => glide_ipc::Response::Error { message: err.clone() },
+        };
+        for waiter in std::mem::take(&mut self.session.screenshot_waiters) {
+            crate::ipc::reply(&waiter, &answer);
+        }
         let (summary, body) = match result {
             Ok(Saved { path, png }) => {
                 tracing::info!(path = %path.display(), "screenshot saved");

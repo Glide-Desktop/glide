@@ -43,6 +43,10 @@ impl SeatHandler for GlideState {
         self.cursor_status = image;
     }
 
+    fn led_state_changed(&mut self, _seat: &Seat<Self>, _led_state: smithay::input::keyboard::LedState) {
+        self.sync_keyboard_leds();
+    }
+
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
@@ -74,9 +78,12 @@ impl DataDeviceHandler for GlideState {
 
 impl DndGrabHandler for GlideState {
     fn dropped(
-        &mut self, _target: Option<DndTarget<'_, Self>>, _validated: bool, _seat: Seat<Self>,
-        _location: Point<f64, Logical>,
+        &mut self, target: Option<DndTarget<'_, Self>>, _validated: bool, _seat: Seat<Self>,
+        location: Point<f64, Logical>,
     ) {
+        if target.is_none() {
+            self.finish_dock_drop(location);
+        }
         self.drag_finished();
         self.clear_dnd_icon();
     }
@@ -100,6 +107,9 @@ impl WaylandDndGrabHandler for GlideState {
     fn dnd_requested<S: Source>(
         &mut self, source: S, icon: Option<WlSurface>, seat: Seat<Self>, serial: Serial, type_: GrabType,
     ) {
+        let shared = std::sync::Arc::new(source);
+        self.drag.dock_drop.source = Some(shared.clone());
+        let source = crate::dock_drop::SharedSource(shared);
         match type_ {
             GrabType::Pointer => {
                 let Some(ptr) = seat.get_pointer() else {
@@ -171,6 +181,27 @@ impl smithay::wayland::xdg_system_bell::XdgSystemBellHandler for GlideState {
         }
         self.session.bell = Some(now);
         crate::sound::play(glide_notify::Sound::Named("bell".into()));
+    }
+}
+
+impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for GlideState {
+    fn set_icon(
+        &mut self, _toplevel: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel,
+        wl_surface: WlSurface,
+    ) {
+        let name = smithay::wayland::compositor::with_states(&wl_surface, |states| {
+            let mut cached = states.cached_state.get::<smithay::wayland::xdg_toplevel_icon::ToplevelIconCachedState>();
+            cached.pending().icon_name().map(str::to_string)
+        });
+        let Some(id) = self.window_id_for_surface(&wl_surface) else {
+            return;
+        };
+        let app_id = self.window_map.get(&id).and_then(|window| window.identity().0);
+        for key in app_id.into_iter().chain(self.dock_key(id)) {
+            crate::icon::set_alias(&key, name.as_deref());
+        }
+        self.refresh_dock();
+        self.queue_redraw();
     }
 }
 

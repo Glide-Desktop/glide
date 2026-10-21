@@ -32,7 +32,9 @@ iced = { version = "0.14.0", default-features = false, features = [
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 glide-config = { path = "../glide-config" }
 glide-theme = { path = "../glide-theme" }
+glide-iced = { path = "../glide-iced" }
 glide-ipc = { path = "../glide-ipc" }
+glide-app = { path = "../glide-app" }
 glide-netbird = { path = "../glide-netbird" }
 glide-terminal = { path = "../glide-terminal" }
 thiserror.workspace = true

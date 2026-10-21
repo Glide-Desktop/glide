@@ -1,12 +1,13 @@
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
+use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use super::uri::file_uri;
 
@@ -81,17 +82,53 @@ pub fn cache_name(path: &Path, modified_nanos: u128, len: u64) -> String {
 fn run_thumbnailer(thumbnailer: &Thumbnailer, input: &Path, output: &Path) -> bool {
     let uri = file_uri(input);
     let size = SIZE.to_string();
-    let command: Vec<String> = thumbnailer
-        .exec
-        .split_whitespace()
-        .map(|word| {
-            word.replace("%i", &input.to_string_lossy())
-                .replace("%u", &uri)
-                .replace("%o", &output.to_string_lossy())
-                .replace("%s", &size)
-                .replace("%%", "%")
-        })
-        .collect();
+    let mut command = Vec::new();
+    let mut word = OsString::new();
+    let mut quoted = false;
+    let mut started = false;
+    let mut chars = thumbnailer.exec.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            '\\' if quoted => {
+                let Some(c) = chars.next() else {
+                    return false;
+                };
+                word.push(c.encode_utf8(&mut [0; 4]));
+                started = true;
+            }
+            '%' => {
+                match chars.next() {
+                    Some('i') => word.push(input.as_os_str()),
+                    Some('u') => word.push(&uri),
+                    Some('o') => word.push(output.as_os_str()),
+                    Some('s') => word.push(&size),
+                    Some('%') => word.push("%"),
+                    _ => return false,
+                }
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    command.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                word.push(c.encode_utf8(&mut [0; 4]));
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return false;
+    }
+    if started {
+        command.push(word);
+    }
     let Some((program, args)) = command.split_first() else {
         return false;
     };
@@ -198,28 +235,142 @@ fn prune_once() {
 
 pub type Result = (PathBuf, Option<PathBuf>);
 
+type Job = (PathBuf, String, Arc<Vec<Thumbnailer>>, Arc<AtomicU64>, u64, UnboundedSender<Result>);
+
+static QUEUE: Mutex<VecDeque<Job>> = Mutex::new(VecDeque::new());
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+fn claim_worker() -> bool {
+    ACTIVE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| (active < WORKERS).then_some(active + 1)).is_ok()
+}
+
+fn work() {
+    loop {
+        let next = QUEUE.lock().unwrap_or_else(PoisonError::into_inner).pop_front();
+        let Some((path, mime, thumbnailers, latest, generation, sender)) = next else {
+            ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            let empty = QUEUE.lock().unwrap_or_else(PoisonError::into_inner).is_empty();
+            if empty {
+                return;
+            }
+            let reclaimed = claim_worker();
+            if !reclaimed {
+                return;
+            }
+            continue;
+        };
+        if latest.load(Ordering::Relaxed) != generation || sender.is_closed() {
+            continue;
+        }
+        let made = make(&path, &mime, &thumbnailers);
+        let _ = sender.unbounded_send((path, made));
+    }
+}
+
 #[must_use]
 pub fn generate(
     requests: Vec<(PathBuf, String)>, thumbnailers: &Arc<Vec<Thumbnailer>>, latest: &Arc<AtomicU64>, generation: u64,
 ) -> UnboundedReceiver<Result> {
     prune_once();
     let (sender, receiver) = unbounded();
-    let queue = Arc::new(Mutex::new(VecDeque::from(requests)));
-    for _ in 0..WORKERS {
-        let (queue, sender) = (Arc::clone(&queue), sender.clone());
-        let (thumbnailers, latest) = (Arc::clone(thumbnailers), Arc::clone(latest));
-        let _ = std::thread::Builder::new().name(String::from("glide-files-thumbs")).spawn(move || {
-            while latest.load(Ordering::Relaxed) == generation {
-                let next = queue.lock().unwrap_or_else(PoisonError::into_inner).pop_front();
-                let Some((path, mime)) = next else {
-                    return;
-                };
-                let made = make(&path, &mime, &thumbnailers);
-                if sender.unbounded_send((path, made)).is_err() {
-                    return;
-                }
-            }
-        });
+    QUEUE.lock().unwrap_or_else(PoisonError::into_inner).extend(
+        requests
+            .into_iter()
+            .map(|(path, mime)| (path, mime, Arc::clone(thumbnailers), Arc::clone(latest), generation, sender.clone())),
+    );
+    drop(sender);
+    while claim_worker() {
+        if std::thread::Builder::new().name(String::from("glide-files-thumbs")).spawn(work).is_err() {
+            ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            break;
+        }
     }
     receiver
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ACTIVE, Thumbnailer, WORKERS, generate, run_thumbnailer};
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn repeated_requests_share_one_bounded_worker_pool() {
+        let thumbnailers = Arc::new(Vec::new());
+        let latest = Arc::new(AtomicU64::new(7));
+        let requests = |batch: usize| {
+            (0..50)
+                .map(|index| {
+                    let path = std::path::PathBuf::from(format!("/no-such-glide-thumb/{batch}/{index}.png"));
+                    (path, String::from("image/png"))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut receivers: Vec<_> = (0..4).map(|batch| generate(requests(batch), &thumbnailers, &latest, 7)).collect();
+        let mut seen = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while seen < 200 && std::time::Instant::now() < deadline {
+            assert!(ACTIVE.load(Ordering::Acquire) <= WORKERS, "thumbnail workers stay bounded across calls");
+            for receiver in &mut receivers {
+                while let Ok((_, made)) = receiver.try_recv() {
+                    assert!(made.is_none());
+                    seen += 1;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(seen, 200, "every queued request is answered");
+    }
+
+    #[test]
+    fn stale_generations_are_skipped() {
+        let thumbnailers = Arc::new(Vec::new());
+        let latest = Arc::new(AtomicU64::new(1));
+        let request = vec![(std::path::PathBuf::from("/no-such-glide-thumb/stale.png"), String::from("image/png"))];
+        let mut receiver = generate(request, &thumbnailers, &latest, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match receiver.try_recv() {
+                Err(err) if err.is_closed() => break,
+                Ok(_) => panic!("a stale request produced a result"),
+                Err(_) => {
+                    assert!(std::time::Instant::now() < deadline, "the stream closes once its jobs are dropped");
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn thumbnailer_arguments_preserve_quotes_field_codes_and_filename_bytes() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos();
+        let dir = std::env::temp_dir().join(format!("glide-thumbnailer-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&dir).expect("scratch directory");
+        let program = dir.join("copy tool");
+        std::os::unix::fs::symlink("/bin/cp", &program).expect("quoted program path");
+        let mut thumbnailer =
+            Thumbnailer { exec: format!("\"{}\" \"%i\" \"%o\"", program.display()), mimes: Vec::new() };
+        let names = [OsString::from("input %s %o %% \"quoted\".png"), OsString::from_vec(b"raw-\xff-%s.png".to_vec())];
+        for (index, name) in names.into_iter().enumerate() {
+            let input = dir.join(name);
+            let output = dir.join(format!("result {index} %i %s.png"));
+            std::fs::write(&input, b"thumbnail data").expect("input");
+            assert!(run_thumbnailer(&thumbnailer, &input, &output));
+            assert_eq!(std::fs::read(&output).expect("output"), b"thumbnail data");
+        }
+        let input = dir.join("literal%i.png");
+        let output = dir.join("literal-output.png");
+        std::fs::write(&input, b"literal percent").expect("literal input");
+        thumbnailer.exec =
+            format!("\"{}\" \"{}\" \"%o\"", program.display(), input.display().to_string().replace('%', "%%"));
+        assert!(run_thumbnailer(&thumbnailer, &input, &output));
+        assert_eq!(std::fs::read(&output).expect("literal output"), b"literal percent");
+        thumbnailer.exec = format!("\"{}\" \"%i\" \"%o", program.display());
+        let output = dir.join("invalid-output.png");
+        assert!(!run_thumbnailer(&thumbnailer, &input, &output));
+        assert!(!output.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

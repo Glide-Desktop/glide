@@ -22,6 +22,7 @@ pub struct DragState {
     dwell: DragDwell,
     pointer: Point<f64, Logical>,
     icon_offset: Point<i32, Logical>,
+    pub dock_drop: crate::dock_drop::DockDrop,
 }
 
 impl DragState {
@@ -103,6 +104,7 @@ impl GlideState {
     pub fn drag_finished(&mut self) {
         self.drag.active = false;
         self.drag.dwell.reset();
+        self.drag.dock_drop = crate::dock_drop::DockDrop::default();
     }
 
     pub fn drag_assist_motion(&mut self, pointer: Point<f64, Logical>) {
@@ -110,6 +112,7 @@ impl GlideState {
             return;
         }
         self.drag.pointer = pointer;
+        self.prefetch_dock_drop(pointer);
         let target = self.drag_target(pointer);
         match self.drag.dwell.update(target, Instant::now()) {
             DwellStep::Started => self.schedule_drag_dwell(),

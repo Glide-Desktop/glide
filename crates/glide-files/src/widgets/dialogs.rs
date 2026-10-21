@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use iced::widget::{
-    Column, button, checkbox, column, container, float, opaque, row, rule, scrollable, space, text, text_input,
+    Column, button, checkbox, column, container, float, image, opaque, row, rule, scrollable, space, svg, text,
+    text_input,
 };
 use iced::{Alignment, Element, Fill, Length, Padding, Vector};
 
@@ -11,8 +12,10 @@ use super::header::SEMIBOLD_SPREAD;
 use super::{Ring, file_icon, fit_lines, pressable, ringed, text_width};
 use crate::app::{App, Dialog, Field, MODAL_ID, Message, Modal, Properties};
 use crate::fs::jobs::{Choice, Question};
-use crate::fs::{format_bytes, format_time, home_dir, permissions_string};
+use crate::fs::{Target, format_bytes, format_time, home_dir, permissions_string};
 use crate::i18n::{self, Key, Lang};
+use crate::icons::Icon;
+use crate::native_icons::Art;
 use crate::theme::{self, ThemeState, Tone};
 
 const WIDTH: f32 = 400.0;
@@ -37,6 +40,7 @@ impl Ctx<'_> {
 #[must_use]
 pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> Element<'a, Message> {
     let c = Ctx { app, alpha: progress };
+    let focus = modal.focused();
     let body = match &modal.dialog {
         Dialog::NewFolder => input(c, modal, (Key::NewFolderTitle, Key::NamePrompt), Key::Create),
         Dialog::NewFile => input(c, modal, (Key::NewFileTitle, Key::NamePrompt), Key::Create),
@@ -45,10 +49,18 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
         Dialog::Rename(_) => input(c, modal, (Key::RenameTitle, Key::NamePrompt), Key::RenameConfirm),
         Dialog::Delete(paths) => {
             let prompt = if paths.len() == 1 { Key::DeletePromptOne } else { Key::DeletePrompt };
-            confirm(c, Key::DeleteTitle, prompt, Some(subject(app, paths)), Key::DeletePermanently)
+            confirm(c, Key::DeleteTitle, prompt, Some(subject(app, paths)), Key::DeletePermanently, focus)
         }
-        Dialog::EmptyTrash => confirm(c, Key::EmptyTrashTitle, Key::EmptyTrashPrompt, None, Key::EmptyTrash),
-        Dialog::Quit => confirm(c, Key::QuitTitle, Key::QuitPrompt, None, Key::QuitConfirm),
+        Dialog::EmptyTrash => confirm(c, Key::EmptyTrashTitle, Key::EmptyTrashPrompt, None, Key::EmptyTrash, focus),
+        Dialog::Quit => confirm(c, Key::QuitTitle, Key::QuitPrompt, None, Key::QuitConfirm, focus),
+        Dialog::Replace(target) => confirm(
+            c,
+            Key::ChooserReplaceTitle,
+            Key::ChooserReplacePrompt,
+            Some(subject(app, std::slice::from_ref(target))),
+            Key::Replace,
+            focus,
+        ),
         Dialog::Properties(properties) => details(c, properties),
         Dialog::Repair(object) => confirm(
             c,
@@ -56,9 +68,13 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
             Key::RepairPrompt,
             app.volume(object).map(|volume| format!("«{}»", volume.name(app.lang))),
             Key::RepairAction,
+            focus,
         ),
-        Dialog::Conflict { question, for_all, .. } => conflict(c, question, *for_all),
+        Dialog::Conflict { question, for_all, .. } => conflict(c, question, *for_all, focus),
         Dialog::Unlock(object) => unlock(c, modal, object),
+        Dialog::OpenWith { targets, mime, chosen, always } => {
+            open_with(c, modal, targets, mime.as_deref(), chosen, *always)
+        }
     };
     let width = card_width(&modal.dialog, app.lang);
     let rise = (1.0 - progress) * 12.0;
@@ -79,14 +95,18 @@ pub fn view<'a>(app: &'a App, modal: &'a Modal, progress: f32, live: bool) -> El
 
 #[must_use]
 pub fn card_width(dialog: &Dialog, lang: Lang) -> f32 {
-    let Dialog::Conflict { question, .. } = dialog else {
-        return WIDTH;
-    };
-    let labels = std::iter::once(Key::StopJob).chain(choices(question.folders).map(|(key, _)| key));
-    let row: f32 = labels
-        .map(|key| text_width(key.text(lang), BUTTON_TEXT) / SEMIBOLD_SPREAD + 2.0 * theme::SP4 + theme::SP2)
-        .sum();
-    WIDE.max(row + theme::SP4 + 2.0 * theme::SP5)
+    match dialog {
+        Dialog::OpenWith { .. } => WIDE,
+        Dialog::Conflict { question, .. } => {
+            let labels = std::iter::once(Key::StopJob).chain(choices(question.folders).map(|(key, _)| key));
+            let row: f32 = labels
+                .map(|key| text_width(key.text(lang), BUTTON_TEXT) / SEMIBOLD_SPREAD + 2.0 * theme::SP4 + theme::SP2)
+                .sum::<f32>()
+                + 8.0 * theme::RING;
+            WIDE.max(row + theme::SP4 + 2.0 * theme::SP5)
+        }
+        _ => WIDTH,
+    }
 }
 
 #[must_use]
@@ -95,7 +115,8 @@ pub fn shown_name(name: &str) -> String {
     breakable(&fit_lines(name, room, theme::T3, NAME_LINES))
 }
 
-fn choices(folders: bool) -> [(Key, Choice); 3] {
+#[must_use]
+pub fn choices(folders: bool) -> [(Key, Choice); 3] {
     if folders {
         [(Key::Skip, Choice::Skip), (Key::KeepBothFolders, Choice::KeepBoth), (Key::Merge, Choice::Merge)]
     } else {
@@ -120,15 +141,19 @@ fn action(c: Ctx<'_>, label: Key, tone: Tone, message: Option<Message>) -> Eleme
     )
 }
 
+fn focusable(c: Ctx<'_>, label: Key, tone: Tone, message: Message, focused: bool) -> Element<'_, Message> {
+    ringed(&c.theme(), action(c, label, tone, Some(message)), if focused { Ring::Focus } else { Ring::Off })
+}
+
 fn buttons<'a>(c: Ctx<'a>, confirm: Element<'a, Message>) -> Element<'a, Message> {
     row![space::horizontal(), action(c, Key::Cancel, Tone::Neutral, Some(Message::ModalCancel)), confirm,]
         .spacing(theme::SP2)
         .into()
 }
 
-fn field<'a>(c: Ctx<'a>, modal: &'a Modal, secure: bool) -> Element<'a, Message> {
+fn field<'a>(c: Ctx<'a>, modal: &'a Modal, placeholder: &str, secure: bool) -> Element<'a, Message> {
     let t = c.theme();
-    let input = text_input("", &modal.input)
+    let input = text_input(placeholder, &modal.input)
         .id(MODAL_ID)
         .on_input(Message::ModalInput)
         .on_submit(Message::ModalSubmit)
@@ -158,7 +183,7 @@ fn input<'a>(c: Ctx<'a>, modal: &'a Modal, (heading, prompt): (Key, Key), submit
     let mut body = column![
         title(heading.text(lang)),
         text(prompt.text(lang)).size(theme::CAP).color(c.theme().fg_2()),
-        field(c, modal, false),
+        field(c, modal, "", false),
     ]
     .spacing(theme::SP2);
     if let Some(error) = &modal.error {
@@ -176,12 +201,98 @@ fn unlock<'a>(c: Ctx<'a>, modal: &'a Modal, object: &'a str) -> Element<'a, Mess
         title(Key::UnlockTitle.text(lang)),
         text(name).size(theme::CALL).font(theme::SEMIBOLD).wrapping(WRAP),
         text(Key::UnlockPrompt.text(lang)).size(theme::CAP).color(c.theme().fg_2()),
-        field(c, modal, true),
+        field(c, modal, "", true),
         space().height(theme::SP2),
         buttons(c, action(c, Key::Unlock, Tone::Primary, (!modal.input.is_empty()).then_some(Message::ModalSubmit))),
     ]
     .spacing(theme::SP2)
     .into()
+}
+
+fn app_icon<'a>(app: &App, name: Option<&str>, size: f32, theme: &ThemeState) -> Element<'a, Message> {
+    if let Some(name) = name
+        && let Some(art) = app.icons.lookup(&[name.to_string(), "application-x-executable".to_string()])
+    {
+        return match art {
+            Art::Vector(handle) => svg(handle).width(size).height(size).into(),
+            Art::Raster(handle) => image(handle).width(size).height(size).into(),
+        };
+    }
+    super::icon(Icon::FileBinary, size, theme.fg_2())
+}
+
+fn open_with<'a>(
+    c: Ctx<'a>, modal: &'a Modal, targets: &'a [Target], mime: Option<&'a str>, chosen: &'a str, always: bool,
+) -> Element<'a, Message> {
+    let (t, lang) = (c.theme(), c.app.lang);
+    let (matching, others) = c.app.open_with_apps(targets, &modal.input);
+    let paths: Vec<PathBuf> = targets.iter().map(|target| target.path.clone()).collect();
+    let total_apps = matching.len() + others.len();
+    let has_selection = matching.iter().chain(&others).any(|app| app.id == chosen);
+
+    let mut body = column![
+        title(Key::OpenWith.text(lang)),
+        text(subject(c.app, &paths)).size(theme::CALL).font(theme::SEMIBOLD).wrapping(WRAP),
+        field(c, modal, Key::SearchApps.text(lang), false),
+    ]
+    .spacing(theme::SP2);
+
+    let rows: Vec<Element<'a, Message>> = if total_apps == 0 {
+        vec![
+            container(text(Key::NoSearchResults.text(lang)).size(theme::CAP).color(t.fg_3()))
+                .center_x(Fill)
+                .center_y(Fill)
+                .height(Length::Fixed(180.0))
+                .into(),
+        ]
+    } else {
+        let mut list: Vec<Element<'a, Message>> = Vec::new();
+        for app in matching.into_iter().chain(others) {
+            let selected = app.id == chosen;
+            let icon_el = app_icon(c.app, app.icon.as_deref(), 22.0, &t);
+            let name_el =
+                text(super::fit(&app.name, 360.0, BUTTON_TEXT)).size(BUTTON_TEXT).wrapping(text::Wrapping::None);
+            let mut row_content = row![icon_el, name_el].spacing(theme::SP3).align_y(Alignment::Center);
+            if selected {
+                row_content =
+                    row_content.push(space::horizontal()).push(super::icon(Icon::Check, 16.0, t.acc_soft_fg()));
+            }
+            let btn = button(container(row_content).height(Fill).align_y(Alignment::Center))
+                .on_press(Message::PickApp(app.id.clone()))
+                .width(Fill)
+                .height(Length::Fixed(theme::CONTROL))
+                .padding(Padding::from([0.0, theme::SP3]))
+                .style(move |_, status| theme::list_row(&t, selected, false, 0.0, status));
+            list.push(btn.into());
+        }
+        list
+    };
+
+    let list_container = container(
+        scrollable(Column::with_children(rows).spacing(2.0))
+            .height(Length::Fixed(200.0))
+            .style(move |_, status| theme::scroller(&t, status)),
+    )
+    .padding(theme::SP1)
+    .width(Fill)
+    .style(move |_| theme::rounded(t.fill_1(), theme::R2));
+
+    body = body.push(list_container);
+
+    if mime.is_some() {
+        let check = checkbox(always)
+            .label(Key::AlwaysOpenWithThis.text(lang))
+            .on_toggle(|_| Message::ToggleAlwaysOpen)
+            .size(18)
+            .spacing(theme::SP2)
+            .text_size(BUTTON_TEXT)
+            .style(move |_, status| theme::checkbox(&t, status));
+        body = body.push(check);
+    }
+
+    body.push(space().height(theme::SP1))
+        .push(buttons(c, action(c, Key::Open, Tone::Primary, has_selection.then_some(Message::ModalSubmit))))
+        .into()
 }
 
 fn subject(app: &App, paths: &[PathBuf]) -> String {
@@ -195,18 +306,26 @@ fn display_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy()).into_owned()
 }
 
-fn confirm(c: Ctx<'_>, heading: Key, prompt: Key, subject: Option<String>, submit: Key) -> Element<'_, Message> {
+fn confirm(
+    c: Ctx<'_>, heading: Key, prompt: Key, subject: Option<String>, submit: Key, focus: Option<usize>,
+) -> Element<'_, Message> {
     let mut body = column![title(heading.text(c.app.lang))].spacing(theme::SP3);
     if let Some(subject) = subject {
         body = body.push(text(subject).size(theme::CALL).font(theme::SEMIBOLD).wrapping(WRAP));
     }
+    let actions = row![
+        space::horizontal(),
+        focusable(c, Key::Cancel, Tone::Neutral, Message::ModalCancel, focus == Some(0)),
+        focusable(c, submit, Tone::Danger, Message::ModalSubmit, focus == Some(1)),
+    ]
+    .spacing(theme::SP2);
     body.push(text(prompt.text(c.app.lang)).size(theme::CALL).color(c.theme().fg_2()))
         .push(space().height(theme::SP1))
-        .push(buttons(c, action(c, submit, Tone::Danger, Some(Message::ModalSubmit))))
+        .push(actions)
         .into()
 }
 
-fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool) -> Element<'a, Message> {
+fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool, focus: Option<usize>) -> Element<'a, Message> {
     let (t, lang) = (c.theme(), c.app.lang);
     let (heading, hint) = if question.folders {
         (Key::FolderExists.text(lang).to_string(), Key::FolderExistsHint)
@@ -228,11 +347,11 @@ fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool) -> Element<'a
         check,
         space().height(theme::SP1),
         row![
-            action(c, Key::StopJob, Tone::Ghost, Some(Message::Resolve(Choice::Cancel))),
+            focusable(c, Key::StopJob, Tone::Ghost, Message::Resolve(Choice::Cancel), focus == Some(0)),
             space::horizontal(),
-            action(c, skip, Tone::Neutral, Some(Message::Resolve(skipped))),
-            action(c, both, Tone::Neutral, Some(Message::Resolve(kept))),
-            action(c, primary, Tone::Primary, Some(Message::Resolve(chosen))),
+            focusable(c, skip, Tone::Neutral, Message::Resolve(skipped), focus == Some(1)),
+            focusable(c, both, Tone::Neutral, Message::Resolve(kept), focus == Some(2)),
+            focusable(c, primary, Tone::Primary, Message::Resolve(chosen), focus == Some(3)),
         ]
         .spacing(theme::SP2),
     ]

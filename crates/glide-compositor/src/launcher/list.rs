@@ -202,6 +202,15 @@ impl Launcher {
             Entry::File(index) => {
                 self.recent.get(*index).map_or_else(Default::default, |file| (file.name.clone(), file.folder.clone()))
             }
+            Entry::Provided { index, app } => self.provided.get(*index).map_or_else(Default::default, |found| {
+                let owner = app.and_then(|app| self.apps.get(app)).map_or(found.desktop_id.as_str(), |app| &app.name);
+                let subtitle = if found.description.is_empty() {
+                    owner.to_string()
+                } else {
+                    format!("{} · {owner}", found.description)
+                };
+                (found.name.clone(), subtitle)
+            }),
         }
     }
 }
@@ -224,9 +233,11 @@ enum RowIcon {
 const fn row_icon(entry: &Entry) -> RowIcon {
     match entry {
         Entry::App(index) => RowIcon::Tile(*index),
-        Entry::Action { app, .. } | Entry::Window { app: Some(app), .. } => RowIcon::Tile(*app),
+        Entry::Action { app, .. } | Entry::Window { app: Some(app), .. } | Entry::Provided { app: Some(app), .. } => {
+            RowIcon::Tile(*app)
+        }
         Entry::Window { app: None, .. } => RowIcon::Glyph(RowGlyph::Window),
-        Entry::File(_) => RowIcon::Glyph(RowGlyph::File),
+        Entry::File(_) | Entry::Provided { app: None, .. } => RowIcon::Glyph(RowGlyph::File),
         Entry::Run(_) => RowIcon::Glyph(RowGlyph::Run),
         Entry::Calculator { .. } => RowIcon::Glyph(RowGlyph::Calculator),
         Entry::Command(command) => RowIcon::Glyph(RowGlyph::Command(*command)),

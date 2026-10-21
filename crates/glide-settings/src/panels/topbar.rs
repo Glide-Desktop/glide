@@ -22,9 +22,9 @@ mod tr {
         TimeFormatAuto => "Follows the region: 12-hour only for US English", "За регіоном: 12-годинний лише для американської англійської";
         TimeFormat24 => "Always 24-hour, like 14:05", "Завжди 24-годинний, як-от 14:05";
         TimeFormat12 => "Always 12-hour, like 2:05 PM", "Завжди 12-годинний, як-от 2:05 PM";
-        Auto => "Auto", "Авто";
-        Hours24 => "24-hour", "24 год";
-        Hours12 => "12-hour", "12 год";
+        Auto => "Automatic", "Автоматично";
+        Hours24 => "24-hour", "24 години";
+        Hours12 => "12-hour", "12 годин";
         Status => "Status area", "Область стану";
         StatusHint => "The right-hand side of the bar", "Права частина панелі";
         BatteryPercent => "Battery percentage", "Відсоток заряду";

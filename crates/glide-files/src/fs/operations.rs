@@ -53,11 +53,38 @@ pub fn rename_item(target: &Path, new_name: &str) -> io::Result<PathBuf> {
     if renamed == target {
         return Ok(renamed);
     }
-    if occupied(&renamed) && !same_file(target, &renamed) {
-        return Err(io::Error::new(ErrorKind::AlreadyExists, "name taken"));
+    if same_file(target, &renamed) {
+        std::fs::rename(target, &renamed)?;
+        return Ok(renamed);
     }
-    std::fs::rename(target, &renamed)?;
+    rename_noreplace(target, &renamed)?;
     Ok(renamed)
+}
+
+fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = |path: &Path| {
+        std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(ErrorKind::InvalidFilename))
+    };
+    let (from_c, to_c) = (c(from)?, c(to)?);
+    // SAFETY: both pointers come from live CStrings that outlive the call.
+    let status = unsafe {
+        libc::renameat2(libc::AT_FDCWD, from_c.as_ptr(), libc::AT_FDCWD, to_c.as_ptr(), libc::RENAME_NOREPLACE)
+    };
+    if status == 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EEXIST) => Err(io::Error::new(ErrorKind::AlreadyExists, "name taken")),
+        Some(libc::EINVAL | libc::ENOSYS) => {
+            if occupied(to) {
+                return Err(io::Error::new(ErrorKind::AlreadyExists, "name taken"));
+            }
+            std::fs::rename(from, to)
+        }
+        _ => Err(err),
+    }
 }
 
 pub fn create_link(target: &Path, dir: &Path, prefix: &str) -> io::Result<PathBuf> {
@@ -99,6 +126,17 @@ pub fn remove_recursive(path: &Path) -> io::Result<()> {
     if std::fs::symlink_metadata(path)?.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
 }
 
+fn compound_extension(name: &OsStr) -> Option<(&OsStr, &OsStr)> {
+    use std::os::unix::ffi::OsStrExt;
+    const COMPOUND: [&[u8]; 8] =
+        [b".tar.gz", b".tar.xz", b".tar.bz2", b".tar.zst", b".tar.lz", b".tar.lzma", b".tar.lz4", b".tar.Z"];
+    let bytes = name.as_bytes();
+    COMPOUND.iter().find(|ext| bytes.len() > ext.len() && bytes.ends_with(ext)).map(|ext| {
+        let split = bytes.len() - ext.len();
+        (OsStr::from_bytes(&bytes[..split]), OsStr::from_bytes(&bytes[split + 1..]))
+    })
+}
+
 #[must_use]
 pub fn unique_path(dir: &Path, name: &OsStr, keep_extension: bool, taken: impl Fn(&Path) -> bool) -> PathBuf {
     let candidate = dir.join(name);
@@ -106,8 +144,10 @@ pub fn unique_path(dir: &Path, name: &OsStr, keep_extension: bool, taken: impl F
         return candidate;
     }
     let original = Path::new(name);
-    let (stem, extension) = match (original.file_stem(), original.extension()) {
-        (Some(stem), Some(ext)) if keep_extension => (stem, Some(ext)),
+    let compound = keep_extension.then(|| compound_extension(name)).flatten();
+    let (stem, extension) = match (compound, original.file_stem(), original.extension()) {
+        (Some((stem, ext)), ..) => (stem, Some(ext)),
+        (None, Some(stem), Some(ext)) if keep_extension => (stem, Some(ext)),
         _ => (name, None),
     };
     let mut counter = 1_u32;
@@ -127,16 +167,32 @@ pub fn unique_path(dir: &Path, name: &OsStr, keep_extension: bool, taken: impl F
 }
 
 pub fn open_with_default(path: &Path) -> io::Result<()> {
-    let status =
-        Command::new("xdg-open").arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    let status = Command::new("xdg-open")
+        .arg(path)
+        .envs(glide_ipc::client::activation_env(None))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
     if status.success() { Ok(()) } else { Err(io::Error::other(format!("xdg-open exited with {status}"))) }
 }
 
 pub fn open_in_terminal(dir: &Path) -> io::Result<()> {
     let terminal = glide_config::terminal::current();
+    if glide_app::integration::is_glide_terminal(&terminal)
+        && let Some(token) = glide_ipc::client::activation_token(None)
+        && glide_app::integration::open_terminal_tab(dir, &[], &token).is_ok()
+    {
+        return Ok(());
+    }
     let mut words = terminal.split_whitespace();
     let program = words.next().ok_or_else(|| io::Error::new(ErrorKind::NotFound, "no terminal emulator"))?;
-    let mut child = Command::new(program).args(words).current_dir(dir).stdin(Stdio::null()).spawn()?;
+    let mut child = Command::new(program)
+        .args(words)
+        .envs(glide_ipc::client::activation_env(None))
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .spawn()?;
     std::thread::spawn(move || child.wait());
     Ok(())
 }

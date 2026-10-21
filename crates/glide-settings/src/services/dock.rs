@@ -67,14 +67,7 @@ pub fn save_to(path: &Path, pins: &[Pin]) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
     }
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut tmp = target.clone().into_os_string();
-    tmp.push(".glide-settings.tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, render_pins(pins)).map_err(|err| err.to_string())?;
-    std::fs::rename(&tmp, &target).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp);
-        err.to_string()
-    })
+    super::config::write_atomic(&target, render_pins(pins).as_bytes()).map_err(|err| err.to_string())
 }
 
 pub fn save(pins: &[Pin]) -> Result<(), String> {

@@ -43,10 +43,10 @@ Rows inside a group sit in a 4 px padded card so their R2 hover layer is concent
 - **Blending matches the CSS reference.** iced is built with `web-colors`; without it iced blends in linear space and every translucent token (`line`, `fill-*`, `fg-2..4`, dark `acc-soft`) rendered much brighter than specified in dark mode — hairlines read as grey borders and dropdowns as grey slabs.
 - **Rows** are at least 44 px: 5 px vertical padding around a 34 px content strut, so a 34 px control (button, dropdown, field, segmented) fits exactly and every row in a card has the same height. Title 14 px `fg-1`, subtitle 12 px `fg-2`. Separators are inset 12 px on both sides, never after the last row.
 - **Rhythm**: page padding 24 / 32, 24 px between groups, 8 px between a group heading and its card; page header is a 26 px title plus a one-line description per panel.
-- **Controls**: buttons are 34 px with transparent borders (`.btn` base = `fill-1`); icon buttons are 28 px round; the segmented track is `fill-1` without a border and its active thumb is `card-bg` (light) / `fill-3` (dark) with `--el-1`; switches are 48×24 with an 18 px thumb; the sidebar search is a borderless `fill-1` well that turns `view-bg` with an accent border on focus and gains a clear button while a query is typed.
+- **Controls**: primary buttons use `acc-bg` (`acc-bg-hover` on hover) with `--el-1` / `--el-2` elevation shadows; secondary buttons are 34 px with transparent borders (`.btn` base = `fill-1`); icon buttons are 28 px round; dropdown menus use `popover-bg`, 1 px `line`, R3, `--el-3` shadow, and `fill-2` / `fg-1` selection; banners use semantic soft tokens (`danger-soft`, `warn-soft`, `ok-soft`, `acc-soft`); SVG icons preserve the alpha channel of translucent tokens (`fg-2..4`) via `.opacity(color.a)`; the segmented track is `fill-1` without a border and its active thumb is `card-bg` (light) / `fill-3` (dark) with `--el-1`; switches are 48×24 with an 18 px thumb; the sidebar search is a borderless `fill-1` well that turns `view-bg` with an accent border on focus and gains a clear button while a query is typed.
 - **Selection rings** (style previews, wallpapers, accent swatches, monitors) are 2 px with a 4 px gap, so the inner R2 image stays concentric with the R3 ring and selecting never shifts neighbours.
 - **Sidebar**: 32 px rows, 24 px tiles, inactive labels `fg-1`, hover is the 8 % state layer, selected is `acc-soft` / `acc-soft-fg`; the account card uses the spec `.avatar` gradient.
-- **Panels**: Sound lists output / input devices as rows with a check (a dropdown only past six devices) under volume groups; Wi-Fi rows show a disclosure chevron only when a click expands them (connected, or secured and unsaved); the Displays arrangement sits in a regular card with gradient monitor tiles; About opens with a hero card (logo, hostname, Glide version and OS, CPU and memory).
+- **Panels**: Sound lists output / input devices as rows with a check (a dropdown only past six devices) under volume groups and stops the microphone level meter when leaving the panel or switching input devices; Wi-Fi rows show a disclosure chevron only when a click expands them (connected, or secured and unsaved); the Displays arrangement sits in a regular card with gradient monitor tiles; About opens with a hero card (logo, hostname, Glide version and OS, CPU and memory).
 
 ---
 
@@ -72,15 +72,15 @@ Rows inside a group sit in a 4 px padded card so their R2 hover layer is concent
 | Panel | Keys written |
 |---|---|
 | Appearance | `[topbar] appearance`, `accent`; `[general] wallpaper`, `wallpaper-fit`; `[animations] enabled`, `speed`, `respect-system` |
-| Displays | `[[output]] name`, `scale`; `[night-light] schedule`, `from`, `to` |
+| Displays | `[[output]] name`, `scale`, `mode`, `x`, `y`; `[night-light] schedule`, `from`, `to`, `temperature` |
 | Keyboard | `[input] xkb-layout`, `xkb-variant`, `xkb-options` (only the `grp:` switch option is replaced), `repeat-delay`, `repeat-rate`; `[general] language` |
 | Mouse & Touchpad | `[input] accel-speed`, `accel-profile`, `natural-scroll`, `tap-to-click` |
-| Appearance (fonts & icons) | `[dock] icon-theme`; `[general] font-family` |
-| Desktop & Dock | `[dock] enabled`, `autohide` (`smart` / `always` / `never`), `item-size`, `icon-size`; `[topbar] enabled`, `global-menu`, `appmenu-registrar`; `[workspaces] new-window`; `[overview] label` |
-| Windows | `[decorations] title-align`, `height`, `shadow`, `border-width` |
+| Appearance (fonts & icons) | `[dock] icon-theme`; `[general] font-family` (also applied live to `glide-settings` via `theme::use_ui_family`) |
+| Desktop & Dock | `[dock] enabled`, `autohide` (`smart` / `always` / `never`), `item-size`, `icon-size`; `pins.toml` (atomic write); `[topbar] enabled`, `global-menu`, `appmenu-registrar`; `[workspaces] new-window`, `fixed`; `[overview] label`, `hot-corner` |
+| Windows | `[decorations] title-align`, `height`, `shadow`, `border-width`, `buttons` |
 | Power | `[general] blank-after-seconds`, `suspend-after-seconds`, `suspend-on-battery-after-seconds`; `[topbar] battery-low-pct`; power mode through `powerprofilesctl` when installed |
 | Privacy & Security | `[general] blank-after-seconds`, `lock-after-seconds` (0 = with the blank, -1 = never) |
-| Sound | `[topbar] max-volume-pct` (100 or 150) |
+| Sound | `[topbar] max-volume-pct` (100 or 150); `[general] pause-media-on-disconnect` |
 | Apps | `[general] autostart`; default handlers through `xdg-mime default` |
 
 Terminal is the one panel that does not touch `glide.toml`: it edits `$XDG_CONFIG_HOME/glide/terminal.toml` with `toml_edit` (comments kept) and reads it back through `glide_terminal::config::Preferences`, so the keys and defaults are the terminal's own. `glide-terminal` re-reads the file on its 1 s tick; no `Reload` is sent. The file is never written when it fails to parse.
@@ -126,15 +126,11 @@ crates/glide-settings/
 
 ## 6. Known Gaps
 
-- **2026-09-25 expansion (12 → 27 panels) is only partly checked by hand.** Dock, Storage, Power & Battery, Keyboard Shortcuts and Network were screenshotted in dark mode; the other panels, light mode and interaction states were not. Runtime effects not exercised: DRM mode switching, night-light temperature, libinput per-device options, Num Lock, hot corner, titlebar button layout, notification banner position / DND schedule, XDG autostart at sign-in, CUPS actions, polkit-guarded timedate1 / locale1 / hostname1 / AccountsService writes, hotspot, VPN import.
-- Keyboard Shortcuts has no key capture: the key name is typed, because panels get no keyboard subscription.
+- **2026-09-25 expansion (12 → 30 panels) is only partly checked by hand.** Dock, Storage, Power & Battery, Keyboard Shortcuts and Network were screenshotted in dark mode; the other panels, light mode and interaction states were not. Runtime effects not exercised: DRM mode switching, night-light temperature, libinput per-device options, Num Lock, hot corner, titlebar button layout, notification banner position / DND schedule, XDG autostart at sign-in, CUPS actions, polkit-guarded timedate1 / locale1 / hostname1 / AccountsService writes, hotspot, VPN import.
+- Keyboard Shortcuts key capture cannot observe combinations that the running compositor already grabs before they reach the client window; those must still be typed by name. Non-Latin layouts (e.g. Ukrainian) fall back to physical keycodes during capture and for `Ctrl+F` / `Ctrl+K` search shortcuts, and global app navigation shortcuts are suppressed while recording.
 - The Notifications panel shows the configured Do Not Disturb value, not the live top-bar toggle state.
-
-- **Theme propagation needs the new compositor build.** The installed Glide (built 2026-09-23) predates the GSettings sync; until `scripts/install-session.sh` is rerun, only the Settings app itself syncs the theme, and only when a setting is changed from it.
 - `appmenu-registrar` only takes effect on the next sign-in.
-
-- **Not verified by hand**: connecting to a secured Wi-Fi network, pairing a Bluetooth device, and changing the output scale on the new compositor build. The UI and parsers are tested; the effects on real hardware were not exercised.
-- **Resolution and refresh rate are read-only.** The compositor config has no mode key, so there is nothing to write.
+- **Not verified by hand**: connecting to a secured Wi-Fi network, pairing a Bluetooth device, and changing the output scale or mode on the compositor build. The UI and parsers are tested; the effects on real hardware were not exercised.
 - **Wi-Fi passwords never reach argv.** A connect with a password goes over NetworkManager's D-Bus API (`AddAndActivateConnection` with an `802-11-wireless-security.psk` setting, the strongest matching AP as the specific object), waits for activation and deletes the new profile if activation fails. Everything else still uses `nmcli`. The D-Bus signatures and property names were checked against the running NetworkManager with `busctl`; an actual secured connect was not exercised.
 - **No transitions.** Iced has no built-in tweening for these widgets, so the Meridian motion rules (t1–t4) are not applied inside the app.
 - **Bluetooth pairing** relies on bluetoothctl's default agent; devices that need a PIN confirmation will fail with the tool's error message.
@@ -142,7 +138,6 @@ crates/glide-settings/
 - There are no sub-pages, so there is no back navigation; Wi-Fi details expand inline.
 - iced's toggler has a fixed 2:1 aspect ratio, so the switch is 48×24 rather than the spec's 44×26, and neither the switch thumb shadow nor the 3 px focus ring (`box-shadow`) can be drawn.
 - **Layout at 760×480 was inspected on screen** (Sound, Network, Mouse, Keyboard, Appearance, plus the read-only banner) by launching with `GLIDE_SETTINGS_SIZE=760x480`. Row labels and suffix controls split the row evenly (`FillPortion(1)` each, suffix capped at its old fixed width), the accent hint moved to the group description, and TOML parse errors are condensed to one line (`line L, column C: message`). Long device names may be truncated inside dropdowns at the minimum width.
-- **Saved-network lookup costs one `nmcli` call per Wi-Fi profile** on every 4 s refresh of the Network panel.
 
 ---
 

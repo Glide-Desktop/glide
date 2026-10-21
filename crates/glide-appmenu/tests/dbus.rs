@@ -89,7 +89,8 @@ impl FakeDbusMenu {
         (1, (0, HashMap::new(), vec![file]))
     }
 
-    fn about_to_show(&self, _id: i32) -> bool {
+    fn about_to_show(&self, id: i32) -> bool {
+        self.log.lock().expect("log").push(format!("{id}:about-to-show"));
         false
     }
 
@@ -189,4 +190,54 @@ fn a_dbusmenu_layout_is_read_and_clicks_are_delivered() {
 
     handle.activate(source, Activation::DbusMenu(7));
     wait_for(&log, "7:clicked");
+}
+
+fn about_to_show_calls(log: &Log) -> usize {
+    log.lock().expect("log").iter().filter(|line| line.ends_with(":about-to-show")).count()
+}
+
+#[test]
+fn a_layout_update_refreshes_without_asking_about_to_show_again() {
+    let Some(server) = session() else { return };
+    let log = Log::default();
+    server.object_server().at("/test/dbusmenu", FakeDbusMenu { log: log.clone() }).expect("dbusmenu");
+    let bus = server.unique_name().expect("unique name").to_string();
+
+    let Some((handle, rx)) = client() else { return };
+    handle.watch(Source::DbusMenu { bus, path: "/test/dbusmenu".into() });
+    next_menu(&rx);
+    assert_eq!(about_to_show_calls(&log), 1, "the first fetch primes each top-level menu");
+
+    for revision in 2..5u32 {
+        server
+            .emit_signal(None::<()>, "/test/dbusmenu", "com.canonical.dbusmenu", "LayoutUpdated", &(revision, 0i32))
+            .expect("signal");
+        next_menu(&rx);
+    }
+    assert_eq!(about_to_show_calls(&log), 1, "a refresh must not provoke another layout update");
+}
+
+#[test]
+fn a_menu_whose_client_leaves_the_bus_is_gone() {
+    let Some(server) = session() else { return };
+    let log = Log::default();
+    server.object_server().at("/test/dbusmenu", FakeDbusMenu { log }).expect("dbusmenu");
+    let bus = server.unique_name().expect("unique name").to_string();
+
+    let Some((handle, rx)) = client() else { return };
+    let source = Source::DbusMenu { bus, path: "/test/dbusmenu".into() };
+    handle.watch(source.clone());
+    next_menu(&rx);
+
+    server.close().expect("close");
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)).expect("the menu is reported gone") {
+            AppMenuEvent::Gone { source: gone } => {
+                assert_eq!(gone, source);
+                return;
+            }
+            AppMenuEvent::Menu { .. } => panic!("a vanished client produced a menu"),
+            _ => {}
+        }
+    }
 }

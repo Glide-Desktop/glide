@@ -1,10 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/glide-app",
     "crates/glide-appmenu",
     "crates/glide-compositor",
     "crates/glide-config",
     "crates/glide-geom",
+    "crates/glide-iced",
     "crates/glide-files",
     "crates/glide-layout",
     "crates/glide-ipc",
@@ -12,6 +14,7 @@ members = [
     "crates/glide-netbird",
     "crates/glide-notify",
     "crates/glide-paint",
+    "crates/glide-portal",
     "crates/glide-settings",
     "crates/glide-terminal",
     "crates/glide-theme",

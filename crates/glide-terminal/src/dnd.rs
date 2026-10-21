@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -13,6 +14,37 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 const URI_LIST: &str = "text/uri-list";
 const TEXTS: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];
+const MAX_DROP: u64 = 16 * 1024 * 1024;
+static ACTIVE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+struct Reading;
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        ACTIVE_DROPS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn read_drop(mut reader: std::os::unix::net::UnixStream) -> std::io::Result<Vec<u8>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        reader.set_read_timeout(Some(remaining))?;
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        if (bytes.len() + count) as u64 > MAX_DROP {
+            return Err(std::io::Error::other("drop exceeds size limit"));
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handles {
@@ -38,6 +70,24 @@ pub fn quote(path: &std::path::Path) -> String {
 }
 
 #[must_use]
+pub fn quote_bytes(path: &std::path::Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    if path.to_str().is_some() {
+        return quote(path).into_bytes();
+    }
+    let mut quoted = vec![b'\''];
+    for &byte in path.as_os_str().as_bytes() {
+        if byte == b'\'' {
+            quoted.extend_from_slice(b"'\\''");
+        } else {
+            quoted.push(byte);
+        }
+    }
+    quoted.push(b'\'');
+    quoted
+}
+
+#[must_use]
 pub fn parse(mime: &str, bytes: &[u8], at: (f32, f32)) -> Option<Dropped> {
     let text = String::from_utf8_lossy(bytes);
     if mime != URI_LIST {
@@ -48,8 +98,10 @@ pub fn parse(mime: &str, bytes: &[u8], at: (f32, f32)) -> Option<Dropped> {
     if entries.is_empty() {
         return None;
     }
-    if entries.iter().all(|entry| entry.starts_with("file://")) {
-        return Some(Dropped::Paths(entries.into_iter().map(crate::app::uri_path).collect(), at));
+    if entries.iter().all(|entry| entry.starts_with("file://"))
+        && let Some(paths) = entries.iter().map(|entry| crate::app::local_uri_path(entry)).collect::<Option<Vec<_>>>()
+    {
+        return Some(Dropped::Paths(paths, at));
     }
     Some(Dropped::Text(entries.join(" "), at))
 }
@@ -57,6 +109,7 @@ pub fn parse(mime: &str, bytes: &[u8], at: (f32, f32)) -> Option<Dropped> {
 #[derive(Default)]
 struct Offer {
     mimes: Vec<String>,
+    copied: bool,
 }
 
 struct State {
@@ -117,27 +170,47 @@ impl State {
             offer.destroy();
             return;
         };
-        let Ok((reader, writer)) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) else {
+        if ACTIVE_DROPS
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| (active < 4).then_some(active + 1))
+            .is_err()
+        {
+            offer.destroy();
+            return;
+        }
+        let reading = Reading;
+        let Ok((reader, writer)) = std::os::unix::net::UnixStream::pair() else {
             offer.destroy();
             return;
         };
+        if reader.set_read_timeout(Some(std::time::Duration::from_secs(10))).is_err() {
+            offer.destroy();
+            return;
+        }
         offer.receive(mime.to_string(), std::os::fd::AsFd::as_fd(&writer));
         drop(writer);
         let _ = self.connection.flush();
         let (events, connection, at) = (self.events.clone(), self.connection.clone(), self.hover);
-        let _ = std::thread::Builder::new().name(String::from("glide-terminal-drop")).spawn(move || {
-            let mut bytes = Vec::new();
-            if std::fs::File::from(reader).read_to_end(&mut bytes).is_ok()
+        let failed_offer = offer.clone();
+        let spawned = std::thread::Builder::new().name(String::from("glide-terminal-drop")).spawn(move || {
+            let _reading = reading;
+            if let Ok(bytes) = read_drop(reader)
                 && let Some(dropped) = parse(mime, &bytes, at)
             {
                 let _ = events.unbounded_send(dropped);
             }
-            if offer.version() >= 3 {
+            if offer.version() >= 3
+                && offer
+                    .data::<Mutex<Offer>>()
+                    .is_some_and(|data| data.lock().unwrap_or_else(PoisonError::into_inner).copied)
+            {
                 offer.finish();
             }
             offer.destroy();
             let _ = connection.flush();
         });
+        if spawned.is_err() {
+            failed_offer.destroy();
+        }
     }
 }
 
@@ -165,7 +238,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                     offer.accept(serial, mime.map(str::to_string));
                     if offer.version() >= 3 {
                         let actions = if mime.is_some() { DndAction::Copy } else { DndAction::empty() };
-                        offer.set_actions(actions, DndAction::Copy);
+                        offer.set_actions(actions, actions);
                     }
                 }
                 state.drag = id;
@@ -185,6 +258,7 @@ impl Dispatch<WlDataDevice, ()> for State {
                 state.drop_offer();
                 let _ = state.events.unbounded_send(Dropped::Hover(None));
             }
+            wl_data_device::Event::Selection { id: Some(offer) } => offer.destroy(),
             _ => {}
         }
     }
@@ -199,8 +273,13 @@ impl Dispatch<WlDataOffer, Mutex<Offer>> for State {
         _: &mut Self, _: &WlDataOffer, event: wl_data_offer::Event, data: &Mutex<Offer>, _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            data.lock().unwrap_or_else(PoisonError::into_inner).mimes.push(mime_type);
+        let mut data = data.lock().unwrap_or_else(PoisonError::into_inner);
+        match event {
+            wl_data_offer::Event::Offer { mime_type } => data.mimes.push(mime_type),
+            wl_data_offer::Event::Action { dnd_action } => {
+                data.copied = dnd_action == wayland_client::WEnum::Value(DndAction::Copy);
+            }
+            _ => {}
         }
     }
 }
@@ -227,5 +306,38 @@ mod tests {
         assert_eq!(link, Some(Dropped::Text(String::from("https://glide.dev/"), at)));
         assert_eq!(parse(TEXTS[0], "ls -la".as_bytes(), at), Some(Dropped::Text(String::from("ls -la"), at)));
         assert_eq!(parse(URI_LIST, b"\r\n", at), None);
+    }
+
+    #[test]
+    fn remote_file_uris_are_never_reinterpreted_as_local_paths() {
+        let at = (0.0, 0.0);
+        assert_eq!(
+            parse(URI_LIST, b"file://remote/etc/hosts", at),
+            Some(Dropped::Text("file://remote/etc/hosts".into(), at))
+        );
+    }
+
+    #[test]
+    fn quoting_preserves_non_utf8_filename_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp/a\xff'b"));
+        assert_eq!(quote_bytes(path), b"'/tmp/a\xff'\\''b'");
+    }
+
+    #[test]
+    fn drop_reads_stop_at_eof_and_reject_oversized_data() {
+        use std::io::Write;
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let thread = std::thread::spawn(move || {
+            writer.write_all(b"hello").unwrap();
+        });
+        assert_eq!(read_drop(reader).unwrap(), b"hello");
+        thread.join().unwrap();
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let thread = std::thread::spawn(move || {
+            let _ = writer.write_all(&vec![0; MAX_DROP as usize + 1]);
+        });
+        assert!(read_drop(reader).is_err());
+        thread.join().unwrap();
     }
 }

@@ -197,6 +197,26 @@ fn unique_names_keep_extension_for_files_only() {
 }
 
 #[test]
+fn unique_names_keep_compound_archive_extensions_together() {
+    let scratch = Scratch::new("unique-tar");
+    scratch.file("backup.tar.gz");
+    let taken = |path: &Path| path.exists();
+    assert_eq!(unique_path(&scratch.0, "backup.tar.gz".as_ref(), true, taken), scratch.0.join("backup (1).tar.gz"));
+}
+
+#[test]
+fn a_relative_path_in_the_home_trash_is_not_restored_against_the_working_directory() {
+    let scratch = Scratch::new("trash-relative");
+    let trash = Trash::new(scratch.0.join("Trash"));
+    let original = scratch.file("note.txt");
+    let trashed = trash.put(&original).expect("trash");
+    let info = scratch.0.join("Trash/info/note.txt.trashinfo");
+    std::fs::write(&info, "[Trash Info]\nPath=relative/note.txt\nDeletionDate=2026-01-01T00:00:00\n").expect("info");
+    assert_eq!(trash.original_path(&trashed), None);
+    assert!(trash.restore(&trashed).is_err());
+}
+
+#[test]
 fn names_are_validated_before_touching_disk() {
     let scratch = Scratch::new("names");
     let file = scratch.file("keep.txt");

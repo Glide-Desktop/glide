@@ -234,7 +234,7 @@ pub fn field_key(
     if pressed(Keysym::BackSpace) {
         return Some(if ctrl_only { FieldKey::DeleteWord } else { FieldKey::Backspace });
     }
-    if pressed(Keysym::Delete) || pressed(Keysym::KP_Delete) {
+    if pressed(Keysym::Delete) {
         return Some(FieldKey::Delete);
     }
     let caret = [

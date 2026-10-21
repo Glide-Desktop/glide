@@ -114,7 +114,7 @@ fn by_size(usage: &HomeUsage) -> impl Iterator<Item = (Category, u64)> {
 }
 
 fn free_of(c: &Ctx, volume: &Volume) -> String {
-    format!("{} {} {}", format_bytes(volume.avail), c.t(T::Free), format_bytes(volume.total))
+    format!("{} {} {}", format_bytes(volume.avail, c.lang), c.t(T::Free), format_bytes(volume.total, c.lang))
 }
 
 fn short_path(path: &Path, home: &Path) -> String {
@@ -216,7 +216,7 @@ impl Pane for Page {
                 t,
                 t.ok(),
                 Icon::Check,
-                format!("{} {}", c.t(T::Freed), format_bytes(freed)),
+                format!("{} {}", c.t(T::Freed), format_bytes(freed, c.lang)),
                 None,
             ));
         }
@@ -240,7 +240,7 @@ impl Page {
                         share(size, root.total),
                         category_color(&t, category),
                         c.t(category_meta(category).0).to_string(),
-                        format_bytes(size),
+                        format_bytes(size, c.lang),
                     ));
                 }
                 let system = root.used.saturating_sub(home_bytes);
@@ -248,10 +248,13 @@ impl Page {
                     share(system, root.total),
                     t.fg_4(),
                     c.t(T::SystemAndApps).to_string(),
-                    format_bytes(system),
+                    format_bytes(system, c.lang),
                 ));
             }
-            _ => segments.push((root.fraction(), t.acc_bg(), c.t(T::Used).to_string(), format_bytes(root.used))),
+            _ => {
+                let used = format_bytes(root.used, c.lang);
+                segments.push((root.fraction(), t.acc_bg(), c.t(T::Used).to_string(), used));
+            }
         }
         widgets::usage_card(t, format!("{} · {}", c.t(T::SystemDisk), root.mount), free_of(c, root), segments)
     }
@@ -267,14 +270,14 @@ impl Page {
         let Some(usage) = &self.usage else {
             return group.push(Row::new(t, c.t(T::Measuring)).dimmed(true).build()).build();
         };
-        group = group.description(format!("{} · {}", usage.home.display(), format_bytes(usage.total)));
+        group = group.description(format!("{} · {}", usage.home.display(), format_bytes(usage.total, c.lang)));
         for (category, size) in by_size(usage) {
             let (title, glyph, _) = category_meta(category);
             let path = usage.path(category);
             let subtitle = path.map_or_else(|| c.t(T::OtherHint).to_string(), |path| short_path(path, &usage.home));
             let mut suffix = row![
                 column![
-                    text(format_bytes(size)).size(13).font(theme::SEMIBOLD).color(t.fg_1()),
+                    text(format_bytes(size, c.lang)).size(13).font(theme::SEMIBOLD).color(t.fg_1()),
                     container(widgets::progress_bar(t, share(size, usage.total))).width(96),
                 ]
                 .spacing(4)
@@ -316,7 +319,7 @@ impl Page {
         };
         let subtitle = match size {
             Some(0) => c.t(T::Nothing).to_string(),
-            Some(size) => format!("{} · {}", format_bytes(size), c.t(hint)),
+            Some(size) => format!("{} · {}", format_bytes(size, c.lang), c.t(hint)),
             None => c.t(hint).to_string(),
         };
         Row::new(t, c.t(title)).subtitle(subtitle).prefix(widgets::tile(icon, t.danger(), 28.0)).suffix(suffix).build()

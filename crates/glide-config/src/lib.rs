@@ -1,8 +1,12 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 pub mod autostart;
 mod keyboard;
 pub mod terminal;
+pub mod toolkits;
 
 pub use keyboard::SystemKeyboard;
 
@@ -64,6 +68,44 @@ pub fn xdg_path(component: &str, file_name: &str) -> Option<PathBuf> {
     Some(config_home()?.join(component).join(file_name))
 }
 
+static LAST_TZSET: AtomicU64 = AtomicU64::new(0);
+const TZSET_INTERVAL: u64 = 60;
+
+unsafe extern "C" {
+    fn tzset();
+}
+
+fn tzset_due(last: u64, now: u64) -> bool {
+    last == 0 || now.saturating_sub(last) >= TZSET_INTERVAL || now < last
+}
+
+fn refresh_time_zone(now: u64) {
+    let last = LAST_TZSET.load(Ordering::Relaxed);
+    if tzset_due(last, now)
+        && LAST_TZSET.compare_exchange(last, now.max(1), Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    {
+        // SAFETY: tzset takes glibc's time zone lock, which localtime_r also takes, and only re-reads TZ and /etc/localtime.
+        unsafe { tzset() };
+    }
+}
+
+#[must_use]
+pub fn local_minute() -> Option<u16> {
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    refresh_time_zone(seconds);
+    let seconds = libc::time_t::try_from(seconds).ok()?;
+    let mut value = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid, and the output is only read after a successful call.
+    if unsafe { libc::localtime_r(&raw const seconds, value.as_mut_ptr()) }.is_null() {
+        return None;
+    }
+    // SAFETY: localtime_r returned a non-null pointer and initialized the output.
+    let value = unsafe { value.assume_init() };
+    let hour = u16::try_from(value.tm_hour).ok()?;
+    let minute = u16::try_from(value.tm_min).ok()?;
+    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,5 +116,20 @@ mod tests {
         assert_eq!(user_dir(Some("/xdg".into()), home.clone(), ".config"), Some(PathBuf::from("/xdg")));
         assert_eq!(user_dir(None, home, ".config"), Some(PathBuf::from("/home/me/.config")));
         assert_eq!(user_dir(None, None, ".config"), None);
+    }
+
+    #[test]
+    fn the_time_zone_is_reread_at_first_use_then_at_most_once_a_minute() {
+        assert!(tzset_due(0, 1_000));
+        assert!(!tzset_due(1_000, 1_000));
+        assert!(!tzset_due(1_000, 1_059));
+        assert!(tzset_due(1_000, 1_060));
+        assert!(tzset_due(1_000, 900), "a clock set backwards rereads at once");
+    }
+
+    #[test]
+    fn local_minute_is_within_a_day() {
+        assert!(local_minute().is_some_and(|minute| minute < 24 * 60));
+        assert!(local_minute().is_some_and(|minute| minute < 24 * 60));
     }
 }

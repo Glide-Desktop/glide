@@ -33,7 +33,7 @@ mod tr {
         NumpadDigits => "Number pad always types digits", "Цифровий блок завжди вводить цифри";
         NumpadDigitsHint => "Ignores Num Lock, as on a Mac", "Не зважає на Num Lock, як на Mac";
         NumLock => "Num Lock on at sign-in", "Num Lock увімкнено під час входу";
-        NumLockHint => "Applied when Glide starts or reloads its settings", "Застосовується під час запуску Glide або перезавантаження налаштувань";
+        NumLockHint => "The keypad types digits and its light shows the real state; off turns the keypad into arrows", "Цифровий блок вводить цифри, а індикатор показує справжній стан; вимкнено — блок працює як стрілки";
         Off => "Off", "Вимкнено";
         RightAlt => "Right Alt", "Правий Alt";
         RightSuper => "Right Super", "Правий Super";
@@ -551,7 +551,7 @@ impl Page {
             .push(toggle(
                 tr::Key::NumLock,
                 tr::Key::NumLockHint,
-                config.bool_or("input", "numlock", false),
+                config.bool_or("input", "numlock", true),
                 Msg::NumLock,
             ))
             .build()

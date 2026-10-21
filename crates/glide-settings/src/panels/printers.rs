@@ -340,7 +340,7 @@ fn subtitle(c: &Ctx, printer: &Printer) -> String {
 
 fn job_row<'a>(c: &Ctx, job: &'a Job, busy: bool) -> Element<'a, Msg> {
     let t = c.theme;
-    let mut details = vec![job.user.clone(), printers::size_label(job.size)];
+    let mut details = vec![job.user.clone(), crate::services::system::format_bytes(job.size, c.lang)];
     if !job.submitted.is_empty() {
         details.push(job.submitted.clone());
     }

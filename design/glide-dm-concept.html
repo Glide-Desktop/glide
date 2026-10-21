@@ -1,30 +1,38 @@
 <!DOCTYPE html>
-<html lang="uk">
+<html lang="uk" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glide DM — macOS-style Lockscreen (greetd + Meridian)</title>
+<title>Meridian OS — Концепт вікна блокування та Display Manager</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;550;600;650;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;550;600;650;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 /* =========================================================================
-   MERIDIAN Design System Tokens (Dark / Light)
+   MERIDIAN Design System v3 — Токени та змінні
+   Нормативна специфікація: design/MERIDIAN_DESIGN_SPEC.md (§18)
    ========================================================================= */
 :root {
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
   --sp-5: 24px; --sp-6: 32px; --sp-7: 48px; --sp-8: 64px;
 
-  /* Шкала форм Meridian */
-  --r-1: 4px;       /* мікроелементи */
-  --r-2: 8px;       /* контролі: поля вводу, кнопки, меню */
-  --r-3: 12px;      /* контейнери: спливні меню */
-  --r-4: 18px;      /* оболонки */
-  --r-round: 999px; /* виключно для круглих кнопок, аватара, пігулок */
+  /* Шкала форм Meridian:
+     --r-1: 4px  (мікроелементи: бейджі, чипи, кнопки всередині полів)
+     --r-2: 8px  (КОНТРОЛІ: кнопки, поля вводу, полиця живлення, вибір сесії)
+     --r-3: 12px (контейнери: popover меню, розширений віджет медіа)
+     --r-4: 18px (оболонка)
+     --r-round: 999px (виключно АВАТАР, перемикачі, крапки)
+     ЖОДНИХ капсульних кнопок! */
+  --r-1: 4px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --r-4: 18px;
+  --r-round: 999px;
 
   /* Шари стану */
   --st-hover: .08;
   --st-press: .13;
+  --st-drag: .18;
 
   /* Рух (Motion) */
   --t-1: 120ms;
@@ -38,634 +46,971 @@
   --font: 'Inter', system-ui, -apple-system, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  /* Meridian Azurite */
+  /* Meridian Azurite (Default Accent) */
   --ac-1: #d9e6fb; --ac-2: #a7c8f6; --ac-3: #5b9bec;
   --ac-4: #2f6fd0; --ac-5: #1f56a8; --ac-6: #163e79;
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --win-bg: #141316;
+  --win-bg: #1c1b1e;
+  --view-bg: #161518;
+  --card-bg: #29282d;
+  --popover-bg: #2f2e34;
+  --sunken-bg: #121114;
+
   --fg-1: #f2f0ed;
-  --fg-2: rgba(242, 240, 237, 0.72);
-  --fg-3: rgba(242, 240, 237, 0.48);
-  --fg-4: rgba(242, 240, 237, 0.24);
+  --fg-2: rgba(242, 240, 237, 0.68);
+  --fg-3: rgba(242, 240, 237, 0.46);
+  --fg-4: rgba(242, 240, 237, 0.22);
 
-  --glass-bg: rgba(30, 29, 34, 0.45);
-  --glass-border: rgba(255, 255, 255, 0.14);
-  --glass-card: rgba(26, 25, 30, 0.65);
+  --line: rgba(255, 255, 255, 0.09);
+  --line-2: rgba(255, 255, 255, 0.15);
 
-  --sunken-bg: rgba(0, 0, 0, 0.35);
-  --popover-bg: #252429;
+  --fill-1: rgba(255, 255, 255, 0.07);
+  --fill-2: rgba(255, 255, 255, 0.12);
+  --fill-3: rgba(255, 255, 255, 0.18);
 
-  --line: rgba(255, 255, 255, 0.10);
-  --line-2: rgba(255, 255, 255, 0.18);
+  --shell-bg: rgba(38, 37, 42, 0.82);
+  --shell-fg: #f2f0ed;
+  --shell-line: rgba(255, 255, 255, 0.12);
 
   --ok: #62d69b;
+  --ok-soft: rgba(98, 214, 155, 0.16);
+  --warn: #e5b355;
+  --warn-soft: rgba(229, 179, 85, 0.16);
   --danger: #f0796f;
-  --danger-soft: rgba(240, 121, 111, 0.20);
+  --danger-soft: rgba(240, 121, 111, 0.16);
 
   --acc-bg: var(--ac-4);
   --acc-bg-hover: var(--ac-3);
-  --acc-ring: rgba(167, 200, 246, 0.45);
+  --acc-fg: #ffffff;
+  --acc-text: var(--ac-2);
+  --acc-soft: rgba(91, 155, 236, 0.20);
+  --acc-soft-fg: var(--ac-2);
+  --acc-ring: rgba(167, 200, 246, 0.40);
 
-  --el-1: 0 2px 6px rgba(0, 0, 0, 0.35);
-  --el-2: 0 8px 24px rgba(0, 0, 0, 0.45);
-  --el-3: 0 16px 48px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.12);
+  --el-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --el-2: 0 2px 6px rgba(0, 0, 0, 0.45), 0 10px 24px rgba(0, 0, 0, 0.40);
+  --el-3: 0 4px 10px rgba(0, 0, 0, 0.50), 0 22px 52px rgba(0, 0, 0, 0.55);
 
-  --wall-overlay: rgba(10, 9, 12, 0.40);
+  --wall-1: #222c3c;
+  --wall-2: #2c2436;
+  --wall-3: #18202c;
+  --wall-4: #241d2c;
+  --wall-line: rgba(255, 255, 255, 0.13);
+  --wall-pick: rgba(255, 255, 255, 0.55);
+  --scrim: rgba(14, 13, 16, 0.42);
 }
 
 [data-theme="light"] {
   color-scheme: light;
-  --win-bg: #f5f4f1;
-  --fg-1: #1b1a17;
-  --fg-2: rgba(27, 26, 23, 0.70);
-  --fg-3: rgba(27, 26, 23, 0.46);
-  --fg-4: rgba(27, 26, 23, 0.22);
-
-  --glass-bg: rgba(255, 255, 255, 0.45);
-  --glass-border: rgba(255, 255, 255, 0.65);
-  --glass-card: rgba(255, 255, 255, 0.75);
-
-  --sunken-bg: rgba(0, 0, 0, 0.08);
+  --win-bg: #f3f2ef;
+  --view-bg: #ffffff;
+  --card-bg: #ffffff;
   --popover-bg: #ffffff;
+  --sunken-bg: #e8e6e2;
+
+  --fg-1: #1b1a17;
+  --fg-2: rgba(27, 26, 23, 0.66);
+  --fg-3: rgba(27, 26, 23, 0.44);
+  --fg-4: rgba(27, 26, 23, 0.20);
 
   --line: rgba(27, 26, 23, 0.10);
-  --line-2: rgba(27, 26, 23, 0.18);
+  --line-2: rgba(27, 26, 23, 0.17);
+
+  --fill-1: rgba(27, 26, 23, 0.05);
+  --fill-2: rgba(27, 26, 23, 0.09);
+  --fill-3: rgba(27, 26, 23, 0.14);
+
+  --shell-bg: rgba(251, 250, 248, 0.82);
+  --shell-fg: #1b1a17;
+  --shell-line: rgba(27, 26, 23, 0.12);
 
   --ok: #1c7a4c;
+  --ok-soft: #dcf0e5;
+  --warn: #a1690a;
+  --warn-soft: #f8ecd6;
   --danger: #bf372c;
-  --danger-soft: rgba(191, 55, 44, 0.16);
+  --danger-soft: #fae3e0;
 
   --acc-bg: var(--ac-4);
   --acc-bg-hover: var(--ac-5);
-  --acc-ring: rgba(47, 111, 208, 0.35);
+  --acc-fg: #ffffff;
+  --acc-text: var(--ac-5);
+  --acc-soft: var(--ac-1);
+  --acc-soft-fg: var(--ac-6);
+  --acc-ring: rgba(47, 111, 208, 0.32);
 
-  --el-1: 0 2px 6px rgba(27, 26, 23, 0.08);
-  --el-2: 0 8px 24px rgba(27, 26, 23, 0.12);
-  --el-3: 0 16px 48px rgba(27, 26, 23, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.85);
+  --el-1: 0 1px 2px rgba(27, 26, 23, 0.07);
+  --el-2: 0 2px 4px rgba(27, 26, 23, 0.06), 0 6px 16px rgba(27, 26, 23, 0.09);
+  --el-3: 0 4px 8px rgba(27, 26, 23, 0.08), 0 18px 44px rgba(27, 26, 23, 0.15);
 
-  --wall-overlay: rgba(255, 255, 255, 0.20);
+  --wall-1: #dfe6ef;
+  --wall-2: #f1ece4;
+  --wall-3: #c9d6e6;
+  --wall-4: #ece1d4;
+  --wall-line: rgba(27, 26, 23, 0.10);
+  --wall-pick: rgba(27, 26, 23, 0.35);
+  --scrim: rgba(245, 244, 240, 0.28);
 }
 
 /* =========================================================================
-   БАЗОВА СТРУКТУРА ЕКРАНА
+   БАЗОВА РОЗМІТКА
    ========================================================================= */
 *, *::before, *::after { box-sizing: border-box; }
 html, body {
   margin: 0; padding: 0; width: 100%; height: 100%;
   font-family: var(--font); color: var(--fg-1);
-  overflow: hidden; user-select: none;
+  overflow-x: hidden; user-select: none;
   -webkit-font-smoothing: antialiased;
+  background: var(--win-bg);
 }
 
-/* Фонова сцена */
-.stage-wallpaper {
-  position: fixed; inset: 0; z-index: 0;
-  background-image: url('wallpaper.png'),
-    radial-gradient(circle at 18% 22%, #2d3b50 0%, transparent 55%),
-    radial-gradient(circle at 82% 78%, #362942 0%, transparent 60%),
-    linear-gradient(135deg, #121116 0%, #0d0f14 100%);
-  background-size: cover; background-position: center;
-  transition: transform 600ms var(--e-out);
+/* Верхня панель налаштувань інтерактивного концепту */
+.demo-topbar {
+  position: relative; z-index: 100;
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 8px 18px;
+  background: var(--view-bg);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px; color: var(--fg-2);
+  flex-wrap: wrap;
 }
-
-.stage-scrim {
-  position: absolute; inset: 0;
-  backdrop-filter: blur(48px) saturate(1.4);
-  -webkit-backdrop-filter: blur(48px) saturate(1.4);
-  background: var(--wall-overlay);
+.demo-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: var(--r-1);
+  background: var(--acc-soft); color: var(--acc-soft-fg);
+  text-transform: uppercase; letter-spacing: 0.05em;
 }
-
-/* Головний контейнер розкладки (macOS Layout) */
-.lockscreen-layout {
-  position: relative; z-index: 10;
-  width: 100%; height: 100%;
-  display: flex; flex-direction: column;
-  justify-content: space-between;
-  align-items: center;
-  padding: 32px 36px 32px;
+.demo-label {
+  font-size: 11px; font-weight: 640; text-transform: uppercase;
+  letter-spacing: 0.075em; color: var(--fg-3);
 }
-
-/* =========================================================================
-   1. ПЛАВАЮЧІ СТАТУС-ІКОНКИ У ВЕРХНЬОМУ ПРАВОМУ КУТІ
-   ========================================================================= */
-.floating-status-cluster {
-  position: absolute; top: 24px; right: 28px;
-  display: flex; align-items: center; gap: 8px;
-  z-index: 20;
+.swatches {
+  display: flex; align-items: center; gap: 4px;
 }
+.swatch {
+  width: 18px; height: 18px; border-radius: var(--r-1);
+  border: 1px solid rgba(0,0,0,0.15); cursor: pointer;
+  transition: transform var(--t-1) var(--e-out);
+}
+.swatch:hover { transform: scale(1.15); }
+.swatch.active { box-shadow: 0 0 0 2px var(--fg-1); }
 
-.status-pill-btn {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  color: var(--fg-2);
-  height: 32px; padding: 0 10px;
-  border-radius: var(--r-round);
-  font-family: var(--font); font-size: 12px; font-weight: 550;
-  display: flex; align-items: center; gap: 6px;
-  cursor: pointer; box-shadow: var(--el-1);
+.seg-control {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: var(--fill-1); border-radius: var(--r-2);
+  padding: 2px;
+}
+.seg-btn {
+  background: transparent; border: none; padding: 4px 10px;
+  border-radius: var(--r-1); color: var(--fg-2); font-family: var(--font);
+  font-size: 12px; font-weight: 500; cursor: pointer;
   transition: all var(--t-1) var(--e-io);
 }
-.status-pill-btn:hover {
-  background: var(--glass-card);
-  color: var(--fg-1);
-  border-color: var(--line-2);
-}
-.status-pill-btn:active {
-  transform: scale(0.97);
-}
-.status-pill-btn.kbd {
-  font-family: var(--mono); font-size: 11.5px; font-weight: 600;
-  padding: 0 9px;
+.seg-btn:hover { color: var(--fg-1); }
+.seg-btn.active {
+  background: var(--card-bg); color: var(--fg-1);
+  box-shadow: var(--el-1); font-weight: 550;
 }
 
 /* =========================================================================
-   2. ВЕРХНІЙ БЛОК: ЗБІЛЬШЕНИЙ ГОДИННИК ТА ДАТА (114px Cinematic)
+   СТЕНД СЦЕНИ (Екран блокування / DM)
    ========================================================================= */
-.clock-section {
-  display: flex; flex-direction: column; align-items: center;
-  text-align: center;
-  margin-top: 4px;
+.stage-container {
+  position: relative; width: 100%; min-height: 890px; height: calc(100vh - 42px);
+  display: flex; flex-direction: column; justify-content: space-between;
+  overflow: hidden;
 }
 
+/* Фірмові шпалери Meridian */
+.meridian-wall {
+  position: absolute; inset: 0; z-index: 0;
+  background: linear-gradient(150deg, var(--wall-1) 0%, var(--wall-2) 46%, var(--wall-3) 100%);
+  transition: background var(--t-4) var(--e-io);
+}
+.wall-ring {
+  position: absolute; border-radius: 50%; border: 1.5px solid var(--wall-line);
+  pointer-events: none;
+}
+.ring-1 { width: 580px; height: 580px; left: -160px; bottom: -220px; }
+.ring-2 { width: 880px; height: 880px; left: -280px; bottom: -360px; }
+.ring-3 { width: 460px; height: 460px; right: -120px; top: -140px; }
+
+/* Scrim з акриловим розмиттям */
+.wall-scrim {
+  position: absolute; inset: 0; z-index: 1;
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  background: var(--scrim);
+  transition: background var(--t-3) var(--e-io);
+}
+
+/* =========================================================================
+   1. СИСТЕМНА СМУГА (TOPBAR) — Інтеграція з оболонкою Glide
+   ========================================================================= */
+.lock-topbar {
+  position: relative; z-index: 30;
+  height: 38px; width: 100%;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 var(--sp-4);
+  background: var(--shell-bg);
+  border-bottom: 1px solid var(--shell-line);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  color: var(--shell-fg);
+  font-size: 12px;
+}
+
+.topbar-left {
+  display: flex; align-items: center; gap: var(--sp-2);
+}
+.topbar-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px; border-radius: var(--r-2);
+  background: var(--fill-1); border: 1px solid var(--line);
+  color: var(--fg-2); font-weight: 550; font-size: 11.5px;
+}
+.topbar-badge svg { color: var(--acc-bg); }
+
+/* Центральний Status Island */
+.status-island {
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 28px; padding: 0 12px; border-radius: var(--r-2);
+  background: var(--fill-1); border: 1px solid var(--line);
+  font-size: 12px; font-weight: 500; color: var(--fg-2);
+  cursor: pointer; transition: all var(--t-2) var(--e-out);
+}
+.status-island:hover {
+  background: var(--fill-2); color: var(--fg-1);
+}
+.status-island .equalizer {
+  display: flex; align-items: flex-end; gap: 2px; height: 12px;
+}
+.eq-bar {
+  width: 2.5px; border-radius: 1px; background: var(--acc-bg);
+  animation: eqBounce 800ms ease-in-out infinite alternate;
+}
+.eq-bar:nth-child(1) { height: 4px; animation-delay: 0ms; }
+.eq-bar:nth-child(2) { height: 11px; animation-delay: 200ms; }
+.eq-bar:nth-child(3) { height: 7px; animation-delay: 400ms; }
+@keyframes eqBounce { from { height: 3px; } to { height: 12px; } }
+
+/* Правий кластер статусів: строго R2 (8px) */
+.topbar-right {
+  display: flex; align-items: center; gap: var(--sp-1);
+}
+.mrd-btn-tb {
+  height: 26px; padding: 0 8px; border-radius: var(--r-2);
+  background: transparent; border: 1px solid transparent;
+  color: var(--fg-2); font-family: var(--font); font-size: 12px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  transition: all var(--t-1) var(--e-io);
+}
+.mrd-btn-tb:hover {
+  background: var(--fill-2); color: var(--fg-1);
+  border-color: var(--line);
+}
+.mrd-btn-tb:active { background: var(--fill-3); transform: scale(0.98); }
+.mrd-btn-tb.kbd {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+  background: var(--fill-1); border-color: var(--line);
+  min-width: 32px; justify-content: center;
+}
+
+/* =========================================================================
+   2. ГОЛОВНА ОБЛАСТЬ: МОНУМЕНТАЛЬНИЙ ГОДИННИК ТА ВЕЛИКИЙ АВАТАР
+   ========================================================================= */
+.main-stage-area {
+  position: relative; z-index: 20;
+  width: 100%; max-width: 760px;
+  margin: 0 auto;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 12px 24px;
+}
+
+/* МОНУМЕНТАЛЬНИЙ КІНЕМАТОГРАФІЧНИЙ ГОДИННИК (144px Monumental Scale) */
+.clock-block {
+  text-align: center;
+  margin-bottom: var(--sp-4);
+  position: relative;
+  transition: all var(--t-3) var(--e-out);
+}
 .lock-date {
-  font-size: 21px; line-height: 26px; font-weight: 500;
-  letter-spacing: -0.02em; color: var(--fg-2);
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  font-size: 21px; line-height: 28px; font-weight: 550;
+  letter-spacing: -0.015em; color: var(--fg-2);
   margin-bottom: 2px;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.lock-date .date-pill {
+  display: inline-flex; align-items: center;
+  padding: 2px 10px; border-radius: var(--r-1);
+  background: var(--fill-1); border: 1px solid var(--line);
+  font-size: 13px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--fg-2);
 }
 
 .lock-time {
-  font-size: 114px; line-height: 0.95; font-weight: 560;
-  letter-spacing: -0.045em; font-family: var(--font);
+  font-size: 144px; /* Прям великий годинник за запитом користувача */
+  line-height: 0.90;
+  font-weight: 620;
+  letter-spacing: -0.05em;
+  font-family: var(--font);
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
   color: var(--fg-1);
-  text-shadow: 0 6px 30px rgba(0, 0, 0, 0.40);
-  transition: transform var(--t-3) var(--e-out);
+  text-shadow: 0 6px 36px rgba(0, 0, 0, 0.40);
+  margin-top: 4px;
+  transition: transform var(--t-3) var(--e-out), font-size var(--t-3) var(--e-out);
+}
+.scale-compact .lock-time {
+  font-size: 110px;
+}
+
+/* ВІДЖЕТ МЕДІА (STATUS ISLAND CARD НА ЕКРАНІ БЛОКУВАННЯ) */
+.lock-media-widget {
+  display: none; align-items: center; gap: var(--sp-3);
+  padding: 8px 14px 8px 8px; border-radius: var(--r-3);
+  background: var(--shell-bg); border: 1px solid var(--shell-line);
+  box-shadow: var(--el-2); backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  margin-bottom: var(--sp-4);
+  animation: fadeInUp var(--t-2) var(--e-out);
+}
+.lock-media-widget.active { display: flex; }
+.media-cover {
+  width: 44px; height: 44px; border-radius: var(--r-2);
+  background: linear-gradient(135deg, var(--ac-3) 0%, var(--ac-5) 100%);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; flex-shrink: 0; box-shadow: var(--el-1);
+}
+.media-info {
+  display: flex; flex-direction: column; min-width: 190px; max-width: 270px;
+}
+.media-title {
+  font-size: 13px; font-weight: 600; color: var(--fg-1);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.media-artist {
+  font-size: 11.5px; font-weight: 450; color: var(--fg-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.media-ctl-btn {
+  width: 32px; height: 32px; border-radius: var(--r-2);
+  background: var(--fill-1); border: 1px solid var(--line);
+  color: var(--fg-1); display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all var(--t-1) var(--e-io);
+}
+.media-ctl-btn:hover { background: var(--fill-2); transform: scale(1.04); }
+.media-ctl-btn:active { transform: scale(0.96); }
+
+/* ЦЕНТРАЛЬНА КАРТКА АУТЕНТИФІКАЦІЇ */
+.auth-card {
+  display: flex; flex-direction: column; align-items: center;
+  width: 100%; max-width: 340px;
+  animation: fadeInUp var(--t-3) var(--e-out);
 }
 
 /* =========================================================================
-   3. ЦЕНТРАЛЬНИЙ БЛОК: АВАТАР + ВХІД (Meridian Controls)
+   ВЕЛИКИЙ АВАТАР ІЗ БАГАТОШАРОВИМ ОБІГРАВАННЯМ (112px Hero Avatar)
    ========================================================================= */
-.auth-section {
-  display: flex; flex-direction: column; align-items: center;
-  width: 100%; max-width: 320px;
-  position: relative; margin-top: -10px;
+.avatar-stage {
+  position: relative;
+  margin-bottom: var(--sp-3);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* Зовнішній світловий ореол (Ambient Specular Halo) */
+.avatar-halo {
+  position: absolute;
+  width: 130px; height: 130px;
+  border-radius: var(--r-round);
+  background: radial-gradient(circle, var(--acc-soft) 0%, transparent 70%);
+  opacity: 0.6; pointer-events: none;
   transition: opacity var(--t-3) var(--e-out), transform var(--t-3) var(--e-out);
 }
-
-/* Круглий аватар із контуром Meridian */
-.user-avatar-btn {
-  background: transparent; border: none; padding: 0; cursor: pointer;
-  position: relative; margin-bottom: 12px; outline: none;
+.avatar-stage:hover .avatar-halo,
+.avatar-stage.active-focus .avatar-halo {
+  opacity: 1; transform: scale(1.15);
 }
-.user-avatar-img {
-  width: 82px; height: 82px; border-radius: var(--r-round);
-  background: linear-gradient(135deg, var(--ac-3) 0%, var(--ac-5) 100%);
+
+/* Зовнішнє скляне обрамлення (Glass Pedestal Ring) */
+.avatar-pedestal {
+  position: relative;
+  width: 112px; height: 112px; /* Збільшений великий аватар */
+  border-radius: var(--r-round);
+  padding: 4px;
+  background: var(--shell-bg);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--line-2);
+  transition: all var(--t-2) var(--e-out);
+}
+.scale-compact .avatar-pedestal {
+  width: 84px; height: 84px;
+}
+.avatar-stage:hover .avatar-pedestal {
+  transform: translateY(-4px) scale(1.03);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45), 0 0 0 3px var(--acc-ring);
+}
+.avatar-stage:active .avatar-pedestal {
+  transform: translateY(-1px) scale(0.98);
+}
+
+/* Внутрішній градієнтний диск аватара */
+.avatar-core {
+  width: 100%; height: 100%;
+  border-radius: var(--r-round);
+  background: linear-gradient(145deg, var(--ac-3) 0%, var(--ac-5) 100%);
   display: flex; align-items: center; justify-content: center;
-  font-size: 30px; font-weight: 650; color: #ffffff;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30), 0 0 0 2px var(--glass-border);
-  transition: transform var(--t-2) var(--e-out), box-shadow var(--t-2);
+  font-size: 42px; /* Велика виразна літера */
+  font-weight: 680; color: #ffffff;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.30);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.40);
+  transition: font-size var(--t-2) var(--e-out);
 }
-.user-avatar-btn:hover .user-avatar-img {
-  transform: scale(1.03);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38), 0 0 0 2.5px var(--acc-ring);
-}
-.user-avatar-btn:active .user-avatar-img {
-  transform: scale(0.98);
+.scale-compact .avatar-core {
+  font-size: 32px;
 }
 
-/* Ім'я користувача */
-.user-name-label {
-  font-size: 17px; font-weight: 620; letter-spacing: -0.015em;
-  color: var(--fg-1); margin-bottom: 12px;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.30);
-  cursor: pointer;
+/* Міні-бейдж статусу на кутку аватара (Security & Session Badge) */
+.avatar-status-badge {
+  position: absolute; right: 2px; bottom: 2px;
+  width: 28px; height: 28px;
+  border-radius: var(--r-round);
+  background: var(--card-bg);
+  border: 2px solid var(--win-bg);
+  box-shadow: var(--el-1);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--acc-bg);
+}
+.avatar-status-badge svg { width: 14px; height: 14px; }
+
+/* ІМ'Я КОРИСТУВАЧА */
+.user-name {
+  font-size: 19px; font-weight: 630; letter-spacing: -0.015em;
+  color: var(--fg-1); margin-bottom: var(--sp-3);
+  text-shadow: 0 2px 6px rgba(0,0,0,0.30);
+  display: flex; align-items: center; gap: 8px;
 }
 
-/* Поле пароля (Meridian контрол --r-2: 8px) */
-.password-box {
-  width: 240px; position: relative;
-  height: 38px;
+/* ПЕРЕМИКАЧ КОРИСТУВАЧІВ (У РЕЖИМІ DISPLAY MANAGER) */
+.user-picker-row {
+  display: none; align-items: center; gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
-.pwd-field {
+.mode-dm .user-picker-row { display: flex; }
+.user-chip {
+  padding: 4px 12px; border-radius: var(--r-2);
+  background: var(--fill-1); border: 1px solid var(--line);
+  color: var(--fg-2); font-size: 12.5px; font-weight: 500;
+  cursor: pointer; transition: all var(--t-1);
+}
+.user-chip:hover { background: var(--fill-2); color: var(--fg-1); }
+.user-chip.active {
+  background: var(--acc-soft); color: var(--acc-soft-fg);
+  border-color: var(--acc-ring); font-weight: 600;
+}
+
+/* ПОЛЕ ВВЕДЕННЯ ПАРОЛЯ (MERIDIAN КОНТРОЛ: РАДІУС --r-2: 8px) */
+.input-group {
+  position: relative; width: 260px; height: 42px;
+}
+.mrd-input-field {
   width: 100%; height: 100%;
   background: var(--sunken-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-radius: var(--r-2); /* 8px за специфікацією Meridian */
-  padding: 0 38px 0 14px;
-  color: var(--fg-1); font-family: var(--font); font-size: 13.5px;
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: var(--r-2); /* 8px строго за специфікацією */
+  padding: 0 44px 0 14px;
+  color: var(--fg-1); font-family: var(--font); font-size: 14px;
   outline: none;
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.20);
   transition: border-color var(--t-2) var(--e-out), box-shadow var(--t-2) var(--e-out), background var(--t-2);
 }
-.pwd-field::placeholder { color: var(--fg-3); }
-.pwd-field:focus {
+.mrd-input-field::placeholder { color: var(--fg-3); }
+.mrd-input-field:focus {
   border-color: var(--acc-bg);
-  background: var(--glass-card);
+  background: var(--card-bg);
   box-shadow: 0 0 0 3px var(--acc-ring), inset 0 1px 2px rgba(0,0,0,0.15);
 }
-.pwd-field.error {
+.mrd-input-field.error {
   border-color: var(--danger);
   box-shadow: 0 0 0 3px var(--danger-soft);
   animation: shake 320ms var(--e-out);
 }
 
-/* Кнопка стрілки всередині поля */
-.pwd-submit-btn {
-  position: absolute; right: 3px; top: 3px; bottom: 3px;
-  width: 32px; border-radius: 6px;
-  background: var(--acc-bg); border: none; color: #fff;
+/* Кнопка підтвердження всередині поля (радіус --r-1: 4px) */
+.mrd-submit-btn {
+  position: absolute; right: 4px; top: 4px; bottom: 4px;
+  width: 34px; border-radius: var(--r-1);
+  background: var(--acc-bg); border: none; color: #ffffff;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
   transition: background var(--t-1) var(--e-io), transform var(--t-1) var(--e-out);
 }
-.pwd-submit-btn:hover { background: var(--acc-bg-hover); }
-.pwd-submit-btn:active { transform: scale(0.94); }
+.mrd-submit-btn:hover { background: var(--acc-bg-hover); }
+.mrd-submit-btn:active { transform: scale(0.94); }
 
-/* Підказка Touch ID / біометрії */
-.biometric-hint {
-  margin-top: 10px; font-size: 12px; font-weight: 450;
+/* Підказка біометрії */
+.auth-hint {
+  margin-top: var(--sp-2); font-size: 12px; font-weight: 450;
   color: var(--fg-3); display: flex; align-items: center; gap: 6px;
-  min-height: 18px; cursor: pointer;
-  padding: 3px 6px; border-radius: var(--r-1);
+  min-height: 20px; cursor: pointer; padding: 3px 8px; border-radius: var(--r-1);
   transition: color var(--t-2);
 }
-.biometric-hint:hover { color: var(--fg-1); }
-.biometric-hint.error-msg { color: var(--danger); font-weight: 550; }
-.biometric-hint.ok-msg { color: var(--ok); font-weight: 550; }
+.auth-hint:hover { color: var(--fg-1); }
+.auth-hint.error { color: var(--danger); font-weight: 550; }
+.auth-hint.ok { color: var(--ok); font-weight: 550; }
 
 /* =========================================================================
-   4. НИЖНІЙ РЯДОК: ЦІКАВО ОБІГРАНИЙ ОСТРІВ ЖИВЛЕННЯ ЗЛІВА, СТІЛЬНИЦЯ СПРАВА
+   3. НИЖНЯ ПАНЕЛЬ: ЖИВЛЕННЯ ТА СЕСІЯ (MERIDIAN CONTROLS: 8px)
    ========================================================================= */
-.bottom-dock-row {
+.lock-bottom-row {
+  position: relative; z-index: 30;
   width: 100%;
   display: flex; align-items: flex-end; justify-content: space-between;
+  padding: var(--sp-4) var(--sp-6);
 }
 
-/* ЗЛІВА ВНИЗУ: Інтерактивна скляна капсула живлення з Inline-озброєнням */
-.power-cluster-left {
+/* БЛОК ЖИВЛЕННЯ (ЗЛІВА ВНИЗУ) — MERIDIAN ФОРМА --r-2: 8px */
+.power-cluster {
   position: relative;
 }
-
-.power-morph-capsule {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(28px) saturate(1.4);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+.power-shelf {
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-line);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
   box-shadow: var(--el-1);
-  border-radius: var(--r-round);
-  height: 42px;
+  border-radius: var(--r-2);
+  height: 40px;
   display: flex; align-items: center;
   padding: 0 4px;
   transition: all var(--t-3) var(--e-out);
-  overflow: hidden;
 }
-.power-morph-capsule:hover {
-  background: var(--glass-card);
+.power-shelf:hover {
+  background: var(--card-bg);
   border-color: var(--line-2);
   box-shadow: var(--el-2);
 }
 
-/* Звичайний стан: 3 іконки з магнітним розкриттям підписів */
-.power-idle-tray {
+.power-idle-items {
   display: flex; align-items: center; gap: 2px;
-  transition: opacity var(--t-2) var(--e-out), transform var(--t-2) var(--e-out);
 }
-.power-morph-capsule.armed .power-idle-tray {
-  display: none;
-}
+.power-shelf.armed .power-idle-items { display: none; }
 
-.pwr-item-btn {
+.mrd-btn-pwr {
   background: transparent; border: none; outline: none;
-  height: 34px; padding: 0 10px;
-  border-radius: var(--r-round);
+  height: 32px; padding: 0 10px;
+  border-radius: var(--r-1);
   color: var(--fg-2); cursor: pointer;
   display: flex; align-items: center; gap: 6px;
-  transition: all var(--t-2) var(--e-out);
+  font-family: var(--font); font-size: 12px; font-weight: 500;
+  transition: all var(--t-1) var(--e-out);
 }
-.pwr-item-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--fg-1);
+.mrd-btn-pwr:hover {
+  background: var(--fill-2); color: var(--fg-1);
 }
-.pwr-item-btn.danger-act:hover {
-  background: var(--danger-soft);
-  color: var(--danger);
+.mrd-btn-pwr.danger:hover {
+  background: var(--danger-soft); color: var(--danger);
 }
-.pwr-item-btn:active {
-  transform: scale(0.96);
-}
+.mrd-btn-pwr:active { transform: scale(0.96); }
 
-.pwr-icon {
-  width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
-}
-.pwr-text {
-  font-size: 12px; font-weight: 500; letter-spacing: -0.01em;
-  max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap;
-  transition: max-width var(--t-2) var(--e-out), opacity var(--t-2) var(--e-out);
-}
-/* При наведенні плавно розгортається назва дії */
-.pwr-item-btn:hover .pwr-text {
-  max-width: 80px; opacity: 1;
-}
+.pwr-sep { width: 1px; height: 16px; background: var(--line); }
 
-.pwr-divider {
-  width: 1px; height: 16px; background: var(--line);
-}
-
-/* Стан озброєння (Inline Armed Tray) — замінює розгортання в модалку! */
-.power-armed-tray {
-  display: none; align-items: center; gap: 8px;
-  padding: 0 4px 0 12px;
+/* Озброєний стан дії живлення */
+.power-armed-shelf {
+  display: none; align-items: center; gap: var(--sp-2);
+  padding: 0 4px 0 10px;
   animation: fadeInTray var(--t-2) var(--e-out);
 }
-.power-morph-capsule.armed .power-armed-tray {
-  display: flex;
+.power-shelf.armed .power-armed-shelf { display: flex; }
+.armed-q {
+  font-size: 12px; font-weight: 550; color: var(--fg-1); white-space: nowrap;
 }
-
-.armed-question-text {
-  font-size: 12.5px; font-weight: 550; color: var(--fg-1);
-  white-space: nowrap;
-}
-
-.armed-btn-confirm {
-  height: 30px; padding: 0 12px;
-  border-radius: var(--r-round);
+.mrd-btn-confirm {
+  height: 30px; padding: 0 12px; border-radius: var(--r-1);
   border: none; font-size: 12px; font-weight: 600;
   cursor: pointer; display: flex; align-items: center; gap: 4px;
-  transition: all var(--t-1) var(--e-io);
+  color: #ffffff; transition: all var(--t-1) var(--e-io);
 }
-.armed-btn-confirm.danger {
-  background: var(--danger); color: #ffffff;
-}
-.armed-btn-confirm.accent {
-  background: var(--acc-bg); color: #ffffff;
-}
-.armed-btn-confirm:hover {
-  opacity: 0.92; transform: scale(1.02);
-}
-.armed-btn-confirm:active {
-  transform: scale(0.96);
-}
+.mrd-btn-confirm.danger { background: var(--danger); }
+.mrd-btn-confirm.accent { background: var(--acc-bg); }
+.mrd-btn-confirm:hover { opacity: 0.92; transform: scale(1.02); }
+.mrd-btn-confirm:active { transform: scale(0.96); }
 
-.armed-btn-cancel {
-  width: 28px; height: 28px; border-radius: var(--r-round);
-  background: rgba(255, 255, 255, 0.08); border: none;
+.mrd-btn-cancel {
+  width: 28px; height: 28px; border-radius: var(--r-1);
+  background: var(--fill-1); border: 1px solid var(--line);
   color: var(--fg-2); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   font-size: 12px; transition: all var(--t-1);
 }
-.armed-btn-cancel:hover {
-  background: rgba(255, 255, 255, 0.16); color: var(--fg-1);
-}
+.mrd-btn-cancel:hover { background: var(--fill-2); color: var(--fg-1); }
 
-/* СПРАВА ВНИЗУ: Вибір стільниці (Wayland Session Picker) */
-.session-cluster-right {
-  position: relative;
-}
-
-.session-pill-btn {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(28px) saturate(1.4);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+/* СПРАВА ВНИЗУ: ВИБІР СЕСІЇ WAYLAND (DISPLAY MANAGER MODE) */
+.session-cluster { position: relative; }
+.mode-lock .session-cluster { display: none; }
+.session-btn {
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-line);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
   color: var(--fg-2);
-  height: 42px; padding: 0 16px;
-  border-radius: var(--r-round);
+  height: 40px; padding: 0 14px;
+  border-radius: var(--r-2);
   font-family: var(--font); font-size: 12.5px; font-weight: 500;
   display: flex; align-items: center; gap: 8px;
   cursor: pointer; box-shadow: var(--el-1);
   transition: all var(--t-2) var(--e-out);
 }
-.session-pill-btn:hover {
-  background: var(--glass-card);
-  color: var(--fg-1);
-  border-color: var(--line-2);
-  transform: translateY(-2px);
+.session-btn:hover {
+  background: var(--card-bg); color: var(--fg-1);
+  border-color: var(--line-2); transform: translateY(-2px);
   box-shadow: var(--el-2);
 }
-.session-pill-btn:active {
-  transform: translateY(0);
-}
+.session-btn:active { transform: translateY(0); }
 
-/* Спливне меню сесій (випадає вгору) */
-.session-menu-popover {
-  position: absolute; bottom: 50px; right: 0;
+.session-popover {
+  position: absolute; bottom: 48px; right: 0;
   background: var(--popover-bg);
   border: 1px solid var(--line-2);
   border-radius: var(--r-3);
   box-shadow: var(--el-3);
-  padding: 6px; width: 220px;
+  padding: 6px; width: 230px;
   display: none; flex-direction: column; gap: 2px;
-  z-index: 50;
+  z-index: 60;
 }
-.session-menu-popover.open {
+.session-popover.open {
   display: flex; animation: revealMenu var(--t-2) var(--e-out);
 }
-.session-menu-option {
+.session-row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-radius: var(--r-2);
   border: none; background: transparent; cursor: pointer;
   color: var(--fg-1); font-size: 13px; text-align: left;
   transition: background var(--t-1);
 }
-.session-menu-option:hover { background: rgba(255, 255, 255, 0.08); }
-.session-menu-option.active { background: var(--acc-bg); color: #fff; font-weight: 500; }
+.session-row:hover { background: var(--fill-2); }
+.session-row.active {
+  background: var(--acc-bg); color: #ffffff; font-weight: 550;
+}
 
 /* =========================================================================
-   АНІМАЦІЇ
+   СПЕЦІАЛЬНІ АНІМАЦІЇ ТА СТАНИ
    ========================================================================= */
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
   20%, 60% { transform: translateX(-7px); }
   40%, 80% { transform: translateX(7px); }
 }
-@keyframes revealMenu {
-  from { opacity: 0; transform: translateY(6px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 @keyframes fadeInTray {
-  from { opacity: 0; transform: scale(0.96); }
+  from { opacity: 0; transform: scale(0.97); }
   to { opacity: 1; transform: scale(1); }
+}
+@keyframes revealMenu {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .spinner {
   width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.35);
-  border-top-color: #fff; border-radius: 50%;
+  border-top-color: #ffffff; border-radius: 50%;
   animation: spin 0.6s linear infinite; display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Стан успішного запуску Glide */
-.launching .auth-section {
-  opacity: 0; transform: scale(0.95);
-}
-.launching .clock-section {
-  opacity: 0; transform: translateY(-20px);
-}
-.launching .bottom-dock-row {
-  opacity: 0; transform: translateY(20px);
-}
-.launch-scrim {
-  position: fixed; inset: 0; z-index: 1000;
+/* Стан розблокування (Smooth Unlock Transition) */
+.unlock-scrim {
+  position: absolute; inset: 0; z-index: 90;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   background: var(--win-bg); opacity: 0; pointer-events: none;
-  transition: opacity 400ms var(--e-out);
+  transition: opacity var(--t-4) var(--e-out);
 }
-.launching .launch-scrim {
-  opacity: 1; pointer-events: auto;
+.unlocking .unlock-scrim { opacity: 1; pointer-events: auto; }
+.unlocking .main-stage-area {
+  opacity: 0; transform: scale(0.96); transition: all var(--t-3) var(--e-out);
+}
+.unlocking .lock-topbar {
+  opacity: 0; transform: translateY(-10px); transition: all var(--t-3) var(--e-out);
+}
+.unlocking .lock-bottom-row {
+  opacity: 0; transform: translateY(10px); transition: all var(--t-3) var(--e-out);
+}
+
+/* =========================================================================
+   РОЗДІЛ ДОСЛІДЖЕННЯ ТА ПОРІВНЯННЯ З ІНШИМИ ОС
+   ========================================================================= */
+.doc-section {
+  position: relative; z-index: 10;
+  max-width: 980px; margin: 48px auto; padding: 40px 36px;
+  background: var(--view-bg); border-radius: var(--r-3);
+  border: 1px solid var(--line); box-shadow: var(--el-2);
+}
+.doc-title {
+  font-size: 24px; font-weight: 700; margin: 0 0 8px 0; color: var(--fg-1);
+}
+.doc-lede {
+  font-size: 14.5px; line-height: 23px; color: var(--fg-2); margin-bottom: 28px;
+}
+.os-analysis-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 32px;
+}
+.os-card {
+  padding: 18px; border-radius: var(--r-2);
+  background: var(--sunken-bg); border: 1px solid var(--line);
+}
+.os-card h4 {
+  margin: 0 0 8px 0; font-size: 14px; font-weight: 650; color: var(--fg-1);
+  display: flex; align-items: center; gap: 6px;
+}
+.os-card p {
+  margin: 0; font-size: 12.5px; line-height: 19px; color: var(--fg-2);
+}
+.os-tag {
+  display: inline-block; padding: 2px 6px; border-radius: var(--r-1);
+  background: var(--acc-soft); color: var(--acc-soft-fg);
+  font-size: 11px; font-weight: 600; margin-top: 8px;
 }
 </style>
 </head>
 
-<body data-theme="dark">
+<body data-theme="dark" class="mode-lock">
 
-<!-- Фонова шпалера + Scrim -->
-<div class="stage-wallpaper">
-  <div class="stage-scrim"></div>
-</div>
+<!-- СЛУЖБОВА ВЕРХНЯ ПАНЕЛЬ ДЛЯ ДЕМОНСТРАЦІЇ -->
+<nav class="demo-topbar">
+  <div class="demo-badge">Meridian OS v3.0</div>
 
-<!-- Екран плавного переходу в сесію -->
-<div class="launch-scrim" id="launchScrim">
-  <div class="spinner" style="width:36px; height:36px; border-width:3px; border-top-color:var(--acc-bg);"></div>
-  <div style="margin-top:16px; font-weight:550; font-size:15px; color:var(--fg-1);">Вхід до Glide Desktop...</div>
-</div>
+  <span class="demo-label">Тема:</span>
+  <div class="seg-control">
+    <button class="seg-btn" id="btnThemeLight" onclick="setTheme('light')">Світла</button>
+    <button class="seg-btn active" id="btnThemeDark" onclick="setTheme('dark')">Темна</button>
+  </div>
 
-<!-- ПЛАВАЮЧІ ІНДИКАТОРИ В КУТКУ -->
-<div class="floating-status-cluster">
-  <!-- Перемикач розкладки клавіатури -->
-  <button class="status-pill-btn kbd" id="kbdBtn" onclick="toggleKeyboardLayout()" title="Перемкнути розкладку (Super+Space)">
-    <span id="kbdText">UA</span>
-  </button>
+  <span class="demo-label" style="margin-left:8px;">Акцент:</span>
+  <div class="swatches" id="swatchList"></div>
 
-  <!-- Wi-Fi -->
-  <button class="status-pill-btn" title="Wi-Fi: Підключено (5 GHz)">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-  </button>
+  <span class="demo-label" style="margin-left:8px;">Масштаб годинника/аватара:</span>
+  <div class="seg-control">
+    <button class="seg-btn active" id="btnScaleGrand" onclick="setScale('grand')">Monumental (144px / 112px)</button>
+    <button class="seg-btn" id="btnScaleCompact" onclick="setScale('compact')">Classic (110px / 84px)</button>
+  </div>
 
-  <!-- Батарея -->
-  <button class="status-pill-btn" title="Батарея: 94%">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg>
-    <span style="font-size:11.5px; font-variant-numeric:tabular-nums;">94%</span>
-  </button>
-</div>
+  <span class="demo-label" style="margin-left:8px;">Режим:</span>
+  <div class="seg-control">
+    <button class="seg-btn active" id="btnModeLock" onclick="setMode('lock')">Вікно блокування</button>
+    <button class="seg-btn" id="btnModeDm" onclick="setMode('dm')">Display Manager</button>
+  </div>
 
-<!-- ГОЛОВНА РОЗМІТКА ЕКРАНА -->
-<div class="lockscreen-layout">
+  <span class="demo-label" style="margin-left:8px;">Медіа:</span>
+  <div class="seg-control">
+    <button class="seg-btn" id="btnMediaToggle" onclick="toggleMedia()">Увімк/Вимк</button>
+  </div>
+</nav>
 
-  <!-- ВЕРХ: ГОДИННИК ТА ДАТА (ЗБІЛЬШЕНИЙ ЕЛЕГАНТНИЙ ШРИФТ 114px) -->
-  <header class="clock-section">
-    <div class="lock-date" id="dateDisplay">пʼятниця, 25 вересня</div>
-    <div class="lock-time" id="timeDisplay">14:50</div>
+<!-- ГОЛОВНИЙ СТЕНД ЕКРАНА -->
+<div class="stage-container" id="stageContainer">
+
+  <!-- Фонова сцена -->
+  <div class="meridian-wall">
+    <div class="wall-ring ring-1"></div>
+    <div class="wall-ring ring-2"></div>
+    <div class="wall-ring ring-3"></div>
+  </div>
+  <div class="wall-scrim"></div>
+
+  <!-- Екран плавного переходу (Unlock) -->
+  <div class="unlock-scrim" id="unlockScrim">
+    <div class="spinner" style="width:36px; height:36px; border-width:3px; border-top-color:var(--acc-bg);"></div>
+    <div style="margin-top:16px; font-weight:600; font-size:15px; color:var(--fg-1);" id="unlockLabel">Розблокування сесії...</div>
+  </div>
+
+  <!-- 1. ІНТЕГРОВАНА СИСТЕМНА СМУГА (TOPBAR GLIDE) -->
+  <header class="lock-topbar">
+    <div class="topbar-left">
+      <div class="topbar-badge">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span id="lockStatusText">Заблоковано</span>
+      </div>
+    </div>
+
+    <!-- Status Island у центрі смуги -->
+    <div class="status-island" id="topbarIsland" onclick="toggleMedia()" title="Натисніть для перемикання віджета медіа">
+      <div class="equalizer">
+        <div class="eq-bar"></div>
+        <div class="eq-bar"></div>
+        <div class="eq-bar"></div>
+      </div>
+      <span id="islandMediaText">Океан Ельзи — Без бою</span>
+    </div>
+
+    <!-- Правий кластер статусів: строго R2 (8px) -->
+    <div class="topbar-right">
+      <button class="mrd-btn-tb kbd" id="kbdBtn" onclick="toggleLayout()" title="Змінити розкладку (Super+Space)">
+        <span id="kbdText">UA</span>
+      </button>
+
+      <button class="mrd-btn-tb" title="Мережа: Wi-Fi 5 GHz (Connected)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+      </button>
+
+      <button class="mrd-btn-tb" title="Батарея: 94%">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><rect x="4.5" y="9.5" width="10.5" height="5" rx="0.5" fill="currentColor" stroke="none"/></svg>
+        <span style="font-family:var(--mono); font-size:11.5px; font-weight:550;">94%</span>
+      </button>
+    </div>
   </header>
 
-  <!-- ЦЕНТР: АВАТАР, КОРИСТУВАЧ, ПОЛЕ ВХОДУ (Meridian) -->
-  <main class="auth-section">
+  <!-- 2. ГОЛОВНА ОБЛАСТЬ: МОНУМЕНТАЛЬНИЙ ГОДИННИК ТА АВАТАР -->
+  <main class="main-stage-area">
 
-    <!-- Круглий аватар -->
-    <button class="user-avatar-btn" onclick="focusPassword()" title="Користувач Артем">
-      <div class="user-avatar-img" id="avatarLetter">А</div>
-    </button>
+    <!-- ВЕЛИКИЙ КІНЕМАТОГРАФІЧНИЙ ГОДИННИК -->
+    <section class="clock-block">
+      <div class="lock-date" id="dateDisplay">
+        <span class="date-pill">середа</span> 21 жовтня
+      </div>
+      <div class="lock-time" id="timeDisplay">14:50</div>
+    </section>
 
-    <!-- Ім'я -->
-    <div class="user-name-label" id="userNameLabel">Артем</div>
-
-    <!-- Поле введення пароля (Meridian контрол --r-2: 8px) -->
-    <form class="password-box" id="loginForm" onsubmit="handleAuthSubmit(event)">
-      <input
-        type="password"
-        class="pwd-field"
-        id="pwdInput"
-        placeholder="Введіть пароль"
-        autocomplete="current-password"
-        autofocus
-      />
-      <button type="submit" class="pwd-submit-btn" id="submitBtn" title="Увійти">
-        <span id="submitIcon">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-        </span>
+    <!-- РОЗШИРЕНИЙ ВІДЖЕТ МЕДІА (STATUS ISLAND CARD) -->
+    <div class="lock-media-widget active" id="mediaWidget">
+      <div class="media-cover">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      </div>
+      <div class="media-info">
+        <div class="media-title">Без бою</div>
+        <div class="media-artist">Океан Ельзи · Gloria</div>
+      </div>
+      <button class="media-ctl-btn" title="Попередня пісня">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
       </button>
-    </form>
-
-    <!-- Підказка біометрії (Touch ID) -->
-    <div class="biometric-hint" id="biometricHint" onclick="simulateFingerprintAuth()" title="Натисніть для симуляції Touch ID">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/></svg>
-      <span id="hintText">Торкніться Touch ID або натисніть Enter</span>
+      <button class="media-ctl-btn" id="mediaPlayBtn" onclick="togglePlay()" title="Пауза / Відтворення">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+      </button>
+      <button class="media-ctl-btn" title="Наступна пісня">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+      </button>
     </div>
+
+    <!-- КАРТКА АУТЕНТИФІКАЦІЇ З ВЕЛИКИМ ОБІГРАНИМ АВАТАРОМ -->
+    <section class="auth-card">
+
+      <!-- ВЕЛИКИЙ АВАТАР: Скляний п'єдестал + світловий ореол + бейдж сесії -->
+      <div class="avatar-stage" id="avatarStage" onclick="focusField()" title="Натисніть для введення пароля">
+        <div class="avatar-halo"></div>
+        <div class="avatar-pedestal">
+          <div class="avatar-core" id="avatarInitial">А</div>
+        </div>
+        <div class="avatar-status-badge" title="Сесія захищена">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+      </div>
+
+      <!-- Ім'я користувача -->
+      <div class="user-name" id="userName">Артем</div>
+
+      <!-- Вибір користувача (у режимі Display Manager) -->
+      <div class="user-picker-row">
+        <button class="user-chip active" onclick="switchUser('Артем', 'А')">Артем</button>
+        <button class="user-chip" onclick="switchUser('Марія', 'М')">Марія</button>
+        <button class="user-chip" onclick="switchUser('Гість', 'Г')">Гість</button>
+      </div>
+
+      <!-- Поле введення пароля (Meridian контрол --r-2: 8px) -->
+      <form class="input-group" id="authForm" onsubmit="handleAuth(event)">
+        <input
+          type="password"
+          class="mrd-input-field"
+          id="pwdField"
+          placeholder="Введіть пароль"
+          autocomplete="current-password"
+          autofocus
+        />
+        <button type="submit" class="mrd-submit-btn" id="submitBtn" title="Підтвердити">
+          <span id="submitIcon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </span>
+        </button>
+      </form>
+
+      <!-- Підказка біометрії Touch ID -->
+      <div class="auth-hint" id="hintRow" onclick="simulateBio()" title="Натисніть для імітації Touch ID">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/></svg>
+        <span id="hintText">Торкніться Touch ID або натисніть Enter</span>
+      </div>
+
+    </section>
 
   </main>
 
-  <!-- НИЗ: ЦІКАВО ОБІГРАНИЙ ОСТРІВ ЖИВЛЕННЯ ЗЛІВА, СТІЛЬНИЦЯ СПРАВА -->
-  <footer class="bottom-dock-row">
+  <!-- 3. НИЖНЯ ПАНЕЛЬ: ЖИВЛЕННЯ ТА СЕСІЯ -->
+  <footer class="lock-bottom-row">
 
-    <!-- ЗЛІВА ВНИЗУ: Інтерактивна капсула живлення з Inline Morphing -->
-    <div class="power-cluster-left">
-      <div class="power-morph-capsule" id="powerCapsule">
+    <!-- ЗЛІВА ВНИЗУ: ОСТРІВ ЖИВЛЕННЯ З INLINE-ОЗБРОЄННЯМ (ФОРМА MERIDIAN --r-2: 8px) -->
+    <div class="power-cluster">
+      <div class="power-shelf" id="powerShelf">
 
-        <!-- Звичайний стан: 3 дії з магнітним розгортанням тексту на ховері -->
-        <div class="power-idle-tray" id="powerIdleTray">
-          <!-- Сон -->
-          <button class="pwr-item-btn" onclick="armInlineAction('sleep', 'Перевести комп’ютер у сон?', 'Заснути', 'accent')" title="Сон">
-            <span class="pwr-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-            </span>
-            <span class="pwr-text">Сон</span>
+        <!-- Звичайний стан -->
+        <div class="power-idle-items" id="powerIdleGroup">
+          <button class="mrd-btn-pwr" onclick="armPower('sleep', 'Перевести комп’ютер у сон?', 'Заснути', 'accent')" title="Сон">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <span>Сон</span>
           </button>
 
-          <div class="pwr-divider"></div>
+          <div class="pwr-sep"></div>
 
-          <!-- Перезапуск -->
-          <button class="pwr-item-btn danger-act" onclick="armInlineAction('restart', 'Перезавантажити компʼютер?', 'Перезапуск', 'danger')" title="Перезапуск">
-            <span class="pwr-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            </span>
-            <span class="pwr-text">Перезапуск</span>
+          <button class="mrd-btn-pwr danger" onclick="armPower('restart', 'Перезавантажити компʼютер?', 'Перезапуск', 'danger')" title="Перезапуск">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span>Перезапуск</span>
           </button>
 
-          <div class="pwr-divider"></div>
+          <div class="pwr-sep"></div>
 
-          <!-- Вимкнути -->
-          <button class="pwr-item-btn danger-act" onclick="armInlineAction('shutdown', 'Вимкнути компʼютер?', 'Вимкнути', 'danger')" title="Вимкнути">
-            <span class="pwr-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="20" x2="12" y2="12"/></svg>
-            </span>
-            <span class="pwr-text">Вимкнути</span>
+          <button class="mrd-btn-pwr danger" onclick="armPower('shutdown', 'Вимкнути компʼютер?', 'Вимкнути', 'danger')" title="Вимкнути">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="20" x2="12" y2="12"/></svg>
+            <span>Вимкнути</span>
           </button>
         </div>
 
-        <!-- Озброєний стан: плавно замінює іконки прямо всередині капсули -->
-        <div class="power-armed-tray" id="powerArmedTray">
-          <span class="armed-question-text" id="armedQuestion">Вимкнути компʼютер?</span>
-          <button class="armed-btn-confirm danger" id="armedConfirmBtn" onclick="confirmPowerAction()">Вимкнути</button>
-          <button class="armed-btn-cancel" onclick="cancelInlineAction()" title="Скасувати (Esc)">✕</button>
+        <!-- Озброєний стан дії (підтвердження inline) -->
+        <div class="power-armed-shelf" id="powerArmedGroup">
+          <span class="armed-q" id="armedQuestion">Вимкнути компʼютер?</span>
+          <button class="mrd-btn-confirm danger" id="armedConfirmBtn" onclick="confirmPower()">Вимкнути</button>
+          <button class="mrd-btn-cancel" onclick="cancelPower()" title="Скасувати (Esc)">✕</button>
         </div>
 
       </div>
     </div>
 
-    <!-- СПРАВА ВНИЗУ: Вибір стільниці (Wayland Session Picker) -->
-    <div class="session-cluster-right">
-      <button class="session-pill-btn" onclick="toggleSessionMenu(event)" title="Вибрати стільницю">
+    <!-- СПРАВА ВНИЗУ: ВИБІР СТІЛЬНИЦІ WAYLAND (ТИЛЬКИ ДЛЯ РЕЖИМУ DISPLAY MANAGER) -->
+    <div class="session-cluster">
+      <button class="session-btn" onclick="toggleSessionMenu(event)" title="Вибрати стільницю">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-        <span id="currentSessionLabel">Glide Desktop</span>
+        <span id="sessionLabel">Glide Desktop</span>
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
 
-      <!-- Спливне меню вибору сесії (відкривається вгору) -->
-      <div class="session-menu-popover" id="sessionMenu">
-        <button class="session-menu-option active" onclick="pickSession('Glide Desktop')">
-          <span>Glide Desktop (Wayland)</span>
+      <!-- Меню вибору сесії (popover: --r-3: 12px) -->
+      <div class="session-popover" id="sessionMenu">
+        <button class="session-row active" onclick="selectSession('Glide Desktop (Wayland)')">
+          <span>Glide Desktop</span>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
         </button>
-        <button class="session-menu-option" onclick="pickSession('GNOME (Wayland)')">
+        <button class="session-row" onclick="selectSession('GNOME (Wayland)')">
           <span>GNOME (Wayland)</span>
         </button>
-        <button class="session-menu-option" onclick="pickSession('Sway')">
+        <button class="session-row" onclick="selectSession('Sway')">
           <span>Sway</span>
         </button>
       </div>
@@ -675,9 +1020,154 @@ html, body {
 
 </div>
 
+<!-- РОЗДІЛ ДОСЛІДЖЕННЯ: ЯК ЦЕ ЗРОБЛЕНО В ІНШИХ ОС ТА ЯК МИ ЦЕ ОБІГРАЛИ -->
+<section class="doc-section">
+  <h3 class="doc-title">Як великий годинник та аватар реалізовані в інших ОС</h3>
+  <p class="doc-lede">
+    Ми дослідили передовий досвід сучасних десктопних і мобільних операційних систем (macOS Sonoma/Sequoia, Android 14/15, Windows 11, iOS 18), щоб створити виразну монументальну композицію, яка органічно інтегрована у філософію Meridian «Structured Calm».
+  </p>
+
+  <div class="os-analysis-grid">
+    <div class="os-card">
+      <h4> macOS Sonoma & Sequoia</h4>
+      <p>
+        Впроваджено функцію <strong>«Show Large Clock»</strong>: масивна гарнітура SF Pro Display (120–140px) з високою оптичною щільністю та напівпрозорою тінню. Аватар розташовується в центрі над іменем і Touch ID, створюючи єдину вертикальну вісь уваги.
+      </p>
+      <span class="os-tag">Монументальна типографіка</span>
+    </div>
+
+    <div class="os-card">
+      <h4>🤖 Android 14 / 15 Pixel</h4>
+      <p>
+        Гігантський динамічний годинник, що масштабується залежно від контексту та наявності сповіщень. Використовує колірний адаптивний тон Material You та виразний шрифт із чіткими табличними цифрами без стрибків.
+      </p>
+      <span class="os-tag">Динамічний контекст</span>
+    </div>
+
+    <div class="os-card">
+      <h4>🪟 Windows 11 Acrylic</h4>
+      <p>
+        Двоетапна сцена: великий годинник у верхній третині при блокуванні, а при взаємодії — посилення акрилового розмиття (Acrylic Blur) та плавний вихід великого круглого аватара з акцентним підсвічуванням.
+      </p>
+      <span class="os-tag">Акрилова глибина</span>
+    </div>
+  </div>
+
+  <h4 style="font-size:16px; margin:24px 0 10px; color:var(--fg-1);">🎨 Як ми це обіграли в Meridian OS:</h4>
+  <ul style="font-size:13.5px; line-height:22px; color:var(--fg-2); padding-left:20px; margin:0;">
+    <li><strong>Кінематографічний годинник (144px):</strong> Збільшено кегль до монументальних 144px із від'ємним трекінгом <code>-0.05em</code>, табличними пропорціями (tabular-nums) та дифузною об'ємною тінню, що додає глибини над шпалерами.</li>
+    <li><strong>Багатошаровий п'єдестал аватара (112px):</strong> Аватар збільшено з 82px до 112px. Додано зовнішнє напівпрозоре скляне кільце (Glass Pedestal), м'який акцентний світловий ореол (Ambient Halo) на фокусі/наведенні, а також міні-бейдж безпеки сесії.</li>
+    <li><strong>Інтерактивний зв'язок:</strong> Натискання на аватар фокусує поле введення, а при активному вводі ореол аватара м'яко пульсує акцентним кольором.</li>
+    <li><strong>Суворе дотримання форми:</strong> Усі кнопки та панелі мають радіус <code>8px (--r-2)</code>, тоді як радіус <code>999px</code> залишається привілеєм виключно круглого аватара.</li>
+  </ul>
+</section>
+
 <script>
-// Годинник і дата реального часу (Збільшений 114px шрифт)
-function updateTime() {
+/* =========================================================================
+   АКЦЕНТИ ТА ТЕМИ MERIDIAN
+   ========================================================================= */
+const ACCENTS = [
+  { id: 'blue',     name: 'Азурит',   ramp: ['#d9e6fb', '#a7c8f6', '#5b9bec', '#2f6fd0', '#1f56a8', '#163e79'] },
+  { id: 'teal',     name: 'Малахіт',  ramp: ['#d3ebe7', '#9ad4cd', '#46b3a6', '#128b7e', '#0d6a61', '#084b45'] },
+  { id: 'green',    name: 'Хвоя',     ramp: ['#dcefd9', '#b0dbaa', '#6cbb62', '#3f9639', '#2d7229', '#1e4f1c'] },
+  { id: 'amber',    name: 'Бурштин',  ramp: ['#faecd2', '#f2d296', '#e0a83f', '#b57e10', '#8d600b', '#63430a'] },
+  { id: 'orange',   name: 'Теракота', ramp: ['#fce4d6', '#f6bf9c', '#ec8b4f', '#cf6524', '#a44b17', '#74340f'] },
+  { id: 'red',      name: 'Цинобра',  ramp: ['#fbe3e0', '#f3b8b1', '#e3736a', '#c8483c', '#9f3529', '#71241b'] },
+  { id: 'purple',   name: 'Аметист',  ramp: ['#eae0f8', '#cdb4ee', '#a077d8', '#7a4dbb', '#5d3893', '#402566'] },
+  { id: 'graphite', name: 'Графіт',   ramp: ['#e5e2db', '#c6c0b5', '#918a7d', '#6a6459', '#4c4740', '#35312c'] }
+];
+
+let currentTheme = 'dark';
+let currentAccent = ACCENTS[0];
+
+function rgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
+
+function applyAccent(acc) {
+  currentAccent = acc;
+  const s = document.documentElement.style;
+  acc.ramp.forEach((c, i) => s.setProperty(`--ac-${i + 1}`, c));
+
+  if (currentTheme === 'dark') {
+    s.setProperty('--acc-bg', acc.ramp[3]);
+    s.setProperty('--acc-bg-hover', acc.ramp[2]);
+    s.setProperty('--acc-fg', '#ffffff');
+    s.setProperty('--acc-text', acc.ramp[2]);
+    s.setProperty('--acc-soft', `rgba(${rgb(acc.ramp[2])}, 0.20)`);
+    s.setProperty('--acc-soft-fg', acc.ramp[1]);
+    s.setProperty('--acc-ring', `rgba(${rgb(acc.ramp[2])}, 0.40)`);
+  } else {
+    s.setProperty('--acc-bg', acc.ramp[3]);
+    s.setProperty('--acc-bg-hover', acc.ramp[4]);
+    s.setProperty('--acc-fg', '#ffffff');
+    s.setProperty('--acc-text', acc.ramp[4]);
+    s.setProperty('--acc-soft', acc.ramp[0]);
+    s.setProperty('--acc-soft-fg', acc.ramp[5]);
+    s.setProperty('--acc-ring', `rgba(${rgb(acc.ramp[3])}, 0.32)`);
+  }
+
+  document.querySelectorAll('.swatch').forEach(b => {
+    b.classList.toggle('active', b.dataset.id === acc.id);
+  });
+}
+
+function setTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+  document.getElementById('btnThemeLight').classList.toggle('active', theme === 'light');
+  document.getElementById('btnThemeDark').classList.toggle('active', theme === 'dark');
+  applyAccent(currentAccent);
+}
+
+// Ініціалізація списку зразків акцентів
+const swatchContainer = document.getElementById('swatchList');
+ACCENTS.forEach(acc => {
+  const b = document.createElement('button');
+  b.className = 'swatch';
+  b.dataset.id = acc.id;
+  b.title = acc.name;
+  b.style.background = `linear-gradient(135deg, ${acc.ramp[2]}, ${acc.ramp[4]})`;
+  b.onclick = () => applyAccent(acc);
+  swatchContainer.appendChild(b);
+});
+applyAccent(ACCENTS[0]);
+
+/* =========================================================================
+   ПЕРЕМИКАННЯ МАСШТАБУ (MONUMENTAL VS CLASSIC)
+   ========================================================================= */
+function setScale(scale) {
+  document.body.classList.toggle('scale-compact', scale === 'compact');
+  document.getElementById('btnScaleGrand').classList.toggle('active', scale === 'grand');
+  document.getElementById('btnScaleCompact').classList.toggle('active', scale === 'compact');
+}
+
+/* =========================================================================
+   ПЕРЕМИКАННЯ РЕЖИМІВ (DISPLAY MANAGER VS LOCK SCREEN)
+   ========================================================================= */
+function setMode(mode) {
+  document.body.classList.toggle('mode-lock', mode === 'lock');
+  document.body.classList.toggle('mode-dm', mode === 'dm');
+  document.getElementById('btnModeLock').classList.toggle('active', mode === 'lock');
+  document.getElementById('btnModeDm').classList.toggle('active', mode === 'dm');
+
+  const statusText = document.getElementById('lockStatusText');
+  const unlockLabel = document.getElementById('unlockLabel');
+
+  if (mode === 'lock') {
+    statusText.textContent = 'Заблоковано';
+    unlockLabel.textContent = 'Розблокування сесії...';
+  } else {
+    statusText.textContent = 'Meridian OS';
+    unlockLabel.textContent = 'Вхід до Glide Desktop...';
+  }
+}
+
+/* =========================================================================
+   ГОДИННИК ТА ДАТА
+   ========================================================================= */
+function updateClock() {
   const now = new Date();
   const hours = String(now.getHours()).padStart(2, '0');
   const minutes = String(now.getMinutes()).padStart(2, '0');
@@ -685,121 +1175,170 @@ function updateTime() {
 
   const days = ['неділя', 'понеділок', 'вівторок', 'середа', 'четвер', 'пʼятниця', 'субота'];
   const months = ['січня', 'лютого', 'березня', 'квітня', 'травня', 'червня', 'липня', 'серпня', 'вересня', 'жовтня', 'листопада', 'грудня'];
-  document.getElementById('dateDisplay').textContent = `${days[now.getDay()]}, ${now.getDate()} ${months[now.getMonth()]}`;
+  document.getElementById('dateDisplay').innerHTML = `<span class="date-pill">${days[now.getDay()]}</span> ${now.getDate()} ${months[now.getMonth()]}`;
 }
-setInterval(updateTime, 1000);
-updateTime();
+setInterval(updateClock, 1000);
+updateClock();
 
-// Фокус у поле вводу
-function focusPassword() {
-  document.getElementById('pwdInput').focus();
-}
-
-// Перемикач розкладки клавіатури
+/* =========================================================================
+   РОЗКЛАДКА КЛАВІАТУРИ
+   ========================================================================= */
 const kbdText = document.getElementById('kbdText');
-function toggleKeyboardLayout() {
+function toggleLayout() {
   kbdText.textContent = kbdText.textContent === 'UA' ? 'EN' : 'UA';
 }
 
-// Меню вибору сесії Wayland (справа внизу)
-const sessionMenu = document.getElementById('sessionMenu');
-function toggleSessionMenu(e) {
-  e.stopPropagation();
-  sessionMenu.classList.toggle('open');
+/* =========================================================================
+   МЕДІАВІДЖЕТ
+   ========================================================================= */
+let isMediaPlaying = true;
+const mediaWidget = document.getElementById('mediaWidget');
+const mediaPlayBtn = document.getElementById('mediaPlayBtn');
+
+function toggleMedia() {
+  mediaWidget.classList.toggle('active');
+  const active = mediaWidget.classList.contains('active');
+  document.getElementById('topbarIsland').style.display = active ? 'flex' : 'none';
 }
-function pickSession(name) {
-  document.getElementById('currentSessionLabel').textContent = name;
-  sessionMenu.classList.remove('open');
+
+function togglePlay() {
+  isMediaPlaying = !isMediaPlaying;
+  const bars = document.querySelectorAll('.eq-bar');
+  if (isMediaPlaying) {
+    mediaPlayBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+    bars.forEach(b => b.style.animationPlayState = 'running');
+  } else {
+    mediaPlayBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>`;
+    bars.forEach(b => b.style.animationPlayState = 'paused');
+  }
 }
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('#sessionMenu') && !e.target.closest('.session-pill-btn')) {
-    sessionMenu.classList.remove('open');
-  }
-  if (!e.target.closest('#powerCapsule')) {
-    cancelInlineAction();
-  }
+
+/* =========================================================================
+   ВИБІР КОРИСТУВАЧА ТА ВВЕДЕННЯ
+   ========================================================================= */
+function switchUser(name, initial) {
+  document.getElementById('userName').textContent = name;
+  document.getElementById('avatarInitial').textContent = initial;
+  document.querySelectorAll('.user-chip').forEach(b => {
+    b.classList.toggle('active', b.textContent === name);
+  });
+  const input = document.getElementById('pwdField');
+  input.value = '';
+  input.focus();
+}
+
+function focusField() {
+  const input = document.getElementById('pwdField');
+  input.focus();
+  document.getElementById('avatarStage').classList.add('active-focus');
+}
+
+document.getElementById('pwdField').addEventListener('blur', () => {
+  document.getElementById('avatarStage').classList.remove('active-focus');
+});
+document.getElementById('pwdField').addEventListener('focus', () => {
+  document.getElementById('avatarStage').classList.add('active-focus');
 });
 
-// Кнопка Esc скасовує озброєння дій або закриває меню
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    cancelInlineAction();
-    sessionMenu.classList.remove('open');
-  }
-});
-
-// Обробка форми логіну
-function handleAuthSubmit(e) {
+function handleAuth(e) {
   e.preventDefault();
-  const input = document.getElementById('pwdInput');
+  const input = document.getElementById('pwdField');
   const val = input.value.trim();
-
   const submitIcon = document.getElementById('submitIcon');
+  const hint = document.getElementById('hintRow');
+  const hintText = document.getElementById('hintText');
+
   submitIcon.innerHTML = `<span class="spinner"></span>`;
 
   setTimeout(() => {
     if (val === 'wrong') {
-      // Помилка (shake)
       input.classList.remove('error');
       void input.offsetWidth;
       input.classList.add('error');
       input.value = '';
 
-      const hint = document.getElementById('biometricHint');
-      const hintText = document.getElementById('hintText');
-      hint.className = 'biometric-hint error-msg';
+      hint.className = 'auth-hint error';
       hintText.textContent = 'Невірний пароль. Спробуйте ще раз';
-
       submitIcon.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`;
 
       setTimeout(() => {
-        hint.className = 'biometric-hint';
+        hint.className = 'auth-hint';
         hintText.textContent = 'Торкніться Touch ID або натисніть Enter';
         input.classList.remove('error');
-      }, 2500);
+      }, 2400);
     } else {
-      // Успішний вхід (запуск Glide)
-      document.body.classList.add('launching');
+      document.body.classList.add('unlocking');
+      setTimeout(() => {
+        document.body.classList.remove('unlocking');
+        input.value = '';
+        submitIcon.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`;
+      }, 1600);
     }
   }, 450);
 }
 
-// Симуляція відбитка пальця
-function simulateFingerprintAuth() {
-  const hint = document.getElementById('biometricHint');
+function simulateBio() {
+  const hint = document.getElementById('hintRow');
   const hintText = document.getElementById('hintText');
-  hint.className = 'biometric-hint ok-msg';
+  hint.className = 'auth-hint ok';
   hintText.textContent = '✓ Відбиток розпізнано! Вхід...';
 
   setTimeout(() => {
-    document.body.classList.add('launching');
+    document.body.classList.add('unlocking');
+    setTimeout(() => {
+      document.body.classList.remove('unlocking');
+      hint.className = 'auth-hint';
+      hintText.textContent = 'Торкніться Touch ID або натисніть Enter';
+    }, 1600);
   }, 400);
 }
 
-// =========================================================================
-// ЦІКАВЕ ІНТЕРАКТИВНЕ ОБІГРАВАННЯ КНОПОК ЖИВЛЕННЯ (Inline Morphing)
-// =========================================================================
-let activePowerAction = null;
-const powerCapsule = document.getElementById('powerCapsule');
+/* =========================================================================
+   ДВОЕТАПНЕ ЖИВЛЕННЯ (INLINE POWER ARMING)
+   ========================================================================= */
+const powerShelf = document.getElementById('powerShelf');
 const armedQuestion = document.getElementById('armedQuestion');
 const armedConfirmBtn = document.getElementById('armedConfirmBtn');
 
-function armInlineAction(action, questionText, confirmBtnLabel, themeType) {
-  activePowerAction = action;
+function armPower(action, questionText, confirmLabel, themeType) {
   armedQuestion.textContent = questionText;
-  armedConfirmBtn.textContent = confirmBtnLabel;
-  armedConfirmBtn.className = `armed-btn-confirm ${themeType}`;
-  powerCapsule.classList.add('armed');
+  armedConfirmBtn.textContent = confirmLabel;
+  armedConfirmBtn.className = `mrd-btn-confirm ${themeType}`;
+  powerShelf.classList.add('armed');
 }
 
-function cancelInlineAction() {
-  powerCapsule.classList.remove('armed');
-  activePowerAction = null;
+function cancelPower() { powerShelf.classList.remove('armed'); }
+function confirmPower() { cancelPower(); }
+
+/* =========================================================================
+   МЕНЮ ВИБОРУ СЕСІЇ (WAYLAND SESSION PICKER)
+   ========================================================================= */
+const sessionMenu = document.getElementById('sessionMenu');
+function toggleSessionMenu(e) {
+  e.stopPropagation();
+  sessionMenu.classList.toggle('open');
 }
 
-function confirmPowerAction() {
-  cancelInlineAction();
+function selectSession(name) {
+  document.getElementById('sessionLabel').textContent = name;
+  sessionMenu.classList.remove('open');
 }
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#sessionMenu') && !e.target.closest('.session-btn')) {
+    sessionMenu.classList.remove('open');
+  }
+  if (!e.target.closest('#powerShelf')) {
+    cancelPower();
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    cancelPower();
+    sessionMenu.classList.remove('open');
+  }
+});
 </script>
 
 </body>

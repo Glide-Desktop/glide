@@ -38,6 +38,7 @@ pub struct WindowState {
     pub fullscreen: bool,
     pub minimized: bool,
     pub insets: Insets,
+    pub parent: Option<WindowId>,
 }
 
 impl WindowState {
@@ -485,7 +486,24 @@ impl Layout {
 
     pub fn add_window_with_parent(&mut self, w: WindowId, initial_size: Size, parent: WindowId) -> WorkspaceId {
         let ws_id = self.windows.get(&parent).map_or(self.active, |state| state.workspace_id);
-        self.insert_window(w, ws_id, initial_size)
+        let ws_id = self.insert_window(w, ws_id, initial_size);
+        let over = self.centered_over_parent(parent, initial_size, Insets::NONE);
+        if let Some(state) = self.windows.get_mut(&w) {
+            state.parent = Some(parent);
+            if let Some(geometry) = over.filter(|_| state.is_placed) {
+                state.geometry = geometry;
+            }
+        }
+        ws_id
+    }
+
+    fn centered_over_parent(&self, parent: WindowId, content_size: Size, insets: Insets) -> Option<Rectangle> {
+        let parent = self.windows.get(&parent).filter(|state| state.is_placed && !state.minimized)?;
+        let frame_size = content_size.grow(insets);
+        let host = parent.frame_geometry();
+        let x = host.loc.x + (host.size.width - frame_size.width) / 2;
+        let y = host.loc.y + (host.size.height - frame_size.height) / 2;
+        Some(keep_reachable(Rectangle::new(Point::new(x, y), frame_size), self.placement_work_area()))
     }
 
     fn insert_window(&mut self, w: WindowId, ws_id: WorkspaceId, size: Size) -> WorkspaceId {
@@ -508,6 +526,7 @@ impl Layout {
                 fullscreen: false,
                 minimized: false,
                 insets: Insets::NONE,
+                parent: None,
             },
         );
         if let Some(ws) = self.workspace_mut(ws_id) {
@@ -652,7 +671,10 @@ impl Layout {
         let index_on_ws =
             self.workspace(state.workspace_id).and_then(|ws| ws.windows.iter().position(|&id| id == w)).unwrap_or(0);
 
-        let geometry = self.calculate_centered_geometry(size, insets, index_on_ws);
+        let geometry = state
+            .parent
+            .and_then(|parent| self.centered_over_parent(parent, size, insets))
+            .unwrap_or_else(|| self.calculate_centered_geometry(size, insets, index_on_ws));
         if let Some(state) = self.windows.get_mut(&w) {
             state.geometry = geometry;
             state.is_placed = true;

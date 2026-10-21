@@ -24,13 +24,16 @@ fn luma(c: Color) -> f32 {
 
 #[test]
 fn widget_styles_use_only_meridian_radii() {
+    use glide_settings::theme::{chip_style, icon_button_style};
     const { assert!(R1 < R2 && R2 < R3 && R3 < R_ROUND) };
     let theme = ThemeState::new(Appearance::Dark, Accent::Blue);
     let active = button::Status::Active;
     assert_eq!(card_style(&theme).border.radius, radius_r3());
-    for style in [button_primary, button_secondary, button_ghost] {
+    for style in [button_primary, button_secondary, button_ghost, icon_button_style] {
         assert_eq!(style(&theme, active).border.radius, radius_r2());
     }
+    assert_eq!(chip_style(&theme, false, active).border.radius, radius_r2());
+    assert_eq!(chip_style(&theme, true, active).border.radius, radius_r2());
     assert_eq!(text_input_style(&theme, text_input::Status::Active).border.radius, radius_r2());
     let on = toggler::Status::Active { is_toggled: true };
     assert_eq!(toggle_style(&theme, on).border_radius, Some(radius_round()));
@@ -104,5 +107,32 @@ fn every_settings_accent_has_names_and_an_opaque_sample() {
         assert!(!accent.name().is_empty() && !accent.name_uk().is_empty());
         assert!(accent.primary_hex().starts_with('#'));
         assert!(accent.sample_color().a > 0.99);
+    }
+}
+
+#[test]
+fn primary_button_and_menu_follow_meridian_tokens() {
+    use glide_settings::theme::{banner_style, elevation, menu_style};
+    use glide_theme::elevation::Level;
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        let theme = ThemeState::new(appearance, Accent::Blue);
+        let active = button_primary(&theme, button::Status::Active);
+        let hovered = button_primary(&theme, button::Status::Hovered);
+        let disabled = button_primary(&theme, button::Status::Disabled);
+        assert_eq!(active.background, Some(iced::Background::Color(theme.acc_bg())));
+        assert_eq!(hovered.background, Some(iced::Background::Color(theme.acc_bg_hover())));
+        assert_eq!(active.shadow, elevation(&theme, Level::El1));
+        assert_eq!(hovered.shadow, elevation(&theme, Level::El2));
+        assert_eq!(disabled.shadow, iced::Shadow::default());
+
+        let menu = menu_style(&theme);
+        assert_eq!(menu.border.color, theme.line());
+        assert_eq!(menu.selected_background, iced::Background::Color(theme.fill_2()));
+        assert_eq!(menu.selected_text_color, theme.fg_1());
+        assert_eq!(menu.shadow, elevation(&theme, Level::El3));
+
+        assert_eq!(banner_style(&theme, theme.danger()).background, Some(iced::Background::Color(theme.danger_soft())));
+        assert_eq!(banner_style(&theme, theme.warn()).background, Some(iced::Background::Color(theme.warn_soft())));
+        assert_eq!(banner_style(&theme, theme.ok()).background, Some(iced::Background::Color(theme.ok_soft())));
     }
 }

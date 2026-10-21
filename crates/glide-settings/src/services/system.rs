@@ -2,6 +2,7 @@ use std::path::Path;
 
 use super::run;
 use super::timedate::{authorized_call, system_proxy};
+use crate::i18n::Lang;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SystemInfo {
@@ -178,16 +179,30 @@ pub fn collect() -> SystemInfo {
     }
 }
 
-#[must_use]
-pub fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut size = bytes as f64;
+fn scaled(bytes: u64, base: f64, units: [(&'static str, &'static str); 4], lang: Lang) -> String {
+    let pick = |(en, uk): (&'static str, &'static str)| if lang == Lang::Uk { uk } else { en };
+    if (bytes as f64) < base {
+        return format!("{bytes} {}", pick(("B", "Б")));
+    }
+    let mut value = bytes as f64 / base;
     let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
+    while value >= base - 0.05 && unit + 1 < units.len() {
+        value /= base;
         unit += 1;
     }
-    if unit == 0 || size >= 100.0 { format!("{size:.0} {}", UNITS[unit]) } else { format!("{size:.1} {}", UNITS[unit]) }
+    let number = format!("{value:.1}");
+    let number = if lang == Lang::Uk { number.replace('.', ",") } else { number };
+    format!("{number} {}", pick(units[unit]))
+}
+
+#[must_use]
+pub fn format_bytes(bytes: u64, lang: Lang) -> String {
+    scaled(bytes, 1000.0, [("kB", "кБ"), ("MB", "МБ"), ("GB", "ГБ"), ("TB", "ТБ")], lang)
+}
+
+#[must_use]
+pub fn format_memory(bytes: u64, lang: Lang) -> String {
+    scaled(bytes, 1024.0, [("KiB", "КіБ"), ("MiB", "МіБ"), ("GiB", "ГіБ"), ("TiB", "ТіБ")], lang)
 }
 
 #[must_use]

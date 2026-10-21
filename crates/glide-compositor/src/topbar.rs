@@ -68,7 +68,7 @@ const APP_STYLE: TextStyle = TextStyle {
     line_height_px: TextStyle::TOPBAR.line_height_px,
     ..TextStyle::HEAD
 };
-const APP_NAME_MAX: usize = 28;
+const APP_NAME_MAX: usize = 36;
 
 const SEG_HEIGHT: i32 = 20;
 const SEG_INSET: i32 = 2;
@@ -2554,14 +2554,18 @@ pub fn short_layout_name(name: &str) -> String {
 
 #[must_use]
 pub fn app_display_name(app_id: &str, title: &str) -> String {
+    let title_trimmed = title.trim();
+    if !title_trimmed.is_empty() {
+        return truncate_name(title_trimmed);
+    }
     let trimmed = app_id.trim();
     if trimmed.is_empty() {
-        return truncate_name(title.trim());
+        return String::new();
     }
     let tail = trimmed.rsplit('.').next().unwrap_or(trimmed);
     let tail = tail.trim();
     if tail.is_empty() {
-        return truncate_name(title.trim());
+        return String::new();
     }
     let mut chars = tail.chars();
     let name = match chars.next() {
@@ -4945,8 +4949,10 @@ mod tests {
         assert_eq!(short_layout_name("Ukrainian"), "UKR");
         assert_eq!(short_layout_name("English (US)"), "US");
         assert_eq!(short_layout_name("Polish (qwertz)"), "QWE");
+        assert_eq!(app_display_name("org.gnome.Nautilus", "Documents"), "Documents");
         assert_eq!(app_display_name("org.gnome.Nautilus", ""), "Nautilus");
         assert_eq!(app_display_name("kitty", ""), "Kitty");
+        assert_eq!(app_display_name("kitty", "fish ~"), "fish ~");
         assert_eq!(app_display_name("", "Some Window"), "Some Window");
         let shown = app_display_name(&"a".repeat(80), "");
         assert!(shown.chars().count() <= APP_NAME_MAX && shown.ends_with('…'));

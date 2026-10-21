@@ -44,6 +44,22 @@ fn runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
         .ok_or(Error::Unavailable)
 }
 
+fn block_on<F>(runtime: &tokio::runtime::Runtime, future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    match tokio::runtime::Handle::try_current() {
+        Err(_) => runtime.block_on(future),
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| runtime.block_on(future))
+        }
+        Ok(_) => std::thread::scope(|scope| {
+            scope.spawn(|| runtime.block_on(future)).join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        }),
+    }
+}
+
 #[must_use]
 pub fn socket_path() -> PathBuf {
     std::env::var("NB_DAEMON_ADDR")
@@ -122,12 +138,13 @@ impl Daemon {
 
     fn call<T, F, Fut>(&self, limit: Duration, request: F) -> Result<T, Error>
     where
+        T: Send,
         F: FnOnce(DaemonServiceClient<Channel>) -> Fut,
-        Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+        Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>> + Send,
     {
         let runtime = runtime()?;
         let future = request(self.client.clone());
-        runtime.block_on(async move {
+        block_on(runtime, async move {
             match tokio::time::timeout(limit, future).await {
                 Ok(Ok(response)) => Ok(response.into_inner()),
                 Ok(Err(status)) => Err(Error::from_status(&status)),
@@ -491,5 +508,44 @@ async fn watch_events(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(LAST_RETRY);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn missing() -> Daemon {
+        let path = std::env::temp_dir().join(format!("glide-netbird-missing-{}.sock", std::process::id()));
+        Daemon::at(&path).expect("lazy channel")
+    }
+
+    #[test]
+    fn calls_from_a_plain_thread_report_a_missing_daemon() {
+        assert!(missing().status().is_err());
+    }
+
+    #[test]
+    fn calls_from_inside_a_multi_thread_runtime_do_not_panic() {
+        let outer = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().expect("rt");
+        let daemon = missing();
+        let result = outer.block_on(outer.spawn(async move { daemon.status() })).expect("task");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn calls_from_inside_a_current_thread_runtime_do_not_panic() {
+        let outer = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("rt");
+        let daemon = missing();
+        assert!(outer.block_on(async move { daemon.status() }).is_err());
+    }
+
+    #[test]
+    fn calls_from_the_clients_own_worker_do_not_deadlock() {
+        let daemon = missing();
+        let own = runtime().expect("runtime");
+        let task = own.spawn(async move { (daemon.status(), daemon.compatible()) });
+        let (status, compatible) = own.block_on(task).expect("task");
+        assert!(status.is_err() && compatible.is_err());
     }
 }

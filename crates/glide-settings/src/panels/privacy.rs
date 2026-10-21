@@ -6,9 +6,10 @@ use super::network::note;
 use super::{Ctx, Pane};
 use crate::icons::Icon;
 use crate::services::config::{ConfigStore, DEFAULT_BLANK_AFTER};
-use crate::services::gsettings;
 use crate::services::privacy::{self, Footprint, PRIVACY, PrivacyState};
 use crate::services::run::blocking;
+use crate::services::system::format_bytes;
+use crate::services::{gsettings, keybinds};
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
 
@@ -49,10 +50,10 @@ mod tr {
         ClearHistory => "Clear history", "Очистити історію";
         Cleanup => "Clean up", "Прибирання";
         CleanupHint => "Files that stay on disk after you are done with them", "Файли, що лишаються на диску, коли вони вже не потрібні";
-        Trash => "Trash", "Кошик";
+        Trash => "Trash", "Смітник";
         TrashEmpty => "Empty", "Порожній";
-        EmptyTrash => "Empty trash", "Очистити кошик";
-        EmptyConfirm => "Permanently delete everything in the trash? This cannot be undone.", "Остаточно видалити все з кошика? Це не можна скасувати.";
+        EmptyTrash => "Empty Trash", "Очистити смітник";
+        EmptyConfirm => "Permanently delete everything in the Trash? This cannot be undone.", "Остаточно видалити все зі смітника? Це не можна скасувати.";
         Delete => "Delete", "Видалити";
         Thumbnails => "Thumbnail cache", "Кеш мініатюр";
         ThumbnailsHint => "Previews of pictures and videos. They are recreated when needed.", "Попередні перегляди зображень і відео. Створюються знову за потреби.";
@@ -117,6 +118,7 @@ impl Pane for Page {
         "блокування",
         "камера",
         "мікрофон",
+        "смітник",
         "кошик",
         "історія",
     ];
@@ -349,7 +351,7 @@ fn footprint(c: &Ctx, footprint: Footprint) -> String {
     if footprint.items == 0 {
         c.t(T::TrashEmpty).to_string()
     } else {
-        format!("{} {} · {}", footprint.items, c.t(T::Items), privacy::human_size(footprint.bytes))
+        format!("{} {} · {}", footprint.items, c.t(T::Items), format_bytes(footprint.bytes, c.lang))
     }
 }
 
@@ -372,7 +374,7 @@ fn lock<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         } else if value % 60 == 0 {
             format!("{} {}", value / 60, c.t(T::Minutes))
         } else {
-            format!("{value} s")
+            format!("{value} {}", c.t(T::Seconds))
         }
     });
     let lock_after = config.int_or("general", "lock-after-seconds", 0).max(-1);
@@ -399,9 +401,13 @@ fn lock<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
                 .subtitle(c.t(T::LockShortcut))
                 .prefix(widgets::icon(Icon::Lock, 18.0, t.fg_2()))
                 .suffix(
-                    row![widgets::key_combo(t, "Super+L"), widgets::secondary(t, c.t(T::Lock), Some(Msg::LockNow)),]
-                        .spacing(12)
-                        .align_y(Alignment::Center),
+                    row![
+                        keybinds::combo_for(&keybinds::current(config), "lock")
+                            .map(|combo| widgets::key_combo(t, &combo)),
+                        widgets::secondary(t, c.t(T::Lock), Some(Msg::LockNow)),
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
                 )
                 .build(),
         )

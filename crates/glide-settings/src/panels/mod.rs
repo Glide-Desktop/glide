@@ -68,6 +68,8 @@ pub trait Pane: Default {
         Task::none()
     }
 
+    fn leave(&mut self) {}
+
     fn update(&mut self, msg: Self::Msg, c: Ctx, config: &mut ConfigStore) -> Task<Self::Msg>;
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Self::Msg>;

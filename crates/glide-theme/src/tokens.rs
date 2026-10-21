@@ -15,6 +15,19 @@ pub const DARK_UNTIL_MINUTE: u16 = 7 * 60;
 
 impl Appearance {
     #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::Light, Self::Dark].into_iter().find(|appearance| appearance.key() == key)
+    }
+
+    #[must_use]
     pub const fn scheduled(minute_of_day: u16) -> Self {
         if minute_of_day >= DARK_FROM_MINUTE || minute_of_day < DARK_UNTIL_MINUTE { Self::Dark } else { Self::Light }
     }
@@ -79,6 +92,42 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    #[must_use]
+    pub const fn segment_thumb(&self) -> Color {
+        match self.appearance {
+            Appearance::Light => self.card_bg,
+            Appearance::Dark => self.fill_3,
+        }
+    }
+
+    #[must_use]
+    pub fn terminal_ansi(&self) -> [Color; 16] {
+        let dark = self.appearance == Appearance::Dark;
+        let mut colors = if dark {
+            [
+                "#131218", "#f0796f", "#8fe08a", "#e6c07b", "#8fb8ff", "#d797e8", "#76d6d5", "#cfe4ca", "#535158",
+                "#f4948c", "#a6e7a2", "#ebd097", "#a9cbff", "#e1aef0", "#95dedd", "#ffffff",
+            ]
+        } else {
+            [
+                "#1e241b", "#bf372c", "#1c7a4c", "#8d600b", "#1e5bb8", "#8a3fb8", "#167a82", "#d8d6cf", "#6b6960",
+                "#d14f43", "#289460", "#a87615", "#2d72db", "#a356d4", "#21949d", "#f5f4f0",
+            ]
+        }
+        .map(|hex| Color::from_hex(hex).expect("terminal ANSI colors are valid"));
+        colors[0] = if dark { self.term_bg } else { self.term_fg };
+        colors[1] = self.danger;
+        colors[2] = self.term_ok;
+        colors[3] = self.term_warn;
+        colors[4] = self.term_accent;
+        if dark {
+            colors[7] = self.term_fg;
+        } else {
+            colors[15] = self.term_bg;
+        }
+        colors
+    }
+
     #[must_use]
     pub fn new(appearance: Appearance, accent: Accent) -> Self {
         let ramp = accent.ramp();

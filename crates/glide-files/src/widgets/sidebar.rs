@@ -28,7 +28,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
         column![].spacing(theme::SP4).padding(Padding::from([theme::SP1, theme::SP2]).bottom(theme::SP4));
     let devices = app.devices();
     for (title, rows) in [
-        (Key::Places, app.places.iter().map(|place| item(app, place, false)).collect()),
+        (
+            Key::Places,
+            app.places
+                .iter()
+                .filter(|place| app.chooser.is_none() || !app.trash.contains(&place.path))
+                .map(|place| item(app, place, false))
+                .collect(),
+        ),
         (Key::Bookmarks, app.shown_bookmarks().map(|place| item(app, place, true)).collect()),
         (
             Key::Devices,
@@ -77,8 +84,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .on_press(Message::WindowDrag)
     .on_double_click(Message::WindowMaximize);
 
-    let mut panel =
-        column![top, scrollable(sections).width(Fill).height(Fill).style(move |_, status| theme::scroller(t, status)),];
+    let places = scrollable(sections).width(Fill).height(Fill).style(move |_, status| theme::scroller(t, status));
+    if app.chooser.is_some() {
+        let corners = theme::window_corners(theme::Side::BottomLeft, app.corner());
+        return container(places)
+            .padding(Padding::from([theme::SP2, 0.0]))
+            .width(Length::Fixed(SIDEBAR_WIDTH))
+            .height(Fill)
+            .style(move |_| theme::rounded(t.sidebar_bg(), corners))
+            .into();
+    }
+    let mut panel = column![top, places];
     if !app.jobs.is_empty() {
         let jobs = scrollable(super::jobs(app)).style(move |_, status| theme::scroller(t, status));
         panel = panel.push(super::divider(t)).push(container(jobs).max_height(JOBS_HEIGHT));

@@ -337,7 +337,14 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags).into()]);
             entries
         }
-        MenuKind::OpenWith => offered(&menu.offers).into_iter().skip(1).collect(),
+        MenuKind::OpenWith => {
+            let mut entries: Vec<Entry> = offered(&menu.offers).into_iter().skip(1).collect();
+            if !entries.is_empty() {
+                entries.push(Entry::Separator);
+            }
+            entries.push(item(Key::OtherApp, Message::OpenWithDialog).into());
+            entries
+        }
         MenuKind::Columns => {
             let mut entries = vec![Entry::Header(Key::Columns.text(app.lang).into())];
             entries.extend(crate::config::ListColumn::ALL.into_iter().map(|column| {
@@ -394,6 +401,12 @@ fn volume_entries(app: &App, volume: &Volume) -> Vec<Entry> {
 #[must_use]
 pub fn height(entries: &[Entry]) -> f32 {
     entries.iter().map(Entry::height).sum::<f32>() + 2.0 * PADDING + 2.0
+}
+
+#[must_use]
+pub fn span(entries: &[Entry], index: usize) -> (f32, f32) {
+    let top: f32 = entries.iter().take(index).map(Entry::height).sum();
+    (top, top + entries.get(index).map_or(0.0, Entry::height))
 }
 
 #[must_use]
@@ -512,10 +525,41 @@ fn panel<'a>(
             }
         }
     });
-    container(scrollable(Column::with_children(rows)).height(Fill).style(move |_, status| theme::scroller(&t, status)))
-        .padding(PADDING)
-        .width(Length::Fixed(WIDTH))
-        .height(Length::Fixed(fit))
-        .style(move |_| theme::popover(&t))
-        .into()
+    container(
+        scrollable(Column::with_children(rows))
+            .id(crate::app::MENU_ID)
+            .height(Fill)
+            .style(move |_, status| theme::scroller(&t, status)),
+    )
+    .padding(PADDING)
+    .width(Length::Fixed(WIDTH))
+    .height(Length::Fixed(fit))
+    .style(move |_| theme::popover(&t))
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Entry, HEADER, Item, ROW, SEPARATOR, span};
+
+    fn item() -> Entry {
+        Entry::Item(Item {
+            label: "row".into(),
+            message: None,
+            shortcut: None,
+            submenu: false,
+            danger: false,
+            checked: None,
+            swatch: None,
+        })
+    }
+
+    #[test]
+    fn row_spans_include_headers_and_separators_above_them() {
+        let entries = [Entry::Header("h".into()), item(), Entry::Separator, item()];
+        assert_eq!(span(&entries, 0), (0.0, HEADER));
+        assert_eq!(span(&entries, 1), (HEADER, HEADER + ROW));
+        let top = HEADER + ROW + SEPARATOR;
+        assert_eq!(span(&entries, 3), (top, top + ROW));
+    }
 }

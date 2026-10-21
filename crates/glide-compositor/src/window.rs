@@ -21,7 +21,7 @@ use smithay::{
 };
 
 use crate::{
-    clip::{ClipCapableRenderer, ClippedSurfaceElement, RoundedClip},
+    clip::{ClipCapableRenderer, ClippedMemoryElement, ClippedSurfaceElement, RoundedClip},
     decoration,
     raster::ShellRenderer,
 };
@@ -44,7 +44,22 @@ impl GlideWindow {
     }
 
     pub(crate) fn shadow_margin(&self) -> i32 {
-        self.try_decoration_state().map_or(0, |state| state.header.shadow_margin())
+        self.try_decoration_state()
+            .map_or(0, |state| if state.header.is_framed() { state.header.shadow_margin() } else { 0 })
+    }
+
+    pub(crate) fn is_framed(&self) -> bool {
+        self.try_decoration_state().is_some_and(|state| state.header.is_framed())
+    }
+
+    #[must_use]
+    pub fn is_animating_geometry(&self) -> bool {
+        self.open_animation().is_some() || self.geometry_animation().is_some()
+    }
+
+    #[must_use]
+    pub fn frames_itself(&self) -> bool {
+        self.identity().0.as_deref().is_some_and(crate::decoration::glide_csd_app)
     }
 
     #[must_use]
@@ -250,8 +265,11 @@ impl SpaceElement for GlideWindow {
     fn bbox(&self) -> Rectangle<i32, Logical> {
         let mut bbox = SpaceElement::bbox(&self.0);
         let height = self.header_height();
-        let band =
-            if height > 0 { decoration::RESIZE_BORDER.max(self.shadow_margin()) } else { decoration::RESIZE_BORDER };
+        let band = if self.is_framed() {
+            decoration::RESIZE_BORDER.max(self.shadow_margin())
+        } else {
+            decoration::RESIZE_BORDER
+        };
         bbox.loc.x -= band;
         bbox.loc.y -= height + band;
         bbox.size.w += band * 2;
@@ -293,6 +311,7 @@ render_elements! {
     Content = WaylandSurfaceRenderElement<R>,
     ClippedContent = ClippedSurfaceElement<R>,
     Decoration = MemoryRenderBufferRenderElement<R>,
+    ClippedDecoration = ClippedMemoryElement<R>,
     ScaledDecoration = RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
 }
 
@@ -308,6 +327,7 @@ impl<R: Renderer> std::fmt::Debug for GlideWindowLayer<R> {
             Self::Content(e) => f.debug_tuple("Content").field(e).finish(),
             Self::ClippedContent(e) => f.debug_tuple("ClippedContent").field(e).finish(),
             Self::Decoration(e) => f.debug_tuple("Decoration").field(e).finish(),
+            Self::ClippedDecoration(e) => f.debug_tuple("ClippedDecoration").field(e).finish(),
             Self::ScaledDecoration(e) => f.debug_tuple("ScaledDecoration").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
@@ -329,7 +349,7 @@ impl GlideWindow {
         &self, frame_location: Point<i32, Physical>, scale: Scale<f64>,
     ) -> Option<(Rectangle<i32, Physical>, f32)> {
         let state = self.try_decoration_state()?;
-        if !state.header.is_decorated() || state.header.maximized {
+        if !state.header.is_framed() || state.header.maximized {
             return None;
         }
         let radius = state.header.theme.corner_radius;
@@ -345,16 +365,29 @@ impl GlideWindow {
         Some((Rectangle::new(frame_location, frame_logical.to_physical_precise_round(scale)), radius_physical))
     }
 
+    fn preview_clip_frame(
+        &self, location: Point<i32, Physical>, scale: Scale<f64>, shape: PreviewShape,
+    ) -> Option<(Rectangle<i32, Physical>, f32)> {
+        if shape.radius <= 0.0 || shape.scale <= 0.0 {
+            return None;
+        }
+        let geometry = self.geometry();
+        let header = self.header_height();
+        let origin = location + geometry.loc.to_physical_precise_round(scale)
+            - Point::<i32, Logical>::from((0, header)).to_physical_precise_round(scale);
+        let frame_logical = Size::from((geometry.size.w, geometry.size.h + header));
+        let radius_physical = (f64::from(shape.radius) / shape.scale * scale.y) as f32;
+        Some((Rectangle::new(origin, frame_logical.to_physical_precise_round(scale)), radius_physical))
+    }
+
     fn content_layers<R>(
-        &self, renderer: &mut R, location: Point<i32, Physical>, header_location: Point<i32, Physical>,
+        &self, renderer: &mut R, location: Point<i32, Physical>, clip_frame: Option<(Rectangle<i32, Physical>, f32)>,
         scale: Scale<f64>, alpha: f32,
     ) -> Vec<GlideWindowLayer<R>>
     where
         R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
     {
-        let clip_frame = self.content_clip_frame(header_location, scale).filter(|_| renderer.prepare_rounded_clip());
-
         let content_elements: Vec<WaylandSurfaceRenderElement<R>> =
             AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
 
@@ -379,7 +412,7 @@ impl GlideWindow {
 
     fn chrome_layers<R>(
         &self, renderer: &mut R, painter: &crate::paint::Painter, header_location: Point<i32, Physical>,
-        scale: Scale<f64>, alpha: f32,
+        scale: Scale<f64>, alpha: f32, chrome_clip: Option<(Rectangle<i32, Physical>, f32)>,
     ) -> (Vec<GlideWindowLayer<R>>, Vec<GlideWindowLayer<R>>)
     where
         R: ShellRenderer + ClipCapableRenderer,
@@ -390,18 +423,18 @@ impl GlideWindow {
             .into_iter()
             .filter(|deco_buf| deco_buf.alpha > 0.0)
             .partition(|deco_buf| deco_buf.overlay);
-        let upload = |renderer: &mut R, buffers: Vec<decoration::DecorationBuffer>| {
+        let upload = |renderer: &mut R, buffers: Vec<decoration::DecorationBuffer>, clip| {
             buffers
                 .iter()
-                .filter_map(|deco_buf| Self::decoration_layer(renderer, deco_buf, header_location, scale, alpha))
+                .filter_map(|deco_buf| Self::decoration_layer(renderer, deco_buf, header_location, scale, alpha, clip))
                 .collect::<Vec<_>>()
         };
-        (upload(renderer, overlays), upload(renderer, chrome))
+        (upload(renderer, overlays, None), upload(renderer, chrome, chrome_clip))
     }
 
     fn decoration_layer<R>(
         renderer: &mut R, deco_buf: &decoration::DecorationBuffer, header_location: Point<i32, Physical>,
-        scale: Scale<f64>, alpha: f32,
+        scale: Scale<f64>, alpha: f32, clip_frame: Option<(Rectangle<i32, Physical>, f32)>,
     ) -> Option<GlideWindowLayer<R>>
     where
         R: ShellRenderer + ClipCapableRenderer,
@@ -421,18 +454,25 @@ impl GlideWindow {
         .map_err(|e| tracing::warn!("failed to upload decoration buffer: {:?}", e))
         .ok()?;
 
-        Some(match deco_buf.scale {
-            Some(factor) => GlideWindowLayer::ScaledDecoration(RescaleRenderElement::from_element(
+        if let Some(factor) = deco_buf.scale {
+            return Some(GlideWindowLayer::ScaledDecoration(RescaleRenderElement::from_element(
                 element,
                 header_location + physical_offset,
                 factor,
-            )),
+            )));
+        }
+        let clip = clip_frame.and_then(|(frame, radius)| {
+            RoundedClip::from_frame(element.geometry(scale), frame, radius).filter(RoundedClip::is_visible)
+        });
+        Some(match clip {
+            Some(clip) => GlideWindowLayer::ClippedDecoration(ClippedMemoryElement::new(element, clip)),
             None => GlideWindowLayer::Decoration(element),
         })
     }
 
     fn render_elements_impl<R, C>(
-        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32, include_box_deco: bool,
+        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
+        preview: Option<PreviewShape>,
     ) -> Vec<C>
     where
         R: ShellRenderer + ClipCapableRenderer,
@@ -446,22 +486,29 @@ impl GlideWindow {
         let header_height = self.header_height();
         let header_location = location - Point::from((0, header_height)).to_physical_precise_round(scale);
 
-        let (overlays, chrome) = self.chrome_layers(renderer, &painter, header_location, scale, alpha);
+        let clip_frame = match preview {
+            Some(shape) => self.preview_clip_frame(location, scale, shape),
+            None => self.content_clip_frame(header_location, scale),
+        }
+        .filter(|_| renderer.prepare_rounded_clip());
+        let chrome_clip = clip_frame.filter(|_| preview.is_some());
+
+        let (overlays, chrome) = self.chrome_layers(renderer, &painter, header_location, scale, alpha, chrome_clip);
         let mut layers: Vec<GlideWindowLayer<R>> = overlays;
-        layers.extend(self.content_layers(renderer, location, header_location, scale, alpha));
+        layers.extend(self.content_layers(renderer, location, clip_frame, scale, alpha));
         layers.extend(chrome);
 
-        let buffer_scale = self.decoration_buffer_scale(scale);
-        let box_deco = include_box_deco.then(|| decoration::shadow_and_border_buffer(self, buffer_scale)).flatten();
-        let fade = decoration::shadow_and_border_fade(self, buffer_scale).map(|(mut buf, fade_alpha)| {
-            buf.alpha = fade_alpha;
-            buf
-        });
-        layers.extend(
-            fade.iter()
-                .chain(&box_deco)
-                .filter_map(|deco_buf| Self::decoration_layer(renderer, deco_buf, header_location, scale, alpha)),
-        );
+        if preview.is_none() {
+            let buffer_scale = self.decoration_buffer_scale(scale);
+            let box_deco = decoration::shadow_and_border_buffer(self, buffer_scale);
+            let fade = decoration::shadow_and_border_fade(self, buffer_scale).map(|(mut buf, fade_alpha)| {
+                buf.alpha = fade_alpha;
+                buf
+            });
+            layers.extend(fade.iter().chain(&box_deco).filter_map(|deco_buf| {
+                Self::decoration_layer(renderer, deco_buf, header_location, scale, alpha, None)
+            }));
+        }
 
         let mut factor = Scale::from((1.0, 1.0));
         let mut travel = Point::<i32, Logical>::from((0, 0));
@@ -509,19 +556,25 @@ where
     fn render_elements<C: From<Self::RenderElement>>(
         &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
     ) -> Vec<C> {
-        self.render_elements_impl(renderer, location, scale, alpha, true)
+        self.render_elements_impl(renderer, location, scale, alpha, None)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PreviewShape {
+    pub(crate) radius: f32,
+    pub(crate) scale: f64,
 }
 
 impl GlideWindow {
     pub(crate) fn preview_render_elements<R>(
-        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
+        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32, shape: PreviewShape,
     ) -> Vec<GlideWindowRenderElement<R>>
     where
         R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
     {
-        self.render_elements_impl(renderer, location, scale, alpha, false)
+        self.render_elements_impl(renderer, location, scale, alpha, Some(shape))
     }
 }
 

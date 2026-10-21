@@ -9,7 +9,6 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 
 const CHUNK: usize = 2000;
-const LIMIT: usize = 50_000;
 
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -17,6 +16,7 @@ pub struct Outcome {
     pub found: Option<Match>,
     pub total: usize,
     pub index: usize,
+    pub revision: u64,
 }
 
 pub struct Job<T> {
@@ -25,6 +25,8 @@ pub struct Job<T> {
     pub term: Arc<FairMutex<Term<T>>>,
     pub regex: RegexSearch,
     pub target: Target,
+    pub revision: Arc<AtomicU64>,
+    pub expected_revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +35,7 @@ pub enum Target {
     Seek(Point, Direction),
 }
 
-fn chunk_end<T>(term: &Term<T>, from: Line, chunk: usize) -> Line {
+pub(crate) fn chunk_end<T>(term: &Term<T>, from: Line, chunk: usize) -> Line {
     let bottom = term.bottommost_line();
     let mut end = Line((from.0 + chunk as i32 - 1).min(bottom.0));
     let last = term.last_column();
@@ -43,11 +45,16 @@ fn chunk_end<T>(term: &Term<T>, from: Line, chunk: usize) -> Line {
     end
 }
 
-fn scan<T>(job: &mut Job<T>, chunk: usize) -> Option<Vec<Match>> {
-    let mut matches = Vec::new();
+fn settle<T>(mut job: Job<T>, chunk: usize) -> Option<Outcome> {
+    let mut total = 0;
+    let mut first = None;
+    let mut last = None;
+    let mut chosen = None;
     let mut line = job.term.lock().topmost_line();
     loop {
-        if job.latest.load(Ordering::Relaxed) != job.generation {
+        if job.latest.load(Ordering::Acquire) != job.generation
+            || job.revision.load(Ordering::Acquire) != job.expected_revision
+        {
             return None;
         }
         let term = job.term.lock();
@@ -63,37 +70,41 @@ fn scan<T>(job: &mut Job<T>, chunk: usize) -> Option<Vec<Match>> {
             &term,
             &mut job.regex,
         );
-        matches.extend(range.filter(|found| found.start().line >= line));
+        for found in range.filter(|found| found.start().line >= line) {
+            total += 1;
+            let candidate = (found, total);
+            if first.is_none() {
+                first = Some(candidate.clone());
+            }
+            let wanted = match &job.target {
+                Target::Current(current) => candidate.0.start() == current.start(),
+                Target::Seek(origin, Direction::Right) => chosen.is_none() && candidate.0.start() >= origin,
+                Target::Seek(origin, Direction::Left) => candidate.0.start() <= origin,
+            };
+            if wanted {
+                chosen = Some(candidate.clone());
+            }
+            last = Some(candidate);
+        }
         line = end + 1;
-        if matches.len() >= LIMIT {
-            matches.truncate(LIMIT);
-            break;
-        }
     }
-    Some(matches)
-}
-
-fn pick(matches: &[Match], target: &Target) -> Option<Match> {
-    match target {
-        Target::Current(current) => Some(current.clone()),
-        Target::Seek(origin, Direction::Right) => {
-            matches.iter().find(|found| found.start() > origin).or_else(|| matches.first()).cloned()
-        }
-        Target::Seek(origin, Direction::Left) => {
-            matches.iter().rev().find(|found| found.start() < origin).or_else(|| matches.last()).cloned()
-        }
+    if job.revision.load(Ordering::Acquire) != job.expected_revision {
+        return None;
     }
-}
-
-fn settle<T>(mut job: Job<T>, chunk: usize) -> Option<Outcome> {
-    let matches = scan(&mut job, chunk)?;
-    let found = pick(&matches, &job.target);
-    let index = found
-        .as_ref()
-        .and_then(|found| matches.iter().position(|candidate| candidate.start() == found.start()))
-        .map_or(0, |position| position + 1);
+    let chosen = chosen.or(match &job.target {
+        Target::Seek(_, Direction::Right) => first,
+        Target::Seek(_, Direction::Left) => last,
+        Target::Current(_) => None,
+    });
+    let (found, index) = chosen.map_or((None, 0), |(found, index)| (Some(found), index));
     let seek = matches!(job.target, Target::Seek(..));
-    Some(Outcome { generation: job.generation, found: if seek { found } else { None }, total: matches.len(), index })
+    Some(Outcome {
+        generation: job.generation,
+        found: if seek { found } else { None },
+        total,
+        index,
+        revision: job.expected_revision,
+    })
 }
 
 pub fn spawn<T: Send + 'static>(job: Job<T>) -> iced::futures::channel::oneshot::Receiver<Outcome> {
@@ -130,6 +141,8 @@ mod tests {
             term: Arc::clone(term),
             regex: RegexSearch::new("(?i)foo").unwrap(),
             target,
+            revision: Arc::new(AtomicU64::new(0)),
+            expected_revision: 0,
         }
     }
 
@@ -160,5 +173,31 @@ mod tests {
         let job = job(&term, Target::Seek(Point::new(Line(0), Column(0)), Direction::Right));
         job.latest.store(4, Ordering::Relaxed);
         assert!(settle(job, 1).is_none());
+    }
+
+    #[test]
+    fn a_grid_revision_change_rejects_the_entire_scan() {
+        let term = term("foo\r\n");
+        let job = job(&term, Target::Seek(Point::new(Line(0), Column(0)), Direction::Left));
+        job.revision.fetch_add(1, Ordering::Release);
+        assert!(settle(job, 1).is_none());
+    }
+
+    #[test]
+    fn counting_and_navigation_do_not_truncate_after_fifty_thousand_matches() {
+        let mut term = Term::new(
+            Config { scrolling_history: 30_000, ..Config::default() },
+            &Cells { columns: 10, lines: 3 },
+            VoidListener,
+        );
+        let mut processor: Processor = Processor::new();
+        for _ in 0..20_000 {
+            processor.advance(&mut term, b"foofoofoo\r\n");
+        }
+        let term = Arc::new(FairMutex::new(term));
+        let bottom = term.lock().bottommost_line();
+        let result = settle(job(&term, Target::Seek(Point::new(bottom, Column(9)), Direction::Left)), CHUNK).unwrap();
+        assert_eq!(result.total, 60_000);
+        assert_eq!(result.index, 60_000);
     }
 }

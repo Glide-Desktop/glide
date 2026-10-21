@@ -263,22 +263,20 @@ fn publish(connection: &zbus::blocking::Connection, last: &mut Option<Track>, ar
         track
     });
 
-    match (track, last.as_ref()) {
-        (None, None) => {}
-        (None, Some(_)) => {
-            *last = None;
-            sink(MediaEvent::Gone);
+    if let Some(event) = update_for(last.as_ref(), track.as_ref()) {
+        sink(event);
+    }
+    *last = track;
+}
+
+fn update_for(previous: Option<&Track>, track: Option<&Track>) -> Option<MediaEvent> {
+    match (previous, track) {
+        (None, None) => None,
+        (Some(_), None) => Some(MediaEvent::Gone),
+        (Some(previous), Some(track)) if *previous == Track { position: previous.position, ..track.clone() } => {
+            (previous.progress() != track.progress()).then(|| MediaEvent::Progress(track.progress()))
         }
-        (Some(track), Some(previous)) if previous.is_same_track(&track) && previous.status == track.status => {
-            if previous.progress() != track.progress() {
-                sink(MediaEvent::Progress(track.progress()));
-                *last = Some(track);
-            }
-        }
-        (Some(track), _) => {
-            sink(MediaEvent::Changed(Box::new(track.clone())));
-            *last = Some(track);
-        }
+        (_, Some(track)) => Some(MediaEvent::Changed(Box::new(track.clone()))),
     }
 }
 
@@ -373,6 +371,37 @@ mod tests {
         assert!(seek_arguments(&no_length, 0.5).is_none());
 
         assert!(seek_arguments(&seekable_track(), f32::NAN).is_none());
+    }
+
+    #[test]
+    fn only_a_moved_position_is_a_progress_update_and_any_other_field_is_a_change() {
+        let first = Track { position: Some(Duration::from_secs(20)), ..seekable_track() };
+        assert_eq!(update_for(None, None), None);
+        assert_eq!(update_for(Some(&first), None), Some(MediaEvent::Gone));
+        assert_eq!(update_for(None, Some(&first)), Some(MediaEvent::Changed(Box::new(first.clone()))));
+        assert_eq!(update_for(Some(&first), Some(&first)), None);
+
+        let moved = Track { position: Some(Duration::from_secs(50)), ..first.clone() };
+        assert_eq!(update_for(Some(&first), Some(&moved)), Some(MediaEvent::Progress(Some(0.25))));
+
+        let changes = [
+            Track { length: Some(Duration::from_secs(300)), ..first.clone() },
+            Track { track_id: "/org/glide/track/2".to_string(), ..first.clone() },
+            Track { album: "Other".to_string(), ..first.clone() },
+            Track { can_go_next: !first.can_go_next, ..first.clone() },
+            Track { can_go_previous: !first.can_go_previous, ..first.clone() },
+            Track { can_pause: !first.can_pause, ..first.clone() },
+            Track { desktop_entry: "other".to_string(), ..first.clone() },
+            Track { identity: "Other".to_string(), ..first.clone() },
+            Track { status: Playback::Paused, ..first.clone() },
+        ];
+        for changed in changes {
+            assert_eq!(
+                update_for(Some(&first), Some(&changed)),
+                Some(MediaEvent::Changed(Box::new(changed.clone()))),
+                "{changed:?}"
+            );
+        }
     }
 
     fn map(key: &str, value: Value<'_>) -> HashMap<String, OwnedValue> {

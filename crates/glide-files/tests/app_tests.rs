@@ -373,8 +373,7 @@ fn the_pointer_and_the_keyboard_share_one_menu_highlight() {
     let _ = app.update(Message::Released);
     let _ = app.update(Message::KeyMenu);
     let highlight = |app: &glide_files::App| app.menu.as_ref().and_then(|menu| menu.highlight);
-    let first = highlight(&app);
-    assert!(first.is_some());
+    let first = highlight(&app).expect("first");
     let _ = app.update(Message::MenuHover(5, true));
     assert_eq!(highlight(&app), Some(5), "the row under the pointer takes the highlight");
     let _ = app.update(Message::Move(Step::Down, false));
@@ -382,8 +381,8 @@ fn the_pointer_and_the_keyboard_share_one_menu_highlight() {
     let moved = highlight(&app);
     let _ = app.update(Message::MenuHover(5, false));
     assert_eq!(highlight(&app), moved, "leaving a row the keyboard already left changes nothing");
-    let _ = app.update(Message::MenuHover(2, true));
-    let _ = app.update(Message::MenuHover(2, false));
+    let _ = app.update(Message::MenuHover(first, true));
+    let _ = app.update(Message::MenuHover(first, false));
     assert_eq!(highlight(&app), None, "leaving the menu clears the highlight");
 }
 
@@ -701,8 +700,106 @@ fn renaming_a_search_result_runs_the_search_again() {
 }
 
 #[test]
-fn the_sort_menu_picks_a_key_and_only_the_column_header_flips_the_order() {
+fn f2_keeps_the_path_editor_open_without_starting_a_rename() {
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::EditPath);
+    let editing = app.path_edit.clone();
+    assert!(editing.is_some());
+    let _ = app.update(Message::Rename);
+    assert!(app.renaming.is_none());
+    assert_eq!(app.path_edit, editing);
+}
+
+#[test]
+fn reload_and_directory_changes_restart_the_current_search() {
+    use glide_files::app::Search;
+
+    for message in [Message::Reload, Message::DirChanged] {
+        let mut app = listed_app();
+        app.search = Some(Search { query: String::from("needle"), pending: false });
+        let _ = app.update(message);
+        let search = app.search.as_ref().expect("search stays open");
+        assert_eq!(search.query, "needle");
+        assert!(search.pending, "the current query is searched again");
+        let count = app.entries.len();
+        let _ = app.update(Message::SearchResults(0, Vec::new()));
+        assert_eq!(app.entries.len(), count, "results from before the reload are ignored");
+    }
+}
+
+#[test]
+fn an_empty_open_with_search_clears_selection_and_enter_keeps_the_dialog_open() {
+    use glide_files::app::Dialog;
+
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::OpenWithDialog);
+    let _ = app.update(Message::PickApp(String::from("missing.desktop")));
+    let _ = app.update(Message::ModalInput(String::from("no-such-application-893475")));
+    let modal = app.modal.as_ref().expect("open with dialog");
+    assert!(matches!(&modal.dialog, Dialog::OpenWith { chosen, .. } if chosen.is_empty()));
+    let _ = app.update(Message::ModalSubmit);
+    assert!(app.modal.is_some(), "Enter cannot submit an empty selection");
+}
+
+#[test]
+fn finishing_a_move_only_clears_the_clipboard_that_started_it() {
+    use glide_files::app::JobEvent;
+    use glide_files::fs::jobs::Report;
+    use glide_files::fs::{ClipboardAction, FileClipboard};
+
+    for changed in [false, true] {
+        let mut app = listed_app();
+        app.clipboard = Some(FileClipboard { action: ClipboardAction::Cut, paths: vec![path(8)] });
+        let _ = app.update(Message::Paste);
+        let id = app.jobs.last().expect("move job").id;
+        let newer = FileClipboard { action: ClipboardAction::Copy, paths: vec![path(9)] };
+        if changed {
+            app.clipboard = Some(newer.clone());
+        }
+        let report = Report { done: vec![(path(8), app.current.join("8.txt"))], ..Report::default() };
+        let _ = app.update(Message::Job(id, JobEvent::Done(Box::new(report))));
+        if changed {
+            assert_eq!(app.clipboard, Some(newer), "a newer clipboard survives an older move");
+        } else {
+            assert!(app.clipboard.is_none(), "a completed cut consumes its own clipboard");
+        }
+    }
+}
+
+#[test]
+fn association_reload_is_allowed_while_a_dialog_is_open() {
+    assert!(Message::ReloadExtensions.passes_modal());
+}
+
+#[test]
+fn view_and_sort_preferences_survive_restart_without_touching_user_state() {
     use glide_files::fs::SortBy;
+
+    let child_state = std::env::var_os("GLIDE_FILES_PREFS_TEST_STATE");
+    if child_state.is_none() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos();
+        let state = std::env::temp_dir().join(format!("glide-files-prefs-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&state).expect("isolated state directory");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "view_and_sort_preferences_survive_restart_without_touching_user_state", "--nocapture"])
+            .env("XDG_STATE_HOME", &state)
+            .env("GLIDE_FILES_PREFS_TEST_STATE", &state)
+            .output()
+            .expect("isolated preferences test");
+        std::fs::remove_dir_all(&state).expect("remove isolated state");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert_eq!(std::env::var_os("XDG_STATE_HOME"), child_state);
     let mut app = listed_app();
     let ascending = app.sort.ascending;
     let _ = app.update(Message::SortKey(app.sort.by));
@@ -711,6 +808,12 @@ fn the_sort_menu_picks_a_key_and_only_the_column_header_flips_the_order() {
     assert_eq!((app.sort.by, app.sort.ascending), (SortBy::Size, ascending));
     let _ = app.update(Message::SortBy(SortBy::Size));
     assert_eq!(app.sort.ascending, !ascending, "a second click on the header reverses");
+    for view in [ViewMode::Grid, ViewMode::List, ViewMode::Grid, ViewMode::List] {
+        let _ = app.update(Message::SetView(view));
+        let (restored, _) = glide_files::App::new();
+        assert_eq!(restored.view, view, "the last selected view survives restarting Files");
+        assert_eq!(restored.sort, app.sort, "changing the view preserves sorting");
+    }
 }
 
 #[test]
@@ -842,7 +945,8 @@ fn the_mouse_side_buttons_walk_the_history() {
 #[test]
 fn printable_keys_start_type_ahead_search() {
     assert_eq!(chord("д", Modifiers::empty()), Some(Message::TypeToSearch(String::from("д"))));
-    assert_eq!(press(IcedKey::Named(Named::Tab), Modifiers::empty(), Some("\t")), None);
+    assert_eq!(press(IcedKey::Named(Named::Tab), Modifiers::empty(), Some("\t")), Some(Message::ModalFocus(true)));
+    assert_eq!(press(IcedKey::Named(Named::Tab), Modifiers::SHIFT, Some("\t")), Some(Message::ModalFocus(false)));
     assert_eq!(chord("q", Modifiers::ALT), None);
 }
 
@@ -1149,4 +1253,145 @@ fn drops_refuse_self_parent_and_trash_loops() {
     assert!(droppable(std::slice::from_ref(&photo), &trash, &trash), "the Trash place accepts files");
     assert!(!droppable(&[trash.join("old.txt")], &trash, &trash));
     assert!(!droppable(std::slice::from_ref(&photo), &trash.join("sub"), &trash), "never into Trash internals");
+}
+
+#[test]
+fn open_with_dialog_is_available_for_any_regular_file() {
+    use glide_files::app::Dialog;
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::KeyMenu);
+    assert!(app.menu.as_ref().is_some_and(|menu| menu.open_with));
+    let _ = app.update(Message::OpenWithDialog);
+    assert!(matches!(app.modal.as_ref().map(|modal| &modal.dialog), Some(Dialog::OpenWith { .. })));
+}
+
+#[test]
+fn saving_over_an_existing_file_asks_first() {
+    let dir = std::env::temp_dir().join(format!("glide-files-chooser-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    std::fs::write(dir.join("taken.txt"), "old").expect("file");
+    let mut app = listed_app();
+    app.current = dir.clone();
+    app.chooser = Some(glide_files::chooser::State::new(glide_files::chooser::Request {
+        mode: glide_files::chooser::Mode::Save,
+        current_name: Some("taken.txt".into()),
+        ..glide_files::chooser::Request::default()
+    }));
+    let _ = app.update(Message::ChooserAccept);
+    let asked = app.modal.as_ref().map(|modal| modal.dialog.clone());
+    assert_eq!(asked, Some(glide_files::app::Dialog::Replace(dir.join("taken.txt"))), "a modal asks, not a toast");
+    assert!(!glide_files::chooser::accepted(), "nothing is returned before the replace is confirmed");
+    let _ = app.update(Message::ModalCancel);
+    assert!(app.modal.is_none());
+    assert_eq!(app.chooser.as_ref().and_then(|chooser| chooser.confirm.clone()), None, "cancelling keeps the file");
+    assert_eq!(std::fs::read_to_string(dir.join("taken.txt")).expect("kept"), "old");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn chooser_app(mode: glide_files::chooser::Mode) -> glide_files::app::App {
+    let mut app = listed_app();
+    app.chooser = Some(glide_files::chooser::State::new(glide_files::chooser::Request {
+        mode,
+        filters: vec![
+            glide_files::chooser::Filter {
+                name: "All".into(),
+                patterns: vec![glide_files::chooser::Pattern::Glob("*".into())],
+            },
+            glide_files::chooser::Filter {
+                name: "Text".into(),
+                patterns: vec![glide_files::chooser::Pattern::Glob("*.txt".into())],
+            },
+        ],
+        ..glide_files::chooser::Request::default()
+    }));
+    app
+}
+
+#[test]
+fn the_file_dialog_refuses_every_file_manager_action() {
+    let mut app = chooser_app(glide_files::chooser::Mode::Open);
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let before = app.entries.clone();
+    for message in [
+        Message::Trash,
+        Message::Delete,
+        Message::Rename,
+        Message::Duplicate,
+        Message::Properties,
+        Message::OpenWithDialog,
+        Message::EditTags,
+        Message::Undo,
+        Message::Cut,
+        Message::KeyMenu,
+        Message::ToggleOptions,
+    ] {
+        let _ = app.update(message.clone());
+        assert!(app.modal.is_none() && app.menu.is_none() && app.renaming.is_none(), "{message:?} went through");
+        assert!(app.jobs.is_empty(), "{message:?} started a job");
+    }
+    assert_eq!(app.entries, before);
+    assert!(app.clipboard.is_none());
+}
+
+#[test]
+fn the_file_dialog_picks_filters_from_a_list_and_makes_folders_when_saving() {
+    let mut app = chooser_app(glide_files::chooser::Mode::Save);
+    let _ = app.update(Message::ChooserFilter(1));
+    assert_eq!(app.chooser.as_ref().and_then(|chooser| chooser.filter), Some(1));
+    let _ = app.update(Message::NewFolder);
+    let asked = app.modal.as_ref().map(|modal| modal.dialog.clone());
+    assert_eq!(asked, Some(glide_files::app::Dialog::NewFolder));
+}
+
+#[test]
+fn escape_in_the_file_dialog_closes_the_search_before_the_dialog() {
+    let mut app = chooser_app(glide_files::chooser::Mode::Open);
+    let _ = app.update(Message::SearchChanged(String::from("notes")));
+    assert!(app.search.is_some());
+    let _ = app.update(Message::Escape);
+    assert!(app.search.is_none(), "the first Escape only leaves the search");
+    assert!(app.chooser.is_some());
+}
+
+#[test]
+fn open_with_is_offered_for_folders() {
+    use glide_files::app::Dialog;
+    use glide_files::fs::FileCategory;
+    let mut app = listed_app();
+    app.entries[1].is_dir = true;
+    app.entries[1].category = FileCategory::Folder;
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::KeyMenu);
+    assert!(app.menu.as_ref().is_some_and(|menu| menu.open_with));
+    let _ = app.update(Message::OpenWithDialog);
+    match app.modal.as_ref().map(|modal| &modal.dialog) {
+        Some(Dialog::OpenWith { targets, mime, .. }) => {
+            assert_eq!(targets.len(), 1);
+            assert_eq!(mime.as_deref(), Some(glide_files::fs::mime::DIRECTORY));
+        }
+        _ => panic!("expected OpenWith dialog for a folder"),
+    }
+}
+
+#[test]
+fn open_with_dialog_allows_picking_app_and_toggling_always() {
+    use glide_files::app::Dialog;
+    let mut app = listed_app();
+    let _ = app.update(Message::Pressed(path(1)));
+    let _ = app.update(Message::Released);
+    let _ = app.update(Message::OpenWithDialog);
+    let _ = app.update(Message::PickApp(String::from("custom.desktop")));
+    let _ = app.update(Message::ToggleAlwaysOpen);
+    let modal = app.modal.as_ref().expect("open with dialog open");
+    match &modal.dialog {
+        Dialog::OpenWith { chosen, always, .. } => {
+            assert_eq!(chosen, "custom.desktop");
+            assert!(*always);
+        }
+        _ => panic!("expected OpenWith dialog"),
+    }
 }

@@ -125,8 +125,6 @@ fn lpstat_devices_and_jobs_parse() {
     assert_eq!(jobs[0].size, 2048);
     assert_eq!(jobs[0].submitted, "Mon 01 Jan 2024 10:00:00 AM");
     assert_eq!(jobs[1].printer, "HP_LaserJet");
-    assert_eq!(printers::size_label(10), "10 B");
-    assert_eq!(printers::size_label(2048), "2 KB");
 }
 
 #[test]

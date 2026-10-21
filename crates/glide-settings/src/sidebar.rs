@@ -96,15 +96,22 @@ fn search_field<'a>(c: &Ctx, query: &'a str) -> Element<'a, Message> {
     search.into()
 }
 
-fn account_card<'a>(c: &Ctx, selected: bool, user: &'a str, login: &'a str) -> Element<'a, Message> {
+fn account_card<'a>(app: &'a App, c: &Ctx, selected: bool, user: &'a str, login: &'a str) -> Element<'a, Message> {
     let t = c.theme;
+    let me = app.current_account();
+    let user = me.map_or(user, |me| me.display_name());
+    let login = me.map_or(login, |me| me.user_name.as_str());
     let name = [user, login].into_iter().find(|name| !name.trim().is_empty()).unwrap_or(c.t(K::User));
     let subtitle = if login.is_empty() || login == name { c.t(K::LocalAccount) } else { login };
     let (name_color, sub_color, chevron) =
         if selected { (t.acc_soft_fg(), t.acc_soft_fg(), t.acc_soft_fg()) } else { (t.fg_1(), t.fg_2(), t.fg_3()) };
+    let avatar = match me {
+        Some(me) => crate::panels::users::portrait(t, me, AVATAR_SIZE),
+        None => widgets::avatar(t, system::initials(name), AVATAR_SIZE),
+    };
     button(
         row![
-            widgets::avatar(t, system::initials(name), AVATAR_SIZE),
+            avatar,
             column![
                 text(name).size(14).font(theme::SEMIBOLD).color(name_color).wrapping(Wrapping::None),
                 text(subtitle).size(12).color(sub_color).wrapping(Wrapping::None),
@@ -127,16 +134,17 @@ fn account_card<'a>(c: &Ctx, selected: bool, user: &'a str, login: &'a str) -> E
 fn item_label<'a>(c: &Ctx, label: &'static str, query: &str, selected: bool) -> Element<'a, Message> {
     let t = c.theme;
     let (color, accent) = if selected { (t.acc_soft_fg(), t.acc_soft_fg()) } else { (t.fg_1(), t.acc_text()) };
+    let font = if selected { theme::SEMIBOLD } else { iced::Font::DEFAULT };
     match highlight(label, query) {
         Some((start, end)) => {
             let spans: Vec<Span<'a, (), iced::Font>> = vec![
-                span(&label[..start]),
+                span(&label[..start]).font(font),
                 span(&label[start..end]).font(theme::SEMIBOLD).color(accent).underline(selected),
-                span(&label[end..]),
+                span(&label[end..]).font(font),
             ];
             rich_text(spans).size(14).color(color).wrapping(Wrapping::None).into()
         }
-        None => text(label).size(14).color(color).wrapping(Wrapping::None).into(),
+        None => text(label).size(14).font(font).color(color).wrapping(Wrapping::None).into(),
     }
 }
 
@@ -243,7 +251,7 @@ pub fn view<'a>(app: &'a App, c: Ctx, user: &'a str, login: &'a str) -> Element<
         groups = groups.push(no_results(&c));
     }
 
-    let top = column![search_field(&c, query), account_card(&c, app.active_panel() == Panel::Users, user, login),]
+    let top = column![search_field(&c, query), account_card(app, &c, app.active_panel() == Panel::Users, user, login),]
         .spacing(EDGE)
         .padding(Padding::from([EDGE, EDGE]).bottom(0));
 

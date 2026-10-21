@@ -62,7 +62,7 @@ pub struct Session {
     pub state: String,
     pub remote: bool,
     pub service: String,
-    pub since: String,
+    pub started: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -108,11 +108,31 @@ pub fn parse_session(text: &str) -> Session {
             "State" => session.state = value,
             "Remote" => session.remote = value == "yes",
             "Service" => session.service = value,
-            "Timestamp" => session.since = value,
+            "Timestamp" => session.started = parse_timestamp(&value, &super::tz::Zone::system()),
             _ => {}
         }
     }
     session
+}
+
+#[must_use]
+pub fn parse_timestamp(text: &str, zone: &super::tz::Zone) -> Option<i64> {
+    let mut parts = text.split_whitespace().skip(1);
+    let (date, time) = (parts.next()?, parts.next()?);
+    let date: Vec<&str> = date.split('-').collect();
+    let time: Vec<&str> = time.split(':').collect();
+    let ([year, month, day], [hour, minute, second]) = (date.as_slice(), time.as_slice()) else {
+        return None;
+    };
+    let local = super::tz::from_civil(
+        year.parse().ok()?,
+        month.parse().ok()?,
+        day.parse().ok()?,
+        hour.parse().ok()?,
+        minute.parse().ok()?,
+        second.parse().ok()?,
+    );
+    Some(zone.to_utc(local))
 }
 
 fn user_proxy<'a>(bus: &'a Connection, path: &'a str) -> zbus::Result<Proxy<'a>> {

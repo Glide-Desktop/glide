@@ -282,6 +282,18 @@ catalogue! {
     ErrNoDisks => "the disk service (udisks2) is unavailable", "служба дисків (udisks2) недоступна";
     ErrMissingTool => "this tool isn’t installed:", "не встановлено програму:";
     ErrUnrepaired => "the file system couldn’t be fully repaired", "файлову систему не вдалося повністю виправити";
+    OtherApp => "Other Application…", "Інша програма…";
+    AlwaysOpenWithThis => "Always open with this app", "Завжди відкривати цією програмою";
+    SearchApps => "Search applications…", "Пошук програм…";
+    ChooserTitle => "Choose a File", "Виберіть файл";
+    ChooserOpen => "Open", "Відкрити";
+    ChooserSave => "Save", "Зберегти";
+    ChooserSelect => "Select", "Вибрати";
+    ChooserName => "Name", "Назва";
+    ChooserBadName => "This name can't be used", "Таку назву не можна використати";
+    ChooserReplaceTitle => "Replace the file?", "Замінити файл?";
+    ChooserReplacePrompt => "A file with this name already exists in this folder. Replacing it overwrites its contents.", "У цій папці вже є файл із такою назвою. Заміна перезапише його вміст.";
+    ChooserFileType => "File type", "Тип файлів";
 }
 
 const MONTHS_EN: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

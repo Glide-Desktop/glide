@@ -220,9 +220,13 @@ fn system_parsers_read_proc_formats() {
 
 #[test]
 fn byte_formatting_and_initials() {
-    assert_eq!(system::format_bytes(512), "512 B");
-    assert_eq!(system::format_bytes(1536), "1.5 KiB");
-    assert_eq!(system::format_bytes(16 * 1024 * 1024 * 1024), "16.0 GiB");
+    use glide_settings::Lang;
+    assert_eq!(system::format_bytes(512, Lang::En), "512 B");
+    assert_eq!(system::format_bytes(1_500, Lang::En), "1.5 kB");
+    assert_eq!(system::format_bytes(207_300_000_000, Lang::Uk), "207,3 ГБ", "the same units as the Files app");
+    assert_eq!(system::format_bytes(999_960, Lang::En), "1.0 MB", "rounding never prints 1000.0 kB");
+    assert_eq!(system::format_memory(16 * 1024 * 1024 * 1024, Lang::En), "16.0 GiB");
+    assert_eq!(system::format_memory(33_000_000_000, Lang::Uk), "30,7 ГіБ");
     assert_eq!(system::initials("artem tr"), "AT");
     assert_eq!(system::initials("Олена"), "О");
     assert_eq!(system::initials(""), "?");
@@ -777,9 +781,12 @@ fn every_default_keybind_is_its_own_default_even_with_shared_actions() {
 
 #[test]
 fn recorded_keys_become_xkb_names_with_their_modifiers() {
-    use glide_settings::panels::shortcuts::{Capture, capture};
-    use glide_settings::services::keybinds::Mod;
-    use iced::keyboard::{Key, Modifiers, key::Named};
+    use glide_settings::panels::shortcuts::{Capture, capture, capture_event};
+    use glide_settings::services::keybinds::{Mod, is_valid_key, key_label};
+    use iced::keyboard::{
+        Key, Modifiers,
+        key::{Code, Named, Physical},
+    };
     let combo = |mods: Vec<Mod>, key: &str| Capture::Combo(mods, key.to_string());
     let super_shift = Modifiers::LOGO | Modifiers::SHIFT;
     assert_eq!(capture(&Key::Character("t".into()), Modifiers::LOGO), combo(vec![Mod::Super], "t"));
@@ -788,9 +795,18 @@ fn recorded_keys_become_xkb_names_with_their_modifiers() {
     assert_eq!(capture(&Key::Named(Named::PageDown), Modifiers::ALT), combo(vec![Mod::Alt], "Next"));
     assert_eq!(capture(&Key::Character("-".into()), Modifiers::CTRL), combo(vec![Mod::Ctrl], "minus"));
     assert_eq!(capture(&Key::Named(Named::AudioVolumeUp), Modifiers::empty()), combo(vec![], "XF86AudioRaiseVolume"));
+    assert_eq!(capture(&Key::Named(Named::MicrophoneToggle), Modifiers::empty()), combo(vec![], "XF86AudioMicMute"));
+    assert_eq!(capture(&Key::Named(Named::PowerOff), Modifiers::empty()), combo(vec![], "XF86PowerOff"));
     assert_eq!(capture(&Key::Named(Named::Shift), Modifiers::SHIFT), Capture::Ignore, "a lone modifier waits");
     assert_eq!(capture(&Key::Named(Named::Escape), Modifiers::empty()), Capture::Stop);
     assert_eq!(capture(&Key::Named(Named::Escape), Modifiers::LOGO), combo(vec![Mod::Super], "Escape"));
+    assert_eq!(
+        capture_event(&Key::Character("ф".into()), Physical::Code(Code::KeyA), Modifiers::LOGO),
+        combo(vec![Mod::Super], "a")
+    );
+    assert!(is_valid_key("Page_Up") && is_valid_key("Page_Down"));
+    assert_eq!(key_label("Page_Up"), "Page Up");
+    assert_eq!(key_label("Page_Down"), "Page Down");
 }
 
 #[test]

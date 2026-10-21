@@ -62,6 +62,7 @@ pub enum Icon {
     Phone,
     Camera,
     Check,
+    FolderPlus,
 }
 
 impl Icon {
@@ -129,6 +130,9 @@ impl Icon {
                 "<rect x='8' y='8' width='12' height='12' rx='2'/><path d='M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2'/>"
             ),
             Self::Move => glyph!("<path d='M5 12h14M13 6l6 6-6 6'/>"),
+            Self::FolderPlus => glyph!(
+                "<path d='M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/><path d='M12 10.5v5M9.5 13h5'/>"
+            ),
             Self::Phone => glyph!("<rect x='7' y='2.5' width='10' height='19' rx='2'/><path d='M11 18.5h2'/>"),
             Self::Camera => glyph!(
                 "<path d='M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z'/><circle cx='12' cy='13' r='3.5'/>"

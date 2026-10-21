@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use alacritty_terminal::event::Event as TermEvent;
@@ -32,8 +33,10 @@ use crate::style::Paint;
 use crate::terminal::{Action, Flash, Fonts, Look};
 
 pub const FIND_ID: &str = "find";
+static SEARCH_ID: AtomicU64 = AtomicU64::new(1);
 const BLINK: Duration = Duration::from_millis(530);
 const POLL: Duration = Duration::from_secs(1);
+const SERVICE_WAIT: Duration = Duration::from_secs(3);
 const BELL_GAP: Duration = Duration::from_millis(250);
 const DRAG_SLOP: f32 = 6.0;
 const NOTICE: Duration = Duration::from_secs(4);
@@ -88,6 +91,7 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuKind {
     Options,
+    Window,
     Context(Option<String>),
     Profiles,
 }
@@ -97,12 +101,22 @@ pub struct Menu {
     pub kind: MenuKind,
     pub at: Point,
     pub opened: Instant,
+    pub selected: Option<usize>,
+    pub reveal: glide_ui::Reveal,
+}
+
+impl Menu {
+    fn new(kind: MenuKind, at: Point, selected: Option<usize>) -> Self {
+        let mut reveal = glide_ui::Reveal::closed().with_ease(motion::ease_out);
+        reveal.open(motion::t2());
+        Self { kind, at, opened: Instant::now(), selected, reveal }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Pane(PaneId),
-    Tab(usize),
+    Tab(TabId),
     Window,
 }
 
@@ -111,6 +125,8 @@ pub struct Confirm {
     pub scope: Scope,
     pub processes: Vec<String>,
     pub opened: Instant,
+    pub accept_focused: bool,
+    pub reveal: glide_ui::Reveal,
 }
 
 pub struct HintMode {
@@ -131,6 +147,24 @@ pub struct Find {
     pub counting: bool,
     generation: u64,
     latest: Arc<AtomicU64>,
+    pane: Option<PaneId>,
+    revision: u64,
+}
+
+impl Drop for Find {
+    fn drop(&mut self) {
+        self.latest.store(0, Ordering::Release);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabId(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFrame {
+    Floating,
+    Maximized,
+    Fullscreen,
 }
 
 fn select(term: &mut alacritty_terminal::term::Term<session::Listener>, found: &Match) {
@@ -141,6 +175,7 @@ fn select(term: &mut alacritty_terminal::term::Term<session::Listener>, found: &
 }
 
 pub struct Tab {
+    pub id: TabId,
     pub panes: pane_grid::State<Pane>,
     pub focus: pane_grid::Pane,
     pub profile: Profile,
@@ -161,6 +196,8 @@ impl Tab {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    ShellLook(glide_app::Look),
+    Remote(crate::service::Request),
     Feed(Feed),
     Terminal(Action),
     Key(keyboard::Event, bool),
@@ -192,6 +229,11 @@ pub enum Message {
     Frame,
     WindowDrag,
     WindowMaximize,
+    WindowMinimize,
+    WindowState(bool, bool),
+    SystemMotion(bool),
+    HeaderMenu,
+    MenuHovered(usize),
     WindowResize(window::Direction),
 }
 
@@ -210,6 +252,7 @@ pub struct App {
     handles: Option<dnd::Handles>,
     pub menu: Option<Menu>,
     pub confirm: Option<Confirm>,
+    pub closing_confirm: Option<Confirm>,
     pub hovered_tab: Option<usize>,
     tab_drag: Option<TabDrag>,
     pub window: Size,
@@ -218,6 +261,10 @@ pub struct App {
     font: iced::Font,
     modifiers: Modifiers,
     focused_window: bool,
+    pub frame: WindowFrame,
+    reported_focus: Option<PaneId>,
+    ui_family: Option<String>,
+    shell_look: config::Look,
     typed: Instant,
     flashes: HashMap<PaneId, (Instant, Flash)>,
     prompts: HashMap<PaneId, marks::Prompt>,
@@ -225,12 +272,25 @@ pub struct App {
     bus: Option<Bus>,
     next_id: u64,
     stamps: (Option<SystemTime>, Option<SystemTime>),
+    shell: Option<glide_app::Look>,
+    awaiting: Option<Instant>,
+    pending: Vec<crate::service::OpenTab>,
 }
 
 #[must_use]
 pub fn uri_path(arg: &str) -> PathBuf {
-    let Some(rest) = arg.strip_prefix("file://") else { return PathBuf::from(arg) };
-    let path = rest.find('/').map_or(rest, |slash| &rest[slash..]);
+    local_uri_path(arg).unwrap_or_else(|| PathBuf::from(arg))
+}
+
+#[must_use]
+pub fn local_uri_path(arg: &str) -> Option<PathBuf> {
+    let Some(rest) = arg.strip_prefix("file://") else { return Some(PathBuf::from(arg)) };
+    let slash = rest.find('/')?;
+    let host = &rest[..slash];
+    if !host.is_empty() && host != "localhost" {
+        return None;
+    }
+    let path = &rest[slash..];
     let bytes = path.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -247,7 +307,7 @@ pub fn uri_path(arg: &str) -> PathBuf {
             index += 1;
         }
     }
-    PathBuf::from(String::from_utf8_lossy(&out).into_owned())
+    (!out.contains(&0)).then(|| PathBuf::from(std::ffi::OsString::from_vec(out)))
 }
 
 #[must_use]
@@ -401,20 +461,55 @@ fn wayland_handles(window: &dyn iced::window::Window) -> Option<dnd::Handles> {
 
 fn family(prefs: &Preferences) -> iced::Font {
     match prefs.font_family.as_deref().map(str::trim) {
-        Some(name) if !name.is_empty() => iced::Font::with_name(Box::leak(name.to_string().into_boxed_str())),
+        Some(name) if !name.is_empty() => {
+            let mut system = iced::advanced::graphics::text::font_system()
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if system
+                .raw()
+                .db()
+                .faces()
+                .any(|face| face.monospaced && face.families.iter().any(|(family, _)| family == name))
+            {
+                iced::Font::with_name(Box::leak(name.to_string().into_boxed_str()))
+            } else {
+                crate::MONO
+            }
+        }
         _ => crate::MONO,
     }
 }
 
+fn reveal_or_open(path: PathBuf) {
+    let _ = std::thread::Builder::new().name("glide-terminal-reveal".into()).spawn(move || {
+        let token = glide_ipc::client::activation_token(None).unwrap_or_default();
+        if path.exists() && glide_app::integration::show_in_files(&path, &token).is_ok() {
+            return;
+        }
+        if hints::openable_path(&path) {
+            open_detached("xdg-open", &[&path.to_string_lossy()]);
+        }
+    });
+}
+
 fn open_detached(program: &str, args: &[&str]) {
-    if let Ok(mut child) = std::process::Command::new(program).args(args).spawn() {
-        std::thread::spawn(move || child.wait());
-    }
+    let program = program.to_string();
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let _ = std::thread::Builder::new().name("glide-terminal-open".into()).spawn(move || {
+        let env = glide_ipc::client::activation_env(None);
+        if let Ok(mut child) = std::process::Command::new(program).args(args).envs(env).spawn() {
+            let _ = child.wait();
+        }
+    });
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
-        Self::with_launch(parse_args(std::env::args().skip(1)))
+        let (mut app, task) = Self::with_launch(parse_args(std::env::args().skip(1)));
+        if std::env::args().any(|arg| arg == "--service") {
+            app.awaiting = Some(Instant::now());
+        }
+        (app, task)
     }
 
     pub fn with_launch(mut launch: Launch) -> (Self, Task<Message>) {
@@ -424,10 +519,10 @@ impl App {
         if launch.command.is_none()
             && let Some(shell) = prefs.shell.clone()
         {
-            launch.command = Some((shell, Vec::new()));
+            launch.command = Some(config::shell_command(&shell).unwrap_or((shell, Vec::new())));
         }
         let app = Self {
-            paint: Paint::new(look.appearance, look.accent),
+            paint: Paint::new(look.appearance_at(glide_config::local_minute()), look.accent),
             lang: look.language.unwrap_or_else(Lang::from_env),
             sounds: look.sounds,
             rung: None,
@@ -443,12 +538,17 @@ impl App {
             drop_at: None,
             menu: None,
             confirm: None,
+            closing_confirm: None,
             hovered_tab: None,
             tab_drag: None,
             window: Size::new(960.0, 600.0),
             error: None,
             zoom: 0.0,
             focused_window: true,
+            frame: WindowFrame::Floating,
+            reported_focus: None,
+            ui_family: look.ui_family.clone(),
+            shell_look: look.clone(),
             typed: Instant::now(),
             flashes: HashMap::new(),
             prompts: HashMap::new(),
@@ -456,7 +556,11 @@ impl App {
             bus: None,
             next_id: 1,
             stamps: (config::stamp(config::shell_path().as_deref()), config::stamp(config::path().as_deref())),
+            shell: None,
+            awaiting: None,
+            pending: Vec::new(),
         };
+        crate::style::use_ui_family(look.ui_family.as_deref());
         let handles = window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles);
         (app, handles)
     }
@@ -510,6 +614,16 @@ impl App {
     }
 
     #[must_use]
+    pub fn edge_to_edge(&self) -> bool {
+        self.frame != WindowFrame::Floating
+    }
+
+    #[must_use]
+    pub fn pane_focused(&self, id: PaneId) -> bool {
+        self.reported_focus == Some(id)
+    }
+
+    #[must_use]
     pub fn view(&self) -> iced::Element<'_, Message> {
         crate::chrome::view(self)
     }
@@ -550,8 +664,9 @@ impl App {
         let opening = |opened: Instant| opened.elapsed() < motion::t2();
         self.flashes.values().any(|(at, _)| at.elapsed() < motion::t3())
             || self.notice.as_ref().is_some_and(|(_, at)| opening(*at))
-            || self.menu.as_ref().is_some_and(|menu| opening(menu.opened))
+            || self.menu.as_ref().is_some_and(|menu| menu.reveal.is_animating(motion::t2()))
             || self.confirm.as_ref().is_some_and(|confirm| opening(confirm.opened))
+            || self.closing_confirm.as_ref().is_some_and(|confirm| confirm.reveal.is_animating(motion::t2()))
     }
 
     #[must_use]
@@ -597,8 +712,19 @@ impl App {
             }),
             window::close_requests().map(|_| Message::CloseRequested),
             iced::time::every(POLL).map(|_| Message::Tick),
+            Subscription::run(glide_app::look_changes).map(Message::ShellLook),
+            Subscription::run(crate::service::requests).map(Message::Remote),
         ];
-        if self.focused_window && self.prefs.cursor_blink && !motion::is_disabled() {
+        if self.shell.is_none() {
+            subscriptions.push(Subscription::run(config::motion_changes).map(Message::SystemMotion));
+        }
+        if self.reported_focus.is_some()
+            && !motion::is_disabled()
+            && self.focused().is_some_and(|pane| {
+                let term = pane.term.lock();
+                term.cursor_style().blinking && term.mode().contains(TermMode::SHOW_CURSOR)
+            })
+        {
             subscriptions.push(iced::time::every(BLINK).map(|_| Message::Blink));
         }
         if let Some(handles) = self.handles {
@@ -617,10 +743,19 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.update_message(message);
+        self.sync_focus();
+        task
+    }
+
+    fn update_message(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Feed(Feed::Connected(bus)) => {
                 self.bus = Some(bus);
-                if self.tabs.is_empty() {
+                for request in std::mem::take(&mut self.pending) {
+                    self.open_remote(&request);
+                }
+                if self.tabs.is_empty() && self.awaiting.is_none() {
                     let launch = self.launch.clone();
                     self.open_tab(&launch);
                 }
@@ -659,6 +794,11 @@ impl App {
             | Message::Frame
             | Message::WindowDrag
             | Message::WindowMaximize
+            | Message::WindowMinimize
+            | Message::WindowState(..)
+            | Message::SystemMotion(_)
+            | Message::ShellLook(_)
+            | Message::Remote(_)
             | Message::WindowResize(_) => self.on_window(&message),
             Message::Pasted(text) => {
                 if let Some(text) = text {
@@ -667,24 +807,39 @@ impl App {
                 Task::none()
             }
             Message::Open(uri) => {
-                self.menu = None;
-                open_detached("xdg-open", &[&uri]);
+                self.dismiss_menu();
+                match local_uri_path(&uri) {
+                    Some(path) => reveal_or_open(path),
+                    None if hints::openable(&uri) => open_detached("xdg-open", &[&uri]),
+                    None => {}
+                }
                 Task::none()
             }
             Message::CopyText(text) => {
-                self.menu = None;
+                self.dismiss_menu();
                 clipboard::write(text)
             }
             Message::Dismiss => {
-                self.menu = None;
+                self.dismiss_menu();
+                Task::none()
+            }
+            Message::MenuHovered(index) => {
+                if let Some(menu) = &mut self.menu {
+                    menu.selected = Some(index);
+                }
+                Task::none()
+            }
+            Message::HeaderMenu => {
+                self.toggle_menu(MenuKind::Window, Point::new(8.0, crate::chrome::HEADER));
                 Task::none()
             }
             Message::Confirm(accepted) => {
-                let confirm = self.confirm.take();
-                match confirm {
-                    Some(confirm) if accepted => self.close(confirm.scope),
-                    _ => Task::none(),
-                }
+                let Some(mut confirm) = self.confirm.take() else { return Task::none() };
+                confirm.reveal.close(motion::t2());
+                confirm.reveal = confirm.reveal.with_ease(motion::ease_io);
+                let scope = confirm.scope;
+                self.closing_confirm = Some(confirm);
+                if accepted { self.close(scope) } else { Task::none() }
             }
         }
     }
@@ -754,18 +909,36 @@ impl App {
             Message::Focused(focused) => {
                 self.focused_window = focused;
                 self.typed = Instant::now();
-                if let Some(pane) = self.focused() {
-                    let mut term = pane.term.lock();
-                    term.is_focused = focused;
-                    if term.mode().contains(TermMode::FOCUS_IN_OUT) {
-                        pane.write(if focused { &b"\x1b[I"[..] } else { &b"\x1b[O"[..] });
-                    }
-                }
                 Task::none()
             }
+            Message::WindowState(maximized, fullscreen) => {
+                self.frame = if fullscreen {
+                    WindowFrame::Fullscreen
+                } else if maximized {
+                    WindowFrame::Maximized
+                } else {
+                    WindowFrame::Floating
+                };
+                Task::none()
+            }
+            Message::SystemMotion(_) => {
+                self.apply_look();
+                Task::none()
+            }
+            Message::ShellLook(ref look) => {
+                self.shell = Some(look.clone());
+                self.apply_look();
+                Task::none()
+            }
+            Message::Remote(ref request) => self.on_remote(request),
             Message::Resized(size) => {
                 self.window = size;
-                Task::none()
+                window::latest().and_then(|id| {
+                    window::is_maximized(id).then(move |maximized| {
+                        window::mode(id)
+                            .map(move |mode| Message::WindowState(maximized, mode == window::Mode::Fullscreen))
+                    })
+                })
             }
             Message::CloseRequested => self.request_close(Scope::Window),
             Message::Tick => {
@@ -775,32 +948,57 @@ impl App {
                     }
                 }
                 self.settle_prompts();
+                self.publish_tabs();
+                if self.awaiting.is_some_and(|since| since.elapsed() >= SERVICE_WAIT) && self.bus.is_some() {
+                    self.awaiting = None;
+                    if self.tabs.is_empty() {
+                        let launch = self.launch.clone();
+                        self.open_tab(&launch);
+                    }
+                }
                 self.notice.take_if(|(_, at)| at.elapsed() >= NOTICE);
                 self.reload();
+                if self.find.as_ref().is_some_and(|find| {
+                    self.focused().is_some_and(|pane| find.revision != pane.revision.load(Ordering::Acquire))
+                }) {
+                    return self.rebuild_find();
+                }
                 Task::none()
             }
             Message::Blink | Message::Frame => {
                 self.flashes.retain(|_, (at, _)| at.elapsed() < motion::t3());
+                if let Some(menu) = &mut self.menu {
+                    menu.reveal.settle(motion::t2());
+                }
+                self.menu.take_if(|menu| !menu.reveal.is_open() && !menu.reveal.is_visible(motion::t2()));
+                if let Some(confirm) = &mut self.closing_confirm {
+                    confirm.reveal.settle(motion::t2());
+                }
+                self.closing_confirm.take_if(|confirm| !confirm.reveal.is_visible(motion::t2()));
                 Task::none()
             }
             Message::WindowDrag => window::latest().and_then(window::drag),
-            Message::WindowMaximize => window::latest().and_then(window::toggle_maximize),
+            Message::WindowMaximize => {
+                self.dismiss_menu();
+                window::latest().and_then(window::toggle_maximize)
+            }
+            Message::WindowMinimize => {
+                self.dismiss_menu();
+                window::latest().and_then(|id| window::minimize(id, true))
+            }
             Message::WindowResize(direction) => window::latest().and_then(move |id| window::drag_resize(id, direction)),
             _ => Task::none(),
         }
     }
 
     fn reload(&mut self) {
+        self.update_appearance(glide_config::local_minute());
         let stamps = (config::stamp(config::shell_path().as_deref()), config::stamp(config::path().as_deref()));
         if stamps == self.stamps {
             return;
         }
         self.stamps = stamps;
-        let look = config::load_look();
-        motion::set_scale(look.motion_scale);
-        self.paint = Paint::new(look.appearance, look.accent);
-        self.lang = look.language.unwrap_or_else(Lang::from_env);
-        self.sounds = look.sounds;
+        self.apply_look();
         let prefs = config::load();
         if prefs.profile != self.prefs.profile {
             let previous = self.prefs.profile;
@@ -818,6 +1016,65 @@ impl App {
                 pane.term.lock().set_options(options.clone());
             }
         }
+    }
+
+    fn with_shell(&self, mut look: config::Look) -> config::Look {
+        if let Some(shell) = &self.shell {
+            look.appearance = shell.appearance;
+            look.appearance_schedule = false;
+            look.accent = shell.accent;
+            look.language = shell.language.as_deref().and_then(Lang::from_key);
+            look.motion_scale = shell.animation_scale;
+            look.ui_family.clone_from(&shell.font_family);
+        }
+        look
+    }
+
+    fn apply_look(&mut self) {
+        let look = self.with_shell(config::load_look());
+        motion::set_scale(look.motion_scale);
+        self.paint = Paint::new(look.appearance_at(glide_config::local_minute()), look.accent);
+        self.lang = look.language.unwrap_or_else(Lang::from_env);
+        self.sounds = look.sounds;
+        if self.ui_family != look.ui_family {
+            crate::style::use_ui_family(look.ui_family.as_deref());
+            self.ui_family.clone_from(&look.ui_family);
+        }
+        self.shell_look = look;
+    }
+
+    fn update_appearance(&mut self, minute: Option<u16>) {
+        let appearance = self.shell_look.appearance_at(minute);
+        if appearance != self.paint.tokens.appearance {
+            self.paint = Paint::new(appearance, self.shell_look.accent);
+        }
+    }
+
+    fn sync_focus(&mut self) {
+        let focused = self.focused().map(|pane| pane.id);
+        if self.find.as_ref().is_some_and(|find| find.pane.is_some() && find.pane != focused) {
+            self.find = None;
+        }
+        if self.hint_mode.as_ref().is_some_and(|mode| Some(mode.pane) != focused) {
+            self.hint_mode = None;
+        }
+        let next = focused.filter(|_| self.focused_window && self.confirm.is_none() && self.find.is_none());
+        if self.reported_focus == next {
+            return;
+        }
+        for (id, active) in [(self.reported_focus, false), (next, true)] {
+            if let Some((index, handle)) = id.and_then(|id| self.locate(id))
+                && let Some(pane) = self.tabs[index].panes.get(handle)
+            {
+                let mut term = pane.term.lock();
+                term.is_focused = active;
+                if term.mode().contains(TermMode::FOCUS_IN_OUT) {
+                    pane.write(if active { &b"\x1b[I"[..] } else { &b"\x1b[O"[..] });
+                }
+            }
+        }
+        self.reported_focus = next;
+        self.typed = Instant::now();
     }
 
     fn spawn(&mut self, launch: &Launch) -> Option<Pane> {
@@ -838,8 +1095,72 @@ impl App {
 
     fn here(&self) -> Launch {
         Launch {
-            command: self.prefs.shell.clone().map(|shell| (shell, Vec::new())),
+            command: self.prefs.shell.clone().map(|shell| config::shell_command(&shell).unwrap_or((shell, Vec::new()))),
             directory: self.focused().and_then(|pane| pane.directory.clone()).or_else(home),
+        }
+    }
+
+    fn on_remote(&mut self, request: &crate::service::Request) -> Task<Message> {
+        match request {
+            crate::service::Request::OpenTab(request) => {
+                if self.bus.is_none() {
+                    self.pending.push(request.clone());
+                } else {
+                    self.open_remote(request);
+                }
+                Task::none()
+            }
+            crate::service::Request::NewTab => {
+                if self.bus.is_some() {
+                    let launch = self.here();
+                    self.open_tab(&launch);
+                }
+                window::latest().and_then(window::gain_focus)
+            }
+            crate::service::Request::FocusTab(id) => {
+                let Some(index) = self.tabs.iter().position(|tab| tab.id.0 == *id) else {
+                    return Task::none();
+                };
+                self.active = index;
+                window::latest().and_then(window::gain_focus)
+            }
+        }
+    }
+
+    fn publish_tabs(&self) {
+        let home = home();
+        let tabs = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                let pane = tab.panes.get(tab.focus)?;
+                let directory = pane.directory.as_ref().map_or_else(String::new, |dir| {
+                    match home.as_deref().and_then(|home| dir.strip_prefix(home).ok()) {
+                        Some(rest) if rest.as_os_str().is_empty() => String::from("~"),
+                        Some(rest) => format!("~/{}", rest.display()),
+                        None => dir.display().to_string(),
+                    }
+                });
+                let title =
+                    pane.title.clone().filter(|title| !title.is_empty()).unwrap_or_else(|| pane.process.clone());
+                Some(crate::service::TabEntry { id: tab.id.0, title, directory })
+            })
+            .collect();
+        crate::service::publish_tabs(tabs);
+    }
+
+    fn open_remote(&mut self, request: &crate::service::OpenTab) {
+        self.awaiting = None;
+        let here = self.here();
+        let launch = Launch {
+            command: request.command.clone().or(here.command),
+            directory: request.directory.clone().or(here.directory),
+        };
+        self.open_tab(&launch);
+        if let (Some(handles), Some(token)) = (self.handles, request.token.clone()) {
+            let _ = std::thread::Builder::new().name("glide-terminal-activate".into()).spawn(move || {
+                let _ = glide_app::activation::activate(handles.display, handles.surface, &token);
+            });
         }
     }
 
@@ -848,7 +1169,8 @@ impl App {
         let (panes, focus) = pane_grid::State::new(pane);
         let profile = self.tab().map_or(self.prefs.profile, |tab| tab.profile);
         let index = if self.tabs.is_empty() { 0 } else { self.active + 1 };
-        self.tabs.insert(index, Tab { panes, focus, profile, bell: false, activity: false });
+        self.tabs.insert(index, Tab { id: TabId(self.next_id), panes, focus, profile, bell: false, activity: false });
+        self.next_id += 1;
         self.active = index;
     }
 
@@ -864,6 +1186,7 @@ impl App {
 
     fn select(&mut self, index: usize) {
         if index < self.tabs.len() {
+            self.hint_mode = None;
             self.active = index;
             self.tabs[index].bell = false;
             self.tabs[index].activity = false;
@@ -873,11 +1196,11 @@ impl App {
 
     fn request_close(&mut self, scope: Scope) -> Task<Message> {
         let mut busy = Vec::new();
-        for (index, tab) in self.tabs.iter_mut().enumerate() {
+        for tab in &mut self.tabs {
             for (_, pane) in tab.panes.iter_mut() {
                 let inside = match scope {
                     Scope::Pane(id) => pane.id == id,
-                    Scope::Tab(tab) => index == tab,
+                    Scope::Tab(id) => tab.id == id,
                     Scope::Window => true,
                 };
                 if inside {
@@ -889,8 +1212,12 @@ impl App {
             }
         }
         if self.prefs.confirm_close && !busy.is_empty() {
-            self.menu = None;
-            self.confirm = Some(Confirm { scope, processes: busy, opened: Instant::now() });
+            self.dismiss_menu();
+            let mut reveal = glide_ui::Reveal::closed().with_ease(motion::ease_out);
+            reveal.open(motion::t2());
+            self.closing_confirm = None;
+            self.confirm =
+                Some(Confirm { scope, processes: busy, opened: Instant::now(), accept_focused: false, reveal });
             return Task::none();
         }
         self.close(scope)
@@ -899,13 +1226,13 @@ impl App {
     fn close(&mut self, scope: Scope) -> Task<Message> {
         match scope {
             Scope::Window => return iced::exit(),
-            Scope::Tab(index) if index < self.tabs.len() => {
+            Scope::Tab(id) => {
+                let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else { return Task::none() };
                 self.tabs.remove(index);
                 if index < self.active || self.active >= self.tabs.len() {
                     self.active = self.active.saturating_sub(1);
                 }
             }
-            Scope::Tab(_) => {}
             Scope::Pane(id) => {
                 let Some((index, handle)) = self.locate(id) else { return Task::none() };
                 let tab = &mut self.tabs[index];
@@ -916,7 +1243,8 @@ impl App {
                         tab.focus = sibling;
                     }
                 } else {
-                    return self.close(Scope::Tab(index));
+                    let id = tab.id;
+                    return self.close(Scope::Tab(id));
                 }
             }
         }
@@ -934,6 +1262,9 @@ impl App {
             TermEvent::Wakeup => {
                 if index != active {
                     self.tabs[index].activity = true;
+                }
+                if self.hint_mode.as_ref().is_some_and(|mode| mode.pane == id) {
+                    self.hint_mode = None;
                 }
             }
             TermEvent::Title(title) => pane.title = Some(title),
@@ -993,8 +1324,9 @@ impl App {
         if close {
             return self.close(Scope::Pane(id));
         }
-        let note = match status.code() {
-            Some(code) if code != 0 => format!("{} {code}]", Text::CompletedWithCode.text(lang)),
+        let note = match (status.code(), std::os::unix::process::ExitStatusExt::signal(&status)) {
+            (Some(code), _) if code != 0 => format!("{} {code}]", Text::CompletedWithCode.text(lang)),
+            (None, Some(signal)) => format!("{} {signal}]", Text::CompletedWithSignal.text(lang)),
             _ => Text::Completed.text(lang).to_string(),
         };
         let mut processor: Processor = Processor::new();
@@ -1008,9 +1340,10 @@ impl App {
                 if let Some(pane) = self.pane_mut(id) {
                     pane.resize(cells, cell);
                 }
+                self.hint_mode = None;
             }
             Action::Focus(id) => {
-                self.menu = None;
+                self.dismiss_menu();
                 self.hint_mode = None;
                 if let Some((index, handle)) = self.locate(id) {
                     self.tabs[index].focus = handle;
@@ -1033,14 +1366,14 @@ impl App {
                 if let Some((index, handle)) = self.locate(id) {
                     self.tabs[index].focus = handle;
                 }
-                self.menu = Some(Menu { kind: MenuKind::Context(link), at, opened: Instant::now() });
+                self.menu = Some(Menu::new(MenuKind::Context(link), at, None));
             }
         }
         Task::none()
     }
 
     fn on_key(&mut self, event: &keyboard::Event, captured: bool) -> Task<Message> {
-        let keyboard::Event::KeyPressed { key, physical_key, modifiers, text, .. } = event else {
+        let keyboard::Event::KeyPressed { key, modified_key, physical_key, modifiers, text, .. } = event else {
             if let keyboard::Event::ModifiersChanged(modifiers) = event {
                 self.modifiers = *modifiers;
             }
@@ -1049,18 +1382,21 @@ impl App {
         self.modifiers = *modifiers;
         let escape = matches!(key, Key::Named(Named::Escape));
         if let Some(confirm) = &self.confirm {
-            let scope = confirm.scope;
+            let accepted = confirm.accept_focused;
             return match key {
                 Key::Named(Named::Escape) => self.update(Message::Confirm(false)),
-                Key::Named(Named::Enter) => {
-                    self.confirm = None;
-                    self.close(scope)
+                Key::Named(Named::Enter | Named::Space) => self.update(Message::Confirm(accepted)),
+                Key::Named(Named::Tab | Named::ArrowLeft | Named::ArrowRight) => {
+                    if let Some(confirm) = &mut self.confirm {
+                        confirm.accept_focused = !accepted;
+                    }
+                    Task::none()
                 }
                 _ => Task::none(),
             };
         }
-        if escape && self.menu.is_some() {
-            self.menu = None;
+        if escape && self.menu_open() {
+            self.dismiss_menu();
             return Task::none();
         }
         if captured {
@@ -1072,10 +1408,20 @@ impl App {
         if self.hint_mode.is_some() {
             return self.hint_key(key, *physical_key, modifiers.shift());
         }
-        if let Some(command) = shortcut(key, *physical_key, *modifiers) {
+        if self.menu_open()
+            && let Some(task) = self.menu_key(key, *modifiers)
+        {
+            return task;
+        }
+        if let Some(command) = shortcut(key, *physical_key, *modifiers).filter(|command| {
+            self.find.is_some()
+                || !matches!(key, Key::Named(Named::F3))
+                || !matches!(command, Command::FindUp | Command::FindDown)
+        }) {
             return self.command(command);
         }
-        if self.menu.take().is_some() {
+        if self.menu_open() {
+            self.dismiss_menu();
             return Task::none();
         }
         let mark_prompts = self.prefs.mark_prompts;
@@ -1089,9 +1435,11 @@ impl App {
         }
         let mut term = pane.term.lock();
         let mode = *term.mode();
-        if let Some(bytes) = input::encode(key, *physical_key, *modifiers, text.as_deref(), mode, alt_is_meta) {
+        let encoded_key = if modifiers.control() { key } else { modified_key };
+        if let Some(bytes) = input::encode(encoded_key, *physical_key, *modifiers, text.as_deref(), mode, alt_is_meta) {
             let prompt = (mark_prompts && enter).then(|| marks::prompt(&mut term)).flatten();
             term.scroll_display(Scroll::Bottom);
+            term.selection = None;
             drop(term);
             pane.write(bytes);
             if let Some(prompt) = prompt {
@@ -1128,12 +1476,68 @@ impl App {
         Task::none()
     }
 
+    fn menu_key(&mut self, key: &Key, modifiers: Modifiers) -> Option<Task<Message>> {
+        let menu = self.menu.as_ref()?;
+        let actions = crate::chrome::menu_actions(self, &menu.kind);
+        if actions.is_empty() {
+            return None;
+        }
+        let columns = if menu.kind == MenuKind::Profiles { 3 } else { 1 };
+        let next = match key {
+            Key::Named(Named::ArrowDown) => Some(columns),
+            Key::Named(Named::ArrowUp) => Some(-columns),
+            Key::Named(Named::ArrowRight) if columns > 1 => Some(1),
+            Key::Named(Named::ArrowLeft) if columns > 1 => Some(-1),
+            Key::Named(Named::Tab) => Some(if modifiers.shift() { -1 } else { 1 }),
+            Key::Named(Named::Home) => {
+                self.menu.as_mut()?.selected = Some(0);
+                return Some(operation::snap_to(
+                    "terminal-menu",
+                    iced::widget::scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                ));
+            }
+            Key::Named(Named::End) => {
+                self.menu.as_mut()?.selected = Some(actions.len() - 1);
+                return Some(operation::snap_to(
+                    "terminal-menu",
+                    iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+                ));
+            }
+            Key::Named(Named::Enter | Named::Space) => {
+                let selected = menu.selected.unwrap_or(0).min(actions.len() - 1);
+                return Some(self.update(actions[selected].clone()));
+            }
+            _ => None,
+        };
+        if let Some(step) = next {
+            let selected = menu.selected.map_or(if step < 0 { actions.len() - 1 } else { 0 }, |selected| {
+                (selected as isize + step).rem_euclid(actions.len() as isize) as usize
+            });
+            self.menu.as_mut()?.selected = Some(selected);
+            return Some(operation::snap_to(
+                "terminal-menu",
+                iced::widget::scrollable::RelativeOffset {
+                    x: 0.0,
+                    y: selected as f32 / actions.len().saturating_sub(1).max(1) as f32,
+                },
+            ));
+        }
+        None
+    }
+
     fn use_hint(&self, pane: PaneId, hint: &hints::Hint, copy: bool) -> Task<Message> {
         if copy {
             return clipboard::write(hint.text.clone());
         }
         let cwd = self.locate(pane).and_then(|(index, handle)| self.tabs[index].panes.get(handle)?.directory.clone());
-        open_detached("xdg-open", &[&hints::target(hint, home().as_deref(), cwd.as_deref())]);
+        let target = hints::target(hint, home().as_deref(), cwd.as_deref());
+        if target.starts_with('/') {
+            reveal_or_open(PathBuf::from(target));
+        } else if let Some(path) = local_uri_path(&target) {
+            reveal_or_open(path);
+        } else if hints::openable(&target) {
+            open_detached("xdg-open", &[&target]);
+        }
         Task::none()
     }
 
@@ -1177,35 +1581,72 @@ impl App {
                 return;
             }
             dnd::Dropped::Paths(paths, at) => {
-                let quoted: Vec<String> = paths.iter().map(|path| dnd::quote(path)).collect();
-                (quoted.join(" ") + " ", at)
+                let mut bytes = Vec::new();
+                for path in &paths {
+                    bytes.extend(dnd::quote_bytes(path));
+                    bytes.push(b' ');
+                }
+                self.drop_at = None;
+                if self.focus_drop(at) {
+                    self.paste_bytes(&bytes);
+                }
+                return;
             }
             dnd::Dropped::Text(text, at) => (text, at),
         };
         self.drop_at = None;
+        if self.focus_drop(at) {
+            self.paste(&text);
+        }
+    }
+
+    fn focus_drop(&mut self, at: (f32, f32)) -> bool {
         if let Some(handle) = crate::chrome::pane_at(self, at)
             && let Some(tab) = self.tab_mut()
         {
             tab.focus = handle;
+            return true;
         }
-        self.paste(&text);
+        false
     }
 
     fn paste(&mut self, text: &str) {
+        self.paste_bytes(text.as_bytes());
+    }
+
+    fn paste_bytes(&mut self, text: &[u8]) {
         let Some(pane) = self.focused() else { return };
         let mut term = pane.term.lock();
         let bracketed = term.mode().contains(TermMode::BRACKETED_PASTE);
         term.scroll_display(Scroll::Bottom);
         drop(term);
-        let bytes = if bracketed {
-            format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', ""))
-        } else {
-            text.replace("\r\n", "\r").replace('\n', "\r")
-        };
-        pane.write(bytes.into_bytes());
+        let mut bytes = Vec::new();
+        if bracketed {
+            bytes.extend_from_slice(b"\x1b[200~");
+        }
+        for (index, &byte) in text.iter().enumerate() {
+            if bracketed {
+                if byte != 0x1b {
+                    bytes.push(byte);
+                }
+            } else if byte == b'\n' {
+                if index == 0 || text[index - 1] != b'\r' {
+                    bytes.push(b'\r');
+                }
+            } else {
+                bytes.push(byte);
+            }
+        }
+        if bracketed {
+            bytes.extend_from_slice(b"\x1b[201~");
+        }
+        pane.write(bytes);
     }
 
     fn rebuild_find(&mut self) -> Task<Message> {
+        if let Some(pane) = self.focused() {
+            pane.term.lock().selection = None;
+        }
         let Some(find) = &mut self.find else { return Task::none() };
         let flag = if find.case { "(?-i)" } else { "(?i)" };
         find.pattern = if find.query.is_empty() { String::new() } else { format!("{flag}{}", escape(&find.query)) };
@@ -1214,7 +1655,7 @@ impl App {
         find.total = 0;
         find.index = 0;
         find.counting = false;
-        find.generation += 1;
+        find.generation = SEARCH_ID.fetch_add(1, Ordering::Relaxed);
         find.latest.store(find.generation, std::sync::atomic::Ordering::Relaxed);
         self.find_step(Direction::Left)
     }
@@ -1223,6 +1664,14 @@ impl App {
         let Some(pane) = self.tabs.get(self.active).and_then(Tab::focused) else { return Task::none() };
         let Some(find) = &mut self.find else { return Task::none() };
         let Some(regex) = &mut find.regex else { return Task::none() };
+        if find.pane != Some(pane.id) {
+            return Task::none();
+        }
+        let revision = pane.revision.load(Ordering::Acquire);
+        if find.revision != revision {
+            find.current = None;
+        }
+        find.revision = revision;
         let mut term = pane.term.lock();
         let origin = match (&find.current, direction) {
             (Some(found), Direction::Right) => found.end().add(&*term, Boundary::None, 1),
@@ -1243,7 +1692,7 @@ impl App {
             None => find::Target::Seek(origin, direction),
         };
         drop(term);
-        find.generation += 1;
+        find.generation = SEARCH_ID.fetch_add(1, Ordering::Relaxed);
         find.latest.store(find.generation, std::sync::atomic::Ordering::Relaxed);
         find.counting = true;
         let job = find::Job {
@@ -1252,13 +1701,21 @@ impl App {
             term: Arc::clone(&pane.term),
             regex: regex.clone(),
             target,
+            revision: Arc::clone(&pane.revision),
+            expected_revision: revision,
         };
         Task::perform(find::spawn(job), |outcome| Message::Found(outcome.ok()))
     }
 
     fn found(&mut self, outcome: find::Outcome) {
         let Some(pane) = self.tabs.get(self.active).and_then(Tab::focused) else { return };
-        let Some(find) = self.find.as_mut().filter(|find| find.generation == outcome.generation) else { return };
+        let Some(find) = self.find.as_mut().filter(|find| {
+            find.generation == outcome.generation
+                && find.pane == Some(pane.id)
+                && outcome.revision == pane.revision.load(Ordering::Acquire)
+        }) else {
+            return;
+        };
         find.counting = false;
         find.total = outcome.total;
         find.index = outcome.index;
@@ -1272,7 +1729,7 @@ impl App {
 
     fn command(&mut self, command: Command) -> Task<Message> {
         if !matches!(command, Command::Profiles | Command::Options | Command::SetProfile(_)) {
-            self.menu = None;
+            self.dismiss_menu();
         }
         match command {
             Command::NewWindow => {
@@ -1307,7 +1764,11 @@ impl App {
                     return self.request_close(Scope::Pane(pane.id));
                 }
             }
-            Command::CloseTab(index) => return self.request_close(Scope::Tab(index)),
+            Command::CloseTab(index) => {
+                if let Some(tab) = self.tabs.get(index) {
+                    return self.request_close(Scope::Tab(tab.id));
+                }
+            }
             Command::CloseWindow => return self.request_close(Scope::Window),
             Command::NextTab if !self.tabs.is_empty() => self.select((self.active + 1) % self.tabs.len()),
             Command::PreviousTab if !self.tabs.is_empty() => {
@@ -1368,7 +1829,9 @@ impl App {
             }
             Command::Find => {
                 if self.find.is_none() {
-                    self.find = Some(Find::default());
+                    let mut find = Find::default();
+                    find.pane = self.focused().map(|pane| pane.id);
+                    self.find = Some(find);
                 }
                 return Task::batch([operation::focus(FIND_ID), operation::select_all(FIND_ID)]);
             }
@@ -1413,6 +1876,7 @@ impl App {
                         title: Text::ExportText.text(self.lang).trim_end_matches('…').to_string(),
                         name: Text::ExportName.text(self.lang).to_string(),
                         folder: pane.directory.clone().or_else(home),
+                        revision: Arc::clone(&pane.revision),
                     };
                     return Task::perform(export::spawn(request), |saved| Message::Exported(saved.ok()));
                 }
@@ -1479,12 +1943,17 @@ impl App {
             }
             Command::MakeDefault => {
                 if let Some(profile) = self.tab().map(|tab| tab.profile) {
-                    self.prefs.profile = profile;
-                    if config::save(&self.prefs).is_ok() {
-                        self.stamps.1 = config::stamp(config::path().as_deref());
+                    let mut prefs = self.prefs.clone();
+                    prefs.profile = profile;
+                    match config::save(&prefs) {
+                        Ok(()) => {
+                            self.prefs = prefs;
+                            self.stamps.1 = config::stamp(config::path().as_deref());
+                        }
+                        Err(error) => self.error = Some(error.to_string()),
                     }
                 }
-                self.menu = None;
+                self.dismiss_menu();
             }
             _ => {}
         }
@@ -1493,10 +1962,26 @@ impl App {
 
     fn toggle_menu(&mut self, kind: MenuKind, at: Point) {
         if self.menu.as_ref().is_some_and(|menu| menu.kind == kind) {
-            self.menu = None;
+            if self.menu_open() {
+                self.dismiss_menu();
+            } else if let Some(menu) = &mut self.menu {
+                menu.reveal.open(motion::t2());
+                menu.reveal = menu.reveal.with_ease(motion::ease_out);
+            }
         } else {
             let at = self.menu.as_ref().filter(|menu| menu.kind == MenuKind::Options).map_or(at, |menu| menu.at);
-            self.menu = Some(Menu { kind, at, opened: Instant::now() });
+            self.menu = Some(Menu::new(kind, at, Some(0)));
+        }
+    }
+
+    fn menu_open(&self) -> bool {
+        self.menu.as_ref().is_some_and(|menu| menu.reveal.is_open())
+    }
+
+    fn dismiss_menu(&mut self) {
+        if let Some(menu) = &mut self.menu {
+            menu.reveal.close(motion::t2());
+            menu.reveal = menu.reveal.with_ease(motion::ease_io);
         }
     }
 }
@@ -1654,5 +2139,121 @@ mod tests {
         assert_eq!(ids(&app), vec![before[1], before[2], before[0]]);
         assert_eq!(app.active, 2);
         assert_eq!(app.dragged_tab(), None);
+    }
+
+    fn review_app() -> App {
+        let (sender, _receiver) = iced::futures::channel::mpsc::unbounded();
+        let (mut app, _) = App::with_launch(Launch { command: Some(("cat".into(), Vec::new())), directory: None });
+        app.prefs = Preferences { shell: Some("cat".into()), ..Preferences::default() };
+        let _ = app.update(Message::Feed(Feed::Connected(Bus(sender))));
+        app
+    }
+
+    #[test]
+    fn confirmation_follows_its_tab_when_an_earlier_tab_exits() {
+        let mut app = review_app();
+        let _ = app.update(Message::Command(Command::NewTab));
+        let _ = app.update(Message::Command(Command::NewTab));
+        let ids: Vec<_> = app.tabs.iter().map(|tab| tab.id).collect();
+        let _ = app.request_close(Scope::Tab(ids[1]));
+        assert!(app.confirm.is_some());
+        let _ = app.close(Scope::Tab(ids[0]));
+        let _ = app.update(Message::Confirm(true));
+        assert_eq!(app.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(), [ids[2]]);
+    }
+
+    #[test]
+    fn explicitly_launched_programs_ask_before_closing_and_enter_defaults_to_cancel() {
+        let mut app = review_app();
+        let _ = app.update(Message::CloseRequested);
+        assert!(app.confirm.is_some());
+        let _ = app.update(press(Key::Named(Named::Enter), None));
+        assert!(app.confirm.is_none());
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[test]
+    fn reopening_find_rejects_an_old_sessions_outcome() {
+        let mut app = review_app();
+        let _ = app.update(Message::Command(Command::Find));
+        let _ = app.update(Message::FindInput("foo".into()));
+        let previous = app.find.as_ref().unwrap().generation;
+        let _ = app.update(Message::FindClose);
+        let _ = app.update(Message::Command(Command::Find));
+        let _ = app.update(Message::FindInput("bar".into()));
+        assert_ne!(app.find.as_ref().unwrap().generation, previous);
+        let revision = app.focused().unwrap().revision.load(Ordering::Acquire);
+        let _ = app.update(Message::Found(Some(find::Outcome {
+            generation: previous,
+            found: None,
+            total: 999,
+            index: 999,
+            revision,
+        })));
+        assert_eq!(app.find.as_ref().unwrap().total, 0);
+    }
+
+    #[test]
+    fn switching_panes_cancels_find_and_transfers_terminal_focus() {
+        let mut app = review_app();
+        let first = app.focused().unwrap().id;
+        let _ = app.update(Message::Command(Command::SplitRight));
+        let second = app.focused().unwrap().id;
+        assert_ne!(first, second);
+        assert!(!app.pane_mut(first).unwrap().term.lock().is_focused);
+        assert!(app.focused().unwrap().term.lock().is_focused);
+        let _ = app.update(Message::Command(Command::Find));
+        let _ = app.update(Message::Command(Command::FocusPane(pane_grid::Direction::Left)));
+        assert!(app.find.is_none());
+        assert!(app.focused().unwrap().term.lock().is_focused);
+        assert!(!app.pane_mut(second).unwrap().term.lock().is_focused);
+    }
+
+    #[test]
+    fn f3_without_find_reaches_the_program_and_tab_changes_end_hints() {
+        let mut app = review_app();
+        let _ = app.update(press(Key::Named(Named::F3), None));
+        assert!(app.find.is_none());
+        app.hint_mode = Some(HintMode { pane: app.focused().unwrap().id, items: Vec::new(), typed: String::new() });
+        let _ = app.update(Message::Command(Command::NewTab));
+        assert!(app.hint_mode.is_none());
+    }
+
+    #[test]
+    fn local_file_uris_preserve_bytes_and_reject_remote_hosts_and_nuls() {
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(local_uri_path("file:///tmp/a%ff").unwrap().as_os_str().as_bytes(), b"/tmp/a\xff");
+        assert_eq!(local_uri_path("file://localhost/tmp/a"), Some(PathBuf::from("/tmp/a")));
+        assert!(local_uri_path("file://remote/tmp/a").is_none());
+        assert!(local_uri_path("file:///tmp/a%00").is_none());
+    }
+
+    #[test]
+    fn the_clock_rethemes_the_app_without_changing_config_stamps() {
+        let mut app = review_app();
+        app.shell_look = config::Look::parse("[topbar]\nappearance-schedule = true\n", false);
+        let stamps = app.stamps;
+        app.update_appearance(Some(12 * 60));
+        assert_eq!(app.paint.tokens.appearance, glide_theme::Appearance::Light);
+        app.update_appearance(Some(20 * 60));
+        assert_eq!(app.paint.tokens.appearance, glide_theme::Appearance::Dark);
+        assert_eq!(app.stamps, stamps);
+    }
+
+    #[test]
+    fn menu_arrows_select_actions_and_escape_starts_a_reversible_close() {
+        let mut app = review_app();
+        let _ = app.update(Message::Command(Command::Options));
+        let _ = app.update(press(Key::Named(Named::ArrowDown), None));
+        assert_eq!(app.menu.as_ref().unwrap().selected, Some(1));
+        let _ = app.update(press(Key::Named(Named::End), None));
+        assert_eq!(
+            app.menu.as_ref().unwrap().selected,
+            Some(crate::chrome::menu_actions(&app, &MenuKind::Options).len() - 1)
+        );
+        let _ = app.update(press(Key::Named(Named::Escape), None));
+        assert!(!app.menu_open());
+        let _ = app.update(Message::Command(Command::Options));
+        assert!(app.menu_open());
     }
 }

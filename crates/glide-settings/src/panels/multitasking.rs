@@ -6,7 +6,7 @@ use super::desktop::{NewWindow, sketch};
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::services::config::ConfigStore;
-use crate::services::keybinds::{self, Action, Keybind};
+use crate::services::keybinds;
 use crate::theme::{self, ThemeState};
 use crate::widgets::{self, Group, Row};
 
@@ -101,7 +101,8 @@ impl Pane for Page {
 
 fn workspaces_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
-    let current = NewWindow::from_config(config);
+    let fixed = config.int_or("workspaces", "fixed", 0);
+    let current = if fixed > 0 { NewWindow::ActiveWorkspace } else { NewWindow::from_config(config) };
     let card = |policy: NewWindow, heading: K, hint: tr::Key| {
         widgets::radio_card(
             t,
@@ -117,11 +118,11 @@ fn workspaces_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         card(NewWindow::ActiveWorkspace, K::CurrentWorkspace, tr::Key::ActiveWorkspaceHint),
     ]
     .spacing(12);
-    let fixed = config.int_or("workspaces", "fixed", 0);
+    let cards_ctx = Ctx { writable: c.writable && fixed == 0, ..*c };
     let mut group = Group::new(t)
         .title(c.t(K::NewWindows))
         .description(c.t(K::WorkspacesHint))
-        .push(container(gated(*c, cards)).padding(8))
+        .push(container(gated(cards_ctx, cards)).padding(8))
         .push(switch_row(*c, c.t(tr::Key::Fixed), c.t(tr::Key::FixedHint), fixed > 0, Msg::Fixed));
     if fixed > 0 {
         let selected = u8::try_from(fixed).ok();
@@ -191,16 +192,9 @@ fn snapping_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         .build()
 }
 
-fn combo_for(binds: &[Keybind], action: &str) -> Option<String> {
-    let bind = binds.iter().find(|bind| bind.action == Action::Named(action.to_string()))?;
-    let mut parts: Vec<String> = bind.sorted_mods().iter().map(|m| m.key().to_string()).collect();
-    parts.push(bind.key.clone());
-    Some(parts.join("+"))
-}
-
 fn shortcuts_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
-    let binds = keybinds::load(config).map_or_else(|_| keybinds::defaults().to_vec(), |loaded| loaded.binds);
+    let binds = keybinds::current(config);
     let entries = [
         (tr::Key::OpenOverview, "toggle-overview"),
         (tr::Key::OpenLauncher, "toggle-launcher"),
@@ -211,7 +205,7 @@ fn shortcuts_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     ];
     let mut group = Group::new(t).title(c.t(tr::Key::Shortcuts)).description(c.t(tr::Key::ShortcutsHint));
     for (label, action) in entries {
-        let suffix: Element<'a, Msg> = match combo_for(&binds, action) {
+        let suffix: Element<'a, Msg> = match keybinds::combo_for(&binds, action) {
             Some(combo) => widgets::key_combo(t, &combo),
             None => text(c.t(tr::Key::Unbound)).size(13).color(t.fg_3()).into(),
         };

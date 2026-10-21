@@ -5,30 +5,30 @@ use smithay::{
 
 use crate::{config::Color, paint::Painter, window::GlideWindow};
 
-use super::{BUTTON_PAD_X, BUTTON_PAD_Y, BUTTON_SIZE, BoxDecoCache, BoxDecoFade, BoxDecoKey, DecorationBuffer};
+use super::{BUTTON_PAD_X, BoxDecoCache, BoxDecoFade, BoxDecoKey, DecorationBuffer};
 
 const PRESS_SCALE: f64 = 0.96;
 
-fn pressed_side() -> i32 {
-    let inset = (f64::from(BUTTON_SIZE) * (1.0 - PRESS_SCALE) / 2.0).round().max(1.0) as i32;
-    (BUTTON_SIZE - inset * 2).max(1)
+fn pressed_side(size: i32) -> i32 {
+    let inset = (f64::from(size) * (1.0 - PRESS_SCALE) / 2.0).round().max(1.0) as i32;
+    (size - inset * 2).max(1)
 }
 
 pub(crate) fn redraw_button(
-    buf: &mut Option<MemoryRenderBuffer>, scale: i32, bg: Color, fg: Color, pressed: bool,
+    buf: &mut Option<MemoryRenderBuffer>, size: i32, scale: i32, bg: Color, fg: Color, pressed: bool,
     icon: fn(&mut [u8], i32, i32, i32, Color, Color),
 ) {
-    let (pw, ph) = (BUTTON_SIZE * scale, BUTTON_SIZE * scale);
+    let (pw, ph) = (size * scale, size * scale);
     let buf =
         buf.get_or_insert_with(|| MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None));
     let mut ctx = buf.render();
     ctx.resize((pw, ph));
     let _ = ctx.draw(|pixels| {
         if pressed {
-            let side = pressed_side();
-            let (spw, sph) = (side * scale, side * scale);
+            let shrunk = pressed_side(size);
+            let (spw, sph) = (shrunk * scale, shrunk * scale);
             let mut small = vec![0u8; usize::try_from(spw * sph * 4).unwrap_or_default()];
-            icon(&mut small, side, side, scale, fg, bg);
+            icon(&mut small, shrunk, shrunk, scale, fg, bg);
 
             pixels.fill(0);
             let (ox, oy) = ((pw - spw) / 2, (ph - sph) / 2);
@@ -41,7 +41,7 @@ pub(crate) fn redraw_button(
                 pixels[dst_start..dst_start + src_stride].copy_from_slice(&small[src_start..src_start + src_stride]);
             }
         } else {
-            icon(pixels, BUTTON_SIZE, BUTTON_SIZE, scale, fg, bg);
+            icon(pixels, size, size, scale, fg, bg);
         }
         Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
     });
@@ -81,8 +81,10 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter, scale: i32) -> Vec
         });
     }
 
-    let left = Point::from((BUTTON_PAD_X, BUTTON_PAD_Y));
-    let right = Point::from((header.width - BUTTON_PAD_X - BUTTON_SIZE, BUTTON_PAD_Y));
+    let size = header.button_size();
+    let pad_y = (header.height - size).max(0) / 2;
+    let left = Point::from((BUTTON_PAD_X, pad_y));
+    let right = Point::from((header.width - BUTTON_PAD_X - size, pad_y));
     let (maximize_at, close_at) = if header.close_on_left() { (right, left) } else { (left, right) };
 
     for (buf, at) in
@@ -144,7 +146,7 @@ fn window_shadow_layers(
 
 pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<DecorationBuffer> {
     let mut state = window.try_decoration_state_mut()?;
-    if !state.header.is_decorated() {
+    if !state.header.is_framed() {
         return None;
     }
 

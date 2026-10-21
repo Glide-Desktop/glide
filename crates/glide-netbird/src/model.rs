@@ -625,6 +625,14 @@ pub struct ConfigPatch {
     pub disable_ipv6: Option<bool>,
 }
 
+fn shell_quote(word: &str) -> String {
+    if !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_./=:,+@%".contains(&byte)) {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
 impl ConfigPatch {
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -646,7 +654,7 @@ impl ConfigPatch {
     pub fn up_flags(&self) -> Vec<String> {
         let mut flags = Vec::new();
         if let Some(url) = &self.management_url {
-            flags.push(format!("--management-url {url}"));
+            flags.push(format!("--management-url {}", shell_quote(url)));
         }
         if let Some(allowed) = self.server_ssh_allowed {
             flags.push(format!("--allow-server-ssh={allowed}"));
@@ -968,5 +976,15 @@ mod tests {
         assert_eq!(guarded.server_ssh_allowed, Some(true));
         assert_eq!(guarded.up_flags(), ["--management-url https://nb.example:443", "--allow-server-ssh=true"]);
         assert!(ConfigPatch::default().is_empty() && !guarded.is_empty());
+    }
+
+    #[test]
+    fn a_management_url_in_the_copyable_command_cannot_inject_shell() {
+        let flags = |url: &str| ConfigPatch { management_url: Some(url.into()), ..ConfigPatch::default() }.up_flags();
+        assert_eq!(flags("https://nb.example:443/a,b+c@d%20"), ["--management-url https://nb.example:443/a,b+c@d%20"]);
+        assert_eq!(flags("https://x; rm -rf ~"), ["--management-url 'https://x; rm -rf ~'"]);
+        assert_eq!(flags("https://x'; rm -rf ~; '"), [r"--management-url 'https://x'\''; rm -rf ~; '\'''"]);
+        assert_eq!(flags("$(id)`id`"), ["--management-url '$(id)`id`'"]);
+        assert_eq!(flags(""), ["--management-url ''"]);
     }
 }

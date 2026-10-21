@@ -38,8 +38,8 @@ impl IconLoader {
     }
 
     #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
+    pub fn generation(&self) -> u64 {
+        self.generation.wrapping_add(ALIAS_REVISION.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     pub fn expire_missing(&mut self) -> bool {
@@ -94,8 +94,10 @@ impl IconLoader {
         self.expire_missing();
         let theme = self.theme_name();
         let index = &mut self.index;
-        self.rendered
-            .entry((app_id.to_string(), side))
+        let key = (app_id.to_string(), side);
+        let found = self
+            .rendered
+            .entry(key.clone())
             .or_insert_with(|| {
                 let rendered = index.resolve_app(app_id, &theme, side).and_then(|path| render(&path, side, None));
                 if rendered.is_none() {
@@ -103,8 +105,31 @@ impl IconLoader {
                 }
                 rendered
             })
-            .as_deref()
+            .is_some();
+        if !found && let Some(icon) = alias_for(app_id) {
+            return self.load_named(&icon, side);
+        }
+        self.rendered.get(&key).and_then(|pixels| pixels.as_deref())
     }
+}
+
+static ALIASES: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+static ALIAS_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_alias(key: &str, icon: Option<&str>) {
+    let mut aliases = ALIASES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = aliases.get_or_insert_with(HashMap::new);
+    let changed = match icon.filter(|icon| !icon.trim().is_empty() && !icon.contains('/')) {
+        Some(icon) => map.insert(key.to_string(), icon.to_string()).as_deref() != Some(icon),
+        None => map.remove(key).is_some(),
+    };
+    if changed {
+        ALIAS_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn alias_for(key: &str) -> Option<String> {
+    ALIASES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()?.get(key).cloned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +273,7 @@ pub struct DesktopApp {
     pub id: String,
     pub name: String,
     pub command: String,
+    pub exec: String,
     pub icon: String,
     pub category: AppCategory,
     pub generic_name: String,
@@ -318,7 +344,7 @@ pub fn list_applications() -> Vec<DesktopApp> {
 #[must_use]
 pub fn find_application(app_id: &str) -> Option<DesktopApp> {
     let app_id = app_id.trim();
-    if app_id.is_empty() {
+    if !is_plain_app_id(app_id) {
         return None;
     }
     let wanted = app_id.to_lowercase();
@@ -489,6 +515,7 @@ fn parse_desktop_entry_for(id: &str, contents: &str, lang: &str, terminal: &dyn 
 
     let name = unescape_desktop_value(entry.localized("Name")?);
     let command = runnable(entry.plain("Exec")?);
+    let exec = if terminal.is_some() { String::new() } else { entry.plain("Exec").unwrap_or_default().to_string() };
 
     let mut keywords = desktop_list(entry.localized("Keywords"));
     for extra in desktop_list(entry.plain("Keywords")) {
@@ -517,6 +544,7 @@ fn parse_desktop_entry_for(id: &str, contents: &str, lang: &str, terminal: &dyn 
         id: id.to_string(),
         name,
         command,
+        exec,
         icon: entry.plain("Icon").unwrap_or_default().to_string(),
         category: AppCategory::from_desktop(entry.plain("Categories").unwrap_or_default()),
         generic_name: entry.localized("GenericName").map(unescape_desktop_value).unwrap_or_default(),
@@ -576,7 +604,14 @@ fn default_system_data_dirs(home: Option<&Path>) -> Vec<PathBuf> {
     dirs
 }
 
+fn is_plain_app_id(app_id: &str) -> bool {
+    !app_id.is_empty() && !app_id.starts_with('.') && !app_id.contains(['/', '\0'])
+}
+
 fn desktop_icon_name(app_id: &str) -> Option<String> {
+    if !is_plain_app_id(app_id) {
+        return None;
+    }
     let exact = if app_id.ends_with(".desktop") { app_id.to_string() } else { format!("{app_id}.desktop") };
     let candidates = [exact, format!("{app_id}.desktop"), format!("{}.desktop", app_id.to_lowercase())];
 
@@ -744,7 +779,13 @@ fn symbolic_candidates(icon: &str) -> Vec<String> {
     vec![format!("{base}-symbolic"), base]
 }
 
+const MAX_ICON_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
 pub(crate) fn render(path: &Path, side: i32, tint: Option<Color>) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_ICON_FILE_BYTES {
+        return None;
+    }
     let data = std::fs::read(path).ok()?;
     match (path.extension().and_then(|ext| ext.to_str()), tint) {
         (Some("svg"), None) => glide_paint::render_svg(&data, side),

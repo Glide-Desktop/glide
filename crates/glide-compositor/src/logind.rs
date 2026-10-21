@@ -73,6 +73,7 @@ pub enum LoginEvent {
     Lock,
     Unlock,
     Sleep,
+    Wake,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,8 +194,11 @@ fn watch(
                     sink(LoginEvent::Sleep);
                     std::thread::sleep(LOCK_GRACE);
                     inhibitor = None;
-                } else if inhibitor.is_none() {
-                    inhibitor = inhibit(&connection, SLEEP_DELAY);
+                } else {
+                    sink(LoginEvent::Wake);
+                    if inhibitor.is_none() {
+                        inhibitor = inhibit(&connection, SLEEP_DELAY);
+                    }
                 }
             }
             None => {}

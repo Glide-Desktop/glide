@@ -1,0 +1,20 @@
+[package]
+name = "glide-iced"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = ["tiny-skia", "wayland", "advanced", "image", "svg", "web-colors"] }
+glide-theme = { path = "../glide-theme" }
+glide-paint = { path = "../glide-paint" }
+glide-ui = { path = "../glide-ui" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+iced = { version = "0.14.0", default-features = false, features = ["wgpu"] }
+iced_tiny_skia = { version = "0.14", default-features = false }

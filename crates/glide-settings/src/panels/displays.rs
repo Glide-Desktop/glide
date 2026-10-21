@@ -16,6 +16,10 @@ mod tr {
     crate::i18n::catalogue! {
         Arrangement => "Arrangement", "Розташування";
         ArrangementHint => "Displays sit side by side from left to right. Select one to change it.", "Дисплеї стоять поруч зліва направо. Виберіть дисплей, щоб змінити його.";
+        Extend => "Extend", "Розширити";
+        Mirror => "Mirror", "Дублювати";
+        ExtendHint => "Each display shows its own part of the desktop", "Кожен дисплей показує свою частину стільниці";
+        MirrorHint => "Every display shows the built-in screen, or the first one when there is none", "Усі дисплеї показують вбудований екран, а без нього — перший";
         MoveLeft => "Move left", "Посунути ліворуч";
         MoveRight => "Move right", "Посунути праворуч";
         Recommended => "recommended", "рекомендовано";
@@ -40,12 +44,40 @@ mod tr {
         Seconds => "s", "с";
         KeepChanges => "Keep changes", "Залишити зміни";
         Revert => "Revert", "Повернути";
+        Millimetres => "mm", "мм";
     }
 }
 
 pub const CONFIRM_SECONDS: u8 = 15;
 
-type Snapshot = Vec<(String, Option<Table>)>;
+#[derive(Debug, Clone)]
+struct Snapshot {
+    outputs: Vec<(String, Option<Table>)>,
+    arrangement: Option<String>,
+}
+
+const DISPLAYS: &str = "displays";
+const ARRANGEMENT: &str = "arrangement";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrangement {
+    Extend,
+    Mirror,
+}
+
+impl Arrangement {
+    #[must_use]
+    pub fn of(config: &ConfigStore) -> Self {
+        if config.get_str(DISPLAYS, ARRANGEMENT) == Some("mirror") { Self::Mirror } else { Self::Extend }
+    }
+
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Extend => "extend",
+            Self::Mirror => "mirror",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Countdown {
@@ -62,13 +94,17 @@ struct Guard {
 
 impl Guard {
     fn capture(config: &ConfigStore, names: &[String]) -> Snapshot {
-        names.iter().map(|name| (name.clone(), config.output_snapshot(name))).collect()
+        Snapshot {
+            outputs: names.iter().map(|name| (name.clone(), config.output_snapshot(name))).collect(),
+            arrangement: config.optional_str(DISPLAYS, ARRANGEMENT),
+        }
     }
 
     fn changed(before: &Snapshot, config: &ConfigStore) -> bool {
-        before.iter().any(|(name, table)| {
-            config.output_snapshot(name).map(|t| t.to_string()) != table.as_ref().map(ToString::to_string)
-        })
+        before.arrangement != config.optional_str(DISPLAYS, ARRANGEMENT)
+            || before.outputs.iter().any(|(name, table)| {
+                config.output_snapshot(name).map(|t| t.to_string()) != table.as_ref().map(ToString::to_string)
+            })
     }
 
     fn arm(&mut self, before: Snapshot) -> u64 {
@@ -102,9 +138,10 @@ impl Guard {
 
     fn revert(&mut self, config: &mut ConfigStore) {
         if let Some((snapshot, _)) = self.pending.take() {
-            for (name, table) in &snapshot {
+            for (name, table) in &snapshot.outputs {
                 config.restore_output(name, table.as_ref());
             }
+            config.set_optional_str(DISPLAYS, ARRANGEMENT, snapshot.arrangement.as_deref());
         }
         self.generation.bump();
     }
@@ -136,6 +173,7 @@ pub enum Msg {
     Scale(f64),
     Mode(ModeChoice),
     Move(bool),
+    Arrange(Arrangement),
     Brightness(f64),
     SettleBrightness(u64),
     BrightnessDone(Option<Result<String, String>>),
@@ -273,6 +311,11 @@ impl Page {
             Msg::Keep => self.guard.keep(),
             Msg::Revert => self.guard.revert(config),
             Msg::Move(right) => self.move_selected(right, config),
+            Msg::Arrange(arrangement) => {
+                let before = self.capture(config);
+                config.set_str(DISPLAYS, ARRANGEMENT, arrangement.key());
+                return self.guard_change(before, config);
+            }
             Msg::Brightness(value) => {
                 let value = value.round().clamp(1.0, 100.0) as u8;
                 self.brightness.value = Some(value);
@@ -443,7 +486,26 @@ impl Page {
             ));
         }
         let mut card = column![container(monitors).center_x(Fill)].spacing(14);
+        let arrangement = Arrangement::of(config);
         if order.len() > 1 {
+            let choices = vec![
+                (Arrangement::Extend, c.t(tr::Key::Extend).to_string()),
+                (Arrangement::Mirror, c.t(tr::Key::Mirror).to_string()),
+            ];
+            let hint = match arrangement {
+                Arrangement::Extend => c.t(tr::Key::ExtendHint),
+                Arrangement::Mirror => c.t(tr::Key::MirrorHint),
+            };
+            card = card.push(
+                row![
+                    text(hint).size(12.5).color(t.fg_2()).width(Fill),
+                    super::common::gated(*c, widgets::segmented(t, choices, arrangement, Msg::Arrange)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        if order.len() > 1 && arrangement == Arrangement::Extend {
             let at = order.iter().position(|index| *index == self.selected).unwrap_or(0);
             let writable = c.writable;
             card = card.push(
@@ -598,7 +660,12 @@ impl Page {
         if let Some(inches) = display::diagonal_inches(output.physical_mm) {
             rows.push((
                 c.t(tr::Key::ScreenSize).to_string(),
-                format!("{inches}″ · {} × {} mm", output.physical_mm.0, output.physical_mm.1),
+                format!(
+                    "{inches}″ · {} × {} {}",
+                    output.physical_mm.0,
+                    output.physical_mm.1,
+                    c.t(tr::Key::Millimetres)
+                ),
             ));
         }
         rows.push((c.t(tr::Key::Workspace).to_string(), format!("{w:.0} × {h:.0}")));
@@ -660,7 +727,11 @@ fn fixed_mode_rows<'a>(c: &Ctx, output: &OutputInfo) -> Vec<Element<'a, Msg>> {
     if output.refresh_mhz > 0 {
         rows.push(
             Row::new(t, c.t(K::RefreshRate))
-                .suffix(text(format!("{} Hz", display::refresh_text(output.refresh_mhz))).size(13).color(t.fg_2()))
+                .suffix(
+                    text(format!("{} {}", display::refresh_text(output.refresh_mhz), display::hertz(c.lang)))
+                        .size(13)
+                        .color(t.fg_2()),
+                )
                 .build(),
         );
     }
@@ -677,7 +748,7 @@ fn refresh_row<'a>(c: &Ctx, output: &OutputInfo, configured: Option<&str>) -> Op
     let mut choices = vec![ModeChoice { key: Some(base.clone()), label: c.t(tr::Key::Automatic).to_string() }];
     choices.extend(rates.iter().map(|rate| ModeChoice {
         key: Some(format!("{base}@{}", display::refresh_text(*rate))),
-        label: format!("{} Hz", display::refresh_text(*rate)),
+        label: format!("{} {}", display::refresh_text(*rate), display::hertz(c.lang)),
     }));
     let current = format!("{base}@{}", display::refresh_text(output.refresh_mhz));
     let selected = match configured {
@@ -688,7 +759,12 @@ fn refresh_row<'a>(c: &Ctx, output: &OutputInfo, configured: Option<&str>) -> Op
     Some(
         Row::new(t, c.t(K::RefreshRate))
             .subtitle(if output.refresh_mhz > 0 {
-                format!("{}: {} Hz", c.t(tr::Key::Current), display::refresh_text(output.refresh_mhz))
+                format!(
+                    "{}: {} {}",
+                    c.t(tr::Key::Current),
+                    display::refresh_text(output.refresh_mhz),
+                    display::hertz(c.lang)
+                )
             } else {
                 c.t(tr::Key::FastestHint).to_string()
             })
@@ -831,6 +907,20 @@ mod tests {
         assert_eq!(guard.tick(generation), Countdown::Stale);
         guard.revert(&mut config);
         assert_eq!(config.to_text(), applied);
+    }
+
+    #[test]
+    fn switching_to_mirror_is_guarded_and_reverting_returns_to_extend() {
+        let mut config = ConfigStore::parse("[[output]]\nname = \"DP-1\"\nscale = 1.0\n");
+        let mut guard = Guard::default();
+        let before = Guard::capture(&config, &names());
+        config.set_str(DISPLAYS, ARRANGEMENT, Arrangement::Mirror.key());
+        assert!(Guard::changed(&before, &config));
+        assert_eq!(Arrangement::of(&config), Arrangement::Mirror);
+        guard.arm(before);
+        guard.revert(&mut config);
+        assert_eq!(Arrangement::of(&config), Arrangement::Extend);
+        assert_eq!(config.get_str(DISPLAYS, ARRANGEMENT), None);
     }
 
     #[test]

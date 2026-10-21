@@ -24,16 +24,6 @@ const TERMINAL_APP: [Rgb; 16] = ansi([
     0xeaec23, 0x5833ff, 0xf935f8, 0x14f0f0, 0xe9ebeb,
 ]);
 
-const MERIDIAN_DARK: [Rgb; 16] = ansi([
-    0x131218, 0xf0796f, 0x8fe08a, 0xe6c07b, 0x8fb8ff, 0xd797e8, 0x76d6d5, 0xcfe4ca, 0x535158, 0xf4948c, 0xa6e7a2,
-    0xebd097, 0xa9cbff, 0xe1aef0, 0x95dedd, 0xffffff,
-]);
-
-const MERIDIAN_LIGHT: [Rgb; 16] = ansi([
-    0x1e241b, 0xbf372c, 0x1c7a4c, 0x8d600b, 0x1e5bb8, 0x8a3fb8, 0x167a82, 0xd8d6cf, 0x6b6960, 0xd14f43, 0x289460,
-    0xa87615, 0x2d72db, 0xa356d4, 0x21949d, 0xf5f4f0,
-]);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Profile {
@@ -231,7 +221,7 @@ impl Profile {
             Self::Meridian => {
                 let background = token(tokens.term_bg);
                 Palette {
-                    ansi: if dark { MERIDIAN_DARK } else { MERIDIAN_LIGHT },
+                    ansi: tokens.terminal_ansi().map(token),
                     foreground: token(tokens.term_fg),
                     background,
                     bold: None,
@@ -276,6 +266,23 @@ mod tests {
             assert_eq!(palette.background, token(tokens.term_bg));
             assert_eq!(palette.foreground, token(tokens.term_fg));
             assert_eq!(palette.is_dark(), appearance == Appearance::Dark);
+        }
+    }
+
+    #[test]
+    fn meridian_ansi_semantics_follow_changed_tokens_not_old_hex_values() {
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            let mut tokens = tokens(appearance);
+            let changed = glide_theme::Color::from_hex("#123456").unwrap();
+            tokens.term_ok = changed;
+            tokens.term_warn = changed;
+            tokens.term_accent = changed;
+            tokens.danger = changed;
+            let palette = Profile::Meridian.palette(&tokens);
+            for index in [1, 2, 3, 4] {
+                assert_eq!(palette.ansi[index], token(changed));
+            }
+            assert_eq!(Profile::Pro.palette(&tokens).ansi, TERMINAL_APP);
         }
     }
 

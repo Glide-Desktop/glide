@@ -1,0 +1,3555 @@
+<!DOCTYPE html>
+<html lang="uk" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glide — Знімок екрана та розмітка за місцем (In-Place Screenshot &amp; Markup)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+/* =========================================================================
+   MERIDIAN OS v3 — DESIGN TOKENS & SYSTEM THEMES
+   ========================================================================= */
+:root {
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* Strict Form Scale — 5 Steps Only (Zero intermediate values) */
+  --r-1: 4px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --r-4: 18px;
+  --r-round: 999px;
+
+  /* State Layers */
+  --st-hover: .08;
+  --st-press: .13;
+  --st-drag: .18;
+
+  /* Motion Physics (Strictly No Springs) */
+  --t-1: 120ms;
+  --t-2: 200ms;
+  --t-3: 320ms;
+  --t-4: 420ms;
+  --e-out: cubic-bezier(.2, 0, 0, 1);
+  --e-io: cubic-bezier(.4, 0, .2, 1);
+  --e-over: cubic-bezier(.32, 1.28, .5, 1);
+
+  /* Typography */
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Accent Ramps: Default Azurite Blue */
+  --ac-1: #d9e6fb;
+  --ac-2: #a7c8f6;
+  --ac-3: #5b9bec;
+  --ac-4: #2f6fd0;
+  --ac-5: #1f56a8;
+  --ac-6: #163e79;
+  --ac-rgb: 47, 111, 208;
+
+  --acc-bg: var(--ac-4);
+  --acc-bg-hover: var(--ac-5);
+  --acc-fg: #ffffff;
+  --acc-text: var(--ac-5);
+  --acc-soft: var(--ac-1);
+  --acc-soft-fg: var(--ac-6);
+  --acc-ring: rgba(var(--ac-rgb), .32);
+}
+
+/* -------------------------------------------------------------------------
+   Light Theme
+   ------------------------------------------------------------------------- */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --win-bg: #f3f2ef;
+  --view-bg: #ffffff;
+  --sidebar-bg: #eceae6;
+  --bar-bg: #fbfaf8;
+  --bar-bg-idle: #f2f0ed;
+  --card-bg: #ffffff;
+  --popover-bg: #ffffff;
+  --sunken-bg: #e8e6e2;
+  --inverse-bg: #26251f;
+  --inverse-fg: #f7f6f3;
+
+  --fg-1: #1b1a17;
+  --fg-2: rgba(27, 26, 23, .66);
+  --fg-3: rgba(27, 26, 23, .44);
+  --fg-4: rgba(27, 26, 23, .20);
+
+  --line: rgba(27, 26, 23, .10);
+  --line-2: rgba(27, 26, 23, .17);
+
+  --state: 27, 26, 23;
+  --fill-1: rgba(27, 26, 23, .05);
+  --fill-2: rgba(27, 26, 23, .09);
+  --fill-3: rgba(27, 26, 23, .14);
+
+  --ok: #1c7a4c;
+  --ok-soft: #dcf0e5;
+  --warn: #a1690a;
+  --warn-soft: #f8ecd6;
+  --danger: #bf372c;
+  --danger-soft: #fae3e0;
+
+  --el-1: 0 1px 2px rgba(27, 26, 23, .07);
+  --el-2: 0 2px 4px rgba(27, 26, 23, .06), 0 6px 16px rgba(27, 26, 23, .09);
+  --el-3: 0 4px 8px rgba(27, 26, 23, .08), 0 18px 44px rgba(27, 26, 23, .15);
+  --el-win: 0 0 0 1px rgba(27, 26, 23, .07), 0 6px 14px rgba(27, 26, 23, .10), 0 26px 60px rgba(27, 26, 23, .22);
+  --el-win-idle: 0 0 0 1px rgba(27, 26, 23, .06), 0 2px 6px rgba(27, 26, 23, .06), 0 10px 24px rgba(27, 26, 23, .09);
+
+  --shell-bg: rgba(251, 250, 248, .84);
+  --shell-fg: #1b1a17;
+  --shell-line: rgba(27, 26, 23, .12);
+
+  --wall-1: #dfe6ef;
+  --wall-2: #f1ece4;
+  --wall-3: #c9d6e6;
+  --wall-4: #ece1d4;
+  --wall-line: rgba(27, 26, 23, .10);
+
+  --bezel-1: #b9b6b0;
+  --bezel-2: #86837e;
+  --bezel-hi: rgba(255, 255, 255, .55);
+
+  --scrim-bg: rgba(27, 26, 23, .45);
+
+  --acc-bg: var(--ac-4);
+  --acc-bg-hover: var(--ac-5);
+  --acc-fg: #ffffff;
+  --acc-text: var(--ac-5);
+  --acc-soft: var(--ac-1);
+  --acc-soft-fg: var(--ac-6);
+  --acc-ring: rgba(var(--ac-rgb), .32);
+}
+
+/* -------------------------------------------------------------------------
+   Dark Theme
+   ------------------------------------------------------------------------- */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --win-bg: #1c1b1e;
+  --view-bg: #161518;
+  --sidebar-bg: #232227;
+  --bar-bg: #29282d;
+  --bar-bg-idle: #222126;
+  --card-bg: #29282d;
+  --popover-bg: #2f2e34;
+  --sunken-bg: #121114;
+  --inverse-bg: #edece8;
+  --inverse-fg: #1b1a17;
+
+  --fg-1: #f2f0ed;
+  --fg-2: rgba(242, 240, 237, .68);
+  --fg-3: rgba(242, 240, 237, .46);
+  --fg-4: rgba(242, 240, 237, .22);
+
+  --line: rgba(255, 255, 255, .09);
+  --line-2: rgba(255, 255, 255, .15);
+
+  --state: 255, 255, 255;
+  --fill-1: rgba(255, 255, 255, .07);
+  --fill-2: rgba(255, 255, 255, .12);
+  --fill-3: rgba(255, 255, 255, .18);
+
+  --ok: #62d69b;
+  --ok-soft: rgba(98, 214, 155, .16);
+  --warn: #e5b355;
+  --warn-soft: rgba(229, 179, 85, .16);
+  --danger: #f0796f;
+  --danger-soft: rgba(240, 121, 111, .16);
+
+  --el-1: 0 1px 2px rgba(0, 0, 0, .45);
+  --el-2: 0 2px 6px rgba(0, 0, 0, .45), 0 10px 24px rgba(0, 0, 0, .40);
+  --el-3: 0 4px 10px rgba(0, 0, 0, .5), 0 22px 52px rgba(0, 0, 0, .55);
+  --el-win: 0 0 0 1px rgba(255, 255, 255, .10), 0 8px 16px rgba(0, 0, 0, .5), 0 32px 68px rgba(0, 0, 0, .6);
+  --el-win-idle: 0 0 0 1px rgba(255, 255, 255, .05), 0 3px 8px rgba(0, 0, 0, .4), 0 14px 32px rgba(0, 0, 0, .4);
+
+  --shell-bg: rgba(38, 37, 42, .86);
+  --shell-fg: #f2f0ed;
+  --shell-line: rgba(255, 255, 255, .12);
+
+  --wall-1: #222c3c;
+  --wall-2: #2c2436;
+  --wall-3: #18202c;
+  --wall-4: #241d2c;
+  --wall-line: rgba(255, 255, 255, .14);
+
+  --bezel-1: #35343a;
+  --bezel-2: #171719;
+  --bezel-hi: rgba(255, 255, 255, .12);
+
+  --scrim-bg: rgba(0, 0, 0, .52);
+
+  --acc-bg: var(--ac-4);
+  --acc-bg-hover: var(--ac-3);
+  --acc-fg: #ffffff;
+  --acc-text: var(--ac-2);
+  --acc-soft: rgba(var(--ac-rgb), .20);
+  --acc-soft-fg: var(--ac-2);
+  --acc-ring: rgba(var(--ac-rgb), .40);
+}
+
+/* -------------------------------------------------------------------------
+   Reset & State Layers
+   ------------------------------------------------------------------------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: var(--sp-4);
+  background: var(--win-bg);
+  color: var(--fg-1);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 21px;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+.layer {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.layer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-1) var(--e-io);
+}
+
+.layer:hover::before {
+  opacity: var(--st-hover);
+}
+
+.layer:active::before {
+  opacity: var(--st-press);
+}
+
+.layer.is-drag::before {
+  opacity: var(--st-drag);
+}
+
+/* -------------------------------------------------------------------------
+   Typography (Strict Uppercase Exclusively on .t-micro, badge, kbd)
+   ------------------------------------------------------------------------- */
+.t-display { font-size: 36px; line-height: 42px; font-weight: 680; letter-spacing: -.03em; }
+.t-t1 { font-size: 26px; line-height: 33px; font-weight: 650; letter-spacing: -.024em; }
+.t-t2 { font-size: 19px; line-height: 26px; font-weight: 630; letter-spacing: -.017em; }
+.t-t3 { font-size: 16px; line-height: 22px; font-weight: 610; letter-spacing: -.012em; }
+.t-head { font-size: 14px; line-height: 20px; font-weight: 630; letter-spacing: -.007em; }
+.t-body { font-size: 14px; line-height: 21px; font-weight: 400; }
+.t-call { font-size: 13px; line-height: 19px; font-weight: 400; }
+.t-cap { font-size: 12px; line-height: 16px; font-weight: 450; color: var(--fg-2); }
+.t-micro { font-size: 11px; line-height: 14px; font-weight: 640; letter-spacing: .075em; text-transform: uppercase; color: var(--fg-3); }
+.t-num { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: var(--r-1);
+  background: var(--fill-2);
+  color: var(--fg-2);
+  text-transform: uppercase;
+}
+
+.badge-spec {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: var(--r-1);
+  background: var(--acc-soft);
+  color: var(--acc-soft-fg);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--fill-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  color: var(--fg-1);
+  text-transform: uppercase;
+}
+
+/* -------------------------------------------------------------------------
+   Buttons, Segmented Controls, Swatches
+   ------------------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 34px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-2);
+  border: 0;
+  background: var(--fill-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-2) var(--e-out), color var(--t-2) var(--e-out), transform var(--t-1) var(--e-out);
+}
+.btn:active { transform: scale(.98); }
+.btn:disabled { opacity: .42; pointer-events: none; }
+.btn--sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: var(--r-2); }
+.btn--primary { background: var(--acc-bg); color: var(--acc-fg); box-shadow: var(--el-1); }
+.btn--primary:hover { background: var(--acc-bg-hover); box-shadow: var(--el-2); }
+.btn--tonal { background: var(--acc-soft); color: var(--acc-soft-fg); }
+.btn--outline { background: transparent; border: 1px solid var(--line-2); color: var(--fg-1); }
+.btn--danger { background: var(--danger); color: #ffffff; }
+.btn--danger-soft { background: var(--danger-soft); color: var(--danger); }
+
+.seg-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-2);
+  background: var(--fill-1);
+}
+.seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-2);
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background var(--t-2) var(--e-out), color var(--t-2) var(--e-out), box-shadow var(--t-2) var(--e-out);
+}
+.seg-btn:hover { color: var(--fg-1); }
+.seg-btn.active {
+  background: var(--card-bg);
+  color: var(--fg-1);
+  box-shadow: var(--el-1);
+}
+
+.swatch-group {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.swatch-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-round);
+  border: 1px solid var(--line-2);
+  background: var(--swatch-color, #2f6fd0);
+  padding: 0;
+  cursor: pointer;
+  position: relative;
+  transition: transform var(--t-2) var(--e-over);
+}
+.swatch-btn:hover { transform: scale(1.15); }
+.swatch-btn.active::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: var(--r-round);
+  border: 2px solid var(--fg-1);
+}
+
+/* -------------------------------------------------------------------------
+   1. PLAYGROUND DOCK (#playgroundDock)
+   ------------------------------------------------------------------------- */
+.playground-dock {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto var(--sp-4);
+  background: var(--card-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-2);
+  padding: var(--sp-3) var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  transition: background var(--t-3) var(--e-io), border-color var(--t-3) var(--e-io);
+}
+.dock-row-brand { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.dock-title-group { display: flex; align-items: center; gap: var(--sp-2); }
+.dock-title { margin: 0; font-size: 15px; font-weight: 640; letter-spacing: -.01em; color: var(--fg-1); }
+.dock-hotkeys { display: flex; align-items: center; gap: 6px; color: var(--fg-2); }
+.dock-row-controls { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
+.ctrl-unit { display: flex; align-items: center; gap: var(--sp-2); }
+.ctrl-label { white-space: nowrap; }
+.dock-sep { width: 1px; height: 20px; background: var(--line); flex: none; }
+.btn-cluster { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* -------------------------------------------------------------------------
+   2. DESKTOP STAGE (#desktopStage) & TOPBAR
+   ------------------------------------------------------------------------- */
+.screen-frame {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  border-radius: var(--r-4);
+  padding: 10px;
+  background: linear-gradient(180deg, var(--bezel-1), var(--bezel-2));
+  box-shadow: var(--el-3), inset 0 1px 0 var(--bezel-hi);
+  transition: background var(--t-3) var(--e-io);
+}
+.screen {
+  position: relative;
+  width: 100%;
+  height: 860px;
+  overflow: hidden;
+  border-radius: var(--r-3);
+  background: var(--wall-1);
+  user-select: none;
+}
+.wall {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(56% 44% at 78% 14%, var(--wall-2), transparent 62%),
+    radial-gradient(66% 52% at 12% 88%, var(--wall-4), transparent 60%),
+    radial-gradient(88% 68% at 50% 42%, var(--wall-3), transparent 70%),
+    linear-gradient(160deg, var(--wall-1), var(--wall-3));
+  transition: background var(--t-4) var(--e-io);
+}
+.wall .ring { position: absolute; border-radius: var(--r-round); border: 1.5px solid var(--wall-line); }
+.wall .r1 { width: 440px; height: 440px; left: -130px; bottom: -180px; }
+.wall .r2 { width: 640px; height: 640px; left: -230px; bottom: -300px; }
+.wall .r3 { width: 260px; height: 260px; right: -70px; top: -90px; }
+
+/* Topbar */
+.topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 8px;
+  background: var(--shell-bg);
+  color: var(--shell-fg);
+  border-bottom: 1px solid var(--shell-line);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  font-size: 12px;
+}
+.tb-group { display: flex; align-items: center; gap: 4px; }
+.tb-group.right { margin-left: auto; }
+.tb-btn {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--r-2);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.tb-sep { width: 1px; height: 16px; background: var(--shell-line); }
+.mb { display: flex; align-items: center; gap: 2px; }
+.mb-item {
+  padding: 2px 8px;
+  border-radius: var(--r-1);
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.mb-item:hover { color: var(--fg-1); }
+
+.tb-clock {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+  font-weight: 560;
+  color: var(--fg-1);
+  cursor: pointer;
+}
+.tb-clock .dot { width: 4px; height: 4px; border-radius: var(--r-round); background: var(--acc-bg); }
+
+/* Quick Settings Popover & Tile */
+.qs-popover {
+  position: absolute;
+  top: 40px;
+  right: 8px;
+  width: 280px;
+  background: var(--popover-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  padding: var(--sp-3);
+  z-index: 46;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  animation: qsFade var(--t-2) var(--e-out);
+}
+@keyframes qsFade {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.qs-header { margin-bottom: 4px; }
+.qs-tiles-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+.qs-tile {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 8px 10px;
+  border-radius: var(--r-2);
+  background: var(--fill-1);
+  color: var(--fg-1);
+  cursor: pointer;
+  transition: background var(--t-2) var(--e-out);
+}
+.qs-tile--active { background: var(--acc-soft); color: var(--acc-soft-fg); }
+.qs-tile-text { display: flex; flex-direction: column; overflow: hidden; }
+.qs-tile-text b { font-size: 12px; line-height: 15px; }
+.qs-tile-text span { font-size: 10px; color: var(--fg-3); line-height: 12px; white-space: nowrap; }
+
+/* Desktop Windows */
+.win {
+  background: var(--view-bg);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-win);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow var(--t-3) var(--e-io), transform var(--t-2) var(--e-out);
+}
+.winbar {
+  height: 48px;
+  padding: 0 10px;
+  background: var(--bar-bg);
+  box-shadow: inset 0 -1px 0 var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+}
+.titlebox { display: flex; flex-direction: column; align-items: center; }
+.titlebox .title { font-size: 13px; font-weight: 600; color: var(--fg-1); }
+.titlebox .subtitle { font-size: 11px; color: var(--fg-3); }
+.wctl { display: flex; gap: 4px; }
+.wctl button {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-2);
+  border: 0;
+  background: var(--fill-1);
+  color: var(--fg-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--t-2) var(--e-out), color var(--t-2) var(--e-out);
+}
+.wctl .close:hover { background: var(--danger); color: #fff; }
+.wctl .maximize:hover { background: var(--acc-bg); color: var(--acc-fg); }
+
+/* Window contents */
+.term-body {
+  background: #121114;
+  color: #edece8;
+  padding: 16px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 19px;
+  flex: 1;
+  overflow: auto;
+}
+.term-prompt { color: #5b9bec; font-weight: 600; }
+.term-dir { color: #e5b355; }
+.term-ok { color: #62d69b; font-weight: 600; }
+.term-cursor { color: var(--acc-bg); animation: cursorBlink 1s infinite; }
+@keyframes cursorBlink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+
+.browser-addr-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--fill-1);
+  border-radius: var(--r-2);
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.browser-body { padding: 24px; flex: 1; overflow: auto; background: var(--view-bg); }
+.browser-article h2 { margin: 8px 0; color: var(--fg-1); }
+.browser-article p { color: var(--fg-2); line-height: 22px; }
+.sample-tags { display: flex; gap: 6px; margin-top: 12px; }
+.sample-tag {
+  background: var(--fill-1);
+  border: 1px solid var(--line);
+  padding: 3px 8px;
+  border-radius: var(--r-1);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.files-split { display: flex; flex: 1; overflow: hidden; }
+.win-sidebar {
+  width: 160px;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--line);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--r-2);
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.side-item.active { background: var(--fill-2); color: var(--fg-1); font-weight: 600; }
+.files-grid {
+  flex: 1;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 12px;
+  background: var(--view-bg);
+}
+.file-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 6px;
+  border-radius: var(--r-2);
+  background: var(--fill-1);
+  border: 1px solid var(--line);
+  text-align: center;
+  cursor: pointer;
+}
+.file-thumb { font-size: 28px; }
+.file-name { word-break: break-all; }
+
+/* Desktop Dock */
+.desktop-dock {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 48px;
+  padding: 4px 8px;
+  border-radius: var(--r-3);
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-line);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  box-shadow: var(--el-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 40;
+}
+.dock-tile {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-2);
+  border: 0;
+  background: transparent;
+  color: var(--fg-1);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 20px;
+  transition: transform var(--t-1) var(--e-out);
+}
+.dock-tile:hover { transform: scale(1.1); }
+.dock-tile.active { background: var(--fill-2); }
+
+/* -------------------------------------------------------------------------
+   3. IN-PLACE CAPTURE OVERLAY (#captureOverlay)
+   ------------------------------------------------------------------------- */
+.capture-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  cursor: crosshair;
+  background: var(--scrim-bg);
+  transition: background var(--t-2) var(--e-io);
+}
+.capture-overlay.has-selection {
+  background: transparent;
+}
+.capture-overlay[data-mode="window"] { cursor: default; }
+.capture-overlay[data-mode="screen"] { cursor: pointer; }
+
+/* Initial Onboarding Guide Pill */
+.capture-guide-pill {
+  position: absolute;
+  top: 50px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--shell-bg);
+  color: var(--shell-fg);
+  border: 1px solid var(--shell-line);
+  padding: 6px 14px;
+  border-radius: var(--r-round);
+  font-size: 12.5px;
+  font-weight: 560;
+  box-shadow: var(--el-2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 52;
+  animation: guideFade var(--t-3) var(--e-out);
+}
+@keyframes guideFade {
+  from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* Inverted Darkened Cutout Box */
+.selection-box {
+  position: absolute;
+  background: transparent;
+  border: 2px solid var(--acc-bg);
+  box-shadow: 0 0 0 9999px var(--scrim-bg);
+  border-radius: var(--r-1);
+  pointer-events: auto;
+  cursor: crosshair;
+}
+.selection-box::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: var(--r-1);
+  pointer-events: none;
+}
+
+/* Selection Move Bar (Allows repositioning the framed area) */
+.sel-move-bar {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--acc-bg);
+  color: var(--acc-fg);
+  padding: 3px 8px;
+  border-radius: var(--r-1);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: move;
+  user-select: none;
+  z-index: 12;
+  box-shadow: var(--el-1);
+  pointer-events: auto;
+}
+.sel-move-bar .move-icon { font-size: 11px; opacity: 0.9; }
+
+/* 8 Resize Handles */
+.sel-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--r-round);
+  background: #ffffff;
+  border: 2px solid var(--acc-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+  z-index: 15;
+}
+.handle-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+.handle-n  { top: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+.handle-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.handle-e  { top: calc(50% - 5px); right: -5px; cursor: ew-resize; }
+.handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+.handle-s  { bottom: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+.handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.handle-w  { top: calc(50% - 5px); left: -5px; cursor: ew-resize; }
+
+.selection-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--inverse-bg);
+  color: var(--inverse-fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: var(--r-1);
+  box-shadow: var(--el-2);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 14;
+}
+
+/* In-Place Drawing Canvas layers inside selection frame */
+.in-place-canvas-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--r-1);
+}
+.in-place-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+.in-place-draft-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+  cursor: crosshair;
+  z-index: 4;
+}
+.in-place-text-editor {
+  position: absolute;
+  border: 1.5px dashed var(--acc-bg);
+  background: var(--popover-bg);
+  color: var(--fg-1);
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 20px;
+  padding: 3px 8px;
+  border-radius: var(--r-1);
+  outline: none;
+  min-width: 60px;
+  min-height: 26px;
+  z-index: 10;
+  box-shadow: var(--el-3);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* Local Zone Flash matching flash_alpha parity */
+.in-place-zone-flash,
+.screen-flash {
+  position: absolute;
+  inset: 0;
+  background: #ffffff;
+  pointer-events: none;
+  opacity: 0;
+  display: none;
+  z-index: 20;
+}
+
+/* Window Highlight Box */
+.window-highlight-box {
+  position: absolute;
+  border: 2px solid var(--acc-bg);
+  border-radius: var(--r-3);
+  box-shadow: 0 0 0 4px var(--acc-ring), 0 0 0 9999px rgba(0, 0, 0, 0.40);
+  background: rgba(var(--ac-rgb), 0.08);
+  pointer-events: none;
+  transition: all var(--t-2) var(--e-out);
+}
+
+/* Countdown Overlay */
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1010;
+  pointer-events: none;
+}
+.countdown-disc {
+  width: 96px;
+  height: 96px;
+  border-radius: var(--r-round);
+  background: var(--shell-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--shell-line);
+  box-shadow: var(--el-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.countdown-number {
+  font-family: var(--mono);
+  font-size: 48px;
+  font-weight: 700;
+  color: var(--acc-bg);
+  line-height: 1;
+}
+
+/* -------------------------------------------------------------------------
+   4. IN-PLACE SNAPPING TOOLBAR (#inPlaceToolbar)
+   ------------------------------------------------------------------------- */
+.in-place-toolbar {
+  position: absolute;
+  z-index: 60;
+  height: 42px;
+  padding: 3px 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--shell-bg);
+  color: var(--shell-fg);
+  border: 1px solid var(--shell-line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  user-select: none;
+  transition: opacity var(--t-2) var(--e-out), transform var(--t-2) var(--e-out);
+  animation: inPlaceReveal var(--t-2) var(--e-out);
+}
+@keyframes inPlaceReveal {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ipt-segment {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--fill-1);
+  border-radius: var(--r-2);
+  padding: 2px;
+}
+.ipt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--r-2);
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background var(--t-2) var(--e-out), color var(--t-2) var(--e-out);
+}
+.ipt-btn:hover { color: var(--fg-1); }
+.ipt-btn:disabled { opacity: .35; pointer-events: none; }
+.ipt-btn.active {
+  background: var(--card-bg);
+  color: var(--fg-1);
+  box-shadow: var(--el-1);
+}
+.ipt-btn--icon {
+  width: 30px;
+  padding: 0;
+}
+.ipt-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--shell-line);
+  margin: 0 2px;
+  flex: none;
+}
+
+/* Palette swatches in toolbar */
+.ipt-palette {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px;
+}
+.ipt-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-round);
+  border: 1px solid var(--line-2);
+  background: var(--swatch-color, #2f6fd0);
+  padding: 0;
+  cursor: pointer;
+  position: relative;
+  transition: transform var(--t-1) var(--e-out);
+}
+.ipt-swatch:hover { transform: scale(1.15); }
+.ipt-swatch.active::after {
+  content: '';
+  position: absolute;
+  inset: -2.5px;
+  border-radius: var(--r-round);
+  border: 2px solid var(--fg-1);
+}
+
+/* Floating HUD (#screenshotHud) */
+.screenshot-hud {
+  position: absolute;
+  bottom: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 48px;
+  padding: 4px 6px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--shell-bg);
+  color: var(--shell-fg);
+  border: 1px solid var(--shell-line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+}
+.hud-grip { color: var(--fg-4); cursor: grab; padding: 0 4px; font-size: 14px; user-select: none; }
+.hud-segment { display: flex; align-items: center; gap: 2px; background: var(--fill-1); border-radius: var(--r-2); padding: 2px; }
+.hud-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-2);
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  cursor: pointer;
+}
+.hud-btn:hover { color: var(--fg-1); }
+.hud-btn.active { background: var(--card-bg); color: var(--fg-1); box-shadow: var(--el-1); }
+.hud-btn--icon { padding: 0 8px; }
+.hud-sep { width: 1px; height: 20px; background: var(--shell-line); }
+
+/* Corner Thumbnail (#cornerThumbnail) */
+.corner-thumbnail {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 240px;
+  z-index: 65;
+  background: var(--card-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.thumb-header { display: flex; align-items: center; justify-content: space-between; }
+.thumb-timer-box { width: 22px; height: 22px; position: relative; display: flex; align-items: center; justify-content: center; }
+.thumb-timer-svg { transform: rotate(-90deg); width: 22px; height: 22px; }
+.timer-bg { fill: none; stroke: var(--fill-2); stroke-width: 2.2; }
+.timer-progress { fill: none; stroke: var(--acc-bg); stroke-width: 2.2; stroke-dasharray: 50.26; stroke-dashoffset: 0; }
+.thumb-close-btn { width: 20px; height: 20px; border-radius: var(--r-round); border: 0; background: transparent; cursor: pointer; }
+.thumb-preview-wrap { position: relative; border-radius: var(--r-2); overflow: hidden; }
+.thumb-canvas { width: 100%; height: auto; display: block; border-radius: var(--r-2); }
+.thumb-actions { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 4px; }
+.thumb-context-menu {
+  position: absolute;
+  z-index: 75;
+  background: var(--popover-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  padding: 6px;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Markup Modal (#markupModal) */
+.markup-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  background: rgba(16, 15, 18, .65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+}
+.markup-dialog {
+  width: 96%;
+  max-width: 1140px;
+  height: 90%;
+  max-height: 760px;
+  background: var(--view-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.markup-header { padding: 0 var(--sp-4); }
+.markup-toolbar {
+  height: 44px;
+  padding: 0 var(--sp-4);
+  background: var(--sunken-bg);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.markup-canvas-viewport { flex: 1; position: relative; overflow: auto; display: flex; align-items: center; justify-content: center; }
+.canvas-wrapper { position: relative; border-radius: var(--r-1); overflow: hidden; }
+.stroke-dot { background: currentColor; border-radius: var(--r-round); display: block; }
+.dot-2 { width: 4px; height: 4px; }
+.dot-4 { width: 8px; height: 8px; }
+.dot-8 { width: 14px; height: 14px; }
+.markup-footer { height: 38px; padding: 0 var(--sp-4); background: var(--bar-bg); display: flex; align-items: center; justify-content: space-between; }
+
+/* -------------------------------------------------------------------------
+   5. TOAST NOTIFICATION CONTAINER (glide_notify in top-right)
+   ------------------------------------------------------------------------- */
+.toast-container {
+  position: absolute;
+  top: 44px;
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+.glide-toast {
+  pointer-events: auto;
+  min-width: 340px;
+  max-width: 420px;
+  background: var(--popover-bg);
+  color: var(--fg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--el-3);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  animation: toastSlideDown var(--t-2) var(--e-out);
+}
+@keyframes toastSlideDown {
+  from { opacity: 0; transform: translateY(-12px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.toast-thumb-wrap {
+  width: 54px;
+  height: 38px;
+  border-radius: var(--r-1);
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--line);
+  background: var(--sunken-bg);
+  flex: none;
+}
+.toast-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.toast-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.toast-title { font-size: 13px; font-weight: 600; line-height: 17px; }
+.toast-body { font-size: 11.5px; color: var(--fg-3); line-height: 15px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+.toast-close-btn {
+  background: transparent;
+  border: 0;
+  color: var(--fg-3);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: var(--r-2);
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+}
+.toast-close-btn:hover { color: var(--fg-1); background: var(--fill-1); }
+  </style>
+</head>
+<body>
+
+<div class="demo-layout">
+
+  <!-- =====================================================================
+       1. PLAYGROUND DOCK (#playgroundDock)
+       ===================================================================== -->
+  <header class="playground-dock" id="playgroundDock" role="toolbar" aria-label="Панель тестування та керування">
+    <div class="dock-row-brand">
+      <div class="dock-title-group">
+        <span class="t-micro badge-pill">Meridian Shell</span>
+        <h1 class="dock-title">Glide — Знімки екрана за місцем (In-Place Screenshot &amp; Markup)</h1>
+      </div>
+      <div class="dock-hotkeys t-cap">
+        <kbd class="kbd">Print</kbd> / <kbd class="kbd">Super+Shift+4</kbd> Знімок • 
+        <kbd class="kbd">Enter</kbd> Копіювати • 
+        <kbd class="kbd">Ctrl+Z</kbd> Відкат • 
+        <kbd class="kbd">Esc</kbd> Скасувати
+      </div>
+    </div>
+
+    <div class="dock-row-controls">
+      <!-- Theme Switcher -->
+      <div class="ctrl-unit">
+        <span class="ctrl-label t-micro">ТЕМА:</span>
+        <div class="seg-control" id="themeSwitch">
+          <button type="button" class="seg-btn layer" data-theme-btn="light" title="Світле тепле скло">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8h1.5M13 8h1.5"/></svg>
+            <span>Світла</span>
+          </button>
+          <button type="button" class="seg-btn active layer" data-theme-btn="dark" title="Графітове скло">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.2 9.8A5.5 5.5 0 016.2 2.8 5.5 5.5 0 1013.2 9.8z"/></svg>
+            <span>Темна</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="dock-sep"></div>
+
+      <!-- 8 Meridian Accents -->
+      <div class="ctrl-unit">
+        <span class="ctrl-label t-micro">АКЦЕНТ:</span>
+        <div class="swatch-group" id="swatches">
+          <button type="button" class="swatch-btn active layer" data-accent="blue" title="Азурит" style="--swatch-color:#2f6fd0;"></button>
+          <button type="button" class="swatch-btn layer" data-accent="teal" title="Малахіт" style="--swatch-color:#128b7e;"></button>
+          <button type="button" class="swatch-btn layer" data-accent="green" title="Хвоя" style="--swatch-color:#3f9639;"></button>
+          <button type="button" class="swatch-btn layer" data-accent="amber" title="Бурштин" style="--swatch-color:#b57e10;"></button>
+          <button type="button" class="swatch-btn layer" data-accent="orange" title="Теракота" style="--swatch-color:#cf6524;"></button>
+          <button type="button" class="swatch-btn layer" data-accent="red" title="Цинобра" style="--swatch-color:#c8483c;"></button>
+          <button type="button" class="swatch-btn layer" data-accent="purple" title="Аметист" style="--swatch-color:#7a4dbb;"></button>
+          <button type="button" class="swatch-btn layer" data-accent="graphite" title="Графіт" style="--swatch-color:#6a6459;"></button>
+        </div>
+      </div>
+
+      <div class="dock-sep"></div>
+
+      <!-- Quick Triggers & Simulation -->
+      <div class="ctrl-unit">
+        <span class="ctrl-label t-micro">СИМУЛЯЦІЯ:</span>
+        <div class="btn-cluster">
+          <button type="button" class="btn btn--sm btn--primary layer" id="btnTriggerZoneCapture" title="Активувати режим вибору зони (Super+Shift+4 / Print)">
+            <span>📸 Виділити зону</span>
+          </button>
+          <button type="button" class="btn btn--sm layer" id="btnTriggerScreenDirect" title="Миттєвий знімок усього екрана (Super+Shift+3)">
+            <span>⚡ Весь екран</span>
+          </button>
+          <button type="button" class="btn btn--sm layer" id="btnResetSimulation" title="Скинути стан (Esc)">
+            <span>↺ Скинути</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- =====================================================================
+       2. DESKTOP STAGE (#desktopStage)
+       ===================================================================== -->
+  <div class="screen-frame">
+    <main class="screen" id="desktopStage" role="region" aria-label="Робочий стіл Glide OS">
+      <!-- Wallpaper & Atmospheric Rings -->
+      <div class="wall" aria-hidden="true">
+        <div class="ring r1"></div>
+        <div class="ring r2"></div>
+        <div class="ring r3"></div>
+      </div>
+
+      <!-- Topbar (34px) -->
+      <header class="topbar" id="desktopTopbar">
+        <div class="tb-group">
+          <button type="button" class="tb-btn layer" id="btnAppMenu">
+            <span class="app-icon">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/><path d="M8 3v5l3 2"/></svg>
+            </span>
+            <span style="font-weight:630;">Glide</span>
+          </button>
+          <div class="tb-sep"></div>
+          <div class="mb">
+            <span class="mb-item layer">Файл</span>
+            <span class="mb-item layer">Редагувати</span>
+            <span class="mb-item layer">Вигляд</span>
+            <span class="mb-item layer">Вікно</span>
+          </div>
+        </div>
+
+        <!-- Topbar Center Clock -->
+        <div class="tb-clock" id="topbarClock" title="Годинник і календар">
+          <span class="date" id="topbarDate">Пн 19 жов</span>
+          <span class="dot"></span>
+          <span class="time t-num" id="topbarTime">14:55:00</span>
+        </div>
+
+        <!-- Topbar Right Tray -->
+        <div class="tb-group right">
+          <div class="tb-lang seg">
+            <span class="t-micro" style="color:var(--fg-2);">УКР</span>
+          </div>
+          <div style="font-size:12px; margin:0 4px;" title="Wi-Fi">📶</div>
+          <div style="font-size:12px; margin:0 4px;" title="Батарея">🔋</div>
+          <span class="t-num" style="font-size:11px; margin-right:4px;">84%</span>
+
+          <!-- Quick Settings Toggle Button -->
+          <button type="button" class="tb-btn layer" id="btnQuickSettings" aria-label="Центр керування" aria-expanded="false">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M2 4h12M2 8h12M2 12h12M5 2.5v3M11 6.5v3M7 10.5v3"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Quick Settings Popover with Screenshot Tile -->
+        <div class="qs-popover" id="quickSettingsPopover" style="display:none;">
+          <div class="qs-header t-micro">ШВИДКІ ПАРАМЕТРИ</div>
+          <div class="qs-tiles-grid">
+            <div class="qs-tile layer" id="qsTileWifi">
+              <span style="font-size:16px;">📶</span>
+              <div class="qs-tile-text"><b>Wi-Fi</b><span>Meridian-5G</span></div>
+            </div>
+            <!-- Screenshot Tile (R1 Activation trigger) -->
+            <div class="qs-tile qs-tile--active layer" id="qsScreenshotTile" title="Зробити знімок екрана">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M2 5a2 2 0 012-2h1.5l1.5-1.5h2l1.5 1.5H12a2 2 0 012 2v7a2 2 0 01-2 2H4a2 2 0 01-2-2V5z"/>
+                <circle cx="8" cy="8.5" r="2.5"/>
+              </svg>
+              <div class="qs-tile-text"><b>Знімок</b><span>Виділити ділянку</span></div>
+            </div>
+            <div class="qs-tile layer" id="qsTileDnd">
+              <span style="font-size:16px;">🌙</span>
+              <div class="qs-tile-text"><b>Не турбувати</b><span>Вимкнено</span></div>
+            </div>
+            <div class="qs-tile layer" id="qsTileBluetooth">
+              <span style="font-size:16px;">🎧</span>
+              <div class="qs-tile-text"><b>Bluetooth</b><span>Навушники</span></div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Desktop Windows -->
+      <!-- Window 1: Terminal -->
+      <section class="win win--terminal" id="winTerminal" data-window-id="terminal" data-window-title="Термінал — fish" style="left:80px; top:60px; width:580px; height:380px; position:absolute; z-index:10;">
+        <div class="winbar">
+          <div class="wctl">
+            <button type="button" class="maximize" title="Розгорнути"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1h6v6H1z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+          <div class="titlebox">
+            <span class="title">Термінал — fish</span>
+            <span class="subtitle">artem@meridian:~</span>
+          </div>
+          <div class="wctl">
+            <button type="button" class="close" title="Закрити"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+        </div>
+        <div class="win-body term-body">
+          <pre class="term-text" style="margin:0;"><code><span class="term-prompt">artem@meridian</span> <span class="term-dir">~</span>&gt; glide-compositor --version
+glide-compositor 0.4.2 (Meridian OS x86_64)
+
+<span class="term-prompt">artem@meridian</span> <span class="term-dir">~/Documents/Glide</span>&gt; cargo check --workspace
+   <span class="term-ok">Checking</span> glide-theme v0.4.2
+   <span class="term-ok">Checking</span> glide-compositor v0.4.2
+   <span class="term-ok">Finished</span> dev [unoptimized + debuginfo] target(s) in 2.14s
+
+<span class="term-prompt">artem@meridian</span> <span class="term-dir">~/Documents/Glide</span>&gt; token=ghp_92jf98A19KLaSecrEtToken4819
+<span class="term-prompt">artem@meridian</span> <span class="term-dir">~/Documents/Glide</span>&gt; <span class="term-cursor">▋</span></code></pre>
+        </div>
+      </section>
+
+      <!-- Window 2: Browser -->
+      <section class="win win--browser" id="winBrowser" data-window-id="browser" data-window-title="Документація Glide — Meridian v3" style="left:520px; top:110px; width:680px; height:450px; position:absolute; z-index:12;">
+        <div class="winbar">
+          <div class="wctl">
+            <button type="button" class="maximize" title="Розгорнути"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1h6v6H1z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+          <div class="browser-addr-bar">
+            <span>🔒</span>
+            <span>glide://docs/meridian-design-spec.html</span>
+          </div>
+          <div class="wctl">
+            <button type="button" class="close" title="Закрити"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+        </div>
+        <div class="win-body browser-body">
+          <div class="browser-article">
+            <div class="badge-spec">MERIDIAN SPEC v3</div>
+            <h2 class="t-t1">Structured Calm</h2>
+            <p class="t-body">Meridian побудовано навколо передбачуваності: єдина форма контролів (--r-2 / 8px), шари стану замість нових кольорів (8%/13%/18%) та рух без пружинних коливань.</p>
+            <div class="sample-tags">
+              <span class="sample-tag">--e-out</span>
+              <span class="sample-tag">--r-3 container</span>
+              <span class="sample-tag">Inter UI</span>
+              <span class="sample-tag">JetBrains Mono</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Window 3: Files Manager -->
+      <section class="win win--files" id="winFiles" data-window-id="files" data-window-title="Файли — Зображення" style="left:220px; top:360px; width:640px; height:370px; position:absolute; z-index:15;">
+        <div class="winbar">
+          <div class="wctl">
+            <button type="button" class="maximize" title="Розгорнути"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1h6v6H1z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+          <div class="titlebox">
+            <span class="title">Зображення</span>
+            <span class="subtitle">4 елементи</span>
+          </div>
+          <div class="wctl">
+            <button type="button" class="close" title="Закрити"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+        </div>
+        <div class="win-body files-split">
+          <aside class="win-sidebar">
+            <div class="side-item"><span class="ico">🏠</span><span>Домівка</span></div>
+            <div class="side-item"><span class="ico">📁</span><span>Документи</span></div>
+            <div class="side-item active"><span class="ico">🖼️</span><span>Зображення</span></div>
+            <div class="side-item"><span class="ico">⬇️</span><span>Завантаження</span></div>
+          </aside>
+          <div class="files-grid" id="filesDropTarget">
+            <div class="file-card layer">
+              <div class="file-thumb">🖼️</div>
+              <span class="file-name t-cap">Знімок_14-30.png</span>
+            </div>
+            <div class="file-card layer">
+              <div class="file-thumb">🖼️</div>
+              <span class="file-name t-cap">Шпалери.png</span>
+            </div>
+            <div class="file-card layer">
+              <div class="file-thumb">📐</div>
+              <span class="file-name t-cap">Макет.svg</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Window 4: Settings (Налаштування) -->
+      <section class="win win--settings" id="winSettings" data-window-id="settings" data-window-title="Налаштування" style="left:760px; top:280px; width:460px; height:340px; position:absolute; z-index:11;">
+        <div class="winbar">
+          <div class="wctl">
+            <button type="button" class="maximize" title="Розгорнути"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1h6v6H1z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+          <div class="titlebox">
+            <span class="title">Налаштування</span>
+            <span class="subtitle">Система та вигляд</span>
+          </div>
+          <div class="wctl">
+            <button type="button" class="close" title="Закрити"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          </div>
+        </div>
+        <div class="win-body settings-body" style="padding:16px; display:flex; flex-direction:column; gap:12px;">
+          <div style="font-size:13px; font-weight:600; color:var(--fg-1);">Знімки екрана та копіювання</div>
+          <div style="font-size:12px; color:var(--fg-2); line-height:1.4;">Розмітка за місцем з розмиттям чутливих даних безпосередньо у виділеній рамці.</div>
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:var(--fill-1); border-radius:var(--r-2);">
+            <span style="font-size:12px; font-weight:550;">Автокопіювання в буфер</span>
+            <span style="font-size:11px; color:var(--ok); font-weight:600;">Увімкнено</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:var(--fill-1); border-radius:var(--r-2);">
+            <span style="font-size:12px; font-weight:550;">Звуковий сигнал спуску</span>
+            <span style="font-size:11px; color:var(--ok); font-weight:600;">Увімкнено</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Desktop Bottom Dock -->
+      <div class="desktop-dock" role="navigation" aria-label="Панель програм">
+        <button type="button" class="dock-tile layer" id="dockTerminalBtn" title="Термінал"><span>⬛</span></button>
+        <button type="button" class="dock-tile layer" id="dockBrowserBtn" title="Браузер"><span>🌐</span></button>
+        <button type="button" class="dock-tile layer active" id="dockFilesBtn" title="Файли"><span>📁</span></button>
+        <button type="button" class="dock-tile layer" id="dockSettingsBtn" title="Налаштування"><span>⚙️</span></button>
+        <div class="tb-sep"></div>
+        <button type="button" class="dock-tile layer" id="dockScreenshotBtn" title="Знімок ділянки (Print / Super+Shift+4)"><span>📸</span></button>
+      </div>
+
+      <!-- ===================================================================
+           3. IN-PLACE CAPTURE OVERLAY (#captureOverlay)
+           =================================================================== -->
+      <div class="capture-overlay" id="captureOverlay" data-mode="area" style="display:none;" aria-hidden="true">
+        <!-- Initial Onboarding Guide Pill -->
+        <div class="capture-guide-pill" id="captureGuidePill">
+          <span>🎯 Затисніть та виділіть прямокутну область на екрані</span>
+          <span style="opacity:0.4;">|</span>
+          <span class="t-cap"><kbd class="kbd">Esc</kbd> — скасувати</span>
+        </div>
+
+        <!-- In-Place Selection Box with Handles & Drawing Surface -->
+        <div class="selection-box" id="selectionBox" style="display:none;">
+          <!-- Move Grip Bar for Repositioning Box -->
+          <div class="sel-move-bar" id="selMoveBar" title="Перетягніть для переміщення рамки">
+            <span class="move-icon">⋮⋮</span>
+            <span class="t-micro">ПЕРЕМІСТИТИ</span>
+          </div>
+
+          <!-- 8 Resize Handles -->
+          <div class="sel-handle handle-nw" data-handle="nw"></div>
+          <div class="sel-handle handle-n"  data-handle="n"></div>
+          <div class="sel-handle handle-ne" data-handle="ne"></div>
+          <div class="sel-handle handle-e"  data-handle="e"></div>
+          <div class="sel-handle handle-se" data-handle="se"></div>
+          <div class="sel-handle handle-s"  data-handle="s"></div>
+          <div class="sel-handle handle-sw" data-handle="sw"></div>
+          <div class="sel-handle handle-w"  data-handle="w"></div>
+
+          <!-- Dimension Badge -->
+          <div class="selection-badge t-num" id="selectionBadge">680 × 420 px</div>
+
+          <!-- In-Place Drawing Canvas layers -->
+          <div class="in-place-canvas-wrap" id="inPlaceCanvasWrap">
+            <!-- Base raster canvas: committed markups and blurs -->
+            <canvas class="in-place-canvas" id="inPlaceCanvas"></canvas>
+            <!-- Draft canvas: active mouse interaction and previews -->
+            <canvas class="in-place-draft-canvas" id="inPlaceDraftCanvas"></canvas>
+            <!-- Inline text editor for Text tool -->
+            <div class="in-place-text-editor" id="inPlaceTextEditor" contenteditable="true" style="display:none;"></div>
+            <!-- Local zone flash on shutter -->
+            <div class="in-place-zone-flash" id="inPlaceZoneFlash"></div>
+          </div>
+        </div>
+
+        <!-- Window Highlight Hover Box -->
+        <div class="window-highlight-box" id="windowHighlightBox" style="display:none;"></div>
+
+        <!-- Shutter Countdown Indicator -->
+        <div class="countdown-overlay" id="countdownOverlay" style="display:none;">
+          <div class="countdown-disc">
+            <span class="countdown-number t-num" id="countdownNumber">3</span>
+          </div>
+        </div>
+
+        <!-- Screen Flash -->
+        <div class="screen-flash" id="screenFlash"></div>
+
+        <!-- =================================================================
+             4. CONTEXTUAL IN-PLACE SNAPPING TOOLBAR (#inPlaceToolbar)
+             ================================================================= -->
+        <nav class="in-place-toolbar" id="inPlaceToolbar" role="toolbar" aria-label="Панель інструментів розмітки" style="display:none;">
+          <!-- Tool Selection Segment -->
+          <div class="ipt-segment" id="iptToolsSegment">
+            <!-- 1. Blur / Redact (Mandatory Key Tool) -->
+            <button type="button" class="ipt-btn ipt-btn--icon layer active" id="toolBlur" data-tool="blur" title="Розмиття / Цензурування чутливих даних (B)">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                <rect x="2" y="2" width="12" height="12" rx="2" stroke-dasharray="2 2"/>
+                <path d="M5 2v12M8 2v12M11 2v12M2 5h12M2 8h12M2 11h12"/>
+              </svg>
+            </button>
+            <!-- 2. Arrow -->
+            <button type="button" class="ipt-btn ipt-btn--icon layer" id="toolArrow" data-tool="arrow" title="Вказівна стрілка (A)">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7">
+                <path d="M3 13L13 3M13 3H7M13 3V9"/>
+              </svg>
+            </button>
+            <!-- 3. Rectangle -->
+            <button type="button" class="ipt-btn ipt-btn--icon layer" id="toolRect" data-tool="rect" title="Рамка виділення (R)">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7">
+                <rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/>
+              </svg>
+            </button>
+            <!-- 4. Pen / Marker -->
+            <button type="button" class="ipt-btn ipt-btn--icon layer" id="toolPen" data-tool="pen" title="Олівець / Вільне малювання (P)">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7">
+                <path d="M11.5 2.5l2 2L4.5 13.5H2.5V11.5L11.5 2.5z"/>
+              </svg>
+            </button>
+            <!-- 5. Text -->
+            <button type="button" class="ipt-btn ipt-btn--icon layer" id="toolText" data-tool="text" title="Текстовий напис Inter (T)">
+              <span style="font-family:var(--font); font-weight:700; font-size:14px; line-height:1;">T</span>
+            </button>
+          </div>
+
+          <div class="ipt-sep"></div>
+
+          <!-- Color Palette Swatches (6. Color) -->
+          <div class="ipt-palette" id="iptPalette">
+            <button type="button" class="ipt-swatch active layer" data-color="accent" title="Акцентний (Azurite)" style="--swatch-color:var(--acc-bg);"></button>
+            <button type="button" class="ipt-swatch layer" data-color="#bf372c" title="Danger (Червоний)" style="--swatch-color:var(--danger, #bf372c);"></button>
+            <button type="button" class="ipt-swatch layer" data-color="#1c7a4c" title="Ok (Зелений)" style="--swatch-color:var(--ok, #1c7a4c);"></button>
+            <button type="button" class="ipt-swatch layer" data-color="#ffffff" title="Білий" style="--swatch-color:#ffffff;"></button>
+          </div>
+
+          <div class="ipt-sep"></div>
+
+          <!-- 7. Undo -->
+          <button type="button" class="ipt-btn ipt-btn--icon layer" id="iptUndoBtn" title="Скасувати останню дію (Ctrl+Z)" disabled>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M4 7h7a3 3 0 010 6H8M4 7l3-3M4 7l3 3"/>
+            </svg>
+          </button>
+
+          <div class="ipt-sep"></div>
+
+          <!-- 8. Cancel (Esc / Cross) -->
+          <button type="button" class="ipt-btn ipt-btn--icon layer" id="iptCancelBtn" title="Скасувати виділення (Esc)">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M3 3l10 10M13 3L3 13"/>
+            </svg>
+          </button>
+
+          <!-- 9. Copy to Clipboard (Enter) -->
+          <button type="button" class="btn btn--sm layer" id="iptCopyBtn" title="Копіювати знімок у буфер (Enter)">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7">
+              <rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 11V3h8"/>
+            </svg>
+            <span>Копія</span>
+          </button>
+
+          <!-- 10. Save to Disk -->
+          <button type="button" class="btn btn--sm btn--primary layer" id="iptSaveBtn" title="Зберегти файл (.png)">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M8 2.5v8M4.5 7.5L8 11l3.5-3.5M2.5 13.5h11"/>
+            </svg>
+            <span>Зберегти</span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- ===================================================================
+           FLOATING HUD TOOLBAR (#screenshotHud - for suite compatibility)
+           =================================================================== -->
+      <nav class="screenshot-hud" id="screenshotHud" role="toolbar" aria-label="Панель знімка екрана" style="display:none;">
+        <div class="hud-grip" title="Перетягнути панель" aria-hidden="true">⋮⋮</div>
+        <div class="hud-segment" id="hudModeSegment">
+          <button type="button" class="hud-btn layer active" id="hudModeArea" data-mode="area" data-capture-mode="area"><span>Область</span></button>
+          <button type="button" class="hud-btn layer" id="hudModeWindow" data-mode="window" data-capture-mode="window"><span>Вікно</span></button>
+          <button type="button" class="hud-btn layer" id="hudModeScreen" data-mode="screen" data-capture-mode="screen"><span>Екран</span></button>
+        </div>
+        <div class="hud-sep"></div>
+        <div class="hud-segment" id="hudTimerSegment">
+          <button type="button" class="hud-btn layer active" id="hudTimer0" data-timer="0"><span>0с</span></button>
+          <button type="button" class="hud-btn layer" id="hudTimer3" data-timer="3"><span>3с</span></button>
+          <button type="button" class="hud-btn layer" id="hudTimer5" data-timer="5"><span>5с</span></button>
+        </div>
+        <div class="hud-sep"></div>
+        <button type="button" class="hud-btn hud-btn--icon layer" id="hudCursorToggle" data-cursor="false" title="Курсор"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M3 2l8 4.5-4 1.5-1.5 4L3 2z"/></svg></button>
+        <div class="hud-sep"></div>
+        <button type="button" class="btn btn--primary layer" id="hudCaptureBtn"><span>Зняти</span></button>
+        <button type="button" class="hud-btn hud-btn--icon layer" id="hudCloseBtn"><span>×</span></button>
+      </nav>
+
+      <!-- ===================================================================
+           CORNER THUMBNAIL FLOATING CARD (#cornerThumbnail)
+           =================================================================== -->
+      <aside class="corner-thumbnail" id="cornerThumbnail" style="display:none;" aria-label="Отриманий знімок екрана">
+        <div class="thumb-header">
+          <span class="t-micro">ЗНІМОК ЕКРАНА</span>
+          <div class="thumb-timer-box">
+            <svg class="thumb-timer-svg" width="22" height="22" viewBox="0 0 22 22">
+              <circle cx="11" cy="11" r="8" class="timer-bg"/>
+              <circle cx="11" cy="11" r="8" class="timer-progress" id="thumbnailProgressRing"/>
+            </svg>
+          </div>
+          <button type="button" class="thumb-close-btn layer" id="thumbnailCloseBtn">×</button>
+        </div>
+        <div class="thumb-preview-wrap">
+          <canvas class="thumb-canvas" id="thumbnailCanvas" width="220" height="138"></canvas>
+        </div>
+        <div class="thumb-actions">
+          <button type="button" class="btn btn--sm btn--tonal layer" id="thumbActionMarkup"><span>Розмітка</span></button>
+          <button type="button" class="btn btn--sm layer" id="thumbActionCopy"><span>Копія</span></button>
+          <button type="button" class="btn btn--sm layer" id="thumbActionSave"><span>Зберегти</span></button>
+        </div>
+        <div class="thumb-context-menu" id="thumbnailContextMenu" style="display:none;"></div>
+      </aside>
+
+      <!-- ===================================================================
+           MARKUP & QUICK EDITOR MODAL (#markupModal)
+           =================================================================== -->
+      <div class="markup-modal-backdrop" id="markupModal" style="display:none;" role="dialog" aria-modal="true" aria-label="Редактор розмітки знімка">
+        <div class="markup-dialog" id="markupDialog">
+          <div class="winbar markup-header" id="markupHeader">
+            <div class="title-cluster"><span class="title">Розмітка знімка</span></div>
+            <div class="undo-redo-cluster">
+              <button type="button" class="btn btn--sm layer" id="markupUndoBtn" title="Скасувати"><span>↶</span></button>
+              <button type="button" class="btn btn--sm layer" id="markupRedoBtn" title="Повторити"><span>↷</span></button>
+            </div>
+            <div class="markup-header-actions">
+              <button type="button" class="btn btn--sm layer" id="markupCopyBtn"><span>Копіювати</span></button>
+              <button type="button" class="btn btn--sm layer" id="markupSaveBtn"><span>Зберегти</span></button>
+              <button type="button" class="btn btn--sm btn--primary layer" id="markupDoneBtn"><span>Готово</span></button>
+            </div>
+          </div>
+          <div class="markup-toolbar" id="markupToolbar">
+            <div class="seg-control" id="markupToolSelector">
+              <button type="button" class="seg-btn layer" data-tool="crop"><span>Кадрувати</span></button>
+              <button type="button" class="seg-btn layer active" data-tool="arrow"><span>Стрілка</span></button>
+              <button type="button" class="seg-btn layer" data-tool="rect"><span>Рамка</span></button>
+              <button type="button" class="seg-btn layer" data-tool="ellipse"><span>Еліпс</span></button>
+              <button type="button" class="seg-btn layer" data-tool="text"><span>Текст</span></button>
+              <button type="button" class="seg-btn layer" data-tool="highlighter"><span>Маркер</span></button>
+              <button type="button" class="seg-btn layer" data-tool="blur" data-tool-alt="redact"><span>Цензура</span></button>
+            </div>
+            <div class="seg-control" id="markupStrokeSelector">
+              <button type="button" class="seg-btn layer" data-stroke="2"><span class="stroke-dot dot-2"></span></button>
+              <button type="button" class="seg-btn layer active" data-stroke="4"><span class="stroke-dot dot-4"></span></button>
+              <button type="button" class="seg-btn layer" data-stroke="8"><span class="stroke-dot dot-8"></span></button>
+            </div>
+            <div class="swatch-group" id="markupPalette">
+              <button type="button" class="swatch-btn active layer" data-color="#2f6fd0" style="--swatch-color:#2f6fd0;"></button>
+              <button type="button" class="swatch-btn layer" data-color="#bf372c" style="--swatch-color:#bf372c;"></button>
+              <button type="button" class="swatch-btn layer" data-color="#a1690a" style="--swatch-color:#a1690a;"></button>
+              <button type="button" class="swatch-btn layer" data-color="#1c7a4c" style="--swatch-color:#1c7a4c;"></button>
+            </div>
+          </div>
+          <div class="markup-canvas-viewport" id="markupCanvasViewport">
+            <div class="canvas-wrapper" id="canvasWrapper">
+              <canvas id="markupMainCanvas" width="960" height="540"></canvas>
+              <canvas id="markupDraftCanvas" width="960" height="540"></canvas>
+            </div>
+          </div>
+          <div class="markup-footer" id="markupFooter">
+            <button type="button" class="btn btn--sm btn--danger-soft layer" id="markupBtnDelete"><span>Очистити</span></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================
+           5. TOAST NOTIFICATION CONTAINER (#toastContainer)
+           =================================================================== -->
+      <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+    </main>
+  </div>
+</div>
+
+<!-- =======================================================================
+     VANILLA JAVASCRIPT SYSTEM ENGINE (ZERO EXTERNAL RUNTIME DEPENDENCIES)
+     ======================================================================= -->
+<script>
+(function() {
+  'use strict';
+
+  // =========================================================================
+  // 1. MERIDIAN MOTION & MATHEMATICAL SOLVER (Exact flash_alpha Parity)
+  // =========================================================================
+  class CubicBezier {
+    constructor(x1, y1, x2, y2) {
+      this.x1 = x1;
+      this.y1 = y1;
+      this.x2 = x2;
+      this.y2 = y2;
+    }
+
+    static coefficients(p1, p2) {
+      const c = 3.0 * p1;
+      const b = 3.0 * p2 - 6.0 * p1;
+      const a = 1.0 + 3.0 * p1 - 3.0 * p2;
+      return [a, b, c];
+    }
+
+    static axisAt(p1, p2, u) {
+      const [a, b, c] = CubicBezier.coefficients(p1, p2);
+      return ((a * u + b) * u + c) * u;
+    }
+
+    static axisSlope(p1, p2, u) {
+      const [a, b, c] = CubicBezier.coefficients(p1, p2);
+      return (3.0 * a * u + 2.0 * b) * u + c;
+    }
+
+    solveForX(x) {
+      const NEWTON_ITERATIONS = 8;
+      const BISECTION_ITERATIONS = 24;
+      const EPSILON = 1e-6;
+
+      let u = x;
+      for (let i = 0; i < NEWTON_ITERATIONS; i++) {
+        const error = CubicBezier.axisAt(this.x1, this.x2, u) - x;
+        if (Math.abs(error) < EPSILON) return u;
+        const slope = CubicBezier.axisSlope(this.x1, this.x2, u);
+        if (Math.abs(slope) < EPSILON) break;
+        const next = u - error / slope;
+        if (!isFinite(next)) break;
+        u = next;
+      }
+
+      let low = 0.0, high = 1.0;
+      u = Math.max(0.0, Math.min(1.0, x));
+      for (let i = 0; i < BISECTION_ITERATIONS; i++) {
+        const error = CubicBezier.axisAt(this.x1, this.x2, u) - x;
+        if (Math.abs(error) < EPSILON) return u;
+        if (error > 0.0) high = u;
+        else low = u;
+        u = (low + high) * 0.5;
+      }
+      return u;
+    }
+
+    ease(progress) {
+      if (progress <= 0.0) return 0.0;
+      if (progress >= 1.0) return 1.0;
+      const u = this.solveForX(progress);
+      return CubicBezier.axisAt(this.y1, this.y2, u);
+    }
+  }
+
+  const E_OUT = new CubicBezier(0.2, 0.0, 0.0, 1.0);
+  const E_IO = new CubicBezier(0.4, 0.0, 0.2, 1.0);
+  const E_OVER = new CubicBezier(0.32, 1.28, 0.5, 1.0);
+
+  function addGlobalListener(event, handler, options) {
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener(event, handler, options);
+    } else if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener(event, handler, options);
+    }
+  }
+
+  // Exact flash_alpha parity from crates/glide-compositor/src/screenshot_ui.rs
+  const PEAK = 0.60;
+  const RISE = 0.25;
+
+  function flashAlpha(fraction) {
+    if (fraction < 0.0 || fraction >= 1.0) return 0.0;
+    if (fraction < RISE) {
+      return PEAK * E_OUT.ease(fraction / RISE);
+    } else {
+      return PEAK * (1.0 - E_OUT.ease((fraction - RISE) / (1.0 - RISE)));
+    }
+  }
+
+  function triggerZoneFlash(flashEl, onComplete) {
+    if (!flashEl) {
+      if (onComplete) onComplete();
+      return;
+    }
+    const duration = 200; // T2 duration (200ms)
+    const getNow = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now()
+      : Date.now();
+    const startTime = getNow();
+    flashEl.style.display = 'block';
+    flashEl.style.opacity = '0';
+
+    function step(now) {
+      const curNow = (typeof now === 'number' && now > 0) ? now : getNow();
+      const elapsed = curNow - startTime;
+      const fraction = Math.min(1.0, elapsed / duration);
+      const alpha = flashAlpha(fraction);
+      flashEl.style.opacity = alpha.toFixed(4);
+
+      if (fraction < 1.0) {
+        requestAnimationFrame(step);
+      } else {
+        flashEl.style.opacity = '0';
+        flashEl.style.display = 'none';
+        if (onComplete) onComplete();
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  // =========================================================================
+  // 2. WEB AUDIO SYNTHESIZER (Mechanical Shutter Clicks)
+  // =========================================================================
+  class ShutterAudioEngine {
+    constructor() {
+      this.ctx = null;
+    }
+
+    ensureContext() {
+      if (typeof window === 'undefined') return null;
+      if (!this.ctx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          try {
+            this.ctx = new AudioCtx();
+          } catch (e) {}
+        }
+      }
+      if (this.ctx && this.ctx.state === 'suspended') {
+        try { this.ctx.resume(); } catch (e) {}
+      }
+      return this.ctx;
+    }
+
+    playShutterClick() {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+
+      try {
+        const now = (ctx && typeof ctx.currentTime === 'number') ? ctx.currentTime : 0;
+        // 1. Blade opening transient click
+        const osc1 = ctx.createOscillator();
+        const gain1 = ctx.createGain();
+        osc1.type = 'triangle';
+        osc1.frequency.setValueAtTime(1600, now);
+        osc1.frequency.exponentialRampToValueAtTime(100, now + 0.014);
+        gain1.gain.setValueAtTime(0.45, now);
+        gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.015);
+        osc1.connect(gain1);
+        gain1.connect(ctx.destination);
+        osc1.start(now);
+        osc1.stop(now + 0.016);
+
+        // 2. Friction texture
+        if (ctx.createBuffer) {
+          const sampleRate = ctx.sampleRate || 44100;
+          const bufferSize = Math.max(1, Math.floor(sampleRate * 0.045));
+          const buffer = ctx.createBuffer(1, bufferSize, sampleRate);
+          const data = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+          }
+          const noise = ctx.createBufferSource();
+          noise.buffer = buffer;
+          const noiseGain = ctx.createGain();
+          noiseGain.gain.setValueAtTime(0.28, now);
+          noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.042);
+
+          if (ctx.createBiquadFilter) {
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.setValueAtTime(2600, now);
+            filter.Q.setValueAtTime(3.5, now);
+            noise.connect(filter);
+            filter.connect(noiseGain);
+          } else {
+            noise.connect(noiseGain);
+          }
+          noiseGain.connect(ctx.destination);
+          noise.start(now);
+          noise.stop(now + 0.045);
+        }
+
+        // 3. Shutter closing snap
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(950, now + 0.045);
+        osc2.frequency.exponentialRampToValueAtTime(50, now + 0.075);
+        gain2.gain.setValueAtTime(0.0, now);
+        gain2.gain.setValueAtTime(0.55, now + 0.045);
+        gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.start(now + 0.045);
+        osc2.stop(now + 0.085);
+      } catch (e) {}
+    }
+  }
+
+  // =========================================================================
+  // 3. TOAST NOTIFICATION SERVICE (glide_notify in top-right with thumbnail)
+  // =========================================================================
+  class GlideToastService {
+    constructor(containerEl) {
+      this.containerEl = containerEl || document.getElementById('toastContainer');
+    }
+
+    show(title, body = '', thumbnailDataUrl = null) {
+      if (!this.containerEl) return;
+      const toast = document.createElement('div');
+      toast.className = 'glide-toast layer';
+
+      let thumbHtml = '';
+      if (thumbnailDataUrl) {
+        thumbHtml = `
+          <div class="toast-thumb-wrap">
+            <img class="toast-thumb-img" src="${thumbnailDataUrl}" alt="Мініатюра знімка" />
+          </div>
+        `;
+      } else {
+        thumbHtml = `
+          <div class="toast-thumb-wrap" style="display:grid; place-items:center; font-size:16px;">
+            📸
+          </div>
+        `;
+      }
+
+      toast.innerHTML = `
+        ${thumbHtml}
+        <div class="toast-content">
+          <div class="toast-title t-head">${title}</div>
+          ${body ? `<div class="toast-body t-cap">${body}</div>` : ''}
+        </div>
+        <button type="button" class="toast-close-btn layer" aria-label="Закрити">×</button>
+      `;
+
+      const closeBtn = toast.querySelector('.toast-close-btn');
+      let timer = null;
+
+      const dismiss = () => {
+        if (!toast.parentNode) return;
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-10px) scale(0.95)';
+        toast.style.transition = 'opacity 200ms ease, transform 200ms ease';
+        setTimeout(() => {
+          if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, 200);
+      };
+
+      if (closeBtn) closeBtn.addEventListener('click', dismiss);
+
+      // Auto dismiss after 4 seconds matching compositor NOTICE_TIMEOUT
+      timer = setTimeout(dismiss, 4000);
+
+      toast.addEventListener('mouseenter', () => { if (timer) clearTimeout(timer); });
+      toast.addEventListener('mouseleave', () => { timer = setTimeout(dismiss, 2500); });
+
+      this.containerEl.appendChild(toast);
+    }
+  }
+
+  // =========================================================================
+  // 4. DESKTOP RASTERIZER (Accurate sampling of underlying screen area)
+  // =========================================================================
+  class DesktopRasterizer {
+    static sampleRegion(stageEl, rect) {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, rect.width);
+      canvas.height = Math.max(1, rect.height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return canvas;
+
+      const ox = -rect.x;
+      const oy = -rect.y;
+      const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+
+      // 1. Wallpaper
+      const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      if (theme === 'light') {
+        grad.addColorStop(0, '#dfe6ef');
+        grad.addColorStop(0.5, '#f1ece4');
+        grad.addColorStop(1, '#c9d6e6');
+      } else {
+        grad.addColorStop(0, '#222c3c');
+        grad.addColorStop(0.5, '#2c2436');
+        grad.addColorStop(1, '#18202c');
+      }
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 2. Wallpaper ring
+      ctx.strokeStyle = theme === 'light' ? 'rgba(27,26,23,0.1)' : 'rgba(255,255,255,0.14)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(ox + 80, oy + 680, 220, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // 3. Topbar
+      const tbHeight = 34;
+      const stageW = stageEl ? (stageEl.offsetWidth || 1440) : 1440;
+      if (rect.y < tbHeight) {
+        ctx.fillStyle = theme === 'light' ? 'rgba(251,250,248,0.88)' : 'rgba(38,37,42,0.88)';
+        ctx.fillRect(ox, oy, stageW, tbHeight);
+        ctx.fillStyle = theme === 'light' ? '#1b1a17' : '#f2f0ed';
+        ctx.font = '600 12px Inter, sans-serif';
+        ctx.fillText('Glide', ox + 16, oy + 22);
+        const clockEl = document.getElementById('topbarTime');
+        const dateEl = document.getElementById('topbarDate');
+        const clockStr = (clockEl && clockEl.textContent) ? clockEl.textContent.trim() : '14:55:00';
+        const dateStr = (dateEl && dateEl.textContent) ? dateEl.textContent.trim() : '';
+        const fullClockStr = dateStr ? `${dateStr}  •  ${clockStr}` : clockStr;
+        ctx.fillText(fullClockStr, ox + (stageEl ? stageEl.offsetWidth / 2 - 40 : 380), oy + 22);
+        ctx.font = '500 11px Inter, sans-serif';
+        ctx.fillText('УКР  📶  🔋 84%', ox + stageW - 110, oy + 22);
+      }
+
+      // 4. Windows (sorted by visual stacking zIndex)
+      if (stageEl) {
+        const rawWins = (stageEl.querySelectorAll && typeof stageEl.querySelectorAll === 'function')
+          ? Array.from(stageEl.querySelectorAll('.win') || [])
+          : [];
+        const windows = rawWins.sort((a, b) => {
+          const za = parseInt((a.style && a.style.zIndex) || 0, 10) || 0;
+          const zb = parseInt((b.style && b.style.zIndex) || 0, 10) || 0;
+          return za - zb;
+        });
+        windows.forEach(win => {
+          if (win.style.display === 'none') return;
+          const sRect = (stageEl && typeof stageEl.getBoundingClientRect === 'function')
+            ? stageEl.getBoundingClientRect()
+            : { left: 0, top: 0, width: stageEl.offsetWidth || 1440, height: stageEl.offsetHeight || 860 };
+          const wRect = (win && typeof win.getBoundingClientRect === 'function')
+            ? win.getBoundingClientRect()
+            : {
+                left: parseInt(win.style ? win.style.left : 0, 10) || 0,
+                top: parseInt(win.style ? win.style.top : 0, 10) || 0,
+                width: parseInt(win.style ? win.style.width : 0, 10) || (win.offsetWidth || 400),
+                height: parseInt(win.style ? win.style.height : 0, 10) || (win.offsetHeight || 300)
+              };
+          const wx = Math.round(wRect.left - sRect.left + ox);
+          const wy = Math.round(wRect.top - sRect.top + oy);
+          const ww = Math.round(wRect.width);
+          const wh = Math.round(wRect.height);
+
+          if (wx + ww < 0 || wx > rect.width || wy + wh < 0 || wy > rect.height) return;
+
+          ctx.save();
+          // Window container
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(wx, wy, ww, wh, 12);
+          else ctx.rect(wx, wy, ww, wh);
+          ctx.fillStyle = theme === 'light' ? '#ffffff' : '#1c1b1e';
+          ctx.fill();
+          ctx.strokeStyle = theme === 'light' ? 'rgba(27,26,23,0.12)' : 'rgba(255,255,255,0.12)';
+          ctx.stroke();
+
+          // Titlebar
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(wx, wy, ww, 48, [12, 12, 0, 0]);
+          else ctx.rect(wx, wy, ww, 48);
+          ctx.fillStyle = theme === 'light' ? '#fbfaf8' : '#29282d';
+          ctx.fill();
+
+          ctx.fillStyle = theme === 'light' ? '#1b1a17' : '#f2f0ed';
+          ctx.font = '600 13px Inter, sans-serif';
+          ctx.fillText(win.dataset.windowTitle || 'Вікно', wx + 40, wy + 28);
+
+          // Render specific window contents for authentic blurring
+          if (win.id === 'winTerminal') {
+            ctx.fillStyle = '#121114';
+            ctx.fillRect(wx, wy + 48, ww, wh - 48);
+            ctx.fillStyle = '#5b9bec';
+            ctx.font = '500 12px "JetBrains Mono", monospace';
+            ctx.fillText('artem@meridian ~> glide-compositor --version', wx + 16, wy + 74);
+            ctx.fillStyle = '#edece8';
+            ctx.fillText('glide-compositor 0.4.2 (Meridian OS x86_64)', wx + 16, wy + 94);
+            ctx.fillStyle = '#5b9bec';
+            ctx.fillText('artem@meridian ~/Documents/Glide> cargo check', wx + 16, wy + 124);
+            ctx.fillStyle = '#62d69b';
+            ctx.fillText('Checking glide-theme v0.4.2', wx + 16, wy + 144);
+            ctx.fillStyle = '#e5b355';
+            ctx.fillText('token=ghp_92jf98A19KLaSecrEtToken4819', wx + 16, wy + 174);
+          } else if (win.id === 'winBrowser') {
+            ctx.fillStyle = theme === 'light' ? '#ffffff' : '#161518';
+            ctx.fillRect(wx, wy + 48, ww, wh - 48);
+            ctx.fillStyle = theme === 'light' ? '#1b1a17' : '#f2f0ed';
+            ctx.font = '700 20px Inter, sans-serif';
+            ctx.fillText('Structured Calm', wx + 24, wy + 92);
+            ctx.fillStyle = theme === 'light' ? 'rgba(27,26,23,0.7)' : 'rgba(242,240,237,0.7)';
+            ctx.font = '400 13px Inter, sans-serif';
+            ctx.fillText('Meridian побудовано навколо передбачуваності: єдина форма контролів (--r-2)', wx + 24, wy + 120);
+            ctx.fillText('та шари стану замість нових кольорів (8%/13%/18%).', wx + 24, wy + 140);
+          } else if (win.id === 'winFiles') {
+            ctx.fillStyle = theme === 'light' ? '#eceae6' : '#232227';
+            ctx.fillRect(wx, wy + 48, 160, wh - 48);
+            ctx.fillStyle = theme === 'light' ? '#ffffff' : '#161518';
+            ctx.fillRect(wx + 160, wy + 48, ww - 160, wh - 48);
+            ctx.fillStyle = theme === 'light' ? '#1b1a17' : '#f2f0ed';
+            ctx.font = '500 12px Inter, sans-serif';
+            ctx.fillText('📁 Документи', wx + 16, wy + 82);
+            ctx.fillText('🖼️ Зображення', wx + 16, wy + 110);
+            ctx.fillText('Знімок_14-30.png', wx + 180, wy + 110);
+          } else if (win.id === 'winSettings') {
+            ctx.fillStyle = theme === 'light' ? '#fbfaf8' : '#1c1b1e';
+            ctx.fillRect(wx, wy + 48, ww, wh - 48);
+            ctx.fillStyle = theme === 'light' ? '#1b1a17' : '#f2f0ed';
+            ctx.font = '600 13px Inter, sans-serif';
+            ctx.fillText('Знімки екрана та копіювання', wx + 20, wy + 78);
+            ctx.fillStyle = theme === 'light' ? 'rgba(27,26,23,0.7)' : 'rgba(242,240,237,0.7)';
+            ctx.font = '400 12px Inter, sans-serif';
+            ctx.fillText('Розмітка за місцем з розмиттям чутливих даних.', wx + 20, wy + 100);
+            ctx.fillStyle = theme === 'light' ? 'rgba(27,26,23,0.06)' : 'rgba(255,255,255,0.06)';
+            ctx.fillRect(wx + 20, wy + 115, ww - 40, 36);
+            ctx.fillStyle = theme === 'light' ? '#1b1a17' : '#f2f0ed';
+            ctx.font = '500 12px Inter, sans-serif';
+            ctx.fillText('Автокопіювання в буфер', wx + 32, wy + 137);
+            ctx.fillStyle = '#3f9639';
+            ctx.fillText('Увімкнено', wx + ww - 100, wy + 137);
+          }
+
+          ctx.restore();
+        });
+      }
+
+      // 5. Desktop Dock (Bottom)
+      if (stageEl) {
+        const dockEl = (typeof stageEl.querySelector === 'function') ? stageEl.querySelector('.desktop-dock') : null;
+        if (dockEl && dockEl.style.display !== 'none') {
+          const stageW = stageEl.offsetWidth || 1440;
+          const stageH = stageEl.offsetHeight || 860;
+          const dockW = dockEl.offsetWidth || 230;
+          const dockH = dockEl.offsetHeight || 48;
+          const dx = Math.round((stageW - dockW) / 2 + ox);
+          const dy = Math.round(stageH - dockH - 12 + oy);
+
+          if (dx + dockW >= 0 && dx <= rect.width && dy + dockH >= 0 && dy <= rect.height) {
+            ctx.save();
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(dx, dy, dockW, dockH, 12);
+            else ctx.rect(dx, dy, dockW, dockH);
+            ctx.fillStyle = theme === 'light' ? 'rgba(251, 250, 248, 0.88)' : 'rgba(38, 37, 42, 0.88)';
+            ctx.fill();
+            ctx.strokeStyle = theme === 'light' ? 'rgba(27, 26, 23, 0.12)' : 'rgba(255, 255, 255, 0.12)';
+            ctx.stroke();
+
+            // Dock icons
+            ctx.font = '16px sans-serif';
+            ctx.fillStyle = theme === 'light' ? '#1b1a17' : '#f2f0ed';
+            ctx.fillText('⬛', dx + 12, dy + 30);
+            ctx.fillText('🌐', dx + 54, dy + 30);
+            ctx.fillText('📁', dx + 96, dy + 30);
+            ctx.fillText('⚙️', dx + 138, dy + 30);
+            ctx.fillText('📸', dx + 188, dy + 30);
+            ctx.restore();
+          }
+        }
+      }
+
+      return canvas;
+    }
+  }
+
+  // =========================================================================
+  // 5. IN-PLACE SCREENSHOT & MARKUP ENGINE
+  // =========================================================================
+  class GlideInPlaceScreenshotEngine {
+    constructor() {
+      this.stageEl = document.getElementById('desktopStage');
+      this.overlayEl = document.getElementById('captureOverlay');
+      this.guidePillEl = document.getElementById('captureGuidePill');
+      this.selectionBoxEl = document.getElementById('selectionBox');
+      this.selectionBadgeEl = document.getElementById('selectionBadge');
+      this.selMoveBarEl = document.getElementById('selMoveBar');
+      this.toolbarEl = document.getElementById('inPlaceToolbar');
+
+      this.canvasEl = document.getElementById('inPlaceCanvas');
+      this.draftCanvasEl = document.getElementById('inPlaceDraftCanvas');
+      this.textEditorEl = document.getElementById('inPlaceTextEditor');
+      this.zoneFlashEl = document.getElementById('inPlaceZoneFlash');
+      this.undoBtn = document.getElementById('iptUndoBtn');
+
+      this.audio = new ShutterAudioEngine();
+      this.toastService = new GlideToastService();
+
+      this.selectionRect = null;
+      this.isSelecting = false;
+      this.dragAction = null; // 'create', 'move', 'resize'
+      this.activeHandle = null;
+      this.dragStart = { x: 0, y: 0 };
+      this.dragAnchor = { x: 0, y: 0 };
+      this.initialBox = null;
+
+      // In-place markup state
+      this.activeTool = 'blur'; // 'blur', 'arrow', 'rect', 'pen', 'text'
+      this.activeColor = 'accent'; // 'accent', '#c8483c', '#3f9639', '#ffffff'
+      this.isDrawing = false;
+      this.drawStartPos = { x: 0, y: 0 };
+      this.penPoints = [];
+      this.textPos = null;
+
+      // History stack for Undo
+      this.historyStack = [];
+      this.sampledDesktopCanvas = null;
+
+      this.initEvents();
+    }
+
+    initEvents() {
+      // Global hotkeys
+      addGlobalListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          if (this.textEditorEl && this.textEditorEl.style.display !== 'none') {
+            e.preventDefault();
+            this.textEditorEl.style.display = 'none';
+            this.textPos = null;
+            return;
+          }
+          if (this.overlayEl && this.overlayEl.style.display !== 'none') {
+            e.preventDefault();
+            this.cancelCapture();
+            return;
+          }
+        }
+
+        const hasSuper = e.metaKey || e.ctrlKey;
+
+        // PrintScreen / Super+Shift+4 -> open in-place capture
+        if (e.key === 'PrintScreen' || e.key === 'Print' || e.code === 'PrintScreen' || (hasSuper && e.shiftKey && (e.key === '4' || e.code === 'Digit4' || e.code === 'Numpad4'))) {
+          e.preventDefault();
+          this.openCapture();
+          return;
+        }
+
+        // Super+Shift+3 -> instant whole screen capture
+        if (hasSuper && e.shiftKey && (e.key === '3' || e.code === 'Digit3' || e.code === 'Numpad3')) {
+          e.preventDefault();
+          this.captureWholeScreen();
+          return;
+        }
+
+        // Enter key confirms and copies when in-place capture is active
+        if ((e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter') && this.overlayEl && this.overlayEl.style.display !== 'none') {
+          if (this.textEditorEl && this.textEditorEl.style.display !== 'none') {
+            this.commitText();
+            return;
+          }
+          e.preventDefault();
+          this.executeCommit('copy');
+          return;
+        }
+
+        // Ctrl+Z / Cmd+Z -> Undo
+        if (hasSuper && (e.code === 'KeyZ' || e.key === 'z' || e.key === 'Z' || e.key === 'я' || e.key === 'Я') && this.overlayEl && this.overlayEl.style.display !== 'none') {
+          if (!this.textEditorEl || this.textEditorEl.style.display === 'none') {
+            e.preventDefault();
+            this.undo();
+            return;
+          }
+        }
+
+        // Tool hotkeys when capture is active (layout-independent)
+        if (this.overlayEl && this.overlayEl.style.display !== 'none' && (!this.textEditorEl || this.textEditorEl.style.display === 'none')) {
+          if (e.code === 'KeyB' || e.key === 'b' || e.key === 'B' || e.key === 'и' || e.key === 'И') this.setTool('blur');
+          else if (e.code === 'KeyA' || e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф') this.setTool('arrow');
+          else if (e.code === 'KeyR' || e.key === 'r' || e.key === 'R' || e.key === 'к' || e.key === 'К') this.setTool('rect');
+          else if (e.code === 'KeyP' || e.key === 'p' || e.key === 'P' || e.key === 'з' || e.key === 'З') this.setTool('pen');
+          else if (e.code === 'KeyT' || e.key === 't' || e.key === 'T' || e.key === 'е' || e.key === 'Е') this.setTool('text');
+        }
+      });
+
+      // Overlay pointer events (creating selection)
+      if (this.overlayEl) {
+        this.overlayEl.addEventListener('pointerdown', (e) => this.onOverlayPointerDown(e));
+      }
+      addGlobalListener('pointermove', (e) => this.onGlobalPointerMove(e));
+      addGlobalListener('pointerup', (e) => this.onGlobalPointerUp(e));
+
+      // Move bar pointerdown
+      if (this.selMoveBarEl) {
+        this.selMoveBarEl.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          const coords = this.getStageCoordinates(e.clientX, e.clientY);
+          this.dragAction = 'move';
+          this.initialBox = { ...this.selectionRect };
+          this.dragStart = { x: coords.x, y: coords.y };
+        });
+      }
+
+      // In-place drawing canvas events
+      if (this.draftCanvasEl) {
+        this.draftCanvasEl.addEventListener('pointerdown', (e) => this.onDraftPointerDown(e));
+      }
+
+      // Text editor commit on blur and Enter key (with stopPropagation)
+      if (this.textEditorEl) {
+        this.textEditorEl.addEventListener('blur', () => this.commitText());
+        this.textEditorEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.commitText();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.textEditorEl.style.display = 'none';
+            this.textPos = null;
+          }
+        });
+      }
+
+      // Toolbar interactions
+      if (this.toolbarEl) {
+        this.toolbarEl.addEventListener('click', (e) => {
+          const toolBtn = e.target.closest('[data-tool]');
+          if (toolBtn) {
+            this.setTool(toolBtn.getAttribute('data-tool'));
+            return;
+          }
+
+          const swatchBtn = e.target.closest('[data-color]');
+          if (swatchBtn) {
+            this.setColor(swatchBtn.getAttribute('data-color'));
+            return;
+          }
+
+          if (e.target.closest('#iptUndoBtn')) {
+            this.undo();
+            return;
+          }
+
+          if (e.target.closest('#iptCancelBtn')) {
+            this.cancelCapture();
+            return;
+          }
+
+          if (e.target.closest('#iptCopyBtn')) {
+            this.executeCommit('copy');
+            return;
+          }
+
+          if (e.target.closest('#iptSaveBtn')) {
+            this.executeCommit('save');
+            return;
+          }
+        });
+      }
+
+      this.bindHandleEvents();
+    }
+
+    openCapture() {
+      this.selectionRect = null;
+      this.historyStack = [];
+      this.sampledDesktopCanvas = null;
+      this.isCommitting = false;
+      this.updateUndoButton();
+
+      if (this.overlayEl) {
+        this.overlayEl.style.display = 'block';
+        this.overlayEl.classList.remove('has-selection');
+      }
+      if (this.guidePillEl) this.guidePillEl.style.display = 'flex';
+      if (this.selectionBoxEl) {
+        this.selectionBoxEl.style.display = 'none';
+        const handles = (typeof this.selectionBoxEl.querySelectorAll === 'function')
+          ? this.selectionBoxEl.querySelectorAll('.sel-handle')
+          : [];
+        if (handles && handles.forEach) handles.forEach(h => { h.style.display = ''; });
+      }
+      if (this.toolbarEl) this.toolbarEl.style.display = 'none';
+      if (this.textEditorEl) {
+        this.textEditorEl.style.display = 'none';
+        this.textEditorEl.textContent = '';
+        this.textPos = null;
+      }
+
+      this.clearCanvases();
+    }
+
+    cancelCapture() {
+      if (this.overlayEl) {
+        this.overlayEl.style.display = 'none';
+        this.overlayEl.classList.remove('has-selection');
+      }
+      if (this.toolbarEl) this.toolbarEl.style.display = 'none';
+      if (this.selectionBoxEl) {
+        this.selectionBoxEl.style.display = 'none';
+        const handles = (typeof this.selectionBoxEl.querySelectorAll === 'function')
+          ? this.selectionBoxEl.querySelectorAll('.sel-handle')
+          : [];
+        if (handles && handles.forEach) handles.forEach(h => { h.style.display = ''; });
+      }
+      if (this.textEditorEl) {
+        this.textEditorEl.style.display = 'none';
+        this.textEditorEl.textContent = '';
+      }
+      this.selectionRect = null;
+      this.initialBox = null;
+      this.isSelecting = false;
+      this.dragAction = null;
+      this.isDrawing = false;
+      this.isCommitting = false;
+      this.sampledDesktopCanvas = null;
+      this.historyStack = [];
+      this.penPoints = [];
+      this.textPos = null;
+      this.clearCanvases();
+    }
+
+    getStageCoordinates(clientX, clientY) {
+      if (!this.stageEl) return { x: 0, y: 0, stageWidth: 1200, stageHeight: 860 };
+      const rect = this.stageEl.getBoundingClientRect();
+      const scaleX = (this.stageEl.offsetWidth || rect.width) / (rect.width || 1);
+      const scaleY = (this.stageEl.offsetHeight || rect.height) / (rect.height || 1);
+      const x = Math.max(0, Math.min((clientX - rect.left) * scaleX, this.stageEl.offsetWidth));
+      const y = Math.max(0, Math.min((clientY - rect.top) * scaleY, this.stageEl.offsetHeight));
+      return { x: Math.round(x), y: Math.round(y), stageWidth: this.stageEl.offsetWidth, stageHeight: this.stageEl.offsetHeight };
+    }
+
+    getBoxCanvasCoordinates(clientX, clientY) {
+      if (!this.draftCanvasEl) return { x: 0, y: 0 };
+      const r = this.draftCanvasEl.getBoundingClientRect();
+      const scaleX = (this.draftCanvasEl.width || 1) / (r.width || 1);
+      const scaleY = (this.draftCanvasEl.height || 1) / (r.height || 1);
+      const x = Math.max(0, Math.min((clientX - r.left) * scaleX, this.draftCanvasEl.width));
+      const y = Math.max(0, Math.min((clientY - r.top) * scaleY, this.draftCanvasEl.height));
+      return { x: Math.round(x), y: Math.round(y) };
+    }
+
+    onOverlayPointerDown(e) {
+      if (e.button !== 0) return;
+      if (this.toolbarEl && this.toolbarEl.contains(e.target)) return;
+      if (this.selectionBoxEl && this.selectionBoxEl.contains(e.target)) return;
+
+      const coords = this.getStageCoordinates(e.clientX, e.clientY);
+
+      // Start selecting a new rectangular zone with fresh state
+      this.clearCanvases();
+      this.historyStack = [];
+      this.updateUndoButton();
+
+      this.dragAction = 'create';
+      this.dragStart = { x: coords.x, y: coords.y };
+      this.dragAnchor = { x: coords.x, y: coords.y };
+      this.selectionRect = { x: coords.x, y: coords.y, width: 0, height: 0 };
+
+      if (this.guidePillEl) this.guidePillEl.style.display = 'none';
+      if (this.toolbarEl) this.toolbarEl.style.display = 'none';
+    }
+
+    onGlobalPointerMove(e) {
+      if (!this.dragAction) return;
+      const coords = this.getStageCoordinates(e.clientX, e.clientY);
+      const MIN_SIZE = 24;
+
+      if (this.dragAction === 'create') {
+        const x = Math.min(this.dragAnchor.x, coords.x);
+        const y = Math.min(this.dragAnchor.y, coords.y);
+        const width = Math.abs(coords.x - this.dragAnchor.x);
+        const height = Math.abs(coords.y - this.dragAnchor.y);
+
+        this.selectionRect = {
+          x: Math.round(x),
+          y: Math.round(y),
+          width: Math.round(width),
+          height: Math.round(height)
+        };
+        this.renderSelectionBox(coords.stageWidth, coords.stageHeight);
+      } else if (this.dragAction === 'move') {
+        const dx = coords.x - this.dragStart.x;
+        const dy = coords.y - this.dragStart.y;
+        let newX = this.initialBox.x + dx;
+        let newY = this.initialBox.y + dy;
+
+        newX = Math.max(0, Math.min(newX, coords.stageWidth - this.initialBox.width));
+        newY = Math.max(0, Math.min(newY, coords.stageHeight - this.initialBox.height));
+
+        this.selectionRect = {
+          x: Math.round(newX),
+          y: Math.round(newY),
+          width: this.initialBox.width,
+          height: this.initialBox.height
+        };
+        this.renderSelectionBox(coords.stageWidth, coords.stageHeight);
+        this.updateToolbarPosition(coords.stageWidth, coords.stageHeight);
+      } else if (this.dragAction === 'resize') {
+        this.selectionRect = this.calculateResizedRect(
+          this.activeHandle,
+          this.initialBox,
+          this.dragAnchor,
+          coords,
+          MIN_SIZE,
+          coords.stageWidth,
+          coords.stageHeight
+        );
+        this.renderSelectionBox(coords.stageWidth, coords.stageHeight);
+        this.updateToolbarPosition(coords.stageWidth, coords.stageHeight);
+      }
+    }
+
+    onGlobalPointerUp() {
+      if (!this.dragAction) return;
+      const wasResize = this.dragAction === 'resize';
+      const initialBox = this.initialBox;
+      this.dragAction = null;
+      this.activeHandle = null;
+
+      if (!this.selectionRect || this.selectionRect.width < 24 || this.selectionRect.height < 24) {
+        if (this.selectionBoxEl) this.selectionBoxEl.style.display = 'none';
+        if (this.toolbarEl) this.toolbarEl.style.display = 'none';
+        if (this.guidePillEl) this.guidePillEl.style.display = 'flex';
+        if (this.overlayEl) this.overlayEl.classList.remove('has-selection');
+        this.selectionRect = null;
+        this.initialBox = null;
+        return;
+      }
+
+      // When selection is finalized or resized:
+      const offsetX = (wasResize && initialBox) ? (initialBox.x - this.selectionRect.x) : 0;
+      const offsetY = (wasResize && initialBox) ? (initialBox.y - this.selectionRect.y) : 0;
+      this.syncCanvasDimensions(offsetX, offsetY);
+      this.initialBox = null;
+      const coords = this.getStageCoordinates(0, 0);
+      this.updateToolbarPosition(coords.stageWidth, coords.stageHeight);
+      if (this.toolbarEl) {
+        this.toolbarEl.style.display = 'flex';
+      }
+
+      // Sample desktop pixels for the current selection rect
+      this.sampledDesktopCanvas = DesktopRasterizer.sampleRegion(this.stageEl, this.selectionRect);
+
+      // Bind resize handles on the selection box
+      this.bindHandleEvents();
+    }
+
+    calculateAnchor(handle, box) {
+      switch (handle) {
+        case 'nw': return { x: box.x + box.width, y: box.y + box.height };
+        case 'n':  return { x: box.x, y: box.y + box.height };
+        case 'ne': return { x: box.x, y: box.y + box.height };
+        case 'e':  return { x: box.x, y: box.y };
+        case 'se': return { x: box.x, y: box.y };
+        case 's':  return { x: box.x, y: box.y };
+        case 'sw': return { x: box.x + box.width, y: box.y };
+        case 'w':  return { x: box.x + box.width, y: box.y };
+        default:   return { x: box.x, y: box.y };
+      }
+    }
+
+    calculateResizedRect(handle, box, anchor, current, minSize, stageW, stageH) {
+      const curX = Math.max(0, Math.min(current.x, stageW));
+      const curY = Math.max(0, Math.min(current.y, stageH));
+
+      if (handle === 'se' || handle === 'nw' || handle === 'ne' || handle === 'sw') {
+        let x, y, width, height;
+
+        if (curX >= anchor.x) {
+          x = anchor.x;
+          width = Math.max(minSize, curX - anchor.x);
+          if (x + width > stageW) width = stageW - x;
+        } else {
+          x = Math.min(anchor.x - minSize, curX);
+          x = Math.max(0, x);
+          width = anchor.x - x;
+        }
+
+        if (curY >= anchor.y) {
+          y = anchor.y;
+          height = Math.max(minSize, curY - anchor.y);
+          if (y + height > stageH) height = stageH - y;
+        } else {
+          y = Math.min(anchor.y - minSize, curY);
+          y = Math.max(0, y);
+          height = anchor.y - y;
+        }
+
+        return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+      }
+
+      let x = box.x, y = box.y, w = box.width, h = box.height;
+      if (handle === 'e') {
+        w = Math.max(minSize, Math.min(curX - box.x, stageW - box.x));
+      } else if (handle === 'w') {
+        const right = box.x + box.width;
+        const rawX = Math.min(curX, right - minSize);
+        x = Math.max(0, rawX);
+        w = right - x;
+      } else if (handle === 's') {
+        h = Math.max(minSize, Math.min(curY - box.y, stageH - box.y));
+      } else if (handle === 'n') {
+        const bottom = box.y + box.height;
+        const rawY = Math.min(curY, bottom - minSize);
+        y = Math.max(0, rawY);
+        h = bottom - y;
+      }
+      return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
+    }
+
+    bindHandleEvents() {
+      const handles = (this.selectionBoxEl && typeof this.selectionBoxEl.querySelectorAll === 'function')
+        ? this.selectionBoxEl.querySelectorAll('.sel-handle')
+        : (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function' ? document.querySelectorAll('.sel-handle') : []);
+      if (!handles || !handles.forEach) return;
+      handles.forEach(handle => {
+        handle.onpointerdown = (e) => {
+          e.stopPropagation();
+          const coords = this.getStageCoordinates(e.clientX, e.clientY);
+          this.dragAction = 'resize';
+          this.activeHandle = handle.dataset ? handle.dataset.handle : handle.getAttribute('data-handle');
+          this.initialBox = { ...this.selectionRect };
+          this.dragAnchor = this.calculateAnchor(this.activeHandle, this.initialBox);
+        };
+      });
+    }
+
+    renderSelectionBox(stageW, stageH) {
+      if (!this.selectionBoxEl || !this.selectionRect) return;
+      const rect = this.selectionRect;
+
+      if (this.overlayEl && rect.width > 0 && rect.height > 0) {
+        this.overlayEl.classList.add('has-selection');
+      }
+
+      this.selectionBoxEl.style.display = 'block';
+      this.selectionBoxEl.style.left = `${rect.x}px`;
+      this.selectionBoxEl.style.top = `${rect.y}px`;
+      this.selectionBoxEl.style.width = `${rect.width}px`;
+      this.selectionBoxEl.style.height = `${rect.height}px`;
+
+      // Guarantee resize handles are visible and operational
+      if (this.selectionBoxEl) {
+        const handles = (typeof this.selectionBoxEl.querySelectorAll === 'function')
+          ? this.selectionBoxEl.querySelectorAll('.sel-handle')
+          : [];
+        if (handles && handles.forEach) handles.forEach(h => { h.style.display = ''; });
+      }
+
+      const toolbarFitsBelow = rect.y + rect.height + 42 + 8 <= stageH;
+      const canPlaceAbove = rect.y >= 28 && toolbarFitsBelow;
+
+      if (this.selMoveBarEl) {
+        this.selMoveBarEl.style.display = 'flex';
+        const txt = (typeof this.selMoveBarEl.querySelector === 'function')
+          ? this.selMoveBarEl.querySelector('.t-micro')
+          : null;
+        if (txt) {
+          txt.style.display = rect.width < 150 ? 'none' : 'inline';
+        }
+
+        if (canPlaceAbove) {
+          this.selMoveBarEl.style.top = '-26px';
+          this.selMoveBarEl.style.left = '0px';
+        } else {
+          this.selMoveBarEl.style.top = '6px';
+          this.selMoveBarEl.style.left = '6px';
+        }
+      }
+
+      if (this.selectionBadgeEl) {
+        this.selectionBadgeEl.textContent = `${rect.width} × ${rect.height} px`;
+
+        if (canPlaceAbove) {
+          this.selectionBadgeEl.style.display = 'block';
+          this.selectionBadgeEl.style.top = '-26px';
+          this.selectionBadgeEl.style.bottom = 'auto';
+          this.selectionBadgeEl.style.right = '0px';
+        } else {
+          if (rect.width < 140) {
+            this.selectionBadgeEl.style.display = rect.width >= 75 ? 'block' : 'none';
+            this.selectionBadgeEl.style.top = rect.height >= 55 ? 'auto' : '6px';
+            this.selectionBadgeEl.style.bottom = rect.height >= 55 ? '6px' : 'auto';
+            this.selectionBadgeEl.style.right = '6px';
+          } else {
+            this.selectionBadgeEl.style.display = 'block';
+            this.selectionBadgeEl.style.top = '6px';
+            this.selectionBadgeEl.style.bottom = 'auto';
+            this.selectionBadgeEl.style.right = '6px';
+          }
+        }
+      }
+    }
+
+    updateToolbarPosition(stageW, stageH) {
+      if (!this.toolbarEl || !this.selectionRect) return;
+      const rect = this.selectionRect;
+      const tbW = this.toolbarEl.offsetWidth || 440;
+      const tbH = this.toolbarEl.offsetHeight || 42;
+      const gap = 8;
+
+      let left = rect.x + (rect.width - tbW) / 2;
+      left = Math.max(10, Math.min(left, stageW - tbW - 10));
+
+      let top;
+      if (rect.y + rect.height + tbH + gap <= stageH) {
+        // Preferred: snap directly below the selection
+        top = rect.y + rect.height + gap;
+      } else if (rect.y - tbH - gap >= 36) {
+        // Snap directly above the selection
+        top = rect.y - tbH - gap;
+      } else {
+        // Clamp to visible bottom
+        top = Math.max(40, stageH - tbH - 12);
+      }
+
+      this.toolbarEl.style.left = `${left}px`;
+      this.toolbarEl.style.top = `${top}px`;
+    }
+
+    syncCanvasDimensions(dx = 0, dy = 0) {
+      if (!this.canvasEl || !this.draftCanvasEl || !this.selectionRect) return;
+      const w = this.selectionRect.width;
+      const h = this.selectionRect.height;
+
+      // Preserve existing drawings on resize if needed
+      const prevCanvas = document.createElement('canvas');
+      prevCanvas.width = this.canvasEl.width || 1;
+      prevCanvas.height = this.canvasEl.height || 1;
+      const prevCtx = prevCanvas.getContext('2d');
+      if (prevCtx && this.canvasEl.width > 0) {
+        prevCtx.drawImage(this.canvasEl, 0, 0);
+      }
+
+      this.canvasEl.width = w;
+      this.canvasEl.height = h;
+      this.draftCanvasEl.width = w;
+      this.draftCanvasEl.height = h;
+
+      const ctx = this.canvasEl.getContext('2d');
+      if (ctx && prevCanvas.width > 1 && prevCanvas.height > 1) {
+        ctx.drawImage(prevCanvas, dx, dy);
+      }
+    }
+
+    clearCanvases() {
+      if (this.canvasEl) {
+        const ctx = this.canvasEl.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, this.canvasEl.width, this.canvasEl.height);
+      }
+      if (this.draftCanvasEl) {
+        const dCtx = this.draftCanvasEl.getContext('2d');
+        if (dCtx) dCtx.clearRect(0, 0, this.draftCanvasEl.width, this.draftCanvasEl.height);
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // In-Place Markup: Tools & Palette
+    // -----------------------------------------------------------------------
+    setTool(tool) {
+      if (this.textEditorEl && this.textEditorEl.style.display !== 'none') {
+        this.commitText();
+      }
+      this.activeTool = tool;
+      document.querySelectorAll('#iptToolsSegment button').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-tool') === tool);
+      });
+    }
+
+    setColor(color) {
+      this.activeColor = color;
+      document.querySelectorAll('#iptPalette button').forEach(b => {
+        b.classList.toggle('active', b.getAttribute('data-color') === color);
+      });
+    }
+
+    getEffectiveColor() {
+      const getVar = (name) => {
+        if (typeof getComputedStyle === 'function' && typeof document !== 'undefined' && document.documentElement) {
+          try {
+            return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+          } catch (e) {}
+        }
+        return '';
+      };
+
+      if (this.activeColor === 'accent') {
+        return getVar('--acc-bg') || '#2f6fd0';
+      }
+      if (this.activeColor === '#bf372c' || this.activeColor === 'danger') {
+        return getVar('--danger') || '#bf372c';
+      }
+      if (this.activeColor === '#1c7a4c' || this.activeColor === 'ok') {
+        return getVar('--ok') || '#1c7a4c';
+      }
+      return this.activeColor;
+    }
+
+    onDraftPointerDown(e) {
+      if (e.button !== 0 || !this.selectionRect) return;
+      e.stopPropagation();
+
+      const pos = this.getBoxCanvasCoordinates(e.clientX, e.clientY);
+      this.drawStartPos = pos;
+      this.isDrawing = true;
+
+      if (this.activeTool === 'text') {
+        this.isDrawing = false;
+        this.openInlineText(e.clientX, e.clientY, pos);
+        return;
+      }
+
+      if (this.activeTool === 'pen') {
+        this.penPoints = [pos];
+      }
+    }
+
+    onGlobalPointerMoveDrawing(e) {
+      if (!this.isDrawing || !this.draftCanvasEl) return;
+      const pos = this.getBoxCanvasCoordinates(e.clientX, e.clientY);
+      const dCtx = this.draftCanvasEl.getContext('2d');
+      if (!dCtx) return;
+
+      dCtx.clearRect(0, 0, this.draftCanvasEl.width, this.draftCanvasEl.height);
+
+      const color = this.getEffectiveColor();
+      dCtx.save();
+      dCtx.strokeStyle = color;
+      dCtx.fillStyle = color;
+      dCtx.lineWidth = 3.5;
+      dCtx.lineCap = 'round';
+      dCtx.lineJoin = 'round';
+
+      const x = Math.min(this.drawStartPos.x, pos.x);
+      const y = Math.min(this.drawStartPos.y, pos.y);
+      const w = Math.abs(pos.x - this.drawStartPos.x);
+      const h = Math.abs(pos.y - this.drawStartPos.y);
+
+      if (this.activeTool === 'blur') {
+        // Live preview of blur marquee
+        dCtx.setLineDash([4, 4]);
+        dCtx.strokeStyle = '#f0796f';
+        dCtx.strokeRect(x, y, w, h);
+        dCtx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+        dCtx.fillRect(x, y, w, h);
+      } else if (this.activeTool === 'arrow') {
+        this.drawArrowShape(dCtx, this.drawStartPos.x, this.drawStartPos.y, pos.x, pos.y, color, 3.5);
+      } else if (this.activeTool === 'rect') {
+        if (dCtx.roundRect) {
+          dCtx.beginPath();
+          dCtx.roundRect(x, y, w, h, 4);
+          dCtx.stroke();
+        } else {
+          dCtx.strokeRect(x, y, w, h);
+        }
+      } else if (this.activeTool === 'pen') {
+        this.penPoints.push(pos);
+        dCtx.beginPath();
+        for (let i = 0; i < this.penPoints.length; i++) {
+          const pt = this.penPoints[i];
+          if (i === 0) dCtx.moveTo(pt.x, pt.y);
+          else dCtx.lineTo(pt.x, pt.y);
+        }
+        dCtx.stroke();
+      }
+
+      dCtx.restore();
+    }
+
+    onGlobalPointerUpDrawing(e) {
+      if (!this.isDrawing) return;
+      this.isDrawing = false;
+      const pos = this.getBoxCanvasCoordinates(e.clientX, e.clientY);
+
+      if (this.draftCanvasEl) {
+        const dCtx = this.draftCanvasEl.getContext('2d');
+        if (dCtx) dCtx.clearRect(0, 0, this.draftCanvasEl.width, this.draftCanvasEl.height);
+      }
+
+      const mainCtx = this.canvasEl ? this.canvasEl.getContext('2d') : null;
+      if (!mainCtx) return;
+
+      const color = this.getEffectiveColor();
+      const x = Math.min(this.drawStartPos.x, pos.x);
+      const y = Math.min(this.drawStartPos.y, pos.y);
+      const w = Math.abs(pos.x - this.drawStartPos.x);
+      const h = Math.abs(pos.y - this.drawStartPos.y);
+
+      if (this.activeTool === 'blur') {
+        if (w >= 4 && h >= 4) {
+          this.saveHistoryState();
+          this.applyInPlaceBlur(mainCtx, x, y, w, h);
+        }
+      } else if (this.activeTool === 'arrow') {
+        if (w >= 4 || h >= 4) {
+          this.saveHistoryState();
+          mainCtx.save();
+          this.drawArrowShape(mainCtx, this.drawStartPos.x, this.drawStartPos.y, pos.x, pos.y, color, 3.5);
+          mainCtx.restore();
+        }
+      } else if (this.activeTool === 'rect') {
+        if (w >= 4 && h >= 4) {
+          this.saveHistoryState();
+          mainCtx.save();
+          mainCtx.strokeStyle = color;
+          mainCtx.lineWidth = 3.5;
+          if (mainCtx.roundRect) {
+            mainCtx.beginPath();
+            mainCtx.roundRect(x, y, w, h, 4);
+            mainCtx.stroke();
+          } else {
+            mainCtx.strokeRect(x, y, w, h);
+          }
+          mainCtx.restore();
+        }
+      } else if (this.activeTool === 'pen') {
+        if (this.penPoints.length > 0) {
+          const lastPt = this.penPoints[this.penPoints.length - 1];
+          if (!lastPt || lastPt.x !== pos.x || lastPt.y !== pos.y) {
+            this.penPoints.push(pos);
+          }
+          this.saveHistoryState();
+          mainCtx.save();
+          mainCtx.strokeStyle = color;
+          mainCtx.fillStyle = color;
+          mainCtx.lineWidth = 3.5;
+          mainCtx.lineCap = 'round';
+          mainCtx.lineJoin = 'round';
+          if (this.penPoints.length === 1) {
+            mainCtx.beginPath();
+            mainCtx.arc(this.penPoints[0].x, this.penPoints[0].y, 1.75, 0, Math.PI * 2);
+            mainCtx.fill();
+          } else {
+            mainCtx.beginPath();
+            for (let i = 0; i < this.penPoints.length; i++) {
+              const pt = this.penPoints[i];
+              if (i === 0) mainCtx.moveTo(pt.x, pt.y);
+              else mainCtx.lineTo(pt.x, pt.y);
+            }
+            mainCtx.stroke();
+          }
+          mainCtx.restore();
+        }
+        this.penPoints = [];
+      }
+    }
+
+    applyInPlaceBlur(ctx, x, y, w, h) {
+      if (!this.sampledDesktopCanvas && this.selectionRect) {
+        this.sampledDesktopCanvas = DesktopRasterizer.sampleRegion(this.stageEl, this.selectionRect);
+      }
+      if (!this.sampledDesktopCanvas || w <= 0 || h <= 0) return;
+
+      const sW = this.sampledDesktopCanvas.width;
+      const sH = this.sampledDesktopCanvas.height;
+      const safeX = Math.max(0, Math.min(x, sW - 1));
+      const safeY = Math.max(0, Math.min(y, sH - 1));
+      const safeW = Math.max(1, Math.min(w, sW - safeX));
+      const safeH = Math.max(1, Math.min(h, sH - safeY));
+
+      const blockSize = 10;
+      // Composite desktop background and existing markups to blur accurately
+      const compCanvas = document.createElement('canvas');
+      compCanvas.width = sW;
+      compCanvas.height = sH;
+      const cCtx = compCanvas.getContext('2d');
+      if (!cCtx) return;
+
+      cCtx.drawImage(this.sampledDesktopCanvas, 0, 0);
+      if (this.canvasEl) {
+        cCtx.drawImage(this.canvasEl, 0, 0);
+      }
+
+      const imgData = cCtx.getImageData(safeX, safeY, safeW, safeH);
+      const data = imgData.data;
+
+      for (let by = 0; by < safeH; by += blockSize) {
+        for (let bx = 0; bx < safeW; bx += blockSize) {
+          let r = 0, g = 0, b = 0, count = 0;
+
+          for (let py = 0; py < blockSize && by + py < safeH; py++) {
+            for (let px = 0; px < blockSize && bx + px < safeW; px++) {
+              const idx = ((by + py) * safeW + (bx + px)) * 4;
+              r += data[idx];
+              g += data[idx + 1];
+              b += data[idx + 2];
+              count++;
+            }
+          }
+
+          if (count > 0) {
+            r = Math.round(r / count);
+            g = Math.round(g / count);
+            b = Math.round(b / count);
+
+            ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+            ctx.fillRect(safeX + bx, safeY + by, Math.min(blockSize, safeW - bx), Math.min(blockSize, safeH - by));
+          }
+        }
+      }
+
+      // Add a subtle border around the redacted region
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(safeX + 0.5, safeY + 0.5, safeW - 1, safeH - 1);
+      ctx.restore();
+    }
+
+    drawArrowShape(ctx, x1, y1, x2, y2, color, strokeW = 3.5) {
+      const headLength = Math.max(13, strokeW * 3.8);
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = strokeW;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // Stem (stops before arrowhead tip so lineCap doesn't poke out past sharp tip)
+      const stemEndX = x2 - (headLength * 0.35) * Math.cos(angle);
+      const stemEndY = y2 - (headLength * 0.35) * Math.sin(angle);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(stemEndX, stemEndY);
+      ctx.stroke();
+
+      // Sharp Arrowhead
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(
+        x2 - headLength * Math.cos(angle - Math.PI / 6),
+        y2 - headLength * Math.sin(angle - Math.PI / 6)
+      );
+      ctx.lineTo(
+        x2 - headLength * Math.cos(angle + Math.PI / 6),
+        y2 - headLength * Math.sin(angle + Math.PI / 6)
+      );
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    openInlineText(clientX, clientY, pos) {
+      if (!this.textEditorEl || !this.selectionRect) return;
+      if (this.textEditorEl.style.display !== 'none') {
+        this.commitText();
+      }
+      const left = Math.max(8, Math.min(pos.x, this.selectionRect.width - 90));
+      const top = Math.max(8, Math.min(pos.y, this.selectionRect.height - 36));
+
+      this.textEditorEl.style.display = 'block';
+      this.textEditorEl.style.left = `${left}px`;
+      this.textEditorEl.style.top = `${top}px`;
+      this.textEditorEl.style.color = this.getEffectiveColor();
+      this.textEditorEl.textContent = '';
+      this.textPos = { x: left, y: top };
+      setTimeout(() => this.textEditorEl.focus(), 10);
+    }
+
+    commitText() {
+      if (!this.textEditorEl || this.textEditorEl.style.display === 'none') return;
+      const text = this.textEditorEl.textContent.trim();
+      this.textEditorEl.style.display = 'none';
+
+      if (text && this.textPos && this.canvasEl) {
+        this.saveHistoryState();
+        const ctx = this.canvasEl.getContext('2d');
+        if (ctx) {
+          ctx.save();
+          ctx.font = '600 16px Inter, system-ui, sans-serif';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = this.getEffectiveColor();
+          // Drop shadow for crisp readability on any wallpaper
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+          ctx.shadowBlur = 4;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 1;
+          ctx.fillText(text, this.textPos.x + 8, this.textPos.y + 4);
+          ctx.restore();
+        }
+      }
+      this.textPos = null;
+    }
+
+    saveHistoryState() {
+      if (!this.canvasEl || this.canvasEl.width === 0 || this.canvasEl.height === 0) return;
+      const snap = document.createElement('canvas');
+      snap.width = this.canvasEl.width;
+      snap.height = this.canvasEl.height;
+      const snapCtx = snap.getContext('2d');
+      if (snapCtx) snapCtx.drawImage(this.canvasEl, 0, 0);
+      this.historyStack.push(snap);
+      if (this.historyStack.length > 25) this.historyStack.shift();
+      this.updateUndoButton();
+    }
+
+    undo() {
+      if (this.textEditorEl && this.textEditorEl.style.display !== 'none') {
+        this.textEditorEl.style.display = 'none';
+        this.textEditorEl.textContent = '';
+        this.textPos = null;
+      }
+      if (this.historyStack.length === 0 || !this.canvasEl) return;
+      const prevCanvas = this.historyStack.pop();
+      const ctx = this.canvasEl.getContext('2d');
+      if (ctx && prevCanvas) {
+        ctx.clearRect(0, 0, this.canvasEl.width, this.canvasEl.height);
+        ctx.drawImage(prevCanvas, 0, 0);
+      }
+      this.updateUndoButton();
+    }
+
+    updateUndoButton() {
+      if (this.undoBtn) {
+        this.undoBtn.disabled = this.historyStack.length === 0;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Execution: Save & Copy with Shutter Audio & flash_alpha
+    // -----------------------------------------------------------------------
+    captureWholeScreen() {
+      const coords = this.getStageCoordinates(0, 0);
+      this.selectionRect = { x: 0, y: 0, width: coords.stageWidth, height: coords.stageHeight };
+      this.sampledDesktopCanvas = DesktopRasterizer.sampleRegion(this.stageEl, this.selectionRect);
+      this.syncCanvasDimensions();
+      this.executeCommit('copy');
+    }
+
+    executeCommit(action = 'copy') {
+      if (!this.selectionRect || this.isCommitting) return;
+      this.isCommitting = true;
+
+      // Commit any uncommitted text in progress
+      this.commitText();
+
+      // Immediately hide UI chrome so flash illuminates clean captured content
+      if (this.toolbarEl) this.toolbarEl.style.display = 'none';
+      if (this.selMoveBarEl) this.selMoveBarEl.style.display = 'none';
+      if (this.selectionBadgeEl) this.selectionBadgeEl.style.display = 'none';
+      if (this.selectionBoxEl) {
+        const handles = (typeof this.selectionBoxEl.querySelectorAll === 'function')
+          ? this.selectionBoxEl.querySelectorAll('.sel-handle')
+          : [];
+        if (handles && handles.forEach) handles.forEach(h => { h.style.display = 'none'; });
+      }
+
+      // 1. Play Shutter audio click
+      this.audio.playShutterClick();
+
+      // 2. Trigger local zone flash (or full screen flash) with dismissal callback
+      const flashEl = (this.selectionBoxEl && this.selectionBoxEl.style.display !== 'none')
+        ? this.zoneFlashEl
+        : (document.getElementById('screenFlash') || this.zoneFlashEl);
+
+      triggerZoneFlash(flashEl, () => {
+        this.cancelCapture();
+      });
+
+      // 3. Render final composite canvas (desktop background + in-place markup)
+      const finalCanvas = document.createElement('canvas');
+      finalCanvas.width = this.selectionRect.width;
+      finalCanvas.height = this.selectionRect.height;
+      const fCtx = finalCanvas.getContext('2d');
+
+      if (fCtx) {
+        // Desktop base slice
+        if (this.sampledDesktopCanvas) {
+          fCtx.drawImage(this.sampledDesktopCanvas, 0, 0);
+        }
+        // In-place markups & pixelated blurs
+        if (this.canvasEl) {
+          fCtx.drawImage(this.canvasEl, 0, 0);
+        }
+      }
+
+      const dataUrl = finalCanvas.toDataURL('image/png');
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`;
+      const fileName = `Знімок_${dateStr}_${timeStr}.png`;
+      const dims = `${this.selectionRect.width} × ${this.selectionRect.height} px`;
+
+      if (action === 'save') {
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = fileName;
+        a.click();
+        this.toastService.show('Знімок збережено', `${fileName} (${dims})`, dataUrl);
+      } else {
+        // Copy to clipboard
+        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+          try {
+            if (typeof ClipboardItem !== 'undefined' && finalCanvas.toBlob) {
+              finalCanvas.toBlob(blob => {
+                if (blob) navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).catch(() => {});
+              });
+            }
+          } catch (e) {}
+        }
+        this.toastService.show('Знімок скопійовано в буфер', `Готово для вставки (${dims})`, dataUrl);
+      }
+    }
+  }
+
+  // Bind drawing movement globally so pointer doesn't get lost
+  function setupEngineGlobalDrawing(engine) {
+    addGlobalListener('pointermove', (e) => {
+      engine.onGlobalPointerMoveDrawing(e);
+    });
+    addGlobalListener('pointerup', (e) => {
+      engine.onGlobalPointerUpDrawing(e);
+    });
+  }
+
+  // =========================================================================
+  // 6. PLAYGROUND CONTROLLER, CLOCK & SYSTEM BINDINGS
+  // =========================================================================
+  function initPlayground() {
+    // Clock
+    const clockTime = document.getElementById('topbarTime');
+    const clockDate = document.getElementById('topbarDate');
+    const ukrDays = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+    const ukrMonths = ['січ', 'лют', 'бер', 'кві', 'тра', 'чер', 'лип', 'сер', 'вер', 'жов', 'лис', 'гру'];
+    function updateClock() {
+      const now = new Date();
+      if (clockTime) {
+        const h = String(now.getHours()).padStart(2, '0');
+        const m = String(now.getMinutes()).padStart(2, '0');
+        const s = String(now.getSeconds()).padStart(2, '0');
+        clockTime.textContent = `${h}:${m}:${s}`;
+      }
+      if (clockDate) {
+        clockDate.textContent = `${ukrDays[now.getDay()]} ${now.getDate()} ${ukrMonths[now.getMonth()]}`;
+      }
+    }
+    const clockInterval = setInterval(updateClock, 1000);
+    if (clockInterval && typeof clockInterval.unref === 'function') clockInterval.unref();
+    updateClock();
+
+    // Theme Switcher
+    const lightBtn = document.querySelector('[data-theme-btn="light"]');
+    const darkBtn = document.querySelector('[data-theme-btn="dark"]');
+    if (lightBtn && darkBtn) {
+      lightBtn.addEventListener('click', () => {
+        document.documentElement.setAttribute('data-theme', 'light');
+        lightBtn.classList.add('active');
+        darkBtn.classList.remove('active');
+        if (window.captureEngine && window.captureEngine.selectionRect && window.captureEngine.stageEl) {
+          window.captureEngine.sampledDesktopCanvas = DesktopRasterizer.sampleRegion(
+            window.captureEngine.stageEl,
+            window.captureEngine.selectionRect
+          );
+        }
+      });
+      darkBtn.addEventListener('click', () => {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        darkBtn.classList.add('active');
+        lightBtn.classList.remove('active');
+        if (window.captureEngine && window.captureEngine.selectionRect && window.captureEngine.stageEl) {
+          window.captureEngine.sampledDesktopCanvas = DesktopRasterizer.sampleRegion(
+            window.captureEngine.stageEl,
+            window.captureEngine.selectionRect
+          );
+        }
+      });
+    }
+
+    // 8 Accents Switcher
+    const accentRamps = {
+      blue: { c4: '#2f6fd0', c5: '#1f56a8', c1: '#d9e6fb', c6: '#163e79', rgb: '47, 111, 208' },
+      teal: { c4: '#128b7e', c5: '#0b665c', c1: '#d2f2ed', c6: '#084740', rgb: '18, 139, 126' },
+      green: { c4: '#3f9639', c5: '#2e7429', c1: '#dcf2d9', c6: '#1d4f19', rgb: '63, 150, 57' },
+      amber: { c4: '#b57e10', c5: '#875d07', c1: '#faefd2', c6: '#5c3e02', rgb: '181, 126, 16' },
+      orange: { c4: '#cf6524', c5: '#9e4914', c1: '#fbe9db', c6: '#6d300a', rgb: '207, 101, 36' },
+      red: { c4: '#c8483c', c5: '#973228', c1: '#fae3e0', c6: '#661f18', rgb: '200, 72, 60' },
+      purple: { c4: '#7a4dbb', c5: '#5c3691', c1: '#ecdefa', c6: '#3e2264', rgb: '122, 77, 187' },
+      graphite: { c4: '#6a6459', c5: '#4f4a41', c1: '#eae7e2', c6: '#35312b', rgb: '106, 100, 89' }
+    };
+
+    document.querySelectorAll('#swatches button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#swatches button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const accent = btn.getAttribute('data-accent');
+        const ramp = accentRamps[accent];
+        if (ramp) {
+          const r = document.documentElement.style;
+          r.setProperty('--ac-4', ramp.c4);
+          r.setProperty('--ac-5', ramp.c5);
+          r.setProperty('--ac-1', ramp.c1);
+          r.setProperty('--ac-6', ramp.c6);
+          r.setProperty('--ac-rgb', ramp.rgb);
+          r.setProperty('--acc-bg', ramp.c4);
+          r.setProperty('--acc-bg-hover', ramp.c5);
+          r.setProperty('--acc-soft', ramp.c1);
+          r.setProperty('--acc-soft-fg', ramp.c6);
+          r.setProperty('--acc-ring', `rgba(${ramp.rgb}, .32)`);
+        }
+      });
+    });
+
+    // Quick Settings Toggle & Outside Click Dismiss
+    const btnQs = document.getElementById('btnQuickSettings');
+    const qsPopover = document.getElementById('quickSettingsPopover');
+    if (btnQs && qsPopover) {
+      btnQs.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isShown = qsPopover.style.display !== 'none';
+        qsPopover.style.display = isShown ? 'none' : 'flex';
+        btnQs.setAttribute('aria-expanded', isShown ? 'false' : 'true');
+      });
+
+      addGlobalListener('pointerdown', (e) => {
+        if (qsPopover.style.display !== 'none' && !qsPopover.contains(e.target) && !btnQs.contains(e.target)) {
+          qsPopover.style.display = 'none';
+          btnQs.setAttribute('aria-expanded', 'false');
+        }
+      });
+    }
+
+    // Topbar Screenshot tile click
+    const qsTileShot = document.getElementById('qsScreenshotTile');
+    if (qsTileShot) {
+      qsTileShot.addEventListener('click', () => {
+        if (qsPopover) qsPopover.style.display = 'none';
+        window.captureEngine.openCapture();
+      });
+    }
+
+    // Dock Buttons
+    const dockShotBtn = document.getElementById('dockScreenshotBtn');
+    if (dockShotBtn) {
+      dockShotBtn.addEventListener('click', () => {
+        window.captureEngine.openCapture();
+      });
+    }
+
+    const appWindows = {
+      dockTerminalBtn: 'winTerminal',
+      dockBrowserBtn: 'winBrowser',
+      dockFilesBtn: 'winFiles',
+      dockSettingsBtn: 'winSettings'
+    };
+
+    let topWindowZ = 20;
+    for (const [btnId, winId] of Object.entries(appWindows)) {
+      const btn = document.getElementById(btnId);
+      const win = document.getElementById(winId);
+      if (btn && win) {
+        btn.addEventListener('click', () => {
+          if (win.style.display === 'none') {
+            win.style.display = 'block';
+            topWindowZ++;
+            win.style.zIndex = topWindowZ;
+            btn.classList.add('active');
+          } else {
+            topWindowZ++;
+            win.style.zIndex = topWindowZ;
+          }
+        });
+      }
+    }
+
+    // Interactive mock window dragging & bring-to-front
+    const mockWins = (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function')
+      ? document.querySelectorAll('.screen .win')
+      : [];
+    if (mockWins && mockWins.forEach) {
+      mockWins.forEach(win => {
+        if (!win || typeof win.addEventListener !== 'function') return;
+        win.addEventListener('pointerdown', () => {
+          topWindowZ++;
+          win.style.zIndex = topWindowZ;
+        });
+
+        const winbar = (typeof win.querySelector === 'function') ? win.querySelector('.winbar') : null;
+        if (winbar && typeof winbar.addEventListener === 'function') {
+          winbar.addEventListener('pointerdown', (e) => {
+            if (e.target && typeof e.target.closest === 'function' && e.target.closest('button')) return;
+            if (e.preventDefault) e.preventDefault();
+            topWindowZ++;
+            win.style.zIndex = topWindowZ;
+
+            const stage = document.getElementById('desktopStage');
+            if (!stage || typeof stage.getBoundingClientRect !== 'function' || typeof win.getBoundingClientRect !== 'function') return;
+            const sRect = stage.getBoundingClientRect();
+            const wRect = win.getBoundingClientRect();
+            const ox = e.clientX - wRect.left;
+            const oy = e.clientY - wRect.top;
+
+            function onWinMove(moveEvt) {
+              const curX = moveEvt.clientX - sRect.left - ox;
+              const curY = moveEvt.clientY - sRect.top - oy;
+              win.style.left = `${Math.max(0, Math.min(curX, stage.offsetWidth - win.offsetWidth))}px`;
+              win.style.top = `${Math.max(34, Math.min(curY, stage.offsetHeight - win.offsetHeight))}px`;
+            }
+
+            function onWinUp() {
+              window.removeEventListener('pointermove', onWinMove);
+              window.removeEventListener('pointerup', onWinUp);
+            }
+
+            window.addEventListener('pointermove', onWinMove);
+            window.addEventListener('pointerup', onWinUp);
+          });
+        }
+
+        const closeBtn = (typeof win.querySelector === 'function') ? win.querySelector('.wctl .close') : null;
+        if (closeBtn && typeof closeBtn.addEventListener === 'function') {
+          closeBtn.addEventListener('click', (e) => {
+            if (e.stopPropagation) e.stopPropagation();
+            win.style.display = 'none';
+            const matchEntry = Object.entries(appWindows).find(([, wId]) => wId === win.id);
+            if (matchEntry) {
+              const dockBtn = document.getElementById(matchEntry[0]);
+              if (dockBtn && dockBtn.classList) dockBtn.classList.remove('active');
+            }
+          });
+        }
+      });
+    }
+
+    // Playground Simulation Buttons
+    const btnTriggerZoneCapture = document.getElementById('btnTriggerZoneCapture');
+    const btnTriggerScreenDirect = document.getElementById('btnTriggerScreenDirect');
+    const btnResetSimulation = document.getElementById('btnResetSimulation');
+
+    if (btnTriggerZoneCapture) {
+      btnTriggerZoneCapture.addEventListener('click', () => window.captureEngine.openCapture());
+    }
+    if (btnTriggerScreenDirect) {
+      btnTriggerScreenDirect.addEventListener('click', () => window.captureEngine.captureWholeScreen());
+    }
+    if (btnResetSimulation) {
+      btnResetSimulation.addEventListener('click', () => {
+        window.captureEngine.cancelCapture();
+      });
+    }
+
+    // Suite compatibility bindings for HUD and Corner Thumbnail
+    const hudCapture = document.getElementById('hudCaptureBtn');
+    if (hudCapture) {
+      hudCapture.addEventListener('click', () => {
+        if (window.captureEngine) window.captureEngine.executeCommit('copy');
+      });
+    }
+    const hudClose = document.getElementById('hudCloseBtn');
+    if (hudClose) {
+      hudClose.addEventListener('click', () => {
+        if (window.captureEngine) window.captureEngine.cancelCapture();
+      });
+    }
+    const tActionCopy = document.getElementById('thumbActionCopy');
+    if (tActionCopy) {
+      tActionCopy.addEventListener('click', () => {
+        if (window.captureEngine) window.captureEngine.executeCommit('copy');
+      });
+    }
+    const tActionSave = document.getElementById('thumbActionSave');
+    if (tActionSave) {
+      tActionSave.addEventListener('click', () => {
+        if (window.captureEngine) window.captureEngine.executeCommit('save');
+      });
+    }
+    const tClose = document.getElementById('thumbnailCloseBtn');
+    if (tClose) {
+      tClose.addEventListener('click', () => {
+        const thumb = document.getElementById('cornerThumbnail');
+        if (thumb) thumb.style.display = 'none';
+      });
+    }
+  }
+
+  // =========================================================================
+  // INITIALIZATION ON DOM READY
+  // =========================================================================
+  function initAll() {
+    window.captureEngine = new GlideInPlaceScreenshotEngine();
+    setupEngineGlobalDrawing(window.captureEngine);
+    initPlayground();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
+})();
+</script>
+</body>
+</html>

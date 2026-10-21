@@ -1,8 +1,9 @@
 use std::cell::RefCell;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use glide_files::fs::jobs::{Answer, Choice, Op, Progress, Question, Sink, delete, transfer};
+use glide_files::fs::jobs::{Answer, Choice, Op, Progress, Question, Sink, copy_exact, delete, transfer};
 
 fn scratch(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -28,6 +29,8 @@ struct Script {
     asked: RefCell<Vec<Question>>,
     last: RefCell<Progress>,
     cancel_on_progress: Option<&'static AtomicBool>,
+    watch_mode: Option<PathBuf>,
+    observed_modes: RefCell<Vec<u32>>,
 }
 
 impl Script {
@@ -41,6 +44,11 @@ impl Script {
 
 impl Sink for Script {
     fn progress(&self, progress: Progress) {
+        if let Some(path) = &self.watch_mode
+            && let Ok(meta) = std::fs::metadata(path)
+        {
+            self.observed_modes.borrow_mut().push(meta.permissions().mode() & 0o777);
+        }
         let bytes = progress.bytes;
         *self.last.borrow_mut() = progress;
         if let Some(flag) = self.cancel_on_progress
@@ -58,6 +66,60 @@ impl Sink for Script {
 
 fn run(op: Op, sources: &[PathBuf], target: &Path, sink: &Script) -> glide_files::fs::jobs::Report {
     transfer(op, sources, target, sink, &AtomicBool::new(false))
+}
+
+#[test]
+fn copies_start_private_and_restore_the_source_permissions() {
+    let root = scratch("private-output");
+    write(&root.join("source.txt"), "content");
+    write(&root.join("source-dir/child.txt"), "child");
+    std::fs::set_permissions(root.join("source.txt"), std::fs::Permissions::from_mode(0o644)).expect("file mode");
+    std::fs::set_permissions(root.join("source-dir"), std::fs::Permissions::from_mode(0o755)).expect("directory mode");
+    std::fs::create_dir(root.join("dst")).expect("destination");
+    for (name, final_mode) in [("source.txt", 0o644), ("source-dir", 0o755)] {
+        let dest = root.join("dst").join(name);
+        let sink = Script { watch_mode: Some(dest.clone()), ..Script::default() };
+        let report = run(Op::Copy, &[root.join(name)], &root.join("dst"), &sink);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let initial = sink.observed_modes.borrow().first().copied().expect("mode observed during copy");
+        assert_eq!(initial & 0o077, 0, "unfinished copies are inaccessible to group and other users");
+        let actual = std::fs::metadata(&dest).expect("copied item").permissions().mode() & 0o777;
+        assert_eq!(actual, final_mode, "completed copies restore the source mode");
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn copy_exact_never_removes_a_destination_it_did_not_create() {
+    let root = scratch("copy-exact-existing");
+    write(&root.join("source.txt"), "source");
+    write(&root.join("existing.txt"), "keep file");
+    write(&root.join("source-dir/child.txt"), "source child");
+    write(&root.join("existing-dir/keep.txt"), "keep child");
+    for (source, dest) in [("source.txt", "existing.txt"), ("source-dir", "existing-dir")] {
+        let err = copy_exact(&root.join(source), &root.join(dest)).expect_err("destination already exists");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    }
+    let err = copy_exact(&root.join("missing"), &root.join("existing.txt")).expect_err("source missing");
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(read(&root.join("existing.txt")), "keep file");
+    assert_eq!(read(&root.join("existing-dir/keep.txt")), "keep child");
+    assert_eq!(read(&root.join("source.txt")), "source");
+    assert_eq!(read(&root.join("source-dir/child.txt")), "source child");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn copy_exact_removes_its_own_partial_tree_on_failure() {
+    let root = scratch("copy-exact-partial");
+    write(&root.join("source/child.txt"), "source child");
+    let socket = std::os::unix::net::UnixListener::bind(root.join("source/socket")).expect("socket");
+    let err = copy_exact(&root.join("source"), &root.join("partial")).expect_err("socket cannot be copied");
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    assert!(!root.join("partial").exists(), "only this operation's partial tree is removed");
+    assert_eq!(read(&root.join("source/child.txt")), "source child");
+    drop(socket);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -149,7 +211,6 @@ fn conflicts_follow_the_answer_and_for_all_is_remembered() {
 
 #[test]
 fn a_replace_that_cannot_copy_keeps_the_file_it_would_have_replaced() {
-    use std::os::unix::fs::PermissionsExt;
     // SAFETY: `geteuid` has no preconditions and cannot fail.
     if unsafe { libc::geteuid() } == 0 {
         return;
@@ -361,4 +422,42 @@ fn the_meter_reports_speed_and_time_left_only_while_running() {
     meter.pause(true);
     assert!(meter.is_paused());
     assert_eq!(meter.rate(), None, "a paused job shows no speed");
+}
+
+#[test]
+fn a_failed_folder_replace_keeps_the_folder_it_would_have_replaced() {
+    let root = scratch("replace-failed");
+    write(&root.join("src/box/fine.txt"), "new");
+    write(&root.join("src/box/locked.txt"), "secret");
+    std::fs::set_permissions(root.join("src/box/locked.txt"), std::fs::Permissions::from_mode(0o000)).expect("lock");
+    if std::fs::read(root.join("src/box/locked.txt")).is_ok() {
+        let _ = std::fs::remove_dir_all(root);
+        return;
+    }
+    write(&root.join("dst/box/keep.txt"), "old");
+    let sink = Script::answering(&[(Choice::Replace, false)]);
+    let report = run(Op::Copy, &[root.join("src/box")], &root.join("dst"), &sink);
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.done.is_empty());
+    assert_eq!(read(&root.join("dst/box/keep.txt")), "old", "the original folder survives a failed replace");
+    let leftovers: Vec<_> =
+        std::fs::read_dir(root.join("dst")).expect("dst").flatten().map(|e| e.file_name()).collect();
+    assert_eq!(leftovers, vec![std::ffi::OsString::from("box")], "no staging folder is left behind");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_folder_replace_swaps_in_the_new_contents() {
+    let root = scratch("replace-folder");
+    write(&root.join("src/box/new.txt"), "new");
+    write(&root.join("dst/box/old.txt"), "old");
+    let sink = Script::answering(&[(Choice::Replace, false)]);
+    let report = run(Op::Move, &[root.join("src/box")], &root.join("dst"), &sink);
+    assert_eq!(report.done.len(), 1);
+    assert_eq!(read(&root.join("dst/box/new.txt")), "new");
+    assert!(!root.join("dst/box/old.txt").exists());
+    assert!(!root.join("src/box").exists());
+    let leftovers = std::fs::read_dir(root.join("dst")).expect("dst").count();
+    assert_eq!(leftovers, 1, "the replaced folder is gone, not parked beside the new one");
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -58,7 +58,20 @@ impl SystemKeyboard {
 
     #[must_use]
     pub fn for_locale(locale: &str) -> Self {
-        let language = locale.split(['_', '.', '@']).next().unwrap_or_default();
+        let name = locale.split(['.', '@']).next().unwrap_or_default();
+        let (language, territory) = name.split_once('_').unwrap_or((name, ""));
+        let (layout, variant) = match (language, territory) {
+            ("pt", "BR") => ("br", ""),
+            ("de", "CH") => ("ch", ""),
+            ("fr", "CH") => ("ch", "fr"),
+            ("fr", "CA") => ("ca", ""),
+            ("fr" | "nl", "BE") => ("be", ""),
+            ("de", "AT") => ("at", ""),
+            _ => ("", ""),
+        };
+        if !layout.is_empty() {
+            return Self { layout: layout.to_string(), variant: variant.to_string(), ..Self::default() };
+        }
         let native = match language {
             "uk" => "ua",
             "cs" => "cz",
@@ -159,5 +172,25 @@ EndSection
         assert_eq!(SystemKeyboard::for_locale("C").layout, "us");
         assert_eq!(SystemKeyboard::for_locale("").layout, "us");
         assert!(SystemKeyboard::for_locale("de_DE").options.is_empty());
+    }
+
+    #[test]
+    fn the_territory_picks_the_regional_layout() {
+        let pick = |locale: &str| {
+            let keyboard = SystemKeyboard::for_locale(locale);
+            (keyboard.layout, keyboard.variant)
+        };
+        let expect = |layout: &str, variant: &str| (layout.to_string(), variant.to_string());
+        assert_eq!(pick("pt_BR.UTF-8"), expect("br", ""));
+        assert_eq!(pick("pt_PT.UTF-8"), expect("pt", ""));
+        assert_eq!(pick("de_CH.UTF-8"), expect("ch", ""));
+        assert_eq!(pick("fr_CH.UTF-8"), expect("ch", "fr"));
+        assert_eq!(pick("fr_CA.UTF-8"), expect("ca", ""));
+        assert_eq!(pick("fr_BE.UTF-8"), expect("be", ""));
+        assert_eq!(pick("nl_BE.UTF-8@euro"), expect("be", ""));
+        assert_eq!(pick("de_AT.UTF-8"), expect("at", ""));
+        assert_eq!(pick("fr_FR.UTF-8"), expect("fr", ""));
+        assert_eq!(pick("nl_NL.UTF-8"), expect("us", ""));
+        assert_eq!(pick("uk_UA.UTF-8"), expect("us,ua", ""));
     }
 }

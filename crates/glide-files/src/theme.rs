@@ -9,31 +9,7 @@ pub use glide_theme::shape::{R_ROUND, R1, R2, R3};
 
 pub const SEMIBOLD: iced::Font = iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT };
 
-pub fn use_ui_family(requested: Option<&str>) -> String {
-    use iced::advanced::graphics::text::cosmic_text::fontdb::{Family, Query, Style, Weight};
-    let mut system =
-        iced::advanced::graphics::text::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let db = system.raw().db_mut();
-    let family = glide_theme::font::ui_family(
-        requested,
-        db.faces().flat_map(|face| face.families.iter().map(|(name, _)| name.as_str())),
-    );
-    db.set_sans_serif_family(family.clone());
-    for weight in [Weight::MEDIUM, Weight::SEMIBOLD, Weight::BOLD] {
-        let exact = db.faces().any(|face| {
-            face.weight == weight
-                && face.style == Style::Normal
-                && face.families.iter().any(|(name, _)| *name == family)
-        });
-        let query = Query { families: &[Family::Name(&family)], weight, ..Query::default() };
-        let nearest = db.query(&query).and_then(|id| db.face(id)).cloned();
-        if let Some(mut face) = nearest.filter(|_| !exact) {
-            face.weight = weight;
-            db.push_face_info(face);
-        }
-    }
-    family
-}
+pub use glide_iced::font::use_ui_family;
 
 pub const MICRO: f32 = TextStyle::MICRO.size_px;
 pub const CAP: f32 = TextStyle::CAP.size_px;
@@ -42,9 +18,9 @@ pub const MENU_ITEM: f32 = TextStyle::MENU_ITEM.size_px;
 pub const TITLE: f32 = TextStyle::WIN_TITLE.size_px;
 pub const T3: f32 = TextStyle::T3.size_px;
 
-pub const CONTROL: f32 = 34.0;
-pub const RING: f32 = 3.0;
-pub const SMALL_CONTROL: f32 = 28.0;
+pub const CONTROL: f32 = glide_theme::component::CONTROL;
+pub const RING: f32 = glide_theme::component::FIELD_HALO;
+pub const SMALL_CONTROL: f32 = glide_theme::component::SMALL_CONTROL;
 
 pub const SP1: f32 = glide_theme::spacing::SP1 as f32;
 pub const SP2: f32 = glide_theme::spacing::SP2 as f32;
@@ -382,6 +358,8 @@ pub enum Side {
     Right,
     TopRight,
     BottomRight,
+    Top,
+    BottomLeft,
 }
 
 #[must_use]
@@ -392,6 +370,8 @@ pub fn window_corners(side: Side, corner: f32) -> Radius {
         Side::Right => none.top_right(corner).bottom_right(corner),
         Side::TopRight => none.top_right(corner),
         Side::BottomRight => none.bottom_right(corner),
+        Side::Top => none.top_left(corner).top_right(corner),
+        Side::BottomLeft => none.bottom_left(corner),
     }
 }
 
@@ -411,6 +391,35 @@ pub fn popover(theme: &ThemeState) -> container::Style {
         border: Border { color: theme.line(), width: 1.0, radius: Radius::from(R3) },
         shadow: theme.shadow(Level::El3),
         snap: true,
+    }
+}
+
+#[must_use]
+pub fn dropdown(theme: &ThemeState, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
+    use iced::widget::pick_list::Status;
+    let border = match status {
+        Status::Opened { .. } => theme.acc_bg(),
+        Status::Hovered => theme.fill_3(),
+        Status::Active => theme.line_2(),
+    };
+    iced::widget::pick_list::Style {
+        text_color: theme.fg_1(),
+        placeholder_color: theme.fg_3(),
+        handle_color: theme.fg_2(),
+        background: Background::Color(theme.view_bg()),
+        border: Border { color: border, width: 1.0, radius: Radius::from(R2) },
+    }
+}
+
+#[must_use]
+pub fn dropdown_menu(theme: &ThemeState) -> iced::overlay::menu::Style {
+    iced::overlay::menu::Style {
+        background: Background::Color(theme.popover_bg()),
+        border: Border { color: theme.line(), width: 1.0, radius: Radius::from(R2) },
+        text_color: theme.fg_1(),
+        selected_text_color: theme.acc_soft_fg(),
+        selected_background: Background::Color(theme.acc_soft()),
+        shadow: theme.shadow(Level::El3),
     }
 }
 

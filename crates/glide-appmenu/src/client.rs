@@ -28,6 +28,7 @@ enum Request {
     Activate(Source, Activation),
     Opened(Source, Activation),
     Changed { sender: String },
+    OwnerChanged { name: String, new_owner: String },
 }
 
 #[derive(Debug, Clone)]
@@ -59,12 +60,15 @@ impl AppMenuHandle {
     }
 }
 
-const SIGNAL_RULES: [&str; 4] = [
+const SIGNAL_RULES: [&str; 5] = [
     "type='signal',interface='org.gtk.Menus',member='Changed'",
     "type='signal',interface='org.gtk.Actions',member='Changed'",
     "type='signal',interface='com.canonical.dbusmenu',member='LayoutUpdated'",
     "type='signal',interface='com.canonical.dbusmenu',member='ItemsPropertiesUpdated'",
+    "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'",
 ];
+
+const DBUS_INTERFACE: &str = "org.freedesktop.DBus";
 
 const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
 const COALESCE: Duration = Duration::from_millis(40);
@@ -136,6 +140,15 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>) {
             continue;
         }
         let interface = header.interface().map(|i| i.as_str().to_string());
+        if interface.as_deref() == Some(DBUS_INTERFACE) {
+            if header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged")
+                && let Ok((name, _old, new_owner)) = message.body().deserialize::<(String, String, String)>()
+                && tx.send(Request::OwnerChanged { name, new_owner }).is_err()
+            {
+                return;
+            }
+            continue;
+        }
         let relevant =
             matches!(interface.as_deref(), Some(GTK_MENUS_INTERFACE | GTK_ACTIONS_INTERFACE | DBUSMENU_INTERFACE));
         let Some(sender) = header.sender().map(|s| s.as_str().to_string()) else {
@@ -151,6 +164,7 @@ struct Watched {
     source: Source,
     owner: String,
     groups: Vec<u32>,
+    primed: bool,
 }
 
 struct Worker {
@@ -187,7 +201,7 @@ impl Worker {
                     return;
                 }
                 let owner = self.owner_of(source.bus());
-                self.watched.push(Watched { source, owner, groups: Vec::new() });
+                self.watched.push(Watched { source, owner, groups: Vec::new(), primed: false });
                 self.refresh(self.watched.len() - 1);
             }
             Request::Unwatch(source) => {
@@ -205,7 +219,34 @@ impl Worker {
                     self.refresh(index);
                 }
             }
+            Request::OwnerChanged { name, new_owner } => self.owner_changed(&name, &new_owner),
             Request::Changed { .. } => {}
+        }
+    }
+
+    fn owner_changed(&mut self, name: &str, new_owner: &str) {
+        let mut index = self.watched.len();
+        while index > 0 {
+            index -= 1;
+            let watched = &self.watched[index];
+            let affected = watched.source.bus() == name
+                || (name.starts_with(':') && watched.owner == name && new_owner.is_empty());
+            if !affected {
+                continue;
+            }
+            if new_owner.is_empty() {
+                let watched = self.watched.remove(index);
+                (self.sink)(AppMenuEvent::Gone { source: watched.source });
+                continue;
+            }
+            if watched.owner == new_owner {
+                continue;
+            }
+            let watched = &mut self.watched[index];
+            watched.owner = new_owner.to_string();
+            watched.groups.clear();
+            watched.primed = false;
+            self.refresh(index);
         }
     }
 
@@ -233,7 +274,11 @@ impl Worker {
                     items
                 })
             }
-            Source::DbusMenu { bus, path } => self.fetch_dbusmenu(bus, path),
+            Source::DbusMenu { bus, path } => {
+                let prime = !self.watched[index].primed;
+                self.watched[index].primed = true;
+                self.fetch_dbusmenu(bus, path, prime)
+            }
         };
         match result {
             Ok(items) => (self.sink)(AppMenuEvent::Menu { source, items }),
@@ -300,7 +345,7 @@ impl Worker {
         Some(reply.into_iter().map(|(name, action)| (name, describe(action))).collect())
     }
 
-    fn fetch_dbusmenu(&self, bus: &str, path: &str) -> zbus::Result<Vec<MenuItem>> {
+    fn fetch_dbusmenu(&self, bus: &str, path: &str, prime: bool) -> zbus::Result<Vec<MenuItem>> {
         let proxy = self.proxy(bus, path, DBUSMENU_INTERFACE)?;
         let layout = || -> zbus::Result<DbusMenuNode> {
             let (_revision, root): (u32, DbusMenuNode) =
@@ -309,10 +354,12 @@ impl Worker {
         };
         let root = layout()?;
         let mut stale = false;
-        for child in &root.2 {
-            if let Ok((id, _, _)) = DbusMenuNode::try_from(child.clone()) {
-                let update: zbus::Result<bool> = proxy.call("AboutToShow", &(id,));
-                stale |= update.unwrap_or(false);
+        if prime {
+            for child in &root.2 {
+                if let Ok((id, _, _)) = DbusMenuNode::try_from(child.clone()) {
+                    let update: zbus::Result<bool> = proxy.call("AboutToShow", &(id,));
+                    stale |= update.unwrap_or(false);
+                }
             }
         }
         let root = if stale { layout()? } else { root };

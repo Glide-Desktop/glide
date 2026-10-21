@@ -45,6 +45,32 @@ fn the_trash_view_hears_a_trash_on_another_volume() {
 }
 
 #[test]
+fn a_folder_that_cannot_be_watched_yet_is_still_followed() {
+    let root = scratch("watch-fallback");
+    let missing = root.join("later");
+    let mut stream = changes(&vec![missing.clone()]);
+    std::thread::sleep(Duration::from_millis(50));
+    std::fs::create_dir(&missing).expect("create watched folder");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut heard = false;
+    while Instant::now() < deadline && !heard {
+        heard = stream.try_recv().is_ok();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(heard, "the folder appearing is reported even though inotify could not watch it at first");
+    let file = missing.join("new.txt");
+    std::fs::write(&file, b"x").expect("write");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    heard = false;
+    while Instant::now() < deadline && !heard {
+        heard = stream.try_recv().is_ok();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(heard, "once it exists, changes inside it are reported");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn only_rows_near_the_viewport_are_built() {
     assert_eq!(visible_rows(1000, 100.0, 20.0, 0.0, 500.0), 0..7);
     let middle = visible_rows(1000, 100.0, 20.0, 50_000.0, 500.0);

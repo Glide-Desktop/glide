@@ -309,7 +309,8 @@ pub fn empty_trash() -> Result<u64, String> {
     }
     let (files, _) = remove_children(&trash.join("files"));
     let (info, _) = remove_children(&trash.join("info"));
-    Ok(files + info)
+    let (expunged, _) = remove_children(&trash.join("expunged"));
+    Ok(files + info + expunged)
 }
 
 pub fn open(path: &Path) -> Result<(), String> {

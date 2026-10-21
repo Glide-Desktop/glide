@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -37,30 +37,38 @@ struct Inner {
     next_id: u32,
     next_cookie: u32,
     last: Option<(Notification, Instant)>,
-    live: HashSet<u32>,
+    live: HashMap<u32, String>,
     inhibitors: HashMap<u32, Held>,
 }
 
 impl Inner {
     fn new() -> Self {
-        Self { next_id: 1, next_cookie: 1, last: None, live: HashSet::new(), inhibitors: HashMap::new() }
+        Self { next_id: 1, next_cookie: 1, last: None, live: HashMap::new(), inhibitors: HashMap::new() }
     }
 
     fn allocate(&mut self) -> u32 {
         let mut id = self.next_id;
-        while self.live.contains(&id) {
+        while self.live.contains_key(&id) {
             id = id.checked_add(1).unwrap_or(1);
         }
         self.next_id = id.checked_add(1).unwrap_or(1);
         id
     }
 
-    fn replaceable(&self, replaces_id: u32) -> bool {
-        replaces_id != 0 && self.live.contains(&replaces_id)
+    fn replaceable(&self, replaces_id: u32, sender: &str) -> bool {
+        replaces_id != 0 && self.live.get(&replaces_id).is_some_and(|owner| owner == sender)
     }
 
     fn forget(&mut self, id: u32) {
         self.live.remove(&id);
+    }
+
+    fn revoke(&mut self, id: u32, sender: &str) -> bool {
+        let owned = self.live.get(&id).is_some_and(|owner| owner == sender);
+        if owned {
+            self.live.remove(&id);
+        }
+        owned
     }
 
     fn hold(&mut self, owner: String, inhibitor: Inhibitor) -> (u32, bool) {
@@ -158,7 +166,7 @@ impl Service {
 
         let replacing = {
             let mut inner = self.lock();
-            let replacing = inner.replaceable(replaces_id);
+            let replacing = inner.replaceable(replaces_id, &notification.sender);
             if !replacing {
                 if let Some((previous, at)) = inner.last.as_ref()
                     && at.elapsed() < FLOOD_WINDOW
@@ -170,7 +178,7 @@ impl Service {
                 }
                 notification.id = inner.allocate();
             }
-            inner.live.insert(notification.id);
+            inner.live.insert(notification.id, notification.sender.clone());
             inner.last = Some((notification.clone(), Instant::now()));
             replacing
         };
@@ -181,9 +189,11 @@ impl Service {
         Ok(id)
     }
 
-    fn close_notification(&self, id: u32) -> zbus::fdo::Result<()> {
-        self.lock().forget(id);
-        (self.sink)(NotifyEvent::Closed(id, CloseReason::Revoked));
+    fn close_notification(&self, id: u32, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<()> {
+        let revoked = self.lock().revoke(id, &Self::sender(&header));
+        if revoked {
+            (self.sink)(NotifyEvent::Closed(id, CloseReason::Revoked));
+        }
         Ok(())
     }
 
@@ -195,22 +205,32 @@ impl Service {
         ("Glide".to_string(), "glide".to_string(), env!("CARGO_PKG_VERSION").to_string(), "1.3".to_string())
     }
 
-    fn inhibit(
+    async fn inhibit(
         &self, desktop_entry: String, reason: String, hints: HashMap<String, OwnedValue>,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::fdo::Result<u32> {
         drop(hints);
         let (cookie, became_inhibited) = self.lock().hold(Self::sender(&header), Inhibitor { desktop_entry, reason });
         if became_inhibited {
             (self.sink)(NotifyEvent::InhibitedChanged(true));
+            if let Err(err) = self.inhibited_changed(&emitter).await {
+                tracing::debug!("failed to emit Inhibited change: {err}");
+            }
         }
         Ok(cookie)
     }
 
-    fn un_inhibit(&self, cookie: u32, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<()> {
+    async fn un_inhibit(
+        &self, cookie: u32, #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
         let released = self.lock().release(&Self::sender(&header), cookie);
         if released {
             (self.sink)(NotifyEvent::InhibitedChanged(false));
+            if let Err(err) = self.inhibited_changed(&emitter).await {
+                tracing::debug!("failed to emit Inhibited change: {err}");
+            }
         }
         Ok(())
     }
@@ -298,6 +318,7 @@ fn watch_inhibitor_owners(connection: &zbus::blocking::Connection, inner: Shared
             return;
         }
     };
+    let interface = connection.object_server().interface::<_, Service>(OBJECT_PATH);
     let spawned = std::thread::Builder::new().name("glide-notify-owners".into()).spawn(move || {
         for signal in signals {
             let Ok(args) = signal.args() else {
@@ -309,6 +330,12 @@ fn watch_inhibitor_owners(connection: &zbus::blocking::Connection, inner: Shared
             let released = lock_shared(&inner).release_owner(args.name().as_str());
             if released {
                 sink(NotifyEvent::InhibitedChanged(false));
+                if let Ok(interface) = interface.as_ref() {
+                    let service = interface.get();
+                    if let Err(err) = zbus::block_on(service.inhibited_changed(interface.signal_emitter())) {
+                        tracing::debug!("failed to emit Inhibited change: {err}");
+                    }
+                }
             }
         }
     });
@@ -341,21 +368,46 @@ mod tests {
     fn only_a_live_id_can_be_replaced() {
         let (service, _) = service();
         let mut inner = service.lock();
-        assert!(!inner.replaceable(0));
-        assert!(!inner.replaceable(7), "an id we never handed out is new");
+        assert!(!inner.replaceable(0, ":1.5"));
+        assert!(!inner.replaceable(7, ":1.5"), "an id we never handed out is new");
         let id = inner.allocate();
-        inner.live.insert(id);
-        assert!(inner.replaceable(id));
+        inner.live.insert(id, ":1.5".to_string());
+        assert!(inner.replaceable(id, ":1.5"));
         inner.forget(id);
-        assert!(!inner.replaceable(id), "a closed id is no longer replaceable");
+        assert!(!inner.replaceable(id, ":1.5"), "a closed id is no longer replaceable");
+    }
+
+    #[test]
+    fn another_client_cannot_replace_a_notification() {
+        let (service, _) = service();
+        let mut inner = service.lock();
+        let id = inner.allocate();
+        inner.live.insert(id, ":1.5".to_string());
+        assert!(!inner.replaceable(id, ":1.9"));
+        assert!(!inner.replaceable(id, ""));
+        assert!(inner.replaceable(id, ":1.5"));
+    }
+
+    #[test]
+    fn only_the_owner_can_close_a_notification() {
+        let (service, _) = service();
+        let mut inner = service.lock();
+        let id = inner.allocate();
+        inner.live.insert(id, ":1.5".to_string());
+        assert!(!inner.revoke(id, ":1.9"), "a stranger cannot close it");
+        assert!(inner.live.contains_key(&id));
+        assert!(!inner.revoke(u32::MAX - 3000, ":1.5"), "ids that are not live are never forwarded");
+        assert!(inner.revoke(id, ":1.5"));
+        assert!(!inner.live.contains_key(&id));
+        assert!(!inner.revoke(id, ":1.5"), "a closed id is gone");
     }
 
     #[test]
     fn allocation_skips_ids_that_are_still_live() {
         let (service, _) = service();
         let mut inner = service.lock();
-        inner.live.insert(1);
-        inner.live.insert(2);
+        inner.live.insert(1, ":1.5".to_string());
+        inner.live.insert(2, ":1.6".to_string());
         assert_eq!(inner.allocate(), 3);
     }
 

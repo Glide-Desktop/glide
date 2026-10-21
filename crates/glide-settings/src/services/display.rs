@@ -66,6 +66,14 @@ pub fn mode_key(mode: &ModeInfo) -> String {
 }
 
 #[must_use]
+pub const fn hertz(lang: crate::i18n::Lang) -> &'static str {
+    match lang {
+        crate::i18n::Lang::Uk => "Гц",
+        crate::i18n::Lang::En => "Hz",
+    }
+}
+
+#[must_use]
 pub fn refresh_text(refresh_mhz: i32) -> String {
     let text = format!("{:.3}", f64::from(refresh_mhz) / 1000.0);
     text.trim_end_matches('0').trim_end_matches('.').to_string()

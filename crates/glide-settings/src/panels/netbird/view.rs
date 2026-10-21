@@ -12,6 +12,7 @@ use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::panels::Ctx;
 use crate::panels::network::{actions, form_row, lines, note, sheet};
+use crate::services::system::format_bytes;
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
 
@@ -58,18 +59,6 @@ fn ago(c: &Ctx, when: Option<SystemTime>) -> String {
         }
         _ => c.t(T::JustNow).to_string(),
     }
-}
-
-#[must_use]
-pub fn bytes(value: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut amount = value as f64;
-    let mut unit = 0;
-    while amount >= 1024.0 && unit < UNITS.len() - 1 {
-        amount /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 { format!("{value} B") } else { format!("{amount:.1} {}", UNITS[unit]) }
 }
 
 fn address(ip: &str) -> &str {
@@ -1084,7 +1073,9 @@ fn peer_sheet<'a>(c: &Ctx, peer: &nb::Peer) -> Element<'a, Msg> {
     info.push((c.t(T::StatusSince).to_string(), ago(c, peer.status_since)));
     info.push((
         c.t(T::Transfer).to_string(),
-        c.t(T::TransferLine).replace("{rx}", &bytes(peer.bytes_rx)).replace("{tx}", &bytes(peer.bytes_tx)),
+        c.t(T::TransferLine)
+            .replace("{rx}", &format_bytes(peer.bytes_rx, c.lang))
+            .replace("{tx}", &format_bytes(peer.bytes_tx, c.lang)),
     ));
     info.push((c.t(T::Rosenpass).to_string(), c.t(if peer.rosenpass { T::On } else { T::Off }).to_string()));
     if !peer.networks.is_empty() {
@@ -1232,13 +1223,6 @@ mod tests {
             drop(page.view(ctx()));
         }
         drop(Page::default().view(ctx()));
-    }
-
-    #[test]
-    fn transfer_sizes_use_binary_units() {
-        assert_eq!(bytes(512), "512 B");
-        assert_eq!(bytes(1536), "1.5 KiB");
-        assert_eq!(bytes(5 * 1024 * 1024 * 1024), "5.0 GiB");
     }
 
     #[test]

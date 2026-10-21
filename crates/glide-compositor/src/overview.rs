@@ -835,7 +835,7 @@ impl OverviewUi {
             && let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id)
         {
             let rect = preview.rect_at(t);
-            let (w, h) = (preview.target.size.w.max(1), preview.target.size.h.max(1));
+            let (w, h) = (rect.size.w.max(1), rect.size.h.max(1));
             let key = RasterKey::new(&theme, output_scale);
             let needs_redraw =
                 preview.highlight.get(&output_scale).is_none_or(|(cached_w, cached_h, cached_key, _)| {
@@ -891,8 +891,9 @@ impl OverviewUi {
             let frame_physical = preview.origin.loc.to_f64().to_physical(scale).to_i32_round();
             let target_physical = rect.loc.to_f64().to_physical(scale).to_i32_round();
 
+            let shape = crate::window::PreviewShape { radius: theme.corner_radius, scale: window_scale };
             let raw: Vec<GlideWindowRenderElement<R>> =
-                window.preview_render_elements(renderer, real_physical, scale, 1.0);
+                window.preview_render_elements(renderer, real_physical, scale, 1.0, shape);
 
             for element in raw {
                 let scaled = RescaleRenderElement::from_element(element, frame_physical, window_scale);

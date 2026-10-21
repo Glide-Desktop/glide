@@ -116,7 +116,11 @@ impl Trash {
             .and_then(|top| original.strip_prefix(top).ok())
             .map_or_else(|| encode_path(&original), encode_path);
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&info)?;
-        write!(file, "[Trash Info]\nPath={recorded}\nDeletionDate={}\n", deleted.unwrap_or_default())?;
+        write!(
+            file,
+            "[Trash Info]\nPath={recorded}\nDeletionDate={}\n",
+            deleted.unwrap_or_else(|| String::from("1970-01-01T00:00:00"))
+        )?;
         if let Err(err) = move_path(target, &dest) {
             let _ = std::fs::remove_file(&info);
             return Err(err);
@@ -147,10 +151,11 @@ impl Trash {
         let trash = Self::owner(trashed).unwrap_or_else(|| self.clone());
         let info = std::fs::read_to_string(trash.info_file(trashed.file_name()?)).ok()?;
         let recorded = info.lines().find_map(|line| line.strip_prefix("Path=")).map(|path| decode_path(path.trim()))?;
-        Some(match trash.top() {
-            Some(top) if recorded.is_relative() => top.join(recorded),
-            _ => recorded,
-        })
+        match trash.top() {
+            Some(top) if recorded.is_relative() => Some(top.join(recorded)),
+            _ if recorded.is_relative() => None,
+            _ => Some(recorded),
+        }
     }
 
     pub fn restore(&self, trashed: &Path) -> io::Result<PathBuf> {

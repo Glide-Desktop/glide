@@ -559,6 +559,7 @@ impl Page {
                     .subtitle(user.user_name.clone())
                     .prefix(portrait(t, user, 32.0))
                     .suffix(badges)
+                    .wide()
                     .build(),
             );
             if let Some(form) = self.password_form(c, &user.path) {
@@ -593,14 +594,15 @@ fn form_buttons<'a>(c: &Ctx, confirm: Element<'a, Msg>) -> Element<'a, Msg> {
         .spacing(8)
         .align_y(Alignment::Center),
     )
-    .padding([4.0, 8.0])
+    .padding([4.0, theme::ROW_PADDING_X])
     .into()
 }
 
 fn remove_form<'a>(c: &Ctx, name: &str, idle: bool) -> Element<'a, Msg> {
     let t = c.theme;
     column![
-        container(text(c.t(T::RemoveAsk).replace("{}", name)).size(13).color(t.fg_2())).padding([4.0, 8.0]),
+        container(text(c.t(T::RemoveAsk).replace("{}", name)).size(13).color(t.fg_2()))
+            .padding([4.0, theme::ROW_PADDING_X]),
         container(
             row![
                 iced::widget::space().width(Fill),
@@ -611,7 +613,7 @@ fn remove_form<'a>(c: &Ctx, name: &str, idle: bool) -> Element<'a, Msg> {
             .spacing(8)
             .align_y(Alignment::Center),
         )
-        .padding([4.0, 8.0]),
+        .padding([4.0, theme::ROW_PADDING_X]),
     ]
     .into()
 }
@@ -631,8 +633,8 @@ fn session_row<'a>(c: &Ctx, session: &'a Session, current: &str, busy: bool) -> 
     if session.remote {
         place.push(c.t(T::Remote).to_string());
     }
-    if !session.since.is_empty() {
-        place.push(session.since.clone());
+    if let Some(started) = session.started {
+        place.push(ago(c, started));
     }
     let suffix: Element<'a, Msg> = if this {
         widgets::status_pill(t, Tone::Ok, c.t(T::ThisSession))
@@ -664,7 +666,7 @@ fn ago(c: &Ctx, timestamp: i64) -> String {
 }
 
 #[must_use]
-pub fn portrait<'a>(t: ThemeState, account: &Account, size: f32) -> Element<'a, Msg> {
+pub fn portrait<'a, M: 'a>(t: ThemeState, account: &Account, size: f32) -> Element<'a, M> {
     match account.icon() {
         Some(path) => image(image::Handle::from_path(path))
             .width(size)

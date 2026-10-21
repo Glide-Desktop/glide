@@ -16,6 +16,7 @@ use cosmic_text::{
 };
 
 use glide_theme::{Color, TextStyle};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAlign {
@@ -262,16 +263,16 @@ impl Painter {
             return text.to_owned();
         }
 
-        let chars: Vec<char> = text.chars().collect();
-        let candidate_at = |k: usize| -> String { chars[..k].iter().collect::<String>() + "…" };
+        let starts: Vec<usize> = text.grapheme_indices(true).map(|(start, _)| start).collect();
+        let candidate_at = |k: usize| -> String { text[..starts[k]].to_owned() + "…" };
         let fits = |k: usize| -> bool { measure(&candidate_at(k)) <= avail_w };
 
-        if chars.is_empty() || !fits(0) {
+        if starts.is_empty() || !fits(0) {
             return String::new();
         }
 
         let mut lo = 0usize;
-        let mut hi = chars.len() - 1;
+        let mut hi = starts.len() - 1;
         while lo < hi {
             let mid = lo + (hi - lo).div_ceil(2);
             if fits(mid) {
@@ -381,7 +382,7 @@ impl Painter {
         if metrics.width <= 0.0 {
             return;
         }
-        let total_w = metrics.width as i32;
+        let total_w = metrics.width.ceil() as i32;
 
         let avail_w = px_max - px_min;
         let x_off = match align {
@@ -1741,14 +1742,30 @@ mod tests {
         assert_eq!(fit(&painter, "anything", 0), "");
         assert_eq!(fit(&painter, "", 1000), "");
         let long = "a very long window title that will not fit in the available space";
-        let chars: Vec<char> = long.chars().collect();
+        let graphemes: Vec<&str> = long.graphemes(true).collect();
         for avail_w in [10, 30, 60, 100, 200] {
-            let linear = (0..chars.len())
+            let linear = (0..graphemes.len())
                 .rev()
-                .map(|k| chars[..k].iter().collect::<String>() + "…")
+                .map(|k| graphemes[..k].concat() + "…")
                 .find(|candidate| painter.text_width(candidate) <= avail_w as f32)
                 .unwrap_or_default();
             assert_eq!(fit(&painter, long, avail_w), linear, "avail_w={avail_w}");
+        }
+    }
+
+    #[test]
+    fn fit_text_never_splits_a_grapheme() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let text = "Cafe\u{301} 👩\u{200d}💻 family 👨\u{200d}👩\u{200d}👧 e\u{301}e\u{301}e\u{301} done";
+        let full = painter.text_width(text).ceil() as i32;
+        for avail_w in 1..full {
+            let fitted = fit(&painter, text, avail_w);
+            let kept = fitted.strip_suffix('…').unwrap_or(&fitted);
+            assert!(text.starts_with(kept), "avail_w={avail_w}: {fitted:?}");
+            assert!(
+                text.grapheme_indices(true).any(|(start, _)| start == kept.len()),
+                "avail_w={avail_w}: cut inside a grapheme: {fitted:?}"
+            );
         }
     }
 

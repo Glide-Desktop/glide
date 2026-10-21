@@ -69,9 +69,37 @@ impl Animations {
     }
 }
 
+static SYSTEM_REDUCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[must_use]
 pub fn reduced_motion() -> bool {
-    std::env::var("GLIDE_REDUCED_MOTION").is_ok_and(|value| value.trim() == "1")
+    SYSTEM_REDUCED.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var("GLIDE_REDUCED_MOTION").is_ok_and(|value| value.trim() == "1")
+}
+
+#[must_use]
+pub fn motion_changes() -> iced::futures::channel::mpsc::UnboundedReceiver<bool> {
+    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+    let _ = std::thread::Builder::new().name(String::from("glide-files-motion")).spawn(move || {
+        let mut previous = None;
+        while !sender.is_closed() {
+            let reduced = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .is_ok_and(|output| output.status.success() && output.stdout.trim_ascii() == b"false");
+            if previous != Some(reduced) {
+                SYSTEM_REDUCED.store(reduced, std::sync::atomic::Ordering::Relaxed);
+                if sender.unbounded_send(reduced).is_err() {
+                    break;
+                }
+                previous = Some(reduced);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+    receiver
 }
 
 #[derive(Deserialize, Default)]
@@ -269,13 +297,31 @@ pub fn load_prefs() -> ViewPrefs {
 }
 
 pub fn save_prefs(prefs: &ViewPrefs) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
     let Some(path) = prefs_path() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
     }
-    let _ = std::fs::write(path, prefs.render());
+    let (temporary, mut file) = loop {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temporary = path.with_extension(format!("{}.{serial}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
+            Ok(file) => break (temporary, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return,
+        }
+    };
+    if file.write_all(prefs.render().as_bytes()).and_then(|()| std::fs::rename(&temporary, &path)).is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
 }
 
 #[must_use]

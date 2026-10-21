@@ -16,6 +16,8 @@ use wayland_client::protocol::wl_data_source::{self, WlDataSource};
 use wayland_client::protocol::wl_shm::{self, WlShm};
 use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm_pool, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+use wayland_protocols::xdg::foreign::zv2::client::zxdg_imported_v2::ZxdgImportedV2;
+use wayland_protocols::xdg::foreign::zv2::client::zxdg_importer_v2::ZxdgImporterV2;
 
 use crate::fs::{file_uri, path_from_arg};
 
@@ -194,6 +196,7 @@ struct State {
     compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
     icon: Option<(wl_surface::WlSurface, WlBuffer)>,
+    _foreign: Option<(ZxdgImporterV2, ZxdgImportedV2)>,
 }
 
 #[must_use]
@@ -236,6 +239,12 @@ pub fn serve(
     let device = manager.get_data_device(&seat, &qh, ());
     let compositor: Option<WlCompositor> = globals.bind(&qh, 3..=6, ()).ok();
     let shm: Option<WlShm> = globals.bind(&qh, 1..=1, ()).ok();
+    let foreign = crate::chooser::request().and_then(|request| request.wayland_parent()).and_then(|handle| {
+        let importer: ZxdgImporterV2 = globals.bind(&qh, 1..=1, ()).ok()?;
+        let parent = importer.import_toplevel(handle.to_string(), &qh, ());
+        parent.set_parent_of(&surface);
+        Some((importer, parent))
+    });
     let (commands, inbox) = mpsc::channel();
     let accepting = Arc::new(AtomicBool::new(true));
     let link = Link { commands: Arc::new(Mutex::new(commands)), accepting: Arc::clone(&accepting) };
@@ -257,6 +266,7 @@ pub fn serve(
         compositor,
         shm,
         icon: None,
+        _foreign: foreign,
     };
     loop {
         queue.dispatch_pending(&mut state).map_err(|err| err.to_string())?;
@@ -525,6 +535,8 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
 }
 
 wayland_client::delegate_noop!(State: ignore wl_seat::WlSeat);
+wayland_client::delegate_noop!(State: ignore ZxdgImporterV2);
+wayland_client::delegate_noop!(State: ignore ZxdgImportedV2);
 wayland_client::delegate_noop!(State: ignore WlDataDeviceManager);
 wayland_client::delegate_noop!(State: WlCompositor);
 wayland_client::delegate_noop!(State: ignore wl_surface::WlSurface);

@@ -3,11 +3,11 @@ use iced::{Alignment, Element, Fill, Task};
 
 use super::common::error_banner;
 use super::{Ctx, Pane};
-use crate::i18n::Key as K;
+use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::services::config::ConfigStore;
 use crate::services::run::{Generation, blocking};
-use crate::services::system::{self, Details, format_bytes};
+use crate::services::system::{self, Details, format_bytes, format_memory};
 use crate::theme::{self, Accent, Tone, ramp_color};
 use crate::widgets::{self, Group, Row};
 
@@ -108,10 +108,14 @@ fn chassis_key(chassis: &str) -> Option<T> {
 }
 
 #[must_use]
-pub fn display_line(output: &glide_ipc::OutputInfo) -> String {
+pub fn display_line(output: &glide_ipc::OutputInfo, lang: Lang) -> String {
     let mut parts = vec![format!("{}×{}", output.width, output.height)];
     if output.refresh_mhz > 0 {
-        parts.push(format!("@ {:.0} Hz", f64::from(output.refresh_mhz) / 1000.0));
+        parts.push(format!(
+            "@ {:.0} {}",
+            f64::from(output.refresh_mhz) / 1000.0,
+            crate::services::display::hertz(lang)
+        ));
     }
     let mut line = parts.join(" ");
     if (output.scale - 1.0).abs() > f64::EPSILON && output.scale > 0.0 {
@@ -142,10 +146,14 @@ impl Page {
             format!("OS: {}", info.os_name),
             format!("Kernel: {}", info.kernel),
             format!("CPU: {} ({} threads)", info.cpu, info.cores),
-            format!("Memory: {}", format_bytes(info.memory_bytes)),
+            format!("Memory: {}", format_memory(info.memory_bytes, Lang::En)),
         ];
         lines.extend(info.gpus.iter().map(|gpu| format!("GPU: {gpu}")));
-        lines.push(format!("Disk: {} free of {}", format_bytes(info.disk_free), format_bytes(info.disk_total)));
+        lines.push(format!(
+            "Disk: {} free of {}",
+            format_bytes(info.disk_free, Lang::En),
+            format_bytes(info.disk_total, Lang::En)
+        ));
         lines.push(format!("Session: {}", info.session));
         lines.join("\n")
     }
@@ -176,15 +184,22 @@ impl Page {
         push("CPU", format!("{} ({} threads)", info.cpu, info.cores));
         push(
             "Memory",
-            format!("{} ({} available)", format_bytes(info.memory_bytes), format_bytes(details.memory_available)),
+            format!(
+                "{} ({} available)",
+                format_memory(info.memory_bytes, Lang::En),
+                format_memory(details.memory_available, Lang::En)
+            ),
         );
         for gpu in &info.gpus {
             push("GPU", gpu.clone());
         }
         for output in &details.displays {
-            push("Display", format!("{} {}", output.name, display_line(output)));
+            push("Display", format!("{} {}", output.name, display_line(output, Lang::En)));
         }
-        push("Disk", format!("{} free of {}", format_bytes(info.disk_free), format_bytes(info.disk_total)));
+        push(
+            "Disk",
+            format!("{} free of {}", format_bytes(info.disk_free, Lang::En), format_bytes(info.disk_total, Lang::En)),
+        );
         push("Firmware", format!("{} {} ({})", firmware.bios_vendor, firmware.bios_version, firmware.bios_date));
         push("Board", firmware.board.clone());
         for battery in &details.batteries {
@@ -342,7 +357,7 @@ impl Page {
             specs = specs.push(spec(Icon::Cpu, info.cpu.clone()));
         }
         if info.memory_bytes > 0 {
-            specs = specs.push(spec(Icon::Memory, format_bytes(info.memory_bytes)));
+            specs = specs.push(spec(Icon::Memory, format_memory(info.memory_bytes, c.lang)));
         }
         if let Some(gpu) = info.gpus.first() {
             specs = specs.push(spec(Icon::Display, gpu.clone()));
@@ -453,7 +468,7 @@ fn stats<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
             t,
             Icon::Drive,
             ramp_color(Accent::Malachite, 3),
-            format_bytes(info.disk_free),
+            format_bytes(info.disk_free, c.lang),
             c.t(T::DiskFree),
         ));
     }
@@ -493,21 +508,26 @@ fn hardware_group<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
                 .build(),
         )
         .push(
-            info_row(c, c.t(K::Memory), format_bytes(info.memory_bytes))
-                .subtitle(format!("{} {}", format_bytes(details.memory_available), c.t(T::Available)))
+            info_row(c, c.t(K::Memory), format_memory(info.memory_bytes, c.lang))
+                .subtitle(format!("{} {}", format_memory(details.memory_available, c.lang), c.t(T::Available)))
                 .build(),
         )
         .extend(info.gpus.iter().map(|gpu| info_row(c, c.t(K::Graphics), gpu.clone()).build()));
     for output in &details.displays {
         let name = joined(&output.make, &output.model);
         group = group.push(
-            info_row(c, c.t(T::Displays), display_line(output))
+            info_row(c, c.t(T::Displays), display_line(output, c.lang))
                 .subtitle(if name.is_empty() { output.name.clone() } else { format!("{} · {name}", output.name) })
                 .build(),
         );
     }
     if info.disk_total > 0 {
-        let disk = format!("{} {} {}", format_bytes(info.disk_free), c.t(K::FreeOf), format_bytes(info.disk_total));
+        let disk = format!(
+            "{} {} {}",
+            format_bytes(info.disk_free, c.lang),
+            c.t(K::FreeOf),
+            format_bytes(info.disk_total, c.lang)
+        );
         group = group.push(info_row(c, c.t(K::Disk), disk).build());
     }
     group.build()

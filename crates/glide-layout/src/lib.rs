@@ -341,6 +341,22 @@ mod tests {
     }
 
     #[test]
+    fn a_dialog_opens_centred_over_its_parent() {
+        let mut layout = Layout::new();
+        let (parent, dialog, late) = (WindowId::next(), WindowId::next(), WindowId::next());
+        layout.add_window(parent, SIZE);
+        layout.add_window_with_parent(dialog, SMALL, parent);
+        layout.add_window_with_parent(late, Size::new(0, 0), parent);
+        layout.update_window_size(late, SMALL);
+        let center = |id| {
+            let frame = layout.window_state(id).expect("window").frame_geometry();
+            (frame.loc.x + frame.size.width / 2, frame.loc.y + frame.size.height / 2)
+        };
+        assert_eq!(center(dialog), center(parent));
+        assert_eq!(center(late), center(parent), "placed once its size is known");
+    }
+
+    #[test]
     fn test_dynamic_workspace_destruction_on_remove() {
         let mut layout = Layout::new();
         let ids = windows(&mut layout, 2, SIZE);

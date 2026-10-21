@@ -166,16 +166,30 @@ fn accept_pending(listener: &UnixListener, loop_handle: &LoopHandle<'static, Gli
     }
 }
 
+const MAX_PENDING_CONNECTIONS: usize = 64;
+
+static PENDING_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn register_connection(stream: UnixStream, loop_handle: &LoopHandle<'static, GlideState>) -> anyhow::Result<()> {
+    use std::sync::atomic::Ordering;
+
+    if PENDING_CONNECTIONS.load(Ordering::Relaxed) >= MAX_PENDING_CONNECTIONS {
+        anyhow::bail!("too many IPC connections are waiting for a request");
+    }
     stream.set_nonblocking(true)?;
 
     let mut buffer: Vec<u8> = Vec::new();
     loop_handle
         .insert_source(Generic::new(stream, Interest::READ, Mode::Level), move |_, stream, state| {
-            Ok(read_request(stream, &mut buffer, state))
+            let action = read_request(stream, &mut buffer, state);
+            if matches!(action, PostAction::Remove) {
+                PENDING_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+            }
+            Ok(action)
         })
         .map_err(|e| e.error)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    PENDING_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
 
     Ok(())
 }
@@ -213,6 +227,16 @@ fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideStat
     }
 }
 
+pub fn reply(stream: &UnixStream, response: &Response) {
+    let Ok(mut json) = serde_json::to_string(response) else {
+        return;
+    };
+    json.push('\n');
+    if let Err(err) = write_all_nonblocking(stream, json.as_bytes()) {
+        tracing::debug!(?err, "failed to deliver a deferred IPC response");
+    }
+}
+
 fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::Result<()> {
     let mut retries = 0;
     while !data.is_empty() {
@@ -238,6 +262,23 @@ fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::R
     Ok(())
 }
 
+fn peer_pid(stream: &UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY: `credentials` and `len` are live locals sized for SO_PEERCRED, and the fd belongs to `stream`.
+    let status = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &raw mut len,
+        )
+    };
+    (status == 0 && credentials.pid > 0).then_some(credentials.pid)
+}
+
 fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     let request = match std::str::from_utf8(line) {
         Ok(text) => {
@@ -246,9 +287,26 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
         Err(err) => Err(format!("IPC request was not valid UTF-8: {err}")),
     };
 
+    if let Ok(request @ (Request::Screenshot | Request::ScreenshotArea | Request::PickColor)) = &request {
+        match stream.try_clone() {
+            Ok(waiter) => match request {
+                Request::ScreenshotArea => state.start_picker(crate::screen_picker::PickMode::Area, waiter),
+                Request::PickColor => state.start_picker(crate::screen_picker::PickMode::Color, waiter),
+                _ => state.request_screenshot_for(waiter),
+            },
+            Err(err) => reply(stream, &Response::Error { message: err.to_string() }),
+        }
+        return;
+    }
     let subscribing = matches!(request, Ok(Request::Subscribe));
     let practising = matches!(request, Ok(Request::PracticeGestures));
     let response = match request {
+        Ok(Request::ActivationToken { app_id }) => {
+            match peer_pid(stream).and_then(|pid| state.mint_activation_token_for(pid, app_id)) {
+                Some(token) => Response::ActivationToken { token },
+                None => Response::Error { message: "only the focused client may request an activation token".into() },
+            }
+        }
         Ok(request) => dispatch_request(state, request),
         Err(message) => Response::Error { message },
     };
@@ -345,6 +403,9 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             state.lock_screen();
             Response::Ok
         }
+        Request::ActivationToken { .. } | Request::Screenshot | Request::ScreenshotArea | Request::PickColor => {
+            Response::Error { message: "this request needs a client connection".into() }
+        }
     }
 }
 
@@ -352,11 +413,19 @@ fn list_outputs(state: &GlideState) -> Response {
     let list = state
         .space
         .outputs()
+        .chain(&state.session.mirrors)
         .map(|output| {
             let physical = output.physical_properties();
             let (width, height, refresh_mhz) =
                 output.current_mode().map_or((0, 0, 0), |mode| (mode.size.w, mode.size.h, mode.refresh));
-            let location = output.current_location();
+            let mirrored = state.session.mirrors.contains(output);
+            let location = state
+                .space
+                .outputs()
+                .next()
+                .filter(|_| mirrored)
+                .and_then(|primary| state.space.output_geometry(primary))
+                .map_or_else(|| output.current_location(), |primary| primary.loc);
             let preferred = output.preferred_mode();
             let modes = output
                 .modes()

@@ -8,6 +8,27 @@ use smithay::{
 use crate::GlideState;
 
 pub const MAX_TOKEN_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+pub const LAUNCH_INTENT: std::time::Duration = std::time::Duration::from_secs(5);
+pub const USER_ACTION: std::time::Duration = std::time::Duration::from_secs(5);
+
+pub fn user_pressed<I: smithay::backend::input::InputBackend>(event: &smithay::backend::input::InputEvent<I>) -> bool {
+    use smithay::backend::input::{ButtonState, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent};
+    match event {
+        InputEvent::Keyboard { event } => event.state() == KeyState::Pressed,
+        InputEvent::PointerButton { event } => event.state() == ButtonState::Pressed,
+        InputEvent::TouchDown { .. }
+        | InputEvent::GestureSwipeBegin { .. }
+        | InputEvent::GesturePinchBegin { .. }
+        | InputEvent::GestureHoldBegin { .. } => true,
+        _ => false,
+    }
+}
+
+#[must_use]
+pub fn follows_user_action(last_input: Option<std::time::Instant>, token_created: std::time::Instant) -> bool {
+    last_input
+        .is_some_and(|input| input <= token_created && token_created.saturating_duration_since(input) <= USER_ACTION)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActivationGrant(bool);
@@ -55,7 +76,7 @@ impl XdgActivationHandler for GlideState {
             .map(|client| client.id())
             .or_else(|| data.client_id.clone());
         let fresh = requester_has_keyboard_focus(requester, focused_client)
-            && data.serial.as_ref().is_some_and(|(serial, seat)| {
+            && data.serial.as_ref().is_none_or(|(serial, seat)| {
                 let last_enter = keyboard.as_ref().and_then(KeyboardHandle::last_enter);
                 token_serial_is_fresh(self.seat.owns(seat), Some(*serial), last_enter)
             });
@@ -70,14 +91,21 @@ impl XdgActivationHandler for GlideState {
         let Some(id) = self.window_id_for_surface(&surface) else {
             return;
         };
-        if activation_allowed(is_granted(&token_data), token_data.timestamp.elapsed()) {
+        let granted = activation_allowed(is_granted(&token_data), token_data.timestamp.elapsed());
+        let focused = self.layout.focused_window() == Some(id);
+        let fresh = token_is_fresh_enough(token_data.timestamp.elapsed());
+        let reacting = !granted && fresh && follows_user_action(self.session.last_user_input, token_data.timestamp);
+        let launched = !granted && !reacting && !focused && self.take_launch_intent();
+        if granted || reacting || launched {
             self.protocols.xdg_activation_state.remove_token(&token);
+            tracing::info!(window = id.0, granted, reacting, launched, "activation honoured");
             if self.layout.focus_window(id) {
                 self.reconcile_space();
             }
             return;
         }
-        if self.layout.focused_window() != Some(id) {
+        if !focused {
+            tracing::info!(window = id.0, "activation refused: the token was not granted and nothing was launched");
             self.demand_attention(id);
         }
     }
@@ -89,6 +117,16 @@ mod tests {
 
     fn serial(n: u32) -> Serial {
         Serial::from(n)
+    }
+
+    #[test]
+    fn a_token_minted_right_after_a_click_counts_as_the_users_doing() {
+        let click = std::time::Instant::now();
+        let token = click + std::time::Duration::from_millis(400);
+        assert!(follows_user_action(Some(click), token));
+        assert!(!follows_user_action(None, token), "no input yet means nobody asked for it");
+        assert!(!follows_user_action(Some(token + std::time::Duration::from_millis(10)), token), "the user moved on");
+        assert!(!follows_user_action(Some(click), click + USER_ACTION + std::time::Duration::from_millis(1)));
     }
 
     #[test]

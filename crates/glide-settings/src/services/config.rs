@@ -117,7 +117,7 @@ pub const DEFAULT_REPEAT_DELAY: i64 = 200;
 pub const DEFAULT_REPEAT_RATE: i64 = 25;
 pub const DEFAULT_ITEM_SIZE: i64 = 56;
 pub const DEFAULT_ICON_SIZE: i64 = 44;
-pub const DEFAULT_TITLEBAR_HEIGHT: i64 = 48;
+pub const DEFAULT_TITLEBAR_HEIGHT: i64 = 20;
 pub const DEFAULT_BORDER_WIDTH: i64 = 1;
 pub const DEFAULT_BLANK_AFTER: i64 = 600;
 pub const DEFAULT_BATTERY_LOW: i64 = 20;
@@ -723,7 +723,7 @@ fn temp_sibling(target: &Path) -> PathBuf {
     target.with_file_name(name)
 }
 
-fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
     let tmp = temp_sibling(target);

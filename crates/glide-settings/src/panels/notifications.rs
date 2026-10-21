@@ -120,7 +120,7 @@ pub enum Msg {
 #[derive(Debug, Default)]
 pub struct Page {
     apps: Vec<DesktopApp>,
-    requested: bool,
+    loaded_lang: Option<crate::i18n::Lang>,
     from: Option<String>,
     to: Option<String>,
     name: String,
@@ -164,10 +164,10 @@ impl Pane for Page {
         &["notification", "banner", "dnd", "disturb", "toast", "сповіщення", "банер", "турбувати"];
 
     fn open(&mut self, c: Ctx, _config: &ConfigStore) -> Task<Msg> {
-        if self.requested {
+        if self.loaded_lang == Some(c.lang) {
             return Task::none();
         }
-        self.requested = true;
+        self.loaded_lang = Some(c.lang);
         let lang = c.lang.key().to_string();
         Task::perform(blocking(move || apps::visible(&apps::installed(&lang))), |apps| {
             Msg::AppsLoaded(apps.unwrap_or_default())

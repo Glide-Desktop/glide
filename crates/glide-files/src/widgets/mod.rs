@@ -1,3 +1,4 @@
+pub mod chooser;
 pub mod content;
 pub mod dialogs;
 pub mod header;
@@ -23,7 +24,7 @@ use crate::native_icons::Art;
 use crate::theme::{self, Side, ThemeState, Tone};
 
 pub const SIDEBAR_WIDTH: f32 = 208.0;
-pub const HEADER_HEIGHT: f32 = 48.0;
+pub const HEADER_HEIGHT: f32 = 35.0;
 pub const PATHBAR_HEIGHT: f32 = 28.0;
 pub const TRASH_BANNER: f32 = CONTROL + 2.0 * theme::SP1;
 pub const CONTROL: f32 = theme::SMALL_CONTROL;
@@ -31,33 +32,14 @@ pub const CONTROL: f32 = theme::SMALL_CONTROL;
 #[must_use]
 pub fn window(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
-    let mut body = column![header::view(app), divider(t)];
-    if app.in_trash() {
-        body = body.push(trash_banner(app)).push(divider(t));
-    }
-    let body = body.push(content::view(app)).push(divider(t));
-    let body = body.push(pathbar::view(app));
-    let corner = app.corner();
-
-    let base = container(row![
-        sidebar::view(app),
-        rule::vertical(1).style(move |_| theme::line(t)),
-        container(body)
-            .width(Fill)
-            .height(Fill)
-            .style(move |_| theme::rounded(t.view_bg(), theme::window_corners(Side::Right, corner))),
-    ])
-    .width(Fill)
-    .height(Fill)
-    .style(move |_| theme::rounded(t.win_bg(), corner));
+    let base = chooser::base(app).unwrap_or_else(|| browser(app));
     let base = pointer::context_area(base, Message::ContextMenu).on_zoom(Message::Zoom);
 
     let now = Instant::now();
     let motion = &app.motion;
     let mut layers: Vec<Element<'_, Message>> = vec![base.into()];
     if !app.is_maximized() {
-        let frame = container(space().width(Fill).height(Fill)).style(move |_| theme::window_frame(t, corner));
-        layers.extend([frame.into(), resize_handles()]);
+        layers.push(resize_handles());
     }
     if let Some(rect) = app.band_rect() {
         let accent = t.acc_bg();
@@ -88,6 +70,28 @@ pub fn window(app: &App) -> Element<'_, Message> {
         layers.push(dialogs::view(app, modal, motion.modal.progress(now), app.modal.is_some()));
     }
     Stack::with_children(layers).into()
+}
+
+fn browser(app: &App) -> Element<'_, Message> {
+    let t = &app.theme;
+    let mut body = column![header::view(app), divider(t)];
+    if app.in_trash() {
+        body = body.push(trash_banner(app)).push(divider(t));
+    }
+    let body = body.push(content::view(app)).push(divider(t)).push(pathbar::view(app));
+    let corner = app.corner();
+    container(row![
+        sidebar::view(app),
+        rule::vertical(1).style(move |_| theme::line(t)),
+        container(body)
+            .width(Fill)
+            .height(Fill)
+            .style(move |_| theme::rounded(t.view_bg(), theme::window_corners(Side::Right, corner))),
+    ])
+    .width(Fill)
+    .height(Fill)
+    .style(move |_| theme::rounded(t.win_bg(), corner))
+    .into()
 }
 
 fn resize_handles<'a>() -> Element<'a, Message> {

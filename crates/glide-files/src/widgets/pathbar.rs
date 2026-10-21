@@ -86,6 +86,28 @@ pub fn status(app: &App) -> String {
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
+    container(
+        row![
+            container(crumbs_row(app)).width(Fill).clip(true),
+            space().width(theme::SP3),
+            text(status(app)).size(theme::CAP).color(t.fg_2()).wrapping(text::Wrapping::None),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([0.0, theme::SP2]).right(theme::SP3))
+    .width(Fill)
+    .height(PATHBAR_HEIGHT)
+    .align_y(Alignment::Center)
+    .style(move |_| {
+        let corners = theme::window_corners(theme::Side::BottomRight, app.corner());
+        theme::rounded(super::header::bar_background(app), corners)
+    })
+    .into()
+}
+
+#[must_use]
+pub fn crumbs_row(app: &App) -> Element<'_, Message> {
+    let t = &app.theme;
     let crumbs = trail(app);
     let last = crumbs.len() - 1;
     let mut trail = Row::new().align_y(Alignment::Center);
@@ -115,22 +137,5 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .on_exit(Message::Hover(key, false)),
         );
     }
-
-    container(
-        row![
-            container(trail).width(Fill).clip(true),
-            space().width(theme::SP3),
-            text(status(app)).size(theme::CAP).color(t.fg_2()).wrapping(text::Wrapping::None),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .padding(Padding::from([0.0, theme::SP2]).right(theme::SP3))
-    .width(Fill)
-    .height(PATHBAR_HEIGHT)
-    .align_y(Alignment::Center)
-    .style(move |_| {
-        let corners = theme::window_corners(theme::Side::BottomRight, app.corner());
-        theme::rounded(super::header::bar_background(app), corners)
-    })
-    .into()
+    trail.into()
 }

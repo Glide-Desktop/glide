@@ -110,6 +110,40 @@ fn own_app_id(window: &GlideWindow) -> Option<String> {
     window.identity().0.filter(|app_id| !app_id.trim().is_empty())
 }
 
+#[cfg(test)]
+mod descent_tests {
+    #[test]
+    fn a_process_descends_from_its_parent_and_itself_but_not_a_stranger() {
+        let me = i32::try_from(std::process::id()).expect("pid");
+        let parent = i32::try_from(std::os::unix::process::parent_id()).expect("ppid");
+        assert!(super::descends_from(me, me));
+        assert!(super::descends_from(me, parent));
+        assert!(!super::descends_from(parent, me));
+        assert!(!super::descends_from(me, i32::MAX));
+    }
+}
+
+fn parent_pid(pid: i32) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_name = &stat[stat.rfind(')')? + 1..];
+    after_name.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[must_use]
+pub fn descends_from(pid: i32, ancestor: i32) -> bool {
+    let mut current = pid;
+    for _ in 0..32 {
+        if current == ancestor {
+            return true;
+        }
+        match parent_pid(current) {
+            Some(parent) if parent > 1 && parent != current => current = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
 impl GlideState {
     pub(crate) fn window_pid(&self, window: &GlideWindow) -> Option<i32> {
         let toplevel = window.toplevel()?;
@@ -244,7 +278,13 @@ impl GlideState {
             .and_then(|index| index.get(&item.app_id))
             .map(|app| app.actions.iter().map(|action| action.name.clone()).collect())
             .unwrap_or_default();
-        MenuContext { windows, actions }
+        let quick = self
+            .session
+            .quicklists
+            .get(&item.app_id)
+            .map(|list| list.items.iter().map(|(_, label)| label.clone()).collect())
+            .unwrap_or_default();
+        MenuContext { windows, actions, quick }
     }
 
     pub(crate) fn run_shell_focus_action(&mut self, action: &crate::input::KeyAction) {
@@ -347,6 +387,13 @@ impl GlideState {
                     self.launch_app(&tile.app_id, &tile.name, &command);
                 }
             }
+            DockMenuItem::Quick(slot) => {
+                if let Some(list) = self.session.quicklists.get(&tile.app_id)
+                    && let Some((id, _)) = list.items.get(slot)
+                {
+                    crate::launcher_entry::click(list.bus.clone(), list.path.clone(), *id);
+                }
+            }
             DockMenuItem::Pin | DockMenuItem::Unpin => self.toggle_dock_pin(index),
             DockMenuItem::Hide => {
                 for id in self.windows_for_app(&tile.app_id) {
@@ -368,21 +415,86 @@ impl GlideState {
         self.queue_redraw();
     }
 
+    pub fn mint_granted_token(&mut self, app_id: Option<String>) -> String {
+        let max_age = crate::handlers::xdg_activation::MAX_TOKEN_AGE;
+        let activation = &mut self.protocols.xdg_activation_state;
+        activation.retain_tokens(|_, data| data.timestamp.elapsed() <= max_age);
+        let data = XdgActivationTokenData {
+            app_id: app_id.filter(|app_id| !app_id.trim().is_empty()),
+            ..XdgActivationTokenData::default()
+        };
+        let (token, data) = activation.create_external_token(data);
+        crate::handlers::xdg_activation::grant(data);
+        self.session.launch_intent = Some(std::time::Instant::now());
+        token.as_str().to_string()
+    }
+
+    pub fn take_launch_intent(&mut self) -> bool {
+        self.session
+            .launch_intent
+            .take()
+            .is_some_and(|at| at.elapsed() <= crate::handlers::xdg_activation::LAUNCH_INTENT)
+    }
+
+    pub fn activate_notification(&mut self, id: u32) {
+        let token = self.mint_granted_token(None);
+        self.notifications.activate(id, Some(&token));
+    }
+
+    pub fn open_terminal_tab(&mut self) {
+        let terminal = crate::global_menu::terminal_command();
+        if !glide_app::integration::is_glide_terminal(&terminal) {
+            let _ = self.spawn_user_command(&terminal);
+            return;
+        }
+        let token = self.mint_granted_token(None);
+        let home = glide_config::home().unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let spawned = std::thread::Builder::new().name("glide-open-terminal".into()).spawn(move || {
+            if glide_app::integration::open_terminal_tab(&home, &[], &token).is_ok() {
+                return;
+            }
+            let env = [("XDG_ACTIVATION_TOKEN", token.as_str()), ("DESKTOP_STARTUP_ID", token.as_str())];
+            if let Err(err) = crate::spawn_shell_command_with_env(&terminal, &env) {
+                tracing::error!(terminal, ?err, "failed to open a terminal");
+            }
+        });
+        if let Err(err) = spawned {
+            tracing::warn!("cannot reach the terminal service: {err}");
+        }
+    }
+
+    pub fn spawn_user_command(&mut self, command: &str) -> std::io::Result<u32> {
+        let token = self.mint_granted_token(None);
+        let env = [("XDG_ACTIVATION_TOKEN", token.as_str()), ("DESKTOP_STARTUP_ID", token.as_str())];
+        crate::spawn_shell_command_with_env(command, &env)
+    }
+
+    pub fn spawn_user_process(&mut self, mut command: std::process::Command) -> std::io::Result<u32> {
+        let token = self.mint_granted_token(None);
+        command.env("XDG_ACTIVATION_TOKEN", &token).env("DESKTOP_STARTUP_ID", &token);
+        crate::spawn_detached(command)
+    }
+
+    pub fn mint_activation_token_for(&mut self, pid: i32, app_id: Option<String>) -> Option<String> {
+        if self.screen_locked() {
+            return None;
+        }
+        let surface = self.seat.get_keyboard()?.current_focus()?;
+        let client = smithay::reexports::wayland_server::Resource::client(&surface)?;
+        let credentials = client.get_credentials(&self.display_handle).ok()?;
+        if !descends_from(pid, credentials.pid) {
+            tracing::info!(pid, focused = credentials.pid, "activation token refused: the caller does not hold focus");
+            return None;
+        }
+        Some(self.mint_granted_token(app_id))
+    }
+
     pub fn launch_app(&mut self, app_id: &str, name: &str, command: &str) {
         if command.trim().is_empty() {
             tracing::debug!(%app_id, "nothing to launch: the entry has no command");
             return;
         }
-        let max_age = crate::handlers::xdg_activation::MAX_TOKEN_AGE;
-        let activation = &mut self.protocols.xdg_activation_state;
-        activation.retain_tokens(|_, data| data.timestamp.elapsed() <= max_age);
-        let data = XdgActivationTokenData {
-            app_id: (!app_id.trim().is_empty()).then(|| app_id.to_string()),
-            ..XdgActivationTokenData::default()
-        };
-        let (token, data) = activation.create_external_token(data);
-        crate::handlers::xdg_activation::grant(data);
-        let token = token.as_str().to_string();
+        let token = self.mint_granted_token(Some(app_id.to_string()));
         let env = [("XDG_ACTIVATION_TOKEN", token.as_str()), ("DESKTOP_STARTUP_ID", token.as_str())];
         if let Err(err) = crate::spawn_shell_command_with_env(command, &env) {
             tracing::error!(%command, ?err, "failed to launch an app");
@@ -455,10 +567,23 @@ impl GlideState {
     }
 
     pub fn handle_launcher_entry(&mut self, desktop_id: &str, update: &crate::launcher_entry::EntryUpdate) {
+        if desktop_id.is_empty() {
+            if let Some(gone) = update.quicklist.as_ref() {
+                self.session.quicklists.retain(|_, list| list.bus != gone.bus);
+            }
+            return;
+        }
         let entry = self.launcher_entries.entry(desktop_id.to_lowercase()).or_default();
         entry.merge(update);
         let state = *entry;
         let key = self.dock_key_for_desktop_id(desktop_id);
+        if let Some(quicklist) = update.quicklist.clone() {
+            if quicklist.items.is_empty() {
+                self.session.quicklists.remove(&key);
+            } else {
+                self.session.quicklists.insert(key.clone(), quicklist);
+            }
+        }
         let mut changed = self.dock.set_badge(&key, state.badge());
         if update.urgent.is_some() {
             changed |= self.set_app_attention(&key, state.urgent);

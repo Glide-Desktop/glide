@@ -137,18 +137,6 @@ pub fn connection_label(uri: &str) -> &'static str {
     }
 }
 
-#[must_use]
-pub fn size_label(bytes: u64) -> String {
-    let value = bytes as f64;
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if value < 1024.0 * 1024.0 {
-        format!("{:.0} KB", value / 1024.0)
-    } else {
-        format!("{:.1} MB", value / 1024.0 / 1024.0)
-    }
-}
-
 fn c_locale(program: &str, args: &[&str]) -> Result<String, String> {
     let result = Command::new(program)
         .args(args)

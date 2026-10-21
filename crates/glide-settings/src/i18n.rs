@@ -187,7 +187,7 @@ catalogue! {
     AboutMultitasking => "Workspaces, overview, hot corner and edge snapping", "Робочі простори, огляд, гарячий кут і прилипання до країв";
     AboutNightLight => "Warmer colours in the evening", "Тепліші кольори ввечері";
     AboutShortcuts => "Key combinations for the shell and apps", "Сполучення клавіш для оболонки й програм";
-    AboutAccessibility => "Seeing, hearing, typing and pointing", "Зір, слух, набір тексту й керування вказівником";
+    AboutAccessibility => "Seeing, pointing and motion", "Зір, вказівник і рух";
     AboutPrivacy => "Screen lock, history and what apps can see", "Блокування екрана, історія та що бачать програми";
     AboutUsers => "Accounts on this computer", "Облікові записи на цьому комп'ютері";
     AboutDateTime => "Time zone, clock format and synchronisation", "Часовий пояс, формат годинника й синхронізація";

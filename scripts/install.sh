@@ -6,7 +6,7 @@
 #   --prefix DIR   install prefix (default /usr/local)
 #   --destdir DIR  stage into DIR instead of / (for distribution packages)
 #   --from DIR     directory holding the glide, glidectl, glide-settings,
-#                  glide-files and glide-terminal binaries (default: bin/ of a
+#                  glide-files, glide-terminal and glide-portal binaries (default: bin/ of a
 #                  release tarball, else target/release of the source tree)
 #   --dm           install and configure glide-dm (via greetd) as system display manager
 #   --uninstall    remove every file this script installs
@@ -41,10 +41,12 @@ PREFIX="${PREFIX%/}"
 BINDIR="$PREFIX/bin"
 APPDIR="$PREFIX/share/applications"
 SOUNDDIR="$PREFIX/share/glide/sounds"
-# Display managers and xdg-desktop-portal only look under /usr/share, whatever
-# the prefix, so these two always go there.
+# Display managers, xdg-desktop-portal and D-Bus activation only look under
+# /usr/share, whatever the prefix, so these always go there.
 SESSIONDIR=/usr/share/wayland-sessions
 PORTALDIR=/usr/share/xdg-desktop-portal
+DBUSDIR=/usr/share/dbus-1/services
+SEARCHDIR=/usr/share/gnome-shell/search-providers
 PAMDIR=/etc/pam.d
 if [ "$PREFIX" = /usr ]; then
     UNITDIR=/usr/lib/systemd/user
@@ -52,9 +54,12 @@ else
     UNITDIR="$PREFIX/lib/systemd/user"
 fi
 
-BINARIES="glide glidectl glide-settings glide-files glide-terminal"
-FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-session $BINDIR/glide-lock
+BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-portal"
+FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-portal $BINDIR/glide-session $BINDIR/glide-lock
 $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
+$PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
+$DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service
+$SEARCHDIR/glide-files-search-provider.ini $SEARCHDIR/glide-terminal-search-provider.ini
 $UNITDIR/glide.service $UNITDIR/glide-shutdown.target $PAMDIR/glide-lock"
 
 if [ -z "$DESTDIR" ] && [ "$(id -u)" -ne 0 ]; then
@@ -110,6 +115,17 @@ install -Dm644 "$ROOT/data/glide-files.desktop" "$DESTDIR$APPDIR/glide-files.des
 install -Dm644 "$ROOT/data/glide-terminal.desktop" "$DESTDIR$APPDIR/glide-terminal.desktop"
 install -Dm644 "$ROOT/data/sounds/terminal-bell.mp3" "$DESTDIR$SOUNDDIR/terminal-bell.mp3"
 install -Dm644 "$ROOT/data/glide-portals.conf" "$DESTDIR$PORTALDIR/glide-portals.conf"
+install -Dm644 "$ROOT/data/glide.portal" "$DESTDIR$PORTALDIR/portals/glide.portal"
+install -d "$DESTDIR$DBUSDIR"
+sed "s|^Exec=.*|Exec=$BINDIR/glide-portal|" "$ROOT/data/org.freedesktop.impl.portal.desktop.glide.service" > "$DESTDIR$DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service"
+chmod 644 "$DESTDIR$DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service"
+for name in glide-files-search-provider.ini glide-terminal-search-provider.ini; do
+    install -Dm644 "$ROOT/data/$name" "$DESTDIR$SEARCHDIR/$name"
+done
+for name in org.glide.Files.service org.glide.Terminal.service; do
+    sed "s|^Exec=/usr/local/bin/|Exec=$BINDIR/|" "$ROOT/data/$name" > "$DESTDIR$DBUSDIR/$name"
+    chmod 644 "$DESTDIR$DBUSDIR/$name"
+done
 install -Dm644 "$ROOT/data/pam.d/glide-lock" "$DESTDIR$PAMDIR/glide-lock"
 
 install -d "$DESTDIR$SESSIONDIR" "$DESTDIR$UNITDIR"
@@ -187,6 +203,20 @@ for tool in $TOOLS; do
 done
 [ -x /usr/lib/xdg-desktop-portal ] || [ -x /usr/libexec/xdg-desktop-portal ] || missing="$missing xdg-desktop-portal"
 
+qt_plugin() {
+    for root in /usr/lib/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/x86_64-linux-gnu/qt6/plugins \
+        /usr/lib/aarch64-linux-gnu/qt6/plugins /usr/lib/qt/plugins /usr/lib64/qt5/plugins /usr/lib/qt5/plugins \
+        /usr/lib/x86_64-linux-gnu/qt5/plugins /usr/lib/aarch64-linux-gnu/qt5/plugins; do
+        [ -e "$root/$1" ] && return 0
+    done
+    return 1
+}
+themes=""
+[ -d /usr/share/themes/adw-gtk3/gtk-3.0 ] || [ -d /usr/local/share/themes/adw-gtk3/gtk-3.0 ] || themes="$themes adw-gtk3"
+qt_plugin platformthemes/libqt6ct.so || themes="$themes qt6ct"
+qt_plugin platformthemes/libqt5ct.so || themes="$themes qt5ct"
+qt_plugin styles/libkvantum.so || themes="$themes kvantum"
+
 echo
 if [ "$INSTALL_DM" -eq 1 ]; then
     echo "Glide and glide-dm (via greetd) are installed. Reboot or start greetd.service to test."
@@ -201,6 +231,14 @@ if [ -n "$missing" ]; then
     echo "  wpctl (wireplumber), brightnessctl, playerctl   volume, brightness and media keys"
     echo "  nmcli (NetworkManager), bluetoothctl (bluez)   Wi-Fi and Bluetooth in quick settings"
     echo "  udisksctl (udisks2)   removable drives in Glide Files"
+fi
+if [ -n "$themes" ]; then
+    echo
+    echo "Theme parts not found:$themes"
+    echo "  adw-gtk3 (adw-gtk-theme)   GTK 3, Chrome and Electron apps in Glide colours"
+    echo "  qt6ct, qt5ct               Qt 6 / Qt 5 apps in Glide colours"
+    echo "  kvantum                    Qt controls in the Glide shapes"
+    echo "  Settings > Appearance > Other apps shows what is in use."
 fi
 echo
 echo "Password prompts for Settings need a polkit agent (polkit-gnome, polkit-kde,"

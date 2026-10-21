@@ -160,6 +160,10 @@ impl Pane for Page {
         self.refresh()
     }
 
+    fn leave(&mut self) {
+        self.stop_meter();
+    }
+
     #[allow(clippy::too_many_lines)] // One match arm per message; splitting would only scatter the state machine
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
@@ -217,7 +221,10 @@ impl Pane for Page {
             Msg::Mute(channel, muted) => {
                 return Task::perform(blocking(move || audio::set_muted(channel.target(), muted)), Msg::Done);
             }
-            Msg::Device(_, device) => {
+            Msg::Device(channel, device) => {
+                if channel == Channel::Input {
+                    self.stop_meter();
+                }
                 return Task::perform(blocking(move || audio::set_default(device.id)), Msg::Done);
             }
             Msg::Done(result) => {
@@ -298,12 +305,7 @@ impl Pane for Page {
                     return self.start_meter();
                 }
             }
-            Msg::MeterStop => {
-                self.meter.stop.store(true, Ordering::Relaxed);
-                self.meter.generation.bump();
-                self.meter.running = false;
-                self.meter.level = 0.0;
-            }
+            Msg::MeterStop => self.stop_meter(),
             Msg::Meter(generation, _) if !self.meter.generation.is_current(generation) => {}
             Msg::Meter(_, event) => match event {
                 MeterEvent::Level(level) => {
@@ -415,6 +417,13 @@ impl Page {
         };
         let index = slider.index;
         Task::perform(blocking(move || audio::set_stream_volume(index, value)), |_| Msg::StreamApplied)
+    }
+
+    fn stop_meter(&mut self) {
+        self.meter.stop.store(true, Ordering::Relaxed);
+        self.meter.generation.bump();
+        self.meter.running = false;
+        self.meter.level = 0.0;
     }
 
     fn start_meter(&mut self) -> Task<Msg> {

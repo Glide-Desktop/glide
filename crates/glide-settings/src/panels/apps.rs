@@ -111,6 +111,7 @@ pub struct Page {
     error: Option<String>,
     notice: Option<T>,
     lang: Option<Lang>,
+    icon_theme: Option<String>,
     overrides: HashMap<String, String>,
     kind: Option<Kind>,
     query: String,
@@ -185,8 +186,9 @@ impl Page {
     fn refresh(&mut self, lang: Lang, config: &ConfigStore) -> Task<Msg> {
         self.loading = true;
         self.lang = Some(lang);
-        let generation = self.generation.bump();
         let theme = config.optional_str("dock", "icon-theme");
+        self.icon_theme.clone_from(&theme);
+        let generation = self.generation.bump();
         Task::perform(blocking(move || load(lang, theme.as_deref())), move |catalog| {
             Msg::Loaded(generation, lang, Box::new(catalog.unwrap_or_default()))
         })
@@ -242,7 +244,10 @@ impl Pane for Page {
     ];
 
     fn open(&mut self, c: Ctx, config: &ConfigStore) -> Task<Msg> {
-        if (self.loaded || self.loading) && self.lang == Some(c.lang) {
+        if (self.loaded || self.loading)
+            && self.lang == Some(c.lang)
+            && self.icon_theme == config.optional_str("dock", "icon-theme")
+        {
             return Task::none();
         }
         self.refresh(c.lang, config)

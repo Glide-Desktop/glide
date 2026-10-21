@@ -220,6 +220,8 @@ pub const NAMED_KEYS: &[&str] = &[
     "End",
     "Prior",
     "Next",
+    "Page_Up",
+    "Page_Down",
     "Up",
     "Down",
     "Left",
@@ -325,8 +327,8 @@ pub fn key_label(key: &str) -> String {
         "space" => "Space",
         "Escape" => "Esc",
         "BackSpace" => "Backspace",
-        "Prior" => "Page Up",
-        "Next" => "Page Down",
+        "Prior" | "Page_Up" => "Page Up",
+        "Next" | "Page_Down" => "Page Down",
         "Up" => "↑",
         "Down" => "↓",
         "Left" => "←",
@@ -497,6 +499,19 @@ pub fn load(config: &ConfigStore) -> Result<Loaded, String> {
     };
     let customised = !binds.is_empty();
     Ok(Loaded { binds: if customised { binds } else { defaults().to_vec() }, customised })
+}
+
+#[must_use]
+pub fn current(config: &ConfigStore) -> Vec<Keybind> {
+    load(config).map_or_else(|_| defaults().to_vec(), |loaded| loaded.binds)
+}
+
+#[must_use]
+pub fn combo_for(binds: &[Keybind], action: &str) -> Option<String> {
+    let bind = binds.iter().find(|bind| bind.action == Action::Named(action.to_string()))?;
+    let mut parts: Vec<String> = bind.sorted_mods().iter().map(|m| m.key().to_string()).collect();
+    parts.push(bind.key.clone());
+    Some(parts.join("+"))
 }
 
 pub fn store(config: &mut ConfigStore, binds: &[Keybind]) {

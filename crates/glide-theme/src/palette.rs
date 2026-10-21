@@ -21,6 +21,25 @@ impl Accent {
         &[Self::Blue, Self::Teal, Self::Green, Self::Amber, Self::Orange, Self::Red, Self::Purple, Self::Graphite];
 
     #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Blue => "blue",
+            Self::Teal => "teal",
+            Self::Green => "green",
+            Self::Amber => "amber",
+            Self::Orange => "orange",
+            Self::Red => "red",
+            Self::Purple => "purple",
+            Self::Graphite => "graphite",
+        }
+    }
+
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|accent| accent.key() == key)
+    }
+
+    #[must_use]
     pub fn ramp(self) -> [Color; 6] {
         let hex: [&str; 6] = match self {
             Self::Blue => ["#d9e6fb", "#a7c8f6", "#5b9bec", "#2f6fd0", "#1f56a8", "#163e79"],

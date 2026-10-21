@@ -5,16 +5,16 @@ use smithay::{
 };
 
 use crate::{
-    config::{Color, DecorationTheme, TitleAlign},
+    config::{Color, DecorationTheme},
     grabs::resize_grab::ResizeEdge,
     paint::{Painter, TextAlign},
     raster::{Canvas, rect},
 };
 
 use super::{
-    BUTTON_HIT_WIDTH, BUTTON_PAD_X, BUTTON_SIZE, DOUBLE_CLICK_MS, DOUBLE_CLICK_SLOP, IDLE_BUTTON_OPACITY,
-    MENU_CONTAINER_PADDING, MENU_CONTAINER_RADIUS, MENU_CORNER_RADIUS, MENU_PADDING, MENU_ROW_HEIGHT, MENU_WIDTH,
-    RESIZE_BORDER, TITLE_PADDING, menu::MenuItem, menu_open_anim, render::redraw_button, state_layer_anim,
+    BUTTON_HIT_WIDTH, DOUBLE_CLICK_MS, DOUBLE_CLICK_SLOP, IDLE_BUTTON_OPACITY, MENU_CONTAINER_PADDING,
+    MENU_CONTAINER_RADIUS, MENU_CORNER_RADIUS, MENU_PADDING, MENU_ROW_HEIGHT, MENU_WIDTH, RESIZE_BORDER,
+    menu::MenuItem, menu_open_anim, render::redraw_button, state_layer_anim,
 };
 
 use glide_theme::motion::{ease_io, ease_out};
@@ -44,6 +44,13 @@ impl std::ops::DerefMut for Fade {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Outline {
+    #[default]
+    None,
+    Drawn,
+}
+
 #[derive(Debug, Default)]
 pub struct HeaderBar {
     pub(crate) height: i32,
@@ -70,6 +77,7 @@ pub struct HeaderBar {
     pub(crate) focused: bool,
     pub(crate) focus_fade_started: Option<std::time::Instant>,
     pub(crate) maximized: bool,
+    pub(crate) outline: Outline,
 
     pub(crate) buffers: std::collections::HashMap<i32, HeaderBuffers>,
 }
@@ -151,6 +159,11 @@ impl HeaderBar {
     }
 
     #[must_use]
+    pub const fn is_framed(&self) -> bool {
+        self.height > 0 || matches!(self.outline, Outline::Drawn)
+    }
+
+    #[must_use]
     pub const fn has_frame(&self) -> bool {
         self.width > 0 && self.content_height > 0
     }
@@ -162,6 +175,11 @@ impl HeaderBar {
 
     pub const fn set_height(&mut self, height: i32) {
         self.height = height;
+    }
+
+    #[must_use]
+    pub fn button_size(&self) -> i32 {
+        glide_theme::component::titlebar_button(self.height)
     }
 
     pub(crate) fn border_width(&self) -> i32 {
@@ -618,6 +636,7 @@ impl HeaderBar {
         };
         let container_h = self.menu_container_height();
         let menu_w = self.menu_panel_rect().size.width;
+        let button_size = self.button_size();
         let buffers = self.buffers.entry(scale).or_default();
         if buffers.last_redraw.as_ref() == Some(&snapshot) {
             return false;
@@ -652,10 +671,6 @@ impl HeaderBar {
             });
             let mut ctx = buf.render();
             ctx.resize((pw, ph));
-            let align = match theme.title_align {
-                TitleAlign::Left => TextAlign::Left,
-                TitleAlign::Center => TextAlign::Center,
-            };
             let _ = ctx.draw(|pixels| {
                 Painter::fill_panel_background(
                     pixels,
@@ -666,9 +681,6 @@ impl HeaderBar {
                     corner_radius,
                     [true, true, false, false],
                 );
-                let band = (BUTTON_PAD_X + BUTTON_SIZE + TITLE_PADDING, w - BUTTON_PAD_X - BUTTON_SIZE - TITLE_PADDING);
-                let style = &glide_theme::TextStyle::WIN_TITLE;
-                Canvas::over(pixels, w, h, scale).label(painter, band, align, &self.title, title_color, style);
                 Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
         }
@@ -700,7 +712,7 @@ impl HeaderBar {
             let zone_press_t = if press_zone == Some(*zone) { press_t } else { 0.0 };
             let (btn_bg, btn_fg) =
                 button_colors(*normal, *hover_bg, *fg, fg_hover, hover_t, is_hovered, zone_press_t, self.focused);
-            redraw_button(buf, scale, btn_bg, btn_fg, is_pressed, *icon);
+            redraw_button(buf, button_size, scale, btn_bg, btn_fg, is_pressed, *icon);
         }
 
         if menu_visible {
@@ -732,7 +744,7 @@ impl HeaderBar {
                     let accel_w = if accel.is_empty() {
                         0
                     } else {
-                        painter.text_width_styled(accel, &glide_theme::TextStyle::CAP) as i32 + MENU_PADDING
+                        painter.text_width_styled(accel, &glide_theme::TextStyle::CAP).ceil() as i32 + MENU_PADDING
                     };
                     let label_x_min = row_left + MENU_PADDING;
                     let label_x_max = (row_left + row_w - MENU_PADDING - accel_w).max(label_x_min);

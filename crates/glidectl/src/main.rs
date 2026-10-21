@@ -149,8 +149,10 @@ fn format_event(event: &Event) -> String {
 }
 
 fn print_usage() {
-    eprintln!(
-        r#"glidectl — CLI controller for Glide Wayland compositor
+    eprintln!("{USAGE}");
+}
+
+const USAGE: &str = r#"glidectl — CLI controller for Glide Wayland compositor
 
 USAGE:
     glidectl [OPTIONS] <COMMAND>
@@ -170,12 +172,11 @@ COMMANDS:
     dpms <on|off>              Turn the outputs on or blank them
     layout [get|next]          Read or cycle the active keyboard layout
     outputs                    List connected outputs with mode, scale and position
+    night-light <on|off|status>  Turn night light on or off, or show its state
 
 OPTIONS:
     --json                     Output response as raw JSON
-"#
-    );
-}
+"#;
 
 fn find_socket_path() -> anyhow::Result<PathBuf> {
     if let Ok(path) = std::env::var("GLIDE_IPC_SOCK")
@@ -295,6 +296,9 @@ fn print_response(response: &Response) {
         }
         Response::Layout { index, name } => println!("{index} {name}"),
         Response::NightLight { on } => println!("{}", if *on { "on" } else { "off" }),
+        Response::ActivationToken { token } => println!("{token}"),
+        Response::Screenshot { path } => println!("{path}"),
+        Response::Color { red, green, blue } => println!("{red:.4} {green:.4} {blue:.4}"),
         Response::Outputs { list } => {
             println!("{:<12} {:<28} {:<22} {:<7} {:<12}", "NAME", "MODEL", "MODE", "SCALE", "POSITION");
             println!("{}", "-".repeat(84));
@@ -432,5 +436,13 @@ mod tests {
 
         let unknown = cli(&["glidectl", "unknown_cmd"]);
         assert!(parse_args(&unknown.subcommand_args).is_err());
+    }
+
+    #[test]
+    fn usage_lists_night_light_with_the_arguments_it_parses() {
+        assert!(USAGE.contains("\n    night-light <on|off|status>  "));
+        assert_eq!(parse(&["night-light", "on"]), Request::NightLight { on: Some(true) });
+        assert_eq!(parse(&["night-light", "off"]), Request::NightLight { on: Some(false) });
+        assert_eq!(parse(&["night-light", "status"]), Request::NightLight { on: None });
     }
 }

@@ -30,7 +30,7 @@ mod tr {
     }
 }
 
-pub const COMPACT_HEIGHT: i64 = 38;
+pub const COMPACT_HEIGHT: i64 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleAlign {
@@ -349,11 +349,13 @@ fn round_button<'a>(t: &ThemeState, glyph: Icon, size: f32) -> Element<'a, Msg> 
 
 fn window_mock<'a>(t: &ThemeState, title: &'a str, mock: Mock) -> Element<'a, Msg> {
     let Mock { align, density, layout, shadow, border, width, height } = mock;
-    let bar_height = match density {
-        Density::Compact => 22.0,
-        Density::Standard => 28.0,
+    let bar_px = match density {
+        Density::Compact => COMPACT_HEIGHT,
+        Density::Standard => DEFAULT_TITLEBAR_HEIGHT,
     };
-    let button = bar_height - 10.0;
+    let bar_px = i32::try_from(bar_px).unwrap_or(0);
+    let bar_height = bar_px as f32;
+    let button = glide_theme::component::titlebar_button(bar_px) as f32;
     let (leading, trailing) = match layout {
         ButtonLayout::CloseRight => (Icon::Maximize, Icon::Close),
         ButtonLayout::CloseLeft => (Icon::Close, Icon::Maximize),

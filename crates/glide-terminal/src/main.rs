@@ -1,6 +1,7 @@
 use glide_terminal::{App, FONTS};
 
 fn main() -> iced::Result {
+    glide_terminal::service::claim();
     let window = iced::window::Settings {
         size: iced::Size::new(760.0, 480.0),
         min_size: Some(iced::Size::new(420.0, 260.0)),

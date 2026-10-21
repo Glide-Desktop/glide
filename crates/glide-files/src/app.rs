@@ -34,6 +34,7 @@ pub const SEARCH_ID: &str = "search";
 pub const PATH_ID: &str = "path";
 pub const MODAL_ID: &str = "modal";
 pub const FILES_ID: &str = "files";
+pub const MENU_ID: &str = "menu";
 pub const RENAME_ID: &str = "rename";
 
 const SEARCH_LIMIT: usize = 500;
@@ -71,7 +72,9 @@ pub enum Dialog {
     Unlock(String),
     NewFromTemplate(PathBuf),
     Tags(Vec<PathBuf>),
+    OpenWith { targets: Vec<Target>, mime: Option<String>, chosen: String, always: bool },
     Quit,
+    Replace(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +82,35 @@ pub struct Modal {
     pub dialog: Dialog,
     pub input: String,
     pub error: Option<String>,
+    pub focus: Option<usize>,
+}
+
+impl Modal {
+    #[must_use]
+    pub fn actions(&self) -> Vec<Message> {
+        match &self.dialog {
+            Dialog::Delete(_) | Dialog::EmptyTrash | Dialog::Quit | Dialog::Repair(_) | Dialog::Replace(_) => {
+                vec![Message::ModalCancel, Message::ModalSubmit]
+            }
+            Dialog::Conflict { question, .. } => {
+                let [(_, skip), (_, both), (_, primary)] = widgets::dialogs::choices(question.folders);
+                vec![
+                    Message::Resolve(Choice::Cancel),
+                    Message::Resolve(skip),
+                    Message::Resolve(both),
+                    Message::Resolve(primary),
+                ]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn focused(&self) -> Option<usize> {
+        let last = self.actions().len().checked_sub(1)?;
+        let safe = usize::from(matches!(self.dialog, Dialog::Conflict { .. }));
+        Some(self.focus.unwrap_or(safe).min(last))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,7 +184,7 @@ pub struct Job {
     pub op: Op,
     pub progress: Progress,
     target: PathBuf,
-    from_clipboard: bool,
+    clipboard: Option<FileClipboard>,
     cancel: Arc<AtomicBool>,
     pub pause: Arc<AtomicBool>,
     pub meter: Meter,
@@ -275,6 +307,7 @@ pub enum Arrival {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Listed {
     generation: u64,
+    revision: u64,
     path: PathBuf,
     arrival: Arrival,
     select: Option<PathBuf>,
@@ -283,6 +316,13 @@ pub struct Listed {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
+    ShellLook(glide_app::Look),
+    ChooserName(String),
+    ChooserFilter(usize),
+    ChooserChoice(usize, String),
+    ChooserAccept,
+    ChooserCancel,
+    FolderContents(PathBuf, Option<usize>),
     Navigate(PathBuf),
     Reveal(PathBuf),
     GoHome,
@@ -290,6 +330,9 @@ pub enum Message {
     Forward,
     Up,
     Reload,
+    ReloadExtensions,
+    SystemMotion(bool),
+    ModalFocus(bool),
     Pressed(PathBuf),
     Secondary(PathBuf),
     MenuTarget(MenuKind),
@@ -401,6 +444,9 @@ pub enum Message {
     FolderSize(PathBuf, (u64, usize)),
     Permission(u32),
     VolumesChanged,
+    OpenWithDialog,
+    PickApp(String),
+    ToggleAlwaysOpen,
 }
 
 pub type ThumbKey = (PathBuf, Option<SystemTime>);
@@ -439,6 +485,58 @@ impl From<Edge> for window::Direction {
 }
 
 impl Message {
+    #[must_use]
+    pub const fn chooser_allows(&self) -> bool {
+        !matches!(
+            self,
+            Self::Cut
+                | Self::Copy
+                | Self::Paste
+                | Self::PasteText(_)
+                | Self::CopyText(_)
+                | Self::Rename
+                | Self::RenameInput(_)
+                | Self::RenameSubmit
+                | Self::Trash
+                | Self::Delete
+                | Self::EmptyTrash
+                | Self::Restore
+                | Self::Undo
+                | Self::Duplicate
+                | Self::CreateLink
+                | Self::NewFile
+                | Self::NewFromTemplate(_)
+                | Self::OpenTemplates
+                | Self::ToggleTag(_)
+                | Self::EditTags
+                | Self::Properties
+                | Self::PropertiesOf(_)
+                | Self::Permission(_)
+                | Self::Terminal
+                | Self::TerminalAt(_)
+                | Self::RunAction(_)
+                | Self::OpenWithDialog
+                | Self::PickApp(_)
+                | Self::ToggleAlwaysOpen
+                | Self::AddBookmark(_)
+                | Self::RemoveBookmark(_)
+                | Self::BookmarkPressed(_)
+                | Self::Secondary(_)
+                | Self::MenuTarget(_)
+                | Self::ContextMenu(_)
+                | Self::KeyMenu
+                | Self::ToggleOptions
+                | Self::SubMenu(_)
+                | Self::Menu(_)
+                | Self::Dnd(_)
+                | Self::JobPause(_)
+                | Self::ToggleQueue
+                | Self::ToggleColumn(_)
+                | Self::ColumnPressed(_)
+                | Self::Service(_)
+        )
+    }
+
     #[must_use]
     pub const fn dismisses_menu(&self) -> bool {
         matches!(
@@ -482,6 +580,9 @@ impl Message {
                 | Self::Disk(_)
                 | Self::SearchResults(..)
                 | Self::ExtensionsLoaded(_)
+                | Self::ReloadExtensions
+                | Self::SystemMotion(_)
+                | Self::ModalFocus(_)
                 | Self::Modifiers(_)
                 | Self::PaneResized(_)
                 | Self::Tick
@@ -517,6 +618,8 @@ impl Message {
                 | Self::FolderSize(..)
                 | Self::Permission(_)
                 | Self::VolumesChanged
+                | Self::PickApp(_)
+                | Self::ToggleAlwaysOpen
         )
     }
 }
@@ -627,6 +730,7 @@ impl Surfaces {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent app state flags, not a state machine
 pub struct App {
     pub theme: ThemeState,
     pub icons: IconTheme,
@@ -670,8 +774,12 @@ pub struct App {
     modifiers: Modifiers,
     pub pane: Size,
     nav_generation: u64,
+    listing_revision: u64,
     navigating: bool,
+    refresh_pending: bool,
     config_stamp: Option<SystemTime>,
+    shell: Option<glide_app::Look>,
+    pub chooser: Option<crate::chooser::State>,
     handles: Option<dnd::Handles>,
     dnd: Option<dnd::Link>,
     drag_arm: Option<DragArm>,
@@ -798,6 +906,13 @@ pub fn volume_icon(volume: &Volume) -> Icon {
     if volume.removable { Icon::Usb } else { Icon::Drive }
 }
 
+fn requested_location() -> Option<PathBuf> {
+    match crate::chooser::request() {
+        Some(request) => request.current_folder.clone(),
+        None => std::env::args().nth(1).and_then(|arg| path_from_arg(&arg)),
+    }
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy()).into_owned()
 }
@@ -809,7 +924,7 @@ impl App {
         let lang = look.language.unwrap_or_else(Lang::from_env);
         let trash = Trash::user();
         let prefs = config::load_prefs();
-        let requested = std::env::args().nth(1).and_then(|arg| path_from_arg(&arg));
+        let requested = requested_location();
         let fallback = home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let (current, focus) = match requested {
             Some(path) if path.is_dir() => (path, None),
@@ -861,8 +976,12 @@ impl App {
             modifiers: Modifiers::empty(),
             pane: Size::new(760.0, 560.0),
             nav_generation: 0,
+            listing_revision: 0,
             navigating: false,
+            refresh_pending: false,
             config_stamp: config::path().as_deref().and_then(stamp),
+            shell: None,
+            chooser: crate::chooser::request().cloned().map(crate::chooser::State::new),
             handles: None,
             dnd: None,
             drag_arm: None,
@@ -893,7 +1012,7 @@ impl App {
             look,
         };
         app.bookmarks = app.fresh_bookmarks();
-        let task = app.list(app.current.clone(), Arrival::Initial, focus);
+        let task = Task::batch([app.open_as_dialog(), app.list(app.current.clone(), Arrival::Initial, focus)]);
         let extensions = app.load_extensions();
         let scan = app.scan();
         let handles =
@@ -902,8 +1021,25 @@ impl App {
         (app, Task::batch([task, extensions, scan, handles, phones]))
     }
 
+    fn open_as_dialog(&mut self) -> Task<Message> {
+        let Some(chooser) = &self.chooser else {
+            return Task::none();
+        };
+        self.view = ViewMode::List;
+        self.motion = Surfaces::new(ViewMode::List);
+        if chooser.request.mode != crate::chooser::Mode::Save {
+            return Task::none();
+        }
+        let id = widgets::chooser::NAME_ID;
+        Task::batch([operation::focus(id), operation::select_range(id, 0, chooser.name_stem())])
+    }
+
     #[must_use]
     pub fn title(&self) -> String {
+        if let Some(chooser) = &self.chooser {
+            let title = chooser.request.title.trim();
+            return if title.is_empty() { Key::ChooserTitle.text(self.lang).to_string() } else { title.to_string() };
+        }
         format!("{} — {}", self.place_title(), Key::AppName.text(self.lang))
     }
 
@@ -970,8 +1106,9 @@ impl App {
             .flatten()
             .map(|place| place.icon);
         let db = &self.extensions.mime;
-        let mime =
-            (!entry.is_dir).then(|| db.of(&entry.path, false)).filter(|mime| mime != crate::fs::mime::OCTET_STREAM);
+        let mime = (!entry.is_dir)
+            .then(|| db.of_name(&entry.path, false))
+            .filter(|mime| mime != crate::fs::mime::OCTET_STREAM);
         let by_mime = mime.map(|mime| db.icon_names(&mime)).unwrap_or_default();
         self.icons.lookup(&self.icons.names(entry, place, &by_mime))
     }
@@ -1037,6 +1174,10 @@ impl App {
         }
         subscriptions.push(Subscription::run(crate::service::requests).map(Message::Service));
         subscriptions.push(Subscription::run(crate::fs::volumes::changes).map(|()| Message::VolumesChanged));
+        subscriptions.push(Subscription::run(glide_app::look_changes).map(Message::ShellLook));
+        if self.shell.is_none() {
+            subscriptions.push(Subscription::run(config::motion_changes).map(Message::SystemMotion));
+        }
         subscriptions
             .push(Subscription::run_with(self.watched(), crate::fs::watch::changes).map(|()| Message::DirChanged));
         if let Some(handles) = self.handles {
@@ -1069,11 +1210,19 @@ impl App {
                 | Message::KeyMenu
                 | Message::ToggleOptions
                 | Message::NoticeChosen(_)
-        );
+        ) || matches!(message, Message::Scrolled(offset) if offset != self.scroll_y);
         if self.renaming.is_some() && ends_rename {
             let committed = self.commit_rename();
             if self.renaming.is_some() {
-                return committed;
+                let restore = if matches!(message, Message::Scrolled(_)) {
+                    operation::scroll_to(
+                        Id::new(FILES_ID),
+                        iced::widget::scrollable::AbsoluteOffset { x: None, y: Some(self.scroll_y) },
+                    )
+                } else {
+                    Task::none()
+                };
+                return Task::batch([committed, restore]);
             }
             return Task::batch([committed, self.update(message)]);
         }
@@ -1081,7 +1230,7 @@ impl App {
         self.surface_question();
         self.sync_motion(Instant::now());
         if let Some(link) = &self.dnd {
-            link.set_accepting(!self.in_trash());
+            link.set_accepting(!self.in_trash() && self.chooser.is_none());
         }
         task
     }
@@ -1148,6 +1297,27 @@ impl App {
 
     #[allow(clippy::too_many_lines)] // One arm per message; each arm delegates to a helper
     fn handle(&mut self, message: Message) -> Task<Message> {
+        if self.chooser.is_some() && !message.chooser_allows() {
+            return Task::none();
+        }
+        if let Some((focused, actions)) =
+            self.modal.as_ref().and_then(|modal| modal.focused().map(|focused| (focused, modal.actions())))
+        {
+            let count = actions.len();
+            let step = match &message {
+                Message::OpenSelection => return self.handle(actions[focused].clone()),
+                Message::TypeToSearch(text) if text == " " => return self.handle(actions[focused].clone()),
+                Message::Move(Step::Left | Step::Up, _) | Message::ModalFocus(false) => Some(count - 1),
+                Message::Move(Step::Right | Step::Down, _) | Message::ModalFocus(true) => Some(1),
+                _ => None,
+            };
+            if let Some(step) = step
+                && let Some(modal) = &mut self.modal
+            {
+                modal.focus = Some((focused + step) % count);
+                return Task::none();
+            }
+        }
         if self.modal.is_some() && !message.passes_modal() {
             return Task::none();
         }
@@ -1161,6 +1331,7 @@ impl App {
             | Message::Trash
             | Message::Properties
             | Message::NewFolder
+            | Message::Rename
                 if self.renaming.is_some() || self.path_edit.is_some() => {}
             Message::Move(step, _) if self.menu.is_some() => return self.step_menu(step),
             Message::OpenSelection if self.menu.is_some() => return self.activate_menu(),
@@ -1187,6 +1358,12 @@ impl App {
                 }
             }
             Message::Reload | Message::DirChanged => return self.reload(),
+            Message::ReloadExtensions => return self.load_extensions(),
+            Message::SystemMotion(_) => self.apply_look(&config::load()),
+            Message::ShellLook(look) => {
+                self.shell = Some(look);
+                self.apply_look(&config::load());
+            }
             Message::Listed(listed) => return self.arrive(*listed),
             Message::Pressed(path) => return self.press(path),
             Message::Secondary(path) => {
@@ -1213,7 +1390,8 @@ impl App {
                     }
                     let (offers, open_with) = if kind == MenuKind::Selection && !self.in_trash() {
                         let targets = self.targets();
-                        (self.extensions.offers(&targets), !self.open_with_offers(&targets).is_empty())
+                        let open_with = !targets.is_empty();
+                        (self.extensions.offers(&targets), open_with)
                     } else {
                         (Vec::new(), false)
                     };
@@ -1224,14 +1402,41 @@ impl App {
             Message::RunAction(offer) => return self.run_action(*offer),
             Message::ExtensionsLoaded(extensions) => {
                 self.extensions = extensions;
+                if self.chooser.as_ref().is_some_and(|chooser| chooser.active_filter().is_some()) {
+                    return Task::batch([self.reload(), self.request_thumbs()]);
+                }
                 return self.request_thumbs();
             }
+            Message::ChooserName(name) => {
+                if let Some(chooser) = self.chooser.as_mut() {
+                    chooser.name = name;
+                    chooser.confirm = None;
+                }
+            }
+            Message::ChooserFilter(index) => {
+                if let Some(chooser) = self.chooser.as_mut() {
+                    chooser.set_filter(index);
+                }
+                return self.reload();
+            }
+            Message::ChooserChoice(index, value) => {
+                if let Some(chooser) = self.chooser.as_mut() {
+                    chooser.set_choice(index, value);
+                }
+            }
+            Message::ChooserAccept => return self.chooser_accept(),
+            Message::ChooserCancel => return iced::exit(),
             Message::Thumb(key, thumb) => {
                 self.thumbs.insert(key, thumb);
             }
             Message::FolderSize(path, total) => {
                 if let Some(properties) = self.properties_mut().filter(|properties| properties.entry.path == path) {
                     properties.total = Some(total);
+                }
+            }
+            Message::FolderContents(path, contents) => {
+                if let Some(properties) = self.properties_mut().filter(|properties| properties.entry.path == path) {
+                    properties.contents = contents;
                 }
             }
             Message::Permission(bit) => self.toggle_permission(bit),
@@ -1353,6 +1558,7 @@ impl App {
             {
                 sort_entries(&mut found, self.sort);
                 self.entries = found;
+                self.filter_for_chooser();
                 self.selection.clear();
                 self.forget_vanished();
                 if let Some(search) = &mut self.search {
@@ -1553,8 +1759,53 @@ impl App {
             }
             Message::ModalInput(text) => {
                 if let Some(modal) = &mut self.modal {
-                    modal.input = text;
+                    modal.input.clone_from(&text);
                     modal.error = None;
+                }
+                let open_with_data = self.modal.as_ref().and_then(|m| match &m.dialog {
+                    Dialog::OpenWith { targets, chosen, .. } => Some((targets.clone(), chosen.clone())),
+                    _ => None,
+                });
+                if let Some((targets, chosen)) = open_with_data {
+                    let (matching, others) = self.open_with_apps(&targets, &text);
+                    let all: Vec<_> = matching.into_iter().chain(others).collect();
+                    let new_chosen = if all.iter().any(|app| app.id == chosen) {
+                        None
+                    } else {
+                        Some(all.first().map_or_else(String::new, |app| app.id.clone()))
+                    };
+                    if let Some(new_chosen) = new_chosen
+                        && let Some(modal) = &mut self.modal
+                        && let Dialog::OpenWith { chosen: cur_chosen, .. } = &mut modal.dialog
+                    {
+                        *cur_chosen = new_chosen;
+                    }
+                }
+            }
+            Message::OpenWithDialog => {
+                self.menu = None;
+                let targets = self.targets();
+                let files = targets.clone();
+                if files.is_empty() {
+                    return Task::none();
+                }
+                let mime = targets.first().map(|t| t.mime.clone()).filter(|m| targets.iter().all(|t| &t.mime == m));
+                let (matching, others) = self.open_with_apps(&files, "");
+                let chosen = matching.first().or_else(|| others.first()).map_or_else(String::new, |app| app.id.clone());
+                return self.prompt(
+                    Dialog::OpenWith { targets: files, mime, chosen, always: false },
+                    String::new(),
+                    None,
+                );
+            }
+            Message::PickApp(id) => {
+                if let Some(Modal { dialog: Dialog::OpenWith { chosen, .. }, .. }) = &mut self.modal {
+                    *chosen = id;
+                }
+            }
+            Message::ToggleAlwaysOpen => {
+                if let Some(Modal { dialog: Dialog::OpenWith { always, .. }, .. }) = &mut self.modal {
+                    *always = !*always;
                 }
             }
             Message::ModalSubmit => return self.submit_modal(),
@@ -1681,7 +1932,8 @@ impl App {
             | Message::NoticeExpired(_)
             | Message::Quit
             | Message::Surveyed(None)
-            | Message::Frame(_) => {}
+            | Message::Frame(_)
+            | Message::ModalFocus(_) => {}
         }
         Task::none()
     }
@@ -1744,8 +1996,14 @@ impl App {
         if arrival != Arrival::Refresh {
             self.nav_generation += 1;
             self.navigating = true;
+            self.refresh_pending = false;
+        } else if self.navigating {
+            self.refresh_pending = true;
+            return Task::none();
         }
+        self.listing_revision += 1;
         let generation = self.nav_generation;
+        let revision = self.listing_revision;
         let (hidden, sort, lang) = (self.show_hidden, self.sort, self.lang);
         let dir = path.clone();
         let merged = (path == self.trash.files()).then(|| (self.trash.clone(), self.mounts()));
@@ -1769,6 +2027,7 @@ impl App {
             move |result| {
                 Message::Listed(Box::new(Listed {
                     generation,
+                    revision,
                     path,
                     arrival,
                     select,
@@ -1783,7 +2042,12 @@ impl App {
             return Task::none();
         }
         let refresh = listed.arrival == Arrival::Refresh;
-        if refresh && (self.navigating || listed.path != self.current || self.is_searching()) {
+        if refresh
+            && (listed.revision != self.listing_revision
+                || self.navigating
+                || listed.path != self.current
+                || self.is_searching())
+        {
             return Task::none();
         }
         if !refresh {
@@ -1799,7 +2063,8 @@ impl App {
                         self.history_index = self.history_index.saturating_sub(1);
                     }
                 }
-                return self.notify(text, None);
+                let refresh = if std::mem::take(&mut self.refresh_pending) { self.reload() } else { Task::none() };
+                return Task::batch([self.notify(text, None), refresh]);
             }
         };
         if refresh {
@@ -1817,6 +2082,7 @@ impl App {
             Arrival::Initial | Arrival::Refresh => {}
         }
         self.entries = entries;
+        self.filter_for_chooser();
         self.free_bytes = free;
         self.forget_vanished();
         if !refresh {
@@ -1826,12 +2092,13 @@ impl App {
             self.thumb_generation.fetch_add(1, Ordering::Relaxed);
         }
         let thumbs = self.request_thumbs();
+        let refresh = if std::mem::take(&mut self.refresh_pending) { self.reload() } else { Task::none() };
         match listed.select.filter(|path| self.index_of(path).is_some()) {
             Some(path) => {
                 self.select_only(path);
-                Task::batch([thumbs, self.reveal_cursor()])
+                Task::batch([thumbs, self.reveal_cursor(), refresh])
             }
-            None => thumbs,
+            None => Task::batch([thumbs, refresh]),
         }
     }
 
@@ -1897,8 +2164,11 @@ impl App {
 
     fn reload(&mut self) -> Task<Message> {
         let survey = self.start_survey();
-        if self.is_searching() {
-            return survey;
+        if let Some(search) = &self.search
+            && !search.query.trim().is_empty()
+        {
+            let query = search.query.clone();
+            return Task::batch([survey, self.set_query(query)]);
         }
         Task::batch([survey, self.list(self.current.clone(), Arrival::Refresh, None)])
     }
@@ -1923,6 +2193,9 @@ impl App {
 
     fn navigate_select(&mut self, path: PathBuf, select: Option<PathBuf>) -> Task<Message> {
         if !path.is_dir() {
+            if self.chooser.is_some() {
+                return self.chooser_pick(path);
+            }
             return self.open_files(vec![path]);
         }
         if path == self.current && self.search.is_none() {
@@ -1972,6 +2245,13 @@ impl App {
         self.menu = None;
         self.path_edit = None;
         self.pending_select = None;
+        if let Some(chooser) = self.chooser.as_mut()
+            && chooser.request.mode == crate::chooser::Mode::Save
+            && !path.is_dir()
+        {
+            chooser.name = file_name(&path);
+            chooser.confirm = None;
+        }
         let now = Instant::now();
         let double = self
             .last_click
@@ -2110,7 +2390,13 @@ impl App {
         if let Some(menu) = &mut self.menu {
             menu.highlight = next;
         }
-        Task::none()
+        match next {
+            Some(index) => {
+                let (top, bottom) = widgets::menu::span(&entries, index);
+                widgets::pointer::reveal(Id::new(MENU_ID), top, bottom)
+            }
+            None => Task::none(),
+        }
     }
 
     fn activate_menu(&mut self) -> Task<Message> {
@@ -2130,7 +2416,93 @@ impl App {
         task
     }
 
+    fn chooser_pick(&mut self, path: PathBuf) -> Task<Message> {
+        let saving = self.chooser.as_ref().is_some_and(|chooser| chooser.request.mode == crate::chooser::Mode::Save);
+        if saving {
+            if let Some(chooser) = self.chooser.as_mut() {
+                chooser.name = file_name(&path);
+            }
+        } else {
+            self.select_only(path);
+        }
+        self.chooser_accept()
+    }
+
+    fn chooser_accept(&mut self) -> Task<Message> {
+        use crate::chooser::Mode;
+        let Some(chooser) = self.chooser.as_ref() else {
+            return Task::none();
+        };
+        let selected = self.selected();
+        let request = &chooser.request;
+        let mut picked: Vec<PathBuf> = match request.mode {
+            Mode::Open if request.directory => {
+                let folders: Vec<PathBuf> = selected.into_iter().filter(|path| path.is_dir()).collect();
+                if folders.is_empty() { vec![self.current.clone()] } else { folders }
+            }
+            Mode::Open => {
+                let files: Vec<PathBuf> = selected.iter().filter(|path| !path.is_dir()).cloned().collect();
+                if files.is_empty() {
+                    return match selected.as_slice() {
+                        [folder] => self.navigate(folder.clone()),
+                        _ => Task::none(),
+                    };
+                }
+                files
+            }
+            Mode::Save => {
+                let name = chooser.name.trim().to_string();
+                if !crate::chooser::valid_name(&name) {
+                    return self.notify(Key::ChooserBadName.text(self.lang).to_string(), None);
+                }
+                let target = self.current.join(&name);
+                if target.is_dir() {
+                    return self.navigate(target);
+                }
+                if target.exists() && chooser.confirm.as_ref() != Some(&target) {
+                    return self.prompt(Dialog::Replace(target), String::new(), None);
+                }
+                vec![target]
+            }
+            Mode::SaveFiles => {
+                let folder = match selected.as_slice() {
+                    [folder] if folder.is_dir() => folder.clone(),
+                    _ => self.current.clone(),
+                };
+                request.files.iter().map(|name| folder.join(name)).collect()
+            }
+        };
+        if request.mode == Mode::Open && !request.multiple {
+            picked.truncate(1);
+        }
+        let response = crate::chooser::Response {
+            uris: picked.iter().map(|path| crate::fs::file_uri(path)).collect(),
+            filter: chooser.filter,
+            choices: chooser.answered_choices(),
+        };
+        crate::chooser::finish(&response);
+        iced::exit()
+    }
+
+    fn filter_for_chooser(&mut self) {
+        let Some(chooser) = self.chooser.as_ref() else {
+            return;
+        };
+        let db = &self.extensions.mime;
+        self.entries.retain(|entry| chooser.shows(&entry.path, entry.is_dir, db));
+    }
+
     fn open_selection(&mut self) -> Task<Message> {
+        if self.chooser.is_some() {
+            let selected = self.selected();
+            if let [folder] = selected.as_slice()
+                && folder.is_dir()
+                && !self.chooser.as_ref().is_some_and(crate::chooser::State::picks_folders)
+            {
+                return self.navigate(folder.clone());
+            }
+            return self.chooser_accept();
+        }
         let selected = self.selected();
         match selected.as_slice() {
             [] => Task::none(),
@@ -2172,10 +2544,15 @@ impl App {
     }
 
     fn open_with_offers(&self, targets: &[Target]) -> Vec<Offer> {
-        if targets.iter().any(|target| target.mime == crate::fs::mime::DIRECTORY) {
-            return Vec::new();
+        let folders = targets.iter().any(|target| target.mime == crate::fs::mime::DIRECTORY);
+        let mut apps = self.extensions.listed_apps_for(targets);
+        if apps.is_empty() && !folders {
+            let text_target = Target { path: PathBuf::new(), mime: String::from("text/plain") };
+            apps = self.extensions.listed_apps_for(&[text_target]);
         }
-        let apps = self.extensions.listed_apps_for(targets);
+        if apps.is_empty() {
+            apps = self.extensions.all_listed_apps();
+        }
         let lang = self.lang;
         let group = Some(Key::OpenWith.text(lang).to_string());
         let mut offers: Vec<Offer> = apps
@@ -2183,10 +2560,11 @@ impl App {
             .take(OPEN_WITH_LIMIT)
             .map(|app| Offer { label: app.name.clone(), group: group.clone(), run: app.run() })
             .collect();
-        if let [target] = targets {
+        let shared_mime = targets.first().map(|t| &t.mime).filter(|m| targets.iter().all(|t| &t.mime == *m));
+        if let Some(mime) = shared_mime {
             let current = self
                 .extensions
-                .default_app(&target.mime)
+                .default_app(mime)
                 .and_then(|id| self.extensions.apps.iter().find(|app| app.id == id))
                 .map(|app| app.exec.as_str());
             let group = Some(Key::AlwaysOpenWith.text(lang).to_string());
@@ -2194,7 +2572,7 @@ impl App {
                 |app| Offer {
                     label: app.name.clone(),
                     group: group.clone(),
-                    run: Run::SetDefault { mime: target.mime.clone(), app: app.id.clone() },
+                    run: Run::SetDefault { mime: mime.clone(), app: app.id.clone() },
                 },
             ));
         }
@@ -2202,13 +2580,9 @@ impl App {
     }
 
     fn run_action(&mut self, offer: Offer) -> Task<Message> {
-        if let Run::SetDefault { .. } = &offer.run {
-            let text = offer.run.launch(&[], &self.current).err().map(|err| i18n::io_error(&err, self.lang));
-            let reload = self.load_extensions();
-            return match text {
-                Some(text) => Task::batch([reload, self.notify(text, None)]),
-                None => reload,
-            };
+        if let Run::SetDefault { mime, app } = &offer.run {
+            let targets = self.targets();
+            return self.apply_default_and_open(Some(mime.clone()), app, targets);
         }
         let targets = self.targets();
         let cwd = self.current.clone();
@@ -2221,6 +2595,59 @@ impl App {
                 .map(|_| format!("{} «{}»", Key::CantRun.text(lang), offer.label)),
             ..Outcome::default()
         })
+    }
+
+    fn apply_default_and_open(&mut self, mime: Option<String>, app_id: &str, targets: Vec<Target>) -> Task<Message> {
+        let app = self.extensions.apps.iter().find(|app| app.id == app_id).cloned();
+        if let Some(mime) = &mime {
+            Arc::make_mut(&mut self.extensions).set_default(mime, app_id);
+        }
+        let cwd = self.current.clone();
+        let lang = self.lang;
+        let app_id_owned = app_id.to_string();
+        let is_default = mime.is_some();
+        let task = run(move || {
+            let mut text = None;
+            if let Some(mime) = &mime
+                && let Err(err) = crate::fs::actions::set_default_app(mime, &app_id_owned)
+            {
+                text = Some(i18n::io_error(&err, lang));
+            }
+            if let Some(app) = &app
+                && !targets.is_empty()
+                && let Err(_) = app.run().launch(&targets, &cwd)
+            {
+                text.get_or_insert_with(|| format!("{} «{}»", Key::CantRun.text(lang), app.name));
+            }
+            Outcome { text, ..Outcome::default() }
+        });
+        if is_default { task.chain(Task::done(Message::ReloadExtensions)) } else { task }
+    }
+
+    #[must_use]
+    pub fn open_with_apps<'a>(
+        &'a self, targets: &[Target], query: &str,
+    ) -> (Vec<&'a crate::fs::DesktopApp>, Vec<&'a crate::fs::DesktopApp>) {
+        let matching = self.extensions.listed_apps_for(targets);
+        let mut seen = HashSet::new();
+        for app in &matching {
+            seen.insert(app.exec.as_str());
+        }
+        let all = self.extensions.all_listed_apps();
+        let query = query.trim().to_lowercase();
+        let filter = |app: &&crate::fs::DesktopApp| {
+            if query.is_empty() {
+                true
+            } else {
+                app.name.to_lowercase().contains(&query)
+                    || app.id.to_lowercase().contains(&query)
+                    || app.exec.to_lowercase().contains(&query)
+            }
+        };
+        let matching_filtered: Vec<_> = matching.into_iter().filter(filter).collect();
+        let other_filtered: Vec<_> =
+            all.into_iter().filter(|app| !seen.contains(app.exec.as_str())).filter(filter).collect();
+        (matching_filtered, other_filtered)
     }
 
     fn load_extensions(&mut self) -> Task<Message> {
@@ -2332,6 +2759,14 @@ impl App {
                 self.modal = None;
                 self.properties_of(path)
             }
+            Request::Activate(token) => {
+                if let Some(handles) = self.handles {
+                    let _ = std::thread::Builder::new().name("glide-files-activate".into()).spawn(move || {
+                        let _ = glide_app::activation::activate(handles.display, handles.surface, &token);
+                    });
+                }
+                Task::none()
+            }
         };
         Task::batch([task, focus])
     }
@@ -2345,7 +2780,7 @@ impl App {
             .map(thumb_key)
             .filter(|key| !self.thumbs.contains_key(key) && !self.thumbs_asked.contains(key))
             .map(|key| {
-                let mime = self.extensions.mime.of(&key.0, false);
+                let mime = self.extensions.mime.of_name(&key.0, false);
                 (key, mime)
             })
             .filter(|(_, mime)| crate::fs::thumbs::can_thumbnail(mime, &thumbnailers))
@@ -2377,6 +2812,9 @@ impl App {
     }
 
     fn save_prefs(&self) {
+        if self.chooser.is_some() {
+            return;
+        }
         config::save_prefs(&config::ViewPrefs {
             view: self.view,
             sort: self.sort,
@@ -2548,9 +2986,11 @@ impl App {
                     let Some(from) = lines.iter().position(|line| matches(line, &dragged)) else {
                         return;
                     };
+                    let Some(to) = lines.iter().position(|line| matches(line, &target)) else {
+                        return;
+                    };
                     let moved = lines.remove(from);
-                    let to = lines.iter().position(|line| matches(line, &target)).unwrap_or(lines.len());
-                    lines.insert(if to >= from { to + 1 } else { to }, moved);
+                    lines.insert(to, moved);
                 })
             }
             Some(Hover::Place(target)) if target == dragged => self.navigate(dragged),
@@ -2650,7 +3090,7 @@ impl App {
             }
             Some(DragArm::At(origin)) => origin,
         };
-        if origin.distance(at) < DRAG_THRESHOLD {
+        if origin.distance(at) < DRAG_THRESHOLD || self.chooser.is_some() {
             return;
         }
         self.drag_arm = None;
@@ -2857,6 +3297,16 @@ impl App {
         }
         self.next_job += 1;
         let id = self.next_job;
+        let clipboard = self
+            .clipboard
+            .as_ref()
+            .filter(|clipboard| {
+                from_clipboard
+                    && op == Op::Move
+                    && clipboard.action == ClipboardAction::Cut
+                    && clipboard.paths == sources
+            })
+            .cloned();
         let (cancel, pause) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let (answers, inbox) = mpsc::channel();
         let (events, stream) = unbounded();
@@ -2890,7 +3340,7 @@ impl App {
             op,
             progress: Progress::default(),
             target,
-            from_clipboard,
+            clipboard,
             cancel,
             pause,
             meter: Meter::default(),
@@ -2977,7 +3427,9 @@ impl App {
             text,
             select,
             undo,
-            clear_clipboard: job.from_clipboard && job.op == Op::Move && !report.cancelled,
+            clear_clipboard: !report.cancelled
+                && report.failures.is_empty()
+                && job.clipboard.as_ref().is_some_and(|clipboard| self.clipboard.as_ref() == Some(clipboard)),
         })
     }
 
@@ -2995,6 +3447,7 @@ impl App {
             dialog: Dialog::Conflict { job, question, for_all: false },
             input: String::new(),
             error: None,
+            focus: None,
         });
     }
 
@@ -3147,12 +3600,25 @@ impl App {
             target: meta
                 .filter(|meta| meta.file_type().is_symlink())
                 .and_then(|_| std::fs::read_link(&entry.path).ok()),
-            contents: entry.is_dir.then(|| std::fs::read_dir(&entry.path).map(Iterator::count).ok()).flatten(),
+            contents: None,
             original: self.trash.original_path(&entry.path),
             total: None,
             error: None,
             entry,
         };
+        let counting = properties.entry.is_dir.then(|| {
+            let dir = properties.entry.path.clone();
+            Task::perform(
+                blocking(move || {
+                    let contents = std::fs::read_dir(&dir).map(Iterator::count).ok();
+                    (dir, contents)
+                }),
+                |result| {
+                    let (dir, contents) = result.unwrap_or_default();
+                    Message::FolderContents(dir, contents)
+                },
+            )
+        });
         let sizing = properties.entry.is_dir.then(|| {
             let dir = properties.entry.path.clone();
             Task::perform(
@@ -3167,7 +3633,7 @@ impl App {
             )
         });
         let shown = self.prompt(Dialog::Properties(Box::new(properties)), String::new(), None);
-        Task::batch([shown, sizing.unwrap_or_else(Task::none)])
+        Task::batch([shown, counting.unwrap_or_else(Task::none), sizing.unwrap_or_else(Task::none)])
     }
 
     fn properties_mut(&mut self) -> Option<&mut Properties> {
@@ -3204,8 +3670,9 @@ impl App {
                 | Dialog::Unlock(_)
                 | Dialog::NewFromTemplate(_)
                 | Dialog::Tags(_)
+                | Dialog::OpenWith { .. }
         );
-        self.modal = Some(Modal { dialog, input, error: None });
+        self.modal = Some(Modal { dialog, input, error: None, focus: None });
         if !takes_input {
             return Task::none();
         }
@@ -3221,10 +3688,21 @@ impl App {
         if self.in_conflict() {
             return Task::none();
         }
+        if let Some(Modal { dialog: Dialog::OpenWith { targets, chosen, .. }, input, .. }) = &self.modal {
+            let (matching, others) = self.open_with_apps(targets, input);
+            if !matching.into_iter().chain(others).any(|app| &app.id == chosen) {
+                return Task::none();
+            }
+        }
         let Some(modal) = self.modal.take() else {
             return Task::none();
         };
         let created = match &modal.dialog {
+            Dialog::OpenWith { targets, mime, chosen, always } => {
+                let targets = targets.clone();
+                let save_mime = mime.clone().filter(|_| *always);
+                return self.apply_default_and_open(save_mime, chosen, targets);
+            }
             Dialog::NewFolder => create_directory(&self.current, &modal.input),
             Dialog::NewFile => create_empty_file(&self.current, &modal.input),
             Dialog::Rename(target) => rename_item(target, &modal.input),
@@ -3267,6 +3745,12 @@ impl App {
                 return if self.jobs.is_empty() { iced::exit() } else { Task::none() };
             }
             Dialog::Repair(object) => return self.disk_job(object, DiskAction::Repair),
+            Dialog::Replace(target) => {
+                if let Some(chooser) = self.chooser.as_mut() {
+                    chooser.confirm = Some(target.clone());
+                }
+                return self.chooser_accept();
+            }
             Dialog::Unlock(object) => {
                 let Some(volume) = self.volume(object).cloned() else {
                     return Task::none();
@@ -3452,7 +3936,7 @@ impl App {
         let survey = self.start_survey();
         let config_stamp = config::path().as_deref().and_then(stamp);
         let lang = self.lang;
-        if config_stamp != self.config_stamp {
+        if self.shell.is_none() && config_stamp != self.config_stamp {
             self.config_stamp = config_stamp;
             self.apply_look(&config::load());
         }
@@ -3470,9 +3954,26 @@ impl App {
         Task::batch([survey, extensions, volumes, phones])
     }
 
+    fn with_shell(&self, mut look: Look) -> Look {
+        if let Some(shell) = &self.shell {
+            look.appearance = shell.appearance;
+            look.appearance_schedule = false;
+            look.accent = shell.accent;
+            look.language = shell.language.as_deref().and_then(Lang::from_key);
+            look.icon_theme.clone_from(&shell.icon_theme);
+            look.font_family.clone_from(&shell.font_family);
+            look.motion_scale = shell.animation_scale;
+        }
+        look
+    }
+
     fn apply_look(&mut self, look: &Look) {
+        let look = &self.with_shell(look.clone());
         glide_theme::motion::set_scale(look.motion_scale);
         self.theme = ThemeState::new(look.appearance_at(minute_now()), look.accent);
+        if look.font_family != self.look.font_family {
+            crate::theme::use_ui_family(look.font_family.as_deref());
+        }
         self.look = look.clone();
         self.icons = IconTheme::new(look.icon_theme.as_deref(), look.accent);
         let lang = look.language.unwrap_or_else(Lang::from_env);
@@ -3505,6 +4006,9 @@ impl App {
         }
         if self.search.is_some() {
             return self.close_search();
+        }
+        if self.chooser.is_some() {
+            return iced::exit();
         }
         self.selection.clear();
         Task::none()
@@ -3620,6 +4124,7 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::F10) if shift => Message::KeyMenu,
         Key::Named(Named::Enter) if alt => Message::Properties,
         Key::Named(Named::Enter) => Message::OpenSelection,
+        Key::Named(Named::Tab) => Message::ModalFocus(!shift),
         Key::Named(Named::ArrowLeft) if alt => Message::Back,
         Key::Named(Named::ArrowRight) if alt => Message::Forward,
         Key::Named(Named::ArrowUp) if alt => Message::Up,
@@ -3664,4 +4169,174 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
         _ => return None,
     };
     Some(message)
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::{App, Arrival, Listed, Message, Renaming, Step};
+    use crate::fs::FileEntry;
+
+    #[test]
+    fn confirmation_dialogs_are_keyboard_operable_and_start_on_the_safe_choice() {
+        let (mut app, _) = App::new();
+        let target = std::path::PathBuf::from("/no-such-glide-folder/keyboard-delete.txt");
+        let _ = app.prompt(super::Dialog::Delete(vec![target.clone()]), String::new(), None);
+        assert_eq!(app.modal.as_ref().and_then(super::Modal::focused), Some(0));
+        let _ = app.update(Message::OpenSelection);
+        assert!(app.modal.is_none(), "Enter on the default choice cancels");
+        assert!(app.jobs.is_empty());
+        let _ = app.prompt(super::Dialog::Delete(vec![target]), String::new(), None);
+        let _ = app.update(Message::ModalFocus(true));
+        assert_eq!(app.modal.as_ref().and_then(super::Modal::focused), Some(1));
+        let _ = app.update(Message::Move(Step::Right, false));
+        assert_eq!(app.modal.as_ref().and_then(super::Modal::focused), Some(0), "focus wraps");
+        let _ = app.update(Message::Move(Step::Left, false));
+        let _ = app.update(Message::TypeToSearch(String::from(" ")));
+        assert!(app.modal.is_none());
+        assert_eq!(app.jobs.len(), 1, "Space confirms the focused delete");
+        let conflict = super::Modal {
+            dialog: super::Dialog::Conflict {
+                job: 0,
+                question: crate::fs::jobs::Question {
+                    source: std::path::PathBuf::from("/a"),
+                    dest: std::path::PathBuf::from("/b"),
+                    folders: false,
+                },
+                for_all: false,
+            },
+            input: String::new(),
+            error: None,
+            focus: None,
+        };
+        assert_eq!(conflict.focused(), Some(1), "a conflict starts on Skip, not Stop or Replace");
+    }
+
+    #[test]
+    fn system_motion_changes_reach_the_app_behind_a_dialog() {
+        assert!(Message::SystemMotion(true).passes_modal());
+        let (mut app, _) = App::new();
+        let task = app.update(Message::SystemMotion(false));
+        assert_eq!(task.units(), 0);
+    }
+
+    #[test]
+    fn keyboard_menu_steps_scroll_the_highlight_into_view() {
+        let (mut app, _) = App::new();
+        let _ = app.update(Message::ToggleOptions);
+        let task = app.step_menu(Step::Up);
+        let menu = app.menu.as_ref().expect("options menu");
+        let entries = crate::widgets::menu::entries(&app, menu);
+        let last = crate::widgets::menu::next_highlight(&entries, None, Step::Last);
+        assert_eq!(menu.highlight, last, "Up from nothing wraps to the last row");
+        assert!(task.units() > 0, "the highlighted row is revealed");
+        let hovered = app.update(Message::MenuHover(last.expect("row"), true));
+        assert_eq!(hovered.units(), 0, "pointer hover never scrolls the menu");
+    }
+
+    #[test]
+    fn scrolling_finishes_an_unchanged_inline_rename() {
+        let (mut app, _) = App::new();
+        app.renaming = Some(Renaming {
+            path: std::path::PathBuf::from("/no-such-glide-folder/unchanged.txt"),
+            text: String::from("unchanged.txt"),
+        });
+        let _ = app.update(Message::Scrolled(1200.0));
+        assert!(app.renaming.is_none(), "scrolling cannot leave a virtualized rename editor alive");
+        assert_eq!(app.scroll_y, 1200.0);
+    }
+
+    #[test]
+    fn an_invalid_inline_rename_restores_scroll_and_keeps_its_editor() {
+        let (mut app, _) = App::new();
+        let path = std::env::current_dir().expect("current directory");
+        app.entries = vec![FileEntry::from_path(path.clone()).expect("directory entry")];
+        app.renaming = Some(Renaming { path, text: String::from("a/b") });
+        let unchanged = app.update(Message::Scrolled(0.0));
+        assert_eq!(unchanged.units(), 0, "a rollback notification does not retry the rename");
+        assert!(app.notice.is_none());
+        let task = app.update(Message::Scrolled(1200.0));
+        assert!(app.renaming.is_some());
+        assert_eq!(app.scroll_y, 0.0);
+        assert!(app.notice.is_some());
+        assert!(task.units() >= 3, "the error, editor focus and scroll rollback are all scheduled");
+    }
+
+    #[test]
+    fn an_older_refresh_cannot_replace_a_newer_listing() {
+        let (mut app, _) = App::new();
+        let directory = std::env::current_dir().expect("current directory");
+        app.current = directory.clone();
+        app.navigating = false;
+        let _ = app.list(directory.clone(), Arrival::Refresh, None);
+        let older = app.listing_revision;
+        let _ = app.list(directory.clone(), Arrival::Refresh, None);
+        let newer = app.listing_revision;
+        assert!(newer > older);
+        let entry = FileEntry::from_path(directory.clone()).expect("directory entry");
+        let _ = app.arrive(Listed {
+            generation: app.nav_generation,
+            revision: newer,
+            path: directory.clone(),
+            arrival: Arrival::Refresh,
+            select: None,
+            result: Ok((vec![entry.clone()], Some(20))),
+        });
+        let _ = app.arrive(Listed {
+            generation: app.nav_generation,
+            revision: older,
+            path: directory,
+            arrival: Arrival::Refresh,
+            select: None,
+            result: Ok((Vec::new(), Some(10))),
+        });
+        assert_eq!(app.entries, vec![entry]);
+        assert_eq!(app.free_bytes, Some(20));
+    }
+
+    #[test]
+    fn a_refresh_during_navigation_runs_after_arrival() {
+        let (mut app, _) = App::new();
+        let directory = app.current.clone();
+        let revision = app.listing_revision;
+        let refresh = app.list(directory.clone(), Arrival::Refresh, None);
+        assert_eq!(refresh.units(), 0, "a refresh waits for navigation");
+        assert!(app.refresh_pending);
+        assert_eq!(app.listing_revision, revision);
+        let task = app.arrive(Listed {
+            generation: app.nav_generation,
+            revision,
+            path: directory.clone(),
+            arrival: Arrival::Initial,
+            select: None,
+            result: Ok((Vec::new(), None)),
+        });
+        assert!(!app.navigating);
+        assert!(!app.refresh_pending);
+        assert_eq!(app.current, directory);
+        assert_eq!(app.listing_revision, revision + 1, "the deferred refresh is requested");
+        assert!(task.units() > 0);
+    }
+
+    #[test]
+    fn a_failed_navigation_still_runs_its_deferred_refresh() {
+        let (mut app, _) = App::new();
+        let directory = app.current.clone();
+        let revision = app.listing_revision;
+        let _ = app.list(directory.clone(), Arrival::Refresh, None);
+        assert!(app.refresh_pending);
+        let task = app.arrive(Listed {
+            generation: app.nav_generation,
+            revision,
+            path: directory.clone(),
+            arrival: Arrival::Initial,
+            select: None,
+            result: Err(String::from("navigation failed")),
+        });
+        assert!(!app.navigating);
+        assert!(!app.refresh_pending);
+        assert_eq!(app.current, directory);
+        assert_eq!(app.listing_revision, revision + 1);
+        assert!(app.notice.is_some());
+        assert!(task.units() > 0);
+    }
 }

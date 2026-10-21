@@ -11,6 +11,58 @@ const PATHS: &str = "(~|\\.\\.?)?/[^\u{0000}-\u{0020}\u{007F}:'\"<>|()\\[\\]{}`]
 const ALPHABET: &str = "asdfghjklqwertyuiopzxcvbnm";
 const LIMIT: usize = ALPHABET.len() * ALPHABET.len();
 
+const OPENABLE_SCHEMES: [&str; 13] =
+    ["http", "https", "mailto", "ftp", "gemini", "gopher", "news", "magnet", "ipfs", "ipns", "git", "ssh", "file"];
+
+#[must_use]
+pub fn openable(uri: &str) -> bool {
+    let uri = uri.trim();
+    if uri.is_empty() || uri.starts_with('-') || uri.chars().any(char::is_control) {
+        return false;
+    }
+    let Some((scheme, rest)) = uri.split_once(':') else {
+        return false;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if !OPENABLE_SCHEMES.contains(&scheme.as_str()) {
+        return false;
+    }
+    if scheme != "file" {
+        return true;
+    }
+    let path = rest.trim_start_matches("//");
+    let path = path.find('/').map_or(path, |start| &path[start..]);
+    openable_path(Path::new(path))
+}
+
+#[must_use]
+pub fn openable_path(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("desktop")) {
+        return false;
+    }
+    std::fs::metadata(path).map_or(true, |meta| meta.is_dir() || meta.permissions().mode() & 0o111 == 0)
+}
+
+#[must_use]
+pub fn clean_url(text: &str) -> &str {
+    let mut text = text;
+    loop {
+        let trimmed = text.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        text = trimmed;
+        let Some(last) = text.chars().last() else { return text };
+        let opening = match last {
+            ')' => '(',
+            ']' => '[',
+            _ => return text,
+        };
+        if text.chars().filter(|&c| c == last).count() <= text.chars().filter(|&c| c == opening).count() {
+            return text;
+        }
+        text = &text[..text.len() - last.len_utf8()];
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Url,
@@ -69,7 +121,7 @@ pub fn scan<T>(term: &Term<T>) -> Vec<Hint> {
         .zip(labels)
         .map(|((range, kind), label)| {
             let text = term.bounds_to_string(*range.start(), *range.end());
-            let text = text.trim_end_matches(['.', ',', ';']).to_string();
+            let text = if kind == Kind::Url { clean_url(&text).to_string() } else { text };
             Hint { range, text, label, kind }
         })
         .collect()
@@ -98,6 +150,19 @@ mod tests {
 
     use crate::session::Cells;
 
+    #[test]
+    fn only_known_schemes_and_inert_files_open() {
+        assert!(openable("https://example.com/a?b"));
+        assert!(openable("mailto:me@example.com"));
+        assert!(openable("file:///tmp"));
+        assert!(!openable("-e evil"));
+        assert!(!openable("javascript:alert(1)"));
+        assert!(!openable("smb://host/share"));
+        assert!(!openable("file:///usr/share/applications/evil.desktop"));
+        assert!(!openable("file:///usr/bin/env"));
+        assert!(!openable("https://a\u{7}b"));
+    }
+
     fn term(output: &str) -> Term<VoidListener> {
         let mut term = Term::new(Config::default(), &Cells { columns: 60, lines: 4 }, VoidListener);
         let mut processor: Processor = Processor::new();
@@ -123,7 +188,7 @@ mod tests {
         let term = term("see https://glide.dev/docs and ~/notes.txt.\r\nthen ./build/out /usr/bin a/b /\r\n");
         let hints = scan(&term);
         let texts: Vec<&str> = hints.iter().map(|hint| hint.text.as_str()).collect();
-        assert_eq!(texts, ["https://glide.dev/docs", "~/notes.txt", "./build/out", "/usr/bin"]);
+        assert_eq!(texts, ["https://glide.dev/docs", "~/notes.txt.", "./build/out", "/usr/bin"]);
         assert_eq!(hints[0].kind, Kind::Url);
         assert!(hints[1..].iter().all(|hint| hint.kind == Kind::Path));
         assert_eq!(hints.iter().map(|hint| hint.label.as_str()).collect::<Vec<_>>(), ["a", "s", "d", "f"]);
@@ -141,5 +206,16 @@ mod tests {
         assert_eq!(target(&hint("~/a.txt"), Some(home), Some(cwd)), "/home/me/a.txt");
         assert_eq!(target(&hint("./build"), Some(home), Some(cwd)), "/srv/app/./build");
         assert_eq!(target(&hint("/etc/hosts"), Some(home), Some(cwd)), "/etc/hosts");
+    }
+
+    #[test]
+    fn url_punctuation_is_shared_but_path_punctuation_is_preserved() {
+        assert_eq!(clean_url("https://example.com/a)."), "https://example.com/a");
+        assert_eq!(clean_url("https://example.com/a(b)"), "https://example.com/a(b)");
+        let hints = scan(&term("~/notes. ./notes, /tmp/notes;\r\n"));
+        assert_eq!(
+            hints.iter().map(|hint| hint.text.as_str()).collect::<Vec<_>>(),
+            ["~/notes.", "./notes,", "/tmp/notes;"]
+        );
     }
 }

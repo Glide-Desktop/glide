@@ -57,6 +57,31 @@ impl GlideState {
         }
     }
 
+    pub fn search_providers(&mut self) -> Option<super::providers::Handle> {
+        if std::mem::replace(&mut self.session.search_providers_started, true) {
+            return self.session.search_providers.clone();
+        }
+        let (sender, receiver) = smithay::reexports::calloop::channel::channel::<(u64, Vec<super::providers::Found>)>();
+        let handle = super::providers::start(move |generation, found| {
+            let _ = sender.send((generation, found));
+        });
+        if handle.is_some() {
+            let inserted = self.loop_handle.insert_source(receiver, |event, (), state| {
+                if let smithay::reexports::calloop::channel::Event::Msg((generation, found)) = event
+                    && let Some(launcher) = state.launcher.as_mut()
+                {
+                    launcher.set_provided(generation, found);
+                    state.queue_redraw();
+                }
+            });
+            if let Err(err) = inserted {
+                tracing::warn!(?err, "cannot watch the search providers");
+            }
+        }
+        self.session.search_providers.clone_from(&handle);
+        handle
+    }
+
     pub fn activate_launcher_entry(&mut self, entry: Entry) {
         let Some(launcher) = self.launcher.as_ref() else {
             return;
@@ -85,13 +110,13 @@ impl GlideState {
             }
             Entry::Settings(panel) => {
                 let command = format!("glide-settings {}", panel.slug());
-                if let Err(err) = crate::spawn_shell_command(&command) {
+                if let Err(err) = self.spawn_user_command(&command) {
                     tracing::error!(%command, ?err, "failed to open a settings panel");
                 }
             }
             Entry::Run(command) => {
                 tracing::info!(%command, "running a command from the run prompt");
-                if let Err(err) = crate::spawn_shell_command(&command) {
+                if let Err(err) = self.spawn_user_command(&command) {
                     tracing::warn!(%command, ?err, "failed to run a command");
                 }
             }
@@ -99,9 +124,14 @@ impl GlideState {
                 if let Some(path) = launcher.recent_file(index).map(|file| file.path.clone()) {
                     let mut command = std::process::Command::new("xdg-open");
                     command.arg(&path);
-                    if let Err(err) = crate::spawn_detached(command) {
+                    if let Err(err) = self.spawn_user_process(command) {
                         tracing::warn!(path = %path.display(), ?err, "failed to open a recent file");
                     }
+                }
+            }
+            Entry::Provided { index, .. } => {
+                if let Some((found, handle, terms)) = launcher.provided(index) {
+                    handle.activate(found, terms);
                 }
             }
             Entry::Window { index, .. } => {
