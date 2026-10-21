@@ -168,7 +168,6 @@ impl GlideState {
             crate::ipc::reply(&waiter, &answer);
         }
         let mut actions = Vec::new();
-        let mut image_path = String::new();
         let (summary, body) = match result {
             Ok(Saved { path, png }) => {
                 smithay::wayland::selection::data_device::set_data_device_selection(
@@ -183,7 +182,6 @@ impl GlideState {
                         glide_notify::Action { key: OPEN.into(), label: t(Key::ShotOpen).into() },
                         glide_notify::Action { key: SHOW.into(), label: t(Key::ShotShowInFolder).into() },
                     ];
-                    image_path = path.display().to_string();
                     self.session.last_screenshot = Some(path.clone());
                     (crate::i18n::screenshot_saved(), path.display().to_string())
                 } else {
@@ -203,7 +201,6 @@ impl GlideState {
             summary: summary.to_string(),
             body,
             actions,
-            image_path,
             transient: true,
             timeout: Some(NOTICE_TIMEOUT),
             ..glide_notify::Notification::default()

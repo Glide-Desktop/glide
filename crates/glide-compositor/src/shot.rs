@@ -502,9 +502,12 @@ impl GlideState {
         };
         let painter = crate::paint::current();
         let mut drew = false;
-        for mark in shot.sprites_wanted() {
+        for mark in shot.marks.iter_mut().filter(|mark| mark.shape.needs_sprite() && mark.sprite.is_none()) {
             mark.sprite = render::sprite_for(mark, &painter, scale);
             drew |= mark.sprite.is_some();
+        }
+        if let Some(draft) = shot.draft.as_mut().filter(|draft| draft.shape.needs_sprite() && draft.sprite.is_none()) {
+            draft.sprite = render::sprite_for(draft, &painter, scale);
         }
         if drew {
             shot.revision += 1;

@@ -186,7 +186,7 @@ pub enum Control {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Gesture {
-    Select(Pos),
+    Select { origin: Pos, before: Option<Area> },
     Move { grab: Pos, from: Area },
     Resize { handle: Handle, from: Area },
     Draw,
@@ -280,7 +280,7 @@ impl Shot {
 
     #[must_use]
     pub fn selecting(&self) -> bool {
-        matches!(self.gesture, Some(Gesture::Select(_)))
+        matches!(self.gesture, Some(Gesture::Select { .. }))
     }
 
     #[must_use]
@@ -395,7 +395,7 @@ impl Shot {
         let hover_changed = self.hover != control;
         self.hover = control;
         match self.gesture {
-            Some(Gesture::Select(origin)) => {
+            Some(Gesture::Select { origin, .. }) => {
                 self.selection = Some(rect_between(origin, pos));
                 true
             }
@@ -448,6 +448,9 @@ impl Shot {
         if let Some(control) = control {
             return self.activate(control);
         }
+        if self.over_bar(pos) {
+            return Outcome::Nothing;
+        }
         if self.typing {
             self.commit_text();
             if self.tool == Tool::Text {
@@ -457,8 +460,7 @@ impl Shot {
         if !self.editing() {
             return match self.mode {
                 Mode::Area => {
-                    self.gesture = Some(Gesture::Select(pos));
-                    self.selection = Some(Rectangle::new(pos, Size::from((0.0, 0.0))));
+                    self.begin_select(pos);
                     Outcome::Redraw
                 }
                 Mode::Window => match self.window_at(pos) {
@@ -482,8 +484,7 @@ impl Shot {
         };
         if !target.contains(pos) {
             if self.mode == Mode::Area && self.tool == Tool::Move {
-                self.gesture = Some(Gesture::Select(pos));
-                self.selection = Some(Rectangle::new(pos, Size::from((0.0, 0.0))));
+                self.begin_select(pos);
                 return Outcome::Redraw;
             }
             return Outcome::Nothing;
@@ -518,24 +519,31 @@ impl Shot {
         Outcome::Redraw
     }
 
+    fn begin_select(&mut self, pos: Pos) {
+        self.gesture = Some(Gesture::Select { origin: pos, before: self.selection });
+        self.selection = Some(Rectangle::new(pos, Size::from((0.0, 0.0))));
+    }
+
+    #[must_use]
+    pub fn over_bar(&self, pos: Pos) -> bool {
+        self.bar_visible() && self.bar().rect.contains(pos)
+    }
+
     pub fn release(&mut self, pos: Pos) -> Outcome {
         let pos = self.clamp(pos);
         let Some(gesture) = self.gesture.take() else {
             return Outcome::Nothing;
         };
         match gesture {
-            Gesture::Select(origin) => {
+            Gesture::Select { origin, before } => {
                 let area = rect_between(origin, pos);
                 if area.size.w >= MIN_SIDE && area.size.h >= MIN_SIDE {
                     self.selection = Some(area);
                     if !self.editing() {
                         return self.enter_edit();
                     }
-                } else if self.editing() {
-                    self.selection = None;
-                    self.stage = Stage::Choose;
                 } else {
-                    self.selection = None;
+                    self.selection = before;
                 }
                 Outcome::Redraw
             }
@@ -968,6 +976,46 @@ mod tests {
         assert_eq!(shot.release(p(600.0, 400.0)), Outcome::Redraw);
         assert!(shot.editing());
         assert_eq!(shot.target(), Some(Rectangle::new(p(200.0, 150.0), Size::from((400.0, 250.0)))));
+    }
+
+    #[test]
+    fn clicks_on_the_bar_outside_its_controls_never_reach_the_capture() {
+        let mut shot = shot();
+        let kept = Rectangle::new(p(200.0, 200.0), Size::from((300.0, 200.0)));
+        shot.selection = Some(kept);
+        let bar = shot.bar();
+        let padding = bar.rect.loc + Point::from((CHOOSE_PAD / 2.0, bar.rect.size.h / 2.0));
+        let rule = bar.rect.loc + Point::from((bar.rules[0], bar.rect.size.h / 2.0));
+        for pos in [padding, rule] {
+            assert_eq!(shot.press(pos, shot.control_at(pos)), Outcome::Nothing);
+            shot.release(pos);
+            assert_eq!(shot.selection, Some(kept));
+        }
+        shot.capture();
+        shot.set_tool(Tool::Arrow);
+        shot.press(p(250.0, 250.0), None);
+        shot.release(p(300.0, 300.0));
+        let bar = shot.bar();
+        let padding = bar.rect.loc + Point::from((EDIT_PAD / 2.0, bar.rect.size.h / 2.0));
+        shot.press(padding, shot.control_at(padding));
+        shot.release(padding);
+        assert!(shot.editing() && shot.marks.len() == 1 && shot.selection == Some(kept));
+    }
+
+    #[test]
+    fn a_stray_click_outside_the_capture_keeps_it() {
+        let mut shot = shot();
+        let kept = Rectangle::new(p(200.0, 200.0), Size::from((300.0, 200.0)));
+        shot.selection = Some(kept);
+        shot.capture();
+        shot.press(p(50.0, 50.0), None);
+        shot.motion(p(52.0, 51.0), None);
+        shot.release(p(52.0, 51.0));
+        assert!(shot.editing(), "still editing");
+        assert_eq!(shot.selection, Some(kept));
+        shot.press(p(50.0, 50.0), None);
+        shot.release(p(150.0, 120.0));
+        assert_eq!(shot.selection, Some(Rectangle::new(p(50.0, 50.0), Size::from((100.0, 70.0)))));
     }
 
     #[test]

@@ -1399,7 +1399,7 @@ pub fn sprite_for(mark: &Mark, painter: &Painter, scale: f64) -> Option<Arc<Spri
 #[must_use]
 pub fn cursor_for(shot: &Shot, control: Option<Control>, pos: model::Pos) -> smithay::input::pointer::CursorIcon {
     use smithay::input::pointer::CursorIcon;
-    if control.is_some() {
+    if control.is_some() || shot.over_bar(pos) {
         return CursorIcon::Default;
     }
     if let Some(handle) = shot.handle_at(pos) {
