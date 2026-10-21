@@ -22,6 +22,7 @@ use crate::history::Kind;
 use crate::i18n::{Key as Text, Lang};
 use crate::syntax::{self, Language, Lines, Marks, Palette, Settings};
 use crate::tree::{self, Entry, Tree};
+use glide_app::menubar;
 use glide_iced::style::Paint;
 
 pub const EDITOR: &str = "glide-text-editor";
@@ -288,6 +289,8 @@ pub enum Message {
     Focused(bool),
     Resized(Size),
     Dropped(PathBuf),
+    Handles(Option<menubar::Handles>),
+    MenuBar(menubar::Event),
     CloseRequested,
     WindowDrag,
     WindowMaximize,
@@ -328,6 +331,10 @@ pub struct App {
     pub pointer: Point,
     primary: Option<std::fs::File>,
     marked: u64,
+    handles: Option<menubar::Handles>,
+    publisher: Option<menubar::Publisher>,
+    pub shell_menu: bool,
+    exported: Vec<Command>,
     session_mark: u64,
     session_at: Instant,
     queue: Vec<u64>,
@@ -549,6 +556,19 @@ pub fn suggested_name(document: &Document, untitled: &str) -> String {
     format!("{stem}.{}", document.language().extension())
 }
 
+fn wayland_handles(window: &dyn iced::window::Window) -> Option<menubar::Handles> {
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    let display = window.display_handle().ok()?.as_raw();
+    let surface = window.window_handle().ok()?.as_raw();
+    match (display, surface) {
+        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => Some(menubar::Handles {
+            display: display.display.as_ptr() as usize,
+            surface: surface.surface.as_ptr() as usize,
+        }),
+        _ => None,
+    }
+}
+
 fn intern(family: &str) -> &'static str {
     static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
     let mut names = NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -617,6 +637,10 @@ impl App {
             pointer: Point::ORIGIN,
             primary,
             marked: 0,
+            handles: None,
+            publisher: None,
+            shell_menu: false,
+            exported: Vec::new(),
             session_mark: 0,
             session_at: Instant::now(),
             queue: Vec::new(),
@@ -632,6 +656,7 @@ impl App {
             app.new_document();
         }
         tasks.push(operation::focus(EDITOR));
+        tasks.push(window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles));
         (app, Task::batch(tasks))
     }
 
@@ -855,6 +880,9 @@ impl App {
             iced::time::every(TICK).map(|_| Message::Tick),
             Subscription::run(glide_app::look_changes).map(Message::ShellLook),
         ];
+        if let Some(handles) = self.handles {
+            subscriptions.push(Subscription::run_with(handles, menubar::events).map(Message::MenuBar));
+        }
         if self.tab_drag.is_some() {
             subscriptions.push(iced::event::listen_with(|event, _, _| {
                 let released = iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left));
@@ -868,12 +896,44 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let quiet = matches!(message, Message::Pointer(_) | Message::Frame);
         let task = self.handle(message);
         let highlight = self.schedule();
         self.refresh_find();
         self.refresh_marks();
         self.refresh_preview();
+        if !quiet {
+            self.publish_menu();
+        }
         Task::batch([task, highlight])
+    }
+
+    fn publish_menu(&mut self) {
+        let Some(publisher) = &self.publisher else { return };
+        let (menu, commands) = crate::chrome::export_menu(self);
+        self.exported = commands;
+        publisher.set(menu);
+    }
+
+    fn on_menu_bar(&mut self, event: menubar::Event) -> Task<Message> {
+        match event {
+            menubar::Event::Ready(publisher) => self.publisher = Some(publisher),
+            menubar::Event::Shown(shown) => {
+                self.shell_menu = shown;
+                if shown
+                    && self.menu.as_ref().is_some_and(|menu| matches!(menu.kind, MenuKind::Bar(_) | MenuKind::Compact))
+                {
+                    self.dismiss_menu();
+                }
+            }
+            menubar::Event::Activated(id) => {
+                let command = usize::try_from(id).ok().and_then(|id| self.exported.get(id.checked_sub(1)?)).copied();
+                if let Some(command) = command {
+                    return Task::batch([self.command(command), operation::focus(EDITOR)]);
+                }
+            }
+        }
+        Task::none()
     }
 
     #[allow(clippy::too_many_lines)] // The message dispatcher: one short arm per Message variant
@@ -1108,6 +1168,11 @@ impl App {
             }
             Message::WindowMinimize => window::latest().and_then(|id| window::minimize(id, true)),
             Message::WindowResize(direction) => window::latest().and_then(move |id| window::drag_resize(id, direction)),
+            Message::Handles(handles) => {
+                self.handles = handles;
+                Task::none()
+            }
+            Message::MenuBar(event) => self.on_menu_bar(event),
             Message::Noop => Task::none(),
         }
     }
@@ -1640,6 +1705,7 @@ impl App {
                 }
                 Task::none()
             }
+            Command::MenuBar if self.shell_menu => Task::none(),
             Command::MenuBar => {
                 let at = Point::new(crate::chrome::bar_x(self, Bar::File), crate::chrome::HEADER - 2.0);
                 let kind = if crate::chrome::compact(self) { MenuKind::Compact } else { MenuKind::Bar(Bar::File) };
@@ -2415,5 +2481,26 @@ mod tests {
         assert!(app.dialog.is_none());
         assert_eq!(app.doc().unwrap().text, "draft");
         assert_eq!(app.docs.len(), 1, "cancel keeps the document");
+    }
+
+    #[test]
+    fn when_the_shell_shows_the_menu_bar_the_window_drops_its_own_and_runs_clicked_commands() {
+        let mut app = app();
+        let _ = app.update(Message::BarPressed(Bar::File));
+        assert!(app.menu_open());
+        let _ = app.update(Message::MenuBar(menubar::Event::Shown(true)));
+        assert!(app.shell_menu);
+        assert!(!app.menu_open(), "an in-window menu bar menu closes once the shell owns the menu bar");
+        let _ = app.update(Message::Command(Command::MenuBar));
+        assert!(!app.menu_open(), "F10 belongs to the shell's menu bar now");
+        let (_, commands) = crate::chrome::export_menu(&app);
+        app.exported = commands;
+        let new = app.exported.iter().position(|command| *command == Command::New).unwrap() + 1;
+        let _ = app.update(Message::MenuBar(menubar::Event::Activated(u32::try_from(new).unwrap())));
+        assert_eq!(app.docs.len(), 2);
+        let _ = app.update(Message::MenuBar(menubar::Event::Activated(9999)));
+        assert_eq!(app.docs.len(), 2, "a stale id does nothing");
+        let _ = app.update(Message::MenuBar(menubar::Event::Shown(false)));
+        assert!(!app.shell_menu, "the window takes its menu bar back when the shell stops showing one");
     }
 }

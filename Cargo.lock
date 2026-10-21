@@ -1454,6 +1454,7 @@ name = "glide-app"
 version = "0.1.0"
 dependencies = [
  "futures-channel",
+ "glide-appmenu",
  "glide-theme",
  "serde",
  "serde_json",
@@ -1461,6 +1462,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-plasma",
  "zbus",
 ]
 
@@ -1698,6 +1700,7 @@ dependencies = [
  "glide-ui",
  "iced",
  "iced_tiny_skia",
+ "raw-window-handle",
  "regex",
  "serde",
  "toml",

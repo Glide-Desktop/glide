@@ -8,6 +8,7 @@ use zbus::zvariant::OwnedValue;
 pub mod activation;
 pub mod chooser;
 pub mod integration;
+pub mod menubar;
 pub mod quicklist;
 pub mod search_provider;
 

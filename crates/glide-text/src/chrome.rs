@@ -192,17 +192,13 @@ fn header(app: &App) -> Element<'_, Message> {
         Key::Maximize.text(app.lang),
     );
     let mut left = row![maximize].spacing(SP2).align_y(Alignment::Center);
-    if compact(app) {
-        let open = app.menu.as_ref().is_some_and(|menu| menu.kind == MenuKind::Compact && menu.reveal.is_open());
-        left = left.push(icon_button(
-            &control_paint,
-            Icon::Menu,
-            Message::BarPressed(Bar::File),
-            open,
-            Key::Menu.text(app.lang),
-        ));
-    } else {
-        left = left.push(iced::widget::row(Bar::ALL.map(|bar| bar_button(app, &control_paint, bar))).spacing(SP1));
+    if !app.shell_menu {
+        left = left.push(if compact(app) {
+            let open = app.menu.as_ref().is_some_and(|menu| menu.kind == MenuKind::Compact && menu.reveal.is_open());
+            icon_button(&control_paint, Icon::Menu, Message::BarPressed(Bar::File), open, Key::Menu.text(app.lang))
+        } else {
+            iced::widget::row(Bar::ALL.map(|bar| bar_button(app, &control_paint, bar))).spacing(SP1).into()
+        });
     }
     let close = button(glide_iced::glyph::window_close())
         .on_press(Message::CloseRequested)
@@ -237,7 +233,7 @@ fn header(app: &App) -> Element<'_, Message> {
     };
     let room = app.window.width - 2.0 * left_width.max(controls_width()) - SP4;
     let mut layers: Vec<Element<'_, Message>> = vec![bar.height(Fill).into()];
-    if room > 80.0 {
+    if room > 80.0 && !app.shell_menu {
         let title = app.doc().map(|doc| {
             let dirty = if doc.dirty() { "• " } else { "" };
             format!("{dirty}{}", app.doc_name(doc))
@@ -1066,6 +1062,59 @@ fn opens_more(command: Command) -> bool {
     matches!(command, Command::Recent | Command::Syntax | Command::TabWidths | Command::Endings)
 }
 
+fn submenu_of(command: Command) -> Option<MenuKind> {
+    match command {
+        Command::Recent => Some(MenuKind::Recent),
+        Command::Syntax => Some(MenuKind::Syntax),
+        Command::TabWidths => Some(MenuKind::TabWidths),
+        Command::Endings => Some(MenuKind::Endings),
+        _ => None,
+    }
+}
+
+fn export_items(app: &App, items: Vec<Item>, commands: &mut Vec<Command>) -> Vec<glide_app::menubar::Entry> {
+    use glide_app::menubar::Entry;
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::Separator => Some(Entry::Separator),
+            Item::Header(_) => None,
+            Item::Action { label, shortcut, command, enabled, check } => {
+                if let Some(kind) = submenu_of(command) {
+                    let children = export_items(app, menu_items(app, &kind), commands);
+                    return Some(Entry::Submenu {
+                        label: label.trim_end_matches('…').to_string(),
+                        enabled: enabled && !children.is_empty(),
+                        children,
+                    });
+                }
+                commands.push(command);
+                Some(Entry::Action {
+                    id: u32::try_from(commands.len()).unwrap_or(u32::MAX),
+                    label,
+                    enabled,
+                    check,
+                    shortcut: shortcut.map(str::to_string),
+                })
+            }
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn export_menu(app: &App) -> (Vec<glide_app::menubar::Entry>, Vec<Command>) {
+    let mut commands = Vec::new();
+    let menu = Bar::ALL
+        .into_iter()
+        .map(|bar| glide_app::menubar::Entry::Submenu {
+            label: bar.key().text(app.lang).to_string(),
+            enabled: true,
+            children: export_items(app, bar_items(app, bar), &mut commands),
+        })
+        .collect();
+    (menu, commands)
+}
+
 fn menu_row(paint: &Paint, item: Item, index: Option<usize>, selected: bool) -> (Element<'static, Message>, f32) {
     let paint = *paint;
     match item {
@@ -1475,5 +1524,36 @@ mod tests {
         app.window = iced::Size::new(420.0, 400.0);
         assert!(compact(&app));
         assert_eq!(bar_x(&app, Bar::Help), bar_x(&app, Bar::File));
+    }
+
+    #[test]
+    fn the_exported_menu_bar_mirrors_the_window_menus_with_real_submenus() {
+        use glide_app::menubar::Entry;
+        fn walk<'a>(entries: &'a [Entry], actions: &mut usize, syntax: &mut Option<&'a [Entry]>) {
+            for entry in entries {
+                match entry {
+                    Entry::Action { id, .. } => {
+                        *actions += 1;
+                        assert_eq!(usize::try_from(*id).unwrap(), *actions, "ids follow the command table");
+                    }
+                    Entry::Submenu { children, .. } => {
+                        if children.len() > Language::ALL.len() {
+                            *syntax = Some(children);
+                        }
+                        walk(children, actions, syntax);
+                    }
+                    Entry::Separator => {}
+                }
+            }
+        }
+        let (app, _) = App::launch(None, &[]);
+        let (menu, commands) = export_menu(&app);
+        assert_eq!(menu.len(), Bar::ALL.len());
+        let mut actions = 0;
+        let mut syntax = None;
+        walk(&menu, &mut actions, &mut syntax);
+        assert_eq!(actions, commands.len());
+        assert!(syntax.is_some(), "the highlight mode list is a submenu, not an in-window popup");
+        assert!(!commands.iter().any(|command| opens_more(*command)), "commands that open popups are expanded");
     }
 }

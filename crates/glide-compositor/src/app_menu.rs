@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use glide_appmenu::{Activation, AppMenuEvent, MenuItem, Source};
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, protocol::wl_surface::WlSurface,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, backend::GlobalId,
+    protocol::wl_surface::WlSurface,
 };
 
 use crate::{global_menu::DesktopCommand, state::GlideState};
@@ -62,6 +63,7 @@ pub struct AppMenus {
     x11: crate::x11_menus::X11Bridge,
     cache: HashMap<Source, Vec<MenuItem>>,
     owner: Owner,
+    kde: Option<GlobalId>,
 }
 
 impl Default for AppMenus {
@@ -77,6 +79,7 @@ impl Default for AppMenus {
             x11: crate::x11_menus::X11Bridge::default(),
             cache: HashMap::new(),
             owner: Owner::Desktop,
+            kde: None,
         }
     }
 }
@@ -97,8 +100,9 @@ impl AppMenus {
             + 'static,
     {
         display.create_global::<D, gtk_shell1::GtkShell1, _>(GTK_SHELL_VERSION, ());
-        display.create_global::<D, org_kde_kwin_appmenu_manager::OrgKdeKwinAppmenuManager, _>(KDE_APPMENU_VERSION, ());
-        Self::default()
+        let kde = display
+            .create_global::<D, org_kde_kwin_appmenu_manager::OrgKdeKwinAppmenuManager, _>(KDE_APPMENU_VERSION, ());
+        Self { kde: Some(kde), ..Self::default() }
     }
 
     fn capabilities(&self) -> u32 {
@@ -159,6 +163,19 @@ impl GlideState {
             return;
         }
         self.app_menus.enabled = enabled;
+        match (enabled, self.app_menus.kde.take()) {
+            (false, Some(global)) => self.display_handle.remove_global::<Self>(global),
+            (true, None) => {
+                self.app_menus.kde = Some(
+                    self.display_handle
+                        .create_global::<Self, org_kde_kwin_appmenu_manager::OrgKdeKwinAppmenuManager, _>(
+                            KDE_APPMENU_VERSION,
+                            (),
+                        ),
+                );
+            }
+            (_, global) => self.app_menus.kde = global,
+        }
         let capabilities = self.app_menus.capabilities();
         self.app_menus.shells.retain(Resource::is_alive);
         for shell in &self.app_menus.shells {
