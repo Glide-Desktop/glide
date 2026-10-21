@@ -279,17 +279,26 @@ entry.flat{focus}, spinbutton.flat{focus}, spinbutton > entry{focus} {{ backgrou
     );
 }
 
-fn range_rules(out: &mut String, p: &Paint) {
+fn range_rules(out: &mut String, p: &Paint, gtk: Gtk) {
     let Paint { acc, ring, switch_thumb, .. } = p;
     let r1 = shape::R1;
+    let trough = match gtk {
+        Gtk::Three => format!(
+            "scale.horizontal:not(.color) > contents > trough {{ min-height: {TRACK}px; }}
+scale.vertical:not(.color) > contents > trough {{ min-width: {TRACK}px; }}"
+        ),
+        Gtk::Four => String::from(
+            "scale.horizontal:not(.color) > trough { padding-top: 1px; padding-bottom: 1px; }
+scale.vertical:not(.color) > trough { padding-left: 1px; padding-right: 1px; }",
+        ),
+    };
     let _ = write!(
         out,
         "
 check {{ border-radius: {r2}px; }}
 scale:not(.color) slider {{ background-color: {acc}; background-image: none; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); }}
 scale:not(.color) slider:hover {{ box-shadow: 0 0 0 4px {ring}, 0 1px 3px rgba(0, 0, 0, 0.25); }}
-scale.horizontal:not(.color) > trough {{ min-height: {TRACK}px; }}
-scale.vertical:not(.color) > trough {{ min-width: {TRACK}px; }}
+{trough}
 progressbar:not(.osd) > trough, progressbar:not(.osd) > trough > progress {{ border-radius: {r1}px; }}
 progressbar.horizontal:not(.osd) > trough, progressbar.horizontal:not(.osd) > trough > progress {{ min-height: {TRACK}px; }}
 progressbar.vertical:not(.osd) > trough, progressbar.vertical:not(.osd) > trough > progress {{ min-width: {TRACK}px; }}
@@ -400,7 +409,7 @@ fn component_rules(out: &mut String, p: &Paint, gtk: Gtk) {
     titlebutton_rules(out, p, gtk);
     toggle_rules(out, p);
     entry_rules(out, p, gtk);
-    range_rules(out, p);
+    range_rules(out, p, gtk);
     notebook_rules(out, p);
     list_rules(out, p);
     overlay_rules(out, p, gtk);
