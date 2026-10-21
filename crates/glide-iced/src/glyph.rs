@@ -13,6 +13,14 @@ pub enum Icon {
     Search,
     Up,
     Down,
+    Sidebar,
+    Folder,
+    File,
+    Right,
+    Menu,
+    Eye,
+    Refresh,
+    Check,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +51,20 @@ pub fn glyph<'a, Message: 'a>(icon: Icon, side: f32, tint: Color) -> Element<'a,
                     "<circle cx='5' cy='12' r='1' fill='currentColor'/><circle cx='12' cy='12' r='1' fill='currentColor'/><circle cx='19' cy='12' r='1' fill='currentColor'/>"
                 }
                 Icon::Bell => "<path d='M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z'/><path d='M10 20.5a2 2 0 0 0 4 0'/>",
+                Icon::Sidebar => "<rect x='3.5' y='4.5' width='17' height='15' rx='2.5'/><path d='M9.5 4.5v15'/>",
+                Icon::Folder => {
+                    "<path d='M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z'/>"
+                }
+                Icon::File => {
+                    "<path d='M7 3.5h7l4.5 4.5v11a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z'/><path d='M14 3.5V8h4.5'/>"
+                }
+                Icon::Right => "<path d='M9.5 6l6 6-6 6'/>",
+                Icon::Menu => "<path d='M4.5 7h15M4.5 12h15M4.5 17h15'/>",
+                Icon::Eye => {
+                    "<path d='M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z'/><circle cx='12' cy='12' r='2.75'/>"
+                }
+                Icon::Refresh => "<path d='M19.5 12a7.5 7.5 0 1 1-2.2-5.3'/><path d='M19.5 4.5v4h-4'/>",
+                Icon::Check => "<path d='M5 12.5l4.5 4.5L19 7.5'/>",
                 _ => unreachable!(),
             };
             let svg = format!(

@@ -89,8 +89,17 @@ fn refresh_time_zone(now: u64) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
 #[must_use]
-pub fn local_minute() -> Option<u16> {
+pub fn local_time() -> Option<LocalTime> {
     let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
     refresh_time_zone(seconds);
     let seconds = libc::time_t::try_from(seconds).ok()?;
@@ -101,9 +110,19 @@ pub fn local_minute() -> Option<u16> {
     }
     // SAFETY: localtime_r returned a non-null pointer and initialized the output.
     let value = unsafe { value.assume_init() };
-    let hour = u16::try_from(value.tm_hour).ok()?;
-    let minute = u16::try_from(value.tm_min).ok()?;
-    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+    let time = LocalTime {
+        year: value.tm_year + 1900,
+        month: u8::try_from(value.tm_mon + 1).ok()?,
+        day: u8::try_from(value.tm_mday).ok()?,
+        hour: u8::try_from(value.tm_hour).ok()?,
+        minute: u8::try_from(value.tm_min).ok()?,
+    };
+    (time.hour < 24 && time.minute < 60).then_some(time)
+}
+
+#[must_use]
+pub fn local_minute() -> Option<u16> {
+    local_time().map(|time| u16::from(time.hour) * 60 + u16::from(time.minute))
 }
 
 #[cfg(test)]

@@ -32,7 +32,7 @@ pub const RESIZE_BORDER: i32 = 8;
 
 #[must_use]
 pub fn glide_csd_app(app_id: &str) -> bool {
-    matches!(app_id, "glide-files" | "glide-terminal")
+    matches!(app_id, "glide-files" | "glide-terminal" | "glide-text")
 }
 
 const MENU_WIDTH: i32 = 224;

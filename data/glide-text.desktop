@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=Text Editor
+Name[uk]=Текстовий редактор
+GenericName=Notepad
+GenericName[uk]=Блокнот
+Comment=Edit text files and folders of them
+Comment[uk]=Редагування текстових файлів і тек
+Exec=glide-text %F
+Icon=org.gnome.TextEditor
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=text;editor;notepad;markdown;code;plain;текст;редактор;блокнот;нотатки;
+MimeType=text/plain;text/markdown;text/x-markdown;text/x-rust;text/x-python;text/x-python3;text/javascript;application/javascript;text/x-typescript;application/json;application/toml;text/x-toml;application/x-yaml;text/x-yaml;application/x-shellscript;text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;text/x-go;text/x-java;text/x-lua;text/html;text/css;text/xml;application/xml;text/x-log;
+StartupNotify=true
+StartupWMClass=glide-text
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Name[uk]=Нове вікно
+Exec=glide-text --new-window
