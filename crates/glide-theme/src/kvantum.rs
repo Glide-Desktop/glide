@@ -57,6 +57,7 @@ const fn visible(color: Color) -> bool {
 
 struct Svg {
     body: String,
+    defs: String,
     x: f32,
     y: f32,
     tallest: f32,
@@ -64,7 +65,54 @@ struct Svg {
 
 impl Svg {
     const fn new() -> Self {
-        Self { body: String::new(), x: 0.0, y: 0.0, tallest: 0.0 }
+        Self { body: String::new(), defs: String::new(), x: 0.0, y: 0.0, tallest: 0.0 }
+    }
+
+    fn shadow(&mut self, prefix: &str, color: Color, peak: f32) {
+        let stops = |strength: f32| {
+            format!(
+                "<stop offset=\"0\" stop-color=\"{}\" stop-opacity=\"{:.3}\"/><stop offset=\"1\" stop-color=\"{}\" stop-opacity=\"0\"/>",
+                hex(color),
+                peak * strength,
+                hex(color)
+            )
+        };
+        let sides = [
+            ("top", "x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\"", TOP_SHADOW),
+            ("bottom", "x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"", 1.0),
+            ("left", "x1=\"1\" y1=\"0\" x2=\"0\" y2=\"0\"", SIDE_SHADOW),
+            ("right", "x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\"", SIDE_SHADOW),
+        ];
+        for (side, axis, strength) in sides {
+            let _ = write!(
+                self.defs,
+                "<linearGradient id=\"{prefix}-{side}-fade\" {axis}>{}</linearGradient>",
+                stops(strength)
+            );
+        }
+        let corners = [
+            ("topleft", "1", "1", TOP_SHADOW),
+            ("topright", "0", "1", TOP_SHADOW),
+            ("bottomleft", "1", "0", 1.0),
+            ("bottomright", "0", "0", 1.0),
+        ];
+        for (corner, cx, cy, strength) in corners {
+            let _ = write!(
+                self.defs,
+                "<radialGradient id=\"{prefix}-{corner}-fade\" cx=\"{cx}\" cy=\"{cy}\" r=\"1\">{}</radialGradient>",
+                stops(strength)
+            );
+        }
+        let d = SHADOW;
+        let fill = |x: f32, y: f32, w: f32, h: f32, name: &str| {
+            format!("<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"url(#{prefix}-{name}-fade)\"/>")
+        };
+        for (side, w, h) in [("top", EDGE, d), ("bottom", EDGE, d), ("left", d, EDGE), ("right", d, EDGE)] {
+            self.group(&format!("{prefix}-{side}"), w, h, |x, y| fill(x, y, w, h, side));
+        }
+        for corner in ["topleft", "topright", "bottomleft", "bottomright"] {
+            self.group(&format!("{prefix}-{corner}"), d, d, |x, y| fill(x, y, d, d, corner));
+        }
     }
 
     fn place(&mut self, w: f32, h: f32) -> (f32, f32) {
@@ -187,8 +235,8 @@ impl Svg {
     fn finish(self) -> String {
         let height = self.y + self.tallest;
         format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{ROW}\" height=\"{height}\" viewBox=\"0 0 {ROW} {height}\">\n{}</svg>\n",
-            self.body
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{ROW}\" height=\"{height}\" viewBox=\"0 0 {ROW} {height}\">\n<defs>{}</defs>\n{}</svg>\n",
+            self.defs, self.body
         )
     }
 }
@@ -414,6 +462,9 @@ fn indicators(svg: &mut Svg, p: &Palette) {
 }
 
 const TAB_BAR: f32 = 3.0;
+const SHADOW: f32 = 10.0;
+const TOP_SHADOW: f32 = 0.55;
+const SIDE_SHADOW: f32 = 0.8;
 const CHECK: f32 = 18.0;
 const CHECK_RADIUS: f32 = 5.0;
 const BOX_STROKE: f32 = 1.5;
@@ -447,6 +498,10 @@ pub fn svg(tokens: &Tokens) -> String {
     for id in ["toolbar-handle", "toolbar-separator", "header-separator"] {
         svg.group(id, 8.0, 10.0, |x, y| Svg::rect(x + 3.5, y, 1.0, 10.0, rule));
     }
+    let layers = crate::elevation::layers(crate::elevation::Level::El3, t.appearance);
+    let tint = layers.first().map_or(Color([0.0, 0.0, 0.0, 1.0]), |layer| layer.color.with_alpha(1.0));
+    let peak = layers.iter().map(|layer| layer.color.0[3]).sum::<f32>() / 2.0;
+    svg.shadow("menu-shadow", tint, peak);
     indicators(&mut svg, &p);
     svg.finish()
 }
@@ -512,7 +567,7 @@ pub fn config(tokens: &Tokens) -> String {
             ("translucent_windows", "false".into()),
             ("blurring", "false".into()),
             ("popup_blurring", "false".into()),
-            ("menu_shadow_depth", "0".into()),
+            ("menu_shadow_depth", SHADOW.to_string()),
             ("tooltip_shadow_depth", "0".into()),
             ("submenu_overlap", "0".into()),
             ("animate_states", "true".into()),
@@ -831,6 +886,17 @@ mod tests {
         assert!(!group(&svg, "tab-normal-bottom").contains(&hex(tokens.acc_bg)));
         assert!(group(&svg, "tabframe-normal-top").contains(&hex(over(tokens.line, tokens.win_bg))));
         assert!(section_of(&config(&tokens), "Tab").contains(&format!("text.toggle.color={}", hex(tokens.acc_text))));
+    }
+
+    #[test]
+    fn menus_cast_an_el3_shadow_from_gradient_edges() {
+        let tokens = Tokens::new(Appearance::Dark, Accent::Blue);
+        let (config, svg) = (config(&tokens), svg(&tokens));
+        assert!(config.contains(&format!("menu_shadow_depth={SHADOW}")));
+        for part in ["top", "bottom", "left", "right", "topleft", "topright", "bottomleft", "bottomright"] {
+            assert!(group(&svg, &format!("menu-shadow-{part}")).contains(&format!("url(#menu-shadow-{part}-fade)")));
+            assert!(svg.contains(&format!("id=\"menu-shadow-{part}-fade\"")), "{part} has its gradient");
+        }
     }
 
     #[test]
