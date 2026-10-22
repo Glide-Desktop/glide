@@ -1644,6 +1644,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "glide-sdk"
+version = "0.1.0"
+dependencies = [
+ "glide-app",
+ "glide-config",
+ "glide-iced",
+ "glide-ipc",
+ "glide-theme",
+ "glide-ui",
+ "iced",
+ "iced_tiny_skia",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
 name = "glide-settings"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,39 @@
+[package]
+name = "glide-sdk"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Build applications that look and behave like Glide's own"
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "wayland",
+    "tokio",
+    "svg",
+    "image",
+    "web-colors",
+    "advanced",
+] }
+glide-app = { path = "../glide-app" }
+glide-config = { path = "../glide-config" }
+glide-iced = { path = "../glide-iced" }
+glide-ipc = { path = "../glide-ipc" }
+glide-theme = { path = "../glide-theme" }
+glide-ui = { path = "../glide-ui" }
+raw-window-handle = "0.6"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+zbus = "5"
+
+[dev-dependencies]
+iced_tiny_skia = { version = "0.14", default-features = false }
+
+[lints]
+workspace = true

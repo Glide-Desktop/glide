@@ -15,6 +15,7 @@ members = [
     "crates/glide-notify",
     "crates/glide-paint",
     "crates/glide-portal",
+    "crates/glide-sdk",
     "crates/glide-settings",
     "crates/glide-terminal",
     "crates/glide-text",

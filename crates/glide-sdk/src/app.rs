@@ -1,0 +1,811 @@
+use std::borrow::Cow;
+use std::time::{Duration, Instant, SystemTime};
+
+use glide_app::menubar::{self, Handles, Publisher};
+use glide_iced::Paint;
+use glide_iced::style::{self, SP2};
+use glide_theme::{component, motion};
+use iced::border::Radius;
+use iced::keyboard::{self, Key, key::Named};
+use iced::widget::{column, container, mouse_area};
+use iced::{Element, Fill, Point, Size, Subscription, Task};
+
+use crate::look::{self, Lang, Look};
+use crate::menu::{self, Menu, Popup, Source};
+use crate::overlay::{self, Answer, Dialog, Toast};
+use crate::widget::separator;
+use crate::window::{self, Action, Header, Window};
+
+const TICK: Duration = Duration::from_secs(1);
+
+#[derive(Clone)]
+pub struct Settings {
+    pub app_id: String,
+    pub size: Size,
+    pub min_size: Option<Size>,
+    pub fonts: Vec<Cow<'static, [u8]>>,
+}
+
+impl Settings {
+    #[must_use]
+    pub fn new(app_id: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            size: Size::new(960.0, 640.0),
+            min_size: Some(Size::new(420.0, 300.0)),
+            fonts: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn size(mut self, width: f32, height: f32) -> Self {
+        self.size = Size::new(width, height);
+        self
+    }
+
+    #[must_use]
+    pub fn min_size(mut self, width: f32, height: f32) -> Self {
+        self.min_size = Some(Size::new(width, height));
+        self
+    }
+
+    #[must_use]
+    pub fn font(mut self, bytes: impl Into<Cow<'static, [u8]>>) -> Self {
+        self.fonts.push(bytes.into());
+        self
+    }
+}
+
+pub struct Shell<M> {
+    app_id: String,
+    look: Look,
+    paint: Paint,
+    lang: Lang,
+    window: Window,
+    pointer: Point,
+    toast: Option<Toast>,
+    dialog: Option<Dialog<M>>,
+    closing: Option<Dialog<M>>,
+    popup: Option<Popup<M>>,
+    actions: Vec<Action>,
+    exit: bool,
+    top_bar_menu: bool,
+}
+
+impl<M: Clone> Shell<M> {
+    fn new(app_id: String, look: Look) -> Self {
+        Self {
+            app_id,
+            paint: look.paint(),
+            lang: look.lang(),
+            look,
+            window: Window::default(),
+            pointer: Point::ORIGIN,
+            toast: None,
+            dialog: None,
+            closing: None,
+            popup: None,
+            actions: Vec::new(),
+            exit: false,
+            top_bar_menu: false,
+        }
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    #[must_use]
+    pub fn look(&self) -> &Look {
+        &self.look
+    }
+
+    #[must_use]
+    pub fn paint(&self) -> &Paint {
+        &self.paint
+    }
+
+    #[must_use]
+    pub fn lang(&self) -> Lang {
+        self.lang
+    }
+
+    #[must_use]
+    pub fn t<'a>(&self, uk: &'a str, en: &'a str) -> &'a str {
+        self.lang.pick(uk, en)
+    }
+
+    #[must_use]
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+
+    #[must_use]
+    pub fn pointer(&self) -> Point {
+        self.pointer
+    }
+
+    #[must_use]
+    pub fn menu_in_top_bar(&self) -> bool {
+        self.top_bar_menu
+    }
+
+    #[must_use]
+    pub fn has_dialog(&self) -> bool {
+        self.dialog.is_some()
+    }
+
+    pub fn toast(&mut self, text: impl Into<String>) {
+        self.toast = Some(Toast::new(text));
+    }
+
+    pub fn dialog(&mut self, dialog: Dialog<M>) {
+        self.popup = None;
+        self.dialog = Some(dialog);
+    }
+
+    pub fn close_dialog(&mut self) {
+        if let Some(mut dialog) = self.dialog.take() {
+            dialog.reveal.close(motion::t2());
+            self.closing = Some(dialog);
+        }
+    }
+
+    pub fn context_menu(&mut self, items: Vec<menu::Item<M>>) {
+        self.context_menu_at(self.pointer, items);
+    }
+
+    pub fn context_menu_at(&mut self, at: Point, items: Vec<menu::Item<M>>) {
+        self.popup = Some(Popup::new(Source::Context, items, at));
+    }
+
+    pub fn close_menu(&mut self) {
+        if let Some(popup) = &mut self.popup {
+            popup.reveal.close(motion::t2());
+        }
+    }
+
+    pub fn window_action(&mut self, action: Action) {
+        self.actions.push(action);
+    }
+
+    pub fn exit(&mut self) {
+        self.exit = true;
+    }
+
+    fn animating(&self) -> bool {
+        let now = Instant::now();
+        self.toast.as_ref().is_some_and(|toast| toast.animating(now))
+            || self.popup.as_ref().is_some_and(|popup| popup.reveal.is_animating(motion::t2()))
+            || self.dialog.as_ref().is_some_and(|dialog| dialog.reveal.is_animating(motion::t2()))
+            || self.closing.as_ref().is_some_and(|dialog| dialog.reveal.is_animating(motion::t2()))
+    }
+
+    fn settle(&mut self) {
+        let duration = motion::t2();
+        for reveal in [
+            self.popup.as_mut().map(|popup| &mut popup.reveal),
+            self.dialog.as_mut().map(|dialog| &mut dialog.reveal),
+            self.closing.as_mut().map(|dialog| &mut dialog.reveal),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            reveal.settle(duration);
+        }
+        self.popup.take_if(|popup| !popup.reveal.is_open() && !popup.reveal.is_visible(duration));
+        self.closing.take_if(|dialog| !dialog.reveal.is_visible(duration));
+    }
+}
+
+pub trait App: Sized + 'static {
+    type Message: Clone + Send + std::fmt::Debug + 'static;
+
+    fn new(shell: &mut Shell<Self::Message>) -> (Self, Task<Self::Message>);
+
+    fn title(&self, shell: &Shell<Self::Message>) -> String;
+
+    fn update(&mut self, message: Self::Message, shell: &mut Shell<Self::Message>) -> Task<Self::Message>;
+
+    fn view<'a>(&'a self, shell: &'a Shell<Self::Message>) -> Element<'a, Self::Message>;
+
+    fn subtitle(&self, _shell: &Shell<Self::Message>) -> Option<String> {
+        None
+    }
+
+    fn menus(&self, _shell: &Shell<Self::Message>) -> Vec<Menu<Self::Message>> {
+        Vec::new()
+    }
+
+    fn toolbar<'a>(&'a self, _shell: &'a Shell<Self::Message>) -> Vec<Element<'a, Self::Message>> {
+        Vec::new()
+    }
+
+    fn subscription(&self) -> Subscription<Self::Message> {
+        Subscription::none()
+    }
+
+    fn close_requested(&mut self, _shell: &mut Shell<Self::Message>) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Event<M> {
+    App(M),
+    Window(Action),
+    Look(glide_app::Look),
+    Tick,
+    Frame,
+    Key(keyboard::Event, bool),
+    Pointer(Point),
+    Handles(Option<Handles>),
+    MenuBar(menubar::Event),
+    Bar(menu::BarEvent),
+    Popup(menu::Event),
+    Dialog(Answer),
+    CloseRequested,
+}
+
+struct Host<A: App> {
+    app: A,
+    shell: Shell<A::Message>,
+    shell_look: Option<glide_app::Look>,
+    font_family: Option<String>,
+    stamp: Option<SystemTime>,
+    handles: Option<Handles>,
+    publisher: Option<Publisher>,
+    menus: Vec<Menu<A::Message>>,
+    exported: Vec<A::Message>,
+}
+
+fn wayland_handles(window: &dyn iced::window::Window) -> Option<Handles> {
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    let display = window.display_handle().ok()?.as_raw();
+    let surface = window.window_handle().ok()?.as_raw();
+    match (display, surface) {
+        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => {
+            Some(Handles { display: display.display.as_ptr() as usize, surface: surface.surface.as_ptr() as usize })
+        }
+        _ => None,
+    }
+}
+
+const BAR_START: f32 = SP2 + component::SMALL_CONTROL + SP2;
+
+impl<A: App> Host<A> {
+    fn boot(app_id: &str) -> (Self, Task<Event<A::Message>>) {
+        look::watch_reduced_motion();
+        let look = Look::load();
+        motion::set_scale(look.motion_scale);
+        let font_family = look.font_family.clone();
+        glide_iced::font::use_ui_family(font_family.as_deref());
+        let mut shell = Shell::new(app_id.to_string(), look);
+        let (app, task) = A::new(&mut shell);
+        let _ = std::thread::Builder::new().name("glide-sdk-frame".into()).spawn(|| {
+            if let Err(err) = crate::system::frame_windows() {
+                tracing::debug!("the shell does not frame this window: {err}");
+            }
+        });
+        let mut host = Self {
+            app,
+            shell,
+            shell_look: None,
+            font_family,
+            stamp: look::stamp(look::shell_path().as_deref()),
+            handles: None,
+            publisher: None,
+            menus: Vec::new(),
+            exported: Vec::new(),
+        };
+        host.refresh_menus();
+        let handles = iced::window::latest().and_then(|id| iced::window::run(id, wayland_handles)).map(Event::Handles);
+        (host, Task::batch([task.map(Event::App), handles]))
+    }
+
+    fn apply_look(&mut self) {
+        let look = Look::load().with_shell(self.shell_look.as_ref());
+        motion::set_scale(look.motion_scale);
+        if self.font_family != look.font_family {
+            glide_iced::font::use_ui_family(look.font_family.as_deref());
+            self.font_family.clone_from(&look.font_family);
+        }
+        self.shell.paint = look.paint();
+        self.shell.lang = look.lang();
+        self.shell.look = look;
+    }
+
+    fn refresh_menus(&mut self) {
+        self.menus = self.app.menus(&self.shell);
+        if let Some(publisher) = &self.publisher {
+            let (entries, actions) = menu::export(&self.menus);
+            self.exported = actions;
+            publisher.set(entries);
+        }
+    }
+
+    fn run(&mut self, message: A::Message) -> Task<Event<A::Message>> {
+        self.app.update(message, &mut self.shell).map(Event::App)
+    }
+
+    fn update(&mut self, event: Event<A::Message>) -> Task<Event<A::Message>> {
+        let quiet = matches!(event, Event::Pointer(_) | Event::Frame | Event::Tick);
+        let task = self.handle(event);
+        if !quiet {
+            self.refresh_menus();
+        }
+        let actions: Vec<Task<Event<A::Message>>> = std::mem::take(&mut self.shell.actions)
+            .into_iter()
+            .map(|action| self.shell.window.update(action).map(Event::Window))
+            .collect();
+        let exit = if self.shell.exit { iced::exit() } else { Task::none() };
+        Task::batch([task, Task::batch(actions), exit])
+    }
+
+    fn handle(&mut self, event: Event<A::Message>) -> Task<Event<A::Message>> {
+        match event {
+            Event::App(message) => self.run(message),
+            Event::Window(action) => {
+                if matches!(action, Action::Drag | Action::ToggleMaximize) {
+                    self.shell.close_menu();
+                }
+                self.shell.window.update(action).map(Event::Window)
+            }
+            Event::Look(look) => {
+                self.shell_look = Some(look);
+                self.apply_look();
+                Task::none()
+            }
+            Event::Tick => {
+                let now = Instant::now();
+                self.shell.toast.take_if(|toast| toast.expired(now));
+                let stamp = look::stamp(look::shell_path().as_deref());
+                if stamp != self.stamp {
+                    self.stamp = stamp;
+                    self.apply_look();
+                } else if self.shell.look.appearance_now() != self.shell.paint.tokens.appearance {
+                    self.shell.paint = self.shell.look.paint();
+                }
+                Task::none()
+            }
+            Event::Frame => {
+                self.shell.settle();
+                Task::none()
+            }
+            Event::Key(event, captured) => self.on_key(&event, captured),
+            Event::Pointer(point) => {
+                self.shell.pointer = point;
+                Task::none()
+            }
+            Event::Handles(handles) => {
+                self.handles = handles;
+                Task::none()
+            }
+            Event::MenuBar(event) => self.on_menu_bar(event),
+            Event::Bar(event) => {
+                self.on_bar(event);
+                Task::none()
+            }
+            Event::Popup(event) => self.on_popup(event),
+            Event::Dialog(answer) => self.on_answer(answer),
+            Event::CloseRequested => {
+                if self.app.close_requested(&mut self.shell) {
+                    self.shell.exit = true;
+                }
+                Task::none()
+            }
+        }
+    }
+
+    fn on_menu_bar(&mut self, event: menubar::Event) -> Task<Event<A::Message>> {
+        match event {
+            menubar::Event::Ready(publisher) => {
+                self.publisher = Some(publisher);
+                self.refresh_menus();
+            }
+            menubar::Event::Shown(shown) => {
+                self.shell.top_bar_menu = shown;
+                if shown && self.shell.popup.as_ref().is_some_and(|popup| matches!(popup.source, Source::Bar(_))) {
+                    self.shell.close_menu();
+                }
+            }
+            menubar::Event::Activated(id) => {
+                if let Some(message) = menu::exported(&self.exported, id) {
+                    return self.run(message);
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn open_bar(&mut self, index: usize) {
+        let Some(menu) = self.menus.get(index) else { return };
+        let at = Point::new(menu::bar_x(&self.menus, BAR_START, index), window::HEADER - 6.0);
+        self.shell.popup = Some(Popup::new(Source::Bar(index), menu.items.clone(), at));
+    }
+
+    fn on_bar(&mut self, event: menu::BarEvent) {
+        let open = self.shell.popup.as_ref().filter(|popup| popup.reveal.is_open()).map(|popup| popup.source);
+        match event {
+            menu::BarEvent::Pressed(index) if open == Some(Source::Bar(index)) => self.shell.close_menu(),
+            menu::BarEvent::Pressed(index) => self.open_bar(index),
+            menu::BarEvent::Hovered(index) => {
+                if matches!(open, Some(Source::Bar(current)) if current != index) {
+                    self.open_bar(index);
+                }
+            }
+        }
+    }
+
+    fn on_popup(&mut self, event: menu::Event) -> Task<Event<A::Message>> {
+        let Some(popup) = self.shell.popup.as_mut() else { return Task::none() };
+        match event {
+            menu::Event::Hovered(index) => popup.selected = Some(index),
+            menu::Event::Dismiss => self.shell.close_menu(),
+            menu::Event::Picked(index) => {
+                let outcome = popup.pick(index);
+                return self.finish(outcome);
+            }
+        }
+        Task::none()
+    }
+
+    fn finish(&mut self, outcome: menu::Outcome<A::Message>) -> Task<Event<A::Message>> {
+        match outcome {
+            menu::Outcome::None => Task::none(),
+            menu::Outcome::Close => {
+                self.shell.close_menu();
+                Task::none()
+            }
+            menu::Outcome::Run(message) => {
+                self.shell.close_menu();
+                self.run(message)
+            }
+        }
+    }
+
+    fn on_answer(&mut self, answer: Answer) -> Task<Event<A::Message>> {
+        let Some(dialog) = &self.shell.dialog else { return Task::none() };
+        let message = match answer {
+            Answer::Chose(index) => dialog.choices.get(index).and_then(|choice| choice.message.clone()),
+            Answer::Dismiss => None,
+        };
+        self.shell.close_dialog();
+        message.map_or_else(Task::none, |message| self.run(message))
+    }
+
+    fn on_key(&mut self, event: &keyboard::Event, captured: bool) -> Task<Event<A::Message>> {
+        let keyboard::Event::KeyPressed { key, physical_key, modifiers, .. } = event else { return Task::none() };
+        if let Some(dialog) = &self.shell.dialog {
+            return dialog.key(key).map_or_else(Task::none, |answer| self.on_answer(answer));
+        }
+        if let Some(popup) = self.shell.popup.as_mut().filter(|popup| popup.reveal.is_open()) {
+            let source = popup.source;
+            if let Some(outcome) = popup.key(key) {
+                return self.finish(outcome);
+            }
+            if let (Source::Bar(index), Key::Named(Named::ArrowLeft | Named::ArrowRight)) = (source, key) {
+                let count = self.menus.len().max(1);
+                let next = if matches!(key, Key::Named(Named::ArrowRight)) {
+                    (index + 1) % count
+                } else {
+                    (index + count - 1) % count
+                };
+                self.open_bar(next);
+            }
+            return Task::none();
+        }
+        if *key == Key::Named(Named::F10) && modifiers.is_empty() && !self.shell.top_bar_menu && !self.menus.is_empty()
+        {
+            self.open_bar(0);
+            if let Some(popup) = &mut self.shell.popup {
+                popup.step(true);
+            }
+            return Task::none();
+        }
+        if captured {
+            return Task::none();
+        }
+        menu::shortcut(&self.menus, key, *physical_key, *modifiers).map_or_else(Task::none, |message| self.run(message))
+    }
+
+    fn view(&self) -> Element<'_, Event<A::Message>> {
+        let shell = &self.shell;
+        let paint = shell.paint;
+        let window = shell.window;
+        let lang = shell.lang;
+        let mut header = Header::new(self.app.title(shell))
+            .subtitle(self.app.subtitle(shell))
+            .labels(lang.pick("Розгорнути", "Maximize"), lang.pick("Закрити", "Close"));
+        let bar = !shell.top_bar_menu && !self.menus.is_empty();
+        if bar {
+            let open = shell.popup.as_ref().and_then(|popup| match popup.source {
+                Source::Bar(index) if popup.reveal.is_open() => Some(index),
+                _ => None,
+            });
+            header = header.leading(menu::bar(&paint, &self.menus, open).map(Event::Bar));
+        }
+        for element in self.app.toolbar(shell) {
+            header = header.trailing(element.map(Event::App));
+        }
+        let taken = if bar { menu::bar_total(&self.menus) } else { 0.0 };
+        let header = window::header(&paint, &window, header, Event::Window, Event::CloseRequested, taken);
+        let corner = window.corner();
+        let background = paint.win_bg();
+        let content = container(self.app.view(shell).map(Event::App))
+            .width(Fill)
+            .height(Fill)
+            .style(move |_| style::rounded(background, Radius::default().bottom_left(corner).bottom_right(corner)));
+        let body = mouse_area(column![header, separator(&paint), content]).on_move(Event::Pointer);
+        let mut layers: Vec<Element<'_, Event<A::Message>>> = vec![body.into()];
+        if !window.edge_to_edge() {
+            layers.push(window::resize_handles(Event::Window));
+        }
+        if let Some(toast) = &shell.toast {
+            layers.push(overlay::toast(&paint, toast, window.size));
+        }
+        if let Some(popup) = &shell.popup {
+            layers.push(menu::view(&paint, popup, window.size).map(Event::Popup));
+        }
+        if let Some(dialog) = shell.dialog.as_ref().or(shell.closing.as_ref()) {
+            layers.push(overlay::dialog(&paint, dialog, window.size, corner).map(Event::Dialog));
+        }
+        iced::widget::stack(layers).into()
+    }
+
+    fn subscription(&self) -> Subscription<Event<A::Message>> {
+        let mut subscriptions = vec![
+            iced::event::listen_with(|event, status, _| match event {
+                iced::Event::Keyboard(event) => Some(Event::Key(event, status == iced::event::Status::Captured)),
+                iced::Event::Window(iced::window::Event::Focused) => Some(Event::Window(Action::Focused(true))),
+                iced::Event::Window(iced::window::Event::Unfocused) => Some(Event::Window(Action::Focused(false))),
+                iced::Event::Window(iced::window::Event::Resized(size) | iced::window::Event::Opened { size, .. }) => {
+                    Some(Event::Window(Action::Resized(size)))
+                }
+                _ => None,
+            }),
+            iced::window::close_requests().map(|_| Event::CloseRequested),
+            iced::time::every(TICK).map(|_| Event::Tick),
+            Subscription::run(glide_app::look_changes).map(Event::Look),
+            self.app.subscription().map(Event::App),
+        ];
+        if let Some(handles) = self.handles {
+            subscriptions.push(Subscription::run_with(handles, menubar::events).map(Event::MenuBar));
+        }
+        if self.shell.animating() {
+            subscriptions.push(iced::window::frames().map(|_| Event::Frame));
+        }
+        Subscription::batch(subscriptions)
+    }
+}
+
+pub fn run<A: App>(settings: Settings) -> iced::Result {
+    let window = iced::window::Settings {
+        size: settings.size,
+        min_size: settings.min_size,
+        decorations: false,
+        transparent: true,
+        exit_on_close_request: false,
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: settings.app_id.clone(),
+            ..iced::window::settings::PlatformSpecific::default()
+        },
+        ..iced::window::Settings::default()
+    };
+    let app_id = settings.app_id.clone();
+    settings
+        .fonts
+        .into_iter()
+        .fold(
+            iced::application(move || Host::<A>::boot(&app_id), Host::<A>::update, Host::<A>::view),
+            iced::Application::font,
+        )
+        .title(|host: &Host<A>| host.app.title(&host.shell))
+        .theme(|host: &Host<A>| host.shell.paint.iced_theme())
+        .style(|host: &Host<A>, _| iced::theme::Style {
+            background_color: iced::Color::TRANSPARENT,
+            text_color: host.shell.paint.fg_1(),
+        })
+        .subscription(Host::<A>::subscription)
+        .window(window)
+        .antialiasing(true)
+        .run()
+}
+
+pub struct Harness<A: App> {
+    host: Host<A>,
+}
+
+impl<A: App> Harness<A> {
+    #[must_use]
+    pub fn new(app_id: &str, look: Look, size: Size) -> Self {
+        motion::set_scale(look.motion_scale);
+        let mut shell = Shell::new(app_id.to_string(), look);
+        shell.window.size = size;
+        let (app, _) = A::new(&mut shell);
+        let mut host = Host {
+            app,
+            shell,
+            shell_look: None,
+            font_family: None,
+            stamp: None,
+            handles: None,
+            publisher: None,
+            menus: Vec::new(),
+            exported: Vec::new(),
+        };
+        host.refresh_menus();
+        Self { host }
+    }
+
+    pub fn send(&mut self, event: Event<A::Message>) {
+        let _ = self.host.update(event);
+    }
+
+    pub fn message(&mut self, message: A::Message) {
+        self.send(Event::App(message));
+    }
+
+    #[must_use]
+    pub fn app(&self) -> &A {
+        &self.host.app
+    }
+
+    #[must_use]
+    pub fn shell(&self) -> &Shell<A::Message> {
+        &self.host.shell
+    }
+
+    #[must_use]
+    pub fn menus(&self) -> &[Menu<A::Message>] {
+        &self.host.menus
+    }
+
+    #[must_use]
+    pub fn exiting(&self) -> bool {
+        self.host.shell.exit
+    }
+
+    #[must_use]
+    pub fn view(&self) -> Element<'_, Event<A::Message>> {
+        self.host.view()
+    }
+
+    #[must_use]
+    pub fn theme(&self) -> iced::Theme {
+        self.host.shell.paint.iced_theme()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::menu::Item;
+    use crate::widget::Tone;
+
+    #[derive(Default)]
+    struct Notes {
+        saved: usize,
+        dirty: bool,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Save,
+        Edit,
+        Discard,
+    }
+
+    impl App for Notes {
+        type Message = Message;
+
+        fn new(_: &mut Shell<Message>) -> (Self, Task<Message>) {
+            (Self::default(), Task::none())
+        }
+
+        fn title(&self, _: &Shell<Message>) -> String {
+            "Notes".into()
+        }
+
+        fn update(&mut self, message: Message, shell: &mut Shell<Message>) -> Task<Message> {
+            match message {
+                Message::Save => {
+                    self.saved += 1;
+                    self.dirty = false;
+                    shell.toast("Saved");
+                }
+                Message::Edit => self.dirty = true,
+                Message::Discard => shell.exit(),
+            }
+            Task::none()
+        }
+
+        fn view<'a>(&'a self, _: &'a Shell<Message>) -> Element<'a, Message> {
+            iced::widget::Space::new().into()
+        }
+
+        fn menus(&self, _: &Shell<Message>) -> Vec<Menu<Message>> {
+            vec![Menu::new("File", vec![Item::action("Save", Message::Save).shortcut("Ctrl+S").enabled(self.dirty)])]
+        }
+
+        fn close_requested(&mut self, shell: &mut Shell<Message>) -> bool {
+            if self.dirty {
+                shell.dialog(
+                    Dialog::new("Unsaved", "").choice("Discard", Tone::Danger, Message::Discard).cancel("Cancel"),
+                );
+            }
+            !self.dirty
+        }
+    }
+
+    fn host() -> Host<Notes> {
+        Harness::<Notes>::new("org.example.Notes", Look::default(), Size::new(800.0, 600.0)).host
+    }
+
+    fn press(key: Key, physical: keyboard::key::Code, modifiers: keyboard::Modifiers) -> Event<Message> {
+        Event::Key(
+            keyboard::Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: keyboard::key::Physical::Code(physical),
+                location: keyboard::Location::Standard,
+                modifiers,
+                text: None,
+                repeat: false,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn menu_shortcuts_follow_the_state_the_menus_were_built_from() {
+        let mut host = host();
+        let ctrl_s = || press(Key::Character("s".into()), keyboard::key::Code::KeyS, keyboard::Modifiers::CTRL);
+        let _ = host.update(ctrl_s());
+        assert_eq!(host.app.saved, 0, "Save is disabled while clean");
+        let _ = host.update(Event::App(Message::Edit));
+        let _ = host.update(ctrl_s());
+        assert_eq!(host.app.saved, 1);
+        assert!(host.shell.toast.is_some());
+    }
+
+    #[test]
+    fn a_refused_close_waits_for_the_dialog() {
+        let mut host = host();
+        let _ = host.update(Event::App(Message::Edit));
+        let _ = host.update(Event::CloseRequested);
+        assert!(!host.shell.exit);
+        assert!(host.shell.has_dialog());
+        let _ =
+            host.update(press(Key::Named(Named::Escape), keyboard::key::Code::Escape, keyboard::Modifiers::empty()));
+        assert!(!host.shell.has_dialog(), "Esc dismisses the dialog");
+        let _ = host.update(Event::CloseRequested);
+        let _ = host.update(Event::Dialog(Answer::Chose(0)));
+        assert!(host.shell.exit, "Discard ran its message");
+    }
+
+    #[test]
+    fn the_in_window_menu_opens_with_f10_and_runs_with_enter() {
+        let mut host = host();
+        let _ = host.update(Event::App(Message::Edit));
+        let _ = host.update(press(Key::Named(Named::F10), keyboard::key::Code::F10, keyboard::Modifiers::empty()));
+        assert!(matches!(host.shell.popup.as_ref().map(|popup| popup.source), Some(Source::Bar(0))));
+        let _ = host.update(press(Key::Named(Named::Enter), keyboard::key::Code::Enter, keyboard::Modifiers::empty()));
+        assert_eq!(host.app.saved, 1);
+        assert!(!host.shell.popup.as_ref().is_some_and(|popup| popup.reveal.is_open()));
+    }
+
+    #[test]
+    fn the_top_bar_menu_hides_the_in_window_one_and_runs_exported_ids() {
+        let mut host = host();
+        let _ = host.update(Event::App(Message::Edit));
+        let _ = host.update(Event::MenuBar(menubar::Event::Shown(true)));
+        assert!(host.shell.menu_in_top_bar());
+        let _ = host.update(press(Key::Named(Named::F10), keyboard::key::Code::F10, keyboard::Modifiers::empty()));
+        assert!(host.shell.popup.is_none(), "F10 belongs to the top bar now");
+        host.exported = menu::export(&host.menus).1;
+        let _ = host.update(Event::MenuBar(menubar::Event::Activated(1)));
+        assert_eq!(host.app.saved, 1);
+    }
+}

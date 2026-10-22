@@ -37,6 +37,10 @@ macro_rules! colors {
 
 colors!(
     win_bg,
+    view_bg,
+    sidebar_bg,
+    card_bg,
+    sunken_bg,
     bar_bg,
     bar_bg_idle,
     popover_bg,
@@ -52,10 +56,16 @@ colors!(
     acc_bg,
     acc_bg_hover,
     acc_fg,
+    acc_text,
     acc_soft,
+    acc_soft_fg,
+    acc_ring,
+    ok,
+    ok_soft,
     danger,
     danger_soft,
     warn,
+    warn_soft,
 );
 
 #[must_use]
