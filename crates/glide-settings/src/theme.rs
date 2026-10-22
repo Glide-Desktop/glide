@@ -1,4 +1,4 @@
-use iced::widget::{button, container, pick_list, scrollable, slider, text_input, toggler};
+use iced::widget::{button, container, scrollable, text_input};
 use serde::{Deserialize, Serialize};
 
 pub const R1: f32 = glide_theme::shape::R1;
@@ -386,32 +386,6 @@ fn state_fill(base: iced::Color, layer: iced::Color, status: button::Status) -> 
 }
 
 #[must_use]
-pub fn button_primary(theme: &ThemeState, status: button::Status) -> button::Style {
-    use glide_theme::elevation::Level;
-    let (bg, text, shadow) = match status {
-        button::Status::Active => (theme.acc_bg(), theme.acc_fg(), elevation(theme, Level::El1)),
-        button::Status::Hovered => (theme.acc_bg_hover(), theme.acc_fg(), elevation(theme, Level::El2)),
-        button::Status::Pressed => {
-            (press_layer(theme.acc_bg(), iced::Color::WHITE), theme.acc_fg(), elevation(theme, Level::El1))
-        }
-        button::Status::Disabled => (theme.fill_2(), theme.fg_4(), iced::Shadow::default()),
-    };
-    button::Style { shadow, ..flat_button(Some(bg), text, radius_r2()) }
-}
-
-#[must_use]
-pub fn button_secondary(theme: &ThemeState, status: button::Status) -> button::Style {
-    let (bg, text) = if status == button::Status::Disabled {
-        let mut dim = theme.fill_1();
-        dim.a *= 0.5;
-        (dim, theme.fg_4())
-    } else {
-        (state_fill(theme.fill_1(), theme.state(), status), theme.fg_1())
-    };
-    flat_button(Some(bg), text, radius_r2())
-}
-
-#[must_use]
 pub fn button_ghost(theme: &ThemeState, status: button::Status) -> button::Style {
     let text = match status {
         button::Status::Active => theme.fg_2(),
@@ -420,46 +394,6 @@ pub fn button_ghost(theme: &ThemeState, status: button::Status) -> button::Style
     };
     let bg = state_fill(iced::Color::TRANSPARENT, theme.state(), status);
     flat_button(Some(bg), text, radius_r2())
-}
-
-#[must_use]
-pub fn toggle_style(theme: &ThemeState, status: toggler::Status) -> toggler::Style {
-    let (is_toggled, is_hovered, is_disabled) = match status {
-        toggler::Status::Active { is_toggled } => (is_toggled, false, false),
-        toggler::Status::Hovered { is_toggled } => (is_toggled, true, false),
-        toggler::Status::Disabled { is_toggled } => (is_toggled, false, true),
-    };
-
-    let track_bg = if is_disabled {
-        theme.fill_2()
-    } else if is_toggled {
-        if is_hovered { hover_layer(theme.acc_bg(), iced::Color::WHITE) } else { theme.acc_bg() }
-    } else if is_hovered {
-        hover_layer(theme.fill_3(), theme.state())
-    } else {
-        theme.fill_3()
-    };
-
-    let thumb_color = if is_toggled {
-        iced::Color::WHITE
-    } else {
-        match theme.appearance {
-            Appearance::Light => iced::Color::WHITE,
-            Appearance::Dark => iced::Color::from_rgb(0.812, 0.800, 0.780),
-        }
-    };
-
-    toggler::Style {
-        background: iced::Background::Color(track_bg),
-        background_border_width: 0.0,
-        background_border_color: iced::Color::TRANSPARENT,
-        foreground: iced::Background::Color(thumb_color),
-        foreground_border_width: 0.0,
-        foreground_border_color: iced::Color::TRANSPARENT,
-        text_color: Some(if is_disabled { theme.fg_4() } else { theme.fg_1() }),
-        border_radius: Some(radius_round()),
-        padding_ratio: SWITCH_PADDING_RATIO,
-    }
 }
 
 #[must_use]
@@ -507,29 +441,6 @@ pub fn search_field_style(theme: &ThemeState, status: text_input::Status) -> tex
 }
 
 #[must_use]
-pub fn slider_style(theme: &ThemeState, status: slider::Status) -> slider::Style {
-    let (handle_radius, border_width, border_color) = match status {
-        slider::Status::Active => (9.0, 0.0, iced::Color::TRANSPARENT),
-        slider::Status::Hovered => (9.7, 2.0, theme.acc_ring()),
-        slider::Status::Dragged => (10.2, 3.0, theme.acc_ring()),
-    };
-
-    slider::Style {
-        rail: slider::Rail {
-            backgrounds: (iced::Background::Color(theme.acc_bg()), iced::Background::Color(theme.fill_2())),
-            width: 6.0,
-            border: iced::Border { color: iced::Color::TRANSPARENT, width: 0.0, radius: radius_r1() },
-        },
-        handle: slider::Handle {
-            shape: slider::HandleShape::Circle { radius: handle_radius },
-            background: iced::Background::Color(theme.acc_bg()),
-            border_width,
-            border_color,
-        },
-    }
-}
-
-#[must_use]
 pub fn sidebar_item_style(theme: &ThemeState, selected: bool, status: button::Status) -> button::Style {
     let (base, text) =
         if selected { (theme.acc_soft(), theme.acc_soft_fg()) } else { (iced::Color::TRANSPARENT, theme.fg_1()) };
@@ -567,8 +478,6 @@ pub const SECTION_GAP: f32 = 24.0;
 pub const PAGE_PADDING_X: f32 = 32.0;
 pub const PAGE_PADDING_TOP: f32 = 24.0;
 pub const PAGE_TITLE_SIZE: f32 = 26.0;
-pub const SWITCH_SIZE: f32 = 24.0;
-pub const SWITCH_PADDING_RATIO: f32 = 0.125;
 pub const RING_GAP: f32 = 4.0;
 pub const RING_WIDTH: f32 = glide_theme::component::FOCUS_RING;
 
@@ -644,50 +553,8 @@ pub fn icon_button_style(theme: &ThemeState, status: button::Status) -> button::
 }
 
 #[must_use]
-pub fn button_tonal(theme: &ThemeState, status: button::Status) -> button::Style {
-    let (bg, text) = if status == button::Status::Disabled {
-        (theme.fill_1(), theme.fg_4())
-    } else {
-        let fg = theme.acc_soft_fg();
-        (state_fill(theme.acc_soft(), fg, status), fg)
-    };
-    flat_button(Some(bg), text, radius_r2())
-}
-
-#[must_use]
-pub fn button_danger_soft(theme: &ThemeState, status: button::Status) -> button::Style {
-    let (bg, text) = match status {
-        button::Status::Active => (theme.danger_soft(), theme.danger()),
-        button::Status::Hovered => (theme.danger(), theme.view_bg()),
-        button::Status::Pressed => (press_layer(theme.danger(), theme.state()), theme.view_bg()),
-        button::Status::Disabled => (theme.fill_1(), theme.fg_4()),
-    };
-    flat_button(Some(bg), text, radius_r2())
-}
-
-#[must_use]
-pub fn segmented_track_style(theme: &ThemeState) -> container::Style {
-    solid(theme.fill_1(), radius_r2())
-}
-
-#[must_use]
 pub fn segment_thumb(theme: &ThemeState) -> iced::Color {
     to_iced_color(theme.tokens.segment_thumb())
-}
-
-#[must_use]
-pub fn segment_style(theme: &ThemeState, active: bool, status: button::Status) -> button::Style {
-    let (background, shadow, text) = if active {
-        (Some(segment_thumb(theme)), elevation(theme, glide_theme::elevation::Level::El1), theme.fg_1())
-    } else {
-        let background = match status {
-            button::Status::Hovered => Some(hover_layer(iced::Color::TRANSPARENT, theme.state())),
-            button::Status::Pressed => Some(press_layer(iced::Color::TRANSPARENT, theme.state())),
-            _ => None,
-        };
-        (background, iced::Shadow::default(), theme.fg_2())
-    };
-    button::Style { shadow, ..flat_button(background, text, radius_r1()) }
 }
 
 #[must_use]
@@ -713,34 +580,6 @@ pub fn banner_style(theme: &ThemeState, tone: iced::Color) -> container::Style {
         background: Some(iced::Background::Color(soft)),
         border: iced::Border { color: iced::Color { a: 0.35, ..tone }, width: 1.0, radius: radius_r2() },
         ..container::Style::default()
-    }
-}
-
-#[must_use]
-pub fn pick_list_style(theme: &ThemeState, status: pick_list::Status) -> pick_list::Style {
-    let (background, border) = match status {
-        pick_list::Status::Active => (theme.fill_1(), theme.line()),
-        pick_list::Status::Hovered => (hover_layer(theme.fill_1(), theme.state()), theme.line_2()),
-        pick_list::Status::Opened { .. } => (press_layer(theme.fill_1(), theme.state()), theme.acc_bg()),
-    };
-    pick_list::Style {
-        text_color: theme.fg_1(),
-        placeholder_color: theme.fg_3(),
-        handle_color: theme.fg_2(),
-        background: iced::Background::Color(background),
-        border: iced::Border { color: border, width: 1.0, radius: radius_r2() },
-    }
-}
-
-#[must_use]
-pub fn menu_style(theme: &ThemeState) -> iced::overlay::menu::Style {
-    iced::overlay::menu::Style {
-        background: iced::Background::Color(theme.popover_bg()),
-        border: iced::Border { color: theme.line(), width: 1.0, radius: radius_r3() },
-        text_color: theme.fg_1(),
-        selected_text_color: theme.fg_1(),
-        selected_background: iced::Background::Color(theme.fill_2()),
-        shadow: elevation(theme, glide_theme::elevation::Level::El3),
     }
 }
 

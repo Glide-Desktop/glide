@@ -14,7 +14,7 @@ pub fn gated<'a, M: 'a>(c: Ctx, content: impl Into<Element<'a, M>>) -> Element<'
     widgets::inert(c.theme, c.writable, content)
 }
 
-pub fn toggle<'a, M: 'a>(c: Ctx, value: bool, on_toggle: impl Fn(bool) -> M + 'a) -> Element<'a, M> {
+pub fn toggle<'a, M: Clone + 'a>(c: Ctx, value: bool, on_toggle: impl Fn(bool) -> M + 'a) -> Element<'a, M> {
     gated(c, widgets::switch(c.theme, value, on_toggle))
 }
 

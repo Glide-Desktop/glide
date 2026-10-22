@@ -591,15 +591,16 @@ fn opener<'a, M: 'a>(paint: &Paint, label: String, color: iced::Color, width: Le
 
 #[must_use]
 pub fn dropdown<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
-    paint: &Paint, options: Vec<T>, selected: Option<T>, placeholder: &'a str, on_select: impl Fn(T) -> M + Clone + 'a,
+    paint: &Paint, options: Vec<T>, selected: Option<T>, placeholder: &str, on_select: impl Fn(T) -> M + 'a,
 ) -> Element<'a, M> {
     let paint = *paint;
     let label = selected.as_ref().map_or_else(|| placeholder.to_string(), ToString::to_string);
     let color = if selected.is_some() { paint.fg_1() } else { paint.fg_3() };
     let anchor = opener(&paint, label, color, Length::Fill);
     let count = options.len();
-    let pick_options = options.clone();
-    let pick = on_select.clone();
+    let options = std::rc::Rc::new(options);
+    let on_select = std::rc::Rc::new(on_select);
+    let (pick_options, pick) = (std::rc::Rc::clone(&options), std::rc::Rc::clone(&on_select));
     Popup::new(&paint, anchor, move |paint, highlight| {
         let rows = options
             .iter()

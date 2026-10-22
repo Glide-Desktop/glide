@@ -4,7 +4,7 @@ use glide_settings::panels::sound::device_icon;
 use glide_settings::services::network::AccessPoint;
 use glide_settings::theme::{
     self, Accent, Appearance, CONTROL_HEIGHT, GROUP_INSET, PAGE_PADDING_TOP, PAGE_PADDING_X, R2, R3, RING_GAP,
-    ROW_MIN_HEIGHT, ROW_PADDING_X, SECTION_GAP, SMALL_CONTROL_HEIGHT, SWITCH_PADDING_RATIO, SWITCH_SIZE, ThemeState,
+    ROW_MIN_HEIGHT, ROW_PADDING_X, SECTION_GAP, SMALL_CONTROL_HEIGHT, ThemeState,
 };
 use glide_settings::{Lang, Panel};
 
@@ -67,10 +67,6 @@ fn page_rhythm_uses_only_spec_spacing_steps() {
     assert!(
         ((CONTROL_HEIGHT - SMALL_CONTROL_HEIGHT) / 2.0 - 3.0).abs() < f32::EPSILON,
         "the segmented track pads a small control up to a full control"
-    );
-    assert!(
-        (SWITCH_PADDING_RATIO * SWITCH_SIZE).fract().abs() < f32::EPSILON,
-        "the switch thumb keeps a whole-pixel margin inside its track"
     );
 }
 

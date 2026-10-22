@@ -1,7 +1,5 @@
-use iced::widget::{
-    Column, button, column, container, opaque, pick_list, row, rule, slider, space, stack, svg, text, text_input,
-    toggler,
-};
+use glide_sdk::widget as sdk;
+use iced::widget::{Column, button, column, container, opaque, row, rule, space, stack, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 use crate::icons::Icon;
@@ -44,10 +42,6 @@ pub fn separator<'a, M: 'a>(t: ThemeState) -> Element<'a, M> {
     container(rule::horizontal(1).style(move |_: &iced::Theme| theme::rule_style(&t)))
         .padding(Padding::ZERO.left(theme::ROW_PADDING_X).right(theme::ROW_PADDING_X))
         .into()
-}
-
-fn control_label<'a>(label: impl text::IntoFragment<'a>, font: iced::Font) -> iced::widget::Text<'a> {
-    text(label).size(13).font(font).height(Fill).align_y(Alignment::Center)
 }
 
 pub struct Group<'a, M> {
@@ -255,48 +249,27 @@ pub fn min_height<'a, M: 'a>(content: impl Into<Element<'a, M>>, height: f32) ->
 }
 
 #[must_use]
-pub fn switch<'a, M: 'a>(t: ThemeState, value: bool, on_toggle: impl Fn(bool) -> M + 'a) -> Element<'a, M> {
-    styled_toggler(&t, value).on_toggle(on_toggle).into()
+pub fn paint(t: &ThemeState) -> glide_sdk::Paint {
+    glide_sdk::Paint { tokens: t.tokens, alpha: 1.0 }
 }
 
 #[must_use]
-pub fn switch_disabled<'a, M: 'a>(t: ThemeState, value: bool) -> Element<'a, M> {
-    styled_toggler(&t, value).into()
+pub fn switch<'a, M: Clone + 'a>(t: ThemeState, value: bool, on_toggle: impl Fn(bool) -> M + 'a) -> Element<'a, M> {
+    sdk::switch(&paint(&t), value, Some(on_toggle))
 }
 
-fn styled_toggler<'a, M: 'a>(t: &ThemeState, value: bool) -> iced::widget::Toggler<'a, M> {
-    let t = *t;
-    toggler(value).size(theme::SWITCH_SIZE).style(move |_: &iced::Theme, status| theme::toggle_style(&t, status))
+#[must_use]
+pub fn switch_disabled<'a, M: Clone + 'a>(t: ThemeState, value: bool) -> Element<'a, M> {
+    sdk::switch(&paint(&t), value, None::<fn(bool) -> M>)
 }
 
 #[must_use]
 pub fn segmented<'a, M: Clone + 'a, T: Copy + PartialEq + 'a>(
     t: ThemeState, options: Vec<(T, String)>, selected: T, on_select: impl Fn(T) -> M,
 ) -> Element<'a, M> {
-    let mut segments = row![].spacing(2);
-    for (value, label) in options {
-        let active = value == selected;
-        segments = segments.push(
-            button(
-                text(label)
-                    .size(13)
-                    .font(if active { theme::SEMIBOLD } else { iced::Font::DEFAULT })
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-                    .width(Fill)
-                    .height(Fill),
-            )
-            .on_press(on_select(value))
-            .padding([0, 14])
-            .height(theme::SMALL_CONTROL_HEIGHT)
-            .width(Length::Shrink)
-            .style(move |_: &iced::Theme, status| theme::segment_style(&t, active, status)),
-        );
-    }
-    container(segments)
-        .padding((theme::CONTROL_HEIGHT - theme::SMALL_CONTROL_HEIGHT) / 2.0)
-        .style(move |_: &iced::Theme| theme::segmented_track_style(&t))
-        .into()
+    let options: Vec<(T, std::borrow::Cow<'a, str>)> =
+        options.into_iter().map(|(value, label)| (value, label.into())).collect();
+    sdk::segmented(&paint(&t), &options, selected, on_select)
 }
 
 #[must_use]
@@ -308,44 +281,37 @@ pub fn badge<'a, M: 'a>(label: impl text::IntoFragment<'a>, bg: Color, fg: Color
 }
 
 fn action_button<'a, M: Clone + 'a>(
-    t: &ThemeState, label: impl text::IntoFragment<'a>, message: Option<M>,
-    style: fn(&ThemeState, button::Status) -> button::Style,
+    t: &ThemeState, label: impl text::IntoFragment<'a>, message: Option<M>, tone: sdk::Tone,
 ) -> Element<'a, M> {
-    let t = *t;
-    button(control_label(label, theme::SEMIBOLD))
-        .on_press_maybe(message)
-        .padding([0, 16])
-        .height(theme::CONTROL_HEIGHT)
-        .style(move |_: &iced::Theme, status| style(&t, status))
-        .into()
+    sdk::button(&paint(t), label.into_fragment(), tone, message)
 }
 
 #[must_use]
 pub fn primary<'a, M: Clone + 'a>(
     t: ThemeState, label: impl text::IntoFragment<'a>, message: Option<M>,
 ) -> Element<'a, M> {
-    action_button(&t, label, message, theme::button_primary)
+    action_button(&t, label, message, sdk::Tone::Accent)
 }
 
 #[must_use]
 pub fn secondary<'a, M: Clone + 'a>(
     t: ThemeState, label: impl text::IntoFragment<'a>, message: Option<M>,
 ) -> Element<'a, M> {
-    action_button(&t, label, message, theme::button_secondary)
+    action_button(&t, label, message, sdk::Tone::Neutral)
 }
 
 #[must_use]
 pub fn tonal<'a, M: Clone + 'a>(
     t: ThemeState, label: impl text::IntoFragment<'a>, message: Option<M>,
 ) -> Element<'a, M> {
-    action_button(&t, label, message, theme::button_tonal)
+    action_button(&t, label, message, sdk::Tone::Tonal)
 }
 
 #[must_use]
 pub fn danger<'a, M: Clone + 'a>(
     t: ThemeState, label: impl text::IntoFragment<'a>, message: Option<M>,
 ) -> Element<'a, M> {
-    action_button(&t, label, message, theme::button_danger_soft)
+    action_button(&t, label, message, sdk::Tone::Danger)
 }
 
 #[must_use]
@@ -366,15 +332,7 @@ pub fn icon_button<'a, M: Clone + 'a>(t: ThemeState, glyph: Icon, message: Optio
 pub fn dropdown<'a, M: Clone + 'a, T: ToString + PartialEq + Clone + 'a>(
     t: ThemeState, options: Vec<T>, selected: Option<T>, on_select: impl Fn(T) -> M + 'a, width: f32,
 ) -> Element<'a, M> {
-    flexible(
-        pick_list(options, selected, on_select)
-            .width(Fill)
-            .padding([8, 11])
-            .text_size(13)
-            .style(move |_: &iced::Theme, status| theme::pick_list_style(&t, status))
-            .menu_style(move |_: &iced::Theme| theme::menu_style(&t)),
-        width,
-    )
+    flexible(sdk::dropdown(&paint(&t), options, selected, "", on_select), width)
 }
 
 #[must_use]
@@ -405,17 +363,7 @@ pub fn inert<'a, M: 'a>(t: ThemeState, enabled: bool, content: impl Into<Element
 pub fn chooser<'a, M: Clone + 'a, T: ToString + PartialEq + Clone + 'a>(
     t: ThemeState, options: Vec<T>, placeholder: &str, on_select: impl Fn(T) -> M + 'a, width: f32,
 ) -> Element<'a, M> {
-    flexible(
-        pick_list(options, None::<T>, on_select)
-            .placeholder(placeholder)
-            .width(Fill)
-            .padding([8, 11])
-            .text_size(13)
-            .menu_height(Length::Fixed(320.0))
-            .style(move |_: &iced::Theme, status| theme::pick_list_style(&t, status))
-            .menu_style(move |_: &iced::Theme| theme::menu_style(&t)),
-        width,
-    )
+    flexible(sdk::dropdown(&paint(&t), options, None, placeholder, on_select), width)
 }
 
 #[must_use]
@@ -444,14 +392,9 @@ pub fn value_slider<'a, M: Clone + 'a>(
     t: ThemeState, range: std::ops::RangeInclusive<f64>, value: f64, step: f64, on_change: impl Fn(f64) -> M + 'a,
     on_release: Option<M>,
 ) -> Element<'a, M> {
-    let mut control = slider(range, value, on_change)
-        .step(step)
-        .width(Fill)
-        .style(move |_: &iced::Theme, status| theme::slider_style(&t, status));
-    if let Some(message) = on_release {
-        control = control.on_release(message);
-    }
-    control.into()
+    let range = (*range.start() as f32)..=(*range.end() as f32);
+    let change = move |value: f32| on_change(f64::from(value));
+    sdk::stepped_slider(&paint(&t), range, value as f32, step as f32, Some(change), on_release)
 }
 
 #[must_use]

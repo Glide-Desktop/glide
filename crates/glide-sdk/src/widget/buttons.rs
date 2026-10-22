@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use glide_iced::Paint;
 use glide_iced::style::{self, R2, SP3, SP4};
 use glide_iced::widgets;
@@ -100,7 +102,7 @@ pub fn button_style(paint: &Paint, tone: Tone, status: control::Status) -> contr
 
 #[must_use]
 pub fn sized_button<'a, M: Clone + 'a>(
-    paint: &Paint, label: &'a str, tone: Tone, size: Size, message: Option<M>,
+    paint: &Paint, label: impl Into<Cow<'a, str>>, tone: Tone, size: Size, message: Option<M>,
 ) -> Element<'a, M> {
     let paint = *paint;
     let control = control(container(text(label, size.label()).wrapping(Wrapping::None)).center_y(Fill))
@@ -111,44 +113,46 @@ pub fn sized_button<'a, M: Clone + 'a>(
 }
 
 #[must_use]
-pub fn button<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, tone: Tone, message: Option<M>) -> Element<'a, M> {
+pub fn button<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, tone: Tone, message: Option<M>,
+) -> Element<'a, M> {
     sized_button(paint, label, tone, Size::Medium, message)
 }
 
 #[must_use]
 pub fn compact_button<'a, M: Clone + 'a>(
-    paint: &Paint, label: &'a str, tone: Tone, message: Option<M>,
+    paint: &Paint, label: impl Into<Cow<'a, str>>, tone: Tone, message: Option<M>,
 ) -> Element<'a, M> {
     sized_button(paint, label, tone, Size::Small, message)
 }
 
 #[must_use]
-pub fn primary<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, message: M) -> Element<'a, M> {
+pub fn primary<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, message: M) -> Element<'a, M> {
     button(paint, label, Tone::Accent, Some(message))
 }
 
 #[must_use]
-pub fn secondary<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, message: M) -> Element<'a, M> {
+pub fn secondary<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, message: M) -> Element<'a, M> {
     button(paint, label, Tone::Neutral, Some(message))
 }
 
 #[must_use]
-pub fn tonal<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, message: M) -> Element<'a, M> {
+pub fn tonal<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, message: M) -> Element<'a, M> {
     button(paint, label, Tone::Tonal, Some(message))
 }
 
 #[must_use]
-pub fn outline<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, message: M) -> Element<'a, M> {
+pub fn outline<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, message: M) -> Element<'a, M> {
     button(paint, label, Tone::Outline, Some(message))
 }
 
 #[must_use]
-pub fn ghost<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, message: M) -> Element<'a, M> {
+pub fn ghost<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, message: M) -> Element<'a, M> {
     button(paint, label, Tone::Ghost, Some(message))
 }
 
 #[must_use]
-pub fn danger<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, message: M) -> Element<'a, M> {
+pub fn danger<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, message: M) -> Element<'a, M> {
     button(paint, label, Tone::Danger, Some(message))
 }
 

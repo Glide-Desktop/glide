@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use glide_iced::Paint;
 use glide_iced::style::{self, R2, SP1, SP2, SP3, to_iced};
 use glide_iced::widgets;
@@ -237,7 +239,7 @@ pub fn track<'a, M: 'a>(
 }
 
 fn segment_button<'a, M: Clone + 'a>(
-    paint: &Paint, label: &'a str, active: bool, message: M, height: f32, width: Length,
+    paint: &Paint, label: Cow<'a, str>, active: bool, message: M, height: f32, width: Length,
 ) -> Element<'a, M> {
     let paint = *paint;
     let style = if active { TextStyle { weight: 560, ..TextStyle::CALL } } else { TextStyle::CALL };
@@ -255,13 +257,21 @@ fn segment_button<'a, M: Clone + 'a>(
 }
 
 #[must_use]
-pub fn segmented<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
-    paint: &Paint, options: &[(T, &'a str)], selected: T, on_select: impl Fn(T) -> M,
+pub fn segmented<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
+    paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M,
 ) -> Element<'a, M> {
     let paint = *paint;
     let index = options.iter().position(|(value, _)| *value == selected);
-    let segments = options.iter().map(|&(value, label)| {
-        segment_button(&paint, label, value == selected, on_select(value), component::SMALL_CONTROL, Length::Shrink)
+    let segments = options.iter().map(|(value, label)| {
+        let active = *value == selected;
+        segment_button(
+            &paint,
+            label.clone().into(),
+            active,
+            on_select(*value),
+            component::SMALL_CONTROL,
+            Length::Shrink,
+        )
     });
     let content = Row::with_children(segments).spacing(2);
     container(track(&paint, Indicator::Thumb, index, content))
@@ -271,16 +281,17 @@ pub fn segmented<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
 }
 
 #[must_use]
-pub fn tabs<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
-    paint: &Paint, options: &[(T, &'a str)], selected: T, on_select: impl Fn(T) -> M,
+pub fn tabs<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
+    paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M,
 ) -> Element<'a, M> {
     let paint = *paint;
     let index = options.iter().position(|(value, _)| *value == selected);
-    let items = options.iter().map(|&(value, label)| {
-        let active = value == selected;
+    let items = options.iter().map(|(value, label)| {
+        let active = *value == selected;
         let style = if active { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
+        let label: Cow<'a, str> = label.clone().into();
         let control = button(container(text(label, style).wrapping(Wrapping::None)).center_y(Fill))
-            .on_press(on_select(value))
+            .on_press(on_select(*value))
             .height(component::CONTROL + SP1)
             .padding(Padding::from([0.0, SP3]));
         widgets::button(control, move |status| {
