@@ -1,92 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-use glide_theme::{Accent, Appearance};
 use serde::{Deserialize, Serialize};
-
-use crate::i18n::Lang;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Look {
-    pub appearance: Appearance,
-    pub appearance_schedule: bool,
-    pub accent: Accent,
-    pub language: Option<Lang>,
-    pub motion_scale: f32,
-    pub ui_family: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Shell {
-    general: General,
-    topbar: Topbar,
-    animations: Animations,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "kebab-case")]
-struct General {
-    language: Option<String>,
-    font_family: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "kebab-case")]
-struct Topbar {
-    appearance: Appearance,
-    accent: Accent,
-    appearance_schedule: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-struct Animations {
-    enabled: bool,
-    speed: f32,
-    respect_system: bool,
-}
-
-impl Default for Animations {
-    fn default() -> Self {
-        Self { enabled: true, speed: 1.0, respect_system: true }
-    }
-}
-
-impl Look {
-    #[must_use]
-    pub fn parse(text: &str, reduced_motion: bool) -> Self {
-        let shell: Shell = toml::from_str(text).unwrap_or_default();
-        let animations = &shell.animations;
-        let still = !animations.enabled || (animations.respect_system && reduced_motion);
-        Self {
-            appearance: shell.topbar.appearance,
-            appearance_schedule: shell.topbar.appearance_schedule,
-            accent: shell.topbar.accent,
-            language: shell.general.language.as_deref().and_then(Lang::from_key),
-            motion_scale: if still { 0.0 } else { animations.speed },
-            ui_family: shell.general.font_family,
-        }
-    }
-
-    #[must_use]
-    pub fn appearance_at(&self, minute: Option<u16>) -> Appearance {
-        minute.filter(|_| self.appearance_schedule).map_or(self.appearance, Appearance::scheduled)
-    }
-
-    #[must_use]
-    pub fn with_shell(mut self, shell: Option<&glide_app::Look>) -> Self {
-        if let Some(shell) = shell {
-            self.appearance = shell.appearance;
-            self.appearance_schedule = false;
-            self.accent = shell.accent;
-            self.language = shell.language.as_deref().and_then(Lang::from_key);
-            self.motion_scale = shell.animation_scale;
-            self.ui_family.clone_from(&shell.font_family);
-        }
-        self
-    }
-}
 
 #[allow(clippy::struct_excessive_bools)] // Independent text.toml switches, not a state machine
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -135,16 +49,6 @@ impl Preferences {
 }
 
 #[must_use]
-pub fn reduced_motion() -> bool {
-    std::env::var("GLIDE_REDUCED_MOTION").is_ok_and(|value| value.trim() == "1")
-}
-
-#[must_use]
-pub fn shell_path() -> Option<PathBuf> {
-    glide_config::xdg_path("glide", "glide.toml")
-}
-
-#[must_use]
 pub fn path() -> Option<PathBuf> {
     glide_config::xdg_path("glide", "text.toml")
 }
@@ -152,17 +56,6 @@ pub fn path() -> Option<PathBuf> {
 #[must_use]
 pub fn state_dir() -> Option<PathBuf> {
     Some(glide_config::state_home()?.join("glide").join("text"))
-}
-
-#[must_use]
-pub fn stamp(path: Option<&Path>) -> Option<SystemTime> {
-    std::fs::metadata(path?).and_then(|meta| meta.modified()).ok()
-}
-
-#[must_use]
-pub fn load_look() -> Look {
-    let text = shell_path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
-    Look::parse(&text, reduced_motion())
 }
 
 #[must_use]
@@ -276,14 +169,6 @@ mod tests {
         assert!(text.contains("# mine") && text.contains("future-key = 3") && text.contains("sidebar = false"));
         assert_eq!(Preferences::parse(&text), prefs);
         std::fs::remove_dir_all(&folder).unwrap();
-    }
-
-    #[test]
-    fn the_shell_look_follows_glide_toml_and_the_bus() {
-        let look =
-            Look::parse("[topbar]\nappearance = \"light\"\naccent = \"green\"\n[general]\nlanguage = \"en\"\n", false);
-        assert_eq!((look.appearance, look.accent, look.language), (Appearance::Light, Accent::Green, Some(Lang::En)));
-        assert_eq!(Look::parse("[animations]\nenabled = false\n", false).motion_scale, 0.0);
     }
 
     #[test]

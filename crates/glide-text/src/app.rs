@@ -11,10 +11,10 @@ use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::markdown;
 use iced::widget::operation;
 use iced::widget::text_editor::{Action, Binding, KeyPress, Status};
-use iced::{Point, Size, Subscription, Task, clipboard, window};
+use iced::{Point, Subscription, Task, clipboard, window};
 
 use crate::chooser::{self, Ask, Chosen, Purpose};
-use crate::config::{self, Look, Preferences, Session, SessionTab};
+use crate::config::{self, Preferences, Session, SessionTab};
 use crate::document::{self, Decoded, Document, Encoding, Ending, LoadError};
 use crate::edit::{self, Case, Indent};
 use crate::find::{self, Query};
@@ -24,6 +24,9 @@ use crate::syntax::{self, Language, Lines, Marks, Palette, Settings};
 use crate::tree::{self, Entry, Tree};
 use glide_app::menubar;
 use glide_iced::style::Paint;
+use glide_sdk::look::{self, Look};
+pub use glide_sdk::window::Frame;
+use glide_sdk::window::{Action as WindowAction, Window};
 
 pub const EDITOR: &str = "glide-text-editor";
 pub const FIND_ID: &str = "glide-text-find";
@@ -230,13 +233,6 @@ pub struct FindBar {
 
 const MARK_LIMIT: usize = 20_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Frame {
-    Floating,
-    Maximized,
-    Fullscreen,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct TabDrag {
     index: usize,
@@ -286,17 +282,11 @@ pub enum Message {
     ShellLook(glide_app::Look),
     Tick,
     Frame,
-    Focused(bool),
-    Resized(Size),
+    Window(WindowAction),
     Dropped(PathBuf),
     Handles(Option<menubar::Handles>),
     MenuBar(menubar::Event),
     CloseRequested,
-    WindowDrag,
-    WindowMaximize,
-    WindowMinimize,
-    WindowState(bool, bool),
-    WindowResize(window::Direction),
     Noop,
 }
 
@@ -317,9 +307,7 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub closing: Option<Dialog>,
     pub notice: Option<(String, Instant)>,
-    pub window: Size,
-    focused_window: bool,
-    pub frame: Frame,
+    pub window: Window,
     pub hovered_tab: Option<usize>,
     tab_drag: Option<TabDrag>,
     pub zoom: f32,
@@ -556,17 +544,8 @@ pub fn suggested_name(document: &Document, untitled: &str) -> String {
     format!("{stem}.{}", document.language().extension())
 }
 
-fn wayland_handles(window: &dyn iced::window::Window) -> Option<menubar::Handles> {
-    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-    let display = window.display_handle().ok()?.as_raw();
-    let surface = window.window_handle().ok()?.as_raw();
-    match (display, surface) {
-        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => Some(menubar::Handles {
-            display: display.display.as_ptr() as usize,
-            surface: surface.surface.as_ptr() as usize,
-        }),
-        _ => None,
-    }
+fn stamps() -> (Option<SystemTime>, Option<SystemTime>) {
+    (look::stamp(look::shell_path().as_deref()), look::stamp(config::path().as_deref()))
 }
 
 fn intern(family: &str) -> &'static str {
@@ -601,15 +580,16 @@ impl App {
     }
 
     pub fn launch(primary: Option<std::fs::File>, paths: &[PathBuf]) -> (Self, Task<Message>) {
-        let look = config::load_look();
+        look::watch_reduced_motion();
+        let look = Look::load();
         motion::set_scale(look.motion_scale);
         let prefs = config::load();
         let session =
             if primary.is_some() && prefs.restore_session { config::load_session() } else { Session::default() };
         let mut app = Self {
-            paint: Paint::new(look.appearance_at(glide_config::local_minute()), look.accent),
-            lang: look.language.unwrap_or_else(Lang::from_env),
-            ui_family: look.ui_family.clone(),
+            paint: look.paint(),
+            lang: look.lang(),
+            ui_family: look.font_family.clone(),
             look,
             shell: None,
             prefs,
@@ -623,9 +603,7 @@ impl App {
             dialog: None,
             closing: None,
             notice: None,
-            window: Size::new(960.0, 640.0),
-            focused_window: true,
-            frame: Frame::Floating,
+            window: Window::default(),
             hovered_tab: None,
             tab_drag: None,
             zoom: 0.0,
@@ -645,7 +623,7 @@ impl App {
             session_at: Instant::now(),
             queue: Vec::new(),
             after: None,
-            stamps: (config::stamp(config::shell_path().as_deref()), config::stamp(config::path().as_deref())),
+            stamps: stamps(),
         };
         glide_iced::style::use_ui_family(app.ui_family.as_deref());
         let mut tasks = vec![app.restore(&session)];
@@ -656,7 +634,7 @@ impl App {
             app.new_document();
         }
         tasks.push(operation::focus(EDITOR));
-        tasks.push(window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles));
+        tasks.push(glide_sdk::window::handles().map(Message::Handles));
         (app, Task::batch(tasks))
     }
 
@@ -749,12 +727,12 @@ impl App {
 
     #[must_use]
     pub const fn window_focused(&self) -> bool {
-        self.focused_window
+        self.window.focused
     }
 
     #[must_use]
     pub fn edge_to_edge(&self) -> bool {
-        self.frame != Frame::Floating
+        self.window.edge_to_edge()
     }
 
     #[must_use]
@@ -868,11 +846,11 @@ impl App {
         let mut subscriptions = vec![
             iced::event::listen_with(|event, status, _| match event {
                 iced::Event::Keyboard(event) => Some(Message::Key(event, status == iced::event::Status::Captured)),
-                iced::Event::Window(window::Event::Focused) => Some(Message::Focused(true)),
-                iced::Event::Window(window::Event::Unfocused) => Some(Message::Focused(false)),
+                iced::Event::Window(window::Event::Focused) => Some(Message::Window(WindowAction::Focused(true))),
+                iced::Event::Window(window::Event::Unfocused) => Some(Message::Window(WindowAction::Focused(false))),
                 iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::Dropped(path)),
                 iced::Event::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
-                    Some(Message::Resized(size))
+                    Some(Message::Window(WindowAction::Resized(size)))
                 }
                 _ => None,
             }),
@@ -1038,7 +1016,7 @@ impl App {
                 if self.menu.as_ref().is_some_and(|menu| menu.kind == kind) {
                     self.dismiss_menu();
                 } else {
-                    let at = Point::new(x, self.window.height - crate::chrome::STATUS);
+                    let at = Point::new(x, self.window.size.height - crate::chrome::STATUS);
                     self.open_menu(kind, at, false);
                 }
                 Task::none()
@@ -1131,43 +1109,16 @@ impl App {
                 self.closing.take_if(|dialog| !dialog.reveal.is_visible(motion::t2()));
                 Task::none()
             }
-            Message::Focused(focused) => {
-                self.focused_window = focused;
-                if focused {
-                    return self.refresh_tree();
+            Message::Window(action) => {
+                let task = self.window.update(action).map(Message::Window);
+                match action {
+                    WindowAction::Drag | WindowAction::ToggleMaximize => self.dismiss_menu(),
+                    WindowAction::Focused(true) => return Task::batch([task, self.refresh_tree()]),
+                    _ => {}
                 }
-                Task::none()
-            }
-            Message::Resized(size) => {
-                self.window = size;
-                window::latest().and_then(|id| {
-                    window::is_maximized(id).then(move |maximized| {
-                        window::mode(id)
-                            .map(move |mode| Message::WindowState(maximized, mode == window::Mode::Fullscreen))
-                    })
-                })
-            }
-            Message::WindowState(maximized, fullscreen) => {
-                self.frame = if fullscreen {
-                    Frame::Fullscreen
-                } else if maximized {
-                    Frame::Maximized
-                } else {
-                    Frame::Floating
-                };
-                Task::none()
+                task
             }
             Message::CloseRequested => self.request_window_close(),
-            Message::WindowDrag => {
-                self.dismiss_menu();
-                window::latest().and_then(window::drag)
-            }
-            Message::WindowMaximize => {
-                self.dismiss_menu();
-                window::latest().and_then(window::toggle_maximize)
-            }
-            Message::WindowMinimize => window::latest().and_then(|id| window::minimize(id, true)),
-            Message::WindowResize(direction) => window::latest().and_then(move |id| window::drag_resize(id, direction)),
             Message::Handles(handles) => {
                 self.handles = handles;
                 Task::none()
@@ -1182,24 +1133,23 @@ impl App {
     }
 
     fn apply_look(&mut self) {
-        let look = config::load_look().with_shell(self.shell.as_ref());
+        let look = Look::load().with_shell(self.shell.as_ref());
         motion::set_scale(look.motion_scale);
-        self.paint = Paint::new(look.appearance_at(glide_config::local_minute()), look.accent);
-        self.lang = look.language.unwrap_or_else(Lang::from_env);
-        if self.ui_family != look.ui_family {
-            glide_iced::style::use_ui_family(look.ui_family.as_deref());
-            self.ui_family.clone_from(&look.ui_family);
+        self.paint = look.paint();
+        self.lang = look.lang();
+        if self.ui_family != look.font_family {
+            glide_iced::style::use_ui_family(look.font_family.as_deref());
+            self.ui_family.clone_from(&look.font_family);
         }
         self.look = look;
     }
 
     fn tick(&mut self) -> Task<Message> {
         self.notice.take_if(|(_, at)| at.elapsed() >= NOTICE);
-        let appearance = self.look.appearance_at(glide_config::local_minute());
-        if appearance != self.paint.tokens.appearance {
-            self.paint = Paint::new(appearance, self.look.accent);
+        if self.look.appearance_now() != self.paint.tokens.appearance {
+            self.paint = self.look.paint();
         }
-        let stamps = (config::stamp(config::shell_path().as_deref()), config::stamp(config::path().as_deref()));
+        let stamps = stamps();
         if stamps != self.stamps {
             self.stamps = stamps;
             self.apply_look();
@@ -1299,7 +1249,7 @@ impl App {
             return;
         }
         drag.moved = true;
-        let width = self.window.width - if self.sidebar_visible() { crate::chrome::SIDEBAR + 1.0 } else { 0.0 };
+        let width = self.window.size.width - if self.sidebar_visible() { crate::chrome::SIDEBAR + 1.0 } else { 0.0 };
         let slot = crate::chrome::tab_slot(x, width, self.docs.len());
         if slot != drag.index && drag.index < self.docs.len() {
             let doc = self.docs.remove(drag.index);
@@ -1312,7 +1262,7 @@ impl App {
 
     #[must_use]
     pub fn sidebar_visible(&self) -> bool {
-        self.prefs.sidebar && self.window.width >= crate::chrome::SIDEBAR_MIN_WINDOW
+        self.prefs.sidebar && self.window.size.width >= crate::chrome::SIDEBAR_MIN_WINDOW
     }
 
     fn open_menu(&mut self, kind: MenuKind, at: Point, keyboard: bool) {
@@ -1714,7 +1664,7 @@ impl App {
             }
             Command::ContextMenu => {
                 let at = if self.pointer == Point::ORIGIN {
-                    Point::new(self.window.width / 2.0 - 120.0, self.window.height / 3.0)
+                    Point::new(self.window.size.width / 2.0 - 120.0, self.window.size.height / 3.0)
                 } else {
                     self.pointer
                 };

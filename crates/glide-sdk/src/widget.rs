@@ -75,14 +75,27 @@ pub fn button_style(paint: &Paint, tone: Tone, status: control::Status) -> contr
     }
 }
 
-#[must_use]
-pub fn button<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, tone: Tone, message: Option<M>) -> Element<'a, M> {
+fn sized<'a, M: Clone + 'a>(
+    paint: &Paint, label: &'a str, tone: Tone, message: Option<M>, height: f32, padding: f32,
+) -> Element<'a, M> {
     let paint = *paint;
     let control = control(container(text(label, TextStyle::CALL).wrapping(Wrapping::None)).center_y(Fill))
         .on_press_maybe(message)
-        .height(component::CONTROL)
-        .padding(Padding::from([0.0, SP4]));
+        .height(height)
+        .padding(Padding::from([0.0, padding]));
     widgets::button(control, move |status| button_style(&paint, tone, status))
+}
+
+#[must_use]
+pub fn button<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, tone: Tone, message: Option<M>) -> Element<'a, M> {
+    sized(paint, label, tone, message, component::CONTROL, SP4)
+}
+
+#[must_use]
+pub fn compact_button<'a, M: Clone + 'a>(
+    paint: &Paint, label: &'a str, tone: Tone, message: Option<M>,
+) -> Element<'a, M> {
+    sized(paint, label, tone, message, component::SMALL_CONTROL, SP3)
 }
 
 #[must_use]

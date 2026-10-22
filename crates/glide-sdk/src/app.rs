@@ -260,18 +260,6 @@ struct Host<A: App> {
     exported: Vec<A::Message>,
 }
 
-fn wayland_handles(window: &dyn iced::window::Window) -> Option<Handles> {
-    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-    let display = window.display_handle().ok()?.as_raw();
-    let surface = window.window_handle().ok()?.as_raw();
-    match (display, surface) {
-        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => {
-            Some(Handles { display: display.display.as_ptr() as usize, surface: surface.surface.as_ptr() as usize })
-        }
-        _ => None,
-    }
-}
-
 const BAR_START: f32 = SP2 + component::SMALL_CONTROL + SP2;
 
 impl<A: App> Host<A> {
@@ -300,7 +288,7 @@ impl<A: App> Host<A> {
             exported: Vec::new(),
         };
         host.refresh_menus();
-        let handles = iced::window::latest().and_then(|id| iced::window::run(id, wayland_handles)).map(Event::Handles);
+        let handles = window::handles().map(Event::Handles);
         (host, Task::batch([task.map(Event::App), handles]))
     }
 

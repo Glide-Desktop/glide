@@ -2,9 +2,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use glide_iced::glyph::Icon;
-use glide_iced::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6, Tone, to_iced};
+use glide_iced::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6, to_iced};
 use glide_iced::text::text;
 use glide_iced::widgets;
+use glide_sdk::Tone;
+use glide_sdk::widget::{
+    button_style, compact_button, icon_button, measure, primary as accent_pill, separator as rule, tooltip as tip,
+    vertical_separator as vertical_rule,
+};
+use glide_sdk::window::{Action as WindowAction, resize_handles};
 use glide_theme::elevation::Level;
 use glide_theme::motion::{ST_HOVER, ST_PRESS};
 use glide_theme::{TextStyle, component};
@@ -13,9 +19,9 @@ use iced::widget::text::Wrapping;
 use iced::widget::text_editor::{self as editor_widget};
 use iced::widget::{
     Space, button, column, container, markdown, mouse_area, opaque, pin, row, scrollable, stack, text_editor,
-    text_input, tooltip,
+    text_input,
 };
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, mouse, window};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::app::{
     Answer, App, Bar, Command, Dialog, DialogKind, GOTO_ID, Item, Menu, MenuKind, Message, REPLACE_ID, Toggle,
@@ -40,42 +46,6 @@ const ROW: f32 = 28.0;
 const MENU_WIDTH: f32 = 300.0;
 const FIND_FIELD: f32 = 260.0;
 
-fn view_bg(paint: &Paint) -> Color {
-    to_iced(paint.tokens.view_bg).scale_alpha(paint.alpha)
-}
-
-fn sidebar_bg(paint: &Paint) -> Color {
-    to_iced(paint.tokens.sidebar_bg).scale_alpha(paint.alpha)
-}
-
-fn measure(content: &str, style: TextStyle) -> f32 {
-    use iced::advanced::graphics::text::{self as graphics, cosmic_text};
-    thread_local! {
-        static CACHE: RefCell<HashMap<(String, u32, u64), f32>> = RefCell::new(HashMap::new());
-    }
-    let key = (content.to_string(), style.size_px.to_bits() ^ u32::from(style.weight), glide_iced::font::revision());
-    if let Some(width) = CACHE.with_borrow(|cache| cache.get(&key).copied()) {
-        return width;
-    }
-    let mut system = graphics::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut buffer =
-        cosmic_text::Buffer::new(system.raw(), cosmic_text::Metrics::new(style.size_px, style.line_height_px));
-    buffer.set_size(system.raw(), None, None);
-    let attributes = graphics::to_attributes(iced::Font::DEFAULT)
-        .weight(cosmic_text::Weight(style.weight))
-        .letter_spacing(style.tracking_em);
-    buffer.set_text(system.raw(), content, &attributes, cosmic_text::Shaping::Advanced, None);
-    buffer.shape_until_scroll(system.raw(), false);
-    let width = graphics::measure(&buffer).0.width.ceil();
-    CACHE.with_borrow_mut(|cache| {
-        if cache.len() > 256 {
-            cache.clear();
-        }
-        cache.insert(key, width);
-    });
-    width
-}
-
 const BAR_STYLE: TextStyle = TextStyle::CALL;
 
 fn bar_width(app: &App, bar: Bar) -> f32 {
@@ -93,7 +63,7 @@ fn controls_width() -> f32 {
 #[must_use]
 pub fn compact(app: &App) -> bool {
     let bars: f32 = Bar::ALL.iter().map(|bar| bar_width(app, *bar)).sum::<f32>() + SP1 * 5.0;
-    bar_start() + bars + controls_width() + 120.0 > app.window.width
+    bar_start() + bars + controls_width() + 120.0 > app.window.size.width
 }
 
 #[must_use]
@@ -111,58 +81,6 @@ pub fn bar_x(app: &App, target: Bar) -> f32 {
     x
 }
 
-fn tip<'a>(paint: &Paint, child: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
-    let paint = *paint;
-    tooltip(
-        child,
-        widgets::surface(
-            container(text(label, TextStyle::CAP)).padding([SP1, SP2]).style(move |_| {
-                let mut style = style::popover(&paint);
-                style.border.radius = R2.into();
-                style
-            }),
-            &paint,
-            Level::El2,
-            R2,
-        ),
-        tooltip::Position::Bottom,
-    )
-    .delay(component::TOOLTIP_DELAY)
-    .gap(SP2)
-    .into()
-}
-
-fn icon_button<'a>(paint: &Paint, icon: Icon, message: Message, on: bool, label: &'a str) -> Element<'a, Message> {
-    let paint = *paint;
-    let tint = if on { paint.fg_1() } else { paint.fg_2() };
-    let control = button(container(glide_iced::glyph::glyph(icon, 16.0, tint)).center(Fill))
-        .on_press(message)
-        .width(CONTROL)
-        .height(CONTROL)
-        .padding(0);
-    tip(
-        &paint,
-        widgets::button(control, move |status| {
-            if on {
-                style::flat(paint.layered(paint.fill_2(), status), paint.fg_1(), R2)
-            } else {
-                style::action(&paint, Tone::Ghost, status)
-            }
-        }),
-        label,
-    )
-}
-
-fn rule<'a>(paint: &Paint) -> Element<'a, Message> {
-    let paint = *paint;
-    container(Space::new().width(Fill).height(1)).style(move |_| style::rounded(paint.hairline(), 0.0)).into()
-}
-
-fn vertical_rule<'a>(paint: &Paint) -> Element<'a, Message> {
-    let paint = *paint;
-    container(Space::new().width(1).height(Fill)).style(move |_| style::rounded(paint.hairline(), 0.0)).into()
-}
-
 fn bar_button(app: &App, paint: &Paint, bar: Bar) -> Element<'static, Message> {
     let paint = *paint;
     let open = app.menu.as_ref().is_some_and(|menu| menu.kind == MenuKind::Bar(bar) && menu.reveal.is_open());
@@ -173,16 +91,16 @@ fn bar_button(app: &App, paint: &Paint, bar: Bar) -> Element<'static, Message> {
         .height(CONTROL)
         .padding(0);
     let control = widgets::button(control, move |status| {
-        if open { style::flat(paint.fill_2(), paint.fg_1(), R2) } else { style::action(&paint, Tone::Ghost, status) }
+        if open { style::flat(paint.fill_2(), paint.fg_1(), R2) } else { button_style(&paint, Tone::Ghost, status) }
     });
     mouse_area(control).on_enter(Message::BarHovered(bar)).into()
 }
 
 fn header(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
-    let control_paint = if app.window_focused() { paint } else { paint.faded(component::IDLE_CONTROLS) };
+    let control_paint = app.window.controls_paint(&paint);
     let maximize = button(glide_iced::glyph::window_control(app.edge_to_edge()))
-        .on_press(Message::WindowMaximize)
+        .on_press(Message::Window(WindowAction::ToggleMaximize))
         .width(CONTROL)
         .height(CONTROL)
         .padding(0);
@@ -195,7 +113,13 @@ fn header(app: &App) -> Element<'_, Message> {
     if !app.shell_menu {
         left = left.push(if compact(app) {
             let open = app.menu.as_ref().is_some_and(|menu| menu.kind == MenuKind::Compact && menu.reveal.is_open());
-            icon_button(&control_paint, Icon::Menu, Message::BarPressed(Bar::File), open, Key::Menu.text(app.lang))
+            icon_button(
+                &control_paint,
+                Icon::Menu,
+                Key::Menu.text(app.lang),
+                Some(Message::BarPressed(Bar::File)),
+                open,
+            )
         } else {
             iced::widget::row(Bar::ALL.map(|bar| bar_button(app, &control_paint, bar))).spacing(SP1).into()
         });
@@ -214,11 +138,11 @@ fn header(app: &App) -> Element<'_, Message> {
         icon_button(
             &control_paint,
             Icon::Sidebar,
-            Message::Command(Command::ToggleSidebar),
-            app.prefs.sidebar,
-            Key::Sidebar.text(app.lang)
+            Key::Sidebar.text(app.lang),
+            Some(Message::Command(Command::ToggleSidebar)),
+            app.prefs.sidebar
         ),
-        icon_button(&control_paint, Icon::Plus, Message::Command(Command::New), false, Key::New.text(app.lang)),
+        icon_button(&control_paint, Icon::Plus, Key::New.text(app.lang), Some(Message::Command(Command::New)), false),
         Space::new().width(2),
         close,
     ]
@@ -231,7 +155,7 @@ fn header(app: &App) -> Element<'_, Message> {
     } else {
         bar_start() + Bar::ALL.iter().map(|bar| bar_width(app, *bar)).sum::<f32>() + SP1 * 5.0
     };
-    let room = app.window.width - 2.0 * left_width.max(controls_width()) - SP4;
+    let room = app.window.size.width - 2.0 * left_width.max(controls_width()) - SP4;
     let mut layers: Vec<Element<'_, Message>> = vec![bar.height(Fill).into()];
     if room > 80.0 && !app.shell_menu {
         let title = app.doc().map(|doc| {
@@ -243,7 +167,7 @@ fn header(app: &App) -> Element<'_, Message> {
                 .wrapping(Wrapping::None)
         ]
         .align_x(Alignment::Center);
-        if let Some(subtitle) = app.subtitle().filter(|_| app.window.height > 360.0) {
+        if let Some(subtitle) = app.subtitle().filter(|_| app.window.size.height > 360.0) {
             lines = lines.push(text(subtitle, TextStyle::CAP).color(paint.fg_3()).wrapping(Wrapping::None));
         }
         let title_color = if app.window_focused() { paint.fg_1() } else { paint.fg_3() };
@@ -265,7 +189,10 @@ fn header(app: &App) -> Element<'_, Message> {
         .width(Fill)
         .height(HEADER)
         .style(move |_| style::rounded(background, corners));
-    mouse_area(bar).on_press(Message::WindowDrag).on_double_click(Message::WindowMaximize).into()
+    mouse_area(bar)
+        .on_press(Message::Window(WindowAction::Drag))
+        .on_double_click(Message::Window(WindowAction::ToggleMaximize))
+        .into()
 }
 
 #[must_use]
@@ -292,7 +219,7 @@ fn tab_button<'a>(app: &'a App, index: usize, doc: &'a Document) -> Element<'a, 
             .width(22)
             .height(22)
             .padding(0);
-        widgets::button(control, move |status| style::action(&paint, Tone::Ghost, status))
+        widgets::button(control, move |status| button_style(&paint, Tone::Ghost, status))
     } else {
         Space::new().width(22).height(22).into()
     };
@@ -303,7 +230,7 @@ fn tab_button<'a>(app: &'a App, index: usize, doc: &'a Document) -> Element<'a, 
     let lifted = app.dragged_tab() == Some(index);
     let tab = widgets::container(container(inner).width(Fill).height(Fill), move |hover, press| {
         let (background, color) = if active {
-            (view_bg(&paint), paint.fg_1())
+            (paint.view_bg(), paint.fg_1())
         } else {
             (
                 paint.layer(Color::TRANSPARENT, ST_HOVER * hover + (ST_PRESS - ST_HOVER) * press),
@@ -362,20 +289,11 @@ fn toggle<'a>(paint: &Paint, label: &'a str, on: bool, message: Message, hint: &
     tip(&paint, widgets::button(control, move |status| style::toggle(&paint, on, status)), hint)
 }
 
-fn pill<'a>(paint: &Paint, label: &'a str, message: Message, tone: Tone) -> Element<'a, Message> {
-    let paint = *paint;
-    let control = button(text(label, TextStyle::CALL).wrapping(Wrapping::None))
-        .on_press(message)
-        .height(CONTROL)
-        .padding(Padding::from([SP1, SP3]));
-    widgets::button(control, move |status| style::action(&paint, tone, status))
-}
-
 fn find_bar(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let Some(find) = &app.find else { return Space::new().into() };
     let lang = app.lang;
-    let narrow = app.window.width < 760.0;
+    let narrow = app.window.size.width < 760.0;
     let width = if narrow { Length::Fill } else { Length::Fixed(FIND_FIELD) };
     let search = field(
         &paint,
@@ -389,15 +307,21 @@ fn find_bar(app: &App) -> Element<'_, Message> {
         .color(if find.error.is_some() { paint.danger() } else { paint.fg_3() })
         .wrapping(Wrapping::None);
     let options = row![
-        icon_button(&paint, Icon::Up, Message::Command(Command::FindPrevious), false, Key::FindPrevious.text(lang)),
-        icon_button(&paint, Icon::Down, Message::Command(Command::FindNext), false, Key::FindNext.text(lang)),
+        icon_button(
+            &paint,
+            Icon::Up,
+            Key::FindPrevious.text(lang),
+            Some(Message::Command(Command::FindPrevious)),
+            false
+        ),
+        icon_button(&paint, Icon::Down, Key::FindNext.text(lang), Some(Message::Command(Command::FindNext)), false),
         toggle(&paint, "Aa", find.query.case, Message::FindToggle(Toggle::Case), Key::MatchCase.text(lang)),
         toggle(&paint, "W", find.query.word, Message::FindToggle(Toggle::Word), Key::WholeWord.text(lang)),
         toggle(&paint, ".*", find.query.regex, Message::FindToggle(Toggle::Regex), Key::Regex.text(lang)),
         status,
         Space::new().width(Fill),
         toggle(&paint, "⇄", find.replacing, Message::ToggleReplace, Key::ShowReplace.text(lang)),
-        pill(&paint, Key::Done.text(lang), Message::FindClose, Tone::Neutral),
+        compact_button(&paint, Key::Done.text(lang), Tone::Neutral, Some(Message::FindClose)),
     ]
     .spacing(SP1)
     .align_y(Alignment::Center)
@@ -420,8 +344,8 @@ fn find_bar(app: &App) -> Element<'_, Message> {
         body = body.push(
             row![
                 replace,
-                pill(&paint, Key::ReplaceOne.text(lang), Message::ReplaceOne, Tone::Neutral),
-                pill(&paint, Key::ReplaceAll.text(lang), Message::ReplaceAll, Tone::Neutral),
+                compact_button(&paint, Key::ReplaceOne.text(lang), Tone::Neutral, Some(Message::ReplaceOne)),
+                compact_button(&paint, Key::ReplaceAll.text(lang), Tone::Neutral, Some(Message::ReplaceAll)),
             ]
             .spacing(SP2)
             .align_y(Alignment::Center),
@@ -452,7 +376,7 @@ fn goto_bar(app: &App) -> Element<'_, Message> {
             ),
             text(format!("{line} / {total}"), TextStyle::NUM).color(paint.fg_3()),
             Space::new().width(Fill),
-            pill(&paint, Key::Cancel.text(app.lang), Message::Escape, Tone::Neutral),
+            compact_button(&paint, Key::Cancel.text(app.lang), Tone::Neutral, Some(Message::Escape)),
         ]
         .spacing(SP2)
         .align_y(Alignment::Center),
@@ -470,9 +394,11 @@ fn infobar(app: &App) -> Option<Element<'_, Message>> {
     let message = if gone { Key::DeletedOnDisk } else { Key::ChangedOnDisk };
     let mut actions = row![].spacing(SP2).align_y(Alignment::Center);
     if !gone {
-        actions = actions.push(pill(&paint, Key::Reload.text(app.lang), Message::Disk(true), Tone::Neutral));
+        actions =
+            actions.push(compact_button(&paint, Key::Reload.text(app.lang), Tone::Neutral, Some(Message::Disk(true))));
     }
-    actions = actions.push(pill(&paint, Key::KeepMine.text(app.lang), Message::Disk(false), Tone::Ghost));
+    actions =
+        actions.push(compact_button(&paint, Key::KeepMine.text(app.lang), Tone::Ghost, Some(Message::Disk(false))));
     let warn = to_iced(paint.tokens.warn_soft).scale_alpha(paint.alpha);
     Some(
         container(
@@ -518,7 +444,7 @@ fn tree_row<'a>(app: &'a App, node: &'a crate::tree::Node) -> Element<'a, Messag
 
 fn sidebar(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
-    let background = sidebar_bg(&paint);
+    let background = paint.sidebar_bg();
     let body: Element<'_, Message> = match &app.tree {
         Some(tree) => {
             let title = row![
@@ -527,16 +453,16 @@ fn sidebar(app: &App) -> Element<'_, Message> {
                 icon_button(
                     &paint,
                     Icon::Refresh,
-                    Message::Command(Command::RefreshTree),
-                    false,
-                    Key::Refresh.text(app.lang)
+                    Key::Refresh.text(app.lang),
+                    Some(Message::Command(Command::RefreshTree)),
+                    false
                 ),
                 icon_button(
                     &paint,
                     Icon::Close,
-                    Message::Command(Command::CloseFolder),
-                    false,
-                    Key::CloseFolder.text(app.lang)
+                    Key::CloseFolder.text(app.lang),
+                    Some(Message::Command(Command::CloseFolder)),
+                    false
                 ),
             ]
             .spacing(SP1)
@@ -556,11 +482,11 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             column![
                 glide_iced::glyph::glyph(Icon::Folder, 28.0, paint.fg_3()),
                 text(Key::NoFolder.text(app.lang), TextStyle::CALL).color(paint.fg_2()).align_x(Alignment::Center),
-                pill(
+                compact_button(
                     &paint,
                     Key::OpenFolderButton.text(app.lang),
-                    Message::Command(Command::OpenFolder),
-                    Tone::Neutral
+                    Tone::Neutral,
+                    Some(Message::Command(Command::OpenFolder))
                 ),
             ]
             .spacing(SP3)
@@ -727,7 +653,7 @@ fn status_button<'a>(paint: &Paint, label: String, message: Message) -> Element<
         .on_press(message)
         .height(STATUS - 4.0)
         .padding(Padding::from([2.0, SP2]));
-    widgets::button(control, move |status| style::action(&paint, Tone::Ghost, status))
+    widgets::button(control, move |status| button_style(&paint, Tone::Ghost, status))
 }
 
 fn status_bar(app: &App) -> Element<'_, Message> {
@@ -767,7 +693,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         } else {
             format!("{}: {}", Key::Tabs.text(lang), app.prefs.tab_width)
         };
-        let width = app.window.width;
+        let width = app.window.size.width;
         right = right
             .push(status_button(&paint, language, Message::StatusMenu(MenuKind::Syntax, width - MENU_WIDTH - SP2)))
             .push(status_button(&paint, indent, Message::StatusMenu(MenuKind::TabWidths, width - MENU_WIDTH - SP2)))
@@ -896,7 +822,7 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             check(app, Key::HiddenFiles, Command::ToggleHidden, app.prefs.hidden_files, true),
             action(app, Key::Refresh, Command::RefreshTree, app.tree.is_some()),
             Item::Separator,
-            check(app, Key::FullScreen, Command::FullScreen, app.frame == crate::app::Frame::Fullscreen, true),
+            check(app, Key::FullScreen, Command::FullScreen, app.window.frame == crate::app::Frame::Fullscreen, true),
         ],
         Bar::Search => vec![
             action(app, Key::Find, Command::Find, has),
@@ -1200,7 +1126,7 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
         rows.push(element);
         height += size;
     }
-    let window = app.window;
+    let window = app.window.size;
     let width = MENU_WIDTH.min(window.width - 2.0 * SP2);
     let height = height.min((window.height - 2.0 * SP3).max(1.0));
     let bar = iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(SP1);
@@ -1287,9 +1213,19 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
                 title,
                 body.into(),
                 vec![
-                    pill(&paint, Key::DontSave.text(lang), Message::Dialog(Answer::Discard), Tone::Danger),
+                    compact_button(
+                        &paint,
+                        Key::DontSave.text(lang),
+                        Tone::Danger,
+                        Some(Message::Dialog(Answer::Discard)),
+                    ),
                     Space::new().width(Fill).into(),
-                    pill(&paint, Key::Cancel.text(lang), Message::Dialog(Answer::Cancel), Tone::Neutral),
+                    compact_button(
+                        &paint,
+                        Key::Cancel.text(lang),
+                        Tone::Neutral,
+                        Some(Message::Dialog(Answer::Cancel)),
+                    ),
                     accent_pill(&paint, Key::Save.text(lang), Message::Dialog(Answer::Save)),
                 ],
                 420.0,
@@ -1343,7 +1279,7 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
         DialogKind::Shortcuts => (
             Key::Shortcuts.text(lang).to_string(),
             scrollable(container(shortcut_rows(app, &paint)).padding(Padding::from([0.0, SP2]).left(0.0)))
-                .height(Length::Fixed((app.window.height - 220.0).clamp(120.0, 520.0)))
+                .height(Length::Fixed((app.window.size.height - 220.0).clamp(120.0, 520.0)))
                 .into(),
             vec![
                 Space::new().width(Fill).into(),
@@ -1358,7 +1294,7 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
     )
     .padding(SP4)
     .width(width)
-    .max_width(app.window.width - SP6)
+    .max_width(app.window.size.width - SP6)
     .style(move |_| style::popover(&paint));
     let scrim = Color { a: 0.32 * progress, ..Color::BLACK };
     let corner = if app.edge_to_edge() { 0.0 } else { R3 };
@@ -1376,27 +1312,12 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
     .into()
 }
 
-fn accent_pill<'a>(paint: &Paint, label: &'a str, message: Message) -> Element<'a, Message> {
-    let paint = *paint;
-    let control = button(text(label, TextStyle::CALL).wrapping(Wrapping::None))
-        .on_press(message)
-        .height(component::CONTROL)
-        .padding(Padding::from([SP2, SP4]));
-    widgets::button(control, move |status| {
-        let background = match status {
-            button::Status::Hovered | button::Status::Pressed => paint.acc_bg_hover(),
-            _ => paint.acc_bg(),
-        };
-        style::flat(background, paint.acc_fg(), R2)
-    })
-}
-
 fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element<'a, Message> {
     let progress = App::reveal(at);
     let paint = app.paint.faded(progress);
     let pill = container(text(message, TextStyle::CALL))
         .padding(Padding::from([SP2, SP4]))
-        .max_width(app.window.width - 48.0)
+        .max_width(app.window.size.width - 48.0)
         .style(move |_| style::popover(&paint));
     let bottom = if app.prefs.status_bar { STATUS } else { 0.0 } + SP5 + (1.0 - progress) * component::POPOVER_RISE;
     container(widgets::surface(pill, &paint, Level::El3, R3))
@@ -1406,39 +1327,6 @@ fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element
         .align_y(Alignment::End)
         .padding(Padding::from([0.0, SP5]).bottom(bottom))
         .into()
-}
-
-fn resize_handles<'a>() -> Element<'a, Message> {
-    const EDGE: f32 = 5.0;
-    const CORNER: f32 = 10.0;
-    let handle = |width: Length, height: Length, direction: window::Direction, cursor: mouse::Interaction| {
-        mouse_area(Space::new().width(width).height(height))
-            .on_press(Message::WindowResize(direction))
-            .interaction(cursor)
-    };
-    let fixed = Length::Fixed;
-    let down = mouse::Interaction::ResizingDiagonallyDown;
-    let up = mouse::Interaction::ResizingDiagonallyUp;
-    let horizontal = mouse::Interaction::ResizingHorizontally;
-    let vertical = mouse::Interaction::ResizingVertically;
-    let band = |left, middle, right, left_cursor, right_cursor| {
-        row![
-            handle(fixed(CORNER), fixed(EDGE), left, left_cursor),
-            handle(Fill, fixed(EDGE), middle, vertical),
-            handle(fixed(CORNER), fixed(EDGE), right, right_cursor),
-        ]
-    };
-    column![
-        band(window::Direction::NorthWest, window::Direction::North, window::Direction::NorthEast, down, up),
-        row![
-            handle(fixed(EDGE), Fill, window::Direction::West, horizontal),
-            Space::new().width(Fill).height(Fill),
-            handle(fixed(EDGE), Fill, window::Direction::East, horizontal),
-        ]
-        .height(Fill),
-        band(window::Direction::SouthWest, window::Direction::South, window::Direction::SouthEast, up, down),
-    ]
-    .into()
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -1457,7 +1345,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         main = main.push(bar).push(rule(&paint));
     }
     main = main.push(editor(app));
-    let background = view_bg(&paint);
+    let background = paint.view_bg();
     let bottom_right = if app.edge_to_edge() || app.prefs.status_bar { 0.0 } else { R3 };
     let bottom_left = if app.sidebar_visible() { 0.0 } else { bottom_right };
     let main = container(main).width(Fill).height(Fill).style(move |_| {
@@ -1475,7 +1363,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body = mouse_area(body).on_move(Message::Pointer);
     let mut layers: Vec<Element<'_, Message>> = vec![body.into()];
     if !app.edge_to_edge() {
-        layers.push(resize_handles());
+        layers.push(resize_handles(Message::Window));
     }
     if let Some((text, at)) = &app.notice {
         layers.push(notice(app, text, *at));
@@ -1518,10 +1406,10 @@ mod tests {
     #[test]
     fn the_menu_bar_collapses_on_narrow_windows() {
         let (mut app, _) = App::launch(None, &[]);
-        app.window = iced::Size::new(1200.0, 700.0);
+        app.window.size = iced::Size::new(1200.0, 700.0);
         assert!(!compact(&app));
         assert!(bar_x(&app, Bar::Edit) > bar_x(&app, Bar::File));
-        app.window = iced::Size::new(420.0, 400.0);
+        app.window.size = iced::Size::new(420.0, 400.0);
         assert!(compact(&app));
         assert_eq!(bar_x(&app, Bar::Help), bar_x(&app, Bar::File));
     }
