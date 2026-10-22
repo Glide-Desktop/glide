@@ -27,9 +27,9 @@ The shell mixes the two platforms deliberately:
 |---|---|---|
 | Sidebar with coloured rounded-square icon tiles, grouped with gaps | macOS System Settings | `sidebar.rs`, `widgets::tile`, `Panel::GROUPS`, `Panel::color` |
 | Search field at the top of the sidebar, account card under it | macOS | `sidebar.rs` (`Ctrl+F` focuses search, `Esc` clears it, `Enter` opens the first hit) |
-| Boxed lists: group title + description above a card of rows with inset separators | GNOME / libadwaita `AdwPreferencesGroup` | `widgets::Group` |
-| Action rows: title, subtitle, prefix icon, suffix control | libadwaita `AdwActionRow` | `widgets::Row` |
-| Hero card with a large tile and a master switch (Wi-Fi, Bluetooth) | macOS | `widgets::hero` |
+| Boxed lists: group title + description above a card of rows with inset separators | GNOME / libadwaita `AdwPreferencesGroup` | `widgets::Group` (= `glide_sdk::widget::Group`) |
+| Action rows: title, subtitle, prefix icon, suffix control | libadwaita `AdwActionRow` | `widgets::Row` (= `glide_sdk::widget::ListRow`) |
+| Hero card with a large tile and a master switch (Wi-Fi, Bluetooth) | macOS | `widgets::section_hero` (= `glide_sdk::widget::hero_card`) |
 | Centered content clamp (max 680 px) | libadwaita `AdwClamp` | `app.rs::view_content` |
 | Style previews (Light / Dark mini windows), accent colour dots with check | GNOME 47 Appearance + macOS | `panels/appearance.rs` |
 | Display arrangement diagram | macOS Displays | `panels/displays.rs` |
@@ -45,7 +45,8 @@ Rows inside a group sit in a 4 px padded card so their R2 hover layer is concent
 - **Rhythm**: page padding 24 / 32, 24 px between groups, 8 px between a group heading and its card; page header is a 26 px title plus a one-line description per panel.
 - **Controls**: primary buttons use `acc-bg` (`acc-bg-hover` on hover) with `--el-1` / `--el-2` elevation shadows; secondary buttons are 34 px with transparent borders (`.btn` base = `fill-1`); icon buttons are 28 px round; dropdown menus use `popover-bg`, 1 px `line`, R3, `--el-3` shadow, and `fill-2` / `fg-1` selection; banners use semantic soft tokens (`danger-soft`, `warn-soft`, `ok-soft`, `acc-soft`); SVG icons preserve the alpha channel of translucent tokens (`fg-2..4`) via `.opacity(color.a)`; the segmented track is `fill-1` without a border and its active thumb is `card-bg` (light) / `fill-3` (dark) with `--el-1`; switches are 48×24 with an 18 px thumb; the sidebar search is a borderless `fill-1` well that turns `view-bg` with an accent border on focus and gains a clear button while a query is typed.
 - **Selection rings** (style previews, wallpapers, accent swatches, monitors) are 2 px with a 4 px gap, so the inner R2 image stays concentric with the R3 ring and selecting never shifts neighbours.
-- **Sidebar**: 32 px rows, 24 px tiles, inactive labels `fg-1`, hover is the 8 % state layer, selected is `acc-soft` / `acc-soft-fg`; the account card uses the spec `.avatar` gradient.
+- **Sidebar**: glide-sdk `SidebarItem` rows (34 px) with 24 px tiles, inactive labels `fg-2`, hover is the 8 % state layer, selected is `acc-soft` / `acc-soft-fg` with the 3×18 bar growing t3 E_OVER; search hits are drawn in the accent; the account card is the SDK `profile_card`.
+- **Components**: every builder in `widgets.rs` delegates to `glide_sdk::widget` (badges, banners, cards, tiles, keycaps, swatches, empty states…); `widgets.rs` only converts `ThemeState` into a `Paint` and keeps Settings' call signatures.
 - **Panels**: Sound lists output / input devices as rows with a check (a dropdown only past six devices) under volume groups and stops the microphone level meter when leaving the panel or switching input devices; Wi-Fi rows show a disclosure chevron only when a click expands them (connected, or secured and unsaved); the Displays arrangement sits in a regular card with gradient monitor tiles; About opens with a hero card (logo, hostname, Glide version and OS, CPU and memory).
 
 ---
@@ -107,7 +108,7 @@ crates/glide-settings/
 │   ├── lib.rs
 │   ├── app.rs             root state, message routing, save + reload, subscriptions
 │   ├── sidebar.rs         search, account card, grouped panel list
-│   ├── widgets.rs         Group, Row, hero, segmented, switch, dropdown, banner, badge, …
+│   ├── widgets.rs         Settings-signature wrappers over glide-sdk widgets
 │   ├── icons.rs           inline SVG glyphs
 │   ├── i18n.rs            uk / en catalogue (follows `[general] language`)
 │   ├── theme.rs           Meridian tokens and Iced styles
@@ -132,7 +133,7 @@ crates/glide-settings/
 - `appmenu-registrar` only takes effect on the next sign-in.
 - **Not verified by hand**: connecting to a secured Wi-Fi network, pairing a Bluetooth device, and changing the output scale or mode on the compositor build. The UI and parsers are tested; the effects on real hardware were not exercised.
 - **Wi-Fi passwords never reach argv.** A connect with a password goes over NetworkManager's D-Bus API (`AddAndActivateConnection` with an `802-11-wireless-security.psk` setting, the strongest matching AP as the specific object), waits for activation and deletes the new profile if activation fails. Everything else still uses `nmcli`. The D-Bus signatures and property names were checked against the running NetworkManager with `busctl`; an actual secured connect was not exercised.
-- **No transitions.** Iced has no built-in tweening for these widgets, so the Meridian motion rules (t1–t4) are not applied inside the app.
+- **Motion comes from glide-sdk.** The SDK widgets Settings draws with (switches, segments, sliders, sidebar rows, cards, state layers) animate by the Meridian motion table; panel illustrations of Settings' own (monitor layouts, gesture pad, desktop previews) do not. The motion was checked in headless renders and tests, not on screen.
 - **Bluetooth pairing** relies on bluetoothctl's default agent; devices that need a PIN confirmation will fail with the tool's error message.
 - **Visual pass verified on screen** (2026-09-24): every panel was screenshotted in dark and light (light via a temporary `XDG_CONFIG_HOME` with `appearance = "light"`) before and after the redesign. Hover / press / focus states and open dropdown menus were not captured.
 - There are no sub-pages, so there is no back navigation; Wi-Fi details expand inline.

@@ -212,9 +212,12 @@ the spec's motion table; the catalogue shows each of them.
 | `button(paint, label, tone, Option<msg>)`, `primary`, `secondary`, `tonal`, `outline`, `ghost`, `danger` | `Tone::{Accent, Tonal, Neutral, Outline, Ghost, Danger}`; the primary rises El1 → El2, danger fills on hover, a press squeezes to .975 and state layers crossfade over t1. Labels may be `&str` or `String`. |
 | `sized_button(…, Size::{Small, Medium, Large}, …)`, `compact_button` | 28 / 34 / 42 px with the spec's padding and label sizes. |
 | `icon_button(paint, Icon, tooltip, Option<msg>, on)` | 28 px square with a tooltip. |
+| `sized_icon_button(…, Size)`, `icon_segmented(paint, &[(value, Icon, tooltip)], selected, on_select)` | Icon buttons at any size; a segmented control of icons (view switchers). |
 | `linked(paint, &[(label, Option<msg>)])` | Joined group, R2 outside and R1 inside. |
-| `toggle_button(paint, label, on, Option<on_toggle>)` | Neutral when off, tonal when on; fill and ink crossfade over t2. |
+| `toggle_button(paint, label, on, Option<on_toggle>)`, `sized_toggle_button(…, Size)`, `flat_toggle_button(…)` | Neutral (or ghost, for flat) when off, tonal when on; fill and ink crossfade over t2; one- or two-letter labels make a square button (Aa, W, .*). |
+| `link(paint, label, Option<msg>)` | Accent text button with a ghost hover layer. |
 | `menu_button(paint, label, items, width)` | Opens a menu of actions under itself (keyboard rows, Esc, outside click). |
+| `Size::width(label)` | Measured width of a button of that size with that label, for layouts that must fit buttons in. |
 
 **Inputs**
 
@@ -223,7 +226,9 @@ the spec's motion table; the catalogue shows each of them.
 | `text_field(paint, placeholder, value, on_input)`, `field(paint, text_input)` | Fill-1 well, accent border and a 3 px halo that fades in on focus. `field` wraps any `text_input` (ids, submit, secure). |
 | `validated_field(paint, text_input, Validity::{Neutral, Valid, Invalid})` | OK / danger border and ring. |
 | `search_field(paint, placeholder, value, on_input, on_clear)`, `password_field(…, revealed, on_input, on_reveal)` | Leading search glyph and a clear button; an eye toggle. |
-| `text_area_style(paint, status)` | Style for iced's `text_editor`. |
+| `search_input(paint, text_input, Option<on_clear>, clear_label)`, `hinted_search_input(…, Option<hint>)` | The same well around your own `text_input` (ids, submit); the hint (e.g. a `key_combo`) shows while there is nothing to clear. |
+| `inline_field(paint, text_input, TextStyle)`, `inline_style` | A compact view-bg field with a line-2 border for editing in place (rename in a grid or list). |
+| `text_area_style(paint, status)`, `bare_text_area_style` | Style for iced's `text_editor`; the bare one has no well (editors). |
 | `stepper(paint, value, previous, next, on_change)` | − value +. |
 | `dropdown(paint, options, selected, placeholder, on_select)` | Opener with a chevron; the list fades and rises in, follows the keyboard (↑ ↓ Enter Esc) and closes on an outside click. |
 
@@ -237,8 +242,9 @@ the spec's motion table; the catalogue shows each of them.
 | `sidebar_list(paint, &[(icon, label)], selected, on_select)` | A sliding acc-soft selection with the 3×18 bar growing t3 E_OVER. |
 | `chip(paint, label, on, Option<msg>)` | Toggle chip; fill and ink crossfade. |
 | `breadcrumbs(paint, &[label], on_select)` | Path crumbs: hover layer on each, chevrons between, the last one semibold. |
+| `Crumb::new(paint, label)` + `crumb_trail(paint, crumbs)` | Crumbs with `.glyph(glyph, tint)`, `.current(bool)`, `.hovered(bool)` (drop targets) and `.on_press(Option<msg>)`; wrap each in a `mouse_area` for context menus or drop hover. |
 | `page_dots(paint, count, current, on_select)` | 8 px dots; the current one stretches to a 22 px accent pill (t2 E_OUT); arrows step. |
-| `swatches(paint, &[(value, colour)], selected, on_select)` | 24 px colour dots; the picked one gets an accent ring and a check with a small E_OVER pop. |
+| `swatches(paint, &[(value, colour)], selected, on_select)`, `swatch(paint, colour, selected, Option<msg>, side)` | Colour dots; the picked one gets an accent ring and a check with a small E_OVER pop. |
 | `slider(paint, range, value, on_change)`, `stepped_slider(…, step, on_change, on_release)` | 6 px groove, 18 px thumb whose acc-ring grows on hover; drags are instant, programmatic changes glide t2 E_OUT. |
 | `track(paint, Indicator, selected, row_or_column)` | The sliding-indicator primitive the above are built on. |
 
@@ -246,26 +252,64 @@ the spec's motion table; the catalogue shows each of them.
 
 | Widget | Notes |
 |---|---|
-| `progress(paint, Some(fraction))`, `progress(paint, None)` | 6 px bar gliding to its value; indeterminate is a 34 % sweep (E_IO, 1.4 s). |
-| `spinner(paint, large)` | 22 / 34 px. |
-| `badge(paint, label, Severity)`, `count_badge(paint, n)` | Severities `Neutral, Accent, Ok, Warn, Danger`; the counter pops in from 0.6. |
-| `banner(paint, Severity, title, body, actions)`, `empty_state(paint, icon, title, body, action)` | |
-| `avatar(paint, name, side)`, `keycap(paint, label)` | Gradient initial; a key label. |
+| `progress(paint, Some(fraction))`, `progress(paint, None)`, `paused_progress(paint, fraction, paused)` | 6 px bar gliding to its value; indeterminate is a 34 % sweep (E_IO, 1.4 s); paused turns fg-3 and stops. |
+| `spinner(paint, large)`, `sized_spinner(paint, side)`, `busy_label(paint, label)` | 22 / 34 px or any size; a small spinner with a caption. |
+| `badge(paint, label, Severity)`, `status_badge(…)`, `count_badge(paint, n)`, `dot(colour, side)` | Severities `Neutral, Accent, Ok, Warn, Danger`; the status badge leads with a dot; the counter pops in from 0.6. |
+| `banner(paint, Severity, title, body, actions)`, `noted_banner(paint, Severity, glyph, title, body, actions)` | The second picks its own glyph; an empty title leaves one line. |
+| `empty_state(paint, glyph, title, body, action)`, `empty_note(paint, glyph, title, body)` | The first fills and centres in its area; the note is compact, for lists and scrolled pages. |
+| `avatar(paint, name, side)`, `initials(name)`, `keycap(paint, label)`, `key_combo(paint, "Ctrl+F", symbol)` | Gradient initials (first and last word); key labels; a combo of keycaps through your symbol mapping. |
+| `icon_tile(glyph, colour, side)` | A coloured app tile with a white glyph, R2 / R3 / R4 by size. |
+| `task_card(paint, glyph, Task { title, current, fraction, paused, detail, actions })` | A job card: title and buttons, current item, progress, detail line. |
 | `skeleton(paint, width, height)` | Loading placeholder; fill-2 block that breathes over 1.4 s (E_IO), still with animations off. |
-| `tooltip(paint, child, label)` | Fades and rises after the 550 ms delay. |
+| `tooltip(paint, child, label)`, `bubble(paint, content)` | Fades and rises after the 550 ms delay; the bubble is the same surface drawn at once (drag hints, labels over images). |
 
 **Layout**
 
 | Widget | Notes |
 |---|---|
-| `card(paint, content)`, `action_card(paint, content, msg)` | Action cards lift 3 px on hover (E_OVER). |
-| `switch_row(paint, title, subtitle, on, Option<on_toggle>)` | A list row that toggles from anywhere on it, with a hover layer and the switch at its end. |
-| `list(paint, rows)`, `list_row(paint, title, subtitle, trailing)`, `action_row(…, msg)` | Boxed list; action rows carry a chevron and a hover layer. |
-| `expander(paint, title, open, on_toggle, content)` | Unfolds over t3 E_OUT; the chevron turns. |
+| `card(paint, content)`, `action_card(paint, content, msg)`, `card_style`, `tinted_card_style(paint, tint)` | Action cards lift 3 px on hover (E_OVER); the tinted card washes its top in a colour. |
+| `Group::new(paint)` | Boxed-list section: `.title`, `.description`, `.suffix`, `.push` / `.push_maybe` / `.extend` rows, `.build()`. |
+| `ListRow::new(paint, title)` | 44 px row around 34 px controls: `.subtitle`, `.prefix`, `.suffix`, `.on_press` (R2 hover layer, keyboard focus), `.dimmed`, `.stacked(bool)` (suffix below the label on narrow windows). |
+| `list(paint, rows)`, `list_row(paint, title, subtitle, trailing)`, `action_row(…, msg)`, `switch_row(…, on, Option<on_toggle>)` | Shortcuts built on the two above; switch rows toggle from anywhere on them. |
+| `facts(paint, rows, label_width)`, `well(paint, content)`, `sample_well(paint, content)`, `select_row(paint, leading, label, selected, msg)` | Key/value lines; a fill-1 well; a sunken sample area; a pickable row with a check. |
+| `expander(paint, title, open, on_toggle, content)`, `disclosure(paint, value)`, `inert(paint, enabled, content)` | Unfolds over t3 E_OUT; a value with a chevron; a veil over controls that cannot be used. |
 | `section(paint, title, content)`, `sidebar(paint, width, items)`, `sidebar_item(…)` | |
+| `SidebarItem::new(paint, label)` | `.glyph` / `.tinted` / `.leading(element)`, `.ink`, `.matched(range)` (search hit), `.accessory` (eject button, status), `.selected`, `.current` (bar grows t3 E_OVER), `.hovered`, `.held`, `.on_press`. |
+| `profile_card(paint, avatar, name, subtitle, selected, msg)` | The account card at the top of a sidebar. |
+| `tree_row(paint, depth, expanded, glyph, label, current, msg)`, `TREE_ROW`, `TREE_INDENT` | Folder-tree rows with a turning chevron. |
+| `table_header(paint, cells)` + `HeaderCell::new(paint, label)` | MICRO column headers: `.width`, `.separated`, `.sorted(Some(ascending))` or `.sort_mark(glyph)`, `.lit`, `.target` (drag), `.on_press`. |
+| `status_bar(paint, left, right, corners)`, `status_button(paint, label, msg)` | 26 px bar along the window's bottom. |
+| `stat_tile`, `grid(cells, per_line, spacing)`, `usage_bar`, `legend`, `usage_card` | Figures with a tile; a wrapping grid; segmented usage bars with their legend. |
+| `preview_card(paint, content, label, selected, Option<msg>)`, `preview_ring_style`, `choice_card(paint, illustration, heading, subtitle, selected, msg)` | Thumbnails with a selection ring that never changes width; a card with a radio mark. |
+| `hero_card(paint, glyph, colour, heading, description, trailing, stacked)`, `page_header(paint, glyph, colour, eyebrow, heading, description, trailing)` | A page's lead card and its title block. |
 | `Popup::new(paint, anchor, build)` | A popover anchored to any element; `.keyboard(rows, on_pick)`, `.width(w)`. Build its rows from containers and `mouse_area` rather than iced buttons, whose status resets while the popover animates. |
 | `popover`, `surface`, `separator`, `vertical_separator`, `scrollable` | |
-| `text(content, TextStyle)`, `measure(text, TextStyle)`, `icon(Icon, side, tint)` | The shell's type scale; widths are ceiled. |
+| `text(content, TextStyle)`, `measure(text, TextStyle)`, `icon(glyph, side, tint)` | The shell's type scale; widths are ceiled. `icon` takes anything implementing `Glyph`: the SDK's `Icon`, or an app's own icon set with a one-method impl. |
+| `elide(name, width, TextStyle)`, `elide_end(sentence, width, TextStyle)`, `ellipsize(name, chars)` | Measured shortening: in the middle keeping the extension, or at the end. |
+
+**Bars and strips**
+
+| Widget | Notes |
+|---|---|
+| `tab_strip(paint, tabs, active)` → `.height`, `.hovered`, `.dragged`, `.on_select`, `.on_close`; `Tab`, `Mark::{None, Dot, Alert}`, `tab_slot` | Document tabs with close buttons on hover, marks, and the slot a drag lands in. |
+| `find_bar(paint, text_input)` → `.status`, `.steps`, `.toggle`, `.extra`, `.done`, `.replace`, `.narrow`, `.height` | A find (and replace) bar. |
+| `bar_strip(paint, Option<Severity>, content)`, `info_bar(paint, Option<Severity>, title, detail, actions)`, `INFO_BAR` | A strip under the header; the info bar is a 36 px title, detail and actions. |
+
+**Window**
+
+| Item | Notes |
+|---|---|
+| `window::Header::new(title)` + `window::header(paint, window, header, on_window, on_close, room_taken)` | The client-side header: `.subtitle`, `.leading`, `.trailing`, `.center`, `.labels`, `.height`, `.corners`, `.context`, `.without_maximize`, `.without_close` (dialog headers: Cancel · title · Accept). |
+| `window::maximize_button`, `window::close_button` | The header's controls on their own, for split headers. |
+| `window::resize_edges(on_resize)`, `window::resize_handles(on_window)`, `window::Edge` | The 5 px edges and 10 px corners; `Edge` wraps a direction so messages can derive `PartialEq`. |
+
+**Menus and overlays**
+
+| Item | Notes |
+|---|---|
+| `menu::Item` (`Action`, `Submenu`, `Stepper`, `Heading`, `Separator`) and `menu::Popup` | Action rows carry a shortcut, a check, a swatch, a danger tint or a submenu arrow; `place` keeps bar menus below and shifts context menus to fit; `walk` moves the keyboard highlight. |
+| `overlay::modal`, `dialog_card`, `dialog_buttons`, `ringed` | Build dialogs with your own body; danger and ghost choices sit on the left, Enter takes the accent one. |
+| `overlay::toast_pill`, `overlay::toast_card(paint, message, ink, action, close, max_width)` | The bottom toast, or just its card for apps that place it themselves. |
 
 `Paint` exposes every colour token as a method (`win_bg`, `view_bg`,
 `fg_1`…`fg_4`, `fill_1`…`fill_3`, `acc_bg`, `acc_soft`, `danger`, …),
