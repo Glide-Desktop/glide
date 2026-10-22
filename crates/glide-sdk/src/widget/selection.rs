@@ -117,13 +117,16 @@ impl<M> Widget<M, Theme, Renderer> for Track<'_, M> {
         clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let slide = tree.state.downcast_mut::<Slide>();
+        let grows = self.indicator == Indicator::Selection;
         let mut changed = false;
         if slide.selected != self.selected {
             if let Some(index) = self.selected {
                 if slide.selected.is_none() {
                     slide.position.jump(index as f32);
                 }
-                slide.bar.jump(0.0);
+                if grows {
+                    slide.bar.jump(0.0);
+                }
             }
             slide.selected = self.selected;
             changed = true;
@@ -136,7 +139,7 @@ impl<M> Widget<M, Theme, Renderer> for Track<'_, M> {
         changed |= slide.bar.to(present, Speed::GROW);
         let animating = slide.position.animating(Speed::SLIDE)
             || slide.presence.animating(Speed::FADE)
-            || slide.bar.animating(Speed::GROW);
+            || (grows && slide.bar.animating(Speed::GROW));
         if changed || (animating && matches!(event, Event::Window(window::Event::RedrawRequested(_)))) {
             shell.request_redraw();
         }
@@ -243,17 +246,21 @@ fn segment_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let paint = *paint;
     let style = if active { TextStyle { weight: 560, ..TextStyle::CALL } } else { TextStyle::CALL };
-    let label = text(label, style).wrapping(Wrapping::None);
-    let control = button(container(label).center_x(Fill).center_y(Fill))
-        .on_press(message)
-        .height(height)
-        .width(width)
-        .padding(Padding::from([0.0, SP3 + 2.0]));
-    widgets::button(control, move |status| {
-        let color = if active { paint.fg_1() } else { paint.fg_2() };
-        let background = if active { Color::TRANSPARENT } else { paint.layered(Color::TRANSPARENT, status) };
-        style::flat(background, color, R1 + 2.0)
+    animate(if active { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
+        let value = value.clone();
+        let label = text(label, style).wrapping(Wrapping::None);
+        let control = button(container(label).center_x(Fill).center_y(Fill))
+            .on_press(message)
+            .height(height)
+            .width(width)
+            .padding(Padding::from([0.0, SP3 + 2.0]));
+        widgets::button(control, move |status| {
+            let amount = value.get().clamp(0.0, 1.0);
+            let background = paint.layered(Color::TRANSPARENT, status).scale_alpha(1.0 - amount);
+            style::flat(background, super::mix(paint.fg_2(), paint.fg_1(), amount), R1 + 2.0)
+        })
     })
+    .into()
 }
 
 #[must_use]
@@ -290,20 +297,19 @@ pub fn tabs<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clon
         let active = *value == selected;
         let style = if active { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
         let label: Cow<'a, str> = label.clone().into();
-        let control = button(container(text(label, style).wrapping(Wrapping::None)).center_y(Fill))
-            .on_press(on_select(*value))
-            .height(component::CONTROL + SP1)
-            .padding(Padding::from([0.0, SP3]));
-        widgets::button(control, move |status| {
-            let color = if active {
-                paint.acc_text()
-            } else if status == button::Status::Hovered {
-                paint.fg_1()
-            } else {
-                paint.fg_2()
-            };
-            style::flat(paint.layered(Color::TRANSPARENT, status), color, R2)
-        })
+        let message = on_select(*value);
+        Element::from(animate(if active { 1.0 } else { 0.0 }, Speed::COLOR, move |shown| {
+            let shown = shown.clone();
+            let control = button(container(text(label, style).wrapping(Wrapping::None)).center_y(Fill))
+                .on_press(message)
+                .height(component::CONTROL + SP1)
+                .padding(Padding::from([0.0, SP3]));
+            widgets::button(control, move |status| {
+                let idle = if status == button::Status::Hovered { paint.fg_1() } else { paint.fg_2() };
+                let color = super::mix(idle, paint.acc_text(), shown.get().clamp(0.0, 1.0));
+                style::flat(paint.layered(Color::TRANSPARENT, status), color, R2)
+            })
+        }))
     });
     let bar = track(&paint, Indicator::Underline, index, Row::with_children(items).spacing(SP1));
     iced::widget::column![bar, super::separator(&paint)].into()
@@ -402,6 +408,55 @@ pub fn radio_group<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
 mod tests {
     use super::*;
     use iced::Point;
+    use iced::widget::Space;
+
+    fn renderer() -> Renderer {
+        Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)))
+    }
+
+    fn pump(element: &mut Element<'_, ()>, tree: &mut Tree, renderer: &Renderer) -> bool {
+        let limits = layout::Limits::new(Size::ZERO, Size::new(400.0, 100.0));
+        let node = element.as_widget_mut().layout(tree, renderer, &limits);
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            tree,
+            &Event::Window(window::Event::RedrawRequested(std::time::Instant::now())),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(400.0, 100.0)),
+        );
+        shell.redraw_request() == window::RedrawRequest::NextFrame
+    }
+
+    #[test]
+    fn the_indicator_travels_between_items_instead_of_jumping() {
+        let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        let make = |selected| {
+            track(
+                &paint,
+                Indicator::Thumb,
+                Some(selected),
+                Row::with_children([0, 1].map(|_| Space::new().width(40).height(20).into())).spacing(10),
+            )
+        };
+        let renderer = renderer();
+        let mut first: Element<'_, ()> = make(0);
+        let mut tree = Tree::new(&first);
+        pump(&mut first, &mut tree, &renderer);
+        let mut second: Element<'_, ()> = make(1);
+        tree.diff(&second);
+        assert!(pump(&mut second, &mut tree, &renderer), "a new selection asks for frames");
+        std::thread::sleep((Speed::SLIDE.duration)() / 2);
+        let middle = tree.state.downcast_ref::<Slide>().position.value(Speed::SLIDE);
+        assert!(middle > 0.2 && middle < 1.0, "half-way through t2 the thumb is between the items: {middle}");
+        std::thread::sleep((Speed::SLIDE.duration)());
+        assert_eq!(tree.state.downcast_ref::<Slide>().position.value(Speed::SLIDE), 1.0);
+        assert!(!pump(&mut second, &mut tree, &renderer), "a settled thumb stops asking for frames");
+    }
 
     #[test]
     fn the_indicator_slides_between_neighbouring_items() {

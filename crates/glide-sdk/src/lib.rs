@@ -23,8 +23,9 @@ pub mod theme {
 }
 
 pub mod prelude {
+    pub use crate::anim::{self, Speed};
     pub use crate::theme::{SP1, SP2, SP3, SP4, SP5, SP6, TextStyle};
-    pub use crate::widget::{self, Icon, Tone, text};
+    pub use crate::widget::{self, Icon, Severity, Tone, text};
     pub use crate::{App, Dialog, Item, Lang, Menu, Paint, Settings, Shell};
     pub use iced::widget::{Column, Row, Space, container};
     pub use iced::{Alignment, Element, Fill, Length, Padding, Subscription, Task};

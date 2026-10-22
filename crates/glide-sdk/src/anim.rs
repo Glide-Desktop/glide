@@ -284,7 +284,7 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
     }
 
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
-        if self.open {
+        if layout.bounds().height > 0.0 {
             let Some(child) = layout.children().next() else { return };
             self.content.as_widget_mut().operate(&mut tree.children[0], child, renderer, operation);
         }
@@ -427,6 +427,37 @@ impl<M> Widget<M, Theme, Renderer> for Spin<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_collapse_unfolds_through_intermediate_heights() {
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let content = || iced::widget::Space::new().width(100).height(120);
+        let limits = layout::Limits::new(Size::ZERO, Size::new(400.0, 400.0));
+        let mut closed: Element<'_, ()> = collapse(false, content());
+        let mut tree = Tree::new(&closed);
+        assert_eq!(closed.as_widget_mut().layout(&mut tree, &renderer, &limits).size().height, 0.0);
+        let mut open: Element<'_, ()> = collapse(true, content());
+        tree.diff(&open);
+        let node = open.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        open.as_widget_mut().update(
+            &mut tree,
+            &Event::Window(window::Event::RedrawRequested(Instant::now())),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(400.0, 400.0)),
+        );
+        assert!(shell.is_layout_invalid(), "every frame of the unfold asks for a new layout");
+        std::thread::sleep((Speed::EXPAND.duration)() / 3);
+        let middle = open.as_widget_mut().layout(&mut tree, &renderer, &limits).size().height;
+        assert!(middle > 10.0 && middle < 120.0, "a third of the way through t3 it is part open: {middle}");
+        std::thread::sleep((Speed::EXPAND.duration)());
+        assert_eq!(open.as_widget_mut().layout(&mut tree, &renderer, &limits).size().height, 120.0);
+    }
 
     #[test]
     fn a_zero_duration_settles_a_motion_at_once() {

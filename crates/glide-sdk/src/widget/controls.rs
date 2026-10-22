@@ -626,6 +626,27 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_thumb_travels_with_overshoot_and_settles() {
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(44.0, 26.0));
+        let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
+        let mut toggle = Toggle::default();
+        let first: Option<Action<()>> =
+            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 0.0, true, Speed::SPRING);
+        assert!(first.is_none(), "the first frame starts at rest");
+        let flipped: Option<Action<()>> =
+            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 1.0, true, Speed::SPRING);
+        assert!(flipped.is_some(), "flipping asks for frames");
+        std::thread::sleep((Speed::SPRING.duration)() / 2);
+        let middle = toggle.value.value(Speed::SPRING);
+        assert!(middle > 0.3 && middle < 1.35, "mid-flight thumb position {middle}");
+        std::thread::sleep((Speed::SPRING.duration)());
+        assert_eq!(toggle.value.value(Speed::SPRING), 1.0);
+        let settled: Option<Action<()>> =
+            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 1.0, true, Speed::SPRING);
+        assert!(settled.is_none(), "a settled switch stops asking for frames");
+    }
+
+    #[test]
     fn a_pointer_reports_pressed_only_after_a_press_over_it() {
         let mut pointer = Pointer::default();
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(20.0, 20.0));

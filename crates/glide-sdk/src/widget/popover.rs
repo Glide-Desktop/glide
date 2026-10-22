@@ -57,6 +57,12 @@ struct Hint {
     tree: Tree,
 }
 
+const STEPS: f32 = 30.0;
+
+fn step(progress: f32) -> u32 {
+    (progress.clamp(0.0, 1.0) * STEPS).round() as u32
+}
+
 struct Cache<'a, M> {
     key: (u32, Option<usize>),
     element: Element<'a, M>,
@@ -194,13 +200,13 @@ impl<'a, M: 'a> Widget<M, Theme, Renderer> for Tooltip<'a, M> {
         let (state, children) = (&mut tree.state, &mut tree.children);
         let inner = self.content.as_widget_mut().overlay(&mut children[0], layout, renderer, viewport, translation);
         let hint = state.downcast_mut::<Hint>();
-        let progress = hint.reveal.value(Speed::STATE);
+        let progress = step(hint.reveal.value(Speed::STATE)) as f32 / STEPS;
         if inner.is_some() || progress <= 0.0 {
             return inner;
         }
         let (paint, label) = (self.paint, self.label);
         let element =
-            cached(&mut self.tip, &mut hint.tree, (progress.to_bits(), None), || tip(&paint.faded(progress), label));
+            cached(&mut self.tip, &mut hint.tree, (step(progress), None), || tip(&paint.faded(progress), label));
         Some(overlay::Element::new(Box::new(Floating {
             element: element.as_widget_mut(),
             tree: &mut hint.tree,
@@ -428,12 +434,12 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
         &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, _: &Renderer, _: &Rectangle, translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<Shown>();
-        let progress = state.reveal.value(Speed::FADE);
+        let progress = step(state.reveal.value(Speed::FADE)) as f32 / STEPS;
         if progress <= 0.0 && !state.open {
             return None;
         }
         let (paint, highlight, build) = (self.paint, state.highlight, &self.build);
-        let element = cached(&mut self.content, &mut state.tree, (progress.to_bits(), highlight), || {
+        let element = cached(&mut self.content, &mut state.tree, (step(progress), highlight), || {
             build(&paint.faded(progress.max(0.01)), highlight)
         });
         let anchor = layout.bounds() + translation;
