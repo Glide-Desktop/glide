@@ -21,22 +21,26 @@ use iced::{Background, Border, Color, Element, Fill, Shadow};
 
 pub use buttons::{
     Size, Tone, button, button_style, compact_button, danger, ghost, icon_button, linked, outline, primary, secondary,
-    sized_button, tonal,
+    sized_button, toggle_button, tonal,
 };
 pub use controls::{
     CHECK, Check, SwitchSize, check_box, chevron, progress, radio_mark, sized_switch, slider, spinner, stepped_slider,
     switch,
 };
-pub use feedback::{Severity, avatar, badge, banner, count_badge, empty_state, keycap};
+pub use feedback::{Severity, avatar, badge, banner, count_badge, empty_state, keycap, skeleton};
 pub use focus::{Focus, RING, focusable};
 pub use inputs::{
     Validity, field, input_style, password_field, search_field, stepper, text_area_style, text_field, validated_field,
 };
 pub use layout::{
     action_card, action_row, card, card_style, expander, list, list_row, section, sidebar, sidebar_item, surface,
+    switch_row,
 };
 pub use popover::{Popup, Tooltip, dropdown, menu_button, tooltip};
-pub use selection::{Indicator, checkbox, chip, radio_group, segmented, sidebar_list, tabs, track};
+pub use selection::{
+    DOT, DOT_ACTIVE, Indicator, SWATCH, breadcrumbs, checkbox, chip, page_dots, radio_group, segmented, sidebar_list,
+    swatches, tabs, track,
+};
 
 #[must_use]
 pub fn measure(content: &str, style: TextStyle) -> f32 {

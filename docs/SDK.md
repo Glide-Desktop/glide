@@ -213,6 +213,7 @@ the spec's motion table; the catalogue shows each of them.
 | `sized_button(…, Size::{Small, Medium, Large}, …)`, `compact_button` | 28 / 34 / 42 px with the spec's padding and label sizes. |
 | `icon_button(paint, Icon, tooltip, Option<msg>, on)` | 28 px square with a tooltip. |
 | `linked(paint, &[(label, Option<msg>)])` | Joined group, R2 outside and R1 inside. |
+| `toggle_button(paint, label, on, Option<on_toggle>)` | Neutral when off, tonal when on; fill and ink crossfade over t2. |
 | `menu_button(paint, label, items, width)` | Opens a menu of actions under itself (keyboard rows, Esc, outside click). |
 
 **Inputs**
@@ -234,7 +235,10 @@ the spec's motion table; the catalogue shows each of them.
 | `checkbox(paint, label, Check::{Off, On, Mixed}, Option<msg>)`, `check_box`, `radio_group`, `radio_mark` | 20 px marks; the check and dot pop with E_OVER. |
 | `segmented(paint, &[(value, label)], selected, on_select)`, `tabs(…)` | The raised thumb / the accent underline slides between options. |
 | `sidebar_list(paint, &[(icon, label)], selected, on_select)` | A sliding acc-soft selection with the 3×18 bar growing t3 E_OVER. |
-| `chip(paint, label, on, msg)` | Toggle chip; fill and ink crossfade. |
+| `chip(paint, label, on, Option<msg>)` | Toggle chip; fill and ink crossfade. |
+| `breadcrumbs(paint, &[label], on_select)` | Path crumbs: hover layer on each, chevrons between, the last one semibold. |
+| `page_dots(paint, count, current, on_select)` | 8 px dots; the current one stretches to a 22 px accent pill (t2 E_OUT); arrows step. |
+| `swatches(paint, &[(value, colour)], selected, on_select)` | 24 px colour dots; the picked one gets an accent ring and a check with a small E_OVER pop. |
 | `slider(paint, range, value, on_change)`, `stepped_slider(…, step, on_change, on_release)` | 6 px groove, 18 px thumb whose acc-ring grows on hover; drags are instant, programmatic changes glide t2 E_OUT. |
 | `track(paint, Indicator, selected, row_or_column)` | The sliding-indicator primitive the above are built on. |
 
@@ -247,6 +251,7 @@ the spec's motion table; the catalogue shows each of them.
 | `badge(paint, label, Severity)`, `count_badge(paint, n)` | Severities `Neutral, Accent, Ok, Warn, Danger`; the counter pops in from 0.6. |
 | `banner(paint, Severity, title, body, actions)`, `empty_state(paint, icon, title, body, action)` | |
 | `avatar(paint, name, side)`, `keycap(paint, label)` | Gradient initial; a key label. |
+| `skeleton(paint, width, height)` | Loading placeholder; fill-2 block that breathes over 1.4 s (E_IO), still with animations off. |
 | `tooltip(paint, child, label)` | Fades and rises after the 550 ms delay. |
 
 **Layout**
@@ -254,6 +259,7 @@ the spec's motion table; the catalogue shows each of them.
 | Widget | Notes |
 |---|---|
 | `card(paint, content)`, `action_card(paint, content, msg)` | Action cards lift 3 px on hover (E_OVER). |
+| `switch_row(paint, title, subtitle, on, Option<on_toggle>)` | A list row that toggles from anywhere on it, with a hover layer and the switch at its end. |
 | `list(paint, rows)`, `list_row(paint, title, subtitle, trailing)`, `action_row(…, msg)` | Boxed list; action rows carry a chevron and a hover layer. |
 | `expander(paint, title, open, on_toggle, content)` | Unfolds over t3 E_OUT; the chevron turns. |
 | `section(paint, title, content)`, `sidebar(paint, width, items)`, `sidebar_item(…)` | |

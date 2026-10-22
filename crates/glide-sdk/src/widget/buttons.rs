@@ -12,7 +12,8 @@ use iced::{Border, Color, Element, Fill, Padding, Shadow, Vector};
 
 use super::focus::activatable;
 use super::popover::tooltip;
-use super::{Icon, Wrapping, icon, text};
+use super::{Icon, Wrapping, icon, mix, text};
+use crate::anim::{Speed, animate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Tone {
@@ -182,6 +183,38 @@ pub fn icon_button<'a, M: Clone + 'a>(
         }
     });
     tooltip(&paint, activatable(&paint, control, R2, message), label)
+}
+
+#[must_use]
+pub fn toggle_button<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, on: bool, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let label = label.into();
+    let message = on_toggle.map(|toggle| toggle(!on));
+    animate(if on { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
+        let value = value.clone();
+        let control = control(container(text(label, Size::Medium.label()).wrapping(Wrapping::None)).center_y(Fill))
+            .on_press_maybe(message.clone())
+            .height(Size::Medium.height())
+            .padding(Padding::from([0.0, Size::Medium.padding()]));
+        let control = widgets::button(control, move |status| {
+            let amount = value.get().clamp(0.0, 1.0);
+            let idle = button_style(&paint, Tone::Neutral, status);
+            let lit = button_style(&paint, Tone::Tonal, status);
+            let pick = |style: &control::Style| match style.background {
+                Some(iced::Background::Color(color)) => color,
+                _ => Color::TRANSPARENT,
+            };
+            control::Style {
+                background: Some(iced::Background::Color(mix(pick(&idle), pick(&lit), amount))),
+                text_color: mix(idle.text_color, lit.text_color, amount),
+                ..lit
+            }
+        });
+        activatable(&paint, control, R2, message)
+    })
+    .into()
 }
 
 #[must_use]

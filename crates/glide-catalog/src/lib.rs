@@ -212,6 +212,9 @@ pub struct Catalog {
     pub count: u32,
     pub expanded: [bool; 2],
     pub flipped: bool,
+    pub styles: [bool; 3],
+    pub dot: usize,
+    pub depth: usize,
     pub draft: Draft,
     pub last: Option<u32>,
     pub download: Option<(u32, f32)>,
@@ -249,6 +252,9 @@ pub enum Message {
     Count(u32),
     Expand(usize),
     Flip,
+    Style(usize, bool),
+    Dot(usize),
+    Depth(usize),
     Said(&'static str),
     Dialog,
     Delete,
@@ -399,6 +405,9 @@ impl App for Catalog {
             count: 3,
             expanded: [true, false],
             flipped: false,
+            styles: [true, false, false],
+            dot: 1,
+            depth: 3,
             draft: Draft::new(lang),
             last: None,
             download: None,
@@ -467,6 +476,13 @@ impl App for Catalog {
                 }
             }
             Message::Flip => self.flipped = !self.flipped,
+            Message::Style(index, on) => {
+                if let Some(style) = self.styles.get_mut(index) {
+                    *style = on;
+                }
+            }
+            Message::Dot(index) => self.dot = index,
+            Message::Depth(depth) => self.depth = depth,
             Message::Said(what) => shell.toast(what),
             Message::Dialog => shell.dialog(
                 Dialog::new(

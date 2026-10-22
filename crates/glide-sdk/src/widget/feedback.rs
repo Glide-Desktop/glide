@@ -1,13 +1,15 @@
+use std::time::Duration;
+
 use glide_iced::Paint;
 use glide_iced::style::{self, R2, SP1, SP2, SP3, SP4, SP5};
-use glide_theme::TextStyle;
 use glide_theme::shape::{R_ROUND, R1};
+use glide_theme::{TextStyle, motion};
 use iced::gradient::Linear;
-use iced::widget::{Row, column, container, row};
-use iced::{Alignment, Background, Border, Color, Degrees, Element, Fill, Gradient, Padding};
+use iced::widget::{Row, Space, column, container, row};
+use iced::{Alignment, Background, Border, Color, Degrees, Element, Fill, Gradient, Length, Padding};
 
 use super::{Icon, Wrapping, icon, text};
-use crate::anim::{Speed, animate};
+use crate::anim::{Speed, animate, spin};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Severity {
@@ -130,6 +132,26 @@ pub fn avatar<'a, M: 'a>(paint: &Paint, name: &str, side: f32) -> Element<'a, M>
         ..container::Style::default()
     })
     .into()
+}
+
+const PULSE: Duration = Duration::from_millis(1400);
+
+fn pulse(phase: f32) -> f32 {
+    let rise = 2.0 * phase.min(1.0 - phase);
+    motion::ease_io(f64::from(rise.clamp(0.0, 1.0))) as f32
+}
+
+#[must_use]
+pub fn skeleton<'a, M: 'a>(paint: &Paint, width: impl Into<Length>, height: f32) -> Element<'a, M> {
+    let paint = *paint;
+    let width = width.into();
+    spin(PULSE, move |phase| {
+        let phase = phase.clone();
+        container(Space::new().width(width).height(height)).style(move |_| {
+            let amount = 1.0 - 0.45 * pulse(phase.get());
+            style::rounded(paint.fill_2().scale_alpha(amount), R1)
+        })
+    })
 }
 
 #[must_use]

@@ -204,6 +204,12 @@ pub fn sized_switch<'a, M: Clone + 'a>(
     activatable(paint, clickable(canvas.into(), message.clone()), track.height / 2.0, message)
 }
 
+pub(crate) fn switch_face<'a, M: 'a>(paint: &Paint, on: bool, enabled: bool) -> Element<'a, M> {
+    let size = SwitchSize::Panel;
+    let track = size.track();
+    surface(Switch { paint: *paint, on, enabled, size }).width(track.width).height(track.height).into()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Check {
     Off,

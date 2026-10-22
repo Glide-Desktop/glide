@@ -11,7 +11,7 @@ use iced::advanced::renderer::{self, Quad, Renderer as _};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, overlay};
 use iced::keyboard::key::Named;
-use iced::widget::{Column, Row, button, container, mouse_area, row};
+use iced::widget::{Column, Row, Space, button, container, mouse_area, row};
 use iced::{
     Alignment, Border, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Shadow, Size, Theme, Vector,
     mouse, window,
@@ -19,7 +19,7 @@ use iced::{
 
 use super::controls::{Check, mark};
 use super::focus::{activatable, focusable};
-use super::{Icon, Wrapping, icon, text};
+use super::{Icon, Wrapping, icon, mix, text};
 use crate::anim::{Motion, Speed, animate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +408,95 @@ pub fn chip<'a, M: Clone + 'a>(
     })
     .into()
 }
+
+#[must_use]
+pub fn breadcrumbs<'a, M: Clone + 'a>(
+    paint: &Paint, crumbs: &[&'a str], on_select: impl Fn(usize) -> M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let last = crumbs.len().saturating_sub(1);
+    let mut trail = Row::new().spacing(2).align_y(Alignment::Center);
+    for (index, &label) in crumbs.iter().enumerate() {
+        if index > 0 {
+            trail = trail.push(icon(Icon::Right, 10.0, paint.fg_4()));
+        }
+        if index == last {
+            let current = text(label, TextStyle { weight: 600, ..TextStyle::CALL }).wrapping(Wrapping::None);
+            trail = trail.push(container(current).padding(Padding::from([0.0, SP2])));
+            continue;
+        }
+        let message = on_select(index);
+        let control = button(container(text(label, TextStyle::CALL).wrapping(Wrapping::None)).center_y(Fill))
+            .on_press(message.clone())
+            .height(component::SMALL_CONTROL)
+            .padding(Padding::from([0.0, SP2]));
+        let control = widgets::button(control, move |status| {
+            let color = if status == button::Status::Hovered { paint.fg_1() } else { paint.fg_2() };
+            style::flat(paint.layered(Color::TRANSPARENT, status), color, R1)
+        });
+        trail = trail.push(activatable(&paint, control, R1, Some(message)));
+    }
+    trail.into()
+}
+
+pub const DOT: f32 = 8.0;
+pub const DOT_ACTIVE: f32 = 22.0;
+
+#[must_use]
+pub fn page_dots<'a, M: Clone + 'a>(
+    paint: &Paint, count: usize, current: usize, on_select: impl Fn(usize) -> M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let dots = (0..count).map(|index| {
+        let active = index == current;
+        let dot = animate(if active { 1.0 } else { 0.0 }, Speed::SLIDE, move |value| {
+            let amount = value.get().clamp(0.0, 1.0);
+            let color = mix(paint.fill_3(), paint.acc_bg(), amount);
+            container(Space::new().width(DOT + (DOT_ACTIVE - DOT) * amount).height(DOT))
+                .style(move |_| style::rounded(color, R_ROUND))
+        });
+        let target = container(dot).padding(Padding::from([SP1, 3.0]));
+        mouse_area(target).on_release(on_select(index)).interaction(mouse::Interaction::Pointer).into()
+    });
+    let options: Vec<(usize, ())> = (0..count).map(|index| (index, ())).collect();
+    let row = Row::with_children(dots).align_y(Alignment::Center);
+    arrows(&paint, row, R_ROUND, &options, (current < count).then_some(current), on_select)
+}
+
+#[must_use]
+pub fn swatches<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
+    paint: &Paint, colors: &[(T, Color)], selected: Option<T>, on_select: impl Fn(T) -> M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let items = colors.iter().map(|&(value, color)| {
+        let on = selected == Some(value);
+        let message = on_select(value);
+        let swatch = animate(if on { 1.0 } else { 0.0 }, Speed::SPRING, move |shown| {
+            let shown = shown.clone();
+            let ink =
+                if 0.299 * color.r + 0.587 * color.g + 0.114 * color.b > 0.62 { Color::BLACK } else { Color::WHITE };
+            let mark: Element<'a, M> = if on { icon(Icon::Check, 12.0, ink) } else { Space::new().into() };
+            let dot = container(mark).center(SWATCH).style(move |_| style::rounded(color, R_ROUND));
+            container(dot).padding(3).style(move |_| {
+                let amount = shown.get().clamp(0.0, 1.2);
+                container::Style {
+                    border: Border {
+                        color: paint.acc_bg().scale_alpha(amount.min(1.0)),
+                        width: 2.0,
+                        radius: R_ROUND.into(),
+                    },
+                    ..container::Style::default()
+                }
+            })
+        })
+        .scale(|value| 1.0 + 0.32 * value * (1.0 - value));
+        let control = mouse_area(swatch).on_release(message.clone()).interaction(mouse::Interaction::Pointer);
+        activatable(&paint, control, SWATCH / 2.0 + 3.0, Some(message))
+    });
+    Row::with_children(items).spacing(SP2).align_y(Alignment::Center).into()
+}
+
+pub const SWATCH: f32 = 24.0;
 
 #[must_use]
 pub fn checkbox<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, check: Check, message: Option<M>) -> Element<'a, M> {

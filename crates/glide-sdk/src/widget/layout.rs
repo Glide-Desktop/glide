@@ -6,7 +6,9 @@ use glide_theme::{TextStyle, component};
 use iced::widget::{Column, Space, button as control, column, container, mouse_area, row, stack};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Vector, mouse};
 
-use super::controls::chevron;
+use glide_theme::motion;
+
+use super::controls::{chevron, switch_face};
 use super::focus::{activatable, focusable};
 use super::{Icon, Wrapping, icon, mix, separator, text};
 use crate::anim::{Speed, animate, collapse, hover};
@@ -86,6 +88,22 @@ pub fn list_row<'a, M: 'a>(
         .padding(Padding::from([SP2, SP4]))
         .width(Fill)
         .into()
+}
+
+#[must_use]
+pub fn switch_row<'a, M: Clone + 'a>(
+    paint: &Paint, title: &'a str, subtitle: Option<&'a str>, on: bool, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let message = on_toggle.map(|toggle| toggle(!on));
+    let content = list_row(&paint, title, subtitle, switch_face(&paint, on, message.is_some()));
+    let Some(message) = message else { return content };
+    let lit = widgets::container(container(content).width(Fill), move |hover, press| {
+        let amount = motion::ST_HOVER * hover + (motion::ST_PRESS - motion::ST_HOVER) * press;
+        style::rounded(paint.layer(Color::TRANSPARENT, amount), 0.0)
+    });
+    let control = mouse_area(lit).on_release(message.clone()).interaction(mouse::Interaction::Pointer);
+    focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
 }
 
 #[must_use]

@@ -50,7 +50,7 @@ pub fn view<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
     .style(move |_| glide_sdk::glide_iced::style::rounded(paint.sidebar_bg(), 0.0));
     let body = match catalog.page {
         Page::Overview => overview(catalog, shell),
-        Page::Buttons => buttons(shell),
+        Page::Buttons => buttons(catalog, shell),
         Page::Inputs => inputs(catalog, shell),
         Page::Selection => selection(catalog, shell),
         Page::Feedback => feedback(catalog, shell),
@@ -123,7 +123,7 @@ fn overview<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
     )
 }
 
-fn buttons<'a>(shell: &'a Shell<Message>) -> Element<'a, Message> {
+fn buttons<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
     let paint = shell.paint();
     let tones = [
         (Tone::Accent, shell.t("Основна", "Primary")),
@@ -183,7 +183,22 @@ fn buttons<'a>(shell: &'a Shell<Message>) -> Element<'a, Message> {
                 shell.t("Іконки, група, меню", "Icons, group, menu"),
                 column![icons, linked, menu].spacing(SP3),
             ),
+            demo(shell, shell.t("Кнопки-перемикачі", "Toggle buttons"), toggle_buttons(catalog, shell)),
         ],
+    )
+}
+
+fn toggle_buttons<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let labels = [shell.t("Жирний", "Bold"), shell.t("Курсив", "Italic"), shell.t("Підкреслений", "Underline")];
+    wrap(
+        labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                ui::toggle_button(paint, *label, catalog.styles[index], Some(move |on| Message::Style(index, on)))
+            })
+            .collect(),
     )
 }
 
@@ -334,7 +349,35 @@ fn selection<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a,
         .map(|(index, label)| ui::chip(paint, *label, catalog.chips[index], Some(Message::Chip(index))))
         .collect(),
     );
-    let sliders = column![
+    page(
+        shell,
+        Page::Selection,
+        shell.t(
+            "Підкладки ковзають між варіантами, позначки «вистрибують» з переліт-кривою.",
+            "Thumbs slide between options; marks pop with the overshoot curve.",
+        ),
+        vec![
+            ui::section(paint, shell.t("Перемикачі", "Switches"), toggles),
+            demo(shell, shell.t("Позначки й радіо", "Checks and radios"), checks),
+            demo(
+                shell,
+                shell.t("Сегменти й вкладки", "Segments and tabs"),
+                column![
+                    ui::segmented(paint, &fruits, catalog.segment, Message::Segment),
+                    ui::tabs(paint, &fruits, catalog.tab, Message::Tab),
+                ]
+                .spacing(SP4),
+            ),
+            demo(shell, shell.t("Чіпи", "Chips"), chips),
+            demo(shell, shell.t("Повзунки", "Sliders"), sliders(catalog, shell)),
+            demo(shell, shell.t("Навігація й кольори", "Navigation and colours"), navigation(catalog, shell)),
+        ],
+    )
+}
+
+fn sliders<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    column![
         row![
             text(shell.t("Гучність", "Volume"), TextStyle::CALL).width(110),
             ui::slider(paint, 0.0..=100.0, catalog.volume, Message::Volume),
@@ -358,30 +401,47 @@ fn selection<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a,
         .spacing(SP2)
         .align_y(Alignment::Center),
     ]
-    .spacing(SP3);
-    page(
-        shell,
-        Page::Selection,
-        shell.t(
-            "Підкладки ковзають між варіантами, позначки «вистрибують» з переліт-кривою.",
-            "Thumbs slide between options; marks pop with the overshoot curve.",
+    .spacing(SP3)
+    .into()
+}
+
+fn navigation<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let trail = [shell.t("Домівка", "Home"), shell.t("Документи", "Documents"), shell.t("Звіти", "Reports"), "2026"];
+    let depth = catalog.depth.min(trail.len() - 1);
+    let crumbs = row![
+        ui::breadcrumbs(paint, &trail[..=depth], Message::Depth),
+        Space::new().width(Fill),
+        ui::sized_button(
+            paint,
+            shell.t("Глибше", "Deeper"),
+            Tone::Neutral,
+            Size::Small,
+            (depth + 1 < trail.len()).then_some(Message::Depth(depth + 1))
         ),
-        vec![
-            ui::section(paint, shell.t("Перемикачі", "Switches"), toggles),
-            demo(shell, shell.t("Позначки й радіо", "Checks and radios"), checks),
-            demo(
-                shell,
-                shell.t("Сегменти й вкладки", "Segments and tabs"),
-                column![
-                    ui::segmented(paint, &fruits, catalog.segment, Message::Segment),
-                    ui::tabs(paint, &fruits, catalog.tab, Message::Tab),
-                ]
-                .spacing(SP4),
-            ),
-            demo(shell, shell.t("Чіпи", "Chips"), chips),
-            demo(shell, shell.t("Повзунки", "Sliders"), sliders),
-        ],
-    )
+    ]
+    .align_y(Alignment::Center);
+    let colors: Vec<(Accent, glide_sdk::iced::Color)> = Accent::ALL
+        .iter()
+        .map(|accent| {
+            let tokens = glide_sdk::theme::Tokens::new(paint.tokens.appearance, *accent);
+            (*accent, glide_sdk::theme::to_iced(tokens.acc_bg))
+        })
+        .collect();
+    let accent = catalog.accent.unwrap_or(shell.look().accent);
+    column![
+        caption(shell, shell.t("Хлібні крихти", "Breadcrumbs")),
+        crumbs,
+        caption(
+            shell,
+            shell.t("Крапки сторінок — активна витягується в пігулку", "Page dots — the active one stretches")
+        ),
+        ui::page_dots(paint, 5, catalog.dot, Message::Dot),
+        caption(shell, shell.t("Палітра змінює акцент каталогу", "Swatches change the catalogue's accent")),
+        ui::swatches(paint, &colors, Some(accent), |accent| Message::Accent(Some(accent))),
+    ]
+    .spacing(SP3)
+    .into()
 }
 
 fn feedback<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
@@ -460,6 +520,16 @@ fn feedback<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
             demo(shell, shell.t("Бейджі", "Badges"), badges),
             ui::section(paint, shell.t("Банери", "Banners"), banners),
             demo(shell, shell.t("Аватари й клавіші", "Avatars and keys"), people),
+            demo(
+                shell,
+                shell.t("Заготовка під час завантаження", "Loading skeleton"),
+                row![
+                    ui::skeleton(paint, 40, 40.0),
+                    column![ui::skeleton(paint, Fill, 14.0), ui::skeleton(paint, 220, 12.0)].spacing(SP2).width(Fill),
+                ]
+                .spacing(SP3)
+                .align_y(Alignment::Center),
+            ),
             ui::section(paint, shell.t("Порожній стан", "Empty state"), ui::card(paint, container(empty).height(280))),
         ],
     )
@@ -507,11 +577,12 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
                 Message::Said("Network"),
             ),
             ui::action_row(paint, "Bluetooth", Some(shell.t("2 пристрої", "2 devices")), Message::Said("Bluetooth")),
-            ui::list_row(
+            ui::switch_row(
                 paint,
                 shell.t("Режим польоту", "Airplane mode"),
-                None,
-                ui::switch(paint, !catalog.wifi, Some(|on: bool| Message::Wifi(!on))),
+                Some(shell.t("Рядок-перемикач: клацніть будь-де", "A switch row: click anywhere on it")),
+                !catalog.wifi,
+                Some(|on: bool| Message::Wifi(!on)),
             ),
         ],
     );
