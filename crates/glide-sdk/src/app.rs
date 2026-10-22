@@ -560,9 +560,11 @@ impl<A: App> Host<A> {
             iced::window::close_requests().map(|_| Event::CloseRequested),
             iced::time::every(TICK).map(|_| Event::Tick),
             Subscription::run(glide_app::look_changes).map(Event::Look),
-            Subscription::run(look::motion_changes).map(Event::Motion),
             self.app.subscription().map(Event::App),
         ];
+        if self.shell_look.is_none() {
+            subscriptions.push(Subscription::run(look::motion_changes).map(Event::Motion));
+        }
         if let Some(handles) = self.handles {
             subscriptions.push(Subscription::run_with(handles, menubar::events).map(Event::MenuBar));
         }
@@ -737,6 +739,12 @@ mod tests {
     }
 
     fn press(key: Key, physical: keyboard::key::Code, modifiers: keyboard::Modifiers) -> Event<Message> {
+        pressed(key, physical, modifiers, false)
+    }
+
+    fn pressed(
+        key: Key, physical: keyboard::key::Code, modifiers: keyboard::Modifiers, captured: bool,
+    ) -> Event<Message> {
         Event::Key(
             keyboard::Event::KeyPressed {
                 modified_key: key.clone(),
@@ -747,8 +755,19 @@ mod tests {
                 text: None,
                 repeat: false,
             },
-            false,
+            captured,
         )
+    }
+
+    #[test]
+    fn a_key_a_focused_widget_consumed_runs_no_shortcut() {
+        let mut host = host();
+        let _ = host.update(Event::App(Message::Edit));
+        let s = || Key::Character("s".into());
+        let _ = host.update(pressed(s(), keyboard::key::Code::KeyS, keyboard::Modifiers::CTRL, true));
+        assert_eq!(host.app.saved, 0, "a chord a focused widget consumed never reaches the menus");
+        let _ = host.update(pressed(s(), keyboard::key::Code::KeyS, keyboard::Modifiers::CTRL, false));
+        assert_eq!(host.app.saved, 1);
     }
 
     #[test]

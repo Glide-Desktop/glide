@@ -37,8 +37,13 @@ cargo run -p glide-sdk --example notes
 
 ```toml
 [dependencies]
-glide-sdk = { git = "https://github.com/artem/glide" }
+glide-sdk = { path = "../glide/crates/glide-sdk" }
 ```
+
+The SDK is not on crates.io and the repository has no public remote yet, so
+depend on a checkout by path (or vendor it); switch to a `git = …` line once
+the repository is published. Copy Glide's `Cargo.lock` the first time so iced
+and its dependencies resolve to the versions Glide is tested with.
 
 `glide-sdk` re-exports `iced`, so an app depends on nothing else to draw.
 Use `glide_sdk::iced` rather than adding iced yourself, or the versions will
@@ -169,7 +174,9 @@ Menu::new("File", vec![
 - A shortcut string is the binding: `Ctrl`, `Shift`, `Alt`, `Super` plus a
   key (`S`, `+`, `F3`, `Delete`, `Up`…). Letters match by physical key, so
   Ctrl+S works on a Ukrainian layout. Disabled items do not fire. Keys a
-  focused text field consumes are left to it.
+  focused widget consumes are left to it: an iced 0.14 text field takes
+  typed characters, Ctrl+A/C/X/V, Backspace, Delete, Home, End, arrows,
+  Enter and Esc, and lets every other chord through to the menus.
 
 ## Dialogs, toasts and context menus
 
