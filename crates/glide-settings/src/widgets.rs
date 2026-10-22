@@ -274,8 +274,8 @@ pub fn preview_card<'a, M: Clone + 'a>(
 }
 
 #[must_use]
-pub fn radio_mark<'a, M: Clone + 'a>(t: ThemeState, selected: bool) -> Element<'a, M> {
-    sdk::radio_mark(&paint(&t), selected, None)
+pub fn radio_mark<'a, M: 'a>(t: ThemeState, selected: bool) -> Element<'a, M> {
+    sdk::radio_indicator(&paint(&t), selected)
 }
 
 #[must_use]

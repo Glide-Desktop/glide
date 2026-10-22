@@ -31,8 +31,8 @@ pub use cards::{
     tinted_card_style, usage_bar, usage_card,
 };
 pub use controls::{
-    CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_mark, sized_spinner, sized_switch,
-    slider, spinner, stepped_slider, switch,
+    CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
+    sized_spinner, sized_switch, slider, spinner, stepped_slider, switch,
 };
 pub use feedback::{
     Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,

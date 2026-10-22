@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use glide_sdk::anim::{self, Speed};
 use glide_sdk::iced::widget::{Column, Row, Space, column, container, mouse_area, row, text_editor, text_input};
 use glide_sdk::iced::{Alignment, Border, Color, Element, Fill, Padding, Vector};
@@ -55,6 +57,7 @@ pub fn view<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         Page::Selection => selection(catalog, shell),
         Page::Feedback => feedback(catalog, shell),
         Page::Layout => layout(catalog, shell),
+        Page::Cards => cards(catalog, shell),
         Page::Overlays => overlays(shell),
         Page::Type => typography(shell),
         Page::Motion => motion(catalog, shell),
@@ -698,6 +701,168 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
     )
 }
 
+fn cards<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let accent = glide_sdk::theme::to_iced(paint.tokens.ramp[3]);
+    let green = paint.ok();
+    let tiles = ui::grid(
+        vec![
+            ui::stat_tile(paint, Icon::File, accent, "12", shell.t("потоків", "threads")),
+            ui::stat_tile(paint, Icon::Folder, green, "28%", shell.t("пам'яті", "memory")),
+            ui::stat_tile(paint, Icon::Refresh, paint.warn(), "5 h", shell.t("працює", "running")),
+        ],
+        3,
+        SP3,
+    );
+    let usage = ui::usage_card(
+        paint,
+        shell.t("Диск", "Disk"),
+        "56 GB free",
+        vec![
+            (0.6, accent, String::from("Apps"), String::from("300 GB")),
+            (0.2, green, String::from("Media"), String::new()),
+        ],
+    );
+    let picks = row![
+        ui::preview_card(
+            paint,
+            ui::icon_tile(Icon::Sidebar, accent, 64.0),
+            "Light",
+            !catalog.flipped,
+            Some(Message::Flip)
+        ),
+        ui::preview_card(
+            paint,
+            ui::icon_tile(Icon::Sidebar, paint.fg_2(), 64.0),
+            "Dark",
+            catalog.flipped,
+            Some(Message::Flip)
+        ),
+        container(ui::choice_card(
+            paint,
+            ui::icon_tile(Icon::Bell, accent, 40.0),
+            shell.t("Праворуч угорі", "Top right"),
+            Some(shell.t("Банери", "Banners").to_string()),
+            !catalog.flipped,
+            Message::Flip,
+        ))
+        .width(200),
+    ]
+    .spacing(SP3)
+    .align_y(Alignment::Center);
+    let hero = ui::hero_card(
+        paint,
+        Icon::Bell,
+        accent,
+        shell.t("Не турбувати", "Do Not Disturb"),
+        shell.t("Банери не з'являються", "Banners stay hidden"),
+        Some(ui::switch(paint, catalog.compact, Some(Message::Compact))),
+        false,
+    );
+    let header = ui::page_header(
+        paint,
+        Icon::Folder,
+        green,
+        Some(shell.t("Система", "System")),
+        shell.t("Сховище", "Storage"),
+        Some(shell.t("Заголовок сторінки", "A page header")),
+        None,
+    );
+    page(
+        shell,
+        Page::Cards,
+        shell.t(
+            "Групи, рядки, картки й плитки, якими користується Settings.",
+            "Groups, rows, cards and tiles, as Settings uses them.",
+        ),
+        vec![
+            header,
+            card_group(catalog, shell),
+            ui::section(paint, shell.t("Плитки й використання", "Tiles and usage"), column![tiles, usage].spacing(SP3)),
+            demo(shell, shell.t("Прев'ю й вибір", "Previews and choices"), picks),
+            ui::section(paint, shell.t("Головна картка", "Hero card"), hero),
+            demo(shell, shell.t("Дрібні частини", "Small pieces"), small_pieces(catalog, shell)),
+        ],
+    )
+}
+
+fn card_group<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let accent = glide_sdk::theme::to_iced(paint.tokens.ramp[3]);
+    ui::Group::new(paint)
+        .title(shell.t("Група", "Group"))
+        .description(shell.t("Заголовок, опис і рядки", "A heading, a description and rows"))
+        .suffix(ui::link(paint, shell.t("Скинути", "Reset"), Some(Message::Said("Reset"))))
+        .push(
+            ui::ListRow::new(paint, shell.t("Режим польоту", "Airplane mode"))
+                .subtitle(shell.t("Рядок з префіксом і перемикачем", "A row with a prefix and a switch"))
+                .prefix(ui::icon_tile(Icon::Bell, accent, 28.0))
+                .suffix(ui::switch(paint, catalog.wifi, Some(Message::Wifi))),
+        )
+        .push(
+            ui::ListRow::new(paint, shell.t("Недоступний рядок", "A dimmed row"))
+                .dimmed(true)
+                .suffix(ui::status_badge(paint, shell.t("Вимкнено", "Off"), Severity::Neutral)),
+        )
+        .push(
+            ui::ListRow::new(paint, shell.t("Вузьке вікно", "Narrow window"))
+                .subtitle(shell.t("Керування переходить під текст", "The control moves under the label"))
+                .stacked(catalog.compact)
+                .suffix(ui::inert(
+                    paint,
+                    !catalog.compact,
+                    ui::segmented(paint, &[(0, Cow::Borrowed("A")), (1, Cow::Borrowed("B"))], 0, |_| Message::Flip),
+                )),
+        )
+        .push(
+            ui::ListRow::new(paint, shell.t("Деталі", "Details"))
+                .suffix(ui::disclosure(paint, Some(String::from("3"))))
+                .on_press(Message::Said("Details")),
+        )
+        .build()
+}
+
+fn small_pieces<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let accent = glide_sdk::theme::to_iced(paint.tokens.ramp[3]);
+    let green = paint.ok();
+    column![
+        ui::profile_card(
+            paint,
+            ui::avatar(paint, "Olena Koval", 40.0),
+            "Olena Koval",
+            "olena",
+            catalog.flipped,
+            Message::Flip
+        ),
+        ui::noted_banner(
+            paint,
+            Severity::Accent,
+            Icon::Bell,
+            "",
+            shell.t("Банер зі своїм значком", "A banner with its own glyph"),
+            vec![]
+        ),
+        row![
+            ui::busy_label(paint, shell.t("Пошук…", "Searching…")),
+            ui::key_combo(paint, "Ctrl+Shift+K", str::to_string),
+            ui::swatch(paint, accent, true, Some(Message::Flip), 20.0),
+            ui::swatch(paint, green, false, Some(Message::Flip), 20.0),
+        ]
+        .spacing(SP4)
+        .align_y(Alignment::Center),
+        ui::sample_well(paint, text("Aa — The quick brown fox", TextStyle::T2)),
+        ui::empty_note(
+            paint,
+            Icon::Search,
+            shell.t("Нічого не знайдено", "Nothing found"),
+            shell.t("Компактний порожній стан", "A compact empty state")
+        ),
+    ]
+    .spacing(SP3)
+    .into()
+}
+
 fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
     let paint = shell.paint();
     column![
@@ -714,6 +879,20 @@ fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element
                 .glyph(Icon::File)
                 .ink(Some(paint.fg_3()))
                 .on_press(Some(Message::Said("Mount"))),
+        ),
+        Element::from(
+            ui::SidebarItem::new(paint, "Notifications")
+                .leading(ui::icon_tile(Icon::Bell, paint.danger(), 24.0))
+                .matched(Some((0, 6)))
+                .accessory(ui::keycap(paint, "↵"))
+                .on_press(Some(Message::Said("Notifications"))),
+        ),
+        ui::hinted_search_input(
+            paint,
+            text_input(shell.t("Пошук", "Search"), &catalog.search).on_input(Message::Search),
+            (!catalog.search.is_empty()).then(|| Message::Search(String::new())),
+            "",
+            Some(ui::key_combo(paint, "Ctrl+F", str::to_string)),
         ),
     ]
     .spacing(2)

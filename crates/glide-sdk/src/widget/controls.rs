@@ -323,6 +323,11 @@ pub fn radio_mark<'a, M: Clone + 'a>(paint: &Paint, selected: bool, message: Opt
     activatable(paint, clickable(mark(paint, check, true, enabled), message.clone()), CHECK / 2.0, message)
 }
 
+#[must_use]
+pub fn radio_indicator<'a, M: 'a>(paint: &Paint, selected: bool) -> Element<'a, M> {
+    mark(paint, if selected { Check::On } else { Check::Off }, true, true)
+}
+
 pub(crate) fn mark<'a, M: 'a>(paint: &Paint, check: Check, round: bool, enabled: bool) -> Element<'a, M> {
     surface(CheckBox { paint: *paint, check, enabled, round }).width(CHECK).height(CHECK).into()
 }

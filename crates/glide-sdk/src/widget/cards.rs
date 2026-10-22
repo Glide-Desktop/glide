@@ -7,7 +7,7 @@ use glide_theme::{TextStyle, component};
 use iced::widget::{Column, Row, Space, button as control, column, container, row};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding};
 
-use super::controls::radio_mark;
+use super::controls::radio_indicator;
 use super::feedback::{dot, icon_tile};
 use super::focus::activatable;
 use super::layout::card_style;
@@ -166,7 +166,7 @@ pub fn choice_card<'a, M: Clone + 'a>(
     }
     let body = column![
         container(illustration.into()).center_x(Fill),
-        row![radio_mark(&paint, selected, None::<M>), labels].spacing(SP2).align_y(Alignment::Center),
+        row![radio_indicator(&paint, selected), labels].spacing(SP2).align_y(Alignment::Center),
     ]
     .spacing(SP2 + 2.0);
     let card = control(body).on_press(message.clone()).padding(SP2 + 2.0).width(Fill);

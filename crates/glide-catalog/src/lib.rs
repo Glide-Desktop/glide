@@ -18,6 +18,7 @@ pub enum Page {
     Selection,
     Feedback,
     Layout,
+    Cards,
     Overlays,
     Type,
     Motion,
@@ -26,13 +27,14 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Overview,
         Self::Buttons,
         Self::Inputs,
         Self::Selection,
         Self::Feedback,
         Self::Layout,
+        Self::Cards,
         Self::Overlays,
         Self::Type,
         Self::Motion,
@@ -49,6 +51,7 @@ impl Page {
             Self::Selection => ("Вибір", "Selection"),
             Self::Feedback => ("Стан і відгук", "Feedback"),
             Self::Layout => ("Розмітка", "Layout"),
+            Self::Cards => ("Картки й списки", "Cards and lists"),
             Self::Overlays => ("Оверлеї", "Overlays"),
             Self::Type => ("Типографіка й кольори", "Type and colour"),
             Self::Motion => ("Рух", "Motion"),
@@ -65,7 +68,7 @@ impl Page {
             Self::Buttons | Self::Selection => Icon::Check,
             Self::Inputs => Icon::Search,
             Self::Feedback => Icon::Refresh,
-            Self::Layout => Icon::Folder,
+            Self::Layout | Self::Cards => Icon::Folder,
             Self::Overlays => Icon::More,
             Self::Type => Icon::File,
             Self::Motion => Icon::Right,
