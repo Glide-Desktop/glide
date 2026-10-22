@@ -231,6 +231,12 @@ struct Floating<'b, M> {
     gap: f32,
 }
 
+const SHADOW_ROOM: f32 = 80.0;
+
+fn content(layout: Layout<'_>) -> Layout<'_> {
+    layout.children().next().unwrap_or(layout)
+}
+
 impl<M> Floating<'_, M> {
     fn lay(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
         let max_width = self.width.unwrap_or(bounds.width - 2.0 * MARGIN);
@@ -243,7 +249,9 @@ impl<M> Floating<'_, M> {
         let node = self.element.layout(self.tree, renderer, &limits);
         let (at, side) = place(self.anchor, node.size(), bounds, self.gap, self.centred);
         self.side = side;
-        node.move_to(at)
+        let room = Size::new(2.0 * SHADOW_ROOM, 2.0 * SHADOW_ROOM);
+        layout::Node::with_children(node.size().expand(room), vec![node.move_to(Point::new(SHADOW_ROOM, SHADOW_ROOM))])
+            .move_to(at - Vector::new(SHADOW_ROOM, SHADOW_ROOM))
     }
 }
 
@@ -257,6 +265,7 @@ impl<M> overlay::Overlay<M, Theme, Renderer> for Floating<'_, M> {
         cursor: mouse::Cursor,
     ) {
         use iced::advanced::Renderer as _;
+        let layout = content(layout);
         let bounds = layout.bounds();
         renderer.with_transformation(
             rise(self.progress, self.side, bounds, component::POPOVER_CLOSED_SCALE),
@@ -485,6 +494,7 @@ impl<M> overlay::Overlay<M, Theme, Renderer> for MenuOverlay<'_, M> {
         if !*self.open {
             return;
         }
+        let layout = content(layout);
         let bounds = layout.bounds();
         if let Event::Mouse(mouse::Event::ButtonPressed(_)) = event
             && !cursor.is_over(bounds)
@@ -530,8 +540,12 @@ impl<M> overlay::Overlay<M, Theme, Renderer> for MenuOverlay<'_, M> {
     }
 
     fn mouse_interaction(&self, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer) -> mouse::Interaction {
+        let layout = content(layout);
         let bounds = layout.bounds();
-        self.floating.element.mouse_interaction(self.floating.tree, layout, cursor, &bounds, renderer)
+        match self.floating.element.mouse_interaction(self.floating.tree, layout, cursor, &bounds, renderer) {
+            mouse::Interaction::None if *self.open && cursor.is_over(bounds) => mouse::Interaction::Idle,
+            interaction => interaction,
+        }
     }
 }
 
