@@ -73,9 +73,10 @@ fn overview<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         (Look::Dark, shell.t("Темна", "Dark")),
     ];
     let mut accents: Vec<Element<'a, Message>> =
-        vec![ui::chip(paint, shell.t("Системний", "System"), catalog.accent.is_none(), Message::Accent(None))];
+        vec![ui::chip(paint, shell.t("Системний", "System"), catalog.accent.is_none(), Some(Message::Accent(None)))];
     for accent in Accent::ALL {
-        accents.push(ui::chip(paint, accent.key(), catalog.accent == Some(*accent), Message::Accent(Some(*accent))));
+        let on = catalog.accent == Some(*accent);
+        accents.push(ui::chip(paint, accent.key(), on, Some(Message::Accent(Some(*accent)))));
     }
     let facts = ui::list(
         paint,
@@ -330,7 +331,7 @@ fn selection<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a,
         ]
         .iter()
         .enumerate()
-        .map(|(index, label)| ui::chip(paint, label, catalog.chips[index], Message::Chip(index)))
+        .map(|(index, label)| ui::chip(paint, *label, catalog.chips[index], Some(Message::Chip(index))))
         .collect(),
     );
     let sliders = column![

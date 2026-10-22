@@ -23,7 +23,7 @@ fn luma(c: Color) -> f32 {
 
 #[test]
 fn widget_styles_use_only_meridian_radii() {
-    use glide_settings::theme::{chip_style, icon_button_style};
+    use glide_settings::theme::icon_button_style;
     const { assert!(R1 < R2 && R2 < R3 && R3 < R_ROUND) };
     let theme = ThemeState::new(Appearance::Dark, Accent::Blue);
     let active = button::Status::Active;
@@ -31,8 +31,6 @@ fn widget_styles_use_only_meridian_radii() {
     for style in [button_ghost, icon_button_style] {
         assert_eq!(style(&theme, active).border.radius, radius_r2());
     }
-    assert_eq!(chip_style(&theme, false, active).border.radius, radius_r2());
-    assert_eq!(chip_style(&theme, true, active).border.radius, radius_r2());
     assert_eq!(text_input_style(&theme, text_input::Status::Active).border.radius, radius_r2());
     assert_eq!(sidebar_item_style(&theme, false, active).border.radius, radius_r2());
     for style in [window_container_style, content_container_style] {

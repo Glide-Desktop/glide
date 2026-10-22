@@ -372,8 +372,11 @@ pub fn sidebar_list<'a, M: Clone + 'a>(
 }
 
 #[must_use]
-pub fn chip<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, on: bool, message: M) -> Element<'a, M> {
+pub fn chip<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, on: bool, message: Option<M>,
+) -> Element<'a, M> {
     let paint = *paint;
+    let label = label.into();
     animate(if on { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
         let value = value.clone();
         let mark =
@@ -386,11 +389,12 @@ pub fn chip<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, on: bool, message:
             )
             .center_y(Fill),
         )
-        .on_press(message.clone())
+        .on_press_maybe(message.clone())
         .height(component::SMALL_CONTROL)
         .padding(Padding::from([0.0, SP3]));
         let control = widgets::button(control, move |status| {
             let amount = value.get();
+            let status = if status == button::Status::Disabled { button::Status::Active } else { status };
             let base = super::mix(paint.fill_1(), paint.acc_soft(), amount);
             let mut style = style::flat(
                 paint.layered(base, status),
@@ -400,7 +404,7 @@ pub fn chip<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, on: bool, message:
             style.border = Border { color: paint.line().scale_alpha(1.0 - amount), width: 1.0, radius: R_ROUND.into() };
             style
         });
-        activatable(&paint, control, component::SMALL_CONTROL / 2.0, Some(message))
+        activatable(&paint, control, component::SMALL_CONTROL / 2.0, message)
     })
     .into()
 }

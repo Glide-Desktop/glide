@@ -316,16 +316,19 @@ pub fn danger<'a, M: Clone + 'a>(
 
 #[must_use]
 pub fn icon_button<'a, M: Clone + 'a>(t: ThemeState, glyph: Icon, message: Option<M>) -> Element<'a, M> {
+    let paint = paint(&t);
     let color = if message.is_some() { t.fg_2() } else { t.fg_4() };
-    button(
+    let control = button(
         container(icon(glyph, 16.0, color))
             .center_x(Length::Fixed(theme::SMALL_CONTROL_HEIGHT))
             .center_y(Length::Fixed(theme::SMALL_CONTROL_HEIGHT)),
     )
-    .on_press_maybe(message)
-    .padding(0)
-    .style(move |_: &iced::Theme, status| theme::icon_button_style(&t, status))
-    .into()
+    .on_press_maybe(message.clone())
+    .padding(0);
+    let control = glide_sdk::glide_iced::widgets::button(control, move |status| {
+        sdk::button_style(&paint, sdk::Tone::Ghost, status)
+    });
+    sdk::focusable(&paint, control, glide_sdk::theme::R2).on_activate(message).into()
 }
 
 #[must_use]
@@ -502,17 +505,7 @@ pub fn status_pill<'a, M: 'a>(t: ThemeState, tone: theme::Tone, label: impl text
 pub fn chip<'a, M: Clone + 'a>(
     t: ThemeState, label: impl text::IntoFragment<'a>, selected: bool, on_press: Option<M>,
 ) -> Element<'a, M> {
-    let mut content = row![].spacing(6).height(Fill).align_y(Alignment::Center);
-    if selected {
-        content = content.push(icon(Icon::Check, 13.0, t.acc_soft_fg()));
-    }
-    content = content.push(text(label).size(13).font(if selected { theme::SEMIBOLD } else { iced::Font::DEFAULT }));
-    button(content)
-        .on_press_maybe(on_press)
-        .padding([0, 12])
-        .height(theme::SMALL_CONTROL_HEIGHT)
-        .style(move |_: &iced::Theme, status| theme::chip_style(&t, selected, status))
-        .into()
+    sdk::chip(&paint(&t), label.into_fragment(), selected, on_press)
 }
 
 #[must_use]
@@ -710,24 +703,8 @@ pub fn usage_bar<'a, M: 'a>(t: ThemeState, segments: &[(f32, Color)], height: f3
 
 #[must_use]
 pub fn progress_bar<'a, M: 'a>(t: ThemeState, fraction: f32) -> Element<'a, M> {
-    let part = portion(fraction);
-    let mut fill = row![].width(Fill).height(Fill);
-    if part > 0 {
-        let accent = t.acc_bg();
-        fill = fill.push(
-            container(space())
-                .width(Length::FillPortion(part))
-                .height(Fill)
-                .style(move |_: &iced::Theme| theme::solid(accent, theme::radius_r1())),
-        );
-    }
-    if part < 1000 {
-        fill = fill.push(space().width(Length::FillPortion(1000 - part)));
-    }
-    container(fill).width(Fill).height(PROGRESS_HEIGHT).style(move |_: &iced::Theme| theme::track_style(&t)).into()
+    sdk::progress(&paint(&t), Some(fraction))
 }
-
-pub const PROGRESS_HEIGHT: f32 = 6.0;
 
 #[must_use]
 pub fn legend<'a, M: 'a>(t: ThemeState, items: Vec<(Color, String, String)>) -> Element<'a, M> {

@@ -755,18 +755,6 @@ pub fn keycap_style(theme: &ThemeState) -> container::Style {
 }
 
 #[must_use]
-pub fn chip_style(theme: &ThemeState, selected: bool, status: button::Status) -> button::Style {
-    let (base, text, state) = if selected {
-        (theme.acc_soft(), theme.acc_soft_fg(), theme.acc_soft_fg())
-    } else {
-        (theme.fill_1(), theme.fg_1(), theme.state())
-    };
-    let background = state_fill(base, state, status);
-    let text = if matches!(status, button::Status::Disabled) { theme.fg_4() } else { text };
-    flat_button(Some(background), text, radius_r2())
-}
-
-#[must_use]
 pub fn track_style(theme: &ThemeState) -> container::Style {
     solid(theme.fill_2(), radius_r1())
 }
