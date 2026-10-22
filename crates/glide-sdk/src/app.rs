@@ -469,6 +469,20 @@ impl<A: App> Host<A> {
                 let outcome = popup.pick(index);
                 return self.finish(outcome);
             }
+            menu::Event::Stepped(index, more) => {
+                popup.selected = Some(index);
+                let step = match popup.items.get(index) {
+                    Some(menu::Item::Stepper { less, more: next, .. }) => {
+                        if more {
+                            next.clone()
+                        } else {
+                            less.clone()
+                        }
+                    }
+                    _ => None,
+                };
+                return step.map_or_else(Task::none, |message| self.finish(menu::Outcome::Stay(message)));
+            }
         }
         Task::none()
     }
@@ -484,6 +498,22 @@ impl<A: App> Host<A> {
                 self.shell.close_menu();
                 self.run(message)
             }
+            menu::Outcome::Stay(message) => {
+                let task = self.run(message);
+                self.refresh_menus();
+                self.refresh_popup();
+                task
+            }
+        }
+    }
+
+    fn refresh_popup(&mut self) {
+        let Some(popup) = self.shell.popup.as_mut() else { return };
+        if let menu::Source::Bar(index) = popup.source
+            && let Some(menu) = self.menus.get(index)
+            && popup.depth() == 0
+        {
+            popup.items.clone_from(&menu.items);
         }
     }
 

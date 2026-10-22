@@ -122,6 +122,7 @@ pub struct Header<'a, M> {
     pub trailing: Vec<Element<'a, M>>,
     pub labels: (&'a str, &'a str),
     pub height: f32,
+    pub context: Option<M>,
 }
 
 impl<'a, M> Header<'a, M> {
@@ -134,7 +135,14 @@ impl<'a, M> Header<'a, M> {
             trailing: Vec::new(),
             labels: ("", ""),
             height: HEADER,
+            context: None,
         }
+    }
+
+    #[must_use]
+    pub fn context(mut self, message: M) -> Self {
+        self.context = Some(message);
+        self
     }
 
     #[must_use]
@@ -185,6 +193,7 @@ pub fn header<'a, M: Clone + 'a>(
     let close = widgets::button(close, move |status| style::window_control(&controls, status));
     let close = tooltip(paint, close, header.labels.1);
     let height = header.height;
+    let context = header.context;
     let leading_count = header.leading.len();
     let trailing_count = header.trailing.len();
     let left = header.leading.into_iter().fold(row![maximize].spacing(SP2).align_y(Alignment::Center), row::Row::push);
@@ -223,7 +232,11 @@ pub fn header<'a, M: Clone + 'a>(
         .width(Fill)
         .height(height)
         .style(move |_| style::rounded(background, corners));
-    mouse_area(bar).on_press(on_window(Action::Drag)).on_double_click(on_window(Action::ToggleMaximize)).into()
+    let area = mouse_area(bar).on_press(on_window(Action::Drag)).on_double_click(on_window(Action::ToggleMaximize));
+    match context {
+        Some(message) => area.on_right_press(message).into(),
+        None => area.into(),
+    }
 }
 
 #[must_use]

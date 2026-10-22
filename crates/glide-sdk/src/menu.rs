@@ -6,12 +6,14 @@ use glide_theme::{TextStyle, component, motion};
 use glide_ui::Reveal;
 use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::widget::{Space, button, container, mouse_area, pin, row, stack};
-use iced::{Alignment, Background, Element, Fill, Padding, Point, Size};
+use iced::{Alignment, Background, Element, Fill, Length, Padding, Point, Size};
 
 use crate::widget::{Icon, Wrapping, icon, popover, scrollable, text};
 
 pub const WIDTH: f32 = 280.0;
+pub const SCROLL: &str = "glide-menu";
 const ITEM: f32 = component::MENU_ITEM;
+const STEP: f32 = component::SMALL_CONTROL;
 const SEPARATOR: f32 = 9.0;
 const HEADING: f32 = 26.0;
 
@@ -19,6 +21,7 @@ const HEADING: f32 = 26.0;
 pub enum Item<M> {
     Action { label: String, shortcut: Option<String>, message: M, enabled: bool, check: Option<bool>, more: bool },
     Submenu { label: String, items: Vec<Item<M>>, enabled: bool },
+    Stepper { label: String, value: String, less: Option<M>, more: Option<M> },
     Heading(String),
     Separator,
 }
@@ -27,6 +30,11 @@ impl<M> Item<M> {
     #[must_use]
     pub fn action(label: impl Into<String>, message: M) -> Self {
         Self::Action { label: label.into(), shortcut: None, message, enabled: true, check: None, more: false }
+    }
+
+    #[must_use]
+    pub fn stepper(label: impl Into<String>, value: impl Into<String>, less: Option<M>, more: Option<M>) -> Self {
+        Self::Stepper { label: label.into(), value: value.into(), less, more }
     }
 
     #[must_use]
@@ -72,9 +80,22 @@ impl<M> Item<M> {
     pub fn enabled(mut self, on: bool) -> Self {
         match &mut self {
             Self::Action { enabled, .. } | Self::Submenu { enabled, .. } => *enabled = on,
-            Self::Heading(_) | Self::Separator => {}
+            Self::Stepper { less, more, .. } if !on => {
+                *less = None;
+                *more = None;
+            }
+            Self::Stepper { .. } | Self::Heading(_) | Self::Separator => {}
         }
         self
+    }
+
+    #[must_use]
+    pub fn messages(&self) -> Vec<&M> {
+        match self {
+            Self::Action { message, enabled: true, .. } => vec![message],
+            Self::Stepper { less, more, .. } => less.iter().chain(more.iter()).collect(),
+            _ => Vec::new(),
+        }
     }
 
     #[must_use]
@@ -86,7 +107,11 @@ impl<M> Item<M> {
     }
 
     fn actionable(&self) -> bool {
-        matches!(self, Self::Action { enabled: true, .. } | Self::Submenu { enabled: true, .. })
+        match self {
+            Self::Action { enabled, .. } | Self::Submenu { enabled, .. } => *enabled,
+            Self::Stepper { less, more, .. } => less.is_some() || more.is_some(),
+            Self::Heading(_) | Self::Separator => false,
+        }
     }
 }
 
@@ -119,6 +144,24 @@ fn export_items<M: Clone>(items: &[Item<M>], actions: &mut Vec<M>) -> Vec<Entry>
             }
             Item::Submenu { label, items, enabled } => {
                 Entry::Submenu { label: label.clone(), enabled: *enabled, children: export_items(items, actions) }
+            }
+            Item::Stepper { label, less, more, .. } => {
+                let children = [("−", less), ("+", more)]
+                    .into_iter()
+                    .map(|(sign, message)| {
+                        if let Some(message) = message {
+                            actions.push(message.clone());
+                        }
+                        Entry::Action {
+                            id: if message.is_some() { u32::try_from(actions.len()).unwrap_or(u32::MAX) } else { 0 },
+                            label: sign.to_string(),
+                            enabled: message.is_some(),
+                            check: None,
+                            shortcut: None,
+                        }
+                    })
+                    .collect();
+                Entry::Submenu { label: label.clone(), enabled: less.is_some() || more.is_some(), children }
             }
             Item::Heading(label) => {
                 Entry::Action { id: 0, label: label.clone(), enabled: false, check: None, shortcut: None }
@@ -263,12 +306,14 @@ pub struct Popup<M> {
 pub enum Event {
     Hovered(usize),
     Picked(usize),
+    Stepped(usize, bool),
     Dismiss,
 }
 
 pub enum Outcome<M> {
     None,
     Run(M),
+    Stay(M),
     Close,
 }
 
@@ -297,6 +342,11 @@ impl<M: Clone> Popup<M> {
         }
     }
 
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.trail.len()
+    }
+
     pub fn back(&mut self) -> bool {
         let Some(items) = self.trail.pop() else { return false };
         self.items = items;
@@ -320,6 +370,16 @@ impl<M: Clone> Popup<M> {
     }
 
     pub fn key(&mut self, key: &Key) -> Option<Outcome<M>> {
+        if let Some(Item::Stepper { less, more, .. }) = self.selected.and_then(|index| self.items.get(index)) {
+            let step = match key {
+                Key::Named(Named::ArrowLeft) => less.clone(),
+                Key::Named(Named::ArrowRight) => more.clone(),
+                _ => None,
+            };
+            if let Some(message) = step {
+                return Some(Outcome::Stay(message));
+            }
+        }
         Some(match key {
             Key::Named(Named::ArrowDown | Named::Tab) => {
                 self.step(true);
@@ -411,6 +471,9 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
                 measure(label, TextStyle::MENU_ITEM) + keys + if *more { 12.0 + SP2 } else { 0.0 }
             }
             Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + 12.0 + SP2,
+            Item::Stepper { label, value, .. } => {
+                measure(label, TextStyle::MENU_ITEM) + SP3 + 2.0 * STEP + measure(value, TextStyle::NUM).max(STEP)
+            }
             Item::Heading(label) => measure(label, TextStyle::MICRO),
             Item::Separator => 0.0,
         })
@@ -445,7 +508,7 @@ pub fn rows<'a, M>(paint: &Paint, items: &[Item<M>], selected: Option<usize>) ->
 pub fn layer<'a, E: Clone + 'a>(
     paint: &Paint, rows: Vec<Element<'a, E>>, at: Point, size: Size, progress: f32, dismiss: E,
 ) -> Element<'a, E> {
-    let content = scrollable(paint, iced::widget::column(rows)).height(size.height - 2.0 * SP1 - 2.0);
+    let content = scrollable(paint, iced::widget::column(rows)).id(SCROLL).height(size.height - 2.0 * SP1 - 2.0);
     let card = container(popover(paint, content)).width(size.width);
     let scale = component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress;
     stack![
@@ -510,6 +573,33 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
                 style
             });
             mouse_area(control).on_enter(Event::Hovered(index)).into()
+        }
+        Item::Stepper { label, value, less, more } => {
+            let step = |sign: &'static str, active: bool, more: bool| -> Element<'a, Event> {
+                let control = button(container(text(sign, TextStyle::BODY)).center(Fill))
+                    .on_press_maybe(active.then_some(Event::Stepped(index, more)))
+                    .width(STEP)
+                    .height(STEP)
+                    .padding(0);
+                widgets::button(control, move |status| style::action(&paint, glide_iced::Tone::Neutral, status))
+            };
+            let value = text(value.clone(), TextStyle::NUM).width(Length::Shrink);
+            let content = row![
+                Space::new().width(14),
+                text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
+                Space::new().width(Fill),
+                step("−", less.is_some(), false),
+                container(value).center_x(STEP),
+                step("+", more.is_some(), true),
+            ]
+            .spacing(SP2)
+            .align_y(Alignment::Center);
+            let row = container(content).padding(Padding::from([0.0, SP2])).height(ITEM).center_y(ITEM);
+            let row = widgets::container(row, move |hover, _| {
+                let layer = if selected { 1.0 } else { hover };
+                style::rounded(paint.layer(iced::Color::TRANSPARENT, motion::ST_HOVER * layer), R2)
+            });
+            mouse_area(row).on_enter(Event::Hovered(index)).into()
         }
     }
 }

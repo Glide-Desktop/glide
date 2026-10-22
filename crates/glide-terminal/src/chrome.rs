@@ -2,9 +2,7 @@ use alacritty_terminal::index::Direction;
 use glide_theme::elevation::Level;
 use glide_theme::motion::ST_HOVER;
 use iced::border::Radius;
-use iced::widget::{
-    Space, button, column, container, mouse_area, opaque, pane_grid, pin, row, scrollable, space, stack, text_input,
-};
+use iced::widget::{Space, button, column, container, mouse_area, opaque, pane_grid, row, space, stack, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Rectangle, Size};
 
 use crate::app::{App, Command, Confirm, FIND_ID, Menu, MenuKind, Message, Tab, shortcut_label};
@@ -16,19 +14,17 @@ use crate::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6, Tone};
 use crate::terminal::Terminal;
 use crate::widgets;
 use glide_iced::text::{self, text};
-use glide_sdk::widget::{separator as rule, tooltip as tip};
+use glide_sdk::widget::{icon_button, separator as rule, tooltip as tip};
 use glide_sdk::window::resize_edges;
 use glide_theme::{TextStyle, component};
 
 pub const HEADER: f32 = 35.0;
-const HEADER_CONTROL: f32 = CONTROL;
 const TABS: f32 = component::LARGE_CONTROL;
 const TAB_PAD: f32 = SP2;
 const TAB_GAP: f32 = SP1;
 const FIND: f32 = component::LARGE_CONTROL;
 const CONTROL: f32 = component::SMALL_CONTROL;
 const MENU_WIDTH: f32 = 264.0;
-const ITEM: f32 = component::MENU_ITEM;
 const PANE_MIN: f32 = 50.0;
 const SWATCH: Size = Size::new(96.0, 44.0);
 
@@ -36,84 +32,40 @@ fn glyph<'a>(icon: Icon, size: f32, tint: Color) -> Element<'a, Message> {
     crate::icons::glyph(icon, size, tint)
 }
 
-fn icon_button<'a>(
-    paint: &Paint, icon: Icon, message: Message, on: bool, label: &'static str, side: f32,
-) -> Element<'a, Message> {
-    let paint = *paint;
-    let control =
-        button(container(glyph(icon, side.min(16.0), if on { paint.fg_1() } else { paint.fg_2() })).center(Fill))
-            .on_press(message)
-            .width(side)
-            .height(side)
-            .padding(0);
-    tip(
-        &paint,
-        widgets::button(control, move |status| {
-            if on { style::flat(paint.fill_2(), paint.fg_1(), R2) } else { style::action(&paint, Tone::Ghost, status) }
-        }),
-        label,
-    )
+fn sdk_window(app: &App) -> glide_sdk::window::Window {
+    use glide_sdk::window::{Frame, Window};
+    Window {
+        size: app.window,
+        focused: app.window_focused(),
+        frame: if app.edge_to_edge() { Frame::Maximized } else { Frame::Floating },
+    }
+}
+
+fn window_message(action: glide_sdk::window::Action) -> Message {
+    use glide_sdk::window::Action;
+    match action {
+        Action::Drag => Message::WindowDrag,
+        Action::ToggleMaximize => Message::WindowMaximize,
+        Action::Minimize => Message::WindowMinimize,
+        Action::Resize(direction) => Message::WindowResize(direction),
+        Action::Resized(_) | Action::Focused(_) | Action::Framed(_) => Message::Frame,
+    }
 }
 
 fn header(app: &App) -> Element<'_, Message> {
-    let paint = app.paint;
-    let control_paint = if app.window_focused() { paint } else { paint.faded(component::IDLE_CONTROLS) };
+    let window = sdk_window(app);
+    let controls = window.controls_paint(&app.paint);
     let options_open =
         app.menu.as_ref().is_some_and(|menu| matches!(menu.kind, MenuKind::Options | MenuKind::Profiles));
-    let close = button(crate::icons::window_close())
-        .on_press(Message::Command(Command::CloseWindow))
-        .width(HEADER_CONTROL)
-        .height(HEADER_CONTROL)
-        .padding(0);
-    let close = tip(
-        &paint,
-        widgets::button(close, move |status| style::window_control(&control_paint, status)),
-        Key::CloseWindow.text(app.lang),
-    );
-    let maximize = button(crate::icons::window_control(app.edge_to_edge()))
-        .on_press(Message::WindowMaximize)
-        .width(HEADER_CONTROL)
-        .height(HEADER_CONTROL)
-        .padding(0);
-    let maximize = tip(
-        &paint,
-        widgets::button(maximize, move |status| style::maximize_control(&control_paint, status)),
-        Key::Maximize.text(app.lang),
-    );
-    let controls = row![
-        icon_button(
-            &control_paint,
-            Icon::Plus,
-            Message::Command(Command::NewTab),
-            false,
-            Key::NewTab.text(app.lang),
-            HEADER_CONTROL
-        ),
-        icon_button(
-            &control_paint,
-            Icon::More,
-            Message::Command(Command::Options),
-            options_open,
-            Key::Options.text(app.lang),
-            HEADER_CONTROL
-        ),
-        Space::new().width(2),
-        close,
-    ]
-    .spacing(SP2)
-    .align_y(Alignment::Center);
-    let bar = container(row![maximize, Space::new().width(Fill), controls].align_y(Alignment::Center))
-        .padding(Padding::from([0.0, SP2]))
-        .height(Fill)
-        .align_y(Alignment::Center);
-    let corners = if app.edge_to_edge() { Radius::default() } else { Radius::default().top_left(R3).top_right(R3) };
-    let background = if app.window_focused() { paint.bar_bg() } else { paint.bar_bg_idle() };
-    let bar = container(bar).width(Fill).height(HEADER).style(move |_| style::rounded(background, corners));
-    mouse_area(bar)
-        .on_press(Message::WindowDrag)
-        .on_double_click(Message::WindowMaximize)
-        .on_right_press(Message::HeaderMenu)
-        .into()
+    let new_tab = Some(Message::Command(Command::NewTab));
+    let options = Some(Message::Command(Command::Options));
+    let header = glide_sdk::window::Header::new("")
+        .labels(Key::Maximize.text(app.lang), Key::CloseWindow.text(app.lang))
+        .height(HEADER)
+        .context(Message::HeaderMenu)
+        .trailing(icon_button(&controls, Icon::Plus, Key::NewTab.text(app.lang), new_tab, false))
+        .trailing(icon_button(&controls, Icon::More, Key::Options.text(app.lang), options, options_open));
+    glide_sdk::window::header(&app.paint, &window, header, window_message, Message::Command(Command::CloseWindow), 0.0)
 }
 
 fn tab_button<'a>(app: &'a App, index: usize, tab: &'a Tab) -> Element<'a, Message> {
@@ -245,18 +197,16 @@ fn find_bar(app: &App) -> Element<'_, Message> {
             icon_button(
                 &paint,
                 Icon::Up,
-                Message::Command(Command::FindUp),
-                false,
                 Key::FindPrevious.text(app.lang),
-                CONTROL
+                Some(Message::Command(Command::FindUp)),
+                false
             ),
             icon_button(
                 &paint,
                 Icon::Down,
-                Message::Command(Command::FindDown),
-                false,
                 Key::FindNext.text(app.lang),
-                CONTROL
+                Some(Message::Command(Command::FindDown)),
+                false
             ),
         ]
         .spacing(SP1),
@@ -383,205 +333,95 @@ fn content(app: &App) -> Element<'_, Message> {
     container(grid).width(Fill).height(Fill).style(move |_| style::rounded(backdrop, bottom)).into()
 }
 
-fn item<'a>(
-    app: &App, paint: &Paint, label: &'a str, hint: Option<&'a str>, message: Option<Message>,
-) -> Element<'a, Message> {
-    let paint = *paint;
-    let selected = message.as_ref().is_some_and(|message| menu_selected(app, message));
-    let index = message_index(app, message.as_ref());
-    let mut content = row![text(label, TextStyle::MENU_ITEM), Space::new().width(Fill)].align_y(Alignment::Center);
-    if let Some(hint) = hint {
-        content = content.push(text(hint, TextStyle::CAP).font(crate::MONO));
+type MenuItem = glide_sdk::menu::Item<Message>;
+
+fn entry(app: &App, key: Key, command: Command, enabled: bool) -> MenuItem {
+    let item = MenuItem::action(key.text(app.lang), Message::Command(command)).enabled(enabled);
+    match shortcut_label(command) {
+        Some(chord) => item.shortcut(chord),
+        None => item,
     }
-    let control = button(content).on_press_maybe(message).width(Fill).height(ITEM).padding(Padding::from([0.0, SP3]));
-    let control = widgets::button(control, move |status| {
-        let mut style = style::menu_item(&paint, status);
-        if selected {
-            style.border = Border { color: paint.acc_bg(), width: 2.0, radius: R2.into() };
-        }
-        style
-    });
-    if let Some(index) = index { mouse_area(control).on_enter(Message::MenuHovered(index)).into() } else { control }
 }
 
-fn command<'a>(app: &App, paint: &Paint, key: Key, command: Command, enabled: bool) -> Element<'a, Message> {
-    let label = key.text(app.lang);
-    item(app, paint, label, shortcut_label(command), enabled.then_some(Message::Command(command)))
-}
-
-fn font_size(app: &App, paint: &Paint) -> Element<'static, Message> {
-    let paint = *paint;
-    let step = |label: &'static str, command: Command| {
-        let selected = menu_selected(app, &Message::Command(command));
-        let control = button(container(text(label, TextStyle::BODY)).center(Fill))
-            .on_press(Message::Command(command))
-            .width(CONTROL)
-            .height(CONTROL)
-            .padding(0);
-        widgets::button(control, move |status| {
-            let mut style = style::action(&paint, Tone::Neutral, status);
-            if selected {
-                style.border = Border { color: paint.acc_bg(), width: 2.0, radius: R2.into() };
-            }
-            style
-        })
-    };
-    let size = text(format!("{:.0}", app.fonts().size), TextStyle::NUM).width(CONTROL).align_x(Alignment::Center);
-    row![
-        text(Key::FontSize.text(app.lang), TextStyle::CALL),
-        Space::new().width(Fill),
-        step("−", Command::Smaller),
-        size,
-        step("+", Command::Bigger),
-    ]
-    .spacing(SP1)
-    .padding(Padding::from([0.0, SP3]).right(SP2))
-    .height(ITEM)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-fn separator<'a>(paint: &Paint) -> Element<'a, Message> {
-    container(rule(paint)).padding(Padding::from([SP1, SP2])).into()
-}
-
-fn card<'a>(paint: &Paint, content: impl Into<Element<'a, Message>>, width: f32) -> Element<'a, Message> {
-    let paint = *paint;
-    opaque(widgets::surface(
-        container(content).padding(SP1).width(width).style(move |_| style::popover(&paint)),
-        &paint,
-        Level::El3,
-        R3,
-    ))
-}
-
-fn menu_entries(app: &App, paint: &Paint, kind: &MenuKind) -> (Vec<Element<'static, Message>>, f32) {
-    let has_selection = app
-        .focused()
-        .is_some_and(|pane| pane.term.lock().selection.as_ref().is_some_and(|selection| !selection.is_empty()));
-    let mut entries: Vec<Element<'static, Message>> = Vec::new();
-    let mut height = 10.0;
-    let mut push = |entry: Element<'static, Message>, size: f32| {
-        entries.push(entry);
-        height += size;
-    };
-    let sep = ITEM / 3.0;
+#[must_use]
+pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<MenuItem> {
+    let separator = MenuItem::separator;
     match kind {
-        MenuKind::Window => {
-            push(item(app, paint, Key::Maximize.text(app.lang), None, Some(Message::WindowMaximize)), ITEM);
-            push(item(app, paint, Key::Minimize.text(app.lang), None, Some(Message::WindowMinimize)), ITEM);
-            push(command(app, paint, Key::CloseWindow, Command::CloseWindow, true), ITEM);
-        }
-        MenuKind::Options => {
-            push(command(app, paint, Key::NewWindow, Command::NewWindow, true), ITEM);
-            push(command(app, paint, Key::NewTab, Command::NewTab, true), ITEM);
-            push(command(app, paint, Key::SplitDown, Command::SplitDown, true), ITEM);
-            push(command(app, paint, Key::SplitRight, Command::SplitRight, true), ITEM);
-            push(separator(paint), sep);
-            push(command(app, paint, Key::Find, Command::Find, true), ITEM);
-            push(command(app, paint, Key::OpenHints, Command::Hints, true), ITEM);
-            push(command(app, paint, Key::ExportText, Command::Export, true), ITEM);
-            push(command(app, paint, Key::ClearScrollback, Command::ClearScrollback, true), ITEM);
-            push(command(app, paint, Key::Reset, Command::Reset, true), ITEM);
-            push(separator(paint), sep);
-            push(command(app, paint, Key::MarkLine, Command::Mark(Mark::Line), true), ITEM);
-            push(command(app, paint, Key::Bookmark, Command::Mark(Mark::Bookmark), true), ITEM);
-            push(command(app, paint, Key::PreviousMark, Command::Jump(Direction::Left, false), true), ITEM);
-            push(command(app, paint, Key::NextMark, Command::Jump(Direction::Right, false), true), ITEM);
-            push(separator(paint), sep);
-            push(command(app, paint, Key::Profiles, Command::Profiles, true), ITEM);
-            push(font_size(app, paint), ITEM);
-            push(command(app, paint, Key::FullScreen, Command::FullScreen, true), ITEM);
-        }
+        MenuKind::Window => vec![
+            MenuItem::action(Key::Maximize.text(app.lang), Message::WindowMaximize),
+            MenuItem::action(Key::Minimize.text(app.lang), Message::WindowMinimize),
+            entry(app, Key::CloseWindow, Command::CloseWindow, true),
+        ],
+        MenuKind::Options => vec![
+            entry(app, Key::NewWindow, Command::NewWindow, true),
+            entry(app, Key::NewTab, Command::NewTab, true),
+            entry(app, Key::SplitDown, Command::SplitDown, true),
+            entry(app, Key::SplitRight, Command::SplitRight, true),
+            separator(),
+            entry(app, Key::Find, Command::Find, true),
+            entry(app, Key::OpenHints, Command::Hints, true),
+            entry(app, Key::ExportText, Command::Export, true),
+            entry(app, Key::ClearScrollback, Command::ClearScrollback, true),
+            entry(app, Key::Reset, Command::Reset, true),
+            separator(),
+            entry(app, Key::MarkLine, Command::Mark(Mark::Line), true),
+            entry(app, Key::Bookmark, Command::Mark(Mark::Bookmark), true),
+            entry(app, Key::PreviousMark, Command::Jump(Direction::Left, false), true),
+            entry(app, Key::NextMark, Command::Jump(Direction::Right, false), true),
+            separator(),
+            entry(app, Key::Profiles, Command::Profiles, true).cascades(),
+            MenuItem::stepper(
+                Key::FontSize.text(app.lang),
+                format!("{:.0}", app.fonts().size),
+                Some(Message::Command(Command::Smaller)),
+                Some(Message::Command(Command::Bigger)),
+            ),
+            entry(app, Key::FullScreen, Command::FullScreen, true),
+        ],
         MenuKind::Context(link) => {
-            push(command(app, paint, Key::Copy, Command::Copy, has_selection), ITEM);
-            push(command(app, paint, Key::Paste, Command::Paste, true), ITEM);
-            push(command(app, paint, Key::SelectAll, Command::SelectAll, true), ITEM);
+            let selection = app
+                .focused()
+                .is_some_and(|pane| pane.term.lock().selection.as_ref().is_some_and(|selection| !selection.is_empty()));
+            let mut items = vec![
+                entry(app, Key::Copy, Command::Copy, selection),
+                entry(app, Key::Paste, Command::Paste, true),
+                entry(app, Key::SelectAll, Command::SelectAll, true),
+            ];
             if app.man_topic().is_some() {
-                push(separator(paint), sep);
-                push(command(app, paint, Key::ManPage, Command::ManPage, true), ITEM);
+                items.extend([separator(), entry(app, Key::ManPage, Command::ManPage, true)]);
             }
             if let Some(link) = link {
-                push(separator(paint), sep);
-                let open = Some(Message::Open(link.clone()));
-                push(item(app, paint, Key::OpenLink.text(app.lang), None, open), ITEM);
-                let copy = Some(Message::CopyText(link.clone()));
-                push(item(app, paint, Key::CopyLink.text(app.lang), None, copy), ITEM);
+                items.extend([
+                    separator(),
+                    MenuItem::action(Key::OpenLink.text(app.lang), Message::Open(link.clone())),
+                    MenuItem::action(Key::CopyLink.text(app.lang), Message::CopyText(link.clone())),
+                ]);
             }
-            push(separator(paint), sep);
-            push(command(app, paint, Key::SplitDown, Command::SplitDown, true), ITEM);
-            push(command(app, paint, Key::SplitRight, Command::SplitRight, true), ITEM);
-            push(command(app, paint, Key::ClosePane, Command::ClosePane, true), ITEM);
-            push(separator(paint), sep);
-            push(command(app, paint, Key::ClearScrollback, Command::ClearScrollback, true), ITEM);
-            push(command(app, paint, Key::Profiles, Command::Profiles, true), ITEM);
+            items.extend([
+                separator(),
+                entry(app, Key::SplitDown, Command::SplitDown, true),
+                entry(app, Key::SplitRight, Command::SplitRight, true),
+                entry(app, Key::ClosePane, Command::ClosePane, true),
+                separator(),
+                entry(app, Key::ClearScrollback, Command::ClearScrollback, true),
+                entry(app, Key::Profiles, Command::Profiles, true).cascades(),
+            ]);
+            items
         }
-        MenuKind::Profiles => {}
+        MenuKind::Profiles => Vec::new(),
     }
-    (entries, height)
 }
 
 pub fn menu_actions(app: &App, kind: &MenuKind) -> Vec<Message> {
-    let commands: Vec<Command> = match kind {
-        MenuKind::Options => vec![
-            Command::NewWindow,
-            Command::NewTab,
-            Command::SplitDown,
-            Command::SplitRight,
-            Command::Find,
-            Command::Hints,
-            Command::Export,
-            Command::ClearScrollback,
-            Command::Reset,
-            Command::Mark(Mark::Line),
-            Command::Mark(Mark::Bookmark),
-            Command::Jump(Direction::Left, false),
-            Command::Jump(Direction::Right, false),
-            Command::Profiles,
-            Command::Smaller,
-            Command::Bigger,
-            Command::FullScreen,
-        ],
-        MenuKind::Profiles => {
-            let mut actions: Vec<_> =
-                Profile::ALL.into_iter().map(|profile| Message::Command(Command::SetProfile(profile))).collect();
-            if app.tab().is_some_and(|tab| tab.profile != app.prefs.profile) {
-                actions.push(Message::Command(Command::MakeDefault));
-            }
-            return actions;
+    if *kind == MenuKind::Profiles {
+        let mut actions: Vec<_> =
+            Profile::ALL.into_iter().map(|profile| Message::Command(Command::SetProfile(profile))).collect();
+        if app.tab().is_some_and(|tab| tab.profile != app.prefs.profile) {
+            actions.push(Message::Command(Command::MakeDefault));
         }
-        MenuKind::Window => {
-            return vec![Message::WindowMaximize, Message::WindowMinimize, Message::Command(Command::CloseWindow)];
-        }
-        MenuKind::Context(link) => {
-            let mut actions = Vec::new();
-            if app
-                .focused()
-                .is_some_and(|pane| pane.term.lock().selection.as_ref().is_some_and(|selection| !selection.is_empty()))
-            {
-                actions.push(Message::Command(Command::Copy));
-            }
-            actions.extend([Message::Command(Command::Paste), Message::Command(Command::SelectAll)]);
-            if app.man_topic().is_some() {
-                actions.push(Message::Command(Command::ManPage));
-            }
-            if let Some(link) = link {
-                actions.extend([Message::Open(link.clone()), Message::CopyText(link.clone())]);
-            }
-            actions.extend(
-                [
-                    Command::SplitDown,
-                    Command::SplitRight,
-                    Command::ClosePane,
-                    Command::ClearScrollback,
-                    Command::Profiles,
-                ]
-                .map(Message::Command),
-            );
-            return actions;
-        }
-    };
-    commands.into_iter().map(Message::Command).collect()
+        return actions;
+    }
+    menu_items(app, kind).iter().flat_map(|item| item.messages().into_iter().cloned()).collect()
 }
 
 fn menu_selected(app: &App, message: &Message) -> bool {
@@ -595,17 +435,6 @@ fn menu_selected(app: &App, message: &Message) -> bool {
         | (Some(Message::WindowMinimize), Message::WindowMinimize) => true,
         _ => false,
     }
-}
-
-fn message_index(app: &App, message: Option<&Message>) -> Option<usize> {
-    let menu = app.menu.as_ref()?;
-    let message = message?;
-    menu_actions(app, &menu.kind).iter().position(|action| match (action, message) {
-        (Message::Command(a), Message::Command(b)) => a == b,
-        (Message::Open(a), Message::Open(b)) | (Message::CopyText(a), Message::CopyText(b)) => a == b,
-        (Message::WindowMaximize, Message::WindowMaximize) | (Message::WindowMinimize, Message::WindowMinimize) => true,
-        _ => false,
-    })
 }
 
 fn swatch(app: &App, paint: &Paint, profile: Profile, current: bool) -> Element<'static, Message> {
@@ -683,45 +512,57 @@ fn profiles(app: &App, paint: &Paint) -> (Element<'static, Message>, Size) {
         .padding(SP2);
     let width = SWATCH.width * 3.0 + 16.0 + 26.0;
     let height = 4.0 * (SWATCH.height + 20.0) + 3.0 * 10.0 + 12.0 + 30.0 + 26.0;
-    let height = height.min((app.window.height - 24.0).max(1.0));
-    (card(&paint, scrollable(body).id("terminal-menu").height(height - 8.0), width), Size::new(width, height))
+    (body.into(), Size::new(width, height))
+}
+
+fn menu_rows(app: &App, paint: &Paint, menu: &Menu) -> (Vec<Element<'static, Message>>, Size) {
+    use glide_sdk::menu::{self, Event};
+    let items = menu_items(app, &menu.kind);
+    let mut first = Vec::with_capacity(items.len());
+    let mut owner = Vec::new();
+    for (row, item) in items.iter().enumerate() {
+        let count = item.messages().len();
+        first.push((count > 0).then_some(owner.len()));
+        owner.extend(std::iter::repeat_n(row, count));
+    }
+    let selected = menu.selected.and_then(|at| owner.get(at).copied());
+    let size = Size::new(menu::width(&items, MENU_WIDTH), menu::height(&items));
+    let rows = menu::rows(paint, &items, selected)
+        .into_iter()
+        .zip(&items)
+        .zip(first)
+        .map(|((row, item), first)| {
+            let messages: Vec<Message> = item.messages().into_iter().cloned().collect();
+            row.map(move |event| match event {
+                Event::Hovered(_) => first.map_or(Message::Frame, Message::MenuHovered),
+                Event::Picked(_) => messages.first().cloned().unwrap_or(Message::Frame),
+                Event::Stepped(_, more) => {
+                    messages.get(usize::from(more)).or(messages.first()).cloned().unwrap_or(Message::Frame)
+                }
+                Event::Dismiss => Message::Dismiss,
+            })
+        })
+        .collect();
+    (rows, size)
 }
 
 fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
     let progress = menu.reveal.value(glide_theme::motion::t2()) as f32;
     let paint = app.paint.faded(progress);
-    let (card, size) = match &menu.kind {
-        MenuKind::Profiles => profiles(app, &paint),
-        kind => {
-            let (entries, height) = menu_entries(app, &paint, kind);
-            let height = height.min((app.window.height - 24.0).max(1.0));
-            (
-                card(
-                    &paint,
-                    scrollable(iced::widget::column(entries)).id("terminal-menu").height(height - 8.0),
-                    MENU_WIDTH,
-                ),
-                Size::new(MENU_WIDTH, height),
-            )
+    let (rows, size) = match &menu.kind {
+        MenuKind::Profiles => {
+            let (body, size) = profiles(app, &paint);
+            (vec![body], size)
         }
+        _ => menu_rows(app, &paint, menu),
     };
     let window = app.window;
-    let (x, y) = match menu.kind {
-        MenuKind::Context(_) | MenuKind::Window => (menu.at.x, menu.at.y),
-        _ => (window.width - size.width - 8.0, HEADER - 2.0),
+    let (anchor, may_flip) = match menu.kind {
+        MenuKind::Context(_) | MenuKind::Window => (menu.at, true),
+        _ => (iced::Point::new(window.width - size.width - 8.0, HEADER - 2.0), false),
     };
-    let x = x.min(window.width - size.width - 8.0).max(8.0);
-    let y = y.min(window.height - size.height - SP2).max(SP2) + (1.0 - progress) * component::POPOVER_RISE;
-    stack![
-        mouse_area(Space::new().width(Fill).height(Fill))
-            .on_press(Message::Dismiss)
-            .on_right_press(Message::Dismiss)
-            .on_middle_press(Message::Dismiss),
-        pin(widgets::scale(card, component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress))
-            .x(x)
-            .y(y),
-    ]
-    .into()
+    let (at, size) = glide_sdk::menu::place(anchor, size.height, size.width, window, may_flip);
+    glide_sdk::menu::layer(&paint, rows, at, size, progress, Message::Dismiss)
 }
 
 fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {

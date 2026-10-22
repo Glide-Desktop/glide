@@ -1485,14 +1485,14 @@ impl App {
             Key::Named(Named::Home) => {
                 self.menu.as_mut()?.selected = Some(0);
                 return Some(operation::snap_to(
-                    "terminal-menu",
+                    glide_sdk::menu::SCROLL,
                     iced::widget::scrollable::RelativeOffset { x: 0.0, y: 0.0 },
                 ));
             }
             Key::Named(Named::End) => {
                 self.menu.as_mut()?.selected = Some(actions.len() - 1);
                 return Some(operation::snap_to(
-                    "terminal-menu",
+                    glide_sdk::menu::SCROLL,
                     iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
                 ));
             }
@@ -1508,7 +1508,7 @@ impl App {
             });
             self.menu.as_mut()?.selected = Some(selected);
             return Some(operation::snap_to(
-                "terminal-menu",
+                glide_sdk::menu::SCROLL,
                 iced::widget::scrollable::RelativeOffset {
                     x: 0.0,
                     y: selected as f32 / actions.len().saturating_sub(1).max(1) as f32,
