@@ -33,12 +33,12 @@ pub use feedback::{Severity, avatar, badge, banner, count_badge, empty_state, ke
 pub use find::{FIND_FIELD, FindBar, bar_strip, find_bar};
 pub use focus::{Focus, RING, focusable};
 pub use inputs::{
-    Validity, field, input_style, password_field, search_field, search_input, stepper, text_area_style, text_field,
-    validated_field,
+    Validity, bare_text_area_style, field, input_style, password_field, search_field, search_input, stepper,
+    text_area_style, text_field, validated_field,
 };
 pub use layout::{
-    action_card, action_row, card, card_style, expander, facts, list, list_row, section, select_row, sidebar,
-    sidebar_item, surface, switch_row, well,
+    STATUS_BAR, TREE_INDENT, TREE_ROW, action_card, action_row, card, card_style, expander, facts, list, list_row,
+    section, select_row, sidebar, sidebar_item, status_bar, status_button, surface, switch_row, tree_row, well,
 };
 pub use popover::{Popup, Tooltip, dropdown, menu_button, tooltip};
 pub use selection::{

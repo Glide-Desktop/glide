@@ -127,6 +127,17 @@ pub fn text_area_style(paint: &Paint, status: text_editor::Status) -> text_edito
 }
 
 #[must_use]
+pub fn bare_text_area_style(paint: &Paint, status: text_editor::Status) -> text_editor::Style {
+    text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        placeholder: paint.fg_4(),
+        value: if status == text_editor::Status::Disabled { paint.fg_4() } else { paint.fg_1() },
+        selection: paint.acc_soft(),
+    }
+}
+
+#[must_use]
 pub fn stepper<'a, T: Copy + PartialOrd + Display + 'a, M: Clone + 'a>(
     paint: &Paint, value: T, previous: Option<T>, next: Option<T>, on_change: impl Fn(T) -> M,
 ) -> Element<'a, M> {

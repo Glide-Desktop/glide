@@ -126,6 +126,74 @@ pub fn select_row<'a, M: Clone + 'a>(
     focusable(&paint, row, R2).inset().on_activate(Some(message)).into()
 }
 
+pub const TREE_ROW: f32 = 28.0;
+pub const TREE_INDENT: f32 = 14.0;
+
+#[must_use]
+pub fn tree_row<'a, M: Clone + 'a>(
+    paint: &Paint, depth: usize, expanded: Option<bool>, glyph: impl super::Glyph, label: &'a str, current: bool,
+    message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let chevron: Element<'a, M> = match expanded {
+        Some(open) => chevron(&paint, open),
+        None => Space::new().width(12).height(12).into(),
+    };
+    let glyph = icon(glyph, 15.0, if current { paint.acc_bg() } else { paint.fg_3() });
+    let style = if current { TextStyle::HEAD } else { TextStyle::CALL };
+    let indent = SP2 + depth as f32 * TREE_INDENT;
+    let content = row![
+        Space::new().width(indent),
+        container(chevron).center(12),
+        glyph,
+        text(label, style).wrapping(Wrapping::None)
+    ]
+    .spacing(SP1 + 2.0)
+    .align_y(Alignment::Center);
+    let control = control(container(content).center_y(Fill).clip(true))
+        .on_press(message.clone())
+        .width(Fill)
+        .height(TREE_ROW)
+        .padding(0);
+    let control = widgets::button(control, move |status| {
+        let base = if current { paint.acc_soft() } else { Color::TRANSPARENT };
+        style::flat(paint.layered(base, status), if current { paint.fg_1() } else { paint.fg_2() }, R2)
+    });
+    focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
+}
+
+pub const STATUS_BAR: f32 = 26.0;
+
+#[must_use]
+pub fn status_bar<'a, M: 'a>(
+    paint: &Paint, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>, corners: iced::border::Radius,
+) -> Element<'a, M> {
+    let background = paint.bar_bg();
+    let left = iced::widget::Row::with_children(left).spacing(SP3).align_y(Alignment::Center);
+    let right = iced::widget::Row::with_children(right).spacing(SP1).align_y(Alignment::Center);
+    container(row![left, Space::new().width(Fill), right].align_y(Alignment::Center))
+        .padding(Padding::from([0.0, SP3]).right(SP2))
+        .width(Fill)
+        .height(STATUS_BAR)
+        .clip(true)
+        .style(move |_| style::rounded(background, corners))
+        .into()
+}
+
+#[must_use]
+pub fn status_button<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<std::borrow::Cow<'a, str>>, message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let control = control(text(label.into(), TextStyle::CAP).wrapping(Wrapping::None))
+        .on_press(message.clone())
+        .height(STATUS_BAR - 4.0)
+        .padding(Padding::from([2.0, SP2]));
+    let control =
+        widgets::button(control, move |status| super::buttons::button_style(&paint, super::Tone::Ghost, status));
+    activatable(&paint, control, R2, Some(message))
+}
+
 #[must_use]
 pub fn facts<'a, M: 'a>(paint: &Paint, rows: Vec<(String, String)>, label_width: f32) -> Element<'a, M> {
     let paint = *paint;

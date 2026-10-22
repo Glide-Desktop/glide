@@ -4,10 +4,9 @@ use std::collections::HashMap;
 use glide_iced::glyph::Icon;
 use glide_iced::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6};
 use glide_iced::text::text;
-use glide_iced::widgets;
 use glide_sdk::Tone;
 use glide_sdk::widget::{
-    Size, bar_strip, button_style, compact_button, flat_toggle_button, icon_button, separator as rule, tooltip as tip,
+    Size, bar_strip, compact_button, flat_toggle_button, icon_button, separator as rule, tooltip as tip,
     vertical_separator as vertical_rule,
 };
 use glide_sdk::window::resize_handles;
@@ -15,8 +14,8 @@ use glide_theme::{TextStyle, component};
 use iced::border::Radius;
 use iced::widget::text::Wrapping;
 use iced::widget::text_editor::{self as editor_widget};
-use iced::widget::{Space, button, column, container, markdown, mouse_area, row, scrollable, text_editor, text_input};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding};
+use iced::widget::{Space, column, container, markdown, mouse_area, row, scrollable, text_editor, text_input};
+use iced::{Alignment, Background, Border, Element, Fill, Length, Padding};
 
 use crate::app::{
     Answer, App, Bar, Command, Dialog, DialogKind, GOTO_ID, Item, Menu, MenuKind, Message, REPLACE_ID, Toggle,
@@ -34,7 +33,6 @@ pub const SIDEBAR: f32 = 248.0;
 pub const SIDEBAR_MIN_WINDOW: f32 = 560.0;
 const TABS: f32 = 36.0;
 const CONTROL: f32 = component::SMALL_CONTROL;
-const ROW: f32 = 28.0;
 const MENU_WIDTH: f32 = 300.0;
 
 fn bar_width(app: &App, bar: Bar) -> f32 {
@@ -226,33 +224,18 @@ fn infobar(app: &App) -> Option<Element<'_, Message>> {
 }
 
 fn tree_row<'a>(app: &'a App, node: &'a crate::tree::Node) -> Element<'a, Message> {
-    let paint = app.paint;
     let current = app.doc().and_then(|doc| doc.path.as_deref()) == Some(node.entry.path.as_path());
-    let indent = SP2 + node.depth as f32 * 14.0;
-    let chevron: Element<'a, Message> = if node.entry.folder {
-        let icon = if node.expanded { Icon::Down } else { Icon::Right };
-        glide_iced::glyph::glyph(icon, 12.0, paint.fg_3())
-    } else {
-        Space::new().width(12).height(12).into()
-    };
-    let icon = glide_iced::glyph::glyph(
-        if node.entry.folder { Icon::Folder } else { Icon::File },
-        15.0,
-        if current { paint.acc_bg() } else { paint.fg_3() },
+    let folder = node.entry.folder;
+    let row = glide_sdk::widget::tree_row(
+        &app.paint,
+        node.depth,
+        folder.then_some(node.expanded),
+        if folder { Icon::Folder } else { Icon::File },
+        node.entry.name.as_str(),
+        current,
+        Message::TreeClicked(node.entry.path.clone()),
     );
-    let label = text(node.entry.name.as_str(), if current { TextStyle::HEAD } else { TextStyle::CALL })
-        .wrapping(Wrapping::None);
-    let content = row![Space::new().width(indent), chevron, icon, label].spacing(SP1 + 2.0).align_y(Alignment::Center);
-    let control = button(container(content).height(Fill).align_y(Alignment::Center).clip(true))
-        .on_press(Message::TreeClicked(node.entry.path.clone()))
-        .width(Fill)
-        .height(ROW)
-        .padding(0);
-    let control = widgets::button(control, move |status| {
-        let base = if current { paint.acc_soft() } else { Color::TRANSPARENT };
-        style::flat(paint.layered(base, status), if current { paint.fg_1() } else { paint.fg_2() }, R2)
-    });
-    mouse_area(control).on_right_press(Message::TreeMenu(node.entry.path.clone())).into()
+    mouse_area(row).on_right_press(Message::TreeMenu(node.entry.path.clone())).into()
 }
 
 fn sidebar(app: &App) -> Element<'_, Message> {
@@ -319,13 +302,7 @@ fn sidebar(app: &App) -> Element<'_, Message> {
 
 fn editor_style(paint: &Paint) -> impl Fn(&iced::Theme, editor_widget::Status) -> editor_widget::Style + use<> {
     let paint = *paint;
-    move |_, _| editor_widget::Style {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
-        placeholder: paint.fg_4(),
-        value: paint.fg_1(),
-        selection: paint.acc_soft(),
-    }
+    move |_, status| glide_sdk::widget::bare_text_area_style(&paint, status)
 }
 
 struct Preview {
@@ -460,41 +437,35 @@ fn editor(app: &App) -> Element<'_, Message> {
     row![container(editor).width(Fill), vertical_rule(&paint), container(preview).width(Fill)].into()
 }
 
-fn status_button<'a>(paint: &Paint, label: String, message: Message) -> Element<'a, Message> {
-    let paint = *paint;
-    let control = button(text(label, TextStyle::CAP).wrapping(Wrapping::None))
-        .on_press(message)
-        .height(STATUS - 4.0)
-        .padding(Padding::from([2.0, SP2]));
-    widgets::button(control, move |status| button_style(&paint, Tone::Ghost, status))
-}
-
 fn status_bar(app: &App) -> Element<'_, Message> {
+    use glide_sdk::widget::status_button;
     let paint = app.paint;
     let lang = app.lang;
-    let mut left = row![].spacing(SP3).align_y(Alignment::Center);
-    let mut right = row![].spacing(SP1).align_y(Alignment::Center);
+    let mut left: Vec<Element<'_, Message>> = Vec::new();
+    let mut right: Vec<Element<'_, Message>> = Vec::new();
     if let Some(doc) = app.doc() {
         let cursor = doc.cursor().position;
         let line_start =
             crate::document::offset(&doc.text, iced::widget::text_editor::Position { line: cursor.line, column: 0 });
         let caret = crate::document::offset(&doc.text, cursor);
         let column = doc.text[line_start..caret].chars().count() + 1;
-        left = left.push(
+        left.push(
             text(
                 format!("{} {}, {} {column}", Key::Line.text(lang), cursor.line + 1, Key::Column.text(lang)),
                 TextStyle::CAP,
             )
-            .color(paint.fg_2()),
+            .color(paint.fg_2())
+            .into(),
         );
         let selected = doc.selected();
         if !selected.is_empty() {
             let count = doc.text[selected].chars().count();
-            left = left.push(text(format!("{count} {}", Key::Selected.text(lang)), TextStyle::CAP).color(paint.fg_3()));
+            left.push(text(format!("{count} {}", Key::Selected.text(lang)), TextStyle::CAP).color(paint.fg_3()).into());
         }
         if doc.text.len() <= 2 * 1024 * 1024 {
-            left = left
-                .push(text(format!("{} {}", doc.words(), Key::Words.text(lang)), TextStyle::CAP).color(paint.fg_3()));
+            left.push(
+                text(format!("{} {}", doc.words(), Key::Words.text(lang)), TextStyle::CAP).color(paint.fg_3()).into(),
+            );
         }
         let language = if doc.pinned.is_some() {
             doc.language().name().to_string()
@@ -506,27 +477,17 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         } else {
             format!("{}: {}", Key::Tabs.text(lang), app.prefs.tab_width)
         };
-        let width = app.window.size.width;
-        right = right
-            .push(status_button(&paint, language, Message::StatusMenu(MenuKind::Syntax, width - MENU_WIDTH - SP2)))
-            .push(status_button(&paint, indent, Message::StatusMenu(MenuKind::TabWidths, width - MENU_WIDTH - SP2)))
-            .push(status_button(
-                &paint,
-                doc.ending.name().to_string(),
-                Message::StatusMenu(MenuKind::Endings, width - MENU_WIDTH - SP2),
-            ))
-            .push(text(doc.encoding.name(), TextStyle::CAP).color(paint.fg_3()));
+        let at = app.window.size.width - MENU_WIDTH - SP2;
+        right.extend([
+            status_button(&paint, language, Message::StatusMenu(MenuKind::Syntax, at)),
+            status_button(&paint, indent, Message::StatusMenu(MenuKind::TabWidths, at)),
+            status_button(&paint, doc.ending.name(), Message::StatusMenu(MenuKind::Endings, at)),
+            text(doc.encoding.name(), TextStyle::CAP).color(paint.fg_3()).into(),
+        ]);
     }
     let corners =
         if app.edge_to_edge() { Radius::default() } else { Radius::default().bottom_left(R3).bottom_right(R3) };
-    let background = paint.bar_bg();
-    container(row![left, Space::new().width(Fill), right].align_y(Alignment::Center))
-        .padding(Padding::from([0.0, SP3]).right(SP2))
-        .width(Fill)
-        .height(STATUS)
-        .clip(true)
-        .style(move |_| style::rounded(background, corners))
-        .into()
+    glide_sdk::widget::status_bar(&paint, left, right, corners)
 }
 
 fn labelled(label: String, command: Command, enabled: bool, on: Option<bool>) -> Item {
