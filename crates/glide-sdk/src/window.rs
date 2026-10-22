@@ -55,6 +55,17 @@ impl Default for Window {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct Edge(pub Direction);
+
+impl PartialEq for Edge {
+    fn eq(&self, other: &Self) -> bool {
+        std::mem::discriminant(&self.0) == std::mem::discriminant(&other.0)
+    }
+}
+
+impl Eq for Edge {}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Action {
     Drag,
     ToggleMaximize,
@@ -311,6 +322,12 @@ pub fn resize_edges<'a, M: Clone + 'a>(on_resize: impl Fn(Direction) -> M) -> El
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edges_compare_by_direction() {
+        assert_eq!(Edge(Direction::North), Edge(Direction::North));
+        assert_ne!(Edge(Direction::North), Edge(Direction::SouthEast));
+    }
 
     #[test]
     fn only_a_floating_window_is_rounded() {

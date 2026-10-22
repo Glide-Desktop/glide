@@ -6,14 +6,13 @@ pub mod menu;
 pub mod pathbar;
 pub mod pointer;
 pub mod sidebar;
-pub mod squish;
 
 use std::time::Instant;
 
-use iced::widget::{Stack, button, column, container, float, image, mouse_area, opaque, row, rule, space, svg, text};
-use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector, mouse};
+use iced::widget::{Stack, column, container, float, image, mouse_area, opaque, row, rule, space, svg};
+use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
-use crate::app::{App, Edge, Hover, Message, Notice, NoticeAction};
+use crate::app::{App, Hover, Message, Notice, NoticeAction};
 use crate::fs::FileEntry;
 use crate::fs::jobs::Op;
 use crate::i18n::Key;
@@ -24,7 +23,7 @@ use crate::theme::{self, Side, ThemeState, Tone};
 pub const SIDEBAR_WIDTH: f32 = 208.0;
 pub const HEADER_HEIGHT: f32 = 35.0;
 pub const PATHBAR_HEIGHT: f32 = 28.0;
-pub const TRASH_BANNER: f32 = CONTROL + 2.0 * theme::SP1;
+pub const TRASH_BANNER: f32 = glide_sdk::widget::INFO_BAR;
 pub const CONTROL: f32 = theme::SMALL_CONTROL;
 
 #[must_use]
@@ -37,7 +36,9 @@ pub fn window(app: &App) -> Element<'_, Message> {
     let motion = &app.motion;
     let mut layers: Vec<Element<'_, Message>> = vec![base.into()];
     if !app.is_maximized() {
-        layers.push(resize_handles());
+        layers.push(glide_sdk::window::resize_edges(|direction| {
+            Message::WindowResize(glide_sdk::window::Edge(direction))
+        }));
     }
     if let Some(rect) = app.band_rect() {
         let accent = t.acc_bg();
@@ -92,38 +93,9 @@ fn browser(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn resize_handles<'a>() -> Element<'a, Message> {
-    const EDGE: f32 = 5.0;
-    const CORNER: f32 = 10.0;
-    let handle = |width: Length, height: Length, edge: Edge, cursor: mouse::Interaction| {
-        mouse_area(space().width(width).height(height)).on_press(Message::WindowResize(edge)).interaction(cursor)
-    };
-    let fixed = Length::Fixed;
-    let diagonal_down = mouse::Interaction::ResizingDiagonallyDown;
-    let diagonal_up = mouse::Interaction::ResizingDiagonallyUp;
-    let horizontal = mouse::Interaction::ResizingHorizontally;
-    let vertical = mouse::Interaction::ResizingVertically;
-    let band = |left: Edge, middle: Edge, right: Edge, left_cursor, right_cursor| {
-        row![
-            handle(fixed(CORNER), fixed(EDGE), left, left_cursor),
-            handle(Fill, fixed(EDGE), middle, vertical),
-            handle(fixed(CORNER), fixed(EDGE), right, right_cursor),
-        ]
-    };
-    column![
-        band(Edge::NorthWest, Edge::North, Edge::NorthEast, diagonal_down, diagonal_up),
-        row![
-            handle(fixed(EDGE), Fill, Edge::West, horizontal),
-            space().width(Fill).height(Fill),
-            handle(fixed(EDGE), Fill, Edge::East, horizontal),
-        ]
-        .height(Fill),
-        band(Edge::SouthWest, Edge::South, Edge::SouthEast, diagonal_up, diagonal_down),
-    ]
-    .into()
-}
-
 fn trash_banner(app: &App) -> Element<'_, Message> {
+    use glide_sdk::widget::{Size, elide_end, measure};
+    use glide_theme::TextStyle;
     let t = &app.theme;
     let lang = app.lang;
     let restorable = app.selected_entries().any(|e| app.trash.is_top_level(&e.path));
@@ -132,73 +104,21 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
     if restorable {
         buttons.insert(0, Key::Restore);
     }
-    let taken: f32 = buttons
-        .iter()
-        .map(|key| text_width(key.text(lang), SMALL_LABEL) / header::SEMIBOLD_SPREAD + 2.0 * theme::SP3 + theme::SP2)
-        .sum();
-    let room = app.pane.width
-        - 2.0 * theme::SP4
-        - text_width(title, theme::CALL) / header::SEMIBOLD_SPREAD
-        - theme::SP2
-        - taken
-        - theme::SP2;
-    let blurb = text(fit_sentence(Key::TrashBanner.text(lang), room, theme::CAP))
-        .size(theme::CAP)
-        .color(t.fg_3())
-        .wrapping(text::Wrapping::None);
-    let mut content = row![
-        text(title).size(theme::CALL).font(theme::SEMIBOLD).wrapping(text::Wrapping::None),
-        container(blurb).width(Fill).clip(true),
-    ]
-    .spacing(theme::SP2)
-    .align_y(Alignment::Center);
-    for key in buttons {
-        let message = match key {
-            Key::Restore => Some(Message::Restore),
-            _ => (app.trash_count > 0).then_some(Message::EmptyTrash),
-        };
-        content = content.push(labelled(t, key.text(lang), Tone::Neutral, message));
-    }
-    container(content)
-        .padding(Padding::from([0.0, theme::SP4]))
-        .width(Fill)
-        .height(TRASH_BANNER)
-        .align_y(Alignment::Center)
-        .style(move |_| theme::surface(t.view_bg()))
-        .into()
-}
-
-fn portion(value: f32) -> Length {
-    Length::FillPortion((value.clamp(0.0, 1.0) * 1000.0).round().max(1.0) as u16)
-}
-
-pub const SWEEP: f32 = 0.34;
-
-#[must_use]
-pub fn sweep(phase: f32) -> (f32, f32) {
-    let left = SWEEP * (4.4 * glide_theme::motion::E_IO.ease(phase.clamp(0.0, 1.0)) - 1.1);
-    (left.clamp(0.0, 1.0), (left + SWEEP).clamp(0.0, 1.0))
-}
-
-fn progress_bar(t: &ThemeState, fraction: Option<f32>, paused: bool) -> Element<'_, Message> {
-    const BAR: f32 = 6.0;
-    const PERIOD: u128 = 1400;
-    let fill = if paused { t.fg_3() } else { t.acc_bg() };
-    let (start, end) = match fraction {
-        Some(fraction) => (0.0, fraction.clamp(0.0, 1.0)),
-        None if glide_theme::motion::is_disabled() => ((1.0 - SWEEP) / 2.0, f32::midpoint(1.0, SWEEP)),
-        None => {
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |since| since.as_millis() % PERIOD);
-            sweep(millis as f32 / PERIOD as f32)
-        }
-    };
-    let gap = |value: f32| space().width(portion(value)).height(BAR);
-    let bar =
-        container(space().height(BAR)).width(portion(end - start)).style(move |_| theme::rounded(fill, theme::R1));
-    let track = container(space().width(Fill).height(BAR)).style(move |_| theme::rounded(t.fill_2(), theme::R1));
-    Stack::with_children([track.into(), row![gap(start), bar, gap(1.0 - end)].width(Fill).into()]).into()
+    let taken: f32 = buttons.iter().map(|key| Size::Small.width(key.text(lang)) + theme::SP2).sum();
+    let heading = measure(title, TextStyle { weight: 600, ..TextStyle::CALL });
+    let room = app.pane.width - 2.0 * theme::SP3 - heading - theme::SP2 - taken;
+    let blurb = elide_end(Key::TrashBanner.text(lang), room, TextStyle::CAP);
+    let actions = buttons
+        .into_iter()
+        .map(|key| {
+            let message = match key {
+                Key::Restore => Some(Message::Restore),
+                _ => (app.trash_count > 0).then_some(Message::EmptyTrash),
+            };
+            labelled(t, key.text(lang), Tone::Neutral, message)
+        })
+        .collect();
+    glide_sdk::widget::info_bar(&paint(t), None, title, &blurb, actions)
 }
 
 fn job_detail(app: &App, job: &crate::app::Job) -> String {
@@ -240,17 +160,10 @@ fn job_detail(app: &App, job: &crate::app::Job) -> String {
 }
 
 pub fn jobs(app: &App) -> Element<'_, Message> {
-    let t = &app.theme;
+    use glide_sdk::widget::{Task, elide, elide_end, icon_button as small, task_card};
+    use glide_theme::TextStyle;
+    let paint = paint(&app.theme);
     let lang = app.lang;
-    let small = |glyph: Icon, label: Key, message: Option<Message>| {
-        let control = button(container(icon(glyph, 14.0, t.fg_2())).center(Fill))
-            .on_press_maybe(message)
-            .width(Length::Fixed(CONTROL))
-            .height(Length::Fixed(CONTROL))
-            .padding(0)
-            .style(move |_, status| theme::action(t, Tone::Ghost, status));
-        hint(t, pressable(control), label.text(lang))
-    };
     let cards = app.jobs.iter().map(|job| {
         let (label, glyph) = match job.op {
             Op::Copy => (Key::Copying, Icon::Copy),
@@ -259,40 +172,21 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
             Op::Trash => (Key::Trashing, Icon::Trash),
         };
         let progress = &job.progress;
-        let title = fit_sentence(label.text(lang), JOB_TITLE * header::SEMIBOLD_SPREAD, theme::CAP);
         let paused = job.meter.is_paused();
-        let fraction = (progress.total_items > 0 || job.launch.is_some()).then(|| progress.fraction());
         let toggle = if paused { (Icon::Play, Key::ResumeJob) } else { (Icon::Pause, Key::PauseJob) };
-        let head = row![
-            icon(glyph, JOB_GLYPH, t.acc_text()),
-            space().width(theme::SP2),
-            text(title)
-                .size(theme::CAP)
-                .font(theme::SEMIBOLD)
-                .color(t.fg_1())
-                .wrapping(text::Wrapping::None)
-                .width(Fill),
-            small(toggle.0, toggle.1, job.launch.is_none().then_some(Message::JobPause(job.id))),
-            small(Icon::Close, Key::StopJob, Some(Message::JobCancel(job.id))),
-        ]
-        .align_y(Alignment::Center);
-        let mut card = column![head].spacing(theme::SP1);
-        if let Some(current) = &progress.current {
-            card = card.push(
-                text(fit(current, JOB_TEXT, theme::MICRO))
-                    .size(theme::MICRO)
-                    .color(t.fg_2())
-                    .wrapping(text::Wrapping::None),
-            );
-        }
-        card = card
-            .push(progress_bar(t, fraction, paused))
-            .push(text(job_detail(app, job)).size(theme::MICRO).color(t.fg_3()));
-        container(card)
-            .padding(Padding::from([theme::SP2, theme::SP3]).right(theme::SP1))
-            .width(Fill)
-            .style(move |_| theme::rounded(t.fill_1(), theme::R3))
-            .into()
+        let pause = job.launch.is_none().then_some(Message::JobPause(job.id));
+        let task = Task {
+            title: elide_end(label.text(lang), JOB_TITLE, TextStyle { weight: 600, ..TextStyle::CAP }),
+            current: progress.current.as_ref().map(|current| elide(current, JOB_TEXT, TextStyle::CAP)),
+            fraction: (progress.total_items > 0 || job.launch.is_some()).then(|| progress.fraction()),
+            paused,
+            detail: job_detail(app, job),
+            actions: vec![
+                small(&paint, toggle.0, toggle.1.text(lang), pause, false),
+                small(&paint, Icon::Close, Key::StopJob.text(lang), Some(Message::JobCancel(job.id)), false),
+            ],
+        };
+        task_card(&paint, glyph, task)
     });
     container(column(cards).spacing(theme::SP2)).padding(theme::SP2).width(Fill).into()
 }
@@ -309,13 +203,9 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
     let art: Element<'_, Message> = if count > 1 {
         Stack::with_children([
             container(art).padding(theme::SP2).into(),
-            container(
-                container(text(count.to_string()).size(theme::MICRO).font(theme::SEMIBOLD).color(t.acc_fg()))
-                    .padding(Padding::from([1.0, theme::SP2]))
-                    .style(move |_| theme::rounded(t.acc_bg(), theme::R_ROUND)),
-            )
-            .align_right(Length::Fixed(52.0))
-            .into(),
+            container(glide_sdk::widget::count_badge(&paint(t), u32::try_from(count).unwrap_or(u32::MAX)))
+                .align_right(Length::Fixed(52.0))
+                .into(),
         ])
         .into()
     } else {
@@ -329,13 +219,12 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
             crate::app::DropAction::Move => (Key::DropMove, Icon::Move),
             crate::app::DropAction::Bookmark => (Key::AddBookmark, Icon::Folder),
         };
-        container(
-            row![icon(glyph, 12.0, t.fg_1()), text(key.text(lang)).size(theme::CAP).color(t.fg_1())]
+        glide_sdk::widget::bubble(
+            &paint(t),
+            row![icon(glyph, 12.0, t.fg_1()), glide_sdk::widget::text(key.text(lang), glide_theme::TextStyle::CAP)]
                 .spacing(theme::SP1)
                 .align_y(Alignment::Center),
         )
-        .padding(Padding::from([theme::SP1, theme::SP2]))
-        .style(move |_| theme::tooltip(t))
     });
     let mut ghost = column![art].spacing(theme::SP1).align_x(Alignment::Start);
     if let Some(hint) = hint {
@@ -354,47 +243,19 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
     const RISE: f32 = 16.0;
     const SHRINK: f32 = 0.04;
     const TOAST_WIDTH: f32 = 470.0;
-    const TOAST_TEXT: f32 = 320.0;
-    let t = app.theme.faded(progress);
-    let mut content = row![
-        container(text(&notice.text).size(LABEL).color(t.fg_1()).wrapping(text::Wrapping::WordOrGlyph))
-            .max_width(TOAST_TEXT)
-    ]
-    .spacing(theme::SP3)
-    .align_y(Alignment::Center);
+    let paint = paint(&app.theme.faded(progress));
+    let dismiss = Message::DismissNotice(notice.id);
     let action = notice.action.as_ref().map(|action| {
         let label = match action {
             NoticeAction::Undo => Key::Undo,
             NoticeAction::Repair(_) => Key::RepairAction,
         };
-        (label, Message::NoticeChosen(action.clone()))
+        (label.text(app.lang), if live { Message::NoticeChosen(action.clone()) } else { dismiss.clone() })
     });
-    if let Some((label, message)) = action {
-        content = content.push(pressable(
-            button(container(text(label.text(app.lang)).size(SMALL_LABEL).font(theme::SEMIBOLD)).center_y(Fill))
-                .on_press_maybe(live.then_some(message))
-                .height(Length::Fixed(CONTROL))
-                .padding(Padding::from([0.0, theme::SP3]))
-                .style(move |_, status| theme::action(&t, Tone::Neutral, status)),
-        ));
-    }
-    content = content.push(pressable(
-        button(container(icon(Icon::Close, 14.0, t.fg_2())).center(Fill))
-            .on_press_maybe(live.then_some(Message::DismissNotice(notice.id)))
-            .width(Length::Fixed(CONTROL))
-            .height(Length::Fixed(CONTROL))
-            .padding(0)
-            .style(move |_, status| theme::action(&t, Tone::Ghost, status)),
-    ));
+    let close = Some((dismiss, Key::Close.text(app.lang)));
+    let card = glide_sdk::overlay::toast_card(&paint, &notice.text, None, action, close, TOAST_WIDTH);
     let (drop, scale) = if live { ((1.0 - progress) * RISE, 1.0) } else { (0.0, 1.0 - (1.0 - progress) * SHRINK) };
-    let card = float(
-        container(content)
-            .padding(Padding::from(theme::SP2).left(theme::SP3))
-            .max_width(TOAST_WIDTH)
-            .style(move |_| theme::popover(&t)),
-    )
-    .scale(scale)
-    .translate(move |_, _| Vector::new(0.0, drop));
+    let card = float(card).scale(scale).translate(move |_, _| Vector::new(0.0, drop));
     let card: Element<'a, Message> = if live {
         mouse_area(opaque(card))
             .on_enter(Message::Hover(Hover::Toast, true))
@@ -456,19 +317,7 @@ pub fn divider(t: &ThemeState) -> Element<'_, Message> {
 
 #[must_use]
 pub fn icon_button(t: &ThemeState, glyph: Icon, message: Option<Message>, active: bool) -> Element<'_, Message> {
-    let color = match (&message, active) {
-        (None, _) => t.fg_4(),
-        (Some(_), true) => t.fg_1(),
-        (Some(_), false) => t.fg_2(),
-    };
-    pressable(
-        button(container(icon(glyph, 16.0, color)).center_x(Fill).center_y(Fill))
-            .on_press_maybe(message)
-            .width(Length::Fixed(CONTROL))
-            .height(Length::Fixed(CONTROL))
-            .padding(0)
-            .style(move |_, status| theme::action(t, if active { Tone::Open } else { Tone::Ghost }, status)),
-    )
+    glide_sdk::widget::icon_button(&paint(t), glyph, "", message, active)
 }
 
 #[must_use]
@@ -488,29 +337,20 @@ pub fn check<'a>(t: &ThemeState, label: &'a str, on: bool, message: Message) -> 
 }
 
 #[must_use]
-pub fn pressable<'a>(control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    squish::Squish::new(control, squish::BUTTON).into()
-}
-
-#[must_use]
 pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Option<Message>) -> Element<'a, Message> {
-    pressable(
-        button(
-            container(text(label).size(SMALL_LABEL).font(theme::SEMIBOLD).wrapping(text::Wrapping::None))
-                .center_y(Fill),
-        )
-        .on_press_maybe(message)
-        .height(Length::Fixed(CONTROL))
-        .padding(Padding::from([0.0, theme::SP3]))
-        .style(move |_, status| theme::action(t, tone, status)),
-    )
+    let tone = match tone {
+        Tone::Primary => glide_sdk::Tone::Accent,
+        Tone::Danger => glide_sdk::Tone::Danger,
+        Tone::Ghost => glide_sdk::Tone::Ghost,
+        Tone::Open => glide_sdk::Tone::Tonal,
+        Tone::Neutral => glide_sdk::Tone::Neutral,
+    };
+    glide_sdk::widget::compact_button(&paint(t), label, tone, message)
 }
 
-const SMALL_LABEL: f32 = 12.5;
-const LABEL: f32 = 13.5;
 const JOB_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - theme::SP1;
 const JOB_TITLE: f32 = JOB_TEXT - JOB_GLYPH - theme::SP2 - 2.0 * CONTROL;
-const JOB_GLYPH: f32 = 14.0;
+const JOB_GLYPH: f32 = 16.0;
 
 #[must_use]
 pub fn text_width(text: &str, size: f32) -> f32 {
@@ -622,16 +462,4 @@ pub fn fit_sentence(sentence: &str, width: f32, size: f32) -> String {
     String::new()
 }
 
-#[must_use]
-pub fn ellipsize(name: &str, max: usize) -> String {
-    let count = name.chars().count();
-    if count <= max {
-        return name.to_string();
-    }
-    let tail =
-        name.rfind('.').filter(|&dot| dot > 0).map_or(0, |dot| name[dot..].chars().count() + 4).max(3).min(max / 2);
-    let head = max.saturating_sub(tail + 1);
-    let start: String = name.chars().take(head).collect();
-    let end: String = name.chars().skip(count - tail).collect();
-    format!("{start}…{end}")
-}
+pub use glide_sdk::widget::ellipsize;

@@ -226,26 +226,38 @@ pub fn toast_pill<'a, M: Clone + 'a>(
     paint: &Paint, progress: f32, message: &str, ink: Option<Color>, action: Option<(&str, M)>, window: Size,
 ) -> Element<'a, M> {
     let paint = paint.faded(progress);
-    let mut label = text(message.to_string(), TextStyle::CALL).wrapping(Wrapping::Word);
-    if let Some(ink) = ink {
-        label = label.color(Color { a: ink.a * paint.alpha, ..ink });
-    }
-    let mut content = row![label].spacing(SP3).align_y(Alignment::Center);
-    let padding = if action.is_some() { Padding::from([SP1, SP1]).left(SP4) } else { Padding::from([SP2, SP4]) };
-    if let Some((label, message)) = action {
-        content = content.push(crate::widget::compact_button(&paint, label.to_string(), Tone::Tonal, Some(message)));
-    }
-    let pill = container(content)
-        .padding(padding)
-        .max_width((window.width - 48.0).max(1.0))
-        .style(move |_| style::popover(&paint));
-    container(widgets::surface(pill, &paint, Level::El3, R3))
+    let card = toast_card(&paint, message, ink, action, None, (window.width - 48.0).max(1.0));
+    container(card)
         .width(Fill)
         .height(Fill)
         .align_x(Alignment::Center)
         .align_y(Alignment::End)
         .padding(Padding::from([0.0, SP5]).bottom(SP5 + (1.0 - progress) * component::POPOVER_RISE))
         .into()
+}
+
+#[must_use]
+pub fn toast_card<'a, M: Clone + 'a>(
+    paint: &Paint, message: &str, ink: Option<Color>, action: Option<(&str, M)>, close: Option<(M, &'a str)>,
+    max_width: f32,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let mut label = text(message.to_string(), TextStyle::CALL).wrapping(Wrapping::WordOrGlyph);
+    if let Some(ink) = ink {
+        label = label.color(Color { a: ink.a * paint.alpha, ..ink });
+    }
+    let mut content = row![label].spacing(SP3).align_y(Alignment::Center);
+    let compact = action.is_some() || close.is_some();
+    if let Some((label, message)) = action {
+        content = content.push(crate::widget::compact_button(&paint, label.to_string(), Tone::Tonal, Some(message)));
+    }
+    if let Some((message, hint)) = close {
+        content =
+            content.push(crate::widget::icon_button(&paint, crate::widget::Icon::Close, hint, Some(message), false));
+    }
+    let padding = if compact { Padding::from([SP1, SP1]).left(SP4) } else { Padding::from([SP2, SP4]) };
+    let pill = container(content).padding(padding).max_width(max_width).style(move |_| style::popover(&paint));
+    widgets::surface(pill, &paint, Level::El3, R3)
 }
 
 #[cfg(test)]

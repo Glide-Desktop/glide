@@ -164,6 +164,12 @@ impl<'a, M: Clone + 'a> From<FindBar<'a, M>> for Element<'a, M> {
 pub fn bar_strip<'a, M: 'a>(
     paint: &Paint, severity: Option<Severity>, content: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
+    strip(paint, severity, Padding::from([SP2, SP3]), content)
+}
+
+fn strip<'a, M: 'a>(
+    paint: &Paint, severity: Option<Severity>, padding: Padding, content: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
     let background = match severity {
         None => paint.bar_bg(),
         Some(Severity::Warn) => paint.warn_soft(),
@@ -172,9 +178,21 @@ pub fn bar_strip<'a, M: 'a>(
         Some(Severity::Accent) => paint.acc_soft(),
         Some(Severity::Neutral) => paint.fill_1(),
     };
-    container(content)
-        .padding(Padding::from([SP2, SP3]))
-        .width(Fill)
-        .style(move |_| style::rounded(background, 0.0))
-        .into()
+    container(content).padding(padding).width(Fill).style(move |_| style::rounded(background, 0.0)).into()
+}
+
+pub const INFO_BAR: f32 = glide_theme::component::SMALL_CONTROL + 2.0 * SP1;
+
+#[must_use]
+pub fn info_bar<'a, M: 'a>(
+    paint: &Paint, severity: Option<Severity>, title: &str, detail: &str, actions: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    let weight = if detail.is_empty() { TextStyle::CALL.weight } else { 600 };
+    let mut content = row![text(title.to_string(), TextStyle { weight, ..TextStyle::CALL }).wrapping(Wrapping::None)]
+        .spacing(SP2)
+        .align_y(Alignment::Center);
+    let blurb = text(detail.to_string(), TextStyle::CAP).color(paint.fg_3()).wrapping(Wrapping::None);
+    content = content.push(container(blurb).width(Fill).clip(true));
+    let content = actions.into_iter().fold(content, iced::widget::Row::push);
+    strip(paint, severity, Padding::from([0.0, SP3]), container(content).height(INFO_BAR).align_y(Alignment::Center))
 }

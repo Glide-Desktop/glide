@@ -398,7 +398,7 @@ pub enum Message {
     Quit,
     WindowDrag,
     WindowMaximize,
-    WindowResize(Edge),
+    WindowResize(glide_sdk::window::Edge),
     Handles(Option<dnd::Handles>),
     Dnd(dnd::Event),
     Scrolled(f32),
@@ -453,33 +453,6 @@ pub type ThumbKey = (PathBuf, Option<SystemTime>);
 enum DragArm {
     Pressed,
     At(Point),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Edge {
-    North,
-    South,
-    East,
-    West,
-    NorthEast,
-    NorthWest,
-    SouthEast,
-    SouthWest,
-}
-
-impl From<Edge> for window::Direction {
-    fn from(edge: Edge) -> Self {
-        match edge {
-            Edge::North => Self::North,
-            Edge::South => Self::South,
-            Edge::East => Self::East,
-            Edge::West => Self::West,
-            Edge::NorthEast => Self::NorthEast,
-            Edge::NorthWest => Self::NorthWest,
-            Edge::SouthEast => Self::SouthEast,
-            Edge::SouthWest => Self::SouthWest,
-        }
-    }
 }
 
 impl Message {
@@ -624,7 +597,6 @@ impl Message {
 
 pub struct Surfaces {
     hover: HashMap<Hover, (Fade, Fade)>,
-    side: HashMap<PathBuf, Fade>,
     pub menu: Fade,
     pub menu_ghost: Option<Menu>,
     pub toast: Fade,
@@ -637,7 +609,6 @@ impl Surfaces {
     fn new() -> Self {
         Self {
             hover: HashMap::new(),
-            side: HashMap::new(),
             menu: Fade::asymmetric(false, (Speed::T2, Curve::Out), (Speed::T2, Curve::InOut)),
             menu_ghost: None,
             toast: Fade::asymmetric(false, (Speed::T4, Curve::Out), (Speed::T2, Curve::InOut)),
@@ -688,32 +659,13 @@ impl Surfaces {
     }
 
     #[must_use]
-    pub fn indicator(&self, path: &Path, now: Instant) -> f32 {
-        self.side.get(path).map_or(0.0, |fade| fade.progress(now))
-    }
-
-    fn set_active(&mut self, active: Option<&Path>, now: Instant) {
-        for (path, fade) in &mut self.side {
-            fade.set(Some(path.as_path()) == active, now);
-        }
-        if let Some(path) = active {
-            self.side
-                .entry(path.to_path_buf())
-                .or_insert_with(|| Fade::new(false, Speed::T3, Curve::Over))
-                .set(true, now);
-        }
-    }
-
-    #[must_use]
     pub fn is_animating(&self, now: Instant) -> bool {
         self.hover.values().any(|(layer, lift)| layer.is_animating(now) || lift.is_animating(now))
-            || self.side.values().any(|fade| fade.is_animating(now))
             || [&self.menu, &self.toast, &self.modal].into_iter().any(|fade| fade.is_animating(now))
     }
 
     fn prune(&mut self, now: Instant) {
         self.hover.retain(|_, (layer, lift)| !layer.is_settled_off(now) || !lift.is_settled_off(now));
-        self.side.retain(|_, fade| !fade.is_settled_off(now));
         if self.menu.is_settled_off(now) {
             self.menu_ghost = None;
         }
@@ -1243,9 +1195,7 @@ impl App {
         if let Some(menu) = self.menu.as_mut().filter(|_| stale) {
             menu.highlight = None;
         }
-        let active = self.sidebar_active().map(Path::to_path_buf);
         let motion = &mut self.motion;
-        motion.set_active(active.as_deref(), now);
         motion.menu.set(self.menu.is_some(), now);
         if self.menu.is_some() {
             motion.menu_ghost.clone_from(&self.menu);
@@ -1274,11 +1224,6 @@ impl App {
         let phone =
             self.phones.iter().filter_map(|phone| phone.mount.as_deref()).find(|mount| self.current.starts_with(mount));
         Some(phone.unwrap_or(&self.current))
-    }
-
-    #[must_use]
-    pub fn indicator(&self, path: &Path) -> f32 {
-        self.motion.indicator(path, Instant::now())
     }
 
     #[must_use]
@@ -1864,7 +1809,7 @@ impl App {
             }
             Message::WindowMaximize => return window::latest().and_then(window::toggle_maximize),
             Message::WindowResize(edge) => {
-                return window::latest().and_then(move |id| window::drag_resize(id, edge.into()));
+                return window::latest().and_then(move |id| window::drag_resize(id, edge.0));
             }
             Message::Handles(handles) => self.handles = handles,
             Message::Dnd(event) => return self.on_dnd(event),

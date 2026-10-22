@@ -2,7 +2,7 @@ use glide_theme::elevation::{self, Level};
 use glide_theme::motion::{ST_HOVER, ST_PRESS};
 use glide_theme::{Accent, Appearance, TextStyle, Tokens};
 use iced::border::Radius;
-use iced::widget::{button, container, rule, scrollable, svg, text_input};
+use iced::widget::{button, container, rule, svg, text_input};
 use iced::{Background, Border, Color, Shadow};
 
 pub use glide_theme::shape::{R_ROUND, R1, R2, R3};
@@ -14,7 +14,6 @@ pub use glide_iced::font::use_ui_family;
 pub const MICRO: f32 = TextStyle::MICRO.size_px;
 pub const CAP: f32 = TextStyle::CAP.size_px;
 pub const CALL: f32 = TextStyle::CALL.size_px;
-pub const MENU_ITEM: f32 = TextStyle::MENU_ITEM.size_px;
 pub const TITLE: f32 = TextStyle::WIN_TITLE.size_px;
 pub const T3: f32 = TextStyle::T3.size_px;
 
@@ -210,16 +209,6 @@ fn interactive(theme: &ThemeState, base: Color, hover: f32, status: button::Stat
 }
 
 #[must_use]
-pub fn sidebar_row(theme: &ThemeState, selected: bool, hover: f32, status: button::Status) -> button::Style {
-    let (base, text) = match (selected, hover > 0.5 || status == button::Status::Pressed) {
-        (true, _) => (theme.acc_soft(), theme.acc_soft_fg()),
-        (false, true) => (Color::TRANSPARENT, theme.fg_1()),
-        (false, false) => (Color::TRANSPARENT, theme.fg_2()),
-    };
-    flat(interactive(theme, base, hover, status), text, R2)
-}
-
-#[must_use]
 pub fn list_row(theme: &ThemeState, selected: bool, stripe: bool, hover: f32, status: button::Status) -> button::Style {
     let (base, text) = match (selected, stripe) {
         (true, _) => (theme.acc_soft(), theme.acc_soft_fg()),
@@ -252,16 +241,6 @@ pub fn window_control(theme: &ThemeState, danger: bool, status: button::Status) 
         (true, true) => flat(theme.danger(), Color::WHITE, R2),
         (true, false) => flat(theme.acc_bg(), theme.acc_fg(), R2),
         (false, _) => flat(theme.fill_1(), theme.fg_2(), R2),
-    }
-}
-
-#[must_use]
-pub fn tooltip(theme: &ThemeState) -> container::Style {
-    let base = popover(theme);
-    container::Style {
-        border: Border { radius: Radius::from(R2), ..base.border },
-        shadow: theme.shadow(Level::El2),
-        ..base
     }
 }
 
@@ -303,38 +282,6 @@ pub fn window_corners(side: Side, corner: f32) -> Radius {
 }
 
 #[must_use]
-pub fn window_frame(theme: &ThemeState, corner: f32) -> container::Style {
-    container::Style {
-        border: Border { color: theme.line(), width: 1.0, radius: Radius::from(corner) },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
-pub fn popover(theme: &ThemeState) -> container::Style {
-    container::Style {
-        text_color: Some(theme.fg_1()),
-        background: Some(Background::Color(theme.popover_bg())),
-        border: Border { color: theme.line(), width: 1.0, radius: Radius::from(R3) },
-        shadow: theme.shadow(Level::El3),
-        snap: true,
-    }
-}
-
-#[must_use]
-pub fn scrim(progress: f32) -> container::Style {
-    surface(Color::from_rgba8(16, 15, 14, 0.4 * progress.clamp(0.0, 1.0)))
-}
-
-#[must_use]
-pub fn ring(color: Color) -> container::Style {
-    container::Style {
-        border: Border { color, width: RING, radius: Radius::from(R2 + RING) },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
 pub fn field(theme: &ThemeState, status: text_input::Status) -> text_input::Style {
     let border = match status {
         text_input::Status::Focused { .. } => theme.acc_bg(),
@@ -348,43 +295,6 @@ pub fn field(theme: &ThemeState, status: text_input::Status) -> text_input::Styl
         placeholder: theme.fg_3(),
         value: theme.fg_1(),
         selection: theme.acc_soft(),
-    }
-}
-
-#[must_use]
-pub fn bare_field(theme: &ThemeState, status: text_input::Status) -> text_input::Style {
-    text_input::Style {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
-        ..field(theme, status)
-    }
-}
-
-#[must_use]
-pub fn scroller(theme: &ThemeState, status: scrollable::Status) -> scrollable::Style {
-    let active = matches!(
-        status,
-        scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. } | scrollable::Status::Dragged { .. }
-    );
-    let rail = scrollable::Rail {
-        background: None,
-        border: Border::default(),
-        scroller: scrollable::Scroller {
-            background: Background::Color(if active { theme.fg_3() } else { theme.fill_3() }),
-            border: Border { radius: Radius::from(glide_theme::shape::R_ROUND), ..Border::default() },
-        },
-    };
-    scrollable::Style {
-        container: container::Style::default(),
-        vertical_rail: rail,
-        horizontal_rail: rail,
-        gap: None,
-        auto_scroll: scrollable::AutoScroll {
-            background: Background::Color(theme.popover_bg()),
-            border: Border { color: theme.line(), width: 1.0, radius: Radius::from(glide_theme::shape::R_ROUND) },
-            shadow: Shadow::default(),
-            icon: theme.fg_2(),
-        },
     }
 }
 

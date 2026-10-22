@@ -59,6 +59,11 @@ impl Size {
         };
         TextStyle { size_px: size, weight: 500, ..TextStyle::MENU_ITEM }
     }
+
+    #[must_use]
+    pub fn width(self, label: &str) -> f32 {
+        super::measure(label, self.label()) + 2.0 * self.padding()
+    }
 }
 
 fn shadow(paint: &Paint, level: Level) -> Shadow {

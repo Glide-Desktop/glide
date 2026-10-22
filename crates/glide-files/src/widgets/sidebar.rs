@@ -1,23 +1,21 @@
 use std::path::Path;
 
-use iced::border::Radius;
-use iced::widget::{Column, button, column, container, mouse_area, row, scrollable, space, stack, text};
+use iced::widget::{Column, column, container, mouse_area, scrollable, text};
 
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
-use super::header::{SEMIBOLD_SPREAD, window_control};
-use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, fit, hint, icon};
+use super::header::window_control;
+use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, hint};
 use crate::app::{App, Device, Hover, MenuKind, Message, volume_icon};
 use crate::fs::{Place, Volume};
 use crate::i18n::Key;
 use crate::icons::Icon;
-use crate::theme::{self, R1, Tone};
+use crate::theme;
 
 pub const ITEM_HEIGHT: f32 = theme::CONTROL;
 const EJECT: f32 = theme::SMALL_CONTROL;
 const JOBS_HEIGHT: f32 = 320.0;
 const GLYPH: f32 = 16.0;
-const INDICATOR: (f32, f32) = (3.0, 18.0);
 const ROW_GAP: f32 = 2.0;
 
 #[must_use]
@@ -84,7 +82,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .on_press(Message::WindowDrag)
     .on_double_click(Message::WindowMaximize);
 
-    let places = scrollable(sections).width(Fill).height(Fill).style(move |_, status| theme::scroller(t, status));
+    let paint = super::paint(t);
+    let bar = move |_: &iced::Theme, status| glide_sdk::widget::scrollable_style(&paint, status);
+    let places = scrollable(sections).width(Fill).height(Fill).style(bar);
     if app.chooser.is_some() {
         let corners = theme::window_corners(theme::Side::BottomLeft, app.corner());
         return container(places)
@@ -96,7 +96,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     let mut panel = column![top, places];
     if !app.jobs.is_empty() {
-        let jobs = scrollable(super::jobs(app)).style(move |_, status| theme::scroller(t, status));
+        let jobs = scrollable(super::jobs(app)).style(bar);
         panel = panel.push(super::divider(t)).push(container(jobs).max_height(JOBS_HEIGHT));
     }
     let corners = theme::window_corners(theme::Side::Left, app.corner());
@@ -116,7 +116,6 @@ struct Line<'a> {
     press: Option<Message>,
     selected: bool,
     active: bool,
-    indicator: f32,
     held: bool,
     key: Hover,
     menu: Option<MenuKind>,
@@ -126,49 +125,30 @@ struct Line<'a> {
 
 impl<'a> Line<'a> {
     fn view(self) -> Element<'a, Message> {
-        let t = &self.app.theme;
+        let paint = super::paint(&self.app.theme);
         let active = self.active;
-        let mut room = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - GLYPH - 2.0 * theme::SP2;
-        room -= if self.eject.is_some() { EJECT } else { 0.0 };
-        room *= if active { SEMIBOLD_SPREAD } else { 1.0 };
-        let mut label = text(fit(&self.label, room, theme::CALL)).size(theme::CALL).wrapping(text::Wrapping::None);
-        if active {
-            label = label.font(theme::SEMIBOLD);
-        }
-        if let Some(color) = self.dim {
-            label = label.color(color);
-        }
-        let tint = if self.selected { t.acc_soft_fg() } else { self.tint };
-        let mut content = row![icon(self.glyph, GLYPH, tint), label, space::horizontal()]
-            .spacing(theme::SP2)
-            .align_y(Alignment::Center);
+        let mut room = SIDEBAR_WIDTH - 2.0 * theme::SP2 - 2.0 * theme::SP3 - GLYPH - theme::SP2 - 2.0;
+        room -= if self.eject.is_some() { EJECT + theme::SP2 } else { 0.0 };
+        let style = glide_theme::TextStyle { weight: if active { 600 } else { 400 }, ..glide_theme::TextStyle::CALL };
+        let mut item = glide_sdk::widget::SidebarItem::new(&paint, glide_sdk::widget::elide(&self.label, room, style))
+            .tinted(self.glyph, self.tint)
+            .ink(self.dim)
+            .on_press(self.press)
+            .selected(self.selected)
+            .current(active)
+            .hovered(self.app.hover(&self.key) > 0.5)
+            .held(self.held);
         if let Some(message) = self.eject {
             let label = if matches!(message, Message::Unmount(_)) { Key::Unmount } else { Key::Eject };
-            let eject = button(container(icon(Icon::Eject, 12.0, t.fg_2())).center(Fill))
-                .on_press(message)
-                .width(Length::Fixed(EJECT))
-                .height(Length::Fixed(EJECT))
-                .padding(0)
-                .style(move |_, status| theme::action(t, Tone::Ghost, status));
-            content = content.push(hint(t, super::pressable(eject), label.text(self.app.lang)));
+            item = item.accessory(glide_sdk::widget::icon_button(
+                &paint,
+                Icon::Eject,
+                label.text(self.app.lang),
+                Some(message),
+                false,
+            ));
         }
-        let (selected, hover) = (self.selected, self.app.hover(&self.key));
-        let held = self.held;
-        let row = button(container(content).height(Fill).align_y(Alignment::Center))
-            .on_press_maybe(self.press)
-            .width(Fill)
-            .height(Length::Fixed(ITEM_HEIGHT))
-            .padding(Padding::ZERO.left(theme::SP3).right(theme::SP1))
-            .style(move |_, status| {
-                theme::sidebar_row(t, selected, hover, if held { button::Status::Pressed } else { status })
-            });
-        let row: Element<'a, Message> = if self.indicator > 0.0 {
-            let bar = container(space().width(INDICATOR.0).height(INDICATOR.1 * self.indicator))
-                .style(move |_| theme::rounded(t.acc_bg(), Radius::default().top_right(R1).bottom_right(R1)));
-            stack![row, container(bar).height(Fill).align_y(Alignment::Center)].into()
-        } else {
-            row.into()
-        };
+        let row: Element<'a, Message> = item.into();
         let mut area =
             mouse_area(row).on_enter(Message::Hover(self.key.clone(), true)).on_exit(Message::Hover(self.key, false));
         if let Some(kind) = self.menu {
@@ -185,10 +165,6 @@ fn is_active(app: &App, path: Option<&Path>) -> bool {
     path.is_some_and(|path| app.sidebar_active() == Some(path))
 }
 
-fn reach(app: &App, path: Option<&Path>) -> f32 {
-    path.map_or(0.0, |path| app.indicator(path))
-}
-
 fn item<'a>(app: &'a App, place: &'a Place, bookmark: bool) -> Element<'a, Message> {
     let active = is_active(app, Some(&place.path));
     Line {
@@ -200,7 +176,6 @@ fn item<'a>(app: &'a App, place: &'a Place, bookmark: bool) -> Element<'a, Messa
         press: (!bookmark).then(|| Message::Navigate(place.path.clone())),
         selected: active || app.is_drop_target(&place.path) || app.is_bookmark_target(&place.path),
         active,
-        indicator: reach(app, Some(&place.path)),
         held: bookmark && app.is_bookmark_pressed(&place.path),
         key: Hover::Place(place.path.clone()),
         menu: Some(MenuKind::Location(place.path.clone())),
@@ -228,7 +203,6 @@ fn phone_item<'a>(app: &'a App, phone: &'a crate::fs::mtp::Phone) -> Element<'a,
         press: (!busy).then(|| Message::OpenPhone(phone.id.clone())),
         selected: active,
         active,
-        indicator: reach(app, phone.mount.as_deref()),
         held: false,
         key: Hover::Place(phone.mount.clone().unwrap_or_else(|| std::path::PathBuf::from(&phone.id))),
         menu: None,
@@ -267,7 +241,6 @@ fn volume_item<'a>(app: &'a App, volume: &'a Volume) -> Element<'a, Message> {
         },
         selected: active,
         active,
-        indicator: reach(app, volume.mount.as_deref()),
         held: false,
         key: Hover::Place(volume.mount.clone().unwrap_or_else(|| volume.device.clone())),
         menu: Some(MenuKind::Volume(volume.object.clone())),

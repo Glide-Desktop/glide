@@ -97,9 +97,14 @@ pub fn tooltip<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>, lab
 }
 
 fn tip<'a, M: 'a>(paint: &Paint, label: &'a str) -> Element<'a, M> {
+    bubble(paint, text(label, TextStyle::CAP).wrapping(Wrapping::None))
+}
+
+#[must_use]
+pub fn bubble<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     let paint = *paint;
     widgets::surface(
-        container(text(label, TextStyle::CAP).wrapping(Wrapping::None)).padding([SP1, SP2]).style(move |_| {
+        container(content).padding([SP1, SP2]).style(move |_| {
             let mut style = style::popover(&paint);
             style.border.radius = R2.into();
             style

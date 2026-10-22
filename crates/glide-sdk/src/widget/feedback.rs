@@ -98,14 +98,13 @@ pub fn empty_state<'a, M: 'a>(
     let paint = *paint;
     let well =
         container(icon(glyph, 28.0, paint.fg_3())).center(64).style(move |_| style::rounded(paint.fill_1(), R_ROUND));
-    let mut content = column![
-        well,
-        text(title, TextStyle::HEAD),
-        text(body, TextStyle::CALL).color(paint.fg_3()).align_x(Alignment::Center)
-    ]
-    .spacing(SP3)
-    .align_x(Alignment::Center)
-    .max_width(360);
+    let mut content = column![well].spacing(SP3).align_x(Alignment::Center).max_width(360);
+    if !title.is_empty() {
+        content = content.push(text(title, TextStyle::HEAD));
+    }
+    if !body.is_empty() {
+        content = content.push(text(body, TextStyle::CALL).color(paint.fg_3()).align_x(Alignment::Center));
+    }
     if let Some(action) = action {
         content = content.push(action);
     }
@@ -132,6 +131,38 @@ pub fn avatar<'a, M: 'a>(paint: &Paint, name: &str, side: f32) -> Element<'a, M>
         ..container::Style::default()
     })
     .into()
+}
+
+pub struct Task<'a, M> {
+    pub title: String,
+    pub current: Option<String>,
+    pub fraction: Option<f32>,
+    pub paused: bool,
+    pub detail: String,
+    pub actions: Vec<Element<'a, M>>,
+}
+
+#[must_use]
+pub fn task_card<'a, M: 'a>(paint: &Paint, glyph: impl super::Glyph, task: Task<'a, M>) -> Element<'a, M> {
+    let paint = *paint;
+    let title = text(task.title, TextStyle { weight: 600, ..TextStyle::CAP }).wrapping(Wrapping::None).width(Fill);
+    let head = task
+        .actions
+        .into_iter()
+        .fold(row![icon(glyph, 16.0, paint.acc_text()), Space::new().width(SP2), title], Row::push)
+        .align_y(Alignment::Center);
+    let mut card = column![head].spacing(SP1);
+    if let Some(current) = task.current {
+        card = card.push(text(current, TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None));
+    }
+    card = card
+        .push(super::controls::paused_progress(&paint, task.fraction, task.paused))
+        .push(text(task.detail, TextStyle::CAP).color(paint.fg_3()));
+    container(card)
+        .padding(Padding::from([SP2, SP3]).right(SP1))
+        .width(Fill)
+        .style(move |_| style::rounded(paint.fill_1(), style::R3))
+        .into()
 }
 
 const PULSE: Duration = Duration::from_millis(1400);

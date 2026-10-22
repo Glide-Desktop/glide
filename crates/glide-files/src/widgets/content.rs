@@ -31,8 +31,6 @@ const DOT: f32 = theme::SP2;
 const DOT_GAP: f32 = 2.0;
 pub const FIT_SLACK: f32 = 0.96;
 const LABEL_LINES: usize = 2;
-const EMPTY_WELL: f32 = 44.0;
-const EMPTY_GLYPH: f32 = 22.0;
 const LINK_MARK: f32 = 11.0;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
 const LIST_ROWS: [(f32, f32); crate::config::LIST_ZOOMS] = [(22.0, 14.0), (26.0, 16.0), (32.0, 22.0), (40.0, 28.0)];
@@ -213,7 +211,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn empty_state(app: &App) -> Element<'_, Message> {
-    let t = &app.theme;
     let (key, glyph) = if app.search.as_ref().is_some_and(|search| search.pending) {
         (Key::Searching, Icon::Search)
     } else if app.is_searching() {
@@ -221,23 +218,17 @@ fn empty_state(app: &App) -> Element<'_, Message> {
     } else {
         (Key::EmptyFolder, Icon::Folder)
     };
-    let well = container(icon(glyph, EMPTY_GLYPH, t.fg_3()))
-        .center(Length::Fixed(EMPTY_WELL))
-        .style(move |_| theme::rounded(t.fill_1(), theme::R3));
-    let body = column![well, text(key.text(app.lang)).size(theme::CALL).color(t.fg_2())]
-        .spacing(theme::SP3)
-        .align_x(Alignment::Center);
-    container(body).center(Fill).into()
+    glide_sdk::widget::empty_state(&super::paint(&app.theme), glyph, "", key.text(app.lang), None)
 }
 
 fn files<'a>(app: &'a App, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let t = &app.theme;
+    let paint = super::paint(&app.theme);
     scrollable(content)
         .id(FILES_ID)
         .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
         .width(Fill)
         .height(Fill)
-        .style(move |_, status| theme::scroller(t, status))
+        .style(move |_, status| glide_sdk::widget::scrollable_style(&paint, status))
         .into()
 }
 

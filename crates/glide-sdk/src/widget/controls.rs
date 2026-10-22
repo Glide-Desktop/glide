@@ -497,6 +497,7 @@ struct Progress {
     paint: Paint,
     fraction: Option<f32>,
     height: f32,
+    paused: bool,
 }
 
 const SWEEP: Duration = Duration::from_millis(1400);
@@ -506,7 +507,9 @@ impl<M> canvas::Program<M> for Progress {
 
     fn update(&self, state: &mut Bar, event: &Event, _: Rectangle, _: mouse::Cursor) -> Option<Action<M>> {
         let Some(fraction) = self.fraction else {
-            let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_))) && !motion::is_disabled();
+            let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_)))
+                && !motion::is_disabled()
+                && !self.paused;
             return redraw.then(Action::request_redraw);
         };
         let motion = state.value.get_or_insert_with(|| Motion::at(fraction));
@@ -527,8 +530,8 @@ impl<M> canvas::Program<M> for Progress {
         );
         let (start, width) = if let Some(fraction) = self.fraction {
             (0.0, bounds.width * state.value.map_or(fraction, |motion| motion.value(Speed::SLIDE)))
-        } else if motion::is_disabled() {
-            (0.0, bounds.width * 0.34)
+        } else if motion::is_disabled() || self.paused {
+            (bounds.width * 0.33, bounds.width * 0.34)
         } else {
             let width = bounds.width * 0.34;
             let t = motion::ease_io(f64::from(phase(state.started, SWEEP))) as f32;
@@ -539,7 +542,7 @@ impl<M> canvas::Program<M> for Progress {
         if right > left {
             frame.fill(
                 &Path::rounded_rectangle(Point::new(left, top), Size::new(right - left, self.height), radius.into()),
-                paint.acc_bg(),
+                if self.paused { paint.fg_3() } else { paint.acc_bg() },
             );
         }
         vec![frame.into_geometry()]
@@ -548,10 +551,17 @@ impl<M> canvas::Program<M> for Progress {
 
 #[must_use]
 pub fn progress<'a, M: 'a>(paint: &Paint, fraction: Option<f32>) -> Element<'a, M> {
-    surface(Progress { paint: *paint, fraction: fraction.map(|value| value.clamp(0.0, 1.0)), height: 6.0 })
-        .width(iced::Fill)
-        .height(6)
-        .into()
+    bar(paint, fraction, false)
+}
+
+#[must_use]
+pub fn paused_progress<'a, M: 'a>(paint: &Paint, fraction: Option<f32>, paused: bool) -> Element<'a, M> {
+    bar(paint, fraction, paused)
+}
+
+fn bar<'a, M: 'a>(paint: &Paint, fraction: Option<f32>, paused: bool) -> Element<'a, M> {
+    let fraction = fraction.map(|value| value.clamp(0.0, 1.0));
+    surface(Progress { paint: *paint, fraction, height: 6.0, paused }).width(iced::Fill).height(6).into()
 }
 
 struct Chevron {

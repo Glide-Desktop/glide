@@ -398,14 +398,9 @@ fn the_pointer_and_the_keyboard_share_one_menu_highlight() {
 fn the_sidebar_marks_the_current_place_until_a_search_takes_over() {
     let mut app = listed_app();
     let here = app.current.clone();
-    let _ = app.update(Message::Frame(std::time::Instant::now()));
     assert_eq!(app.sidebar_active(), Some(here.as_path()));
-    std::thread::sleep(std::time::Duration::from_millis(450));
-    assert!((app.indicator(&here) - 1.0).abs() < 0.01, "the indicator grows to its full height");
     let _ = app.update(Message::TypeToSearch(String::from("o")));
     assert_eq!(app.sidebar_active(), None, "search results belong to no sidebar place");
-    std::thread::sleep(std::time::Duration::from_millis(450));
-    assert!(app.indicator(&here) < 0.01, "and the indicator shrinks away");
 }
 
 #[test]
@@ -424,16 +419,6 @@ fn a_rubber_band_in_the_trash_selects_the_row_under_it() {
     let _ = app.update(Message::Cursor(Point::new(SIDEBAR_WIDTH + 90.0, middle + 2.0)));
     assert_eq!(app.selection.len(), 1);
     assert!(app.selection.contains(&path(2)), "the banner above the list is not part of the rows");
-}
-
-#[test]
-fn the_indeterminate_bar_sweeps_a_third_of_the_track_from_edge_to_edge() {
-    use glide_files::widgets::{SWEEP, sweep};
-    assert_eq!(sweep(0.0), (0.0, 0.0), "it starts hidden past the left edge");
-    assert_eq!(sweep(1.0), (1.0, 1.0), "and ends hidden past the right edge");
-    let widths: Vec<f32> = (0..=100).map(|step| sweep(step as f32 / 100.0)).map(|(start, end)| end - start).collect();
-    assert!(widths.iter().all(|&width| width <= SWEEP + 1e-4), "it is never wider than its 34%");
-    assert!(widths.iter().any(|&width| (width - SWEEP).abs() < 1e-4), "and shows all of it on the way across");
 }
 
 #[test]

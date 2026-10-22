@@ -279,35 +279,147 @@ pub fn expander<'a, M: Clone + 'a>(
 pub fn sidebar_item<'a, M: Clone + 'a>(
     paint: &Paint, glyph: Option<impl super::Glyph + 'a>, label: &'a str, selected: bool, message: M,
 ) -> Element<'a, M> {
-    let paint = *paint;
-    animate(if selected { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
-        let tint = if selected { paint.acc_soft_fg() } else { paint.fg_3() };
-        let mut content = row![].spacing(SP2 + 2.0).align_y(Alignment::Center);
-        if let Some(glyph) = glyph {
-            content = content.push(icon(glyph, 16.0, tint));
+    let mut item = SidebarItem::new(paint, label).selected(selected).current(selected).on_press(Some(message));
+    if let Some(glyph) = glyph {
+        item = item.glyph(glyph);
+    }
+    item.into()
+}
+
+type Drawn<'a, M> = Box<dyn FnOnce(Color) -> Element<'a, M> + 'a>;
+
+#[allow(clippy::struct_excessive_bools)] // Independent visual flags of one row, each set by its own builder call
+pub struct SidebarItem<'a, M> {
+    paint: Paint,
+    glyph: Option<(Drawn<'a, M>, Color)>,
+    label: String,
+    ink: Option<Color>,
+    accessory: Option<Element<'a, M>>,
+    message: Option<M>,
+    selected: bool,
+    current: bool,
+    hovered: bool,
+    held: bool,
+}
+
+impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
+    #[must_use]
+    pub fn new(paint: &Paint, label: impl Into<String>) -> Self {
+        Self {
+            paint: *paint,
+            glyph: None,
+            label: label.into(),
+            ink: None,
+            accessory: None,
+            message: None,
+            selected: false,
+            current: false,
+            hovered: false,
+            held: false,
         }
-        let style = if selected { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
-        content = content.push(text(label, style).wrapping(Wrapping::None));
-        let control = control(container(content).center_y(Fill).clip(true))
-            .on_press(message.clone())
-            .width(Fill)
-            .height(component::CONTROL)
-            .padding(Padding::from([0.0, SP3]));
-        let value = value.clone();
-        let item = widgets::button(control, move |status| {
-            let amount = value.get().clamp(0.0, 1.0);
-            let background = mix(paint.layered(Color::TRANSPARENT, status), paint.acc_soft(), amount);
-            style::flat(background, mix(paint.fg_2(), paint.acc_soft_fg(), amount), R2)
-        });
-        let item = focusable(&paint, item, R2).inset().on_activate(Some(message));
-        let bar = animate(if selected { 1.0 } else { 0.0 }, Speed::GROW, |_| {
-            container(Space::new().width(3).height(18)).style(move |_| style::rounded(paint.acc_bg(), 2.0))
+    }
+
+    #[must_use]
+    pub fn glyph(self, glyph: impl super::Glyph + 'a) -> Self {
+        let tint = self.paint.fg_3();
+        self.tinted(glyph, tint)
+    }
+
+    #[must_use]
+    pub fn tinted(mut self, glyph: impl super::Glyph + 'a, tint: Color) -> Self {
+        self.glyph = Some((Box::new(move |tint| icon(glyph, 16.0, tint)), tint));
+        self
+    }
+
+    #[must_use]
+    pub fn ink(mut self, ink: Option<Color>) -> Self {
+        self.ink = ink;
+        self
+    }
+
+    #[must_use]
+    pub fn accessory(mut self, accessory: impl Into<Element<'a, M>>) -> Self {
+        self.accessory = Some(accessory.into());
+        self
+    }
+
+    #[must_use]
+    pub fn on_press(mut self, message: Option<M>) -> Self {
+        self.message = message;
+        self
+    }
+
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    #[must_use]
+    pub fn current(mut self, current: bool) -> Self {
+        self.current = current;
+        self
+    }
+
+    #[must_use]
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.hovered = hovered;
+        self
+    }
+
+    #[must_use]
+    pub fn held(mut self, held: bool) -> Self {
+        self.held = held;
+        self
+    }
+}
+
+impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
+    fn from(item: SidebarItem<'a, M>) -> Self {
+        let SidebarItem { paint, glyph, label, ink, accessory, message, selected, current, hovered, held } = item;
+        animate(if selected { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
+            let trailing = if accessory.is_some() { SP1 } else { SP3 };
+            let mut content = row![].spacing(SP2 + 2.0).align_y(Alignment::Center);
+            if let Some((glyph, tint)) = glyph {
+                content = content.push(glyph(if selected { paint.acc_soft_fg() } else { tint }));
+            }
+            let style = if current { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
+            let mut label = text(label, style).wrapping(Wrapping::None).width(Fill);
+            if let Some(ink) = ink.filter(|_| !selected) {
+                label = label.color(ink);
+            }
+            content = content.push(label);
+            if let Some(accessory) = accessory {
+                content = content.push(accessory);
+            }
+            let control = control(container(content).center_y(Fill).clip(true))
+                .on_press_maybe(message.clone())
+                .width(Fill)
+                .height(component::CONTROL)
+                .padding(Padding::from([0.0, SP3]).right(trailing));
+            let value = value.clone();
+            let item = widgets::button(control, move |status| {
+                let status = match status {
+                    _ if held => control::Status::Pressed,
+                    control::Status::Active | control::Status::Disabled if hovered => control::Status::Hovered,
+                    control::Status::Disabled => control::Status::Active,
+                    other => other,
+                };
+                let amount = value.get().clamp(0.0, 1.0);
+                let rest = if matches!(status, control::Status::Active) { paint.fg_2() } else { paint.fg_1() };
+                let background = mix(paint.layered(Color::TRANSPARENT, status), paint.acc_soft(), amount);
+                style::flat(background, mix(rest, paint.acc_soft_fg(), amount), R2)
+            });
+            let item = focusable(&paint, item, R2).inset().on_activate(message);
+            let bar = animate(if current { 1.0 } else { 0.0 }, Speed::GROW, |_| {
+                container(Space::new().width(3).height(18)).style(move |_| style::rounded(paint.acc_bg(), 2.0))
+            })
+            .from(0.0)
+            .scale(|value| value.max(0.0));
+            stack![item, container(bar).height(component::CONTROL).center_y(component::CONTROL)]
         })
-        .from(0.0)
-        .scale(|value| value.max(0.0));
-        stack![item, container(bar).height(component::CONTROL).center_y(component::CONTROL)]
-    })
-    .into()
+        .into()
+    }
 }
 
 #[must_use]

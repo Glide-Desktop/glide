@@ -211,16 +211,13 @@ fn infobar(app: &App) -> Option<Element<'_, Message>> {
     let doc = app.doc().filter(|doc| doc.changed_on_disk)?;
     let gone = doc.path.as_deref().is_some_and(|path| !path.exists());
     let message = if gone { Key::DeletedOnDisk } else { Key::ChangedOnDisk };
-    let mut actions = row![].spacing(SP2).align_y(Alignment::Center);
+    let mut actions = Vec::new();
     if !gone {
-        actions =
-            actions.push(compact_button(&paint, Key::Reload.text(app.lang), Tone::Neutral, Some(Message::Disk(true))));
+        actions.push(compact_button(&paint, Key::Reload.text(app.lang), Tone::Neutral, Some(Message::Disk(true))));
     }
-    actions =
-        actions.push(compact_button(&paint, Key::KeepMine.text(app.lang), Tone::Ghost, Some(Message::Disk(false))));
-    let content = row![text(message.text(app.lang), TextStyle::CALL), Space::new().width(Fill), actions]
-        .align_y(Alignment::Center);
-    Some(bar_strip(&paint, Some(glide_sdk::widget::Severity::Warn), content))
+    actions.push(compact_button(&paint, Key::KeepMine.text(app.lang), Tone::Ghost, Some(Message::Disk(false))));
+    let warn = Some(glide_sdk::widget::Severity::Warn);
+    Some(glide_sdk::widget::info_bar(&paint, warn, message.text(app.lang), "", actions))
 }
 
 fn tree_row<'a>(app: &'a App, node: &'a crate::tree::Node) -> Element<'a, Message> {
