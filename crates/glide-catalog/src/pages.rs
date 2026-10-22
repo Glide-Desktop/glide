@@ -522,6 +522,13 @@ fn feedback<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
             demo(shell, shell.t("Аватари й клавіші", "Avatars and keys"), people),
             demo(
                 shell,
+                shell.t("Картки задач — пауза за кнопкою", "Task cards — the button pauses"),
+                tasks(catalog, shell),
+            ),
+            ui::section(paint, shell.t("Інфосмуги", "Info bars"), info_bars(shell)),
+            demo(shell, shell.t("Бульбашка й картка тосту", "Bubble and toast card"), bubbles(shell)),
+            demo(
+                shell,
                 shell.t("Заготовка під час завантаження", "Loading skeleton"),
                 row![
                     ui::skeleton(paint, 40, 40.0),
@@ -533,6 +540,66 @@ fn feedback<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
             ui::section(paint, shell.t("Порожній стан", "Empty state"), ui::card(paint, container(empty).height(280))),
         ],
     )
+}
+
+fn tasks<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let task = |paused: bool| ui::Task {
+        title: shell.t("Копіювання", "Copying").to_string(),
+        current: Some("holiday-in-the-carpathians.jpg".to_string()),
+        fraction: Some(catalog.loading),
+        paused,
+        detail: format!("12/40 · {:.0}%", catalog.loading * 100.0),
+        actions: vec![
+            ui::icon_button(paint, if paused { Icon::Refresh } else { Icon::More }, "", Some(Message::Flip), false),
+            ui::icon_button(paint, Icon::Close, "", Some(Message::Said("Stop")), false),
+        ],
+    };
+    row![
+        container(ui::task_card(paint, Icon::File, task(catalog.flipped))).width(260),
+        container(ui::task_card(paint, Icon::File, ui::Task { fraction: None, ..task(false) })).width(260),
+    ]
+    .spacing(SP3)
+    .into()
+}
+
+fn info_bars(shell: &Shell<Message>) -> Element<'_, Message> {
+    let paint = shell.paint();
+    let empty = ui::compact_button(paint, shell.t("Очистити", "Empty"), Tone::Neutral, Some(Message::Said("Empty")));
+    let keep = ui::compact_button(paint, shell.t("Відкинути", "Keep mine"), Tone::Ghost, Some(Message::Said("Keep")));
+    column![
+        ui::info_bar(
+            paint,
+            None,
+            shell.t("Смітник", "Trash"),
+            shell.t("Об'єкти можна відновити або стерти.", "Items can be restored or erased."),
+            vec![empty],
+        ),
+        ui::info_bar(
+            paint,
+            Some(Severity::Warn),
+            shell.t("Файл змінено поза редактором.", "The file changed outside the editor."),
+            "",
+            vec![keep],
+        ),
+    ]
+    .spacing(SP2)
+    .into()
+}
+
+fn bubbles(shell: &Shell<Message>) -> Element<'_, Message> {
+    let paint = shell.paint();
+    wrap(vec![
+        ui::bubble(paint, text(shell.t("Статична підказка", "A static tip"), TextStyle::CAP)),
+        glide_sdk::overlay::toast_card(
+            paint,
+            shell.t("Переміщено до смітника", "Moved to the Trash"),
+            None,
+            Some((shell.t("Скасувати", "Undo"), Message::Said("Undo"))),
+            Some((Message::Said("Close"), shell.t("Закрити", "Close"))),
+            420.0,
+        ),
+    ])
 }
 
 fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
@@ -610,12 +677,6 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
             ui::switch(paint, catalog.compact, Some(Message::Compact)),
         ),
     );
-    let items = column![
-        ui::sidebar_item(paint, Some(Icon::Folder), shell.t("Домівка", "Home"), !catalog.flipped, Message::Flip),
-        ui::sidebar_item(paint, Some(Icon::File), shell.t("Документи", "Documents"), catalog.flipped, Message::Flip),
-    ]
-    .spacing(2)
-    .width(240);
     page(
         shell,
         Page::Layout,
@@ -627,9 +688,79 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
             ui::section(paint, shell.t("Картки з дією", "Action cards"), cards),
             ui::section(paint, shell.t("Список", "Boxed list"), rows),
             ui::section(paint, shell.t("Розгортні блоки", "Expanders"), column![first, second].spacing(SP2)),
-            demo(shell, shell.t("Пункти бічної панелі", "Sidebar items"), items),
+            demo(shell, shell.t("Пункти бічної панелі", "Sidebar items"), sidebar_items(catalog, shell)),
+            demo(
+                shell,
+                shell.t("Крихти, таблиця, поле на місці", "Crumbs, table, inline field"),
+                tables(catalog, shell),
+            ),
         ],
     )
+}
+
+fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    column![
+        ui::sidebar_item(paint, Some(Icon::Folder), shell.t("Домівка", "Home"), !catalog.flipped, Message::Flip),
+        ui::sidebar_item(paint, Some(Icon::File), shell.t("Документи", "Documents"), catalog.flipped, Message::Flip),
+        Element::from(
+            ui::SidebarItem::new(paint, "KINGSTON")
+                .glyph(Icon::File)
+                .on_press(Some(Message::Said("Drive")))
+                .accessory(ui::icon_button(paint, Icon::Up, "", Some(Message::Said("Eject")), false)),
+        ),
+        Element::from(
+            ui::SidebarItem::new(paint, shell.t("Не змонтовано", "Not mounted"))
+                .glyph(Icon::File)
+                .ink(Some(paint.fg_3()))
+                .on_press(Some(Message::Said("Mount"))),
+        ),
+    ]
+    .spacing(2)
+    .width(240)
+    .into()
+}
+
+fn tables<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let trail = [shell.t("Домівка", "Home"), shell.t("Документи", "Documents"), shell.t("Звіти", "Reports")];
+    let crumbs = ui::crumb_trail(
+        paint,
+        trail
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                ui::Crumb::new(paint, *label)
+                    .glyph(Icon::Folder, if index == 0 { paint.fg_2() } else { paint.acc_bg() })
+                    .current(index + 1 == trail.len())
+                    .on_press(Some(Message::Said("Crumb")))
+                    .into()
+            })
+            .collect(),
+    );
+    let header = ui::table_header(
+        paint,
+        vec![
+            ui::HeaderCell::new(paint, shell.t("Назва", "Name"))
+                .separated(false)
+                .sorted(Some(!catalog.flipped))
+                .on_press(Some(Message::Flip))
+                .into(),
+            ui::HeaderCell::new(paint, shell.t("Розмір", "Size")).width(120).on_press(Some(Message::Flip)).into(),
+            ui::HeaderCell::new(paint, shell.t("Змінено", "Modified")).width(160).lit(catalog.compact).into(),
+        ],
+    );
+    let inline = ui::inline_field(paint, text_input("", &catalog.name).on_input(Message::Name), TextStyle::CALL);
+    column![
+        caption(shell, shell.t("Крихти зі значками", "Crumbs with glyphs")),
+        crumbs,
+        caption(shell, shell.t("Заголовок таблиці — клацніть «Назва»", "Table header — click Name")),
+        header,
+        caption(shell, shell.t("Поле на місці (перейменування)", "Inline field (rename)")),
+        container(inline).width(260),
+    ]
+    .spacing(SP3)
+    .into()
 }
 
 fn overlays(shell: &Shell<Message>) -> Element<'_, Message> {
