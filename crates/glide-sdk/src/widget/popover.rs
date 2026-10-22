@@ -688,4 +688,34 @@ mod tests {
         assert!(at.x + 200.0 <= bounds.width - MARGIN + 0.01);
         assert!(at.x >= MARGIN);
     }
+
+    #[test]
+    fn the_overlay_clip_leaves_room_for_the_deepest_popover_shadow() {
+        for appearance in [glide_theme::Appearance::Light, glide_theme::Appearance::Dark] {
+            for layer in glide_theme::elevation::layers(Level::El3, appearance) {
+                assert!(layer.blur + layer.dy.abs() + layer.spread <= SHADOW_ROOM, "{appearance:?} {layer:?}");
+                assert!(layer.blur + layer.dx.abs() + layer.spread <= SHADOW_ROOM, "{appearance:?} {layer:?}");
+            }
+        }
+        let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        let mut element = tip::<()>(&paint, "Hint");
+        let mut tree = Tree::new(&element);
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let mut floating = Floating {
+            element: element.as_widget_mut(),
+            tree: &mut tree,
+            anchor: Rectangle::new(Point::new(200.0, 200.0), Size::new(40.0, 30.0)),
+            progress: 1.0,
+            side: Side::Below,
+            width: None,
+            centred: true,
+            gap: SP2,
+        };
+        let node = floating.lay(&renderer, Size::new(800.0, 600.0));
+        let [card] = node.children() else { panic!("the content is the only child") };
+        assert_eq!(card.bounds().position(), Point::new(SHADOW_ROOM, SHADOW_ROOM));
+        assert_eq!(node.size().width, card.size().width + 2.0 * SHADOW_ROOM);
+        assert_eq!(node.size().height, card.size().height + 2.0 * SHADOW_ROOM);
+        assert_eq!(node.bounds().y + SHADOW_ROOM, 200.0 + 30.0 + SP2);
+    }
 }
