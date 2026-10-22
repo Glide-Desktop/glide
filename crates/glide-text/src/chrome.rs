@@ -10,15 +10,11 @@ use glide_sdk::widget::{
     button_style, compact_button, icon_button, separator as rule, tooltip as tip, vertical_separator as vertical_rule,
 };
 use glide_sdk::window::resize_handles;
-use glide_theme::elevation::Level;
-use glide_theme::motion::{ST_HOVER, ST_PRESS};
 use glide_theme::{TextStyle, component};
 use iced::border::Radius;
 use iced::widget::text::Wrapping;
 use iced::widget::text_editor::{self as editor_widget};
-use iced::widget::{
-    Space, button, column, container, markdown, mouse_area, row, scrollable, stack, text_editor, text_input,
-};
+use iced::widget::{Space, button, column, container, markdown, mouse_area, row, scrollable, text_editor, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::app::{
@@ -36,8 +32,6 @@ pub const STATUS: f32 = 26.0;
 pub const SIDEBAR: f32 = 248.0;
 pub const SIDEBAR_MIN_WINDOW: f32 = 560.0;
 const TABS: f32 = 36.0;
-const TAB_PAD: f32 = SP1;
-const TAB_GAP: f32 = SP1;
 const CONTROL: f32 = component::SMALL_CONTROL;
 const ROW: f32 = 28.0;
 const MENU_WIDTH: f32 = 300.0;
@@ -132,70 +126,22 @@ fn header(app: &App) -> Element<'_, Message> {
     glide_sdk::window::header(&paint, &app.window, header, Message::Window, Message::CloseRequested, taken)
 }
 
-#[must_use]
-pub fn tab_slot(x: f32, width: f32, count: usize) -> usize {
-    let slot = (width - 2.0 * TAB_PAD + TAB_GAP) / count.max(1) as f32;
-    (((x - TAB_PAD) / slot.max(1.0)).floor().max(0.0) as usize).min(count.saturating_sub(1))
-}
-
-fn tab_button<'a>(app: &'a App, index: usize, doc: &'a Document) -> Element<'a, Message> {
-    let paint = app.paint;
-    let active = index == app.active;
-    let hovered = app.hovered_tab == Some(index);
-    let mut label =
-        row![text(app.doc_name(doc), TextStyle::CAP).wrapping(Wrapping::None)].spacing(SP2).align_y(Alignment::Center);
-    if doc.dirty() && !hovered {
-        label = label.push(
-            container(Space::new().width(6).height(6))
-                .style(move |_| style::rounded(paint.fg_3(), glide_theme::shape::R_ROUND)),
-        );
-    }
-    let close: Element<'a, Message> = if hovered || active {
-        let control = button(container(glide_iced::glyph::glyph(Icon::Close, 10.0, paint.fg_2())).center(Fill))
-            .on_press(Message::Command(Command::CloseTab(index)))
-            .width(22)
-            .height(22)
-            .padding(0);
-        widgets::button(control, move |status| button_style(&paint, Tone::Ghost, status))
-    } else {
-        Space::new().width(22).height(22).into()
-    };
-    let inner = stack![
-        container(label).center_x(Fill).center_y(Fill).padding(Padding::from([0, 28])).clip(true),
-        container(close).padding(Padding::from([0.0, SP1])).height(Fill).align_y(Alignment::Center),
-    ];
-    let lifted = app.dragged_tab() == Some(index);
-    let tab = widgets::container(container(inner).width(Fill).height(Fill), move |hover, press| {
-        let (background, color) = if active {
-            (paint.view_bg(), paint.fg_1())
-        } else {
-            (
-                paint.layer(Color::TRANSPARENT, ST_HOVER * hover + (ST_PRESS - ST_HOVER) * press),
-                if hover > 0.5 { paint.fg_1() } else { paint.fg_2() },
-            )
-        };
-        container::Style { text_color: Some(color), ..style::rounded(background, R2) }
-    });
-    let tab =
-        if active { widgets::surface(tab, &paint, if lifted { Level::El2 } else { Level::El1 }, R2) } else { tab };
-    mouse_area(tab)
-        .on_press(Message::TabPressed(index))
-        .on_enter(Message::TabHovered(Some(index)))
-        .on_exit(Message::TabHovered(None))
-        .on_middle_press(Message::Command(Command::CloseTab(index)))
-        .into()
-}
+pub use glide_sdk::widget::tab_slot;
 
 fn tab_bar(app: &App) -> Element<'_, Message> {
-    let paint = app.paint;
-    let tabs: Vec<Element<'_, Message>> =
-        app.docs.iter().enumerate().map(|(index, doc)| tab_button(app, index, doc)).collect();
-    let bar = container(iced::widget::row(tabs).spacing(TAB_GAP).height(Fill))
-        .padding(Padding::from([SP1, TAB_PAD]))
-        .width(Fill)
+    use glide_sdk::widget::{Mark, Tab, tab_strip};
+    let tabs = app
+        .docs
+        .iter()
+        .map(|doc| Tab::new(app.doc_name(doc)).mark(if doc.dirty() { Mark::Dot } else { Mark::None }))
+        .collect();
+    tab_strip(&app.paint, tabs, app.active)
         .height(TABS)
-        .style(move |_| style::rounded(paint.bar_bg(), 0.0));
-    mouse_area(bar).on_move(|point| Message::TabMoved(point.x)).into()
+        .on_select(Message::TabPressed)
+        .hovered(app.hovered_tab, Message::TabHovered)
+        .dragged(app.dragged_tab(), Message::TabMoved)
+        .on_close(|index| Message::Command(Command::CloseTab(index)), Key::CloseTab.text(app.lang))
+        .into()
 }
 
 fn field<'a>(paint: &Paint, input: text_input::TextInput<'a, Message>, width: Length) -> Element<'a, Message> {
@@ -1158,15 +1104,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_dragged_tab_lands_in_the_slot_under_the_pointer() {
-        let width = 2.0 * TAB_PAD + 3.0 * 200.0 + 2.0 * TAB_GAP;
-        assert_eq!(tab_slot(TAB_PAD + 1.0, width, 3), 0);
-        assert_eq!(tab_slot(TAB_PAD + 200.0 + TAB_GAP + 1.0, width, 3), 1);
-        assert_eq!(tab_slot(width + 50.0, width, 3), 2);
-        assert_eq!(tab_slot(-10.0, width, 0), 0);
-    }
 
     #[test]
     fn every_enabled_menu_row_is_reachable_from_the_keyboard() {

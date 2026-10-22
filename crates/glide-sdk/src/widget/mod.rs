@@ -6,6 +6,7 @@ mod inputs;
 mod layout;
 mod popover;
 mod selection;
+mod strip;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,6 +43,7 @@ pub use selection::{
     DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, icon_segmented, page_dots,
     radio_group, segmented, sidebar_list, swatches, tabs, track,
 };
+pub use strip::{Mark, TAB_GAP, TAB_PAD, Tab, TabStrip, tab_slot, tab_strip};
 
 #[must_use]
 pub fn measure(content: &str, style: TextStyle) -> f32 {
