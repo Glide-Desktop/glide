@@ -413,14 +413,14 @@ impl Page {
                 Row::new(t, c.t(tr::Key::Smoothing))
                     .subtitle(c.t(tr::Key::SmoothingHint))
                     .suffix(widgets::segmented(t, smoothing, rendering.smoothing, Msg::Smoothing))
-                    .wide()
+                    .stacked(t.compact)
                     .build(),
             )
             .push(
                 Row::new(t, c.t(tr::Key::Hinting))
                     .subtitle(c.t(tr::Key::HintingHint))
                     .suffix(widgets::segmented(t, hinting, rendering.hinting, Msg::Hinting))
-                    .wide()
+                    .stacked(t.compact)
                     .build(),
             );
         group

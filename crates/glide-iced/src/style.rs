@@ -22,6 +22,12 @@ pub struct Paint {
     pub alpha: f32,
 }
 
+impl From<&Paint> for Paint {
+    fn from(paint: &Paint) -> Self {
+        *paint
+    }
+}
+
 macro_rules! colors {
     ($($name:ident),* $(,)?) => {
         impl Paint {

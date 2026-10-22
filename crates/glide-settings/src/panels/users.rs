@@ -559,7 +559,7 @@ impl Page {
                     .subtitle(user.user_name.clone())
                     .prefix(portrait(t, user, 32.0))
                     .suffix(badges)
-                    .wide()
+                    .stacked(t.compact)
                     .build(),
             );
             if let Some(form) = self.password_form(c, &user.path) {

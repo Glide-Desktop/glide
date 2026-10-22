@@ -37,9 +37,9 @@ pub use inputs::{
     search_input, stepper, text_area_style, text_field, validated_field,
 };
 pub use layout::{
-    HeaderCell, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW, action_card, action_row, card,
-    card_style, expander, facts, list, list_row, section, select_row, sidebar, sidebar_item, status_bar, status_button,
-    surface, switch_row, table_header, tree_row, well,
+    Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW, action_card,
+    action_row, card, card_style, expander, facts, list, list_row, section, select_row, sidebar, sidebar_item,
+    status_bar, status_button, surface, switch_row, table_header, tree_row, well,
 };
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
 pub use selection::{

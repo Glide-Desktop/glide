@@ -2,7 +2,7 @@ use glide_iced::Paint;
 use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4};
 use glide_iced::widgets;
 use glide_theme::elevation::Level;
-use glide_theme::{TextStyle, component, motion};
+use glide_theme::{TextStyle, component};
 use iced::widget::{Column, Space, button as control, column, container, mouse_area, row, stack};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Vector, mouse};
 
@@ -56,6 +56,9 @@ pub fn action_card<'a, M: Clone + 'a>(paint: &Paint, content: impl Into<Element<
     activatable(&paint, control, R3, Some(message))
 }
 
+pub const ROW_HEIGHT: f32 = 44.0;
+const ROW_PAD_Y: f32 = (ROW_HEIGHT - component::CONTROL) / 2.0;
+
 #[must_use]
 pub fn list<'a, M: 'a>(paint: &Paint, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
     let paint = *paint;
@@ -64,28 +67,215 @@ pub fn list<'a, M: 'a>(paint: &Paint, rows: Vec<Element<'a, M>>) -> Element<'a, 
     for (index, item) in rows.into_iter().enumerate() {
         items = items.push(item);
         if index + 1 < count {
-            items = items.push(container(separator(&paint)).padding(Padding::from([0.0, SP4])));
+            items = items.push(container(separator(&paint)).padding(Padding::from([0.0, SP3])));
         }
     }
-    widgets::surface(container(items).width(Fill).clip(true).style(move |_| card_style(&paint)), &paint, Level::El1, R3)
+    let boxed = container(items).padding(SP1).width(Fill).style(move |_| card_style(&paint));
+    widgets::surface(boxed, &paint, Level::El1, R3)
 }
 
-fn row_label<'a, M: 'a>(paint: &Paint, title: &'a str, subtitle: Option<&'a str>) -> Element<'a, M> {
-    let mut label = column![text(title, TextStyle::CALL)].spacing(2);
-    if let Some(subtitle) = subtitle {
-        label = label.push(text(subtitle, TextStyle::CAP).color(paint.fg_3()));
+pub struct Group<'a, M> {
+    paint: Paint,
+    title: Option<String>,
+    description: Option<String>,
+    suffix: Option<Element<'a, M>>,
+    rows: Vec<Element<'a, M>>,
+}
+
+impl<'a, M: 'a> Group<'a, M> {
+    #[must_use]
+    pub fn new(paint: impl Into<Paint>) -> Self {
+        Self { paint: paint.into(), title: None, description: None, suffix: None, rows: Vec::new() }
     }
-    container(label).width(Fill).into()
+
+    #[must_use]
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn suffix(mut self, suffix: impl Into<Element<'a, M>>) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+
+    #[must_use]
+    pub fn push(mut self, row: impl Into<Element<'a, M>>) -> Self {
+        self.rows.push(row.into());
+        self
+    }
+
+    #[must_use]
+    pub fn push_maybe(self, row: Option<impl Into<Element<'a, M>>>) -> Self {
+        match row {
+            Some(row) => self.push(row),
+            None => self,
+        }
+    }
+
+    #[must_use]
+    pub fn extend(mut self, rows: impl IntoIterator<Item = Element<'a, M>>) -> Self {
+        self.rows.extend(rows);
+        self
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    #[must_use]
+    pub fn build(self) -> Element<'a, M> {
+        self.into()
+    }
+}
+
+impl<'a, M: 'a> From<Group<'a, M>> for Element<'a, M> {
+    fn from(group: Group<'a, M>) -> Self {
+        let Group { paint, title, description, suffix, rows } = group;
+        let mut outer = Column::new().spacing(SP2);
+        if title.is_some() || description.is_some() || suffix.is_some() {
+            let mut heading = Column::new().spacing(2).width(Fill);
+            if let Some(title) = title {
+                heading = heading.push(text(title, TextStyle::HEAD));
+            }
+            if let Some(description) = description {
+                heading = heading.push(text(description, TextStyle::CALL).color(paint.fg_2()));
+            }
+            let mut header = row![heading].spacing(SP3).align_y(Alignment::Center);
+            if let Some(suffix) = suffix {
+                header = header.push(suffix);
+            }
+            outer = outer.push(container(header).padding(Padding::ZERO.left(SP1)));
+        }
+        if !rows.is_empty() {
+            outer = outer.push(list(&paint, rows));
+        }
+        outer.into()
+    }
+}
+
+pub struct ListRow<'a, M> {
+    paint: Paint,
+    title: String,
+    subtitle: Option<String>,
+    prefix: Option<Element<'a, M>>,
+    suffix: Option<Element<'a, M>>,
+    message: Option<M>,
+    dimmed: bool,
+    stacked: bool,
+}
+
+impl<'a, M: Clone + 'a> ListRow<'a, M> {
+    #[must_use]
+    pub fn new(paint: impl Into<Paint>, title: impl Into<String>) -> Self {
+        Self {
+            paint: paint.into(),
+            title: title.into(),
+            subtitle: None,
+            prefix: None,
+            suffix: None,
+            message: None,
+            dimmed: false,
+            stacked: false,
+        }
+    }
+
+    #[must_use]
+    pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        let subtitle = subtitle.into();
+        if !subtitle.is_empty() {
+            self.subtitle = Some(subtitle);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn prefix(mut self, prefix: impl Into<Element<'a, M>>) -> Self {
+        self.prefix = Some(prefix.into());
+        self
+    }
+
+    #[must_use]
+    pub fn suffix(mut self, suffix: impl Into<Element<'a, M>>) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+
+    #[must_use]
+    pub fn on_press(mut self, message: M) -> Self {
+        self.message = Some(message);
+        self
+    }
+
+    #[must_use]
+    pub fn on_press_maybe(mut self, message: Option<M>) -> Self {
+        self.message = message;
+        self
+    }
+
+    #[must_use]
+    pub fn dimmed(mut self, dimmed: bool) -> Self {
+        self.dimmed = dimmed;
+        self
+    }
+
+    #[must_use]
+    pub fn stacked(mut self, stacked: bool) -> Self {
+        self.stacked = stacked;
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> Element<'a, M> {
+        self.into()
+    }
+}
+
+impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
+    fn from(item: ListRow<'a, M>) -> Self {
+        let ListRow { paint, title, subtitle, prefix, suffix, message, dimmed, stacked } = item;
+        let ink = if dimmed { paint.fg_3() } else { paint.fg_1() };
+        let mut labels = column![text(title, TextStyle::BODY).color(ink)].spacing(1).width(Fill);
+        if let Some(subtitle) = subtitle {
+            labels = labels.push(text(subtitle, TextStyle::CAP).color(paint.fg_2()));
+        }
+        let mut line = row![].spacing(SP3).align_y(Alignment::Center);
+        if let Some(prefix) = prefix {
+            line = line.push(prefix);
+        }
+        line = line.push(labels);
+        let mut below = None;
+        if let Some(suffix) = suffix {
+            if stacked { below = Some(suffix) } else { line = line.push(suffix) }
+        }
+        let line = row![Space::new().height(component::CONTROL), line].align_y(Alignment::Center);
+        let mut content = Column::new().spacing(SP2).push(line);
+        if let Some(suffix) = below {
+            content = content.push(container(suffix).padding(Padding::ZERO.bottom(ROW_PAD_Y)));
+        }
+        let body = container(content).padding(Padding::from([ROW_PAD_Y, SP3])).width(Fill);
+        let Some(message) = message else { return body.into() };
+        let control = control(body).on_press(message.clone()).padding(0).width(Fill);
+        let control = widgets::button(control, move |status| {
+            style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), R2)
+        });
+        focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
+    }
 }
 
 #[must_use]
-pub fn list_row<'a, M: 'a>(
+pub fn list_row<'a, M: Clone + 'a>(
     paint: &Paint, title: &'a str, subtitle: Option<&'a str>, trailing: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
-    container(row![row_label(paint, title, subtitle), trailing.into()].spacing(SP3).align_y(Alignment::Center))
-        .padding(Padding::from([SP2, SP4]))
-        .width(Fill)
-        .into()
+    ListRow::new(paint, title).subtitle(subtitle.unwrap_or_default()).suffix(trailing).into()
 }
 
 #[must_use]
@@ -213,31 +403,23 @@ pub fn facts<'a, M: 'a>(paint: &Paint, rows: Vec<(String, String)>, label_width:
 pub fn switch_row<'a, M: Clone + 'a>(
     paint: &Paint, title: &'a str, subtitle: Option<&'a str>, on: bool, on_toggle: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
-    let paint = *paint;
     let message = on_toggle.map(|toggle| toggle(!on));
-    let content = list_row(&paint, title, subtitle, switch_face(&paint, on, message.is_some()));
-    let Some(message) = message else { return content };
-    let lit = widgets::container(container(content).width(Fill), move |hover, press| {
-        let amount = motion::ST_HOVER * hover + (motion::ST_PRESS - motion::ST_HOVER) * press;
-        style::rounded(paint.layer(Color::TRANSPARENT, amount), 0.0)
-    });
-    let control = mouse_area(lit).on_release(message.clone()).interaction(mouse::Interaction::Pointer);
-    focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
+    ListRow::new(paint, title)
+        .subtitle(subtitle.unwrap_or_default())
+        .suffix(switch_face(paint, on, message.is_some()))
+        .on_press_maybe(message)
+        .into()
 }
 
 #[must_use]
 pub fn action_row<'a, M: Clone + 'a>(
     paint: &Paint, title: &'a str, subtitle: Option<&'a str>, message: M,
 ) -> Element<'a, M> {
-    let paint = *paint;
-    let content = row![row_label(&paint, title, subtitle), icon(Icon::Right, 12.0, paint.fg_3())]
-        .spacing(SP3)
-        .align_y(Alignment::Center);
-    let control = control(content).on_press(message.clone()).width(Fill).padding(Padding::from([SP2 + 2.0, SP4]));
-    let control = widgets::button(control, move |status| {
-        style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), 0.0)
-    });
-    focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
+    ListRow::new(paint, title)
+        .subtitle(subtitle.unwrap_or_default())
+        .suffix(icon(Icon::Right, 12.0, paint.fg_3()))
+        .on_press(message)
+        .into()
 }
 
 #[must_use]

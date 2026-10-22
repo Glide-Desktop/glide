@@ -239,7 +239,7 @@ impl Page {
                     .subtitle(c.t(T::TextSizeHint))
                     .prefix(widgets::icon(Icon::TextSize, 18.0, t.fg_2()))
                     .suffix(widgets::segmented(t, options, scale, Msg::TextScale))
-                    .wide()
+                    .stacked(t.compact)
                     .build(),
             )
             .push(widgets::sample_well(t, text(c.t(T::TextPreview)).size(preview_size).color(t.fg_1())))

@@ -528,7 +528,7 @@ impl Page {
             Row::new(t, c.t(tr::Key::TestSound))
                 .subtitle(if busy { c.t(tr::Key::Playing) } else { c.t(tr::Key::TestSoundHint) })
                 .suffix(buttons)
-                .wide()
+                .stacked(t.compact)
                 .build()
         })
     }
