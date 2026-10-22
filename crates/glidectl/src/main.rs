@@ -47,6 +47,11 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    if cli.subcommand_args[0] == "tokens" {
+        println!("{}", tokens(&cli.subcommand_args[1..])?);
+        return Ok(());
+    }
+
     let request = parse_args(&cli.subcommand_args)?;
     let socket_path = find_socket_path()?;
 
@@ -66,6 +71,21 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+pub fn tokens(args: &[String]) -> anyhow::Result<String> {
+    let mut appearance = glide_theme::Appearance::default();
+    let mut accent = glide_theme::Accent::default();
+    for arg in args {
+        if let Some(value) = glide_theme::Appearance::from_key(arg) {
+            appearance = value;
+        } else if let Some(value) = glide_theme::Accent::from_key(arg) {
+            accent = value;
+        } else {
+            anyhow::bail!("unknown appearance or accent {arg:?}");
+        }
+    }
+    Ok(glide_theme::data::json(&glide_theme::Tokens::new(appearance, accent)))
 }
 
 #[must_use]
@@ -173,6 +193,7 @@ COMMANDS:
     layout [get|next]          Read or cycle the active keyboard layout
     outputs                    List connected outputs with mode, scale and position
     night-light <on|off|status>  Turn night light on or off, or show its state
+    tokens [light|dark] [ACCENT]  Print the design tokens as JSON (no session needed)
 
 OPTIONS:
     --json                     Output response as raw JSON
@@ -436,6 +457,14 @@ mod tests {
 
         let unknown = cli(&["glidectl", "unknown_cmd"]);
         assert!(parse_args(&unknown.subcommand_args).is_err());
+    }
+
+    #[test]
+    fn tokens_take_an_appearance_and_an_accent_in_any_order() {
+        let args = |words: &[&str]| words.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let sheet = tokens(&args(&["teal", "light"])).unwrap();
+        assert!(sheet.contains("\"appearance\":\"light\"") && sheet.contains("\"accent\":\"teal\""));
+        assert!(tokens(&args(&["mauve"])).is_err());
     }
 
     #[test]

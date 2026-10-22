@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 pub mod component;
+pub mod data;
 pub mod elevation;
 pub mod font;
 pub mod motion;

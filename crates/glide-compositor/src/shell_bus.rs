@@ -53,7 +53,13 @@ impl Snapshot {
             ("IconTheme", Value::from(self.icon_theme.clone())),
             ("Locked", Value::from(self.locked)),
             ("ActiveWorkspace", Value::from(self.active_workspace)),
+            ("Tokens", Value::from(self.tokens())),
         ]
+    }
+
+    #[must_use]
+    pub fn tokens(&self) -> String {
+        glide_theme::data::json(&glide_theme::Tokens::new(self.appearance, self.accent))
     }
 
     #[must_use]
@@ -160,6 +166,11 @@ impl Shell {
     #[zbus(property)]
     fn active_workspace(&self) -> u32 {
         self.read(|s| s.active_workspace)
+    }
+
+    #[zbus(property)]
+    fn tokens(&self) -> String {
+        self.read(Snapshot::tokens)
     }
 
     async fn activation_token(
@@ -274,7 +285,10 @@ mod tests {
         let before = Snapshot::default();
         let after = Snapshot { appearance: glide_theme::Appearance::Light, locked: true, ..before.clone() };
         let names: Vec<&str> = after.changed_since(&before).into_iter().map(|(name, _)| name).collect();
-        assert_eq!(names, ["Appearance", "Locked"]);
+        assert_eq!(names, ["Appearance", "Locked", "Tokens"]);
+        let accent = Snapshot { accent: glide_theme::Accent::Teal, ..before.clone() };
+        let names: Vec<&str> = accent.changed_since(&before).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["Accent", "Tokens"], "the token sheet follows the accent too");
     }
 
     #[test]
