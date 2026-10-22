@@ -488,10 +488,12 @@ struct Painter<'r> {
     origin: Point,
     metrics: Metrics,
     clip: Rectangle,
+    grid: Cells,
+    corners: Radius,
     run: String,
     run_at: Span,
     run_style: (Rgb, Font),
-    background: Option<(Span, Rgb)>,
+    background: Option<(Span, Rgb, bool)>,
 }
 
 impl Painter<'_> {
@@ -558,17 +560,41 @@ impl Painter<'_> {
         self.run.push(glyph);
     }
 
-    fn fill(&mut self, next: Option<(Span, Rgb)>) {
+    fn bleed(&self, span: Span) -> (Rectangle, Radius) {
+        let rect = self.rect(span);
+        let clip = self.clip;
+        let (left, top) = (span.column == 0, span.row == 0);
+        let right = span.column + span.width >= self.grid.columns;
+        let bottom = span.row + 1 >= self.grid.lines;
+        let x = if left { clip.x } else { rect.x };
+        let y = if top { clip.y } else { rect.y };
+        let end_x = if right { clip.x + clip.width } else { rect.x + rect.width };
+        let end_y = if bottom { clip.y + clip.height } else { rect.y + rect.height };
+        let corner = |a: bool, b: bool, radius: f32| if a && b { radius } else { 0.0 };
+        let radius = Radius {
+            top_left: corner(top, left, self.corners.top_left),
+            top_right: corner(top, right, self.corners.top_right),
+            bottom_right: corner(bottom, right, self.corners.bottom_right),
+            bottom_left: corner(bottom, left, self.corners.bottom_left),
+        };
+        (Rectangle { x, y, width: end_x - x, height: end_y - y }, radius)
+    }
+
+    fn fill(&mut self, next: Option<(Span, Rgb, bool)>) {
         match (self.background, next) {
-            (Some((span, bg)), Some((more, next_bg)))
-                if span.row == more.row && span.column + span.width == more.column && bg == next_bg =>
+            (Some((span, bg, bleeds)), Some((more, next_bg, next_bleeds)))
+                if span.row == more.row
+                    && span.column + span.width == more.column
+                    && bg == next_bg
+                    && bleeds == next_bleeds =>
             {
-                self.background = Some((Span { width: span.width + more.width, ..span }, bg));
+                self.background = Some((Span { width: span.width + more.width, ..span }, bg, bleeds));
             }
             (previous, next) => {
-                if let Some((span, bg)) = previous {
-                    let rect = self.rect(span);
-                    self.quad(rect, color(bg, 1.0));
+                if let Some((span, bg, bleeds)) = previous {
+                    let (bounds, radius) = if bleeds { self.bleed(span) } else { (self.rect(span), Radius::default()) };
+                    let border = Border { radius, ..Border::default() };
+                    self.renderer.fill_quad(Quad { bounds, border, ..Quad::default() }, color(bg, 1.0));
                 }
                 self.background = next;
             }
@@ -733,6 +759,8 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
                 origin: Point::new(bounds.x + PAD, bounds.y + PAD),
                 metrics,
                 clip: bounds,
+                grid: Cells { columns: term.columns(), lines: term.screen_lines() },
+                corners: self.corners,
                 run: String::new(),
                 run_at: Span::new(0, 0, 0),
                 run_style: (palette.foreground, self.look.fonts.regular),
@@ -910,15 +938,16 @@ impl Terminal<'_> {
         let tint = |indexed: &Indexed<&Cell>| {
             let point = indexed.point;
             let (mut fg, mut bg) = palette.cell(content.colors, indexed.cell, self.look.bold_bright);
+            let mut bleeds = true;
             if content.selection.is_some_and(|range| range.contains_cell(indexed, cursor.point, cursor.shape)) {
-                bg = palette.selection;
+                (bg, bleeds) = (palette.selection, false);
             } else if found.iter().any(|range| range.contains(&point)) {
-                bg = found_bg;
+                (bg, bleeds) = (found_bg, false);
             }
             if block && point == cursor.point {
-                (fg, bg) = (palette.cursor_text, palette.query(content.colors, 258));
+                (fg, bg, bleeds) = (palette.cursor_text, palette.query(content.colors, 258), false);
             }
-            (fg, bg)
+            (fg, bg, bleeds)
         };
         for indexed in &cells {
             let cell = indexed.cell;
@@ -930,8 +959,8 @@ impl Terminal<'_> {
                 indexed.point.column.0,
                 if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 },
             );
-            let (_, bg) = tint(indexed);
-            painter.fill((bg != palette.query(content.colors, 257)).then_some((at, bg)));
+            let (_, bg, bleeds) = tint(indexed);
+            painter.fill((bg != palette.query(content.colors, 257)).then_some((at, bg, bleeds)));
         }
         painter.fill(None);
         for indexed in cells {
@@ -955,7 +984,7 @@ impl Terminal<'_> {
             if cursor_visible && !block && point == cursor.point {
                 cursor_span = Some((at, cursor.shape));
             }
-            let (fg, _) = tint(&indexed);
+            let (fg, ..) = tint(&indexed);
             if cell.flags.contains(Flags::HIDDEN) {
                 painter.flush();
                 continue;
@@ -1096,6 +1125,29 @@ mod tests {
             assert!(colors.contains(&iced::Background::Color(color(palette.ansi[1], 1.0))));
             assert_eq!(colors.last(), Some(&iced::Background::Color(color(palette.foreground, 1.0))));
         }
+    }
+
+    #[test]
+    fn edge_cell_backgrounds_fill_the_padding_but_inner_ones_and_the_cursor_do_not() {
+        let bounds = Rectangle::with_size(Size::new(656.0, 400.0));
+        let palette = crate::profile::Profile::Meridian.palette(&Tokens::new(Appearance::Dark, Accent::Blue));
+        let colors_at = |output: &str, point: Point| -> Vec<_> {
+            rendered(output, bounds)
+                .iter()
+                .flat_map(|layer| &layer.quads)
+                .filter(|(quad, _)| quad.bounds.contains(point))
+                .map(|(_, background)| *background)
+                .collect()
+        };
+        let black = iced::Background::Color(color(palette.ansi[0], 1.0));
+        let red = iced::Background::Color(color(palette.ansi[1], 1.0));
+        let cursor = iced::Background::Color(color(palette.cursor, 1.0));
+        for point in [Point::new(1.0, 1.0), Point::new(654.0, 200.0), Point::new(328.0, 399.0)] {
+            assert!(colors_at("\x1b[?25l\x1b[40m\x1b[2J", point).contains(&black), "{point:?}");
+        }
+        assert!(!colors_at("\x1b[?25l\x1b[3G\x1b[41mx", Point::new(1.0, 12.0)).contains(&red));
+        assert!(colors_at("", Point::new(12.0, 12.0)).contains(&cursor));
+        assert!(!colors_at("", Point::new(1.0, 12.0)).contains(&cursor));
     }
 
     #[test]
