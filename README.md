@@ -131,6 +131,13 @@ cargo test --workspace
 `scripts/test-tty.sh` runs a debug build from a free VT and checks the log.
 `docs/VERIFY.md` has the manual checklist. Project rules are in `AGENTS.md`.
 
+## Writing apps for Glide
+
+`crates/glide-sdk` is the toolkit for third-party apps in Glide's design
+system: window chrome, menus in the top bar, dialogs, widgets and system
+integration in one crate. Start with `docs/SDK.md` and
+`cargo run -p glide-sdk --example notes`.
+
 ## License
 
 GPL-3.0-or-later.
