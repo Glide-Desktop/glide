@@ -11,9 +11,12 @@ implement them too.
 Two examples come with it: [`counter.rs`](../crates/glide-sdk/examples/counter.rs)
 is the quick start below, [`notes.rs`](../crates/glide-sdk/examples/notes.rs)
 a complete app with a sidebar, boxed lists, menus, a dialog, toasts,
-notifications and a dock badge:
+notifications and a dock badge. The **component catalogue**,
+[`crates/glide-catalog`](../crates/glide-catalog), shows every component live
+and doubles as a notification and dock test bench:
 
 ```
+cargo run -p glide-catalog
 cargo run -p glide-sdk --example notes
 ```
 
@@ -25,13 +28,14 @@ cargo run -p glide-sdk --example notes
 4. [Menus and shortcuts](#menus-and-shortcuts)
 5. [Dialogs, toasts and context menus](#dialogs-toasts-and-context-menus)
 6. [Widgets](#widgets)
-7. [Design rules](#design-rules)
-8. [System integration](#system-integration)
-9. [Testing](#testing)
-10. [Packaging](#packaging)
-11. [Contracts for other languages](#contracts-for-other-languages)
-12. [Limitations](#limitations)
-13. [A Go SDK: how hard would it be](#a-go-sdk-how-hard-would-it-be)
+7. [Motion](#motion)
+8. [Design rules](#design-rules)
+9. [System integration](#system-integration)
+10. [Testing](#testing)
+11. [Packaging](#packaging)
+12. [Contracts for other languages](#contracts-for-other-languages)
+13. [Limitations](#limitations)
+14. [A Go SDK: how hard would it be](#a-go-sdk-how-hard-would-it-be)
 
 ## Quick start
 
@@ -149,7 +153,8 @@ system.
 | `window()` | Size, focus, `Frame::{Floating, Maximized, Fullscreen}`. |
 | `pointer()` | Last pointer position in the window. |
 | `menu_in_top_bar()` | Whether the top bar is showing the app's menus. |
-| `toast(text)` | Bottom pill for 4 s. |
+| `toast(text)`, `toast_with(text, action, msg)` | Bottom pill for 4 s, optionally with an action button (Undo). |
+| `preview_look(Some((appearance, accent)))` | Repaint this window alone in another look (previews, galleries); `None` follows the shell again. |
 | `dialog(Dialog)`, `close_dialog()`, `has_dialog()` | Modal dialog. |
 | `context_menu(items)`, `context_menu_at(point, items)`, `close_menu()` | Popup menu at the pointer or a point. |
 | `window_action(Action)` | `Drag`, `ToggleMaximize`, `Minimize`, `Resize(direction)`. |
@@ -196,34 +201,94 @@ content, build it in `view` with `widget::popover` and `iced::widget::stack`.
 
 ## Widgets
 
-All live in `glide_sdk::widget` and take `&Paint` first.
+All live in `glide_sdk::widget` and take `&Paint` first. Every one moves by
+the spec's motion table; the catalogue shows each of them.
+
+**Buttons**
 
 | Widget | Notes |
 |---|---|
-| `button(paint, label, tone, Option<msg>)`, `primary`, `secondary`, `ghost`, `danger` | 34 px; `Tone::{Accent, Neutral, Ghost, Danger}`; press shrinks to .975, state layers crossfade over t1. |
-| `compact_button` | 28 px, for bars and dense rows. |
+| `button(paint, label, tone, Option<msg>)`, `primary`, `secondary`, `tonal`, `outline`, `ghost`, `danger` | `Tone::{Accent, Tonal, Neutral, Outline, Ghost, Danger}`; the primary rises El1 → El2, danger fills on hover, a press squeezes to .975 and state layers crossfade over t1. Labels may be `&str` or `String`. |
+| `sized_button(…, Size::{Small, Medium, Large}, …)`, `compact_button` | 28 / 34 / 42 px with the spec's padding and label sizes. |
 | `icon_button(paint, Icon, tooltip, Option<msg>, on)` | 28 px square with a tooltip. |
-| `text_field(paint, placeholder, value, on_input)`, `field(paint, text_input)` | Fill-1 well, accent border and 3 px halo when focused. `field` wraps any `text_input` (ids, submit, secure). |
-| `switch(paint, on, Option<on_toggle>)` | Spec switch with the token thumb. |
-| `checkbox(paint, label, checked, Option<on_toggle>)` | |
-| `segmented(paint, &[(value, label)], selected, on_select)` | Raised thumb with El1. |
-| `slider(paint, range, value, on_change)` | 6 px groove, accent ring on hover and drag. |
-| `progress(paint, fraction)` | 6 px R1 bar. |
-| `dropdown(paint, options, selected, on_select)` | Pick list with an R3 popover. |
-| `list(paint, rows)`, `list_row(paint, title, subtitle, trailing)` | Boxed list (R3 card, hairlines between rows). |
-| `section(paint, title, content)` | MICRO caps heading over content. |
-| `card`, `popover`, `surface` | Surfaces with the right fill, ring and elevation. |
-| `sidebar(paint, width, items)`, `sidebar_item(paint, icon, label, selected, msg)` | |
-| `badge(paint, label, tone)`, `empty_state(paint, icon, title, body)`, `tooltip(paint, child, label)` | |
-| `separator`, `vertical_separator` | Opaque hairlines. |
-| `scrollable(paint, content)` | Thin scrollbar that darkens on hover. |
-| `text(content, TextStyle)` | The shell's type scale (`TextStyle::T1`, `BODY`, `CALL`, `CAP`, `MICRO`, …). |
-| `measure(text, TextStyle)` | Width in px, ceiled. |
+| `linked(paint, &[(label, Option<msg>)])` | Joined group, R2 outside and R1 inside. |
+| `menu_button(paint, label, items, width)` | Opens a menu of actions under itself (keyboard rows, Esc, outside click). |
+
+**Inputs**
+
+| Widget | Notes |
+|---|---|
+| `text_field(paint, placeholder, value, on_input)`, `field(paint, text_input)` | Fill-1 well, accent border and a 3 px halo that fades in on focus. `field` wraps any `text_input` (ids, submit, secure). |
+| `validated_field(paint, text_input, Validity::{Neutral, Valid, Invalid})` | OK / danger border and ring. |
+| `search_field(paint, placeholder, value, on_input, on_clear)`, `password_field(…, revealed, on_input, on_reveal)` | Leading search glyph and a clear button; an eye toggle. |
+| `text_area_style(paint, status)` | Style for iced's `text_editor`. |
+| `stepper(paint, value, previous, next, on_change)` | − value +. |
+| `dropdown(paint, options, selected, placeholder, on_select)` | Opener with a chevron; the list fades and rises in, follows the keyboard (↑ ↓ Enter Esc) and closes on an outside click. |
+
+**Selection**
+
+| Widget | Notes |
+|---|---|
+| `switch(paint, on, Option<on_toggle>)`, `sized_switch(…, SwitchSize::{Panel, Bar}, …)` | 44×26 or 28×16; the thumb travels t2 E_OVER, the track colour t2 E_OUT, the thumb stretches while pressed. |
+| `checkbox(paint, label, Check::{Off, On, Mixed}, Option<msg>)`, `check_box`, `radio_group`, `radio_mark` | 20 px marks; the check and dot pop with E_OVER. |
+| `segmented(paint, &[(value, label)], selected, on_select)`, `tabs(…)` | The raised thumb / the accent underline slides between options. |
+| `sidebar_list(paint, &[(icon, label)], selected, on_select)` | A sliding acc-soft selection with the 3×18 bar growing t3 E_OVER. |
+| `chip(paint, label, on, msg)` | Toggle chip; fill and ink crossfade. |
+| `slider(paint, range, value, on_change)`, `stepped_slider(…, step, on_change, on_release)` | 6 px groove, 18 px thumb whose acc-ring grows on hover; drags are instant, programmatic changes glide t2 E_OUT. |
+| `track(paint, Indicator, selected, row_or_column)` | The sliding-indicator primitive the above are built on. |
+
+**Feedback**
+
+| Widget | Notes |
+|---|---|
+| `progress(paint, Some(fraction))`, `progress(paint, None)` | 6 px bar gliding to its value; indeterminate is a 34 % sweep (E_IO, 1.4 s). |
+| `spinner(paint, large)` | 22 / 34 px. |
+| `badge(paint, label, Severity)`, `count_badge(paint, n)` | Severities `Neutral, Accent, Ok, Warn, Danger`; the counter pops in from 0.6. |
+| `banner(paint, Severity, title, body, actions)`, `empty_state(paint, icon, title, body, action)` | |
+| `avatar(paint, name, side)`, `keycap(paint, label)` | Gradient initial; a key label. |
+| `tooltip(paint, child, label)` | Fades and rises after the 550 ms delay. |
+
+**Layout**
+
+| Widget | Notes |
+|---|---|
+| `card(paint, content)`, `action_card(paint, content, msg)` | Action cards lift 3 px on hover (E_OVER). |
+| `list(paint, rows)`, `list_row(paint, title, subtitle, trailing)`, `action_row(…, msg)` | Boxed list; action rows carry a chevron and a hover layer. |
+| `expander(paint, title, open, on_toggle, content)` | Unfolds over t3 E_OUT; the chevron turns. |
+| `section(paint, title, content)`, `sidebar(paint, width, items)`, `sidebar_item(…)` | |
+| `Popup::new(paint, anchor, build)` | A popover anchored to any element; `.keyboard(rows, on_pick)`, `.width(w)`. Build its rows from containers and `mouse_area` rather than iced buttons, whose status resets while the popover animates. |
+| `popover`, `surface`, `separator`, `vertical_separator`, `scrollable` | |
+| `text(content, TextStyle)`, `measure(text, TextStyle)`, `icon(Icon, side, tint)` | The shell's type scale; widths are ceiled. |
 
 `Paint` exposes every colour token as a method (`win_bg`, `view_bg`,
 `fg_1`…`fg_4`, `fill_1`…`fill_3`, `acc_bg`, `acc_soft`, `danger`, …),
 `layer(base, opacity)` for state layers and `faded(alpha)` for fading a whole
 subtree.
+
+## Motion
+
+`glide_sdk::anim` animates anything of your own the same way:
+
+```rust
+use glide_sdk::anim::{self, Speed};
+
+anim::animate(if open { 1.0 } else { 0.0 }, Speed::SPRING, |value| {
+    let value = value.clone();
+    container(content).style(move |_| rounded(mix(idle, active, value.get())))
+})
+.offset(|value| Vector::new(0.0, -3.0 * value));
+```
+
+- `Speed::{STATE, PRESS, COLOR, SLIDE, SPRING, EXPAND, GROW, FADE}` are the
+  rows of the spec's table (duration + curve); every duration is scaled by
+  the shell and `0` means instant.
+- `animate(target, speed, build)` tweens towards `target`; the value reaches
+  style closures through `Value::get()`, and `.scale()` / `.offset()` /
+  `.transform()` move the content. `.from(start)` animates in on first show.
+- `hover(speed, build)` targets 1 while the pointer is over the content.
+- `collapse(open, content)` animates height; `spin(period, build)` gives a
+  looping phase. `Motion` is the retargetable tween underneath, for custom
+  widgets.
 
 ## Design rules
 
@@ -247,7 +312,9 @@ most often:
 
 | Call | What it does |
 |---|---|
-| `notify(Notification)` (async), `withdraw(id)` | `org.freedesktop.Notifications`; `Notification::new(app_id, summary).body(…).icon(…).urgency(…).action(key, label)`. Use `Task::perform`. |
+| `notify(Notification)` (async), `withdraw(id)` | `org.freedesktop.Notifications`; `Notification::new(app_id, summary).body(…).icon(…).urgency(…).action(key, label).reply(label, placeholder).progress(Some(40)).resident(true).transient(true).sound(name).silent(true).timeout(ms).category(…).image(path).replaces(id)`. Use `Task::perform`. |
+| `notification_events()` | Stream for `Subscription::run`: `NotificationEvent::{Action { id, key }, Replied { id, text }, Closed { id, reason }}`. Notifications and their replies share one bus connection, so inline replies reach the app. |
+| `show_osd(Osd::{Volume, Brightness, KeyboardBrightness, CapsLock}, level, on)`, `open_quick_settings(QuickSettings::…)` | The shell's on-screen indicator and quick settings views. |
 | `Dock::new(app_id)` → `.progress(Some(0.4))`, `.count(Some(3))`, `.urgent(true)` | `com.canonical.Unity.LauncherEntry`: progress bar, count pill and attention on the dock tile. |
 | `activation_token(app_id)`, `activation_env(app_id)` | A granted xdg-activation token while the app is focused, so what it launches gets focus. |
 | `open(uri_or_path, app_id)`, `spawn_detached(command, app_id)` | Launch with the token; children are reaped. |
@@ -319,14 +386,16 @@ The key under which the other palette sits is that appearance's name
 
 - One window per app; no multi-window API yet.
 - Dialog bodies are text; richer modals are built by hand in `view`.
-- Notification action replies are not delivered back yet (`ActionInvoked`
-  is not subscribed).
+- The canvas-drawn controls (switch, checkbox, radio, slider) take the
+  pointer only; keyboard focus and Space/arrow handling are not there yet.
+- iced cannot fade a whole subtree, so popovers fade by repainting their
+  rows with a faded `Paint`; arbitrary iced buttons placed in a `Popup` look
+  disabled while it animates (see `Popup` above).
 - No IME, no drag-and-drop helpers (Files' `dnd.rs` shows the protocol), no
   printing.
-- The live session has not been exercised with a third-party app yet: the
-  chrome, menus, overlays and example were checked headlessly through
-  `Harness` + `iced_test`, the bus contracts against a private
-  `dbus-daemon`.
+- Checked headlessly (`Harness` + `iced_test`, both appearances, Ukrainian,
+  hover, open menus and dropdowns, keyboard rows) and the examples were
+  started in a live Glide session; the motion itself is only visible live.
 
 ## A Go SDK: how hard would it be
 
