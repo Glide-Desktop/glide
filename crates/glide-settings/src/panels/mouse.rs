@@ -443,7 +443,7 @@ impl Page {
         )
         .padding(16)
         .width(Fill)
-        .style(move |_: &iced::Theme| theme::hero_card_style(&t, color))
+        .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
         .into()
     }
 

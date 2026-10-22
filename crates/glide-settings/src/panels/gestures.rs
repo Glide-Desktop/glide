@@ -468,7 +468,7 @@ impl Page {
         let mut group = Group::new(t).title(c.t(tr::Key::Practice)).description(c.t(tr::Key::PracticeHint));
         if self.failed() {
             group = group
-                .push(container(widgets::banner(t, t.warn(), Icon::Warning, c.t(tr::Key::Failed), None)).padding(8));
+                .push(container(widgets::banner(t, Tone::Warn, Icon::Warning, c.t(tr::Key::Failed), None)).padding(8));
         }
         group = group
             .push(container(pad(c, self.live.as_ref(), self.practising(), natural)).center_x(Fill).padding([12, 8]));

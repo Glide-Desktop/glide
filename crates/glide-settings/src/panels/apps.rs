@@ -309,7 +309,7 @@ impl Pane for Page {
         column![
             self.hero(c),
             error_banner(t, self.error.as_deref()),
-            self.notice.map(|notice| widgets::banner(t, t.ok(), Icon::Check, c.t(notice), None)),
+            self.notice.map(|notice| widgets::banner(t, Tone::Ok, Icon::Check, c.t(notice), None)),
             self.roles_group(c),
             self.types_group(c),
             self.reset_group(c),

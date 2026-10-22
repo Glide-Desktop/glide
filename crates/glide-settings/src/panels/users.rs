@@ -8,7 +8,7 @@ use super::network::{form_row, note};
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
-use crate::services::accounts::{self, Account, Session, UsersState, initials};
+use crate::services::accounts::{self, Account, Session, UsersState};
 use crate::services::config::ConfigStore;
 use crate::services::run::blocking;
 use crate::theme::{self, ThemeState, Tone};
@@ -674,7 +674,7 @@ pub fn portrait<'a, M: 'a>(t: ThemeState, account: &Account, size: f32) -> Eleme
             .content_fit(iced::ContentFit::Cover)
             .border_radius(size / 2.0)
             .into(),
-        None => widgets::avatar(t, initials(account.display_name()), size),
+        None => widgets::avatar(t, account.display_name(), size),
     }
 }
 
@@ -689,7 +689,7 @@ pub fn face_button<'a>(t: ThemeState, face: &Path, selected: bool, on_press: Opt
     )
     .on_press_maybe(on_press)
     .padding(theme::RING_GAP)
-    .style(move |_: &iced::Theme, status| theme::ring_button_style(&t, selected, status))
+    .style(move |_: &iced::Theme, status| glide_sdk::widget::preview_ring_style(&widgets::paint(&t), selected, status))
     .into()
 }
 
@@ -717,6 +717,6 @@ fn hero<'a>(c: &Ctx, me: &'a Account) -> Element<'a, Msg> {
     )
     .padding(20)
     .width(Length::Fill)
-    .style(move |_: &iced::Theme| theme::hero_card_style(&t, tint))
+    .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), tint))
     .into()
 }

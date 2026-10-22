@@ -472,7 +472,7 @@ impl Page {
         if let Some(err) = &self.pins_error {
             column = column.push(widgets::banner(
                 t,
-                t.danger(),
+                crate::theme::Tone::Danger,
                 Icon::Warning,
                 format!("{} {err}", c.t(tr::Key::PinsFailed)),
                 None,

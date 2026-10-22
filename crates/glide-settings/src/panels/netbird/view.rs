@@ -187,13 +187,13 @@ impl Page {
         let t = c.theme;
         let mut banners = Vec::new();
         if !self.snapshot.compatible {
-            banners.push(widgets::banner(t, t.warn(), Icon::Warning, c.t(T::Outdated), None));
+            banners.push(widgets::banner(t, crate::theme::Tone::Warn, Icon::Warning, c.t(T::Outdated), None));
         }
         if let Some(error) = &self.error {
-            banners.push(widgets::banner(t, t.danger(), Icon::Warning, error.as_str(), None));
+            banners.push(widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, error.as_str(), None));
         }
         if let Some((summary, command)) = &self.privilege {
-            banners.push(widgets::banner(t, t.warn(), Icon::Lock, summary.as_str(), None));
+            banners.push(widgets::banner(t, crate::theme::Tone::Warn, Icon::Lock, summary.as_str(), None));
             if !command.is_empty() {
                 let copy = widgets::secondary(t, c.t(T::Copy), Some(Msg::CopyText(command.clone())));
                 banners.push(

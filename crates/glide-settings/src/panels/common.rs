@@ -7,7 +7,7 @@ use crate::widgets::{self, Row};
 
 #[must_use]
 pub fn error_banner<'a, M: Clone + 'a>(t: ThemeState, error: Option<&'a str>) -> Option<Element<'a, M>> {
-    error.map(|error| widgets::banner(t, t.danger(), Icon::Warning, error, None))
+    error.map(|error| widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, error, None))
 }
 
 pub fn gated<'a, M: 'a>(c: Ctx, content: impl Into<Element<'a, M>>) -> Element<'a, M> {

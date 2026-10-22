@@ -148,9 +148,9 @@ impl Pane for Page {
                 if self.loaded { (c.t(T::NotInstalled), c.t(T::NotInstalledHint)) } else { (c.t(K::Loading), "") };
             return widgets::empty_state(t, Icon::Printer, title, hint);
         }
-        let not_running =
-            (!self.state.running).then(|| widgets::banner(t, t.warn(), Icon::Warning, c.t(T::NotRunning), None));
-        let info = self.info.as_deref().map(|info| widgets::banner(t, t.ok(), Icon::Check, info, None));
+        let not_running = (!self.state.running)
+            .then(|| widgets::banner(t, crate::theme::Tone::Warn, Icon::Warning, c.t(T::NotRunning), None));
+        let info = self.info.as_deref().map(|info| widgets::banner(t, crate::theme::Tone::Ok, Icon::Check, info, None));
         let page = column![self.hero(&c), not_running, error_banner(t, self.error.as_deref()), info]
             .spacing(theme::SECTION_GAP);
         if self.state.printers.is_empty() {
@@ -244,7 +244,7 @@ impl Page {
             };
             let mut suffix = row![].spacing(8).align_y(Alignment::Center);
             if printer.is_default {
-                suffix = suffix.push(widgets::badge(c.t(T::DefaultBadge), t.acc_soft(), t.acc_soft_fg()));
+                suffix = suffix.push(widgets::pill(t, crate::theme::Tone::Accent, c.t(T::DefaultBadge)));
             }
             let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
             group = group.push(

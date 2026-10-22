@@ -462,7 +462,7 @@ impl Page {
             } else {
                 format!("{} · {}", source.layout.to_uppercase(), source.variant)
             };
-            let badge = container(widgets::badge(source.layout.to_uppercase(), t.acc_soft(), t.acc_soft_fg()))
+            let badge = container(widgets::pill(t, crate::theme::Tone::Accent, source.layout.to_uppercase()))
                 .width(Length::Fixed(44.0));
             let actions = gated(
                 *c,

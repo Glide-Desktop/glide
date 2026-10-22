@@ -516,23 +516,6 @@ pub fn solid(color: iced::Color, radius: iced::border::Radius) -> container::Sty
 }
 
 #[must_use]
-pub fn tile_style(color: iced::Color) -> container::Style {
-    let top = blend_state_layer(color, iced::Color::WHITE, ST_DRAG);
-    container::Style {
-        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
-            iced::gradient::Linear::new(std::f32::consts::PI).add_stop(0.0, top).add_stop(1.0, color),
-        ))),
-        border: iced::Border { color: iced::Color { a: 0.12, ..iced::Color::BLACK }, width: 0.5, radius: radius_r2() },
-        shadow: iced::Shadow {
-            color: iced::Color { a: 0.18, ..iced::Color::BLACK },
-            offset: iced::Vector::new(0.0, 1.0),
-            blur_radius: 2.0,
-        },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
 pub fn group_style(theme: &ThemeState) -> container::Style {
     card_style(theme)
 }
@@ -555,11 +538,6 @@ pub fn icon_button_style(theme: &ThemeState, status: button::Status) -> button::
 #[must_use]
 pub fn segment_thumb(theme: &ThemeState) -> iced::Color {
     to_iced_color(theme.tokens.segment_thumb())
-}
-
-#[must_use]
-pub fn badge_style(background: iced::Color, text: iced::Color) -> container::Style {
-    container::Style { text_color: Some(text), ..solid(background, radius_round()) }
 }
 
 #[must_use]
@@ -647,30 +625,6 @@ pub fn swatch_ring_style(theme: &ThemeState, selected: bool) -> container::Style
 }
 
 #[must_use]
-pub fn swatch_style(color: iced::Color, theme: &ThemeState) -> container::Style {
-    container::Style {
-        background: Some(iced::Background::Color(color)),
-        border: iced::Border { color: theme.line_2(), width: 1.0, radius: radius_round() },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
-pub fn avatar_style(theme: &ThemeState) -> container::Style {
-    let ramp = theme.accent.ramp();
-    container::Style {
-        text_color: Some(theme.acc_fg()),
-        background: Some(iced::Background::Gradient(iced::Gradient::Linear(
-            iced::gradient::Linear::new(std::f32::consts::PI * 0.78)
-                .add_stop(0.0, to_iced_color(ramp[2]))
-                .add_stop(1.0, to_iced_color(ramp[4])),
-        ))),
-        border: iced::Border { color: iced::Color::TRANSPARENT, width: 0.0, radius: radius_round() },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
 pub fn monitor_style(theme: &ThemeState, selected: bool) -> container::Style {
     let ramp = theme.accent.ramp();
     let (top, bottom) =
@@ -701,121 +655,7 @@ pub fn plain_button_style(theme: &ThemeState, _status: button::Status) -> button
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Tone {
-    #[default]
-    Neutral,
-    Accent,
-    Ok,
-    Warn,
-    Danger,
-}
-
-#[must_use]
-pub fn tone_colors(theme: &ThemeState, tone: Tone) -> (iced::Color, iced::Color) {
-    match tone {
-        Tone::Neutral => (theme.fill_1(), theme.fg_2()),
-        Tone::Accent => (theme.acc_soft(), theme.acc_soft_fg()),
-        Tone::Ok => (theme.ok_soft(), theme.ok()),
-        Tone::Warn => (theme.warn_soft(), theme.warn()),
-        Tone::Danger => (theme.danger_soft(), theme.danger()),
-    }
-}
-
-#[must_use]
-pub fn tile_radius(size: f32) -> iced::border::Radius {
-    if size <= 32.0 {
-        radius_r2()
-    } else if size <= 56.0 {
-        radius_r3()
-    } else {
-        radius_r4()
-    }
-}
-
-#[must_use]
-pub fn tile_style_sized(color: iced::Color, size: f32) -> container::Style {
-    let mut style = tile_style(color);
-    style.border.radius = tile_radius(size);
-    style
-}
-
-#[must_use]
-pub fn keycap_style(theme: &ThemeState) -> container::Style {
-    container::Style {
-        text_color: Some(theme.fg_2()),
-        background: Some(iced::Background::Color(match theme.appearance {
-            Appearance::Light => theme.card_bg(),
-            Appearance::Dark => theme.fill_2(),
-        })),
-        border: iced::Border { color: theme.line_2(), width: 1.0, radius: radius_r1() },
-        shadow: iced::Shadow { color: theme.line_2(), offset: iced::Vector::new(0.0, 1.0), blur_radius: 0.0 },
-        snap: true,
-    }
-}
-
-#[must_use]
-pub fn track_style(theme: &ThemeState) -> container::Style {
-    solid(theme.fill_2(), radius_r1())
-}
-
-#[must_use]
-pub fn selectable_card_style(theme: &ThemeState, selected: bool, status: button::Status) -> button::Style {
-    let background = state_fill(theme.card_bg(), theme.state(), status);
-    button::Style {
-        background: Some(iced::Background::Color(background)),
-        text_color: theme.fg_1(),
-        border: iced::Border {
-            color: if selected { theme.acc_bg() } else { theme.line() },
-            width: if selected { RING_WIDTH } else { 1.0 },
-            radius: radius_r3(),
-        },
-        shadow: elevation(theme, glide_theme::elevation::Level::El1),
-        snap: true,
-    }
-}
-
-#[must_use]
-pub fn ring_button_style(theme: &ThemeState, selected: bool, status: button::Status) -> button::Style {
-    let color = if selected {
-        theme.acc_bg()
-    } else {
-        match status {
-            button::Status::Hovered | button::Status::Pressed => theme.line_2(),
-            _ => iced::Color::TRANSPARENT,
-        }
-    };
-    button::Style {
-        background: None,
-        text_color: theme.fg_1(),
-        border: iced::Border { color, width: RING_WIDTH, radius: radius_r3() },
-        shadow: iced::Shadow::default(),
-        snap: true,
-    }
-}
-
-#[must_use]
-pub fn radio_mark_style(theme: &ThemeState, selected: bool) -> container::Style {
-    container::Style {
-        background: selected.then_some(iced::Background::Color(theme.acc_bg())),
-        border: iced::Border {
-            color: if selected { theme.acc_bg() } else { theme.fg_4() },
-            width: 1.5,
-            radius: radius_round(),
-        },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
-pub fn hero_card_style(theme: &ThemeState, tint: iced::Color) -> container::Style {
-    let mut style = card_style(theme);
-    let top = blend_state_layer(theme.card_bg(), tint, ST_PRESS);
-    style.background = Some(iced::Background::Gradient(iced::Gradient::Linear(
-        iced::gradient::Linear::new(std::f32::consts::PI * 0.75).add_stop(0.0, top).add_stop(1.0, theme.card_bg()),
-    )));
-    style
-}
+pub use glide_sdk::widget::Severity as Tone;
 
 #[must_use]
 pub fn sidebar_indicator_style(theme: &ThemeState, visible: bool) -> container::Style {
@@ -837,7 +677,6 @@ pub fn account_card_style(theme: &ThemeState, selected: bool, status: button::St
 
 pub const SIDEBAR_INDICATOR_WIDTH: f32 = 3.0;
 pub const SIDEBAR_INDICATOR_HEIGHT: f32 = 16.0;
-pub const PAGE_TILE_SIZE: f32 = 52.0;
 
 #[cfg(test)]
 mod tests {

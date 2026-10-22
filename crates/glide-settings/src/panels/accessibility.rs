@@ -187,7 +187,7 @@ impl Pane for Page {
                 None,
             ),
             error_banner(t, self.error.as_deref()),
-            (self.loaded && !gnome).then(|| widgets::banner(t, t.warn(), Icon::Info, c.t(T::NoGsettings), None)),
+            (self.loaded && !gnome).then(|| widgets::banner(t, Tone::Warn, Icon::Info, c.t(T::NoGsettings), None)),
             gnome.then(|| self.seeing(&c)),
             self.pointer(&c, config),
             gnome.then(|| self.motion(&c, config)),

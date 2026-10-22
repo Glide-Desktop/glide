@@ -8,7 +8,6 @@ use crate::app::{App, Message, SEARCH_ID};
 use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::panels::{Ctx, Panel};
-use crate::services::system;
 use crate::theme;
 use crate::widgets;
 
@@ -107,7 +106,7 @@ fn account_card<'a>(app: &'a App, c: &Ctx, selected: bool, user: &'a str, login:
         if selected { (t.acc_soft_fg(), t.acc_soft_fg(), t.acc_soft_fg()) } else { (t.fg_1(), t.fg_2(), t.fg_3()) };
     let avatar = match me {
         Some(me) => crate::panels::users::portrait(t, me, AVATAR_SIZE),
-        None => widgets::avatar(t, system::initials(name), AVATAR_SIZE),
+        None => widgets::avatar(t, name, AVATAR_SIZE),
     };
     button(
         row![

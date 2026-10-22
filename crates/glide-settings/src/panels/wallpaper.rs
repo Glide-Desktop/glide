@@ -211,7 +211,7 @@ impl Pane for Page {
         let current = current.as_deref();
         let error = self.error.as_ref().map(|(key, detail)| {
             let message = format!("{} {detail}", c.t(*key));
-            widgets::banner(c.theme, c.theme.danger(), Icon::Warning, message, None)
+            widgets::banner(c.theme, crate::theme::Tone::Danger, Icon::Warning, message, None)
         });
         column![
             self.hero(&c, config, current),
@@ -532,7 +532,13 @@ fn picture<'a>(thumb: &Thumbnail, badge: Option<&'a str>, t: &ThemeState) -> Ele
     match badge {
         Some(label) => iced::widget::stack![
             shot,
-            container(widgets::badge(label, t.popover_bg(), t.fg_1())).padding(6).align_bottom(Fill).align_left(Fill),
+            container(glide_sdk::widget::bubble(
+                &widgets::paint(t),
+                glide_sdk::widget::text(label, glide_sdk::theme::TextStyle::CAP)
+            ))
+            .padding(6)
+            .align_bottom(Fill)
+            .align_left(Fill),
         ]
         .into(),
         None => shot.into(),

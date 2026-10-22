@@ -422,15 +422,15 @@ impl Page {
         let mut page = column![].spacing(theme::SECTION_GAP);
         if !self.state.live && self.loaded {
             let reason = if self.state.compositor_running { K::DisplaysUnsupported } else { K::DisplaysOffline };
-            page = page.push(widgets::banner(t, t.warn(), Icon::Warning, c.t(reason), None));
+            page = page.push(widgets::banner(t, crate::theme::Tone::Warn, Icon::Warning, c.t(reason), None));
         }
         if let Some(error) = &self.error {
-            page = page.push(widgets::banner(t, t.danger(), Icon::Warning, error.as_str(), None));
+            page = page.push(widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, error.as_str(), None));
         }
         if let Some(left) = self.guard.remaining() {
             page = page.push(widgets::banner(
                 t,
-                t.warn(),
+                crate::theme::Tone::Warn,
                 Icon::Display,
                 format!(
                     "{} {} {left} {}.",

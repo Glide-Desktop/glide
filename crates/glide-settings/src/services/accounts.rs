@@ -40,17 +40,6 @@ impl Account {
     }
 }
 
-#[must_use]
-pub fn initials(name: &str) -> String {
-    let words: Vec<&str> = name.split_whitespace().collect();
-    let letters: String = match words.as_slice() {
-        [] => String::new(),
-        [one] => one.chars().take(1).collect(),
-        [first, .., last] => first.chars().take(1).chain(last.chars().take(1)).collect(),
-    };
-    letters.to_uppercase()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Session {
     pub id: String,

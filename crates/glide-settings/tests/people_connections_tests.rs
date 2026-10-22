@@ -453,8 +453,6 @@ fn login_sessions_and_names_parse() {
         "logind's local timestamp becomes a time Settings can show as \"2 h ago\""
     );
     assert_eq!(accounts::parse_timestamp("n/a", &utc), None);
-    assert_eq!(accounts::initials("Артем Шевченко"), "АШ");
-    assert_eq!(accounts::initials("artem"), "A");
     assert_eq!(accounts::clean_real_name("  Artem \t Shevchenko: ").as_deref(), Some("Artem Shevchenko"));
 }
 

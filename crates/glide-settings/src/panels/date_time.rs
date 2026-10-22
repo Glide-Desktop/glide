@@ -364,7 +364,7 @@ impl Pane for Page {
             .state
             .as_ref()
             .is_some_and(|state| !state.available)
-            .then(|| widgets::banner(t, t.warn(), Icon::Info, c.t(T::Unavailable), None));
+            .then(|| widgets::banner(t, Tone::Warn, Icon::Info, c.t(T::Unavailable), None));
         column![
             self.hero(c, config),
             error_banner(t, self.error.as_deref()),
@@ -419,7 +419,7 @@ impl Page {
         container(body)
             .padding([20, 24])
             .width(Fill)
-            .style(move |_: &iced::Theme| theme::hero_card_style(&t, color))
+            .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
             .into()
     }
 
@@ -543,7 +543,8 @@ impl Page {
                 .suffix(widgets::pill(t, tone, c.t(rtc)))
                 .build(),
         );
-        let warning = state.local_rtc.then(|| widgets::banner(t, t.warn(), Icon::Warning, c.t(T::RtcLocalWarn), None));
+        let warning =
+            state.local_rtc.then(|| widgets::banner(t, Tone::Warn, Icon::Warning, c.t(T::RtcLocalWarn), None));
         column![group.build(), warning].spacing(12).into()
     }
 

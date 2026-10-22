@@ -390,7 +390,7 @@ impl Page {
         )
         .padding([24, 16])
         .center_x(Fill)
-        .style(move |_: &iced::Theme| theme::hero_card_style(&t, color))
+        .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
         .into()
     }
 
@@ -443,7 +443,7 @@ impl Page {
         }
         let mut column = column![group.build()].spacing(12);
         if !details.names.available {
-            column = column.push(widgets::banner(t, t.warn(), Icon::Info, c.t(T::NoHostnamed), None));
+            column = column.push(widgets::banner(t, Tone::Warn, Icon::Info, c.t(T::NoHostnamed), None));
         }
         column.into()
     }
@@ -631,9 +631,9 @@ fn software_group<'a>(c: &Ctx, details: &'a Details, config: &'a ConfigStore) ->
             Row::new(t, c.t(K::ConfigFile))
                 .subtitle(config_path)
                 .suffix(if c.online {
-                    widgets::badge(c.t(K::CompositorOnline), t.ok_soft(), t.ok())
+                    widgets::pill(t, Tone::Ok, c.t(K::CompositorOnline))
                 } else {
-                    widgets::badge(c.t(K::CompositorOffline), t.warn_soft(), t.warn())
+                    widgets::pill(t, Tone::Warn, c.t(K::CompositorOffline))
                 })
                 .build(),
         )

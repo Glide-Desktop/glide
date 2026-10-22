@@ -477,12 +477,13 @@ impl App {
                 Some(ConfigFault::Io) => K::ConfigUnreadable,
                 _ => K::ConfigReadOnly,
             };
-            body = body.push(widgets::banner(t, t.danger(), Icon::Warning, format!("{} {error}", c.t(lead)), None));
+            let message = format!("{} {error}", c.t(lead));
+            body = body.push(widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, message, None));
         }
         if let Some(notice) = &self.notice {
             body = body.push(widgets::banner(
                 t,
-                if notice.error { t.danger() } else { t.warn() },
+                if notice.error { crate::theme::Tone::Danger } else { crate::theme::Tone::Warn },
                 if notice.error { Icon::Warning } else { Icon::Info },
                 notice.text.as_str(),
                 Some(widgets::icon_button(t, Icon::Close, Some(Message::DismissNotice))),

@@ -313,7 +313,7 @@ impl Page {
         container(row![meter, body].spacing(20).align_y(Alignment::Center))
             .padding(20)
             .width(Fill)
-            .style(move |_: &iced::Theme| theme::hero_card_style(&t, color))
+            .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
             .into()
     }
 

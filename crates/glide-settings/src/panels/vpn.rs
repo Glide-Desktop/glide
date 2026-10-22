@@ -432,10 +432,10 @@ impl Page {
         )]
         .spacing(theme::SECTION_GAP);
         if let Some(error) = &self.error {
-            page = page.push(widgets::banner(t, t.danger(), Icon::Warning, error.as_str(), None));
+            page = page.push(widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, error.as_str(), None));
         }
         if self.notice.is_some() {
-            page = page.push(widgets::banner(t, t.ok(), Icon::Check, c.t(T::Imported), None));
+            page = page.push(widgets::banner(t, crate::theme::Tone::Ok, Icon::Check, c.t(T::Imported), None));
         }
         let mut list = Group::new(t).title(c.t(T::Connections)).description(c.t(T::ConnectionsHint));
         if self.state.connections.is_empty() {

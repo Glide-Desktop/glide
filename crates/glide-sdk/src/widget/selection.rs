@@ -563,33 +563,39 @@ pub fn page_dots<'a, M: Clone + 'a>(
 pub fn swatches<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
     paint: &Paint, colors: &[(T, Color)], selected: Option<T>, on_select: impl Fn(T) -> M,
 ) -> Element<'a, M> {
-    let paint = *paint;
-    let items = colors.iter().map(|&(value, color)| {
-        let on = selected == Some(value);
-        let message = on_select(value);
-        let swatch = animate(if on { 1.0 } else { 0.0 }, Speed::SPRING, move |shown| {
-            let shown = shown.clone();
-            let ink =
-                if 0.299 * color.r + 0.587 * color.g + 0.114 * color.b > 0.62 { Color::BLACK } else { Color::WHITE };
-            let mark: Element<'a, M> = if on { icon(Icon::Check, 12.0, ink) } else { Space::new().into() };
-            let dot = container(mark).center(SWATCH).style(move |_| style::rounded(color, R_ROUND));
-            container(dot).padding(3).style(move |_| {
-                let amount = shown.get().clamp(0.0, 1.2);
-                container::Style {
-                    border: Border {
-                        color: paint.acc_bg().scale_alpha(amount.min(1.0)),
-                        width: 2.0,
-                        radius: R_ROUND.into(),
-                    },
-                    ..container::Style::default()
-                }
-            })
-        })
-        .scale(|value| 1.0 + 0.32 * value * (1.0 - value));
-        let control = mouse_area(swatch).on_release(message.clone()).interaction(mouse::Interaction::Pointer);
-        activatable(&paint, control, SWATCH / 2.0 + 3.0, Some(message))
-    });
+    let items = colors
+        .iter()
+        .map(|&(value, color)| swatch(paint, color, selected == Some(value), Some(on_select(value)), SWATCH));
     Row::with_children(items).spacing(SP2).align_y(Alignment::Center).into()
+}
+
+#[must_use]
+pub fn swatch<'a, M: Clone + 'a>(
+    paint: &Paint, color: Color, selected: bool, message: Option<M>, side: f32,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let swatch = animate(if selected { 1.0 } else { 0.0 }, Speed::SPRING, move |shown| {
+        let shown = shown.clone();
+        let ink = if 0.299 * color.r + 0.587 * color.g + 0.114 * color.b > 0.62 { Color::BLACK } else { Color::WHITE };
+        let mark: Element<'a, M> =
+            if selected { icon(Icon::Check, (side * 0.5).round(), ink) } else { Space::new().into() };
+        let dot = container(mark).center(side).style(move |_| style::rounded(color, R_ROUND));
+        container(dot).padding(3).style(move |_| {
+            let amount = shown.get().clamp(0.0, 1.2);
+            container::Style {
+                border: Border {
+                    color: paint.acc_bg().scale_alpha(amount.min(1.0)),
+                    width: 2.0,
+                    radius: R_ROUND.into(),
+                },
+                ..container::Style::default()
+            }
+        })
+    })
+    .scale(|value| 1.0 + 0.32 * value * (1.0 - value));
+    let Some(message) = message else { return swatch.into() };
+    let control = mouse_area(swatch).on_release(message.clone()).interaction(mouse::Interaction::Pointer);
+    activatable(&paint, control, side / 2.0 + 3.0, Some(message))
 }
 
 pub const SWATCH: f32 = 24.0;

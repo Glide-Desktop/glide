@@ -480,7 +480,7 @@ impl Pane for Page {
                 return page
                     .push(widgets::banner(
                         t,
-                        t.danger(),
+                        crate::theme::Tone::Danger,
                         Icon::Warning,
                         format!("{} {err}", c.t(tr::Key::Unreadable)),
                         None,
@@ -516,7 +516,7 @@ impl Pane for Page {
                 .join("; ");
             page = page.push(widgets::banner(
                 t,
-                t.warn(),
+                crate::theme::Tone::Warn,
                 Icon::Warning,
                 format!("{} {list}", c.t(tr::Key::ConflictsFound)),
                 None,

@@ -281,9 +281,11 @@ impl Pane for Page {
         let Some(snapshot) = &self.snapshot else {
             return widgets::empty_state(t, Icon::Globe, c.t(T::Loading), "");
         };
-        let notice = error_banner(t, self.error.as_deref())
-            .or_else(|| self.saved.then(|| widgets::banner(t, t.acc_bg(), Icon::Info, c.t(T::Applied), None)));
-        let unavailable = (!snapshot.bus).then(|| widgets::banner(t, t.warn(), Icon::Info, c.t(T::Unavailable), None));
+        let notice = error_banner(t, self.error.as_deref()).or_else(|| {
+            self.saved.then(|| widgets::banner(t, crate::theme::Tone::Accent, Icon::Info, c.t(T::Applied), None))
+        });
+        let unavailable = (!snapshot.bus)
+            .then(|| widgets::banner(t, crate::theme::Tone::Warn, Icon::Info, c.t(T::Unavailable), None));
         column![
             self.hero(c, snapshot),
             notice,

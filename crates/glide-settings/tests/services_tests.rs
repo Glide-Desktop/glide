@@ -219,7 +219,7 @@ fn system_parsers_read_proc_formats() {
 }
 
 #[test]
-fn byte_formatting_and_initials() {
+fn byte_formatting() {
     use glide_settings::Lang;
     assert_eq!(system::format_bytes(512, Lang::En), "512 B");
     assert_eq!(system::format_bytes(1_500, Lang::En), "1.5 kB");
@@ -227,9 +227,6 @@ fn byte_formatting_and_initials() {
     assert_eq!(system::format_bytes(999_960, Lang::En), "1.0 MB", "rounding never prints 1000.0 kB");
     assert_eq!(system::format_memory(16 * 1024 * 1024 * 1024, Lang::En), "16.0 GiB");
     assert_eq!(system::format_memory(33_000_000_000, Lang::Uk), "30,7 ГіБ");
-    assert_eq!(system::initials("artem tr"), "AT");
-    assert_eq!(system::initials("Олена"), "О");
-    assert_eq!(system::initials(""), "?");
 }
 
 #[test]

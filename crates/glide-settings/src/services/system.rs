@@ -206,13 +206,6 @@ pub fn format_memory(bytes: u64, lang: Lang) -> String {
 }
 
 #[must_use]
-pub fn initials(name: &str) -> String {
-    let letters: String =
-        name.split_whitespace().filter_map(|word| word.chars().next()).take(2).flat_map(char::to_uppercase).collect();
-    if letters.is_empty() { String::from("?") } else { letters }
-}
-
-#[must_use]
 pub fn os_release_value(text: &str, key: &str) -> Option<String> {
     text.lines()
         .find_map(|line| {

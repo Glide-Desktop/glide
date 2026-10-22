@@ -604,6 +604,27 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
     }
 }
 
+#[must_use]
+pub fn disclosure<'a, M: 'a>(paint: &Paint, value: Option<String>) -> Element<'a, M> {
+    let mut line = row![].spacing(SP1 + 2.0).align_y(Alignment::Center);
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        line = line.push(text(value, TextStyle::CALL).color(paint.fg_2()));
+    }
+    line.push(icon(Icon::Right, 12.0, paint.fg_3())).into()
+}
+
+#[must_use]
+pub fn inert<'a, M: 'a>(paint: &Paint, enabled: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let content = content.into();
+    if enabled {
+        return content;
+    }
+    let veil = Color { a: 0.55, ..paint.card_bg() };
+    let cover =
+        container(Space::new().width(Fill).height(Fill)).style(move |_| style::rounded(veil, glide_theme::shape::R1));
+    stack![content, iced::widget::opaque(cover)].into()
+}
+
 pub const TABLE_HEADER: f32 = 26.0;
 
 #[must_use]

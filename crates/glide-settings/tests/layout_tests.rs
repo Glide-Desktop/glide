@@ -196,41 +196,6 @@ fn the_account_card_is_a_hairline_card_that_turns_acc_soft_when_selected() {
 }
 
 #[test]
-fn tile_corners_grow_with_the_tile_and_stay_on_the_radius_scale() {
-    assert_eq!(theme::tile_radius(24.0), theme::radius_r2());
-    assert_eq!(theme::tile_radius(theme::PAGE_TILE_SIZE), theme::radius_r3());
-    assert_eq!(theme::tile_radius(72.0), theme::radius_r4());
-}
-
-#[test]
-fn selectable_cards_keep_their_ring_on_the_card_radius() {
-    use iced::widget::button::Status;
-    for t in both() {
-        let on = theme::selectable_card_style(&t, true, Status::Active);
-        let off = theme::selectable_card_style(&t, false, Status::Active);
-        assert_eq!(on.border.color, t.acc_bg());
-        assert_eq!(off.border.color, t.line());
-        assert_eq!(on.border.radius, theme::radius_r3());
-        let ring = theme::ring_button_style(&t, true, Status::Active);
-        assert!((ring.border.width - theme::RING_WIDTH).abs() < f32::EPSILON);
-        assert!(
-            (theme::ring_button_style(&t, false, Status::Active).border.width - ring.border.width).abs() < f32::EPSILON,
-            "selecting a preview must not shift its neighbours"
-        );
-    }
-}
-
-#[test]
-fn tones_pair_a_soft_background_with_a_strong_foreground() {
-    use glide_settings::theme::Tone;
-    for t in both() {
-        assert_eq!(theme::tone_colors(&t, Tone::Ok), (t.ok_soft(), t.ok()));
-        assert_eq!(theme::tone_colors(&t, Tone::Accent), (t.acc_soft(), t.acc_soft_fg()));
-        assert_eq!(theme::tone_colors(&t, Tone::Danger), (t.danger_soft(), t.danger()));
-    }
-}
-
-#[test]
 fn key_names_render_as_keycap_symbols() {
     use glide_settings::widgets::key_symbol;
     assert_eq!(key_symbol("Super"), "⌘");

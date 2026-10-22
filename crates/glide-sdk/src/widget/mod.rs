@@ -1,4 +1,5 @@
 mod buttons;
+mod cards;
 mod controls;
 mod feedback;
 mod find;
@@ -22,14 +23,21 @@ use iced::widget::{Space, container, scrollable as scroll};
 use iced::{Background, Border, Color, Element, Fill, Shadow};
 
 pub use buttons::{
-    Size, Tone, button, button_style, compact_button, danger, flat_toggle_button, ghost, icon_button, linked, outline,
-    primary, secondary, sized_button, sized_icon_button, sized_toggle_button, toggle_button, tonal,
+    Size, Tone, button, button_style, compact_button, danger, flat_toggle_button, ghost, icon_button, link, linked,
+    outline, primary, secondary, sized_button, sized_icon_button, sized_toggle_button, toggle_button, tonal,
+};
+pub use cards::{
+    choice_card, grid, hero_card, legend, page_header, preview_card, preview_ring_style, sample_well, stat_tile,
+    tinted_card_style, usage_bar, usage_card,
 };
 pub use controls::{
-    CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_mark, sized_switch, slider, spinner,
-    stepped_slider, switch,
+    CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_mark, sized_spinner, sized_switch,
+    slider, spinner, stepped_slider, switch,
 };
-pub use feedback::{Severity, Task, avatar, badge, banner, count_badge, empty_state, keycap, skeleton, task_card};
+pub use feedback::{
+    Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,
+    key_combo, keycap, noted_banner, skeleton, status_badge, task_card,
+};
 pub use find::{FIND_FIELD, FindBar, INFO_BAR, bar_strip, find_bar, info_bar};
 pub use focus::{Focus, RING, focusable};
 pub use inputs::{
@@ -38,13 +46,13 @@ pub use inputs::{
 };
 pub use layout::{
     Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW, action_card,
-    action_row, card, card_style, expander, facts, list, list_row, section, select_row, sidebar, sidebar_item,
-    status_bar, status_button, surface, switch_row, table_header, tree_row, well,
+    action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, section, select_row, sidebar,
+    sidebar_item, status_bar, status_button, surface, switch_row, table_header, tree_row, well,
 };
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
-    page_dots, radio_group, segmented, sidebar_list, swatches, tabs, track,
+    page_dots, radio_group, segmented, sidebar_list, swatch, swatches, tabs, track,
 };
 pub use strip::{Mark, TAB_GAP, TAB_PAD, Tab, TabStrip, tab_slot, tab_strip};
 

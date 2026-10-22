@@ -214,7 +214,7 @@ impl Pane for Page {
         if let Some(freed) = self.freed {
             page = page.push(widgets::banner(
                 t,
-                t.ok(),
+                crate::theme::Tone::Ok,
                 Icon::Check,
                 format!("{} {}", c.t(T::Freed), format_bytes(freed, c.lang)),
                 None,

@@ -644,7 +644,11 @@ impl<M> canvas::Program<M> for Spinner {
 
 #[must_use]
 pub fn spinner<'a, M: 'a>(paint: &Paint, large: bool) -> Element<'a, M> {
-    let side = if large { 34.0 } else { 22.0 };
+    sized_spinner(paint, if large { 34.0 } else { 22.0 })
+}
+
+#[must_use]
+pub fn sized_spinner<'a, M: 'a>(paint: &Paint, side: f32) -> Element<'a, M> {
     surface(Spinner { paint: *paint }).width(side).height(side).into()
 }
 

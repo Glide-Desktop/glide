@@ -228,7 +228,7 @@ impl Pane for Page {
             c.t(K::BluetoothOff).to_string()
         };
         let blocked = (self.state.blocked && !self.state.powered)
-            .then(|| widgets::banner(t, t.warn(), Icon::Warning, c.t(K::BluetoothBlocked), None));
+            .then(|| widgets::banner(t, Tone::Warn, Icon::Warning, c.t(K::BluetoothBlocked), None));
         let page = column![
             widgets::section_hero(
                 t,

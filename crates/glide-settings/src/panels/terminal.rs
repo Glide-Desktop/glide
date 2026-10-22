@@ -228,7 +228,7 @@ impl Pane for Page {
         if store.doc.is_none() {
             page = page.push(widgets::banner(
                 c.theme,
-                c.theme.danger(),
+                crate::theme::Tone::Danger,
                 crate::icons::Icon::Warning,
                 c.t(tr::Key::Unwritable),
                 None,
