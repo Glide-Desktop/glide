@@ -484,7 +484,18 @@ pub fn ringed<'a>(t: &ThemeState, field: impl Into<Element<'a, Message>>, ring: 
 
 #[must_use]
 pub fn hint<'a>(t: &ThemeState, content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
-    glide_sdk::widget::tooltip(&glide_sdk::Paint { tokens: t.tokens, alpha: t.alpha }, content, label)
+    glide_sdk::widget::tooltip(&paint(t), content, label)
+}
+
+#[must_use]
+pub fn paint(t: &ThemeState) -> glide_sdk::Paint {
+    glide_sdk::Paint { tokens: t.tokens, alpha: t.alpha }
+}
+
+#[must_use]
+pub fn check<'a>(t: &ThemeState, label: &'a str, on: bool, message: Message) -> Element<'a, Message> {
+    let state = if on { glide_sdk::widget::Check::On } else { glide_sdk::widget::Check::Off };
+    glide_sdk::widget::checkbox(&paint(t), label, state, Some(message))
 }
 
 #[must_use]

@@ -318,27 +318,6 @@ pub fn tooltip(theme: &ThemeState) -> container::Style {
 }
 
 #[must_use]
-pub fn checkbox(theme: &ThemeState, status: iced::widget::checkbox::Status) -> iced::widget::checkbox::Style {
-    use iced::widget::checkbox::Status;
-    let (checked, hovered) = match status {
-        Status::Active { is_checked } | Status::Disabled { is_checked } => (is_checked, false),
-        Status::Hovered { is_checked } => (is_checked, true),
-    };
-    let background = if checked { theme.acc_bg() } else { theme.view_bg() };
-    let border = match (checked, hovered) {
-        (true, _) => theme.acc_bg(),
-        (false, true) => theme.fg_3(),
-        (false, false) => theme.line_2(),
-    };
-    iced::widget::checkbox::Style {
-        background: Background::Color(background),
-        icon_color: theme.acc_fg(),
-        border: Border { color: border, width: 1.5, radius: Radius::from(R2) },
-        text_color: Some(theme.fg_1()),
-    }
-}
-
-#[must_use]
 pub fn surface(background: Color) -> container::Style {
     container::Style { background: Some(Background::Color(background)), ..container::Style::default() }
 }
@@ -391,35 +370,6 @@ pub fn popover(theme: &ThemeState) -> container::Style {
         border: Border { color: theme.line(), width: 1.0, radius: Radius::from(R3) },
         shadow: theme.shadow(Level::El3),
         snap: true,
-    }
-}
-
-#[must_use]
-pub fn dropdown(theme: &ThemeState, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
-    use iced::widget::pick_list::Status;
-    let border = match status {
-        Status::Opened { .. } => theme.acc_bg(),
-        Status::Hovered => theme.fill_3(),
-        Status::Active => theme.line_2(),
-    };
-    iced::widget::pick_list::Style {
-        text_color: theme.fg_1(),
-        placeholder_color: theme.fg_3(),
-        handle_color: theme.fg_2(),
-        background: Background::Color(theme.view_bg()),
-        border: Border { color: border, width: 1.0, radius: Radius::from(R2) },
-    }
-}
-
-#[must_use]
-pub fn dropdown_menu(theme: &ThemeState) -> iced::overlay::menu::Style {
-    iced::overlay::menu::Style {
-        background: Background::Color(theme.popover_bg()),
-        border: Border { color: theme.line(), width: 1.0, radius: Radius::from(R2) },
-        text_color: theme.fg_1(),
-        selected_text_color: theme.acc_soft_fg(),
-        selected_background: Background::Color(theme.acc_soft()),
-        shadow: theme.shadow(Level::El3),
     }
 }
 

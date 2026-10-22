@@ -1,4 +1,4 @@
-use iced::widget::{Row, checkbox, column, container, mouse_area, pick_list, row, rule, text, text_input};
+use iced::widget::{Row, column, container, mouse_area, row, rule, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
 use super::header::{GAP, INSET, bar_background, path_field, search_field};
@@ -143,14 +143,13 @@ fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>
 fn dropdown<'a>(
     app: &'a App, options: Vec<Pick>, selected: Option<Pick>, on_pick: impl Fn(Pick) -> Message + 'a,
 ) -> Element<'a, Message> {
-    let t = &app.theme;
-    pick_list(options, selected, on_pick)
-        .text_size(theme::CALL)
-        .padding(Padding::from([6.0, theme::SP3]))
-        .width(Length::Shrink)
-        .style(move |_, status| theme::dropdown(t, status))
-        .menu_style(move |_| theme::dropdown_menu(t))
-        .into()
+    let widest = options
+        .iter()
+        .map(|pick| glide_sdk::widget::measure(&pick.to_string(), glide_theme::TextStyle::CALL))
+        .fold(0.0, f32::max);
+    let width = (widest + 2.0 * theme::SP3 + theme::SP2 + 12.0).clamp(140.0, 360.0);
+    let picker = glide_sdk::widget::dropdown(&super::paint(&app.theme), options, selected, "", on_pick);
+    container(picker).width(width).into()
 }
 
 fn footer<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> {
@@ -171,12 +170,8 @@ fn footer<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> 
     for (index, choice) in request.choices.iter().enumerate() {
         if choice.is_toggle() {
             let on = chooser.choice_is_on(index);
-            let check = checkbox(on)
-                .label(choice.label.as_str())
-                .text_size(theme::CALL)
-                .on_toggle(move |on| Message::ChooserChoice(index, on.to_string()))
-                .style(move |_, status| theme::checkbox(t, status));
-            bar = bar.push(check);
+            let message = Message::ChooserChoice(index, (!on).to_string());
+            bar = bar.push(super::check(t, choice.label.as_str(), on, message));
         } else {
             let options = chooser.choice_options(index);
             let current = chooser.choices.get(index);

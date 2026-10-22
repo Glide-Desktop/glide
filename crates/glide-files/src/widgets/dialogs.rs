@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use iced::widget::{
-    Column, button, checkbox, column, container, float, image, opaque, row, rule, scrollable, space, svg, text,
-    text_input,
+    Column, button, column, container, float, image, opaque, row, rule, scrollable, space, svg, text, text_input,
 };
 use iced::{Alignment, Element, Fill, Length, Padding, Vector};
 
@@ -280,14 +279,7 @@ fn open_with<'a>(
     body = body.push(list_container);
 
     if mime.is_some() {
-        let check = checkbox(always)
-            .label(Key::AlwaysOpenWithThis.text(lang))
-            .on_toggle(|_| Message::ToggleAlwaysOpen)
-            .size(18)
-            .spacing(theme::SP2)
-            .text_size(BUTTON_TEXT)
-            .style(move |_, status| theme::checkbox(&t, status));
-        body = body.push(check);
+        body = body.push(super::check(&t, Key::AlwaysOpenWithThis.text(lang), always, Message::ToggleAlwaysOpen));
     }
 
     body.push(space().height(theme::SP1))
@@ -333,13 +325,7 @@ fn conflict<'a>(c: Ctx<'a>, question: &'a Question, for_all: bool, focus: Option
         (format!("«{}» {}", display_name(&question.dest), Key::FileExists.text(lang)), Key::FileExistsHint)
     };
     let [(skip, skipped), (both, kept), (primary, chosen)] = choices(question.folders);
-    let check = checkbox(for_all)
-        .label(Key::ApplyToAll.text(lang))
-        .on_toggle(|_| Message::ToggleForAll)
-        .size(20)
-        .spacing(theme::SP2)
-        .text_size(BUTTON_TEXT)
-        .style(move |_, status| theme::checkbox(&t, status));
+    let check = super::check(&t, Key::ApplyToAll.text(lang), for_all, Message::ToggleForAll);
     column![
         text(heading).size(theme::T3).font(theme::SEMIBOLD).wrapping(WRAP),
         text(hint.text(lang)).size(theme::CALL).color(t.fg_2()),
