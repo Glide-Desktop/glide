@@ -549,14 +549,12 @@ impl Page {
             }));
         }
         let well = t.sunken_bg();
-        let scroller = container(
-            scrollable(lines)
-                .height(Length::Fixed(120.0))
-                .width(Fill)
-                .style(move |_: &iced::Theme, status| theme::scrollable_style(&t, status)),
-        )
-        .width(Fill)
-        .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2()));
+        let scroller =
+            container(scrollable(lines).height(Length::Fixed(120.0)).width(Fill).style(
+                move |_: &iced::Theme, status| glide_sdk::widget::scrollable_style(&widgets::paint(&t), status),
+            ))
+            .width(Fill)
+            .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2()));
         Group::new(t)
             .title(c.t(T::TryIt))
             .description(c.t(T::TryItHint))

@@ -258,7 +258,7 @@ impl Page {
         let card = container(column![container(preview).center_x(Fill), slider].spacing(18))
             .padding(18)
             .width(Fill)
-            .style(move |_: &iced::Theme| theme::group_style(&t));
+            .style(move |_: &iced::Theme| theme::card_style(&t));
         let reset = widgets::secondary(
             t,
             c.t(K::Reset),

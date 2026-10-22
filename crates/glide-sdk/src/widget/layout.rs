@@ -458,6 +458,36 @@ pub fn expander<'a, M: Clone + 'a>(
 }
 
 #[must_use]
+pub fn profile_card<'a, M: Clone + 'a>(
+    paint: &Paint, avatar: impl Into<Element<'a, M>>, name: &str, subtitle: &str, selected: bool, message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let (ink, soft, mark) = if selected {
+        (paint.acc_soft_fg(), paint.acc_soft_fg(), paint.acc_soft_fg())
+    } else {
+        (paint.fg_1(), paint.fg_2(), paint.fg_3())
+    };
+    let labels = column![
+        text(name.to_string(), TextStyle::HEAD).color(ink).wrapping(Wrapping::None),
+        text(subtitle.to_string(), TextStyle::CAP).color(soft).wrapping(Wrapping::None),
+    ]
+    .spacing(1)
+    .width(Fill)
+    .clip(true);
+    let content =
+        row![avatar.into(), labels, icon(Icon::Right, 12.0, mark)].spacing(SP2 + 2.0).align_y(Alignment::Center);
+    let card = control(content).on_press(message.clone()).padding(Padding::from([SP2, SP2 + 2.0])).width(Fill);
+    let card = widgets::button(card, move |status| {
+        let base = if selected { paint.acc_soft() } else { paint.card_bg() };
+        control::Style {
+            border: Border { color: paint.line(), width: 1.0, radius: R3.into() },
+            ..style::flat(paint.layered(base, status), ink, R3)
+        }
+    });
+    activatable(&paint, card, R3, Some(message))
+}
+
+#[must_use]
 pub fn sidebar_item<'a, M: Clone + 'a>(
     paint: &Paint, glyph: Option<impl super::Glyph + 'a>, label: &'a str, selected: bool, message: M,
 ) -> Element<'a, M> {
@@ -474,7 +504,9 @@ type Drawn<'a, M> = Box<dyn FnOnce(Color) -> Element<'a, M> + 'a>;
 pub struct SidebarItem<'a, M> {
     paint: Paint,
     glyph: Option<(Drawn<'a, M>, Color)>,
+    leading: Option<Element<'a, M>>,
     label: String,
+    matched: Option<(usize, usize)>,
     ink: Option<Color>,
     accessory: Option<Element<'a, M>>,
     message: Option<M>,
@@ -490,7 +522,9 @@ impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
         Self {
             paint: *paint,
             glyph: None,
+            leading: None,
             label: label.into(),
+            matched: None,
             ink: None,
             accessory: None,
             message: None,
@@ -499,6 +533,20 @@ impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
             hovered: false,
             held: false,
         }
+    }
+
+    #[must_use]
+    pub fn leading(mut self, leading: impl Into<Element<'a, M>>) -> Self {
+        self.leading = Some(leading.into());
+        self
+    }
+
+    #[must_use]
+    pub fn matched(mut self, range: Option<(usize, usize)>) -> Self {
+        self.matched = range.filter(|&(start, end)| {
+            start < end && self.label.is_char_boundary(start) && self.label.is_char_boundary(end)
+        });
+        self
     }
 
     #[must_use]
@@ -558,18 +606,52 @@ impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
 
 impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
     fn from(item: SidebarItem<'a, M>) -> Self {
-        let SidebarItem { paint, glyph, label, ink, accessory, message, selected, current, hovered, held } = item;
+        let SidebarItem {
+            paint,
+            glyph,
+            leading,
+            label,
+            matched,
+            ink,
+            accessory,
+            message,
+            selected,
+            current,
+            hovered,
+            held,
+        } = item;
         animate(if selected { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
             let trailing = if accessory.is_some() { SP1 } else { SP3 };
             let mut content = row![].spacing(SP2 + 2.0).align_y(Alignment::Center);
-            if let Some((glyph, tint)) = glyph {
+            if let Some(leading) = leading {
+                content = content.push(leading);
+            } else if let Some((glyph, tint)) = glyph {
                 content = content.push(glyph(if selected { paint.acc_soft_fg() } else { tint }));
             }
             let style = if current { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
-            let mut label = text(label, style).wrapping(Wrapping::None).width(Fill);
-            if let Some(ink) = ink.filter(|_| !selected) {
-                label = label.color(ink);
-            }
+            let ink = ink.filter(|_| !selected);
+            let piece = |part: String, style: TextStyle| {
+                let piece = text(part, style).wrapping(Wrapping::None);
+                match ink {
+                    Some(ink) => piece.color(ink),
+                    None => piece,
+                }
+            };
+            let label: Element<'a, M> = match matched {
+                Some((start, end)) => {
+                    let hit = if selected { paint.acc_soft_fg() } else { paint.acc_text() };
+                    row![
+                        piece(label[..start].to_string(), style),
+                        text(label[start..end].to_string(), TextStyle { weight: 600, ..style })
+                            .color(hit)
+                            .wrapping(Wrapping::None),
+                        piece(label[end..].to_string(), style),
+                    ]
+                    .width(Fill)
+                    .into()
+                }
+                None => piece(label, style).width(Fill).into(),
+            };
             content = content.push(label);
             if let Some(accessory) = accessory {
                 content = content.push(accessory);
@@ -749,4 +831,16 @@ pub fn sidebar<'a, M: 'a>(paint: &Paint, width: f32, items: Vec<Element<'a, M>>)
 #[must_use]
 pub fn surface<'a, M: 'a>(background: Color, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(content).width(Fill).height(Length::Fill).style(move |_| style::rounded(background, 0.0)).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_fits_one_control_and_its_hover_is_concentric_with_the_card() {
+        assert!((ROW_HEIGHT - 44.0).abs() < f32::EPSILON);
+        assert!((ROW_HEIGHT - 2.0 * ROW_PAD_Y - component::CONTROL).abs() < f32::EPSILON);
+        assert!((R3 - SP1 - R2).abs() < f32::EPSILON, "rows sit SP1 inside the card, so R2 follows R3");
+    }
 }

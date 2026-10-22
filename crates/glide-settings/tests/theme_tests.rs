@@ -1,9 +1,8 @@
 use glide_settings::theme::{
-    Accent as SettingsAccent, R_ROUND, R1, R2, R3, ThemeState, button_ghost, card_style, content_container_style,
-    radius_r2, radius_r3, sidebar_item_style, text_input_style, window_container_style,
+    Accent as SettingsAccent, R_ROUND, R1, R2, R3, ThemeState, card_style, content_container_style, radius_r3,
+    window_container_style,
 };
 use glide_theme::{Accent, Appearance, Color, Tokens};
-use iced::widget::{button, text_input};
 
 fn luminance(c: Color) -> f32 {
     let lin = |v: f32| {
@@ -23,16 +22,9 @@ fn luma(c: Color) -> f32 {
 
 #[test]
 fn widget_styles_use_only_meridian_radii() {
-    use glide_settings::theme::icon_button_style;
     const { assert!(R1 < R2 && R2 < R3 && R3 < R_ROUND) };
     let theme = ThemeState::new(Appearance::Dark, Accent::Blue);
-    let active = button::Status::Active;
     assert_eq!(card_style(&theme).border.radius, radius_r3());
-    for style in [button_ghost, icon_button_style] {
-        assert_eq!(style(&theme, active).border.radius, radius_r2());
-    }
-    assert_eq!(text_input_style(&theme, text_input::Status::Active).border.radius, radius_r2());
-    assert_eq!(sidebar_item_style(&theme, false, active).border.radius, radius_r2());
     for style in [window_container_style, content_container_style] {
         assert_eq!(style(&theme).border.radius, iced::border::Radius::default());
     }
@@ -101,16 +93,5 @@ fn every_settings_accent_has_names_and_an_opaque_sample() {
         assert!(!accent.name().is_empty() && !accent.name_uk().is_empty());
         assert!(accent.primary_hex().starts_with('#'));
         assert!(accent.sample_color().a > 0.99);
-    }
-}
-
-#[test]
-fn banners_take_the_soft_fill_of_their_tone() {
-    use glide_settings::theme::banner_style;
-    for appearance in [Appearance::Light, Appearance::Dark] {
-        let theme = ThemeState::new(appearance, Accent::Blue);
-        assert_eq!(banner_style(&theme, theme.danger()).background, Some(iced::Background::Color(theme.danger_soft())));
-        assert_eq!(banner_style(&theme, theme.warn()).background, Some(iced::Background::Color(theme.warn_soft())));
-        assert_eq!(banner_style(&theme, theme.ok()).background, Some(iced::Background::Color(theme.ok_soft())));
     }
 }

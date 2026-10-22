@@ -522,10 +522,8 @@ impl Page {
                 .align_y(Alignment::Center),
             );
         }
-        let body = container(card)
-            .padding(theme::SECTION_GAP)
-            .width(Fill)
-            .style(move |_: &iced::Theme| theme::group_style(&t));
+        let body =
+            container(card).padding(theme::SECTION_GAP).width(Fill).style(move |_: &iced::Theme| theme::card_style(&t));
         column![
             Group::new(t)
                 .title(c.t(tr::Key::Arrangement))

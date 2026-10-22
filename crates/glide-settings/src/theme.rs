@@ -1,4 +1,4 @@
-use iced::widget::{button, container, scrollable, text_input};
+use iced::widget::{button, container};
 use serde::{Deserialize, Serialize};
 
 pub const R1: f32 = glide_theme::shape::R1;
@@ -365,89 +365,6 @@ pub fn card_style(theme: &ThemeState) -> container::Style {
     }
 }
 
-fn flat_button(
-    background: Option<iced::Color>, text_color: iced::Color, radius: iced::border::Radius,
-) -> button::Style {
-    button::Style {
-        background: background.map(iced::Background::Color),
-        text_color,
-        border: iced::Border { color: iced::Color::TRANSPARENT, width: 0.0, radius },
-        shadow: iced::Shadow::default(),
-        snap: true,
-    }
-}
-
-fn state_fill(base: iced::Color, layer: iced::Color, status: button::Status) -> iced::Color {
-    match status {
-        button::Status::Hovered => hover_layer(base, layer),
-        button::Status::Pressed => press_layer(base, layer),
-        button::Status::Active | button::Status::Disabled => base,
-    }
-}
-
-#[must_use]
-pub fn button_ghost(theme: &ThemeState, status: button::Status) -> button::Style {
-    let text = match status {
-        button::Status::Active => theme.fg_2(),
-        button::Status::Hovered | button::Status::Pressed => theme.fg_1(),
-        button::Status::Disabled => theme.fg_4(),
-    };
-    let bg = state_fill(iced::Color::TRANSPARENT, theme.state(), status);
-    flat_button(Some(bg), text, radius_r2())
-}
-
-#[must_use]
-pub fn text_input_style(theme: &ThemeState, status: text_input::Status) -> text_input::Style {
-    let (border_color, border_width, icon_color) = match status {
-        text_input::Status::Active => (theme.line_2(), 1.0, theme.fg_3()),
-        text_input::Status::Hovered => (theme.fill_3(), 1.0, theme.fg_2()),
-        text_input::Status::Focused { .. } => (theme.acc_bg(), 1.5, theme.acc_text()),
-        text_input::Status::Disabled => (theme.fg_4(), 1.0, theme.fg_4()),
-    };
-
-    text_input::Style {
-        background: iced::Background::Color(theme.view_bg()),
-        border: iced::Border { color: border_color, width: border_width, radius: radius_r2() },
-        icon: icon_color,
-        placeholder: theme.fg_3(),
-        value: match status {
-            text_input::Status::Disabled => theme.fg_4(),
-            _ => theme.fg_1(),
-        },
-        selection: theme.acc_soft(),
-    }
-}
-
-#[must_use]
-pub fn search_field_style(theme: &ThemeState, status: text_input::Status) -> text_input::Style {
-    let mut style = text_input_style(theme, status);
-    match status {
-        text_input::Status::Active => {
-            style.background = iced::Background::Color(theme.fill_1());
-            style.border.color = iced::Color::TRANSPARENT;
-        }
-        text_input::Status::Hovered => {
-            style.background = iced::Background::Color(theme.fill_2());
-            style.border.color = iced::Color::TRANSPARENT;
-        }
-        text_input::Status::Focused { .. } => {
-            style.background = iced::Background::Color(theme.view_bg());
-        }
-        text_input::Status::Disabled => {
-            style.background = iced::Background::Color(theme.fill_1());
-        }
-    }
-    style
-}
-
-#[must_use]
-pub fn sidebar_item_style(theme: &ThemeState, selected: bool, status: button::Status) -> button::Style {
-    let (base, text) =
-        if selected { (theme.acc_soft(), theme.acc_soft_fg()) } else { (iced::Color::TRANSPARENT, theme.fg_1()) };
-    let text = if status == button::Status::Disabled { theme.fg_4() } else { text };
-    flat_button(Some(state_fill(base, theme.state(), status)), text, radius_r2())
-}
-
 #[must_use]
 pub fn window_container_style(theme: &ThemeState) -> container::Style {
     container::Style {
@@ -470,21 +387,14 @@ pub const CONTROL_HEIGHT: f32 = glide_theme::component::CONTROL;
 pub const SMALL_CONTROL_HEIGHT: f32 = glide_theme::component::SMALL_CONTROL;
 pub const SIDEBAR_WIDTH: f32 = 256.0;
 pub const CONTENT_MAX_WIDTH: f32 = 680.0;
-pub const ROW_MIN_HEIGHT: f32 = 44.0;
 pub const ROW_PADDING_Y: f32 = 5.0;
 pub const ROW_PADDING_X: f32 = 12.0;
-pub const GROUP_INSET: f32 = 4.0;
 pub const SECTION_GAP: f32 = 24.0;
 pub const PAGE_PADDING_X: f32 = 32.0;
 pub const PAGE_PADDING_TOP: f32 = 24.0;
 pub const PAGE_TITLE_SIZE: f32 = 26.0;
 pub const RING_GAP: f32 = 4.0;
 pub const RING_WIDTH: f32 = glide_theme::component::FOCUS_RING;
-
-#[must_use]
-pub fn row_content_height() -> f32 {
-    ROW_MIN_HEIGHT - 2.0 * ROW_PADDING_Y
-}
 
 #[must_use]
 pub fn meridian_theme(theme: &ThemeState) -> iced::Theme {
@@ -516,81 +426,6 @@ pub fn solid(color: iced::Color, radius: iced::border::Radius) -> container::Sty
 }
 
 #[must_use]
-pub fn group_style(theme: &ThemeState) -> container::Style {
-    card_style(theme)
-}
-
-#[must_use]
-pub fn row_button_style(theme: &ThemeState, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered => Some(hover_layer(iced::Color::TRANSPARENT, theme.state())),
-        button::Status::Pressed => Some(press_layer(iced::Color::TRANSPARENT, theme.state())),
-        _ => None,
-    };
-    flat_button(background, theme.fg_1(), radius_r2())
-}
-
-#[must_use]
-pub fn icon_button_style(theme: &ThemeState, status: button::Status) -> button::Style {
-    button_ghost(theme, status)
-}
-
-#[must_use]
-pub fn segment_thumb(theme: &ThemeState) -> iced::Color {
-    to_iced_color(theme.tokens.segment_thumb())
-}
-
-#[must_use]
-pub fn banner_style(theme: &ThemeState, tone: iced::Color) -> container::Style {
-    let soft = if tone == theme.danger() {
-        theme.danger_soft()
-    } else if tone == theme.warn() {
-        theme.warn_soft()
-    } else if tone == theme.ok() {
-        theme.ok_soft()
-    } else if tone == theme.acc_bg() {
-        theme.acc_soft()
-    } else {
-        iced::Color { a: 0.14, ..tone }
-    };
-    container::Style {
-        text_color: Some(theme.fg_1()),
-        background: Some(iced::Background::Color(soft)),
-        border: iced::Border { color: iced::Color { a: 0.35, ..tone }, width: 1.0, radius: radius_r2() },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
-pub fn scrollable_style(theme: &ThemeState, status: scrollable::Status) -> scrollable::Style {
-    let hovered = matches!(
-        status,
-        scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. } | scrollable::Status::Dragged { .. }
-    );
-    let scroller = if hovered { theme.fg_3() } else { theme.fill_3() };
-    let rail = scrollable::Rail {
-        background: None,
-        border: iced::Border::default(),
-        scroller: scrollable::Scroller {
-            background: iced::Background::Color(scroller),
-            border: iced::Border { color: iced::Color::TRANSPARENT, width: 0.0, radius: radius_round() },
-        },
-    };
-    scrollable::Style {
-        container: container::Style::default(),
-        vertical_rail: rail,
-        horizontal_rail: rail,
-        gap: None,
-        auto_scroll: scrollable::AutoScroll {
-            background: iced::Background::Color(theme.popover_bg()),
-            border: iced::Border { color: theme.line(), width: 1.0, radius: radius_round() },
-            shadow: iced::Shadow::default(),
-            icon: theme.fg_2(),
-        },
-    }
-}
-
-#[must_use]
 pub fn rule_style(theme: &ThemeState) -> iced::widget::rule::Style {
     iced::widget::rule::Style {
         color: theme.line(),
@@ -607,18 +442,6 @@ pub fn preview_frame_style(theme: &ThemeState, selected: bool) -> container::Sty
             color: if selected { theme.acc_bg() } else { theme.line_2() },
             width: if selected { RING_WIDTH } else { 1.0 },
             radius: radius_r3(),
-        },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
-pub fn swatch_ring_style(theme: &ThemeState, selected: bool) -> container::Style {
-    container::Style {
-        border: iced::Border {
-            color: if selected { theme.fg_1() } else { iced::Color::TRANSPARENT },
-            width: RING_WIDTH,
-            radius: radius_round(),
         },
         ..container::Style::default()
     }
@@ -656,27 +479,6 @@ pub fn plain_button_style(theme: &ThemeState, _status: button::Status) -> button
 }
 
 pub use glide_sdk::widget::Severity as Tone;
-
-#[must_use]
-pub fn sidebar_indicator_style(theme: &ThemeState, visible: bool) -> container::Style {
-    solid(if visible { theme.acc_bg() } else { iced::Color::TRANSPARENT }, iced::border::right(R1))
-}
-
-#[must_use]
-pub fn account_card_style(theme: &ThemeState, selected: bool, status: button::Status) -> button::Style {
-    let base = if selected { theme.acc_soft() } else { theme.card_bg() };
-    let background = state_fill(base, theme.state(), status);
-    button::Style {
-        background: Some(iced::Background::Color(background)),
-        text_color: if selected { theme.acc_soft_fg() } else { theme.fg_1() },
-        border: iced::Border { color: theme.line(), width: 1.0, radius: radius_r3() },
-        shadow: iced::Shadow::default(),
-        snap: true,
-    }
-}
-
-pub const SIDEBAR_INDICATOR_WIDTH: f32 = 3.0;
-pub const SIDEBAR_INDICATOR_HEIGHT: f32 = 16.0;
 
 #[cfg(test)]
 mod tests {

@@ -119,10 +119,20 @@ pub fn search_field<'a, M: Clone + 'a>(
 pub fn search_input<'a, M: Clone + 'a>(
     paint: &Paint, input: text_input::TextInput<'a, M>, on_clear: Option<M>, clear_label: &'a str,
 ) -> Element<'a, M> {
+    hinted_search_input(paint, input, on_clear, clear_label, None)
+}
+
+#[must_use]
+pub fn hinted_search_input<'a, M: Clone + 'a>(
+    paint: &Paint, input: text_input::TextInput<'a, M>, on_clear: Option<M>, clear_label: &'a str,
+    hint: Option<Element<'a, M>>,
+) -> Element<'a, M> {
     let lead = icon(Icon::Search, 14.0, paint.fg_3());
     let mut content = row![lead, styled(paint, input)].spacing(SP2).align_y(Alignment::Center);
     if let Some(on_clear) = on_clear {
         content = content.push(super::tooltip(paint, trailing(paint, Icon::Close, on_clear), clear_label));
+    } else if let Some(hint) = hint {
+        content = content.push(hint);
     }
     well(paint, content, Validity::Neutral)
 }

@@ -498,12 +498,9 @@ impl App {
             )
             .center_x(Fill);
 
-        container(
-            scrollable(clamp)
-                .id(CONTENT_SCROLL_ID)
-                .height(Fill)
-                .style(move |_: &iced::Theme, status| theme::scrollable_style(&t, status)),
-        )
+        container(scrollable(clamp).id(CONTENT_SCROLL_ID).height(Fill).style(move |_: &iced::Theme, status| {
+            glide_sdk::widget::scrollable_style(&crate::widgets::paint(&t), status)
+        }))
         .width(Fill)
         .height(Length::Fill)
         .style(move |_: &iced::Theme| theme::content_container_style(&t))
