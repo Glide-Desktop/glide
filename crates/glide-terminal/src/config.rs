@@ -1,100 +1,13 @@
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use alacritty_terminal::term::Config;
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
-use glide_theme::{Accent, Appearance};
 use serde::{Deserialize, Serialize};
 
-use crate::i18n::Lang;
 use crate::profile::Profile;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Look {
-    pub appearance: Appearance,
-    pub appearance_schedule: bool,
-    pub accent: Accent,
-    pub language: Option<Lang>,
-    pub motion_scale: f32,
-    pub sounds: bool,
-    pub ui_family: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Shell {
-    general: General,
-    topbar: Topbar,
-    animations: Animations,
-    notifications: Notifications,
-}
-
-#[derive(Deserialize)]
-#[serde(default)]
-struct Notifications {
-    sounds: bool,
-}
-
-impl Default for Notifications {
-    fn default() -> Self {
-        Self { sounds: true }
-    }
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "kebab-case")]
-struct General {
-    language: Option<String>,
-    font_family: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "kebab-case")]
-struct Topbar {
-    appearance: Appearance,
-    accent: Accent,
-    appearance_schedule: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-struct Animations {
-    enabled: bool,
-    speed: f32,
-    respect_system: bool,
-}
-
-impl Default for Animations {
-    fn default() -> Self {
-        Self { enabled: true, speed: 1.0, respect_system: true }
-    }
-}
-
-impl Look {
-    #[must_use]
-    pub fn parse(text: &str, reduced_motion: bool) -> Self {
-        let shell: Shell = toml::from_str(text).unwrap_or_default();
-        let animations = &shell.animations;
-        let still = !animations.enabled || (animations.respect_system && reduced_motion);
-        Self {
-            appearance: shell.topbar.appearance,
-            appearance_schedule: shell.topbar.appearance_schedule,
-            accent: shell.topbar.accent,
-            language: shell.general.language.as_deref().and_then(Lang::from_key),
-            motion_scale: if still { 0.0 } else { animations.speed },
-            sounds: shell.notifications.sounds,
-            ui_family: shell.general.font_family,
-        }
-    }
-
-    #[must_use]
-    pub fn appearance_at(&self, minute: Option<u16>) -> Appearance {
-        minute.filter(|_| self.appearance_schedule).map_or(self.appearance, Appearance::scheduled)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -189,57 +102,11 @@ impl Preferences {
     }
 }
 
-#[must_use]
-pub fn reduced_motion() -> bool {
-    SYSTEM_REDUCED.load(Ordering::Relaxed)
-        || std::env::var("GLIDE_REDUCED_MOTION").is_ok_and(|value| value.trim() == "1")
-}
-
-static SYSTEM_REDUCED: AtomicBool = AtomicBool::new(false);
 static WRITES: AtomicU64 = AtomicU64::new(0);
-
-#[must_use]
-pub fn motion_changes() -> iced::futures::channel::mpsc::UnboundedReceiver<bool> {
-    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
-    let _ = std::thread::Builder::new().name("glide-terminal-motion".into()).spawn(move || {
-        let mut previous = None;
-        while !sender.is_closed() {
-            let reduced = std::process::Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-                .output()
-                .is_ok_and(|output| output.status.success() && output.stdout.trim_ascii() == b"false");
-            if previous != Some(reduced) {
-                SYSTEM_REDUCED.store(reduced, Ordering::Relaxed);
-                if sender.unbounded_send(reduced).is_err() {
-                    break;
-                }
-                previous = Some(reduced);
-            }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-    });
-    receiver
-}
-
-#[must_use]
-pub fn shell_path() -> Option<PathBuf> {
-    glide_config::xdg_path("glide", "glide.toml")
-}
 
 #[must_use]
 pub fn path() -> Option<PathBuf> {
     glide_config::xdg_path("glide", "terminal.toml")
-}
-
-#[must_use]
-pub fn stamp(path: Option<&Path>) -> Option<SystemTime> {
-    std::fs::metadata(path?).and_then(|meta| meta.modified()).ok()
-}
-
-#[must_use]
-pub fn load_look() -> Look {
-    let text = shell_path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
-    Look::parse(&text, reduced_motion())
 }
 
 #[must_use]
@@ -315,17 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn the_shell_look_follows_glide_toml() {
-        let look = Look::parse("[topbar]\nappearance = \"light\"\n[general]\nlanguage = \"en\"\n", false);
-        assert_eq!(look.appearance, Appearance::Light);
-        assert_eq!(look.language, Some(Lang::En));
-        assert!(look.sounds);
-        assert!(!Look::parse("[notifications]\nsounds = false\n", false).sounds);
-        assert_eq!(Look::parse("[animations]\nenabled = false\n", false).motion_scale, 0.0);
-        assert_eq!(Look::parse("", true).motion_scale, 0.0);
-    }
-
-    #[test]
     fn shell_commands_keep_quoted_arguments_and_reject_unclosed_quotes() {
         assert_eq!(
             shell_command("env FOO='a b' zsh -l"),
@@ -333,17 +189,6 @@ mod tests {
         );
         assert_eq!(shell_command("zsh '"), None);
         assert_eq!(shell_command("   "), None);
-    }
-
-    #[test]
-    fn scheduled_appearance_uses_the_shared_rule_and_manual_appearance_remains_available() {
-        let scheduled = Look::parse("[topbar]\nappearance = 'dark'\nappearance-schedule = true\n", false);
-        for minute in [0, 419, 420, 720, 1139, 1140, 1439] {
-            assert_eq!(scheduled.appearance_at(Some(minute)), Appearance::scheduled(minute));
-        }
-        assert_eq!(scheduled.appearance_at(None), Appearance::Dark);
-        let manual = Look::parse("[topbar]\nappearance = 'light'\nappearance-schedule = false\n", false);
-        assert_eq!(manual.appearance_at(Some(0)), Appearance::Light);
     }
 
     #[test]

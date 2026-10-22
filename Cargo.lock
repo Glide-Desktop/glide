@@ -1693,6 +1693,7 @@ dependencies = [
  "glide-iced",
  "glide-ipc",
  "glide-paint",
+ "glide-sdk",
  "glide-theme",
  "glide-ui",
  "iced",

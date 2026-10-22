@@ -280,6 +280,7 @@ pub enum Message {
     Link(markdown::Uri),
     Pointer(Point),
     ShellLook(glide_app::Look),
+    SystemMotion(bool),
     Tick,
     Frame,
     Window(WindowAction),
@@ -580,7 +581,6 @@ impl App {
     }
 
     pub fn launch(primary: Option<std::fs::File>, paths: &[PathBuf]) -> (Self, Task<Message>) {
-        look::watch_reduced_motion();
         let look = Look::load();
         motion::set_scale(look.motion_scale);
         let prefs = config::load();
@@ -857,6 +857,7 @@ impl App {
             window::close_requests().map(|_| Message::CloseRequested),
             iced::time::every(TICK).map(|_| Message::Tick),
             Subscription::run(glide_app::look_changes).map(Message::ShellLook),
+            Subscription::run(look::motion_changes).map(Message::SystemMotion),
         ];
         if let Some(handles) = self.handles {
             subscriptions.push(Subscription::run_with(handles, menubar::events).map(Message::MenuBar));
@@ -1091,6 +1092,10 @@ impl App {
             }
             Message::ShellLook(look) => {
                 self.shell = Some(look);
+                self.apply_look();
+                Task::none()
+            }
+            Message::SystemMotion(_) => {
                 self.apply_look();
                 Task::none()
             }

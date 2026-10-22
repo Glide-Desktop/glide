@@ -1,29 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Lang {
-    #[default]
-    Uk,
-    En,
-}
-
-impl Lang {
-    #[must_use]
-    pub fn from_key(key: &str) -> Option<Self> {
-        match key.trim().to_ascii_lowercase().as_str() {
-            "uk" | "ua" | "ukrainian" => Some(Self::Uk),
-            "en" | "english" => Some(Self::En),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn from_env() -> Self {
-        let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
-            .into_iter()
-            .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
-            .unwrap_or_default();
-        if locale.starts_with("uk") || locale.is_empty() { Self::Uk } else { Self::En }
-    }
-}
+pub use glide_sdk::Lang;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {

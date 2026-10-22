@@ -12,6 +12,7 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{ClipboardType, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
+use glide_sdk::look::{self as shell_look, Look as ShellLook};
 use glide_theme::motion;
 use iced::keyboard::key::Named;
 use iced::keyboard::{self, Key, Modifiers};
@@ -264,7 +265,7 @@ pub struct App {
     pub frame: WindowFrame,
     reported_focus: Option<PaneId>,
     ui_family: Option<String>,
-    shell_look: config::Look,
+    shell_look: ShellLook,
     typed: Instant,
     flashes: HashMap<PaneId, (Instant, Flash)>,
     prompts: HashMap<PaneId, marks::Prompt>,
@@ -446,6 +447,10 @@ pub fn directory_label(directory: Option<&Path>) -> String {
     directory.file_name().map_or_else(|| directory.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
+fn stamps() -> (Option<SystemTime>, Option<SystemTime>) {
+    (shell_look::stamp(shell_look::shell_path().as_deref()), shell_look::stamp(config::path().as_deref()))
+}
+
 fn wayland_handles(window: &dyn iced::window::Window) -> Option<dnd::Handles> {
     use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
     let display = window.display_handle().ok()?.as_raw();
@@ -513,7 +518,7 @@ impl App {
     }
 
     pub fn with_launch(mut launch: Launch) -> (Self, Task<Message>) {
-        let look = config::load_look();
+        let look = ShellLook::load();
         motion::set_scale(look.motion_scale);
         let prefs = config::load();
         if launch.command.is_none()
@@ -522,8 +527,8 @@ impl App {
             launch.command = Some(config::shell_command(&shell).unwrap_or((shell, Vec::new())));
         }
         let app = Self {
-            paint: Paint::new(look.appearance_at(glide_config::local_minute()), look.accent),
-            lang: look.language.unwrap_or_else(Lang::from_env),
+            paint: look.paint(),
+            lang: look.lang(),
             sounds: look.sounds,
             rung: None,
             font: family(&prefs),
@@ -547,7 +552,7 @@ impl App {
             focused_window: true,
             frame: WindowFrame::Floating,
             reported_focus: None,
-            ui_family: look.ui_family.clone(),
+            ui_family: look.font_family.clone(),
             shell_look: look.clone(),
             typed: Instant::now(),
             flashes: HashMap::new(),
@@ -555,12 +560,12 @@ impl App {
             launch,
             bus: None,
             next_id: 1,
-            stamps: (config::stamp(config::shell_path().as_deref()), config::stamp(config::path().as_deref())),
+            stamps: stamps(),
             shell: None,
             awaiting: None,
             pending: Vec::new(),
         };
-        crate::style::use_ui_family(look.ui_family.as_deref());
+        crate::style::use_ui_family(look.font_family.as_deref());
         let handles = window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles);
         (app, handles)
     }
@@ -716,7 +721,7 @@ impl App {
             Subscription::run(crate::service::requests).map(Message::Remote),
         ];
         if self.shell.is_none() {
-            subscriptions.push(Subscription::run(config::motion_changes).map(Message::SystemMotion));
+            subscriptions.push(Subscription::run(shell_look::motion_changes).map(Message::SystemMotion));
         }
         if self.reported_focus.is_some()
             && !motion::is_disabled()
@@ -993,7 +998,7 @@ impl App {
 
     fn reload(&mut self) {
         self.update_appearance(glide_config::local_minute());
-        let stamps = (config::stamp(config::shell_path().as_deref()), config::stamp(config::path().as_deref()));
+        let stamps = stamps();
         if stamps == self.stamps {
             return;
         }
@@ -1018,27 +1023,15 @@ impl App {
         }
     }
 
-    fn with_shell(&self, mut look: config::Look) -> config::Look {
-        if let Some(shell) = &self.shell {
-            look.appearance = shell.appearance;
-            look.appearance_schedule = false;
-            look.accent = shell.accent;
-            look.language = shell.language.as_deref().and_then(Lang::from_key);
-            look.motion_scale = shell.animation_scale;
-            look.ui_family.clone_from(&shell.font_family);
-        }
-        look
-    }
-
     fn apply_look(&mut self) {
-        let look = self.with_shell(config::load_look());
+        let look = ShellLook::load().with_shell(self.shell.as_ref());
         motion::set_scale(look.motion_scale);
-        self.paint = Paint::new(look.appearance_at(glide_config::local_minute()), look.accent);
-        self.lang = look.language.unwrap_or_else(Lang::from_env);
+        self.paint = look.paint();
+        self.lang = look.lang();
         self.sounds = look.sounds;
-        if self.ui_family != look.ui_family {
-            crate::style::use_ui_family(look.ui_family.as_deref());
-            self.ui_family.clone_from(&look.ui_family);
+        if self.ui_family != look.font_family {
+            crate::style::use_ui_family(look.font_family.as_deref());
+            self.ui_family.clone_from(&look.font_family);
         }
         self.shell_look = look;
     }
@@ -1948,7 +1941,7 @@ impl App {
                     match config::save(&prefs) {
                         Ok(()) => {
                             self.prefs = prefs;
-                            self.stamps.1 = config::stamp(config::path().as_deref());
+                            self.stamps.1 = shell_look::stamp(config::path().as_deref());
                         }
                         Err(error) => self.error = Some(error.to_string()),
                     }
@@ -2231,7 +2224,7 @@ mod tests {
     #[test]
     fn the_clock_rethemes_the_app_without_changing_config_stamps() {
         let mut app = review_app();
-        app.shell_look = config::Look::parse("[topbar]\nappearance-schedule = true\n", false);
+        app.shell_look = ShellLook::parse("[topbar]\nappearance-schedule = true\n", false);
         let stamps = app.stamps;
         app.update_appearance(Some(12 * 60));
         assert_eq!(app.paint.tokens.appearance, glide_theme::Appearance::Light);

@@ -236,6 +236,7 @@ pub enum Event<M> {
     App(M),
     Window(Action),
     Look(glide_app::Look),
+    Motion(bool),
     Tick,
     Frame,
     Key(keyboard::Event, bool),
@@ -264,7 +265,6 @@ const BAR_START: f32 = SP2 + component::SMALL_CONTROL + SP2;
 
 impl<A: App> Host<A> {
     fn boot(app_id: &str) -> (Self, Task<Event<A::Message>>) {
-        look::watch_reduced_motion();
         let look = Look::load();
         motion::set_scale(look.motion_scale);
         let font_family = look.font_family.clone();
@@ -342,6 +342,10 @@ impl<A: App> Host<A> {
             }
             Event::Look(look) => {
                 self.shell_look = Some(look);
+                self.apply_look();
+                Task::none()
+            }
+            Event::Motion(_) => {
                 self.apply_look();
                 Task::none()
             }
@@ -556,6 +560,7 @@ impl<A: App> Host<A> {
             iced::window::close_requests().map(|_| Event::CloseRequested),
             iced::time::every(TICK).map(|_| Event::Tick),
             Subscription::run(glide_app::look_changes).map(Event::Look),
+            Subscription::run(look::motion_changes).map(Event::Motion),
             self.app.subscription().map(Event::App),
         ];
         if let Some(handles) = self.handles {

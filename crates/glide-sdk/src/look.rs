@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use glide_iced::Paint;
 use glide_theme::{Accent, Appearance};
+use iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -229,19 +229,27 @@ fn system_reduced() -> bool {
         .is_ok_and(|output| output.status.success() && output.stdout.trim_ascii() == b"false")
 }
 
-pub fn watch_reduced_motion() {
-    static STARTED: Once = Once::new();
-    STARTED.call_once(|| {
-        let spawned = std::thread::Builder::new().name("glide-sdk-motion".into()).spawn(|| {
-            loop {
-                SYSTEM_REDUCED.store(system_reduced(), Ordering::Relaxed);
-                std::thread::sleep(Duration::from_secs(2));
+#[must_use]
+pub fn motion_changes() -> UnboundedReceiver<bool> {
+    let (sender, receiver) = unbounded();
+    let spawned = std::thread::Builder::new().name("glide-sdk-motion".into()).spawn(move || {
+        let mut previous = None;
+        while !sender.is_closed() {
+            let reduced = system_reduced();
+            if previous != Some(reduced) {
+                SYSTEM_REDUCED.store(reduced, Ordering::Relaxed);
+                if sender.unbounded_send(reduced).is_err() {
+                    break;
+                }
+                previous = Some(reduced);
             }
-        });
-        if let Err(err) = spawned {
-            tracing::debug!("cannot watch reduced motion: {err}");
+            std::thread::sleep(Duration::from_secs(2));
         }
     });
+    if let Err(err) = spawned {
+        tracing::debug!("cannot watch reduced motion: {err}");
+    }
+    receiver
 }
 
 #[cfg(test)]
@@ -295,6 +303,17 @@ mod tests {
         assert_eq!(look.appearance_at(Some(23 * 60)), Appearance::Light);
         assert_eq!(look.lang(), Lang::En);
         assert_eq!(look.motion_scale, 0.0);
+    }
+
+    #[test]
+    fn scheduled_appearance_uses_the_shared_rule_and_manual_appearance_remains_available() {
+        let scheduled = Look::parse("[topbar]\nappearance = 'dark'\nappearance-schedule = true\n", false);
+        for minute in [0, 419, 420, 720, 1139, 1140, 1439] {
+            assert_eq!(scheduled.appearance_at(Some(minute)), Appearance::scheduled(minute));
+        }
+        assert_eq!(scheduled.appearance_at(None), Appearance::Dark);
+        let manual = Look::parse("[topbar]\nappearance = 'light'\nappearance-schedule = false\n", false);
+        assert_eq!(manual.appearance_at(Some(0)), Appearance::Light);
     }
 
     #[test]

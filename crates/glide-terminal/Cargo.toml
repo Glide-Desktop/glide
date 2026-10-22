@@ -33,6 +33,7 @@ alacritty_terminal = { version = "0.26", default-features = false }
 glide-config = { path = "../glide-config" }
 glide-iced = { path = "../glide-iced" }
 glide-paint = { path = "../glide-paint" }
+glide-sdk = { path = "../glide-sdk" }
 glide-theme = { path = "../glide-theme" }
 raw-window-handle = "0.6"
 rustix = { version = "1", default-features = false, features = ["std", "termios", "pipe"] }
