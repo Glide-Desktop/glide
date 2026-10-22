@@ -21,7 +21,7 @@ use iced::{Background, Border, Color, Element, Fill, Shadow};
 
 pub use buttons::{
     Size, Tone, button, button_style, compact_button, danger, ghost, icon_button, linked, outline, primary, secondary,
-    sized_button, sized_icon_button, toggle_button, tonal,
+    sized_button, sized_icon_button, sized_toggle_button, toggle_button, tonal,
 };
 pub use controls::{
     CHECK, Check, SwitchSize, check_box, chevron, progress, radio_mark, sized_switch, slider, spinner, stepped_slider,
@@ -34,8 +34,8 @@ pub use inputs::{
     validated_field,
 };
 pub use layout::{
-    action_card, action_row, card, card_style, expander, list, list_row, section, sidebar, sidebar_item, surface,
-    switch_row,
+    action_card, action_row, card, card_style, expander, facts, list, list_row, section, select_row, sidebar,
+    sidebar_item, surface, switch_row, well,
 };
 pub use popover::{Popup, Tooltip, dropdown, menu_button, tooltip};
 pub use selection::{

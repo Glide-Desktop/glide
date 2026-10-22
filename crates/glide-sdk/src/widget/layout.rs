@@ -1,12 +1,10 @@
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, R3, SP2, SP3, SP4};
+use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4};
 use glide_iced::widgets;
 use glide_theme::elevation::Level;
-use glide_theme::{TextStyle, component};
+use glide_theme::{TextStyle, component, motion};
 use iced::widget::{Column, Space, button as control, column, container, mouse_area, row, stack};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Vector, mouse};
-
-use glide_theme::motion;
 
 use super::controls::{chevron, switch_face};
 use super::focus::{activatable, focusable};
@@ -88,6 +86,59 @@ pub fn list_row<'a, M: 'a>(
         .padding(Padding::from([SP2, SP4]))
         .width(Fill)
         .into()
+}
+
+#[must_use]
+pub fn well<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let background = paint.fill_1();
+    container(content).padding(SP1).width(Fill).style(move |_| style::rounded(background, R2)).into()
+}
+
+#[must_use]
+pub fn select_row<'a, M: Clone + 'a>(
+    paint: &Paint, leading: Option<Element<'a, M>>, label: impl Into<std::borrow::Cow<'a, str>>, selected: bool,
+    message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let label = label.into();
+    let picked = message.clone();
+    let row = animate(if selected { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
+        let value = value.clone();
+        let mut content = row![].spacing(SP3).align_y(Alignment::Center);
+        if let Some(leading) = leading {
+            content = content.push(leading);
+        }
+        content = content.push(text(label, TextStyle::CALL).wrapping(Wrapping::None)).push(Space::new().width(Fill));
+        if selected {
+            content = content.push(icon(Icon::Check, 16.0, paint.acc_soft_fg()));
+        }
+        let control = control(container(content).center_y(Fill).clip(true))
+            .on_press(picked)
+            .width(Fill)
+            .height(component::CONTROL)
+            .padding(Padding::from([0.0, SP3]));
+        widgets::button(control, move |status| {
+            let amount = value.get().clamp(0.0, 1.0);
+            let background = mix(paint.layered(Color::TRANSPARENT, status), paint.acc_soft(), amount);
+            style::flat(background, mix(paint.fg_1(), paint.acc_soft_fg(), amount), R2)
+        })
+    });
+    focusable(&paint, row, R2).inset().on_activate(Some(message)).into()
+}
+
+#[must_use]
+pub fn facts<'a, M: 'a>(paint: &Paint, rows: Vec<(String, String)>, label_width: f32) -> Element<'a, M> {
+    let paint = *paint;
+    Column::with_children(rows.into_iter().map(|(label, value)| {
+        row![
+            text(label, TextStyle::CAP).color(paint.fg_2()).align_x(Alignment::End).width(label_width),
+            text(value, TextStyle::CAP).width(Fill).wrapping(Wrapping::WordOrGlyph),
+        ]
+        .spacing(SP3)
+        .into()
+    }))
+    .spacing(SP2)
+    .into()
 }
 
 #[must_use]

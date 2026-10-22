@@ -121,14 +121,19 @@ pub fn dialog_card<'a, M: 'a>(
     paint: &Paint, title: &str, body: Option<Element<'a, M>>, buttons: Element<'a, M>, width: f32, window: Size,
 ) -> Element<'a, M> {
     let paint = *paint;
-    let mut content = column![text(title.to_string(), TextStyle::T3).wrapping(Wrapping::WordOrGlyph)].spacing(SP3);
+    let mut content = column![].spacing(SP3);
+    if !title.is_empty() {
+        content = content.push(text(title.to_string(), TextStyle::T3).wrapping(Wrapping::WordOrGlyph));
+    }
     if let Some(body) = body {
         content = content.push(body);
     }
-    container(content.push(Space::new().height(SP1)).push(buttons))
+    let content = crate::widget::scrollable(&paint, content.push(Space::new().height(SP1)).push(buttons));
+    container(content)
         .padding(SP4)
         .width(width)
         .max_width((window.width - SP6).max(1.0))
+        .max_height((window.height - 2.0 * SP4).max(1.0))
         .style(move |_| style::popover(&paint))
         .into()
 }
@@ -142,7 +147,7 @@ pub fn dialog_buttons<'a, M: Clone + 'a>(
         ringed(&paint, button(&paint, label.to_string(), tone, message), R2, focus == Some(index))
     };
     let (left, right): (Vec<_>, Vec<_>) =
-        choices.into_iter().enumerate().partition(|(_, (_, tone, _))| *tone == Tone::Danger);
+        choices.into_iter().enumerate().partition(|(_, (_, tone, _))| matches!(tone, Tone::Danger | Tone::Ghost));
     left.into_iter()
         .map(|(index, choice)| control(index, choice))
         .chain(std::iter::once(Space::new().width(Fill).into()))

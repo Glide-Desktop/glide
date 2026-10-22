@@ -8,7 +8,7 @@ use glide_theme::shape::R1;
 use glide_theme::{TextStyle, component};
 use iced::border::Radius;
 use iced::widget::{Row, button as control, container};
-use iced::{Border, Color, Element, Fill, Padding, Shadow, Vector};
+use iced::{Border, Color, Element, Fill, Length, Padding, Shadow, Vector};
 
 use super::focus::activatable;
 use super::popover::tooltip;
@@ -197,15 +197,24 @@ pub fn sized_icon_button<'a, M: Clone + 'a>(
 pub fn toggle_button<'a, M: Clone + 'a>(
     paint: &Paint, label: impl Into<Cow<'a, str>>, on: bool, on_toggle: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
+    sized_toggle_button(paint, label, on, Size::Medium, on_toggle)
+}
+
+#[must_use]
+pub fn sized_toggle_button<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, on: bool, size: Size, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
     let paint = *paint;
     let label = label.into();
     let message = on_toggle.map(|toggle| toggle(!on));
+    let square = label.chars().count() == 1;
     animate(if on { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
         let value = value.clone();
-        let control = control(container(text(label, Size::Medium.label()).wrapping(Wrapping::None)).center_y(Fill))
+        let control = control(container(text(label, size.label()).wrapping(Wrapping::None)).center(Fill))
             .on_press_maybe(message.clone())
-            .height(Size::Medium.height())
-            .padding(Padding::from([0.0, Size::Medium.padding()]));
+            .width(if square { Length::Fixed(size.height()) } else { Length::Shrink })
+            .height(size.height())
+            .padding(Padding::from([0.0, if square { 0.0 } else { size.padding() }]));
         let control = widgets::button(control, move |status| {
             let amount = value.get().clamp(0.0, 1.0);
             let idle = button_style(&paint, Tone::Neutral, status);

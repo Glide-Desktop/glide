@@ -2,7 +2,7 @@ use iced::widget::{Row, column, container, mouse_area, row, rule, text, text_inp
 use iced::{Alignment, Element, Fill, Length, Padding};
 
 use super::header::{GAP, INSET, bar_background, path_field, search_field};
-use super::{HEADER_HEIGHT, Ring, divider, hint, icon_button, labelled, ringed};
+use super::{HEADER_HEIGHT, divider, hint, icon_button, labelled};
 use crate::app::{App, Message};
 use crate::chooser::{Mode, Pick, State};
 use crate::i18n::{Key, Lang};
@@ -106,27 +106,23 @@ fn toolbar<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
 }
 
 fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> {
+    use glide_sdk::widget::{Validity, validated_field};
     if chooser.request.mode != Mode::Save {
         return None;
     }
     let (t, lang) = (&app.theme, app.lang);
-    let style = *t;
     let input = text_input(Key::ChooserName.text(lang), &chooser.name)
         .id(NAME_ID)
         .on_input(Message::ChooserName)
-        .on_submit(Message::ChooserAccept)
-        .padding(Padding::from([7.0, theme::SP3]))
-        .size(13.5)
-        .width(Fill)
-        .style(move |_, status| theme::field(&style, status));
-    let ring = if chooser.name.trim().is_empty() || crate::chooser::valid_name(&chooser.name) {
-        Ring::Off
+        .on_submit(Message::ChooserAccept);
+    let validity = if chooser.name.trim().is_empty() || crate::chooser::valid_name(&chooser.name) {
+        Validity::Neutral
     } else {
-        Ring::Invalid
+        Validity::Invalid
     };
     let row = row![
         text(Key::ChooserName.text(lang)).size(theme::CALL).font(theme::SEMIBOLD).color(t.fg_2()),
-        ringed(t, input, ring)
+        validated_field(&super::paint(t), input, validity)
     ]
     .spacing(theme::SP3)
     .align_y(Alignment::Center);
