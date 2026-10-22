@@ -32,6 +32,7 @@ iced = { version = "0.14.0", default-features = false, features = [
 glide-config = { path = "../glide-config" }
 glide-theme = { path = "../glide-theme" }
 glide-iced = { path = "../glide-iced" }
+glide-sdk = { path = "../glide-sdk" }
 glide-ipc = { path = "../glide-ipc" }
 glide-app = { path = "../glide-app" }
 serde.workspace = true

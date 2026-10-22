@@ -10,9 +10,7 @@ pub mod squish;
 
 use std::time::Instant;
 
-use iced::widget::{
-    Stack, button, column, container, float, image, mouse_area, opaque, row, rule, space, svg, text, tooltip,
-};
+use iced::widget::{Stack, button, column, container, float, image, mouse_area, opaque, row, rule, space, svg, text};
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector, mouse};
 
 use crate::app::{App, Edge, Hover, Message, Notice, NoticeAction};
@@ -486,14 +484,8 @@ pub fn ringed<'a>(t: &ThemeState, field: impl Into<Element<'a, Message>>, ring: 
 
 #[must_use]
 pub fn hint<'a>(t: &ThemeState, content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
-    let t = *t;
-    let bubble = container(text(label).size(theme::CAP))
-        .padding(Padding::from([theme::SP1, theme::SP2]))
-        .style(move |_| theme::tooltip(&t));
-    tooltip(content, bubble, tooltip::Position::Bottom).gap(theme::SP2).delay(HINT_DELAY).into()
+    glide_sdk::widget::tooltip(&glide_sdk::Paint { tokens: t.tokens, alpha: t.alpha }, content, label)
 }
-
-const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(550);
 
 #[must_use]
 pub fn pressable<'a>(control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {

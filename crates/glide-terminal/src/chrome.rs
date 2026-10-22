@@ -4,9 +4,8 @@ use glide_theme::motion::ST_HOVER;
 use iced::border::Radius;
 use iced::widget::{
     Space, button, column, container, mouse_area, opaque, pane_grid, pin, row, scrollable, space, stack, text_input,
-    tooltip,
 };
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Rectangle, Size, mouse, window};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Rectangle, Size};
 
 use crate::app::{App, Command, Confirm, FIND_ID, Menu, MenuKind, Message, Tab, shortcut_label};
 use crate::i18n::Key;
@@ -17,6 +16,8 @@ use crate::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6, Tone};
 use crate::terminal::Terminal;
 use crate::widgets;
 use glide_iced::text::{self, text};
+use glide_sdk::widget::{separator as rule, tooltip as tip};
+use glide_sdk::window::resize_edges;
 use glide_theme::{TextStyle, component};
 
 pub const HEADER: f32 = 35.0;
@@ -33,27 +34,6 @@ const SWATCH: Size = Size::new(96.0, 44.0);
 
 fn glyph<'a>(icon: Icon, size: f32, tint: Color) -> Element<'a, Message> {
     crate::icons::glyph(icon, size, tint)
-}
-
-fn tip<'a>(paint: &Paint, child: impl Into<Element<'a, Message>>, label: &'static str) -> Element<'a, Message> {
-    let paint = *paint;
-    tooltip(
-        child,
-        widgets::surface(
-            container(text(label, TextStyle::CAP)).padding([SP1, SP2]).style(move |_| {
-                let mut style = style::popover(&paint);
-                style.border.radius = R2.into();
-                style
-            }),
-            &paint,
-            Level::El2,
-            R2,
-        ),
-        tooltip::Position::Bottom,
-    )
-    .delay(component::TOOLTIP_DELAY)
-    .gap(SP2)
-    .into()
 }
 
 fn icon_button<'a>(
@@ -73,11 +53,6 @@ fn icon_button<'a>(
         }),
         label,
     )
-}
-
-fn rule<'a>(paint: &Paint) -> Element<'a, Message> {
-    let paint = *paint;
-    container(Space::new().width(Fill).height(1)).style(move |_| style::rounded(paint.hairline(), 0.0)).into()
 }
 
 fn header(app: &App) -> Element<'_, Message> {
@@ -799,39 +774,6 @@ fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {
     .into()
 }
 
-fn resize_handles<'a>() -> Element<'a, Message> {
-    const EDGE: f32 = 5.0;
-    const CORNER: f32 = 10.0;
-    let handle = |width: Length, height: Length, direction: window::Direction, cursor: mouse::Interaction| {
-        mouse_area(Space::new().width(width).height(height))
-            .on_press(Message::WindowResize(direction))
-            .interaction(cursor)
-    };
-    let fixed = Length::Fixed;
-    let down = mouse::Interaction::ResizingDiagonallyDown;
-    let up = mouse::Interaction::ResizingDiagonallyUp;
-    let horizontal = mouse::Interaction::ResizingHorizontally;
-    let vertical = mouse::Interaction::ResizingVertically;
-    let band = |left, middle, right, left_cursor, right_cursor| {
-        row![
-            handle(fixed(CORNER), fixed(EDGE), left, left_cursor),
-            handle(Fill, fixed(EDGE), middle, vertical),
-            handle(fixed(CORNER), fixed(EDGE), right, right_cursor),
-        ]
-    };
-    column![
-        band(window::Direction::NorthWest, window::Direction::North, window::Direction::NorthEast, down, up),
-        row![
-            handle(fixed(EDGE), Fill, window::Direction::West, horizontal),
-            Space::new().width(Fill).height(Fill),
-            handle(fixed(EDGE), Fill, window::Direction::East, horizontal),
-        ]
-        .height(Fill),
-        band(window::Direction::SouthWest, window::Direction::South, window::Direction::SouthEast, up, down),
-    ]
-    .into()
-}
-
 pub fn view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let mut body = column![header(app)];
@@ -844,7 +786,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     body = body.push(rule(&paint)).push(content(app));
     let mut layers: Vec<Element<'_, Message>> = vec![body.into()];
     if !app.edge_to_edge() {
-        layers.push(resize_handles());
+        layers.push(resize_edges(Message::WindowResize));
     }
     if let Some(error) = app.error.as_ref().filter(|_| !app.tabs.is_empty()) {
         let error = container(text(error.as_str(), TextStyle::CALL).color(paint.danger()))

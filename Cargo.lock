@@ -1544,6 +1544,7 @@ dependencies = [
  "glide-config",
  "glide-iced",
  "glide-ipc",
+ "glide-sdk",
  "glide-theme",
  "iced",
  "image",

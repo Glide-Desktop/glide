@@ -213,11 +213,13 @@ pub fn header<'a, M: Clone + 'a>(
 
 #[must_use]
 pub fn resize_handles<'a, M: Clone + 'a>(on_window: impl Fn(Action) -> M) -> Element<'a, M> {
+    resize_edges(move |direction| on_window(Action::Resize(direction)))
+}
+
+#[must_use]
+pub fn resize_edges<'a, M: Clone + 'a>(on_resize: impl Fn(Direction) -> M) -> Element<'a, M> {
     let handle = |width: Length, height: Length, direction: Direction, cursor: mouse::Interaction| -> Element<'a, M> {
-        mouse_area(Space::new().width(width).height(height))
-            .on_press(on_window(Action::Resize(direction)))
-            .interaction(cursor)
-            .into()
+        mouse_area(Space::new().width(width).height(height)).on_press(on_resize(direction)).interaction(cursor).into()
     };
     let fixed = Length::Fixed;
     let down = mouse::Interaction::ResizingDiagonallyDown;
