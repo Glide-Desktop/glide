@@ -26,7 +26,6 @@ use crate::marks::{self, Mark};
 use crate::profile::{Palette, color, mix};
 use crate::session::{Cells, Listener, Pane, PaneId};
 
-pub const PAD: f32 = glide_theme::spacing::SP2 as f32;
 const SAMPLE: &str = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const BAR_ZONE: f32 = 12.0;
@@ -169,7 +168,7 @@ impl Metrics {
     }
 
     fn cells(&self, bounds: Rectangle) -> Cells {
-        let fit = |space: f32, cell: f32| ((space - 2.0 * PAD) / cell).floor().max(1.0) as usize;
+        let fit = |space: f32, cell: f32| (space / cell).floor().max(1.0) as usize;
         Cells { columns: fit(bounds.width, self.cell.width).max(2), lines: fit(bounds.height, self.cell.height) }
     }
 }
@@ -237,8 +236,8 @@ struct Hit {
 }
 
 fn locate(local: Point, metrics: &Metrics, cells: Cells, offset: usize) -> Hit {
-    let x = (local.x - PAD).max(0.0);
-    let y = (local.y - PAD).max(0.0);
+    let x = local.x.max(0.0);
+    let y = local.y.max(0.0);
     let column = ((x / metrics.cell.width) as usize).min(cells.columns.saturating_sub(1));
     let row = ((y / metrics.cell.height) as usize).min(cells.lines.saturating_sub(1));
     let side = if x - column as f32 * metrics.cell.width > metrics.cell.width / 2.0 { Side::Right } else { Side::Left };
@@ -756,7 +755,7 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             renderer.fill_quad(backdrop, color(palette.query(term.colors(), 257), palette.opacity));
             let mut painter = Painter {
                 renderer,
-                origin: Point::new(bounds.x + PAD, bounds.y + PAD),
+                origin: bounds.position(),
                 metrics,
                 clip: bounds,
                 grid: Cells { columns: term.columns(), lines: term.screen_lines() },
@@ -816,7 +815,7 @@ impl Terminal<'_> {
     fn paint_link_target(&self, painter: &mut Painter<'_>, uri: &str, bounds: Rectangle, fill: Color, ink: Color) {
         let (fonts, cell) = (self.look.fonts, painter.metrics.cell);
         let pad = glide_theme::spacing::SP2 as f32;
-        let room = ((bounds.width - PAD * 2.0 - pad * 2.0) / cell.width.max(1.0)).floor().max(1.0) as usize;
+        let room = ((bounds.width - pad * 4.0) / cell.width.max(1.0)).floor().max(1.0) as usize;
         let shown: String = if uri.chars().count() > room {
             uri.chars().take(room.saturating_sub(1)).chain(std::iter::once('…')).collect()
         } else {
@@ -825,9 +824,9 @@ impl Terminal<'_> {
         let width = shown.chars().count() as f32 * cell.width + pad * 2.0;
         let height = cell.height + pad;
         let pill = Rectangle {
-            x: bounds.x + PAD,
-            y: bounds.y + bounds.height - PAD - height,
-            width: width.min(bounds.width - PAD * 2.0),
+            x: bounds.x + pad,
+            y: bounds.y + bounds.height - pad - height,
+            width: width.min(bounds.width - pad * 2.0),
             height,
         };
         let clip = painter.clip;
@@ -972,10 +971,7 @@ impl Terminal<'_> {
                 let rect = painter.rect(at);
                 let tint =
                     if mark == Mark::Bookmark { self.look.bookmark } else { Color { a: 0.55, ..self.look.accent } };
-                painter.quad(
-                    Rectangle { x: bounds.x + 2.0, y: rect.y + 2.0, width: 3.0, height: rect.height - 4.0 },
-                    tint,
-                );
+                painter.quad(Rectangle { x: bounds.x, y: rect.y + 2.0, width: 2.0, height: rect.height - 4.0 }, tint);
             }
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                 continue;
@@ -1112,8 +1108,8 @@ mod tests {
         let bounds = Rectangle::with_size(Size::new(656.0, 400.0));
         let palette = crate::profile::Profile::Meridian.palette(&Tokens::new(Appearance::Dark, Accent::Blue));
         for (output, point) in [
-            ("\x1b[?25l\x1b[41m█\x1b[0m", Point::new(12.0, 16.0)),
-            ("\x1b[?25l\x1b[41;4mA\x1b[0m", Point::new(12.0, 23.5)),
+            ("\x1b[?25l\x1b[41m█\x1b[0m", Point::new(4.0, 8.0)),
+            ("\x1b[?25l\x1b[41;4mA\x1b[0m", Point::new(4.0, 15.5)),
         ] {
             let layers = rendered(output, bounds);
             let colors: Vec<_> = layers
@@ -1128,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_cell_backgrounds_fill_the_padding_but_inner_ones_and_the_cursor_do_not() {
+    fn the_grid_starts_at_the_pane_edge_and_edge_backgrounds_fill_the_remainder_but_the_cursor_does_not() {
         let bounds = Rectangle::with_size(Size::new(656.0, 400.0));
         let palette = crate::profile::Profile::Meridian.palette(&Tokens::new(Appearance::Dark, Accent::Blue));
         let colors_at = |output: &str, point: Point| -> Vec<_> {
@@ -1145,9 +1141,10 @@ mod tests {
         for point in [Point::new(1.0, 1.0), Point::new(654.0, 200.0), Point::new(328.0, 399.0)] {
             assert!(colors_at("\x1b[?25l\x1b[40m\x1b[2J", point).contains(&black), "{point:?}");
         }
-        assert!(!colors_at("\x1b[?25l\x1b[3G\x1b[41mx", Point::new(1.0, 12.0)).contains(&red));
-        assert!(colors_at("", Point::new(12.0, 12.0)).contains(&cursor));
-        assert!(!colors_at("", Point::new(1.0, 12.0)).contains(&cursor));
+        assert!(colors_at("\x1b[?25l\x1b[41mx", Point::new(0.5, 0.5)).contains(&red));
+        assert!(!colors_at("\x1b[?25l\x1b[3G\x1b[41mx", Point::new(4.0, 8.0)).contains(&red));
+        assert!(colors_at("\x1b[24;1H", Point::new(4.0, 380.0)).contains(&cursor));
+        assert!(!colors_at("\x1b[24;1H", Point::new(4.0, 395.0)).contains(&cursor));
     }
 
     #[test]
