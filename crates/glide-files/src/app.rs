@@ -153,7 +153,6 @@ pub enum Hover {
     Column(ListColumn),
     Bookmarks,
     Toast,
-    ClearSearch,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -632,11 +631,10 @@ pub struct Surfaces {
     pub toast_ghost: Option<Notice>,
     pub modal: Fade,
     pub modal_ghost: Option<Modal>,
-    pub thumb: Fade,
 }
 
 impl Surfaces {
-    fn new(view: ViewMode) -> Self {
+    fn new() -> Self {
         Self {
             hover: HashMap::new(),
             side: HashMap::new(),
@@ -646,7 +644,6 @@ impl Surfaces {
             toast_ghost: None,
             modal: Fade::asymmetric(false, (Speed::T3, Curve::Out), (Speed::T2, Curve::InOut)),
             modal_ghost: None,
-            thumb: Fade::new(view == ViewMode::List, Speed::T2, Curve::Out),
         }
     }
 
@@ -711,7 +708,7 @@ impl Surfaces {
     pub fn is_animating(&self, now: Instant) -> bool {
         self.hover.values().any(|(layer, lift)| layer.is_animating(now) || lift.is_animating(now))
             || self.side.values().any(|fade| fade.is_animating(now))
-            || [&self.menu, &self.toast, &self.modal, &self.thumb].into_iter().any(|fade| fade.is_animating(now))
+            || [&self.menu, &self.toast, &self.modal].into_iter().any(|fade| fade.is_animating(now))
     }
 
     fn prune(&mut self, now: Instant) {
@@ -969,7 +966,7 @@ impl App {
             modal: None,
             menu: None,
             menu_target: None,
-            motion: Surfaces::new(prefs.view),
+            motion: Surfaces::new(),
             notice: None,
             notices: 0,
             modifiers: Modifiers::empty(),
@@ -1025,7 +1022,7 @@ impl App {
             return Task::none();
         };
         self.view = ViewMode::List;
-        self.motion = Surfaces::new(ViewMode::List);
+        self.motion = Surfaces::new();
         if chooser.request.mode != crate::chooser::Mode::Save {
             return Task::none();
         }
@@ -1238,10 +1235,6 @@ impl App {
         if self.notice.is_none() && self.hover_target == Some(Hover::Toast) {
             self.hover_target = None;
         }
-        if self.search.is_none() && self.hover_target == Some(Hover::ClearSearch) {
-            self.hover_target = None;
-            self.motion.set_hover(Hover::ClearSearch, false, now);
-        }
         let stale = self.menu.as_ref().is_some_and(|menu| {
             menu.highlight.is_some_and(|index| {
                 widgets::menu::entries(self, menu).get(index).is_none_or(|entry| entry.message().is_none())
@@ -1265,7 +1258,6 @@ impl App {
         if self.modal.is_some() {
             motion.modal_ghost.clone_from(&self.modal);
         }
-        motion.thumb.set(self.view == ViewMode::List, now);
         motion.prune(now);
     }
 

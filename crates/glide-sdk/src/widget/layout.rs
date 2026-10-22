@@ -158,7 +158,7 @@ pub fn expander<'a, M: Clone + 'a>(
 
 #[must_use]
 pub fn sidebar_item<'a, M: Clone + 'a>(
-    paint: &Paint, glyph: Option<Icon>, label: &'a str, selected: bool, message: M,
+    paint: &Paint, glyph: Option<impl super::Glyph + 'a>, label: &'a str, selected: bool, message: M,
 ) -> Element<'a, M> {
     let paint = *paint;
     animate(if selected { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {

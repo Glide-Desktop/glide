@@ -289,6 +289,37 @@ pub fn segmented<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M:
     arrows(&paint, control, R2, options, index, on_select)
 }
 
+pub const ICON_SEGMENT: f32 = 30.0;
+
+#[must_use]
+pub fn icon_segmented<'a, T: Copy + PartialEq + 'a, G: super::Glyph, M: Clone + 'a>(
+    paint: &Paint, options: &[(T, G, &'a str)], selected: T, on_select: impl Fn(T) -> M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let index = options.iter().position(|(value, ..)| *value == selected);
+    let segments = options.iter().map(|&(value, glyph, label)| {
+        let active = value == selected;
+        let message = on_select(value);
+        let tint = if active { paint.fg_1() } else { paint.fg_2() };
+        let control = button(container(icon(glyph, 15.0, tint)).center(Fill))
+            .on_press(message)
+            .width(ICON_SEGMENT)
+            .height(component::SMALL_CONTROL)
+            .padding(0);
+        let control = widgets::button(control, move |status| {
+            let background = if active { Color::TRANSPARENT } else { paint.layered(Color::TRANSPARENT, status) };
+            style::flat(background, tint, R1 + 2.0)
+        });
+        super::tooltip(&paint, control, label)
+    });
+    let content = Row::with_children(segments).spacing(2);
+    let control = container(track(&paint, Indicator::Thumb, index, content))
+        .padding((component::CONTROL - component::SMALL_CONTROL) / 2.0)
+        .style(move |_| style::rounded(paint.fill_1(), R2));
+    let keyed: Vec<(T, ())> = options.iter().map(|&(value, ..)| (value, ())).collect();
+    arrows(&paint, control, R2, &keyed, index, on_select)
+}
+
 fn arrows<'a, T: Copy + 'a, L, M: Clone + 'a>(
     paint: &Paint, control: impl Into<Element<'a, M>>, radius: f32, options: &[(T, L)], index: Option<usize>,
     on_select: impl Fn(T) -> M,
@@ -343,7 +374,8 @@ pub fn tabs<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clon
 
 #[must_use]
 pub fn sidebar_list<'a, M: Clone + 'a>(
-    paint: &Paint, items: &[(Option<Icon>, &'a str)], selected: Option<usize>, on_select: impl Fn(usize) -> M,
+    paint: &Paint, items: &[(Option<impl super::Glyph>, &'a str)], selected: Option<usize>,
+    on_select: impl Fn(usize) -> M,
 ) -> Element<'a, M> {
     let paint = *paint;
     let rows = items.iter().enumerate().map(|(index, &(glyph, label))| {

@@ -414,8 +414,14 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
 
 #[must_use]
 pub fn icon<'a>(icon: Icon, size: f32, color: Color) -> Element<'a, Message> {
-    let opaque = Color { a: 1.0, ..color };
-    svg(icon.handle()).width(size).height(size).opacity(color.a).style(move |_, _| theme::glyph(opaque)).into()
+    glide_sdk::widget::Glyph::draw(icon, size, color)
+}
+
+impl glide_sdk::widget::Glyph for Icon {
+    fn draw<'a, M: 'a>(self, side: f32, tint: Color) -> Element<'a, M> {
+        let opaque = Color { a: 1.0, ..tint };
+        svg(self.handle()).width(side).height(side).opacity(tint.a).style(move |_, _| theme::glyph(opaque)).into()
+    }
 }
 
 #[must_use]

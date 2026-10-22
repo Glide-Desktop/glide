@@ -123,6 +123,9 @@ pub struct Header<'a, M> {
     pub labels: (&'a str, &'a str),
     pub height: f32,
     pub context: Option<M>,
+    pub center: Option<Element<'a, M>>,
+    pub maximize: bool,
+    pub corners: Option<Radius>,
 }
 
 impl<'a, M> Header<'a, M> {
@@ -136,7 +139,28 @@ impl<'a, M> Header<'a, M> {
             labels: ("", ""),
             height: HEADER,
             context: None,
+            center: None,
+            maximize: true,
+            corners: None,
         }
+    }
+
+    #[must_use]
+    pub fn center(mut self, element: impl Into<Element<'a, M>>) -> Self {
+        self.center = Some(element.into());
+        self
+    }
+
+    #[must_use]
+    pub fn without_maximize(mut self) -> Self {
+        self.maximize = false;
+        self
+    }
+
+    #[must_use]
+    pub fn corners(mut self, corners: Radius) -> Self {
+        self.corners = Some(corners);
+        self
     }
 
     #[must_use]
@@ -196,14 +220,19 @@ pub fn header<'a, M: Clone + 'a>(
     let context = header.context;
     let leading_count = header.leading.len();
     let trailing_count = header.trailing.len();
-    let left = header.leading.into_iter().fold(row![maximize].spacing(SP2).align_y(Alignment::Center), row::Row::push);
+    let first = if header.maximize { row![maximize] } else { row![] };
+    let left = header.leading.into_iter().fold(first.spacing(SP2).align_y(Alignment::Center), row::Row::push);
     let right = header
         .trailing
         .into_iter()
         .fold(row![].spacing(SP2).align_y(Alignment::Center), row::Row::push)
         .push(Space::new().width(2))
         .push(close);
-    let bar = row![left, Space::new().width(Fill), right].align_y(Alignment::Center).padding(Padding::from([0.0, SP2]));
+    let middle: Element<'a, M> = match header.center {
+        Some(center) => container(center).width(Fill).clip(true).into(),
+        None => Space::new().width(Fill).into(),
+    };
+    let bar = row![left, middle, right].spacing(SP2).align_y(Alignment::Center).padding(Padding::from([0.0, SP2]));
     let side = (leading_count.max(trailing_count) + 1) as f32 * (CONTROL + SP2) + SP2 + room_taken;
     let room = window.size.width - 2.0 * side - SP4;
     let mut layers: Vec<Element<'a, M>> = Vec::new();
@@ -226,7 +255,11 @@ pub fn header<'a, M: Clone + 'a>(
         );
     }
     layers.push(bar.height(Fill).into());
-    let corners = if window.edge_to_edge() { Radius::default() } else { Radius::default().top_left(R3).top_right(R3) };
+    let corners = match header.corners {
+        _ if window.edge_to_edge() => Radius::default(),
+        Some(corners) => corners,
+        None => Radius::default().top_left(R3).top_right(R3),
+    };
     let background = if window.focused { paint.bar_bg() } else { paint.bar_bg_idle() };
     let bar = container(iced::widget::stack(layers))
         .width(Fill)

@@ -12,7 +12,7 @@ use iced::{Border, Color, Element, Fill, Padding, Shadow, Vector};
 
 use super::focus::activatable;
 use super::popover::tooltip;
-use super::{Icon, Wrapping, icon, mix, text};
+use super::{Glyph, Wrapping, icon, mix, text};
 use crate::anim::{Speed, animate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -160,8 +160,16 @@ pub fn danger<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, 
 
 #[must_use]
 pub fn icon_button<'a, M: Clone + 'a>(
-    paint: &Paint, glyph: Icon, label: &'a str, message: Option<M>, on: bool,
+    paint: &Paint, glyph: impl Glyph, label: &'a str, message: Option<M>, on: bool,
 ) -> Element<'a, M> {
+    sized_icon_button(paint, glyph, label, message, on, Size::Small)
+}
+
+#[must_use]
+pub fn sized_icon_button<'a, M: Clone + 'a>(
+    paint: &Paint, glyph: impl Glyph, label: &'a str, message: Option<M>, on: bool, size: Size,
+) -> Element<'a, M> {
+    let extent = size.height();
     let paint = *paint;
     let tint = if message.is_none() {
         paint.fg_4()
@@ -172,8 +180,8 @@ pub fn icon_button<'a, M: Clone + 'a>(
     };
     let control = control(container(icon(glyph, 16.0, tint)).center(Fill))
         .on_press_maybe(message.clone())
-        .width(component::SMALL_CONTROL)
-        .height(component::SMALL_CONTROL)
+        .width(extent)
+        .height(extent)
         .padding(0);
     let control = widgets::button(control, move |status| {
         if on {

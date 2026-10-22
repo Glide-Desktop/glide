@@ -200,27 +200,6 @@ pub fn action(theme: &ThemeState, tone: Tone, status: button::Status) -> button:
 }
 
 #[must_use]
-pub fn segment(theme: &ThemeState, active: bool, status: button::Status) -> button::Style {
-    if active {
-        flat(Color::TRANSPARENT, theme.fg_1(), R1)
-    } else {
-        let text = match status {
-            button::Status::Hovered | button::Status::Pressed => theme.fg_1(),
-            _ => theme.fg_2(),
-        };
-        flat(theme.layered(Color::TRANSPARENT, status), text, R1)
-    }
-}
-
-#[must_use]
-pub fn segment_thumb(theme: &ThemeState) -> container::Style {
-    match theme.tokens.appearance {
-        Appearance::Light => container::Style { shadow: theme.shadow(Level::El1), ..rounded(theme.view_bg(), R1) },
-        Appearance::Dark => rounded(theme.fill_3(), R1),
-    }
-}
-
-#[must_use]
 pub fn plain(text: Color) -> button::Style {
     flat(Color::TRANSPARENT, text, R2)
 }
@@ -268,43 +247,12 @@ pub fn highlighted(status: button::Status) -> bool {
 }
 
 #[must_use]
-pub fn menu_item(theme: &ThemeState, danger: bool, status: button::Status) -> button::Style {
-    let text = if danger { theme.danger() } else { theme.fg_1() };
-    match status {
-        button::Status::Disabled => plain(theme.fg_4()),
-        button::Status::Pressed => flat(theme.layer(theme.fill_2(), ST_PRESS - ST_HOVER), text, R2),
-        button::Status::Hovered => flat(theme.fill_2(), text, R2),
-        button::Status::Active => plain(text),
-    }
-}
-
-#[must_use]
 pub fn window_control(theme: &ThemeState, danger: bool, status: button::Status) -> button::Style {
     match (highlighted(status), danger) {
         (true, true) => flat(theme.danger(), Color::WHITE, R2),
         (true, false) => flat(theme.acc_bg(), theme.acc_fg(), R2),
         (false, _) => flat(theme.fill_1(), theme.fg_2(), R2),
     }
-}
-
-#[must_use]
-pub fn search_field(theme: &ThemeState, status: text_input::Status) -> text_input::Style {
-    let (background, border) = match status {
-        text_input::Status::Focused { .. } => (theme.view_bg(), theme.acc_bg()),
-        text_input::Status::Hovered => (theme.fill_2(), Color::TRANSPARENT),
-        text_input::Status::Active | text_input::Status::Disabled => (theme.fill_1(), Color::TRANSPARENT),
-    };
-    text_input::Style {
-        background: Background::Color(background),
-        border: Border { color: border, width: 1.0, radius: Radius::from(R2) },
-        ..field(theme, status)
-    }
-}
-
-#[must_use]
-pub fn clear_button(theme: &ThemeState, status: button::Status) -> button::Style {
-    let background = if highlighted(status) { theme.fill_2() } else { Color::TRANSPARENT };
-    flat(background, theme.fg_3(), R1)
 }
 
 #[must_use]

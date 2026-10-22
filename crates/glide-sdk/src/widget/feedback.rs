@@ -93,7 +93,7 @@ pub fn banner<'a, M: 'a>(
 
 #[must_use]
 pub fn empty_state<'a, M: 'a>(
-    paint: &Paint, glyph: Icon, title: &'a str, body: &'a str, action: Option<Element<'a, M>>,
+    paint: &Paint, glyph: impl super::Glyph, title: &'a str, body: &'a str, action: Option<Element<'a, M>>,
 ) -> Element<'a, M> {
     let paint = *paint;
     let well =

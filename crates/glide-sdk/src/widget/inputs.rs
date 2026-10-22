@@ -85,11 +85,18 @@ fn trailing<'a, M: Clone + 'a>(paint: &Paint, glyph: Icon, message: M) -> Elemen
 pub fn search_field<'a, M: Clone + 'a>(
     paint: &Paint, placeholder: &str, value: &str, on_input: impl Fn(String) -> M + 'a, on_clear: M,
 ) -> Element<'a, M> {
+    let clear = (!value.is_empty()).then_some(on_clear);
+    search_input(paint, text_input(placeholder, value).on_input(on_input), clear, "")
+}
+
+#[must_use]
+pub fn search_input<'a, M: Clone + 'a>(
+    paint: &Paint, input: text_input::TextInput<'a, M>, on_clear: Option<M>, clear_label: &'a str,
+) -> Element<'a, M> {
     let lead = icon(Icon::Search, 14.0, paint.fg_3());
-    let input = styled(paint, text_input(placeholder, value).on_input(on_input));
-    let mut content = row![lead, input].spacing(SP2).align_y(Alignment::Center);
-    if !value.is_empty() {
-        content = content.push(trailing(paint, Icon::Close, on_clear));
+    let mut content = row![lead, styled(paint, input)].spacing(SP2).align_y(Alignment::Center);
+    if let Some(on_clear) = on_clear {
+        content = content.push(super::tooltip(paint, trailing(paint, Icon::Close, on_clear), clear_label));
     }
     well(paint, content, Validity::Neutral)
 }
