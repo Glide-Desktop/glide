@@ -18,7 +18,7 @@ use crate::fs::jobs::Op;
 use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::native_icons::Art;
-use crate::theme::{self, Side, ThemeState, Tone};
+use crate::theme::{self, Side, ThemeState};
 
 pub const SIDEBAR_WIDTH: f32 = 208.0;
 pub const HEADER_HEIGHT: f32 = 35.0;
@@ -115,7 +115,7 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
                 Key::Restore => Some(Message::Restore),
                 _ => (app.trash_count > 0).then_some(Message::EmptyTrash),
             };
-            labelled(t, key.text(lang), Tone::Neutral, message)
+            glide_sdk::widget::compact_button(&paint(t), key.text(lang), glide_sdk::Tone::Neutral, message)
         })
         .collect();
     glide_sdk::widget::info_bar(&paint(t), None, title, &blurb, actions)
@@ -316,16 +316,6 @@ pub fn divider(t: &ThemeState) -> Element<'_, Message> {
 }
 
 #[must_use]
-pub fn icon_button(t: &ThemeState, glyph: Icon, message: Option<Message>, active: bool) -> Element<'_, Message> {
-    glide_sdk::widget::icon_button(&paint(t), glyph, "", message, active)
-}
-
-#[must_use]
-pub fn hint<'a>(t: &ThemeState, content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
-    glide_sdk::widget::tooltip(&paint(t), content, label)
-}
-
-#[must_use]
 pub fn paint(t: &ThemeState) -> glide_sdk::Paint {
     glide_sdk::Paint { tokens: t.tokens, alpha: t.alpha }
 }
@@ -334,18 +324,6 @@ pub fn paint(t: &ThemeState) -> glide_sdk::Paint {
 pub fn check<'a>(t: &ThemeState, label: &'a str, on: bool, message: Message) -> Element<'a, Message> {
     let state = if on { glide_sdk::widget::Check::On } else { glide_sdk::widget::Check::Off };
     glide_sdk::widget::checkbox(&paint(t), label, state, Some(message))
-}
-
-#[must_use]
-pub fn labelled<'a>(t: &'a ThemeState, label: &'a str, tone: Tone, message: Option<Message>) -> Element<'a, Message> {
-    let tone = match tone {
-        Tone::Primary => glide_sdk::Tone::Accent,
-        Tone::Danger => glide_sdk::Tone::Danger,
-        Tone::Ghost => glide_sdk::Tone::Ghost,
-        Tone::Open => glide_sdk::Tone::Tonal,
-        Tone::Neutral => glide_sdk::Tone::Neutral,
-    };
-    glide_sdk::widget::compact_button(&paint(t), label, tone, message)
 }
 
 const JOB_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - theme::SP1;

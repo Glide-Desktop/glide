@@ -1,8 +1,7 @@
 use std::time::SystemTime;
 
 use iced::widget::{
-    Column, Row, button, column, container, float, mouse_area, row, rule, scrollable, sensor, space, stack, text,
-    text_input,
+    Column, Row, button, column, container, float, mouse_area, row, scrollable, sensor, space, stack, text, text_input,
 };
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
@@ -26,7 +25,6 @@ pub const LIST_PADDING: f32 = theme::SP1;
 const LOCATION_WIDTH: f32 = 220.0;
 const NAME_MIN: f32 = 64.0;
 const NAME_ROOM: f32 = 200.0;
-const HEADER_HEIGHT: f32 = 26.0;
 const DOT: f32 = theme::SP2;
 const DOT_GAP: f32 = 2.0;
 pub const FIT_SLACK: f32 = 0.96;
@@ -138,7 +136,7 @@ impl Metrics {
     }
 }
 
-pub const LIST_HEADER: f32 = HEADER_HEIGHT + 1.0;
+pub const LIST_HEADER: f32 = glide_sdk::widget::TABLE_HEADER + 1.0;
 
 const TAGS_WIDTH: f32 = 140.0;
 const SORT_ARROW: f32 = 11.0 + theme::SP1;
@@ -245,19 +243,11 @@ fn spacer<'a>(height: f32) -> Element<'a, Message> {
     iced::widget::space().width(Fill).height(height).into()
 }
 
-fn rename_field(app: &App, size: f32) -> Option<Element<'_, Message>> {
+fn rename_field(app: &App, style: glide_theme::TextStyle) -> Option<Element<'_, Message>> {
     let renaming = app.renaming.as_ref()?;
-    let t = &app.theme;
-    Some(
-        text_input("", &renaming.text)
-            .id(RENAME_ID)
-            .on_input(Message::RenameInput)
-            .on_submit(Message::RenameSubmit)
-            .size(size)
-            .padding(Padding::from([1, 4]))
-            .style(move |_, status| theme::field(t, status))
-            .into(),
-    )
+    let input =
+        text_input("", &renaming.text).id(RENAME_ID).on_input(Message::RenameInput).on_submit(Message::RenameSubmit);
+    Some(glide_sdk::widget::inline_field(&super::paint(&app.theme), input, style))
 }
 
 fn grid(app: &App) -> Element<'_, Message> {
@@ -307,27 +297,28 @@ fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a
         container(art).center(Length::Fixed(metrics.plate)).style(move |_| theme::tile_plate(t, selected, hover));
     let tile_w = metrics.tile_w;
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
-    let label: Element<'a, Message> = if let Some(field) = rename_field(app, 12.0).filter(|_| editing) {
-        container(field).width(Length::Fixed(tile_w)).into()
-    } else {
-        let dotted = tags::colors(&entry.tags).len() as f32;
-        let marks = if dotted > 0.0 { dotted * DOT + (dotted - 1.0) * DOT_GAP + theme::SP1 } else { 0.0 };
-        let room = (tile_w - 2.0 * theme::SP1 - marks) * FIT_SLACK;
-        let name = text(breakable(&super::fit_lines(&entry.name, room, theme::CAP, LABEL_LINES)))
-            .size(theme::CAP)
-            .wrapping(text::Wrapping::WordOrGlyph)
-            .align_x(Alignment::Center)
-            .color(if selected { t.acc_soft_fg() } else { t.fg_1() });
-        let mut line = row![].spacing(theme::SP1).align_y(Alignment::Center);
-        if let Some(dots) = dots(entry) {
-            line = line.push(dots);
-        }
-        container(line.push(name))
-            .padding(Padding::from([1.0, theme::SP1]))
-            .max_width(tile_w)
-            .style(move |_| if selected { theme::rounded(t.acc_soft(), R1) } else { container::Style::default() })
-            .into()
-    };
+    let label: Element<'a, Message> =
+        if let Some(field) = rename_field(app, glide_theme::TextStyle::CAP).filter(|_| editing) {
+            container(field).width(Length::Fixed(tile_w)).into()
+        } else {
+            let dotted = tags::colors(&entry.tags).len() as f32;
+            let marks = if dotted > 0.0 { dotted * DOT + (dotted - 1.0) * DOT_GAP + theme::SP1 } else { 0.0 };
+            let room = (tile_w - 2.0 * theme::SP1 - marks) * FIT_SLACK;
+            let name = text(breakable(&super::fit_lines(&entry.name, room, theme::CAP, LABEL_LINES)))
+                .size(theme::CAP)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .align_x(Alignment::Center)
+                .color(if selected { t.acc_soft_fg() } else { t.fg_1() });
+            let mut line = row![].spacing(theme::SP1).align_y(Alignment::Center);
+            if let Some(dots) = dots(entry) {
+                line = line.push(dots);
+            }
+            container(line.push(name))
+                .padding(Padding::from([1.0, theme::SP1]))
+                .max_width(tile_w)
+                .style(move |_| if selected { theme::rounded(t.acc_soft(), R1) } else { container::Style::default() })
+                .into()
+        };
     let body = container(column![plate, label].spacing(theme::SP1).align_x(Alignment::Center))
         .center_x(Fill)
         .height(Fill)
@@ -370,57 +361,38 @@ fn list(app: &App) -> Element<'_, Message> {
 
 fn list_header(app: &App) -> Element<'_, Message> {
     let lang = app.lang;
-    let mut header = row![header_cell(app, SortBy::Name.label(lang), Some(SortBy::Name), None, Fill)];
+    let mut cells = vec![header_cell(app, SortBy::Name.label(lang), Some(SortBy::Name), None, Fill)];
     for (column, width) in sized_columns(app) {
         let width = Length::Fixed(width);
-        header = header.push(header_cell(app, column_label(column, lang), column.sort(), Some(column), width));
+        cells.push(header_cell(app, column_label(column, lang), column.sort(), Some(column), width));
     }
     if app.is_searching() {
-        header = header.push(header_cell(app, Key::ColLocation.text(lang), None, None, Length::Fixed(LOCATION_WIDTH)));
+        cells.push(header_cell(app, Key::ColLocation.text(lang), None, None, Length::Fixed(LOCATION_WIDTH)));
     }
-    let t = &app.theme;
-    let header = header.padding(Padding::from([0.0, theme::SP4])).height(HEADER_HEIGHT).align_y(Alignment::Center);
-    let header = container(header).width(Fill).style(move |_| theme::surface(t.fill_1()));
+    let header = glide_sdk::widget::table_header(&super::paint(&app.theme), cells);
     mouse_area(header).on_right_press(Message::MenuTarget(MenuKind::Columns)).into()
 }
 
 fn header_cell<'a>(
     app: &'a App, label: &'a str, sort: Option<SortBy>, column: Option<ListColumn>, width: Length,
 ) -> Element<'a, Message> {
-    let t = &app.theme;
     let active = sort.is_some() && sort == Some(app.sort.by);
-    let target = column.is_some_and(|column| app.is_column_target(column));
-    let hovered = column.is_some_and(|column| app.hover(&Hover::Column(column)) > 0.5);
-    let ink = move |lit: bool| if lit { t.acc_text() } else { t.fg_3() };
-    let label = text(label.to_uppercase()).size(theme::MICRO).font(theme::SEMIBOLD).wrapping(text::Wrapping::None);
-    let mut content = row![label].spacing(theme::SP1).align_y(Alignment::Center);
+    let mut cell = glide_sdk::widget::HeaderCell::new(&super::paint(&app.theme), label)
+        .width(width)
+        .separated(column.is_some() || sort.is_none());
     if active {
-        let arrow = if app.sort.ascending { Icon::ArrowUp } else { Icon::ArrowDown };
-        content = content.push(iced::widget::space::horizontal()).push(icon(arrow, 11.0, t.fg_3()));
+        cell = cell.sort_mark(if app.sort.ascending { Icon::ArrowUp } else { Icon::ArrowDown });
     }
-    let separated = column.is_some() || sort.is_none();
-    let style = move |_: &iced::Theme, status| theme::plain(ink(sort.is_some() && theme::highlighted(status)));
-    let padding = Padding::from([theme::SP1, theme::SP2]).left(if separated { theme::SP2 } else { 0.0 });
-    let cell: Element<'a, Message> = match column {
-        Some(column) => {
-            mouse_area(container(content).padding(padding).width(Fill).clip(true).style(move |_| container::Style {
-                text_color: Some(ink(hovered || target)),
-                ..if target { theme::rounded(t.fill_2(), R1) } else { container::Style::default() }
-            }))
-            .on_press(Message::ColumnPressed(column))
-            .on_enter(Message::Hover(Hover::Column(column), true))
-            .on_exit(Message::Hover(Hover::Column(column), false))
-            .into()
-        }
-        None => {
-            button(content).on_press_maybe(sort.map(Message::SortBy)).padding(padding).width(Fill).style(style).into()
-        }
-    };
-    let mut cell_row = row![].align_y(Alignment::Center).width(width);
-    if separated {
-        cell_row = cell_row.push(container(rule::vertical(1).style(move |_| theme::line(t))).height(14));
+    match column {
+        Some(column) => mouse_area(Element::from(
+            cell.target(app.is_column_target(column)).lit(app.hover(&Hover::Column(column)) > 0.5),
+        ))
+        .on_press(Message::ColumnPressed(column))
+        .on_enter(Message::Hover(Hover::Column(column), true))
+        .on_exit(Message::Hover(Hover::Column(column), false))
+        .into(),
+        None => cell.on_press(sort.map(Message::SortBy)).into(),
     }
-    cell_row.push(cell).into()
 }
 
 fn column_value(app: &App, entry: &FileEntry, column: ListColumn, now: SystemTime) -> String {
@@ -454,13 +426,14 @@ fn list_row<'a>(
     };
 
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
-    let title: Element<'a, Message> = if let Some(field) = rename_field(app, theme::CALL).filter(|_| editing) {
-        field
-    } else {
-        let room = room - marks_width(entry);
-        let shown = fit(&entry.name, room * FIT_SLACK, theme::CALL);
-        container(text(shown).size(theme::CALL).wrapping(text::Wrapping::None)).max_width(room).clip(true).into()
-    };
+    let title: Element<'a, Message> =
+        if let Some(field) = rename_field(app, glide_theme::TextStyle::CALL).filter(|_| editing) {
+            field
+        } else {
+            let room = room - marks_width(entry);
+            let shown = fit(&entry.name, room * FIT_SLACK, theme::CALL);
+            container(text(shown).size(theme::CALL).wrapping(text::Wrapping::None)).max_width(room).clip(true).into()
+        };
     let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(theme::SP2).align_y(Alignment::Center);
     if let Some(dots) = dots(entry) {
         name = name.push(dots);

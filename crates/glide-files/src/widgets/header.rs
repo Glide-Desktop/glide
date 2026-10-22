@@ -1,4 +1,4 @@
-use iced::widget::{button, container, row, text_input};
+use iced::widget::{container, row, text_input};
 use iced::{Element, Length};
 
 use super::{HEADER_HEIGHT, fit_sentence, text_width};
@@ -11,7 +11,6 @@ pub const SEARCH_WIDTH: f32 = 200.0;
 pub const WINDOW_CONTROL: f32 = glide_theme::component::SMALL_CONTROL;
 pub const GAP: f32 = SP2;
 pub const INSET: f32 = SP3;
-const IDLE_CONTROLS: f32 = glide_theme::component::IDLE_CONTROLS;
 pub const SEMIBOLD_SPREAD: f32 = 0.94;
 
 #[must_use]
@@ -22,18 +21,9 @@ pub fn search_title(label: &str, query: &str, room: f32) -> String {
 }
 
 #[must_use]
-pub fn window_control(app: &App, glyph: Icon, message: Message) -> Element<'_, Message> {
-    let t = if app.is_idle() { app.theme.faded(IDLE_CONTROLS) } else { app.theme };
-    let danger = glyph == Icon::Close;
-    let glyph =
-        if danger { glide_iced::glyph::window_close() } else { glide_iced::glyph::window_control(app.is_maximized()) };
-    button(glyph)
-        .on_press(message)
-        .width(Length::Fixed(WINDOW_CONTROL))
-        .height(Length::Fixed(WINDOW_CONTROL))
-        .padding(0)
-        .style(move |_, status| theme::window_control(&t, danger, status))
-        .into()
+pub fn maximize_button(app: &App) -> Element<'_, Message> {
+    let paint = super::paint(&app.theme);
+    glide_sdk::window::maximize_button(&paint, &sdk_window(app), Key::Maximize.text(app.lang), Message::WindowMaximize)
 }
 
 #[must_use]
@@ -41,7 +31,7 @@ pub fn bar_background(app: &App) -> iced::Color {
     if app.is_idle() { app.theme.bar_bg_idle() } else { app.theme.bar_bg() }
 }
 
-fn sdk_window(app: &App) -> glide_sdk::window::Window {
+pub(crate) fn sdk_window(app: &App) -> glide_sdk::window::Window {
     use glide_sdk::window::{Frame, Window};
     Window {
         size: app.window_size(),
@@ -50,7 +40,7 @@ fn sdk_window(app: &App) -> glide_sdk::window::Window {
     }
 }
 
-fn window_message(action: glide_sdk::window::Action) -> Message {
+pub(crate) fn window_message(action: glide_sdk::window::Action) -> Message {
     use glide_sdk::window::Action;
     match action {
         Action::ToggleMaximize => Message::WindowMaximize,

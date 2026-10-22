@@ -2,7 +2,7 @@ use glide_theme::elevation::{self, Level};
 use glide_theme::motion::{ST_HOVER, ST_PRESS};
 use glide_theme::{Accent, Appearance, TextStyle, Tokens};
 use iced::border::Radius;
-use iced::widget::{button, container, rule, svg, text_input};
+use iced::widget::{button, container, rule, svg};
 use iced::{Background, Border, Color, Shadow};
 
 pub use glide_theme::shape::{R_ROUND, R1, R2, R3};
@@ -152,15 +152,6 @@ fn from_iced(color: Color) -> glide_theme::Color {
     glide_theme::Color([color.r, color.g, color.b, color.a])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tone {
-    Primary,
-    Neutral,
-    Ghost,
-    Open,
-    Danger,
-}
-
 fn flat(background: Color, text_color: Color, radius: f32) -> button::Style {
     button::Style {
         background: Some(Background::Color(background)),
@@ -168,33 +159,6 @@ fn flat(background: Color, text_color: Color, radius: f32) -> button::Style {
         border: Border { radius: Radius::from(radius), ..Border::default() },
         shadow: Shadow::default(),
         snap: true,
-    }
-}
-
-#[must_use]
-pub fn action(theme: &ThemeState, tone: Tone, status: button::Status) -> button::Style {
-    let active = matches!(status, button::Status::Hovered | button::Status::Pressed);
-    if status == button::Status::Disabled {
-        let background = match tone {
-            Tone::Ghost => Color::TRANSPARENT,
-            _ => theme.fill_1(),
-        };
-        return flat(background, theme.fg_4(), R2);
-    }
-    match tone {
-        Tone::Primary => {
-            let (background, level) =
-                if active { (theme.acc_bg_hover(), Level::El2) } else { (theme.acc_bg(), Level::El1) };
-            button::Style { shadow: theme.shadow(level), ..flat(background, theme.acc_fg(), R2) }
-        }
-        Tone::Neutral => flat(theme.layered(theme.fill_1(), status), theme.fg_1(), R2),
-        Tone::Open => flat(theme.layered(theme.fill_2(), status), theme.fg_1(), R2),
-        Tone::Ghost => {
-            let text = if active { theme.fg_1() } else { theme.fg_2() };
-            flat(theme.layered(Color::TRANSPARENT, status), text, R2)
-        }
-        Tone::Danger if active => flat(theme.danger(), theme.view_bg(), R2),
-        Tone::Danger => flat(theme.danger_soft(), theme.danger(), R2),
     }
 }
 
@@ -222,26 +186,6 @@ pub fn list_row(theme: &ThemeState, selected: bool, stripe: bool, hover: f32, st
 pub fn tile_plate(theme: &ThemeState, selected: bool, hover: f32) -> container::Style {
     let base = if selected { theme.acc_soft() } else { Color::TRANSPARENT };
     rounded(theme.hover(base, hover), R2)
-}
-
-#[must_use]
-pub fn crumb(theme: &ThemeState, current: bool, hover: f32, status: button::Status) -> button::Style {
-    let text = if current || hover > 0.5 { theme.fg_1() } else { theme.fg_2() };
-    flat(interactive(theme, Color::TRANSPARENT, hover, status), text, R1)
-}
-
-#[must_use]
-pub fn highlighted(status: button::Status) -> bool {
-    matches!(status, button::Status::Hovered | button::Status::Pressed)
-}
-
-#[must_use]
-pub fn window_control(theme: &ThemeState, danger: bool, status: button::Status) -> button::Style {
-    match (highlighted(status), danger) {
-        (true, true) => flat(theme.danger(), Color::WHITE, R2),
-        (true, false) => flat(theme.acc_bg(), theme.acc_fg(), R2),
-        (false, _) => flat(theme.fill_1(), theme.fg_2(), R2),
-    }
 }
 
 #[must_use]
@@ -282,23 +226,6 @@ pub fn window_corners(side: Side, corner: f32) -> Radius {
 }
 
 #[must_use]
-pub fn field(theme: &ThemeState, status: text_input::Status) -> text_input::Style {
-    let border = match status {
-        text_input::Status::Focused { .. } => theme.acc_bg(),
-        text_input::Status::Hovered => theme.fill_3(),
-        text_input::Status::Active | text_input::Status::Disabled => theme.line_2(),
-    };
-    text_input::Style {
-        background: Background::Color(theme.view_bg()),
-        border: Border { color: border, width: 1.0, radius: Radius::from(R2) },
-        icon: theme.fg_3(),
-        placeholder: theme.fg_3(),
-        value: theme.fg_1(),
-        selection: theme.acc_soft(),
-    }
-}
-
-#[must_use]
 pub fn line(theme: &ThemeState) -> rule::Style {
     rule::Style { color: theme.line(), radius: Radius::default(), fill_mode: rule::FillMode::Full, snap: true }
 }
@@ -306,10 +233,4 @@ pub fn line(theme: &ThemeState) -> rule::Style {
 #[must_use]
 pub fn glyph(color: Color) -> svg::Style {
     svg::Style { color: Some(color) }
-}
-
-#[must_use]
-pub fn flatten(top: Color, bottom: Color) -> Color {
-    let mix = |over: f32, under: f32| under + (over - under) * top.a;
-    Color { r: mix(top.r, bottom.r), g: mix(top.g, bottom.g), b: mix(top.b, bottom.b), a: bottom.a }
 }

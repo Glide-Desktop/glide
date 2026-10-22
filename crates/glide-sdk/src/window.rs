@@ -136,6 +136,7 @@ pub struct Header<'a, M> {
     pub context: Option<M>,
     pub center: Option<Element<'a, M>>,
     pub maximize: bool,
+    pub close: bool,
     pub corners: Option<Radius>,
 }
 
@@ -152,8 +153,15 @@ impl<'a, M> Header<'a, M> {
             context: None,
             center: None,
             maximize: true,
+            close: true,
             corners: None,
         }
+    }
+
+    #[must_use]
+    pub fn without_close(mut self) -> Self {
+        self.close = false;
+        self
     }
 
     #[must_use]
@@ -212,33 +220,42 @@ impl<'a, M> Header<'a, M> {
 }
 
 #[must_use]
+pub fn maximize_button<'a, M: Clone + 'a>(
+    paint: &Paint, window: &Window, label: &'a str, message: M,
+) -> Element<'a, M> {
+    let controls = window.controls_paint(paint);
+    let control = button(glide_iced::glyph::window_control(window.edge_to_edge()))
+        .on_press(message)
+        .width(CONTROL)
+        .height(CONTROL)
+        .padding(0);
+    tooltip(paint, widgets::button(control, move |status| style::maximize_control(&controls, status)), label)
+}
+
+#[must_use]
+pub fn close_button<'a, M: Clone + 'a>(paint: &Paint, window: &Window, label: &'a str, message: M) -> Element<'a, M> {
+    let controls = window.controls_paint(paint);
+    let control = button(glide_iced::glyph::window_close()).on_press(message).width(CONTROL).height(CONTROL).padding(0);
+    tooltip(paint, widgets::button(control, move |status| style::window_control(&controls, status)), label)
+}
+
+#[must_use]
 pub fn header<'a, M: Clone + 'a>(
     paint: &Paint, window: &Window, header: Header<'a, M>, on_window: impl Fn(Action) -> M, on_close: M,
     room_taken: f32,
 ) -> Element<'a, M> {
-    let controls = window.controls_paint(paint);
-    let maximize = button(glide_iced::glyph::window_control(window.edge_to_edge()))
-        .on_press(on_window(Action::ToggleMaximize))
-        .width(CONTROL)
-        .height(CONTROL)
-        .padding(0);
-    let maximize = widgets::button(maximize, move |status| style::maximize_control(&controls, status));
-    let maximize = tooltip(paint, maximize, header.labels.0);
-    let close = button(glide_iced::glyph::window_close()).on_press(on_close).width(CONTROL).height(CONTROL).padding(0);
-    let close = widgets::button(close, move |status| style::window_control(&controls, status));
-    let close = tooltip(paint, close, header.labels.1);
+    let maximize = maximize_button(paint, window, header.labels.0, on_window(Action::ToggleMaximize));
+    let close = close_button(paint, window, header.labels.1, on_close);
     let height = header.height;
     let context = header.context;
     let leading_count = header.leading.len();
     let trailing_count = header.trailing.len();
     let first = if header.maximize { row![maximize] } else { row![] };
     let left = header.leading.into_iter().fold(first.spacing(SP2).align_y(Alignment::Center), row::Row::push);
-    let right = header
-        .trailing
-        .into_iter()
-        .fold(row![].spacing(SP2).align_y(Alignment::Center), row::Row::push)
-        .push(Space::new().width(2))
-        .push(close);
+    let mut right = header.trailing.into_iter().fold(row![].spacing(SP2).align_y(Alignment::Center), row::Row::push);
+    if header.close {
+        right = right.push(Space::new().width(2)).push(close);
+    }
     let middle: Element<'a, M> = match header.center {
         Some(center) => container(center).width(Fill).clip(true).into(),
         None => Space::new().width(Fill).into(),

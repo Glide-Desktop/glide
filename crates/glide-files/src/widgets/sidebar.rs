@@ -4,8 +4,8 @@ use iced::widget::{Column, column, container, mouse_area, scrollable, text};
 
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
-use super::header::window_control;
-use super::{HEADER_HEIGHT, SIDEBAR_WIDTH, hint};
+use super::header::maximize_button;
+use super::{HEADER_HEIGHT, SIDEBAR_WIDTH};
 use crate::app::{App, Device, Hover, MenuKind, Message, volume_icon};
 use crate::fs::{Place, Volume};
 use crate::i18n::Key;
@@ -73,7 +73,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     let top = mouse_area(
-        container(hint(t, window_control(app, Icon::Maximize, Message::WindowMaximize), Key::Maximize.text(lang)))
+        container(maximize_button(app))
             .padding(Padding::from([0.0, theme::SP3]))
             .height(HEADER_HEIGHT)
             .width(Fill)

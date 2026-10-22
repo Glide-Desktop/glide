@@ -422,6 +422,117 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
     }
 }
 
+pub const TABLE_HEADER: f32 = 26.0;
+
+#[must_use]
+pub fn table_header<'a, M: 'a>(paint: &Paint, cells: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let background = paint.fill_1();
+    let cells = iced::widget::Row::with_children(cells)
+        .padding(Padding::from([0.0, SP4]))
+        .height(TABLE_HEADER)
+        .align_y(Alignment::Center);
+    container(cells).width(Fill).style(move |_| style::rounded(background, 0.0)).into()
+}
+
+pub struct HeaderCell<'a, M> {
+    paint: Paint,
+    label: &'a str,
+    mark: Option<Drawn<'a, M>>,
+    width: Length,
+    separated: bool,
+    lit: bool,
+    target: bool,
+    message: Option<M>,
+}
+
+impl<'a, M: Clone + 'a> HeaderCell<'a, M> {
+    #[must_use]
+    pub fn new(paint: &Paint, label: &'a str) -> Self {
+        Self {
+            paint: *paint,
+            label,
+            mark: None,
+            width: Length::Fill,
+            separated: true,
+            lit: false,
+            target: false,
+            message: None,
+        }
+    }
+
+    #[must_use]
+    pub fn sorted(self, ascending: Option<bool>) -> Self {
+        match ascending {
+            Some(ascending) => self.sort_mark(if ascending { Icon::Up } else { Icon::Down }),
+            None => self,
+        }
+    }
+
+    #[must_use]
+    pub fn sort_mark(mut self, glyph: impl super::Glyph + 'a) -> Self {
+        self.mark = Some(Box::new(move |tint| icon(glyph, 11.0, tint)));
+        self
+    }
+
+    #[must_use]
+    pub fn width(mut self, width: impl Into<Length>) -> Self {
+        self.width = width.into();
+        self
+    }
+
+    #[must_use]
+    pub fn separated(mut self, separated: bool) -> Self {
+        self.separated = separated;
+        self
+    }
+
+    #[must_use]
+    pub fn lit(mut self, lit: bool) -> Self {
+        self.lit = lit;
+        self
+    }
+
+    #[must_use]
+    pub fn target(mut self, target: bool) -> Self {
+        self.target = target;
+        self
+    }
+
+    #[must_use]
+    pub fn on_press(mut self, message: Option<M>) -> Self {
+        self.message = message;
+        self
+    }
+}
+
+impl<'a, M: Clone + 'a> From<HeaderCell<'a, M>> for Element<'a, M> {
+    fn from(cell: HeaderCell<'a, M>) -> Self {
+        let HeaderCell { paint, label, mark, width, separated, lit, target, message } = cell;
+        let mut content =
+            row![text(label, TextStyle::MICRO).wrapping(Wrapping::None)].spacing(SP1).align_y(Alignment::Center);
+        if let Some(mark) = mark {
+            content = content.push(Space::new().width(Fill)).push(mark(paint.fg_3()));
+        }
+        let padding = Padding::from([SP1, SP2]).left(if separated { SP2 } else { 0.0 });
+        let control = control(container(content).width(Fill).clip(true))
+            .on_press_maybe(message.clone())
+            .padding(padding)
+            .width(Fill);
+        let control = widgets::button(control, move |status| {
+            let hovered = lit || target || matches!(status, control::Status::Hovered | control::Status::Pressed);
+            let ink = if hovered { paint.acc_text() } else { paint.fg_3() };
+            let background = if target { paint.fill_2() } else { Color::TRANSPARENT };
+            style::flat(background, ink, glide_theme::shape::R1)
+        });
+        let mut cell = row![].align_y(Alignment::Center).width(width);
+        if separated {
+            let rule = container(Space::new().width(1).height(14)).style(move |_| style::rounded(paint.line(), 0.0));
+            cell = cell.push(rule);
+        }
+        cell.push(activatable(&paint, control, glide_theme::shape::R1, message)).into()
+    }
+}
+
 #[must_use]
 pub fn sidebar<'a, M: 'a>(paint: &Paint, width: f32, items: Vec<Element<'a, M>>) -> Element<'a, M> {
     let background = paint.sidebar_bg();

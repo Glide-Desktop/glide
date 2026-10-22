@@ -33,18 +33,18 @@ pub use feedback::{Severity, Task, avatar, badge, banner, count_badge, empty_sta
 pub use find::{FIND_FIELD, FindBar, INFO_BAR, bar_strip, find_bar, info_bar};
 pub use focus::{Focus, RING, focusable};
 pub use inputs::{
-    Validity, bare_text_area_style, field, input_style, password_field, search_field, search_input, stepper,
-    text_area_style, text_field, validated_field,
+    Validity, bare_text_area_style, field, inline_field, inline_style, input_style, password_field, search_field,
+    search_input, stepper, text_area_style, text_field, validated_field,
 };
 pub use layout::{
-    STATUS_BAR, SidebarItem, TREE_INDENT, TREE_ROW, action_card, action_row, card, card_style, expander, facts, list,
-    list_row, section, select_row, sidebar, sidebar_item, status_bar, status_button, surface, switch_row, tree_row,
-    well,
+    HeaderCell, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW, action_card, action_row, card,
+    card_style, expander, facts, list, list_row, section, select_row, sidebar, sidebar_item, status_bar, status_button,
+    surface, switch_row, table_header, tree_row, well,
 };
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
 pub use selection::{
-    DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, icon_segmented, page_dots,
-    radio_group, segmented, sidebar_list, swatches, tabs, track,
+    Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
+    page_dots, radio_group, segmented, sidebar_list, swatches, tabs, track,
 };
 pub use strip::{Mark, TAB_GAP, TAB_PAD, Tab, TabStrip, tab_slot, tab_strip};
 

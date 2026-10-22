@@ -1,13 +1,15 @@
-use iced::widget::{Row, column, container, mouse_area, row, rule, text, text_input};
+use glide_sdk::widget::{Wrapping, text};
+use glide_theme::TextStyle;
+use iced::widget::{Row, column, container, row, rule, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
 use super::header::{GAP, INSET, bar_background, path_field, search_field};
-use super::{HEADER_HEIGHT, divider, hint, icon_button, labelled};
+use super::{HEADER_HEIGHT, divider};
 use crate::app::{App, Message};
 use crate::chooser::{Mode, Pick, State};
 use crate::i18n::{Key, Lang};
 use crate::icons::Icon;
-use crate::theme::{self, Side, Tone};
+use crate::theme::{self, Side};
 
 pub const NAME_ID: &str = "chooser-name";
 const PREVIEW_ICON: f32 = 128.0;
@@ -30,9 +32,9 @@ pub fn preview(app: &App) -> Option<Element<'_, Message>> {
     let modified = entry.modified.map(|time| crate::fs::format_time(time, std::time::SystemTime::now(), app.lang));
     let body = column![
         container(super::file_icon(app, entry, PREVIEW_ICON)).center_x(Fill),
-        text(entry.name.clone()).size(13.5).font(theme::SEMIBOLD).color(t.fg_1()).wrapping(text::Wrapping::WordOrGlyph),
-        column![text(kind).size(theme::CAP).color(t.fg_2())]
-            .push(modified.map(|modified| text(modified).size(theme::CAP).color(t.fg_3())))
+        text(entry.name.clone(), TextStyle::HEAD).wrapping(Wrapping::WordOrGlyph),
+        column![text(kind, TextStyle::CAP).color(t.fg_2())]
+            .push(modified.map(|modified| text(modified, TextStyle::CAP).color(t.fg_3())))
             .spacing(theme::SP1),
     ]
     .spacing(theme::SP2)
@@ -55,48 +57,42 @@ pub fn accept_label(chooser: &State, lang: Lang) -> &str {
 }
 
 fn header<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
-    let (t, lang) = (&app.theme, app.lang);
-    let cancel = labelled(t, Key::Cancel.text(lang), Tone::Neutral, Some(Message::ChooserCancel));
-    let accept = labelled(t, accept_label(chooser, lang), Tone::Primary, Some(Message::ChooserAccept));
-    let title =
-        text(app.title()).size(theme::TITLE).font(theme::SEMIBOLD).color(t.fg_1()).wrapping(text::Wrapping::None);
-    let background = bar_background(app);
-    let bar = container(
-        row![
-            container(cancel).width(Fill).align_x(Alignment::Start),
-            container(title).clip(true),
-            container(accept).width(Fill).align_x(Alignment::End),
-        ]
-        .spacing(GAP)
-        .align_y(Alignment::Center),
-    )
-    .padding(Padding::from([0.0, INSET]))
-    .height(HEADER_HEIGHT)
-    .width(Fill)
-    .align_y(Alignment::Center)
-    .style(move |_| theme::rounded(background, theme::window_corners(Side::Top, app.corner())));
-    mouse_area(bar).on_press(Message::WindowDrag).on_double_click(Message::WindowMaximize).into()
+    use glide_sdk::widget::{Size, compact_button};
+    let lang = app.lang;
+    let paint = super::paint(&app.theme);
+    let (cancel, accept) = (Key::Cancel.text(lang), accept_label(chooser, lang));
+    let taken = Size::Small.width(cancel).max(Size::Small.width(accept));
+    let header = glide_sdk::window::Header::new(app.title())
+        .height(HEADER_HEIGHT)
+        .without_maximize()
+        .without_close()
+        .corners(theme::window_corners(Side::Top, app.corner()))
+        .leading(compact_button(&paint, cancel, glide_sdk::Tone::Neutral, Some(Message::ChooserCancel)))
+        .trailing(compact_button(&paint, accept, glide_sdk::Tone::Accent, Some(Message::ChooserAccept)));
+    let window = super::header::sdk_window(app);
+    glide_sdk::window::header(&paint, &window, header, super::header::window_message, Message::ChooserCancel, taken)
 }
 
 fn toolbar<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
+    use glide_sdk::widget::icon_button;
     let (t, lang) = (&app.theme, app.lang);
-    let back = icon_button(t, Icon::ChevronLeft, app.can_go_back().then_some(Message::Back), false);
-    let forward = icon_button(t, Icon::ChevronRight, app.can_go_forward().then_some(Message::Forward), false);
+    let paint = super::paint(t);
+    let back =
+        icon_button(&paint, Icon::ChevronLeft, Key::Back.text(lang), app.can_go_back().then_some(Message::Back), false);
+    let forward = app.can_go_forward().then_some(Message::Forward);
+    let forward = icon_button(&paint, Icon::ChevronRight, Key::Forward.text(lang), forward, false);
     let location =
         path_field(app).unwrap_or_else(|| container(super::pathbar::crumbs_row(app)).width(Fill).clip(true).into());
     let mut bar = Row::new()
-        .push(hint(t, back, Key::Back.text(lang)))
-        .push(hint(t, forward, Key::Forward.text(lang)))
+        .push(back)
+        .push(forward)
         .push(container(location).width(Fill))
         .push(search_field(app))
         .spacing(GAP)
         .align_y(Alignment::Center);
     if chooser.new_folder_offered() {
-        bar = bar.push(hint(
-            t,
-            icon_button(t, Icon::FolderPlus, Some(Message::NewFolder), false),
-            Key::NewFolder.text(lang),
-        ));
+        let label = Key::NewFolder.text(lang);
+        bar = bar.push(icon_button(&paint, Icon::FolderPlus, label, Some(Message::NewFolder), false));
     }
     container(bar)
         .padding(Padding::from([theme::SP1, INSET]).left(theme::SP2))
@@ -121,7 +117,7 @@ fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>
         Validity::Invalid
     };
     let row = row![
-        text(Key::ChooserName.text(lang)).size(theme::CALL).font(theme::SEMIBOLD).color(t.fg_2()),
+        text(Key::ChooserName.text(lang), TextStyle { weight: 600, ..TextStyle::CALL }).color(t.fg_2()),
         validated_field(&super::paint(t), input, validity)
     ]
     .spacing(theme::SP3)
@@ -154,7 +150,7 @@ fn footer<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> 
         return None;
     }
     let (t, lang) = (&app.theme, app.lang);
-    let label = |caption: &'a str| text(caption).size(theme::CALL).color(t.fg_2()).wrapping(text::Wrapping::None);
+    let label = |caption: &'a str| text(caption, TextStyle::CALL).color(t.fg_2()).wrapping(Wrapping::None);
     let mut bar = Row::new().spacing(theme::SP4).align_y(Alignment::Center);
     if !request.filters.is_empty() {
         let options = chooser.filter_options();

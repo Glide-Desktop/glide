@@ -445,30 +445,94 @@ pub fn chip<'a, M: Clone + 'a>(
 pub fn breadcrumbs<'a, M: Clone + 'a>(
     paint: &Paint, crumbs: &[&'a str], on_select: impl Fn(usize) -> M,
 ) -> Element<'a, M> {
-    let paint = *paint;
     let last = crumbs.len().saturating_sub(1);
+    let items = crumbs.iter().enumerate().map(|(index, &label)| {
+        let current = index == last;
+        Crumb::new(paint, label).current(current).on_press((!current).then(|| on_select(index))).into()
+    });
+    crumb_trail(paint, items.collect())
+}
+
+#[must_use]
+pub fn crumb_trail<'a, M: 'a>(paint: &Paint, crumbs: Vec<Element<'a, M>>) -> Element<'a, M> {
     let mut trail = Row::new().spacing(2).align_y(Alignment::Center);
-    for (index, &label) in crumbs.iter().enumerate() {
+    for (index, crumb) in crumbs.into_iter().enumerate() {
         if index > 0 {
             trail = trail.push(icon(Icon::Right, 10.0, paint.fg_4()));
         }
-        if index == last {
-            let current = text(label, TextStyle { weight: 600, ..TextStyle::CALL }).wrapping(Wrapping::None);
-            trail = trail.push(container(current).padding(Padding::from([0.0, SP2])));
-            continue;
+        trail = trail.push(crumb);
+    }
+    trail.into()
+}
+
+type Painted<'a, M> = Box<dyn FnOnce() -> Element<'a, M> + 'a>;
+
+pub struct Crumb<'a, M> {
+    paint: Paint,
+    label: String,
+    glyph: Option<Painted<'a, M>>,
+    current: bool,
+    hovered: bool,
+    message: Option<M>,
+}
+
+impl<'a, M: Clone + 'a> Crumb<'a, M> {
+    #[must_use]
+    pub fn new(paint: &Paint, label: impl Into<String>) -> Self {
+        Self { paint: *paint, label: label.into(), glyph: None, current: false, hovered: false, message: None }
+    }
+
+    #[must_use]
+    pub fn glyph(mut self, glyph: impl super::Glyph + 'a, tint: Color) -> Self {
+        self.glyph = Some(Box::new(move || icon(glyph, 13.0, tint)));
+        self
+    }
+
+    #[must_use]
+    pub fn current(mut self, current: bool) -> Self {
+        self.current = current;
+        self
+    }
+
+    #[must_use]
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.hovered = hovered;
+        self
+    }
+
+    #[must_use]
+    pub fn on_press(mut self, message: Option<M>) -> Self {
+        self.message = message;
+        self
+    }
+}
+
+impl<'a, M: Clone + 'a> From<Crumb<'a, M>> for Element<'a, M> {
+    fn from(crumb: Crumb<'a, M>) -> Self {
+        let Crumb { paint, label, glyph, current, hovered, message } = crumb;
+        let mut face = Row::new().spacing(SP1).align_y(Alignment::Center);
+        if let Some(glyph) = glyph {
+            face = face.push(glyph());
         }
-        let message = on_select(index);
-        let control = button(container(text(label, TextStyle::CALL).wrapping(Wrapping::None)).center_y(Fill))
-            .on_press(message.clone())
+        if !label.is_empty() {
+            let style = if current { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
+            face = face.push(text(label, style).wrapping(Wrapping::None));
+        }
+        let control = button(container(face).center_y(Fill))
+            .on_press_maybe(message.clone())
             .height(component::SMALL_CONTROL)
             .padding(Padding::from([0.0, SP2]));
         let control = widgets::button(control, move |status| {
-            let color = if status == button::Status::Hovered { paint.fg_1() } else { paint.fg_2() };
+            let status = match status {
+                button::Status::Active | button::Status::Disabled if hovered => button::Status::Hovered,
+                button::Status::Disabled => button::Status::Active,
+                other => other,
+            };
+            let color = if current || status != button::Status::Active { paint.fg_1() } else { paint.fg_2() };
             style::flat(paint.layered(Color::TRANSPARENT, status), color, R1)
         });
-        trail = trail.push(activatable(&paint, control, R1, Some(message)));
+        activatable(&paint, control, R1, message)
     }
-    trail.into()
 }
 
 pub const DOT: f32 = 8.0;

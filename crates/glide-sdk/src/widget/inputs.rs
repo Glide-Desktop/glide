@@ -54,6 +54,32 @@ pub fn field<'a, M: Clone + 'a>(paint: &Paint, input: text_input::TextInput<'a, 
 }
 
 #[must_use]
+pub fn inline_style(paint: &Paint, status: text_input::Status) -> text_input::Style {
+    let border = match status {
+        text_input::Status::Focused { .. } => paint.acc_bg(),
+        text_input::Status::Hovered => paint.fill_3(),
+        text_input::Status::Active | text_input::Status::Disabled => paint.line_2(),
+    };
+    text_input::Style {
+        background: Background::Color(paint.view_bg()),
+        border: Border { color: border, width: 1.0, radius: R2.into() },
+        ..style::field(paint, status)
+    }
+}
+
+#[must_use]
+pub fn inline_field<'a, M: Clone + 'a>(
+    paint: &Paint, input: text_input::TextInput<'a, M>, style: TextStyle,
+) -> Element<'a, M> {
+    let paint = *paint;
+    input
+        .size(style.size_px)
+        .padding(Padding::from([1.0, SP1]))
+        .style(move |_, status| inline_style(&paint, status))
+        .into()
+}
+
+#[must_use]
 pub fn validated_field<'a, M: Clone + 'a>(
     paint: &Paint, input: text_input::TextInput<'a, M>, validity: Validity,
 ) -> Element<'a, M> {
