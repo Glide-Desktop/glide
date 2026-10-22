@@ -14,14 +14,34 @@ pub const WIDTH: f32 = 280.0;
 pub const SCROLL: &str = "glide-menu";
 const ITEM: f32 = component::MENU_ITEM;
 const STEP: f32 = component::SMALL_CONTROL;
+const MARK: f32 = 14.0;
+const DOT: f32 = 10.0;
 const SEPARATOR: f32 = 9.0;
 const HEADING: f32 = 26.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item<M> {
-    Action { label: String, shortcut: Option<String>, message: M, enabled: bool, check: Option<bool>, more: bool },
-    Submenu { label: String, items: Vec<Item<M>>, enabled: bool },
-    Stepper { label: String, value: String, less: Option<M>, more: Option<M> },
+    Action {
+        label: String,
+        shortcut: Option<String>,
+        message: M,
+        enabled: bool,
+        check: Option<bool>,
+        more: bool,
+        danger: bool,
+        swatch: Option<iced::Color>,
+    },
+    Submenu {
+        label: String,
+        items: Vec<Item<M>>,
+        enabled: bool,
+    },
+    Stepper {
+        label: String,
+        value: String,
+        less: Option<M>,
+        more: Option<M>,
+    },
     Heading(String),
     Separator,
 }
@@ -29,7 +49,41 @@ pub enum Item<M> {
 impl<M> Item<M> {
     #[must_use]
     pub fn action(label: impl Into<String>, message: M) -> Self {
-        Self::Action { label: label.into(), shortcut: None, message, enabled: true, check: None, more: false }
+        Self::Action {
+            label: label.into(),
+            shortcut: None,
+            message,
+            enabled: true,
+            check: None,
+            more: false,
+            danger: false,
+            swatch: None,
+        }
+    }
+
+    #[must_use]
+    pub fn danger(mut self) -> Self {
+        if let Self::Action { danger, .. } = &mut self {
+            *danger = true;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn swatch(mut self, color: iced::Color) -> Self {
+        if let Self::Action { swatch, .. } = &mut self {
+            *swatch = Some(color);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn opens(&self) -> bool {
+        matches!(self, Self::Action { enabled: true, more: true, .. } | Self::Submenu { enabled: true, .. })
+    }
+
+    fn checks(&self) -> bool {
+        matches!(self, Self::Action { check: Some(_), .. })
     }
 
     #[must_use]
@@ -355,18 +409,9 @@ impl<M: Clone> Popup<M> {
     }
 
     pub fn step(&mut self, forward: bool) {
-        let rows = self.actionable();
-        if rows.is_empty() {
-            return;
+        if let Some(next) = walk(&self.items, self.selected, if forward { Walk::Next } else { Walk::Previous }) {
+            self.selected = Some(next);
         }
-        let position = self.selected.and_then(|selected| rows.iter().position(|row| *row == selected));
-        let next = match (position, forward) {
-            (None, true) => 0,
-            (None, false) => rows.len() - 1,
-            (Some(at), true) => (at + 1) % rows.len(),
-            (Some(at), false) => (at + rows.len() - 1) % rows.len(),
-        };
-        self.selected = Some(rows[next]);
     }
 
     pub fn key(&mut self, key: &Key) -> Option<Outcome<M>> {
@@ -444,18 +489,45 @@ pub fn actionable<M>(items: &[Item<M>]) -> Vec<usize> {
     items.iter().enumerate().filter(|(_, item)| item.actionable()).map(|(index, _)| index).collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Walk {
+    First,
+    Last,
+    Next,
+    Previous,
+}
+
+#[must_use]
+pub fn walk<M>(items: &[Item<M>], current: Option<usize>, walk: Walk) -> Option<usize> {
+    let rows = actionable(items);
+    let last = rows.len().checked_sub(1)?;
+    let at = current.and_then(|current| rows.iter().position(|row| *row == current));
+    let pick = match (walk, at) {
+        (Walk::First, _) | (Walk::Next, None) => 0,
+        (Walk::Last, _) | (Walk::Previous, None) => last,
+        (Walk::Next, Some(at)) => (at + 1) % rows.len(),
+        (Walk::Previous, Some(at)) => at.checked_sub(1).unwrap_or(last),
+    };
+    Some(rows[pick])
+}
+
+fn row_height<M>(item: &Item<M>) -> f32 {
+    match item {
+        Item::Separator => SEPARATOR,
+        Item::Heading(_) => HEADING,
+        _ => ITEM,
+    }
+}
+
 #[must_use]
 pub fn height<M>(items: &[Item<M>]) -> f32 {
-    2.0 * SP1
-        + 2.0
-        + items
-            .iter()
-            .map(|item| match item {
-                Item::Separator => SEPARATOR,
-                Item::Heading(_) => HEADING,
-                _ => ITEM,
-            })
-            .sum::<f32>()
+    2.0 * SP1 + 2.0 + items.iter().map(row_height).sum::<f32>()
+}
+
+#[must_use]
+pub fn span<M>(items: &[Item<M>], index: usize) -> (f32, f32) {
+    let top: f32 = items.iter().take(index).map(row_height).sum();
+    (top, top + items.get(index).map_or(0.0, row_height))
 }
 
 pub const MAX_WIDTH: f32 = 480.0;
@@ -466,19 +538,20 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
     let widest = items
         .iter()
         .map(|item| match item {
-            Item::Action { label, shortcut, more, .. } => {
+            Item::Action { label, shortcut, more, swatch, .. } => {
                 let keys = shortcut.as_deref().map_or(0.0, |keys| measure(keys, TextStyle::CAP) + SP3);
-                measure(label, TextStyle::MENU_ITEM) + keys + if *more { 12.0 + SP2 } else { 0.0 }
+                let dot = if swatch.is_some() { DOT + SP2 } else { 0.0 };
+                measure(label, TextStyle::MENU_ITEM) + keys + dot + if *more { 12.0 + SP2 } else { 0.0 }
             }
             Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + 12.0 + SP2,
             Item::Stepper { label, value, .. } => {
                 measure(label, TextStyle::MENU_ITEM) + SP3 + 2.0 * STEP + measure(value, TextStyle::NUM).max(STEP)
             }
-            Item::Heading(label) => measure(label, TextStyle::MICRO),
+            Item::Heading(label) => measure(label, TextStyle::CAP),
             Item::Separator => 0.0,
         })
         .fold(0.0, f32::max);
-    let mark = 14.0 + SP2;
+    let mark = if items.iter().any(Item::checks) { MARK + SP2 } else { 0.0 };
     let row_padding = 2.0 * SP2;
     let card = 2.0 * SP1 + 2.0;
     let scrollbar = 6.0 + SP1;
@@ -488,41 +561,51 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
 #[must_use]
 pub fn place(at: Point, height: f32, width: f32, window: Size, may_flip: bool) -> (Point, Size) {
     let width = width.min(window.width - 2.0 * SP2);
-    let x = at.x.min(window.width - width - SP2).max(SP2);
+    let x = if may_flip && at.x + width > window.width - SP2 { at.x - width } else { at.x };
+    let x = x.min(window.width - width - SP2).max(SP2);
     let below = window.height - at.y - SP2;
     let above = at.y - SP1 - SP2;
-    if may_flip && at.y > window.height * 0.6 && height > below {
-        let height = height.min(above).max(ITEM);
-        return (Point::new(x, (at.y - height - SP1).max(SP2)), Size::new(width, height));
+    let room = (window.height - 2.0 * SP2).max(ITEM);
+    if !may_flip || height <= below {
+        let height = height.min(below.max(ITEM));
+        return (Point::new(x, at.y.min(window.height - height - SP2).max(SP2)), Size::new(width, height));
     }
-    let height = height.min(below.max(ITEM));
-    (Point::new(x, at.y.min(window.height - height - SP2).max(SP2)), Size::new(width, height))
+    if at.y > window.height * 0.6 && height <= above {
+        return (Point::new(x, at.y - height - SP1), Size::new(width, height));
+    }
+    let height = height.min(room);
+    (Point::new(x, (window.height - height - SP2).max(SP2)), Size::new(width, height))
 }
 
 #[must_use]
 pub fn rows<'a, M>(paint: &Paint, items: &[Item<M>], selected: Option<usize>) -> Vec<Element<'a, Event>> {
-    items.iter().enumerate().map(|(index, item)| item_row(paint, item, index, selected == Some(index))).collect()
+    let marks = items.iter().any(Item::checks);
+    items.iter().enumerate().map(|(index, item)| item_row(paint, item, index, selected == Some(index), marks)).collect()
 }
 
 #[must_use]
 pub fn layer<'a, E: Clone + 'a>(
-    paint: &Paint, rows: Vec<Element<'a, E>>, at: Point, size: Size, progress: f32, dismiss: E,
+    paint: &Paint, rows: Vec<Element<'a, E>>, at: Point, size: Size, progress: f32, dismiss: Option<E>,
 ) -> Element<'a, E> {
     let content = scrollable(paint, iced::widget::column(rows)).id(SCROLL).height(size.height - 2.0 * SP1 - 2.0);
     let card = container(popover(paint, content)).width(size.width);
     let scale = component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress;
-    stack![
-        mouse_area(Space::new().width(Fill).height(Fill))
-            .on_press(dismiss.clone())
-            .on_right_press(dismiss.clone())
-            .on_middle_press(dismiss),
-        pin(widgets::scale(card, scale)).x(at.x).y(at.y + (1.0 - progress) * component::POPOVER_RISE),
-    ]
-    .into()
+    let card = pin(widgets::scale(card, scale)).x(at.x).y(at.y + (1.0 - progress) * component::POPOVER_RISE);
+    match dismiss {
+        Some(dismiss) => stack![
+            mouse_area(Space::new().width(Fill).height(Fill))
+                .on_press(dismiss.clone())
+                .on_right_press(dismiss.clone())
+                .on_middle_press(dismiss),
+            card,
+        ]
+        .into(),
+        None => card.into(),
+    }
 }
 
 #[must_use]
-pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bool) -> Element<'a, Event> {
+pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bool, marks: bool) -> Element<'a, Event> {
     let paint = *paint;
     match item {
         Item::Separator => container(
@@ -530,26 +613,33 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
         )
         .padding(Padding::from([SP1, SP2]))
         .into(),
-        Item::Heading(label) => container(text(label.clone(), TextStyle::MICRO).color(paint.fg_3()))
+        Item::Heading(label) => container(text(label.clone(), TextStyle::CAP).color(paint.fg_3()))
             .padding(Padding::from([SP2, SP3]).bottom(SP1))
             .into(),
         Item::Action { label, enabled, .. } | Item::Submenu { label, enabled, .. } => {
             let enabled = *enabled;
-            let (shortcut, check, more) = match item {
-                Item::Action { shortcut, check, more, .. } => (shortcut.clone(), *check, *more),
-                _ => (None, None, true),
+            let (shortcut, check, more, danger, swatch) = match item {
+                Item::Action { shortcut, check, more, danger, swatch, .. } => {
+                    (shortcut.clone(), *check, *more, *danger, *swatch)
+                }
+                _ => (None, None, true, false, None),
             };
-            let mark: Element<'a, Event> = match check {
-                Some(true) => icon(Icon::Check, 14.0, if enabled { paint.acc_bg() } else { paint.fg_4() }),
-                _ => Space::new().width(14).height(14).into(),
-            };
-            let mut content = row![
-                mark,
-                text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
-                Space::new().width(Fill)
-            ]
-            .spacing(SP2)
-            .align_y(Alignment::Center);
+            let mut content = row![].spacing(SP2).align_y(Alignment::Center);
+            if marks {
+                content = content.push(match check {
+                    Some(true) => icon(Icon::Check, MARK, if enabled { paint.acc_bg() } else { paint.fg_4() }),
+                    _ => Space::new().width(MARK).height(MARK).into(),
+                });
+            }
+            if let Some(color) = swatch {
+                content = content.push(
+                    container(Space::new().width(DOT).height(DOT))
+                        .style(move |_| style::rounded(color, glide_theme::shape::R_ROUND)),
+                );
+            }
+            content = content
+                .push(text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None))
+                .push(Space::new().width(Fill));
             if let Some(shortcut) = shortcut {
                 content = content.push(text(shortcut, TextStyle::CAP).color(if enabled {
                     paint.fg_3()
@@ -569,6 +659,9 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
                 let mut style = style::menu_item(&paint, status);
                 if selected {
                     style.background = Some(Background::Color(paint.fill_2()));
+                }
+                if danger && enabled {
+                    style.text_color = paint.danger();
                 }
                 style
             });
@@ -609,7 +702,7 @@ pub fn view<'a, M>(paint: &Paint, popup: &'a Popup<M>, window: Size) -> Element<
     let progress = popup.reveal.value(motion::t2()) as f32;
     let paint = paint.faded(progress);
     let (at, size) = popup.placement(window);
-    layer(&paint, rows(&paint, &popup.items, popup.selected), at, size, progress, Event::Dismiss)
+    layer(&paint, rows(&paint, &popup.items, popup.selected), at, size, progress, Some(Event::Dismiss))
 }
 
 #[must_use]
@@ -762,13 +855,45 @@ mod tests {
     #[test]
     fn a_tall_menu_scrolls_below_its_anchor_instead_of_covering_it() {
         let window = Size::new(960.0, 640.0);
-        let (at, size) = place(Point::new(100.0, 36.0), 900.0, 300.0, window, true);
-        assert_eq!(at.y, 36.0, "it opens where the bar ends");
+        let (at, size) = place(Point::new(100.0, 36.0), 900.0, 300.0, window, false);
+        assert_eq!(at.y, 36.0, "a bar menu opens where the bar ends");
         assert!(size.height <= window.height - 36.0 - SP2 + 0.5);
         let (at, size) = place(Point::new(100.0, 600.0), 500.0, 300.0, window, true);
-        assert!(at.y + size.height <= 600.0, "near the bottom it opens upwards");
+        assert!(at.y + size.height <= 600.0, "near the bottom a context menu opens upwards");
         let (short, _) = place(Point::new(100.0, 500.0), 80.0, 300.0, window, true);
         assert_eq!(short.y, 500.0, "a short menu stays below even low in the window");
+        let (at, size) = place(Point::new(100.0, 300.0), 500.0, 300.0, window, true);
+        assert_eq!(size.height, 500.0, "a context menu that fits the window is shown whole");
+        assert!(at.y + size.height <= window.height - SP2 + 0.5);
+        let (at, size) = place(Point::new(100.0, 300.0), 2000.0, 300.0, window, true);
+        assert_eq!((at.y, size.height), (SP2, window.height - 2.0 * SP2), "only taller than the window scrolls");
+    }
+
+    #[test]
+    fn row_spans_include_headings_and_separators_above_them() {
+        let items =
+            [Item::heading("h"), Item::action("a", Command::New), Item::Separator, Item::action("b", Command::Save)];
+        assert_eq!(span(&items, 0), (0.0, HEADING));
+        assert_eq!(span(&items, 1), (HEADING, HEADING + ITEM));
+        let top = HEADING + ITEM + SEPARATOR;
+        assert_eq!(span(&items, 3), (top, top + ITEM));
+    }
+
+    #[test]
+    fn walking_skips_disabled_rows_and_wraps() {
+        let items =
+            [Item::heading("h"), Item::action("a", Command::New), Item::action("b", Command::Save).enabled(false)];
+        assert_eq!(walk(&items, None, Walk::Next), Some(1));
+        assert_eq!(walk(&items, Some(1), Walk::Next), Some(1), "the only enabled row wraps onto itself");
+        assert_eq!(walk(&items, None, Walk::Last), Some(1));
+        assert_eq!(walk(&[Item::<Command>::Separator], None, Walk::First), None);
+    }
+
+    #[test]
+    fn marks_are_reserved_only_when_a_row_can_be_checked() {
+        let plain = [Item::action("Open", Command::New)];
+        let checked = [Item::action("Open", Command::New), Item::action("Wrap", Command::Wrap).checked(false)];
+        assert!(width(&checked, 0.0) > width(&plain, 0.0));
     }
 
     #[test]

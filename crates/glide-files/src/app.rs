@@ -34,7 +34,6 @@ pub const SEARCH_ID: &str = "search";
 pub const PATH_ID: &str = "path";
 pub const MODAL_ID: &str = "modal";
 pub const FILES_ID: &str = "files";
-pub const MENU_ID: &str = "menu";
 pub const RENAME_ID: &str = "rename";
 
 const SEARCH_LIMIT: usize = 500;
@@ -1245,7 +1244,7 @@ impl App {
         }
         let stale = self.menu.as_ref().is_some_and(|menu| {
             menu.highlight.is_some_and(|index| {
-                widgets::menu::entries(self, menu).get(index).is_none_or(|entry| entry.clone().into_message().is_none())
+                widgets::menu::entries(self, menu).get(index).is_none_or(|entry| entry.message().is_none())
             })
         });
         if let Some(menu) = self.menu.as_mut().filter(|_| stale) {
@@ -1485,9 +1484,7 @@ impl App {
             Message::CloseMenu => self.menu = None,
             Message::MenuHover(index, inside) => {
                 let enabled = self.menu.as_ref().is_some_and(|menu| {
-                    widgets::menu::entries(self, menu)
-                        .get(index)
-                        .is_some_and(|entry| entry.clone().into_message().is_some())
+                    widgets::menu::entries(self, menu).get(index).is_some_and(|entry| entry.message().is_some())
                 });
                 if let Some(menu) = &mut self.menu {
                     if inside && enabled {
@@ -2393,7 +2390,7 @@ impl App {
         match next {
             Some(index) => {
                 let (top, bottom) = widgets::menu::span(&entries, index);
-                widgets::pointer::reveal(Id::new(MENU_ID), top, bottom)
+                widgets::pointer::reveal(Id::new(glide_sdk::menu::SCROLL), top, bottom)
             }
             None => Task::none(),
         }
@@ -2406,7 +2403,7 @@ impl App {
         let chosen = menu
             .highlight
             .and_then(|index| widgets::menu::entries(self, menu).into_iter().nth(index))
-            .and_then(widgets::menu::Entry::into_message);
+            .and_then(|entry| entry.message().cloned());
         let Some(message) = chosen else {
             self.menu = None;
             return Task::none();

@@ -562,7 +562,7 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
         _ => (iced::Point::new(window.width - size.width - 8.0, HEADER - 2.0), false),
     };
     let (at, size) = glide_sdk::menu::place(anchor, size.height, size.width, window, may_flip);
-    glide_sdk::menu::layer(&paint, rows, at, size, progress, Message::Dismiss)
+    glide_sdk::menu::layer(&paint, rows, at, size, progress, Some(Message::Dismiss))
 }
 
 fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {

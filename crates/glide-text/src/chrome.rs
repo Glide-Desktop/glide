@@ -958,7 +958,8 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
     let actionable = menu::actionable(&items);
     let selected = menu.selected.and_then(|at| actionable.get(at).copied());
     let width = menu::width(&items, MENU_WIDTH);
-    let (at, size) = menu::place(menu.at, menu::height(&items), width, app.window.size, true);
+    let pops = !matches!(menu.kind, MenuKind::Bar(_) | MenuKind::Compact);
+    let (at, size) = menu::place(menu.at, menu::height(&items), width, app.window.size, pops);
     let rows = menu::rows(&paint, &items, selected)
         .into_iter()
         .zip(&items)
@@ -974,7 +975,7 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
             })
         })
         .collect();
-    menu::layer(&paint, rows, at, size, progress, Message::Dismiss)
+    menu::layer(&paint, rows, at, size, progress, Some(Message::Dismiss))
 }
 
 fn stat_row<'a>(paint: &Paint, label: &'a str, value: String) -> Element<'a, Message> {

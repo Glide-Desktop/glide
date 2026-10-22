@@ -110,18 +110,8 @@ fn the_menu_key_and_shift_f10_open_the_context_menu_and_shortcuts_close_it() {
 fn keyboard_highlight_walks_enabled_menu_rows_and_wraps() {
     use glide_files::app::{Menu, MenuKind};
     use menu::{Entry, next_highlight};
-    let item = |enabled: bool| {
-        Entry::Item(menu::Item {
-            label: "row".into(),
-            message: enabled.then_some(Message::SelectAll),
-            shortcut: None,
-            submenu: false,
-            danger: false,
-            checked: None,
-            swatch: None,
-        })
-    };
-    let entries = [Entry::Header("h".into()), item(true), Entry::Separator, item(false), item(true)];
+    let item = |enabled: bool| Entry::action("row", Message::SelectAll).enabled(enabled);
+    let entries = [Entry::heading("h"), item(true), Entry::Separator, item(false), item(true)];
     assert_eq!(next_highlight(&entries, None, Step::Down), Some(1));
     assert_eq!(next_highlight(&entries, Some(1), Step::Down), Some(4), "skips separators and disabled rows");
     assert_eq!(next_highlight(&entries, Some(4), Step::Down), Some(1), "wraps");
@@ -557,7 +547,7 @@ fn a_menu_highlight_does_not_stay_on_a_row_that_became_disabled() {
     let open = app.menu.clone().expect("menu");
     let index = entries(&app, &open)
         .iter()
-        .position(|entry| matches!(entry, Entry::Item(item) if item.label == rename))
+        .position(|entry| matches!(entry, Entry::Action { label, .. } if label == rename))
         .expect("rename row");
     let _ = app.update(Message::MenuHover(index, true));
     assert_eq!(app.menu.as_ref().and_then(|menu| menu.highlight), Some(index));
@@ -673,7 +663,7 @@ fn a_search_result_offers_its_folder() {
         menu::entries(app, menu)
             .into_iter()
             .filter_map(|entry| match entry {
-                menu::Entry::Item(item) => Some(item.label.into_owned()),
+                menu::Entry::Action { label, .. } => Some(label),
                 _ => None,
             })
             .collect()
@@ -1229,10 +1219,15 @@ fn grid_geometry_matches_keyboard_navigation() {
 
 #[test]
 fn menus_flip_away_from_window_edges() {
+    use glide_sdk::menu::place;
     let window = Size::new(1000.0, 600.0);
-    assert_eq!(menu::place(Point::new(100.0, 100.0), 200.0, window), Point::new(100.0, 100.0));
-    assert_eq!(menu::place(Point::new(900.0, 500.0), 200.0, window), Point::new(900.0 - menu::WIDTH, 392.0));
-    assert_eq!(menu::place(Point::new(10.0, 10.0), 900.0, window), Point::new(10.0, 8.0));
+    assert_eq!(place(Point::new(100.0, 100.0), 200.0, menu::WIDTH, window, true).0, Point::new(100.0, 100.0));
+    let (at, size) = place(Point::new(900.0, 500.0), 200.0, menu::WIDTH, window, true);
+    assert_eq!(at, Point::new(900.0 - menu::WIDTH, 296.0), "left of the pointer and upwards from it");
+    assert_eq!(size.height, 200.0);
+    let (at, size) = place(Point::new(10.0, 10.0), 900.0, menu::WIDTH, window, true);
+    assert_eq!(at, Point::new(10.0, 8.0));
+    assert!(size.height < 600.0, "a menu taller than the window scrolls");
 }
 
 #[test]

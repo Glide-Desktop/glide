@@ -1,152 +1,48 @@
-use std::borrow::Cow;
 use std::path::Path;
 
-use iced::widget::{
-    Column, button, container, float, mouse_area, opaque, pin, responsive, row, rule, scrollable, space, stack, text,
-};
-use iced::{Alignment, Element, Fill, Length, Padding, Point, Size, Vector, mouse};
+use glide_sdk::menu::{self as sdk, Event, Walk};
+use iced::widget::responsive;
+use iced::{Element, Point, Size};
 
 use super::header::{GAP, INSET, SEARCH_WIDTH, WINDOW_CONTROL};
-use super::{CONTROL, HEADER_HEIGHT, icon};
+use super::{CONTROL, HEADER_HEIGHT};
 use crate::app::{App, Menu, MenuKind, Message, Step, ViewMode};
 use crate::fs::{Offer, SortBy, Volume};
 use crate::i18n::Key;
-use crate::icons::Icon;
-use crate::theme::{self, SP1, SP2, SP3, ThemeState};
+use crate::theme::SP2;
+
+pub type Entry = sdk::Item<Message>;
 
 pub const WIDTH: f32 = 248.0;
-pub const ROW: f32 = theme::CONTROL;
-const SEPARATOR: f32 = 2.0 * SP1 + 1.0;
-const HEADER: f32 = 28.0;
-const PADDING: f32 = SP1;
-const MARGIN: f32 = SP2;
-const RISE: f32 = 6.0;
-const SHRINK: f32 = 0.06;
-const MARK: f32 = 16.0;
 const OPTIONS_RIGHT_INSET: f32 = INSET + WINDOW_CONTROL + GAP + SEARCH_WIDTH + GAP;
 const OPTIONS_TOP: f32 = HEADER_HEIGHT.midpoint(CONTROL) + SP2;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Item {
-    pub label: Cow<'static, str>,
-    pub message: Option<Message>,
-    pub shortcut: Option<&'static str>,
-    pub submenu: bool,
-    pub danger: bool,
-    pub checked: Option<bool>,
-    pub swatch: Option<iced::Color>,
-}
-
-impl Item {
-    fn new(label: impl Into<Cow<'static, str>>, message: Message) -> Self {
-        Self {
-            label: label.into(),
-            message: Some(message),
-            shortcut: None,
-            submenu: false,
-            danger: false,
-            checked: None,
-            swatch: None,
+#[must_use]
+pub fn next_highlight(entries: &[Entry], current: Option<usize>, step: Step) -> Option<usize> {
+    let walk = match step {
+        Step::First => Walk::First,
+        Step::Last => Walk::Last,
+        Step::Down => Walk::Next,
+        Step::Up => Walk::Previous,
+        Step::Left | Step::Right => {
+            return current.filter(|at| entries.get(*at).is_some_and(|e| e.message().is_some()));
         }
-    }
-
-    fn swatch(mut self, color: iced::Color) -> Self {
-        self.swatch = Some(color);
-        self
-    }
-
-    fn submenu(mut self) -> Self {
-        self.submenu = true;
-        self
-    }
-
-    fn keys(mut self, shortcut: &'static str) -> Self {
-        self.shortcut = Some(shortcut);
-        self
-    }
-
-    fn enabled(mut self, enabled: bool) -> Self {
-        if !enabled {
-            self.message = None;
-        }
-        self
-    }
-
-    fn danger(mut self) -> Self {
-        self.danger = true;
-        self
-    }
-
-    fn checked(mut self, on: bool) -> Self {
-        self.checked = Some(on);
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Entry {
-    Item(Item),
-    Separator,
-    Header(Cow<'static, str>),
-}
-
-impl From<Item> for Entry {
-    fn from(item: Item) -> Self {
-        Self::Item(item)
-    }
-}
-
-impl Entry {
-    fn height(&self) -> f32 {
-        match self {
-            Self::Item(_) => ROW,
-            Self::Separator => SEPARATOR,
-            Self::Header(_) => HEADER,
-        }
-    }
-
-    const fn enabled(&self) -> bool {
-        matches!(self, Self::Item(Item { message: Some(_), .. }))
-    }
-
-    #[must_use]
-    pub const fn opens(&self) -> bool {
-        matches!(self, Self::Item(Item { message: Some(_), submenu: true, .. }))
-    }
-
-    #[must_use]
-    pub fn into_message(self) -> Option<Message> {
-        match self {
-            Self::Item(item) => item.message,
-            Self::Separator | Self::Header(_) => None,
-        }
-    }
+    };
+    sdk::walk(entries, current, walk)
 }
 
 #[must_use]
-pub fn next_highlight(entries: &[Entry], current: Option<usize>, step: Step) -> Option<usize> {
-    let enabled: Vec<usize> = entries.iter().enumerate().filter(|(_, entry)| entry.enabled()).map(|(i, _)| i).collect();
-    let last = enabled.len().checked_sub(1)?;
-    let at = current.and_then(|current| enabled.iter().position(|&index| index == current));
-    let pick = match (step, at) {
-        (Step::First, _) | (Step::Down, None) => 0,
-        (Step::Last, _) | (Step::Up, None) => last,
-        (Step::Down, Some(at)) => {
-            if at == last {
-                0
-            } else {
-                at + 1
-            }
-        }
-        (Step::Up, Some(at)) => at.checked_sub(1).unwrap_or(last),
-        (Step::Left | Step::Right, at) => return at.map(|at| enabled[at]),
-    };
-    Some(enabled[pick])
+pub fn span(entries: &[Entry], index: usize) -> (f32, f32) {
+    sdk::span(entries, index)
 }
 
 #[must_use]
 pub fn options_at(window: Size) -> Point {
-    Point::new((window.width - OPTIONS_RIGHT_INSET - WIDTH).max(MARGIN), OPTIONS_TOP)
+    options_for(window, WIDTH)
+}
+
+fn options_for(window: Size, width: f32) -> Point {
+    Point::new((window.width - OPTIONS_RIGHT_INSET - width).max(SP2), OPTIONS_TOP)
 }
 
 fn bookmarkable(app: &App, path: &Path) -> bool {
@@ -167,10 +63,10 @@ fn offered(offers: &[Offer]) -> Vec<Entry> {
     for (index, offer) in offers.iter().enumerate() {
         if index == 0 || offer.group != group {
             entries.push(Entry::Separator);
-            entries.extend(offer.group.clone().map(|name| Entry::Header(name.into())));
+            entries.extend(offer.group.clone().map(Entry::heading));
             group.clone_from(&offer.group);
         }
-        entries.push(Item::new(offer.label.clone(), Message::RunAction(Box::new(offer.clone()))).into());
+        entries.push(Entry::action(offer.label.clone(), Message::RunAction(Box::new(offer.clone()))));
     }
     entries
 }
@@ -179,146 +75,139 @@ fn offered(offers: &[Offer]) -> Vec<Entry> {
 #[allow(clippy::too_many_lines)] // One declarative entry list per menu kind
 pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
     let kind = &menu.kind;
-    let item = |key: Key, message: Message| Item::new(key.text(app.lang), message);
+    let item = |key: Key, message: Message| Entry::action(key.text(app.lang), message);
     let selected = app.selected();
     let single = selected.len() == 1;
     let single_dir = single && selected[0].is_dir();
     let in_trash = app.in_trash();
-    let properties = item(Key::Properties, Message::Properties).keys("Ctrl+I");
+    let properties = item(Key::Properties, Message::Properties).shortcut("Ctrl+I");
     match kind {
         MenuKind::Selection if in_trash => vec![
-            item(Key::Restore, Message::Restore)
-                .enabled(selected.iter().any(|path| app.trash.is_top_level(path)))
-                .into(),
-            item(Key::DeletePermanently, Message::Delete).keys("Shift+Del").danger().into(),
+            item(Key::Restore, Message::Restore).enabled(selected.iter().any(|path| app.trash.is_top_level(path))),
+            item(Key::DeletePermanently, Message::Delete).shortcut("Shift+Del").danger(),
             Entry::Separator,
-            properties.enabled(single).into(),
+            properties.enabled(single),
         ],
         MenuKind::Selection => {
             let bookmark = selected
                 .first()
                 .filter(|path| single && bookmarkable(app, path))
                 .map(|path| item(Key::AddBookmark, Message::AddBookmark(path.clone())));
-            let mut entries: Vec<Entry> = vec![item(Key::Open, Message::OpenSelection).keys("Enter").into()];
+            let mut entries = vec![item(Key::Open, Message::OpenSelection).shortcut("Enter")];
             if let (true, [found]) = (app.is_searching(), selected.as_slice()) {
-                entries.push(item(Key::ShowInFolder, Message::Reveal(found.clone())).into());
+                entries.push(item(Key::ShowInFolder, Message::Reveal(found.clone())));
             }
             if menu.open_with {
-                entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith)).submenu().into());
+                entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith)).cascades());
             }
             if single_dir {
-                entries.push(item(Key::OpenInTerminal, Message::Terminal).into());
+                entries.push(item(Key::OpenInTerminal, Message::Terminal));
             }
             entries.extend(offered(&menu.offers));
             entries.extend([
                 Entry::Separator,
-                item(Key::Cut, Message::Cut).keys("Ctrl+X").into(),
-                item(Key::Copy, Message::Copy).keys("Ctrl+C").into(),
-                item(Key::Duplicate, Message::Duplicate).keys("Ctrl+D").into(),
-                item(Key::CreateLink, Message::CreateLink).into(),
-                item(Key::CopyPath, Message::CopyText(joined(&selected))).into(),
+                item(Key::Cut, Message::Cut).shortcut("Ctrl+X"),
+                item(Key::Copy, Message::Copy).shortcut("Ctrl+C"),
+                item(Key::Duplicate, Message::Duplicate).shortcut("Ctrl+D"),
+                item(Key::CreateLink, Message::CreateLink),
+                item(Key::CopyPath, Message::CopyText(joined(&selected))),
                 Entry::Separator,
-                item(Key::Tags, Message::SubMenu(MenuKind::Tags)).submenu().into(),
+                item(Key::Tags, Message::SubMenu(MenuKind::Tags)).cascades(),
             ]);
-            entries.extend(bookmark.map(Entry::from));
+            entries.extend(bookmark);
             entries.extend([
-                item(Key::Rename, Message::Rename).keys("F2").enabled(single).into(),
-                item(Key::MoveToTrash, Message::Trash).keys("Del").danger().into(),
+                item(Key::Rename, Message::Rename).shortcut("F2").enabled(single),
+                item(Key::MoveToTrash, Message::Trash).shortcut("Del").danger(),
                 Entry::Separator,
-                properties.enabled(single).into(),
+                properties.enabled(single),
             ]);
             entries
         }
         MenuKind::Background if in_trash => vec![
-            item(Key::EmptyTrash, Message::EmptyTrash).danger().enabled(app.trash_count > 0).into(),
+            item(Key::EmptyTrash, Message::EmptyTrash).danger().enabled(app.trash_count > 0),
             Entry::Separator,
-            item(Key::SelectAll, Message::SelectAll).keys("Ctrl+A").into(),
+            item(Key::SelectAll, Message::SelectAll).shortcut("Ctrl+A"),
         ],
         MenuKind::Background => vec![
-            item(Key::NewFolder, Message::NewFolder).keys("Ctrl+Shift+N").into(),
-            item(Key::NewFile, Message::NewFile).into(),
-            item(Key::NewDocument, Message::SubMenu(MenuKind::Templates)).submenu().into(),
+            item(Key::NewFolder, Message::NewFolder).shortcut("Ctrl+Shift+N"),
+            item(Key::NewFile, Message::NewFile),
+            item(Key::NewDocument, Message::SubMenu(MenuKind::Templates)).cascades(),
             Entry::Separator,
-            item(Key::Paste, Message::Paste).keys("Ctrl+V").into(),
-            item(Key::SelectAll, Message::SelectAll).keys("Ctrl+A").into(),
+            item(Key::Paste, Message::Paste).shortcut("Ctrl+V"),
+            item(Key::SelectAll, Message::SelectAll).shortcut("Ctrl+A"),
             Entry::Separator,
-            Entry::Header(Key::ViewAs.text(app.lang).into()),
+            Entry::heading(Key::ViewAs.text(app.lang)),
             item(Key::ViewGrid, Message::SetView(ViewMode::Grid))
-                .keys("Ctrl+1")
-                .checked(app.view == ViewMode::Grid)
-                .into(),
+                .shortcut("Ctrl+1")
+                .checked(app.view == ViewMode::Grid),
             item(Key::ViewList, Message::SetView(ViewMode::List))
-                .keys("Ctrl+2")
-                .checked(app.view == ViewMode::List)
-                .into(),
+                .shortcut("Ctrl+2")
+                .checked(app.view == ViewMode::List),
             Entry::Separator,
-            item(Key::OpenInTerminal, Message::Terminal).into(),
-            item(Key::CopyPath, Message::CopyText(app.current.display().to_string())).into(),
-            properties.into(),
+            item(Key::OpenInTerminal, Message::Terminal),
+            item(Key::CopyPath, Message::CopyText(app.current.display().to_string())),
+            properties,
         ],
         MenuKind::Location(path) => {
-            let mut entries: Vec<Entry> = vec![
-                item(Key::Open, Message::Navigate(path.clone())).into(),
-                item(Key::OpenInTerminal, Message::TerminalAt(path.clone())).enabled(!app.trash.contains(path)).into(),
-                item(Key::CopyPath, Message::CopyText(path.display().to_string())).into(),
+            let mut entries = vec![
+                item(Key::Open, Message::Navigate(path.clone())),
+                item(Key::OpenInTerminal, Message::TerminalAt(path.clone())).enabled(!app.trash.contains(path)),
+                item(Key::CopyPath, Message::CopyText(path.display().to_string())),
                 Entry::Separator,
             ];
             if app.is_bookmarked(path) {
-                entries.push(item(Key::RemoveBookmark, Message::RemoveBookmark(path.clone())).into());
+                entries.push(item(Key::RemoveBookmark, Message::RemoveBookmark(path.clone())));
                 entries.push(Entry::Separator);
             } else if bookmarkable(app, path) {
-                entries.push(item(Key::AddBookmark, Message::AddBookmark(path.clone())).into());
+                entries.push(item(Key::AddBookmark, Message::AddBookmark(path.clone())));
                 entries.push(Entry::Separator);
             }
             if *path == app.trash.files() {
-                entries.push(item(Key::EmptyTrash, Message::EmptyTrash).danger().enabled(app.trash_count > 0).into());
+                entries.push(item(Key::EmptyTrash, Message::EmptyTrash).danger().enabled(app.trash_count > 0));
                 entries.push(Entry::Separator);
             }
-            entries.push(item(Key::Properties, Message::PropertiesOf(path.clone())).into());
+            entries.push(item(Key::Properties, Message::PropertiesOf(path.clone())));
             entries
         }
         MenuKind::Volume(object) => app.volume(object).map(|volume| volume_entries(app, volume)).unwrap_or_default(),
         MenuKind::Options => {
-            let mut entries = vec![Entry::Header(Key::SortBy.text(app.lang).into())];
+            let mut entries = vec![Entry::heading(Key::SortBy.text(app.lang))];
             entries.extend(
                 SortBy::ALL
                     .into_iter()
-                    .map(|by| Item::new(by.label(app.lang), Message::SortKey(by)).checked(app.sort.by == by).into()),
+                    .map(|by| Entry::action(by.label(app.lang), Message::SortKey(by)).checked(app.sort.by == by)),
             );
             entries.extend([
-                item(Key::Reversed, Message::ToggleReverse).checked(!app.sort.ascending).into(),
+                item(Key::Reversed, Message::ToggleReverse).checked(!app.sort.ascending),
                 Entry::Separator,
-                item(Key::ShowHidden, Message::ToggleHidden).keys("Ctrl+H").checked(app.show_hidden).into(),
+                item(Key::ShowHidden, Message::ToggleHidden).shortcut("Ctrl+H").checked(app.show_hidden),
                 Entry::Separator,
-                item(Key::ZoomIn, Message::Zoom(1)).keys("Ctrl++").into(),
-                item(Key::ZoomOut, Message::Zoom(-1)).keys("Ctrl+-").into(),
-                item(Key::ZoomReset, Message::Zoom(0)).keys("Ctrl+0").into(),
-                item(Key::Columns, Message::SubMenu(MenuKind::Columns))
-                    .submenu()
-                    .enabled(app.view == ViewMode::List)
-                    .into(),
+                item(Key::ZoomIn, Message::Zoom(1)).shortcut("Ctrl++"),
+                item(Key::ZoomOut, Message::Zoom(-1)).shortcut("Ctrl+-"),
+                item(Key::ZoomReset, Message::Zoom(0)).shortcut("Ctrl+0"),
+                item(Key::Columns, Message::SubMenu(MenuKind::Columns)).cascades().enabled(app.view == ViewMode::List),
                 Entry::Separator,
-                item(Key::QueueOperations, Message::ToggleQueue).checked(app.queue).into(),
+                item(Key::QueueOperations, Message::ToggleQueue).checked(app.queue),
                 Entry::Separator,
-                item(Key::NewFolder, Message::NewFolder).keys("Ctrl+Shift+N").enabled(!in_trash).into(),
-                item(Key::NewFile, Message::NewFile).enabled(!in_trash).into(),
-                item(Key::OpenInTerminal, Message::Terminal).into(),
+                item(Key::NewFolder, Message::NewFolder).shortcut("Ctrl+Shift+N").enabled(!in_trash),
+                item(Key::NewFile, Message::NewFile).enabled(!in_trash),
+                item(Key::OpenInTerminal, Message::Terminal),
                 Entry::Separator,
-                item(Key::Reload, Message::Reload).keys("F5").into(),
+                item(Key::Reload, Message::Reload).shortcut("F5"),
             ]);
             entries
         }
         MenuKind::Templates => {
-            let mut entries = vec![Entry::Header(Key::NewDocument.text(app.lang).into())];
+            let mut entries = vec![Entry::heading(Key::NewDocument.text(app.lang))];
             let root = crate::fs::templates_dir().unwrap_or_default();
             entries.extend(app.templates.iter().map(|template| {
                 let shown = template.strip_prefix(&root).unwrap_or(template).with_extension("");
-                Item::new(shown.display().to_string(), Message::NewFromTemplate(template.clone())).into()
+                Entry::action(shown.display().to_string(), Message::NewFromTemplate(template.clone()))
             }));
             if app.templates.is_empty() {
-                entries.push(item(Key::NoTemplates, Message::CloseMenu).enabled(false).into());
+                entries.push(item(Key::NoTemplates, Message::CloseMenu).enabled(false));
             }
-            entries.extend([Entry::Separator, item(Key::OpenTemplates, Message::OpenTemplates).into()]);
+            entries.extend([Entry::Separator, item(Key::OpenTemplates, Message::OpenTemplates)]);
             entries
         }
         MenuKind::Tags => {
@@ -331,10 +220,9 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                     item(color_key(color), Message::ToggleTag(color))
                         .swatch(super::content::tag_color(color))
                         .checked(on)
-                        .into()
                 })
                 .collect();
-            entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags).into()]);
+            entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags)]);
             entries
         }
         MenuKind::OpenWith => {
@@ -342,15 +230,14 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             if !entries.is_empty() {
                 entries.push(Entry::Separator);
             }
-            entries.push(item(Key::OtherApp, Message::OpenWithDialog).into());
+            entries.push(item(Key::OtherApp, Message::OpenWithDialog));
             entries
         }
         MenuKind::Columns => {
-            let mut entries = vec![Entry::Header(Key::Columns.text(app.lang).into())];
+            let mut entries = vec![Entry::heading(Key::Columns.text(app.lang))];
             entries.extend(crate::config::ListColumn::ALL.into_iter().map(|column| {
-                Item::new(super::content::column_label(column, app.lang), Message::ToggleColumn(column))
+                Entry::action(super::content::column_label(column, app.lang), Message::ToggleColumn(column))
                     .checked(app.columns.contains(&column))
-                    .into()
             }));
             entries
         }
@@ -371,195 +258,58 @@ const fn color_key(color: crate::fs::tags::Color) -> Key {
 }
 
 fn volume_entries(app: &App, volume: &Volume) -> Vec<Entry> {
-    let item = |key: Key, message: Message| Item::new(key.text(app.lang), message);
+    let item = |key: Key, message: Message| Entry::action(key.text(app.lang), message);
     let idle = !app.busy.contains(&volume.object);
     let object = volume.object.clone();
-    let mut entries: Vec<Entry> = match &volume.mount {
+    let mut entries = match &volume.mount {
         Some(path) => vec![
-            item(Key::Open, Message::Navigate(path.clone())).into(),
-            item(Key::OpenInTerminal, Message::TerminalAt(path.clone())).into(),
-            item(Key::CopyPath, Message::CopyText(path.display().to_string())).into(),
+            item(Key::Open, Message::Navigate(path.clone())),
+            item(Key::OpenInTerminal, Message::TerminalAt(path.clone())),
+            item(Key::CopyPath, Message::CopyText(path.display().to_string())),
             Entry::Separator,
-            item(Key::Unmount, Message::Unmount(object.clone())).enabled(idle).into(),
+            item(Key::Unmount, Message::Unmount(object.clone())).enabled(idle),
         ],
         None => vec![
-            item(Key::Open, Message::Mount(object.clone(), false)).enabled(idle).into(),
-            item(Key::MountReadOnly, Message::Mount(object.clone(), true)).enabled(idle).into(),
+            item(Key::Open, Message::Mount(object.clone(), false)).enabled(idle),
+            item(Key::MountReadOnly, Message::Mount(object.clone(), true)).enabled(idle),
         ],
     };
     if volume.can_remove() {
-        entries.push(item(Key::Eject, Message::Eject(object.clone())).enabled(idle).into());
+        entries.push(item(Key::Eject, Message::Eject(object.clone())).enabled(idle));
     }
     entries.push(Entry::Separator);
-    entries.push(item(Key::Repair, Message::Repair(object)).enabled(idle).into());
+    entries.push(item(Key::Repair, Message::Repair(object)).enabled(idle));
     if let Some(path) = &volume.mount {
-        entries.push(item(Key::Properties, Message::PropertiesOf(path.clone())).into());
+        entries.push(item(Key::Properties, Message::PropertiesOf(path.clone())));
     }
     entries
-}
-
-#[must_use]
-pub fn height(entries: &[Entry]) -> f32 {
-    entries.iter().map(Entry::height).sum::<f32>() + 2.0 * PADDING + 2.0
-}
-
-#[must_use]
-pub fn span(entries: &[Entry], index: usize) -> (f32, f32) {
-    let top: f32 = entries.iter().take(index).map(Entry::height).sum();
-    (top, top + entries.get(index).map_or(0.0, Entry::height))
-}
-
-#[must_use]
-pub fn place(at: Point, height: f32, window: Size) -> Point {
-    let x = if at.x + WIDTH > window.width - MARGIN { (at.x - WIDTH).max(MARGIN) } else { at.x };
-    let y = if at.y + height > window.height - MARGIN { (window.height - height - MARGIN).max(MARGIN) } else { at.y };
-    Point::new(x, y)
 }
 
 #[must_use]
 pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> Element<'a, Message> {
     responsive(move |window| {
         let entries = entries(app, menu);
-        let full = height(&entries);
-        let at = match menu.kind {
-            MenuKind::Options => options_at(window),
-            _ => place(menu.at, full, window),
+        let width = sdk::width(&entries, WIDTH);
+        let height = sdk::height(&entries);
+        let (at, size) = match menu.kind {
+            MenuKind::Options => sdk::place(options_for(window, width), height, width, window, false),
+            _ => sdk::place(menu.at, height, width, window, true),
         };
-        let fit = full.min(window.height - at.y - MARGIN);
-        let rise = (1.0 - progress) * -RISE;
-        let panel = float(panel(&app.theme.faded(progress), entries, live, fit, menu.highlight))
-            .scale(1.0 - (1.0 - progress) * SHRINK)
-            .translate(move |_, _| Vector::new(0.0, rise));
-        let panel: Element<'_, Message> = if live { opaque(panel) } else { panel.into() };
-        let positioned = pin(panel).position(at);
-        if live {
-            let dismiss = mouse_area(space().width(Fill).height(Fill))
-                .on_press(Message::CloseMenu)
-                .on_right_press(Message::CloseMenu)
-                .interaction(mouse::Interaction::Idle);
-            stack![dismiss, positioned].into()
-        } else {
-            positioned.into()
-        }
+        let paint = super::paint(&app.theme.faded(progress));
+        let rows = sdk::rows(&paint, &entries, menu.highlight)
+            .into_iter()
+            .zip(&entries)
+            .enumerate()
+            .map(|(index, (row, entry))| {
+                let message = entry.message().cloned().filter(|_| live);
+                row.map(move |event| match (event, &message) {
+                    (Event::Picked(_), Some(message)) => Message::Menu(Box::new(message.clone())),
+                    (Event::Dismiss, _) => Message::CloseMenu,
+                    (_, picked) => Message::MenuHover(index, live && picked.is_some()),
+                })
+            })
+            .collect();
+        sdk::layer(&paint, rows, at, size, progress, live.then_some(Message::CloseMenu))
     })
     .into()
-}
-
-fn panel<'a>(
-    theme: &ThemeState, entries: Vec<Entry>, live: bool, fit: f32, highlight: Option<usize>,
-) -> Element<'a, Message> {
-    let t = *theme;
-    let checks = entries.iter().any(|entry| matches!(entry, Entry::Item(Item { checked: Some(_), .. })));
-    let rows = entries.into_iter().enumerate().map(|(index, entry)| -> Element<'a, Message> {
-        let keyed = highlight == Some(index);
-        match entry {
-            Entry::Separator => {
-                container(rule::horizontal(1).style(move |_| theme::line(&t))).padding(Padding::from([SP1, SP3])).into()
-            }
-            Entry::Header(label) => container(text(label).size(theme::CAP).color(t.fg_3()))
-                .padding(Padding::from([0.0, SP3]))
-                .height(Length::Fixed(HEADER))
-                .align_y(Alignment::Center)
-                .into(),
-            Entry::Item(item) => {
-                let enabled = item.message.is_some();
-                let ink = match (enabled, item.danger) {
-                    (false, _) => t.fg_4(),
-                    (true, true) => t.danger(),
-                    (true, false) => t.fg_1(),
-                };
-                let mut content = row![].spacing(SP2).align_y(Alignment::Center);
-                if checks {
-                    let mark: Element<'a, Message> = if item.checked == Some(true) {
-                        icon(Icon::Check, MARK, ink)
-                    } else {
-                        space().width(MARK).into()
-                    };
-                    content = content.push(mark);
-                }
-                if let Some(color) = item.swatch {
-                    content = content.push(
-                        container(space().width(10).height(10)).style(move |_| theme::rounded(color, theme::R_ROUND)),
-                    );
-                }
-                let mut room = WIDTH - 2.0 * (PADDING + SP3) - 2.0 * SP2;
-                room -= if checks { MARK + SP2 } else { 0.0 };
-                room -= if item.swatch.is_some() { 10.0 + SP2 } else { 0.0 };
-                room -= item.shortcut.map_or(0.0, |keys| super::text_width(keys, theme::CAP) + SP2);
-                room -= if item.submenu { 12.0 + SP2 } else { 0.0 };
-                let label = super::fit(&item.label, room, theme::MENU_ITEM);
-                content = content
-                    .push(text(label).size(theme::MENU_ITEM).wrapping(text::Wrapping::None))
-                    .push(space::horizontal());
-                if let Some(keys) = item.shortcut {
-                    content = content.push(text(keys).size(theme::CAP).color(t.fg_3()));
-                }
-                if item.submenu {
-                    content = content.push(icon(Icon::ChevronRight, 12.0, t.fg_3()));
-                }
-                let danger = item.danger;
-                let message = item.message.filter(|_| live).map(|message| Message::Menu(Box::new(message)));
-                let row = button(container(content).height(Fill).align_y(Alignment::Center))
-                    .on_press_maybe(message)
-                    .width(Fill)
-                    .height(Length::Fixed(ROW))
-                    .padding(Padding::from([0.0, SP3]))
-                    .style(move |_, status| {
-                        let status = match (enabled, live, status) {
-                            (false, ..) => button::Status::Disabled,
-                            (true, true, button::Status::Pressed) => button::Status::Pressed,
-                            (true, true, _) if keyed => button::Status::Hovered,
-                            (true, true, button::Status::Hovered) if highlight.is_none() => button::Status::Hovered,
-                            (true, ..) => button::Status::Active,
-                        };
-                        theme::menu_item(&t, danger, status)
-                    });
-                if enabled && live {
-                    mouse_area(row)
-                        .on_enter(Message::MenuHover(index, true))
-                        .on_exit(Message::MenuHover(index, false))
-                        .into()
-                } else {
-                    row.into()
-                }
-            }
-        }
-    });
-    container(
-        scrollable(Column::with_children(rows))
-            .id(crate::app::MENU_ID)
-            .height(Fill)
-            .style(move |_, status| theme::scroller(&t, status)),
-    )
-    .padding(PADDING)
-    .width(Length::Fixed(WIDTH))
-    .height(Length::Fixed(fit))
-    .style(move |_| theme::popover(&t))
-    .into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Entry, HEADER, Item, ROW, SEPARATOR, span};
-
-    fn item() -> Entry {
-        Entry::Item(Item {
-            label: "row".into(),
-            message: None,
-            shortcut: None,
-            submenu: false,
-            danger: false,
-            checked: None,
-            swatch: None,
-        })
-    }
-
-    #[test]
-    fn row_spans_include_headers_and_separators_above_them() {
-        let entries = [Entry::Header("h".into()), item(), Entry::Separator, item()];
-        assert_eq!(span(&entries, 0), (0.0, HEADER));
-        assert_eq!(span(&entries, 1), (HEADER, HEADER + ROW));
-        let top = HEADER + ROW + SEPARATOR;
-        assert_eq!(span(&entries, 3), (top, top + ROW));
-    }
 }
