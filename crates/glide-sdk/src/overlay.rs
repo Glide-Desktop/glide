@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use glide_iced::Paint;
-use glide_iced::style::{self, R3, SP1, SP2, SP3, SP4, SP5, SP6};
+use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6};
 use glide_iced::widgets;
 use glide_theme::elevation::Level;
 use glide_theme::{TextStyle, component, motion};
@@ -86,36 +86,81 @@ pub enum Answer {
 pub fn dialog<'a, M>(paint: &Paint, dialog: &'a Dialog<M>, window: Size, corner: f32) -> Element<'a, Answer> {
     let progress = dialog.reveal.value(motion::t2()) as f32;
     let paint = paint.faded(progress);
-    let choice = |(index, choice): (usize, &'a Choice<M>)| {
-        button(&paint, &choice.label, choice.tone, Some(Answer::Chose(index)))
-    };
-    let (left, right): (Vec<_>, Vec<_>) =
-        dialog.choices.iter().enumerate().partition(|(_, choice)| choice.tone == Tone::Danger);
-    let buttons = left
-        .into_iter()
-        .map(choice)
-        .chain(std::iter::once(Space::new().width(Fill).into()))
-        .chain(right.into_iter().map(choice))
-        .fold(row![].spacing(SP2).align_y(Alignment::Center), iced::widget::Row::push);
-    let mut content = column![text(&dialog.title, TextStyle::T3)].spacing(SP3);
-    if !dialog.body.is_empty() {
-        content = content.push(text(&dialog.body, TextStyle::CALL).color(paint.fg_2()));
-    }
-    let card = container(content.push(buttons))
-        .padding(SP4)
-        .width(dialog.width)
-        .max_width((window.width - SP6).max(1.0))
-        .style(move |_| style::popover(&paint));
+    let choices: Vec<(&str, Tone, Option<Answer>)> = dialog
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| (choice.label.as_str(), choice.tone, Some(Answer::Chose(index))))
+        .collect();
+    let body: Option<Element<'a, Answer>> =
+        (!dialog.body.is_empty()).then(|| text(&dialog.body, TextStyle::CALL).color(paint.fg_2()).into());
+    let card = dialog_card(&paint, &dialog.title, body, dialog_buttons(&paint, choices, None), dialog.width, window);
+    modal(&paint, progress, card, Some(Answer::Dismiss), corner)
+}
+
+#[must_use]
+pub fn modal<'a, M: Clone + 'a>(
+    paint: &Paint, progress: f32, card: impl Into<Element<'a, M>>, dismiss: Option<M>, corner: f32,
+) -> Element<'a, M> {
     let scrim = Color { a: 0.32 * progress, ..Color::BLACK };
     let scale = component::DIALOG_CLOSED_SCALE + (1.0 - component::DIALOG_CLOSED_SCALE) * progress;
+    let backdrop = container(Space::new().width(Fill).height(Fill)).style(move |_| style::rounded(scrim, corner));
+    let backdrop: Element<'a, M> = match dismiss {
+        Some(message) => mouse_area(backdrop).on_press(message).into(),
+        None => backdrop.into(),
+    };
     stack![
-        opaque(
-            mouse_area(container(Space::new().width(Fill).height(Fill)).style(move |_| style::rounded(scrim, corner)))
-                .on_press(Answer::Dismiss)
-        ),
-        container(widgets::scale(opaque(widgets::surface(card, &paint, Level::El3, R3)), scale)).center(Fill),
+        opaque(backdrop),
+        container(widgets::scale(opaque(widgets::surface(card, paint, Level::El3, R3)), scale)).center(Fill),
     ]
     .into()
+}
+
+#[must_use]
+pub fn dialog_card<'a, M: 'a>(
+    paint: &Paint, title: &str, body: Option<Element<'a, M>>, buttons: Element<'a, M>, width: f32, window: Size,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let mut content = column![text(title.to_string(), TextStyle::T3).wrapping(Wrapping::WordOrGlyph)].spacing(SP3);
+    if let Some(body) = body {
+        content = content.push(body);
+    }
+    container(content.push(Space::new().height(SP1)).push(buttons))
+        .padding(SP4)
+        .width(width)
+        .max_width((window.width - SP6).max(1.0))
+        .style(move |_| style::popover(&paint))
+        .into()
+}
+
+#[must_use]
+pub fn dialog_buttons<'a, M: Clone + 'a>(
+    paint: &Paint, choices: Vec<(&str, Tone, Option<M>)>, focus: Option<usize>,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let control = |index: usize, (label, tone, message): (&str, Tone, Option<M>)| {
+        ringed(&paint, button(&paint, label.to_string(), tone, message), R2, focus == Some(index))
+    };
+    let (left, right): (Vec<_>, Vec<_>) =
+        choices.into_iter().enumerate().partition(|(_, (_, tone, _))| *tone == Tone::Danger);
+    left.into_iter()
+        .map(|(index, choice)| control(index, choice))
+        .chain(std::iter::once(Space::new().width(Fill).into()))
+        .chain(right.into_iter().map(|(index, choice)| control(index, choice)))
+        .fold(row![].spacing(SP2).align_y(Alignment::Center), iced::widget::Row::push)
+        .into()
+}
+
+#[must_use]
+pub fn ringed<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>, radius: f32, on: bool) -> Element<'a, M> {
+    let color = if on { paint.acc_ring() } else { Color::TRANSPARENT };
+    container(content)
+        .padding(crate::widget::RING)
+        .style(move |_| container::Style {
+            border: iced::Border { color, width: crate::widget::RING, radius: (radius + crate::widget::RING).into() },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 #[derive(Debug, Clone)]
@@ -167,13 +212,24 @@ impl<M> Toast<M> {
 #[must_use]
 pub fn toast<'a, M>(paint: &Paint, toast: &'a Toast<M>, window: Size) -> Element<'a, ToastAction> {
     let progress = toast.progress(Instant::now());
+    let action = toast.action.as_ref().map(|(label, _)| (label.as_str(), ToastAction));
+    toast_pill(paint, progress, &toast.text, None, action, window)
+}
+
+#[must_use]
+pub fn toast_pill<'a, M: Clone + 'a>(
+    paint: &Paint, progress: f32, message: &str, ink: Option<Color>, action: Option<(&str, M)>, window: Size,
+) -> Element<'a, M> {
     let paint = paint.faded(progress);
-    let mut content =
-        row![text(&toast.text, TextStyle::CALL).wrapping(Wrapping::Word)].spacing(SP3).align_y(Alignment::Center);
-    if let Some((label, _)) = &toast.action {
-        content = content.push(crate::widget::compact_button(&paint, label, Tone::Tonal, Some(ToastAction)));
+    let mut label = text(message.to_string(), TextStyle::CALL).wrapping(Wrapping::Word);
+    if let Some(ink) = ink {
+        label = label.color(Color { a: ink.a * paint.alpha, ..ink });
     }
-    let padding = if toast.action.is_some() { Padding::from([SP1, SP1]).left(SP4) } else { Padding::from([SP2, SP4]) };
+    let mut content = row![label].spacing(SP3).align_y(Alignment::Center);
+    let padding = if action.is_some() { Padding::from([SP1, SP1]).left(SP4) } else { Padding::from([SP2, SP4]) };
+    if let Some((label, message)) = action {
+        content = content.push(crate::widget::compact_button(&paint, label.to_string(), Tone::Tonal, Some(message)));
+    }
     let pill = container(content)
         .padding(padding)
         .max_width((window.width - 48.0).max(1.0))

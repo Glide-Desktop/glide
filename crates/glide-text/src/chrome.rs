@@ -7,8 +7,7 @@ use glide_iced::text::text;
 use glide_iced::widgets;
 use glide_sdk::Tone;
 use glide_sdk::widget::{
-    button_style, compact_button, icon_button, primary as accent_pill, separator as rule, tooltip as tip,
-    vertical_separator as vertical_rule,
+    button_style, compact_button, icon_button, separator as rule, tooltip as tip, vertical_separator as vertical_rule,
 };
 use glide_sdk::window::resize_handles;
 use glide_theme::elevation::Level;
@@ -18,7 +17,7 @@ use iced::border::Radius;
 use iced::widget::text::Wrapping;
 use iced::widget::text_editor::{self as editor_widget};
 use iced::widget::{
-    Space, button, column, container, markdown, mouse_area, opaque, row, scrollable, stack, text_editor, text_input,
+    Space, button, column, container, markdown, mouse_area, row, scrollable, stack, text_editor, text_input,
 };
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding};
 
@@ -1013,14 +1012,24 @@ fn shortcut_rows(app: &App, paint: &Paint) -> Element<'static, Message> {
     iced::widget::column(rows).spacing(SP1 + 2.0).into()
 }
 
-#[allow(clippy::too_many_lines)] // One arm per dialog sharing a single card, scrim and reveal
+type Choices<'a> = Vec<(&'a str, Tone, Option<Message>)>;
+
 fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
+    use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
     let progress = dialog.reveal.value(glide_theme::motion::t2()) as f32;
     let paint = app.paint.faded(progress);
+    let (title, body, choices, width) = dialog_parts(app, &paint, dialog);
+    let card = dialog_card(&paint, &title, Some(body), dialog_buttons(&paint, choices, None), width, app.window.size);
+    modal(&paint, progress, card, None, if app.edge_to_edge() { 0.0 } else { R3 })
+}
+
+fn dialog_parts<'a>(
+    app: &'a App, paint: &Paint, dialog: &'a Dialog,
+) -> (String, Element<'a, Message>, Choices<'a>, f32) {
+    let paint = *paint;
     let lang = app.lang;
-    let (title, body, buttons, width): (String, Element<'a, Message>, Vec<Element<'a, Message>>, f32) = match &dialog
-        .kind
-    {
+    let close = || vec![(Key::Close.text(lang), Tone::Accent, Some(Message::Dialog(Answer::Cancel)))];
+    match &dialog.kind {
         DialogKind::Unsaved { docs, .. } => {
             let title = match docs.as_slice() {
                 [id] => {
@@ -1040,20 +1049,9 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
                 title,
                 body.into(),
                 vec![
-                    compact_button(
-                        &paint,
-                        Key::DontSave.text(lang),
-                        Tone::Danger,
-                        Some(Message::Dialog(Answer::Discard)),
-                    ),
-                    Space::new().width(Fill).into(),
-                    compact_button(
-                        &paint,
-                        Key::Cancel.text(lang),
-                        Tone::Neutral,
-                        Some(Message::Dialog(Answer::Cancel)),
-                    ),
-                    accent_pill(&paint, Key::Save.text(lang), Message::Dialog(Answer::Save)),
+                    (Key::DontSave.text(lang), Tone::Danger, Some(Message::Dialog(Answer::Discard))),
+                    (Key::Cancel.text(lang), Tone::Neutral, Some(Message::Dialog(Answer::Cancel))),
+                    (Key::Save.text(lang), Tone::Accent, Some(Message::Dialog(Answer::Save))),
                 ],
                 420.0,
             )
@@ -1066,10 +1064,7 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
             ]
             .spacing(SP2)
             .into(),
-            vec![
-                Space::new().width(Fill).into(),
-                accent_pill(&paint, Key::Close.text(lang), Message::Dialog(Answer::Cancel)),
-            ],
+            close(),
             400.0,
         ),
         DialogKind::Statistics => {
@@ -1093,67 +1088,23 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
                         format!("{} · {}", doc.encoding.name(), doc.ending.name()),
                     ));
             }
-            (
-                Key::Statistics.text(lang).trim_end_matches('…').to_string(),
-                body.into(),
-                vec![
-                    Space::new().width(Fill).into(),
-                    accent_pill(&paint, Key::Close.text(lang), Message::Dialog(Answer::Cancel)),
-                ],
-                360.0,
-            )
+            (Key::Statistics.text(lang).trim_end_matches('…').to_string(), body.into(), close(), 360.0)
         }
         DialogKind::Shortcuts => (
             Key::Shortcuts.text(lang).to_string(),
             scrollable(container(shortcut_rows(app, &paint)).padding(Padding::from([0.0, SP2]).left(0.0)))
                 .height(Length::Fixed((app.window.size.height - 220.0).clamp(120.0, 520.0)))
                 .into(),
-            vec![
-                Space::new().width(Fill).into(),
-                accent_pill(&paint, Key::Close.text(lang), Message::Dialog(Answer::Cancel)),
-            ],
+            close(),
             460.0,
         ),
-    };
-    let card = container(
-        column![text(title, TextStyle::T3), body, iced::widget::row(buttons).spacing(SP2).align_y(Alignment::Center)]
-            .spacing(SP3),
-    )
-    .padding(SP4)
-    .width(width)
-    .max_width(app.window.size.width - SP6)
-    .style(move |_| style::popover(&paint));
-    let scrim = Color { a: 0.32 * progress, ..Color::BLACK };
-    let corner = if app.edge_to_edge() { 0.0 } else { R3 };
-    stack![
-        opaque(
-            mouse_area(container(Space::new().width(Fill).height(Fill)).style(move |_| style::rounded(scrim, corner)))
-                .on_press(Message::Noop)
-        ),
-        container(widgets::scale(
-            opaque(widgets::surface(card, &paint, Level::El3, R3)),
-            component::DIALOG_CLOSED_SCALE + (1.0 - component::DIALOG_CLOSED_SCALE) * progress
-        ))
-        .center(Fill),
-    ]
-    .into()
+    }
 }
 
 fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element<'a, Message> {
-    let progress = App::reveal(at);
-    let paint = app.paint.faded(progress);
-    let pill = container(text(message, TextStyle::CALL))
-        .padding(Padding::from([SP2, SP4]))
-        .max_width(app.window.size.width - 48.0)
-        .style(move |_| style::popover(&paint));
-    let bottom = if app.prefs.status_bar { STATUS } else { 0.0 } + SP5 + (1.0 - progress) * component::POPOVER_RISE;
-    container(widgets::surface(pill, &paint, Level::El3, R3))
-        .width(Fill)
-        .height(Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::End)
-        .padding(Padding::from([0.0, SP5]).bottom(bottom))
-        .into()
+    let pill = glide_sdk::overlay::toast_pill(&app.paint, App::reveal(at), message, None, None, app.window.size);
+    let bottom = if app.prefs.status_bar { STATUS } else { 0.0 };
+    container(pill).padding(Padding::ZERO.bottom(bottom)).into()
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {

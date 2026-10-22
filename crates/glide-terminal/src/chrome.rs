@@ -2,7 +2,7 @@ use alacritty_terminal::index::Direction;
 use glide_theme::elevation::Level;
 use glide_theme::motion::ST_HOVER;
 use iced::border::Radius;
-use iced::widget::{Space, button, column, container, mouse_area, opaque, pane_grid, row, space, stack, text_input};
+use iced::widget::{Space, button, column, container, mouse_area, pane_grid, row, space, stack, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Rectangle, Size};
 
 use crate::app::{App, Command, Confirm, FIND_ID, Menu, MenuKind, Message, Tab, shortcut_label};
@@ -10,10 +10,11 @@ use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::marks::Mark;
 use crate::profile::{Profile, color};
-use crate::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6, Tone};
+use crate::style::{self, Paint, R2, R3, SP1, SP2, SP3, Tone};
 use crate::terminal::Terminal;
 use crate::widgets;
 use glide_iced::text::{self, text};
+use glide_sdk::overlay::toast_pill;
 use glide_sdk::widget::{icon_button, separator as rule, tooltip as tip};
 use glide_sdk::window::resize_edges;
 use glide_theme::{TextStyle, component};
@@ -566,53 +567,21 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
 }
 
 fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {
+    use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
     let progress = confirm.reveal.value(glide_theme::motion::t2()) as f32;
     let paint = app.paint.faded(progress);
     let body = format!("{}: {}.", Key::ConfirmBody.text(app.lang), confirm.processes.join(", "));
-    let cancel = button(text(Key::Cancel.text(app.lang), TextStyle::CALL))
-        .on_press(Message::Confirm(false))
-        .height(component::CONTROL)
-        .padding(Padding::from([SP2, SP4]));
-    let cancel = widgets::button(cancel, move |status| {
-        let mut style = style::action(&paint, Tone::Neutral, status);
-        if !confirm.accept_focused {
-            style.border = Border { color: paint.acc_bg(), width: 2.0, radius: R2.into() };
-        }
-        style
-    });
-    let terminate = button(text(Key::Terminate.text(app.lang), TextStyle::CALL))
-        .on_press(Message::Confirm(true))
-        .height(component::CONTROL)
-        .padding(Padding::from([SP2, SP4]));
-    let terminate = widgets::button(terminate, move |status| {
-        let mut style = style::action(&paint, Tone::Danger, status);
-        if confirm.accept_focused {
-            style.border = Border { color: paint.acc_bg(), width: 2.0, radius: R2.into() };
-        }
-        style
-    });
-    let card = container(
-        column![
-            text(Key::ConfirmTitle.text(app.lang), TextStyle::T3),
-            text(body, TextStyle::CALL).color(paint.fg_2()),
-            row![Space::new().width(Fill), cancel, terminate].spacing(SP2),
-        ]
-        .spacing(SP3),
-    )
-    .padding(SP4)
-    .width(380)
-    .max_width(app.window.width - SP6)
-    .style(move |_| style::popover(&paint));
-    let scrim = Color { a: 0.32 * progress, ..Color::BLACK };
-    stack![
-        opaque(container(Space::new().width(Fill).height(Fill)).style(move |_| style::rounded(scrim, R3))),
-        container(widgets::scale(
-            opaque(widgets::surface(card, &paint, Level::El3, R3)),
-            component::DIALOG_CLOSED_SCALE + (1.0 - component::DIALOG_CLOSED_SCALE) * progress
-        ))
-        .center(Fill),
-    ]
-    .into()
+    let buttons = dialog_buttons(
+        &paint,
+        vec![
+            (Key::Terminate.text(app.lang), glide_sdk::Tone::Danger, Some(Message::Confirm(true))),
+            (Key::Cancel.text(app.lang), glide_sdk::Tone::Neutral, Some(Message::Confirm(false))),
+        ],
+        Some(usize::from(!confirm.accept_focused)),
+    );
+    let body = text(body, TextStyle::CALL).color(paint.fg_2()).into();
+    let card = dialog_card(&paint, Key::ConfirmTitle.text(app.lang), Some(body), buttons, 380.0, app.window);
+    modal(&paint, progress, card, None, R3)
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -630,22 +599,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
         layers.push(resize_edges(Message::WindowResize));
     }
     if let Some(error) = app.error.as_ref().filter(|_| !app.tabs.is_empty()) {
-        let error = container(text(error.as_str(), TextStyle::CALL).color(paint.danger()))
-            .padding(SP3)
-            .max_width(app.window.width - 48.0)
-            .style(move |_| style::popover(&paint));
-        layers.push(
-            container(widgets::surface(error, &paint, Level::El3, R3))
-                .width(Fill)
-                .height(Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::End)
-                .padding(SP5)
-                .into(),
-        );
+        layers.push(toast_pill(&paint, 1.0, error, Some(paint.danger()), None, app.window));
     }
     if let Some((text, at)) = &app.notice {
-        layers.push(notice(app, text, *at));
+        layers.push(toast_pill(&paint, App::reveal(*at), text, None, None, app.window));
     }
     if let Some(menu) = &app.menu {
         layers.push(menu_layer(app, menu));
@@ -654,23 +611,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
         layers.push(dialog(app, confirm));
     }
     iced::widget::stack(layers).into()
-}
-
-fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element<'a, Message> {
-    let progress = App::reveal(at);
-    let paint = app.paint.faded(progress);
-    let pill = container(text(message, TextStyle::CALL).wrapping(text::Wrapping::None))
-        .padding(Padding::from([SP2, SP4]))
-        .max_width(app.window.width - 48.0)
-        .clip(true)
-        .style(move |_| style::popover(&paint));
-    container(widgets::surface(pill, &paint, Level::El3, R3))
-        .width(Fill)
-        .height(Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::End)
-        .padding(Padding::from([0.0, SP5]).bottom(SP5 + (1.0 - progress) * component::POPOVER_RISE))
-        .into()
 }
 
 #[cfg(test)]
