@@ -29,13 +29,14 @@ cargo run -p glide-sdk --example notes
 5. [Dialogs, toasts and context menus](#dialogs-toasts-and-context-menus)
 6. [Widgets](#widgets)
 7. [Motion](#motion)
-8. [Design rules](#design-rules)
-9. [System integration](#system-integration)
-10. [Testing](#testing)
-11. [Packaging](#packaging)
-12. [Contracts for other languages](#contracts-for-other-languages)
-13. [Limitations](#limitations)
-14. [A Go SDK: how hard would it be](#a-go-sdk-how-hard-would-it-be)
+8. [Keyboard](#keyboard)
+9. [Design rules](#design-rules)
+10. [System integration](#system-integration)
+11. [Testing](#testing)
+12. [Packaging](#packaging)
+13. [Contracts for other languages](#contracts-for-other-languages)
+14. [Limitations](#limitations)
+15. [A Go SDK: how hard would it be](#a-go-sdk-how-hard-would-it-be)
 
 ## Quick start
 
@@ -290,6 +291,28 @@ anim::animate(if open { 1.0 } else { 0.0 }, Speed::SPRING, |value| {
   looping phase. `Motion` is the retargetable tween underneath, for custom
   widgets.
 
+## Keyboard
+
+Tab and Shift+Tab walk every enabled control in view order: buttons, icon
+buttons, switches, check boxes, radios, sliders, chips, segmented controls,
+tabs, sidebar rows, action rows and cards, expanders, dropdowns, menu buttons
+and text fields. The focused one wears a 3 px `acc-ring` that fades in over
+t1 and leaves at the next pointer press, so rings show for the keyboard only.
+
+- Enter / Space activate buttons, switches, check boxes, radios, chips and
+  rows, and open a dropdown or menu button (so does ↓); inside it ↑ ↓ Enter
+  Esc work as before.
+- ← → (↑ ↓) step a segmented control or tab strip; Home / End jump to the
+  ends.
+- A slider moves by its step (a twentieth of its range when it has none) on
+  ← → ↑ ↓, five steps on Page Up / Down, to the ends on Home / End, and
+  sends `on_release` after each key.
+
+Wrap your own widget with `focusable(paint, content, radius)`, then
+`.on_activate(Some(msg))` and/or `.on_key(|named| vec![…])`; `.inset()` draws
+the ring inside the bounds for rows in clipped lists, `.id(id)` lets
+`iced::widget::operation::focus(id)` move focus there.
+
 ## Design rules
 
 The normative spec is `design/MERIDIAN_DESIGN_SPEC.md`. The ones apps break
@@ -386,15 +409,15 @@ The key under which the other palette sits is that appearance's name
 
 - One window per app; no multi-window API yet.
 - Dialog bodies are text; richer modals are built by hand in `view`.
-- The canvas-drawn controls (switch, checkbox, radio, slider) take the
-  pointer only; keyboard focus and Space/arrow handling are not there yet.
+- A focused control is not scrolled into view yet, and a radio group is one
+  Tab stop per option rather than one stop with arrows.
 - iced cannot fade a whole subtree, so popovers fade by repainting their
   rows with a faded `Paint`; arbitrary iced buttons placed in a `Popup` look
   disabled while it animates (see `Popup` above).
 - No IME, no drag-and-drop helpers (Files' `dnd.rs` shows the protocol), no
   printing.
 - Checked headlessly (`Harness` + `iced_test`, both appearances, Ukrainian,
-  hover, open menus and dropdowns, keyboard rows) and the examples were
+  hover, open menus and dropdowns, keyboard rows, focus rings) and the examples were
   started in a live Glide session; the motion itself is only visible live.
 
 ## A Go SDK: how hard would it be

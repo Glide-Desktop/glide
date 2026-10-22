@@ -10,6 +10,7 @@ use iced::border::Radius;
 use iced::widget::{Row, button as control, container};
 use iced::{Border, Color, Element, Fill, Padding, Shadow, Vector};
 
+use super::focus::activatable;
 use super::popover::tooltip;
 use super::{Icon, Wrapping, icon, text};
 
@@ -106,10 +107,10 @@ pub fn sized_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let paint = *paint;
     let control = control(container(text(label, size.label()).wrapping(Wrapping::None)).center_y(Fill))
-        .on_press_maybe(message)
+        .on_press_maybe(message.clone())
         .height(size.height())
         .padding(Padding::from([0.0, size.padding()]));
-    widgets::button(control, move |status| button_style(&paint, tone, status))
+    activatable(&paint, widgets::button(control, move |status| button_style(&paint, tone, status)), R2, message)
 }
 
 #[must_use]
@@ -169,21 +170,18 @@ pub fn icon_button<'a, M: Clone + 'a>(
         paint.fg_2()
     };
     let control = control(container(icon(glyph, 16.0, tint)).center(Fill))
-        .on_press_maybe(message)
+        .on_press_maybe(message.clone())
         .width(component::SMALL_CONTROL)
         .height(component::SMALL_CONTROL)
         .padding(0);
-    tooltip(
-        &paint,
-        widgets::button(control, move |status| {
-            if on {
-                style::flat(paint.layered(paint.fill_2(), status), paint.fg_1(), R2)
-            } else {
-                button_style(&paint, Tone::Ghost, status)
-            }
-        }),
-        label,
-    )
+    let control = widgets::button(control, move |status| {
+        if on {
+            style::flat(paint.layered(paint.fill_2(), status), paint.fg_1(), R2)
+        } else {
+            button_style(&paint, Tone::Ghost, status)
+        }
+    });
+    tooltip(&paint, activatable(&paint, control, R2, message), label)
 }
 
 #[must_use]
@@ -198,11 +196,12 @@ pub fn linked<'a, M: Clone + 'a>(paint: &Paint, items: &[(&'a str, Option<M>)]) 
             .on_press_maybe(message.clone())
             .height(component::CONTROL)
             .padding(Padding::from([0.0, SP4]));
-        widgets::button(control, move |status| {
+        let control = widgets::button(control, move |status| {
             let mut style = button_style(&paint, Tone::Neutral, status);
             style.border.radius = radius;
             style
-        })
+        });
+        activatable(&paint, control, R1, message.clone())
     });
     Row::with_children(buttons).spacing(1).into()
 }

@@ -10,6 +10,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Quad, Renderer as _};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, overlay};
+use iced::keyboard::key::Named;
 use iced::widget::{Column, Row, button, container, mouse_area, row};
 use iced::{
     Alignment, Border, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Shadow, Size, Theme, Vector,
@@ -17,6 +18,7 @@ use iced::{
 };
 
 use super::controls::{Check, mark};
+use super::focus::{activatable, focusable};
 use super::{Icon, Wrapping, icon, text};
 use crate::anim::{Motion, Speed, animate};
 
@@ -281,9 +283,33 @@ pub fn segmented<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M:
         )
     });
     let content = Row::with_children(segments).spacing(2);
-    container(track(&paint, Indicator::Thumb, index, content))
+    let control = container(track(&paint, Indicator::Thumb, index, content))
         .padding((component::CONTROL - component::SMALL_CONTROL) / 2.0)
-        .style(move |_| style::rounded(paint.fill_1(), R2))
+        .style(move |_| style::rounded(paint.fill_1(), R2));
+    arrows(&paint, control, R2, options, index, on_select)
+}
+
+fn arrows<'a, T: Copy + 'a, L, M: Clone + 'a>(
+    paint: &Paint, control: impl Into<Element<'a, M>>, radius: f32, options: &[(T, L)], index: Option<usize>,
+    on_select: impl Fn(T) -> M,
+) -> Element<'a, M> {
+    let pick = |at: Option<usize>| at.filter(|&at| Some(at) != index).map(|at| on_select(options[at].0));
+    let last = options.len().checked_sub(1);
+    let previous = pick(index.map_or(last, |at| at.checked_sub(1)));
+    let next = pick(index.map_or(Some(0), |at| (at + 1 < options.len()).then_some(at + 1)));
+    let (first, end) = (pick(last.map(|_| 0)), pick(last));
+    focusable(paint, control, radius)
+        .on_key(move |key| {
+            match key {
+                Named::ArrowLeft | Named::ArrowUp => previous.clone(),
+                Named::ArrowRight | Named::ArrowDown => next.clone(),
+                Named::Home => first.clone(),
+                Named::End => end.clone(),
+                _ => None,
+            }
+            .into_iter()
+            .collect()
+        })
         .into()
 }
 
@@ -312,7 +338,7 @@ pub fn tabs<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clon
         }))
     });
     let bar = track(&paint, Indicator::Underline, index, Row::with_children(items).spacing(SP1));
-    iced::widget::column![bar, super::separator(&paint)].into()
+    iced::widget::column![arrows(&paint, bar, R2, options, index, on_select), super::separator(&paint)].into()
 }
 
 #[must_use]
@@ -329,16 +355,18 @@ pub fn sidebar_list<'a, M: Clone + 'a>(
         }
         let style = if active { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
         content = content.push(text(label, style).wrapping(Wrapping::None));
+        let message = on_select(index);
         let control = button(container(content).center_y(Fill).clip(true))
-            .on_press(on_select(index))
+            .on_press(message.clone())
             .width(Fill)
             .height(component::CONTROL)
             .padding(Padding::from([0.0, SP3]));
-        widgets::button(control, move |status| {
+        let control = widgets::button(control, move |status| {
             let color = if active { paint.acc_soft_fg() } else { paint.fg_2() };
             let background = if active { Color::TRANSPARENT } else { paint.layered(Color::TRANSPARENT, status) };
             style::flat(background, color, R2)
-        })
+        });
+        focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
     });
     track(&paint, Indicator::Selection, selected, Column::with_children(rows).spacing(2))
 }
@@ -358,10 +386,10 @@ pub fn chip<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, on: bool, message:
             )
             .center_y(Fill),
         )
-        .on_press(message)
+        .on_press(message.clone())
         .height(component::SMALL_CONTROL)
         .padding(Padding::from([0.0, SP3]));
-        widgets::button(control, move |status| {
+        let control = widgets::button(control, move |status| {
             let amount = value.get();
             let base = super::mix(paint.fill_1(), paint.acc_soft(), amount);
             let mut style = style::flat(
@@ -371,7 +399,8 @@ pub fn chip<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, on: bool, message:
             );
             style.border = Border { color: paint.line().scale_alpha(1.0 - amount), width: 1.0, radius: R_ROUND.into() };
             style
-        })
+        });
+        activatable(&paint, control, component::SMALL_CONTROL / 2.0, Some(message))
     })
     .into()
 }
@@ -388,7 +417,12 @@ fn labelled<'a, M: Clone + 'a>(
     let color = if enabled { paint.fg_1() } else { paint.fg_4() };
     let content = row![mark, text(label, TextStyle::CALL).color(color)].spacing(SP2).align_y(Alignment::Center);
     match message {
-        Some(message) => mouse_area(content).on_release(message).interaction(mouse::Interaction::Pointer).into(),
+        Some(message) => activatable(
+            paint,
+            mouse_area(content).on_release(message.clone()).interaction(mouse::Interaction::Pointer),
+            R1,
+            Some(message),
+        ),
         None => content.into(),
     }
 }

@@ -7,6 +7,7 @@ use iced::widget::{Column, Space, button as control, column, container, mouse_ar
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Vector, mouse};
 
 use super::controls::chevron;
+use super::focus::{activatable, focusable};
 use super::{Icon, Wrapping, icon, mix, separator, text};
 use crate::anim::{Speed, animate, collapse, hover};
 
@@ -51,7 +52,8 @@ pub fn action_card<'a, M: Clone + 'a>(paint: &Paint, content: impl Into<Element<
         )
     })
     .offset(|value| Vector::new(0.0, -3.0 * value));
-    mouse_area(lifted).on_release(message).interaction(mouse::Interaction::Pointer).into()
+    let control = mouse_area(lifted).on_release(message.clone()).interaction(mouse::Interaction::Pointer);
+    activatable(&paint, control, R3, Some(message))
 }
 
 #[must_use]
@@ -94,8 +96,11 @@ pub fn action_row<'a, M: Clone + 'a>(
     let content = row![row_label(&paint, title, subtitle), icon(Icon::Right, 12.0, paint.fg_3())]
         .spacing(SP3)
         .align_y(Alignment::Center);
-    let control = control(content).on_press(message).width(Fill).padding(Padding::from([SP2 + 2.0, SP4]));
-    widgets::button(control, move |status| style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), 0.0))
+    let control = control(content).on_press(message.clone()).width(Fill).padding(Padding::from([SP2 + 2.0, SP4]));
+    let control = widgets::button(control, move |status| {
+        style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), 0.0)
+    });
+    focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
 }
 
 #[must_use]
@@ -117,12 +122,13 @@ pub fn expander<'a, M: Clone + 'a>(
         row![text(title, TextStyle::HEAD), Space::new().width(Fill), chevron::<M>(&paint, open)]
             .align_y(Alignment::Center),
     )
-    .on_press(on_toggle)
+    .on_press(on_toggle.clone())
     .width(Fill)
     .padding(Padding::from([SP3, SP4]));
     let header = widgets::button(header, move |status| {
         style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), 0.0)
     });
+    let header = focusable(&paint, header, R3).inset().on_activate(Some(on_toggle));
     let body = collapse(open, container(content).padding(Padding::from([0.0, SP4]).bottom(SP4)).width(Fill));
     widgets::surface(
         container(column![header, body]).width(Fill).clip(true).style(move |_| card_style(&paint)),
@@ -146,7 +152,7 @@ pub fn sidebar_item<'a, M: Clone + 'a>(
         let style = if selected { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
         content = content.push(text(label, style).wrapping(Wrapping::None));
         let control = control(container(content).center_y(Fill).clip(true))
-            .on_press(message)
+            .on_press(message.clone())
             .width(Fill)
             .height(component::CONTROL)
             .padding(Padding::from([0.0, SP3]));
@@ -156,6 +162,7 @@ pub fn sidebar_item<'a, M: Clone + 'a>(
             let background = mix(paint.layered(Color::TRANSPARENT, status), paint.acc_soft(), amount);
             style::flat(background, mix(paint.fg_2(), paint.acc_soft_fg(), amount), R2)
         });
+        let item = focusable(&paint, item, R2).inset().on_activate(Some(message));
         let bar = animate(if selected { 1.0 } else { 0.0 }, Speed::GROW, |_| {
             container(Space::new().width(3).height(18)).style(move |_| style::rounded(paint.acc_bg(), 2.0))
         })

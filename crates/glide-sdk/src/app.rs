@@ -529,6 +529,13 @@ impl<A: App> Host<A> {
         if captured {
             return Task::none();
         }
+        if *key == Key::Named(Named::Tab) && !modifiers.control() && !modifiers.alt() && !modifiers.logo() {
+            return if modifiers.shift() {
+                iced::widget::operation::focus_previous()
+            } else {
+                iced::widget::operation::focus_next()
+            };
+        }
         menu::shortcut(&self.menus, key, *physical_key, *modifiers).map_or_else(Task::none, |message| self.run(message))
     }
 

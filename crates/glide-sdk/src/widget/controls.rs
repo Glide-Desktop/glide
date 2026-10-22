@@ -1,14 +1,17 @@
 use std::ops::RangeInclusive;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use glide_iced::Paint;
 use glide_iced::style::to_iced;
 use glide_theme::motion;
 use glide_theme::shape::{R1, R2};
+use iced::keyboard::key::Named;
 use iced::widget::canvas::{self, Action, Frame, Geometry, LineCap, Path, Stroke};
 use iced::widget::{canvas as surface, mouse_area};
 use iced::{Color, Element, Event, Point, Radians, Rectangle, Renderer, Size, Theme, Vector, mouse, window};
 
+use super::focus::{activatable, focusable};
 use super::mix;
 use crate::anim::{Motion, Speed, phase};
 
@@ -198,7 +201,7 @@ pub fn sized_switch<'a, M: Clone + 'a>(
     let message = on_toggle.map(|toggle| toggle(!on));
     let canvas =
         surface(Switch { paint: *paint, on, enabled: message.is_some(), size }).width(track.width).height(track.height);
-    clickable(canvas.into(), message)
+    activatable(paint, clickable(canvas.into(), message.clone()), track.height / 2.0, message)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,13 +307,14 @@ impl<M> canvas::Program<M> for CheckBox {
 #[must_use]
 pub fn check_box<'a, M: Clone + 'a>(paint: &Paint, check: Check, message: Option<M>) -> Element<'a, M> {
     let enabled = message.is_some();
-    clickable(mark(paint, check, false, enabled), message)
+    activatable(paint, clickable(mark(paint, check, false, enabled), message.clone()), R2 / 2.0 + 1.0, message)
 }
 
 #[must_use]
 pub fn radio_mark<'a, M: Clone + 'a>(paint: &Paint, selected: bool, message: Option<M>) -> Element<'a, M> {
     let enabled = message.is_some();
-    clickable(mark(paint, if selected { Check::On } else { Check::Off }, true, enabled), message)
+    let check = if selected { Check::On } else { Check::Off };
+    activatable(paint, clickable(mark(paint, check, true, enabled), message.clone()), CHECK / 2.0, message)
 }
 
 pub(crate) fn mark<'a, M: 'a>(paint: &Paint, check: Check, round: bool, enabled: bool) -> Element<'a, M> {
@@ -329,11 +333,28 @@ struct Slider<'a, M> {
     range: RangeInclusive<f32>,
     value: f32,
     step: f32,
-    on_change: Option<Box<dyn Fn(f32) -> M + 'a>>,
+    on_change: Option<Rc<dyn Fn(f32) -> M + 'a>>,
     on_release: Option<M>,
 }
 
+fn nudge(range: &RangeInclusive<f32>, value: f32, step: f32, key: Named) -> Option<f32> {
+    let (start, end) = (*range.start(), *range.end());
+    let unit = if step > 0.0 { step } else { (end - start) / 20.0 };
+    let next = match key {
+        Named::ArrowLeft | Named::ArrowDown => value - unit,
+        Named::ArrowRight | Named::ArrowUp => value + unit,
+        Named::PageDown => value - 5.0 * unit,
+        Named::PageUp => value + 5.0 * unit,
+        Named::Home => start,
+        Named::End => end,
+        _ => return None,
+    }
+    .clamp(start, end);
+    (next != value).then_some(next)
+}
+
 const THUMB: f32 = 18.0;
+const SLIDER_HEIGHT: f32 = THUMB + 12.0;
 
 impl<M> Slider<'_, M> {
     fn fraction(&self, value: f32) -> f32 {
@@ -435,11 +456,23 @@ pub fn stepped_slider<'a, M: Clone + 'a>(
     paint: &Paint, range: RangeInclusive<f32>, value: f32, step: f32, on_change: Option<impl Fn(f32) -> M + 'a>,
     on_release: Option<M>,
 ) -> Element<'a, M> {
-    let on_change = on_change.map(|change| Box::new(change) as Box<dyn Fn(f32) -> M + 'a>);
-    surface(Slider { paint: *paint, range, value, step, on_change, on_release })
+    let on_change = on_change.map(|change| Rc::new(change) as Rc<dyn Fn(f32) -> M + 'a>);
+    let keys = on_change.clone().map(|change| {
+        let (range, release) = (range.clone(), on_release.clone());
+        move |key| {
+            nudge(&range, value, step, key)
+                .map(|next| std::iter::once(change(next)).chain(release.clone()).collect())
+                .unwrap_or_default()
+        }
+    });
+    let canvas = surface(Slider { paint: *paint, range, value, step, on_change, on_release })
         .width(iced::Fill)
-        .height(THUMB + 12.0)
-        .into()
+        .height(SLIDER_HEIGHT);
+    let focus = focusable(paint, canvas, SLIDER_HEIGHT / 2.0);
+    match keys {
+        Some(keys) => focus.on_key(keys).into(),
+        None => focus.into(),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -609,9 +642,21 @@ mod tests {
             range: 0.0..=100.0,
             value: 50.0,
             step,
-            on_change: Some(Box::new(|value| value)),
+            on_change: Some(Rc::new(|value| value)),
             on_release: None,
         }
+    }
+
+    #[test]
+    fn arrows_page_keys_and_home_end_move_a_slider_within_its_range() {
+        let range = 0.0..=100.0;
+        assert_eq!(nudge(&range, 50.0, 0.0, Named::ArrowRight), Some(55.0), "a free slider moves a twentieth");
+        assert_eq!(nudge(&range, 50.0, 10.0, Named::ArrowDown), Some(40.0));
+        assert_eq!(nudge(&range, 50.0, 10.0, Named::PageUp), Some(100.0));
+        assert_eq!(nudge(&range, 95.0, 10.0, Named::ArrowUp), Some(100.0), "the end clamps");
+        assert_eq!(nudge(&range, 100.0, 10.0, Named::End), None, "nothing changes at the end");
+        assert_eq!(nudge(&range, 30.0, 10.0, Named::Home), Some(0.0));
+        assert_eq!(nudge(&range, 30.0, 10.0, Named::Tab), None);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use glide_theme::elevation::Level;
 use glide_theme::{TextStyle, component};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
-use iced::advanced::widget::{Tree, Widget, tree};
+use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, overlay};
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{Column, Space, container, row};
@@ -16,6 +16,7 @@ use iced::{
     mouse, window,
 };
 
+use super::focus::{Ring, plain};
 use super::{Icon, Wrapping, icon, text};
 use crate::anim::{Motion, Speed};
 
@@ -281,6 +282,7 @@ struct Shown {
     reveal: Motion,
     highlight: Option<usize>,
     tree: Tree,
+    ring: Ring,
 }
 
 type Build<'a, M> = Box<dyn Fn(&Paint, Option<usize>) -> Element<'a, M> + 'a>;
@@ -350,6 +352,7 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
             reveal: Motion::at(0.0),
             highlight: None,
             tree: Tree::new((self.build)(&self.paint, None)),
+            ring: Ring::default(),
         })
     }
 
@@ -369,10 +372,36 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
         self.anchor.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
     }
 
+    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
+        let state = tree.state.downcast_mut::<Shown>();
+        if self.enabled {
+            operation.focusable(None, layout.bounds(), &mut state.ring);
+        }
+        operation.traverse(&mut |operation| {
+            self.anchor.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+        });
+    }
+
     fn update(
         &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
         clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
+        let state = tree.state.downcast_mut::<Shown>();
+        if self.enabled
+            && state.ring.focused
+            && !state.open
+            && let Some(Named::Enter | Named::Space | Named::ArrowDown) = plain(event)
+        {
+            state.open = true;
+            state.highlight = (self.rows > 0).then_some(0);
+            shell.capture_event();
+            shell.request_redraw();
+            return;
+        }
+        if !self.enabled {
+            state.ring.focused = false;
+        }
+        state.ring.settle(event, shell);
         self.anchor.as_widget_mut().update(
             &mut tree.children[0],
             event,
@@ -428,6 +457,7 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
         cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         self.anchor.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+        tree.state.downcast_ref::<Shown>().ring.draw(renderer, &self.paint, layout.bounds(), R2, false);
     }
 
     fn mouse_interaction(

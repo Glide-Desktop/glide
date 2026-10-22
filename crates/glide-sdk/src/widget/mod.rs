@@ -1,6 +1,7 @@
 mod buttons;
 mod controls;
 mod feedback;
+mod focus;
 mod inputs;
 mod layout;
 mod popover;
@@ -27,6 +28,7 @@ pub use controls::{
     switch,
 };
 pub use feedback::{Severity, avatar, badge, banner, count_badge, empty_state, keycap};
+pub use focus::{Focus, RING, focusable};
 pub use inputs::{
     Validity, field, input_style, password_field, search_field, stepper, text_area_style, text_field, validated_field,
 };
