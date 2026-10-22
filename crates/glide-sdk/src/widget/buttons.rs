@@ -204,10 +204,22 @@ pub fn toggle_button<'a, M: Clone + 'a>(
 pub fn sized_toggle_button<'a, M: Clone + 'a>(
     paint: &Paint, label: impl Into<Cow<'a, str>>, on: bool, size: Size, on_toggle: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
+    toggle(paint, label.into(), on, size, Tone::Neutral, on_toggle)
+}
+
+#[must_use]
+pub fn flat_toggle_button<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, on: bool, size: Size, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
+    toggle(paint, label.into(), on, size, Tone::Ghost, on_toggle)
+}
+
+fn toggle<'a, M: Clone + 'a>(
+    paint: &Paint, label: Cow<'a, str>, on: bool, size: Size, rest: Tone, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
     let paint = *paint;
-    let label = label.into();
     let message = on_toggle.map(|toggle| toggle(!on));
-    let square = label.chars().count() == 1;
+    let square = label.chars().count() <= 2;
     animate(if on { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
         let value = value.clone();
         let control = control(container(text(label, size.label()).wrapping(Wrapping::None)).center(Fill))
@@ -217,7 +229,7 @@ pub fn sized_toggle_button<'a, M: Clone + 'a>(
             .padding(Padding::from([0.0, if square { 0.0 } else { size.padding() }]));
         let control = widgets::button(control, move |status| {
             let amount = value.get().clamp(0.0, 1.0);
-            let idle = button_style(&paint, Tone::Neutral, status);
+            let idle = button_style(&paint, rest, status);
             let lit = button_style(&paint, Tone::Tonal, status);
             let pick = |style: &control::Style| match style.background {
                 Some(iced::Background::Color(color)) => color,

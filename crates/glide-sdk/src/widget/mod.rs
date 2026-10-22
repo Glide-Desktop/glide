@@ -1,6 +1,7 @@
 mod buttons;
 mod controls;
 mod feedback;
+mod find;
 mod focus;
 mod inputs;
 mod layout;
@@ -21,14 +22,15 @@ use iced::widget::{Space, container, scrollable as scroll};
 use iced::{Background, Border, Color, Element, Fill, Shadow};
 
 pub use buttons::{
-    Size, Tone, button, button_style, compact_button, danger, ghost, icon_button, linked, outline, primary, secondary,
-    sized_button, sized_icon_button, sized_toggle_button, toggle_button, tonal,
+    Size, Tone, button, button_style, compact_button, danger, flat_toggle_button, ghost, icon_button, linked, outline,
+    primary, secondary, sized_button, sized_icon_button, sized_toggle_button, toggle_button, tonal,
 };
 pub use controls::{
     CHECK, Check, SwitchSize, check_box, chevron, progress, radio_mark, sized_switch, slider, spinner, stepped_slider,
     switch,
 };
 pub use feedback::{Severity, avatar, badge, banner, count_badge, empty_state, keycap, skeleton};
+pub use find::{FIND_FIELD, FindBar, bar_strip, find_bar};
 pub use focus::{Focus, RING, focusable};
 pub use inputs::{
     Validity, field, input_style, password_field, search_field, search_input, stepper, text_area_style, text_field,

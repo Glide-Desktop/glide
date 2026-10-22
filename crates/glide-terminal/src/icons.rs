@@ -1,1 +1,1 @@
-pub use glide_iced::glyph::{Icon, glyph};
+pub use glide_iced::glyph::Icon;

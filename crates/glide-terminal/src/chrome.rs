@@ -1,7 +1,7 @@
 use alacritty_terminal::index::Direction;
 use iced::border::Radius;
-use iced::widget::{Space, button, column, container, pane_grid, row, space, text_input};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Rectangle, Size};
+use iced::widget::{Space, button, column, container, pane_grid, row, text_input};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Rectangle, Size};
 
 use crate::app::{App, Command, Confirm, FIND_ID, Menu, MenuKind, Message, shortcut_label};
 use crate::i18n::Key;
@@ -13,21 +13,16 @@ use crate::terminal::Terminal;
 use crate::widgets;
 use glide_iced::text::{self, text};
 use glide_sdk::overlay::toast_pill;
-use glide_sdk::widget::{icon_button, separator as rule, tooltip as tip};
+use glide_sdk::widget::{icon_button, separator as rule};
 use glide_sdk::window::resize_edges;
 use glide_theme::{TextStyle, component};
 
 pub const HEADER: f32 = 35.0;
 const TABS: f32 = component::LARGE_CONTROL;
 const FIND: f32 = component::LARGE_CONTROL;
-const CONTROL: f32 = component::SMALL_CONTROL;
 const MENU_WIDTH: f32 = 264.0;
 const PANE_MIN: f32 = 50.0;
 const SWATCH: Size = Size::new(96.0, 44.0);
-
-fn glyph<'a>(icon: Icon, size: f32, tint: Color) -> Element<'a, Message> {
-    crate::icons::glyph(icon, size, tint)
-}
 
 fn sdk_window(app: &App) -> glide_sdk::window::Window {
     use glide_sdk::window::{Frame, Window};
@@ -95,31 +90,10 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
 fn find_bar(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let Some(find) = &app.find else { return Space::new().into() };
-    let field = widgets::field(
-        container(
-            row![
-                glyph(Icon::Search, 14.0, paint.fg_3()),
-                text_input(Key::FindPlaceholder.text(app.lang), &find.query)
-                    .id(FIND_ID)
-                    .on_input(Message::FindInput)
-                    .on_submit(Message::FindSubmit)
-                    .size(TextStyle::BODY.size_px)
-                    .padding(Padding::from([SP1, 0.0]))
-                    .style(move |_, status| text_input::Style {
-                        background: Background::Color(Color::TRANSPARENT),
-                        border: Border::default(),
-                        ..style::field(&paint, status)
-                    }),
-            ]
-            .spacing(SP2)
-            .align_y(Alignment::Center),
-        )
-        .padding(Padding::from([0.0, SP2]))
-        .width(if app.window.width < 680.0 { Length::Fill } else { Length::Fixed(300.0) })
-        .height(component::CONTROL)
-        .align_y(Alignment::Center),
-        &paint,
-    );
+    let input = text_input(Key::FindPlaceholder.text(app.lang), &find.query)
+        .id(FIND_ID)
+        .on_input(Message::FindInput)
+        .on_submit(Message::FindSubmit);
     let count = if find.query.is_empty() {
         String::new()
     } else if find.counting && find.index == 0 {
@@ -129,57 +103,16 @@ fn find_bar(app: &App) -> Element<'_, Message> {
     } else {
         format!("{} / {}", find.index, find.total)
     };
-    let case = button(text("Aa", TextStyle::CAP))
-        .on_press(Message::FindCase)
-        .height(CONTROL)
-        .padding(Padding::from([SP1, SP2]));
-    let case = tip(
-        &paint,
-        widgets::button(case, move |status| style::toggle(&paint, find.case, status)),
-        Key::CaseSensitive.text(app.lang),
-    );
-    let done = button(text(Key::Done.text(app.lang), TextStyle::CALL))
-        .on_press(Message::FindClose)
-        .height(CONTROL)
-        .padding(Padding::from([SP1, SP3]));
-    let done = widgets::button(done, move |status| style::action(&paint, Tone::Neutral, status));
-    let controls = row![
-        row![
-            icon_button(
-                &paint,
-                Icon::Up,
-                Key::FindPrevious.text(app.lang),
-                Some(Message::Command(Command::FindUp)),
-                false
-            ),
-            icon_button(
-                &paint,
-                Icon::Down,
-                Key::FindNext.text(app.lang),
-                Some(Message::Command(Command::FindDown)),
-                false
-            ),
-        ]
-        .spacing(SP1),
-        case,
-        text(count, TextStyle::NUM).color(paint.fg_3()),
-        space::horizontal(),
-        done,
-    ]
-    .spacing(SP2)
-    .align_y(Alignment::Center)
-    .width(Fill);
-    let contents: Element<'_, Message> = if app.window.width < 680.0 {
-        column![field, controls].spacing(SP1).into()
-    } else {
-        row![field, controls].spacing(SP2).align_y(Alignment::Center).into()
-    };
-    container(contents)
-        .padding(Padding::from([0.0, SP3]))
-        .width(Fill)
+    glide_sdk::widget::find_bar(&paint, input)
+        .narrow(app.window.width < 680.0)
         .height(find_height(app))
-        .align_y(Alignment::Center)
-        .style(move |_| style::rounded(paint.bar_bg(), 0.0))
+        .steps(
+            (Message::Command(Command::FindUp), Key::FindPrevious.text(app.lang)),
+            (Message::Command(Command::FindDown), Key::FindNext.text(app.lang)),
+        )
+        .toggle("Aa", Key::CaseSensitive.text(app.lang), find.case, Message::FindCase)
+        .status(count, false)
+        .done(Key::Done.text(app.lang), Message::FindClose)
         .into()
 }
 

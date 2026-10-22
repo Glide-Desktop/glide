@@ -2,12 +2,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use glide_iced::glyph::Icon;
-use glide_iced::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6, to_iced};
+use glide_iced::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6};
 use glide_iced::text::text;
 use glide_iced::widgets;
 use glide_sdk::Tone;
 use glide_sdk::widget::{
-    button_style, compact_button, icon_button, separator as rule, tooltip as tip, vertical_separator as vertical_rule,
+    Size, bar_strip, button_style, compact_button, flat_toggle_button, icon_button, separator as rule, tooltip as tip,
+    vertical_separator as vertical_rule,
 };
 use glide_sdk::window::resize_handles;
 use glide_theme::{TextStyle, component};
@@ -35,7 +36,6 @@ const TABS: f32 = 36.0;
 const CONTROL: f32 = component::SMALL_CONTROL;
 const ROW: f32 = 28.0;
 const MENU_WIDTH: f32 = 300.0;
-const FIND_FIELD: f32 = 260.0;
 
 fn bar_width(app: &App, bar: Bar) -> f32 {
     glide_sdk::menu::bar_width(bar.key().text(app.lang))
@@ -144,101 +144,41 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-fn field<'a>(paint: &Paint, input: text_input::TextInput<'a, Message>, width: Length) -> Element<'a, Message> {
-    let paint = *paint;
-    widgets::field(
-        container(input.size(TextStyle::BODY.size_px).padding(Padding::from([SP1, 0.0])).style(move |_, status| {
-            text_input::Style {
-                background: Background::Color(Color::TRANSPARENT),
-                border: Border::default(),
-                ..style::field(&paint, status)
-            }
-        }))
-        .padding(Padding::from([0.0, SP2]))
-        .width(width)
-        .height(CONTROL)
-        .align_y(Alignment::Center),
-        &paint,
-    )
-}
-
-fn toggle<'a>(paint: &Paint, label: &'a str, on: bool, message: Message, hint: &'a str) -> Element<'a, Message> {
-    let paint = *paint;
-    let control = button(container(text(label, TextStyle::CAP).font(crate::MONO)).center(Fill))
-        .on_press(message)
-        .width(CONTROL)
-        .height(CONTROL)
-        .padding(0);
-    tip(&paint, widgets::button(control, move |status| style::toggle(&paint, on, status)), hint)
-}
-
 fn find_bar(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let Some(find) = &app.find else { return Space::new().into() };
     let lang = app.lang;
-    let narrow = app.window.size.width < 760.0;
-    let width = if narrow { Length::Fill } else { Length::Fixed(FIND_FIELD) };
-    let search = field(
-        &paint,
-        text_input(Key::FindPlaceholder.text(lang), &find.query.text)
-            .id(FIND_ID)
-            .on_input(Message::FindInput)
-            .on_submit(Message::FindSubmit),
-        width,
-    );
-    let status = text(app.find_label(), TextStyle::NUM)
-        .color(if find.error.is_some() { paint.danger() } else { paint.fg_3() })
-        .wrapping(Wrapping::None);
-    let options = row![
-        icon_button(
+    let input = text_input(Key::FindPlaceholder.text(lang), &find.query.text)
+        .id(FIND_ID)
+        .on_input(Message::FindInput)
+        .on_submit(Message::FindSubmit);
+    let mut bar = glide_sdk::widget::find_bar(&paint, input)
+        .narrow(app.window.size.width < 760.0)
+        .steps(
+            (Message::Command(Command::FindPrevious), Key::FindPrevious.text(lang)),
+            (Message::Command(Command::FindNext), Key::FindNext.text(lang)),
+        )
+        .toggle("Aa", Key::MatchCase.text(lang), find.query.case, Message::FindToggle(Toggle::Case))
+        .toggle("W", Key::WholeWord.text(lang), find.query.word, Message::FindToggle(Toggle::Word))
+        .toggle(".*", Key::Regex.text(lang), find.query.regex, Message::FindToggle(Toggle::Regex))
+        .status(app.find_label(), find.error.is_some())
+        .extra(tip(
             &paint,
-            Icon::Up,
-            Key::FindPrevious.text(lang),
-            Some(Message::Command(Command::FindPrevious)),
-            false
-        ),
-        icon_button(&paint, Icon::Down, Key::FindNext.text(lang), Some(Message::Command(Command::FindNext)), false),
-        toggle(&paint, "Aa", find.query.case, Message::FindToggle(Toggle::Case), Key::MatchCase.text(lang)),
-        toggle(&paint, "W", find.query.word, Message::FindToggle(Toggle::Word), Key::WholeWord.text(lang)),
-        toggle(&paint, ".*", find.query.regex, Message::FindToggle(Toggle::Regex), Key::Regex.text(lang)),
-        status,
-        Space::new().width(Fill),
-        toggle(&paint, "⇄", find.replacing, Message::ToggleReplace, Key::ShowReplace.text(lang)),
-        compact_button(&paint, Key::Done.text(lang), Tone::Neutral, Some(Message::FindClose)),
-    ]
-    .spacing(SP1)
-    .align_y(Alignment::Center)
-    .width(Fill);
-    let first: Element<'_, Message> = if narrow {
-        column![search, options].spacing(SP1).into()
-    } else {
-        row![search, options].spacing(SP2).align_y(Alignment::Center).into()
-    };
-    let mut body = column![first].spacing(SP1);
+            flat_toggle_button(&paint, "⇄", find.replacing, Size::Small, Some(|_| Message::ToggleReplace)),
+            Key::ShowReplace.text(lang),
+        ))
+        .done(Key::Done.text(lang), Message::FindClose);
     if find.replacing {
-        let replace = field(
-            &paint,
-            text_input(Key::ReplacePlaceholder.text(lang), &find.replace)
-                .id(REPLACE_ID)
-                .on_input(Message::ReplaceInput)
-                .on_submit(Message::ReplaceOne),
-            width,
-        );
-        body = body.push(
-            row![
-                replace,
-                compact_button(&paint, Key::ReplaceOne.text(lang), Tone::Neutral, Some(Message::ReplaceOne)),
-                compact_button(&paint, Key::ReplaceAll.text(lang), Tone::Neutral, Some(Message::ReplaceAll)),
-            ]
-            .spacing(SP2)
-            .align_y(Alignment::Center),
+        let replace = text_input(Key::ReplacePlaceholder.text(lang), &find.replace)
+            .id(REPLACE_ID)
+            .on_input(Message::ReplaceInput)
+            .on_submit(Message::ReplaceOne);
+        bar = bar.replace(
+            replace,
+            vec![(Key::ReplaceOne.text(lang), Message::ReplaceOne), (Key::ReplaceAll.text(lang), Message::ReplaceAll)],
         );
     }
-    container(body)
-        .padding(Padding::from([SP2, SP3]))
-        .width(Fill)
-        .style(move |_| style::rounded(paint.bar_bg(), 0.0))
-        .into()
+    bar.into()
 }
 
 fn goto_bar(app: &App) -> Element<'_, Message> {
@@ -246,17 +186,19 @@ fn goto_bar(app: &App) -> Element<'_, Message> {
     let Some(input) = &app.goto else { return Space::new().into() };
     let line = app.doc().map_or(1, |doc| doc.cursor().position.line + 1);
     let total = app.doc().map_or(1, |doc| doc.text.matches('\n').count() + 1);
-    container(
+    let field = glide_sdk::widget::field(
+        &paint,
+        text_input(Key::LinePlaceholder.text(app.lang), input)
+            .id(GOTO_ID)
+            .on_input(Message::GotoInput)
+            .on_submit(Message::GotoSubmit),
+    );
+    bar_strip(
+        &paint,
+        None,
         row![
             text(Key::GoToLine.text(app.lang).trim_end_matches('…').to_string(), TextStyle::CALL),
-            field(
-                &paint,
-                text_input(Key::LinePlaceholder.text(app.lang), input)
-                    .id(GOTO_ID)
-                    .on_input(Message::GotoInput)
-                    .on_submit(Message::GotoSubmit),
-                Length::Fixed(180.0),
-            ),
+            container(field).width(180),
             text(format!("{line} / {total}"), TextStyle::NUM).color(paint.fg_3()),
             Space::new().width(Fill),
             compact_button(&paint, Key::Cancel.text(app.lang), Tone::Neutral, Some(Message::Escape)),
@@ -264,10 +206,6 @@ fn goto_bar(app: &App) -> Element<'_, Message> {
         .spacing(SP2)
         .align_y(Alignment::Center),
     )
-    .padding(Padding::from([SP2, SP3]))
-    .width(Fill)
-    .style(move |_| style::rounded(paint.bar_bg(), 0.0))
-    .into()
 }
 
 fn infobar(app: &App) -> Option<Element<'_, Message>> {
@@ -282,17 +220,9 @@ fn infobar(app: &App) -> Option<Element<'_, Message>> {
     }
     actions =
         actions.push(compact_button(&paint, Key::KeepMine.text(app.lang), Tone::Ghost, Some(Message::Disk(false))));
-    let warn = to_iced(paint.tokens.warn_soft).scale_alpha(paint.alpha);
-    Some(
-        container(
-            row![text(message.text(app.lang), TextStyle::CALL), Space::new().width(Fill), actions]
-                .align_y(Alignment::Center),
-        )
-        .padding(Padding::from([SP2, SP3]))
-        .width(Fill)
-        .style(move |_| style::rounded(warn, 0.0))
-        .into(),
-    )
+    let content = row![text(message.text(app.lang), TextStyle::CALL), Space::new().width(Fill), actions]
+        .align_y(Alignment::Center);
+    Some(bar_strip(&paint, Some(glide_sdk::widget::Severity::Warn), content))
 }
 
 fn tree_row<'a>(app: &'a App, node: &'a crate::tree::Node) -> Element<'a, Message> {
