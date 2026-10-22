@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Component Catalogue
+Name[uk]=Каталог компонентів
+GenericName=Developer Tool
+GenericName[uk]=Інструмент розробника
+Comment=Try every glide-sdk component and test notifications
+Comment[uk]=Компоненти glide-sdk наживо та тестування сповіщень
+Exec=glide-catalog
+Icon=applications-development
+Terminal=false
+Categories=Development;GUIDesigner;
+Keywords=sdk;components;widgets;design;notifications;test;компоненти;віджети;дизайн;сповіщення;
+StartupNotify=true
+StartupWMClass=glide-catalog

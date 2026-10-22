@@ -303,17 +303,18 @@ impl<M> canvas::Program<M> for CheckBox {
 
 #[must_use]
 pub fn check_box<'a, M: Clone + 'a>(paint: &Paint, check: Check, message: Option<M>) -> Element<'a, M> {
-    let canvas =
-        surface(CheckBox { paint: *paint, check, enabled: message.is_some(), round: false }).width(CHECK).height(CHECK);
-    clickable(canvas.into(), message)
+    let enabled = message.is_some();
+    clickable(mark(paint, check, false, enabled), message)
 }
 
 #[must_use]
 pub fn radio_mark<'a, M: Clone + 'a>(paint: &Paint, selected: bool, message: Option<M>) -> Element<'a, M> {
-    let check = if selected { Check::On } else { Check::Off };
-    let canvas =
-        surface(CheckBox { paint: *paint, check, enabled: message.is_some(), round: true }).width(CHECK).height(CHECK);
-    clickable(canvas.into(), message)
+    let enabled = message.is_some();
+    clickable(mark(paint, if selected { Check::On } else { Check::Off }, true, enabled), message)
+}
+
+pub(crate) fn mark<'a, M: 'a>(paint: &Paint, check: Check, round: bool, enabled: bool) -> Element<'a, M> {
+    surface(CheckBox { paint: *paint, check, enabled, round }).width(CHECK).height(CHECK).into()
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -487,6 +488,8 @@ impl<M> canvas::Program<M> for Progress {
         );
         let (start, width) = if let Some(fraction) = self.fraction {
             (0.0, bounds.width * state.value.map_or(fraction, |motion| motion.value(Speed::SLIDE)))
+        } else if motion::is_disabled() {
+            (0.0, bounds.width * 0.34)
         } else {
             let width = bounds.width * 0.34;
             let t = motion::ease_io(f64::from(phase(state.started, SWEEP))) as f32;

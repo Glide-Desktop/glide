@@ -14,7 +14,7 @@ use iced::{
     mouse, window,
 };
 
-use super::controls::{Check, check_box, radio_mark};
+use super::controls::{Check, mark};
 use super::{Icon, Wrapping, icon, text};
 use crate::anim::{Motion, Speed, animate};
 
@@ -334,7 +334,12 @@ pub fn chip<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, on: bool, message:
         let mark =
             if on { icon(Icon::Check, 12.0, paint.acc_soft_fg()) } else { iced::widget::Space::new().width(0).into() };
         let control = button(
-            row![mark, text(label, TextStyle::CAP).wrapping(Wrapping::None)].spacing(SP1).align_y(Alignment::Center),
+            container(
+                row![mark, text(label, TextStyle::CAP).wrapping(Wrapping::None)]
+                    .spacing(SP1)
+                    .align_y(Alignment::Center),
+            )
+            .center_y(Fill),
         )
         .on_press(message)
         .height(component::SMALL_CONTROL)
@@ -356,7 +361,7 @@ pub fn chip<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, on: bool, message:
 
 #[must_use]
 pub fn checkbox<'a, M: Clone + 'a>(paint: &Paint, label: &'a str, check: Check, message: Option<M>) -> Element<'a, M> {
-    labelled(paint, check_box(paint, check, None), label, message)
+    labelled(paint, mark(paint, check, false, message.is_some()), label, message)
 }
 
 fn labelled<'a, M: Clone + 'a>(
@@ -376,8 +381,8 @@ pub fn radio_group<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
     paint: &Paint, options: &[(T, &'a str)], selected: Option<T>, on_select: impl Fn(T) -> M,
 ) -> Element<'a, M> {
     let rows = options.iter().map(|&(value, label)| {
-        let mark = radio_mark(paint, selected == Some(value), None);
-        labelled(paint, mark, label, Some(on_select(value)))
+        let check = if selected == Some(value) { Check::On } else { Check::Off };
+        labelled(paint, mark(paint, check, true, true), label, Some(on_select(value)))
     });
     Column::with_children(rows).spacing(SP2 + 2.0).into()
 }

@@ -10,10 +10,10 @@ use iced::advanced::renderer;
 use iced::advanced::widget::{Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, overlay};
 use iced::keyboard::{self, Key, key::Named};
-use iced::widget::{Column, Space, button, container, row};
+use iced::widget::{Column, Space, container, row};
 use iced::{
-    Alignment, Background, Element, Event, Fill, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
-    Transformation, Vector, mouse, window,
+    Alignment, Element, Event, Fill, Length, Padding, Point, Rectangle, Renderer, Size, Theme, Transformation, Vector,
+    mouse, window,
 };
 
 use super::{Icon, Wrapping, icon, text};
@@ -57,10 +57,28 @@ struct Hint {
     tree: Tree,
 }
 
+struct Cache<'a, M> {
+    key: (u32, Option<usize>),
+    element: Element<'a, M>,
+}
+
+fn cached<'s, 'a, M>(
+    slot: &'s mut Option<Cache<'a, M>>, tree: &mut Tree, key: (u32, Option<usize>),
+    build: impl FnOnce() -> Element<'a, M>,
+) -> &'s mut Element<'a, M> {
+    if slot.as_ref().is_none_or(|cache| cache.key != key) {
+        let element = build();
+        tree.diff(&element);
+        *slot = Some(Cache { key, element });
+    }
+    &mut slot.as_mut().expect("the cache was just filled").element
+}
+
 pub struct Tooltip<'a, M> {
     content: Element<'a, M>,
     label: &'a str,
     paint: Paint,
+    tip: Option<Cache<'a, M>>,
 }
 
 #[must_use]
@@ -68,7 +86,7 @@ pub fn tooltip<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>, lab
     if label.is_empty() {
         return content.into();
     }
-    Element::new(Tooltip { content: content.into(), label, paint: *paint })
+    Element::new(Tooltip { content: content.into(), label, paint: *paint, tip: None })
 }
 
 fn tip<'a, M: 'a>(paint: &Paint, label: &'a str) -> Element<'a, M> {
@@ -85,7 +103,7 @@ fn tip<'a, M: 'a>(paint: &Paint, label: &'a str) -> Element<'a, M> {
     )
 }
 
-impl<M> Widget<M, Theme, Renderer> for Tooltip<'_, M> {
+impl<'a, M: 'a> Widget<M, Theme, Renderer> for Tooltip<'a, M> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<Hint>()
     }
@@ -180,10 +198,11 @@ impl<M> Widget<M, Theme, Renderer> for Tooltip<'_, M> {
         if inner.is_some() || progress <= 0.0 {
             return inner;
         }
-        let element = tip(&self.paint.faded(progress), self.label);
-        hint.tree.diff(&element);
+        let (paint, label) = (self.paint, self.label);
+        let element =
+            cached(&mut self.tip, &mut hint.tree, (progress.to_bits(), None), || tip(&paint.faded(progress), label));
         Some(overlay::Element::new(Box::new(Floating {
-            element,
+            element: element.as_widget_mut(),
             tree: &mut hint.tree,
             anchor: layout.bounds() + translation,
             progress,
@@ -196,7 +215,7 @@ impl<M> Widget<M, Theme, Renderer> for Tooltip<'_, M> {
 }
 
 struct Floating<'b, M> {
-    element: Element<'b, M>,
+    element: &'b mut (dyn Widget<M, Theme, Renderer> + 'b),
     tree: &'b mut Tree,
     anchor: Rectangle,
     progress: f32,
@@ -215,7 +234,7 @@ impl<M> Floating<'_, M> {
             Size::new(self.width.unwrap_or(0.0), 0.0),
             Size::new(max_width, below.max(above).max(48.0)),
         );
-        let node = self.element.as_widget_mut().layout(self.tree, renderer, &limits);
+        let node = self.element.layout(self.tree, renderer, &limits);
         let (at, side) = place(self.anchor, node.size(), bounds, self.gap, self.centred);
         self.side = side;
         node.move_to(at)
@@ -236,7 +255,7 @@ impl<M> overlay::Overlay<M, Theme, Renderer> for Floating<'_, M> {
         renderer.with_transformation(
             rise(self.progress, self.side, bounds, component::POPOVER_CLOSED_SCALE),
             |renderer| {
-                self.element.as_widget().draw(self.tree, renderer, theme, style, layout, cursor, &bounds);
+                self.element.draw(self.tree, renderer, theme, style, layout, cursor, &bounds);
             },
         );
     }
@@ -259,6 +278,7 @@ pub struct Popup<'a, M> {
     rows: usize,
     on_pick: Option<Box<dyn Fn(usize) -> M + 'a>>,
     enabled: bool,
+    content: Option<Cache<'a, M>>,
 }
 
 impl<'a, M: 'a> Popup<'a, M> {
@@ -274,6 +294,7 @@ impl<'a, M: 'a> Popup<'a, M> {
             rows: 0,
             on_pick: None,
             enabled: true,
+            content: None,
         }
     }
 
@@ -411,12 +432,14 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
         if progress <= 0.0 && !state.open {
             return None;
         }
-        let element = (self.build)(&self.paint.faded(progress.max(0.01)), state.highlight);
-        state.tree.diff(&element);
+        let (paint, highlight, build) = (self.paint, state.highlight, &self.build);
+        let element = cached(&mut self.content, &mut state.tree, (progress.to_bits(), highlight), || {
+            build(&paint.faded(progress.max(0.01)), highlight)
+        });
         let anchor = layout.bounds() + translation;
         Some(overlay::Element::new(Box::new(MenuOverlay {
             floating: Floating {
-                element,
+                element: element.as_widget_mut(),
                 tree: &mut state.tree,
                 anchor,
                 progress,
@@ -472,7 +495,7 @@ impl<M> overlay::Overlay<M, Theme, Renderer> for MenuOverlay<'_, M> {
         let mut picked = Vec::new();
         let (captured, invalid, redraw) = {
             let mut inner = Shell::new(&mut picked);
-            self.floating.element.as_widget_mut().update(
+            self.floating.element.update(
                 self.floating.tree,
                 event,
                 layout,
@@ -502,7 +525,7 @@ impl<M> overlay::Overlay<M, Theme, Renderer> for MenuOverlay<'_, M> {
 
     fn mouse_interaction(&self, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer) -> mouse::Interaction {
         let bounds = layout.bounds();
-        self.floating.element.as_widget().mouse_interaction(self.floating.tree, layout, cursor, &bounds, renderer)
+        self.floating.element.mouse_interaction(self.floating.tree, layout, cursor, &bounds, renderer)
     }
 }
 
@@ -525,26 +548,45 @@ fn option_row<'a, M: Clone + 'a>(
     let paint = *paint;
     let mark: Element<'a, M> =
         if checked { icon(Icon::Check, 14.0, paint.acc_bg()) } else { Space::new().width(14).height(14).into() };
-    let control = button(
-        container(
-            row![mark, text(label, TextStyle::MENU_ITEM).wrapping(Wrapping::None)]
-                .spacing(SP2)
-                .align_y(Alignment::Center),
-        )
-        .center_y(Fill)
-        .clip(true),
+    let content = container(
+        row![mark, text(label, TextStyle::MENU_ITEM).wrapping(Wrapping::None)].spacing(SP2).align_y(Alignment::Center),
     )
-    .on_press(message)
+    .center_y(component::MENU_ITEM)
     .width(Fill)
-    .height(component::MENU_ITEM)
-    .padding(Padding::from([0.0, SP2]));
-    widgets::button(control, move |status| {
-        let mut style = style::menu_item(&paint, status);
-        if highlighted {
-            style.background = Some(Background::Color(paint.fill_2()));
+    .padding(Padding::from([0.0, SP2]))
+    .clip(true);
+    let row = widgets::container(content, move |hover, press| {
+        let lit = if highlighted { 1.0 } else { hover.max(press) };
+        container::Style {
+            text_color: Some(paint.fg_1()),
+            ..style::rounded(super::mix(iced::Color::TRANSPARENT, paint.fill_2(), lit), R2)
         }
-        style
-    })
+    });
+    iced::widget::mouse_area(row).on_press(message).interaction(mouse::Interaction::Pointer).into()
+}
+
+fn opener<'a, M: 'a>(paint: &Paint, label: String, color: iced::Color, width: Length) -> Element<'a, M> {
+    let paint = *paint;
+    let mut content = row![text(label, TextStyle::CALL).color(color).wrapping(Wrapping::None)]
+        .spacing(SP2)
+        .align_y(Alignment::Center);
+    if width == Length::Fill {
+        content = content.push(Space::new().width(Fill));
+    }
+    widgets::container(
+        container(content.push(icon(Icon::Down, 12.0, paint.fg_2())))
+            .padding(Padding::from([0.0, SP3]))
+            .height(component::CONTROL)
+            .center_y(component::CONTROL)
+            .width(width),
+        move |hover, press| {
+            let background = paint.layer(paint.fill_1(), glide_theme::motion::ST_HOVER * hover + 0.05 * press);
+            container::Style {
+                border: iced::Border { color: paint.line(), width: 1.0, radius: R2.into() },
+                ..style::rounded(background, R2)
+            }
+        },
+    )
 }
 
 #[must_use]
@@ -554,28 +596,7 @@ pub fn dropdown<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
     let paint = *paint;
     let label = selected.as_ref().map_or_else(|| placeholder.to_string(), ToString::to_string);
     let color = if selected.is_some() { paint.fg_1() } else { paint.fg_3() };
-    let anchor = widgets::container(
-        container(
-            row![
-                text(label, TextStyle::CALL).color(color).wrapping(Wrapping::None),
-                Space::new().width(Fill),
-                icon(Icon::Down, 12.0, paint.fg_2())
-            ]
-            .spacing(SP2)
-            .align_y(Alignment::Center),
-        )
-        .padding(Padding::from([0.0, SP3]))
-        .height(component::CONTROL)
-        .center_y(component::CONTROL)
-        .width(Fill),
-        move |hover, press| {
-            let background = paint.layer(paint.fill_1(), glide_theme::motion::ST_HOVER * hover + 0.05 * press);
-            container::Style {
-                border: iced::Border { color: paint.line(), width: 1.0, radius: R2.into() },
-                ..style::rounded(background, R2)
-            }
-        },
-    );
+    let anchor = opener(&paint, label, color, Length::Fill);
     let count = options.len();
     let pick_options = options.clone();
     let pick = on_select.clone();
@@ -601,10 +622,11 @@ pub fn dropdown<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
 
 #[must_use]
 pub fn menu_button<'a, M: Clone + 'a>(
-    paint: &Paint, anchor: impl Into<Element<'a, M>>, items: Vec<(String, M)>, width: f32,
+    paint: &Paint, label: &'a str, items: Vec<(String, M)>, width: f32,
 ) -> Element<'a, M> {
     let count = items.len();
     let picks: Vec<M> = items.iter().map(|(_, message)| message.clone()).collect();
+    let anchor = opener(paint, label.to_string(), paint.fg_1(), Length::Shrink);
     Popup::new(paint, anchor, move |paint, highlight| {
         let rows = items
             .iter()

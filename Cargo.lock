@@ -1482,6 +1482,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "glide-catalog"
+version = "0.1.0"
+dependencies = [
+ "glide-sdk",
+]
+
+[[package]]
 name = "glide-compositor"
 version = "0.1.0"
 dependencies = [
