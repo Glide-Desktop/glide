@@ -121,12 +121,26 @@ pub struct Header<'a, M> {
     pub leading: Vec<Element<'a, M>>,
     pub trailing: Vec<Element<'a, M>>,
     pub labels: (&'a str, &'a str),
+    pub height: f32,
 }
 
 impl<'a, M> Header<'a, M> {
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), subtitle: None, leading: Vec::new(), trailing: Vec::new(), labels: ("", "") }
+        Self {
+            title: title.into(),
+            subtitle: None,
+            leading: Vec::new(),
+            trailing: Vec::new(),
+            labels: ("", ""),
+            height: HEADER,
+        }
+    }
+
+    #[must_use]
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = height;
+        self
     }
 
     #[must_use]
@@ -170,6 +184,7 @@ pub fn header<'a, M: Clone + 'a>(
     let close = button(glide_iced::glyph::window_close()).on_press(on_close).width(CONTROL).height(CONTROL).padding(0);
     let close = widgets::button(close, move |status| style::window_control(&controls, status));
     let close = tooltip(paint, close, header.labels.1);
+    let height = header.height;
     let leading_count = header.leading.len();
     let trailing_count = header.trailing.len();
     let left = header.leading.into_iter().fold(row![maximize].spacing(SP2).align_y(Alignment::Center), row::Row::push);
@@ -206,7 +221,7 @@ pub fn header<'a, M: Clone + 'a>(
     let background = if window.focused { paint.bar_bg() } else { paint.bar_bg_idle() };
     let bar = container(iced::widget::stack(layers))
         .width(Fill)
-        .height(HEADER)
+        .height(height)
         .style(move |_| style::rounded(background, corners));
     mouse_area(bar).on_press(on_window(Action::Drag)).on_double_click(on_window(Action::ToggleMaximize)).into()
 }

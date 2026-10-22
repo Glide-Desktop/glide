@@ -175,12 +175,7 @@ impl Menu {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Item {
-    Action { label: String, shortcut: Option<&'static str>, command: Command, enabled: bool, check: Option<bool> },
-    Separator,
-    Header(String),
-}
+pub type Item = glide_sdk::menu::Item<Command>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum After {

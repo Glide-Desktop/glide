@@ -17,7 +17,7 @@ const HEADING: f32 = 26.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item<M> {
-    Action { label: String, shortcut: Option<String>, message: M, enabled: bool, check: Option<bool> },
+    Action { label: String, shortcut: Option<String>, message: M, enabled: bool, check: Option<bool>, more: bool },
     Submenu { label: String, items: Vec<Item<M>>, enabled: bool },
     Heading(String),
     Separator,
@@ -26,7 +26,23 @@ pub enum Item<M> {
 impl<M> Item<M> {
     #[must_use]
     pub fn action(label: impl Into<String>, message: M) -> Self {
-        Self::Action { label: label.into(), shortcut: None, message, enabled: true, check: None }
+        Self::Action { label: label.into(), shortcut: None, message, enabled: true, check: None, more: false }
+    }
+
+    #[must_use]
+    pub fn cascades(mut self) -> Self {
+        if let Self::Action { more, .. } = &mut self {
+            *more = true;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn message(&self) -> Option<&M> {
+        match self {
+            Self::Action { message, enabled: true, .. } => Some(message),
+            _ => None,
+        }
     }
 
     #[must_use]
@@ -91,7 +107,7 @@ fn export_items<M: Clone>(items: &[Item<M>], actions: &mut Vec<M>) -> Vec<Entry>
     items
         .iter()
         .map(|item| match item {
-            Item::Action { label, shortcut, message, enabled, check } => {
+            Item::Action { label, shortcut, message, enabled, check, .. } => {
                 actions.push(message.clone());
                 Entry::Action {
                     id: u32::try_from(actions.len()).unwrap_or(u32::MAX),
@@ -265,7 +281,7 @@ impl<M: Clone> Popup<M> {
     }
 
     fn actionable(&self) -> Vec<usize> {
-        self.items.iter().enumerate().filter(|(_, item)| item.actionable()).map(|(index, _)| index).collect()
+        actionable(&self.items)
     }
 
     pub fn pick(&mut self, index: usize) -> Outcome<M> {
@@ -354,31 +370,96 @@ impl<M: Clone> Popup<M> {
 impl<M> Popup<M> {
     #[must_use]
     pub fn height(&self) -> f32 {
-        2.0 * SP1
-            + 2.0
-            + self
-                .items
-                .iter()
-                .map(|item| match item {
-                    Item::Separator => SEPARATOR,
-                    Item::Heading(_) => HEADING,
-                    _ => ITEM,
-                })
-                .sum::<f32>()
+        height(&self.items)
     }
 
     #[must_use]
     pub fn placement(&self, window: Size) -> (Point, Size) {
-        let width = WIDTH.min(window.width - 2.0 * SP2);
-        let height = self.height().min((window.height - 2.0 * SP3).max(1.0));
-        let upward = self.source == Source::Context && self.at.y > window.height * 0.6;
-        let x = self.at.x.min(window.width - width - SP2).max(SP2);
-        let y = if upward { self.at.y - height - SP1 } else { self.at.y };
-        (Point::new(x, y.min(window.height - height - SP2).max(SP2)), Size::new(width, height))
+        place(self.at, self.height(), width(&self.items, WIDTH), window, self.source == Source::Context)
     }
 }
 
-fn row_element<'a, M>(paint: &Paint, item: &'a Item<M>, index: usize, selected: bool) -> Element<'a, Event> {
+#[must_use]
+pub fn actionable<M>(items: &[Item<M>]) -> Vec<usize> {
+    items.iter().enumerate().filter(|(_, item)| item.actionable()).map(|(index, _)| index).collect()
+}
+
+#[must_use]
+pub fn height<M>(items: &[Item<M>]) -> f32 {
+    2.0 * SP1
+        + 2.0
+        + items
+            .iter()
+            .map(|item| match item {
+                Item::Separator => SEPARATOR,
+                Item::Heading(_) => HEADING,
+                _ => ITEM,
+            })
+            .sum::<f32>()
+}
+
+pub const MAX_WIDTH: f32 = 480.0;
+
+#[must_use]
+pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
+    let measure = crate::widget::measure;
+    let widest = items
+        .iter()
+        .map(|item| match item {
+            Item::Action { label, shortcut, more, .. } => {
+                let keys = shortcut.as_deref().map_or(0.0, |keys| measure(keys, TextStyle::CAP) + SP3);
+                measure(label, TextStyle::MENU_ITEM) + keys + if *more { 12.0 + SP2 } else { 0.0 }
+            }
+            Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + 12.0 + SP2,
+            Item::Heading(label) => measure(label, TextStyle::MICRO),
+            Item::Separator => 0.0,
+        })
+        .fold(0.0, f32::max);
+    let mark = 14.0 + SP2;
+    let row_padding = 2.0 * SP2;
+    let card = 2.0 * SP1 + 2.0;
+    let scrollbar = 6.0 + SP1;
+    (widest + mark + SP2 + row_padding + card + scrollbar + SP1).ceil().clamp(least, MAX_WIDTH)
+}
+
+#[must_use]
+pub fn place(at: Point, height: f32, width: f32, window: Size, may_flip: bool) -> (Point, Size) {
+    let width = width.min(window.width - 2.0 * SP2);
+    let x = at.x.min(window.width - width - SP2).max(SP2);
+    let below = window.height - at.y - SP2;
+    let above = at.y - SP1 - SP2;
+    if may_flip && at.y > window.height * 0.6 && height > below {
+        let height = height.min(above).max(ITEM);
+        return (Point::new(x, (at.y - height - SP1).max(SP2)), Size::new(width, height));
+    }
+    let height = height.min(below.max(ITEM));
+    (Point::new(x, at.y.min(window.height - height - SP2).max(SP2)), Size::new(width, height))
+}
+
+#[must_use]
+pub fn rows<'a, M>(paint: &Paint, items: &[Item<M>], selected: Option<usize>) -> Vec<Element<'a, Event>> {
+    items.iter().enumerate().map(|(index, item)| item_row(paint, item, index, selected == Some(index))).collect()
+}
+
+#[must_use]
+pub fn layer<'a, E: Clone + 'a>(
+    paint: &Paint, rows: Vec<Element<'a, E>>, at: Point, size: Size, progress: f32, dismiss: E,
+) -> Element<'a, E> {
+    let content = scrollable(paint, iced::widget::column(rows)).height(size.height - 2.0 * SP1 - 2.0);
+    let card = container(popover(paint, content)).width(size.width);
+    let scale = component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress;
+    stack![
+        mouse_area(Space::new().width(Fill).height(Fill))
+            .on_press(dismiss.clone())
+            .on_right_press(dismiss.clone())
+            .on_middle_press(dismiss),
+        pin(widgets::scale(card, scale)).x(at.x).y(at.y + (1.0 - progress) * component::POPOVER_RISE),
+    ]
+    .into()
+}
+
+#[must_use]
+pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bool) -> Element<'a, Event> {
     let paint = *paint;
     match item {
         Item::Separator => container(
@@ -386,13 +467,13 @@ fn row_element<'a, M>(paint: &Paint, item: &'a Item<M>, index: usize, selected: 
         )
         .padding(Padding::from([SP1, SP2]))
         .into(),
-        Item::Heading(label) => container(text(label.as_str(), TextStyle::MICRO).color(paint.fg_3()))
+        Item::Heading(label) => container(text(label.clone(), TextStyle::MICRO).color(paint.fg_3()))
             .padding(Padding::from([SP2, SP3]).bottom(SP1))
             .into(),
         Item::Action { label, enabled, .. } | Item::Submenu { label, enabled, .. } => {
             let enabled = *enabled;
             let (shortcut, check, more) = match item {
-                Item::Action { shortcut, check, .. } => (shortcut.as_deref(), *check, false),
+                Item::Action { shortcut, check, more, .. } => (shortcut.clone(), *check, *more),
                 _ => (None, None, true),
             };
             let mark: Element<'a, Event> = match check {
@@ -401,7 +482,7 @@ fn row_element<'a, M>(paint: &Paint, item: &'a Item<M>, index: usize, selected: 
             };
             let mut content = row![
                 mark,
-                text(label.as_str(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
+                text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
                 Space::new().width(Fill)
             ]
             .spacing(SP2)
@@ -437,24 +518,8 @@ fn row_element<'a, M>(paint: &Paint, item: &'a Item<M>, index: usize, selected: 
 pub fn view<'a, M>(paint: &Paint, popup: &'a Popup<M>, window: Size) -> Element<'a, Event> {
     let progress = popup.reveal.value(motion::t2()) as f32;
     let paint = paint.faded(progress);
-    let rows: Vec<Element<'a, Event>> = popup
-        .items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| row_element(&paint, item, index, popup.selected == Some(index)))
-        .collect();
     let (at, size) = popup.placement(window);
-    let content = scrollable(&paint, iced::widget::column(rows)).height(size.height - 2.0 * SP1 - 2.0);
-    let card = container(popover(&paint, content)).width(size.width);
-    let scale = component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress;
-    stack![
-        mouse_area(Space::new().width(Fill).height(Fill))
-            .on_press(Event::Dismiss)
-            .on_right_press(Event::Dismiss)
-            .on_middle_press(Event::Dismiss),
-        pin(widgets::scale(card, scale)).x(at.x).y(at.y + (1.0 - progress) * component::POPOVER_RISE),
-    ]
-    .into()
+    layer(&paint, rows(&paint, &popup.items, popup.selected), at, size, progress, Event::Dismiss)
 }
 
 #[must_use]
@@ -464,15 +529,20 @@ pub fn bar_width(label: &str) -> f32 {
 
 #[must_use]
 pub fn bar<'a, M>(paint: &Paint, menus: &'a [Menu<M>], open: Option<usize>) -> Element<'a, BarEvent> {
+    let labels: Vec<&str> = menus.iter().map(|menu| menu.label.as_str()).collect();
+    bar_of(paint, &labels, open)
+}
+
+#[must_use]
+pub fn bar_of<'a>(paint: &Paint, labels: &[&str], open: Option<usize>) -> Element<'a, BarEvent> {
     let paint = *paint;
-    let buttons = menus.iter().enumerate().map(|(index, menu)| {
+    let buttons = labels.iter().enumerate().map(|(index, label)| {
         let active = open == Some(index);
-        let control =
-            button(container(text(menu.label.as_str(), TextStyle::CALL).wrapping(Wrapping::None)).center(Fill))
-                .on_press(BarEvent::Pressed(index))
-                .width(bar_width(&menu.label))
-                .height(component::SMALL_CONTROL)
-                .padding(0);
+        let control = button(container(text(label.to_string(), TextStyle::CALL).wrapping(Wrapping::None)).center(Fill))
+            .on_press(BarEvent::Pressed(index))
+            .width(bar_width(label))
+            .height(component::SMALL_CONTROL)
+            .padding(0);
         let control = widgets::button(control, move |status| {
             if active {
                 style::flat(paint.fill_2(), paint.fg_1(), R2)
@@ -597,5 +667,29 @@ mod tests {
         assert!(at.x + size.width <= window.width - SP2 + 0.5);
         assert!(at.y + size.height <= window.height - SP2 + 0.5);
         assert!(at.x >= SP2 && at.y >= SP2);
+    }
+
+    #[test]
+    fn a_tall_menu_scrolls_below_its_anchor_instead_of_covering_it() {
+        let window = Size::new(960.0, 640.0);
+        let (at, size) = place(Point::new(100.0, 36.0), 900.0, 300.0, window, true);
+        assert_eq!(at.y, 36.0, "it opens where the bar ends");
+        assert!(size.height <= window.height - 36.0 - SP2 + 0.5);
+        let (at, size) = place(Point::new(100.0, 600.0), 500.0, 300.0, window, true);
+        assert!(at.y + size.height <= 600.0, "near the bottom it opens upwards");
+        let (short, _) = place(Point::new(100.0, 500.0), 80.0, 300.0, window, true);
+        assert_eq!(short.y, 500.0, "a short menu stays below even low in the window");
+    }
+
+    #[test]
+    fn the_width_fits_the_longest_label_and_its_shortcut() {
+        let items = vec![
+            Item::action("A label long enough to need more than the least width", Command::New)
+                .shortcut("Ctrl+Shift+N"),
+        ];
+        assert!(width(&items, 200.0) > 200.0);
+        assert_eq!(width(&[Item::action("x", Command::New)], 200.0), 200.0);
+        let huge = vec![Item::action("x".repeat(400), Command::New)];
+        assert_eq!(width(&huge, 200.0), MAX_WIDTH);
     }
 }

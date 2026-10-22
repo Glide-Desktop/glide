@@ -7,10 +7,10 @@ use glide_iced::text::text;
 use glide_iced::widgets;
 use glide_sdk::Tone;
 use glide_sdk::widget::{
-    button_style, compact_button, icon_button, measure, primary as accent_pill, separator as rule, tooltip as tip,
+    button_style, compact_button, icon_button, primary as accent_pill, separator as rule, tooltip as tip,
     vertical_separator as vertical_rule,
 };
-use glide_sdk::window::{Action as WindowAction, resize_handles};
+use glide_sdk::window::resize_handles;
 use glide_theme::elevation::Level;
 use glide_theme::motion::{ST_HOVER, ST_PRESS};
 use glide_theme::{TextStyle, component};
@@ -18,8 +18,7 @@ use iced::border::Radius;
 use iced::widget::text::Wrapping;
 use iced::widget::text_editor::{self as editor_widget};
 use iced::widget::{
-    Space, button, column, container, markdown, mouse_area, opaque, pin, row, scrollable, stack, text_editor,
-    text_input,
+    Space, button, column, container, markdown, mouse_area, opaque, row, scrollable, stack, text_editor, text_input,
 };
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding};
 
@@ -41,15 +40,12 @@ const TABS: f32 = 36.0;
 const TAB_PAD: f32 = SP1;
 const TAB_GAP: f32 = SP1;
 const CONTROL: f32 = component::SMALL_CONTROL;
-const ITEM: f32 = component::MENU_ITEM;
 const ROW: f32 = 28.0;
 const MENU_WIDTH: f32 = 300.0;
 const FIND_FIELD: f32 = 260.0;
 
-const BAR_STYLE: TextStyle = TextStyle::CALL;
-
 fn bar_width(app: &App, bar: Bar) -> f32 {
-    measure(bar.key().text(app.lang), BAR_STYLE) + 2.0 * SP3
+    glide_sdk::menu::bar_width(bar.key().text(app.lang))
 }
 
 fn bar_start() -> f32 {
@@ -81,37 +77,36 @@ pub fn bar_x(app: &App, target: Bar) -> f32 {
     x
 }
 
-fn bar_button(app: &App, paint: &Paint, bar: Bar) -> Element<'static, Message> {
-    let paint = *paint;
-    let open = app.menu.as_ref().is_some_and(|menu| menu.kind == MenuKind::Bar(bar) && menu.reveal.is_open());
-    let label = bar.key().text(app.lang);
-    let control = button(container(text(label, BAR_STYLE).wrapping(Wrapping::None)).center(Fill))
-        .on_press(Message::BarPressed(bar))
-        .width(bar_width(app, bar))
-        .height(CONTROL)
-        .padding(0);
-    let control = widgets::button(control, move |status| {
-        if open { style::flat(paint.fill_2(), paint.fg_1(), R2) } else { button_style(&paint, Tone::Ghost, status) }
+fn menu_bar(app: &App, paint: &Paint) -> Element<'static, Message> {
+    let labels = Bar::ALL.map(|bar| bar.key().text(app.lang));
+    let open = app.menu.as_ref().filter(|menu| menu.reveal.is_open()).and_then(|menu| match menu.kind {
+        MenuKind::Bar(bar) => Bar::ALL.iter().position(|candidate| *candidate == bar),
+        _ => None,
     });
-    mouse_area(control).on_enter(Message::BarHovered(bar)).into()
+    glide_sdk::menu::bar_of(paint, &labels, open).map(|event| match event {
+        glide_sdk::menu::BarEvent::Pressed(index) => Message::BarPressed(Bar::ALL[index]),
+        glide_sdk::menu::BarEvent::Hovered(index) => Message::BarHovered(Bar::ALL[index]),
+    })
 }
 
 fn header(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let control_paint = app.window.controls_paint(&paint);
-    let maximize = button(glide_iced::glyph::window_control(app.edge_to_edge()))
-        .on_press(Message::Window(WindowAction::ToggleMaximize))
-        .width(CONTROL)
-        .height(CONTROL)
-        .padding(0);
-    let maximize = tip(
-        &paint,
-        widgets::button(maximize, move |status| style::maximize_control(&control_paint, status)),
-        Key::Maximize.text(app.lang),
-    );
-    let mut left = row![maximize].spacing(SP2).align_y(Alignment::Center);
+    let title = if app.shell_menu {
+        String::new()
+    } else {
+        app.doc().map_or_else(
+            || Key::AppName.text(app.lang).to_string(),
+            |doc| format!("{}{}", if doc.dirty() { "• " } else { "" }, app.doc_name(doc)),
+        )
+    };
+    let mut header = glide_sdk::window::Header::new(title)
+        .subtitle(app.subtitle())
+        .labels(Key::Maximize.text(app.lang), Key::CloseWindow.text(app.lang))
+        .height(HEADER);
+    let mut taken = 0.0;
     if !app.shell_menu {
-        left = left.push(if compact(app) {
+        header = header.leading(if compact(app) {
             let open = app.menu.as_ref().is_some_and(|menu| menu.kind == MenuKind::Compact && menu.reveal.is_open());
             icon_button(
                 &control_paint,
@@ -121,78 +116,21 @@ fn header(app: &App) -> Element<'_, Message> {
                 open,
             )
         } else {
-            iced::widget::row(Bar::ALL.map(|bar| bar_button(app, &control_paint, bar))).spacing(SP1).into()
+            taken = Bar::ALL.iter().map(|bar| bar_width(app, *bar) + SP1).sum::<f32>() - CONTROL - SP2;
+            menu_bar(app, &control_paint)
         });
     }
-    let close = button(glide_iced::glyph::window_close())
-        .on_press(Message::CloseRequested)
-        .width(CONTROL)
-        .height(CONTROL)
-        .padding(0);
-    let close = tip(
-        &paint,
-        widgets::button(close, move |status| style::window_control(&control_paint, status)),
-        Key::CloseWindow.text(app.lang),
-    );
-    let controls = row![
-        icon_button(
+    let sidebar = Some(Message::Command(Command::ToggleSidebar));
+    header = header
+        .trailing(icon_button(&control_paint, Icon::Sidebar, Key::Sidebar.text(app.lang), sidebar, app.prefs.sidebar))
+        .trailing(icon_button(
             &control_paint,
-            Icon::Sidebar,
-            Key::Sidebar.text(app.lang),
-            Some(Message::Command(Command::ToggleSidebar)),
-            app.prefs.sidebar
-        ),
-        icon_button(&control_paint, Icon::Plus, Key::New.text(app.lang), Some(Message::Command(Command::New)), false),
-        Space::new().width(2),
-        close,
-    ]
-    .spacing(SP2)
-    .align_y(Alignment::Center);
-    let bar =
-        row![left, Space::new().width(Fill), controls].align_y(Alignment::Center).padding(Padding::from([0.0, SP2]));
-    let left_width = if compact(app) {
-        bar_start() + CONTROL
-    } else {
-        bar_start() + Bar::ALL.iter().map(|bar| bar_width(app, *bar)).sum::<f32>() + SP1 * 5.0
-    };
-    let room = app.window.size.width - 2.0 * left_width.max(controls_width()) - SP4;
-    let mut layers: Vec<Element<'_, Message>> = vec![bar.height(Fill).into()];
-    if room > 80.0 && !app.shell_menu {
-        let title = app.doc().map(|doc| {
-            let dirty = if doc.dirty() { "• " } else { "" };
-            format!("{dirty}{}", app.doc_name(doc))
-        });
-        let mut lines = column![
-            text(title.unwrap_or_else(|| Key::AppName.text(app.lang).to_string()), TextStyle::WIN_TITLE)
-                .wrapping(Wrapping::None)
-        ]
-        .align_x(Alignment::Center);
-        if let Some(subtitle) = app.subtitle().filter(|_| app.window.size.height > 360.0) {
-            lines = lines.push(text(subtitle, TextStyle::CAP).color(paint.fg_3()).wrapping(Wrapping::None));
-        }
-        let title_color = if app.window_focused() { paint.fg_1() } else { paint.fg_3() };
-        layers.push(
-            container(
-                container(lines)
-                    .max_width(room)
-                    .clip(true)
-                    .style(move |_| container::Style { text_color: Some(title_color), ..container::Style::default() }),
-            )
-            .center(Fill)
-            .into(),
-        );
-        layers.reverse();
-    }
-    let corners = if app.edge_to_edge() { Radius::default() } else { Radius::default().top_left(R3).top_right(R3) };
-    let background = if app.window_focused() { paint.bar_bg() } else { paint.bar_bg_idle() };
-    let bar = container(iced::widget::stack(layers))
-        .width(Fill)
-        .height(HEADER)
-        .style(move |_| style::rounded(background, corners));
-    mouse_area(bar)
-        .on_press(Message::Window(WindowAction::Drag))
-        .on_double_click(Message::Window(WindowAction::ToggleMaximize))
-        .into()
+            Icon::Plus,
+            Key::New.text(app.lang),
+            Some(Message::Command(Command::New)),
+            false,
+        ));
+    glide_sdk::window::header(&paint, &app.window, header, Message::Window, Message::CloseRequested, taken)
 }
 
 #[must_use]
@@ -716,28 +654,24 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         .into()
 }
 
+fn labelled(label: String, command: Command, enabled: bool, on: Option<bool>) -> Item {
+    let mut item = Item::action(label, command).enabled(enabled);
+    if let Some(on) = on {
+        item = item.checked(on);
+    }
+    if opens_more(command) { item.cascades() } else { item }
+}
+
 fn action(app: &App, key: Key, command: Command, enabled: bool) -> Item {
-    Item::Action {
-        label: key.text(app.lang).to_string(),
-        shortcut: shortcut_label(command),
-        command,
-        enabled,
-        check: None,
+    let item = labelled(key.text(app.lang).to_string(), command, enabled, None);
+    match shortcut_label(command) {
+        Some(chord) => item.shortcut(chord),
+        None => item,
     }
 }
 
 fn check(app: &App, key: Key, command: Command, on: bool, enabled: bool) -> Item {
-    Item::Action {
-        label: key.text(app.lang).to_string(),
-        shortcut: shortcut_label(command),
-        command,
-        enabled,
-        check: Some(on),
-    }
-}
-
-fn labelled(label: String, command: Command, enabled: bool, on: Option<bool>) -> Item {
-    Item::Action { label, shortcut: None, command, enabled, check: on }
+    action(app, key, command, enabled).checked(on)
 }
 
 #[allow(clippy::too_many_lines)] // The whole menu bar as one table, so menus and shortcuts read side by side
@@ -868,9 +802,7 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<Item> {
         MenuKind::Bar(bar) => bar_items(app, *bar),
         MenuKind::Compact => Bar::ALL
             .into_iter()
-            .flat_map(|bar| {
-                std::iter::once(Item::Header(bar.key().text(app.lang).to_string())).chain(bar_items(app, bar))
-            })
+            .flat_map(|bar| std::iter::once(Item::heading(bar.key().text(app.lang))).chain(bar_items(app, bar)))
             .collect(),
         MenuKind::Context => {
             let doc = app.doc();
@@ -975,13 +907,7 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<Item> {
 
 #[must_use]
 pub fn menu_actions(app: &App, kind: &MenuKind) -> Vec<Command> {
-    menu_items(app, kind)
-        .into_iter()
-        .filter_map(|item| match item {
-            Item::Action { command, enabled: true, .. } => Some(command),
-            _ => None,
-        })
-        .collect()
+    menu_items(app, kind).iter().filter_map(Item::message).copied().collect()
 }
 
 fn opens_more(command: Command) -> bool {
@@ -998,157 +924,57 @@ fn submenu_of(command: Command) -> Option<MenuKind> {
     }
 }
 
-fn export_items(app: &App, items: Vec<Item>, commands: &mut Vec<Command>) -> Vec<glide_app::menubar::Entry> {
-    use glide_app::menubar::Entry;
+fn nested(app: &App, items: Vec<Item>) -> Vec<Item> {
     items
         .into_iter()
-        .filter_map(|item| match item {
-            Item::Separator => Some(Entry::Separator),
-            Item::Header(_) => None,
-            Item::Action { label, shortcut, command, enabled, check } => {
-                if let Some(kind) = submenu_of(command) {
-                    let children = export_items(app, menu_items(app, &kind), commands);
-                    return Some(Entry::Submenu {
-                        label: label.trim_end_matches('…').to_string(),
-                        enabled: enabled && !children.is_empty(),
-                        children,
-                    });
-                }
-                commands.push(command);
-                Some(Entry::Action {
-                    id: u32::try_from(commands.len()).unwrap_or(u32::MAX),
-                    label,
-                    enabled,
-                    check,
-                    shortcut: shortcut.map(str::to_string),
-                })
+        .filter(|item| !matches!(item, Item::Heading(_)))
+        .map(|item| {
+            if let Item::Action { label, message, enabled, .. } = &item
+                && let Some(kind) = submenu_of(*message)
+            {
+                let children = nested(app, menu_items(app, &kind));
+                let enabled = *enabled && !children.is_empty();
+                return Item::submenu(label.trim_end_matches('…'), children).enabled(enabled);
             }
+            item
         })
         .collect()
 }
 
 #[must_use]
 pub fn export_menu(app: &App) -> (Vec<glide_app::menubar::Entry>, Vec<Command>) {
-    let mut commands = Vec::new();
-    let menu = Bar::ALL
+    let menus: Vec<glide_sdk::menu::Menu<Command>> = Bar::ALL
         .into_iter()
-        .map(|bar| glide_app::menubar::Entry::Submenu {
-            label: bar.key().text(app.lang).to_string(),
-            enabled: true,
-            children: export_items(app, bar_items(app, bar), &mut commands),
-        })
+        .map(|bar| glide_sdk::menu::Menu::new(bar.key().text(app.lang), nested(app, bar_items(app, bar))))
         .collect();
-    (menu, commands)
-}
-
-fn menu_row(paint: &Paint, item: Item, index: Option<usize>, selected: bool) -> (Element<'static, Message>, f32) {
-    let paint = *paint;
-    match item {
-        Item::Separator => (
-            container(
-                container(Space::new().width(Fill).height(1)).style(move |_| style::rounded(paint.hairline(), 0.0)),
-            )
-            .padding(Padding::from([SP1, SP2]))
-            .into(),
-            9.0,
-        ),
-        Item::Header(label) => (
-            container(text(label, TextStyle::MICRO).color(paint.fg_3()))
-                .padding(Padding::from([SP2, SP3]).bottom(SP1))
-                .into(),
-            26.0,
-        ),
-        Item::Action { label, shortcut, command, enabled, check } => {
-            let mark: Element<'static, Message> = match check {
-                Some(true) => {
-                    glide_iced::glyph::glyph(Icon::Check, 14.0, if enabled { paint.acc_bg() } else { paint.fg_4() })
-                }
-                _ => Space::new().width(14).height(14).into(),
-            };
-            let mut content =
-                row![mark, text(label, TextStyle::MENU_ITEM).wrapping(Wrapping::None), Space::new().width(Fill)]
-                    .spacing(SP2)
-                    .align_y(Alignment::Center);
-            if let Some(shortcut) = shortcut {
-                content = content.push(text(shortcut, TextStyle::CAP).color(if enabled {
-                    paint.fg_3()
-                } else {
-                    paint.fg_4()
-                }));
-            }
-            if opens_more(command) {
-                content = content.push(glide_iced::glyph::glyph(Icon::Right, 12.0, paint.fg_3()));
-            }
-            let control = button(container(content).clip(true))
-                .on_press_maybe(enabled.then_some(Message::Command(command)))
-                .width(Fill)
-                .height(ITEM)
-                .padding(Padding::from([0.0, SP2]));
-            let control = widgets::button(control, move |status| {
-                let mut style = style::menu_item(&paint, status);
-                if selected {
-                    style.background = Some(Background::Color(paint.fill_2()));
-                }
-                style
-            });
-            let element = match index {
-                Some(index) => mouse_area(control).on_enter(Message::MenuHovered(index)).into(),
-                None => control,
-            };
-            (element, ITEM)
-        }
-    }
-}
-
-fn card<'a>(paint: &Paint, content: impl Into<Element<'a, Message>>, width: f32) -> Element<'a, Message> {
-    let paint = *paint;
-    opaque(widgets::surface(
-        container(content).padding(SP1).width(width).style(move |_| style::popover(&paint)),
-        &paint,
-        Level::El3,
-        R3,
-    ))
+    glide_sdk::menu::export(&menus)
 }
 
 fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
+    use glide_sdk::menu::{self, Event};
     let progress = menu.reveal.value(glide_theme::motion::t2()) as f32;
     let paint = app.paint.faded(progress);
-    let mut rows: Vec<Element<'static, Message>> = Vec::new();
-    let mut height = 2.0 * SP1 + 2.0;
-    let mut index = 0;
-    for item in menu_items(app, &menu.kind) {
-        let actionable = matches!(item, Item::Action { enabled: true, .. });
-        let position = actionable.then_some(index);
-        let (element, size) = menu_row(&paint, item, position, actionable && menu.selected == Some(index));
-        if actionable {
-            index += 1;
-        }
-        rows.push(element);
-        height += size;
-    }
-    let window = app.window.size;
-    let width = MENU_WIDTH.min(window.width - 2.0 * SP2);
-    let height = height.min((window.height - 2.0 * SP3).max(1.0));
-    let bar = iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(SP1);
-    let content = scrollable(iced::widget::column(rows))
-        .id("glide-text-menu")
-        .direction(iced::widget::scrollable::Direction::Vertical(bar))
-        .height(height - 2.0 * SP1 - 2.0);
-    let card = card(&paint, content, width);
-    let upward = menu.at.y > window.height * 0.6;
-    let x = menu.at.x.min(window.width - width - SP2).max(SP2);
-    let y = if upward { menu.at.y - height - SP1 } else { menu.at.y };
-    let y = y.min(window.height - height - SP2).max(SP2) + (1.0 - progress) * component::POPOVER_RISE;
-    stack![
-        mouse_area(Space::new().width(Fill).height(Fill))
-            .on_press(Message::Dismiss)
-            .on_right_press(Message::Dismiss)
-            .on_middle_press(Message::Dismiss),
-        pin(widgets::scale(card, component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress))
-            .x(x)
-            .y(y),
-    ]
-    .into()
+    let items = menu_items(app, &menu.kind);
+    let actionable = menu::actionable(&items);
+    let selected = menu.selected.and_then(|at| actionable.get(at).copied());
+    let width = menu::width(&items, MENU_WIDTH);
+    let (at, size) = menu::place(menu.at, menu::height(&items), width, app.window.size, true);
+    let rows = menu::rows(&paint, &items, selected)
+        .into_iter()
+        .zip(&items)
+        .enumerate()
+        .map(|(index, (row, item))| {
+            let hovered = actionable.iter().position(|row| *row == index);
+            let command = item.message().copied();
+            row.map(move |event| match (event, hovered, command) {
+                (Event::Hovered(_), Some(position), _) => Message::MenuHovered(position),
+                (Event::Picked(_), _, Some(command)) => Message::Command(command),
+                (Event::Dismiss, ..) => Message::Dismiss,
+                _ => Message::Noop,
+            })
+        })
+        .collect();
+    menu::layer(&paint, rows, at, size, progress, Message::Dismiss)
 }
 
 fn stat_row<'a>(paint: &Paint, label: &'a str, value: String) -> Element<'a, Message> {
@@ -1160,7 +986,7 @@ fn stat_row<'a>(paint: &Paint, label: &'a str, value: String) -> Element<'a, Mes
 fn shortcut_rows(app: &App, paint: &Paint) -> Element<'static, Message> {
     let mut rows: Vec<Element<'static, Message>> = Vec::new();
     for bar in Bar::ALL {
-        let items: Vec<(String, &'static str)> = bar_items(app, bar)
+        let items: Vec<(String, String)> = bar_items(app, bar)
             .into_iter()
             .filter_map(|item| match item {
                 Item::Action { label, shortcut: Some(shortcut), .. } => Some((label, shortcut)),
@@ -1400,7 +1226,7 @@ mod tests {
             assert!(enabled > 0, "{bar:?} has nothing to do");
         }
         let compact = menu_items(&app, &MenuKind::Compact);
-        assert_eq!(compact.iter().filter(|item| matches!(item, Item::Header(_))).count(), Bar::ALL.len());
+        assert_eq!(compact.iter().filter(|item| matches!(item, Item::Heading(_))).count(), Bar::ALL.len());
     }
 
     #[test]
