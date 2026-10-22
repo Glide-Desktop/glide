@@ -28,6 +28,7 @@ struct Notebook {
 #[derive(Debug, Clone)]
 enum Message {
     New,
+    Save,
     Select(usize),
     Rename(String),
     Pin(bool),
@@ -95,7 +96,7 @@ impl Notebook {
             ui::danger(paint, shell.t("Видалити…", "Delete…"), Message::AskDelete),
             Space::new().width(Fill),
             ui::secondary(paint, shell.t("Поділитися", "Share"), Message::Share),
-            ui::primary(paint, shell.t("Готово", "Done"), Message::New),
+            ui::primary(paint, shell.t("Зберегти", "Save"), Message::Save),
         ]
         .spacing(SP2);
         ui::scrollable(
@@ -138,6 +139,7 @@ impl App for Notebook {
 
     fn update(&mut self, message: Message, shell: &mut Shell<Message>) -> Task<Message> {
         match message {
+            Message::Save => shell.toast(shell.t("Збережено", "Saved")),
             Message::New => {
                 self.notes
                     .push(Note { title: shell.t("Нова нотатка", "New note").to_string(), pinned: false });
@@ -214,6 +216,7 @@ impl App for Notebook {
                 shell.t("Файл", "File"),
                 vec![
                     Item::action(shell.t("Нова нотатка", "New Note"), Message::New).shortcut("Ctrl+N"),
+                    Item::action(shell.t("Зберегти", "Save"), Message::Save).shortcut("Ctrl+S").enabled(has_note),
                     Item::action(shell.t("Поділитися", "Share"), Message::Share).enabled(has_note),
                     Item::separator(),
                     Item::action(shell.t("Вийти", "Quit"), Message::Quit).shortcut("Ctrl+Q"),
