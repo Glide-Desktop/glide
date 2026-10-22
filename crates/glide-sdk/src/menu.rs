@@ -378,7 +378,7 @@ impl<M> Popup<M> {
     }
 }
 
-fn row_element<M>(paint: &Paint, item: &Item<M>, index: usize, selected: bool) -> Element<'static, Event> {
+fn row_element<'a, M>(paint: &Paint, item: &'a Item<M>, index: usize, selected: bool) -> Element<'a, Event> {
     let paint = *paint;
     match item {
         Item::Separator => container(
@@ -386,22 +386,22 @@ fn row_element<M>(paint: &Paint, item: &Item<M>, index: usize, selected: bool) -
         )
         .padding(Padding::from([SP1, SP2]))
         .into(),
-        Item::Heading(label) => container(text(label.clone(), TextStyle::MICRO).color(paint.fg_3()))
+        Item::Heading(label) => container(text(label.as_str(), TextStyle::MICRO).color(paint.fg_3()))
             .padding(Padding::from([SP2, SP3]).bottom(SP1))
             .into(),
         Item::Action { label, enabled, .. } | Item::Submenu { label, enabled, .. } => {
             let enabled = *enabled;
             let (shortcut, check, more) = match item {
-                Item::Action { shortcut, check, .. } => (shortcut.clone(), *check, false),
+                Item::Action { shortcut, check, .. } => (shortcut.as_deref(), *check, false),
                 _ => (None, None, true),
             };
-            let mark: Element<'static, Event> = match check {
+            let mark: Element<'a, Event> = match check {
                 Some(true) => icon(Icon::Check, 14.0, if enabled { paint.acc_bg() } else { paint.fg_4() }),
                 _ => Space::new().width(14).height(14).into(),
             };
             let mut content = row![
                 mark,
-                text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
+                text(label.as_str(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
                 Space::new().width(Fill)
             ]
             .spacing(SP2)
@@ -434,10 +434,10 @@ fn row_element<M>(paint: &Paint, item: &Item<M>, index: usize, selected: bool) -
 }
 
 #[must_use]
-pub fn view<M>(paint: &Paint, popup: &Popup<M>, window: Size) -> Element<'static, Event> {
+pub fn view<'a, M>(paint: &Paint, popup: &'a Popup<M>, window: Size) -> Element<'a, Event> {
     let progress = popup.reveal.value(motion::t2()) as f32;
     let paint = paint.faded(progress);
-    let rows: Vec<Element<'static, Event>> = popup
+    let rows: Vec<Element<'a, Event>> = popup
         .items
         .iter()
         .enumerate()
@@ -463,12 +463,12 @@ pub fn bar_width(label: &str) -> f32 {
 }
 
 #[must_use]
-pub fn bar<M>(paint: &Paint, menus: &[Menu<M>], open: Option<usize>) -> Element<'static, BarEvent> {
+pub fn bar<'a, M>(paint: &Paint, menus: &'a [Menu<M>], open: Option<usize>) -> Element<'a, BarEvent> {
     let paint = *paint;
     let buttons = menus.iter().enumerate().map(|(index, menu)| {
         let active = open == Some(index);
         let control =
-            button(container(text(menu.label.clone(), TextStyle::CALL).wrapping(Wrapping::None)).center(Fill))
+            button(container(text(menu.label.as_str(), TextStyle::CALL).wrapping(Wrapping::None)).center(Fill))
                 .on_press(BarEvent::Pressed(index))
                 .width(bar_width(&menu.label))
                 .height(component::SMALL_CONTROL)

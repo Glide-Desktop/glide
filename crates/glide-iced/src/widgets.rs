@@ -77,6 +77,15 @@ pub fn field<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, paint: &Pa
     })
 }
 
+pub fn tinted_field<'a, Message: 'a>(
+    child: impl Into<Element<'a, Message>>, paint: &Paint, accent: Color, ring: Color,
+) -> Element<'a, Message> {
+    Element::new(Decorated {
+        child: child.into(),
+        decoration: Decoration::Field(FieldColors { background: paint.fill_1(), border: accent, accent, ring }),
+    })
+}
+
 pub fn container<'a, Message: 'a>(
     panel: iced::widget::Container<'a, Message>, style: impl Fn(f32, f32) -> iced::widget::container::Style + 'a,
 ) -> Element<'a, Message> {

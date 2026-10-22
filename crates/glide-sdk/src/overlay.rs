@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use glide_iced::Paint;
-use glide_iced::style::{self, R3, SP2, SP3, SP4, SP5, SP6};
+use glide_iced::style::{self, R3, SP1, SP2, SP3, SP4, SP5, SP6};
 use glide_iced::widgets;
 use glide_theme::elevation::Level;
 use glide_theme::{TextStyle, component, motion};
@@ -118,16 +118,26 @@ pub fn dialog<'a, M>(paint: &Paint, dialog: &'a Dialog<M>, window: Size, corner:
     .into()
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Toast {
+#[derive(Debug, Clone)]
+pub struct Toast<M> {
     pub text: String,
+    pub action: Option<(String, M)>,
     pub at: Instant,
 }
 
-impl Toast {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToastAction;
+
+impl<M> Toast<M> {
     #[must_use]
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), at: Instant::now() }
+        Self { text: text.into(), action: None, at: Instant::now() }
+    }
+
+    #[must_use]
+    pub fn action(mut self, label: impl Into<String>, message: M) -> Self {
+        self.action = Some((label.into(), message));
+        self
     }
 
     #[must_use]
@@ -155,11 +165,17 @@ impl Toast {
 }
 
 #[must_use]
-pub fn toast<'a, M: 'a>(paint: &Paint, toast: &'a Toast, window: Size) -> Element<'a, M> {
+pub fn toast<'a, M>(paint: &Paint, toast: &'a Toast<M>, window: Size) -> Element<'a, ToastAction> {
     let progress = toast.progress(Instant::now());
     let paint = paint.faded(progress);
-    let pill = container(text(&toast.text, TextStyle::CALL).wrapping(Wrapping::Word))
-        .padding(Padding::from([SP2, SP4]))
+    let mut content =
+        row![text(&toast.text, TextStyle::CALL).wrapping(Wrapping::Word)].spacing(SP3).align_y(Alignment::Center);
+    if let Some((label, _)) = &toast.action {
+        content = content.push(crate::widget::compact_button(&paint, label, Tone::Tonal, Some(ToastAction)));
+    }
+    let padding = if toast.action.is_some() { Padding::from([SP1, SP1]).left(SP4) } else { Padding::from([SP2, SP4]) };
+    let pill = container(content)
+        .padding(padding)
         .max_width((window.width - 48.0).max(1.0))
         .style(move |_| style::popover(&paint));
     container(widgets::surface(pill, &paint, Level::El3, R3))
@@ -189,7 +205,8 @@ mod tests {
 
     #[test]
     fn a_toast_fades_in_holds_and_leaves() {
-        let toast = Toast::new("Saved");
+        let toast = Toast::new("Saved").action("Undo", ());
+        assert!(toast.action.is_some());
         assert!(toast.progress(toast.at) < 0.01);
         assert!((toast.progress(toast.at + Duration::from_secs(2)) - 1.0).abs() < 1e-6);
         assert!(toast.expired(toast.at + TOAST));

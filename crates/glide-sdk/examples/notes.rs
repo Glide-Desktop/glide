@@ -69,6 +69,7 @@ impl Notebook {
                 Icon::File,
                 shell.t("Немає нотаток", "No notes"),
                 shell.t("Створіть першу кнопкою «+».", "Create one with the + button."),
+                Some(ui::primary(paint, shell.t("Нова нотатка", "New note"), Message::New)),
             );
         };
         let options = [(Sort::Recent, shell.t("Нові", "Recent")), (Sort::Title, shell.t("За назвою", "By title"))];

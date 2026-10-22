@@ -155,6 +155,11 @@ pub fn ease_io(t: f64) -> f64 {
 }
 
 #[must_use]
+pub fn ease_over(t: f64) -> f64 {
+    E_OVER.ease_f64(t)
+}
+
+#[must_use]
 pub fn lerp(from: f64, to: f64, t: f64) -> f64 {
     (to - from).mul_add(t, from)
 }

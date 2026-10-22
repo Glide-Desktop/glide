@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod app;
 pub mod look;
 pub mod menu;

@@ -1,0 +1,643 @@
+use std::ops::RangeInclusive;
+use std::time::{Duration, Instant};
+
+use glide_iced::Paint;
+use glide_iced::style::to_iced;
+use glide_theme::motion;
+use glide_theme::shape::{R1, R2};
+use iced::widget::canvas::{self, Action, Frame, Geometry, LineCap, Path, Stroke};
+use iced::widget::{canvas as surface, mouse_area};
+use iced::{Color, Element, Event, Point, Radians, Rectangle, Renderer, Size, Theme, Vector, mouse, window};
+
+use super::mix;
+use crate::anim::{Motion, Speed, phase};
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pointer {
+    pub hover: Motion,
+    pub press: Motion,
+    over: bool,
+    pressed: bool,
+}
+
+impl Default for Pointer {
+    fn default() -> Self {
+        Self { hover: Motion::at(0.0), press: Motion::at(0.0), over: false, pressed: false }
+    }
+}
+
+impl Pointer {
+    pub fn track(&mut self, event: &Event, bounds: Rectangle, cursor: mouse::Cursor, enabled: bool) -> bool {
+        let over = enabled && cursor.is_over(bounds);
+        let mut changed = over != self.over;
+        self.over = over;
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if over => {
+                self.pressed = true;
+                self.press.jump(1.0);
+                changed = true;
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Window(window::Event::Unfocused) => {
+                self.pressed = false;
+            }
+            _ => {}
+        }
+        changed |= self.hover.to(if over { 1.0 } else { 0.0 }, Speed::STATE);
+        changed |= self.press.to(if self.pressed { 1.0 } else { 0.0 }, Speed::PRESS);
+        changed
+    }
+
+    #[must_use]
+    pub fn animating(&self) -> bool {
+        self.hover.animating(Speed::STATE) || self.press.animating(Speed::PRESS)
+    }
+
+    #[must_use]
+    pub fn hover(&self) -> f32 {
+        self.hover.value(Speed::STATE)
+    }
+
+    #[must_use]
+    pub fn press(&self) -> f32 {
+        self.press.value(Speed::PRESS)
+    }
+
+    #[must_use]
+    pub fn layer(&self) -> f32 {
+        motion::ST_HOVER * self.hover() + (motion::ST_PRESS - motion::ST_HOVER) * self.press()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Toggle {
+    pointer: Pointer,
+    value: Motion,
+    started: bool,
+}
+
+impl Default for Toggle {
+    fn default() -> Self {
+        Self { pointer: Pointer::default(), value: Motion::at(0.0), started: false }
+    }
+}
+
+impl Toggle {
+    fn update<M>(
+        &mut self, event: &Event, bounds: Rectangle, cursor: mouse::Cursor, target: f32, enabled: bool, speed: Speed,
+    ) -> Option<Action<M>> {
+        if !self.started {
+            self.value.jump(target);
+            self.started = true;
+        }
+        let mut changed = self.value.to(target, speed);
+        changed |= self.pointer.track(event, bounds, cursor, enabled);
+        let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_)))
+            && (self.value.animating(speed) || self.pointer.animating());
+        (changed || redraw).then(Action::request_redraw)
+    }
+}
+
+fn shadowed_circle(frame: &mut Frame, center: Point, radius: f32, color: Color, shadow: f32) {
+    if shadow > 0.0 {
+        frame.fill(&Path::circle(center + Vector::new(0.0, 1.0), radius + 0.5), Color { a: shadow, ..Color::BLACK });
+    }
+    frame.fill(&Path::circle(center, radius), color);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchSize {
+    Panel,
+    Bar,
+}
+
+impl SwitchSize {
+    const fn track(self) -> Size {
+        match self {
+            Self::Panel => Size::new(44.0, 26.0),
+            Self::Bar => Size::new(28.0, 16.0),
+        }
+    }
+}
+
+struct Switch {
+    paint: Paint,
+    on: bool,
+    enabled: bool,
+    size: SwitchSize,
+}
+
+impl<M> canvas::Program<M> for Switch {
+    type State = Toggle;
+
+    fn update(&self, state: &mut Toggle, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<M>> {
+        state.update(event, bounds, cursor, if self.on { 1.0 } else { 0.0 }, self.enabled, Speed::SPRING)
+    }
+
+    fn draw(
+        &self, state: &Toggle, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let paint = &self.paint;
+        let thumb_on = state.value.value(Speed::SPRING);
+        let color_on = state.value.value(Speed::COLOR);
+        let mut frame = Frame::new(renderer, bounds.size());
+        let size = self.size.track();
+        let origin = Point::new((bounds.width - size.width) / 2.0, (bounds.height - size.height) / 2.0);
+        let off = if self.enabled { paint.fill_3() } else { paint.fill_2() };
+        let on = if self.enabled { paint.acc_bg() } else { paint.acc_bg().scale_alpha(0.42) };
+        let track = paint.layer(mix(off, on, color_on), state.pointer.layer());
+        frame.fill(&Path::rounded_rectangle(origin, size, (size.height / 2.0).into()), track);
+        let inset = (size.height - size.height * 0.77).max(2.0) / 2.0;
+        let radius = size.height / 2.0 - inset;
+        let travel = size.width - 2.0 * (inset + radius);
+        let stretch = 2.0 * state.pointer.press();
+        let x = origin.x + inset + radius + travel * thumb_on;
+        let center = Point::new(x, origin.y + size.height / 2.0);
+        let thumb = mix(to_iced(paint.tokens.switch_thumb()), Color::WHITE, color_on).scale_alpha(paint.alpha);
+        if stretch > 0.01 {
+            let width = 2.0 * radius + stretch;
+            let left = (x - radius - stretch * thumb_on).max(origin.x + inset);
+            frame.fill(
+                &Path::rounded_rectangle(
+                    Point::new(left, center.y - radius),
+                    Size::new(width, 2.0 * radius),
+                    radius.into(),
+                ),
+                thumb,
+            );
+        } else {
+            shadowed_circle(&mut frame, center, radius, thumb, 0.18 * paint.alpha);
+        }
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(&self, _: &Toggle, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if self.enabled && cursor.is_over(bounds) { mouse::Interaction::Pointer } else { mouse::Interaction::default() }
+    }
+}
+
+fn clickable<'a, M: Clone + 'a>(element: Element<'a, M>, message: Option<M>) -> Element<'a, M> {
+    match message {
+        Some(message) => mouse_area(element).on_release(message).interaction(mouse::Interaction::Pointer).into(),
+        None => element,
+    }
+}
+
+#[must_use]
+pub fn switch<'a, M: Clone + 'a>(
+    paint: &Paint, on: bool, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
+    sized_switch(paint, on, SwitchSize::Panel, on_toggle)
+}
+
+#[must_use]
+pub fn sized_switch<'a, M: Clone + 'a>(
+    paint: &Paint, on: bool, size: SwitchSize, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
+    let track = size.track();
+    let message = on_toggle.map(|toggle| toggle(!on));
+    let canvas =
+        surface(Switch { paint: *paint, on, enabled: message.is_some(), size }).width(track.width).height(track.height);
+    clickable(canvas.into(), message)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    Off,
+    On,
+    Mixed,
+}
+
+struct CheckBox {
+    paint: Paint,
+    check: Check,
+    enabled: bool,
+    round: bool,
+}
+
+pub const CHECK: f32 = 20.0;
+
+impl<M> canvas::Program<M> for CheckBox {
+    type State = Toggle;
+
+    fn update(&self, state: &mut Toggle, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<M>> {
+        let target = if self.check == Check::Off { 0.0 } else { 1.0 };
+        state.update(event, bounds, cursor, target, self.enabled, Speed::SPRING)
+    }
+
+    fn draw(
+        &self, state: &Toggle, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let paint = &self.paint;
+        let pop = state.value.value(Speed::SPRING);
+        let fill = state.value.value(Speed::COLOR);
+        let mut frame = Frame::new(renderer, bounds.size());
+        let side = CHECK.min(bounds.width).min(bounds.height);
+        let origin = Point::new((bounds.width - side) / 2.0, (bounds.height - side) / 2.0);
+        let radius = if self.round { side / 2.0 } else { R2 / 2.0 + 1.0 };
+        let off = paint.layer(paint.view_bg(), state.pointer.layer());
+        let on = if self.enabled { paint.acc_bg() } else { paint.fill_3() };
+        let on = paint.layer(on, state.pointer.layer());
+        let outer = Path::rounded_rectangle(origin, Size::new(side, side), radius.into());
+        if self.round {
+            frame.fill(&outer, mix(off, on, fill));
+            let inner = Path::rounded_rectangle(
+                origin + Vector::new(1.0, 1.0),
+                Size::new(side - 2.0, side - 2.0),
+                (radius - 1.0).into(),
+            );
+            frame.fill(&inner, mix(off, paint.view_bg(), fill));
+            let dot = 4.5 * pop;
+            if dot > 0.1 {
+                frame.fill(&Path::circle(Point::new(origin.x + side / 2.0, origin.y + side / 2.0), dot), on);
+            }
+            let ring = Stroke::default().with_color(paint.line_2().scale_alpha(1.0 - fill)).with_width(1.0);
+            frame.stroke(
+                &Path::rounded_rectangle(
+                    origin + Vector::new(0.5, 0.5),
+                    Size::new(side - 1.0, side - 1.0),
+                    (radius - 0.5).into(),
+                ),
+                ring,
+            );
+            return vec![frame.into_geometry()];
+        }
+        frame.fill(&outer, mix(off, on, fill));
+        let ring = Stroke::default().with_color(paint.line_2().scale_alpha(1.0 - fill)).with_width(1.0);
+        frame.stroke(
+            &Path::rounded_rectangle(
+                origin + Vector::new(0.5, 0.5),
+                Size::new(side - 1.0, side - 1.0),
+                (radius - 0.5).into(),
+            ),
+            ring,
+        );
+        if pop > 0.01 {
+            let center = Point::new(origin.x + side / 2.0, origin.y + side / 2.0);
+            frame.with_save(|frame| {
+                frame.translate(Vector::new(center.x, center.y));
+                frame.scale(pop.max(0.0));
+                let mark = match self.check {
+                    Check::Mixed => Path::line(Point::new(-4.5, 0.0), Point::new(4.5, 0.0)),
+                    _ => Path::new(|path| {
+                        path.move_to(Point::new(-4.5, 0.2));
+                        path.line_to(Point::new(-1.4, 3.3));
+                        path.line_to(Point::new(4.6, -3.4));
+                    }),
+                };
+                let stroke = Stroke::default()
+                    .with_color(paint.acc_fg())
+                    .with_width(2.0)
+                    .with_line_cap(LineCap::Round)
+                    .with_line_join(canvas::LineJoin::Round);
+                frame.stroke(&mark, stroke);
+            });
+        }
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(&self, _: &Toggle, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if self.enabled && cursor.is_over(bounds) { mouse::Interaction::Pointer } else { mouse::Interaction::default() }
+    }
+}
+
+#[must_use]
+pub fn check_box<'a, M: Clone + 'a>(paint: &Paint, check: Check, message: Option<M>) -> Element<'a, M> {
+    let canvas =
+        surface(CheckBox { paint: *paint, check, enabled: message.is_some(), round: false }).width(CHECK).height(CHECK);
+    clickable(canvas.into(), message)
+}
+
+#[must_use]
+pub fn radio_mark<'a, M: Clone + 'a>(paint: &Paint, selected: bool, message: Option<M>) -> Element<'a, M> {
+    let check = if selected { Check::On } else { Check::Off };
+    let canvas =
+        surface(CheckBox { paint: *paint, check, enabled: message.is_some(), round: true }).width(CHECK).height(CHECK);
+    clickable(canvas.into(), message)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Drag {
+    pointer: Pointer,
+    value: Option<Motion>,
+    dragging: bool,
+}
+
+struct Slider<'a, M> {
+    paint: Paint,
+    range: RangeInclusive<f32>,
+    value: f32,
+    step: f32,
+    on_change: Option<Box<dyn Fn(f32) -> M + 'a>>,
+    on_release: Option<M>,
+}
+
+const THUMB: f32 = 18.0;
+
+impl<M> Slider<'_, M> {
+    fn fraction(&self, value: f32) -> f32 {
+        let (start, end) = (*self.range.start(), *self.range.end());
+        if end <= start { 0.0 } else { ((value - start) / (end - start)).clamp(0.0, 1.0) }
+    }
+
+    fn value_at(&self, bounds: Rectangle, x: f32) -> f32 {
+        let (start, end) = (*self.range.start(), *self.range.end());
+        let fraction = ((x - bounds.x - THUMB / 2.0) / (bounds.width - THUMB).max(1.0)).clamp(0.0, 1.0);
+        let value = start + fraction * (end - start);
+        if self.step > 0.0 {
+            ((value - start) / self.step).round().mul_add(self.step, start).clamp(start, end)
+        } else {
+            value
+        }
+    }
+}
+
+impl<M: Clone> canvas::Program<M> for Slider<'_, M> {
+    type State = Drag;
+
+    fn update(&self, state: &mut Drag, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<M>> {
+        let enabled = self.on_change.is_some();
+        let target = self.fraction(self.value);
+        let motion = state.value.get_or_insert_with(|| Motion::at(target));
+        let mut changed = if state.dragging {
+            motion.jump(target);
+            false
+        } else {
+            motion.to(target, Speed::SLIDE)
+        };
+        changed |= state.pointer.track(event, bounds, cursor, enabled);
+        let publish = |x: f32| self.on_change.as_ref().map(|change| change(self.value_at(bounds, x)));
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if enabled && cursor.is_over(bounds) => {
+                state.dragging = true;
+                let message = cursor.position().and_then(|point| publish(point.x));
+                return Some(message.map_or_else(Action::request_redraw, Action::publish).and_capture());
+            }
+            Event::Mouse(mouse::Event::CursorMoved { position }) if state.dragging => {
+                return publish(position.x).map(|message| Action::publish(message).and_capture());
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.dragging => {
+                state.dragging = false;
+                return Some(self.on_release.clone().map_or_else(Action::request_redraw, Action::publish));
+            }
+            _ => {}
+        }
+        let animating = state.pointer.animating() || state.value.is_some_and(|motion| motion.animating(Speed::SLIDE));
+        let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_))) && animating;
+        (changed || redraw).then(Action::request_redraw)
+    }
+
+    fn draw(&self, state: &Drag, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let paint = &self.paint;
+        let fraction = state.value.map_or_else(|| self.fraction(self.value), |motion| motion.value(Speed::SLIDE));
+        let mut frame = Frame::new(renderer, bounds.size());
+        let middle = bounds.height / 2.0;
+        let rail = 6.0;
+        let span = bounds.width - THUMB;
+        let x = THUMB / 2.0 + span * fraction;
+        frame.fill(
+            &Path::rounded_rectangle(Point::new(0.0, middle - rail / 2.0), Size::new(bounds.width, rail), R1.into()),
+            paint.fill_2(),
+        );
+        let fill = if self.on_change.is_some() { paint.acc_bg() } else { paint.fg_4() };
+        frame.fill(&Path::rounded_rectangle(Point::new(0.0, middle - rail / 2.0), Size::new(x, rail), R1.into()), fill);
+        let ring = 4.0 * state.pointer.hover() + 2.0 * if state.dragging { 1.0 } else { state.pointer.press() };
+        let center = Point::new(x, middle);
+        if ring > 0.05 {
+            frame.fill(&Path::circle(center, THUMB / 2.0 + ring), paint.acc_ring());
+        }
+        shadowed_circle(&mut frame, center, THUMB / 2.0, fill, 0.18 * paint.alpha);
+        frame.fill(&Path::circle(center, THUMB / 2.0 - 4.0), Color::WHITE.scale_alpha(paint.alpha));
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(&self, state: &Drag, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if state.dragging {
+            mouse::Interaction::Grabbing
+        } else if self.on_change.is_some() && cursor.is_over(bounds) {
+            mouse::Interaction::Grab
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+}
+
+#[must_use]
+pub fn slider<'a, M: Clone + 'a>(
+    paint: &Paint, range: RangeInclusive<f32>, value: f32, on_change: impl Fn(f32) -> M + 'a,
+) -> Element<'a, M> {
+    stepped_slider(paint, range, value, 0.0, Some(on_change), None)
+}
+
+#[must_use]
+pub fn stepped_slider<'a, M: Clone + 'a>(
+    paint: &Paint, range: RangeInclusive<f32>, value: f32, step: f32, on_change: Option<impl Fn(f32) -> M + 'a>,
+    on_release: Option<M>,
+) -> Element<'a, M> {
+    let on_change = on_change.map(|change| Box::new(change) as Box<dyn Fn(f32) -> M + 'a>);
+    surface(Slider { paint: *paint, range, value, step, on_change, on_release })
+        .width(iced::Fill)
+        .height(THUMB + 12.0)
+        .into()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Bar {
+    value: Option<Motion>,
+    started: Instant,
+}
+
+impl Default for Bar {
+    fn default() -> Self {
+        Self { value: None, started: Instant::now() }
+    }
+}
+
+struct Progress {
+    paint: Paint,
+    fraction: Option<f32>,
+    height: f32,
+}
+
+const SWEEP: Duration = Duration::from_millis(1400);
+
+impl<M> canvas::Program<M> for Progress {
+    type State = Bar;
+
+    fn update(&self, state: &mut Bar, event: &Event, _: Rectangle, _: mouse::Cursor) -> Option<Action<M>> {
+        let Some(fraction) = self.fraction else {
+            let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_))) && !motion::is_disabled();
+            return redraw.then(Action::request_redraw);
+        };
+        let motion = state.value.get_or_insert_with(|| Motion::at(fraction));
+        let changed = motion.to(fraction, Speed::SLIDE);
+        let redraw =
+            matches!(event, Event::Window(window::Event::RedrawRequested(_))) && motion.animating(Speed::SLIDE);
+        (changed || redraw).then(Action::request_redraw)
+    }
+
+    fn draw(&self, state: &Bar, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let paint = &self.paint;
+        let mut frame = Frame::new(renderer, bounds.size());
+        let top = (bounds.height - self.height) / 2.0;
+        let radius = (self.height / 2.0).min(R1);
+        frame.fill(
+            &Path::rounded_rectangle(Point::new(0.0, top), Size::new(bounds.width, self.height), radius.into()),
+            paint.fill_2(),
+        );
+        let (start, width) = if let Some(fraction) = self.fraction {
+            (0.0, bounds.width * state.value.map_or(fraction, |motion| motion.value(Speed::SLIDE)))
+        } else {
+            let width = bounds.width * 0.34;
+            let t = motion::ease_io(f64::from(phase(state.started, SWEEP))) as f32;
+            (-width + (bounds.width + width) * t, width)
+        };
+        let left = start.max(0.0);
+        let right = (start + width).min(bounds.width);
+        if right > left {
+            frame.fill(
+                &Path::rounded_rectangle(Point::new(left, top), Size::new(right - left, self.height), radius.into()),
+                paint.acc_bg(),
+            );
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+#[must_use]
+pub fn progress<'a, M: 'a>(paint: &Paint, fraction: Option<f32>) -> Element<'a, M> {
+    surface(Progress { paint: *paint, fraction: fraction.map(|value| value.clamp(0.0, 1.0)), height: 6.0 })
+        .width(iced::Fill)
+        .height(6)
+        .into()
+}
+
+struct Chevron {
+    paint: Paint,
+    open: bool,
+}
+
+impl<M> canvas::Program<M> for Chevron {
+    type State = Toggle;
+
+    fn update(&self, state: &mut Toggle, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<M>> {
+        state.update(event, bounds, cursor, if self.open { 1.0 } else { 0.0 }, false, Speed::SLIDE)
+    }
+
+    fn draw(
+        &self, state: &Toggle, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let turn = state.value.value(Speed::SLIDE);
+        frame.with_save(|frame| {
+            frame.translate(Vector::new(bounds.width / 2.0, bounds.height / 2.0));
+            frame.rotate(Radians(std::f32::consts::FRAC_PI_2 * turn));
+            let mark = Path::new(|path| {
+                path.move_to(Point::new(-1.8, -4.0));
+                path.line_to(Point::new(2.2, 0.0));
+                path.line_to(Point::new(-1.8, 4.0));
+            });
+            let stroke = Stroke::default()
+                .with_color(self.paint.fg_3())
+                .with_width(1.6)
+                .with_line_cap(LineCap::Round)
+                .with_line_join(canvas::LineJoin::Round);
+            frame.stroke(&mark, stroke);
+        });
+        vec![frame.into_geometry()]
+    }
+}
+
+#[must_use]
+pub fn chevron<'a, M: 'a>(paint: &Paint, open: bool) -> Element<'a, M> {
+    surface(Chevron { paint: *paint, open }).width(16).height(16).into()
+}
+
+struct Spinner {
+    paint: Paint,
+}
+
+const TURN: Duration = Duration::from_millis(900);
+
+impl<M> canvas::Program<M> for Spinner {
+    type State = Bar;
+
+    fn update(&self, _: &mut Bar, event: &Event, _: Rectangle, _: mouse::Cursor) -> Option<Action<M>> {
+        let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_))) && !motion::is_disabled();
+        redraw.then(Action::request_redraw)
+    }
+
+    fn draw(&self, state: &Bar, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let paint = &self.paint;
+        let mut frame = Frame::new(renderer, bounds.size());
+        let side = bounds.width.min(bounds.height);
+        let width = if side > 28.0 { 3.0 } else { 2.5 };
+        let radius = side / 2.0 - width / 2.0;
+        let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        frame.stroke(&Path::circle(center, radius), Stroke::default().with_color(paint.fill_2()).with_width(width));
+        let start = std::f32::consts::TAU * phase(state.started, TURN) - std::f32::consts::FRAC_PI_2;
+        let arc = Path::new(|path| {
+            path.arc(canvas::path::Arc {
+                center,
+                radius,
+                start_angle: Radians(start),
+                end_angle: Radians(start + std::f32::consts::FRAC_PI_2 * 1.2),
+            });
+        });
+        frame
+            .stroke(&arc, Stroke::default().with_color(paint.acc_bg()).with_width(width).with_line_cap(LineCap::Round));
+        vec![frame.into_geometry()]
+    }
+}
+
+#[must_use]
+pub fn spinner<'a, M: 'a>(paint: &Paint, large: bool) -> Element<'a, M> {
+    let side = if large { 34.0 } else { 22.0 };
+    surface(Spinner { paint: *paint }).width(side).height(side).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slider(step: f32) -> Slider<'static, f32> {
+        Slider {
+            paint: Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue),
+            range: 0.0..=100.0,
+            value: 50.0,
+            step,
+            on_change: Some(Box::new(|value| value)),
+            on_release: None,
+        }
+    }
+
+    #[test]
+    fn a_slider_maps_the_pointer_onto_its_range_and_steps() {
+        let bounds = Rectangle::new(Point::new(10.0, 0.0), Size::new(218.0, 30.0));
+        let free = slider(0.0);
+        assert_eq!(free.value_at(bounds, 0.0), 0.0, "left of the track clamps");
+        assert_eq!(free.value_at(bounds, 1000.0), 100.0, "right of the track clamps");
+        assert!((free.value_at(bounds, 10.0 + THUMB / 2.0 + 100.0) - 50.0).abs() < 0.01);
+        assert_eq!(slider(25.0).value_at(bounds, 10.0 + THUMB / 2.0 + 70.0), 25.0);
+        assert_eq!(free.fraction(150.0), 1.0);
+    }
+
+    #[test]
+    fn a_pointer_reports_pressed_only_after_a_press_over_it() {
+        let mut pointer = Pointer::default();
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(20.0, 20.0));
+        let inside = mouse::Cursor::Available(Point::new(5.0, 5.0));
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        assert!(
+            pointer.track(&press, bounds, mouse::Cursor::Available(Point::new(50.0, 5.0)), true) || !pointer.pressed
+        );
+        assert!(!pointer.pressed);
+        pointer.track(&press, bounds, inside, true);
+        assert!(pointer.pressed);
+        pointer.track(&Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)), bounds, inside, true);
+        assert!(!pointer.pressed);
+        let mut disabled = Pointer::default();
+        disabled.track(&press, bounds, inside, false);
+        assert!(!disabled.pressed, "a disabled control never presses");
+    }
+}

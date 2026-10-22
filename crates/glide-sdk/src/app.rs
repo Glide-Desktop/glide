@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime};
 use glide_app::menubar::{self, Handles, Publisher};
 use glide_iced::Paint;
 use glide_iced::style::{self, SP2};
-use glide_theme::{component, motion};
+use glide_theme::{Accent, Appearance, component, motion};
 use iced::border::Radius;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{column, container, mouse_area};
@@ -63,13 +63,14 @@ pub struct Shell<M> {
     lang: Lang,
     window: Window,
     pointer: Point,
-    toast: Option<Toast>,
+    toast: Option<Toast<M>>,
     dialog: Option<Dialog<M>>,
     closing: Option<Dialog<M>>,
     popup: Option<Popup<M>>,
     actions: Vec<Action>,
     exit: bool,
     top_bar_menu: bool,
+    preview: Option<(Appearance, Accent)>,
 }
 
 impl<M: Clone> Shell<M> {
@@ -88,6 +89,7 @@ impl<M: Clone> Shell<M> {
             actions: Vec::new(),
             exit: false,
             top_bar_menu: false,
+            preview: None,
         }
     }
 
@@ -140,6 +142,10 @@ impl<M: Clone> Shell<M> {
         self.toast = Some(Toast::new(text));
     }
 
+    pub fn toast_with(&mut self, text: impl Into<String>, action: impl Into<String>, message: M) {
+        self.toast = Some(Toast::new(text).action(action, message));
+    }
+
     pub fn dialog(&mut self, dialog: Dialog<M>) {
         self.popup = None;
         self.dialog = Some(dialog);
@@ -168,6 +174,23 @@ impl<M: Clone> Shell<M> {
 
     pub fn window_action(&mut self, action: Action) {
         self.actions.push(action);
+    }
+
+    pub fn preview_look(&mut self, preview: Option<(Appearance, Accent)>) {
+        self.preview = preview;
+        self.refresh_paint();
+    }
+
+    #[must_use]
+    pub fn previewing(&self) -> Option<(Appearance, Accent)> {
+        self.preview
+    }
+
+    fn refresh_paint(&mut self) {
+        self.paint = match self.preview {
+            Some((appearance, accent)) => Paint::new(appearance, accent),
+            None => self.look.paint(),
+        };
     }
 
     pub fn exit(&mut self) {
@@ -246,6 +269,7 @@ pub enum Event<M> {
     Bar(menu::BarEvent),
     Popup(menu::Event),
     Dialog(Answer),
+    ToastAction,
     CloseRequested,
 }
 
@@ -299,9 +323,9 @@ impl<A: App> Host<A> {
             glide_iced::font::use_ui_family(look.font_family.as_deref());
             self.font_family.clone_from(&look.font_family);
         }
-        self.shell.paint = look.paint();
         self.shell.lang = look.lang();
         self.shell.look = look;
+        self.shell.refresh_paint();
     }
 
     fn refresh_menus(&mut self) {
@@ -356,8 +380,10 @@ impl<A: App> Host<A> {
                 if stamp != self.stamp {
                     self.stamp = stamp;
                     self.apply_look();
-                } else if self.shell.look.appearance_now() != self.shell.paint.tokens.appearance {
-                    self.shell.paint = self.shell.look.paint();
+                } else if self.shell.preview.is_none()
+                    && self.shell.look.appearance_now() != self.shell.paint.tokens.appearance
+                {
+                    self.shell.refresh_paint();
                 }
                 Task::none()
             }
@@ -381,6 +407,10 @@ impl<A: App> Host<A> {
             }
             Event::Popup(event) => self.on_popup(event),
             Event::Dialog(answer) => self.on_answer(answer),
+            Event::ToastAction => match self.shell.toast.take().and_then(|toast| toast.action) {
+                Some((_, message)) => self.run(message),
+                None => Task::none(),
+            },
             Event::CloseRequested => {
                 if self.app.close_requested(&mut self.shell) {
                     self.shell.exit = true;
@@ -535,7 +565,7 @@ impl<A: App> Host<A> {
             layers.push(window::resize_handles(Event::Window));
         }
         if let Some(toast) = &shell.toast {
-            layers.push(overlay::toast(&paint, toast, window.size));
+            layers.push(overlay::toast(&paint, toast, window.size).map(|_| Event::ToastAction));
         }
         if let Some(popup) = &shell.popup {
             layers.push(menu::view(&paint, popup, window.size).map(Event::Popup));
