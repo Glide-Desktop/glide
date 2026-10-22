@@ -65,6 +65,7 @@ impl Snapshot {
 
 pub enum Event {
     Token { pid: i32, reply: crate::oneshot::Sender<Option<String>> },
+    Frame { pid: i32 },
     Lock,
     Osd(crate::osd::Reading),
     QuickSettings(Option<crate::topbar::Detail>),
@@ -96,6 +97,12 @@ pub fn quick_settings_view(view: &str) -> Result<Option<crate::topbar::Detail>, 
 }
 
 type Sink = Arc<dyn Fn(Event) + Send + Sync>;
+
+async fn sender_pid(header: &Header<'_>, connection: &zbus::Connection) -> zbus::fdo::Result<i32> {
+    let sender = header.sender().ok_or_else(|| zbus::fdo::Error::Failed("no sender".into()))?.to_owned();
+    let pid = zbus::fdo::DBusProxy::new(connection).await?.get_connection_unix_process_id(sender.into()).await?;
+    i32::try_from(pid).map_err(|_| zbus::fdo::Error::Failed("bad pid".into()))
+}
 
 struct Shell {
     snapshot: Arc<Mutex<Snapshot>>,
@@ -158,14 +165,20 @@ impl Shell {
     async fn activation_token(
         &self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
     ) -> zbus::fdo::Result<String> {
-        let sender = header.sender().ok_or_else(|| zbus::fdo::Error::Failed("no sender".into()))?.to_owned();
-        let pid = zbus::fdo::DBusProxy::new(connection).await?.get_connection_unix_process_id(sender.into()).await?;
-        let pid = i32::try_from(pid).map_err(|_| zbus::fdo::Error::Failed("bad pid".into()))?;
+        let pid = sender_pid(&header, connection).await?;
         let (reply, answer) = crate::oneshot::channel();
         (self.sink)(Event::Token { pid, reply });
         answer.await.flatten().ok_or_else(|| {
             zbus::fdo::Error::AccessDenied("only the focused app may request an activation token".into())
         })
+    }
+
+    async fn frame_windows(
+        &self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    ) -> zbus::fdo::Result<()> {
+        let pid = sender_pid(&header, connection).await?;
+        (self.sink)(Event::Frame { pid });
+        Ok(())
     }
 
     fn lock(&self) {
@@ -262,6 +275,24 @@ mod tests {
         let after = Snapshot { appearance: glide_theme::Appearance::Light, locked: true, ..before.clone() };
         let names: Vec<&str> = after.changed_since(&before).into_iter().map(|(name, _)| name).collect();
         assert_eq!(names, ["Appearance", "Locked"]);
+    }
+
+    #[test]
+    fn frame_windows_reports_the_calling_process() {
+        let Some(bus) = crate::test_bus::private_bus() else {
+            return;
+        };
+        let (events, received) = mpsc::channel::<i32>();
+        let events = Mutex::new(events);
+        let sink: Sink = Arc::new(move |event| {
+            if let Event::Frame { pid } = event {
+                let _ = events.lock().map(|events| events.send(pid));
+            }
+        });
+        let _handle = serve(bus.builder(), Snapshot::default(), sink).expect("serve");
+        bus.client().call_method(Some(BUS_NAME), PATH, Some(INTERFACE), "FrameWindows", &()).expect("call");
+        let pid = received.recv_timeout(std::time::Duration::from_secs(5)).expect("a frame request");
+        assert_eq!(pid, i32::try_from(std::process::id()).expect("pid fits"));
     }
 
     #[test]

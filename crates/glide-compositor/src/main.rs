@@ -24,6 +24,7 @@ mod dock;
 mod dock_drop;
 mod focus;
 mod force_quit;
+mod framed;
 mod global_menu;
 mod grabs;
 pub mod greeter;

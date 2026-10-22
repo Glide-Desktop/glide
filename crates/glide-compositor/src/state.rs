@@ -375,6 +375,7 @@ pub struct SessionServices {
     pub search_providers_started: bool,
     pub quicklists: HashMap<String, crate::launcher_entry::Quicklist>,
     pub modal_windows: std::collections::HashSet<glide_layout::WindowId>,
+    pub framed_pids: crate::framed::FramedClients,
     pub capture: Option<crate::screen_picker::Capture>,
     pub end: crate::session_end::SessionEnd,
     pub battery_alert: crate::battery_alert::BatteryAlert,
@@ -579,7 +580,11 @@ impl GlideState {
             Self::apply_window_state(&window, state, is_focused, work_area);
 
             let decoration_height = if state.fullscreen { 0 } else { state.insets.top };
-            let framed = !state.fullscreen && decoration_height == 0 && window.frames_itself();
+            let framed = !state.fullscreen
+                && decoration_height == 0
+                && (window.frames_itself()
+                    || (!self.session.framed_pids.is_empty()
+                        && self.window_pid(&window).is_some_and(|pid| self.session.framed_pids.contains(pid))));
             window.sync_decoration(&self.decoration_theme, decoration_height, is_focused, state.maximized, framed);
         }
 
@@ -3343,6 +3348,13 @@ impl GlideState {
     pub fn handle_shell_bus_event(&mut self, event: crate::shell_bus::Event) {
         match event {
             crate::shell_bus::Event::Token { pid, reply } => reply.send(self.mint_activation_token_for(pid, None)),
+            crate::shell_bus::Event::Frame { pid } => {
+                if self.session.framed_pids.register(pid, crate::framed::process_alive) {
+                    tracing::info!(pid, "windows of this client get the shell's frame");
+                    self.reconcile_space();
+                    self.queue_redraw();
+                }
+            }
             crate::shell_bus::Event::Lock => self.lock_screen(),
             crate::shell_bus::Event::Osd(reading) => {
                 self.session.osd.show(reading, std::time::Instant::now());
