@@ -1486,6 +1486,7 @@ name = "glide-catalog"
 version = "0.1.0"
 dependencies = [
  "glide-sdk",
+ "iced_tiny_skia",
 ]
 
 [[package]]

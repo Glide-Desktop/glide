@@ -362,6 +362,17 @@ headless screenshots (`Simulator::with_size(settings, size, harness.view())`
 then `.snapshot(&theme)`), which is how the example was checked in both
 appearances and languages.
 
+### Frame budget
+
+Controls ask for frames only while something moves. `glide-catalog`'s
+`tests/frames.rs` lays out every catalogue page, sends redraw events at
+60 Hz and counts the frames each page asks for: every page except the one
+with spinners and the indeterminate bar stops asking within t4 (most at
+once; the Layout page takes 20 frames for its sidebar bar's grow-in), and
+in a release build view + layout of a page costs 0.5–1.8 ms (4.8 ms for the
+first, which loads the fonts). Popover content is rebuilt at most 31 times
+per fade, since its cache is keyed on 30 reveal steps.
+
 ## Packaging
 
 - Desktop file named after the app id, with `StartupWMClass=` the same id.

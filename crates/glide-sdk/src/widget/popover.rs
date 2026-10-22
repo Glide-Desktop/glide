@@ -720,6 +720,15 @@ mod tests {
     }
 
     #[test]
+    fn a_fade_rebuilds_the_popover_content_at_most_thirty_one_times() {
+        let mut keys: Vec<u32> = (0..=10_000).map(|sample| step(sample as f32 / 10_000.0)).collect();
+        keys.dedup();
+        assert_eq!(keys.len(), STEPS as usize + 1);
+        assert_eq!(step(-0.2), 0);
+        assert_eq!(step(1.3), STEPS as u32);
+    }
+
+    #[test]
     fn the_overlay_clip_leaves_room_for_the_deepest_popover_shadow() {
         for appearance in [glide_theme::Appearance::Light, glide_theme::Appearance::Dark] {
             for layer in glide_theme::elevation::layers(Level::El3, appearance) {
