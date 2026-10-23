@@ -262,21 +262,11 @@ fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::R
     Ok(())
 }
 
-fn peer_pid(stream: &UnixStream) -> Option<i32> {
-    use std::os::fd::AsRawFd;
-    let mut credentials = libc::ucred { pid: 0, uid: 0, gid: 0 };
-    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY: `credentials` and `len` are live locals sized for SO_PEERCRED, and the fd belongs to `stream`.
-    let status = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut credentials).cast(),
-            &raw mut len,
-        )
-    };
-    (status == 0 && credentials.pid > 0).then_some(credentials.pid)
+use crate::privilege::peer_pid;
+
+fn may_capture_silently(stream: &UnixStream, state: &GlideState) -> bool {
+    let program = crate::privilege::Identity::of_stream(stream).program;
+    state.session.gate.decide_and_ask(glide_config::permissions::Access::Screen, false, program.as_deref())
 }
 
 fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
@@ -288,6 +278,13 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
     };
 
     if let Ok(request @ (Request::Screenshot | Request::ScreenshotArea | Request::PickColor)) = &request {
+        if matches!(request, Request::Screenshot) && !may_capture_silently(stream, state) {
+            reply(
+                stream,
+                &Response::Error { message: "this program may not take screenshots; Glide asked you".into() },
+            );
+            return;
+        }
         match stream.try_clone() {
             Ok(waiter) => match request {
                 Request::ScreenshotArea => state.open_shot(Some(waiter)),
@@ -366,6 +363,7 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
         },
         Request::Reload => match crate::config::Config::try_load() {
             Ok(config) => {
+                state.session.gate.reload();
                 config.apply_to_state(state);
                 state.queue_redraw();
                 Response::Ok

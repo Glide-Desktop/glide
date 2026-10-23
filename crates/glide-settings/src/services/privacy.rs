@@ -39,6 +39,7 @@ pub struct PrivacyState {
     pub thumbnails: Footprint,
     pub usage: Usage,
     pub pipewire: bool,
+    pub permissions: glide_config::permissions::Permissions,
 }
 
 pub(crate) use glide_config::data_home;
@@ -268,6 +269,24 @@ pub fn read() -> PrivacyState {
         thumbnails: thumbnail_footprint(),
         usage,
         pipewire,
+        permissions: read_permissions(),
+    }
+}
+
+fn read_permissions() -> glide_config::permissions::Permissions {
+    use glide_config::permissions::Permissions;
+    Permissions::path().and_then(|path| Permissions::load_from(&path).ok()).unwrap_or_default()
+}
+
+pub fn forget_permission(access: glide_config::permissions::Access, program: &str) -> Result<String, String> {
+    use glide_config::permissions::Permissions;
+    let path = Permissions::path().ok_or("no state folder")?;
+    let mut permissions = Permissions::load_from(&path).map_err(|err| err.to_string())?;
+    permissions.forget(access, program);
+    permissions.save_to(&path).map_err(|err| err.to_string())?;
+    match super::ipc::reload() {
+        Ok(()) | Err(super::ipc::ReloadError::Offline) => Ok(String::new()),
+        Err(super::ipc::ReloadError::Rejected(message)) => Err(message),
     }
 }
 

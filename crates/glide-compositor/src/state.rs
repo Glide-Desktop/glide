@@ -96,8 +96,9 @@ pub struct Protocols {
 impl Protocols {
     fn new(
         dh: &DisplayHandle, loop_handle: &LoopHandle<'static, GlideState>, seat_state: SeatState<GlideState>,
-        clock_id: u32,
+        clock_id: u32, gate: &Arc<crate::privilege::Gate>,
     ) -> Self {
+        use glide_config::permissions::Access;
         use smithay::wayland::{
             foreign_toplevel_list::ForeignToplevelListState, idle_inhibit::IdleInhibitManagerState,
             idle_notify::IdleNotifierState, input_method::InputMethodManagerState,
@@ -126,6 +127,10 @@ impl Protocols {
         let data_device_state = DataDeviceState::new::<GlideState>(dh);
         let primary_selection_state = PrimarySelectionState::new::<GlideState>(dh);
         let unrestricted = client_is_unrestricted;
+        let guard = |access: Access| {
+            let gate = Arc::clone(gate);
+            move |client: &smithay::reexports::wayland_server::Client| gate.permits(access, client)
+        };
         Self {
             compositor_state,
             xdg_shell_state,
@@ -143,12 +148,12 @@ impl Protocols {
             wlr_data_control_state: WlrDataControlState::new::<GlideState, _>(
                 dh,
                 Some(&primary_selection_state),
-                unrestricted,
+                guard(Access::Clipboard),
             ),
             ext_data_control_state: ExtDataControlState::new::<GlideState, _>(
                 dh,
                 Some(&primary_selection_state),
-                unrestricted,
+                guard(Access::Clipboard),
             ),
             primary_selection_state,
             foreign_toplevel_list_state: ForeignToplevelListState::new_with_filter::<GlideState>(dh, unrestricted),
@@ -162,8 +167,8 @@ impl Protocols {
             presentation_state: PresentationState::new::<GlideState>(dh, clock_id),
             pointer_constraints_state: PointerConstraintsState::new::<GlideState>(dh),
             text_input_state: TextInputManagerState::new::<GlideState>(dh),
-            input_method_state: InputMethodManagerState::new::<GlideState, _>(dh, unrestricted),
-            virtual_keyboard_state: VirtualKeyboardManagerState::new::<GlideState, _>(dh, unrestricted),
+            input_method_state: InputMethodManagerState::new::<GlideState, _>(dh, guard(Access::Input)),
+            virtual_keyboard_state: VirtualKeyboardManagerState::new::<GlideState, _>(dh, guard(Access::Input)),
             keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState::new::<GlideState>(dh),
             pointer_gestures_state: PointerGesturesState::new::<GlideState>(dh),
             wlr_output_power_state: WlrOutputPowerState::new::<GlideState>(dh),
@@ -396,6 +401,8 @@ pub struct SessionServices {
     pub headset: crate::headset::Session,
     pub lent_keymap: Option<crate::handlers::virtual_keyboard::Lent>,
     pub text_field: Option<crate::focused_field::Field>,
+    pub gate: Arc<crate::privilege::Gate>,
+    pub permission_prompts: crate::privilege::Pending,
 }
 
 impl GlideState {
@@ -407,19 +414,14 @@ impl GlideState {
         let clock = smithay::utils::Clock::new();
 
         let dh = display.handle();
-        let seat_name = backend_data.seat_name();
         let mut seat_state = SeatState::new();
-        let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, seat_name);
-
-        seat.add_keyboard(XkbConfig::default(), 200, 25).expect("the default XKB keymap should always compile");
-        seat.add_pointer();
-        seat.add_touch();
-        smithay::wayland::text_input::TextInputSeat::text_input(&seat).set_compositor_input_method(true);
+        let seat = Self::new_seat(&mut seat_state, &dh, backend_data.seat_name());
 
         let socket_name = Self::init_wayland_listener(display, &loop_handle);
-        let screencopy = crate::screencopy::ScreencopyState::new::<Self>(&dh);
+        let gate = Arc::new(crate::privilege::Gate::load());
+        let screencopy = crate::screencopy::ScreencopyState::new::<Self>(&dh, Arc::clone(&gate));
         let app_menus = crate::app_menu::AppMenus::new::<Self>(&dh);
-        let protocols = Protocols::new(&dh, &loop_handle, seat_state, clock.id() as u32);
+        let protocols = Protocols::new(&dh, &loop_handle, seat_state, clock.id() as u32, &gate);
 
         Self {
             backend_data,
@@ -503,10 +505,19 @@ impl GlideState {
             greeter: None,
             greeter_handle: None,
             lock_auth: None,
-            session: SessionServices::default(),
+            session: SessionServices { gate, ..SessionServices::default() },
             handoff: None,
             shell_cursor: None,
         }
+    }
+
+    fn new_seat(seat_state: &mut SeatState<Self>, dh: &DisplayHandle, name: String) -> Seat<Self> {
+        let mut seat = seat_state.new_wl_seat(dh, name);
+        seat.add_keyboard(XkbConfig::default(), 200, 25).expect("the default XKB keymap should always compile");
+        seat.add_pointer();
+        seat.add_touch();
+        smithay::wayland::text_input::TextInputSeat::text_input(&seat).set_compositor_input_method(true);
+        seat
     }
 
     fn init_wayland_listener(display: Display<Self>, loop_handle: &LoopHandle<'static, Self>) -> OsString {
@@ -517,7 +528,9 @@ impl GlideState {
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, (), state| {
-                if let Err(err) = state.display_handle.insert_client(client_stream, Arc::new(ClientState::default())) {
+                let identity = crate::privilege::Identity::of_stream(&client_stream);
+                let client_state = ClientState { identity, ..ClientState::default() };
+                if let Err(err) = state.display_handle.insert_client(client_stream, Arc::new(client_state)) {
                     tracing::warn!("dropping new wayland client: {err}");
                 }
             })
@@ -3732,6 +3745,7 @@ pub(crate) fn window_surface(window: &GlideWindow) -> &WlSurface {
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
+    pub identity: crate::privilege::Identity,
 }
 
 impl ClientData for ClientState {

@@ -1,3 +1,4 @@
+use glide_config::permissions::Access;
 use iced::widget::{column, row};
 use iced::{Alignment, Element, Task};
 
@@ -59,6 +60,15 @@ mod tr {
         ThumbnailsHint => "Previews of pictures and videos. They are recreated when needed.", "Попередні перегляди зображень і відео. Створюються знову за потреби.";
         Clear => "Clear", "Очистити";
         Done => "Done", "Готово";
+        Access => "Program access", "Доступ програм";
+        AccessHint => "Glide asks the first time a program tries to read the clipboard, type into other apps or record the screen", "Glide запитує, коли програма вперше намагається читати буфер обміну, вводити текст в інші програми чи записувати екран";
+        AccessNone => "No program has asked yet", "Жодна програма ще не запитувала";
+        AccessClipboard => "Clipboard", "Буфер обміну";
+        AccessInput => "Typing into other apps", "Введення в інші програми";
+        AccessScreen => "Screen recording", "Запис екрана";
+        Allowed => "allowed", "дозволено";
+        Denied => "denied", "заборонено";
+        Forget => "Remove", "Прибрати";
     }
 }
 
@@ -79,7 +89,7 @@ pub enum Cleanup {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    Loaded(PrivacyState),
+    Loaded(Box<PrivacyState>),
     Blank(Choice),
     LockAfter(Choice),
     LockNow,
@@ -90,6 +100,8 @@ pub enum Msg {
     Clean(Cleanup),
     Cleaned(Cleanup, Option<Result<String, String>>),
     Done(Option<Result<String, String>>),
+    Forget(Access, String),
+    Forgotten(Option<Result<String, String>>),
 }
 
 #[derive(Debug, Default)]
@@ -132,7 +144,7 @@ impl Pane for Page {
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
             Msg::Loaded(state) => {
-                self.state = state;
+                self.state = *state;
                 self.loading = false;
             }
             Msg::Blank(choice) => config.set_int("general", "blank-after-seconds", choice.value),
@@ -181,6 +193,17 @@ impl Pane for Page {
                     self.error = Some(err);
                 }
             }
+            Msg::Forget(access, program) => {
+                self.error = None;
+                self.state.permissions.forget(access, &program);
+                return Task::perform(blocking(move || privacy::forget_permission(access, &program)), Msg::Forgotten);
+            }
+            Msg::Forgotten(result) => {
+                if let Some(Err(err)) = result {
+                    self.error = Some(err);
+                }
+                return self.reload();
+            }
         }
         Task::none()
     }
@@ -207,6 +230,7 @@ impl Pane for Page {
             ),
             error_banner(t, self.error.as_deref()),
             self.in_use(&c),
+            self.access(&c),
             lock(&c, config),
             self.history(&c),
             self.cleanup(&c),
@@ -222,7 +246,7 @@ impl Page {
             return Task::none();
         }
         self.loading = true;
-        Task::perform(blocking(privacy::read), |state| Msg::Loaded(state.unwrap_or_default()))
+        Task::perform(blocking(privacy::read), |state| Msg::Loaded(Box::new(state.unwrap_or_default())))
     }
 
     #[must_use]
@@ -258,6 +282,42 @@ impl Page {
         }
         if self.state.loaded && !self.state.pipewire {
             group = group.push(note(t, Icon::Info, c.t(T::NoPipewire)));
+        }
+        group.build()
+    }
+
+    fn access(&self, c: &Ctx) -> Element<'_, Msg> {
+        let t = c.theme;
+        let mut group = Group::new(t).title(c.t(T::Access)).description(c.t(T::AccessHint));
+        let mut empty = true;
+        for access in Access::ALL {
+            let (glyph, kind) = match access {
+                Access::Clipboard => (Icon::Copy, T::AccessClipboard),
+                Access::Input => (Icon::Keyboard, T::AccessInput),
+                Access::Screen => (Icon::Display, T::AccessScreen),
+            };
+            let rule = self.state.permissions.rule(access);
+            let entries = rule
+                .allow
+                .iter()
+                .map(|program| (program, true))
+                .chain(rule.deny.iter().map(|program| (program, false)));
+            for (program, allowed) in entries {
+                empty = false;
+                let name =
+                    std::path::Path::new(program).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or(program);
+                let verdict = c.t(if allowed { T::Allowed } else { T::Denied });
+                group = group.push(
+                    Row::new(t, name)
+                        .subtitle(format!("{} · {verdict} · {program}", c.t(kind)))
+                        .prefix(widgets::icon(glyph, 18.0, t.fg_2()))
+                        .suffix(widgets::secondary(t, c.t(T::Forget), Some(Msg::Forget(access, program.clone()))))
+                        .build(),
+                );
+            }
+        }
+        if empty {
+            group = group.push(note(t, Icon::Shield, c.t(T::AccessNone)));
         }
         group.build()
     }

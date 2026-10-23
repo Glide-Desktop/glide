@@ -201,6 +201,11 @@ catalogue! {
     ShortcutsAskBody => "While it is focused, Glide's shortcuts go to it. Super+Esc takes them back.", "Поки вона у фокусі, скорочення Glide надходять їй. Super+Esc поверне їх.";
     ShortcutsAllow => "Allow", "Дозволити";
     ShortcutsRestored => "Keyboard shortcuts restored", "Клавіатурні скорочення повернуто";
+    PermissionClipboard => "{app} wants to read and change the clipboard", "{app} хоче читати й змінювати буфер обміну";
+    PermissionInput => "{app} wants to type and read keys in other apps", "{app} хоче вводити текст і читати клавіші в інших програмах";
+    PermissionScreen => "{app} wants to record the screen", "{app} хоче записувати екран";
+    PermissionBody => "{path}\nAllow it only if you trust this program, then start it again.", "{path}\nДозвольте, лише якщо довіряєте цій програмі, і запустіть її знову.";
+    PermissionAllow => "Allow", "Дозволити";
     SomeApp => "An app", "Програма";
     PowerCountdownLogOut => "You will be logged out automatically in {n} s.", "Сеанс буде завершено автоматично через {n} с.";
     PowerCountdownRestart => "The computer will restart automatically in {n} s.", "Комп\u{2019}ютер буде перезавантажено автоматично через {n} с.";

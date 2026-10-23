@@ -186,6 +186,7 @@ impl crate::GlideState {
             }
         }
         self.settle_shortcut_requests();
+        self.settle_permission_requests();
     }
 }
 

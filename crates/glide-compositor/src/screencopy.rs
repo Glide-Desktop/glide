@@ -70,11 +70,11 @@ pub fn recording_pids(recent: &[(i32, std::time::Instant)], now: std::time::Inst
 
 impl ScreencopyState {
     #[must_use]
-    pub fn new<D>(display: &DisplayHandle) -> Self
+    pub fn new<D>(display: &DisplayHandle, gate: std::sync::Arc<crate::privilege::Gate>) -> Self
     where
-        D: GlobalDispatch<ZwlrScreencopyManagerV1, ()> + 'static,
+        D: GlobalDispatch<ZwlrScreencopyManagerV1, std::sync::Arc<crate::privilege::Gate>> + 'static,
     {
-        display.create_global::<D, ZwlrScreencopyManagerV1, _>(VERSION, ());
+        display.create_global::<D, ZwlrScreencopyManagerV1, _>(VERSION, gate);
         Self { pending: Vec::new(), recent: Vec::new(), names: std::collections::HashMap::new() }
     }
 
@@ -122,16 +122,16 @@ impl ScreencopyState {
     }
 }
 
-impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for GlideState {
+impl GlobalDispatch<ZwlrScreencopyManagerV1, std::sync::Arc<crate::privilege::Gate>> for GlideState {
     fn bind(
         _state: &mut Self, _handle: &DisplayHandle, _client: &Client, resource: New<ZwlrScreencopyManagerV1>,
-        _global_data: &(), data_init: &mut DataInit<'_, Self>,
+        _global_data: &std::sync::Arc<crate::privilege::Gate>, data_init: &mut DataInit<'_, Self>,
     ) {
         data_init.init(resource, ());
     }
 
-    fn can_view(client: Client, _global_data: &()) -> bool {
-        crate::state::client_is_unrestricted(&client)
+    fn can_view(client: Client, gate: &std::sync::Arc<crate::privilege::Gate>) -> bool {
+        gate.permits(glide_config::permissions::Access::Screen, &client)
     }
 }
 

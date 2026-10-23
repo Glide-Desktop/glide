@@ -5,6 +5,7 @@ use std::{
 
 pub mod autostart;
 mod keyboard;
+pub mod permissions;
 pub mod terminal;
 pub mod toolkits;
 

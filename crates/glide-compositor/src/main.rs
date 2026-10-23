@@ -53,6 +53,7 @@ mod polkit_agent;
 mod popup_menu;
 mod power;
 mod power_dialog;
+mod privilege;
 mod qs_net;
 mod raster;
 mod removable;
