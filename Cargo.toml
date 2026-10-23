@@ -36,6 +36,12 @@ repository = "https://github.com/artem/glide"
 [profile.release]
 debug = "line-tables-only"
 
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [workspace.dependencies]
 smithay = { git = "https://github.com/Smithay/smithay", rev = "24647fc8d00131eb7f388efed26e35ea316b0018", default-features = false }
 smithay-drm-extras = { git = "https://github.com/Smithay/smithay", rev = "24647fc8d00131eb7f388efed26e35ea316b0018" }

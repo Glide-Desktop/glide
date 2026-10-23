@@ -402,6 +402,9 @@ pub struct SessionServices {
     pub virtual_keymaps: crate::handlers::virtual_keyboard::VirtualKeymaps,
     pub text_field: Option<crate::focused_field::Field>,
     pub otp: Option<crate::otp::Code>,
+    pub keychain: crate::keychain::Keychain,
+    pub autofill: Option<crate::autofill::Offer>,
+    pub asks: crate::agent_prompt::Asks,
     pub gate: Arc<crate::privilege::Gate>,
     pub permission_prompts: crate::privilege::Pending,
 }
@@ -3289,6 +3292,7 @@ impl GlideState {
             return;
         }
         tracing::info!("locking the screen");
+        self.lock_keychain();
         let user = crate::greeter::current_user(&self.topbar.system_status().user_name);
         if self.lock_auth.is_none() {
             self.lock_auth = self.start_lock_auth(&user.username);

@@ -16,6 +16,7 @@ pub enum WindowSelector {
 }
 
 pub mod client;
+pub mod keychain;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]

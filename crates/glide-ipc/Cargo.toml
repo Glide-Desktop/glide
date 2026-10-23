@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 serde_json.workspace = true

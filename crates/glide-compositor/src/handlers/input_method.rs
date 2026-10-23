@@ -22,6 +22,7 @@ impl TextInputActivation for GlideState {
         tracing::info!(kind = ?field.kind, sensitive = field.sensitive, app = app.as_deref().unwrap_or("-"), "text field focused");
         self.session.text_field = Some(field);
         self.offer_code();
+        self.offer_passwords();
     }
 
     fn deactivated(&mut self) {

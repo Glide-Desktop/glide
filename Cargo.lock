@@ -1648,6 +1648,7 @@ dependencies = [
  "x11rb",
  "xcursor",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -1701,6 +1702,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
@@ -1710,6 +1712,8 @@ dependencies = [
  "argon2",
  "chacha20poly1305",
  "getrandom 0.3.4",
+ "glide-config",
+ "glide-ipc",
  "serde",
  "serde_json",
  "zeroize",

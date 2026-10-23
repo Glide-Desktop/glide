@@ -132,7 +132,37 @@ impl Prompts {
     }
 }
 
+type Then = Box<dyn FnOnce(&mut crate::GlideState, Option<Answer>)>;
+
+#[derive(Default)]
+pub struct Asks(Vec<(oneshot::Receiver<Answer>, Then)>);
+
+fn answered(receiver: &mut oneshot::Receiver<Answer>) -> std::task::Poll<Option<Answer>> {
+    use std::task::{Context, Waker};
+    std::future::Future::poll(std::pin::Pin::new(receiver), &mut Context::from_waker(Waker::noop()))
+}
+
 impl crate::GlideState {
+    pub fn ask(
+        &mut self, owner: &'static str, prompt: &Prompt, then: impl FnOnce(&mut Self, Option<Answer>) + 'static,
+    ) {
+        let (sender, receiver) = oneshot::channel();
+        self.show_prompt(owner, prompt, sender);
+        self.session.asks.0.push((receiver, Box::new(then)));
+    }
+
+    fn settle_asks(&mut self) {
+        if self.session.asks.0.is_empty() {
+            return;
+        }
+        for (mut receiver, then) in std::mem::take(&mut self.session.asks.0) {
+            match answered(&mut receiver) {
+                std::task::Poll::Pending => self.session.asks.0.push((receiver, then)),
+                std::task::Poll::Ready(answer) => then(self, answer),
+            }
+        }
+    }
+
     pub fn show_prompt(&mut self, owner: &'static str, prompt: &Prompt, answer: oneshot::Sender<Answer>) {
         let id = self.session.prompts.open(owner, answer);
         self.notifications.push(&mut self.dock.icons, prompt.notification(id), true);
@@ -154,6 +184,10 @@ impl crate::GlideState {
                 && key == crate::disk_space::OPEN_STORAGE
             {
                 crate::system_info::open_storage_settings();
+                continue;
+            }
+            if let LocalEvent::Action { id: crate::autofill::FILL_ID, key } = &event {
+                self.autofill_action(key);
                 continue;
             }
             if let LocalEvent::Action { id: crate::otp::OFFER_ID, key } = &event
@@ -193,6 +227,7 @@ impl crate::GlideState {
         }
         self.settle_shortcut_requests();
         self.settle_permission_requests();
+        self.settle_asks();
     }
 }
 

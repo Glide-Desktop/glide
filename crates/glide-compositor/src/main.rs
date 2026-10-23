@@ -11,6 +11,7 @@ mod handlers;
 mod launcher_entry;
 mod logind;
 
+mod autofill;
 mod backend;
 mod background_effect;
 mod clip;
@@ -36,6 +37,7 @@ mod icon;
 mod idle;
 mod input;
 mod ipc;
+mod keychain;
 mod launcher;
 mod layout_scope;
 mod lid;
@@ -299,6 +301,7 @@ fn init_session_services(
     init_removable(event_loop);
     init_netbird(event_loop, state);
     init_headset(event_loop);
+    init_keychain(event_loop, state);
     state.welcome_if_first_run();
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
@@ -366,6 +369,17 @@ fn init_headset(event_loop: &mut EventLoop<'static, GlideState>) {
     if watch(event_loop, receiver, "the headset channel", GlideState::handle_headset) {
         let send = std::sync::Arc::new(send);
         headset::start(move |event| send(event));
+    }
+}
+
+fn init_keychain(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<glide_ipc::keychain::Envelope<glide_ipc::keychain::Response>>("a keychain reply");
+    if !watch(event_loop, receiver, "the keychain channel", GlideState::handle_keychain) {
+        return;
+    }
+    match keychain::Keychain::start(send) {
+        Ok(keychain) => state.session.keychain = keychain,
+        Err(err) => tracing::warn!(%err, "the keychain link is unavailable; saved passwords cannot be filled"),
     }
 }
 

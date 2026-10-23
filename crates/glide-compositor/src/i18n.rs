@@ -209,6 +209,15 @@ catalogue! {
     CodeOffer => "Code from {app}: {code}", "Код від {app}: {code}";
     CodeOfferBody => "Insert it into the field you are typing in", "Вставити його в поле, де ви зараз вводите";
     CodeInsert => "Insert", "Вставити";
+    KeychainUnlock => "Unlock the Glide keychain", "Розблокувати зв'язку ключів Glide";
+    KeychainUnlockBody => "Enter the keychain password to fill the saved password", "Введіть пароль зв'язки ключів, щоб вставити збережений пароль";
+    KeychainWrong => "That password did not open the keychain. Try again.", "Цей пароль не відкрив зв'язку ключів. Спробуйте ще раз.";
+    KeychainUnlockAction => "Unlock", "Розблокувати";
+    KeychainPlaceholder => "Keychain password", "Пароль зв'язки ключів";
+    PasswordOffer => "Saved password for {app}", "Збережений пароль для {app}";
+    PasswordOfferLocked => "The keychain is locked", "Зв'язка ключів заблокована";
+    PasswordOfferLockedBody => "Unlock it to fill a saved password for {app}", "Розблокуйте її, щоб вставити збережений пароль для {app}";
+    PasswordFill => "Fill {name}", "Вставити {name}";
     SomeApp => "An app", "Програма";
     PowerCountdownLogOut => "You will be logged out automatically in {n} s.", "Сеанс буде завершено автоматично через {n} с.";
     PowerCountdownRestart => "The computer will restart automatically in {n} s.", "Комп\u{2019}ютер буде перезавантажено автоматично через {n} с.";
