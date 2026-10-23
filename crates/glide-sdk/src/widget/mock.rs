@@ -126,7 +126,8 @@ pub fn screen<'a, M: 'a>(
     let ramp = paint.tokens.ramp;
     let (top, bottom) = (style::to_iced(ramp[1]), style::to_iced(ramp[4]));
     let line = paint.line_2();
-    container(Stack::with_children(layers).width(Fill).height(height))
+    let base: Element<'a, M> = Space::new().width(Fill).height(Fill).into();
+    container(Stack::with_children(std::iter::once(base).chain(layers)).width(Fill).height(height))
         .width(width)
         .height(height)
         .clip(true)
