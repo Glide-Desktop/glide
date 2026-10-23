@@ -1,4 +1,6 @@
-use iced::widget::{column, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, row};
 use iced::{Alignment, Element, Task};
 
 use super::common::error_banner;
@@ -268,7 +270,9 @@ impl Page {
         let name = printer.name.clone();
         let mut rows = Vec::new();
         if let Some(uri) = &printer.device {
-            rows.push(Row::new(t, c.t(T::Connection)).suffix(text(uri.as_str()).size(12).color(t.fg_2())).build());
+            rows.push(
+                Row::new(t, c.t(T::Connection)).suffix(text(uri.as_str(), TextStyle::CAP).color(t.fg_2())).build(),
+            );
         }
         rows.push(
             Row::new(t, c.t(T::DefaultPrinter))

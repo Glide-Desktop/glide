@@ -31,8 +31,6 @@ iced = { version = "0.14.0", default-features = false, features = [
 ] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 glide-config = { path = "../glide-config" }
-glide-theme = { path = "../glide-theme" }
-glide-iced = { path = "../glide-iced" }
 glide-sdk = { path = "../glide-sdk" }
 glide-ipc = { path = "../glide-ipc" }
 glide-app = { path = "../glide-app" }
@@ -43,3 +41,6 @@ serde.workspace = true
 serde_json.workspace = true
 toml_edit = "0.25"
 zbus = "5"
+
+[dev-dependencies]
+glide-theme = { path = "../glide-theme" }

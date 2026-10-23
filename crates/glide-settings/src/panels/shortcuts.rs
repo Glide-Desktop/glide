@@ -1,4 +1,6 @@
-use iced::widget::{column, container, row, space, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row, space};
 use iced::{Alignment, Element, Fill, Length, Subscription, Task};
 
 use super::common::gated;
@@ -670,7 +672,7 @@ pub fn keycaps<'a, M: 'a>(c: Ctx, mods: &[Mod], key: Option<&str>) -> Element<'a
         .align_y(Alignment::Center)
         .push(match key {
             Some(key) => widgets::key_cap(t, &widgets::key_symbol(key)),
-            None => text(c.t(tr::Key::NoKey)).size(12).color(t.fg_3()).into(),
+            None => text(c.t(tr::Key::NoKey), TextStyle::CAP).color(t.fg_3()).into(),
         })
         .into()
 }
@@ -873,13 +875,13 @@ impl Page {
         let normalized = keybinds::normalize_key(&draft.key);
         let mut body = column![
             row![
-                text(action_label(c, &draft.action)).size(14).font(theme::SEMIBOLD).color(t.fg_1()).width(Fill),
+                text(action_label(c, &draft.action), TextStyle::HEAD).color(t.fg_1()).width(Fill),
                 keycaps(c, &draft.mods, normalized.as_deref()),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
             row![
-                text(c.t(tr::Key::Modifiers)).size(13).color(t.fg_2()),
+                text(c.t(tr::Key::Modifiers), TextStyle::CALL).color(t.fg_2()),
                 chips,
                 space().width(Fill),
                 key_field,
@@ -891,7 +893,7 @@ impl Page {
             ]
             .spacing(10)
             .align_y(Alignment::Center),
-            text(c.t(tr::Key::RecordHint)).size(12).color(t.fg_3()),
+            text(c.t(tr::Key::RecordHint), TextStyle::CAP).color(t.fg_3()),
         ]
         .spacing(10);
         if let Action::Exec(command) = &draft.action {
@@ -911,15 +913,14 @@ impl Page {
         let t = c.theme;
         match result {
             Err(error) if !(draft.key.is_empty() && *error == DraftError::NeedKey) => {
-                Some(text(c.t(error.text())).size(12).color(t.danger()).into())
+                Some(text(c.t(error.text()), TextStyle::CAP).color(t.danger()).into())
             }
             Ok(bind) => binds
                 .iter()
                 .enumerate()
                 .find(|(index, other)| Some(*index) != draft.index && other.same_combo(bind))
                 .map(|(_, other)| {
-                    text(format!("{} «{}»", c.t(tr::Key::AlreadyUsed), action_label(*c, &other.action)))
-                        .size(12)
+                    text(format!("{} «{}»", c.t(tr::Key::AlreadyUsed), action_label(*c, &other.action)), TextStyle::CAP)
                         .color(t.warn())
                         .into()
                 }),

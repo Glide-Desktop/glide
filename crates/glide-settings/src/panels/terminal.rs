@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use glide_terminal::config::{Cursor, OnExit, Preferences};
 use glide_terminal::profile::{Profile, color};
-use iced::widget::{Column, container, row, text};
-use iced::{Alignment, Element, Fill, Length, Task};
+use iced::widget::{Column, container, row};
+use iced::{Alignment, Element, Fill, Task};
 use toml_edit::{DocumentMut, Item, value};
 
 use super::common::error_banner;
@@ -248,28 +248,15 @@ impl Pane for Page {
 
 fn swatch<'a>(profile: Profile, t: &ThemeState) -> Element<'a, Msg> {
     let palette = profile.palette(t.tokens());
-    let dots = row([1, 2, 3, 4].map(|index| {
-        let tint = color(palette.ansi[index], 1.0);
-        container(iced::widget::space().width(6).height(6))
-            .style(move |_: &iced::Theme| theme::solid(tint, iced::border::Radius::from(3.0)))
-            .into()
-    }))
-    .spacing(3);
-    let background = color(palette.background, 1.0);
-    container(
-        row![
-            text("Aa").size(16).font(glide_terminal::MONO).color(color(palette.foreground, 1.0)),
-            iced::widget::space().width(Fill),
-            dots
-        ]
-        .align_y(Alignment::Center),
+    let accents = [1, 2, 3, 4].map(|index| color(palette.ansi[index], 1.0));
+    glide_sdk::widget::palette_swatch(
+        &widgets::paint(t),
+        color(palette.background, 1.0),
+        color(palette.foreground, 1.0),
+        &accents,
+        glide_terminal::MONO,
+        iced::Size::new(124.0, 54.0),
     )
-    .padding([0, 12])
-    .width(Length::Fixed(124.0))
-    .height(Length::Fixed(54.0))
-    .align_y(Alignment::Center)
-    .style(move |_: &iced::Theme| theme::solid(background, theme::radius_r2()))
-    .into()
 }
 
 fn profiles_group<'a>(c: &Ctx, prefs: &Preferences) -> Element<'a, Msg> {

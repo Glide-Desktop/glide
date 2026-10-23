@@ -1,7 +1,9 @@
 use std::time::{Duration, SystemTime};
 
 use glide_netbird::{self as nb, PeerStatus, Remaining, State};
-use iced::widget::{column, container, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill};
 
 use super::{
@@ -11,10 +13,10 @@ use super::{
 use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::panels::Ctx;
-use crate::panels::network::{actions, form_row, lines, note, sheet};
 use crate::services::system::format_bytes;
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
+use crate::widgets::{actions, form_row, lines, note, sheet};
 
 const DOCS: &str = "https://docs.netbird.io";
 const GITHUB: &str = "https://github.com/netbirdio/netbird";
@@ -845,7 +847,7 @@ impl Page {
                     Some(c.t(T::JwtTtlHint)),
                     row![
                         widgets::field(t, "0", &self.jwt_ttl, Msg::JwtTtlInput, save.clone(), !ttl_ok).width(120.0),
-                        text(c.t(T::Seconds)).size(13).color(t.fg_3()),
+                        text(c.t(T::Seconds), TextStyle::CALL).color(t.fg_3()),
                         widgets::secondary(t, c.t(T::Save), save),
                     ]
                     .spacing(8)

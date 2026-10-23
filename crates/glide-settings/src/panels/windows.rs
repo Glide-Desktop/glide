@@ -1,14 +1,14 @@
-use iced::widget::{Column, container, row, space, text};
-use iced::{Alignment, Element, Fill, Length, Task};
+use iced::widget::{Column, container, row};
+use iced::{Element, Length, Task};
 
 use super::common::{choice, gated, switch_row};
-use super::desktop::sketch;
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::config::{ConfigStore, DEFAULT_BORDER_WIDTH, DEFAULT_TITLEBAR_HEIGHT};
 use crate::theme::{self, ThemeState};
 use crate::widgets::{self, Group, Row};
+use glide_sdk::widget::mock as sketch;
 
 mod tr {
     crate::i18n::catalogue! {
@@ -338,15 +338,6 @@ fn frame_group<'a>(c: &Ctx, mock: Mock) -> Element<'a, Msg> {
         .build()
 }
 
-fn round_button<'a>(t: &ThemeState, glyph: Icon, size: f32) -> Element<'a, Msg> {
-    let fill = t.fill_2();
-    container(widgets::icon(glyph, (size * 0.55).round(), t.fg_2()))
-        .center_x(Length::Fixed(size))
-        .center_y(Length::Fixed(size))
-        .style(move |_: &iced::Theme| theme::solid(fill, theme::radius_round()))
-        .into()
-}
-
 fn window_mock<'a>(t: &ThemeState, title: &'a str, mock: Mock) -> Element<'a, Msg> {
     let Mock { align, density, layout, shadow, border, width, height } = mock;
     let bar_px = match density {
@@ -354,47 +345,15 @@ fn window_mock<'a>(t: &ThemeState, title: &'a str, mock: Mock) -> Element<'a, Ms
         Density::Standard => DEFAULT_TITLEBAR_HEIGHT,
     };
     let bar_px = i32::try_from(bar_px).unwrap_or(0);
-    let bar_height = bar_px as f32;
-    let button = glide_theme::component::titlebar_button(bar_px) as f32;
-    let (leading, trailing) = match layout {
-        ButtonLayout::CloseRight => (Icon::Maximize, Icon::Close),
-        ButtonLayout::CloseLeft => (Icon::Close, Icon::Maximize),
+    let spec = sketch::TitledWindow {
+        centered: align == TitleAlign::Center,
+        bar_height: bar_px as f32,
+        button: glide_sdk::theme::component::titlebar_button(bar_px) as f32,
+        close_left: layout == ButtonLayout::CloseLeft,
+        shadow,
+        border,
+        width,
+        height,
     };
-    let label = text(title).size(12).font(theme::SEMIBOLD).color(t.fg_1());
-    let title: Element<'a, Msg> = match align {
-        TitleAlign::Left => container(label).width(Fill).into(),
-        TitleAlign::Center => container(label).center_x(Fill).into(),
-    };
-    let bar_bg = t.bar_bg();
-    let bar = container(
-        row![round_button(t, leading, button), title, round_button(t, trailing, button),]
-            .spacing(8)
-            .align_y(Alignment::Center),
-    )
-    .padding([0, 5])
-    .width(Fill)
-    .height(bar_height)
-    .center_y(bar_height)
-    .style(move |_: &iced::Theme| theme::solid(bar_bg, iced::border::Radius::default()));
-    let body = t.win_bg();
-    let ring = t.line();
-    container(iced::widget::column![bar, space().height(Fill)].width(Fill))
-        .width(width)
-        .height(height)
-        .clip(true)
-        .style(move |_: &iced::Theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(body)),
-            border: iced::Border { color: ring, width: if border { 1.0 } else { 0.0 }, radius: theme::radius_r3() },
-            shadow: if shadow {
-                iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35),
-                    offset: iced::Vector::new(0.0, 6.0),
-                    blur_radius: 18.0,
-                }
-            } else {
-                iced::Shadow::default()
-            },
-            ..iced::widget::container::Style::default()
-        })
-        .into()
+    sketch::titled_window(*t, title, Icon::Maximize, Icon::Close, spec)
 }

@@ -200,6 +200,21 @@ pub fn avatar<'a, M: 'a>(paint: &Paint, name: &str, side: f32) -> Element<'a, M>
 }
 
 #[must_use]
+pub fn letter_tile<'a, M: 'a>(paint: &Paint, name: &str, side: f32) -> Element<'a, M> {
+    let letter: String =
+        name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| String::from("?"), |c| c.to_uppercase().collect());
+    let glyph = (side * 0.46).round();
+    let well = paint.fill_2();
+    container(
+        text(letter, TextStyle { size_px: glyph, line_height_px: glyph * 1.2, weight: 600, ..TextStyle::HEAD })
+            .color(paint.fg_2()),
+    )
+    .center(side)
+    .style(move |_| style::rounded(well, R2))
+    .into()
+}
+
+#[must_use]
 pub fn icon_tile<'a, M: 'a>(glyph: impl super::Glyph, color: Color, side: f32) -> Element<'a, M> {
     use glide_theme::shape::{R3, R4};
     let radius = if side <= 32.0 {

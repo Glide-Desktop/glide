@@ -2,7 +2,6 @@ use iced::widget::{column, row};
 use iced::{Alignment, Element, Task};
 
 use super::common::{error_banner, gated, presets};
-use super::network::note;
 use super::{Ctx, Pane};
 use crate::icons::Icon;
 use crate::services::config::{ConfigStore, DEFAULT_BLANK_AFTER};
@@ -11,6 +10,7 @@ use crate::services::run::blocking;
 use crate::services::system::format_bytes;
 use crate::services::{gsettings, keybinds};
 use crate::theme::{self, Tone};
+use crate::widgets::note;
 use crate::widgets::{self, Group, Row};
 
 mod tr {

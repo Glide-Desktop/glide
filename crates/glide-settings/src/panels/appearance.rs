@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use glide_config::toolkits::{QtTheme, Support};
-use iced::widget::{column, container, row, space, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row, space};
 use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::{gated, switch_row, toggle};
@@ -341,7 +343,7 @@ impl Page {
         let (options, selected) =
             pick(choices(c.t(K::SystemDefault), &self.icon_themes), config.optional_str("dock", "icon-theme"));
         let strip: Element<'a, Msg> = if self.preview.is_empty() {
-            text(c.t(tr::Key::NoIcons)).size(12.5).color(t.fg_3()).into()
+            text(c.t(tr::Key::NoIcons), TextStyle::CAP).color(t.fg_3()).into()
         } else {
             row(self.preview.iter().map(|path| super::apps::app_icon(&t, Some(path), "", 36.0)))
                 .spacing(14)
@@ -385,8 +387,10 @@ impl Page {
             .push(widgets::sample_well(
                 t,
                 column![
-                    text("Aa").size(30).font(font).color(t.fg_1()),
-                    text(c.t(tr::Key::FontSample)).size(14).font(font).color(t.fg_2()),
+                    text("Aa", TextStyle { size_px: 30.0, line_height_px: 36.0, weight: 400, ..TextStyle::T1 })
+                        .font(font)
+                        .color(t.fg_1()),
+                    text(c.t(tr::Key::FontSample), TextStyle::BODY).font(font).color(t.fg_2()),
                 ]
                 .spacing(4),
             ))
@@ -448,13 +452,12 @@ impl Page {
             } else {
                 format!("{speed:.2}×")
             };
-            let slider = row![
-                text(c.t(tr::Key::Slower)).size(12).color(t.fg_3()),
-                widgets::value_slider(t, SPEED_MIN..=SPEED_MAX, speed, 0.05, Msg::Speed, Some(Msg::CommitSpeed),),
-                text(c.t(tr::Key::Faster)).size(12).color(t.fg_3()),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
+            let slider = glide_sdk::widget::range_slider(
+                &widgets::paint(&t),
+                c.t(tr::Key::Slower),
+                widgets::value_slider(t, SPEED_MIN..=SPEED_MAX, speed, 0.05, Msg::Speed, Some(Msg::CommitSpeed)),
+                c.t(tr::Key::Faster),
+            );
             group = group.push(
                 Row::new(t, c.t(K::AnimationSpeed))
                     .subtitle(label)
@@ -545,17 +548,13 @@ fn interned(name: &str) -> &'static str {
     leaked
 }
 
-fn bar<'a>(color: iced::Color, width: f32, height: f32) -> Element<'a, Msg> {
-    container(space())
-        .width(width)
-        .height(height)
-        .style(move |_: &iced::Theme| theme::solid(color, theme::radius_r1()))
-        .into()
-}
-
 fn mockup<'a>(t: &ThemeState) -> Element<'a, Msg> {
+    use glide_sdk::widget::mock::{block, outlined_surface, surface};
     let t = *t;
-    let sidebar = container(
+    let bar = |color, width: f32, height: f32| block(color, width, height, theme::R1);
+    let sidebar = surface(
+        t.sidebar_bg(),
+        theme::R1,
         column![
             bar(t.acc_soft(), 34.0, 7.0),
             bar(t.fill_3(), 26.0, 5.0),
@@ -565,9 +564,10 @@ fn mockup<'a>(t: &ThemeState) -> Element<'a, Msg> {
         .spacing(6),
     )
     .padding(6)
-    .height(Fill)
-    .style(move |_: &iced::Theme| theme::solid(t.sidebar_bg(), theme::radius_r1()));
-    let card = container(
+    .height(Fill);
+    let card = surface(
+        t.card_bg(),
+        theme::R1,
         column![
             bar(t.fg_3(), 56.0, 5.0),
             bar(t.fill_3(), 80.0, 5.0),
@@ -579,21 +579,15 @@ fn mockup<'a>(t: &ThemeState) -> Element<'a, Msg> {
     )
     .padding(8)
     .width(Fill)
-    .height(Fill)
-    .style(move |_: &iced::Theme| theme::solid(t.card_bg(), theme::radius_r1()));
-    let window =
-        container(row![sidebar, card].spacing(6)).padding(6).width(Fill).height(Fill).style(move |_: &iced::Theme| {
-            iced::widget::container::Style {
-                background: Some(iced::Background::Color(t.win_bg())),
-                border: iced::Border { color: t.line_2(), width: 1.0, radius: theme::radius_r2() },
-                ..iced::widget::container::Style::default()
-            }
-        });
-    container(window)
+    .height(Fill);
+    let window = outlined_surface(t.win_bg(), t.line_2(), 1.0, theme::R2, row![sidebar, card].spacing(6))
+        .padding(6)
+        .width(Fill)
+        .height(Fill);
+    surface(t.sunken_bg(), theme::R2, window)
         .padding(12)
         .width(Length::Fixed(196.0))
         .height(Length::Fixed(124.0))
-        .style(move |_: &iced::Theme| theme::solid(t.sunken_bg(), theme::radius_r2()))
         .into()
 }
 

@@ -119,6 +119,11 @@ impl Paint {
     }
 
     #[must_use]
+    pub fn hover(&self, base: Color, progress: f32) -> Color {
+        self.layer(base, ST_HOVER * progress.clamp(0.0, 1.0))
+    }
+
+    #[must_use]
     pub fn layered(&self, base: Color, status: button::Status) -> Color {
         match status {
             button::Status::Hovered => self.layer(base, ST_HOVER),

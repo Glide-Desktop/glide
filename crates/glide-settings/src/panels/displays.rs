@@ -1,6 +1,8 @@
 use glide_ipc::OutputInfo;
-use iced::widget::{Row as IcedRow, button, column, container, row, text};
-use iced::{Alignment, Element, Fill, Length, Task};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{Row as IcedRow, column, container, row};
+use iced::{Alignment, Element, Fill, Task};
 use toml_edit::Table;
 
 use super::{Ctx, PageEvent, Pane};
@@ -498,7 +500,7 @@ impl Page {
             };
             card = card.push(
                 row![
-                    text(hint).size(12.5).color(t.fg_2()).width(Fill),
+                    text(hint, TextStyle::CAP).color(t.fg_2()).width(Fill),
                     super::common::gated(*c, widgets::segmented(t, choices, arrangement, Msg::Arrange)),
                 ]
                 .spacing(8)
@@ -510,7 +512,7 @@ impl Page {
             let writable = c.writable;
             card = card.push(
                 row![
-                    text(c.t(tr::Key::ArrangementHint)).size(12.5).color(t.fg_2()).width(Fill),
+                    text(c.t(tr::Key::ArrangementHint), TextStyle::CAP).color(t.fg_2()).width(Fill),
                     widgets::secondary(t, c.t(tr::Key::MoveLeft), (writable && at > 0).then_some(Msg::Move(false)),),
                     widgets::secondary(
                         t,
@@ -522,8 +524,7 @@ impl Page {
                 .align_y(Alignment::Center),
             );
         }
-        let body =
-            container(card).padding(theme::SECTION_GAP).width(Fill).style(move |_: &iced::Theme| theme::card_style(&t));
+        let body = glide_sdk::widget::card(&widgets::paint(&t), container(card).padding(theme::SECTION_GAP - 16.0));
         column![
             Group::new(t)
                 .title(c.t(tr::Key::Arrangement))
@@ -627,13 +628,13 @@ impl Page {
         let internal = display::is_internal(&output.name) || self.state.outputs.len() == 1;
         if let (Some(backlight), true) = (&self.state.backlight, internal) {
             let value = self.brightness.value.unwrap_or(backlight.percent);
-            let control = row![
-                widgets::icon(Icon::Sparkle, 16.0, t.fg_3()),
+            let control = glide_sdk::widget::slider_readout(
+                &widgets::paint(&t),
+                Some(widgets::icon(Icon::Sparkle, 16.0, t.fg_3())),
                 widgets::value_slider(t, 1.0..=100.0, f64::from(value), 1.0, Msg::Brightness, None),
-                text(format!("{value}%")).size(13).color(t.fg_2()).width(Length::Fixed(44.0)).align_x(Alignment::End),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center);
+                format!("{value}%"),
+                false,
+            );
             group = group.push(
                 Row::new(t, c.t(tr::Key::Brightness))
                     .subtitle(c.t(tr::Key::BrightnessHint))
@@ -670,48 +671,15 @@ impl Page {
         if self.state.live {
             rows.push((c.t(tr::Key::Position).to_string(), format!("{}, {}", output.x, output.y)));
         }
-        column![
-            container(text(c.t(tr::Key::Details)).size(14).font(theme::SEMIBOLD).color(t.fg_1()))
-                .padding(iced::Padding::ZERO.left(4)),
-            widgets::info_grid(t, rows),
-        ]
-        .spacing(8)
-        .into()
+        Group::new(t).title(c.t(tr::Key::Details)).extend(widgets::info_rows(t, rows)).build()
     }
 }
 
 fn monitor_tile<'a>(
-    t: &theme::ThemeState, output: &OutputInfo, index: usize, scale: f64, (width, height): (f32, f32), selected: bool,
+    t: &theme::ThemeState, output: &OutputInfo, index: usize, scale: f64, size: (f32, f32), selected: bool,
 ) -> Element<'a, Msg> {
-    let t = *t;
-    let (name_color, scale_color) =
-        if selected { (t.acc_fg(), iced::Color { a: 0.8, ..t.acc_fg() }) } else { (t.fg_1(), t.fg_2()) };
-    let label = column![
-        text(output.name.clone()).size(12).font(theme::SEMIBOLD).color(name_color),
-        text(format!("{} · {}", resolution_text(output.width, output.height), display::scale_label(scale)))
-            .size(11)
-            .color(scale_color),
-    ]
-    .spacing(2)
-    .align_x(Alignment::Center);
-    column![
-        button(
-            container(label)
-                .center_x(Length::Fixed(width.max(72.0)))
-                .center_y(Length::Fixed(height.max(44.0)))
-                .style(move |_: &iced::Theme| theme::monitor_style(&t, selected)),
-        )
-        .padding(0)
-        .on_press(Msg::Select(index))
-        .style(move |_: &iced::Theme, status| theme::plain_button_style(&t, status)),
-        container(iced::widget::space())
-            .width(Length::Fixed((width * 0.28).max(18.0)))
-            .height(Length::Fixed(4.0))
-            .style(move |_: &iced::Theme| theme::solid(t.fill_3(), theme::radius_r1())),
-    ]
-    .spacing(3)
-    .align_x(Alignment::Center)
-    .into()
+    let detail = format!("{} · {}", resolution_text(output.width, output.height), display::scale_label(scale));
+    glide_sdk::widget::mock::monitor(*t, output.name.clone(), detail, size, selected, Msg::Select(index))
 }
 
 fn fixed_mode_rows<'a>(c: &Ctx, output: &OutputInfo) -> Vec<Element<'a, Msg>> {
@@ -719,16 +687,18 @@ fn fixed_mode_rows<'a>(c: &Ctx, output: &OutputInfo) -> Vec<Element<'a, Msg>> {
     let mut rows = vec![
         Row::new(t, c.t(K::Resolution))
             .subtitle(c.t(K::ResolutionHint))
-            .suffix(text(resolution_label(output)).size(13).color(t.fg_2()))
+            .suffix(text(resolution_label(output), TextStyle::CALL).color(t.fg_2()))
             .build(),
     ];
     if output.refresh_mhz > 0 {
         rows.push(
             Row::new(t, c.t(K::RefreshRate))
                 .suffix(
-                    text(format!("{} {}", display::refresh_text(output.refresh_mhz), display::hertz(c.lang)))
-                        .size(13)
-                        .color(t.fg_2()),
+                    text(
+                        format!("{} {}", display::refresh_text(output.refresh_mhz), display::hertz(c.lang)),
+                        TextStyle::CALL,
+                    )
+                    .color(t.fg_2()),
                 )
                 .build(),
         );

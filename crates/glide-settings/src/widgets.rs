@@ -1,5 +1,5 @@
 use glide_sdk::widget as sdk;
-use iced::widget::{container, space, svg, text, text_input};
+use iced::widget::{container, space, text};
 use iced::{Color, Element, Length, Padding};
 
 use crate::icons::Icon;
@@ -15,19 +15,13 @@ impl From<ThemeState> for glide_sdk::Paint {
 
 impl sdk::Glyph for Icon {
     fn draw<'a, M: 'a>(self, side: f32, tint: Color) -> Element<'a, M> {
-        let opaque = Color { a: 1.0, ..tint };
-        svg(self.handle())
-            .width(side)
-            .height(side)
-            .opacity(tint.a)
-            .style(move |_: &iced::Theme, _| svg::Style { color: Some(opaque) })
-            .into()
+        sdk::svg_glyph(self.handle(), side, tint)
     }
 }
 
 #[must_use]
 pub fn paint(t: &ThemeState) -> glide_sdk::Paint {
-    glide_sdk::Paint { tokens: t.tokens, alpha: 1.0 }
+    t.paint
 }
 
 #[must_use]
@@ -38,11 +32,6 @@ pub fn icon<'a, M: 'a>(glyph: Icon, size: f32, color: Color) -> Element<'a, M> {
 #[must_use]
 pub fn tile<'a, M: 'a>(glyph: Icon, color: Color, size: f32) -> Element<'a, M> {
     sdk::icon_tile(glyph, color, size)
-}
-
-#[must_use]
-pub fn title<'a, M: 'a>(label: impl text::IntoFragment<'a>, size: f32) -> Element<'a, M> {
-    text(label).size(size).font(theme::SEMIBOLD).into()
 }
 
 #[must_use]
@@ -132,21 +121,38 @@ pub fn field<'a, M: Clone + 'a>(
     t: ThemeState, placeholder: &str, value: &str, on_input: impl Fn(String) -> M + 'a, on_submit: Option<M>,
     invalid: bool,
 ) -> iced::widget::TextInput<'a, M> {
-    let paint = paint(&t);
-    let mut input = text_input(placeholder, value).on_input(on_input).padding([8, 11]).size(13).style(
-        move |_: &iced::Theme, status| {
-            let mut style = sdk::inline_style(&paint, status);
-            if invalid {
-                style.border.color = paint.danger();
-                style.border.width = 1.5;
-            }
-            style
-        },
-    );
-    if let Some(message) = on_submit {
-        input = input.on_submit(message);
-    }
-    input
+    let validity = if invalid { sdk::Validity::Invalid } else { sdk::Validity::Neutral };
+    sdk::boxed_input(&paint(&t), placeholder, value, validity).on_input(on_input).on_submit_maybe(on_submit)
+}
+
+#[must_use]
+pub fn sheet<'a, M: 'a>(t: ThemeState, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+    sdk::sheet(&paint(&t), rows)
+}
+
+#[must_use]
+pub fn lines<'a, M: 'a>(t: ThemeState, info: Vec<(String, String)>) -> Element<'a, M> {
+    sdk::key_values(&paint(&t), info)
+}
+
+#[must_use]
+pub fn form_row<'a, M: 'a>(t: ThemeState, label: &str, hint: Option<&str>, control: Element<'a, M>) -> Element<'a, M> {
+    sdk::form_row(&paint(&t), label, hint, control)
+}
+
+#[must_use]
+pub fn note<'a, M: 'a>(t: ThemeState, glyph: Icon, message: &str) -> Element<'a, M> {
+    sdk::hint_line(&paint(&t), glyph, message)
+}
+
+#[must_use]
+pub fn actions<'a, M: 'a>(buttons: Vec<Element<'a, M>>) -> Element<'a, M> {
+    sdk::action_bar(buttons)
+}
+
+#[must_use]
+pub fn chevron<'a, M: 'a>(t: ThemeState, open: bool) -> Element<'a, M> {
+    sdk::chevron(&paint(&t), open)
 }
 
 #[must_use]
@@ -314,15 +320,18 @@ pub fn usage_card<'a, M: 'a>(
 
 #[must_use]
 pub fn info_grid<'a, M: Clone + 'a>(t: ThemeState, rows: Vec<(String, String)>) -> Element<'a, M> {
+    sdk::list(&paint(&t), info_rows(t, rows))
+}
+
+#[must_use]
+pub fn info_rows<'a, M: Clone + 'a>(t: ThemeState, rows: Vec<(String, String)>) -> Vec<Element<'a, M>> {
     let paint = paint(&t);
-    let rows = rows
-        .into_iter()
+    rows.into_iter()
         .map(|(key, value)| {
             let value = sdk::text(value, glide_sdk::theme::TextStyle::CALL).color(paint.fg_1());
             Row::new(paint, key).suffix(value).build()
         })
-        .collect();
-    sdk::list(&paint, rows)
+        .collect()
 }
 
 #[must_use]

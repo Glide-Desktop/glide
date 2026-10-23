@@ -1,7 +1,7 @@
 use glide_sdk::theme::SP1;
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{self as sdk, Wrapping, text};
-use iced::widget::{Column, Row, column, container, scrollable, text_input};
+use iced::widget::{Column, Row, column, container, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
 use crate::app::{App, Message, SEARCH_ID};
@@ -158,12 +158,8 @@ pub fn view<'a>(app: &'a App, c: Ctx, user: &'a str, login: &'a str) -> Element<
         .padding(Padding::from([EDGE, EDGE]).bottom(0));
 
     let paint = widgets::paint(&t);
-    let list = scrollable(container(groups).padding(Padding::from([EDGE + 4.0, EDGE]).bottom(EDGE)))
-        .height(Fill)
-        .style(move |_: &iced::Theme, status| sdk::scrollable_style(&paint, status));
-
-    container(column![top, list, footer(&c, app.online())].width(Length::Fixed(theme::SIDEBAR_WIDTH)))
-        .height(Fill)
-        .style(move |_: &iced::Theme| theme::solid(t.sidebar_bg(), iced::border::Radius::default()))
-        .into()
+    let list =
+        sdk::scrollable(&paint, container(groups).padding(Padding::from([EDGE + 4.0, EDGE]).bottom(EDGE))).height(Fill);
+    let body = column![top, list, footer(&c, app.online())].width(Length::Fixed(theme::SIDEBAR_WIDTH));
+    sdk::pane(t.sidebar_bg(), 0.0, body).width(Length::Shrink).into()
 }

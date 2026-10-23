@@ -1684,7 +1684,6 @@ version = "0.1.0"
 dependencies = [
  "glide-app",
  "glide-config",
- "glide-iced",
  "glide-ipc",
  "glide-netbird",
  "glide-sdk",

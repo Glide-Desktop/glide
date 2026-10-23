@@ -2,7 +2,6 @@ use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Task};
 
 use super::common::error_banner;
-use super::network::{actions, chevron, form_row, lines, note, sheet};
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
@@ -11,6 +10,7 @@ use crate::services::config::ConfigStore;
 use crate::services::run::{Generation, blocking};
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
+use crate::widgets::{actions, chevron, form_row, lines, note, sheet};
 
 mod tr {
     crate::i18n::catalogue! {

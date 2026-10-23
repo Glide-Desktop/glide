@@ -5,9 +5,13 @@ mod editor;
 mod feedback;
 mod find;
 mod focus;
+mod form;
 mod inputs;
 mod layout;
+mod media;
+pub mod mock;
 mod panes;
+mod pointer;
 mod popover;
 mod selection;
 mod strip;
@@ -30,7 +34,7 @@ pub use buttons::{
 };
 pub use cards::{
     choice_card, grid, hero_card, legend, page_header, preview_card, preview_ring_style, sample_well, stat_tile,
-    tinted_card_style, usage_bar, usage_card,
+    tinted_card, tinted_card_style, usage_bar, usage_card,
 };
 pub use controls::{
     CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
@@ -39,10 +43,11 @@ pub use controls::{
 pub use editor::{editor, markdown_settings, markdown_view};
 pub use feedback::{
     Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,
-    key_combo, keycap, noted_banner, skeleton, status_badge, task_card,
+    key_combo, keycap, letter_tile, noted_banner, skeleton, status_badge, task_card,
 };
 pub use find::{FIND_FIELD, FindBar, INFO_BAR, bar_strip, find_bar, info_bar};
 pub use focus::{Focus, RING, focusable};
+pub use form::{action_bar, boxed_input, form_row, hint_line, key_values, sheet};
 pub use inputs::{
     Validity, bare_text_area_style, field, hinted_search_input, inline_field, inline_style, input_style,
     password_field, search_field, search_input, stepper, text_area_style, text_field, validated_field,
@@ -52,7 +57,12 @@ pub use layout::{
     action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card, section,
     select_row, sidebar, sidebar_item, status_bar, status_button, surface, switch_row, table_header, tree_row, well,
 };
+pub use media::{
+    Art, art, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider, slider_readout,
+    svg_glyph,
+};
 pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, split_view, stat_rows};
+pub use pointer::{ContextArea, context_area, reveal};
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,

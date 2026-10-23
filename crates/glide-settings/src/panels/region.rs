@@ -1,4 +1,6 @@
-use iced::widget::{column, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, row};
 use iced::{Alignment, Element, Fill, Task};
 
 use super::common::{error_banner, gated};
@@ -479,7 +481,7 @@ fn installed_group(c: &Ctx, snapshot: &Snapshot) -> Element<'static, Msg> {
         let sample = formats.map_or_else(String::new, |formats| locale::format_money(1234.5, formats));
         let suffix = row![
             used.contains(code).then(|| widgets::pill(t, Tone::Accent, c.t(T::InUse))),
-            text(sample).size(13).color(t.fg_3()),
+            text(sample, TextStyle::CALL).color(t.fg_3()),
         ]
         .spacing(8)
         .align_y(Alignment::Center);

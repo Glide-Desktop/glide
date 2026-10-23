@@ -1,4 +1,6 @@
-use iced::widget::{column, container, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::{error_banner, gated};
@@ -242,7 +244,14 @@ impl Page {
                     .stacked(t.compact)
                     .build(),
             )
-            .push(widgets::sample_well(t, text(c.t(T::TextPreview)).size(preview_size).color(t.fg_1())))
+            .push(widgets::sample_well(
+                t,
+                text(
+                    c.t(T::TextPreview),
+                    TextStyle { size_px: preview_size, line_height_px: preview_size * 1.5, ..TextStyle::BODY },
+                )
+                .color(t.fg_1()),
+            ))
             .push(
                 Row::new(t, c.t(T::Scrollbars))
                     .subtitle(c.t(T::ScrollbarsHint))
@@ -341,7 +350,7 @@ impl Page {
                 container(
                     row![
                         widgets::icon(Icon::Info, 16.0, t.warn()),
-                        text(c.t(T::NotFollowing)).size(12.5).color(t.fg_2()).width(Fill),
+                        text(c.t(T::NotFollowing), TextStyle::CAP).color(t.fg_2()).width(Fill),
                         gated(*c, widgets::tonal(t, c.t(T::Follow), Some(Msg::FollowSystem))),
                     ]
                     .spacing(10)

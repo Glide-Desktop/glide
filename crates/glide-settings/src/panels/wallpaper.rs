@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use iced::widget::{Column, Row as IcedRow, button, column, container, image, row, space, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{Row as IcedRow, column, container, row, space};
 use iced::{Alignment, Color, ContentFit, Element, Fill, Length, Task};
 
 use super::common::gated;
-use super::desktop::sketch;
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
@@ -13,6 +14,7 @@ use crate::services::run::blocking;
 use crate::services::wallpaper::{self, Gallery, Source, Thumbnail};
 use crate::theme::{self, Accent, ThemeState};
 use crate::widgets::{self, Group, Row};
+use glide_sdk::widget::mock as sketch;
 
 mod tr {
     crate::i18n::catalogue! {
@@ -297,12 +299,10 @@ impl Page {
         ]
         .width(HERO_W)
         .height(HERO_H);
-        let framed = container(preview).width(HERO_W).height(HERO_H).clip(true).style(move |_: &iced::Theme| {
-            iced::widget::container::Style {
-                border: iced::Border { color: t.line_2(), width: 1.0, radius: theme::radius_r2() },
-                ..iced::widget::container::Style::default()
-            }
-        });
+        let framed = sketch::outlined_surface(iced::Color::TRANSPARENT, t.line_2(), 1.0, theme::R2, preview)
+            .width(HERO_W)
+            .height(HERO_H)
+            .clip(true);
         let status: Element<'a, Msg> = if self.loading {
             widgets::spinner_label(t, c.t(K::Loading))
         } else {
@@ -331,7 +331,7 @@ impl Page {
                     option == fit,
                     Some(Msg::SetFit(option)),
                 ),
-                text(c.t(hint)).size(11.5).color(t.fg_3()),
+                text(c.t(hint), TextStyle::CAP).color(t.fg_3()),
             ]
             .spacing(2)
             .align_x(Alignment::Center)
@@ -468,113 +468,50 @@ fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-fn scaled_size(thumb: &Thumbnail, width: f32) -> (f32, f32) {
-    let scale = width / REFERENCE_WIDTH;
-    ((thumb.width as f32 * scale).max(2.0), (thumb.height as f32 * scale).max(2.0))
-}
-
 fn render<'a>(
     t: &ThemeState, look: &Look<'_>, fit: WallpaperFit, backdrop: [u8; 3], width: f32, height: f32,
 ) -> Element<'a, Msg> {
-    let backdrop = to_color(backdrop);
-    let flat = |colour: Color| -> Element<'a, Msg> {
-        container(space())
-            .width(Fill)
-            .height(Fill)
-            .style(move |_: &iced::Theme| theme::solid(colour, iced::border::Radius::default()))
-            .into()
+    let wallpaper = match look {
+        Look::Solid(rgb) => sketch::Wallpaper::Solid(to_color(*rgb)),
+        Look::Pending => sketch::Wallpaper::Pending,
+        Look::Picture(thumb) => sketch::Wallpaper::Picture {
+            handle: thumb.handle.clone(),
+            width: thumb.width as f32,
+            height: thumb.height as f32,
+        },
     };
-    let content = match look {
-        Look::Solid(rgb) => flat(to_color(*rgb)),
-        Look::Pending => flat(t.sunken_bg()),
-        Look::Picture(thumb) => {
-            let handle = thumb.handle.clone();
-            match fit {
-                WallpaperFit::Cover | WallpaperFit::Contain => image(handle)
-                    .width(Fill)
-                    .height(Fill)
-                    .content_fit(if fit == WallpaperFit::Cover { ContentFit::Cover } else { ContentFit::Contain })
-                    .into(),
-                WallpaperFit::Center => {
-                    let (w, h) = scaled_size(thumb, width);
-                    container(image(handle).width(w).height(h).content_fit(ContentFit::Fill))
-                        .center_x(Fill)
-                        .center_y(Fill)
-                        .into()
-                }
-                WallpaperFit::Tile => {
-                    let (w, h) = scaled_size(thumb, width);
-                    let (cols, rows) =
-                        (((width / w).ceil() as usize).clamp(1, 16), ((height / h).ceil() as usize).clamp(1, 16));
-                    Column::with_children((0..rows).map(|_| {
-                        IcedRow::with_children(
-                            (0..cols)
-                                .map(|_| image(handle.clone()).width(w).height(h).content_fit(ContentFit::Fill).into()),
-                        )
-                        .into()
-                    }))
-                    .into()
-                }
-            }
-        }
+    let fit = match fit {
+        WallpaperFit::Cover => sketch::Fit::Cover,
+        WallpaperFit::Contain => sketch::Fit::Contain,
+        WallpaperFit::Center => sketch::Fit::Center,
+        WallpaperFit::Tile => sketch::Fit::Tile,
     };
-    container(content)
-        .width(width)
-        .height(height)
-        .clip(true)
-        .style(move |_: &iced::Theme| theme::solid(backdrop, theme::radius_r2()))
-        .into()
+    sketch::wallpaper(*t, &wallpaper, fit, to_color(backdrop), width, height, REFERENCE_WIDTH)
 }
 
 fn picture<'a>(thumb: &Thumbnail, badge: Option<&'a str>, t: &ThemeState) -> Element<'a, Msg> {
-    let shot =
-        image(thumb.handle.clone()).width(Fill).height(TILE_H).content_fit(ContentFit::Cover).border_radius(theme::R2);
+    let shot = glide_sdk::widget::picture(thumb.handle.clone(), Fill, TILE_H, ContentFit::Cover, theme::R2);
     match badge {
         Some(label) => iced::widget::stack![
             shot,
-            container(glide_sdk::widget::bubble(
-                &widgets::paint(t),
-                glide_sdk::widget::text(label, glide_sdk::theme::TextStyle::CAP)
-            ))
-            .padding(6)
-            .align_bottom(Fill)
-            .align_left(Fill),
+            container(glide_sdk::widget::bubble(&widgets::paint(t), text(label, TextStyle::CAP)))
+                .padding(6)
+                .align_bottom(Fill)
+                .align_left(Fill),
         ]
         .into(),
-        None => shot.into(),
+        None => shot,
     }
 }
 
 pub const TILE_H: f32 = 84.0;
 
 fn tile<'a>(t: &ThemeState, selected: bool, message: Msg, content: Element<'a, Msg>) -> Element<'a, Msg> {
-    let t = *t;
-    button(
-        container(content)
-            .padding(theme::RING_GAP)
-            .width(Fill)
-            .style(move |_: &iced::Theme| theme::preview_frame_style(&t, selected)),
-    )
-    .padding(0)
-    .width(Length::FillPortion(1))
-    .on_press(message)
-    .style(move |_: &iced::Theme, status| theme::plain_button_style(&t, status))
-    .into()
+    container(glide_sdk::widget::frame_button(&widgets::paint(t), content, selected, message))
+        .width(Length::FillPortion(1))
+        .into()
 }
 
 fn grid(tiles: Vec<Element<'_, Msg>>) -> Element<'_, Msg> {
-    let mut grid = Column::new().spacing(10);
-    let mut tiles = tiles.into_iter().peekable();
-    while tiles.peek().is_some() {
-        let mut line = IcedRow::new().spacing(10);
-        for index in 0..4 {
-            line = match tiles.next() {
-                Some(tile) => line.push(tile),
-                None if index > 0 => line.push(space().width(Length::FillPortion(1))),
-                None => line,
-            };
-        }
-        grid = grid.push(line);
-    }
-    container(grid).padding([theme::ROW_PADDING_X, theme::ROW_PADDING_X]).into()
+    container(widgets::grid(tiles, 4, 10.0)).padding([theme::ROW_PADDING_X, theme::ROW_PADDING_X]).into()
 }

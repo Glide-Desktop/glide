@@ -1,7 +1,4 @@
-use glide_settings::theme::{
-    Accent as SettingsAccent, R_ROUND, R1, R2, R3, ThemeState, card_style, content_container_style, radius_r3,
-    window_container_style,
-};
+use glide_settings::theme::{Accent as SettingsAccent, R_ROUND, R1, R2, R3, ThemeState};
 use glide_theme::{Accent, Appearance, Color, Tokens};
 
 fn luminance(c: Color) -> f32 {
@@ -24,10 +21,7 @@ fn luma(c: Color) -> f32 {
 fn widget_styles_use_only_meridian_radii() {
     const { assert!(R1 < R2 && R2 < R3 && R3 < R_ROUND) };
     let theme = ThemeState::new(Appearance::Dark, Accent::Blue);
-    assert_eq!(card_style(&theme).border.radius, radius_r3());
-    for style in [window_container_style, content_container_style] {
-        assert_eq!(style(&theme).border.radius, iced::border::Radius::default());
-    }
+    assert_eq!(glide_sdk::widget::card_style(&theme.paint).border.radius, R3.into());
 }
 
 #[test]

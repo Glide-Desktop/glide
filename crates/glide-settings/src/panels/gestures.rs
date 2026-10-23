@@ -1,8 +1,10 @@
 use std::ops::RangeInclusive;
 
 use glide_ipc::{GestureAction, GestureKind, GesturePhase, GestureSample};
-use iced::widget::{Stack, column, container, row, space, text};
-use iced::{Alignment, Element, Fill, Length, Padding, Subscription, Task};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{mock as sketch, text};
+use iced::widget::{column, container, row, space};
+use iced::{Alignment, Element, Fill, Length, Subscription, Task};
 
 use super::common::{choice, gated, switch_row, toggle};
 use super::{Ctx, Pane, Panel};
@@ -443,12 +445,13 @@ impl Page {
     fn feel_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let value = self.sensitivity.unwrap_or_else(|| sensitivity(config));
-        let control = row![
-            widgets::value_slider(t, SENSITIVITY, value, 0.05, Msg::Sensitivity, Some(Msg::CommitSensitivity),),
-            text(format!("{value:.2}×")).size(13).color(t.fg_2()).width(Length::Fixed(48.0)).align_x(Alignment::End),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center);
+        let control = glide_sdk::widget::slider_readout(
+            &widgets::paint(&t),
+            None,
+            widgets::value_slider(t, SENSITIVITY, value, 0.05, Msg::Sensitivity, Some(Msg::CommitSensitivity)),
+            format!("{value:.2}×"),
+            false,
+        );
         Group::new(t)
             .title(c.t(tr::Key::Feel))
             .description(c.t(tr::Key::FeelHint))
@@ -505,13 +508,13 @@ impl Page {
             if !self.done.is_empty() || self.last.is_some() {
                 buttons = buttons.push(widgets::tonal(t, c.t(tr::Key::Reset), Some(Msg::ResetPractice)));
             }
-            text(c.t(tr::Key::PracticeHint)).size(12).color(t.fg_3()).width(Fill).into()
+            text(c.t(tr::Key::PracticeHint), TextStyle::CAP).color(t.fg_3()).width(Fill).into()
         } else if c.online {
             buttons = buttons.push(widgets::primary(t, c.t(tr::Key::Start), Some(Msg::StartPractice)));
             space().width(Fill).into()
         } else {
             buttons = buttons.push(widgets::primary(t, c.t(tr::Key::Start), None));
-            text(c.t(tr::Key::Offline)).size(12).color(t.fg_3()).width(Fill).into()
+            text(c.t(tr::Key::Offline), TextStyle::CAP).color(t.fg_3()).width(Fill).into()
         };
         container(row![hint, buttons].spacing(12).align_y(Alignment::Center))
             .padding([10.0, theme::ROW_PADDING_X])
@@ -666,31 +669,11 @@ fn goals<'a>(c: &Ctx, done: &[Goal]) -> Element<'a, Msg> {
         pills = pills.push(widgets::pill(t, tone, label));
     }
     let header = row![
-        text(c.t(tr::Key::Goals)).size(13).color(t.fg_2()).width(Fill),
-        text(format!("{}/{}", done.len(), Goal::ALL.len()))
-            .size(13)
-            .font(theme::SEMIBOLD)
+        text(c.t(tr::Key::Goals), TextStyle::CALL).color(t.fg_2()).width(Fill),
+        text(format!("{}/{}", done.len(), Goal::ALL.len()), TextStyle { weight: 600, ..TextStyle::NUM })
             .color(if done.len() == Goal::ALL.len() { t.ok() } else { t.fg_3() }),
     ];
     container(column![header, pills.wrap()].spacing(8)).padding([10.0, theme::ROW_PADDING_X]).width(Fill).into()
-}
-
-fn dots<'a>(color: iced::Color, count: u32, size: f32, gap: f32) -> Element<'a, Msg> {
-    let mut line = row![].spacing(gap).align_y(Alignment::Center);
-    for _ in 0..count.clamp(1, 5) {
-        line = line.push(
-            container(space())
-                .width(size)
-                .height(size)
-                .style(move |_: &iced::Theme| theme::solid(color, theme::radius_round())),
-        );
-    }
-    line.into()
-}
-
-fn dots_width(count: u32, size: f32, gap: f32) -> f32 {
-    let count = count.clamp(1, 5) as f32;
-    count * size + (count - 1.0) * gap
 }
 
 fn fingers_layers<'a>(t: &ThemeState, sample: &GestureSample, natural: bool) -> Vec<Element<'a, Msg>> {
@@ -698,53 +681,35 @@ fn fingers_layers<'a>(t: &ThemeState, sample: &GestureSample, natural: bool) -> 
     if let Some(glyph) = direction(sample, natural).icon()
         && sample.kind == GestureKind::Swipe
     {
-        layers.push(container(widgets::icon(glyph, 64.0, t.acc_soft())).center_x(Fill).center_y(Fill).into());
+        layers.push(sketch::centered(widgets::icon(glyph, 64.0, t.acc_soft())));
     }
     let gap = match sample.kind {
         GestureKind::Pinch => (DOT_GAP * sample.scale as f32).clamp(0.0, 60.0),
         _ => DOT_GAP,
     };
     let (x, y) = if sample.kind == GestureKind::Swipe { finger_offset(sample, natural) } else { (0.0, 0.0) };
-    let width = dots_width(sample.fingers, DOT, gap);
+    let width = sketch::dots_width(sample.fingers, DOT, gap);
     let left = (PAD_WIDTH / 2.0 + x - width / 2.0).max(0.0);
     let top = (PAD_HEIGHT / 2.0 + y - DOT / 2.0).max(0.0);
-    layers
-        .push(container(dots(t.acc_bg(), sample.fingers, DOT, gap)).padding(Padding::ZERO.top(top).left(left)).into());
+    layers.push(sketch::at(left, top, sketch::dots(t.acc_bg(), sample.fingers, DOT, gap)));
     layers
 }
 
 fn pad<'a>(c: &Ctx, live: Option<&GestureSample>, practising: bool, natural: bool) -> Element<'a, Msg> {
     let t = c.theme;
-    let well = t.sunken_bg();
-    let edge = t.line_2();
-    let surface = container(space()).width(Fill).height(Fill).style(move |_: &iced::Theme| {
-        let mut style = theme::solid(well, theme::radius_r3());
-        style.border.color = edge;
-        style.border.width = 1.0;
-        style
-    });
-    let mut layers: Vec<Element<'a, Msg>> = vec![surface.into()];
+    let mut layers: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(sample) = live {
         layers.extend(fingers_layers(&t, sample, natural));
     } else {
         let (caption, color) = if practising { (tr::Key::PlaceFingers, t.fg_2()) } else { (tr::Key::Idle, t.fg_3()) };
         let ghost = iced::Color { a: 0.35, ..t.fg_3() };
-        layers.push(
-            container(
-                column![dots(ghost, 3, DOT, DOT_GAP), text(c.t(caption)).size(13).color(color),]
-                    .spacing(14)
-                    .align_x(Alignment::Center),
-            )
-            .center_x(Fill)
-            .center_y(Fill)
-            .into(),
-        );
+        layers.push(sketch::centered(
+            column![sketch::dots(ghost, 3, DOT, DOT_GAP), text(c.t(caption), TextStyle::CALL).color(color)]
+                .spacing(14)
+                .align_x(Alignment::Center),
+        ));
     }
-    container(Stack::with_children(layers).width(Fill).height(Fill))
-        .width(Length::Fixed(PAD_WIDTH))
-        .height(Length::Fixed(PAD_HEIGHT))
-        .clip(true)
-        .into()
+    sketch::sample_area(t, Length::Fixed(PAD_WIDTH), Length::Fixed(PAD_HEIGHT), layers)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -761,19 +726,19 @@ fn art<'a>(t: &ThemeState, art: Art) -> Element<'a, Msg> {
     let content: Element<'a, Msg> = match art {
         Art::Sideways(count) => row![
             widgets::icon(Icon::ArrowLeft, 11.0, arrow),
-            dots(accent, count, 5.0, 2.0),
+            sketch::dots(accent, count, 5.0, 2.0),
             widgets::icon(Icon::ArrowRight, 11.0, arrow),
         ]
         .spacing(3)
         .align_y(Alignment::Center)
         .into(),
-        Art::Up(count) => column![widgets::icon(Icon::ArrowUp, 11.0, arrow), dots(accent, count, 5.0, 2.0),]
+        Art::Up(count) => column![widgets::icon(Icon::ArrowUp, 11.0, arrow), sketch::dots(accent, count, 5.0, 2.0)]
             .spacing(2)
             .align_x(Alignment::Center)
             .into(),
         Art::Scroll => column![
             widgets::icon(Icon::ArrowUp, 9.0, arrow),
-            dots(accent, 2, 5.0, 2.0),
+            sketch::dots(accent, 2, 5.0, 2.0),
             widgets::icon(Icon::ArrowDown, 9.0, arrow),
         ]
         .spacing(1)
@@ -781,16 +746,5 @@ fn art<'a>(t: &ThemeState, art: Art) -> Element<'a, Msg> {
         .into(),
         Art::Pinch => widgets::icon(Icon::Pinch, 18.0, arrow),
     };
-    let well = t.fill_1();
-    let edge = t.line_2();
-    container(content)
-        .center_x(Length::Fixed(48.0))
-        .center_y(Length::Fixed(34.0))
-        .style(move |_: &iced::Theme| {
-            let mut style = theme::solid(well, theme::radius_r2());
-            style.border.color = edge;
-            style.border.width = 1.0;
-            style
-        })
-        .into()
+    sketch::glyph_well(*t, 48.0, 34.0, content)
 }

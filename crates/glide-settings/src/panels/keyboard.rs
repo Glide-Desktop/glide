@@ -1,4 +1,6 @@
-use iced::widget::{column, container, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Length, Task};
 
 use super::common::{gated, switch_row};
@@ -592,7 +594,7 @@ impl Page {
                     row![
                         widgets::field(t, c.t(K::TestHere), &self.test, Msg::TestInput, None, false)
                             .width(Length::Fill),
-                        text(format!("{typed} {}", c.t(tr::Key::Characters))).size(12).color(t.fg_3()),
+                        text(format!("{typed} {}", c.t(tr::Key::Characters)), TextStyle::CAP).color(t.fg_3()),
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center),

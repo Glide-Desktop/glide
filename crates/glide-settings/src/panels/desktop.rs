@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use iced::widget::{Column, Row as IcedRow, container, row, text};
+use glide_sdk::widget::mock as sketch;
+use iced::widget::{Column, Row as IcedRow, container, row};
 use iced::{Alignment, Element, Length, Padding, Task};
 
 use super::apps::app_icon;
@@ -336,12 +337,7 @@ impl Page {
         let illustration: Element<'a, Msg> = if on {
             dock_preview(&t, &pins, size, scale, lift, margin)
         } else {
-            sketch::screen(
-                t,
-                Length::Fill,
-                PREVIEW_HEIGHT,
-                vec![sketch::centered(text(c.t(tr::Key::DockHidden)).size(13).color(t.fg_2()))],
-            )
+            sketch::screen(t, Length::Fill, PREVIEW_HEIGHT, vec![sketch::caption(t, c.t(tr::Key::DockHidden))])
         };
         Group::new(t)
             .title(c.t(tr::Key::Preview))
@@ -497,15 +493,13 @@ fn dock_preview<'a>(
             if index == hovered { ((f64::from(unit) * scale) as f32, (lift * 0.62) as f32) } else { (unit, 0.0) };
         tiles = tiles.push(container(app_icon(t, *icon, name, tile_size.round())).padding(Padding::ZERO.bottom(rise)));
     }
-    let shell = t.popover_bg();
-    let line = t.line_2();
-    let dock = container(tiles).padding(6).style(move |_: &iced::Theme| iced::widget::container::Style {
-        background: Some(iced::Background::Color(iced::Color { a: 0.74, ..shell })),
-        border: iced::Border { color: line, width: 1.0, radius: theme::radius_r4() },
-        ..iced::widget::container::Style::default()
-    });
     let bottom = (margin * 0.62) as f32 + 4.0;
-    sketch::screen(*t, Length::Fill, PREVIEW_HEIGHT, vec![sketch::topbar(*t), sketch::bottom(bottom, dock)])
+    sketch::screen(
+        *t,
+        Length::Fill,
+        PREVIEW_HEIGHT,
+        vec![sketch::topbar(*t), sketch::bottom(bottom, sketch::dock(*t, tiles))],
+    )
 }
 
 fn autohide_sketch<'a>(t: &ThemeState, mode: Autohide) -> Element<'a, Msg> {
@@ -520,144 +514,4 @@ fn autohide_sketch<'a>(t: &ThemeState, mode: Autohide) -> Element<'a, Msg> {
         Autohide::Never => vec![sketch::at(18.0, 10.0, window), sketch::bottom(4.0, dock)],
     };
     sketch::screen(t, Length::Fixed(132.0), 80.0, layers)
-}
-
-pub mod sketch {
-    use iced::widget::{Stack, container, row, space};
-    use iced::{Alignment, Color, Element, Fill, Length, Padding};
-
-    use crate::theme::{self, ThemeState};
-
-    #[must_use]
-    pub fn gradient(top: Color, bottom: Color, radius: f32) -> iced::widget::container::Style {
-        iced::widget::container::Style {
-            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
-                iced::gradient::Linear::new(std::f32::consts::PI).add_stop(0.0, top).add_stop(1.0, bottom),
-            ))),
-            border: iced::Border { radius: radius.into(), ..iced::Border::default() },
-            ..iced::widget::container::Style::default()
-        }
-    }
-
-    #[must_use]
-    pub fn block<'a, M: 'a>(color: Color, width: f32, height: f32, radius: f32) -> Element<'a, M> {
-        container(space())
-            .width(width)
-            .height(height)
-            .style(move |_: &iced::Theme| theme::solid(color, radius.into()))
-            .into()
-    }
-
-    #[must_use]
-    pub fn at<'a, M: 'a>(x: f32, y: f32, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-        container(content).padding(Padding::ZERO.top(y).left(x)).into()
-    }
-
-    #[must_use]
-    pub fn centered<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-        container(content).center_x(Fill).center_y(Fill).into()
-    }
-
-    #[must_use]
-    pub fn bottom<'a, M: 'a>(gap: f32, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-        container(content)
-            .width(Fill)
-            .height(Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::End)
-            .padding(Padding::ZERO.bottom(gap))
-            .into()
-    }
-
-    #[must_use]
-    pub fn screen<'a, M: 'a>(t: ThemeState, width: Length, height: f32, layers: Vec<Element<'a, M>>) -> Element<'a, M> {
-        let ramp = t.accent().ramp();
-        let top = theme::to_iced_color(ramp[1]);
-        let bottom = theme::to_iced_color(ramp[4]);
-        let line = t.line_2();
-        container(Stack::with_children(layers).width(Fill).height(Length::Fixed(height)))
-            .width(width)
-            .height(Length::Fixed(height))
-            .clip(true)
-            .style(move |_: &iced::Theme| {
-                let mut style = gradient(top, bottom, theme::R2);
-                style.border.color = line;
-                style.border.width = 1.0;
-                style
-            })
-            .into()
-    }
-
-    #[must_use]
-    pub fn topbar<'a, M: 'a>(t: ThemeState) -> Element<'a, M> {
-        let bar = t.bar_bg();
-        let fg = t.fg_3();
-        container(
-            row![
-                block(fg, 18.0, 4.0, theme::R1),
-                space().width(Fill),
-                block(fg, 26.0, 4.0, theme::R1),
-                space().width(Fill),
-                block(fg, 12.0, 4.0, theme::R1),
-            ]
-            .align_y(iced::Alignment::Center),
-        )
-        .padding([0, 8])
-        .width(Fill)
-        .height(10)
-        .center_y(10.0)
-        .style(move |_: &iced::Theme| theme::solid(bar, iced::border::Radius::default()))
-        .into()
-    }
-
-    #[must_use]
-    pub fn window<'a, M: 'a>(t: ThemeState, width: f32, height: f32) -> Element<'a, M> {
-        let bg = t.win_bg();
-        let bar = t.bar_bg();
-        let line = t.line_2();
-        container(
-            iced::widget::column![
-                container(space())
-                    .width(Fill)
-                    .height(8)
-                    .style(move |_: &iced::Theme| { theme::solid(bar, iced::border::Radius::default()) }),
-                space().height(Fill),
-            ]
-            .width(Fill)
-            .height(Fill),
-        )
-        .width(width)
-        .height(height)
-        .clip(true)
-        .style(move |_: &iced::Theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(bg)),
-            border: iced::Border { color: line, width: 1.0, radius: theme::radius_r1() },
-            shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
-                offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 6.0,
-            },
-            ..iced::widget::container::Style::default()
-        })
-        .into()
-    }
-
-    #[must_use]
-    pub fn mini_dock<'a, M: 'a>(t: ThemeState) -> Element<'a, M> {
-        let shell = t.popover_bg();
-        let line = t.line_2();
-        let ramp = t.accent().ramp();
-        let mut icons = row![].spacing(3);
-        for colour in &ramp[1..=4] {
-            icons = icons.push(block(theme::to_iced_color(*colour), 9.0, 9.0, 3.0));
-        }
-        container(icons)
-            .padding(3)
-            .style(move |_: &iced::Theme| iced::widget::container::Style {
-                background: Some(iced::Background::Color(shell)),
-                border: iced::Border { color: line, width: 1.0, radius: 5.0.into() },
-                ..iced::widget::container::Style::default()
-            })
-            .into()
-    }
 }

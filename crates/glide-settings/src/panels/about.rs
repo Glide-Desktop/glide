@@ -1,4 +1,6 @@
-use iced::widget::{column, container, image, row, svg, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Task};
 
 use super::common::error_banner;
@@ -341,14 +343,11 @@ impl Page {
         let t = c.theme;
         let info = &details.info;
         let logo: Element<'a, Msg> = match &details.os_logo {
-            Some(path) if path.extension().is_some_and(|ext| ext == "svg") => {
-                svg(svg::Handle::from_path(path)).width(72).height(72).into()
-            }
-            Some(path) => image(image::Handle::from_path(path)).width(72).height(72).into(),
+            Some(path) => glide_sdk::widget::photo(path, 72.0, 0.0),
             None => widgets::tile(Icon::Logo, t.acc_bg(), 72.0),
         };
         let spec = |glyph: Icon, label: String| {
-            row![widgets::icon(glyph, 14.0, t.fg_3()), text(label).size(12).color(t.fg_2()),]
+            row![widgets::icon(glyph, 14.0, t.fg_3()), text(label, TextStyle::CAP).color(t.fg_2())]
                 .spacing(6)
                 .align_y(Alignment::Center)
         };
@@ -373,25 +372,20 @@ impl Page {
             .spacing(8)
             .into()
         };
-        let color = super::Panel::About.color();
-        container(
-            column![
-                logo,
-                widgets::gap(8.0),
-                text(device_name(details)).size(theme::PAGE_TITLE_SIZE).font(theme::SEMIBOLD).color(t.fg_1()),
-                text(format!("Glide {VERSION} · {os}")).size(13).color(t.fg_2()),
-                widgets::gap(8.0),
-                specs.wrap().vertical_spacing(6),
-                widgets::gap(12.0),
-                actions,
-            ]
-            .spacing(2)
-            .align_x(Alignment::Center),
-        )
-        .padding([24, 16])
-        .center_x(Fill)
-        .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
-        .into()
+        let body = column![
+            logo,
+            widgets::gap(8.0),
+            text(device_name(details), TextStyle::T1).color(t.fg_1()),
+            text(format!("Glide {VERSION} · {os}"), TextStyle::CALL).color(t.fg_2()),
+            widgets::gap(8.0),
+            specs.wrap().vertical_spacing(6),
+            widgets::gap(12.0),
+            actions,
+        ]
+        .spacing(2)
+        .align_x(Alignment::Center);
+        let body = container(body).center_x(Fill);
+        glide_sdk::widget::tinted_card(&widgets::paint(&t), super::Panel::About.color(), [24, 16], body)
     }
 
     fn name_group<'a>(&'a self, c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
@@ -483,7 +477,7 @@ fn stats<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
 }
 
 fn info_row<'a>(c: &Ctx, title: impl Into<String>, value: String) -> Row<'a, Msg> {
-    Row::new(c.theme, title).suffix(text(value).size(13).color(c.theme.fg_2()))
+    Row::new(c.theme, title).suffix(text(value, TextStyle::CALL).color(c.theme.fg_2()))
 }
 
 fn joined(first: &str, second: &str) -> String {
@@ -549,7 +543,7 @@ fn battery_group<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
         if let Some(percent) = battery.percent {
             line = line.suffix(
                 column![
-                    text(format!("{percent}%")).size(13).font(theme::SEMIBOLD).color(t.fg_1()),
+                    text(format!("{percent}%"), TextStyle { weight: 600, ..TextStyle::NUM }).color(t.fg_1()),
                     container(widgets::progress_bar(t, f32::from(percent) / 100.0)).width(96),
                 ]
                 .spacing(4)
@@ -593,15 +587,7 @@ fn firmware_group<'a>(c: &Ctx, details: &'a Details) -> Option<Element<'a, Msg>>
     if rows.is_empty() {
         return None;
     }
-    Some(
-        column![
-            container(text(c.t(T::Firmware)).size(14).font(theme::SEMIBOLD).color(t.fg_1()))
-                .padding(iced::Padding::ZERO.left(4)),
-            widgets::info_grid(t, rows),
-        ]
-        .spacing(8)
-        .into(),
-    )
+    Some(Group::new(t).title(c.t(T::Firmware)).extend(widgets::info_rows(t, rows)).build())
 }
 
 fn software_group<'a>(c: &Ctx, details: &'a Details, config: &'a ConfigStore) -> Element<'a, Msg> {

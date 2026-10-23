@@ -26,6 +26,75 @@ impl Speed {
     pub const EXPAND: Self = Self { duration: motion::t3, ease: motion::ease_out };
     pub const GROW: Self = Self { duration: motion::t3, ease: motion::ease_over };
     pub const FADE: Self = Self { duration: motion::t2, ease: motion::ease_io };
+    pub const ARRIVE: Self = Self { duration: motion::t4, ease: motion::ease_out };
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Fade {
+    target: bool,
+    from: f32,
+    start: Option<Instant>,
+    enter: Speed,
+    leave: Speed,
+}
+
+impl Fade {
+    #[must_use]
+    pub fn new(on: bool, speed: Speed) -> Self {
+        Self::asymmetric(on, speed, speed)
+    }
+
+    #[must_use]
+    pub fn asymmetric(on: bool, enter: Speed, leave: Speed) -> Self {
+        Self { target: on, from: if on { 1.0 } else { 0.0 }, start: None, enter, leave }
+    }
+
+    pub fn set(&mut self, on: bool, now: Instant) {
+        if self.target == on {
+            return;
+        }
+        self.from = self.progress(now);
+        self.target = on;
+        self.start = Some(now);
+    }
+
+    #[must_use]
+    pub fn target(&self) -> bool {
+        self.target
+    }
+
+    fn speed(&self) -> Speed {
+        if self.target { self.enter } else { self.leave }
+    }
+
+    fn elapsed(&self, now: Instant) -> Option<f64> {
+        let start = self.start?;
+        let duration = (self.speed().duration)();
+        if motion::is_disabled() || duration.is_zero() {
+            return None;
+        }
+        let elapsed = now.saturating_duration_since(start).as_secs_f64() / duration.as_secs_f64();
+        (elapsed < 1.0).then_some(elapsed)
+    }
+
+    #[must_use]
+    pub fn progress(&self, now: Instant) -> f32 {
+        let to = if self.target { 1.0 } else { 0.0 };
+        match self.elapsed(now) {
+            Some(elapsed) => self.from + (to - self.from) * (self.speed().ease)(elapsed) as f32,
+            None => to,
+        }
+    }
+
+    #[must_use]
+    pub fn is_animating(&self, now: Instant) -> bool {
+        self.elapsed(now).is_some()
+    }
+
+    #[must_use]
+    pub fn is_settled_off(&self, now: Instant) -> bool {
+        !self.target && !self.is_animating(now)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -428,6 +497,22 @@ impl<M> Widget<M, Theme, Renderer> for Spin<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fade_reverses_from_where_it_is_and_settles() {
+        let start = Instant::now();
+        let mut fade = Fade::asymmetric(false, Speed::ARRIVE, Speed::FADE);
+        assert!(fade.progress(start) < f32::EPSILON && fade.is_settled_off(start));
+        fade.set(true, start);
+        let middle = start + (Speed::ARRIVE.duration)() / 2;
+        let halfway = fade.progress(middle);
+        if !motion::is_disabled() {
+            assert!(halfway > 0.0 && halfway < 1.0 && fade.is_animating(middle));
+        }
+        fade.set(false, middle);
+        assert!((fade.progress(middle) - halfway).abs() < 1e-4, "reversing keeps the current value");
+        assert!(fade.is_settled_off(middle + Duration::from_secs(2)));
+    }
 
     #[test]
     fn a_collapse_unfolds_through_intermediate_heights() {

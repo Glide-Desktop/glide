@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use iced::widget::{column, container, row, rule, scrollable};
-use iced::{Element, Fill, Length, Subscription, Task};
+use iced::widget::{column, container, row};
+use iced::{Element, Fill, Subscription, Task};
 
 use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
@@ -213,7 +213,7 @@ impl App {
 
     #[must_use]
     pub fn iced_theme(&self) -> iced::Theme {
-        theme::meridian_theme(&self.theme)
+        self.theme.paint.iced_theme()
     }
 
     #[must_use]
@@ -448,12 +448,13 @@ impl App {
     #[must_use]
     pub fn view(&self) -> Element<'_, Message> {
         let t = self.theme;
-        let divider = rule::vertical(1).style(move |_: &iced::Theme| theme::rule_style(&t));
-        container(row![sidebar::view(self, self.ctx(), &self.user_name, &self.login), divider, self.view_content(),])
-            .width(Fill)
-            .height(Fill)
-            .style(move |_: &iced::Theme| theme::window_container_style(&t))
-            .into()
+        let paint = crate::widgets::paint(&t);
+        let body = row![
+            sidebar::view(self, self.ctx(), &self.user_name, &self.login),
+            glide_sdk::widget::vertical_separator(&paint),
+            self.view_content(),
+        ];
+        glide_sdk::widget::pane(t.win_bg(), 0.0, body).into()
     }
 
     fn view_content(&self) -> Element<'_, Message> {
@@ -498,12 +499,12 @@ impl App {
             )
             .center_x(Fill);
 
-        container(scrollable(clamp).id(CONTENT_SCROLL_ID).height(Fill).style(move |_: &iced::Theme, status| {
-            glide_sdk::widget::scrollable_style(&crate::widgets::paint(&t), status)
-        }))
-        .width(Fill)
-        .height(Length::Fill)
-        .style(move |_: &iced::Theme| theme::content_container_style(&t))
+        let paint = crate::widgets::paint(&t);
+        glide_sdk::widget::pane(
+            t.win_bg(),
+            0.0,
+            glide_sdk::widget::scrollable(&paint, clamp).id(CONTENT_SCROLL_ID).height(Fill),
+        )
         .into()
     }
 }

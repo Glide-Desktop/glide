@@ -1,4 +1,4 @@
-use iced::widget::{column, container, row, text};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::error_banner;
@@ -11,7 +11,7 @@ use crate::services::network::{
 };
 use crate::services::run::{Generation, blocking};
 use crate::theme::{self, Tone};
-use crate::widgets::{self, Group, Row};
+use crate::widgets::{self, Group, Row, actions, chevron, form_row, lines, note, sheet};
 
 mod tr {
     crate::i18n::catalogue! {
@@ -1183,77 +1183,4 @@ pub fn ssid_too_long(ssid: &str) -> bool {
 #[must_use]
 pub const fn expands(point: &AccessPoint) -> bool {
     point.in_use || (point.secured && !point.known)
-}
-
-#[must_use]
-pub fn chevron<'a, M: 'a>(t: theme::ThemeState, open: bool) -> Element<'a, M> {
-    widgets::icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, 14.0, t.fg_3())
-}
-
-#[must_use]
-pub fn sheet<'a, M: 'a>(t: theme::ThemeState, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
-    let well = t.fill_1();
-    container(
-        container(column(rows).spacing(2))
-            .padding([8, 4])
-            .width(Fill)
-            .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2())),
-    )
-    .padding([4.0, theme::ROW_PADDING_X - 4.0])
-    .into()
-}
-
-#[must_use]
-pub fn lines<'a, M: 'a>(t: theme::ThemeState, info: Vec<(String, String)>) -> Element<'a, M> {
-    let mut list = column![].spacing(2);
-    for (key, value) in info {
-        list = list.push(
-            container(
-                row![
-                    text(key).size(13).color(t.fg_2()).width(Length::FillPortion(2)),
-                    text(value).size(13).color(t.fg_1()).width(Length::FillPortion(3)).align_x(Alignment::End),
-                ]
-                .spacing(12)
-                .align_y(Alignment::Center),
-            )
-            .padding([5.0, theme::ROW_PADDING_X]),
-        );
-    }
-    list.into()
-}
-
-#[must_use]
-pub fn form_row<'a, M: 'a>(
-    t: theme::ThemeState, label: &str, hint: Option<&str>, control: Element<'a, M>,
-) -> Element<'a, M> {
-    let mut labels = column![text(label.to_string()).size(14).color(t.fg_1())].spacing(1);
-    if let Some(hint) = hint.filter(|hint| !hint.is_empty()) {
-        labels = labels.push(text(hint.to_string()).size(12).color(t.fg_2()));
-    }
-    container(
-        row![container(labels).width(Length::FillPortion(2)), container(control).width(Length::FillPortion(3)),]
-            .spacing(12)
-            .align_y(Alignment::Center),
-    )
-    .padding([theme::ROW_PADDING_Y, theme::ROW_PADDING_X])
-    .into()
-}
-
-#[must_use]
-pub fn note<'a, M: 'a>(t: theme::ThemeState, glyph: Icon, message: &str) -> Element<'a, M> {
-    container(
-        row![widgets::icon(glyph, 14.0, t.fg_3()), text(message.to_string()).size(12).color(t.fg_2()).width(Fill),]
-            .spacing(8)
-            .align_y(Alignment::Center),
-    )
-    .padding([4.0, theme::ROW_PADDING_X])
-    .into()
-}
-
-#[must_use]
-pub fn actions<'a, M: 'a>(buttons: Vec<Element<'a, M>>) -> Element<'a, M> {
-    container(iced::widget::Row::with_children(buttons).spacing(8).align_y(Alignment::Center))
-        .align_right(Fill)
-        .padding([4.0, theme::ROW_PADDING_X])
-        .into()
 }

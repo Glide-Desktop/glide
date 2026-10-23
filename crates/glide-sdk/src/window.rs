@@ -54,6 +54,31 @@ impl Default for Window {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    Bottom,
+}
+
+#[must_use]
+pub fn side_corners(side: Side, corner: f32) -> Radius {
+    let none = Radius::default();
+    match side {
+        Side::Left => none.top_left(corner).bottom_left(corner),
+        Side::Right => none.top_right(corner).bottom_right(corner),
+        Side::Top => none.top_left(corner).top_right(corner),
+        Side::TopRight => none.top_right(corner),
+        Side::BottomLeft => none.bottom_left(corner),
+        Side::BottomRight => none.bottom_right(corner),
+        Side::Bottom => none.bottom_left(corner).bottom_right(corner),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Edge(pub Direction);
 

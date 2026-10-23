@@ -120,6 +120,14 @@ pub fn tinted_card_style(paint: &Paint, tint: Color) -> container::Style {
 }
 
 #[must_use]
+pub fn tinted_card<'a, M: 'a>(
+    paint: &Paint, tint: Color, padding: impl Into<Padding>, content: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    let paint = *paint;
+    container(content).padding(padding).width(Fill).style(move |_| tinted_card_style(&paint, tint)).into()
+}
+
+#[must_use]
 pub fn preview_ring_style(paint: &Paint, selected: bool, status: control::Status) -> control::Style {
     let color = if selected {
         paint.acc_bg()

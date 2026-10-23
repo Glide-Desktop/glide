@@ -1,14 +1,16 @@
-use iced::widget::{Column, container, row, space, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{Column, container, row, space};
 use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::{gated, switch_row};
-use super::desktop::sketch;
 use super::{Ctx, Pane};
 use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::services::config::ConfigStore;
 use crate::theme;
 use crate::widgets::{self, Group, Row};
+use glide_sdk::widget::mock as sketch;
 
 mod tr {
     crate::i18n::catalogue! {
@@ -187,29 +189,22 @@ fn bar_preview<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
     let enabled = config.bool_or("topbar", "enabled", true);
     if !enabled {
-        return sketch::screen(
-            t,
-            Length::Fill,
-            96.0,
-            vec![container(text(c.t(tr::Key::Hidden)).size(13).color(t.fg_2())).center_x(Fill).center_y(Fill).into()],
-        );
+        return sketch::screen(t, Length::Fill, 96.0, vec![sketch::caption(t, c.t(tr::Key::Hidden))]);
     }
     let fg = t.fg_1();
     let dim = t.fg_2();
-    let mut left = row![
-        widgets::icon(Icon::Apps, 13.0, fg),
-        text(c.t(tr::Key::SampleApp)).size(12).font(theme::SEMIBOLD).color(fg),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
+    let strong = TextStyle { weight: 600, ..TextStyle::CAP };
+    let mut left = row![widgets::icon(Icon::Apps, 13.0, fg), text(c.t(tr::Key::SampleApp), strong).color(fg)]
+        .spacing(6)
+        .align_y(Alignment::Center);
     if config.bool_or("topbar", "global-menu", true) {
-        left = left.push(text(c.t(tr::Key::SampleMenus)).size(12).color(dim));
+        left = left.push(text(c.t(tr::Key::SampleMenus), TextStyle::CAP).color(dim));
     }
-    let clock =
-        text(sample_clock(TimeFormat::from_config(config), c.lang, config.bool_or("topbar", "clock-date", true)))
-            .size(12)
-            .font(theme::SEMIBOLD)
-            .color(fg);
+    let clock = text(
+        sample_clock(TimeFormat::from_config(config), c.lang, config.bool_or("topbar", "clock-date", true)),
+        strong,
+    )
+    .color(fg);
     let mut right = row![].spacing(8).align_y(Alignment::Center);
     if config.bool_or("topbar", "tray", true) {
         let ramp = t.accent().ramp();
@@ -220,11 +215,12 @@ fn bar_preview<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
     right = right.push(widgets::icon(Icon::Volume, 13.0, fg)).push(widgets::icon(Icon::Wifi, 13.0, fg));
     let mut battery = row![widgets::icon(Icon::Battery, 14.0, fg)].spacing(3).align_y(Alignment::Center);
     if config.bool_or("topbar", "battery-percentage", true) {
-        battery = battery.push(text("80%").size(12).color(fg));
+        battery = battery.push(text("80%", TextStyle::CAP).color(fg));
     }
     right = right.push(battery).push(widgets::icon(Icon::Grid, 13.0, fg));
-    let bar_bg = t.bar_bg();
-    let bar = container(
+    let bar = sketch::bar(
+        t,
+        30.0,
         row![
             container(left).width(Length::FillPortion(1)),
             container(clock).center_x(Length::Shrink),
@@ -232,15 +228,7 @@ fn bar_preview<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
         ]
         .spacing(12)
         .align_y(Alignment::Center),
-    )
-    .padding([0, 12])
-    .width(Fill)
-    .height(30)
-    .center_y(30.0)
-    .style(move |_: &iced::Theme| iced::widget::container::Style {
-        background: Some(iced::Background::Color(bar_bg)),
-        ..iced::widget::container::Style::default()
-    });
+    );
     sketch::screen(
         t,
         Length::Fill,

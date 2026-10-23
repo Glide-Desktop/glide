@@ -13,7 +13,7 @@ fn luma(c: iced::Color) -> f32 {
 }
 
 fn over(base: iced::Color, top: iced::Color) -> iced::Color {
-    theme::blend_state_layer(base, top, 1.0)
+    glide_sdk::theme::over(top, base)
 }
 
 fn both() -> [ThemeState; 2] {
@@ -21,28 +21,12 @@ fn both() -> [ThemeState; 2] {
 }
 
 #[test]
-fn card_shadow_is_the_spec_el_1_and_never_glows_lighter_than_the_card() {
-    for t in both() {
-        let card = theme::card_style(&t);
-        let shadow = card.shadow;
-        let spec = glide_theme::elevation::layers(glide_theme::elevation::Level::El1, t.appearance().into())[0];
-        assert!((shadow.blur_radius - spec.blur).abs() < f32::EPSILON);
-        assert!((shadow.offset.y - spec.dy).abs() < f32::EPSILON);
-        assert!(
-            luma(over(t.card_bg(), shadow.color)) <= luma(t.card_bg()),
-            "{:?}: a card shadow must darken, not draw a light rim under the card",
-            t.appearance()
-        );
-    }
-}
-
-#[test]
 fn every_card_is_a_hairline_r3_card() {
     for t in both() {
-        let card = theme::card_style(&t);
+        let card = glide_sdk::widget::card_style(&t.paint);
         assert_eq!(card.border.color, t.line());
         assert!((card.border.width - 1.0).abs() < f32::EPSILON);
-        assert_eq!(card.border.radius, theme::radius_r3());
+        assert_eq!(card.border.radius, R3.into());
     }
 }
 

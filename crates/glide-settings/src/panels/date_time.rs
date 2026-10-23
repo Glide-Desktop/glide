@@ -1,4 +1,6 @@
-use iced::widget::{column, container, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::{choice, error_banner, switch_row};
@@ -404,11 +406,12 @@ impl Page {
             _ => widgets::gap(0.0),
         };
         let color = super::Panel::DateTime.color();
+        let clock = TextStyle { size_px: 56.0, line_height_px: 64.0, ..TextStyle::DISPLAY };
         let body = row![
             column![
-                text(clock_text(&now, twelve)).size(56).font(theme::SEMIBOLD).color(t.fg_1()),
-                text(long_date(&now, c.lang)).size(15).color(t.fg_1()),
-                text(zone_line).size(13).color(t.fg_2()),
+                text(clock_text(&now, twelve), clock).color(t.fg_1()),
+                text(long_date(&now, c.lang), TextStyle { weight: 400, ..TextStyle::T3 }).color(t.fg_1()),
+                text(zone_line, TextStyle::CALL).color(t.fg_2()),
             ]
             .spacing(2)
             .width(Fill),
@@ -416,11 +419,7 @@ impl Page {
         ]
         .spacing(16)
         .align_y(Alignment::Center);
-        container(body)
-            .padding([20, 24])
-            .width(Fill)
-            .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
-            .into()
+        glide_sdk::widget::tinted_card(&widgets::paint(&t), color, [20, 24], body)
     }
 
     fn zone_group(&self, c: &Ctx) -> Element<'_, Msg> {
@@ -472,8 +471,9 @@ impl Page {
         let when = tz::civil(self.now + i64::from(entry.offset));
         let suffix = row![
             column![
-                text(format!("{:02}:{:02}", when.hour, when.minute)).size(13).font(theme::SEMIBOLD).color(t.fg_1()),
-                text(offset_delta(entry.offset - local, c.lang)).size(11.5).color(t.fg_3()),
+                text(format!("{:02}:{:02}", when.hour, when.minute), TextStyle { weight: 600, ..TextStyle::NUM })
+                    .color(t.fg_1()),
+                text(offset_delta(entry.offset - local, c.lang), TextStyle::CAP).color(t.fg_3()),
             ]
             .align_x(Alignment::End),
             if selected {
@@ -565,7 +565,7 @@ impl Page {
             };
             Row::new(t, c.t(T::WeekStart))
                 .subtitle(c.t(T::WeekStartHint))
-                .suffix(text(name).size(13).color(t.fg_2()))
+                .suffix(text(name, TextStyle::CALL).color(t.fg_2()))
                 .build()
         });
         Group::new(t)

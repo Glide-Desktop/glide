@@ -1,14 +1,17 @@
-use iced::widget::{Column, container, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{Column, container, row};
 use iced::{Alignment, Element, Length, Task};
 
 use super::common::{gated, switch_row, toggle};
-use super::desktop::{NewWindow, sketch};
+use super::desktop::NewWindow;
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::services::config::ConfigStore;
 use crate::services::keybinds;
 use crate::theme::{self, ThemeState};
 use crate::widgets::{self, Group, Row};
+use glide_sdk::widget::mock as sketch;
 
 mod tr {
     crate::i18n::catalogue! {
@@ -163,16 +166,10 @@ fn snapping_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     let zone = |left: f32, width: f32, label: tr::Key| -> Element<'a, Msg> {
         let fill = if on { t.acc_soft() } else { t.fill_2() };
         let stroke = if on { t.acc_bg() } else { t.line_2() };
-        let highlight = container(iced::widget::space()).width(Length::Fixed(width)).height(Length::Fixed(52.0)).style(
-            move |_: &iced::Theme| iced::widget::container::Style {
-                background: Some(iced::Background::Color(fill)),
-                border: iced::Border { color: stroke, width: 1.5, radius: theme::radius_r1() },
-                ..iced::widget::container::Style::default()
-            },
-        );
+        let highlight = sketch::outlined(fill, stroke, 1.5, width, 52.0, theme::R1);
         iced::widget::column![
             sketch::screen(t, Length::Fixed(112.0), 68.0, vec![sketch::at(left, 12.0, highlight)],),
-            text(c.t(label)).size(12).color(t.fg_2()),
+            text(c.t(label), TextStyle::CAP).color(t.fg_2()),
         ]
         .spacing(6)
         .align_x(Alignment::Center)
@@ -207,7 +204,7 @@ fn shortcuts_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     for (label, action) in entries {
         let suffix: Element<'a, Msg> = match keybinds::combo_for(&binds, action) {
             Some(combo) => widgets::key_combo(t, &combo),
-            None => text(c.t(tr::Key::Unbound)).size(13).color(t.fg_3()).into(),
+            None => text(c.t(tr::Key::Unbound), TextStyle::CALL).color(t.fg_3()).into(),
         };
         let mut line = Row::new(t, c.t(label)).suffix(suffix);
         if action == "switch-windows" {

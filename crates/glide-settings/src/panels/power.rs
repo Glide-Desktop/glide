@@ -1,5 +1,7 @@
-use iced::widget::{Row as IcedRow, column, container, row, text};
-use iced::{Alignment, Color, Element, Fill, Task};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{Row as IcedRow, column, row};
+use iced::{Alignment, Element, Fill, Task};
 
 use super::common::{error_banner, gated, toggle};
 use super::{Ctx, Pane, Panel};
@@ -296,10 +298,14 @@ impl Page {
         });
         let source = if self.state.on_ac { K::PluggedIn } else { K::OnBattery };
         let subtitle = estimate.unwrap_or_else(|| c.t(source).to_string());
-        let meter = battery_meter(&t, f32::from(battery.percent) / 100.0, color);
+        let meter = glide_sdk::widget::mock::battery(t, f32::from(battery.percent) / 100.0, color);
         let mut body = column![
             row![
-                text(format!("{}%", battery.percent)).size(34).font(theme::SEMIBOLD).color(t.fg_1()),
+                text(
+                    format!("{}%", battery.percent),
+                    TextStyle { size_px: 34.0, line_height_px: 40.0, ..TextStyle::DISPLAY }
+                )
+                .color(t.fg_1()),
                 widgets::status_pill(t, tone, status),
             ]
             .spacing(12)
@@ -308,13 +314,14 @@ impl Page {
         .spacing(4)
         .width(Fill);
         if subtitle != status {
-            body = body.push(text(subtitle).size(13).color(t.fg_2()));
+            body = body.push(text(subtitle, TextStyle::CALL).color(t.fg_2()));
         }
-        container(row![meter, body].spacing(20).align_y(Alignment::Center))
-            .padding(20)
-            .width(Fill)
-            .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
-            .into()
+        glide_sdk::widget::tinted_card(
+            &widgets::paint(&t),
+            color,
+            20,
+            row![meter, body].spacing(20).align_y(Alignment::Center),
+        )
     }
 
     fn profile_group(&self, c: &Ctx) -> Element<'_, Msg> {
@@ -457,7 +464,7 @@ impl Page {
             .filter(|_| self.state.has_lid)
             .map(|(key, action)| (key, action_label(action, c)))
             .chain([(tr::Key::PowerButton, c.t(tr::Key::ActAsk))])
-            .map(|(key, label)| Row::new(t, c.t(key)).suffix(text(label).size(13).color(t.fg_2())).build());
+            .map(|(key, label)| Row::new(t, c.t(key)).suffix(text(label, TextStyle::CALL).color(t.fg_2())).build());
         Group::new(t).title(c.t(tr::Key::LidAndButtons)).description(c.t(tr::Key::LidHint)).extend(rows).build()
     }
 }
@@ -473,29 +480,6 @@ fn action_label(action: LidAction, c: &Ctx) -> &'static str {
         LidAction::PowerOff => tr::Key::ActPowerOff,
         LidAction::Other => tr::Key::ActOther,
     })
-}
-
-fn battery_meter<'a>(t: &theme::ThemeState, level: f32, color: Color) -> Element<'a, Msg> {
-    let t = *t;
-    let body_w = 64.0;
-    let body_h = 34.0;
-    let inner_w = body_w - 8.0;
-    let fill_w = (inner_w * level.clamp(0.0, 1.0)).max(2.0);
-    let fill = container(iced::widget::space())
-        .width(fill_w)
-        .height(body_h - 8.0)
-        .style(move |_: &iced::Theme| theme::solid(color, theme::radius_r1()));
-    let shell = container(fill).padding(4).width(body_w).height(body_h).style(move |_: &iced::Theme| {
-        iced::widget::container::Style {
-            border: iced::Border { color: t.fg_3(), width: 2.0, radius: theme::radius_r2() },
-            ..iced::widget::container::Style::default()
-        }
-    });
-    let cap = container(iced::widget::space())
-        .width(4)
-        .height(12)
-        .style(move |_: &iced::Theme| theme::solid(t.fg_3(), theme::radius_r1()));
-    row![shell, cap].spacing(2).align_y(Alignment::Center).into()
 }
 
 fn stats<'a>(c: &Ctx, details: &BatteryDetails) -> Option<Element<'a, Msg>> {

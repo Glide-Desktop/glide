@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use iced::widget::{column, container, image, row, svg, text};
-use iced::{Alignment, Element, Fill, Length, Task};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
+use iced::{Alignment, Element, Fill, Task};
 
 use super::common::error_banner;
 use super::{Ctx, Pane};
@@ -154,20 +156,10 @@ fn load(lang: Lang, theme: Option<&str>) -> Catalog {
 
 #[must_use]
 pub fn app_icon<'a, M: 'a>(t: &ThemeState, path: Option<&PathBuf>, name: &str, size: f32) -> Element<'a, M> {
-    if let Some(path) = path {
-        if path.extension().is_some_and(|ext| ext == "svg") {
-            return svg(svg::Handle::from_path(path)).width(size).height(size).into();
-        }
-        return image(image::Handle::from_path(path)).width(size).height(size).into();
+    match path {
+        Some(path) => glide_sdk::widget::photo(path, size, 0.0),
+        None => glide_sdk::widget::letter_tile(&widgets::paint(t), name, size),
     }
-    let letter: String =
-        name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| String::from("?"), |c| c.to_uppercase().collect());
-    let well = t.fill_2();
-    container(text(letter).size((size * 0.46).round()).font(theme::SEMIBOLD).color(t.fg_2()))
-        .center_x(Length::Fixed(size))
-        .center_y(Length::Fixed(size))
-        .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2()))
-        .into()
 }
 
 #[must_use]
@@ -345,7 +337,7 @@ impl Page {
         let t = c.theme;
         let options = apps::mime_options(&self.catalog.apps, mimes, current);
         if options.is_empty() {
-            return text(c.t(T::NoHandlers)).size(13).color(t.fg_3()).into();
+            return text(c.t(T::NoHandlers), TextStyle::CALL).color(t.fg_3()).into();
         }
         let selected = current.and_then(|id| options.iter().find(|app| app.id == id).cloned());
         widgets::inert(t, !self.busy, widgets::dropdown(t, options, selected, on_select, 240.0))

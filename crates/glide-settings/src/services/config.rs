@@ -427,7 +427,7 @@ impl ConfigStore {
     #[must_use]
     pub fn appearance_at(&self, minute_of_day: Option<u16>) -> Appearance {
         match minute_of_day.filter(|_| self.appearance_scheduled()) {
-            Some(minute) => glide_theme::Appearance::scheduled(minute).into(),
+            Some(minute) => glide_sdk::theme::Appearance::scheduled(minute).into(),
             None => self.appearance(),
         }
     }

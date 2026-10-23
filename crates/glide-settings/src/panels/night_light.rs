@@ -1,4 +1,6 @@
-use iced::widget::{Row as IcedRow, column, container, row, space, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{mock as sketch, text};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Color, Element, Fill, Length, Task};
 
 use super::common::{error_banner, gated, toggle};
@@ -230,15 +232,7 @@ impl Page {
         .align_y(Alignment::Center);
         let warm = tinted(display::night_tint(NIGHT_MIN_KELVIN), 1.0);
         let cool = tinted(display::night_tint(NIGHT_MAX_KELVIN), 1.0);
-        let strip = container(space()).width(Fill).height(Length::Fixed(8.0)).style(move |_: &iced::Theme| {
-            iced::widget::container::Style {
-                background: Some(iced::Background::Gradient(iced::Gradient::Linear(
-                    iced::gradient::Linear::new(std::f32::consts::FRAC_PI_2).add_stop(0.0, warm).add_stop(1.0, cool),
-                ))),
-                border: iced::Border { color: t.line(), width: 1.0, radius: theme::radius_round() },
-                ..iced::widget::container::Style::default()
-            }
-        });
+        let strip = sketch::gradient_strip(t, warm, cool, 8.0);
         let slider = column![
             strip,
             widgets::value_slider(
@@ -250,15 +244,15 @@ impl Page {
                 Some(Msg::CommitTemperature),
             ),
             row![
-                text(c.t(tr::Key::Warmer)).size(12).color(t.fg_3()).width(Fill),
-                text(c.t(tr::Key::Cooler)).size(12).color(t.fg_3()),
+                text(c.t(tr::Key::Warmer), TextStyle::CAP).color(t.fg_3()).width(Fill),
+                text(c.t(tr::Key::Cooler), TextStyle::CAP).color(t.fg_3()),
             ],
         ]
         .spacing(6);
-        let card = container(column![container(preview).center_x(Fill), slider].spacing(18))
-            .padding(18)
-            .width(Fill)
-            .style(move |_: &iced::Theme| theme::card_style(&t));
+        let card = glide_sdk::widget::card(
+            &widgets::paint(&t),
+            column![container(preview).center_x(Fill), slider].spacing(18),
+        );
         let reset = widgets::secondary(
             t,
             c.t(K::Reset),
@@ -329,39 +323,12 @@ fn tinted((r, g, b): (f32, f32, f32), level: f32) -> Color {
 }
 
 fn preview_window<'a>(t: &theme::ThemeState, tint: (f32, f32, f32), label: &'a str) -> Element<'a, Msg> {
-    let t = *t;
-    let paper = tinted(tint, 0.97);
-    let bar = tinted(tint, 0.86);
-    let ink = tinted(tint, 0.62);
     let accent = {
         let base = theme::ramp_color(theme::Accent::Azurit, 3);
         Color::from_rgb(base.r * tint.0, base.g * tint.1, base.b * tint.2)
     };
-    let line = move |width: f32, color: Color| {
-        container(space())
-            .width(Length::Fixed(width))
-            .height(Length::Fixed(5.0))
-            .style(move |_: &iced::Theme| theme::solid(color, theme::radius_round()))
-    };
-    let window = container(
-        column![
-            container(space())
-                .width(Fill)
-                .height(Length::Fixed(14.0))
-                .style(move |_: &iced::Theme| theme::solid(bar, theme::radius_r1())),
-            column![line(70.0, ink), line(96.0, ink), line(52.0, accent)].spacing(6).padding([4, 10]),
-        ]
-        .spacing(6),
-    )
-    .width(Length::Fixed(140.0))
-    .height(Length::Fixed(86.0))
-    .style(move |_: &iced::Theme| iced::widget::container::Style {
-        background: Some(paper.into()),
-        border: iced::Border { color: t.line_2(), width: 1.0, radius: theme::radius_r2() },
-        shadow: theme::elevation(&t, glide_theme::elevation::Level::El1),
-        ..iced::widget::container::Style::default()
-    });
-    column![window, text(label).size(12).color(t.fg_2())].spacing(6).align_x(Alignment::Center).into()
+    let window = sketch::document(*t, tinted(tint, 0.97), tinted(tint, 0.86), tinted(tint, 0.62), accent, 140.0, 86.0);
+    column![window, text(label, TextStyle::CAP).color(t.fg_2())].spacing(6).align_x(Alignment::Center).into()
 }
 
 fn timeline<'a>(c: &Ctx, start: u16, end: u16, kelvin: i64) -> Element<'a, Msg> {
@@ -369,29 +336,10 @@ fn timeline<'a>(c: &Ctx, start: u16, end: u16, kelvin: i64) -> Element<'a, Msg> 
     let segments = display::schedule_segments(start, end);
     let on = tinted(display::night_tint(kelvin), 0.95);
     let on = Color { r: on.r * 0.92, g: on.g * 0.72, b: on.b * 0.4, a: 1.0 };
-    let off = t.fill_2();
-    let mut bar = IcedRow::new().height(Length::Fixed(10.0)).width(Fill);
-    let mut cursor = 0u16;
-    let push = |bar: IcedRow<'a, Msg>, from: u16, to: u16, color: Color| {
-        if to <= from {
-            return bar;
-        }
-        bar.push(
-            container(space())
-                .width(Length::FillPortion(to - from))
-                .height(Fill)
-                .style(move |_: &iced::Theme| theme::solid(color, theme::radius_r1())),
-        )
-    };
-    for (from, to) in &segments {
-        bar = push(bar, cursor, *from, off);
-        bar = push(bar, *from, *to, on);
-        cursor = *to;
-    }
-    bar = push(bar, cursor, 24 * 60, off);
+    let bar = sketch::schedule_bar(&segments, 24 * 60, on, t.fill_2(), 10.0);
     let mut ticks = row![].width(Fill);
     for (index, label) in ["00", "06", "12", "18", "24"].iter().enumerate() {
-        let tick = text(format!("{label}:00")).size(11).color(t.fg_3());
+        let tick = text(format!("{label}:00"), TextStyle::CAP).color(t.fg_3());
         ticks = ticks.push(if index == 0 {
             container(tick).width(Fill)
         } else if index == 4 {
@@ -402,9 +350,9 @@ fn timeline<'a>(c: &Ctx, start: u16, end: u16, kelvin: i64) -> Element<'a, Msg> 
     }
     let mut body = column![bar, ticks].spacing(4);
     if segments.is_empty() {
-        body = body.push(text(c.t(tr::Key::NoWindow)).size(12).color(t.warn()));
+        body = body.push(text(c.t(tr::Key::NoWindow), TextStyle::CAP).color(t.warn()));
     }
-    container(column![text(c.t(tr::Key::Timeline)).size(14).color(t.fg_1()), body,].spacing(8))
+    container(column![text(c.t(tr::Key::Timeline), TextStyle::BODY).color(t.fg_1()), body].spacing(8))
         .padding([10.0, theme::ROW_PADDING_X])
         .width(Fill)
         .into()

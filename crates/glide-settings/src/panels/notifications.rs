@@ -1,14 +1,16 @@
-use iced::widget::{column, container, row, space, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{mock as sketch, text};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::{Choice, gated, presets, toggle};
-use super::network::form_row;
 use super::{Ctx, Pane};
 use crate::icons::Icon;
 use crate::services::apps::{self, DesktopApp};
 use crate::services::config::{ConfigStore, parse_clock};
 use crate::services::run::blocking;
 use crate::theme::{self, ThemeState};
+use crate::widgets::form_row;
 use crate::widgets::{self, Group, Row};
 
 mod tr {
@@ -244,7 +246,7 @@ impl Page {
                     *c,
                     row![
                         widgets::field(t, "22:00", &from, Msg::From, None, from_bad).width(Fill),
-                        text("–").size(14).color(t.fg_3()),
+                        text("–", TextStyle::BODY).color(t.fg_3()),
                         widgets::field(t, "07:00", &to, Msg::To, None, to_bad).width(Fill),
                     ]
                     .spacing(8)
@@ -359,53 +361,37 @@ fn banners<'a>(c: &Ctx, config: &'a ConfigStore, position: Position, dnd: bool) 
 
 #[must_use]
 pub fn screen<'a>(t: ThemeState, position: Position, dnd: bool) -> Element<'a, Msg> {
-    let desk = t.fill_2();
-    let bar = t.fill_3();
     let banner = if dnd { t.fill_3() } else { t.acc_bg() };
-    let toast = container(space())
-        .width(Length::Fixed(44.0))
-        .height(Length::Fixed(14.0))
-        .style(move |_: &iced::Theme| theme::solid(banner, theme::radius_r1()));
+    let toast = sketch::block(banner, 44.0, 14.0, theme::R1);
     let placed = match position {
         Position::TopLeft => container(toast).align_left(Fill),
         Position::TopCenter => container(toast).center_x(Fill),
         Position::TopRight => container(toast).align_right(Fill),
     };
-    container(
-        column![
-            container(space())
-                .width(Fill)
-                .height(Length::Fixed(6.0))
-                .style(move |_: &iced::Theme| theme::solid(bar, theme::radius_r1())),
-            placed.padding([0, 6]),
-        ]
-        .spacing(5),
+    sketch::surface(
+        t.fill_2(),
+        theme::R2,
+        column![sketch::block(t.fill_3(), Fill, 6.0, theme::R1), placed.padding([0, 6])].spacing(5),
     )
     .width(Length::Fixed(132.0))
     .height(Length::Fixed(72.0))
     .padding(4)
-    .style(move |_: &iced::Theme| theme::solid(desk, theme::radius_r2()))
     .into()
 }
 
 fn preview<'a>(c: &Ctx) -> Element<'a, Msg> {
     let t = c.theme;
-    container(
-        row![
-            widgets::tile(Icon::Bell, super::Panel::Notifications.color(), 32.0),
-            column![
-                text(format!("{} · {}", c.t(T::PreviewApp), c.t(T::Now))).size(11.5).color(t.fg_3()),
-                text(c.t(T::PreviewTitle)).size(13.5).font(theme::SEMIBOLD).color(t.fg_1()),
-                text(c.t(T::PreviewBody)).size(13).color(t.fg_2()),
-            ]
-            .spacing(1)
-            .width(Fill),
+    let body = row![
+        widgets::tile(Icon::Bell, super::Panel::Notifications.color(), 32.0),
+        column![
+            text(format!("{} · {}", c.t(T::PreviewApp), c.t(T::Now)), TextStyle::CAP).color(t.fg_3()),
+            text(c.t(T::PreviewTitle), TextStyle::WIN_TITLE).color(t.fg_1()),
+            text(c.t(T::PreviewBody), TextStyle::CALL).color(t.fg_2()),
         ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    )
-    .padding(12)
-    .max_width(360)
-    .style(move |_: &iced::Theme| theme::card_style(&t))
-    .into()
+        .spacing(1)
+        .width(Fill),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    container(glide_sdk::widget::card(&widgets::paint(&t), body)).max_width(360).into()
 }

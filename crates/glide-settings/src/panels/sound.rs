@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use iced::widget::{column, container, row, space, text};
-use iced::{Alignment, Color, Element, Fill, Length, Task};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget as sdk;
+use iced::widget::{column, row, space};
+use iced::{Alignment, Element, Task};
 
 use super::common::{error_banner, switch_row};
 use super::{Ctx, Pane, Panel};
@@ -454,7 +456,7 @@ impl Page {
             None => (String::from("—"), c.t(K::NoDevices).to_string()),
         };
         let muted = self.state.output.is_some_and(|level| level.muted);
-        let big = text(percent).size(28).font(theme::SEMIBOLD).color(if muted { t.fg_3() } else { t.fg_1() });
+        let big = sdk::text(percent, TextStyle::T1).color(if muted { t.fg_3() } else { t.fg_1() });
         widgets::section_hero(
             t,
             if muted { Icon::VolumeMute } else { glyph },
@@ -496,9 +498,9 @@ impl Page {
             format!("{} {:.0}%", c.t(tr::Key::Right), balance * 100.0)
         };
         let control = row![
-            text(c.t(tr::Key::Left)).size(12).color(t.fg_3()),
+            sdk::text(c.t(tr::Key::Left), TextStyle::CAP).color(t.fg_3()),
             widgets::value_slider(t, -1.0..=1.0, f64::from(balance), 0.05, Msg::Balance, Some(Msg::CommitBalance),),
-            text(c.t(tr::Key::Right)).size(12).color(t.fg_3()),
+            sdk::text(c.t(tr::Key::Right), TextStyle::CAP).color(t.fg_3()),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
@@ -549,13 +551,14 @@ impl Page {
             widgets::tonal(t, c.t(tr::Key::TestMic), Some(Msg::MeterStart))
         };
         let tone = if meter.level > 0.9 {
-            t.danger()
+            theme::Tone::Danger
         } else if meter.level > 0.75 {
-            t.warn()
+            theme::Tone::Warn
         } else {
-            t.ok()
+            theme::Tone::Ok
         };
-        let control = row![level_bar(&t, meter.level, meter.peak, tone), action].spacing(12).align_y(Alignment::Center);
+        let meter = sdk::level_meter(&widgets::paint(&t), meter.level, meter.peak, tone);
+        let control = row![meter, action].spacing(12).align_y(Alignment::Center);
         Row::new(t, c.t(tr::Key::InputLevel)).subtitle(subtitle).suffix(widgets::flexible(control, 360.0)).build()
     }
 
@@ -649,39 +652,6 @@ pub fn device_icon(name: &str, fallback: Icon) -> Icon {
     }
 }
 
-fn bar_segment<'a>(portion: u16, color: Option<Color>) -> Element<'a, Msg> {
-    let segment = container(space()).width(Length::FillPortion(portion)).height(6);
-    match color {
-        Some(color) => segment.style(move |_: &iced::Theme| theme::solid(color, theme::radius_round())).into(),
-        None => segment.into(),
-    }
-}
-
-fn level_bar<'a>(t: &theme::ThemeState, level: f32, peak: f32, tone: Color) -> Element<'a, Msg> {
-    let filled = (level.clamp(0.0, 1.0) * 1000.0).round() as u16;
-    let peak_at = (peak.clamp(0.0, 1.0) * 1000.0).round() as u16;
-    let mut bar = row![].align_y(Alignment::Center);
-    if filled > 0 {
-        bar = bar.push(bar_segment(filled, Some(tone)));
-    }
-    let rest = 1000 - filled;
-    if peak_at > filled + 8 {
-        let gap = peak_at - filled - 8;
-        if gap > 0 {
-            bar = bar.push(bar_segment(gap, None));
-        }
-        bar = bar.push(bar_segment(8, Some(tone)));
-        let after = rest - gap - 8;
-        if after > 0 {
-            bar = bar.push(bar_segment(after, None));
-        }
-    } else if rest > 0 {
-        bar = bar.push(bar_segment(rest, None));
-    }
-    let track = t.fill_2();
-    container(bar).width(Fill).height(6).style(move |_: &iced::Theme| theme::solid(track, theme::radius_round())).into()
-}
-
 fn stream_row<'a>(c: &Ctx, stream: &'a Stream, slider: StreamSlider) -> Element<'a, Msg> {
     let t = c.theme;
     let index = stream.index;
@@ -712,18 +682,7 @@ fn stream_row<'a>(c: &Ctx, stream: &'a Stream, slider: StreamSlider) -> Element<
 fn mixer<'a>(
     t: &ThemeState, glyph: Icon, mute: Msg, slider: Element<'a, Msg>, volume: f32, muted: bool,
 ) -> Element<'a, Msg> {
-    row![
-        widgets::icon_button(*t, glyph, Some(mute)),
-        slider,
-        text(format!("{:.0}%", volume * 100.0))
-            .size(13)
-            .color(if muted { t.fg_3() } else { t.fg_2() })
-            .width(Length::Fixed(44.0))
-            .align_x(Alignment::End),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center)
-    .into()
+    sdk::level_control(&widgets::paint(t), glyph, mute, slider, volume, muted)
 }
 
 fn volume_row<'a>(c: &Ctx, channel: Channel, (volume, max): (f32, f32), muted: bool, glyph: Icon) -> Element<'a, Msg> {

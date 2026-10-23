@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use iced::widget::{column, container, row, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
 use iced::{Alignment, Color, Element, Task};
 
 use super::common::error_banner;
@@ -277,7 +279,7 @@ impl Page {
             let subtitle = path.map_or_else(|| c.t(T::OtherHint).to_string(), |path| short_path(path, &usage.home));
             let mut suffix = row![
                 column![
-                    text(format_bytes(size, c.lang)).size(13).font(theme::SEMIBOLD).color(t.fg_1()),
+                    text(format_bytes(size, c.lang), TextStyle { weight: 600, ..TextStyle::NUM }).color(t.fg_1()),
                     container(widgets::progress_bar(t, share(size, usage.total))).width(96),
                 ]
                 .spacing(4)
@@ -352,7 +354,7 @@ impl Page {
                     .suffix(
                         row![
                             column![
-                                text(free_of(c, volume)).size(12.5).color(t.fg_2()),
+                                text(free_of(c, volume), TextStyle::CAP).color(t.fg_2()),
                                 container(widgets::progress_bar(t, volume.fraction())).width(160),
                             ]
                             .spacing(4)

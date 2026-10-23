@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use iced::widget::{Column, column, container, row, scrollable, space, stack, text};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{mock as sketch, text};
+use iced::widget::{Column, column, container, row, space};
 use iced::{Alignment, Color, Element, Fill, Length, Task};
 
 use super::common::{choice, gated, switch_row, toggle};
@@ -409,8 +411,8 @@ impl Page {
             let detail = names.join(", ");
             column![
                 container(art).center_x(Fill).height(Length::Fixed(80.0)),
-                text(heading).size(14).font(theme::SEMIBOLD).color(t.fg_1()),
-                text(detail).size(12).color(t.fg_2()).align_x(Alignment::Center),
+                text(heading, TextStyle::HEAD).color(t.fg_1()),
+                text(detail, TextStyle::CAP).color(t.fg_2()).align_x(Alignment::Center),
                 widgets::status_pill(t, tone, status),
             ]
             .spacing(6)
@@ -426,25 +428,20 @@ impl Page {
         ]
         .spacing(10);
         if !self.devices.read && !self.loading {
-            body =
-                body.push(text(c.t(T::DevicesUnknown)).size(12).color(t.fg_3()).width(Fill).align_x(Alignment::Center));
+            body = body.push(
+                text(c.t(T::DevicesUnknown), TextStyle::CAP).color(t.fg_3()).width(Fill).align_x(Alignment::Center),
+            );
         }
-        let color = Panel::Mouse.color();
-        container(
-            column![
-                row![
-                    text(c.t(T::Devices)).size(14).font(theme::SEMIBOLD).color(t.fg_1()).width(Fill),
-                    widgets::icon_button(t, Icon::Refresh, Some(Msg::Refresh)),
-                ]
-                .align_y(Alignment::Center),
-                body,
+        let content = column![
+            row![
+                text(c.t(T::Devices), TextStyle::HEAD).color(t.fg_1()).width(Fill),
+                widgets::icon_button(t, Icon::Refresh, Some(Msg::Refresh)),
             ]
-            .spacing(12),
-        )
-        .padding(16)
-        .width(Fill)
-        .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), color))
-        .into()
+            .align_y(Alignment::Center),
+            body,
+        ]
+        .spacing(12);
+        glide_sdk::widget::tinted_card(&widgets::paint(&t), Panel::Mouse.color(), 16, content)
     }
 
     fn mouse_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
@@ -526,41 +523,25 @@ impl Page {
             Test::Double => (t.ok(), t.ok_soft(), c.t(T::DoubleClickDone)),
         };
         let (glyph, tint) = if self.test == Test::Double { (Icon::Check, t.ok()) } else { (Icon::Mouse, t.fg_2()) };
-        let target = iced::widget::button(
-            container(widgets::icon(glyph, 22.0, tint))
-                .center_x(Length::Fixed(56.0))
-                .center_y(Length::Fixed(56.0))
-                .style(move |_: &iced::Theme| {
-                    let mut style = theme::solid(fill, theme::radius_round());
-                    style.border.color = ring;
-                    style.border.width = 2.0;
-                    style
-                }),
-        )
-        .padding(0)
-        .on_press(Msg::TestClick)
-        .style(move |_: &iced::Theme, status| theme::plain_button_style(&t, status));
+        let target = sketch::click_target(glyph, tint, fill, ring, 56.0, Msg::TestClick);
         let mut lines = Column::new().spacing(6).padding([6, 12]);
         for index in 1..=40 {
-            lines = lines.push(text(format!("{} {index}", c.t(T::Line))).size(13).color(if index % 5 == 0 {
-                t.fg_1()
-            } else {
-                t.fg_3()
-            }));
+            let ink = if index % 5 == 0 { t.fg_1() } else { t.fg_3() };
+            lines = lines.push(text(format!("{} {index}", c.t(T::Line)), TextStyle::CALL).color(ink));
         }
-        let well = t.sunken_bg();
-        let scroller =
-            container(scrollable(lines).height(Length::Fixed(120.0)).width(Fill).style(
-                move |_: &iced::Theme, status| glide_sdk::widget::scrollable_style(&widgets::paint(&t), status),
-            ))
-            .width(Fill)
-            .style(move |_: &iced::Theme| theme::solid(well, theme::radius_r2()));
+        let paint = widgets::paint(&t);
+        let scroller = sketch::surface(
+            t.sunken_bg(),
+            theme::R2,
+            glide_sdk::widget::scrollable(&paint, lines).height(Length::Fixed(120.0)).width(Fill),
+        )
+        .width(Fill);
         Group::new(t)
             .title(c.t(T::TryIt))
             .description(c.t(T::TryItHint))
             .push(Row::new(t, status).subtitle(c.t(T::DoubleClickHint)).suffix(target).build())
             .push(
-                container(column![text(c.t(T::ScrollHere)).size(12).color(t.fg_2()), scroller].spacing(6))
+                container(column![text(c.t(T::ScrollHere), TextStyle::CAP).color(t.fg_2()), scroller].spacing(6))
                     .padding([10.0, theme::ROW_PADDING_X]),
             )
             .build()
@@ -630,13 +611,12 @@ fn speed_row<'a>(
     c: &Ctx, title: &str, speed: f64, on_change: impl Fn(f64) -> Msg + 'a, on_release: Msg,
 ) -> Element<'a, Msg> {
     let t = c.theme;
-    let control = row![
-        text(c.t(K::Slow)).size(12).color(t.fg_3()),
+    let control = glide_sdk::widget::range_slider(
+        &widgets::paint(&t),
+        c.t(K::Slow),
         widgets::value_slider(t, -1.0..=1.0, speed, 0.05, on_change, Some(on_release)),
-        text(c.t(K::Fast)).size(12).color(t.fg_3()),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
+        c.t(K::Fast),
+    );
     Row::new(t, title).suffix(gated(*c, widgets::flexible(control, 300.0))).build()
 }
 
@@ -654,7 +634,9 @@ fn natural_row<'a>(c: &Ctx, value: bool, on_toggle: fn(bool) -> Msg) -> Element<
 
 fn scroll_row<'a>(c: &Ctx, factor: f64, slider: Slider) -> Element<'a, Msg> {
     let t = c.theme;
-    let control = row![
+    let control = glide_sdk::widget::slider_readout(
+        &widgets::paint(&t),
+        None,
         widgets::value_slider(
             t,
             SCROLL_RANGE,
@@ -663,10 +645,9 @@ fn scroll_row<'a>(c: &Ctx, factor: f64, slider: Slider) -> Element<'a, Msg> {
             move |value| Msg::Slide(slider, value),
             Some(Msg::Commit(slider)),
         ),
-        text(format!("{factor:.2}×")).size(13).color(t.fg_2()).width(Length::Fixed(48.0)).align_x(Alignment::End),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
+        format!("{factor:.2}×"),
+        false,
+    );
     Row::new(t, c.t(T::ScrollSpeed))
         .subtitle(c.t(T::ScrollSpeedHint))
         .suffix(gated(*c, widgets::flexible(control, 300.0)))
@@ -682,31 +663,13 @@ enum PadArt {
     Fingers,
 }
 
-fn block<'a>(color: Color, width: Length, height: Length, radius: f32) -> Element<'a, Msg> {
-    container(space())
-        .width(width)
-        .height(height)
-        .style(move |_: &iced::Theme| theme::solid(color, radius.into()))
-        .into()
-}
-
 fn finger<'a>(color: Color) -> Element<'a, Msg> {
-    container(space())
-        .width(12)
-        .height(12)
-        .style(move |_: &iced::Theme| {
-            let mut style = theme::solid(color, theme::radius_round());
-            style.border.color = Color { a: 0.35, ..Color::WHITE };
-            style.border.width = 2.0;
-            style
-        })
-        .into()
+    sketch::ring_dot(color, 12.0)
 }
 
 fn pad_art<'a>(t: &ThemeState, art: PadArt) -> Element<'a, Msg> {
-    let surface = t.fill_2();
+    use sketch::block;
     let dot = t.acc_bg();
-    let base = block(surface, Length::Fixed(104.0), Length::Fixed(68.0), theme::R2);
     let overlay: Element<'a, Msg> = match art {
         PadArt::Plain => container(block(t.line_2(), Fill, Length::Fixed(1.0), 0.0))
             .padding(iced::Padding::ZERO.top(50).left(6).right(6))
@@ -724,10 +687,7 @@ fn pad_art<'a>(t: &ThemeState, art: PadArt) -> Element<'a, Msg> {
         .into(),
         PadArt::Edge => row![
             space().width(Fill),
-            container(finger(dot)).center_x(Length::Fixed(18.0)).center_y(Fill).style({
-                let soft = t.acc_soft();
-                move |_: &iced::Theme| theme::solid(soft, theme::radius_r1())
-            }),
+            sketch::surface(t.acc_soft(), theme::R1, finger(dot)).center_x(Length::Fixed(18.0)).center_y(Fill),
         ]
         .padding(4)
         .into(),
@@ -747,32 +707,9 @@ fn pad_art<'a>(t: &ThemeState, art: PadArt) -> Element<'a, Msg> {
             .padding(iced::Padding::ZERO.bottom(10))
             .into(),
     };
-    container(stack![base, overlay]).width(Length::Fixed(104.0)).height(Length::Fixed(68.0)).into()
+    sketch::touchpad(*t, overlay)
 }
 
 fn mouse_art<'a>(t: &ThemeState, left_handed: bool) -> Element<'a, Msg> {
-    let (left, right) = if left_handed { (t.fill_3(), t.acc_bg()) } else { (t.acc_bg(), t.fill_3()) };
-    let shell = t.fill_2();
-    container(
-        column![
-            row![
-                block(left, Fill, Length::Fixed(28.0), theme::R2),
-                block(right, Fill, Length::Fixed(28.0), theme::R2),
-            ]
-            .spacing(3),
-            container(block(
-                t.line_2(),
-                Length::Fixed(4.0),
-                Length::Fixed(10.0),
-                2.0
-            ))
-            .center_x(Fill),
-        ]
-        .spacing(6),
-    )
-    .padding(4)
-    .width(Length::Fixed(48.0))
-    .height(Length::Fixed(72.0))
-    .style(move |_: &iced::Theme| theme::solid(shell, theme::R4.into()))
-    .into()
+    sketch::mouse(*t, left_handed)
 }

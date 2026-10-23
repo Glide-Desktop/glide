@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use iced::widget::{button, column, container, image, row, text};
-use iced::{Alignment, Element, Fill, Length, Task};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::text;
+use iced::widget::{column, container, row};
+use iced::{Alignment, Element, Fill, Task};
 
 use super::common::error_banner;
-use super::network::{form_row, note};
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
@@ -13,6 +14,7 @@ use crate::services::config::ConfigStore;
 use crate::services::run::blocking;
 use crate::theme::{self, ThemeState, Tone};
 use crate::widgets::{self, Group, Row};
+use crate::widgets::{form_row, note};
 
 mod tr {
     crate::i18n::catalogue! {
@@ -358,8 +360,11 @@ impl Page {
         if !self.state.faces.is_empty() {
             group = group.push(
                 container(
-                    column![text(c.t(T::Picture)).size(13.5).color(t.fg_1()), faces.wrap().vertical_spacing(8),]
-                        .spacing(8),
+                    column![
+                        text(c.t(T::Picture), TextStyle::MENU_ITEM).color(t.fg_1()),
+                        faces.wrap().vertical_spacing(8)
+                    ]
+                    .spacing(8),
                 )
                 .padding([8.0, theme::ROW_PADDING_X])
                 .width(Fill),
@@ -476,7 +481,7 @@ impl Page {
         let password_hint = password_problem.filter(|_| !confirm.is_empty()).map(|problem| c.t(password_hint(problem)));
         Some(
             column![
-                text(c.t(T::NewUser)).size(13.5).font(theme::SEMIBOLD).color(t.fg_1()),
+                text(c.t(T::NewUser), TextStyle::WIN_TITLE).color(t.fg_1()),
                 form_row(
                     t,
                     c.t(T::FullName),
@@ -601,7 +606,7 @@ fn form_buttons<'a>(c: &Ctx, confirm: Element<'a, Msg>) -> Element<'a, Msg> {
 fn remove_form<'a>(c: &Ctx, name: &str, idle: bool) -> Element<'a, Msg> {
     let t = c.theme;
     column![
-        container(text(c.t(T::RemoveAsk).replace("{}", name)).size(13).color(t.fg_2()))
+        container(text(c.t(T::RemoveAsk).replace("{}", name), TextStyle::CALL).color(t.fg_2()))
             .padding([4.0, theme::ROW_PADDING_X]),
         container(
             row![
@@ -668,29 +673,14 @@ fn ago(c: &Ctx, timestamp: i64) -> String {
 #[must_use]
 pub fn portrait<'a, M: 'a>(t: ThemeState, account: &Account, size: f32) -> Element<'a, M> {
     match account.icon() {
-        Some(path) => image(image::Handle::from_path(path))
-            .width(size)
-            .height(size)
-            .content_fit(iced::ContentFit::Cover)
-            .border_radius(size / 2.0)
-            .into(),
+        Some(path) => glide_sdk::widget::photo(&path, size, size / 2.0),
         None => widgets::avatar(t, account.display_name(), size),
     }
 }
 
 #[must_use]
 pub fn face_button<'a>(t: ThemeState, face: &Path, selected: bool, on_press: Option<Msg>) -> Element<'a, Msg> {
-    button(
-        image(image::Handle::from_path(face))
-            .width(48)
-            .height(48)
-            .content_fit(iced::ContentFit::Cover)
-            .border_radius(24.0),
-    )
-    .on_press_maybe(on_press)
-    .padding(theme::RING_GAP)
-    .style(move |_: &iced::Theme, status| glide_sdk::widget::preview_ring_style(&widgets::paint(&t), selected, status))
-    .into()
+    glide_sdk::widget::photo_button(&widgets::paint(&t), face, 48.0, selected, on_press)
 }
 
 fn hero<'a>(c: &Ctx, me: &'a Account) -> Element<'a, Msg> {
@@ -700,23 +690,17 @@ fn hero<'a>(c: &Ctx, me: &'a Account) -> Element<'a, Msg> {
     if me.automatic_login {
         badges = badges.push(widgets::pill(t, Tone::Warn, c.t(T::AutoLogin)));
     }
-    let tint = super::Panel::Users.color();
-    container(
-        row![
-            portrait(t, me, 72.0),
-            column![
-                text(me.display_name().to_string()).size(22).font(theme::SEMIBOLD).color(t.fg_1()),
-                text(me.user_name.clone()).size(13).color(t.fg_2()),
-                badges,
-            ]
-            .spacing(4)
-            .width(Fill),
+    let body = row![
+        portrait(t, me, 72.0),
+        column![
+            text(me.display_name().to_string(), TextStyle::T2).color(t.fg_1()),
+            text(me.user_name.clone(), TextStyle::CALL).color(t.fg_2()),
+            badges,
         ]
-        .spacing(18)
-        .align_y(Alignment::Center),
-    )
-    .padding(20)
-    .width(Length::Fill)
-    .style(move |_: &iced::Theme| glide_sdk::widget::tinted_card_style(&widgets::paint(&t), tint))
-    .into()
+        .spacing(4)
+        .width(Fill),
+    ]
+    .spacing(18)
+    .align_y(Alignment::Center);
+    glide_sdk::widget::tinted_card(&widgets::paint(&t), super::Panel::Users.color(), 20, body)
 }
