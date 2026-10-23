@@ -8,7 +8,7 @@ use crate::state::GlideState;
 
 pub const OFFER_ID: u32 = u32::MAX - 9;
 pub const INSERT: &str = "insert";
-const FRESH: Duration = Duration::from_secs(180);
+const FRESH: Duration = Duration::from_mins(3);
 const MIN_DIGITS: usize = 4;
 const MAX_DIGITS: usize = 8;
 

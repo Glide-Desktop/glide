@@ -15,7 +15,7 @@ pub const SIZE: u32 = 128;
 const WORKERS: usize = 2;
 const BUILTIN_LIMIT: u64 = 64 << 20;
 const TIMEOUT: Duration = Duration::from_secs(8);
-const KEEP_FOR: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+const KEEP_FOR: Duration = Duration::from_hours(90 * 24);
 const CACHE_LIMIT: u64 = 256 << 20;
 const BUILTIN: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"];
 

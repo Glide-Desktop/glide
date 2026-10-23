@@ -56,7 +56,7 @@ fn ago(c: &Ctx, when: Option<SystemTime>) -> String {
         return c.t(T::Never).to_string();
     };
     match SystemTime::now().duration_since(when) {
-        Ok(elapsed) if elapsed >= Duration::from_secs(60) => {
+        Ok(elapsed) if elapsed >= Duration::from_mins(1) => {
             c.t(T::Ago).replace("{time}", &remaining_text(c, nb::remaining(Some(elapsed))))
         }
         _ => c.t(T::JustNow).to_string(),
@@ -1154,7 +1154,7 @@ mod tests {
         page.snapshot.status = nb::Status {
             state: State::Connected,
             daemon_version: "0.80.0".into(),
-            session_expires_at: Some(now + Duration::from_secs(3600)),
+            session_expires_at: Some(now + Duration::from_hours(1)),
             peers: vec![
                 nb::Peer {
                     fqdn: "laptop.netbird.cloud".into(),

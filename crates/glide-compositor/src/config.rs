@@ -2420,8 +2420,8 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         .expect("valid idle keys");
         let policy = config.general.idle_policy();
         assert_eq!((policy.blank, policy.lock), (None, None), "0 never blanks, a negative delay never locks");
-        assert_eq!(policy.suspend, Some(Duration::from_secs(1800)));
-        assert_eq!(policy.suspend_on_battery, Some(Duration::from_secs(600)));
+        assert_eq!(policy.suspend, Some(Duration::from_mins(30)));
+        assert_eq!(policy.suspend_on_battery, Some(Duration::from_mins(10)));
         let delayed: Config = toml::from_str("[general]\nlock-after-seconds = 30\n").expect("valid idle keys");
         assert_eq!(delayed.general.idle_policy().lock, Some(Duration::from_secs(30)));
     }

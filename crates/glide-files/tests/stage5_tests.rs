@@ -67,7 +67,7 @@ fn the_thumbnail_cache_drops_what_is_stale_or_over_its_limit() {
     use std::time::{Duration, SystemTime};
     let dir = scratch("prune");
     let now = SystemTime::now();
-    let day = Duration::from_secs(24 * 60 * 60);
+    let day = Duration::from_hours(24);
     let put = |name: &str, age: Duration| {
         let path = dir.join(name);
         std::fs::write(&path, [0_u8; 10]).expect("thumb");

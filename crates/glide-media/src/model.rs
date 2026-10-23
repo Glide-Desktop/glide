@@ -329,9 +329,9 @@ mod tests {
 
     #[test]
     fn seeking_outside_the_track_is_clamped_to_its_ends() {
-        let length = Some(Duration::from_secs(60));
+        let length = Some(Duration::from_mins(1));
         assert_eq!(seek_target(length, -3.0), Some(Duration::ZERO));
-        assert_eq!(seek_target(length, 9.0), Some(Duration::from_secs(60)));
+        assert_eq!(seek_target(length, 9.0), Some(Duration::from_mins(1)));
     }
 
     #[test]

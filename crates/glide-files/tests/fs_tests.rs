@@ -157,7 +157,7 @@ fn civil_days_and_relative_timestamps() {
     let today = LocalTime::of(now).expect("local time");
     let clock = format!("{:02}:{:02}", today.hour, today.minute);
     assert_eq!(format_time(now, now, Lang::En), format!("Today, {clock}"));
-    assert_eq!(format_time(now - Duration::from_secs(86_400), now, Lang::Uk), format!("Учора, {clock}"));
+    assert_eq!(format_time(now - Duration::from_hours(24), now, Lang::Uk), format!("Учора, {clock}"));
     let old = format_time(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000), now, Lang::En);
     assert!(old.contains("Sep 2001"), "{old}");
 }

@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(update_for(Some(&first), Some(&moved)), Some(MediaEvent::Progress(Some(0.25))));
 
         let changes = [
-            Track { length: Some(Duration::from_secs(300)), ..first.clone() },
+            Track { length: Some(Duration::from_mins(5)), ..first.clone() },
             Track { track_id: "/org/glide/track/2".to_string(), ..first.clone() },
             Track { album: "Other".to_string(), ..first.clone() },
             Track { can_go_next: !first.can_go_next, ..first.clone() },

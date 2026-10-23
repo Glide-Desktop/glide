@@ -214,7 +214,7 @@ struct ColorResults {
 
 const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-const PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
 async fn ask(request: glide_ipc::Request, timeout: std::time::Duration) -> Option<glide_ipc::Response> {
     let (sender, receiver) = futures_channel::oneshot::channel();

@@ -548,12 +548,12 @@ mod tests {
     fn the_session_row_appears_only_while_connected_and_counts_down() {
         let now = SystemTime::now();
         let mut connected = status(State::Connected);
-        connected.session_expires_at = Some(now + Duration::from_secs(2 * 3600));
+        connected.session_expires_at = Some(now + Duration::from_hours(2));
         let mut view = NetbirdView::default();
         view.apply(NetbirdUpdate::Status(Box::new(connected.clone())), now);
         assert_eq!(view.session, Some(Remaining::Hours(2)));
         assert_eq!(row(&view, 1), Some(NetbirdRow::Session { expired: false }));
-        assert_eq!(view.session_left(now + Duration::from_secs(3 * 3600)), Some(Remaining::Expired));
+        assert_eq!(view.session_left(now + Duration::from_hours(3)), Some(Remaining::Expired));
         let idle = nb::Status { state: State::Idle, ..connected };
         view.apply(NetbirdUpdate::Status(Box::new(idle)), now);
         assert_eq!(view.session, None);

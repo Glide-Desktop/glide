@@ -9,7 +9,7 @@ use std::{
 
 const PROGRAM: &str = "xwayland-satellite";
 const MAX_RESTARTS: usize = 5;
-const RESTART_WINDOW: Duration = Duration::from_secs(60);
+const RESTART_WINDOW: Duration = Duration::from_mins(1);
 const RESTART_DELAY: Duration = Duration::from_secs(1);
 const READY_WAIT: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);

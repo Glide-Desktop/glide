@@ -24,7 +24,7 @@ pub const ACTIONS: [PowerAction; 5] =
 pub const CANCEL: usize = ACTIONS.len();
 pub const CONFIRM: usize = ACTIONS.len() + 1;
 pub const TARGETS: usize = ACTIONS.len() + 2;
-pub const COUNTDOWN: Duration = Duration::from_secs(60);
+pub const COUNTDOWN: Duration = Duration::from_mins(1);
 pub const COUNTDOWN_TICK: Duration = Duration::from_millis(250);
 
 const COLUMNS: i32 = 5;

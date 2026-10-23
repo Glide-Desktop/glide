@@ -97,7 +97,7 @@ const SIGNAL_RULES: [&str; 3] = [
 
 const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
 const FIRST_BACKOFF: Duration = Duration::from_secs(5);
-const MAX_BACKOFF: Duration = Duration::from_secs(120);
+const MAX_BACKOFF: Duration = Duration::from_mins(2);
 const MAX_PENDING: usize = 64;
 const COALESCE: Duration = Duration::from_millis(40);
 const MAX_BATCH: Duration = Duration::from_millis(200);
@@ -655,9 +655,9 @@ mod tests {
     fn backoff_starts_at_five_seconds_doubles_and_caps_at_two_minutes() {
         assert_eq!(next_backoff(None), Duration::from_secs(5));
         assert_eq!(next_backoff(Some(Duration::from_secs(5))), Duration::from_secs(10));
-        assert_eq!(next_backoff(Some(Duration::from_secs(80))), Duration::from_secs(120));
-        assert_eq!(next_backoff(Some(Duration::from_secs(120))), Duration::from_secs(120));
-        assert_eq!(next_backoff(Some(Duration::MAX)), Duration::from_secs(120));
+        assert_eq!(next_backoff(Some(Duration::from_secs(80))), Duration::from_mins(2));
+        assert_eq!(next_backoff(Some(Duration::from_mins(2))), Duration::from_mins(2));
+        assert_eq!(next_backoff(Some(Duration::MAX)), Duration::from_mins(2));
     }
 
     #[test]

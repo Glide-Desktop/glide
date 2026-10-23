@@ -686,7 +686,7 @@ const DEVICE_STATE_FAILED: u32 = 120;
 const ACTIVE_ACTIVATED: u32 = 2;
 const ACTIVE_DEACTIVATING: u32 = 3;
 const ACTIVE_DEACTIVATED: u32 = 4;
-const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(60);
+const ACTIVATION_TIMEOUT: Duration = Duration::from_mins(1);
 const POLL: Duration = Duration::from_millis(100);
 
 enum Failure {

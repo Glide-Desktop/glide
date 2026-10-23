@@ -124,7 +124,7 @@ mod tests {
         );
         assert_eq!(
             classify(&first),
-            Notice::SessionWarning { expires_at: Some(UNIX_EPOCH + Duration::from_secs(600)), final_warning: false }
+            Notice::SessionWarning { expires_at: Some(UNIX_EPOCH + Duration::from_mins(10)), final_warning: false }
         );
         let last =
             event(Category::Authentication, "", &[("session_warning", "true"), ("session_final_warning", "true")]);

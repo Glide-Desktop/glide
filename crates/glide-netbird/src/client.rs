@@ -23,8 +23,8 @@ pub const UPLOAD_URL: &str = "https://upload.debug.netbird.io/upload-url";
 pub const DOWNLOAD_URL: &str = "https://app.netbird.io/install";
 
 const CALL: Duration = Duration::from_secs(10);
-const SLOW: Duration = Duration::from_secs(60);
-const INTERACTIVE: Duration = Duration::from_secs(15 * 60);
+const SLOW: Duration = Duration::from_mins(1);
+const INTERACTIVE: Duration = Duration::from_mins(15);
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(10);
 

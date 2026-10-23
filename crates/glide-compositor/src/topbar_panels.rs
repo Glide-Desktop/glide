@@ -2033,7 +2033,7 @@ mod tests {
         bar.set_netbird_installed(true);
         let status = nb::Status {
             state: nb::State::Connected,
-            session_expires_at: Some(std::time::SystemTime::now() + std::time::Duration::from_secs(600)),
+            session_expires_at: Some(std::time::SystemTime::now() + std::time::Duration::from_mins(10)),
             peers: vec![nb::Peer { status: nb::PeerStatus::Connected, ..nb::Peer::default() }, nb::Peer::default()],
             ..nb::Status::default()
         };

@@ -14,7 +14,7 @@ const SEARCH_NAME: &str = "org.glide.Files.Search";
 const SEARCH_PATH: &str = "/org/glide/Files/SearchProvider";
 const INDEX_DEPTH: usize = 4;
 const INDEX_LIMIT: usize = 5000;
-const INDEX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+const INDEX_AGE: std::time::Duration = std::time::Duration::from_mins(1);
 const SEARCH_LIMIT: usize = 20;
 
 struct Folders {

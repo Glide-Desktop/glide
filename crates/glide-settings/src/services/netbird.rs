@@ -295,7 +295,7 @@ pub fn create_bundle(job: BundleJob, cancel: &AtomicBool) -> Result<nb::BundleRe
         daemon.set_log_level(nb::LogLevel::Trace)?;
     }
     if job.packets {
-        daemon.start_bundle_capture(job.capture.unwrap_or(Duration::from_secs(60)))?;
+        daemon.start_bundle_capture(job.capture.unwrap_or(Duration::from_mins(1)))?;
     }
     let finished = job.capture.is_none_or(|limit| wait(limit, cancel));
     if job.packets

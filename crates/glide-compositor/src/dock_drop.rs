@@ -209,7 +209,7 @@ fn spool_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir);
     let root = cache.join("glide/dropped");
     if let Ok(entries) = std::fs::read_dir(&root) {
-        let day = Duration::from_secs(24 * 60 * 60);
+        let day = Duration::from_hours(24);
         for entry in entries.flatten() {
             let old = entry
                 .metadata()

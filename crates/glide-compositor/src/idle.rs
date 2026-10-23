@@ -18,7 +18,7 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            blank: Some(Duration::from_secs(600)),
+            blank: Some(Duration::from_mins(10)),
             lock: Some(Duration::ZERO),
             suspend: None,
             suspend_on_battery: None,
@@ -125,7 +125,7 @@ impl<S: PartialEq> WakeGuard<S> {
 mod tests {
     use super::*;
 
-    const MINUTE: Duration = Duration::from_secs(60);
+    const MINUTE: Duration = Duration::from_mins(1);
 
     #[test]
     fn the_click_that_wakes_the_screen_is_swallowed_with_its_release() {

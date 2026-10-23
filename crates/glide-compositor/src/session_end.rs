@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::power::PowerAction;
 
 pub const GRACE: Duration = Duration::from_secs(10);
-pub const FORCE_WINDOW: Duration = Duration::from_secs(60);
+pub const FORCE_WINDOW: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {

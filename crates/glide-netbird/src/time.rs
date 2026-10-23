@@ -121,7 +121,7 @@ pub fn refresh_interval(left: Option<Duration>) -> Duration {
         Some(left) if left.is_zero() => Duration::from_secs(30),
         Some(left) if left <= Duration::from_secs(2 * MINUTE) => Duration::from_secs(10),
         Some(left) if left <= Duration::from_secs(HOUR) => Duration::from_secs(30),
-        Some(_) => Duration::from_secs(60),
+        Some(_) => Duration::from_mins(1),
     }
 }
 
@@ -170,8 +170,8 @@ mod tests {
     #[test]
     fn the_countdown_refreshes_faster_as_the_deadline_nears() {
         assert_eq!(refresh_interval(Some(Duration::from_secs(90))), Duration::from_secs(10));
-        assert_eq!(refresh_interval(Some(Duration::from_secs(1800))), Duration::from_secs(30));
-        assert_eq!(refresh_interval(Some(Duration::from_secs(7200))), Duration::from_secs(60));
+        assert_eq!(refresh_interval(Some(Duration::from_mins(30))), Duration::from_secs(30));
+        assert_eq!(refresh_interval(Some(Duration::from_hours(2))), Duration::from_mins(1));
         assert_eq!(refresh_interval(None), Duration::from_secs(30));
     }
 }

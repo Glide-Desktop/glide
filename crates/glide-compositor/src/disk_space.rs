@@ -2,7 +2,7 @@ use std::{ffi::CString, os::unix::ffi::OsStrExt, path::Path, time::Duration};
 
 pub const NOTICE_ID: u32 = u32::MAX - 6;
 pub const OPEN_STORAGE: &str = "open-storage";
-const INTERVAL: Duration = Duration::from_secs(300);
+const INTERVAL: Duration = Duration::from_mins(5);
 const GIB: u64 = 1024 * 1024 * 1024;
 const LOW_SHARE: u64 = 5;
 const LOW_BYTES: u64 = 2 * GIB;

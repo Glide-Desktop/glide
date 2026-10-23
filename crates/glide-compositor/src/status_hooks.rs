@@ -20,7 +20,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use crate::system_info::{self, Privacy, Topics};
 
 const RETRY_FIRST: Duration = Duration::from_secs(2);
-const RETRY_LAST: Duration = Duration::from_secs(60);
+const RETRY_LAST: Duration = Duration::from_mins(1);
 const HEALTHY_RUN: Duration = Duration::from_secs(30);
 
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
