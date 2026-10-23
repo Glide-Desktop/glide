@@ -187,6 +187,7 @@ catalogue! {
     SettingsGestures => "Gestures", "Жести";
     SettingsAccessibility => "Accessibility", "Доступність";
     SettingsPrivacy => "Privacy & Security", "Конфіденційність і безпека";
+    SettingsPasswords => "Passwords", "Паролі";
     SettingsUsers => "Users", "Користувачі";
     SettingsDateTime => "Date & Time", "Дата й час";
     SettingsRegion => "Region & Language", "Регіон і мова";
