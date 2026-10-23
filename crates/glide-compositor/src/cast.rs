@@ -78,7 +78,7 @@ pub fn parse_pick_key(key: &str) -> Option<usize> {
 
 #[must_use]
 pub fn frame_due(interval: Option<Duration>, last: Option<Instant>, now: Instant) -> bool {
-    interval.is_some_and(|interval| last.is_none_or(|last| now.saturating_duration_since(last) >= interval))
+    interval.is_some_and(|interval| last.is_none_or(|last| now.saturating_duration_since(last) >= interval * 4 / 5))
 }
 
 impl GlideState {
@@ -139,8 +139,8 @@ impl GlideState {
         let name = self.session.cast.active.as_ref().map(|active| active.name.clone()).unwrap_or_default();
         let stop = || vec![glide_notify::Action { key: STOP.into(), label: t(Key::CastStop).into() }];
         match status {
-            Status::Connecting(_) => {
-                self.cast_notice(t(Key::CastConnecting).replace("{name}", &name), String::new(), stop());
+            Status::Connecting(display) => {
+                self.cast_notice(t(Key::CastConnecting).replace("{name}", &display), String::new(), stop());
             }
             Status::Negotiated(mode) => {
                 tracing::info!(width = mode.width, height = mode.height, fps = mode.fps, "mirroring mode agreed");
@@ -215,12 +215,12 @@ impl GlideState {
     fn arm_cast_frames(&mut self, interval: Duration) {
         let timer = Timer::from_duration(interval);
         let armed = self.loop_handle.insert_source(timer, move |_, (), state| {
-            if state.session.cast.active.as_ref().is_some_and(|active| active.interval.is_some()) {
-                state.queue_redraw();
-                TimeoutAction::ToDuration(interval)
-            } else {
-                TimeoutAction::Drop
-            }
+            let streaming = state.session.cast.active.as_ref().filter(|active| active.interval.is_some());
+            let Some(output) = streaming.map(|active| active.output.clone()) else {
+                return TimeoutAction::Drop;
+            };
+            state.queue_redraw_output(&output);
+            TimeoutAction::ToDuration(interval)
         });
         if let Err(err) = armed {
             tracing::warn!(?err, "could not pace the mirrored frames; the display updates only on screen changes");
@@ -262,6 +262,19 @@ mod tests {
         assert!(frame_due(interval, None, now));
         assert!(!frame_due(interval, Some(now), now + Duration::from_millis(10)));
         assert!(frame_due(interval, Some(now), now + Duration::from_millis(40)));
+    }
+
+    #[test]
+    fn a_timer_tick_that_lands_a_little_early_still_takes_its_frame() {
+        let interval = Duration::from_millis(33);
+        let start = Instant::now();
+        let mut last = None;
+        for tick in 1..=3 {
+            let early = interval.saturating_sub(Duration::from_millis(2));
+            let now = start + interval * (tick - 1) + early;
+            assert!(frame_due(Some(interval), last, now), "tick {tick} was skipped");
+            last = Some(now);
+        }
     }
 
     #[test]

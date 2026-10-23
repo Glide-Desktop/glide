@@ -1104,6 +1104,24 @@ impl GlideState {
         }
     }
 
+    pub fn queue_redraw_output(&mut self, output: &Output) {
+        if self.outputs_blanked {
+            return;
+        }
+        let Some(device) = self.backend_data.device.as_mut() else {
+            return;
+        };
+        let crtc = device.surfaces.iter_mut().find_map(|(&crtc, surface)| {
+            (surface.output == *output && !surface.redraw_queued).then(|| {
+                surface.redraw_queued = true;
+                crtc
+            })
+        });
+        if let Some(crtc) = crtc {
+            self.loop_handle.insert_idle(move |state| state.render_surface(crtc));
+        }
+    }
+
     #[profiling::function]
     fn render_surface(&mut self, crtc: crtc::Handle) {
         if !self.backend_data.session.is_active() || self.outputs_blanked {

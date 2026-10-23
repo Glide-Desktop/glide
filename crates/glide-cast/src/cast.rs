@@ -106,6 +106,7 @@ fn run(
     gstreamer::init().map_err(|err| format!("GStreamer did not start: {err}"))?;
     let preference = preference(crate::pipeline::hardware_encoder(crate::pipeline::element_exists));
     let p2p = P2p::open()?;
+    let _ = p2p.stop_find();
     let active = p2p.connect(peer, CONNECT_TIMEOUT)?;
     let served = (|| {
         let local = wait_for(ADDRESS_WAIT, stopped, || p2p.local_address(&active))?
