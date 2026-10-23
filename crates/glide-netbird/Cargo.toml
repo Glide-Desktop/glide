@@ -21,7 +21,7 @@ tower = { version = "0.5", default-features = false, features = ["util"] }
 tracing.workspace = true
 
 [build-dependencies]
-protox = { version = "0.9.1", default-features = false }
+protox = { version = "0.10", default-features = false }
 tonic-prost-build = "0.14"
 
 [lints]

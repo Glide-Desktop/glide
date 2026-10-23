@@ -48,7 +48,7 @@ wayland-backend = "0.3"
 wayland-scanner = "0.31"
 wayland-server = "0.31"
 tracy-client = { version = "0.18.4", optional = true }
-x11rb = "0.13"
+x11rb = "0.14"
 zbus = "5"
 zeroize = "1"
 glide-app = { path = "../glide-app" }

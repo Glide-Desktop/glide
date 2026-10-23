@@ -158,9 +158,9 @@ pub fn seal(contents: &Contents, key: &Key) -> Result<Vec<u8>, Error> {
     getrandom::fill(&mut nonce).map_err(|_| Error::Crypto)?;
     let header = key.header(&nonce);
     let plain = Zeroizing::new(serde_json::to_vec(contents).map_err(|_| Error::Crypto)?);
-    let cipher = XChaCha20Poly1305::new(key.bytes.as_ref().into());
+    let cipher = XChaCha20Poly1305::new((&*key.bytes).into());
     let sealed =
-        cipher.encrypt(XNonce::from_slice(&nonce), Payload { msg: &plain, aad: &header }).map_err(|_| Error::Crypto)?;
+        cipher.encrypt(&XNonce::from(nonce), Payload { msg: &plain, aad: &header }).map_err(|_| Error::Crypto)?;
     let mut file = header;
     file.extend_from_slice(&sealed);
     Ok(file)
@@ -177,12 +177,12 @@ pub fn open(file: &[u8], password: &[u8]) -> Result<(Contents, Key), Error> {
     let params = Params { memory_kib: word(5), passes: word(9), lanes: word(13) };
     let mut salt = [0; SALT_LEN];
     salt.copy_from_slice(&file[17..17 + SALT_LEN]);
-    let nonce = &file[17 + SALT_LEN..HEADER_LEN];
+    let nonce = XNonce::try_from(&file[17 + SALT_LEN..HEADER_LEN]).map_err(|_| Error::Corrupt)?;
     let key = Key::derive_with(password, salt, params)?;
-    let cipher = XChaCha20Poly1305::new(key.bytes.as_ref().into());
+    let cipher = XChaCha20Poly1305::new((&*key.bytes).into());
     let plain = Zeroizing::new(
         cipher
-            .decrypt(XNonce::from_slice(nonce), Payload { msg: &file[HEADER_LEN..], aad: &file[..HEADER_LEN] })
+            .decrypt(&nonce, Payload { msg: &file[HEADER_LEN..], aad: &file[..HEADER_LEN] })
             .map_err(|_| Error::WrongPassword)?,
     );
     let contents = serde_json::from_slice(&plain).map_err(|_| Error::Corrupt)?;
