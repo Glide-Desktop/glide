@@ -26,6 +26,18 @@ impl Art {
             Self::Raster(image::Handle::from_path(path))
         }
     }
+
+    #[must_use]
+    pub fn file(&self) -> Option<&Path> {
+        match self {
+            Self::Vector(handle) => match handle.data() {
+                iced::advanced::svg::Data::Path(file) => Some(file),
+                iced::advanced::svg::Data::Bytes(_) => None,
+            },
+            Self::Raster(image::Handle::Path(_, file)) => Some(file),
+            Self::Raster(_) => None,
+        }
+    }
 }
 
 #[must_use]

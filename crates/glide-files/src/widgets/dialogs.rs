@@ -5,8 +5,8 @@ use glide_sdk::Tone;
 use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{
-    Art as Picture, Size, Validity, Wrapping, art, elide, elide_lines, empty_note, facts, measure, scrollable,
-    select_row, separator, sized_toggle_button, text, validated_field, well,
+    Size, Validity, Wrapping, art, elide, elide_lines, empty_note, facts, measure, scrollable, select_row, separator,
+    sized_toggle_button, text, validated_field, well,
 };
 use iced::widget::{Column, column, row, text_input};
 use iced::{Alignment, Element};
@@ -17,7 +17,6 @@ use crate::fs::jobs::{Choice, Question};
 use crate::fs::{Target, format_bytes, format_time, home_dir, permissions_string};
 use crate::i18n::{self, Key, Lang};
 use crate::icons::Icon;
-use crate::native_icons::Art;
 use crate::theme;
 
 const WIDTH: f32 = 400.0;
@@ -174,10 +173,7 @@ fn app_icon<'a>(app: &App, name: Option<&str>, size: f32, paint: &glide_sdk::Pai
     if let Some(name) = name
         && let Some(art) = app.icons.lookup(&[name.to_string(), "application-x-executable".to_string()])
     {
-        return match art {
-            Art::Vector(handle) => self::art(Picture::Vector(handle), size, 1.0),
-            Art::Raster(handle) => self::art(Picture::Raster(handle), size, 1.0),
-        };
+        return self::art(art, size, 1.0);
     }
     super::icon(Icon::FileBinary, size, paint.fg_2())
 }

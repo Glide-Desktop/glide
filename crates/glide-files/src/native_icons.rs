@@ -3,16 +3,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use glide_sdk::theme::Accent;
-use iced::widget::{image, svg};
+pub use glide_sdk::widget::Art;
 
 use crate::fs::{FileCategory, FileEntry};
 use crate::icons::Icon;
-
-#[derive(Debug, Clone)]
-pub enum Art {
-    Vector(svg::Handle),
-    Raster(image::Handle),
-}
 
 const SIZES: [&str; 7] = ["64x64", "scalable", "48x48", "96x96", "128x128", "256x256", "512x512"];
 const CONTEXTS: [&str; 6] = ["places", "mimetypes", "apps", "devices", "status", "legacy"];
@@ -213,17 +207,10 @@ impl IconTheme {
     fn search(&self, name: &str) -> Option<Art> {
         let path = Path::new(name);
         if path.is_absolute() && path.is_file() {
-            if path.extension().is_some_and(|ext| ext == "svg") {
-                return Some(Art::Vector(svg::Handle::from_path(path)));
-            }
-            return Some(Art::Raster(image::Handle::from_path(path)));
+            return Some(Art::from_path(path));
         }
         let path = self.themes.iter().find_map(|dirs| find_file(dirs, name))?;
-        if path.extension().is_some_and(|ext| ext == "svg") {
-            Some(Art::Vector(svg::Handle::from_path(path)))
-        } else {
-            Some(Art::Raster(image::Handle::from_path(path)))
-        }
+        Some(Art::from_path(&path))
     }
 
     #[must_use]

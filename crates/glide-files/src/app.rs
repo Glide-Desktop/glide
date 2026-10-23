@@ -3012,14 +3012,7 @@ impl App {
         if let Some(thumb) = self.thumbnail(entry) {
             return Some(thumb.clone());
         }
-        match self.art(entry)? {
-            Art::Vector(handle) => match handle.data() {
-                iced::advanced::svg::Data::Path(file) => Some(file.clone()),
-                iced::advanced::svg::Data::Bytes(_) => None,
-            },
-            Art::Raster(iced::advanced::image::Handle::Path(_, file)) => Some(file),
-            Art::Raster(_) => None,
-        }
+        self.art(entry)?.file().map(Path::to_path_buf)
     }
 
     fn track_drag(&mut self, at: Point) {

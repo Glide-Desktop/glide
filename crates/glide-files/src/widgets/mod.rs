@@ -9,7 +9,7 @@ pub mod sidebar;
 use std::time::Instant;
 
 use glide_sdk::theme::TextStyle;
-use glide_sdk::widget::{Art as Picture, art, pane, separator, vertical_separator};
+use glide_sdk::widget::{art, pane, separator, vertical_separator};
 use iced::widget::{Stack, column, container, float, mouse_area, opaque, row};
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
@@ -265,18 +265,15 @@ pub fn file_icon<'a>(app: &App, entry: &FileEntry, size: f32) -> Element<'a, Mes
     if size >= 32.0
         && let Some(thumb) = app.thumbnail(entry)
     {
-        return art(Picture::from_path(thumb), size, opacity);
+        return art(Art::from_path(thumb), size, opacity);
     }
-    match app.art(entry) {
-        Some(Art::Vector(handle)) => art(Picture::Vector(handle), size, opacity),
-        Some(Art::Raster(handle)) => art(Picture::Raster(handle), size, opacity),
-        None => {
-            let t = &app.theme;
-            let mut color = if entry.is_dir { t.acc_bg() } else { t.fg_2() };
-            color.a *= opacity;
-            icon(entry.category.icon(), size, color)
-        }
+    if let Some(found) = app.art(entry) {
+        return art(found, size, opacity);
     }
+    let t = &app.theme;
+    let mut color = if entry.is_dir { t.acc_bg() } else { t.fg_2() };
+    color.a *= opacity;
+    icon(entry.category.icon(), size, color)
 }
 
 #[must_use]

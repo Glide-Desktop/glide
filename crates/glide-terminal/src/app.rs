@@ -435,24 +435,7 @@ fn stamp() -> Option<SystemTime> {
 }
 
 fn family(prefs: &Preferences) -> iced::Font {
-    match prefs.font_family.as_deref().map(str::trim) {
-        Some(name) if !name.is_empty() => {
-            let mut system = iced::advanced::graphics::text::font_system()
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if system
-                .raw()
-                .db()
-                .faces()
-                .any(|face| face.monospaced && face.families.iter().any(|(family, _)| family == name))
-            {
-                iced::Font::with_name(Box::leak(name.to_string().into_boxed_str()))
-            } else {
-                crate::MONO
-            }
-        }
-        _ => crate::MONO,
-    }
+    prefs.font_family.as_deref().and_then(glide_sdk::theme::installed_monospace).unwrap_or(crate::MONO)
 }
 
 fn reveal_or_open(path: PathBuf) {

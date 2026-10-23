@@ -34,6 +34,19 @@ pub fn use_ui_family(requested: Option<&str>) -> String {
 }
 
 #[must_use]
+pub fn installed_monospace(name: &str) -> Option<iced::Font> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut system =
+        iced::advanced::graphics::text::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let found =
+        system.raw().db().faces().any(|face| face.monospaced && face.families.iter().any(|(family, _)| family == name));
+    found.then(|| iced::Font::with_name(Box::leak(name.to_string().into_boxed_str())))
+}
+
+#[must_use]
 pub fn revision() -> u64 {
     REVISION.load(Ordering::Acquire)
 }
