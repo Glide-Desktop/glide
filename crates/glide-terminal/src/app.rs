@@ -12,8 +12,10 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{ClipboardType, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
+use glide_sdk::Paint;
+use glide_sdk::anim::Reveal;
 use glide_sdk::look::{self as shell_look, Look as ShellLook};
-use glide_theme::motion;
+use glide_sdk::theme::{motion, use_ui_family};
 use iced::keyboard::key::Named;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::{operation, pane_grid};
@@ -30,9 +32,9 @@ use crate::marks::{self, Mark};
 use crate::profile::Profile;
 use crate::session::{self, Bus, Feed, Launch, Pane, PaneId};
 use crate::sound;
-use crate::style::Paint;
 use crate::terminal::{Action, Flash, Fonts, Look};
 
+pub const APP_ID: &str = "glide-terminal";
 pub const FIND_ID: &str = "find";
 static SEARCH_ID: AtomicU64 = AtomicU64::new(1);
 const BLINK: Duration = Duration::from_millis(530);
@@ -103,12 +105,12 @@ pub struct Menu {
     pub at: Point,
     pub opened: Instant,
     pub selected: Option<usize>,
-    pub reveal: glide_ui::Reveal,
+    pub reveal: Reveal,
 }
 
 impl Menu {
     fn new(kind: MenuKind, at: Point, selected: Option<usize>) -> Self {
-        let mut reveal = glide_ui::Reveal::closed().with_ease(motion::ease_out);
+        let mut reveal = Reveal::closed().with_ease(motion::ease_out);
         reveal.open(motion::t2());
         Self { kind, at, opened: Instant::now(), selected, reveal }
     }
@@ -127,7 +129,7 @@ pub struct Confirm {
     pub processes: Vec<String>,
     pub opened: Instant,
     pub accept_focused: bool,
-    pub reveal: glide_ui::Reveal,
+    pub reveal: Reveal,
 }
 
 pub struct HintMode {
@@ -487,7 +489,7 @@ fn family(prefs: &Preferences) -> iced::Font {
 
 fn reveal_or_open(path: PathBuf) {
     let _ = std::thread::Builder::new().name("glide-terminal-reveal".into()).spawn(move || {
-        let token = glide_ipc::client::activation_token(None).unwrap_or_default();
+        let token = glide_sdk::system::activation_token(APP_ID).unwrap_or_default();
         if path.exists() && glide_app::integration::show_in_files(&path, &token).is_ok() {
             return;
         }
@@ -501,7 +503,7 @@ fn open_detached(program: &str, args: &[&str]) {
     let program = program.to_string();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
     let _ = std::thread::Builder::new().name("glide-terminal-open".into()).spawn(move || {
-        let env = glide_ipc::client::activation_env(None);
+        let env = glide_sdk::system::activation_env(APP_ID);
         if let Ok(mut child) = std::process::Command::new(program).args(args).envs(env).spawn() {
             let _ = child.wait();
         }
@@ -565,7 +567,7 @@ impl App {
             awaiting: None,
             pending: Vec::new(),
         };
-        crate::style::use_ui_family(look.font_family.as_deref());
+        use_ui_family(look.font_family.as_deref());
         let handles = window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles);
         (app, handles)
     }
@@ -1030,7 +1032,7 @@ impl App {
         self.lang = look.lang();
         self.sounds = look.sounds;
         if self.ui_family != look.font_family {
-            crate::style::use_ui_family(look.font_family.as_deref());
+            use_ui_family(look.font_family.as_deref());
             self.ui_family.clone_from(&look.font_family);
         }
         self.shell_look = look;
@@ -1206,7 +1208,7 @@ impl App {
         }
         if self.prefs.confirm_close && !busy.is_empty() {
             self.dismiss_menu();
-            let mut reveal = glide_ui::Reveal::closed().with_ease(motion::ease_out);
+            let mut reveal = Reveal::closed().with_ease(motion::ease_out);
             reveal.open(motion::t2());
             self.closing_confirm = None;
             self.confirm =
@@ -2227,9 +2229,9 @@ mod tests {
         app.shell_look = ShellLook::parse("[topbar]\nappearance-schedule = true\n", false);
         let stamps = app.stamps;
         app.update_appearance(Some(12 * 60));
-        assert_eq!(app.paint.tokens.appearance, glide_theme::Appearance::Light);
+        assert_eq!(app.paint.tokens.appearance, glide_sdk::theme::Appearance::Light);
         app.update_appearance(Some(20 * 60));
-        assert_eq!(app.paint.tokens.appearance, glide_theme::Appearance::Dark);
+        assert_eq!(app.paint.tokens.appearance, glide_sdk::theme::Appearance::Dark);
         assert_eq!(app.stamps, stamps);
     }
 

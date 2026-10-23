@@ -1,21 +1,21 @@
 use alacritty_terminal::index::Direction;
 use iced::border::Radius;
-use iced::widget::{Space, button, column, container, pane_grid, row, text_input};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Rectangle, Size};
+use iced::widget::{Space, column, pane_grid, row, text_input};
+use iced::{Color, Element, Fill, Rectangle, Size};
 
 use crate::app::{App, Command, Confirm, FIND_ID, Menu, MenuKind, Message, shortcut_label};
 use crate::i18n::Key;
-use crate::icons::Icon;
 use crate::marks::Mark;
 use crate::profile::{Profile, color};
-use crate::style::{self, Paint, R2, R3, SP1, SP2, SP3, Tone};
 use crate::terminal::Terminal;
-use crate::widgets;
-use glide_iced::text::{self, text};
-use glide_sdk::overlay::toast_pill;
-use glide_sdk::widget::{icon_button, separator as rule};
+use glide_sdk::overlay::{ringed, toast_pill};
+use glide_sdk::theme::{R2, R3, SP2, SP3, TextStyle, component, motion};
+use glide_sdk::widget::{
+    Icon, button, empty_state, grid, icon_button, palette_swatch, pane, preview_card, separator as rule, split_view,
+    text,
+};
 use glide_sdk::window::resize_edges;
-use glide_theme::{TextStyle, component};
+use glide_sdk::{Paint, Tone};
 
 pub const HEADER: f32 = 35.0;
 const TABS: f32 = component::LARGE_CONTROL;
@@ -159,26 +159,17 @@ fn content(app: &App) -> Element<'_, Message> {
     let Some(tab) = app.tab() else {
         let palette = app.prefs.profile.palette(&paint.tokens);
         let notice: Element<'_, Message> = match &app.error {
-            Some(error) => column![
-                text(Key::SpawnFailed.text(app.lang), TextStyle::HEAD).color(color(palette.foreground, 1.0)),
-                text(error.clone(), TextStyle::CALL).color(paint.fg_2()),
-            ]
-            .spacing(SP2)
-            .align_x(Alignment::Center)
-            .into(),
+            Some(error) => empty_state(&paint, Icon::Warning, Key::SpawnFailed.text(app.lang), error, None),
             None => Space::new().into(),
         };
-        return container(notice)
-            .center(Fill)
-            .style(move |_| style::rounded(color(palette.background, palette.opacity), bottom))
-            .into();
+        return pane(color(palette.background, palette.opacity), bottom, notice).into();
     };
     let look = app.look(tab.profile);
     let regions = tab.panes.layout().pane_regions(0.0, 0.0, Size::new(1.0, 1.0));
     let blink = app.blink_visible();
     let pattern = app.find.as_ref().map(|find| find.pattern.as_str());
     let target = app.drop_at.and_then(|at| pane_at(app, at));
-    let grid = pane_grid(&tab.panes, |handle, pane, _| {
+    let grid = split_view(&paint, &tab.panes, |handle, pane, _| {
         let focused = handle == tab.focus;
         let terminal = Terminal::new(pane, look, app.pane_focused(pane.id))
             .blink(blink)
@@ -198,23 +189,11 @@ fn content(app: &App) -> Element<'_, Message> {
             });
         pane_grid::Content::new(Element::from(terminal).map(Message::Terminal))
     })
-    .spacing(1)
     .min_size(PANE_MIN)
     .on_click(Message::PaneClicked)
-    .on_resize(6, Message::SplitResized)
-    .style(move |_| {
-        let split = pane_grid::Line { color: paint.acc_bg(), width: 2.0 };
-        pane_grid::Style {
-            hovered_region: pane_grid::Highlight {
-                background: Background::Color(paint.acc_soft()),
-                border: Border { color: paint.acc_bg(), width: 1.0, radius: R2.into() },
-            },
-            picked_split: split,
-            hovered_split: split,
-        }
-    });
+    .on_resize(6, Message::SplitResized);
     let backdrop = if tab.panes.len() > 1 { paint.divider() } else { Color::TRANSPARENT };
-    container(grid).width(Fill).height(Fill).style(move |_| style::rounded(backdrop, bottom)).into()
+    pane(backdrop, bottom, grid).into()
 }
 
 type MenuItem = glide_sdk::menu::Item<Message>;
@@ -322,80 +301,47 @@ fn menu_selected(app: &App, message: &Message) -> bool {
 }
 
 fn swatch(app: &App, paint: &Paint, profile: Profile, current: bool) -> Element<'static, Message> {
-    let paint = *paint;
     let palette = profile.palette(&paint.tokens);
-    let sample = row![
-        text("Aa", TextStyle::BODY).font(crate::MONO).color(color(palette.foreground, paint.alpha)),
-        Space::new().width(Fill),
-        row([1, 2, 3, 4].map(|index| {
-            let tint = color(palette.ansi[index], paint.alpha);
-            container(Space::new().width(6).height(6))
-                .style(move |_| style::rounded(tint, glide_theme::shape::R_ROUND))
-                .into()
-        }))
-        .spacing(SP1),
-    ]
-    .align_y(Alignment::Center);
-    let preview = container(sample)
-        .padding(Padding::from([0.0, SP3]))
-        .width(Fill)
-        .height(SWATCH.height)
-        .align_y(Alignment::Center)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(color(palette.background, paint.alpha))),
-            border: Border {
-                color: if current { paint.acc_bg() } else { paint.line() },
-                width: if current { 2.0 } else { 1.0 },
-                radius: R2.into(),
-            },
-            ..container::Style::default()
-        });
+    let accents = [1, 2, 3, 4].map(|index| color(palette.ansi[index], paint.alpha));
+    let background = color(palette.background, paint.alpha);
+    let sample =
+        palette_swatch(paint, background, color(palette.foreground, paint.alpha), &accents, crate::MONO, SWATCH);
     let mut name = profile.name().to_string();
     if profile == app.prefs.profile {
         name = format!("{name} · {}", Key::DefaultProfile.text(app.lang));
     }
+    let name = glide_sdk::widget::elide_end(&name, SWATCH.width, TextStyle { weight: 600, ..TextStyle::CAP });
     let selected = menu_selected(app, &Message::Command(Command::SetProfile(profile)));
-    let control = button(column![preview, text(name, TextStyle::CAP).wrapping(text::Wrapping::None)].spacing(SP1))
-        .on_press(Message::Command(Command::SetProfile(profile)))
-        .width(SWATCH.width)
-        .padding(0);
-    widgets::button(control, move |status| {
-        let lit = current || matches!(status, button::Status::Hovered | button::Status::Pressed);
-        let mut style = style::flat(Color::TRANSPARENT, if lit { paint.fg_1() } else { paint.fg_2() }, R2);
-        if selected {
-            style.border = Border { color: paint.acc_bg(), width: 2.0, radius: R2.into() };
-        }
-        style
-    })
+    let card = preview_card(paint, sample, name, current, Some(Message::Command(Command::SetProfile(profile))));
+    iced::widget::container(ringed(paint, card, R3, selected)).center_x(Fill).into()
 }
 
 fn profiles(app: &App, paint: &Paint) -> (Element<'static, Message>, Size) {
-    let paint = *paint;
+    use glide_sdk::theme::SP1;
+    use glide_sdk::widget::RING;
     let current = app.tab().map_or(app.prefs.profile, |tab| tab.profile);
-    let rows = Profile::ALL.chunks(3).map(|chunk| {
-        iced::widget::row(chunk.iter().map(|profile| swatch(app, &paint, *profile, *profile == current)))
-            .spacing(SP2)
-            .into()
-    });
-    let grid = iced::widget::column(rows).spacing(SP3);
+    let cells = Profile::ALL.iter().map(|profile| swatch(app, paint, *profile, *profile == current)).collect();
     let selected = menu_selected(app, &Message::Command(Command::MakeDefault));
-    let make_default = button(text(Key::MakeDefault.text(app.lang), TextStyle::CALL))
-        .on_press_maybe((current != app.prefs.profile).then_some(Message::Command(Command::MakeDefault)))
-        .height(component::CONTROL)
-        .padding(Padding::from([SP1, SP3]));
-    let make_default = widgets::button(make_default, move |status| {
-        let mut style = style::action(&paint, Tone::Neutral, status);
-        if selected {
-            style.border = Border { color: paint.acc_bg(), width: 2.0, radius: R2.into() };
-        }
-        style
-    });
+    let make_default = (current != app.prefs.profile).then_some(Message::Command(Command::MakeDefault));
+    let make_default = button(paint, Key::MakeDefault.text(app.lang), Tone::Neutral, make_default);
     let title = text(Key::Profiles.text(app.lang).trim_end_matches('…').to_string(), TextStyle::HEAD);
-    let body = column![title, grid, row![Space::new().width(Fill), make_default].align_y(Alignment::Center)]
-        .spacing(SP3)
-        .padding(SP2);
-    let width = SWATCH.width * 3.0 + 16.0 + 26.0;
-    let height = 4.0 * (SWATCH.height + 20.0) + 3.0 * 10.0 + 12.0 + 30.0 + 26.0;
+    let footer = row![Space::new().width(Fill), ringed(paint, make_default, R2, selected)];
+    let body = column![title, grid(cells, 3, SP2), footer].spacing(SP3).padding(SP2);
+    let rows = Profile::ALL.len().div_ceil(3) as f32;
+    let cell = Size::new(
+        SWATCH.width + 2.0 * (SP1 + RING),
+        SWATCH.height + 2.0 * (SP1 + RING) + SP1 + 2.0 + TextStyle::CAP.line_height_px,
+    );
+    let width = 3.0 * cell.width + 2.0 * SP2 + 2.0 * SP2 + 2.0;
+    let height = TextStyle::HEAD.line_height_px
+        + rows * cell.height
+        + (rows - 1.0) * SP2
+        + component::CONTROL
+        + 2.0 * RING
+        + 2.0 * SP3
+        + 2.0 * SP2
+        + 2.0 * SP1
+        + 2.0;
     (body.into(), Size::new(width, height))
 }
 
@@ -431,7 +377,7 @@ fn menu_rows(app: &App, paint: &Paint, menu: &Menu) -> (Vec<Element<'static, Mes
 }
 
 fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
-    let progress = menu.reveal.value(glide_theme::motion::t2()) as f32;
+    let progress = menu.reveal.value(motion::t2()) as f32;
     let paint = app.paint.faded(progress);
     let (rows, size) = match &menu.kind {
         MenuKind::Profiles => {
@@ -451,7 +397,7 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
 
 fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {
     use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
-    let progress = confirm.reveal.value(glide_theme::motion::t2()) as f32;
+    let progress = confirm.reveal.value(motion::t2()) as f32;
     let paint = app.paint.faded(progress);
     let body = format!("{}: {}.", Key::ConfirmBody.text(app.lang), confirm.processes.join(", "));
     let buttons = dialog_buttons(

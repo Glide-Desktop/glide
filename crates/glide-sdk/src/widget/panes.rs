@@ -4,10 +4,50 @@ use glide_iced::Paint;
 use glide_iced::style::{self, R2, SP1, SP2, SP3};
 use glide_theme::TextStyle;
 use iced::border::Radius;
-use iced::widget::{Column, Container, Row, Space, column, container, row};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Padding};
+use iced::widget::{Column, Container, Row, Space, column, container, pane_grid, row};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Font, Padding, Size};
 
-use super::{Wrapping, scrollable_x, text};
+use super::{Wrapping, dot, scrollable_x, text};
+
+#[must_use]
+pub fn split_view<'a, T, M: 'a>(
+    paint: &Paint, state: &'a pane_grid::State<T>,
+    view: impl Fn(pane_grid::Pane, &'a T, bool) -> pane_grid::Content<'a, M>,
+) -> pane_grid::PaneGrid<'a, M> {
+    let paint = *paint;
+    pane_grid(state, view).spacing(1).style(move |_| {
+        let split = pane_grid::Line { color: paint.acc_bg(), width: 2.0 };
+        pane_grid::Style {
+            hovered_region: pane_grid::Highlight {
+                background: Background::Color(paint.acc_soft()),
+                border: Border { color: paint.acc_bg(), width: 1.0, radius: R2.into() },
+            },
+            picked_split: split,
+            hovered_split: split,
+        }
+    })
+}
+
+#[must_use]
+pub fn palette_swatch<'a, M: 'a>(
+    paint: &Paint, background: Color, foreground: Color, accents: &[Color], font: Font, size: Size,
+) -> Element<'a, M> {
+    let line = paint.line();
+    let dots = Row::with_children(accents.iter().map(|tint| dot(*tint, 6.0))).spacing(SP1);
+    container(
+        row![text("Aa", TextStyle::BODY).font(font).color(foreground), Space::new().width(Fill), dots]
+            .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([0.0, SP3]))
+    .width(size.width)
+    .height(size.height)
+    .align_y(Alignment::Center)
+    .style(move |_| container::Style {
+        border: Border { color: line, width: 1.0, radius: R2.into() },
+        ..style::rounded(background, R2)
+    })
+    .into()
+}
 
 #[must_use]
 pub fn pane<'a, M: 'a>(

@@ -3,7 +3,7 @@
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
-use glide_theme::{Appearance, Tokens};
+use glide_sdk::theme::{Appearance, TokenColor, Tokens};
 
 const fn rgb(hex: u32) -> Rgb {
     Rgb { r: (hex >> 16) as u8, g: (hex >> 8) as u8, b: hex as u8 }
@@ -174,7 +174,7 @@ pub fn color(rgb: Rgb, alpha: f32) -> iced::Color {
     iced::Color::from_rgba8(rgb.r, rgb.g, rgb.b, alpha)
 }
 
-fn token(color: glide_theme::Color) -> Rgb {
+fn token(color: TokenColor) -> Rgb {
     let [r, g, b, _] = color.0;
     let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     Rgb { r: byte(r), g: byte(g), b: byte(b) }
@@ -252,7 +252,7 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glide_theme::Accent;
+    use glide_sdk::theme::Accent;
 
     fn tokens(appearance: Appearance) -> Tokens {
         Tokens::new(appearance, Accent::Blue)
@@ -273,7 +273,7 @@ mod tests {
     fn meridian_ansi_semantics_follow_changed_tokens_not_old_hex_values() {
         for appearance in [Appearance::Light, Appearance::Dark] {
             let mut tokens = tokens(appearance);
-            let changed = glide_theme::Color::from_hex("#123456").unwrap();
+            let changed = TokenColor::from_hex("#123456").unwrap();
             tokens.term_ok = changed;
             tokens.term_warn = changed;
             tokens.term_accent = changed;

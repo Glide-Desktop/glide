@@ -777,7 +777,7 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
                 painter.renderer.fill_quad(
                     Quad {
                         bounds: bar,
-                        border: Border { radius: glide_theme::shape::R1.into(), ..Border::default() },
+                        border: Border { radius: glide_sdk::theme::R1.into(), ..Border::default() },
                         ..Quad::default()
                     },
                     color(palette.foreground, alpha),
@@ -814,7 +814,7 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
 impl Terminal<'_> {
     fn paint_link_target(&self, painter: &mut Painter<'_>, uri: &str, bounds: Rectangle, fill: Color, ink: Color) {
         let (fonts, cell) = (self.look.fonts, painter.metrics.cell);
-        let pad = glide_theme::spacing::SP2 as f32;
+        let pad = glide_sdk::theme::SP2;
         let room = ((bounds.width - pad * 4.0) / cell.width.max(1.0)).floor().max(1.0) as usize;
         let shown: String = if uri.chars().count() > room {
             uri.chars().take(room.saturating_sub(1)).chain(std::iter::once('…')).collect()
@@ -834,7 +834,7 @@ impl Terminal<'_> {
             renderer.fill_quad(
                 Quad {
                     bounds: pill,
-                    border: Border { radius: glide_theme::shape::R2.into(), ..Border::default() },
+                    border: Border { radius: glide_sdk::theme::R2.into(), ..Border::default() },
                     ..Quad::default()
                 },
                 fill,
@@ -886,7 +886,7 @@ impl Terminal<'_> {
                 renderer.fill_quad(
                     Quad {
                         bounds: pill,
-                        border: Border { radius: glide_theme::shape::R1.into(), ..Border::default() },
+                        border: Border { radius: glide_sdk::theme::R1.into(), ..Border::default() },
                         ..Quad::default()
                     },
                     accent,
@@ -1067,7 +1067,7 @@ mod tests {
     use crate::session::{Bus, Launch};
     use alacritty_terminal::term::Config;
     use alacritty_terminal::vte::ansi::Processor;
-    use glide_theme::{Accent, Appearance, Tokens};
+    use glide_sdk::theme::{Accent, Appearance, Tokens};
 
     fn rendered(output: &str, bounds: Rectangle) -> Vec<iced_tiny_skia::Layer> {
         let (sender, _receiver) = iced::futures::channel::mpsc::unbounded();

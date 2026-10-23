@@ -21,6 +21,7 @@ pub enum Icon {
     Eye,
     Refresh,
     Check,
+    Warning,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,7 @@ pub fn glyph<'a, Message: 'a>(icon: Icon, side: f32, tint: Color) -> Element<'a,
                 }
                 Icon::Refresh => "<path d='M19.5 12a7.5 7.5 0 1 1-2.2-5.3'/><path d='M19.5 4.5v4h-4'/>",
                 Icon::Check => "<path d='M5 12.5l4.5 4.5L19 7.5'/>",
+                Icon::Warning => "<path d='M12 4.5l8.5 15h-17z'/><path d='M12 10v4.5M12 17v.5'/>",
                 _ => unreachable!(),
             };
             let svg = format!(

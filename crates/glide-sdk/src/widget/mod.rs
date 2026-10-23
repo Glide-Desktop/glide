@@ -52,7 +52,7 @@ pub use layout::{
     action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card, section,
     select_row, sidebar, sidebar_item, status_bar, status_button, surface, switch_row, table_header, tree_row, well,
 };
-pub use panes::{code_block, heading_row, pane, shortcut_list, stat_rows};
+pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, split_view, stat_rows};
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
