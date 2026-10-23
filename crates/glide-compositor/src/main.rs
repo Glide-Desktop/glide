@@ -47,6 +47,7 @@ mod nm_agent;
 mod notifications;
 mod oneshot;
 mod osd;
+mod otp;
 mod overview;
 mod paint;
 mod polkit_agent;

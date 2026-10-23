@@ -401,6 +401,7 @@ pub struct SessionServices {
     pub headset: crate::headset::Session,
     pub lent_keymap: Option<crate::handlers::virtual_keyboard::Lent>,
     pub text_field: Option<crate::focused_field::Field>,
+    pub otp: Option<crate::otp::Code>,
     pub gate: Arc<crate::privilege::Gate>,
     pub permission_prompts: crate::privilege::Pending,
 }
@@ -1516,6 +1517,7 @@ impl GlideState {
     pub fn handle_notify_event(&mut self, event: glide_notify::NotifyEvent) {
         let dirty = match event {
             glide_notify::NotifyEvent::Added(notification) => {
+                self.remember_code(&notification);
                 let sound = self.notifications.audible(&notification);
                 let shown = self.notifications.push(&mut self.dock.icons, *notification, false);
                 if let Some(sound) = sound.filter(|_| shown) {

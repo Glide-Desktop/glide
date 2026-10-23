@@ -206,6 +206,9 @@ catalogue! {
     PermissionScreen => "{app} wants to record the screen", "{app} хоче записувати екран";
     PermissionBody => "{path}\nAllow it only if you trust this program, then start it again.", "{path}\nДозвольте, лише якщо довіряєте цій програмі, і запустіть її знову.";
     PermissionAllow => "Allow", "Дозволити";
+    CodeOffer => "Code from {app}: {code}", "Код від {app}: {code}";
+    CodeOfferBody => "Insert it into the field you are typing in", "Вставити його в поле, де ви зараз вводите";
+    CodeInsert => "Insert", "Вставити";
     SomeApp => "An app", "Програма";
     PowerCountdownLogOut => "You will be logged out automatically in {n} s.", "Сеанс буде завершено автоматично через {n} с.";
     PowerCountdownRestart => "The computer will restart automatically in {n} s.", "Комп\u{2019}ютер буде перезавантажено автоматично через {n} с.";

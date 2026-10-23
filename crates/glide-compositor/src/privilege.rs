@@ -13,9 +13,8 @@ use crate::{GlideState, oneshot};
 
 const OWNER: &str = "permissions";
 
-const GLIDE_PROGRAMS: [&str; 9] = [
+const GLIDE_PROGRAMS: [&str; 8] = [
     "glide",
-    "glidectl",
     "glide-portal",
     "glide-files",
     "glide-terminal",
@@ -272,6 +271,11 @@ mod tests {
         assert_eq!(decide_for(Access::Screen, "/opt/glide/bin/glide-portal", &permissions), Decision::Allow);
         assert_eq!(decide_for(Access::Screen, "/opt/glide/bin/wl-paste", &permissions), Decision::Ask);
         assert_eq!(decide_for(Access::Screen, "/home/me/glide-portal", &permissions), Decision::Ask);
+        assert_eq!(
+            decide_for(Access::Screen, "/opt/glide/bin/glidectl", &permissions),
+            Decision::Ask,
+            "any script can run glidectl, so it is no more trusted than its caller"
+        );
     }
 
     #[test]

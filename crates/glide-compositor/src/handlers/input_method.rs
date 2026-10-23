@@ -21,6 +21,7 @@ impl TextInputActivation for GlideState {
         let app = self.layout.focused_window().and_then(|id| self.dock_key(id));
         tracing::info!(kind = ?field.kind, sensitive = field.sensitive, app = app.as_deref().unwrap_or("-"), "text field focused");
         self.session.text_field = Some(field);
+        self.offer_code();
     }
 
     fn deactivated(&mut self) {

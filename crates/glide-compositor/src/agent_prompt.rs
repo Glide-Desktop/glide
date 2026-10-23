@@ -156,6 +156,12 @@ impl crate::GlideState {
                 crate::system_info::open_storage_settings();
                 continue;
             }
+            if let LocalEvent::Action { id: crate::otp::OFFER_ID, key } = &event
+                && key == crate::otp::INSERT
+            {
+                self.insert_code();
+                continue;
+            }
             if let LocalEvent::Action { id: crate::screenshot_ui::NOTICE_ID, key } = &event {
                 self.open_screenshot(key == crate::screenshot_ui::SHOW);
                 continue;
