@@ -24,11 +24,11 @@ use crate::fs::{
 };
 use crate::i18n::{self, Key, Lang};
 use crate::icons::Icon;
-use crate::motion::{Curve, Fade, Speed};
 use crate::native_icons::{Art, IconTheme};
 use crate::theme::ThemeState;
 use crate::widgets::content::Metrics;
 use crate::widgets::{self, content};
+use glide_sdk::anim::{Fade, Speed};
 
 pub const SEARCH_ID: &str = "search";
 pub const PATH_ID: &str = "path";
@@ -609,11 +609,11 @@ impl Surfaces {
     fn new() -> Self {
         Self {
             hover: HashMap::new(),
-            menu: Fade::asymmetric(false, (Speed::T2, Curve::Out), (Speed::T2, Curve::InOut)),
+            menu: Fade::asymmetric(false, Speed::SLIDE, Speed::FADE),
             menu_ghost: None,
-            toast: Fade::asymmetric(false, (Speed::T4, Curve::Out), (Speed::T2, Curve::InOut)),
+            toast: Fade::asymmetric(false, Speed::ARRIVE, Speed::FADE),
             toast_ghost: None,
-            modal: Fade::asymmetric(false, (Speed::T3, Curve::Out), (Speed::T2, Curve::InOut)),
+            modal: Fade::asymmetric(false, Speed::EXPAND, Speed::FADE),
             modal_ghost: None,
         }
     }
@@ -640,10 +640,7 @@ impl Surfaces {
         let (layer, lift) = match self.hover.get_mut(&key) {
             Some(fades) => fades,
             None if on => self.hover.entry(key).or_insert_with(|| {
-                (
-                    Fade::new(false, Speed::T1, Curve::InOut),
-                    Fade::asymmetric(false, (Speed::T2, Curve::Over), (Speed::T2, Curve::Out)),
-                )
+                (Fade::new(false, Speed::STATE), Fade::asymmetric(false, Speed::SPRING, Speed::SLIDE))
             }),
             None => return,
         };
@@ -2267,7 +2264,7 @@ impl App {
             return Task::none();
         };
         let (top, bottom) = self.metrics().span(self.view, index, self.pane.width);
-        widgets::pointer::reveal(Id::new(FILES_ID), top, bottom)
+        glide_sdk::widget::reveal(Id::new(FILES_ID), top, bottom)
     }
 
     fn cursor_point(&self) -> Point {
@@ -2327,7 +2324,7 @@ impl App {
         match next {
             Some(index) => {
                 let (top, bottom) = widgets::menu::span(&entries, index);
-                widgets::pointer::reveal(Id::new(glide_sdk::menu::SCROLL), top, bottom)
+                glide_sdk::widget::reveal(Id::new(glide_sdk::menu::SCROLL), top, bottom)
             }
             None => Task::none(),
         }

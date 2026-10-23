@@ -4,7 +4,6 @@ pub mod dialogs;
 pub mod header;
 pub mod menu;
 pub mod pathbar;
-pub mod pointer;
 pub mod sidebar;
 
 use std::time::Instant;
@@ -30,7 +29,7 @@ pub const CONTROL: f32 = theme::SMALL_CONTROL;
 pub fn window(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let base = chooser::base(app).unwrap_or_else(|| browser(app));
-    let base = pointer::context_area(base, Message::ContextMenu).on_zoom(Message::Zoom);
+    let base = glide_sdk::widget::context_area(base, Message::ContextMenu).on_zoom(Message::Zoom);
 
     let now = Instant::now();
     let motion = &app.motion;

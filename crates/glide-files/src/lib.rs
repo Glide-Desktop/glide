@@ -7,7 +7,6 @@ pub mod fs;
 pub mod i18n;
 pub mod icons;
 pub mod launcher;
-pub mod motion;
 pub mod native_icons;
 pub mod service;
 pub mod theme;
