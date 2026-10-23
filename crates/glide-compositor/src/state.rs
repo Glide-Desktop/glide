@@ -405,6 +405,7 @@ pub struct SessionServices {
     pub keychain: crate::keychain::Keychain,
     pub autofill: Option<crate::autofill::Offer>,
     pub asks: crate::agent_prompt::Asks,
+    pub cast: crate::cast::Cast,
     pub gate: Arc<crate::privilege::Gate>,
     pub permission_prompts: crate::privilege::Pending,
 }
@@ -1302,7 +1303,10 @@ impl GlideState {
     }
 
     pub fn sync_screen_capture(&mut self) -> bool {
-        let recording = self.screencopy.recording_clients(std::time::Instant::now());
+        let mut recording = self.screencopy.recording_clients(std::time::Instant::now());
+        if let Some(display) = self.session.cast.label() {
+            recording.push(crate::i18n::t(crate::i18n::Key::CastIndicator).replace("{name}", &display));
+        }
         self.topbar.set_screen_capture(recording)
     }
 

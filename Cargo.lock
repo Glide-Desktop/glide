@@ -1690,6 +1690,7 @@ dependencies = [
  "bitflags 2.13.2",
  "glide-app",
  "glide-appmenu",
+ "glide-cast",
  "glide-config",
  "glide-geom",
  "glide-ipc",

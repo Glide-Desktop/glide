@@ -48,6 +48,7 @@ mod tr {
         RunPrompt => "Open the Run prompt", "Відкрити рядок «Виконати»";
         ForceQuit => "Force quit the app", "Завершити програму примусово";
         FillPassword => "Fill a saved password", "Вставити збережений пароль";
+        ScreenMirroring => "Mirror the screen to a TV", "Транслювати екран на телевізор";
         TileLeft => "Fill the left half", "Зайняти ліву половину";
         TileRight => "Fill the right half", "Зайняти праву половину";
         TileMaximize => "Fill the screen", "Розгорнути на весь екран";
@@ -575,6 +576,7 @@ fn named_label(name: &str) -> Option<tr::Key> {
         "run-command" => tr::Key::RunPrompt,
         "force-quit" => tr::Key::ForceQuit,
         "fill-password" => tr::Key::FillPassword,
+        "screen-mirroring" => tr::Key::ScreenMirroring,
         "tile-left" => tr::Key::TileLeft,
         "tile-right" => tr::Key::TileRight,
         "tile-maximize" => tr::Key::TileMaximize,

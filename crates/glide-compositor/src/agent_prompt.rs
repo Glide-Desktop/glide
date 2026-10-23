@@ -186,6 +186,10 @@ impl crate::GlideState {
                 crate::system_info::open_storage_settings();
                 continue;
             }
+            if let LocalEvent::Action { id: crate::cast::NOTICE_ID, key } = &event {
+                self.cast_action(key);
+                continue;
+            }
             if let LocalEvent::Action { id: crate::autofill::FILL_ID, key } = &event {
                 self.autofill_action(key);
                 continue;

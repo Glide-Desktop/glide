@@ -14,6 +14,7 @@ mod logind;
 mod autofill;
 mod backend;
 mod background_effect;
+mod cast;
 mod clip;
 mod clipboard;
 mod config;
@@ -302,6 +303,7 @@ fn init_session_services(
     init_netbird(event_loop, state);
     init_headset(event_loop);
     init_keychain(event_loop, state);
+    init_cast(event_loop, state);
     state.welcome_if_first_run();
     if !greeter::pam::available() {
         tracing::warn!("PAM is unavailable: the screen will not lock on idle, and a manual lock cannot be undone");
@@ -383,6 +385,13 @@ fn init_keychain(event_loop: &mut EventLoop<'static, GlideState>, state: &mut Gl
             state.keychain(glide_ipc::keychain::Request::Status, |_, _| {});
         }
         Err(err) => tracing::warn!(%err, "the keychain link is unavailable; saved passwords cannot be filled"),
+    }
+}
+
+fn init_cast(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<cast::Event>("a screen mirroring event");
+    if watch(event_loop, receiver, "the screen mirroring channel", GlideState::handle_cast) {
+        state.session.cast = cast::Cast::new(std::sync::Arc::new(send));
     }
 }
 

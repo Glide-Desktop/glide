@@ -187,6 +187,7 @@ impl GlideState {
             SystemCommand::LogOut => self.open_power_dialog(Some(PowerAction::LogOut)),
             SystemCommand::Restart => self.open_power_dialog(Some(PowerAction::Restart)),
             SystemCommand::ShutDown => self.open_power_dialog(Some(PowerAction::ShutDown)),
+            SystemCommand::ScreenMirroring => self.toggle_screen_mirroring(),
         }
     }
 

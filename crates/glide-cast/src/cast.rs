@@ -47,14 +47,21 @@ impl Handle {
     }
 }
 
-pub fn discover(seconds: u32, found: impl Fn(Result<Vec<Peer>, String>) + Send + 'static) -> std::io::Result<()> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Discovery {
+    Peers(Vec<Peer>),
+    Finished,
+    Failed(String),
+}
+
+pub fn discover(seconds: u32, found: impl Fn(Discovery) + Send + 'static) -> std::io::Result<()> {
     std::thread::Builder::new().name("glide-cast-find".into()).spawn(move || {
         let p2p = match P2p::open() {
             Ok(p2p) => p2p,
-            Err(err) => return found(Err(err)),
+            Err(err) => return found(Discovery::Failed(err)),
         };
         if let Err(err) = p2p.start_find(i32::try_from(seconds).unwrap_or(30)) {
-            return found(Err(err));
+            return found(Discovery::Failed(err));
         }
         let deadline = Instant::now() + Duration::from_secs(u64::from(seconds));
         let mut last = Vec::new();
@@ -63,24 +70,29 @@ pub fn discover(seconds: u32, found: impl Fn(Result<Vec<Peer>, String>) + Send +
                 && peers != last
             {
                 last.clone_from(&peers);
-                found(Ok(peers));
+                found(Discovery::Peers(peers));
             }
             std::thread::sleep(Duration::from_secs(1));
         }
         let _ = p2p.stop_find();
+        found(Discovery::Finished);
     })?;
     Ok(())
 }
 
-pub fn start(
-    peer: Peer, preference: &'static [u8], frame_format: &'static str, status: impl Fn(Status) + Send + 'static,
-) -> std::io::Result<Handle> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Source {
+    pub frame_format: &'static str,
+    pub size: (u32, u32),
+}
+
+pub fn start(peer: Peer, source: Source, status: impl Fn(Status) + Send + 'static) -> std::io::Result<Handle> {
     let (stop, stopped) = mpsc::channel();
     let stream = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&stream);
     std::thread::Builder::new().name("glide-cast".into()).spawn(move || {
         status(Status::Connecting(peer.name.clone()));
-        let outcome = run(&peer, preference, frame_format, &stopped, &slot, &status);
+        let outcome = run(&peer, source, &stopped, &slot, &status);
         slot.lock().unwrap_or_else(PoisonError::into_inner).take();
         status(Status::Ended(outcome.err()));
     })?;
@@ -88,16 +100,18 @@ pub fn start(
 }
 
 fn run(
-    peer: &Peer, preference: &'static [u8], frame_format: &'static str, stopped: &mpsc::Receiver<()>,
-    slot: &Arc<Mutex<Option<(Stream, Mode)>>>, status: &impl Fn(Status),
+    peer: &Peer, source: Source, stopped: &mpsc::Receiver<()>, slot: &Arc<Mutex<Option<(Stream, Mode)>>>,
+    status: &impl Fn(Status),
 ) -> Result<(), String> {
+    gstreamer::init().map_err(|err| format!("GStreamer did not start: {err}"))?;
+    let preference = preference(crate::pipeline::hardware_encoder(crate::pipeline::element_exists));
     let p2p = P2p::open()?;
     let active = p2p.connect(peer, CONNECT_TIMEOUT)?;
     let served = (|| {
         let local = wait_for(ADDRESS_WAIT, stopped, || p2p.local_address(&active))?
             .ok_or("the Wi-Fi Direct link got no address")?;
         let (tcp, display) = accept(local, stopped)?.ok_or("the display did not open its control connection")?;
-        let link = Link { tcp, display, local, preference, frame_format };
+        let link = Link { tcp, display, local, source, preference };
         link.serve(stopped, slot, status)
     })();
     let _ = p2p.disconnect(&active);
@@ -133,8 +147,8 @@ struct Link {
     tcp: TcpStream,
     display: SocketAddr,
     local: Ipv4Addr,
+    source: Source,
     preference: &'static [u8],
-    frame_format: &'static str,
 }
 
 impl Link {
@@ -185,7 +199,8 @@ impl Link {
                                 audio: choice.audio,
                                 host: display_host(self.display.ip()),
                                 port: choice.sink_rtp_port,
-                                frame_format: self.frame_format,
+                                frame_format: self.source.frame_format,
+                                input: self.source.size,
                             };
                             let stream = Stream::start(&spec)?;
                             *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some((stream, choice.video.mode));
@@ -296,13 +311,9 @@ mod tests {
         let source_slot = Arc::clone(&slot);
         let source = std::thread::spawn(move || {
             let (tcp, display) = listener.accept().unwrap();
-            let link = Link {
-                tcp,
-                display,
-                local: Ipv4Addr::LOCALHOST,
-                preference: &formats::SOFTWARE_PREFERENCE,
-                frame_format: "BGRx",
-            };
+            let source = Source { frame_format: "BGRx", size: (800, 500) };
+            let preference = &formats::SOFTWARE_PREFERENCE;
+            let link = Link { tcp, display, local: Ipv4Addr::LOCALHOST, source, preference };
             let statuses = Mutex::new(Vec::new());
             let outcome = link.serve(&stopped, &source_slot, &|status| statuses.lock().unwrap().push(status));
             (outcome, statuses.into_inner().unwrap())
@@ -341,7 +352,7 @@ mod tests {
         let handle = Handle { stop, stream: Arc::clone(&slot) };
         assert_eq!(handle.mode().map(|mode| (mode.width, mode.height)), Some((640, 480)));
         for _ in 0..15 {
-            handle.push_frame(vec![0x40; 640 * 480 * 4]);
+            handle.push_frame(vec![0x40; 800 * 500 * 4]);
             std::thread::sleep(Duration::from_millis(33));
         }
         let mut packet = [0; 2048];

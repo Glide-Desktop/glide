@@ -1704,6 +1704,19 @@ impl GlideState {
             )
         });
 
+        if self.session.cast.frame_due(&output) {
+            match super::screenshot::capture_frame(
+                gles_renderer,
+                &elements,
+                output_mode,
+                output.current_scale().fractional_scale(),
+                output.current_transform(),
+            ) {
+                Ok(pixels) => self.session.cast.push_frame(pixels),
+                Err(err) => tracing::warn!(?err, "could not capture a mirrored frame"),
+            }
+        }
+
         let flash = self.screenshot_flash.alpha_on(&output, std::time::Instant::now());
         if flash > 0.0 {
             surface.screenshot_flash.update((logical_size.0, logical_size.1), [flash, flash, flash, flash]);

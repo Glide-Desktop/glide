@@ -142,10 +142,12 @@ pub enum SystemCommand {
     Restart,
     ShutDown,
     Sleep,
+    ScreenMirroring,
 }
 
 impl SystemCommand {
-    pub const ALL: [Self; 5] = [Self::Lock, Self::LogOut, Self::Restart, Self::ShutDown, Self::Sleep];
+    pub const ALL: [Self; 6] =
+        [Self::Lock, Self::LogOut, Self::Restart, Self::ShutDown, Self::Sleep, Self::ScreenMirroring];
 
     #[must_use]
     pub fn title(self) -> &'static str {
@@ -155,6 +157,7 @@ impl SystemCommand {
             Self::Restart => Key::CommandRestart,
             Self::ShutDown => Key::CommandShutDown,
             Self::Sleep => Key::CommandSleep,
+            Self::ScreenMirroring => Key::CastTitle,
         })
     }
 
@@ -166,6 +169,16 @@ impl SystemCommand {
             Self::Restart => &["restart", "reboot", "перезавантажити", "перезапуск"],
             Self::ShutDown => &["shut down", "shutdown", "power off", "poweroff", "вимкнути", "вимкнення"],
             Self::Sleep => &["sleep", "suspend", "сон", "призупинити", "режим сну"],
+            Self::ScreenMirroring => &[
+                "screen mirroring",
+                "mirror",
+                "cast",
+                "miracast",
+                "tv",
+                "дублювання екрана",
+                "трансляція",
+                "телевізор",
+            ],
         }
     }
 }

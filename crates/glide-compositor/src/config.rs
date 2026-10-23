@@ -1472,6 +1472,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "terminal" => KeyAction::Terminal,
             "force-quit" => KeyAction::ForceQuit,
             "fill-password" => KeyAction::FillPassword,
+            "screen-mirroring" => KeyAction::ScreenMirroring,
             "tile-left" => KeyAction::Tile(crate::tiling::Side::Left),
             "tile-right" => KeyAction::Tile(crate::tiling::Side::Right),
             "tile-maximize" => KeyAction::TileMaximize,

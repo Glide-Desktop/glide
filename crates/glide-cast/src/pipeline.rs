@@ -17,6 +17,7 @@ pub struct Spec {
     pub host: String,
     pub port: u16,
     pub frame_format: &'static str,
+    pub input: (u32, u32),
 }
 
 impl Spec {
@@ -73,10 +74,12 @@ pub fn description(spec: &Spec, available: impl Fn(&str) -> bool) -> Option<Stri
     let mode = spec.video.mode;
     let mut text = format!(
         "appsrc name=video is-live=true do-timestamp=true format=time block=false max-buffers=2 leaky-type=downstream \
-         caps=\"video/x-raw,format={},width={},height={},framerate={}/1\" ! queue ! videoconvert ! \
-         video/x-raw,format=I420 ! {encoder} ! h264parse config-interval=-1 ! \
-         video/x-h264,stream-format=byte-stream,alignment=au,profile={} ! mux. ",
+         caps=\"video/x-raw,format={},width={},height={},framerate=0/1\" ! queue ! videoscale add-borders=true ! \
+         videoconvert ! videorate ! video/x-raw,format=I420,width={},height={},framerate={}/1,pixel-aspect-ratio=1/1 ! \
+         {encoder} ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au,profile={} ! mux. ",
         spec.frame_format,
+        spec.input.0,
+        spec.input.1,
         mode.width,
         mode.height,
         mode.fps,
@@ -93,7 +96,8 @@ pub fn description(spec: &Spec, available: impl Fn(&str) -> bool) -> Option<Stri
     Some(text)
 }
 
-fn element_exists(name: &str) -> bool {
+#[must_use]
+pub fn element_exists(name: &str) -> bool {
     gst::ElementFactory::find(name).is_some()
 }
 
@@ -158,6 +162,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 0,
             frame_format: "BGRx",
+            input: (640, 480),
         }
     }
 

@@ -87,6 +87,7 @@ pub const NAMED_ACTIONS: &[&str] = &[
     "toggle-do-not-disturb",
     "toggle-caffeine",
     "fill-password",
+    "screen-mirroring",
     "lock",
     "power-dialog",
     "logout",
@@ -171,7 +172,8 @@ impl Action {
                 | "toggle-quick-settings"
                 | "toggle-do-not-disturb"
                 | "toggle-caffeine"
-                | "fill-password" => Category::System,
+                | "fill-password"
+                | "screen-mirroring" => Category::System,
                 media if media.starts_with("media-") => Category::Media,
                 _ => Category::Custom,
             },
