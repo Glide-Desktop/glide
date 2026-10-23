@@ -12,6 +12,7 @@ const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 const WIFI_P2P: &str = "org.freedesktop.NetworkManager.Device.WifiP2P";
 const PEER: &str = "org.freedesktop.NetworkManager.WifiP2PPeer";
 const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
+const IP4_CONFIG: &str = "org.freedesktop.NetworkManager.IP4Config";
 const DEVICE_TYPE_WIFI_P2P: u32 = 30;
 const ACTIVATED: u32 = 2;
 const DEACTIVATED: u32 = 4;
@@ -140,6 +141,18 @@ impl P2p {
                 _ => std::thread::sleep(POLL),
             }
         }
+    }
+
+    #[must_use]
+    pub fn local_address(&self, active: &OwnedObjectPath) -> Option<std::net::Ipv4Addr> {
+        let config: OwnedObjectPath =
+            Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).ok()?.get_property("Ip4Config").ok()?;
+        let addresses: Vec<HashMap<String, zbus::zvariant::OwnedValue>> =
+            Proxy::new(&self.bus, NM, config.as_str(), IP4_CONFIG).ok()?.get_property("AddressData").ok()?;
+        addresses.iter().find_map(|entry| {
+            let address = String::try_from(entry.get("address")?.try_clone().ok()?).ok()?;
+            address.parse().ok()
+        })
     }
 
     pub fn disconnect(&self, active: &OwnedObjectPath) -> Result<(), String> {
