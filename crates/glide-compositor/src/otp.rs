@@ -12,38 +12,54 @@ const FRESH: Duration = Duration::from_secs(180);
 const MIN_DIGITS: usize = 4;
 const MAX_DIGITS: usize = 8;
 
-const KEYWORDS: [&str; 17] = [
+const WORDS: [&str; 20] = [
     "code",
+    "codes",
     "код",
+    "коду",
+    "кодом",
+    "коді",
+    "кода",
     "kod",
     "otp",
     "pin",
     "passcode",
     "password",
     "пароль",
-    "verif",
-    "підтвердж",
-    "подтвержд",
+    "пароля",
     "2fa",
     "token",
     "login",
     "вхід",
+    "входу",
     "вход",
-    "одноразов",
 ];
+
+const STEMS: [&str; 4] = ["verif", "підтвердж", "подтвержд", "одноразов"];
 
 #[must_use]
 pub fn extract(summary: &str, body: &str) -> Option<String> {
     let text: Vec<char> = format!("{summary}\n{body}").chars().collect();
-    let lower: String = text.iter().collect::<String>().to_lowercase();
-    let keyword_at = KEYWORDS.iter().filter_map(|keyword| lower.find(keyword)).min()?;
-    let keyword_char = lower[..keyword_at].chars().count();
+    let keyword_char = keyword_start(&text)?;
     let candidates = candidates(&text);
     candidates
         .iter()
         .find(|(start, _)| *start >= keyword_char)
         .or_else(|| candidates.last())
         .map(|(_, code)| code.clone())
+}
+
+fn keyword_start(text: &[char]) -> Option<usize> {
+    let lower: Vec<char> = text.iter().map(|ch| ch.to_lowercase().next().unwrap_or(*ch)).collect();
+    let chars = |keyword: &&str| keyword.chars().collect::<Vec<char>>();
+    let words: Vec<Vec<char>> = WORDS.iter().map(chars).collect();
+    let stems: Vec<Vec<char>> = STEMS.iter().map(chars).collect();
+    let ends_word = |at: usize| lower.get(at).is_none_or(|ch| !ch.is_alphanumeric());
+    (0..lower.len()).find(|&at| {
+        let at_word_start = at == 0 || !lower[at - 1].is_alphanumeric();
+        let word = words.iter().any(|word| lower[at..].starts_with(word) && ends_word(at + word.len()));
+        at_word_start && (word || stems.iter().any(|stem| lower[at..].starts_with(stem)))
+    })
 }
 
 fn candidates(text: &[char]) -> Vec<(usize, String)> {
@@ -188,6 +204,15 @@ mod tests {
     #[test]
     fn numbers_without_a_code_keyword_are_ignored() {
         assert_eq!(extract("Calendar", "Meeting at 1530 in room 4012"), None);
+    }
+
+    #[test]
+    fn a_keyword_inside_another_word_does_not_count() {
+        assert_eq!(extract("Shop", "Shipping update: parcel 48213 is on its way"), None);
+        assert_eq!(extract("Shop", "Your barcode 48213 is attached"), None);
+        assert_eq!(extract("Player", "Кодек 2160 підтримується"), None);
+        assert_eq!(extract("Банк", "Не повідомляйте коду 5521 нікому"), Some("5521".into()));
+        assert_eq!(extract("Bank", "Your verification number: 5521"), Some("5521".into()), "stems still match");
     }
 
     #[test]

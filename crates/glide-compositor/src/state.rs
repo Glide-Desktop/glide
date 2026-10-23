@@ -399,7 +399,7 @@ pub struct SessionServices {
     pub shortcuts: crate::shortcut_guard::ShortcutGuard,
     pub netbird: crate::netbird::Session,
     pub headset: crate::headset::Session,
-    pub lent_keymap: Option<crate::handlers::virtual_keyboard::Lent>,
+    pub virtual_keymaps: crate::handlers::virtual_keyboard::VirtualKeymaps,
     pub text_field: Option<crate::focused_field::Field>,
     pub otp: Option<crate::otp::Code>,
     pub gate: Arc<crate::privilege::Gate>,
@@ -1814,6 +1814,7 @@ impl GlideState {
                 tracing::error!(?err, "failed to apply the xkb config");
             }
             if rebuild {
+                self.session.virtual_keymaps.seat_keymap_changed();
                 self.sync_topbar_layout();
             }
             if rebuild || numlock_changed {
