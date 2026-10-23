@@ -94,11 +94,26 @@ impl Eq for Edge {}
 pub enum Action {
     Drag,
     ToggleMaximize,
+    ToggleFullscreen,
     Minimize,
+    Activate,
+    Attention,
     Resize(Direction),
     Resized(Size),
     Focused(bool),
     Framed(Frame),
+}
+
+impl PartialEq for Action {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Resize(a), Self::Resize(b)) => Edge(*a) == Edge(*b),
+            (Self::Resized(a), Self::Resized(b)) => a == b,
+            (Self::Focused(a), Self::Focused(b)) => a == b,
+            (Self::Framed(a), Self::Framed(b)) => a == b,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
 }
 
 impl Window {
@@ -116,7 +131,21 @@ impl Window {
         match action {
             Action::Drag => window::latest().and_then(window::drag),
             Action::ToggleMaximize => window::latest().and_then(window::toggle_maximize),
+            Action::ToggleFullscreen => {
+                let mode =
+                    if self.frame == Frame::Fullscreen { window::Mode::Windowed } else { window::Mode::Fullscreen };
+                window::latest().and_then(move |id| window::set_mode(id, mode))
+            }
             Action::Minimize => window::latest().and_then(|id| window::minimize(id, true)),
+            Action::Activate => window::latest().and_then(window::gain_focus),
+            Action::Attention => {
+                if self.focused {
+                    Task::none()
+                } else {
+                    window::latest()
+                        .and_then(|id| window::request_user_attention(id, Some(window::UserAttention::Informational)))
+                }
+            }
             Action::Resize(direction) => window::latest().and_then(move |id| window::drag_resize(id, direction)),
             Action::Resized(size) => {
                 self.size = size;

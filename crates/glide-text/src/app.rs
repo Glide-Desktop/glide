@@ -830,15 +830,9 @@ impl App {
         let mut subscriptions = vec![
             iced::event::listen_with(|event, status, _| match event {
                 iced::Event::Keyboard(event) => Some(Message::Key(event, status == iced::event::Status::Captured)),
-                iced::Event::Window(window::Event::Focused) => Some(Message::Window(WindowAction::Focused(true))),
-                iced::Event::Window(window::Event::Unfocused) => Some(Message::Window(WindowAction::Focused(false))),
                 iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::Dropped(path)),
-                iced::Event::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
-                    Some(Message::Window(WindowAction::Resized(size)))
-                }
                 _ => None,
             }),
-            window::close_requests().map(|_| Message::CloseRequested),
             iced::time::every(TICK).map(|_| Message::Tick),
         ];
         if let Some(handles) = self.handles {
@@ -1088,13 +1082,10 @@ impl App {
                 Task::none()
             }
             Message::Window(action) => {
-                let task = self.window.update(action).map(Message::Window);
-                match action {
-                    WindowAction::Drag | WindowAction::ToggleMaximize => self.dismiss_menu(),
-                    WindowAction::Focused(true) => return Task::batch([task, self.refresh_tree()]),
-                    _ => {}
+                if matches!(action, WindowAction::Drag | WindowAction::ToggleMaximize) {
+                    self.dismiss_menu();
                 }
-                task
+                Task::none()
             }
             Message::CloseRequested => self.request_window_close(),
             Message::Handles(handles) => {
@@ -1114,6 +1105,12 @@ impl App {
         self.look = look.clone();
         self.paint = paint;
         self.lang = look.lang();
+    }
+
+    pub fn follow_window(&mut self, window: Window) -> Task<Message> {
+        let regained = window.focused && !self.window.focused;
+        self.window = window;
+        if regained { self.refresh_tree() } else { Task::none() }
     }
 
     fn tick(&mut self) -> Task<Message> {
@@ -1530,16 +1527,7 @@ impl App {
                 self.zoom = 0.0;
                 Task::none()
             }
-            Command::FullScreen => window::latest().and_then(|id| {
-                window::mode(id).then(move |mode| {
-                    let next = if mode == window::Mode::Fullscreen {
-                        window::Mode::Windowed
-                    } else {
-                        window::Mode::Fullscreen
-                    };
-                    window::set_mode(id, next)
-                })
-            }),
+            Command::FullScreen => Task::done(Message::Window(WindowAction::ToggleFullscreen)),
             Command::ToggleHidden => {
                 self.prefs.hidden_files = !self.prefs.hidden_files;
                 self.store_prefs();
@@ -2210,7 +2198,10 @@ impl glide_sdk::App for App {
         Self::title(self)
     }
 
-    fn update(&mut self, message: Message, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+    fn update(&mut self, message: Message, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        if let Message::Window(action) = message {
+            shell.window_action(action);
+        }
         Self::update(self, message)
     }
 
@@ -2222,8 +2213,12 @@ impl glide_sdk::App for App {
         Self::subscription(self)
     }
 
-    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> bool {
-        false
+    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.request_window_close()
+    }
+
+    fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_window(*shell.window())
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {

@@ -39,7 +39,6 @@ macro_rules! declare_pages {
             Ipc(IpcEvent),
             Tick,
             Clock,
-            Resized(f32),
             DismissNotice,
             $($variant($module::Msg),)*
         }
@@ -277,6 +276,10 @@ impl App {
         self.lang = look.language.map_or_else(|| self.config.language(), Lang::from);
     }
 
+    pub fn follow_window(&mut self, window: glide_sdk::window::Window) {
+        self.width = window.size.width;
+    }
+
     fn apply_edited_look(&mut self) {
         self.theme.set_appearance(self.config.appearance_at(minute_now()));
         self.theme.set_accent(self.config.accent());
@@ -397,10 +400,6 @@ impl App {
                 let changed = self.config.refresh_if_changed();
                 if changed { self.broadcast(PageEvent::Reloaded) } else { Task::none() }
             }
-            Message::Resized(width) => {
-                self.width = width;
-                Task::none()
-            }
             Message::DismissNotice => {
                 self.notice = None;
                 Task::none()
@@ -416,12 +415,6 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             Subscription::run(ipc::events).map(Message::Ipc),
-            iced::window::events().filter_map(|(_, event)| match event {
-                iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size) => {
-                    Some(Message::Resized(size.width))
-                }
-                _ => None,
-            }),
             iced::time::every(CLOCK).map(|_| Message::Clock),
             self.page_subscription(),
         ];
@@ -507,6 +500,11 @@ impl glide_sdk::App for App {
 
     fn look_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
         self.follow_look(shell.look(), *shell.paint());
+        Task::none()
+    }
+
+    fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_window(*shell.window());
         Task::none()
     }
 

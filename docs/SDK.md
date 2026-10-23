@@ -134,7 +134,8 @@ compositor's shadow, ring and corner clip around it.
 | `menus(shell)` | no | The menu bar. Rebuilt after every message, so `enabled` and `checked` can follow state. |
 | `toolbar(shell)` | no | Extra header buttons, left of close. Use `widget::icon_button`. |
 | `subscription()` | no | Your own subscriptions (timers, file watchers…). |
-| `close_requested(shell)` | no | Return `false` to keep the window, e.g. to ask about unsaved changes, then call `shell.exit()` later. |
+| `close_requested(shell)` | no | The window's close button or the compositor asked to close. The default calls `shell.exit()`; override it to ask about unsaved changes first, returning whatever task that needs, and call `shell.exit()` (or return `iced::exit()`) once it may close. |
+| `window_changed(shell)` | no | Runs after the window was resized, focused or unfocused, maximized, made fullscreen or restored; `shell.window()` holds the new state. Apps with their own chrome copy it here instead of subscribing to window events, and send window commands (`window::Action::Drag`, `ToggleMaximize`, `ToggleFullscreen`, `Minimize`, `Activate`, `Attention`, `Resize`) through `shell.window_action`. |
 | `paint(shell)` | no | The colours the window's iced theme and background follow; defaults to `shell.paint()`. |
 | `look_changed(shell)` | no | Runs after the host applied a new look — a Shell1 property, reduced motion, a `glide.toml` edit or the scheduled appearance turning — with `shell.look()` and `shell.paint()` already updated. Apps that cache colours, icons or translated names refresh them here instead of watching the look themselves. |
 

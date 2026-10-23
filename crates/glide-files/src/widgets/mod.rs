@@ -37,9 +37,7 @@ pub fn window(app: &App) -> Element<'_, Message> {
     let motion = &app.motion;
     let mut layers: Vec<Element<'_, Message>> = vec![base.into()];
     if !app.is_maximized() {
-        layers.push(glide_sdk::window::resize_edges(|direction| {
-            Message::WindowResize(glide_sdk::window::Edge(direction))
-        }));
+        layers.push(glide_sdk::window::resize_handles(Message::Window));
     }
     if let Some(rect) = app.band_rect() {
         layers.push(glide_sdk::widget::selection_band(t, rect));

@@ -24,29 +24,17 @@ pub fn search_title(label: &str, query: &str, room: f32) -> String {
 #[must_use]
 pub fn maximize_button(app: &App) -> Element<'_, Message> {
     let paint = super::paint(&app.theme);
-    glide_sdk::window::maximize_button(&paint, &sdk_window(app), Key::Maximize.text(app.lang), Message::WindowMaximize)
+    glide_sdk::window::maximize_button(
+        &paint,
+        &app.window(),
+        Key::Maximize.text(app.lang),
+        Message::Window(glide_sdk::window::Action::ToggleMaximize),
+    )
 }
 
 #[must_use]
 pub fn bar_background(app: &App) -> iced::Color {
     if app.is_idle() { app.theme.bar_bg_idle() } else { app.theme.bar_bg() }
-}
-
-pub(crate) fn sdk_window(app: &App) -> glide_sdk::window::Window {
-    use glide_sdk::window::{Frame, Window};
-    Window {
-        size: app.window_size(),
-        focused: !app.is_idle(),
-        frame: if app.is_maximized() { Frame::Maximized } else { Frame::Floating },
-    }
-}
-
-pub(crate) fn window_message(action: glide_sdk::window::Action) -> Message {
-    use glide_sdk::window::Action;
-    match action {
-        Action::ToggleMaximize => Message::WindowMaximize,
-        _ => Message::WindowDrag,
-    }
 }
 
 #[must_use]
@@ -90,7 +78,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(field) = path_field(app) {
         header = header.center(field);
     }
-    glide_sdk::window::header(&paint, &sdk_window(app), header, window_message, Message::Quit, 0.0)
+    glide_sdk::window::header(&paint, &app.window(), header, Message::Window, Message::Quit, 0.0)
 }
 
 #[must_use]

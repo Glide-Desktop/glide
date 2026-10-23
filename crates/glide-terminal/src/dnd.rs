@@ -46,11 +46,7 @@ fn read_drop(mut reader: std::os::unix::net::UnixStream) -> std::io::Result<Vec<
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Handles {
-    pub display: usize,
-    pub surface: usize,
-}
+pub use glide_sdk::window::Handles;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dropped {

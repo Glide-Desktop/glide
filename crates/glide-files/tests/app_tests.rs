@@ -978,7 +978,7 @@ fn a_properties_card_stays_inside_a_small_window() {
     assert_eq!(shown_name("notes.txt").replace('\u{200B}', ""), "notes.txt");
 
     let mut app = listed_app();
-    let _ = app.update(Message::WindowSize(Size::new(720.0, 480.0)));
+    app.follow_window(glide_sdk::window::Window { size: Size::new(720.0, 480.0), ..app.window() });
     assert_eq!(app.window_size(), Size::new(720.0, 480.0), "the card is capped to the window it opens in");
 }
 

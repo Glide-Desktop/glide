@@ -29,6 +29,7 @@ use crate::theme::ThemeState;
 use crate::widgets::content::Metrics;
 use crate::widgets::{self, content};
 use glide_sdk::anim::{Fade, Speed};
+use glide_sdk::window::{Action as WindowAction, Frame, Window};
 
 pub const SEARCH_ID: &str = "search";
 pub const PATH_ID: &str = "path";
@@ -394,18 +395,13 @@ pub enum Message {
     Tick,
     Escape,
     Quit,
-    WindowDrag,
-    WindowMaximize,
-    WindowResize(glide_sdk::window::Edge),
+    Window(WindowAction),
     Handles(Option<dnd::Handles>),
     Dnd(dnd::Event),
     Scrolled(f32),
     Cursor(Point),
     Released,
     DragTick,
-    WindowSize(Size),
-    WindowFocus(bool),
-    WindowMaximized(bool),
     FocusProbe,
     FieldFocus(Field, bool),
     Surveyed(Option<Box<Survey>>),
@@ -557,18 +553,13 @@ impl Message {
                 | Self::Frame(_)
                 | Self::Hover(..)
                 | Self::Quit
-                | Self::WindowDrag
-                | Self::WindowMaximize
-                | Self::WindowResize(_)
+                | Self::Window(_)
                 | Self::Handles(_)
                 | Self::Dnd(_)
                 | Self::Scrolled(_)
                 | Self::Cursor(_)
                 | Self::Released
                 | Self::DragTick
-                | Self::WindowSize(_)
-                | Self::WindowFocus(_)
-                | Self::WindowMaximized(_)
                 | Self::FocusProbe
                 | Self::FieldFocus(..)
                 | Self::Surveyed(_)
@@ -735,7 +726,8 @@ pub struct App {
     band: Option<Band>,
     pub drag: Option<Drag>,
     hover_target: Option<Hover>,
-    window: WindowState,
+    window: Window,
+    field: Option<Field>,
     pending_select: Option<PathBuf>,
     grid_zoom: u8,
     list_zoom: u8,
@@ -786,14 +778,6 @@ pub struct Band {
     start: Option<Point>,
     end: Point,
     base: HashSet<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct WindowState {
-    size: Size,
-    focused: bool,
-    maximized: bool,
-    field: Option<Field>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -929,7 +913,8 @@ impl App {
             band: None,
             drag: None,
             hover_target: None,
-            window: WindowState { size: Size::ZERO, focused: false, maximized: false, field: None },
+            window: Window { size: Size::ZERO, focused: false, frame: Frame::Floating },
+            field: None,
             pending_select: None,
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
@@ -947,8 +932,7 @@ impl App {
         let task = Task::batch([app.open_as_dialog(), app.list(app.current.clone(), Arrival::Initial, focus)]);
         let extensions = app.load_extensions();
         let scan = app.scan();
-        let handles =
-            window::latest().and_then(|id| window::run(id, |window| dnd_handles(window))).map(Message::Handles);
+        let handles = glide_sdk::window::handles().map(Message::Handles);
         let phones = app.scan_phones();
         (app, Task::batch([task, extensions, scan, handles, phones]))
     }
@@ -1107,7 +1091,6 @@ impl App {
             subscriptions.push(Subscription::run_with(handles, dnd::events).map(Message::Dnd));
         }
         subscriptions.push(iced::event::listen_with(window_events));
-        subscriptions.push(window::close_requests().map(|_| Message::Quit));
         if self.drag_arm.is_some() || self.band.is_some() || self.drag.is_some() {
             subscriptions.push(iced::event::listen_with(drag_motion));
         }
@@ -1388,7 +1371,7 @@ impl App {
                     }),
                 };
             }
-            Message::CloseMenu => self.menu = None,
+            Message::CloseMenu | Message::Window(WindowAction::Drag) => self.menu = None,
             Message::MenuHover(index, inside) => {
                 let enabled = self.menu.as_ref().is_some_and(|menu| {
                     widgets::menu::entries(self, menu).get(index).is_some_and(|entry| entry.message().is_some())
@@ -1445,7 +1428,7 @@ impl App {
                 return self.refresh_listing();
             }
             Message::ToggleSearch => {
-                self.window.field = Some(Field::Search);
+                self.field = Some(Field::Search);
                 return Task::batch([operation::focus(SEARCH_ID), operation::select_all(SEARCH_ID)]);
             }
             Message::TypeToSearch(text)
@@ -1471,7 +1454,7 @@ impl App {
             }
             Message::EditPath => {
                 self.menu = None;
-                self.window.field = Some(Field::Path);
+                self.field = Some(Field::Path);
                 self.path_edit = Some(self.current.display().to_string());
                 return Task::batch([operation::focus(PATH_ID), operation::select_all(PATH_ID)]);
             }
@@ -1773,14 +1756,6 @@ impl App {
             Message::Escape => return self.escape(),
             Message::Quit if self.jobs.is_empty() => return iced::exit(),
             Message::Quit if self.quit_requested.is_none() => return self.prompt(Dialog::Quit, String::new(), None),
-            Message::WindowDrag => {
-                self.menu = None;
-                return window::latest().and_then(window::drag);
-            }
-            Message::WindowMaximize => return window::latest().and_then(window::toggle_maximize),
-            Message::WindowResize(edge) => {
-                return window::latest().and_then(move |id| window::drag_resize(id, edge.0));
-            }
             Message::Handles(handles) => self.handles = handles,
             Message::Dnd(event) => return self.on_dnd(event),
             Message::Scrolled(offset) => self.scroll_y = offset,
@@ -1804,18 +1779,12 @@ impl App {
                 return Task::batch([released, probe_focus()]);
             }
             Message::DragTick => return self.drag_tick(),
-            Message::WindowSize(size) => {
-                self.window.size = size;
-                return window::latest().and_then(window::is_maximized).map(Message::WindowMaximized);
-            }
-            Message::WindowMaximized(maximized) => self.window.maximized = maximized,
-            Message::WindowFocus(focused) => self.window.focused = focused,
             Message::FocusProbe => return probe_focus(),
             Message::FieldFocus(field, focused) => {
                 if focused {
-                    self.window.field = Some(field);
-                } else if self.window.field == Some(field) {
-                    self.window.field = None;
+                    self.field = Some(field);
+                } else if self.field == Some(field) {
+                    self.field = None;
                 }
             }
             Message::Surveyed(Some(survey)) => return self.surveyed(*survey),
@@ -1837,6 +1806,7 @@ impl App {
             | Message::Quit
             | Message::Surveyed(None)
             | Message::Frame(_)
+            | Message::Window(_)
             | Message::ModalFocus(_) => {}
         }
         Task::none()
@@ -1858,8 +1828,8 @@ impl App {
     }
 
     #[must_use]
-    pub const fn is_maximized(&self) -> bool {
-        self.window.maximized
+    pub fn is_maximized(&self) -> bool {
+        self.window.edge_to_edge()
     }
 
     #[must_use]
@@ -1868,8 +1838,17 @@ impl App {
     }
 
     #[must_use]
+    pub const fn window(&self) -> Window {
+        self.window
+    }
+
+    pub fn follow_window(&mut self, window: Window) {
+        self.window = window;
+    }
+
+    #[must_use]
     pub fn focused_field(&self) -> Option<Field> {
-        self.window.field.filter(|field| match field {
+        self.field.filter(|field| match field {
             Field::Search => true,
             Field::Modal => self.modal.is_some(),
             Field::Path => self.path_edit.is_some(),
@@ -1882,8 +1861,8 @@ impl App {
     }
 
     #[must_use]
-    pub const fn corner(&self) -> f32 {
-        if self.window.maximized { 0.0 } else { crate::theme::R3 }
+    pub fn corner(&self) -> f32 {
+        self.window.corner()
     }
 
     #[must_use]
@@ -2566,14 +2545,14 @@ impl App {
     fn open_search(&mut self, query: String) -> Task<Message> {
         self.menu = None;
         self.path_edit = None;
-        self.window.field = Some(Field::Search);
+        self.field = Some(Field::Search);
         Task::batch([self.set_query(query), operation::focus(SEARCH_ID), operation::move_cursor_to_end(SEARCH_ID)])
     }
 
     fn close_search(&mut self) -> Task<Message> {
         self.search = None;
-        if self.window.field == Some(Field::Search) {
-            self.window.field = None;
+        if self.field == Some(Field::Search) {
+            self.field = None;
         }
         self.search_generation.fetch_add(1, Ordering::Relaxed);
         self.reload()
@@ -2651,7 +2630,7 @@ impl App {
 
     fn serve(&mut self, request: crate::service::Request) -> Task<Message> {
         use crate::service::Request;
-        let focus = window::latest().and_then(window::gain_focus);
+        let focus = Task::done(Message::Window(WindowAction::Activate));
         let task = match request {
             Request::Open(path) if path.is_dir() => self.navigate(path),
             Request::Open(path) | Request::Reveal(path) => match path.parent() {
@@ -2808,7 +2787,7 @@ impl App {
             return self.prompt(Dialog::Rename(target), name, Some(stem));
         }
         self.renaming = Some(Renaming { path: target, text: name });
-        self.window.field = None;
+        self.field = None;
         Task::batch([self.reveal_cursor(), operation::focus(RENAME_ID), operation::select_range(RENAME_ID, 0, stem)])
     }
 
@@ -3580,7 +3559,7 @@ impl App {
         if !takes_input {
             return Task::none();
         }
-        self.window.field = Some(Field::Modal);
+        self.field = Some(Field::Modal);
         let select = match selected {
             Some(end) => operation::select_range(MODAL_ID, 0, end),
             None => operation::select_all(MODAL_ID),
@@ -3863,7 +3842,7 @@ impl App {
     }
 
     fn escape(&mut self) -> Task<Message> {
-        self.window.field = None;
+        self.field = None;
         if self.drag.take().is_some() {
             self.drop_target = None;
             return Task::none();
@@ -3896,19 +3875,6 @@ fn thumb_key(entry: &FileEntry) -> ThumbKey {
     (entry.path.clone(), entry.modified)
 }
 
-fn dnd_handles(window: &dyn iced::window::Window) -> Option<dnd::Handles> {
-    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-    let display = window.display_handle().ok()?.as_raw();
-    let surface = window.window_handle().ok()?.as_raw();
-    match (display, surface) {
-        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => Some(dnd::Handles {
-            display: display.display.as_ptr() as usize,
-            surface: surface.surface.as_ptr() as usize,
-        }),
-        _ => None,
-    }
-}
-
 #[must_use]
 pub fn droppable(paths: &[PathBuf], target: &Path, trash: &Path) -> bool {
     if target == trash {
@@ -3936,11 +3902,6 @@ fn probe_focus() -> Task<Message> {
 #[allow(clippy::needless_pass_by_value)] // iced::event::listen_with fixes this signature
 pub fn window_events(event: iced::Event, _status: iced::event::Status, _window: window::Id) -> Option<Message> {
     match event {
-        iced::Event::Window(window::Event::Opened { size, .. } | window::Event::Resized(size)) => {
-            Some(Message::WindowSize(size))
-        }
-        iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocus(true)),
-        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocus(false)),
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => Some(Message::FocusProbe),
         iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::Released),
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => Some(Message::Back),
@@ -3996,7 +3957,10 @@ impl glide_sdk::App for App {
         Self::title(self)
     }
 
-    fn update(&mut self, message: Message, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+    fn update(&mut self, message: Message, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        if let Message::Window(action) = message {
+            shell.window_action(action);
+        }
         Self::update(self, message)
     }
 
@@ -4008,8 +3972,13 @@ impl glide_sdk::App for App {
         Self::subscription(self)
     }
 
-    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> bool {
-        false
+    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, Message::Quit)
+    }
+
+    fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_window(*shell.window());
+        Task::none()
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> glide_sdk::Paint {

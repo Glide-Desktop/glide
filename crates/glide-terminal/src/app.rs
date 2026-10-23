@@ -16,6 +16,7 @@ use glide_sdk::Paint;
 use glide_sdk::anim::Reveal;
 use glide_sdk::look::{self as shell_look, Look as ShellLook};
 use glide_sdk::theme::motion;
+use glide_sdk::window::{Action as WindowAction, Window};
 use iced::keyboard::key::Named;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::{operation, pane_grid};
@@ -162,13 +163,6 @@ impl Drop for Find {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabId(u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowFrame {
-    Floating,
-    Maximized,
-    Fullscreen,
-}
-
 fn select(term: &mut alacritty_terminal::term::Term<session::Listener>, found: &Match) {
     let mut selection = Selection::new(SelectionType::Simple, *found.start(), Side::Left);
     selection.update(*found.end(), Side::Right);
@@ -222,19 +216,13 @@ pub enum Message {
     CopyText(String),
     Dismiss,
     Confirm(bool),
-    Focused(bool),
-    Resized(Size),
     CloseRequested,
     Tick,
     Blink,
     Frame,
-    WindowDrag,
-    WindowMaximize,
-    WindowMinimize,
-    WindowState(bool, bool),
+    Window(WindowAction),
     HeaderMenu,
     MenuHovered(usize),
-    WindowResize(window::Direction),
 }
 
 pub struct App {
@@ -255,13 +243,11 @@ pub struct App {
     pub closing_confirm: Option<Confirm>,
     pub hovered_tab: Option<usize>,
     tab_drag: Option<TabDrag>,
-    pub window: Size,
+    pub window: Window,
     pub error: Option<String>,
     zoom: f32,
     font: iced::Font,
     modifiers: Modifiers,
-    focused_window: bool,
-    pub frame: WindowFrame,
     reported_focus: Option<PaneId>,
     shell_look: ShellLook,
     typed: Instant,
@@ -448,19 +434,6 @@ fn stamp() -> Option<SystemTime> {
     shell_look::stamp(config::path().as_deref())
 }
 
-fn wayland_handles(window: &dyn iced::window::Window) -> Option<dnd::Handles> {
-    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-    let display = window.display_handle().ok()?.as_raw();
-    let surface = window.window_handle().ok()?.as_raw();
-    match (display, surface) {
-        (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => Some(dnd::Handles {
-            display: display.display.as_ptr() as usize,
-            surface: surface.surface.as_ptr() as usize,
-        }),
-        _ => None,
-    }
-}
-
 fn family(prefs: &Preferences) -> iced::Font {
     match prefs.font_family.as_deref().map(str::trim) {
         Some(name) if !name.is_empty() => {
@@ -543,11 +516,9 @@ impl App {
             closing_confirm: None,
             hovered_tab: None,
             tab_drag: None,
-            window: Size::new(960.0, 600.0),
+            window: Window { size: Size::new(960.0, 600.0), ..Window::default() },
             error: None,
             zoom: 0.0,
-            focused_window: true,
-            frame: WindowFrame::Floating,
             reported_focus: None,
             shell_look: look,
             typed: Instant::now(),
@@ -560,7 +531,7 @@ impl App {
             awaiting: None,
             pending: Vec::new(),
         };
-        let handles = window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles);
+        let handles = glide_sdk::window::handles().map(Message::Handles);
         (app, handles)
     }
 
@@ -609,12 +580,12 @@ impl App {
 
     #[must_use]
     pub const fn window_focused(&self) -> bool {
-        self.focused_window
+        self.window.focused
     }
 
     #[must_use]
     pub fn edge_to_edge(&self) -> bool {
-        self.frame != WindowFrame::Floating
+        self.window.edge_to_edge()
     }
 
     #[must_use]
@@ -637,7 +608,7 @@ impl App {
 
     #[must_use]
     pub fn blink_visible(&self) -> bool {
-        !self.focused_window
+        !self.window.focused
             || motion::is_disabled()
             || (self.typed.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2)
     }
@@ -697,14 +668,8 @@ impl App {
             Subscription::run(session::feed).map(Message::Feed),
             iced::event::listen_with(|event, status, _| match event {
                 iced::Event::Keyboard(event) => Some(Message::Key(event, status == iced::event::Status::Captured)),
-                iced::Event::Window(window::Event::Focused) => Some(Message::Focused(true)),
-                iced::Event::Window(window::Event::Unfocused) => Some(Message::Focused(false)),
-                iced::Event::Window(window::Event::Resized(size) | window::Event::Opened { size, .. }) => {
-                    Some(Message::Resized(size))
-                }
                 _ => None,
             }),
-            window::close_requests().map(|_| Message::CloseRequested),
             iced::time::every(POLL).map(|_| Message::Tick),
             Subscription::run(crate::service::requests).map(Message::Remote),
         ];
@@ -776,18 +741,12 @@ impl App {
             | Message::FindCase
             | Message::FindClose
             | Message::Found(_) => self.on_find(message),
-            Message::Focused(_)
-            | Message::Resized(_)
-            | Message::CloseRequested
+            Message::CloseRequested
             | Message::Tick
             | Message::Blink
             | Message::Frame
-            | Message::WindowDrag
-            | Message::WindowMaximize
-            | Message::WindowMinimize
-            | Message::WindowState(..)
-            | Message::Remote(_)
-            | Message::WindowResize(_) => self.on_window(&message),
+            | Message::Window(_)
+            | Message::Remote(_) => self.on_window(&message),
             Message::Pasted(text) => {
                 if let Some(text) = text {
                     self.paste(&text);
@@ -894,31 +853,7 @@ impl App {
 
     fn on_window(&mut self, message: &Message) -> Task<Message> {
         match *message {
-            Message::Focused(focused) => {
-                self.focused_window = focused;
-                self.typed = Instant::now();
-                Task::none()
-            }
-            Message::WindowState(maximized, fullscreen) => {
-                self.frame = if fullscreen {
-                    WindowFrame::Fullscreen
-                } else if maximized {
-                    WindowFrame::Maximized
-                } else {
-                    WindowFrame::Floating
-                };
-                Task::none()
-            }
             Message::Remote(ref request) => self.on_remote(request),
-            Message::Resized(size) => {
-                self.window = size;
-                window::latest().and_then(|id| {
-                    window::is_maximized(id).then(move |maximized| {
-                        window::mode(id)
-                            .map(move |mode| Message::WindowState(maximized, mode == window::Mode::Fullscreen))
-                    })
-                })
-            }
             Message::CloseRequested => self.request_close(Scope::Window),
             Message::Tick => {
                 for tab in &mut self.tabs {
@@ -956,16 +891,10 @@ impl App {
                 self.closing_confirm.take_if(|confirm| !confirm.reveal.is_visible(motion::t2()));
                 Task::none()
             }
-            Message::WindowDrag => window::latest().and_then(window::drag),
-            Message::WindowMaximize => {
+            Message::Window(WindowAction::ToggleMaximize | WindowAction::Minimize) => {
                 self.dismiss_menu();
-                window::latest().and_then(window::toggle_maximize)
+                Task::none()
             }
-            Message::WindowMinimize => {
-                self.dismiss_menu();
-                window::latest().and_then(|id| window::minimize(id, true))
-            }
-            Message::WindowResize(direction) => window::latest().and_then(move |id| window::drag_resize(id, direction)),
             _ => Task::none(),
         }
     }
@@ -1002,6 +931,14 @@ impl App {
         self.shell_look = look.clone();
     }
 
+    pub fn follow_window(&mut self, window: Window) {
+        if window.focused != self.window.focused {
+            self.typed = Instant::now();
+        }
+        self.window = window;
+        self.sync_focus();
+    }
+
     fn sync_focus(&mut self) {
         let focused = self.focused().map(|pane| pane.id);
         if self.find.as_ref().is_some_and(|find| find.pane.is_some() && find.pane != focused) {
@@ -1010,7 +947,7 @@ impl App {
         if self.hint_mode.as_ref().is_some_and(|mode| Some(mode.pane) != focused) {
             self.hint_mode = None;
         }
-        let next = focused.filter(|_| self.focused_window && self.confirm.is_none() && self.find.is_none());
+        let next = focused.filter(|_| self.window.focused && self.confirm.is_none() && self.find.is_none());
         if self.reported_focus == next {
             return;
         }
@@ -1067,14 +1004,14 @@ impl App {
                     let launch = self.here();
                     self.open_tab(&launch);
                 }
-                window::latest().and_then(window::gain_focus)
+                Task::done(Message::Window(WindowAction::Activate))
             }
             crate::service::Request::FocusTab(id) => {
                 let Some(index) = self.tabs.iter().position(|tab| tab.id.0 == *id) else {
                     return Task::none();
                 };
                 self.active = index;
-                window::latest().and_then(window::gain_focus)
+                Task::done(Message::Window(WindowAction::Activate))
             }
         }
     }
@@ -1255,12 +1192,7 @@ impl App {
             self.rung = Some(Instant::now());
             sound::play(file);
         }
-        if self.focused_window {
-            Task::none()
-        } else {
-            window::latest()
-                .and_then(|window| window::request_user_attention(window, Some(window::UserAttention::Informational)))
-        }
+        Task::done(Message::Window(WindowAction::Attention))
     }
 
     fn exited(&mut self, id: PaneId, status: std::process::ExitStatus) -> Task<Message> {
@@ -1457,7 +1389,13 @@ impl App {
             }
             Key::Named(Named::Enter | Named::Space) => {
                 let selected = menu.selected.unwrap_or(0).min(actions.len() - 1);
-                return Some(self.update(actions[selected].clone()));
+                return Some(match actions[selected].clone() {
+                    window @ Message::Window(_) => {
+                        self.dismiss_menu();
+                        Task::done(window)
+                    }
+                    action => self.update(action),
+                });
             }
             _ => None,
         };
@@ -1506,7 +1444,7 @@ impl App {
             return;
         }
         drag.moved = true;
-        let target = crate::chrome::tab_slot(x, self.window.width, count);
+        let target = crate::chrome::tab_slot(x, self.window.size.width, count);
         if target != drag.index && drag.index < count {
             let tab = self.tabs.remove(drag.index);
             self.tabs.insert(target, tab);
@@ -1863,18 +1801,7 @@ impl App {
             Command::Bigger => self.zoom = (self.zoom + 1.0).min(48.0 - self.prefs.font_size),
             Command::Smaller => self.zoom = (self.zoom - 1.0).max(6.0 - self.prefs.font_size),
             Command::ActualSize => self.zoom = 0.0,
-            Command::FullScreen => {
-                return window::latest().and_then(|id| {
-                    window::mode(id).then(move |mode| {
-                        let next = if mode == window::Mode::Fullscreen {
-                            window::Mode::Windowed
-                        } else {
-                            window::Mode::Fullscreen
-                        };
-                        window::set_mode(id, next)
-                    })
-                });
-            }
+            Command::FullScreen => return Task::done(Message::Window(WindowAction::ToggleFullscreen)),
             Command::ScrollPage(up) | Command::ScrollEdge(up) => {
                 let scroll = match (command, up) {
                     (Command::ScrollPage(_), true) => Scroll::PageUp,
@@ -1886,8 +1813,8 @@ impl App {
                     pane.term.lock().scroll_display(scroll);
                 }
             }
-            Command::Options => self.toggle_menu(MenuKind::Options, Point::new(self.window.width - 44.0, 40.0)),
-            Command::Profiles => self.toggle_menu(MenuKind::Profiles, Point::new(self.window.width - 44.0, 40.0)),
+            Command::Options => self.toggle_menu(MenuKind::Options, Point::new(self.window.size.width - 44.0, 40.0)),
+            Command::Profiles => self.toggle_menu(MenuKind::Profiles, Point::new(self.window.size.width - 44.0, 40.0)),
             Command::SetProfile(profile) => {
                 if let Some(tab) = self.tab_mut() {
                     tab.profile = profile;
@@ -1949,7 +1876,10 @@ impl glide_sdk::App for App {
         Self::title(self)
     }
 
-    fn update(&mut self, message: Message, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+    fn update(&mut self, message: Message, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        if let Message::Window(action) = message {
+            shell.window_action(action);
+        }
         Self::update(self, message)
     }
 
@@ -1961,8 +1891,13 @@ impl glide_sdk::App for App {
         Self::subscription(self)
     }
 
-    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> bool {
-        false
+    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, Message::CloseRequested)
+    }
+
+    fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_window(*shell.window());
+        Task::none()
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {
@@ -2116,7 +2051,7 @@ mod tests {
         let _ = app.update(Message::Feed(Feed::Connected(Bus(sender))));
         let _ = app.update(Message::Command(Command::NewTab));
         let _ = app.update(Message::Command(Command::NewTab));
-        app.window = Size::new(616.0, 400.0);
+        app.window.size = Size::new(616.0, 400.0);
         let ids = |app: &App| app.tabs.iter().map(|tab| tab.focused().expect("a pane").id).collect::<Vec<_>>();
         let before = ids(&app);
         let _ = app.update(Message::TabPressed(0));

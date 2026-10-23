@@ -35,11 +35,7 @@ const PASTABLE: [(&str, &str, bool); 7] = [
 ];
 const POLL_MS: i32 = 30;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Handles {
-    pub display: usize,
-    pub surface: usize,
-}
+pub use glide_sdk::window::Handles;
 
 #[derive(Debug)]
 pub enum Command {

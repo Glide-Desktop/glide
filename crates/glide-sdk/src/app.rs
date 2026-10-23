@@ -271,8 +271,9 @@ pub trait App: Sized + 'static {
         Subscription::none()
     }
 
-    fn close_requested(&mut self, _shell: &mut Shell<Self::Message>) -> bool {
-        true
+    fn close_requested(&mut self, shell: &mut Shell<Self::Message>) -> Task<Self::Message> {
+        shell.exit();
+        Task::none()
     }
 
     fn paint(&self, shell: &Shell<Self::Message>) -> Paint {
@@ -280,6 +281,10 @@ pub trait App: Sized + 'static {
     }
 
     fn look_changed(&mut self, _shell: &mut Shell<Self::Message>) -> Task<Self::Message> {
+        Task::none()
+    }
+
+    fn window_changed(&mut self, _shell: &mut Shell<Self::Message>) -> Task<Self::Message> {
         Task::none()
     }
 }
@@ -400,7 +405,12 @@ impl<A: App> Host<A> {
                 if matches!(action, Action::Drag | Action::ToggleMaximize) {
                     self.shell.close_menu();
                 }
-                self.shell.window.update(action).map(Event::Window)
+                let task = self.shell.window.update(action).map(Event::Window);
+                if matches!(action, Action::Resized(_) | Action::Focused(_) | Action::Framed(_)) {
+                    let changed = self.app.window_changed(&mut self.shell).map(Event::App);
+                    return Task::batch([task, changed]);
+                }
+                task
             }
             Event::Look(look) => {
                 self.shell_look = Some(look);
@@ -452,12 +462,7 @@ impl<A: App> Host<A> {
                 Some((_, message)) => self.run(message),
                 None => Task::none(),
             },
-            Event::CloseRequested => {
-                if self.app.close_requested(&mut self.shell) {
-                    self.shell.exit = true;
-                }
-                Task::none()
-            }
+            Event::CloseRequested => self.app.close_requested(&mut self.shell).map(Event::App),
         }
     }
 
@@ -810,6 +815,7 @@ mod tests {
         saved: usize,
         dirty: bool,
         looks: usize,
+        windows: usize,
     }
 
     #[derive(Debug, Clone, PartialEq)]
@@ -856,13 +862,20 @@ mod tests {
             Task::none()
         }
 
-        fn close_requested(&mut self, shell: &mut Shell<Message>) -> bool {
+        fn close_requested(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
             if self.dirty {
                 shell.dialog(
                     Dialog::new("Unsaved", "").choice("Discard", Tone::Danger, Message::Discard).cancel("Cancel"),
                 );
+            } else {
+                shell.exit();
             }
-            !self.dirty
+            Task::none()
+        }
+
+        fn window_changed(&mut self, _: &mut Shell<Message>) -> Task<Message> {
+            self.windows += 1;
+            Task::none()
         }
     }
 
@@ -920,6 +933,20 @@ mod tests {
         let _ = host.update(Event::Motion(true));
         let _ = host.update(Event::Motion(false));
         assert_eq!(host.app.looks, 2);
+    }
+
+    #[test]
+    fn the_app_hears_when_the_window_changes_but_not_when_it_asks_for_a_change() {
+        let mut host = host();
+        let _ = host.update(Event::Window(Action::Resized(Size::new(640.0, 480.0))));
+        let _ = host.update(Event::Window(Action::Focused(false)));
+        let _ = host.update(Event::Window(Action::Framed(window::Frame::Maximized)));
+        assert_eq!(host.app.windows, 3);
+        let _ = host.update(Event::Window(Action::Drag));
+        let _ = host.update(Event::Window(Action::ToggleMaximize));
+        assert_eq!(host.app.windows, 3);
+        assert_eq!(host.shell.window().size, Size::new(640.0, 480.0));
+        assert!(!host.shell.window().focused);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use glide_sdk::widget::{
     Icon, button, empty_state, grid, icon_button, palette_swatch, pane, preview_card, separator as rule, split_view,
     text,
 };
-use glide_sdk::window::resize_edges;
+use glide_sdk::window::{Action as WindowAction, resize_handles};
 use glide_sdk::{Paint, Tone};
 
 pub const HEADER: f32 = 35.0;
@@ -24,28 +24,8 @@ const MENU_WIDTH: f32 = 264.0;
 const PANE_MIN: f32 = 50.0;
 const SWATCH: Size = Size::new(96.0, 44.0);
 
-fn sdk_window(app: &App) -> glide_sdk::window::Window {
-    use glide_sdk::window::{Frame, Window};
-    Window {
-        size: app.window,
-        focused: app.window_focused(),
-        frame: if app.edge_to_edge() { Frame::Maximized } else { Frame::Floating },
-    }
-}
-
-fn window_message(action: glide_sdk::window::Action) -> Message {
-    use glide_sdk::window::Action;
-    match action {
-        Action::Drag => Message::WindowDrag,
-        Action::ToggleMaximize => Message::WindowMaximize,
-        Action::Minimize => Message::WindowMinimize,
-        Action::Resize(direction) => Message::WindowResize(direction),
-        Action::Resized(_) | Action::Focused(_) | Action::Framed(_) => Message::Frame,
-    }
-}
-
 fn header(app: &App) -> Element<'_, Message> {
-    let window = sdk_window(app);
+    let window = app.window;
     let controls = window.controls_paint(&app.paint);
     let options_open =
         app.menu.as_ref().is_some_and(|menu| matches!(menu.kind, MenuKind::Options | MenuKind::Profiles));
@@ -57,7 +37,7 @@ fn header(app: &App) -> Element<'_, Message> {
         .context(Message::HeaderMenu)
         .trailing(icon_button(&controls, Icon::Plus, Key::NewTab.text(app.lang), new_tab, false))
         .trailing(icon_button(&controls, Icon::More, Key::Options.text(app.lang), options, options_open));
-    glide_sdk::window::header(&app.paint, &window, header, window_message, Message::Command(Command::CloseWindow), 0.0)
+    glide_sdk::window::header(&app.paint, &window, header, Message::Window, Message::Command(Command::CloseWindow), 0.0)
 }
 
 pub use glide_sdk::widget::tab_slot;
@@ -104,7 +84,7 @@ fn find_bar(app: &App) -> Element<'_, Message> {
         format!("{} / {}", find.index, find.total)
     };
     glide_sdk::widget::find_bar(&paint, input)
-        .narrow(app.window.width < 680.0)
+        .narrow(app.window.size.width < 680.0)
         .height(find_height(app))
         .steps(
             (Message::Command(Command::FindUp), Key::FindPrevious.text(app.lang)),
@@ -117,7 +97,7 @@ fn find_bar(app: &App) -> Element<'_, Message> {
 }
 
 fn find_height(app: &App) -> f32 {
-    if app.window.width < 680.0 { 84.0 } else { FIND }
+    if app.window.size.width < 680.0 { 84.0 } else { FIND }
 }
 
 #[must_use]
@@ -130,7 +110,7 @@ pub fn pane_at(app: &App, (x, y): (f32, f32)) -> Option<pane_grid::Pane> {
     if app.find.is_some() {
         top += find_height(app) + 1.0;
     }
-    let size = Size::new(app.window.width, (app.window.height - top).max(0.0));
+    let size = Size::new(app.window.size.width, (app.window.size.height - top).max(0.0));
     let point = iced::Point::new(x, y - top);
     tab.panes
         .layout()
@@ -211,8 +191,8 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<MenuItem> {
     let separator = MenuItem::separator;
     match kind {
         MenuKind::Window => vec![
-            MenuItem::action(Key::Maximize.text(app.lang), Message::WindowMaximize),
-            MenuItem::action(Key::Minimize.text(app.lang), Message::WindowMinimize),
+            MenuItem::action(Key::Maximize.text(app.lang), Message::Window(WindowAction::ToggleMaximize)),
+            MenuItem::action(Key::Minimize.text(app.lang), Message::Window(WindowAction::Minimize)),
             entry(app, Key::CloseWindow, Command::CloseWindow, true),
         ],
         MenuKind::Options => vec![
@@ -294,8 +274,7 @@ fn menu_selected(app: &App, message: &Message) -> bool {
     match (actions.get(selected), message) {
         (Some(Message::Command(a)), Message::Command(b)) => a == b,
         (Some(Message::Open(a)), Message::Open(b)) | (Some(Message::CopyText(a)), Message::CopyText(b)) => a == b,
-        (Some(Message::WindowMaximize), Message::WindowMaximize)
-        | (Some(Message::WindowMinimize), Message::WindowMinimize) => true,
+        (Some(Message::Window(a)), Message::Window(b)) => a == b,
         _ => false,
     }
 }
@@ -386,7 +365,7 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
         }
         _ => menu_rows(app, &paint, menu),
     };
-    let window = app.window;
+    let window = app.window.size;
     let (anchor, may_flip) = match menu.kind {
         MenuKind::Context(_) | MenuKind::Window => (menu.at, true),
         _ => (iced::Point::new(window.width - size.width - 8.0, HEADER - 2.0), false),
@@ -409,7 +388,7 @@ fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {
         Some(usize::from(!confirm.accept_focused)),
     );
     let body = text(body, TextStyle::CALL).color(paint.fg_2()).into();
-    let card = dialog_card(&paint, Key::ConfirmTitle.text(app.lang), Some(body), buttons, 380.0, app.window);
+    let card = dialog_card(&paint, Key::ConfirmTitle.text(app.lang), Some(body), buttons, 380.0, app.window.size);
     modal(&paint, progress, card, None, R3)
 }
 
@@ -425,13 +404,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
     body = body.push(rule(&paint)).push(content(app));
     let mut layers: Vec<Element<'_, Message>> = vec![body.into()];
     if !app.edge_to_edge() {
-        layers.push(resize_edges(Message::WindowResize));
+        layers.push(resize_handles(Message::Window));
     }
     if let Some(error) = app.error.as_ref().filter(|_| !app.tabs.is_empty()) {
-        layers.push(toast_pill(&paint, 1.0, error, Some(paint.danger()), None, app.window));
+        layers.push(toast_pill(&paint, 1.0, error, Some(paint.danger()), None, app.window.size));
     }
     if let Some((text, at)) = &app.notice {
-        layers.push(toast_pill(&paint, App::reveal(*at), text, None, None, app.window));
+        layers.push(toast_pill(&paint, App::reveal(*at), text, None, None, app.window.size));
     }
     if let Some(menu) = &app.menu {
         layers.push(menu_layer(app, menu));
@@ -466,7 +445,7 @@ mod tests {
             }
         }
         let (mut app, _) = App::with_launch(crate::session::Launch::default());
-        app.window = Size::new(420.0, 260.0);
+        app.window.size = Size::new(420.0, 260.0);
         app.find = Some(crate::app::Find::default());
         let mut view = find_bar(&app);
         let mut tree = Tree::new(&view);

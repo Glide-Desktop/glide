@@ -72,8 +72,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .width(Fill)
             .align_y(Alignment::Center),
     )
-    .on_press(Message::WindowDrag)
-    .on_double_click(Message::WindowMaximize);
+    .on_press(Message::Window(glide_sdk::window::Action::Drag))
+    .on_double_click(Message::Window(glide_sdk::window::Action::ToggleMaximize));
 
     let places = glide_sdk::widget::scrollable(t, sections).width(Fill).height(Fill);
     if app.chooser.is_some() {

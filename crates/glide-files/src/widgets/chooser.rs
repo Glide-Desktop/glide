@@ -69,8 +69,7 @@ fn header<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
         .corners(theme::window_corners(Side::Top, app.corner()))
         .leading(compact_button(&paint, cancel, glide_sdk::Tone::Neutral, Some(Message::ChooserCancel)))
         .trailing(compact_button(&paint, accept, glide_sdk::Tone::Accent, Some(Message::ChooserAccept)));
-    let window = super::header::sdk_window(app);
-    glide_sdk::window::header(&paint, &window, header, super::header::window_message, Message::ChooserCancel, taken)
+    glide_sdk::window::header(&paint, &app.window(), header, Message::Window, Message::ChooserCancel, taken)
 }
 
 fn toolbar<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {

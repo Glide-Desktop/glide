@@ -262,9 +262,10 @@ fn the_layout_switch_shows_off_and_keeps_an_unknown_option_when_picked_again() {
 fn the_window_turns_compact_below_the_breakpoint() {
     let mut app = app("");
     assert!(!app.compact());
-    let _ = app.update(Message::Resized(glide_settings::app::COMPACT_BELOW - 1.0));
+    let sized = |width| glide_sdk::window::Window { size: iced::Size::new(width, 700.0), ..Default::default() };
+    app.follow_window(sized(glide_settings::app::COMPACT_BELOW - 1.0));
     assert!(app.compact());
-    let _ = app.update(Message::Resized(1000.0));
+    app.follow_window(sized(1000.0));
     assert!(!app.compact());
 }
 
