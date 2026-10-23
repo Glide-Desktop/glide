@@ -36,8 +36,8 @@ repository = "https://github.com/artem/glide"
 debug = "line-tables-only"
 
 [workspace.dependencies]
-smithay = { git = "https://github.com/Smithay/smithay", rev = "d33a9c98fbd4d0ddd85315f93d436747bf3393a6", default-features = false }
-smithay-drm-extras = { git = "https://github.com/Smithay/smithay", rev = "d33a9c98fbd4d0ddd85315f93d436747bf3393a6" }
+smithay = { git = "https://github.com/Smithay/smithay", rev = "24647fc8d00131eb7f388efed26e35ea316b0018", default-features = false }
+smithay-drm-extras = { git = "https://github.com/Smithay/smithay", rev = "24647fc8d00131eb7f388efed26e35ea316b0018" }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 bitflags = "2.2.1"

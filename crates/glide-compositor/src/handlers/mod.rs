@@ -8,6 +8,7 @@ mod pointer_constraints;
 mod security_context;
 mod selection;
 mod session_lock;
+pub mod virtual_keyboard;
 pub mod wlr_gamma_control;
 pub mod wlr_output_management;
 pub mod wlr_output_power;

@@ -1495,6 +1495,7 @@ impl GlideState {
 
     #[allow(clippy::too_many_lines)]
     fn handle_keyboard_event<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent, waking: bool) {
+        self.restore_seat_keymap();
         let serial = SERIAL_COUNTER.next_serial();
         let time = event.time();
         let key_state = event.state();

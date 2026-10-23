@@ -23,6 +23,7 @@ mod disk_space;
 mod dock;
 mod dock_drop;
 mod focus;
+mod focused_field;
 mod force_quit;
 mod framed;
 mod global_menu;

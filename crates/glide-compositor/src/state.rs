@@ -394,6 +394,8 @@ pub struct SessionServices {
     pub shortcuts: crate::shortcut_guard::ShortcutGuard,
     pub netbird: crate::netbird::Session,
     pub headset: crate::headset::Session,
+    pub lent_keymap: Option<crate::handlers::virtual_keyboard::Lent>,
+    pub text_field: Option<crate::focused_field::Field>,
 }
 
 impl GlideState {
@@ -412,6 +414,7 @@ impl GlideState {
         seat.add_keyboard(XkbConfig::default(), 200, 25).expect("the default XKB keymap should always compile");
         seat.add_pointer();
         seat.add_touch();
+        smithay::wayland::text_input::TextInputSeat::text_input(&seat).set_compositor_input_method(true);
 
         let socket_name = Self::init_wayland_listener(display, &loop_handle);
         let screencopy = crate::screencopy::ScreencopyState::new::<Self>(&dh);

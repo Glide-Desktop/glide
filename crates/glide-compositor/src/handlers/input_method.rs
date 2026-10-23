@@ -1,15 +1,32 @@
 use smithay::{
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    reexports::{
+        wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::{ContentHint, ContentPurpose},
+        wayland_server::protocol::wl_surface::WlSurface,
+    },
     utils::{Logical, Rectangle},
     wayland::{
         input_method::{InputMethodHandler, PopupSurface},
         keyboard_shortcuts_inhibit::{
             KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
         },
+        text_input::TextInputActivation,
     },
 };
 
-use crate::state::GlideState;
+use crate::{focused_field::Field, state::GlideState};
+
+impl TextInputActivation for GlideState {
+    fn activated(&mut self, content_type: Option<(ContentHint, ContentPurpose)>) {
+        let field = Field::from_content(content_type);
+        let app = self.layout.focused_window().and_then(|id| self.dock_key(id));
+        tracing::info!(kind = ?field.kind, sensitive = field.sensitive, app = app.as_deref().unwrap_or("-"), "text field focused");
+        self.session.text_field = Some(field);
+    }
+
+    fn deactivated(&mut self) {
+        self.session.text_field = None;
+    }
+}
 
 impl InputMethodHandler for GlideState {
     fn new_popup(&mut self, surface: PopupSurface) {
