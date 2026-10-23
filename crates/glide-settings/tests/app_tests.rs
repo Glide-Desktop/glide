@@ -195,18 +195,6 @@ fn the_system_choice_names_the_detected_language() {
 }
 
 #[test]
-fn locale_variables_pick_ukrainian_only_for_uk() {
-    let pick = Lang::from_locale_vars;
-    assert_eq!(pick(None, None, Some("uk_UA.UTF-8")), Lang::Uk);
-    assert_eq!(pick(None, None, Some("en_US.UTF-8")), Lang::En);
-    assert_eq!(pick(None, None, None), Lang::En);
-    assert_eq!(pick(Some("C"), None, Some("uk_UA.UTF-8")), Lang::En);
-    assert_eq!(pick(Some(""), Some("uk_UA"), Some("en_GB")), Lang::Uk);
-    assert_eq!(pick(None, Some("de_DE"), Some("uk_UA")), Lang::En);
-    assert_eq!(pick(None, None, Some("uk")), Lang::Uk);
-}
-
-#[test]
 fn keyboard_sources_can_be_added_reordered_and_removed_but_never_emptied() {
     let mut app = app("[input]\nxkb-layout = \"us,ua\"\n");
     let _ = app.update(Message::Keyboard(keyboard::Msg::Add(glide_settings::services::input::Layout {

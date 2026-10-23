@@ -2,86 +2,19 @@ use std::io::ErrorKind;
 
 use crate::fs::DiskError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Lang {
-    #[default]
-    Uk,
-    En,
+pub use glide_sdk::i18n::Lang;
+
+#[must_use]
+pub fn system_lang() -> Lang {
+    Lang::from_env_or(Lang::Uk)
 }
 
-impl Lang {
-    #[must_use]
-    pub fn from_key(key: &str) -> Option<Self> {
-        let lower = key.trim().to_lowercase();
-        if lower.starts_with("uk") {
-            Some(Self::Uk)
-        } else if lower.starts_with("en") {
-            Some(Self::En)
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    pub fn from_env() -> Self {
-        ["LC_ALL", "LC_MESSAGES", "LANG"]
-            .into_iter()
-            .filter_map(|key| std::env::var(key).ok())
-            .find_map(|value| Self::from_key(&value))
-            .unwrap_or_default()
-    }
-
-    #[must_use]
-    pub fn of(look: &glide_sdk::look::Look) -> Self {
-        look.language.map_or_else(Self::from_env, Self::from)
-    }
+#[must_use]
+pub fn lang_of(look: &glide_sdk::look::Look) -> Lang {
+    look.language.unwrap_or_else(system_lang)
 }
 
-impl From<glide_sdk::look::Lang> for Lang {
-    fn from(lang: glide_sdk::look::Lang) -> Self {
-        match lang {
-            glide_sdk::look::Lang::Uk => Self::Uk,
-            glide_sdk::look::Lang::En => Self::En,
-        }
-    }
-}
-
-macro_rules! catalogue {
-    ($($key:ident => $en:literal, $uk:literal;)*) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub enum Key {
-            $($key,)*
-        }
-
-        impl Key {
-            pub const ALL: &'static [Self] = &[$(Self::$key,)*];
-
-            #[must_use]
-            pub const fn en(self) -> &'static str {
-                match self {
-                    $(Self::$key => $en,)*
-                }
-            }
-
-            #[must_use]
-            pub const fn uk(self) -> &'static str {
-                match self {
-                    $(Self::$key => $uk,)*
-                }
-            }
-
-            #[must_use]
-            pub const fn text(self, lang: Lang) -> &'static str {
-                match lang {
-                    Lang::Uk => self.uk(),
-                    Lang::En => self.en(),
-                }
-            }
-        }
-    };
-}
-
-catalogue! {
+glide_sdk::catalogue! {
     AppName => "Files", "Файли";
     QuitTitle => "Stop operations and quit?", "Зупинити операції й закрити?";
     QuitPrompt => "Some operations are still running. Stopped now, they stay unfinished.", "Деякі операції ще тривають. Якщо зупинити їх зараз, вони залишаться незавершеними.";
@@ -325,16 +258,11 @@ pub fn month(month: u8, lang: Lang) -> &'static str {
 
 #[must_use]
 pub fn items(count: usize, lang: Lang) -> String {
-    let noun = match lang {
-        Lang::En if count == 1 => "item",
-        Lang::En => "items",
-        Lang::Uk => match (count % 10, count % 100) {
-            (1, n) if n != 11 => "об’єкт",
-            (2..=4, n) if !(12..=14).contains(&n) => "об’єкти",
-            _ => "об’єктів",
-        },
+    let forms = match lang {
+        Lang::En => ["item", "items", "items"],
+        Lang::Uk => ["об’єкт", "об’єкти", "об’єктів"],
     };
-    format!("{count} {noun}")
+    glide_sdk::i18n::count(count as u64, lang, forms)
 }
 
 #[must_use]

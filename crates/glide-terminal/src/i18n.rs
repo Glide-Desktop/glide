@@ -1,113 +1,52 @@
 pub use glide_sdk::Lang;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    AppName,
-    NewWindow,
-    NewTab,
-    SplitDown,
-    SplitRight,
-    ClosePane,
-    Copy,
-    Paste,
-    SelectAll,
-    Find,
-    FindPlaceholder,
-    NoMatches,
-    Done,
-    ClearScrollback,
-    Reset,
-    MarkLine,
-    Bookmark,
-    PreviousMark,
-    NextMark,
-    Profiles,
-    MakeDefault,
-    DefaultProfile,
-    FontSize,
-    FullScreen,
-    OpenLink,
-    CopyLink,
-    ManPage,
-    OpenHints,
-    ExportText,
-    ExportName,
-    SavedTo,
-    SaveFailed,
-    ConfirmTitle,
-    ConfirmBody,
-    Terminate,
-    Cancel,
-    Completed,
-    CompletedWithCode,
-    CompletedWithSignal,
-    SpawnFailed,
-    Maximize,
-    Minimize,
-    CloseWindow,
-    CloseTab,
-    CaseSensitive,
-    FindPrevious,
-    FindNext,
-    Options,
-}
-
-impl Key {
-    #[must_use]
-    pub const fn text(self, lang: Lang) -> &'static str {
-        let (uk, en) = match self {
-            Self::AppName => ("Термінал", "Terminal"),
-            Self::NewWindow => ("Нове вікно", "New Window"),
-            Self::NewTab => ("Нова вкладка", "New Tab"),
-            Self::SplitDown => ("Розділити вниз", "Split Down"),
-            Self::SplitRight => ("Розділити праворуч", "Split Right"),
-            Self::ClosePane => ("Закрити панель", "Close Pane"),
-            Self::Copy => ("Копіювати", "Copy"),
-            Self::Paste => ("Вставити", "Paste"),
-            Self::SelectAll => ("Вибрати все", "Select All"),
-            Self::Find => ("Знайти…", "Find…"),
-            Self::FindPlaceholder => ("Знайти в терміналі", "Find in terminal"),
-            Self::NoMatches => ("Немає збігів", "No matches"),
-            Self::Done => ("Готово", "Done"),
-            Self::ClearScrollback => ("Очистити до початку", "Clear to Start"),
-            Self::Reset => ("Скинути термінал", "Reset Terminal"),
-            Self::MarkLine => ("Позначити рядок", "Mark Line"),
-            Self::Bookmark => ("Додати закладку", "Mark as Bookmark"),
-            Self::PreviousMark => ("До попередньої позначки", "Jump to Previous Mark"),
-            Self::NextMark => ("До наступної позначки", "Jump to Next Mark"),
-            Self::Profiles => ("Профілі…", "Profiles…"),
-            Self::MakeDefault => ("Зробити типовим", "Use as Default"),
-            Self::DefaultProfile => ("типовий", "default"),
-            Self::FontSize => ("Розмір шрифту", "Font Size"),
-            Self::FullScreen => ("На весь екран", "Full Screen"),
-            Self::OpenLink => ("Відкрити посилання", "Open Link"),
-            Self::CopyLink => ("Копіювати посилання", "Copy Link"),
-            Self::ManPage => ("Відкрити сторінку man", "Open man Page"),
-            Self::OpenHints => ("Відкрити посилання чи шлях…", "Open Link or Path…"),
-            Self::ExportText => ("Експортувати текст як…", "Export Text As…"),
-            Self::ExportName => ("Вивід терміналу.txt", "Terminal Saved Output.txt"),
-            Self::SavedTo => ("Збережено в", "Saved to"),
-            Self::SaveFailed => ("Не вдалося зберегти", "Couldn't save"),
-            Self::ConfirmTitle => ("Завершити запущені процеси?", "Terminate running processes?"),
-            Self::ConfirmBody => ("Закриття завершить", "Closing will terminate"),
-            Self::Terminate => ("Завершити", "Terminate"),
-            Self::Cancel => ("Скасувати", "Cancel"),
-            Self::Completed => ("[Процес завершено]", "[Process completed]"),
-            Self::CompletedWithCode => ("[Процес завершено з кодом", "[Process completed with code"),
-            Self::CompletedWithSignal => ("[Процес завершено сигналом", "[Process terminated by signal"),
-            Self::SpawnFailed => ("Не вдалося запустити оболонку", "Couldn't start the shell"),
-            Self::Maximize => ("Розгорнути / Відновити", "Maximize / Restore"),
-            Self::Minimize => ("Згорнути", "Minimize"),
-            Self::CloseWindow => ("Закрити вікно", "Close Window"),
-            Self::CloseTab => ("Закрити вкладку", "Close Tab"),
-            Self::CaseSensitive => ("Враховувати регістр", "Match Case"),
-            Self::FindPrevious => ("Попередній збіг", "Previous Match"),
-            Self::FindNext => ("Наступний збіг", "Next Match"),
-            Self::Options => ("Параметри", "Options"),
-        };
-        match lang {
-            Lang::Uk => uk,
-            Lang::En => en,
-        }
-    }
+glide_sdk::catalogue! {
+    AppName => "Terminal", "Термінал";
+    NewWindow => "New Window", "Нове вікно";
+    NewTab => "New Tab", "Нова вкладка";
+    SplitDown => "Split Down", "Розділити вниз";
+    SplitRight => "Split Right", "Розділити праворуч";
+    ClosePane => "Close Pane", "Закрити панель";
+    Copy => "Copy", "Копіювати";
+    Paste => "Paste", "Вставити";
+    SelectAll => "Select All", "Вибрати все";
+    Find => "Find…", "Знайти…";
+    FindPlaceholder => "Find in terminal", "Знайти в терміналі";
+    NoMatches => "No matches", "Немає збігів";
+    Done => "Done", "Готово";
+    ClearScrollback => "Clear to Start", "Очистити до початку";
+    Reset => "Reset Terminal", "Скинути термінал";
+    MarkLine => "Mark Line", "Позначити рядок";
+    Bookmark => "Mark as Bookmark", "Додати закладку";
+    PreviousMark => "Jump to Previous Mark", "До попередньої позначки";
+    NextMark => "Jump to Next Mark", "До наступної позначки";
+    Profiles => "Profiles…", "Профілі…";
+    MakeDefault => "Use as Default", "Зробити типовим";
+    DefaultProfile => "default", "типовий";
+    FontSize => "Font Size", "Розмір шрифту";
+    FullScreen => "Full Screen", "На весь екран";
+    OpenLink => "Open Link", "Відкрити посилання";
+    CopyLink => "Copy Link", "Копіювати посилання";
+    ManPage => "Open man Page", "Відкрити сторінку man";
+    OpenHints => "Open Link or Path…", "Відкрити посилання чи шлях…";
+    ExportText => "Export Text As…", "Експортувати текст як…";
+    ExportName => "Terminal Saved Output.txt", "Вивід терміналу.txt";
+    SavedTo => "Saved to", "Збережено в";
+    SaveFailed => "Couldn't save", "Не вдалося зберегти";
+    ConfirmTitle => "Terminate running processes?", "Завершити запущені процеси?";
+    ConfirmBody => "Closing will terminate", "Закриття завершить";
+    Terminate => "Terminate", "Завершити";
+    Cancel => "Cancel", "Скасувати";
+    Completed => "[Process completed]", "[Процес завершено]";
+    CompletedWithCode => "[Process completed with code", "[Процес завершено з кодом";
+    CompletedWithSignal => "[Process terminated by signal", "[Процес завершено сигналом";
+    SpawnFailed => "Couldn't start the shell", "Не вдалося запустити оболонку";
+    Maximize => "Maximize / Restore", "Розгорнути / Відновити";
+    Minimize => "Minimize", "Згорнути";
+    CloseWindow => "Close Window", "Закрити вікно";
+    CloseTab => "Close Tab", "Закрити вкладку";
+    CaseSensitive => "Match Case", "Враховувати регістр";
+    FindPrevious => "Previous Match", "Попередній збіг";
+    FindNext => "Next Match", "Наступний збіг";
+    Options => "Options", "Параметри";
 }

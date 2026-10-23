@@ -217,15 +217,11 @@ pub fn finger_offset(sample: &GestureSample, natural: bool) -> (f32, f32) {
 
 #[must_use]
 pub fn fingers_text(count: u32, lang: Lang) -> String {
-    match lang {
-        Lang::Uk => match (count % 10, count % 100) {
-            (1, n) if n != 11 => format!("{count} палець"),
-            (2..=4, n) if !(12..=14).contains(&n) => format!("{count} пальці"),
-            _ => format!("{count} пальців"),
-        },
-        Lang::En if count == 1 => String::from("1 finger"),
-        Lang::En => format!("{count} fingers"),
-    }
+    let forms = match lang {
+        Lang::Uk => ["палець", "пальці", "пальців"],
+        Lang::En => ["finger", "fingers", "fingers"],
+    };
+    glide_sdk::i18n::count(u64::from(count), lang, forms)
 }
 
 #[derive(Debug, Clone)]

@@ -42,7 +42,7 @@ pub fn user_dirs(text: &str, home: &Path) -> Vec<PathBuf> {
 }
 
 fn quick_folders() -> Vec<(String, PathBuf)> {
-    let lang = crate::i18n::Lang::from_env();
+    let lang = crate::i18n::system_lang();
     let Some(home) = crate::fs::home_dir() else {
         return Vec::new();
     };

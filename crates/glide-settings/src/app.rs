@@ -273,7 +273,7 @@ impl App {
 
     pub fn follow_look(&mut self, look: &glide_sdk::look::Look, paint: glide_sdk::Paint) {
         self.theme.paint = paint;
-        self.lang = look.language.map_or_else(|| self.config.language(), Lang::from);
+        self.lang = look.language.unwrap_or_else(|| self.config.language());
     }
 
     pub fn follow_window(&mut self, window: glide_sdk::window::Window) {

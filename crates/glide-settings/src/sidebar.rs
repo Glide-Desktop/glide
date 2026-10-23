@@ -38,19 +38,8 @@ pub fn highlight(label: &str, query: &str) -> Option<(usize, usize)> {
 
 #[must_use]
 pub fn results_label(lang: Lang, count: usize) -> String {
-    let noun = match lang {
-        Lang::En if count == 1 => K::ResultOne,
-        Lang::En => K::ResultMany,
-        Lang::Uk => {
-            let tens = count % 100;
-            match count % 10 {
-                1 if tens != 11 => K::ResultOne,
-                2..=4 if !(12..=14).contains(&tens) => K::ResultFew,
-                _ => K::ResultMany,
-            }
-        }
-    };
-    format!("{count} {}", noun.text(lang))
+    let forms = [K::ResultOne, K::ResultFew, K::ResultMany].map(|key| key.text(lang));
+    glide_sdk::i18n::count(count as u64, lang, forms)
 }
 
 fn search_field<'a>(c: &Ctx, query: &'a str) -> Element<'a, Message> {

@@ -839,7 +839,7 @@ impl App {
     }
 
     pub fn with_look(look: Look) -> (Self, Task<Message>) {
-        let lang = Lang::of(&look);
+        let lang = i18n::lang_of(&look);
         let trash = Trash::user();
         let prefs = config::load_prefs();
         let requested = requested_location();
@@ -3830,7 +3830,7 @@ impl App {
             self.icons = IconTheme::new(look.icon_theme.as_deref(), look.accent);
         }
         self.look = look.clone();
-        let lang = Lang::of(look);
+        let lang = i18n::lang_of(look);
         if lang == self.lang {
             return Task::none();
         }

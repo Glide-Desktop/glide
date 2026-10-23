@@ -29,14 +29,15 @@ cargo run -p glide-sdk --example notes
 5. [Dialogs, toasts and context menus](#dialogs-toasts-and-context-menus)
 6. [Widgets](#widgets)
 7. [Motion](#motion)
-8. [Keyboard](#keyboard)
-9. [Design rules](#design-rules)
-10. [System integration](#system-integration)
-11. [Testing](#testing)
-12. [Packaging](#packaging)
-13. [Contracts for other languages](#contracts-for-other-languages)
-14. [Limitations](#limitations)
-15. [A Go SDK: how hard would it be](#a-go-sdk-how-hard-would-it-be)
+8. [Languages](#languages)
+9. [Keyboard](#keyboard)
+10. [Design rules](#design-rules)
+11. [System integration](#system-integration)
+12. [Testing](#testing)
+13. [Packaging](#packaging)
+14. [Contracts for other languages](#contracts-for-other-languages)
+15. [Limitations](#limitations)
+16. [A Go SDK: how hard would it be](#a-go-sdk-how-hard-would-it-be)
 
 ## Quick start
 
@@ -361,6 +362,29 @@ anim::animate(if open { 1.0 } else { 0.0 }, Speed::SPRING, |value| {
 - `collapse(open, content)` animates height; `spin(period, build)` gives a
   looping phase. `Motion` is the retargetable tween underneath, for custom
   widgets.
+
+## Languages
+
+Glide speaks Ukrainian and English. `shell.lang()` is the language the user
+chose in `glide.toml` (or the shell), else the locale. Keep every string in
+one catalogue per module:
+
+```rust
+glide_sdk::catalogue! {
+    Save => "Save", "Зберегти";
+    Uppercase => "UPPERCASE", "ВЕЛИКІ ЛІТЕРИ" as written;
+}
+
+let label = Key::Save.text(shell.lang());
+```
+
+The macro makes `Key` with `ALL`, `en()`, `uk()`, `text(lang)` and the
+`i18n::Text` trait, and a test that fails on an empty translation or a label
+written in capitals (`as written` exempts a key whose capitals are its
+meaning). `i18n::count(n, lang, [one, few, many])` writes a count with the
+right plural form ("1 файл", "3 файли", "11 файлів"); `Lang::plural` gives the
+form alone. `Lang::from_env()` takes the first set locale variable, and
+`Lang::from_env_or(fallback)` the first one naming Ukrainian or English.
 
 ## Keyboard
 

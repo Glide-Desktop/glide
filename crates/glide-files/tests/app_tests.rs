@@ -1111,10 +1111,10 @@ fn item_counts_use_ukrainian_plural_forms() {
 #[test]
 fn the_configured_language_wins_over_the_locale() {
     let english = Look::parse("[general]\nlanguage = \"en\"\n", false);
-    assert_eq!(Lang::of(&english), Lang::En);
+    assert_eq!(i18n::lang_of(&english), Lang::En);
     let ukrainian = Look::parse("[general]\nlanguage = \"uk\"\n", false);
-    assert_eq!(Lang::of(&ukrainian), Lang::Uk);
-    assert_eq!(Lang::of(&Look::parse("", false)), Lang::from_env());
+    assert_eq!(i18n::lang_of(&ukrainian), Lang::Uk);
+    assert_eq!(i18n::lang_of(&Look::parse("", false)), i18n::system_lang());
 }
 
 #[test]

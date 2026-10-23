@@ -1,155 +1,131 @@
 pub use glide_sdk::Lang;
 
-macro_rules! keys {
-    ($($name:ident => ($uk:expr, $en:expr),)*) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum Key {
-            $($name,)*
-        }
-
-        impl Key {
-            #[must_use]
-            pub const fn text(self, lang: Lang) -> &'static str {
-                match (self, lang) {
-                    $((Self::$name, Lang::Uk) => $uk, (Self::$name, Lang::En) => $en,)*
-                }
-            }
-        }
-    };
-}
-
-keys! {
-    AppName => ("Текстовий редактор", "Text Editor"),
-    Untitled => ("Без назви", "Untitled"),
-    File => ("Файл", "File"),
-    Edit => ("Правка", "Edit"),
-    View => ("Вигляд", "View"),
-    Search => ("Пошук", "Find"),
-    Format => ("Формат", "Format"),
-    Help => ("Довідка", "Help"),
-    Menu => ("Меню", "Menu"),
-    New => ("Новий документ", "New Document"),
-    NewWindow => ("Нове вікно", "New Window"),
-    Open => ("Відкрити…", "Open…"),
-    OpenFolder => ("Відкрити теку…", "Open Folder…"),
-    OpenRecent => ("Нещодавні файли…", "Open Recent…"),
-    NoRecent => ("Нещодавніх файлів немає", "No recent files"),
-    ClearRecent => ("Очистити список", "Clear Menu"),
-    Save => ("Зберегти", "Save"),
-    SaveAs => ("Зберегти як…", "Save As…"),
-    SaveAll => ("Зберегти все", "Save All"),
-    Revert => ("Повернути збережене", "Revert to Saved"),
-    ShowInFiles => ("Показати у Файлах", "Show in Files"),
-    CopyPath => ("Копіювати шлях", "Copy Path"),
-    CloseTab => ("Закрити документ", "Close Document"),
-    CloseFolder => ("Закрити теку", "Close Folder"),
-    CloseWindow => ("Закрити вікно", "Close Window"),
-    Undo => ("Скасувати", "Undo"),
-    Redo => ("Повторити", "Redo"),
-    Cut => ("Вирізати", "Cut"),
-    Copy => ("Копіювати", "Copy"),
-    Paste => ("Вставити", "Paste"),
-    SelectAll => ("Вибрати все", "Select All"),
-    DuplicateLine => ("Дублювати рядок", "Duplicate Line"),
-    DeleteLine => ("Видалити рядок", "Delete Line"),
-    MoveLineUp => ("Перемістити рядок вгору", "Move Line Up"),
-    MoveLineDown => ("Перемістити рядок вниз", "Move Line Down"),
-    JoinLines => ("Об’єднати рядки", "Join Lines"),
-    SortLines => ("Сортувати рядки", "Sort Lines"),
-    ToggleComment => ("Закоментувати / розкоментувати", "Toggle Comment"),
-    Indent => ("Збільшити відступ", "Indent"),
-    Unindent => ("Зменшити відступ", "Unindent"),
-    Uppercase => ("ВЕЛИКІ ЛІТЕРИ", "UPPERCASE"),
-    Lowercase => ("малі літери", "lowercase"),
-    TitleCase => ("Як У Заголовку", "Title Case"),
-    InvertCase => ("іНВЕРТУВАТИ рЕГІСТР", "iNVERT cASE"),
-    TrimTrailing => ("Прибрати пробіли в кінці рядків", "Trim Trailing Spaces"),
-    InsertDate => ("Вставити дату й час", "Insert Date and Time"),
-    Find => ("Знайти…", "Find…"),
-    Replace => ("Знайти й замінити…", "Find and Replace…"),
-    FindNext => ("Знайти наступне", "Find Next"),
-    FindPrevious => ("Знайти попереднє", "Find Previous"),
-    UseSelection => ("Шукати виділене", "Use Selection for Find"),
-    GoToLine => ("Перейти до рядка…", "Go to Line…"),
-    Sidebar => ("Бічна панель", "Sidebar"),
-    StatusBar => ("Рядок стану", "Status Bar"),
-    Monospace => ("Моноширинний шрифт", "Monospace Font"),
-    Preview => ("Перегляд Markdown", "Markdown Preview"),
-    ZoomIn => ("Збільшити", "Zoom In"),
-    ZoomOut => ("Зменшити", "Zoom Out"),
-    ZoomReset => ("Звичайний розмір", "Actual Size"),
-    FullScreen => ("На весь екран", "Full Screen"),
-    HiddenFiles => ("Показувати приховані файли", "Show Hidden Files"),
-    Syntax => ("Мова підсвітки…", "Highlight Mode…"),
-    Automatic => ("Автоматично", "Automatic"),
-    Detected => ("визначено", "detected"),
-    SpacesForTabs => ("Пробіли замість табуляції", "Insert Spaces"),
-    TabWidth => ("Ширина табуляції", "Tab Width"),
-    AutoIndent => ("Автоматичний відступ", "Auto Indent"),
-    LineEndings => ("Закінчення рядків…", "Line Endings…"),
-    UnixEndings => ("Unix / macOS (LF)", "Unix / macOS (LF)"),
-    WindowsEndings => ("Windows (CRLF)", "Windows (CRLF)"),
-    TrimOnSave => ("Прибирати пробіли під час збереження", "Trim Spaces on Save"),
-    Statistics => ("Статистика документа…", "Document Statistics…"),
-    Shortcuts => ("Комбінації клавіш", "Keyboard Shortcuts"),
-    About => ("Про Текстовий редактор", "About Text Editor"),
-    AboutBody => (
-        "Блокнот Glide: вкладки, дерево тек, пошук і заміна, перегляд Markdown. Мову документа визначає вбудований детектор, підсвітку дає tree-sitter.",
-        "The Glide notepad: tabs, a folder tree, find and replace, Markdown preview. A built-in detector picks the document’s language; tree-sitter highlights it."
-    ),
-    FindPlaceholder => ("Знайти", "Find"),
-    ReplacePlaceholder => ("Замінити на", "Replace with"),
-    ReplaceOne => ("Замінити", "Replace"),
-    ReplaceAll => ("Замінити все", "Replace All"),
-    MatchCase => ("Враховувати регістр", "Match Case"),
-    WholeWord => ("Лише цілі слова", "Whole Words"),
-    Regex => ("Регулярний вираз", "Regular Expression"),
-    NoMatches => ("Немає збігів", "No matches"),
-    Of => ("з", "of"),
-    Done => ("Готово", "Done"),
-    Replaced => ("Замінено", "Replaced"),
-    ShowReplace => ("Заміна", "Replace"),
-    LinePlaceholder => ("Рядок[:стовпець]", "Line[:column]"),
-    Line => ("Рядок", "Ln"),
-    Column => ("стовпець", "Col"),
-    Selected => ("вибрано", "selected"),
-    Words => ("сл.", "words"),
-    Spaces => ("Пробіли", "Spaces"),
-    Tabs => ("Табуляція", "Tab Width"),
-    UnsavedOne => ("Зберегти зміни в документі", "Save changes to"),
-    UnsavedMany => ("Зберегти зміни в документах?", "Save changes to these documents?"),
-    UnsavedBody => ("Якщо не зберегти, зміни буде втрачено.", "If you don’t save, your changes will be lost."),
-    DontSave => ("Не зберігати", "Don’t Save"),
-    Cancel => ("Скасувати", "Cancel"),
-    Close => ("Закрити", "Close"),
-    Saved => ("Збережено", "Saved"),
-    SaveFailed => ("Не вдалося зберегти", "Couldn’t save"),
-    OpenFailed => ("Не вдалося відкрити", "Couldn’t open"),
-    Binary => ("це двійковий файл", "it is a binary file"),
-    ChangedOnDisk => ("Файл змінено поза редактором.", "The file changed outside the editor."),
-    Reload => ("Перезавантажити", "Reload"),
-    KeepMine => ("Лишити мою версію", "Keep Mine"),
-    DeletedOnDisk => ("Файл видалено або переміщено.", "The file was deleted or moved."),
-    Latin1Loss => (
-        "Текст не вміщається в ISO-8859-1, тому збережено як UTF-8",
-        "The text doesn’t fit ISO-8859-1, so it was saved as UTF-8"
-    ),
-    ChooserFailed => ("Не вдалося відкрити вікно вибору файлів", "Couldn’t open the file chooser"),
-    NoFolder => ("Відкрийте теку, щоб бачити її файли тут.", "Open a folder to see its files here."),
-    OpenFolderButton => ("Відкрити теку", "Open Folder"),
-    Refresh => ("Оновити", "Refresh"),
-    EmptyFolder => ("Порожня тека", "Empty folder"),
-    OpenItem => ("Відкрити", "Open"),
-    Lines => ("Рядки", "Lines"),
-    WordsLong => ("Слова", "Words"),
-    Characters => ("Символи", "Characters"),
-    CharactersNoSpaces => ("Символи без пробілів", "Characters (no spaces)"),
-    Bytes => ("Байти", "Bytes"),
-    Encoding => ("Кодування", "Encoding"),
-    Maximize => ("Розгорнути / Відновити", "Maximize / Restore"),
-    Minimize => ("Згорнути", "Minimize"),
-    EmptyTitle => ("Немає відкритих документів", "No open documents"),
-    EmptyBody => ("Створіть новий документ або відкрийте файл чи теку.", "Create a new document or open a file or folder."),
+glide_sdk::catalogue! {
+    AppName => "Text Editor", "Текстовий редактор";
+    Untitled => "Untitled", "Без назви";
+    File => "File", "Файл";
+    Edit => "Edit", "Правка";
+    View => "View", "Вигляд";
+    Search => "Find", "Пошук";
+    Format => "Format", "Формат";
+    Help => "Help", "Довідка";
+    Menu => "Menu", "Меню";
+    New => "New Document", "Новий документ";
+    NewWindow => "New Window", "Нове вікно";
+    Open => "Open…", "Відкрити…";
+    OpenFolder => "Open Folder…", "Відкрити теку…";
+    OpenRecent => "Open Recent…", "Нещодавні файли…";
+    NoRecent => "No recent files", "Нещодавніх файлів немає";
+    ClearRecent => "Clear Menu", "Очистити список";
+    Save => "Save", "Зберегти";
+    SaveAs => "Save As…", "Зберегти як…";
+    SaveAll => "Save All", "Зберегти все";
+    Revert => "Revert to Saved", "Повернути збережене";
+    ShowInFiles => "Show in Files", "Показати у Файлах";
+    CopyPath => "Copy Path", "Копіювати шлях";
+    CloseTab => "Close Document", "Закрити документ";
+    CloseFolder => "Close Folder", "Закрити теку";
+    CloseWindow => "Close Window", "Закрити вікно";
+    Undo => "Undo", "Скасувати";
+    Redo => "Redo", "Повторити";
+    Cut => "Cut", "Вирізати";
+    Copy => "Copy", "Копіювати";
+    Paste => "Paste", "Вставити";
+    SelectAll => "Select All", "Вибрати все";
+    DuplicateLine => "Duplicate Line", "Дублювати рядок";
+    DeleteLine => "Delete Line", "Видалити рядок";
+    MoveLineUp => "Move Line Up", "Перемістити рядок вгору";
+    MoveLineDown => "Move Line Down", "Перемістити рядок вниз";
+    JoinLines => "Join Lines", "Об’єднати рядки";
+    SortLines => "Sort Lines", "Сортувати рядки";
+    ToggleComment => "Toggle Comment", "Закоментувати / розкоментувати";
+    Indent => "Indent", "Збільшити відступ";
+    Unindent => "Unindent", "Зменшити відступ";
+    Uppercase => "UPPERCASE", "ВЕЛИКІ ЛІТЕРИ" as written;
+    Lowercase => "lowercase", "малі літери";
+    TitleCase => "Title Case", "Як У Заголовку";
+    InvertCase => "iNVERT cASE", "іНВЕРТУВАТИ рЕГІСТР";
+    TrimTrailing => "Trim Trailing Spaces", "Прибрати пробіли в кінці рядків";
+    InsertDate => "Insert Date and Time", "Вставити дату й час";
+    Find => "Find…", "Знайти…";
+    Replace => "Find and Replace…", "Знайти й замінити…";
+    FindNext => "Find Next", "Знайти наступне";
+    FindPrevious => "Find Previous", "Знайти попереднє";
+    UseSelection => "Use Selection for Find", "Шукати виділене";
+    GoToLine => "Go to Line…", "Перейти до рядка…";
+    Sidebar => "Sidebar", "Бічна панель";
+    StatusBar => "Status Bar", "Рядок стану";
+    Monospace => "Monospace Font", "Моноширинний шрифт";
+    Preview => "Markdown Preview", "Перегляд Markdown";
+    ZoomIn => "Zoom In", "Збільшити";
+    ZoomOut => "Zoom Out", "Зменшити";
+    ZoomReset => "Actual Size", "Звичайний розмір";
+    FullScreen => "Full Screen", "На весь екран";
+    HiddenFiles => "Show Hidden Files", "Показувати приховані файли";
+    Syntax => "Highlight Mode…", "Мова підсвітки…";
+    Automatic => "Automatic", "Автоматично";
+    Detected => "detected", "визначено";
+    SpacesForTabs => "Insert Spaces", "Пробіли замість табуляції";
+    TabWidth => "Tab Width", "Ширина табуляції";
+    AutoIndent => "Auto Indent", "Автоматичний відступ";
+    LineEndings => "Line Endings…", "Закінчення рядків…";
+    UnixEndings => "Unix / macOS (LF)", "Unix / macOS (LF)";
+    WindowsEndings => "Windows (CRLF)", "Windows (CRLF)";
+    TrimOnSave => "Trim Spaces on Save", "Прибирати пробіли під час збереження";
+    Statistics => "Document Statistics…", "Статистика документа…";
+    Shortcuts => "Keyboard Shortcuts", "Комбінації клавіш";
+    About => "About Text Editor", "Про Текстовий редактор";
+    AboutBody => "The Glide notepad: tabs, a folder tree, find and replace, Markdown preview. A built-in detector picks the document’s language; tree-sitter highlights it.", "Блокнот Glide: вкладки, дерево тек, пошук і заміна, перегляд Markdown. Мову документа визначає вбудований детектор, підсвітку дає tree-sitter.";
+    FindPlaceholder => "Find", "Знайти";
+    ReplacePlaceholder => "Replace with", "Замінити на";
+    ReplaceOne => "Replace", "Замінити";
+    ReplaceAll => "Replace All", "Замінити все";
+    MatchCase => "Match Case", "Враховувати регістр";
+    WholeWord => "Whole Words", "Лише цілі слова";
+    Regex => "Regular Expression", "Регулярний вираз";
+    NoMatches => "No matches", "Немає збігів";
+    Of => "of", "з";
+    Done => "Done", "Готово";
+    Replaced => "Replaced", "Замінено";
+    ShowReplace => "Replace", "Заміна";
+    LinePlaceholder => "Line[:column]", "Рядок[:стовпець]";
+    Line => "Ln", "Рядок";
+    Column => "Col", "стовпець";
+    Selected => "selected", "вибрано";
+    Words => "words", "сл.";
+    Spaces => "Spaces", "Пробіли";
+    Tabs => "Tab Width", "Табуляція";
+    UnsavedOne => "Save changes to", "Зберегти зміни в документі";
+    UnsavedMany => "Save changes to these documents?", "Зберегти зміни в документах?";
+    UnsavedBody => "If you don’t save, your changes will be lost.", "Якщо не зберегти, зміни буде втрачено.";
+    DontSave => "Don’t Save", "Не зберігати";
+    Cancel => "Cancel", "Скасувати";
+    Close => "Close", "Закрити";
+    Saved => "Saved", "Збережено";
+    SaveFailed => "Couldn’t save", "Не вдалося зберегти";
+    OpenFailed => "Couldn’t open", "Не вдалося відкрити";
+    Binary => "it is a binary file", "це двійковий файл";
+    ChangedOnDisk => "The file changed outside the editor.", "Файл змінено поза редактором.";
+    Reload => "Reload", "Перезавантажити";
+    KeepMine => "Keep Mine", "Лишити мою версію";
+    DeletedOnDisk => "The file was deleted or moved.", "Файл видалено або переміщено.";
+    Latin1Loss => "The text doesn’t fit ISO-8859-1, so it was saved as UTF-8", "Текст не вміщається в ISO-8859-1, тому збережено як UTF-8";
+    ChooserFailed => "Couldn’t open the file chooser", "Не вдалося відкрити вікно вибору файлів";
+    NoFolder => "Open a folder to see its files here.", "Відкрийте теку, щоб бачити її файли тут.";
+    OpenFolderButton => "Open Folder", "Відкрити теку";
+    Refresh => "Refresh", "Оновити";
+    EmptyFolder => "Empty folder", "Порожня тека";
+    OpenItem => "Open", "Відкрити";
+    Lines => "Lines", "Рядки";
+    WordsLong => "Words", "Слова";
+    Characters => "Characters", "Символи";
+    CharactersNoSpaces => "Characters (no spaces)", "Символи без пробілів";
+    Bytes => "Bytes", "Байти";
+    Encoding => "Encoding", "Кодування";
+    Maximize => "Maximize / Restore", "Розгорнути / Відновити";
+    Minimize => "Minimize", "Згорнути";
+    EmptyTitle => "No open documents", "Немає відкритих документів";
+    EmptyBody => "Create a new document or open a file or folder.", "Створіть новий документ або відкрийте файл чи теку.";
 }
 
 #[cfg(test)]

@@ -7,6 +7,8 @@ use glide_theme::{Accent, Appearance};
 use iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use serde::Deserialize;
 
+const LOCALE_VARS: [&str; 3] = ["LC_ALL", "LC_MESSAGES", "LANG"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Lang {
     #[default]
@@ -30,12 +32,35 @@ impl Lang {
     }
 
     #[must_use]
+    pub fn from_locale_vars(lc_all: Option<&str>, lc_messages: Option<&str>, lang: Option<&str>) -> Self {
+        let locale = [lc_all, lc_messages, lang].into_iter().flatten().map(str::trim).find(|value| !value.is_empty());
+        Self::from_locale(locale.unwrap_or_default())
+    }
+
+    #[must_use]
     pub fn from_env() -> Self {
-        let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        let [lc_all, lc_messages, lang] = LOCALE_VARS.map(|key| std::env::var(key).ok());
+        Self::from_locale_vars(lc_all.as_deref(), lc_messages.as_deref(), lang.as_deref())
+    }
+
+    #[must_use]
+    pub fn from_env_or(fallback: Self) -> Self {
+        LOCALE_VARS
             .into_iter()
-            .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
-            .unwrap_or_default();
-        Self::from_locale(&locale)
+            .filter_map(|key| std::env::var(key).ok())
+            .find_map(|value| Self::naming(&value))
+            .unwrap_or(fallback)
+    }
+
+    fn naming(locale: &str) -> Option<Self> {
+        let lower = locale.trim().to_ascii_lowercase();
+        if lower.starts_with("uk") {
+            Some(Self::Uk)
+        } else if lower.starts_with("en") {
+            Some(Self::En)
+        } else {
+            None
+        }
     }
 
     #[must_use]
@@ -43,6 +68,28 @@ impl Lang {
         match self {
             Self::Uk => "uk",
             Self::En => "en",
+        }
+    }
+
+    #[must_use]
+    pub const fn native_name(self) -> &'static str {
+        match self {
+            Self::Uk => "Українська",
+            Self::En => "English",
+        }
+    }
+
+    #[must_use]
+    pub const fn plural(self, count: u64) -> crate::i18n::Plural {
+        use crate::i18n::Plural;
+        match self {
+            Self::En if count == 1 => Plural::One,
+            Self::En => Plural::Many,
+            Self::Uk => match (count % 10, count % 100) {
+                (1, n) if n != 11 => Plural::One,
+                (2..=4, n) if n < 12 || n > 14 => Plural::Few,
+                _ => Plural::Many,
+            },
         }
     }
 
@@ -322,5 +369,26 @@ mod tests {
         assert_eq!(Lang::from_locale("uk_UA.UTF-8"), Lang::Uk);
         assert_eq!(Lang::from_locale("en_US.UTF-8"), Lang::En);
         assert_eq!(Lang::from_locale("de_DE.UTF-8"), Lang::En);
+    }
+
+    #[test]
+    fn the_first_set_locale_variable_decides() {
+        let pick = Lang::from_locale_vars;
+        assert_eq!(pick(None, None, Some("uk_UA.UTF-8")), Lang::Uk);
+        assert_eq!(pick(None, None, Some("en_US.UTF-8")), Lang::En);
+        assert_eq!(pick(None, None, None), Lang::Uk);
+        assert_eq!(pick(Some("C"), None, Some("uk_UA.UTF-8")), Lang::En);
+        assert_eq!(pick(Some(" "), Some("uk_UA"), Some("en_GB")), Lang::Uk);
+        assert_eq!(pick(None, Some("de_DE"), Some("uk_UA")), Lang::En);
+    }
+
+    #[test]
+    fn ukrainian_plurals_follow_the_last_two_digits() {
+        use crate::i18n::Plural::{Few, Many, One};
+        let uk = |count| Lang::Uk.plural(count);
+        assert_eq!([1, 21, 101].map(uk), [One; 3]);
+        assert_eq!([2, 4, 22, 104].map(uk), [Few; 4]);
+        assert_eq!([0, 5, 11, 12, 14, 111, 112].map(uk), [Many; 7]);
+        assert_eq!([1, 0, 2, 21].map(|count| Lang::En.plural(count)), [One, Many, Many, Many]);
     }
 }
