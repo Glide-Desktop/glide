@@ -11,8 +11,6 @@ fn main() -> iced::Result {
     if args.first().map(String::as_str) == Some(glide_settings::services::netbird::APPLY_FLAG) {
         std::process::exit(glide_settings::services::netbird::apply_privileged(&args[1..]));
     }
-    let config = glide_settings::services::config::ConfigStore::load();
-    glide_settings::theme::use_ui_family(config.optional_str("general", "font-family").as_deref());
     let (width, height) = requested_size().unwrap_or((1000.0, 700.0));
     let settings = glide_sdk::Settings::new("glide-settings")
         .size(width, height)

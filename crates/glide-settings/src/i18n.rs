@@ -50,6 +50,15 @@ impl Lang {
     }
 }
 
+impl From<glide_sdk::look::Lang> for Lang {
+    fn from(lang: glide_sdk::look::Lang) -> Self {
+        match lang {
+            glide_sdk::look::Lang::Uk => Self::Uk,
+            glide_sdk::look::Lang::En => Self::En,
+        }
+    }
+}
+
 pub trait Text: Copy {
     fn text(self, lang: Lang) -> &'static str;
 }

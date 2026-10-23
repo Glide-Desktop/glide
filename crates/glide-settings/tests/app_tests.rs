@@ -124,6 +124,18 @@ fn appearance_changes_retheme_the_app_immediately() {
 }
 
 #[test]
+fn a_look_from_the_host_rethemes_the_app_and_falls_back_to_the_stored_language() {
+    let mut app = App::with_config(ConfigStore::parse("").with_system_language(Lang::Uk));
+    let look = glide_sdk::look::Look::parse("[topbar]\nappearance = \"light\"\n", false);
+    app.follow_look(&look, look.paint());
+    assert_eq!(app.theme.appearance(), Appearance::Light);
+    assert_eq!(app.lang(), Lang::Uk, "no language in the look keeps the system language");
+    let english = glide_sdk::look::Look::parse("[general]\nlanguage = \"en\"\n", false);
+    app.follow_look(&english, english.paint());
+    assert_eq!(app.lang(), Lang::En);
+}
+
+#[test]
 fn language_switch_changes_the_interface_language() {
     let mut app = App::with_config(ConfigStore::parse("").with_system_language(Lang::Uk));
     assert_eq!(app.lang(), Lang::Uk);

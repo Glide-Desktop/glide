@@ -27,7 +27,6 @@ macro_rules! declare_pages {
     ($($variant:ident => $module:ident,)*) => {
         #[derive(Debug, Clone)]
         pub enum Message {
-            ShellLook(glide_app::Look),
             PanelSelected(Panel),
             SearchChanged(String),
             SearchSubmitted,
@@ -129,7 +128,6 @@ pub struct App {
     login: String,
     pages: Pages,
     synced: Option<DesktopLook>,
-    shell: Option<glide_app::Look>,
     netbird: bool,
     width: f32,
 }
@@ -168,7 +166,6 @@ impl App {
             login: String::new(),
             pages: Pages::default(),
             synced: None,
-            shell: None,
             netbird: false,
             width: 1000.0,
         }
@@ -275,16 +272,15 @@ impl App {
         }
     }
 
-    fn apply_look(&mut self) {
-        if let Some(shell) = &self.shell {
-            self.theme.set_appearance(shell.appearance);
-            self.theme.set_accent(shell.accent);
-            self.lang = shell.language.as_deref().and_then(Lang::from_key).unwrap_or_else(|| self.config.language());
-        } else {
-            self.theme.set_appearance(self.config.appearance_at(minute_now()));
-            self.theme.set_accent(self.config.accent());
-            self.lang = self.config.language();
-        }
+    pub fn follow_look(&mut self, look: &glide_sdk::look::Look, paint: glide_sdk::Paint) {
+        self.theme.paint = paint;
+        self.lang = look.language.map_or_else(|| self.config.language(), Lang::from);
+    }
+
+    fn apply_edited_look(&mut self) {
+        self.theme.set_appearance(self.config.appearance_at(minute_now()));
+        self.theme.set_accent(self.config.accent());
+        self.lang = self.config.language();
         if self.config.path().is_some() {
             theme::use_ui_family(self.config.optional_str("general", "font-family").as_deref());
         }
@@ -334,10 +330,10 @@ impl App {
     }
 
     fn commit(&mut self, task: Task<Message>) -> Task<Message> {
-        self.apply_look();
         if !self.config.take_dirty() {
             return task;
         }
+        self.apply_edited_look();
         match self.config.save() {
             Ok(()) => Task::batch([task, Task::perform(blocking(ipc::reload), Message::Reloaded), self.sync_desktop()]),
             Err(err) => {
@@ -397,14 +393,8 @@ impl App {
                 IpcEvent::LayoutChanged(_) => Task::none(),
             },
             Message::Tick => self.tick_page(self.active_panel),
-            Message::ShellLook(look) => {
-                self.shell = Some(look);
-                self.apply_look();
-                Task::none()
-            }
             Message::Clock => {
                 let changed = self.config.refresh_if_changed();
-                self.apply_look();
                 if changed { self.broadcast(PageEvent::Reloaded) } else { Task::none() }
             }
             Message::Resized(width) => {
@@ -426,7 +416,6 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             Subscription::run(ipc::events).map(Message::Ipc),
-            Subscription::run(glide_app::look_changes).map(Message::ShellLook),
             iced::window::events().filter_map(|(_, event)| match event {
                 iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size) => {
                     Some(Message::Resized(size.width))
@@ -514,6 +503,11 @@ impl glide_sdk::App for App {
 
     fn new(_: &mut glide_sdk::Shell<Message>) -> (Self, Task<Message>) {
         Self::new()
+    }
+
+    fn look_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_look(shell.look(), *shell.paint());
+        Task::none()
     }
 
     fn title(&self, _: &glide_sdk::Shell<Message>) -> String {
