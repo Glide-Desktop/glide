@@ -1,22 +1,23 @@
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{elide_end, measure};
 use iced::widget::{container, row, text_input};
 use iced::{Element, Length};
 
-use super::{HEADER_HEIGHT, fit_sentence, text_width};
+use super::HEADER_HEIGHT;
 use crate::app::{App, MenuKind, Message, PATH_ID, SEARCH_ID, ViewMode};
 use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::theme::{self, SP2, SP3};
 
 pub const SEARCH_WIDTH: f32 = 200.0;
-pub const WINDOW_CONTROL: f32 = glide_theme::component::SMALL_CONTROL;
+pub const WINDOW_CONTROL: f32 = theme::SMALL_CONTROL;
 pub const GAP: f32 = SP2;
 pub const INSET: f32 = SP3;
-pub const SEMIBOLD_SPREAD: f32 = 0.94;
 
 #[must_use]
 pub fn search_title(label: &str, query: &str, room: f32) -> String {
-    let frame = text_width(&format!("{label} «»"), theme::TITLE);
-    let shown = fit_sentence(query, room - frame, theme::TITLE);
+    let frame = measure(&format!("{label} «»"), TextStyle::WIN_TITLE);
+    let shown = elide_end(query, room - frame, TextStyle::WIN_TITLE);
     if shown.is_empty() { label.to_string() } else { format!("{label} «{shown}»") }
 }
 

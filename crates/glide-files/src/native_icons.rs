@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use glide_theme::Accent;
+use glide_sdk::theme::Accent;
 use iced::widget::{image, svg};
 
 use crate::fs::{FileCategory, FileEntry};

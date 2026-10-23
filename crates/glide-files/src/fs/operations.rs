@@ -169,7 +169,7 @@ pub fn unique_path(dir: &Path, name: &OsStr, keep_extension: bool, taken: impl F
 pub fn open_with_default(path: &Path) -> io::Result<()> {
     let status = Command::new("xdg-open")
         .arg(path)
-        .envs(glide_ipc::client::activation_env(None))
+        .envs(glide_sdk::system::launch_env())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -180,7 +180,7 @@ pub fn open_with_default(path: &Path) -> io::Result<()> {
 pub fn open_in_terminal(dir: &Path) -> io::Result<()> {
     let terminal = glide_config::terminal::current();
     if glide_app::integration::is_glide_terminal(&terminal)
-        && let Some(token) = glide_ipc::client::activation_token(None)
+        && let Some(token) = glide_sdk::system::launch_token()
         && glide_app::integration::open_terminal_tab(dir, &[], &token).is_ok()
     {
         return Ok(());
@@ -189,7 +189,7 @@ pub fn open_in_terminal(dir: &Path) -> io::Result<()> {
     let program = words.next().ok_or_else(|| io::Error::new(ErrorKind::NotFound, "no terminal emulator"))?;
     let mut child = Command::new(program)
         .args(words)
-        .envs(glide_ipc::client::activation_env(None))
+        .envs(glide_sdk::system::launch_env())
         .current_dir(dir)
         .stdin(Stdio::null())
         .spawn()?;

@@ -1,6 +1,6 @@
-use glide_sdk::widget::{Wrapping, text};
-use glide_theme::TextStyle;
-use iced::widget::{Row, column, container, row, rule, text_input};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{Wrapping, pane, text, vertical_separator};
+use iced::widget::{Row, column, container, row, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
 
 use super::header::{GAP, INSET, bar_background, path_field, search_field};
@@ -94,10 +94,9 @@ fn toolbar<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
         let label = Key::NewFolder.text(lang);
         bar = bar.push(icon_button(&paint, Icon::FolderPlus, label, Some(Message::NewFolder), false));
     }
-    container(bar)
+    pane(t.view_bg(), 0.0, bar)
         .padding(Padding::from([theme::SP1, INSET]).left(theme::SP2))
-        .width(Fill)
-        .style(move |_| theme::surface(t.view_bg()))
+        .height(Length::Shrink)
         .into()
 }
 
@@ -123,11 +122,10 @@ fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>
     .spacing(theme::SP3)
     .align_y(Alignment::Center);
     Some(
-        container(container(row).max_width(NAME_ROW))
+        pane(t.view_bg(), 0.0, container(row).max_width(NAME_ROW))
             .padding(Padding::from([theme::SP2, theme::SP4]))
-            .width(Fill)
             .center_x(Fill)
-            .style(move |_| theme::surface(t.view_bg()))
+            .height(Length::Shrink)
             .into(),
     )
 }
@@ -135,10 +133,8 @@ fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>
 fn dropdown<'a>(
     app: &'a App, options: Vec<Pick>, selected: Option<Pick>, on_pick: impl Fn(Pick) -> Message + 'a,
 ) -> Element<'a, Message> {
-    let widest = options
-        .iter()
-        .map(|pick| glide_sdk::widget::measure(&pick.to_string(), glide_theme::TextStyle::CALL))
-        .fold(0.0, f32::max);
+    let widest =
+        options.iter().map(|pick| glide_sdk::widget::measure(&pick.to_string(), TextStyle::CALL)).fold(0.0, f32::max);
     let width = (widest + 2.0 * theme::SP3 + theme::SP2 + 12.0).clamp(140.0, 360.0);
     let picker = glide_sdk::widget::dropdown(&super::paint(&app.theme), options, selected, "", on_pick);
     container(picker).width(width).into()
@@ -174,11 +170,10 @@ fn footer<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> 
     }
     let corners = theme::window_corners(Side::BottomRight, app.corner());
     Some(
-        container(bar.wrap().vertical_spacing(theme::SP2).align_x(Alignment::End))
+        pane(bar_background(app), corners, bar.wrap().vertical_spacing(theme::SP2).align_x(Alignment::End))
             .padding(Padding::from([theme::SP2, INSET]))
-            .width(Fill)
             .align_x(Alignment::End)
-            .style(move |_| theme::rounded(bar_background(app), corners))
+            .height(Length::Shrink)
             .into(),
     )
 }
@@ -188,31 +183,18 @@ pub fn base(app: &App) -> Option<Element<'_, Message>> {
     let chooser = app.chooser.as_ref()?;
     let t = &app.theme;
     let content: Element<'_, Message> = match preview(app) {
-        Some(preview) => {
-            row![super::content::view(app), rule::vertical(1).style(move |_| theme::line(t)), preview].into()
-        }
+        Some(preview) => row![super::content::view(app), vertical_separator(t), preview].into(),
         None => super::content::view(app),
     };
-    let mut pane = column![content].width(Fill).height(Fill);
+    let mut listing = column![content].width(Fill).height(Fill);
     if let Some(footer) = footer(app, chooser) {
-        pane = pane.push(divider(t)).push(footer);
+        listing = listing.push(divider(t)).push(footer);
     }
     let corners = theme::window_corners(Side::BottomRight, app.corner());
-    let body = row![
-        super::sidebar::view(app),
-        rule::vertical(1).style(move |_| theme::line(t)),
-        container(pane).width(Fill).height(Fill).style(move |_| theme::rounded(t.view_bg(), corners)),
-    ]
-    .height(Fill);
+    let body = row![super::sidebar::view(app), vertical_separator(t), pane(t.view_bg(), corners, listing)].height(Fill);
     let mut window = column![header(app, chooser), divider(t), toolbar(app, chooser), divider(t)];
     if let Some(name) = name_row(app, chooser) {
         window = window.push(name).push(divider(t));
     }
-    Some(
-        container(window.push(body))
-            .width(Fill)
-            .height(Fill)
-            .style(move |_| theme::rounded(t.win_bg(), app.corner()))
-            .into(),
-    )
+    Some(pane(t.win_bg(), app.corner(), window.push(body)).into())
 }

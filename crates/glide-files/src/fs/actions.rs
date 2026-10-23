@@ -773,7 +773,7 @@ fn spawn(command: &[OsString], cwd: &Path) -> io::Result<()> {
         command.split_first().ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "empty command"))?;
     let mut child = Command::new(program)
         .args(args)
-        .envs(glide_ipc::client::activation_env(None))
+        .envs(glide_sdk::system::launch_env())
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

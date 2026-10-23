@@ -865,7 +865,7 @@ fn file_name(path: &Path) -> String {
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         let look = config::load();
-        glide_theme::motion::set_scale(look.motion_scale);
+        glide_sdk::theme::motion::set_scale(look.motion_scale);
         let lang = look.language.unwrap_or_else(Lang::from_env);
         let trash = Trash::user();
         let prefs = config::load_prefs();
@@ -3900,7 +3900,7 @@ impl App {
 
     fn apply_look(&mut self, look: &Look) {
         let look = &self.with_shell(look.clone());
-        glide_theme::motion::set_scale(look.motion_scale);
+        glide_sdk::theme::motion::set_scale(look.motion_scale);
         self.theme = ThemeState::new(look.appearance_at(minute_now()), look.accent);
         if look.font_family != self.look.font_family {
             crate::theme::use_ui_family(look.font_family.as_deref());

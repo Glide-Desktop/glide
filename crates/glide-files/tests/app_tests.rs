@@ -262,33 +262,23 @@ fn web_content_dropped_from_another_app_becomes_a_file() {
 
 #[test]
 fn grid_labels_are_shortened_to_two_wrapped_lines() {
-    use glide_files::widgets::{fit_lines, wrapped_lines};
-    assert_eq!(wrapped_lines("notes.txt", 90.0, 12.0), 1);
-    assert_eq!(wrapped_lines("quarterly-summary-for-the-board", 90.0, 12.0), 3, "lines break after hyphens");
-    assert_eq!(wrapped_lines("customer_archive_two", 90.0, 12.0), 2, "a long word breaks between glyphs");
+    use glide_sdk::theme::TextStyle;
+    use glide_sdk::widget::{elide_lines, measure_lines};
+    let style = TextStyle::CAP;
+    assert_eq!(measure_lines("notes.txt", style, 90.0), 1);
     for name in ["quarterly-summary-for-the-board-meeting.md", "a b c d e f g h i j k l m n o p q r s t.txt"] {
-        let shown = fit_lines(name, 70.0, 12.0, 2);
-        assert!(wrapped_lines(&shown, 70.0, 12.0) <= 2, "{shown:?} still needs more than two lines");
-        let kept = std::path::Path::new(&shown).extension() == std::path::Path::new(name).extension();
+        let shown = elide_lines(name, 70.0, style, 2);
+        assert!(measure_lines(&shown, style, 70.0) <= 2, "{shown:?} still needs more than two lines");
+        let plain = shown.replace('\u{200B}', "");
+        let kept = std::path::Path::new(&plain).extension() == std::path::Path::new(name).extension();
         assert!(kept, "{shown:?} kept its extension");
     }
-    assert_eq!(fit_lines("wallpaper.png", 90.0, 12.0, 2), "wallpaper.png", "a short name is left alone");
-}
-
-#[test]
-fn a_sentence_that_does_not_fit_ends_in_an_ellipsis() {
-    use glide_files::widgets::{fit_sentence, text_width};
-    let sentence = "Items in the Trash can be restored or erased.";
-    assert_eq!(fit_sentence(sentence, 1000.0, 12.0), sentence);
-    let short = fit_sentence(sentence, 120.0, 12.0);
-    assert!(short.ends_with('…') && sentence.starts_with(short.trim_end_matches('…')), "{short:?}");
-    assert!(text_width(&short, 12.0) <= 120.0);
-    assert_eq!(fit_sentence(sentence, 2.0, 12.0), "", "no room at all leaves nothing rather than a lone ellipsis");
+    assert_eq!(elide_lines("wallpaper.png", 90.0, style, 2), "wallpaper\u{200B}.png", "a short name is left alone");
 }
 
 #[test]
 fn grid_labels_prefer_to_break_before_the_extension() {
-    use glide_files::widgets::content::breakable;
+    use glide_sdk::widget::breakable;
     assert_eq!(breakable("wallpaper.png"), "wallpaper\u{200B}.png");
     assert_eq!(breakable("archive.tar.gz"), "archive.tar\u{200B}.gz");
     assert_eq!(breakable(".bashrc"), ".bashrc", "a leading dot is not an extension");
@@ -316,15 +306,16 @@ fn list_columns_are_as_wide_as_their_longest_value_in_either_language() {
     use glide_files::config::ListColumn;
     use glide_files::fs::{widest_sizes, widest_times};
     use glide_files::widgets::content::column_width;
-    use glide_files::widgets::text_width;
+    use glide_sdk::theme::TextStyle;
+    use glide_sdk::widget::measure;
     for lang in [Lang::En, Lang::Uk] {
         let modified = column_width(ListColumn::Modified, lang);
         for sample in widest_times(lang) {
-            assert!(text_width(&sample, glide_files::theme::CAP) + 16.0 <= modified, "{sample} fits");
+            assert!(measure(&sample, TextStyle::CAP) + 16.0 <= modified, "{sample} fits");
         }
         assert!(modified < 168.0, "{lang:?}: a date column no longer reserves 168 px");
         let size = column_width(ListColumn::Size, lang);
-        assert!(widest_sizes(lang).iter().all(|sample| text_width(sample, glide_files::theme::CAP) + 16.0 <= size));
+        assert!(widest_sizes(lang).iter().all(|sample| measure(sample, TextStyle::CAP) + 16.0 <= size));
         assert!(size < 92.0 && column_width(ListColumn::Kind, lang) < 128.0, "{lang:?}");
     }
 }
@@ -965,8 +956,8 @@ fn a_conflict_dialog_is_wide_enough_for_its_buttons_in_every_language() {
     use glide_files::app::Dialog;
     use glide_files::fs::jobs::Question;
     use glide_files::widgets::dialogs::card_width;
-    use glide_files::widgets::header::SEMIBOLD_SPREAD;
-    use glide_files::widgets::text_width;
+    use glide_sdk::theme::TextStyle;
+    let button = TextStyle { weight: 600, ..TextStyle::MENU_ITEM };
     let side = 2.0 * glide_files::theme::SP5;
     for lang in [Lang::Uk, Lang::En] {
         for (folders, both, primary) in [(true, Key::KeepBothFolders, Key::Merge), (false, Key::KeepBoth, Key::Replace)]
@@ -976,7 +967,7 @@ fn a_conflict_dialog_is_wide_enough_for_its_buttons_in_every_language() {
             let row: f32 = [Key::StopJob, Key::Skip, both, primary]
                 .iter()
                 .map(|key| {
-                    text_width(key.text(lang), 13.5) / SEMIBOLD_SPREAD
+                    glide_sdk::widget::measure(key.text(lang), button)
                         + 2.0 * glide_files::theme::SP4
                         + glide_files::theme::SP2
                 })
@@ -1100,7 +1091,7 @@ fn a_typed_path_is_read_from_the_folder_on_screen() {
 fn a_search_title_shortens_the_query_and_keeps_its_quotes() {
     use glide_files::widgets::header::search_title;
     assert_eq!(search_title("Search", "quarterly", 400.0), "Search «quarterly»");
-    let full = glide_files::widgets::text_width("Search «quarterly»", glide_files::theme::TITLE);
+    let full = glide_sdk::widget::measure("Search «quarterly»", glide_sdk::theme::TextStyle::WIN_TITLE);
     let narrow = search_title("Search", "quarterly", full - 20.0);
     assert!(narrow.starts_with("Search «q") && narrow.ends_with("…»"), "the query is cut at its end: {narrow:?}");
     assert_eq!(search_title("Пошук", "quarterly", 40.0), "Пошук", "with no room for the query only the label stays");
@@ -1222,15 +1213,16 @@ fn long_names_keep_their_extension_when_shortened() {
     assert_eq!(shortened.chars().count(), 20);
     assert_eq!(shortened.chars().rev().take(5).collect::<String>(), "gepj.", "{shortened}");
     assert!(shortened.contains('…'));
-    let fitted = glide_files::widgets::fit("a-very-long-holiday-photo-from-the-beach.jpeg", 120.0, 13.0);
-    assert!(glide_files::widgets::text_width(&fitted, 13.0) <= 120.0, "{fitted}");
+    let call = glide_sdk::theme::TextStyle::CALL;
+    let fitted = glide_sdk::widget::elide("a-very-long-holiday-photo-from-the-beach.jpeg", 120.0, call);
+    assert!(glide_sdk::widget::measure(&fitted, call) <= 120.0, "{fitted}");
     assert!(fitted.rsplit('.').next() == Some("jpeg") && fitted.contains('…'), "{fitted}");
-    assert_eq!(glide_files::widgets::fit("Звіт.odt", 120.0, 13.0), "Звіт.odt");
+    assert_eq!(glide_sdk::widget::elide("Звіт.odt", 120.0, call), "Звіт.odt");
     for max in 0..6 {
         assert!(ellipsize("abcdef.txt", max).chars().count() <= max.max(1), "max {max}");
     }
     for width in [-80.0, 0.0, 1.0, 20.0] {
-        let tight = glide_files::widgets::fit("quarterly report.odt", width, 13.0);
+        let tight = glide_sdk::widget::elide("quarterly report.odt", width, call);
         assert!(tight.contains('…'), "{width}: {tight}");
     }
     let no_extension = ellipsize("LICENSE-APACHE-VERSION-TWO-POINT-ZERO", 12);

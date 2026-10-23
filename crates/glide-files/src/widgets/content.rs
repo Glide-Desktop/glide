@@ -1,11 +1,13 @@
 use std::time::SystemTime;
 
-use iced::widget::{
-    Column, Row, button, column, container, float, mouse_area, row, scrollable, sensor, space, stack, text, text_input,
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{
+    Wrapping, corner_badge, dot, elide, elide_lines, item_ink, item_tile, measure, table_row, text,
 };
-use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
+use iced::widget::{Column, Row, column, container, mouse_area, row, sensor, text_input};
+use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
-use super::{divider, file_icon, fit, icon, text_width};
+use super::{divider, file_icon, paint};
 use crate::app::{App, FILES_ID, Hover, MenuKind, Message, RENAME_ID, ViewMode};
 use crate::config::ListColumn;
 use crate::fs::tags;
@@ -14,10 +16,7 @@ use crate::fs::{
 };
 use crate::i18n::{Key, Lang};
 use crate::icons::Icon;
-use crate::theme::{self, R1};
-
-const HOVER_LIFT: f32 = 4.0;
-const HOVER_GROWTH: f32 = 0.06;
+use crate::theme;
 
 pub const GRID_PADDING: f32 = theme::SP4;
 pub const TILE_GAP: f32 = theme::SP3;
@@ -27,7 +26,6 @@ const NAME_MIN: f32 = 64.0;
 const NAME_ROOM: f32 = 200.0;
 const DOT: f32 = theme::SP2;
 const DOT_GAP: f32 = 2.0;
-pub const FIT_SLACK: f32 = 0.96;
 const LABEL_LINES: usize = 2;
 const LINK_MARK: f32 = 11.0;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
@@ -143,16 +141,16 @@ const SORT_ARROW: f32 = 11.0 + theme::SP1;
 
 #[must_use]
 pub fn column_width(column: ListColumn, lang: Lang) -> f32 {
-    let widest = |samples: &[String]| samples.iter().map(|sample| text_width(sample, theme::CAP)).fold(0.0, f32::max);
+    let widest = |samples: &[String]| samples.iter().map(|sample| measure(sample, TextStyle::CAP)).fold(0.0, f32::max);
     let values = match column {
         ListColumn::Size => widest(&widest_sizes(lang)),
         ListColumn::Modified | ListColumn::Created => widest(&widest_times(lang)),
         ListColumn::Kind => widest(&FileCategory::ALL.map(|category| category.name(lang).to_string())),
-        ListColumn::Permissions => text_width(&permissions_string(0o40777), theme::CAP),
+        ListColumn::Permissions => measure(&permissions_string(0o40777), TextStyle::CAP),
         ListColumn::Tags => return TAGS_WIDTH,
     };
-    let label = text_width(&column_label(column, lang).to_uppercase(), theme::MICRO) + SORT_ARROW;
-    (values.max(label) / FIT_SLACK + 2.0 * theme::SP2 + 1.0).ceil()
+    let label = measure(&column_label(column, lang).to_uppercase(), TextStyle::MICRO) + SORT_ARROW;
+    (values.max(label) + 2.0 * theme::SP2 + 1.0).ceil()
 }
 
 #[must_use]
@@ -176,14 +174,8 @@ pub fn tag_color(color: tags::Color) -> Color {
 
 fn dots<'a>(entry: &FileEntry) -> Option<Element<'a, Message>> {
     let colors = tags::colors(&entry.tags);
-    (!colors.is_empty()).then(|| {
-        Row::with_children(colors.into_iter().map(|color| {
-            let fill = tag_color(color);
-            container(space().width(DOT).height(DOT)).style(move |_| theme::rounded(fill, theme::R_ROUND)).into()
-        }))
-        .spacing(DOT_GAP)
-        .into()
-    })
+    (!colors.is_empty())
+        .then(|| Row::with_children(colors.into_iter().map(|color| dot(tag_color(color), DOT))).spacing(DOT_GAP).into())
 }
 
 #[must_use]
@@ -220,13 +212,11 @@ fn empty_state(app: &App) -> Element<'_, Message> {
 }
 
 fn files<'a>(app: &'a App, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let paint = super::paint(&app.theme);
-    scrollable(content)
+    glide_sdk::widget::scrollable(&paint(&app.theme), content)
         .id(FILES_ID)
         .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
         .width(Fill)
         .height(Fill)
-        .style(move |_, status| glide_sdk::widget::scrollable_style(&paint, status))
         .into()
 }
 
@@ -243,7 +233,7 @@ fn spacer<'a>(height: f32) -> Element<'a, Message> {
     iced::widget::space().width(Fill).height(height).into()
 }
 
-fn rename_field(app: &App, style: glide_theme::TextStyle) -> Option<Element<'_, Message>> {
+fn rename_field(app: &App, style: TextStyle) -> Option<Element<'_, Message>> {
     let renaming = app.renaming.as_ref()?;
     let input =
         text_input("", &renaming.text).id(RENAME_ID).on_input(Message::RenameInput).on_submit(Message::RenameSubmit);
@@ -268,73 +258,37 @@ fn grid(app: &App) -> Element<'_, Message> {
 }
 
 fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a, Message> {
-    let t = &app.theme;
+    let paint = paint(&app.theme);
     let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
     let key = Hover::Entry(entry.path.clone());
-    let hover = app.hover(&key);
-    let raised = app.lift(&key);
-    let lift = raised * HOVER_LIFT;
-    let art = float(file_icon(app, entry, metrics.icon))
-        .scale(1.0 + raised * HOVER_GROWTH)
-        .translate(move |_, _| Vector::new(0.0, -lift));
-    let art: Element<'a, Message> = art.into();
-    let art: Element<'a, Message> = if entry.is_symlink {
-        stack![
-            art,
-            container(
-                container(icon(Icon::Link, 10.0, t.fg_1()))
-                    .padding(2)
-                    .style(move |_| theme::rounded(t.popover_bg(), R1)),
-            )
-            .align_bottom(Fill)
-            .align_left(Fill),
-        ]
-        .into()
-    } else {
-        art
-    };
-    let plate =
-        container(art).center(Length::Fixed(metrics.plate)).style(move |_| theme::tile_plate(t, selected, hover));
+    let badge = entry.is_symlink.then(|| corner_badge(&paint, Icon::Link, 10.0));
     let tile_w = metrics.tile_w;
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
-    let label: Element<'a, Message> =
-        if let Some(field) = rename_field(app, glide_theme::TextStyle::CAP).filter(|_| editing) {
-            container(field).width(Length::Fixed(tile_w)).into()
-        } else {
-            let dotted = tags::colors(&entry.tags).len() as f32;
-            let marks = if dotted > 0.0 { dotted * DOT + (dotted - 1.0) * DOT_GAP + theme::SP1 } else { 0.0 };
-            let room = (tile_w - 2.0 * theme::SP1 - marks) * FIT_SLACK;
-            let name = text(breakable(&super::fit_lines(&entry.name, room, theme::CAP, LABEL_LINES)))
-                .size(theme::CAP)
-                .wrapping(text::Wrapping::WordOrGlyph)
-                .align_x(Alignment::Center)
-                .color(if selected { t.acc_soft_fg() } else { t.fg_1() });
-            let mut line = row![].spacing(theme::SP1).align_y(Alignment::Center);
-            if let Some(dots) = dots(entry) {
-                line = line.push(dots);
-            }
-            container(line.push(name))
-                .padding(Padding::from([1.0, theme::SP1]))
-                .max_width(tile_w)
-                .style(move |_| if selected { theme::rounded(t.acc_soft(), R1) } else { container::Style::default() })
-                .into()
-        };
-    let body = container(column![plate, label].spacing(theme::SP1).align_x(Alignment::Center))
-        .center_x(Fill)
-        .height(Fill)
-        .clip(true);
-    mouse_area(
-        button(body)
-            .width(Length::Fixed(tile_w))
-            .height(Length::Fixed(metrics.tile_h))
-            .padding(0)
-            .style(move |_, _| theme::plain(t.fg_1())),
-    )
-    .on_press(Message::Pressed(entry.path.clone()))
-    .on_right_press(Message::Secondary(entry.path.clone()))
-    .on_enter(Message::Hover(key.clone(), true))
-    .on_exit(Message::Hover(key, false))
-    .into()
+    let label: Element<'a, Message> = if let Some(field) = rename_field(app, TextStyle::CAP).filter(|_| editing) {
+        container(field).width(Length::Fixed(tile_w)).into()
+    } else {
+        let dotted = tags::colors(&entry.tags).len() as f32;
+        let marks = if dotted > 0.0 { dotted * DOT + (dotted - 1.0) * DOT_GAP + theme::SP1 } else { 0.0 };
+        let room = tile_w - 2.0 * theme::SP1 - marks;
+        let name = text(elide_lines(&entry.name, room, TextStyle::CAP, LABEL_LINES), TextStyle::CAP)
+            .wrapping(Wrapping::WordOrGlyph)
+            .align_x(Alignment::Center)
+            .color(item_ink(&paint, selected, false));
+        let mut line = row![].spacing(theme::SP1).align_y(Alignment::Center);
+        if let Some(dots) = dots(entry) {
+            line = line.push(dots);
+        }
+        line.push(name).into()
+    };
+    let art = file_icon(app, entry, metrics.icon);
+    let state = (app.hover(&key), app.lift(&key));
+    let tile = item_tile(&paint, art, badge, label, metrics.plate, (tile_w, metrics.tile_h), selected, state);
+    mouse_area(tile)
+        .on_press(Message::Pressed(entry.path.clone()))
+        .on_right_press(Message::Secondary(entry.path.clone()))
+        .on_enter(Message::Hover(key.clone(), true))
+        .on_exit(Message::Hover(key, false))
+        .into()
 }
 
 fn list(app: &App) -> Element<'_, Message> {
@@ -413,33 +367,32 @@ fn list_row<'a>(
     app: &'a App, entry: &'a FileEntry, stripe: bool, now: SystemTime, metrics: &Metrics, room: f32,
     columns: &[(ListColumn, f32)],
 ) -> Element<'a, Message> {
-    let t = &app.theme;
+    let paint = paint(&app.theme);
     let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
     let key = Hover::Entry(entry.path.clone());
     let hover = app.hover(&key);
-    let secondary = if selected { t.acc_soft_fg() } else { t.fg_2() };
+    let secondary = item_ink(&paint, selected, true);
     let cell = move |value: String, width: f32| {
-        container(text(value).size(theme::CAP).color(secondary).wrapping(text::Wrapping::None))
+        container(text(value, TextStyle::CAP).color(secondary).wrapping(Wrapping::None))
             .padding(Padding::from([0.0, theme::SP2]))
             .width(Length::Fixed(width))
             .clip(true)
     };
 
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
-    let title: Element<'a, Message> =
-        if let Some(field) = rename_field(app, glide_theme::TextStyle::CALL).filter(|_| editing) {
-            field
-        } else {
-            let room = room - marks_width(entry);
-            let shown = fit(&entry.name, room * FIT_SLACK, theme::CALL);
-            container(text(shown).size(theme::CALL).wrapping(text::Wrapping::None)).max_width(room).clip(true).into()
-        };
+    let title: Element<'a, Message> = if let Some(field) = rename_field(app, TextStyle::CALL).filter(|_| editing) {
+        field
+    } else {
+        let room = room - marks_width(entry);
+        let shown = elide(&entry.name, room, TextStyle::CALL);
+        container(text(shown, TextStyle::CALL).wrapping(Wrapping::None)).max_width(room).clip(true).into()
+    };
     let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(theme::SP2).align_y(Alignment::Center);
     if let Some(dots) = dots(entry) {
         name = name.push(dots);
     }
     if entry.is_symlink {
-        name = name.push(icon(Icon::Link, LINK_MARK, secondary));
+        name = name.push(super::icon(Icon::Link, LINK_MARK, secondary));
     }
 
     let mut cells = row![container(name).width(Fill).clip(true)].align_y(Alignment::Center);
@@ -448,21 +401,15 @@ fn list_row<'a>(
     }
     if app.is_searching() {
         let room = LOCATION_WIDTH - 2.0 * theme::SP2;
-        cells = cells.push(cell(fit(&location(app, entry), room, theme::CAP), LOCATION_WIDTH));
+        cells = cells.push(cell(elide(&location(app, entry), room, TextStyle::CAP), LOCATION_WIDTH));
     }
 
-    mouse_area(
-        button(container(cells).height(Fill).align_y(Alignment::Center))
-            .width(Fill)
-            .height(Length::Fixed(metrics.row))
-            .padding(Padding::from([0.0, theme::SP2]))
-            .style(move |_, status| theme::list_row(t, selected, stripe, hover, status)),
-    )
-    .on_press(Message::Pressed(entry.path.clone()))
-    .on_right_press(Message::Secondary(entry.path.clone()))
-    .on_enter(Message::Hover(key.clone(), true))
-    .on_exit(Message::Hover(key, false))
-    .into()
+    mouse_area(table_row(&paint, cells, selected, stripe, hover, metrics.row))
+        .on_press(Message::Pressed(entry.path.clone()))
+        .on_right_press(Message::Secondary(entry.path.clone()))
+        .on_enter(Message::Hover(key.clone(), true))
+        .on_exit(Message::Hover(key, false))
+        .into()
 }
 
 fn location(app: &App, entry: &FileEntry) -> String {
@@ -482,14 +429,6 @@ fn location(app: &App, entry: &FileEntry) -> String {
         })
         .collect();
     names.join("/")
-}
-
-#[must_use]
-pub fn breakable(name: &str) -> String {
-    match name.rfind('.').filter(|&dot| dot > 0) {
-        Some(dot) => format!("{}\u{200B}{}", &name[..dot], &name[dot..]),
-        None => name.to_string(),
-    }
 }
 
 fn name_width(app: &App, metrics: &Metrics) -> f32 {

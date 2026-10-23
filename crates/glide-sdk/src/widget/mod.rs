@@ -7,6 +7,7 @@ mod find;
 mod focus;
 mod form;
 mod inputs;
+mod items;
 mod layout;
 mod media;
 pub mod mock;
@@ -52,10 +53,12 @@ pub use inputs::{
     Validity, bare_text_area_style, field, hinted_search_input, inline_field, inline_style, input_style,
     password_field, search_field, search_input, stepper, text_area_style, text_field, validated_field,
 };
+pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
 pub use layout::{
     Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW, action_card,
     action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card, section,
-    select_row, sidebar, sidebar_item, status_bar, status_button, surface, switch_row, table_header, tree_row, well,
+    select_row, sidebar, sidebar_item, status_bar, status_button, status_strip, surface, switch_row, table_header,
+    tree_row, well,
 };
 pub use media::{
     Art, art, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider, slider_readout,
@@ -70,13 +73,12 @@ pub use selection::{
 };
 pub use strip::{Mark, TAB_GAP, TAB_PAD, Tab, TabStrip, tab_slot, tab_strip};
 
-type Measured = (String, u32, u16, u32, u64);
+type Measured = (String, u32, u16, u32, u64, u32);
 
-#[must_use]
-pub fn measure(content: &str, style: TextStyle) -> f32 {
+fn shape(content: &str, style: TextStyle, wrap: Option<f32>) -> (f32, usize) {
     use iced::advanced::graphics::text::{self as graphics, cosmic_text};
     thread_local! {
-        static CACHE: RefCell<HashMap<Measured, f32>> = RefCell::new(HashMap::new());
+        static CACHE: RefCell<HashMap<Measured, (f32, usize)>> = RefCell::new(HashMap::new());
     }
     let key = (
         content.to_string(),
@@ -84,27 +86,67 @@ pub fn measure(content: &str, style: TextStyle) -> f32 {
         style.weight,
         style.tracking_em.to_bits(),
         glide_iced::font::revision(),
+        wrap.map_or(u32::MAX, f32::to_bits),
     );
-    if let Some(width) = CACHE.with_borrow(|cache| cache.get(&key).copied()) {
-        return width;
+    if let Some(shaped) = CACHE.with_borrow(|cache| cache.get(&key).copied()) {
+        return shaped;
     }
     let mut system = graphics::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut buffer =
         cosmic_text::Buffer::new(system.raw(), cosmic_text::Metrics::new(style.size_px, style.line_height_px));
-    buffer.set_size(system.raw(), None, None);
+    buffer.set_size(system.raw(), wrap, None);
+    buffer.set_wrap(system.raw(), cosmic_text::Wrap::WordOrGlyph);
     let attributes = graphics::to_attributes(iced::Font::DEFAULT)
         .weight(cosmic_text::Weight(style.weight))
         .letter_spacing(style.tracking_em);
     buffer.set_text(system.raw(), content, &attributes, cosmic_text::Shaping::Advanced, None);
     buffer.shape_until_scroll(system.raw(), false);
-    let width = graphics::measure(&buffer).0.width.ceil();
+    let shaped = (graphics::measure(&buffer).0.width.ceil(), buffer.layout_runs().count().max(1));
     CACHE.with_borrow_mut(|cache| {
-        if cache.len() > 512 {
+        if cache.len() > 1024 {
             cache.clear();
         }
-        cache.insert(key, width);
+        cache.insert(key, shaped);
     });
-    width
+    shaped
+}
+
+#[must_use]
+pub fn measure(content: &str, style: TextStyle) -> f32 {
+    shape(content, style, None).0
+}
+
+#[must_use]
+pub fn measure_lines(content: &str, style: TextStyle, width: f32) -> usize {
+    shape(content, style, Some(width.max(1.0))).1
+}
+
+#[must_use]
+pub fn breakable(name: &str) -> String {
+    match name.rfind('.').filter(|&dot| dot > 0) {
+        Some(dot) => format!("{}\u{200B}{}", &name[..dot], &name[dot..]),
+        None => name.to_string(),
+    }
+}
+
+#[must_use]
+pub fn elide_lines(name: &str, width: f32, style: TextStyle, lines: usize) -> String {
+    let fits = |text: &str| measure_lines(&breakable(text), style, width) <= lines;
+    let shown = if fits(name) {
+        name.to_string()
+    } else {
+        let (mut low, mut high) = (ELIDE_FLOOR, name.chars().count());
+        while high - low > 1 {
+            let middle = low.midpoint(high);
+            if fits(&ellipsize(name, middle)) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        ellipsize(name, low)
+    };
+    breakable(&shown)
 }
 
 const ELIDE_FLOOR: usize = 6;

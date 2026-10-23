@@ -3,15 +3,15 @@ use std::time::SystemTime;
 
 use glide_sdk::Tone;
 use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
+use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{
-    Size, Validity, facts, scrollable, select_row, separator, sized_toggle_button, validated_field, well,
+    Art as Picture, Size, Validity, Wrapping, art, elide, elide_lines, empty_note, facts, measure, scrollable,
+    select_row, separator, sized_toggle_button, text, validated_field, well,
 };
-use iced::widget::{Column, column, container, image, row, svg, text, text_input};
-use iced::{Alignment, Element, Fill, Length};
+use iced::widget::{Column, column, row, text_input};
+use iced::{Alignment, Element};
 
-use super::content::{FIT_SLACK, breakable};
-use super::header::SEMIBOLD_SPREAD;
-use super::{file_icon, fit_lines, text_width};
+use super::file_icon;
 use crate::app::{App, Dialog, MODAL_ID, Message, Modal, Properties};
 use crate::fs::jobs::{Choice, Question};
 use crate::fs::{Target, format_bytes, format_time, home_dir, permissions_string};
@@ -23,10 +23,12 @@ use crate::theme;
 const WIDTH: f32 = 400.0;
 const WIDE: f32 = 520.0;
 const LABEL_WIDTH: f32 = 112.0;
-const BUTTON_TEXT: f32 = 13.5;
 const ICON: f32 = 56.0;
 const NAME_LINES: usize = 3;
-const WRAP: text::Wrapping = text::Wrapping::WordOrGlyph;
+const WRAP: Wrapping = Wrapping::WordOrGlyph;
+const BUTTON: TextStyle = TextStyle { weight: 600, ..TextStyle::MENU_ITEM };
+const EMPHASIS: TextStyle = TextStyle { weight: 600, ..TextStyle::CALL };
+const NAME: TextStyle = TextStyle { weight: 600, ..TextStyle::T3 };
 
 type Choices<'a> = Vec<(&'a str, Tone, Option<Message>)>;
 
@@ -92,10 +94,9 @@ pub fn card_width(dialog: &Dialog, lang: Lang) -> f32 {
         Dialog::OpenWith { .. } => WIDE,
         Dialog::Conflict { question, .. } => {
             let labels = std::iter::once(Key::StopJob).chain(choices(question.folders).map(|(key, _)| key));
-            let row: f32 = labels
-                .map(|key| text_width(key.text(lang), BUTTON_TEXT) / SEMIBOLD_SPREAD + 2.0 * theme::SP4 + theme::SP2)
-                .sum::<f32>()
-                + 8.0 * theme::RING;
+            let row: f32 =
+                labels.map(|key| measure(key.text(lang), BUTTON) + 2.0 * theme::SP4 + theme::SP2).sum::<f32>()
+                    + 8.0 * theme::RING;
             WIDE.max(row + theme::SP4 + 2.0 * theme::SP5)
         }
         _ => WIDTH,
@@ -104,8 +105,8 @@ pub fn card_width(dialog: &Dialog, lang: Lang) -> f32 {
 
 #[must_use]
 pub fn shown_name(name: &str) -> String {
-    let room = (WIDTH - 2.0 * theme::SP5 - ICON - theme::SP4) * SEMIBOLD_SPREAD * FIT_SLACK;
-    breakable(&fit_lines(name, room, theme::T3, NAME_LINES))
+    let room = WIDTH - 2.0 * theme::SP5 - ICON - theme::SP4;
+    elide_lines(name, room, NAME, NAME_LINES)
 }
 
 #[must_use]
@@ -122,11 +123,11 @@ fn cancel(app: &App) -> (&str, Tone, Option<Message>) {
 }
 
 fn prompt<'a>(paint: &glide_sdk::Paint, label: &'a str) -> Element<'a, Message> {
-    text(label).size(theme::CAP).color(paint.fg_2()).into()
+    text(label, TextStyle::CAP).color(paint.fg_2()).into()
 }
 
 fn emphasis(label: String) -> Element<'static, Message> {
-    text(label).size(theme::CALL).font(theme::SEMIBOLD).wrapping(WRAP).into()
+    text(label, EMPHASIS).wrapping(WRAP).into()
 }
 
 fn field<'a>(paint: &glide_sdk::Paint, modal: &'a Modal, placeholder: &str, secure: bool) -> Element<'a, Message> {
@@ -145,7 +146,7 @@ fn input<'a>(
     let valid = label == Key::TagsPrompt || !modal.input.trim().is_empty();
     let mut body = column![prompt(paint, label.text(lang)), field(paint, modal, "", false)].spacing(theme::SP2);
     if let Some(error) = &modal.error {
-        body = body.push(text(error).size(theme::CAP).color(paint.danger()).wrapping(WRAP));
+        body = body.push(text(error, TextStyle::CAP).color(paint.danger()).wrapping(WRAP));
     }
     Parts {
         title: heading.text(lang).to_string(),
@@ -174,8 +175,8 @@ fn app_icon<'a>(app: &App, name: Option<&str>, size: f32, paint: &glide_sdk::Pai
         && let Some(art) = app.icons.lookup(&[name.to_string(), "application-x-executable".to_string()])
     {
         return match art {
-            Art::Vector(handle) => svg(handle).width(size).height(size).into(),
-            Art::Raster(handle) => image(handle).width(size).height(size).into(),
+            Art::Vector(handle) => self::art(Picture::Vector(handle), size, 1.0),
+            Art::Raster(handle) => self::art(Picture::Raster(handle), size, 1.0),
         };
     }
     super::icon(Icon::FileBinary, size, paint.fg_2())
@@ -194,18 +195,14 @@ fn open_with<'a>(
         .chain(others)
         .map(|entry| {
             let icon = app_icon(app, entry.icon.as_deref(), 22.0, paint);
-            let name = super::fit(&entry.name, 360.0, BUTTON_TEXT);
+            let name = elide(&entry.name, 360.0, TextStyle::CALL);
             select_row(paint, Some(icon), name, entry.id == chosen, Message::PickApp(entry.id.clone()))
         })
         .collect();
     let list: Element<'a, Message> = if rows.is_empty() {
-        container(text(Key::NoSearchResults.text(lang)).size(theme::CAP).color(paint.fg_3()))
-            .center_x(Fill)
-            .center_y(Fill)
-            .height(Length::Fixed(180.0))
-            .into()
+        empty_note(paint, Icon::Search, "", Key::NoSearchResults.text(lang))
     } else {
-        scrollable(paint, Column::with_children(rows).spacing(2.0)).height(Length::Fixed(200.0)).into()
+        scrollable(paint, Column::with_children(rows).spacing(2.0)).height(200.0).into()
     };
     let mut body = column![emphasis(subject(app, &paths)), field(paint, modal, Key::SearchApps.text(lang), false)]
         .spacing(theme::SP2)
@@ -241,7 +238,7 @@ fn confirm<'a>(
     if let Some(subject) = subject {
         body = body.push(emphasis(subject));
     }
-    let body = body.push(text(question.text(app.lang)).size(theme::CALL).color(paint.fg_2()));
+    let body = body.push(text(question.text(app.lang), TextStyle::CALL).color(paint.fg_2()));
     Parts {
         title: heading.text(app.lang).to_string(),
         body: body.into(),
@@ -263,8 +260,8 @@ fn conflict<'a>(
     Parts {
         title: heading,
         body: column![
-            text(hint.text(lang)).size(theme::CALL).color(paint.fg_2()),
-            text(tilde(&question.dest)).size(theme::CAP).color(paint.fg_3()).wrapping(WRAP),
+            text(hint.text(lang), TextStyle::CALL).color(paint.fg_2()),
+            text(tilde(&question.dest), TextStyle::CAP).color(paint.fg_3()).wrapping(WRAP),
             super::check(&app.theme, Key::ApplyToAll.text(lang), for_all, Message::ToggleForAll),
         ]
         .spacing(theme::SP3)
@@ -291,10 +288,10 @@ fn details<'a>(app: &'a App, paint: &glide_sdk::Paint, properties: &'a Propertie
     let lang = app.lang;
     let entry = &properties.entry;
     let now = SystemTime::now();
-    let name = text(shown_name(&entry.name)).size(theme::T3).font(theme::SEMIBOLD).wrapping(WRAP);
+    let name = text(shown_name(&entry.name), NAME).wrapping(WRAP);
     let heading = row![
         file_icon(app, entry, ICON),
-        column![name, text(entry.category.name(lang)).size(theme::CAP).color(paint.fg_3())].spacing(2),
+        column![name, text(entry.category.name(lang), TextStyle::CAP).color(paint.fg_3())].spacing(2),
     ]
     .spacing(theme::SP4)
     .align_y(Alignment::Center);
@@ -332,7 +329,7 @@ fn details<'a>(app: &'a App, paint: &glide_sdk::Paint, properties: &'a Propertie
         column![heading, separator(paint), facts(paint, rows, LABEL_WIDTH), permissions(app, paint, properties)]
             .spacing(theme::SP4);
     if let Some(error) = &properties.error {
-        body = body.push(text(error).size(theme::CAP).color(paint.danger()).wrapping(WRAP));
+        body = body.push(text(error, TextStyle::CAP).color(paint.danger()).wrapping(WRAP));
     }
     Parts {
         title: String::new(),
@@ -354,7 +351,7 @@ fn permissions<'a>(app: &'a App, paint: &glide_sdk::Paint, properties: &'a Prope
             sized_toggle_button(paint, label, on, Size::Small, Some(move |_| Message::Permission(bit)))
         });
         row![
-            text(key.text(app.lang)).size(theme::CAP).color(paint.fg_2()).align_x(Alignment::End).width(LABEL_WIDTH),
+            text(key.text(app.lang), TextStyle::CAP).color(paint.fg_2()).align_x(Alignment::End).width(LABEL_WIDTH),
             iced::widget::Row::with_children(bits).spacing(theme::SP1),
         ]
         .spacing(theme::SP3)

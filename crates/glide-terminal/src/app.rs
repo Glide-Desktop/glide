@@ -34,7 +34,6 @@ use crate::session::{self, Bus, Feed, Launch, Pane, PaneId};
 use crate::sound;
 use crate::terminal::{Action, Flash, Fonts, Look};
 
-pub const APP_ID: &str = "glide-terminal";
 pub const FIND_ID: &str = "find";
 static SEARCH_ID: AtomicU64 = AtomicU64::new(1);
 const BLINK: Duration = Duration::from_millis(530);
@@ -489,7 +488,7 @@ fn family(prefs: &Preferences) -> iced::Font {
 
 fn reveal_or_open(path: PathBuf) {
     let _ = std::thread::Builder::new().name("glide-terminal-reveal".into()).spawn(move || {
-        let token = glide_sdk::system::activation_token(APP_ID).unwrap_or_default();
+        let token = glide_sdk::system::launch_token().unwrap_or_default();
         if path.exists() && glide_app::integration::show_in_files(&path, &token).is_ok() {
             return;
         }
@@ -503,7 +502,7 @@ fn open_detached(program: &str, args: &[&str]) {
     let program = program.to_string();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
     let _ = std::thread::Builder::new().name("glide-terminal-open".into()).spawn(move || {
-        let env = glide_sdk::system::activation_env(APP_ID);
+        let env = glide_sdk::system::launch_env();
         if let Ok(mut child) = std::process::Command::new(program).args(args).envs(env).spawn() {
             let _ = child.wait();
         }

@@ -93,9 +93,24 @@ pub fn activation_token(app_id: &str) -> Option<String> {
 
 #[must_use]
 pub fn activation_env(app_id: &str) -> Vec<(&'static str, String)> {
-    activation_token(app_id)
-        .map(|token| vec![("XDG_ACTIVATION_TOKEN", token.clone()), ("DESKTOP_STARTUP_ID", token)])
-        .unwrap_or_default()
+    token_env(activation_token(app_id))
+}
+
+#[must_use]
+pub fn launch_token() -> Option<String> {
+    shell_call::<_, String>("ActivationToken", &())
+        .ok()
+        .filter(|token| !token.is_empty())
+        .or_else(|| glide_ipc::client::activation_token(None))
+}
+
+#[must_use]
+pub fn launch_env() -> Vec<(&'static str, String)> {
+    token_env(launch_token())
+}
+
+fn token_env(token: Option<String>) -> Vec<(&'static str, String)> {
+    token.map(|token| vec![("XDG_ACTIVATION_TOKEN", token.clone()), ("DESKTOP_STARTUP_ID", token)]).unwrap_or_default()
 }
 
 pub fn spawn_detached(mut command: std::process::Command, app_id: &str) -> std::io::Result<()> {

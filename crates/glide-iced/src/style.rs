@@ -88,6 +88,12 @@ pub fn to_iced(color: glide_theme::Color) -> Color {
     Color { r, g, b, a }
 }
 
+impl Default for Paint {
+    fn default() -> Self {
+        Self::new(Appearance::Dark, Accent::Blue)
+    }
+}
+
 impl Paint {
     #[must_use]
     pub fn new(appearance: Appearance, accent: Accent) -> Self {

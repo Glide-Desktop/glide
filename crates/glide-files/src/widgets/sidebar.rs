@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use iced::widget::{Column, column, container, mouse_area, scrollable, text};
-
+use glide_sdk::widget::pane;
+use iced::widget::{Column, column, container, mouse_area};
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 use super::header::maximize_button;
@@ -53,21 +53,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
             continue;
         }
         let active = bookmarks && app.bookmark_drop_active();
-        let color = if active { t.acc_soft_fg() } else { t.fg_3() };
-        let header =
-            container(text(title.text(lang).to_uppercase()).size(theme::MICRO).font(theme::SEMIBOLD).color(color))
-                .padding(Padding::from([2.0, theme::SP2]))
-                .width(Fill)
-                .style(
-                    move |_| if active { theme::rounded(t.acc_soft(), theme::R2) } else { container::Style::default() },
-                );
+        let header = glide_sdk::widget::section_title(t, title.text(lang), active);
         let header: Element<'_, Message> = if bookmarks {
             mouse_area(header)
                 .on_enter(Message::Hover(Hover::Bookmarks, true))
                 .on_exit(Message::Hover(Hover::Bookmarks, false))
                 .into()
         } else {
-            header.into()
+            header
         };
         sections = sections.push(column![header, Column::with_children(rows).spacing(ROW_GAP)].spacing(theme::SP1));
     }
@@ -82,29 +75,21 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .on_press(Message::WindowDrag)
     .on_double_click(Message::WindowMaximize);
 
-    let paint = super::paint(t);
-    let bar = move |_: &iced::Theme, status| glide_sdk::widget::scrollable_style(&paint, status);
-    let places = scrollable(sections).width(Fill).height(Fill).style(bar);
+    let places = glide_sdk::widget::scrollable(t, sections).width(Fill).height(Fill);
     if app.chooser.is_some() {
         let corners = theme::window_corners(theme::Side::BottomLeft, app.corner());
-        return container(places)
+        return pane(t.sidebar_bg(), corners, places)
             .padding(Padding::from([theme::SP2, 0.0]))
             .width(Length::Fixed(SIDEBAR_WIDTH))
-            .height(Fill)
-            .style(move |_| theme::rounded(t.sidebar_bg(), corners))
             .into();
     }
     let mut panel = column![top, places];
     if !app.jobs.is_empty() {
-        let jobs = scrollable(super::jobs(app)).style(bar);
+        let jobs = glide_sdk::widget::scrollable(t, super::jobs(app));
         panel = panel.push(super::divider(t)).push(container(jobs).max_height(JOBS_HEIGHT));
     }
     let corners = theme::window_corners(theme::Side::Left, app.corner());
-    container(panel)
-        .width(Length::Fixed(SIDEBAR_WIDTH))
-        .height(Fill)
-        .style(move |_| theme::rounded(t.sidebar_bg(), corners))
-        .into()
+    pane(t.sidebar_bg(), corners, panel).width(Length::Fixed(SIDEBAR_WIDTH)).into()
 }
 
 struct Line<'a> {
@@ -129,7 +114,8 @@ impl<'a> Line<'a> {
         let active = self.active;
         let mut room = SIDEBAR_WIDTH - 2.0 * theme::SP2 - 2.0 * theme::SP3 - GLYPH - theme::SP2 - 2.0;
         room -= if self.eject.is_some() { EJECT + theme::SP2 } else { 0.0 };
-        let style = glide_theme::TextStyle { weight: if active { 600 } else { 400 }, ..glide_theme::TextStyle::CALL };
+        let style =
+            glide_sdk::theme::TextStyle { weight: if active { 600 } else { 400 }, ..glide_sdk::theme::TextStyle::CALL };
         let mut item = glide_sdk::widget::SidebarItem::new(&paint, glide_sdk::widget::elide(&self.label, room, style))
             .tinted(self.glyph, self.tint)
             .ink(self.dim)

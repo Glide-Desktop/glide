@@ -358,13 +358,20 @@ pub const STATUS_BAR: f32 = 26.0;
 pub fn status_bar<'a, M: 'a>(
     paint: &Paint, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>, corners: iced::border::Radius,
 ) -> Element<'a, M> {
-    let background = paint.bar_bg();
-    let left = iced::widget::Row::with_children(left).spacing(SP3).align_y(Alignment::Center);
+    status_strip(paint.bar_bg(), STATUS_BAR, left, right, corners)
+}
+
+#[must_use]
+pub fn status_strip<'a, M: 'a>(
+    background: Color, height: f32, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>,
+    corners: iced::border::Radius,
+) -> Element<'a, M> {
+    let left = iced::widget::Row::with_children(left).spacing(SP3).align_y(Alignment::Center).width(Fill).clip(true);
     let right = iced::widget::Row::with_children(right).spacing(SP1).align_y(Alignment::Center);
-    container(row![left, Space::new().width(Fill), right].align_y(Alignment::Center))
+    container(row![left, right].spacing(SP3).align_y(Alignment::Center))
         .padding(Padding::from([0.0, SP3]).right(SP2))
         .width(Fill)
-        .height(STATUS_BAR)
+        .height(height)
         .clip(true)
         .style(move |_| style::rounded(background, corners))
         .into()

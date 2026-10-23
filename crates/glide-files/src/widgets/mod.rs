@@ -8,7 +8,9 @@ pub mod sidebar;
 
 use std::time::Instant;
 
-use iced::widget::{Stack, column, container, float, image, mouse_area, opaque, row, rule, space, svg};
+use glide_sdk::theme::TextStyle;
+use glide_sdk::widget::{Art as Picture, art, pane, separator, vertical_separator};
+use iced::widget::{Stack, column, container, float, mouse_area, opaque, row};
 use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
 use crate::app::{App, Hover, Message, Notice, NoticeAction};
@@ -17,7 +19,7 @@ use crate::fs::jobs::Op;
 use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::native_icons::Art;
-use crate::theme::{self, Side, ThemeState};
+use crate::theme::{self, Side, ThemeState, window_corners};
 
 pub const SIDEBAR_WIDTH: f32 = 208.0;
 pub const HEADER_HEIGHT: f32 = 35.0;
@@ -40,20 +42,7 @@ pub fn window(app: &App) -> Element<'_, Message> {
         }));
     }
     if let Some(rect) = app.band_rect() {
-        let accent = t.acc_bg();
-        let fill = accent.scale_alpha(glide_theme::motion::ST_PRESS);
-        let marquee = container(space().width(rect.width).height(rect.height)).style(move |_| container::Style {
-            background: Some(iced::Background::Color(fill)),
-            border: iced::Border { color: accent, width: 1.0, radius: theme::R1.into() },
-            ..container::Style::default()
-        });
-        layers.push(
-            container(marquee)
-                .padding(Padding { top: rect.y, left: rect.x, ..Padding::ZERO })
-                .width(Fill)
-                .height(Fill)
-                .into(),
-        );
+        layers.push(glide_sdk::widget::selection_band(t, rect));
     }
     if let Some(drag) = &app.drag {
         layers.push(drag_ghost(app, drag));
@@ -78,23 +67,16 @@ fn browser(app: &App) -> Element<'_, Message> {
     }
     let body = body.push(content::view(app)).push(divider(t)).push(pathbar::view(app));
     let corner = app.corner();
-    container(row![
-        sidebar::view(app),
-        rule::vertical(1).style(move |_| theme::line(t)),
-        container(body)
-            .width(Fill)
-            .height(Fill)
-            .style(move |_| theme::rounded(t.view_bg(), theme::window_corners(Side::Right, corner))),
-    ])
-    .width(Fill)
-    .height(Fill)
-    .style(move |_| theme::rounded(t.win_bg(), corner))
+    pane(
+        t.win_bg(),
+        corner,
+        row![sidebar::view(app), vertical_separator(t), pane(t.view_bg(), window_corners(Side::Right, corner), body),],
+    )
     .into()
 }
 
 fn trash_banner(app: &App) -> Element<'_, Message> {
     use glide_sdk::widget::{Size, elide_end, measure};
-    use glide_theme::TextStyle;
     let t = &app.theme;
     let lang = app.lang;
     let restorable = app.selected_entries().any(|e| app.trash.is_top_level(&e.path));
@@ -114,10 +96,10 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
                 Key::Restore => Some(Message::Restore),
                 _ => (app.trash_count > 0).then_some(Message::EmptyTrash),
             };
-            glide_sdk::widget::compact_button(&paint(t), key.text(lang), glide_sdk::Tone::Neutral, message)
+            glide_sdk::widget::compact_button(t, key.text(lang), glide_sdk::Tone::Neutral, message)
         })
         .collect();
-    glide_sdk::widget::info_bar(&paint(t), None, title, &blurb, actions)
+    glide_sdk::widget::info_bar(t, None, title, &blurb, actions)
 }
 
 fn job_detail(app: &App, job: &crate::app::Job) -> String {
@@ -160,8 +142,7 @@ fn job_detail(app: &App, job: &crate::app::Job) -> String {
 
 pub fn jobs(app: &App) -> Element<'_, Message> {
     use glide_sdk::widget::{Task, elide, elide_end, icon_button as small, task_card};
-    use glide_theme::TextStyle;
-    let paint = paint(&app.theme);
+    let paint = app.theme;
     let lang = app.lang;
     let cards = app.jobs.iter().map(|job| {
         let (label, glyph) = match job.op {
@@ -202,7 +183,7 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
     let art: Element<'_, Message> = if count > 1 {
         Stack::with_children([
             container(art).padding(theme::SP2).into(),
-            container(glide_sdk::widget::count_badge(&paint(t), u32::try_from(count).unwrap_or(u32::MAX)))
+            container(glide_sdk::widget::count_badge(t, u32::try_from(count).unwrap_or(u32::MAX)))
                 .align_right(Length::Fixed(52.0))
                 .into(),
         ])
@@ -219,8 +200,8 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
             crate::app::DropAction::Bookmark => (Key::AddBookmark, Icon::Folder),
         };
         glide_sdk::widget::bubble(
-            &paint(t),
-            row![icon(glyph, 12.0, t.fg_1()), glide_sdk::widget::text(key.text(lang), glide_theme::TextStyle::CAP)]
+            t,
+            row![icon(glyph, 12.0, t.fg_1()), glide_sdk::widget::text(key.text(lang), TextStyle::CAP)]
                 .spacing(theme::SP1)
                 .align_y(Alignment::Center),
         )
@@ -239,10 +220,8 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
 }
 
 fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Element<'a, Message> {
-    const RISE: f32 = 16.0;
-    const SHRINK: f32 = 0.04;
     const TOAST_WIDTH: f32 = 470.0;
-    let paint = paint(&app.theme.faded(progress));
+    let paint = app.theme.faded(progress);
     let dismiss = Message::DismissNotice(notice.id);
     let action = notice.action.as_ref().map(|action| {
         let label = match action {
@@ -253,15 +232,14 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
     });
     let close = Some((dismiss, Key::Close.text(app.lang)));
     let card = glide_sdk::overlay::toast_card(&paint, &notice.text, None, action, close, TOAST_WIDTH);
-    let (drop, scale) = if live { ((1.0 - progress) * RISE, 1.0) } else { (0.0, 1.0 - (1.0 - progress) * SHRINK) };
-    let card = float(card).scale(scale).translate(move |_, _| Vector::new(0.0, drop));
+    let card = glide_sdk::overlay::toast_motion(card, progress, live);
     let card: Element<'a, Message> = if live {
         mouse_area(opaque(card))
             .on_enter(Message::Hover(Hover::Toast, true))
             .on_exit(Message::Hover(Hover::Toast, false))
             .into()
     } else {
-        card.into()
+        card
     };
     container(card)
         .width(Fill)
@@ -279,8 +257,7 @@ pub fn icon<'a>(icon: Icon, size: f32, color: Color) -> Element<'a, Message> {
 
 impl glide_sdk::widget::Glyph for Icon {
     fn draw<'a, M: 'a>(self, side: f32, tint: Color) -> Element<'a, M> {
-        let opaque = Color { a: 1.0, ..tint };
-        svg(self.handle()).width(side).height(side).opacity(tint.a).style(move |_, _| theme::glyph(opaque)).into()
+        glide_sdk::widget::svg_glyph(self.handle(), side, tint)
     }
 }
 
@@ -290,16 +267,11 @@ pub fn file_icon<'a>(app: &App, entry: &FileEntry, size: f32) -> Element<'a, Mes
     if size >= 32.0
         && let Some(thumb) = app.thumbnail(entry)
     {
-        return image(image::Handle::from_path(thumb))
-            .width(size)
-            .height(size)
-            .content_fit(iced::ContentFit::Contain)
-            .opacity(opacity)
-            .into();
+        return art(Picture::from_path(thumb), size, opacity);
     }
     match app.art(entry) {
-        Some(Art::Vector(handle)) => svg(handle).width(size).height(size).opacity(opacity).into(),
-        Some(Art::Raster(handle)) => image(handle).width(size).height(size).opacity(opacity).into(),
+        Some(Art::Vector(handle)) => art(Picture::Vector(handle), size, opacity),
+        Some(Art::Raster(handle)) => art(Picture::Raster(handle), size, opacity),
         None => {
             let t = &app.theme;
             let mut color = if entry.is_dir { t.acc_bg() } else { t.fg_2() };
@@ -311,132 +283,22 @@ pub fn file_icon<'a>(app: &App, entry: &FileEntry, size: f32) -> Element<'a, Mes
 
 #[must_use]
 pub fn divider(t: &ThemeState) -> Element<'_, Message> {
-    rule::horizontal(1).style(move |_| theme::line(t)).into()
+    separator(t)
 }
 
 #[must_use]
 pub fn paint(t: &ThemeState) -> glide_sdk::Paint {
-    glide_sdk::Paint { tokens: t.tokens, alpha: t.alpha }
+    *t
 }
 
 #[must_use]
 pub fn check<'a>(t: &ThemeState, label: &'a str, on: bool, message: Message) -> Element<'a, Message> {
     let state = if on { glide_sdk::widget::Check::On } else { glide_sdk::widget::Check::Off };
-    glide_sdk::widget::checkbox(&paint(t), label, state, Some(message))
+    glide_sdk::widget::checkbox(t, label, state, Some(message))
 }
 
 const JOB_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - theme::SP1;
 const JOB_TITLE: f32 = JOB_TEXT - JOB_GLYPH - theme::SP2 - 2.0 * CONTROL;
 const JOB_GLYPH: f32 = 16.0;
-
-#[must_use]
-pub fn text_width(text: &str, size: f32) -> f32 {
-    let em = |c: char| match c {
-        'i' | 'l' | 'j' | 'I' | 'і' | 'ї' | '.' | ',' | ':' | ';' | '!' | '|' | '\'' => 0.28,
-        ' ' | 'f' | 't' | 'r' | 'г' | 'т' | '(' | ')' | '[' | ']' | '-' | '/' => 0.36,
-        'm' | 'w' | 'M' | 'W' | 'м' | 'ш' | 'щ' | 'ж' | 'ю' | 'ф' | 'Ш' | 'Щ' | 'Ж' | 'Ю' | 'Ф' | 'Ы' => {
-            0.82
-        }
-        '\u{200B}' => 0.0,
-        c if c.is_uppercase() => 0.66,
-        c if c.is_ascii_digit() => 0.56,
-        _ => 0.55,
-    };
-    text.chars().map(|c| em(c) * size).sum()
-}
-
-fn break_runs(text: &str) -> Vec<String> {
-    let mut runs = Vec::new();
-    let mut current = String::new();
-    for c in text.chars() {
-        if c == '\u{200B}' && !current.is_empty() {
-            runs.push(std::mem::take(&mut current));
-            continue;
-        }
-        current.push(c);
-        if c == ' ' || c == '-' {
-            runs.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        runs.push(current);
-    }
-    runs
-}
-
-#[must_use]
-pub fn wrapped_lines(text: &str, width: f32, size: f32) -> usize {
-    let width = width.max(1.0);
-    let mut lines = 1;
-    let mut used = 0.0_f32;
-    for run in break_runs(text) {
-        let ink = text_width(run.trim_end_matches(' '), size);
-        if used > 0.0 && used + ink > width {
-            lines += 1;
-            used = 0.0;
-        }
-        let mut rest = ink;
-        while rest > width {
-            lines += 1;
-            rest -= width;
-        }
-        used += rest + text_width(&run, size) - ink;
-    }
-    lines
-}
-
-#[must_use]
-pub fn fit_lines(name: &str, width: f32, size: f32, lines: usize) -> String {
-    let fits = |text: &str| wrapped_lines(&content::breakable(text), width, size) <= lines;
-    if fits(name) {
-        return name.to_string();
-    }
-    let (mut low, mut high) = (FIT_FLOOR, name.chars().count());
-    while high - low > 1 {
-        let middle = low.midpoint(high);
-        if fits(&ellipsize(name, middle)) {
-            low = middle;
-        } else {
-            high = middle;
-        }
-    }
-    ellipsize(name, low)
-}
-
-#[must_use]
-pub fn fit(name: &str, width: f32, size: f32) -> String {
-    let full = text_width(name, size);
-    if full <= width {
-        return name.to_string();
-    }
-    let count = name.chars().count();
-    let mut chars = ((width.max(0.0) / (full / count as f32)) as usize + 2).min(count);
-    while chars > FIT_FLOOR {
-        chars -= 1;
-        let shortened = ellipsize(name, chars);
-        if text_width(&shortened, size) <= width {
-            return shortened;
-        }
-    }
-    ellipsize(name, FIT_FLOOR)
-}
-
-const FIT_FLOOR: usize = 6;
-
-#[must_use]
-pub fn fit_sentence(sentence: &str, width: f32, size: f32) -> String {
-    if text_width(sentence, size) <= width {
-        return sentence.to_string();
-    }
-    let mut kept: String = sentence.to_string();
-    while kept.pop().is_some() {
-        let trimmed = kept.trim_end();
-        let shortened = format!("{trimmed}…");
-        if text_width(&shortened, size) <= width || trimmed.is_empty() {
-            return if trimmed.is_empty() { String::new() } else { shortened };
-        }
-    }
-    String::new()
-}
 
 pub use glide_sdk::widget::ellipsize;

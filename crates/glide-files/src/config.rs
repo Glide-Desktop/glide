@@ -1,4 +1,4 @@
-use glide_theme::{Accent, Appearance};
+use glide_sdk::theme::{Accent, Appearance};
 use serde::Deserialize;
 
 use crate::app::ViewMode;

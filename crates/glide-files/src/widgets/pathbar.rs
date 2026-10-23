@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{Wrapping, elide, measure, text};
-use glide_theme::TextStyle;
-use iced::widget::{container, mouse_area, row, space};
-use iced::{Alignment, Element, Fill, Padding};
+use iced::Element;
+use iced::widget::mouse_area;
 
 use super::PATHBAR_HEIGHT;
 use crate::app::{App, Hover, MenuKind, Message};
@@ -87,23 +87,14 @@ pub fn status(app: &App) -> String {
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
-    container(
-        row![
-            container(crumbs_row(app)).width(Fill).clip(true),
-            space().width(theme::SP3),
-            text(status(app), TextStyle::CAP).color(t.fg_2()).wrapping(Wrapping::None),
-        ]
-        .align_y(Alignment::Center),
+    let corners = theme::window_corners(theme::Side::BottomRight, app.corner());
+    glide_sdk::widget::status_strip(
+        super::header::bar_background(app),
+        PATHBAR_HEIGHT,
+        vec![crumbs_row(app)],
+        vec![text(status(app), TextStyle::CAP).color(t.fg_2()).wrapping(Wrapping::None).into()],
+        corners,
     )
-    .padding(Padding::from([0.0, theme::SP2]).right(theme::SP3))
-    .width(Fill)
-    .height(PATHBAR_HEIGHT)
-    .align_y(Alignment::Center)
-    .style(move |_| {
-        let corners = theme::window_corners(theme::Side::BottomRight, app.corner());
-        theme::rounded(super::header::bar_background(app), corners)
-    })
-    .into()
 }
 
 #[must_use]

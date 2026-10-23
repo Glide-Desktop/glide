@@ -237,6 +237,14 @@ pub fn toast_pill<'a, M: Clone + 'a>(
 }
 
 #[must_use]
+pub fn toast_motion<'a, M: 'a>(card: impl Into<Element<'a, M>>, progress: f32, entering: bool) -> Element<'a, M> {
+    const RISE: f32 = 16.0;
+    const SHRINK: f32 = 0.04;
+    let (drop, scale) = if entering { ((1.0 - progress) * RISE, 1.0) } else { (0.0, 1.0 - (1.0 - progress) * SHRINK) };
+    iced::widget::float(card).scale(scale).translate(move |_, _| iced::Vector::new(0.0, drop)).into()
+}
+
+#[must_use]
 pub fn toast_card<'a, M: Clone + 'a>(
     paint: &Paint, message: &str, ink: Option<Color>, action: Option<(&str, M)>, close: Option<(M, &'a str)>,
     max_width: f32,
