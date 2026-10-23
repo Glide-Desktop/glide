@@ -278,6 +278,10 @@ pub trait App: Sized + 'static {
     fn paint(&self, shell: &Shell<Self::Message>) -> Paint {
         *shell.paint()
     }
+
+    fn look_changed(&mut self, _shell: &mut Shell<Self::Message>) -> Task<Self::Message> {
+        Task::none()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +371,10 @@ impl<A: App> Host<A> {
         }
     }
 
+    fn look_changed(&mut self) -> Task<Event<A::Message>> {
+        self.app.look_changed(&mut self.shell).map(Event::App)
+    }
+
     fn run(&mut self, message: A::Message) -> Task<Event<A::Message>> {
         self.app.update(message, &mut self.shell).map(Event::App)
     }
@@ -397,11 +405,11 @@ impl<A: App> Host<A> {
             Event::Look(look) => {
                 self.shell_look = Some(look);
                 self.apply_look();
-                Task::none()
+                self.look_changed()
             }
             Event::Motion(_) => {
                 self.apply_look();
-                Task::none()
+                self.look_changed()
             }
             Event::Tick => {
                 let now = Instant::now();
@@ -410,10 +418,13 @@ impl<A: App> Host<A> {
                 if stamp != self.stamp {
                     self.stamp = stamp;
                     self.apply_look();
-                } else if self.shell.preview.is_none()
+                    return self.look_changed();
+                }
+                if self.shell.preview.is_none()
                     && self.shell.look.appearance_now() != self.shell.paint.tokens.appearance
                 {
                     self.shell.refresh_paint();
+                    return self.look_changed();
                 }
                 Task::none()
             }
@@ -798,6 +809,7 @@ mod tests {
     struct Notes {
         saved: usize,
         dirty: bool,
+        looks: usize,
     }
 
     #[derive(Debug, Clone, PartialEq)]
@@ -837,6 +849,11 @@ mod tests {
 
         fn menus(&self, _: &Shell<Message>) -> Vec<Menu<Message>> {
             vec![Menu::new("File", vec![Item::action("Save", Message::Save).shortcut("Ctrl+S").enabled(self.dirty)])]
+        }
+
+        fn look_changed(&mut self, _: &mut Shell<Message>) -> Task<Message> {
+            self.looks += 1;
+            Task::none()
         }
 
         fn close_requested(&mut self, shell: &mut Shell<Message>) -> bool {
@@ -895,6 +912,14 @@ mod tests {
         let _ = host.update(ctrl_s());
         assert_eq!(host.app.saved, 1);
         assert!(host.shell.toast.is_some());
+    }
+
+    #[test]
+    fn the_app_hears_about_every_new_look() {
+        let mut host = host();
+        let _ = host.update(Event::Motion(true));
+        let _ = host.update(Event::Motion(false));
+        assert_eq!(host.app.looks, 2);
     }
 
     #[test]

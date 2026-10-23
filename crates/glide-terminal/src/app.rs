@@ -15,7 +15,7 @@ use alacritty_terminal::vte::ansi::Processor;
 use glide_sdk::Paint;
 use glide_sdk::anim::Reveal;
 use glide_sdk::look::{self as shell_look, Look as ShellLook};
-use glide_sdk::theme::{motion, use_ui_family};
+use glide_sdk::theme::motion;
 use iced::keyboard::key::Named;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::{operation, pane_grid};
@@ -198,7 +198,6 @@ impl Tab {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ShellLook(glide_app::Look),
     Remote(crate::service::Request),
     Feed(Feed),
     Terminal(Action),
@@ -233,7 +232,6 @@ pub enum Message {
     WindowMaximize,
     WindowMinimize,
     WindowState(bool, bool),
-    SystemMotion(bool),
     HeaderMenu,
     MenuHovered(usize),
     WindowResize(window::Direction),
@@ -265,7 +263,6 @@ pub struct App {
     focused_window: bool,
     pub frame: WindowFrame,
     reported_focus: Option<PaneId>,
-    ui_family: Option<String>,
     shell_look: ShellLook,
     typed: Instant,
     flashes: HashMap<PaneId, (Instant, Flash)>,
@@ -273,8 +270,7 @@ pub struct App {
     launch: Launch,
     bus: Option<Bus>,
     next_id: u64,
-    stamps: (Option<SystemTime>, Option<SystemTime>),
-    shell: Option<glide_app::Look>,
+    stamp: Option<SystemTime>,
     awaiting: Option<Instant>,
     pending: Vec<crate::service::OpenTab>,
 }
@@ -448,8 +444,8 @@ pub fn directory_label(directory: Option<&Path>) -> String {
     directory.file_name().map_or_else(|| directory.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
-fn stamps() -> (Option<SystemTime>, Option<SystemTime>) {
-    (shell_look::stamp(shell_look::shell_path().as_deref()), shell_look::stamp(config::path().as_deref()))
+fn stamp() -> Option<SystemTime> {
+    shell_look::stamp(config::path().as_deref())
 }
 
 fn wayland_handles(window: &dyn iced::window::Window) -> Option<dnd::Handles> {
@@ -553,20 +549,17 @@ impl App {
             focused_window: true,
             frame: WindowFrame::Floating,
             reported_focus: None,
-            ui_family: look.font_family.clone(),
-            shell_look: look.clone(),
+            shell_look: look,
             typed: Instant::now(),
             flashes: HashMap::new(),
             prompts: HashMap::new(),
             launch,
             bus: None,
             next_id: 1,
-            stamps: stamps(),
-            shell: None,
+            stamp: stamp(),
             awaiting: None,
             pending: Vec::new(),
         };
-        use_ui_family(look.font_family.as_deref());
         let handles = window::latest().and_then(|id| window::run(id, wayland_handles)).map(Message::Handles);
         (app, handles)
     }
@@ -713,12 +706,8 @@ impl App {
             }),
             window::close_requests().map(|_| Message::CloseRequested),
             iced::time::every(POLL).map(|_| Message::Tick),
-            Subscription::run(glide_app::look_changes).map(Message::ShellLook),
             Subscription::run(crate::service::requests).map(Message::Remote),
         ];
-        if self.shell.is_none() {
-            subscriptions.push(Subscription::run(shell_look::motion_changes).map(Message::SystemMotion));
-        }
         if self.reported_focus.is_some()
             && !motion::is_disabled()
             && self.focused().is_some_and(|pane| {
@@ -797,8 +786,6 @@ impl App {
             | Message::WindowMaximize
             | Message::WindowMinimize
             | Message::WindowState(..)
-            | Message::SystemMotion(_)
-            | Message::ShellLook(_)
             | Message::Remote(_)
             | Message::WindowResize(_) => self.on_window(&message),
             Message::Pasted(text) => {
@@ -922,15 +909,6 @@ impl App {
                 };
                 Task::none()
             }
-            Message::SystemMotion(_) => {
-                self.apply_look();
-                Task::none()
-            }
-            Message::ShellLook(ref look) => {
-                self.shell = Some(look.clone());
-                self.apply_look();
-                Task::none()
-            }
             Message::Remote(ref request) => self.on_remote(request),
             Message::Resized(size) => {
                 self.window = size;
@@ -993,13 +971,11 @@ impl App {
     }
 
     fn reload(&mut self) {
-        self.update_appearance(glide_config::local_minute());
-        let stamps = stamps();
-        if stamps == self.stamps {
+        let stamp = stamp();
+        if stamp == self.stamp {
             return;
         }
-        self.stamps = stamps;
-        self.apply_look();
+        self.stamp = stamp;
         let prefs = config::load();
         if prefs.profile != self.prefs.profile {
             let previous = self.prefs.profile;
@@ -1019,24 +995,11 @@ impl App {
         }
     }
 
-    fn apply_look(&mut self) {
-        let look = ShellLook::load().with_shell(self.shell.as_ref());
-        motion::set_scale(look.motion_scale);
-        self.paint = look.paint();
+    pub fn follow_look(&mut self, look: &ShellLook, paint: Paint) {
+        self.paint = paint;
         self.lang = look.lang();
         self.sounds = look.sounds;
-        if self.ui_family != look.font_family {
-            use_ui_family(look.font_family.as_deref());
-            self.ui_family.clone_from(&look.font_family);
-        }
-        self.shell_look = look;
-    }
-
-    fn update_appearance(&mut self, minute: Option<u16>) {
-        let appearance = self.shell_look.appearance_at(minute);
-        if appearance != self.paint.tokens.appearance {
-            self.paint = Paint::new(appearance, self.shell_look.accent);
-        }
+        self.shell_look = look.clone();
     }
 
     fn sync_focus(&mut self) {
@@ -1937,7 +1900,7 @@ impl App {
                     match config::save(&prefs) {
                         Ok(()) => {
                             self.prefs = prefs;
-                            self.stamps.1 = shell_look::stamp(config::path().as_deref());
+                            self.stamp = stamp();
                         }
                         Err(error) => self.error = Some(error.to_string()),
                     }
@@ -2004,6 +1967,11 @@ impl glide_sdk::App for App {
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {
         self.paint
+    }
+
+    fn look_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_look(shell.look(), *shell.paint());
+        Task::none()
     }
 }
 
@@ -2250,15 +2218,14 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_rethemes_the_app_without_changing_config_stamps() {
+    fn a_new_look_from_the_host_rethemes_the_app_without_touching_its_preferences() {
         let mut app = review_app();
-        app.shell_look = ShellLook::parse("[topbar]\nappearance-schedule = true\n", false);
-        let stamps = app.stamps;
-        app.update_appearance(Some(12 * 60));
+        let stamp = app.stamp;
+        let look = ShellLook::parse("[general]\nlanguage = \"en\"\n[topbar]\nappearance = \"light\"\n", false);
+        app.follow_look(&look, look.paint());
         assert_eq!(app.paint.tokens.appearance, glide_sdk::theme::Appearance::Light);
-        app.update_appearance(Some(20 * 60));
-        assert_eq!(app.paint.tokens.appearance, glide_sdk::theme::Appearance::Dark);
-        assert_eq!(app.stamps, stamps);
+        assert_eq!(app.lang, Lang::En);
+        assert_eq!(app.stamp, stamp);
     }
 
     #[test]

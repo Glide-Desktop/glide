@@ -26,7 +26,6 @@ use crate::tree::{self, Entry, Tree};
 use glide_app::menubar;
 use glide_sdk::Paint;
 use glide_sdk::look::{self, Look};
-use glide_sdk::theme::use_ui_family;
 pub use glide_sdk::window::Frame;
 use glide_sdk::window::{Action as WindowAction, Window};
 
@@ -276,8 +275,6 @@ pub enum Message {
     Pasted(Option<String>),
     Link(markdown::Uri),
     Pointer(Point),
-    ShellLook(glide_app::Look),
-    SystemMotion(bool),
     Tick,
     Frame,
     Window(WindowAction),
@@ -292,8 +289,6 @@ pub struct App {
     pub paint: Paint,
     pub lang: Lang,
     look: Look,
-    shell: Option<glide_app::Look>,
-    ui_family: Option<String>,
     pub prefs: Preferences,
     pub docs: Vec<Document>,
     pub active: usize,
@@ -325,7 +320,7 @@ pub struct App {
     session_at: Instant,
     queue: Vec<u64>,
     after: Option<After>,
-    stamps: (Option<SystemTime>, Option<SystemTime>),
+    stamp: Option<SystemTime>,
 }
 
 #[must_use]
@@ -542,8 +537,8 @@ pub fn suggested_name(document: &Document, untitled: &str) -> String {
     format!("{stem}.{}", document.language().extension())
 }
 
-fn stamps() -> (Option<SystemTime>, Option<SystemTime>) {
-    (look::stamp(look::shell_path().as_deref()), look::stamp(config::path().as_deref()))
+fn stamp() -> Option<SystemTime> {
+    look::stamp(config::path().as_deref())
 }
 
 fn intern(family: &str) -> &'static str {
@@ -586,9 +581,7 @@ impl App {
         let mut app = Self {
             paint: look.paint(),
             lang: look.lang(),
-            ui_family: look.font_family.clone(),
             look,
-            shell: None,
             prefs,
             docs: Vec::new(),
             active: 0,
@@ -620,9 +613,8 @@ impl App {
             session_at: Instant::now(),
             queue: Vec::new(),
             after: None,
-            stamps: stamps(),
+            stamp: stamp(),
         };
-        use_ui_family(app.ui_family.as_deref());
         let mut tasks = vec![app.restore(&session)];
         for path in paths {
             tasks.push(app.open_path(path.clone()));
@@ -848,8 +840,6 @@ impl App {
             }),
             window::close_requests().map(|_| Message::CloseRequested),
             iced::time::every(TICK).map(|_| Message::Tick),
-            Subscription::run(glide_app::look_changes).map(Message::ShellLook),
-            Subscription::run(look::motion_changes).map(Message::SystemMotion),
         ];
         if let Some(handles) = self.handles {
             subscriptions.push(Subscription::run_with(handles, menubar::events).map(Message::MenuBar));
@@ -1082,15 +1072,6 @@ impl App {
                 }
                 self.open_path(path)
             }
-            Message::ShellLook(look) => {
-                self.shell = Some(look);
-                self.apply_look();
-                Task::none()
-            }
-            Message::SystemMotion(_) => {
-                self.apply_look();
-                Task::none()
-            }
             Message::Tick => self.tick(),
             Message::Frame => {
                 if let Some(menu) = &mut self.menu {
@@ -1129,27 +1110,17 @@ impl App {
         self.notice = Some((text, Instant::now()));
     }
 
-    fn apply_look(&mut self) {
-        let look = Look::load().with_shell(self.shell.as_ref());
-        motion::set_scale(look.motion_scale);
-        self.paint = look.paint();
+    pub fn follow_look(&mut self, look: &Look, paint: Paint) {
+        self.look = look.clone();
+        self.paint = paint;
         self.lang = look.lang();
-        if self.ui_family != look.font_family {
-            use_ui_family(look.font_family.as_deref());
-            self.ui_family.clone_from(&look.font_family);
-        }
-        self.look = look;
     }
 
     fn tick(&mut self) -> Task<Message> {
         self.notice.take_if(|(_, at)| at.elapsed() >= NOTICE);
-        if self.look.appearance_now() != self.paint.tokens.appearance {
-            self.paint = self.look.paint();
-        }
-        let stamps = stamps();
-        if stamps != self.stamps {
-            self.stamps = stamps;
-            self.apply_look();
+        let stamp = stamp();
+        if stamp != self.stamp {
+            self.stamp = stamp;
             self.prefs = config::load();
         }
         if let Some(doc) = self.doc_mut()
@@ -2257,6 +2228,11 @@ impl glide_sdk::App for App {
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {
         self.paint
+    }
+
+    fn look_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_look(shell.look(), *shell.paint());
+        Task::none()
     }
 }
 
