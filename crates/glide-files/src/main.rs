@@ -1,9 +1,9 @@
 use glide_files::App;
 
-fn requested_size() -> Option<iced::Size> {
+fn requested_size() -> Option<(f32, f32)> {
     let value = std::env::var("GLIDE_FILES_SIZE").ok()?;
     let (width, height) = value.split_once('x')?;
-    Some(iced::Size::new(width.trim().parse().ok()?, height.trim().parse().ok()?))
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
 }
 
 fn main() -> iced::Result {
@@ -21,28 +21,12 @@ fn main() -> iced::Result {
         }
     }
     glide_files::theme::use_ui_family(glide_files::config::load().font_family.as_deref());
-    let default_size = if choosing { iced::Size::new(900.0, 600.0) } else { iced::Size::new(1000.0, 650.0) };
-    let window = iced::window::Settings {
-        size: requested_size().unwrap_or(default_size),
-        min_size: Some(iced::Size::new(720.0, 480.0)),
-        decorations: false,
-        transparent: true,
-        exit_on_close_request: false,
-        platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: String::from("glide-files"),
-            ..iced::window::settings::PlatformSpecific::default()
-        },
-        ..iced::window::Settings::default()
-    };
-
-    let ran = iced::application(App::new, App::update, App::view)
-        .title(App::title)
-        .theme(App::iced_theme)
-        .style(App::style)
-        .subscription(App::subscription)
-        .window(window)
-        .antialiasing(true)
-        .run();
+    let (width, height) = requested_size().unwrap_or(if choosing { (900.0, 600.0) } else { (1000.0, 650.0) });
+    let settings = glide_sdk::Settings::new("glide-files")
+        .size(width, height)
+        .min_size(720.0, 480.0)
+        .chrome(glide_sdk::Chrome::Own);
+    let ran = glide_sdk::run::<App>(settings);
     if choosing && !glide_files::chooser::accepted() {
         std::process::exit(1);
     }

@@ -699,11 +699,6 @@ impl App {
         self.paint.iced_theme()
     }
 
-    #[must_use]
-    pub fn style(&self, _theme: &iced::Theme) -> iced::theme::Style {
-        iced::theme::Style { background_color: iced::Color::TRANSPARENT, text_color: self.paint.fg_1() }
-    }
-
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             Subscription::run(session::feed).map(Message::Feed),
@@ -1977,6 +1972,38 @@ impl App {
             menu.reveal.close(motion::t2());
             menu.reveal = menu.reveal.with_ease(motion::ease_io);
         }
+    }
+}
+
+impl glide_sdk::App for App {
+    type Message = Message;
+
+    fn new(_: &mut glide_sdk::Shell<Message>) -> (Self, Task<Message>) {
+        Self::new()
+    }
+
+    fn title(&self, _: &glide_sdk::Shell<Message>) -> String {
+        Self::title(self)
+    }
+
+    fn update(&mut self, message: Message, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, message)
+    }
+
+    fn view<'a>(&'a self, _: &'a glide_sdk::Shell<Message>) -> iced::Element<'a, Message> {
+        Self::view(self)
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        Self::subscription(self)
+    }
+
+    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> bool {
+        false
+    }
+
+    fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {
+        self.paint
     }
 }
 

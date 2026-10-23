@@ -509,6 +509,34 @@ impl App {
     }
 }
 
+impl glide_sdk::App for App {
+    type Message = Message;
+
+    fn new(_: &mut glide_sdk::Shell<Message>) -> (Self, Task<Message>) {
+        Self::new()
+    }
+
+    fn title(&self, _: &glide_sdk::Shell<Message>) -> String {
+        Self::title(self)
+    }
+
+    fn update(&mut self, message: Message, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, message)
+    }
+
+    fn view<'a>(&'a self, _: &'a glide_sdk::Shell<Message>) -> Element<'a, Message> {
+        Self::view(self)
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        Self::subscription(self)
+    }
+
+    fn paint(&self, _: &glide_sdk::Shell<Message>) -> glide_sdk::Paint {
+        self.theme.paint
+    }
+}
+
 #[must_use]
 pub fn shortcut(event: iced::keyboard::Event) -> Option<Message> {
     use iced::keyboard::{

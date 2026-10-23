@@ -136,10 +136,18 @@ compositor's shadow, ring and corner clip around it.
 | `subscription()` | no | Your own subscriptions (timers, file watchers…). |
 | `close_requested(shell)` | no | Return `false` to keep the window, e.g. to ask about unsaved changes, then call `shell.exit()` later. |
 
+| `paint(shell)` | no | The colours the window's iced theme and background follow; defaults to `shell.paint()`. |
+
 `Settings::new(app_id)` takes the Wayland app id, which must equal the
 desktop file name (`org.example.Notes` ↔ `org.example.Notes.desktop`): the
 dock, the launcher, quicklists and the LauncherEntry badge all key on it.
-`.size(w, h)`, `.min_size(w, h)` and `.font(bytes)` complete it.
+`.size(w, h)`, `.min_size(w, h)`, `.font(bytes)` / `.fonts(list)` and
+`.chrome(Chrome)` complete it. `Chrome::Standard` draws the header, menu bar
+and resize edges around `view`; `Chrome::Own` hands the whole window to
+`view` (draw it with `window::header`, `window::resize_edges` and the rest
+yourself) and leaves every key and the close request to the app;
+`Chrome::Server` asks the compositor for its own frame. Glide's Files,
+Terminal and Text run with `Own`, Settings with `Server`.
 
 ## The `Shell` handle
 
@@ -286,6 +294,16 @@ the spec's motion table; the catalogue shows each of them.
 | `popover`, `surface`, `separator`, `vertical_separator`, `scrollable` | |
 | `text(content, TextStyle)`, `measure(text, TextStyle)`, `icon(glyph, side, tint)` | The shell's type scale; widths are ceiled. `icon` takes anything implementing `Glyph`: the SDK's `Icon`, or an app's own icon set with a one-method impl. |
 | `elide(name, width, TextStyle)`, `elide_end(sentence, width, TextStyle)`, `ellipsize(name, chars)` | Measured shortening: in the middle keeping the extension, or at the end. |
+| `elide_lines(name, width, TextStyle, lines)`, `measure_lines`, `breakable(name)` | Shorten a name to fit a number of wrapped lines, preferring to break before its extension. |
+| `pane(background, corners, content)`, `heading_row(paint, title, actions)`, `section_title(paint, title, highlighted)` | A filled, rounded area that fills its parent (chain `.width`/`.height`/`.padding`); a MICRO heading with buttons; a sidebar section title that lights up as a drop target. |
+| `sheet(paint, rows)`, `key_values(paint, rows)`, `stat_rows(paint, rows)`, `form_row(paint, label, hint, control)`, `hint_line(paint, glyph, text)`, `action_bar(buttons)`, `boxed_input(paint, placeholder, value, Validity)` | Building blocks of detail sheets and forms inside a `Group`. |
+| `tinted_card(paint, tint, padding, content)`, `letter_tile(paint, name, side)` | A hero card with your own layout; an initial on a fill-2 tile for things without an icon. |
+| `item_tile(paint, art, badge, label, plate, size, selected, (hover, lift))`, `corner_badge`, `table_row(paint, cells, selected, stripe, hover, height)`, `item_ink`, `selection_band(paint, rect)` | File-manager style grid tiles and list rows driven by your own hover state, and a rubber band. |
+| `Art`, `art(art, side, opacity)`, `photo(path, side, radius)`, `photo_button`, `picture(handle, w, h, fit, radius)`, `svg_glyph(handle, side, tint)` | Pictures and icon sets from files or handles; `svg_glyph` is the one-line body of an app's `Glyph` impl. |
+| `level_meter(paint, level, peak, Severity)`, `level_control(paint, glyph, mute, slider, level, muted)`, `slider_readout(paint, leading, slider, readout, dimmed)`, `range_slider(paint, low, slider, high)`, `frame_button(paint, content, selected, msg)` | Meters and labelled sliders; a picture button with the selection ring. |
+| `editor(paint, content)`, `text_area(paint, content)`, `markdown_settings(paint, size, mono)`, `markdown_view(paint, items, settings, viewer)`, `code_block(paint, content, padding)`, `shortcut_list(paint, sections)`, `scrollable_x` | A full-window editor, a bordered text area, a Markdown preview with its code blocks, a shortcut reference, a horizontal scroller. |
+| `split_view(paint, state, view)`, `palette_swatch(paint, background, foreground, accents, font, size)`, `context_area(content, on_right_press)`, `reveal(id, top, bottom)` | A Meridian pane grid; a colour-scheme sample; right-click with position and Ctrl+wheel zoom; scroll a range into view. |
+| `mock::*` | Illustration primitives for previews: `screen`, `topbar`, `bar`, `window`, `titled_window`, `dock`, `mini_dock`, `wallpaper`, `monitor`, `battery`, `touchpad`, `mouse`, `document`, `schedule_bar`, `glyph_well`, `sample_area`, `click_target`, `dots`, `ring_dot`, `gradient_strip`, `block`, `outlined`, `surface`, `outlined_surface`, `at`, `centered`, `bottom`, `caption`. |
 
 **Bars and strips**
 
@@ -309,7 +327,9 @@ the spec's motion table; the catalogue shows each of them.
 |---|---|
 | `menu::Item` (`Action`, `Submenu`, `Stepper`, `Heading`, `Separator`) and `menu::Popup` | Action rows carry a shortcut, a check, a swatch, a danger tint or a submenu arrow; `place` keeps bar menus below and shifts context menus to fit; `walk` moves the keyboard highlight. |
 | `overlay::modal`, `dialog_card`, `dialog_buttons`, `ringed` | Build dialogs with your own body; danger and ghost choices sit on the left, Enter takes the accent one. |
-| `overlay::toast_pill`, `overlay::toast_card(paint, message, ink, action, close, max_width)` | The bottom toast, or just its card for apps that place it themselves. |
+| `overlay::toast_pill`, `overlay::toast_card(paint, message, ink, action, close, max_width)`, `overlay::toast_motion(card, progress, entering)` | The bottom toast, or just its card and its rise / shrink for apps that place it themselves. |
+| `window::Side`, `window::side_corners(side, radius)` | Round only the window corners a pane touches. |
+| `anim::Fade`, `anim::Reveal`, `system::launch_token`, `system::launch_env` | A timed 0→1 fade with separate enter and leave speeds; the popup reveal; an activation token for programs the app starts. |
 
 `Paint` exposes every colour token as a method (`win_bg`, `view_bg`,
 `fg_1`…`fg_4`, `fill_1`…`fill_3`, `acc_bg`, `acc_soft`, `danger`, …),

@@ -1063,11 +1063,6 @@ impl App {
     }
 
     #[must_use]
-    pub fn style(&self, _theme: &iced::Theme) -> iced::theme::Style {
-        iced::theme::Style { background_color: iced::Color::TRANSPARENT, text_color: self.theme.fg_1() }
-    }
-
-    #[must_use]
     pub fn iced_theme(&self) -> iced::Theme {
         self.theme.iced_theme()
     }
@@ -4033,6 +4028,38 @@ pub fn expand_path(input: &str, base: &Path) -> PathBuf {
         }
     }
     normal
+}
+
+impl glide_sdk::App for App {
+    type Message = Message;
+
+    fn new(_: &mut glide_sdk::Shell<Message>) -> (Self, Task<Message>) {
+        Self::new()
+    }
+
+    fn title(&self, _: &glide_sdk::Shell<Message>) -> String {
+        Self::title(self)
+    }
+
+    fn update(&mut self, message: Message, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, message)
+    }
+
+    fn view<'a>(&'a self, _: &'a glide_sdk::Shell<Message>) -> Element<'a, Message> {
+        Self::view(self)
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        Self::subscription(self)
+    }
+
+    fn close_requested(&mut self, _: &mut glide_sdk::Shell<Message>) -> bool {
+        false
+    }
+
+    fn paint(&self, _: &glide_sdk::Shell<Message>) -> glide_sdk::Paint {
+        self.theme
+    }
 }
 
 #[must_use]

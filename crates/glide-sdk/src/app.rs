@@ -18,12 +18,21 @@ use crate::window::{self, Action, Header, Window};
 
 const TICK: Duration = Duration::from_secs(1);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Chrome {
+    #[default]
+    Standard,
+    Own,
+    Server,
+}
+
 #[derive(Clone)]
 pub struct Settings {
     pub app_id: String,
     pub size: Size,
     pub min_size: Option<Size>,
     pub fonts: Vec<Cow<'static, [u8]>>,
+    pub chrome: Chrome,
 }
 
 impl Settings {
@@ -34,7 +43,20 @@ impl Settings {
             size: Size::new(960.0, 640.0),
             min_size: Some(Size::new(420.0, 300.0)),
             fonts: Vec::new(),
+            chrome: Chrome::Standard,
         }
+    }
+
+    #[must_use]
+    pub fn chrome(mut self, chrome: Chrome) -> Self {
+        self.chrome = chrome;
+        self
+    }
+
+    #[must_use]
+    pub fn fonts(mut self, fonts: impl IntoIterator<Item = &'static [u8]>) -> Self {
+        self.fonts.extend(fonts.into_iter().map(Cow::Borrowed));
+        self
     }
 
     #[must_use]
@@ -252,6 +274,10 @@ pub trait App: Sized + 'static {
     fn close_requested(&mut self, _shell: &mut Shell<Self::Message>) -> bool {
         true
     }
+
+    fn paint(&self, shell: &Shell<Self::Message>) -> Paint {
+        *shell.paint()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +301,7 @@ pub enum Event<M> {
 
 struct Host<A: App> {
     app: A,
+    chrome: Chrome,
     shell: Shell<A::Message>,
     shell_look: Option<glide_app::Look>,
     font_family: Option<String>,
@@ -288,20 +315,23 @@ struct Host<A: App> {
 const BAR_START: f32 = SP2 + component::SMALL_CONTROL + SP2;
 
 impl<A: App> Host<A> {
-    fn boot(app_id: &str) -> (Self, Task<Event<A::Message>>) {
+    fn boot(app_id: &str, chrome: Chrome) -> (Self, Task<Event<A::Message>>) {
         let look = Look::load();
         motion::set_scale(look.motion_scale);
         let font_family = look.font_family.clone();
         glide_iced::font::use_ui_family(font_family.as_deref());
         let mut shell = Shell::new(app_id.to_string(), look);
         let (app, task) = A::new(&mut shell);
-        let _ = std::thread::Builder::new().name("glide-sdk-frame".into()).spawn(|| {
-            if let Err(err) = crate::system::frame_windows() {
-                tracing::debug!("the shell does not frame this window: {err}");
-            }
-        });
+        if chrome != Chrome::Server {
+            let _ = std::thread::Builder::new().name("glide-sdk-frame".into()).spawn(|| {
+                if let Err(err) = crate::system::frame_windows() {
+                    tracing::debug!("the shell does not frame this window: {err}");
+                }
+            });
+        }
         let mut host = Self {
             app,
+            chrome,
             shell,
             shell_look: None,
             font_family,
@@ -556,7 +586,7 @@ impl<A: App> Host<A> {
             }
             return Task::none();
         }
-        if captured {
+        if captured || self.chrome != Chrome::Standard {
             return Task::none();
         }
         if *key == Key::Named(Named::Tab) && !modifiers.control() && !modifiers.alt() && !modifiers.logo() {
@@ -569,7 +599,27 @@ impl<A: App> Host<A> {
         menu::shortcut(&self.menus, key, *physical_key, *modifiers).map_or_else(Task::none, |message| self.run(message))
     }
 
+    fn overlays<'a>(&'a self, layers: &mut Vec<Element<'a, Event<A::Message>>>) {
+        let shell = &self.shell;
+        let (paint, window) = (shell.paint, shell.window);
+        if let Some(toast) = &shell.toast {
+            layers.push(overlay::toast(&paint, toast, window.size).map(|_| Event::ToastAction));
+        }
+        if let Some(popup) = &shell.popup {
+            layers.push(menu::view(&paint, popup, window.size).map(Event::Popup));
+        }
+        if let Some(dialog) = shell.dialog.as_ref().or(shell.closing.as_ref()) {
+            layers.push(overlay::dialog(&paint, dialog, window.size, window.corner()).map(Event::Dialog));
+        }
+    }
+
     fn view(&self) -> Element<'_, Event<A::Message>> {
+        if self.chrome != Chrome::Standard {
+            let body = mouse_area(self.app.view(&self.shell).map(Event::App)).on_move(Event::Pointer);
+            let mut layers: Vec<Element<'_, Event<A::Message>>> = vec![body.into()];
+            self.overlays(&mut layers);
+            return iced::widget::stack(layers).into();
+        }
         let shell = &self.shell;
         let paint = shell.paint;
         let window = shell.window;
@@ -601,15 +651,7 @@ impl<A: App> Host<A> {
         if !window.edge_to_edge() {
             layers.push(window::resize_handles(Event::Window));
         }
-        if let Some(toast) = &shell.toast {
-            layers.push(overlay::toast(&paint, toast, window.size).map(|_| Event::ToastAction));
-        }
-        if let Some(popup) = &shell.popup {
-            layers.push(menu::view(&paint, popup, window.size).map(Event::Popup));
-        }
-        if let Some(dialog) = shell.dialog.as_ref().or(shell.closing.as_ref()) {
-            layers.push(overlay::dialog(&paint, dialog, window.size, corner).map(Event::Dialog));
-        }
+        self.overlays(&mut layers);
         iced::widget::stack(layers).into()
     }
 
@@ -632,7 +674,7 @@ impl<A: App> Host<A> {
         if self.shell_look.is_none() {
             subscriptions.push(Subscription::run(look::motion_changes).map(Event::Motion));
         }
-        if let Some(handles) = self.handles {
+        if let Some(handles) = self.handles.filter(|_| !self.menus.is_empty()) {
             subscriptions.push(Subscription::run_with(handles, menubar::events).map(Event::MenuBar));
         }
         if self.shell.animating() {
@@ -643,11 +685,13 @@ impl<A: App> Host<A> {
 }
 
 pub fn run<A: App>(settings: Settings) -> iced::Result {
+    let chrome = settings.chrome;
+    let server = chrome == Chrome::Server;
     let window = iced::window::Settings {
         size: settings.size,
         min_size: settings.min_size,
-        decorations: false,
-        transparent: true,
+        decorations: server,
+        transparent: !server,
         exit_on_close_request: false,
         platform_specific: iced::window::settings::PlatformSpecific {
             application_id: settings.app_id.clone(),
@@ -660,14 +704,17 @@ pub fn run<A: App>(settings: Settings) -> iced::Result {
         .fonts
         .into_iter()
         .fold(
-            iced::application(move || Host::<A>::boot(&app_id), Host::<A>::update, Host::<A>::view),
+            iced::application(move || Host::<A>::boot(&app_id, chrome), Host::<A>::update, Host::<A>::view),
             iced::Application::font,
         )
         .title(|host: &Host<A>| host.app.title(&host.shell))
-        .theme(|host: &Host<A>| host.shell.paint.iced_theme())
-        .style(|host: &Host<A>, _| iced::theme::Style {
-            background_color: iced::Color::TRANSPARENT,
-            text_color: host.shell.paint.fg_1(),
+        .theme(|host: &Host<A>| host.app.paint(&host.shell).iced_theme())
+        .style(move |host: &Host<A>, _| {
+            let paint = host.app.paint(&host.shell);
+            iced::theme::Style {
+                background_color: if server { paint.win_bg() } else { iced::Color::TRANSPARENT },
+                text_color: paint.fg_1(),
+            }
         })
         .subscription(Host::<A>::subscription)
         .window(window)
@@ -688,6 +735,7 @@ impl<A: App> Harness<A> {
         let (app, _) = A::new(&mut shell);
         let mut host = Host {
             app,
+            chrome: Chrome::Standard,
             shell,
             shell_look: None,
             font_family: None,
@@ -847,6 +895,16 @@ mod tests {
         let _ = host.update(ctrl_s());
         assert_eq!(host.app.saved, 1);
         assert!(host.shell.toast.is_some());
+    }
+
+    #[test]
+    fn an_app_with_its_own_chrome_keeps_its_keys() {
+        let mut host = host();
+        host.chrome = Chrome::Own;
+        let _ = host.update(Event::App(Message::Edit));
+        let ctrl_s = press(Key::Character("s".into()), keyboard::key::Code::KeyS, keyboard::Modifiers::CTRL);
+        let _ = host.update(ctrl_s);
+        assert_eq!(host.app.saved, 0, "the app binds its own shortcuts when it draws its own window");
     }
 
     #[test]
