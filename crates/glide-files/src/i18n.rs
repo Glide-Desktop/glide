@@ -30,6 +30,20 @@ impl Lang {
             .find_map(|value| Self::from_key(&value))
             .unwrap_or_default()
     }
+
+    #[must_use]
+    pub fn of(look: &glide_sdk::look::Look) -> Self {
+        look.language.map_or_else(Self::from_env, Self::from)
+    }
+}
+
+impl From<glide_sdk::look::Lang> for Lang {
+    fn from(lang: glide_sdk::look::Lang) -> Self {
+        match lang {
+            glide_sdk::look::Lang::Uk => Self::Uk,
+            glide_sdk::look::Lang::En => Self::En,
+        }
+    }
 }
 
 macro_rules! catalogue {

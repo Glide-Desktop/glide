@@ -38,11 +38,3 @@ fn semibold_text_stays_in_the_ui_family() {
         }
     }
 }
-
-#[test]
-fn the_font_family_is_read_from_the_general_section() {
-    let look = glide_files::config::Look::parse_with("[general]\nfont-family = \"Inter\"\n", false);
-    assert_eq!(look.font_family.as_deref(), Some("Inter"));
-    let blank = glide_files::config::Look::parse_with("[general]\nfont-family = \"  \"\n", false);
-    assert_eq!(blank.font_family, None);
-}

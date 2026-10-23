@@ -442,17 +442,6 @@ fn a_toast_stays_while_the_pointer_rests_on_it() {
 }
 
 #[test]
-fn the_appearance_schedule_turns_files_dark_in_the_evening_like_the_shell() {
-    let scheduled = Look::parse_with("[topbar]\nappearance = \"light\"\nappearance-schedule = true\n", false);
-    assert_eq!(scheduled.appearance_at(Some(20 * 60)), Appearance::Dark);
-    assert_eq!(scheduled.appearance_at(Some(6 * 60 + 59)), Appearance::Dark);
-    assert_eq!(scheduled.appearance_at(Some(12 * 60)), Appearance::Light);
-    let fixed = Look::parse_with("[topbar]\nappearance = \"light\"\n", false);
-    assert_eq!(fixed.appearance_at(Some(20 * 60)), Appearance::Light, "without the schedule the stored style holds");
-    assert_eq!(scheduled.appearance_at(None), Appearance::Light, "and it is the fallback when the clock is unknown");
-}
-
-#[test]
 fn a_volume_trash_is_treated_as_the_trash() {
     use glide_files::icons::Icon;
     use glide_files::widgets::pathbar::trail;
@@ -1120,19 +1109,24 @@ fn item_counts_use_ukrainian_plural_forms() {
 }
 
 #[test]
-fn look_reads_only_the_documented_sections() {
-    let look =
-        Look::parse("[general]\nlanguage = \"en\"\n\n[dock]\nappearance = \"light\"\n\n[topbar]\naccent = \"green\"\n");
-    assert_eq!(look.appearance, Appearance::Dark);
-    assert_eq!(look.accent, Accent::Green);
-    assert_eq!(look.language, Some(Lang::En));
+fn the_configured_language_wins_over_the_locale() {
+    let english = Look::parse("[general]\nlanguage = \"en\"\n", false);
+    assert_eq!(Lang::of(&english), Lang::En);
+    let ukrainian = Look::parse("[general]\nlanguage = \"uk\"\n", false);
+    assert_eq!(Lang::of(&ukrainian), Lang::Uk);
+    assert_eq!(Lang::of(&Look::parse("", false)), Lang::from_env());
+}
 
-    let light = Look::parse("[topbar]\nappearance = \"light\"\n");
-    assert_eq!(light.appearance, Appearance::Light);
-    assert_eq!(light.language, None);
-    assert_eq!(light.icon_theme, None);
-    assert_eq!(Look::parse("[dock]\nicon-theme = \"Papirus-Dark\"\n").icon_theme, Some(String::from("Papirus-Dark")));
-    assert_eq!(Look::parse("not toml ["), Look::default());
+#[test]
+fn a_new_look_from_the_host_rethemes_files_and_renames_its_places() {
+    let (mut app, _) = glide_files::App::with_look(Look::parse("[general]\nlanguage = \"uk\"\n", false));
+    let look =
+        Look::parse("[general]\nlanguage = \"en\"\n\n[topbar]\nappearance = \"light\"\naccent = \"green\"\n", false);
+    let _ = app.follow_look(&look, look.paint());
+    assert_eq!(app.lang, Lang::En);
+    assert_eq!(app.theme.tokens.appearance, Appearance::Light);
+    assert_eq!(app.theme.tokens.accent, Accent::Green);
+    assert!(app.places.iter().any(|place| place.name == "Home"), "{:?}", app.places);
 }
 
 #[test]
@@ -1160,16 +1154,6 @@ fn fading_a_theme_scales_every_colour_alpha() {
     assert!((faded.popover_bg().a - theme.popover_bg().a * 0.25).abs() < 1e-6);
     assert_eq!(faded.faded(0.0).acc_bg().a, 0.0);
     assert_eq!(theme.faded(4.0), theme);
-}
-
-#[test]
-fn animation_scale_follows_the_compositor_rules() {
-    let scale = |text: &str, reduced| Look::parse_with(text, reduced).motion_scale;
-    assert_eq!(scale("", false), 1.0);
-    assert_eq!(scale("[animations]\nspeed = 0.5\n", false), 0.5);
-    assert_eq!(scale("[animations]\nenabled = false\n", false), 0.0);
-    assert_eq!(scale("", true), 0.0);
-    assert_eq!(scale("[animations]\nrespect-system = false\n", true), 1.0);
 }
 
 #[test]

@@ -20,7 +20,6 @@ fn main() -> iced::Result {
             return Ok(());
         }
     }
-    glide_files::theme::use_ui_family(glide_files::config::load().font_family.as_deref());
     let (width, height) = requested_size().unwrap_or(if choosing { (900.0, 600.0) } else { (1000.0, 650.0) });
     let settings = glide_sdk::Settings::new("glide-files")
         .size(width, height)

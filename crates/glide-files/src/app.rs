@@ -314,7 +314,6 @@ pub struct Listed {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    ShellLook(glide_app::Look),
     ChooserName(String),
     ChooserFilter(usize),
     ChooserChoice(usize, String),
@@ -329,7 +328,6 @@ pub enum Message {
     Up,
     Reload,
     ReloadExtensions,
-    SystemMotion(bool),
     ModalFocus(bool),
     Pressed(PathBuf),
     Secondary(PathBuf),
@@ -552,7 +550,6 @@ impl Message {
                 | Self::SearchResults(..)
                 | Self::ExtensionsLoaded(_)
                 | Self::ReloadExtensions
-                | Self::SystemMotion(_)
                 | Self::ModalFocus(_)
                 | Self::Modifiers(_)
                 | Self::PaneResized(_)
@@ -722,8 +719,6 @@ pub struct App {
     listing_revision: u64,
     navigating: bool,
     refresh_pending: bool,
-    config_stamp: Option<SystemTime>,
-    shell: Option<glide_app::Look>,
     pub chooser: Option<crate::chooser::State>,
     handles: Option<dnd::Handles>,
     dnd: Option<dnd::Link>,
@@ -827,10 +822,6 @@ fn run(job: impl FnOnce() -> Outcome + Send + 'static) -> Task<Message> {
     Task::perform(blocking(job), |outcome| Message::Done(outcome.unwrap_or_default()))
 }
 
-fn minute_now() -> Option<u16> {
-    crate::fs::LocalTime::of(SystemTime::now()).map(|now| u16::from(now.hour) * 60 + u16::from(now.minute))
-}
-
 fn expire(id: u64) -> Task<Message> {
     Task::perform(blocking(|| std::thread::sleep(NOTICE_TIMEOUT)), move |_| Message::NoticeExpired(id))
 }
@@ -840,10 +831,6 @@ fn terminal(dir: PathBuf, lang: Lang) -> Task<Message> {
         text: open_in_terminal(&dir).err().map(|_| Key::NoTerminal.text(lang).to_string()),
         ..Outcome::default()
     })
-}
-
-fn stamp(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
 #[must_use]
@@ -864,9 +851,11 @@ fn file_name(path: &Path) -> String {
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
-        let look = config::load();
-        glide_sdk::theme::motion::set_scale(look.motion_scale);
-        let lang = look.language.unwrap_or_else(Lang::from_env);
+        Self::with_look(Look::load())
+    }
+
+    pub fn with_look(look: Look) -> (Self, Task<Message>) {
+        let lang = Lang::of(&look);
         let trash = Trash::user();
         let prefs = config::load_prefs();
         let requested = requested_location();
@@ -879,7 +868,7 @@ impl App {
             _ => (fallback, None),
         };
         let mut app = Self {
-            theme: ThemeState::new(look.appearance_at(minute_now()), look.accent),
+            theme: look.paint(),
             icons: IconTheme::new(look.icon_theme.as_deref(), look.accent),
             lang,
             current: current.clone(),
@@ -924,8 +913,6 @@ impl App {
             listing_revision: 0,
             navigating: false,
             refresh_pending: false,
-            config_stamp: config::path().as_deref().and_then(stamp),
-            shell: None,
             chooser: crate::chooser::request().cloned().map(crate::chooser::State::new),
             handles: None,
             dnd: None,
@@ -1114,10 +1101,6 @@ impl App {
         }
         subscriptions.push(Subscription::run(crate::service::requests).map(Message::Service));
         subscriptions.push(Subscription::run(crate::fs::volumes::changes).map(|()| Message::VolumesChanged));
-        subscriptions.push(Subscription::run(glide_app::look_changes).map(Message::ShellLook));
-        if self.shell.is_none() {
-            subscriptions.push(Subscription::run(config::motion_changes).map(Message::SystemMotion));
-        }
         subscriptions
             .push(Subscription::run_with(self.watched(), crate::fs::watch::changes).map(|()| Message::DirChanged));
         if let Some(handles) = self.handles {
@@ -1287,11 +1270,6 @@ impl App {
             }
             Message::Reload | Message::DirChanged => return self.reload(),
             Message::ReloadExtensions => return self.load_extensions(),
-            Message::SystemMotion(_) => self.apply_look(&config::load()),
-            Message::ShellLook(look) => {
-                self.shell = Some(look);
-                self.apply_look(&config::load());
-            }
             Message::Listed(listed) => return self.arrive(*listed),
             Message::Pressed(path) => return self.press(path),
             Message::Secondary(path) => {
@@ -3860,55 +3838,28 @@ impl App {
             self.drives = drives;
         }
         let survey = self.start_survey();
-        let config_stamp = config::path().as_deref().and_then(stamp);
-        let lang = self.lang;
-        if self.shell.is_none() && config_stamp != self.config_stamp {
-            self.config_stamp = config_stamp;
-            self.apply_look(&config::load());
-        }
-        let appearance = self.look.appearance_at(minute_now());
-        if appearance != self.theme.tokens.appearance {
-            self.theme = ThemeState::new(appearance, self.look.accent);
-        }
-        let extensions = if lang != self.lang || self.roots.stamp() != self.extensions_stamp {
-            self.load_extensions()
-        } else {
-            Task::none()
-        };
+        let extensions =
+            if self.roots.stamp() == self.extensions_stamp { Task::none() } else { self.load_extensions() };
         let volumes = if self.disk_watch.live { Task::none() } else { self.scan() };
         let phones = self.scan_phones();
         Task::batch([survey, extensions, volumes, phones])
     }
 
-    fn with_shell(&self, mut look: Look) -> Look {
-        if let Some(shell) = &self.shell {
-            look.appearance = shell.appearance;
-            look.appearance_schedule = false;
-            look.accent = shell.accent;
-            look.language = shell.language.as_deref().and_then(Lang::from_key);
-            look.icon_theme.clone_from(&shell.icon_theme);
-            look.font_family.clone_from(&shell.font_family);
-            look.motion_scale = shell.animation_scale;
-        }
-        look
-    }
-
-    fn apply_look(&mut self, look: &Look) {
-        let look = &self.with_shell(look.clone());
-        glide_sdk::theme::motion::set_scale(look.motion_scale);
-        self.theme = ThemeState::new(look.appearance_at(minute_now()), look.accent);
-        if look.font_family != self.look.font_family {
-            crate::theme::use_ui_family(look.font_family.as_deref());
+    pub fn follow_look(&mut self, look: &Look, paint: ThemeState) -> Task<Message> {
+        self.theme = paint;
+        if look.icon_theme != self.look.icon_theme || look.accent != self.look.accent {
+            self.icons = IconTheme::new(look.icon_theme.as_deref(), look.accent);
         }
         self.look = look.clone();
-        self.icons = IconTheme::new(look.icon_theme.as_deref(), look.accent);
-        let lang = look.language.unwrap_or_else(Lang::from_env);
-        if lang != self.lang {
-            self.lang = lang;
-            self.places = standard_places(lang, &self.trash);
-            self.drives = mounted_drives(lang);
+        let lang = Lang::of(look);
+        if lang == self.lang {
+            return Task::none();
         }
+        self.lang = lang;
+        self.places = standard_places(lang, &self.trash);
+        self.drives = mounted_drives(lang);
         self.bookmarks = self.fresh_bookmarks();
+        self.load_extensions()
     }
 
     fn escape(&mut self) -> Task<Message> {
@@ -4033,8 +3984,12 @@ pub fn expand_path(input: &str, base: &Path) -> PathBuf {
 impl glide_sdk::App for App {
     type Message = Message;
 
-    fn new(_: &mut glide_sdk::Shell<Message>) -> (Self, Task<Message>) {
-        Self::new()
+    fn new(shell: &mut glide_sdk::Shell<Message>) -> (Self, Task<Message>) {
+        Self::with_look(shell.look().clone())
+    }
+
+    fn look_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.follow_look(shell.look(), *shell.paint())
     }
 
     fn title(&self, _: &glide_sdk::Shell<Message>) -> String {
@@ -4167,14 +4122,6 @@ mod navigation_tests {
             focus: None,
         };
         assert_eq!(conflict.focused(), Some(1), "a conflict starts on Skip, not Stop or Replace");
-    }
-
-    #[test]
-    fn system_motion_changes_reach_the_app_behind_a_dialog() {
-        assert!(Message::SystemMotion(true).passes_modal());
-        let (mut app, _) = App::new();
-        let task = app.update(Message::SystemMotion(false));
-        assert_eq!(task.units(), 0);
     }
 
     #[test]
