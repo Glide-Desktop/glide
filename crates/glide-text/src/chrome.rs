@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use glide_sdk::theme::{R3, SP1, SP2, SP3, SP4, SP5, SP6};
+use glide_sdk::theme::{TextStyle, component, motion};
 use glide_sdk::widget::{
     Icon, Size, bar_strip, code_block, compact_button, empty_note, empty_state, flat_toggle_button, heading_row,
     icon_button, markdown_settings, markdown_view, pane, scrollable, separator as rule, shortcut_list, stat_rows, text,
@@ -9,7 +10,6 @@ use glide_sdk::widget::{
 };
 use glide_sdk::window::resize_handles;
 use glide_sdk::{Paint, Tone};
-use glide_theme::{TextStyle, component};
 use iced::border::Radius;
 use iced::widget::{Space, column, container, markdown, mouse_area, row, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding};
@@ -700,7 +700,7 @@ pub fn export_menu(app: &App) -> (Vec<glide_app::menubar::Entry>, Vec<Command>) 
 
 fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
     use glide_sdk::menu::{self, Event};
-    let progress = menu.reveal.value(glide_theme::motion::t2()) as f32;
+    let progress = menu.reveal.value(motion::t2()) as f32;
     let paint = app.paint.faded(progress);
     let items = menu_items(app, &menu.kind);
     let actionable = menu::actionable(&items);
@@ -747,7 +747,7 @@ type Choices<'a> = Vec<(&'a str, Tone, Option<Message>)>;
 
 fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
     use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
-    let progress = dialog.reveal.value(glide_theme::motion::t2()) as f32;
+    let progress = dialog.reveal.value(motion::t2()) as f32;
     let paint = app.paint.faded(progress);
     let (title, body, choices, width) = dialog_parts(app, &paint, dialog);
     let card = dialog_card(&paint, &title, Some(body), dialog_buttons(&paint, choices, None), width, app.window.size);

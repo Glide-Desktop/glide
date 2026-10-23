@@ -1723,10 +1723,7 @@ version = "0.1.0"
 dependencies = [
  "glide-app",
  "glide-config",
- "glide-paint",
  "glide-sdk",
- "glide-theme",
- "glide-ui",
  "iced",
  "iced_tiny_skia",
  "raw-window-handle",

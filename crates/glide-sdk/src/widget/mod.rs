@@ -41,7 +41,7 @@ pub use controls::{
     CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
     sized_spinner, sized_switch, slider, spinner, stepped_slider, switch,
 };
-pub use editor::{editor, markdown_settings, markdown_view};
+pub use editor::{editor, markdown_settings, markdown_view, text_area};
 pub use feedback::{
     Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,
     key_combo, keycap, letter_tile, noted_banner, skeleton, status_badge, task_card,

@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
 use glide_sdk::anim::{self, Speed};
-use glide_sdk::iced::widget::{Column, Row, Space, column, container, mouse_area, row, text_editor, text_input};
-use glide_sdk::iced::{Alignment, Border, Color, Element, Fill, Padding, Vector};
+use glide_sdk::iced::widget::{Column, Row, Space, column, container, mouse_area, row, text_input};
+use glide_sdk::iced::{Alignment, Color, Element, Fill, Padding, Vector};
 use glide_sdk::prelude::*;
 use glide_sdk::system::{Osd, QuickSettings, Urgency};
 use glide_sdk::theme::{Accent, R2, R3, TextStyle};
-use glide_sdk::widget::{self as ui, Check, Severity, Size, SwitchSize, Validity};
+use glide_sdk::widget::{self as ui, Check, Severity, Size, SwitchSize, Validity, mock};
 
 use crate::{Catalog, Fruit, Look, Message, Page, Preset, Timeout};
 
@@ -43,13 +43,9 @@ pub fn view<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
     let entries: Vec<(Option<Icon>, &str)> =
         Page::ALL.iter().map(|page| (Some(page.icon()), page.title(lang))).collect();
     let selected = Page::ALL.iter().position(|page| *page == catalog.page);
-    let sidebar = container(ui::scrollable(
-        paint,
-        container(ui::sidebar_list(paint, &entries, selected, Message::Page)).padding(SP2),
-    ))
-    .width(232)
-    .height(Fill)
-    .style(move |_| glide_sdk::glide_iced::style::rounded(paint.sidebar_bg(), 0.0));
+    let list =
+        ui::scrollable(paint, container(ui::sidebar_list(paint, &entries, selected, Message::Page)).padding(SP2));
+    let sidebar = ui::pane(paint.sidebar_bg(), 0.0, list).width(232);
     let body = match catalog.page {
         Page::Overview => overview(catalog, shell),
         Page::Buttons => buttons(catalog, shell),
@@ -239,15 +235,11 @@ fn inputs<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
         ),
     ]
     .spacing(SP2);
-    let editor = text_editor(&catalog.notes)
+    let editor = ui::text_area(paint, &catalog.notes)
         .on_action(Message::Edit)
         .height(110)
         .padding(SP3)
-        .size(TextStyle::BODY.size_px)
-        .style({
-            let paint = *paint;
-            move |_, status| ui::text_area_style(&paint, status)
-        });
+        .size(TextStyle::BODY.size_px);
     let previous = catalog.quantity.checked_sub(1);
     let next = (catalog.quantity < 9).then_some(catalog.quantity + 1);
     let pickers = ui::list(
@@ -949,21 +941,9 @@ fn overlays(shell: &Shell<Message>) -> Element<'_, Message> {
         ui::secondary(paint, shell.t("Тост", "Toast"), Message::Toast),
         ui::secondary(paint, shell.t("Тост із дією", "Toast with action"), Message::ToastUndo),
     ]);
-    let area = mouse_area(
-        container(
-            text(shell.t("Клацніть правою кнопкою тут", "Right-click here"), TextStyle::CALL).color(paint.fg_2()),
-        )
-        .center_x(Fill)
-        .center_y(120)
-        .style({
-            let paint = *paint;
-            move |_| container::Style {
-                border: Border { color: paint.line_2(), width: 1.0, radius: R2.into() },
-                ..glide_sdk::glide_iced::style::rounded(paint.fill_1(), R2)
-            }
-        }),
-    )
-    .on_right_press(Message::Context);
+    let hint = text(shell.t("Клацніть правою кнопкою тут", "Right-click here"), TextStyle::CALL).color(paint.fg_2());
+    let zone = mock::outlined_surface(paint.fill_1(), paint.line_2(), 1.0, R2, hint).center_x(Fill).center_y(120);
+    let area = mouse_area(zone).on_right_press(Message::Context);
     let tips = wrap(vec![
         ui::tooltip(
             paint,
@@ -1040,12 +1020,8 @@ fn typography(shell: &Shell<Message>) -> Element<'_, Message> {
         swatches
             .iter()
             .map(|&(name, color)| {
-                let line = paint.line_2();
                 column![
-                    container(Space::new().width(64).height(44)).style(move |_| container::Style {
-                        border: Border { color: line, width: 1.0, radius: R2.into() },
-                        ..glide_sdk::glide_iced::style::rounded(color, R2)
-                    }),
+                    mock::outlined(color, paint.line_2(), 1.0, 64.0, 44.0, R2),
                     text(name, TextStyle::CAP).color(paint.fg_2()),
                 ]
                 .spacing(SP1)
@@ -1057,11 +1033,9 @@ fn typography(shell: &Shell<Message>) -> Element<'_, Message> {
         [("R1", 4.0), ("R2", R2), ("R3", R3), ("R4", 18.0)]
             .iter()
             .map(|&(name, radius)| {
-                let fill = paint.acc_soft();
                 column![
-                    container(Space::new().width(56).height(56))
-                        .style(move |_| glide_sdk::glide_iced::style::rounded(fill, radius)),
-                    text(name, TextStyle::CAP).color(paint.fg_2()),
+                    mock::block(paint.acc_soft(), 56.0, 56.0, radius),
+                    text(name, TextStyle::CAP).color(paint.fg_2())
                 ]
                 .spacing(SP1)
                 .align_x(Alignment::Center)
@@ -1096,11 +1070,8 @@ fn motion<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
     ];
     let target = if catalog.flipped { 1.0 } else { 0.0 };
     let lanes = Column::with_children(speeds.iter().map(|&(name, speed)| {
-        let dot = anim::animate(target, speed, |_| {
-            let fill = paint.acc_bg();
-            container(Space::new().width(28).height(28)).style(move |_| glide_sdk::glide_iced::style::rounded(fill, R2))
-        })
-        .offset(|value| Vector::new(300.0 * value, 0.0));
+        let dot = anim::animate(target, speed, |_| mock::block(paint.acc_bg(), 28.0, 28.0, R2))
+            .offset(|value| Vector::new(300.0 * value, 0.0));
         row![text(name, TextStyle::NUM).color(paint.fg_2()).width(170), container(dot).width(340)]
             .spacing(SP3)
             .align_y(Alignment::Center)

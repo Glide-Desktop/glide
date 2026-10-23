@@ -19,6 +19,12 @@ pub fn editor<'a, M: Clone + 'a>(paint: &Paint, content: &'a Content) -> TextEdi
 }
 
 #[must_use]
+pub fn text_area<'a, M: Clone + 'a>(paint: &Paint, content: &'a Content) -> TextEditor<'a, PlainText, M> {
+    let paint = *paint;
+    iced::widget::text_editor(content).style(move |_, status| super::text_area_style(&paint, status))
+}
+
+#[must_use]
 pub fn markdown_settings(paint: &Paint, size: f32, mono: Font) -> markdown::Settings {
     let mut settings = markdown::Settings::with_text_size(
         size,

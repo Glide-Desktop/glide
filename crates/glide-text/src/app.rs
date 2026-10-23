@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use glide_theme::motion;
+use glide_sdk::anim::Reveal;
+use glide_sdk::theme::motion;
 use iced::futures::channel::oneshot;
 use iced::keyboard::key::{Code, Named, Physical};
 use iced::keyboard::{self, Key, Modifiers};
@@ -165,12 +166,12 @@ pub struct Menu {
     pub kind: MenuKind,
     pub at: Point,
     pub selected: Option<usize>,
-    pub reveal: glide_ui::Reveal,
+    pub reveal: Reveal,
 }
 
 impl Menu {
     fn new(kind: MenuKind, at: Point, selected: Option<usize>) -> Self {
-        let mut reveal = glide_ui::Reveal::closed().with_ease(motion::ease_out);
+        let mut reveal = Reveal::closed().with_ease(motion::ease_out);
         reveal.open(motion::t2());
         Self { kind, at, selected, reveal }
     }
@@ -195,7 +196,7 @@ pub enum DialogKind {
 #[derive(Debug, Clone)]
 pub struct Dialog {
     pub kind: DialogKind,
-    pub reveal: glide_ui::Reveal,
+    pub reveal: Reveal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1695,7 +1696,7 @@ impl App {
     }
 
     fn show(&mut self, kind: DialogKind) -> Task<Message> {
-        let mut reveal = glide_ui::Reveal::closed().with_ease(motion::ease_out);
+        let mut reveal = Reveal::closed().with_ease(motion::ease_out);
         reveal.open(motion::t2());
         self.dialog = Some(Dialog { kind, reveal });
         Task::none()

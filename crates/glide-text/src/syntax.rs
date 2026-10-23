@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
-use glide_theme::Tokens;
+use glide_sdk::theme::{TokenColor, Tokens};
 use iced::advanced::text::highlighter;
 use iced::{Color, Font};
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent};
@@ -486,7 +486,7 @@ impl Palette {
     #[must_use]
     pub fn new(tokens: &Tokens, font: Font) -> Self {
         let ansi = tokens.terminal_ansi();
-        let color = |color: glide_theme::Color| {
+        let color = |color: TokenColor| {
             let [r, g, b, a] = color.0;
             Color { r, g, b, a }
         };
@@ -749,8 +749,10 @@ mod tests {
 
     #[test]
     fn the_bridge_feeds_lines_in_order_and_restarts_from_the_first_changed_line() {
-        let palette =
-            Palette::new(&Tokens::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue), Font::MONOSPACE);
+        let palette = Palette::new(
+            &Tokens::new(glide_sdk::theme::Appearance::Dark, glide_sdk::theme::Accent::Blue),
+            Font::MONOSPACE,
+        );
         let lines = Arc::new(highlight(Language::Rust, "fn a() {}\nfn b() {}\nfn c() {}"));
         let none = Arc::new(Marks::new());
         let settings = |lines, revision, marks: &Arc<Marks>, marked| Settings {
