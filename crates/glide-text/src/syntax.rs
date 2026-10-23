@@ -451,7 +451,7 @@ pub fn highlight(language: Language, text: &str) -> Lines {
     let mut lines: Lines = vec![Vec::new(); starts.len()];
     let Some(config) = config(language.key()) else { return lines };
     HIGHLIGHTER.with_borrow_mut(|highlighter| {
-        let Ok(events) = highlighter.highlight(config, text.as_bytes(), None, injected) else {
+        let Ok(events) = highlighter.highlight(config, text.as_bytes(), None, None, injected) else {
             return;
         };
         let mut stack = Vec::new();
