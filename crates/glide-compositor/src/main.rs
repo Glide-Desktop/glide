@@ -378,7 +378,10 @@ fn init_keychain(event_loop: &mut EventLoop<'static, GlideState>, state: &mut Gl
         return;
     }
     match keychain::Keychain::start(send) {
-        Ok(keychain) => state.session.keychain = keychain,
+        Ok(keychain) => {
+            state.session.keychain = keychain;
+            state.keychain(glide_ipc::keychain::Request::Status, |_, _| {});
+        }
         Err(err) => tracing::warn!(%err, "the keychain link is unavailable; saved passwords cannot be filled"),
     }
 }

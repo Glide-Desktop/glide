@@ -14,10 +14,12 @@ glide-config = { path = "../glide-config" }
 glide-ipc = { path = "../glide-ipc" }
 serde.workspace = true
 serde_json.workspace = true
+zbus = "5"
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 serde_json.workspace = true
+zbus = "5"
 
 [lints]
 workspace = true

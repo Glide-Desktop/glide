@@ -43,6 +43,8 @@ pub struct Candidate {
     pub username: String,
 }
 
+pub const EVENT: u64 = 0;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Response {
@@ -53,6 +55,8 @@ pub enum Response {
     Candidates { list: Vec<Candidate> },
     Secret { secret: Hidden },
     Error { message: String },
+    UnlockRequested,
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use glide_ipc::keychain::{Candidate, Hidden, Request, Response};
 
-use crate::vault::{self, Contents, Error, Item, Key, Params};
+use crate::vault::{self, Contents, Error, Item, Key, Params, Secret};
 
 pub const PROGRAM_ATTRIBUTE: &str = "glide:program";
 pub const APP_ATTRIBUTE: &str = "glide:app";
@@ -99,9 +100,89 @@ impl Daemon {
         change(contents);
         self.save()
     }
+
+    #[must_use]
+    pub fn contents(&self) -> Option<&Contents> {
+        self.open.as_ref().map(|(contents, _)| contents)
+    }
+
+    pub fn add_login(&mut self, login: Login) -> Result<u64, Response> {
+        let now = now();
+        let mut id = 0;
+        let item = Item {
+            id: 0,
+            collection: LOGIN_COLLECTION.into(),
+            label: String::new(),
+            attributes: BTreeMap::new(),
+            secret: Secret::new(Vec::new()),
+            content_type: "text/plain".into(),
+            created: now,
+            modified: now,
+        };
+        match self.edit(|contents| id = contents.add(login.apply(item, now))) {
+            Response::Done => Ok(id),
+            other => Err(other),
+        }
+    }
+
+    pub fn update_login(&mut self, id: u64, login: Login) -> Response {
+        if self.contents().is_some_and(|contents| contents.get(id).is_none()) {
+            return Response::Error { message: "no such item".into() };
+        }
+        let now = now();
+        self.edit(|contents| {
+            if let Some(item) = contents.get_mut(id) {
+                *item = login.apply(item.clone(), now);
+            }
+        })
+    }
+
+    pub fn delete(&mut self, id: u64) -> Response {
+        if self.contents().is_some_and(|contents| contents.get(id).is_none()) {
+            return Response::Error { message: "no such item".into() };
+        }
+        self.edit(|contents| {
+            contents.remove(id);
+        })
+    }
 }
 
-fn username(item: &Item) -> String {
+pub const LOGIN_COLLECTION: &str = "login";
+
+#[derive(Debug, Clone)]
+pub struct Login {
+    pub label: String,
+    pub username: String,
+    pub password: Hidden,
+    pub app: String,
+    pub program: String,
+}
+
+impl Login {
+    fn apply(self, mut item: Item, now: u64) -> Item {
+        item.label = self.label;
+        for (key, value) in [("username", self.username), (APP_ATTRIBUTE, self.app), (PROGRAM_ATTRIBUTE, self.program)]
+        {
+            if value.is_empty() {
+                item.attributes.remove(key);
+            } else {
+                item.attributes.insert(key.to_string(), value);
+            }
+        }
+        if !self.password.expose().is_empty() {
+            item.secret = Secret::new(self.password.expose().as_bytes().to_vec());
+        }
+        item.modified = now;
+        item
+    }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+#[must_use]
+pub fn username(item: &Item) -> String {
     USERNAME_ATTRIBUTES.iter().find_map(|key| item.attributes.get(*key)).cloned().unwrap_or_default()
 }
 
@@ -129,7 +210,6 @@ pub fn candidates(contents: &Contents, program: Option<&str>, app_id: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::Secret;
 
     const FAST: Params = Params { memory_kib: 64, passes: 1, lanes: 1 };
 
@@ -204,5 +284,37 @@ mod tests {
         let mut daemon = Daemon::new(temp("locked"), FAST);
         assert_eq!(daemon.handle(Request::Secret { id: 1 }), Response::Locked);
         assert_eq!(daemon.edit(|_| {}), Response::Locked);
+        assert!(daemon.contents().is_none());
+    }
+
+    fn entry(label: &str, password: &str) -> Login {
+        Login {
+            label: label.into(),
+            username: "me".into(),
+            password: hidden(password),
+            app: "org.telegram.desktop".into(),
+            program: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_login_is_added_updated_and_deleted() {
+        let path = temp("logins");
+        let mut daemon = Daemon::new(path.clone(), FAST);
+        daemon.handle(Request::Create { password: hidden("pw") });
+        let id = daemon.add_login(entry("Telegram", "first")).unwrap();
+        let found = candidates(daemon.contents().unwrap(), None, Some("org.telegram.desktop"));
+        assert_eq!(found, [Candidate { id, label: "Telegram".into(), username: "me".into() }]);
+        assert_eq!(daemon.update_login(id, entry("Telegram Desktop", "")), Response::Done);
+        assert_eq!(
+            daemon.handle(Request::Secret { id }),
+            Response::Secret { secret: hidden("first") },
+            "an empty password keeps the saved one"
+        );
+        assert_eq!(daemon.contents().unwrap().get(id).unwrap().label, "Telegram Desktop");
+        assert!(!daemon.contents().unwrap().get(id).unwrap().attributes.contains_key(PROGRAM_ATTRIBUTE));
+        assert_eq!(daemon.delete(id), Response::Done);
+        assert!(matches!(daemon.delete(id), Response::Error { .. }));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

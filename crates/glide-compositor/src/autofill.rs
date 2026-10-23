@@ -111,7 +111,7 @@ impl GlideState {
         self.notifications.dismiss(FILL_ID);
         self.queue_redraw();
         if key == UNLOCK {
-            self.unlock_keychain(false, Self::list_candidates);
+            self.unlock_keychain(Self::list_candidates);
             return;
         }
         let (Some(id), Some(offer)) = (parse_fill_key(key), self.session.autofill.clone()) else {

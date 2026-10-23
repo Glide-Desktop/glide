@@ -1716,6 +1716,7 @@ dependencies = [
  "glide-ipc",
  "serde",
  "serde_json",
+ "zbus",
  "zeroize",
 ]
 
