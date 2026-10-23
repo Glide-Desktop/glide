@@ -7,9 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gstreamer = "0.24"
-gstreamer-app = "0.24"
-gstreamer-video = "0.24"
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
 zbus = "5"
 
 [lints]
