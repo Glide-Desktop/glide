@@ -1,5 +1,4 @@
 pub mod app;
-pub mod boxes;
 mod chrome;
 pub mod config;
 pub mod dnd;

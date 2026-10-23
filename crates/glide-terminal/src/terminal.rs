@@ -8,25 +8,20 @@ use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+use glide_sdk::widget::cells::{Badge, Caret, Metrics, Painter, Span, Underline, thumb};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Quad, Renderer as _};
-use iced::advanced::text::{self, Paragraph as _, Renderer as _};
 use iced::advanced::widget::{Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell};
-use iced::alignment::Vertical;
 use iced::border::Radius;
-use iced::{
-    Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, keyboard, mouse,
-};
+use iced::{Border, Color, Element, Event, Font, Length, Point, Rectangle, Renderer, Size, Theme, keyboard, mouse};
 
-use crate::boxes;
 use crate::hints::Hint;
 use crate::input::{self, Button};
 use crate::marks::{self, Mark};
 use crate::profile::{Palette, color, mix};
 use crate::session::{Cells, Listener, Pane, PaneId};
 
-const SAMPLE: &str = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const BAR_ZONE: f32 = 12.0;
 
@@ -141,38 +136,6 @@ impl<'a> Terminal<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Metrics {
-    fonts: Fonts,
-    cell: Size,
-    baseline: f32,
-}
-
-impl Metrics {
-    fn measure(fonts: Fonts) -> Self {
-        let height = (fonts.size * fonts.line_height).round().max(1.0);
-        let paragraph = <Renderer as text::Renderer>::Paragraph::with_text(text::Text {
-            content: SAMPLE,
-            bounds: Size::INFINITE,
-            size: Pixels(fonts.size),
-            line_height: text::LineHeight::Absolute(Pixels(height)),
-            font: fonts.regular,
-            align_x: text::Alignment::Left,
-            align_y: Vertical::Top,
-            shaping: text::Shaping::Basic,
-            wrapping: text::Wrapping::None,
-        });
-        let width = paragraph.min_bounds().width / SAMPLE.len() as f32;
-        let baseline = ((height - 1.32 * fonts.size) / 2.0 + 1.02 * fonts.size).round();
-        Self { fonts, cell: Size::new(width.max(1.0), height), baseline }
-    }
-
-    fn cells(&self, bounds: Rectangle) -> Cells {
-        let fit = |space: f32, cell: f32| (space / cell).floor().max(1.0) as usize;
-        Cells { columns: fit(bounds.width, self.cell.width).max(2), lines: fit(bounds.height, self.cell.height) }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum Link {
     Osc(Hyperlink),
@@ -208,6 +171,7 @@ enum Drag {
 
 #[derive(Default)]
 struct State {
+    measured: Option<Fonts>,
     metrics: Option<Metrics>,
     drag: Drag,
     clicks: Option<(Instant, GridPoint, u8)>,
@@ -236,19 +200,24 @@ struct Hit {
 }
 
 fn locate(local: Point, metrics: &Metrics, cells: Cells, offset: usize) -> Hit {
-    let x = local.x.max(0.0);
-    let y = local.y.max(0.0);
-    let column = ((x / metrics.cell.width) as usize).min(cells.columns.saturating_sub(1));
-    let row = ((y / metrics.cell.height) as usize).min(cells.lines.saturating_sub(1));
-    let side = if x - column as f32 * metrics.cell.width > metrics.cell.width / 2.0 { Side::Right } else { Side::Left };
+    let hit = metrics.locate(local, cells.into());
+    let (row, column) = (hit.row, hit.column);
+    let side = if hit.right_half { Side::Right } else { Side::Left };
     Hit { row, column, side, point: GridPoint::new(Line(row as i32 - offset as i32), Column(column)) }
 }
 
-fn thumb(bounds: Rectangle, lines: usize, history: usize, offset: usize) -> Rectangle {
-    let track = bounds.height - 8.0;
-    let height = (track * lines as f32 / (lines + history) as f32).clamp(24.0_f32.min(track), track);
-    let progress = 1.0 - offset as f32 / history.max(1) as f32;
-    Rectangle { x: bounds.x + bounds.width - 7.0, y: bounds.y + 4.0 + (track - height) * progress, width: 4.0, height }
+const fn underline_style(flags: Flags) -> Underline {
+    if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        Underline::Double
+    } else if flags.contains(Flags::UNDERCURL) {
+        Underline::Curl
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        Underline::Dotted
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        Underline::Dashed
+    } else {
+        Underline::Single
+    }
 }
 
 fn link_at(term: &Term<Listener>, point: GridPoint, urls: &mut RegexSearch) -> Option<Link> {
@@ -469,160 +438,6 @@ impl Terminal<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Span {
-    row: usize,
-    column: usize,
-    width: usize,
-}
-
-impl Span {
-    const fn new(row: usize, column: usize, width: usize) -> Self {
-        Self { row, column, width }
-    }
-}
-
-struct Painter<'r> {
-    renderer: &'r mut Renderer,
-    origin: Point,
-    metrics: Metrics,
-    clip: Rectangle,
-    grid: Cells,
-    corners: Radius,
-    run: String,
-    run_at: Span,
-    run_style: (Rgb, Font),
-    background: Option<(Span, Rgb, bool)>,
-}
-
-impl Painter<'_> {
-    fn rect(&self, span: Span) -> Rectangle {
-        let cell = self.metrics.cell;
-        let left = (self.origin.x + span.column as f32 * cell.width).round();
-        let right = (self.origin.x + (span.column + span.width) as f32 * cell.width).round();
-        Rectangle {
-            x: left,
-            y: self.origin.y + span.row as f32 * cell.height,
-            width: right - left,
-            height: cell.height,
-        }
-    }
-
-    fn quad(&mut self, bounds: Rectangle, color: Color) {
-        self.renderer.fill_quad(Quad { bounds, ..Quad::default() }, color);
-    }
-
-    fn text(&mut self, content: String, span: Span, (fg, font): (Rgb, Font), basic: bool) {
-        let rect = self.rect(span);
-        self.renderer.fill_text(
-            text::Text {
-                content,
-                bounds: Size::new(rect.width + self.metrics.cell.width * 2.0, rect.height),
-                size: Pixels(self.metrics.fonts.size),
-                line_height: text::LineHeight::Absolute(Pixels(rect.height)),
-                font,
-                align_x: text::Alignment::Left,
-                align_y: Vertical::Top,
-                shaping: if basic { text::Shaping::Basic } else { text::Shaping::Advanced },
-                wrapping: text::Wrapping::None,
-            },
-            Point::new(self.origin.x + span.column as f32 * self.metrics.cell.width, rect.y),
-            color(fg, 1.0),
-            self.clip,
-        );
-    }
-
-    fn flush(&mut self) {
-        let trimmed = self.run.trim_end().len();
-        if trimmed > 0 {
-            self.run.truncate(trimmed);
-            let content = std::mem::take(&mut self.run);
-            let span = Span { width: trimmed, ..self.run_at };
-            self.text(content, span, self.run_style, true);
-        }
-        self.run.clear();
-    }
-
-    fn glyph(&mut self, at: Span, glyph: char, style: (Rgb, Font)) {
-        let continues = !self.run.is_empty()
-            && self.run_at.row == at.row
-            && self.run_at.column + self.run.len() == at.column
-            && self.run_style == style;
-        if !continues {
-            self.flush();
-            if glyph == ' ' {
-                return;
-            }
-            self.run_at = at;
-            self.run_style = style;
-        }
-        self.run.push(glyph);
-    }
-
-    fn bleed(&self, span: Span) -> (Rectangle, Radius) {
-        let rect = self.rect(span);
-        let clip = self.clip;
-        let (left, top) = (span.column == 0, span.row == 0);
-        let right = span.column + span.width >= self.grid.columns;
-        let bottom = span.row + 1 >= self.grid.lines;
-        let x = if left { clip.x } else { rect.x };
-        let y = if top { clip.y } else { rect.y };
-        let end_x = if right { clip.x + clip.width } else { rect.x + rect.width };
-        let end_y = if bottom { clip.y + clip.height } else { rect.y + rect.height };
-        let corner = |a: bool, b: bool, radius: f32| if a && b { radius } else { 0.0 };
-        let radius = Radius {
-            top_left: corner(top, left, self.corners.top_left),
-            top_right: corner(top, right, self.corners.top_right),
-            bottom_right: corner(bottom, right, self.corners.bottom_right),
-            bottom_left: corner(bottom, left, self.corners.bottom_left),
-        };
-        (Rectangle { x, y, width: end_x - x, height: end_y - y }, radius)
-    }
-
-    fn fill(&mut self, next: Option<(Span, Rgb, bool)>) {
-        match (self.background, next) {
-            (Some((span, bg, bleeds)), Some((more, next_bg, next_bleeds)))
-                if span.row == more.row
-                    && span.column + span.width == more.column
-                    && bg == next_bg
-                    && bleeds == next_bleeds =>
-            {
-                self.background = Some((Span { width: span.width + more.width, ..span }, bg, bleeds));
-            }
-            (previous, next) => {
-                if let Some((span, bg, bleeds)) = previous {
-                    let (bounds, radius) = if bleeds { self.bleed(span) } else { (self.rect(span), Radius::default()) };
-                    let border = Border { radius, ..Border::default() };
-                    self.renderer.fill_quad(Quad { bounds, border, ..Quad::default() }, color(bg, 1.0));
-                }
-                self.background = next;
-            }
-        }
-    }
-
-    fn underline(&mut self, span: Span, flags: Flags, color: Color) {
-        let rect = self.rect(span);
-        let y = rect.y + (self.metrics.baseline + 2.0).min(rect.height - 1.0);
-        let line = |x: f32, y: f32, width: f32| Rectangle { x, y, width, height: 1.0 };
-        if flags.contains(Flags::DOUBLE_UNDERLINE) {
-            self.quad(line(rect.x, y - 1.0, rect.width), color);
-            self.quad(line(rect.x, y + 1.0, rect.width), color);
-        } else if flags.intersects(Flags::UNDERCURL | Flags::DOTTED_UNDERLINE | Flags::DASHED_UNDERLINE) {
-            let (dash, gap): (f32, f32) = if flags.contains(Flags::DASHED_UNDERLINE) { (4.0, 2.0) } else { (2.0, 2.0) };
-            let mut x = rect.x;
-            let mut up = false;
-            while x < rect.x + rect.width {
-                let lift = if flags.contains(Flags::UNDERCURL) && up { -1.0 } else { 0.0 };
-                self.quad(line(x, y + lift, dash.min(rect.x + rect.width - x)), color);
-                x += dash + if flags.contains(Flags::UNDERCURL) { 0.0 } else { gap };
-                up = !up;
-            }
-        } else {
-            self.quad(line(rect.x, y, rect.width), color);
-        }
-    }
-}
-
 impl Widget<Action, Theme, Renderer> for Terminal<'_> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -638,8 +453,10 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
 
     fn layout(&mut self, tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
         let state = tree.state.downcast_mut::<State>();
-        if state.metrics.is_none_or(|metrics| metrics.fonts != self.look.fonts) {
-            state.metrics = Some(Metrics::measure(self.look.fonts));
+        let fonts = self.look.fonts;
+        if state.metrics.is_none() || state.measured != Some(fonts) {
+            state.metrics = Some(Metrics::measure(fonts.regular, fonts.size, fonts.line_height));
+            state.measured = Some(fonts);
         }
         layout::Node::new(limits.max())
     }
@@ -651,7 +468,7 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
         let state = tree.state.downcast_mut::<State>();
         let Some(metrics) = state.metrics else { return };
         let bounds = layout.bounds();
-        let cells = metrics.cells(bounds);
+        let cells = Cells::from(metrics.grid(bounds));
         if cells != self.pane.cells || metrics.cell != self.pane.cell_size {
             shell.publish(Action::Resize(self.pane.id, cells, metrics.cell));
         }
@@ -753,45 +570,23 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             let backdrop =
                 Quad { bounds, border: Border { radius: self.corners, ..Border::default() }, ..Quad::default() };
             renderer.fill_quad(backdrop, color(palette.query(term.colors(), 257), palette.opacity));
-            let mut painter = Painter {
-                renderer,
-                origin: bounds.position(),
-                metrics,
-                clip: bounds,
-                grid: Cells { columns: term.columns(), lines: term.screen_lines() },
-                corners: self.corners,
-                run: String::new(),
-                run_at: Span::new(0, 0, 0),
-                run_style: (palette.foreground, self.look.fonts.regular),
-                background: None,
-            };
-            let cursor = self.paint_cells(&mut painter, state, &term, bounds);
+            let grid = Cells { columns: term.columns(), lines: term.screen_lines() };
+            let mut painter = Painter::new(renderer, bounds, metrics, grid.into(), self.corners);
+            let cursor = self.paint_cells(&mut painter, state, &term);
             if let Some((span, shape)) = cursor {
                 self.paint_cursor(&mut painter, span, shape, palette.query(term.colors(), 258));
             }
             let offset = term.grid().display_offset();
             let (lines, history) = (term.screen_lines(), term.history_size());
             if history > 0 && (offset > 0 || state.near_bar || state.drag == Drag::Scrollbar) {
-                let bar = thumb(bounds, lines, history, offset);
                 let alpha = if state.near_bar || state.drag == Drag::Scrollbar { 0.55 } else { 0.32 };
-                painter.renderer.fill_quad(
-                    Quad {
-                        bounds: bar,
-                        border: Border { radius: glide_sdk::theme::R1.into(), ..Border::default() },
-                        ..Quad::default()
-                    },
-                    color(palette.foreground, alpha),
-                );
+                painter.scrollbar(lines, history, offset, color(palette.foreground, alpha));
             }
             match self.flash {
                 Some((Flash::Bell, amount)) => {
                     painter.renderer.fill_quad(backdrop, color(palette.foreground, 0.14 * amount));
                 }
-                Some((Flash::Mark, amount)) => {
-                    let row = painter.rect(Span::new(0, 0, metrics.cells(bounds).columns));
-                    let band = Rectangle { x: bounds.x, width: bounds.width, ..row };
-                    painter.quad(band, Color { a: 0.22 * amount, ..self.look.accent });
-                }
+                Some((Flash::Mark, amount)) => painter.band(0, Color { a: 0.22 * amount, ..self.look.accent }),
                 None => {}
             }
             if let Some((hints, typed)) = self.hints {
@@ -799,9 +594,7 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             }
             if self.drop_target {
                 let border = Border { color: self.look.accent, width: 2.0, radius: self.corners };
-                painter
-                    .renderer
-                    .fill_quad(Quad { bounds, border, ..Quad::default() }, Color { a: 0.08, ..self.look.accent });
+                painter.outline(bounds, border, Color { a: 0.08, ..self.look.accent });
             }
             if let Some(Link::Osc(link)) = &state.hover {
                 let ink = color(palette.query(term.colors(), 257), 1.0);
@@ -813,7 +606,7 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
 
 impl Terminal<'_> {
     fn paint_link_target(&self, painter: &mut Painter<'_>, uri: &str, bounds: Rectangle, fill: Color, ink: Color) {
-        let (fonts, cell) = (self.look.fonts, painter.metrics.cell);
+        let (fonts, cell) = (self.look.fonts, painter.metrics().cell);
         let pad = glide_sdk::theme::SP2;
         let room = ((bounds.width - pad * 4.0) / cell.width.max(1.0)).floor().max(1.0) as usize;
         let shown: String = if uri.chars().count() > room {
@@ -829,33 +622,16 @@ impl Terminal<'_> {
             width: width.min(bounds.width - pad * 2.0),
             height,
         };
-        let clip = painter.clip;
-        painter.renderer.with_layer(clip, |renderer| {
-            renderer.fill_quad(
-                Quad {
-                    bounds: pill,
-                    border: Border { radius: glide_sdk::theme::R2.into(), ..Border::default() },
-                    ..Quad::default()
-                },
-                fill,
-            );
-            renderer.fill_text(
-                text::Text {
-                    content: shown,
-                    bounds: Size::new(pill.width, cell.height),
-                    size: Pixels(fonts.size),
-                    line_height: text::LineHeight::Absolute(Pixels(cell.height)),
-                    font: fonts.regular,
-                    align_x: text::Alignment::Left,
-                    align_y: Vertical::Top,
-                    shaping: text::Shaping::Advanced,
-                    wrapping: text::Wrapping::None,
-                },
-                Point::new(pill.x + pad, pill.y + pad / 2.0),
-                ink,
-                clip,
-            );
-        });
+        painter.badges(vec![Badge {
+            pill,
+            radius: glide_sdk::theme::R2,
+            fill,
+            label: shown,
+            at: Point::new(pill.x + pad, pill.y + pad / 2.0),
+            font: fonts.regular,
+            ink,
+            basic: false,
+        }]);
     }
 
     fn paint_hints(&self, painter: &mut Painter<'_>, hints: &[Hint], typed: &str, offset: i32, lines: usize) {
@@ -872,47 +648,28 @@ impl Terminal<'_> {
                 let Some(row) = visible(line) else { continue };
                 let from = if line == start.line { start.column.0 } else { 0 };
                 let to = if line == end.line { end.column.0 + 1 } else { columns };
-                painter.underline(Span::new(row, from, to.saturating_sub(from)), Flags::UNDERLINE, accent);
+                painter.underline(Span::new(row, from, to.saturating_sub(from)), Underline::Single, accent);
             }
             if let Some(row) = visible(start.line) {
                 labels.push((painter.rect(Span::new(row, start.column.0, hint.label.len())), hint.label.clone()));
             }
         }
-        let (fonts, cell) = (self.look.fonts, painter.metrics.cell);
-        let clip = painter.clip;
-        painter.renderer.with_layer(clip, |renderer| {
-            for (rect, label) in labels {
-                let pill = Rectangle { x: rect.x - 2.0, width: rect.width + 4.0, ..rect };
-                renderer.fill_quad(
-                    Quad {
-                        bounds: pill,
-                        border: Border { radius: glide_sdk::theme::R1.into(), ..Border::default() },
-                        ..Quad::default()
-                    },
-                    accent,
-                );
-                renderer.fill_text(
-                    text::Text {
-                        content: label,
-                        bounds: Size::new(pill.width + cell.width, pill.height),
-                        size: Pixels(fonts.size),
-                        line_height: text::LineHeight::Absolute(Pixels(cell.height)),
-                        font: Font { weight: iced::font::Weight::Bold, ..fonts.regular },
-                        align_x: text::Alignment::Left,
-                        align_y: Vertical::Top,
-                        shaping: text::Shaping::Basic,
-                        wrapping: text::Wrapping::None,
-                    },
-                    Point::new(rect.x, rect.y),
-                    Color::WHITE,
-                    clip,
-                );
-            }
+        let bold = Font { weight: iced::font::Weight::Bold, ..self.look.fonts.regular };
+        let badges = labels.into_iter().map(|(rect, label)| Badge {
+            pill: Rectangle { x: rect.x - 2.0, width: rect.width + 4.0, ..rect },
+            radius: glide_sdk::theme::R1,
+            fill: accent,
+            label,
+            at: rect.position(),
+            font: bold,
+            ink: Color::WHITE,
+            basic: true,
         });
+        painter.badges(badges.collect());
     }
 
     fn paint_cells(
-        &self, painter: &mut Painter<'_>, state: &State, term: &Term<Listener>, bounds: Rectangle,
+        &self, painter: &mut Painter<'_>, state: &State, term: &Term<Listener>,
     ) -> Option<(Span, CursorShape)> {
         let palette = &self.look.palette;
         let found = self.found(state, term);
@@ -959,7 +716,7 @@ impl Terminal<'_> {
                 if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 },
             );
             let (_, bg, bleeds) = tint(indexed);
-            painter.fill((bg != palette.query(content.colors, 257)).then_some((at, bg, bleeds)));
+            painter.fill((bg != palette.query(content.colors, 257)).then_some((at, color(bg, 1.0), bleeds)));
         }
         painter.fill(None);
         for indexed in cells {
@@ -968,10 +725,9 @@ impl Terminal<'_> {
             if at.column == 0
                 && let Some(mark) = marks::at(term, point.line)
             {
-                let rect = painter.rect(at);
                 let tint =
                     if mark == Mark::Bookmark { self.look.bookmark } else { Color { a: 0.55, ..self.look.accent } };
-                painter.quad(Rectangle { x: bounds.x, y: rect.y + 2.0, width: 2.0, height: rect.height - 4.0 }, tint);
+                painter.gutter(at.row, tint);
             }
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                 continue;
@@ -989,12 +745,11 @@ impl Terminal<'_> {
             let hovered = state.hover.as_ref().is_some_and(|link| link.covers(point, cell));
             if cell.flags.intersects(Flags::ALL_UNDERLINES) || hovered {
                 let underline = cell.underline_color().map_or(fg, |tint| palette.resolve(content.colors, tint));
-                painter.underline(at, if hovered { Flags::UNDERLINE } else { cell.flags }, color(underline, 1.0));
+                let style = if hovered { Underline::Single } else { underline_style(cell.flags) };
+                painter.underline(at, style, color(underline, 1.0));
             }
             if cell.flags.contains(Flags::STRIKEOUT) {
-                let rect = painter.rect(at);
-                painter
-                    .quad(Rectangle { y: (rect.y + rect.height / 2.0).round(), height: 1.0, ..rect }, color(fg, 1.0));
+                painter.strike(at, color(fg, 1.0));
             }
         }
         painter.fill(None);
@@ -1003,40 +758,28 @@ impl Terminal<'_> {
     }
 
     fn paint_glyph(&self, painter: &mut Painter<'_>, cell: &Cell, at: Span, fg: Rgb) {
-        let style = (fg, self.look.fonts.styled(cell.flags));
+        let (ink, font) = (color(fg, 1.0), self.look.fonts.styled(cell.flags));
         let zerowidth = cell.zerowidth().filter(|marks| !marks.is_empty());
-        if boxes::handles(cell.c) {
-            painter.flush();
-            let rect = painter.rect(at);
-            boxes::draw(painter.renderer, cell.c, rect, color(fg, 1.0));
-        } else if cell.c.is_ascii() && !cell.c.is_ascii_control() && zerowidth.is_none() && at.width == 1 {
-            painter.glyph(at, cell.c, style);
+        if painter.symbol(at, cell.c, ink) {
+            return;
+        }
+        if cell.c.is_ascii() && !cell.c.is_ascii_control() && zerowidth.is_none() && at.width == 1 {
+            painter.glyph(at, cell.c, ink, font);
         } else if cell.c != ' ' {
             painter.flush();
             let mut content = cell.c.to_string();
             content.extend(zerowidth.into_iter().flatten());
-            painter.text(content, at, style, false);
+            painter.text(content, at, ink, font, false);
         }
     }
 
     fn paint_cursor(&self, painter: &mut Painter<'_>, at: Span, shape: CursorShape, cursor: Rgb) {
-        let rect = painter.rect(at);
-        let tint = color(cursor, 1.0);
-        let stroke = 2.0_f32.min(rect.width);
-        match (self.focused, shape) {
-            (true, CursorShape::Beam) => painter.quad(Rectangle { width: stroke, ..rect }, tint),
-            (true, CursorShape::Underline) => {
-                painter.quad(Rectangle { y: rect.y + rect.height - stroke, height: stroke, ..rect }, tint);
-            }
-            _ => painter.renderer.fill_quad(
-                Quad {
-                    bounds: rect,
-                    border: Border { color: tint, width: 1.0, radius: 0.0.into() },
-                    ..Quad::default()
-                },
-                Color::TRANSPARENT,
-            ),
-        }
+        let caret = match shape {
+            CursorShape::Beam => Caret::Beam,
+            CursorShape::Underline => Caret::Underline,
+            _ => Caret::Block,
+        };
+        painter.caret(at, caret, color(cursor, 1.0), self.focused && caret != Caret::Block);
     }
 }
 
@@ -1086,8 +829,8 @@ mod tests {
         let terminal = Terminal::new(&pane, look, true);
         let mut tree = Tree::new(&terminal as &dyn Widget<Action, Theme, Renderer>);
         tree.state.downcast_mut::<State>().metrics =
-            Some(Metrics { fonts, cell: Size::new(8.0, 16.0), baseline: 13.0 });
-        let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(crate::MONO, Pixels(13.0)));
+            Some(Metrics { font: fonts.regular, size: fonts.size, cell: Size::new(8.0, 16.0), baseline: 13.0 });
+        let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(crate::MONO, iced::Pixels(13.0)));
         renderer.reset(bounds);
         let node = layout::Node::new(bounds.size());
         terminal.draw(

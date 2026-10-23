@@ -13,6 +13,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::tty::{self, Options, Shell};
+use glide_sdk::widget::cells::Grid;
 use iced::futures::channel::mpsc::{self, UnboundedSender};
 use iced::futures::{SinkExt, Stream, StreamExt};
 
@@ -66,6 +67,18 @@ pub fn feed() -> impl Stream<Item = Feed> {
 pub struct Cells {
     pub columns: usize,
     pub lines: usize,
+}
+
+impl From<Grid> for Cells {
+    fn from(Grid { columns, lines }: Grid) -> Self {
+        Self { columns, lines }
+    }
+}
+
+impl From<Cells> for Grid {
+    fn from(Cells { columns, lines }: Cells) -> Self {
+        Self { columns, lines }
+    }
 }
 
 impl Dimensions for Cells {

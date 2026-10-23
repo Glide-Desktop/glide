@@ -1,5 +1,6 @@
 mod buttons;
 mod cards;
+pub mod cells;
 mod controls;
 mod editor;
 mod feedback;
