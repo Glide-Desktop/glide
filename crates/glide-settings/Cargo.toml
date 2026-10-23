@@ -33,7 +33,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 glide-config = { path = "../glide-config" }
 glide-sdk = { path = "../glide-sdk" }
 glide-ipc = { path = "../glide-ipc" }
-glide-app = { path = "../glide-app" }
 glide-netbird = { path = "../glide-netbird" }
 glide-terminal = { path = "../glide-terminal" }
 thiserror.workspace = true
