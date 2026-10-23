@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/glide-app",
     "crates/glide-appmenu",
+    "crates/glide-cast",
     "crates/glide-catalog",
     "crates/glide-compositor",
     "crates/glide-config",
