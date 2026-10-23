@@ -47,6 +47,7 @@ mod tr {
         FocusDock => "Move focus to the dock", "Перейти до панелі програм";
         RunPrompt => "Open the Run prompt", "Відкрити рядок «Виконати»";
         ForceQuit => "Force quit the app", "Завершити програму примусово";
+        FillPassword => "Fill a saved password", "Вставити збережений пароль";
         TileLeft => "Fill the left half", "Зайняти ліву половину";
         TileRight => "Fill the right half", "Зайняти праву половину";
         TileMaximize => "Fill the screen", "Розгорнути на весь екран";
@@ -573,6 +574,7 @@ fn named_label(name: &str) -> Option<tr::Key> {
         "focus-dock" => tr::Key::FocusDock,
         "run-command" => tr::Key::RunPrompt,
         "force-quit" => tr::Key::ForceQuit,
+        "fill-password" => tr::Key::FillPassword,
         "tile-left" => tr::Key::TileLeft,
         "tile-right" => tr::Key::TileRight,
         "tile-maximize" => tr::Key::TileMaximize,

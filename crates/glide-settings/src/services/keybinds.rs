@@ -86,6 +86,7 @@ pub const NAMED_ACTIONS: &[&str] = &[
     "toggle-quick-settings",
     "toggle-do-not-disturb",
     "toggle-caffeine",
+    "fill-password",
     "lock",
     "power-dialog",
     "logout",
@@ -169,7 +170,8 @@ impl Action {
                 | "toggle-notification-center"
                 | "toggle-quick-settings"
                 | "toggle-do-not-disturb"
-                | "toggle-caffeine" => Category::System,
+                | "toggle-caffeine"
+                | "fill-password" => Category::System,
                 media if media.starts_with("media-") => Category::Media,
                 _ => Category::Custom,
             },

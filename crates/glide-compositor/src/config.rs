@@ -1471,6 +1471,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "power-dialog" => KeyAction::PowerDialog,
             "terminal" => KeyAction::Terminal,
             "force-quit" => KeyAction::ForceQuit,
+            "fill-password" => KeyAction::FillPassword,
             "tile-left" => KeyAction::Tile(crate::tiling::Side::Left),
             "tile-right" => KeyAction::Tile(crate::tiling::Side::Right),
             "tile-maximize" => KeyAction::TileMaximize,

@@ -110,6 +110,7 @@ pub enum KeyAction {
     TileRestore,
     MoveToOutput(crate::tiling::Side),
     ForceQuit,
+    FillPassword,
     RestoreShortcuts,
     FocusDock,
     FocusTopBar,
@@ -1919,6 +1920,7 @@ impl GlideState {
             KeyAction::LockedPowerKey => self.locked_power_key(),
             KeyAction::ShowDesktop => self.toggle_show_desktop(),
             KeyAction::ForceQuit => self.force_quit_focused(),
+            KeyAction::FillPassword => self.offer_passwords_now(),
             KeyAction::RestoreShortcuts => self.restore_shortcuts(),
             KeyAction::RunPrompt => self.open_run_prompt(),
             KeyAction::FocusDock

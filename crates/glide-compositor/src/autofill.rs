@@ -16,6 +16,7 @@ pub struct Offer {
     program: Option<String>,
     app_id: Option<String>,
     app: String,
+    asked: bool,
 }
 
 #[must_use]
@@ -39,16 +40,30 @@ impl GlideState {
         if self.session.autofill.as_ref().is_some_and(|offer| offer.surface == surface) {
             return;
         }
+        self.begin_offer(surface, false);
+    }
+
+    pub fn offer_passwords_now(&mut self) {
+        if self.screen_locked() {
+            return;
+        }
+        if let Some(surface) = self.focused_surface() {
+            self.begin_offer(surface, true);
+        }
+    }
+
+    fn begin_offer(&mut self, surface: WlSurface, asked: bool) {
         let program = surface
             .client()
             .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.identity.program.clone()))
             .map(|path| path.display().to_string());
         let (title, app_id) = crate::state::toplevel_title_and_app_id(&surface);
         let app = app_id.clone().or(title).unwrap_or_default();
-        self.session.autofill = Some(Offer { surface, program, app_id, app });
-        self.keychain(Request::Status, |state, response| match response {
+        self.session.autofill = Some(Offer { surface, program, app_id, app, asked });
+        self.keychain(Request::Status, move |state, response| match response {
             Response::Status { exists: true, unlocked: true } => state.list_candidates(),
             Response::Status { exists: true, unlocked: false } => state.show_fill_offer(None),
+            Response::Status { exists: false, .. } if asked => state.show_fill_notice(Key::PasswordNoKeychain),
             _ => {}
         });
     }
@@ -58,11 +73,29 @@ impl GlideState {
             return;
         };
         let request = Request::Candidates { program: offer.program, app_id: offer.app_id };
-        self.keychain(request, |state, response| match response {
+        self.keychain(request, move |state, response| match response {
             Response::Candidates { list } if !list.is_empty() => state.show_fill_offer(Some(list)),
+            Response::Candidates { .. } if offer.asked => state.show_fill_notice(Key::PasswordNoneSaved),
             Response::Locked => state.show_fill_offer(None),
             _ => {}
         });
+    }
+
+    fn show_fill_notice(&mut self, body: Key) {
+        let Some(offer) = self.session.autofill.as_ref() else {
+            return;
+        };
+        let notice = glide_notify::Notification {
+            id: FILL_ID,
+            app_name: "Glide".to_string(),
+            app_icon: "dialog-password".to_string(),
+            summary: t(Key::PasswordOffer).replace("{app}", &offer.app),
+            body: t(body).to_string(),
+            transient: true,
+            ..glide_notify::Notification::default()
+        };
+        self.notifications.push(&mut self.dock.icons, notice, true);
+        self.queue_redraw();
     }
 
     fn show_fill_offer(&mut self, choices: Option<Vec<Candidate>>) {

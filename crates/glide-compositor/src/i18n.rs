@@ -219,7 +219,8 @@ catalogue! {
     PasswordOfferLocked => "The keychain is locked", "Зв'язка ключів заблокована";
     PasswordOfferLockedBody => "Unlock it to fill a saved password for {app}", "Розблокуйте її, щоб вставити збережений пароль для {app}";
     PasswordFill => "Fill {name}", "Вставити {name}";
-    SomeApp => "An app", "Програма";
+    PasswordNoneSaved => "No saved password matches this app. Add one in Settings › Passwords.", "Для цієї програми немає збереженого пароля. Додайте його в Налаштуваннях › Паролі.";
+    PasswordNoKeychain => "Create a keychain in Settings › Passwords first.", "Спершу створіть зв'язку ключів у Налаштуваннях › Паролі.";    SomeApp => "An app", "Програма";
     PowerCountdownLogOut => "You will be logged out automatically in {n} s.", "Сеанс буде завершено автоматично через {n} с.";
     PowerCountdownRestart => "The computer will restart automatically in {n} s.", "Комп\u{2019}ютер буде перезавантажено автоматично через {n} с.";
     PowerCountdownShutDown => "The computer will shut down automatically in {n} s.", "Комп\u{2019}ютер буде вимкнено автоматично через {n} с.";
