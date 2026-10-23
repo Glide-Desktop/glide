@@ -1,7 +1,7 @@
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::text;
 use iced::widget::{column, container, row, space};
-use iced::{Alignment, Element, Fill, Length, Subscription, Task};
+use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::gated;
 use super::{Ctx, Pane, Panel};
@@ -270,7 +270,8 @@ pub fn capture_event(
     }
 }
 
-fn recorded(event: iced::keyboard::Event) -> Option<Msg> {
+#[must_use]
+pub fn recorded(event: iced::keyboard::Event) -> Option<Msg> {
     let iced::keyboard::Event::KeyPressed { key, physical_key, modifiers, .. } = event else {
         return None;
     };
@@ -467,10 +468,6 @@ impl Pane for Page {
             }
         }
         Task::none()
-    }
-
-    fn subscription(&self) -> Subscription<Msg> {
-        if self.recording { iced::keyboard::listen().filter_map(recorded) } else { Subscription::none() }
     }
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {

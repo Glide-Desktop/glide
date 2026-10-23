@@ -287,6 +287,12 @@ pub trait App: Sized + 'static {
     fn window_changed(&mut self, _shell: &mut Shell<Self::Message>) -> Task<Self::Message> {
         Task::none()
     }
+
+    fn key(
+        &mut self, _event: &keyboard::Event, _captured: bool, _shell: &mut Shell<Self::Message>,
+    ) -> Task<Self::Message> {
+        Task::none()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -574,14 +580,21 @@ impl<A: App> Host<A> {
     }
 
     fn on_key(&mut self, event: &keyboard::Event, captured: bool) -> Task<Event<A::Message>> {
-        let keyboard::Event::KeyPressed { key, physical_key, modifiers, .. } = event else { return Task::none() };
+        match self.host_key(event, captured) {
+            Some(task) => task,
+            None => self.app.key(event, captured, &mut self.shell).map(Event::App),
+        }
+    }
+
+    fn host_key(&mut self, event: &keyboard::Event, captured: bool) -> Option<Task<Event<A::Message>>> {
+        let keyboard::Event::KeyPressed { key, physical_key, modifiers, .. } = event else { return None };
         if let Some(dialog) = &self.shell.dialog {
-            return dialog.key(key).map_or_else(Task::none, |answer| self.on_answer(answer));
+            return Some(dialog.key(key).map_or_else(Task::none, |answer| self.on_answer(answer)));
         }
         if let Some(popup) = self.shell.popup.as_mut().filter(|popup| popup.reveal.is_open()) {
             let source = popup.source;
             if let Some(outcome) = popup.key(key) {
-                return self.finish(outcome);
+                return Some(self.finish(outcome));
             }
             if let (Source::Bar(index), Key::Named(Named::ArrowLeft | Named::ArrowRight)) = (source, key) {
                 let count = self.menus.len().max(1);
@@ -592,7 +605,7 @@ impl<A: App> Host<A> {
                 };
                 self.open_bar(next);
             }
-            return Task::none();
+            return Some(Task::none());
         }
         if *key == Key::Named(Named::F10) && modifiers.is_empty() && !self.shell.top_bar_menu && !self.menus.is_empty()
         {
@@ -600,19 +613,20 @@ impl<A: App> Host<A> {
             if let Some(popup) = &mut self.shell.popup {
                 popup.step(true);
             }
-            return Task::none();
+            return Some(Task::none());
         }
         if captured || self.chrome != Chrome::Standard {
-            return Task::none();
+            return None;
         }
         if *key == Key::Named(Named::Tab) && !modifiers.control() && !modifiers.alt() && !modifiers.logo() {
-            return if modifiers.shift() {
+            return Some(if modifiers.shift() {
                 iced::widget::operation::focus_previous()
             } else {
                 iced::widget::operation::focus_next()
-            };
+            });
         }
-        menu::shortcut(&self.menus, key, *physical_key, *modifiers).map_or_else(Task::none, |message| self.run(message))
+        let message = menu::shortcut(&self.menus, key, *physical_key, *modifiers)?;
+        Some(self.run(message))
     }
 
     fn overlays<'a>(&'a self, layers: &mut Vec<Element<'a, Event<A::Message>>>) {
@@ -816,6 +830,7 @@ mod tests {
         dirty: bool,
         looks: usize,
         windows: usize,
+        keys: usize,
     }
 
     #[derive(Debug, Clone, PartialEq)]
@@ -875,6 +890,11 @@ mod tests {
 
         fn window_changed(&mut self, _: &mut Shell<Message>) -> Task<Message> {
             self.windows += 1;
+            Task::none()
+        }
+
+        fn key(&mut self, _: &keyboard::Event, _: bool, _: &mut Shell<Message>) -> Task<Message> {
+            self.keys += 1;
             Task::none()
         }
     }
@@ -957,6 +977,18 @@ mod tests {
         let ctrl_s = press(Key::Character("s".into()), keyboard::key::Code::KeyS, keyboard::Modifiers::CTRL);
         let _ = host.update(ctrl_s);
         assert_eq!(host.app.saved, 0, "the app binds its own shortcuts when it draws its own window");
+        assert_eq!(host.app.keys, 1, "and the host hands it the key instead");
+    }
+
+    #[test]
+    fn keys_the_menus_do_not_take_reach_the_app() {
+        let mut host = host();
+        let _ = host.update(Event::App(Message::Edit));
+        let _ = host.update(press(Key::Character("s".into()), keyboard::key::Code::KeyS, keyboard::Modifiers::CTRL));
+        assert_eq!((host.app.saved, host.app.keys), (1, 0), "a menu shortcut stays with the menu");
+        let _ = host.update(press(Key::Character("q".into()), keyboard::key::Code::KeyQ, keyboard::Modifiers::empty()));
+        let _ = host.update(Event::Key(keyboard::Event::ModifiersChanged(keyboard::Modifiers::SHIFT), false));
+        assert_eq!(host.app.keys, 2);
     }
 
     #[test]

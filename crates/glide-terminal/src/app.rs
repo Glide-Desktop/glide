@@ -666,10 +666,6 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             Subscription::run(session::feed).map(Message::Feed),
-            iced::event::listen_with(|event, status, _| match event {
-                iced::Event::Keyboard(event) => Some(Message::Key(event, status == iced::event::Status::Captured)),
-                _ => None,
-            }),
             iced::time::every(POLL).map(|_| Message::Tick),
             Subscription::run(crate::service::requests).map(Message::Remote),
         ];
@@ -1898,6 +1894,10 @@ impl glide_sdk::App for App {
     fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
         self.follow_window(*shell.window());
         Task::none()
+    }
+
+    fn key(&mut self, event: &keyboard::Event, captured: bool, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, Message::Key(event.clone(), captured))
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {

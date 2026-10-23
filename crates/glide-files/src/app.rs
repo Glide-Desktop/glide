@@ -1076,8 +1076,7 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions =
-            vec![keyboard::listen().filter_map(handle_shortcut), iced::time::every(POLL).map(|_| Message::Tick)];
+        let mut subscriptions = vec![iced::time::every(POLL).map(|_| Message::Tick)];
         let sweeping =
             self.jobs.iter().any(|job| job.progress.total_items == 0 && job.launch.is_none() && !job.meter.is_paused());
         if sweeping || self.motion.is_animating(Instant::now()) {
@@ -3906,10 +3905,16 @@ pub fn window_events(event: iced::Event, _status: iced::event::Status, _window: 
         iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::Released),
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => Some(Message::Back),
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Forward)) => Some(Message::Forward),
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(Named::Escape), .. }) => {
-            Some(Message::Escape)
-        }
         _ => None,
+    }
+}
+
+#[must_use]
+pub fn key_message(event: &keyboard::Event, captured: bool) -> Option<Message> {
+    match event {
+        keyboard::Event::KeyPressed { key: keyboard::Key::Named(Named::Escape), .. } => Some(Message::Escape),
+        _ if captured => None,
+        _ => handle_shortcut(event.clone()),
     }
 }
 
@@ -3979,6 +3984,10 @@ impl glide_sdk::App for App {
     fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
         self.follow_window(*shell.window());
         Task::none()
+    }
+
+    fn key(&mut self, event: &keyboard::Event, captured: bool, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        key_message(event, captured).map_or_else(Task::none, |message| Self::update(self, message))
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> glide_sdk::Paint {

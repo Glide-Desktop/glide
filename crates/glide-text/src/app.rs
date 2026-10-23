@@ -828,8 +828,7 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
-            iced::event::listen_with(|event, status, _| match event {
-                iced::Event::Keyboard(event) => Some(Message::Key(event, status == iced::event::Status::Captured)),
+            iced::event::listen_with(|event, _, _| match event {
                 iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::Dropped(path)),
                 _ => None,
             }),
@@ -2219,6 +2218,10 @@ impl glide_sdk::App for App {
 
     fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
         self.follow_window(*shell.window())
+    }
+
+    fn key(&mut self, event: &keyboard::Event, captured: bool, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, Message::Key(event.clone(), captured))
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {

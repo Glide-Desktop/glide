@@ -1,4 +1,4 @@
-use glide_files::app::{Field, Message, Step, ViewMode, handle_shortcut, window_events};
+use glide_files::app::{Field, Message, Step, ViewMode, handle_shortcut, key_message, window_events};
 use glide_files::config::Look;
 use glide_files::i18n::{self, Key, Lang};
 use glide_files::theme::ThemeState;
@@ -887,9 +887,8 @@ fn shift_arrows_grow_and_shrink_the_range_from_where_it_started() {
 
 #[test]
 fn escape_reaches_the_app_even_when_a_text_field_captured_it() {
-    use iced::event::Status;
-    assert_eq!(named(Named::Escape, Modifiers::empty()), None, "handled once, by window_events");
-    let escape = iced::Event::Keyboard(Event::KeyPressed {
+    assert_eq!(named(Named::Escape, Modifiers::empty()), None, "handled once, by key_message");
+    let escape = Event::KeyPressed {
         key: IcedKey::Named(Named::Escape),
         modified_key: IcedKey::Named(Named::Escape),
         physical_key: Physical::Code(Code::Escape),
@@ -897,11 +896,26 @@ fn escape_reaches_the_app_even_when_a_text_field_captured_it() {
         modifiers: Modifiers::empty(),
         repeat: false,
         text: None,
-    });
-    for status in [Status::Captured, Status::Ignored] {
-        let window = iced::window::Id::unique();
-        assert_eq!(window_events(escape.clone(), status, window), Some(Message::Escape));
+    };
+    for captured in [true, false] {
+        assert_eq!(key_message(&escape, captured), Some(Message::Escape));
     }
+    let ctrl_a = |captured| {
+        key_message(
+            &Event::KeyPressed {
+                key: IcedKey::Character("a".into()),
+                modified_key: IcedKey::Character("a".into()),
+                physical_key: Physical::Code(Code::KeyA),
+                location: Location::Standard,
+                modifiers: Modifiers::CTRL,
+                repeat: false,
+                text: None,
+            },
+            captured,
+        )
+    };
+    assert_eq!(ctrl_a(false), Some(Message::SelectAll));
+    assert_eq!(ctrl_a(true), None, "a shortcut a focused field used stays with the field");
 }
 
 #[test]

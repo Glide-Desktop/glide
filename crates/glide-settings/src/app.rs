@@ -418,9 +418,6 @@ impl App {
             iced::time::every(CLOCK).map(|_| Message::Clock),
             self.page_subscription(),
         ];
-        if !self.is_recording() {
-            subscriptions.push(iced::keyboard::listen().filter_map(shortcut));
-        }
         if self.active_panel.polls() {
             subscriptions.push(iced::time::every(Duration::from_secs(4)).map(|_| Message::Tick));
         }
@@ -506,6 +503,19 @@ impl glide_sdk::App for App {
     fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
         self.follow_window(*shell.window());
         Task::none()
+    }
+
+    fn key(
+        &mut self, event: &iced::keyboard::Event, captured: bool, _: &mut glide_sdk::Shell<Message>,
+    ) -> Task<Message> {
+        let message = if self.is_recording() {
+            shortcuts::recorded(event.clone()).map(Message::Shortcuts)
+        } else if captured {
+            None
+        } else {
+            shortcut(event.clone())
+        };
+        message.map_or_else(Task::none, |message| Self::update(self, message))
     }
 
     fn title(&self, _: &glide_sdk::Shell<Message>) -> String {
