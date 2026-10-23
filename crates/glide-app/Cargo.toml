@@ -16,7 +16,7 @@ wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
-zbus = "5"
+zbus.workspace = true
 
 [dev-dependencies]
 glide-appmenu = { path = "../glide-appmenu" }

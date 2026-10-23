@@ -19,4 +19,4 @@ glide-ipc = { path = "../glide-ipc" }
 futures-channel = "0.3"
 libc = "0.2"
 serde.workspace = true
-zbus = "5"
+zbus.workspace = true

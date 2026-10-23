@@ -10,7 +10,7 @@ repository.workspace = true
 glide-config = { path = "../glide-config" }
 anyhow.workspace = true
 tracing.workspace = true
-zbus = "5"
+zbus.workspace = true
 ureq = "3"
 
 [lints]

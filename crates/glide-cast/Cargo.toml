@@ -10,7 +10,7 @@ repository.workspace = true
 gstreamer = "0.25"
 gstreamer-app = "0.25"
 gstreamer-video = "0.25"
-zbus = "5"
+zbus.workspace = true
 
 [lints]
 workspace = true

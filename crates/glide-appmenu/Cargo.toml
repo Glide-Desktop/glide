@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 tracing.workspace = true
-zbus = "5"
+zbus.workspace = true
 
 [lints]
 workspace = true
