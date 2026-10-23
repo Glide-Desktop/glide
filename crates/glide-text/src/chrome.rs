@@ -1,21 +1,18 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use glide_iced::glyph::Icon;
-use glide_iced::style::{self, Paint, R2, R3, SP1, SP2, SP3, SP4, SP5, SP6};
-use glide_iced::text::text;
-use glide_sdk::Tone;
+use glide_sdk::theme::{R3, SP1, SP2, SP3, SP4, SP5, SP6};
 use glide_sdk::widget::{
-    Size, bar_strip, compact_button, flat_toggle_button, icon_button, separator as rule, tooltip as tip,
-    vertical_separator as vertical_rule,
+    Icon, Size, bar_strip, code_block, compact_button, empty_note, empty_state, flat_toggle_button, heading_row,
+    icon_button, markdown_settings, markdown_view, pane, scrollable, separator as rule, shortcut_list, stat_rows, text,
+    tooltip as tip, vertical_separator as vertical_rule,
 };
 use glide_sdk::window::resize_handles;
+use glide_sdk::{Paint, Tone};
 use glide_theme::{TextStyle, component};
 use iced::border::Radius;
-use iced::widget::text::Wrapping;
-use iced::widget::text_editor::{self as editor_widget};
-use iced::widget::{Space, column, container, markdown, mouse_area, row, scrollable, text_editor, text_input};
-use iced::{Alignment, Background, Border, Element, Fill, Length, Padding};
+use iced::widget::{Space, column, container, markdown, mouse_area, row, text_input};
+use iced::{Alignment, Element, Fill, Length, Padding};
 
 use crate::app::{
     Answer, App, Bar, Command, Dialog, DialogKind, GOTO_ID, Item, Menu, MenuKind, Message, REPLACE_ID, Toggle,
@@ -237,69 +234,32 @@ fn tree_row<'a>(app: &'a App, node: &'a crate::tree::Node) -> Element<'a, Messag
 
 fn sidebar(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
-    let background = paint.sidebar_bg();
-    let body: Element<'_, Message> = match &app.tree {
-        Some(tree) => {
-            let title = row![
-                text(tree.title(), TextStyle::MICRO).color(paint.fg_3()).wrapping(Wrapping::None),
-                Space::new().width(Fill),
-                icon_button(
-                    &paint,
-                    Icon::Refresh,
-                    Key::Refresh.text(app.lang),
-                    Some(Message::Command(Command::RefreshTree)),
-                    false
-                ),
-                icon_button(
-                    &paint,
-                    Icon::Close,
-                    Key::CloseFolder.text(app.lang),
-                    Some(Message::Command(Command::CloseFolder)),
-                    false
-                ),
-            ]
-            .spacing(SP1)
-            .align_y(Alignment::Center)
-            .padding(Padding::from([SP1, SP2]).left(SP3));
-            let rows: Vec<Element<'_, Message>> = tree.nodes.iter().map(|node| tree_row(app, node)).collect();
-            let list: Element<'_, Message> = if tree.loaded && rows.is_empty() {
-                container(text(Key::EmptyFolder.text(app.lang), TextStyle::CALL).color(paint.fg_3()))
-                    .padding(SP4)
-                    .into()
-            } else {
-                scrollable(iced::widget::column(rows).padding(Padding::from([0.0, SP2]))).height(Fill).into()
-            };
-            column![title, list].into()
-        }
-        None => container(
-            column![
-                glide_iced::glyph::glyph(Icon::Folder, 28.0, paint.fg_3()),
-                text(Key::NoFolder.text(app.lang), TextStyle::CALL).color(paint.fg_2()).align_x(Alignment::Center),
-                compact_button(
-                    &paint,
-                    Key::OpenFolderButton.text(app.lang),
-                    Tone::Neutral,
-                    Some(Message::Command(Command::OpenFolder))
-                ),
-            ]
-            .spacing(SP3)
-            .align_x(Alignment::Center),
-        )
-        .padding(SP4)
-        .center(Fill)
-        .into(),
+    let body: Element<'_, Message> = if let Some(tree) = &app.tree {
+        let action = |glyph, key: Key, command| {
+            icon_button(&paint, glyph, key.text(app.lang), Some(Message::Command(command)), false)
+        };
+        let title = heading_row(
+            &paint,
+            tree.title(),
+            vec![
+                action(Icon::Refresh, Key::Refresh, Command::RefreshTree),
+                action(Icon::Close, Key::CloseFolder, Command::CloseFolder),
+            ],
+        );
+        let rows: Vec<Element<'_, Message>> = tree.nodes.iter().map(|node| tree_row(app, node)).collect();
+        let list: Element<'_, Message> = if tree.loaded && rows.is_empty() {
+            empty_note(&paint, Icon::Folder, "", Key::EmptyFolder.text(app.lang))
+        } else {
+            scrollable(&paint, iced::widget::column(rows).padding(Padding::from([0.0, SP2]))).height(Fill).into()
+        };
+        column![title, list].into()
+    } else {
+        let open = Some(Message::Command(Command::OpenFolder));
+        let button = compact_button(&paint, Key::OpenFolderButton.text(app.lang), Tone::Neutral, open);
+        empty_state(&paint, Icon::Folder, "", Key::NoFolder.text(app.lang), Some(button))
     };
     let bottom_left = if app.edge_to_edge() || app.prefs.status_bar { 0.0 } else { R3 };
-    container(body)
-        .width(SIDEBAR)
-        .height(Fill)
-        .style(move |_| style::rounded(background, Radius::default().bottom_left(bottom_left)))
-        .into()
-}
-
-fn editor_style(paint: &Paint) -> impl Fn(&iced::Theme, editor_widget::Status) -> editor_widget::Style + use<> {
-    let paint = *paint;
-    move |_, status| glide_sdk::widget::bare_text_area_style(&paint, status)
+    pane(paint.sidebar_bg(), Radius::default().bottom_left(bottom_left), body).width(SIDEBAR).into()
 }
 
 struct Preview {
@@ -360,77 +320,32 @@ impl<'a> markdown::Viewer<'a, Message> for Preview {
             }
             iced::widget::rich_text(spans).size(settings.code_size).into()
         });
-        let background = paint.fill_1();
-        let border = paint.line();
-        container(
-            scrollable(container(iced::widget::column(rows)).padding(settings.code_size)).direction(
-                iced::widget::scrollable::Direction::Horizontal(iced::widget::scrollable::Scrollbar::default()),
-            ),
-        )
-        .width(Fill)
-        .style(move |_| container::Style {
-            text_color: Some(paint.fg_1()),
-            background: Some(Background::Color(background)),
-            border: Border { color: border, width: 1.0, radius: R2.into() },
-            ..container::Style::default()
-        })
-        .into()
+        code_block(&paint, iced::widget::column(rows), settings.code_size.0)
     }
 }
 
 fn editor(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let Some(doc) = app.doc() else {
-        return container(
-            column![
-                text(Key::EmptyTitle.text(app.lang), TextStyle::T3),
-                text(Key::EmptyBody.text(app.lang), TextStyle::CALL).color(paint.fg_2()),
-            ]
-            .spacing(SP2)
-            .align_x(Alignment::Center),
-        )
-        .center(Fill)
-        .into();
+        return empty_state(&paint, Icon::File, Key::EmptyTitle.text(app.lang), Key::EmptyBody.text(app.lang), None);
     };
     let blocked = app.dialog.is_some() || app.menu_open();
-    let editor = text_editor(&doc.content)
+    let editor = glide_sdk::widget::editor(&paint, &doc.content)
         .id(EDITOR)
         .on_action(Message::Edit)
         .key_binding(move |press| if blocked { None } else { crate::app::binding(press) })
         .font(app.font())
         .size(app.font_size())
-        .line_height(iced::widget::text::LineHeight::Relative(1.5))
         .padding(Padding { top: SP3, bottom: SP6, left: SP5, right: SP4 })
-        .height(Fill)
-        .wrapping(Wrapping::WordOrGlyph)
-        .style(editor_style(&paint))
         .highlight_with::<Bridge>(app.settings(doc), Highlight::to_format);
     let editor = mouse_area(editor).on_right_press(Message::Command(Command::ContextMenu));
     if !app.previewing() {
         return editor.into();
     }
     let items = app.markdown.as_ref().map(|(_, _, items)| items.as_slice()).unwrap_or_default();
-    let mut settings = markdown::Settings::with_text_size(
-        app.font_size(),
-        markdown::Style {
-            font: iced::Font::DEFAULT,
-            inline_code_highlight: iced::advanced::text::Highlight {
-                background: Background::Color(paint.fill_2()),
-                border: Border { radius: 4.0.into(), ..Border::default() },
-            },
-            inline_code_padding: Padding::from([0.0, 3.0]),
-            inline_code_color: paint.fg_1(),
-            inline_code_font: crate::MONO,
-            code_block_font: crate::MONO,
-            link_color: paint.acc_bg(),
-        },
-    );
-    settings.code_size = (app.font_size() * 0.9).into();
+    let settings = markdown_settings(&paint, app.font_size(), crate::MONO);
     let viewer = Preview { paint };
-    let preview = scrollable(
-        container(markdown::view_with(items, settings, &viewer)).padding(Padding::from([SP4, SP5])).width(Fill),
-    )
-    .height(Fill);
+    let preview = markdown_view(&paint, items, settings, &viewer);
     row![container(editor).width(Fill), vertical_rule(&paint), container(preview).width(Fill)].into()
 }
 
@@ -811,39 +726,21 @@ fn menu_layer<'a>(app: &'a App, menu: &'a Menu) -> Element<'a, Message> {
     menu::layer(&paint, rows, at, size, progress, Some(Message::Dismiss))
 }
 
-fn stat_row<'a>(paint: &Paint, label: &'a str, value: String) -> Element<'a, Message> {
-    row![text(label, TextStyle::CALL).color(paint.fg_2()), Space::new().width(Fill), text(value, TextStyle::NUM)]
-        .align_y(Alignment::Center)
-        .into()
-}
-
 fn shortcut_rows(app: &App, paint: &Paint) -> Element<'static, Message> {
-    let mut rows: Vec<Element<'static, Message>> = Vec::new();
-    for bar in Bar::ALL {
-        let items: Vec<(String, String)> = bar_items(app, bar)
-            .into_iter()
-            .filter_map(|item| match item {
-                Item::Action { label, shortcut: Some(shortcut), .. } => Some((label, shortcut)),
-                _ => None,
-            })
-            .collect();
-        if items.is_empty() {
-            continue;
-        }
-        rows.push(text(bar.key().text(app.lang).to_string(), TextStyle::MICRO).color(paint.fg_3()).into());
-        for (label, shortcut) in items {
-            rows.push(
-                row![
-                    text(label, TextStyle::CALL),
-                    Space::new().width(Fill),
-                    text(shortcut, TextStyle::CAP).color(paint.fg_2())
-                ]
-                .align_y(Alignment::Center)
-                .into(),
-            );
-        }
-    }
-    iced::widget::column(rows).spacing(SP1 + 2.0).into()
+    let sections = Bar::ALL
+        .into_iter()
+        .map(|bar| {
+            let items = bar_items(app, bar)
+                .into_iter()
+                .filter_map(|item| match item {
+                    Item::Action { label, shortcut: Some(shortcut), .. } => Some((label, shortcut)),
+                    _ => None,
+                })
+                .collect();
+            (bar.key().text(app.lang).to_string(), items)
+        })
+        .collect();
+    shortcut_list(paint, sections)
 }
 
 type Choices<'a> = Vec<(&'a str, Tone, Option<Message>)>;
@@ -902,31 +799,28 @@ fn dialog_parts<'a>(
             400.0,
         ),
         DialogKind::Statistics => {
-            let stats = app.doc().map(|doc| crate::edit::stats(&doc.text));
-            let doc = app.doc();
-            let mut body = column![].spacing(SP2);
-            if let (Some(stats), Some(doc)) = (stats, doc) {
-                body = body
-                    .push(stat_row(&paint, Key::Lines.text(lang), stats.lines.to_string()))
-                    .push(stat_row(&paint, Key::WordsLong.text(lang), stats.words.to_string()))
-                    .push(stat_row(&paint, Key::Characters.text(lang), stats.characters.to_string()))
-                    .push(stat_row(
-                        &paint,
-                        Key::CharactersNoSpaces.text(lang),
-                        stats.characters_without_spaces.to_string(),
-                    ))
-                    .push(stat_row(&paint, Key::Bytes.text(lang), stats.bytes.to_string()))
-                    .push(stat_row(
-                        &paint,
-                        Key::Encoding.text(lang),
-                        format!("{} · {}", doc.encoding.name(), doc.ending.name()),
-                    ));
-            }
-            (Key::Statistics.text(lang).trim_end_matches('…').to_string(), body.into(), close(), 360.0)
+            let rows = app
+                .doc()
+                .map(|doc| {
+                    let stats = crate::edit::stats(&doc.text);
+                    [
+                        (Key::Lines, stats.lines.to_string()),
+                        (Key::WordsLong, stats.words.to_string()),
+                        (Key::Characters, stats.characters.to_string()),
+                        (Key::CharactersNoSpaces, stats.characters_without_spaces.to_string()),
+                        (Key::Bytes, stats.bytes.to_string()),
+                        (Key::Encoding, format!("{} · {}", doc.encoding.name(), doc.ending.name())),
+                    ]
+                    .into_iter()
+                    .map(|(key, value)| (key.text(lang).to_string(), value))
+                    .collect()
+                })
+                .unwrap_or_default();
+            (Key::Statistics.text(lang).trim_end_matches('…').to_string(), stat_rows(&paint, rows), close(), 360.0)
         }
         DialogKind::Shortcuts => (
             Key::Shortcuts.text(lang).to_string(),
-            scrollable(container(shortcut_rows(app, &paint)).padding(Padding::from([0.0, SP2]).left(0.0)))
+            scrollable(&paint, container(shortcut_rows(app, &paint)).padding(Padding::from([0.0, SP2]).left(0.0)))
                 .height(Length::Fixed((app.window.size.height - 220.0).clamp(120.0, 520.0)))
                 .into(),
             close(),
@@ -957,12 +851,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
         main = main.push(bar).push(rule(&paint));
     }
     main = main.push(editor(app));
-    let background = paint.view_bg();
     let bottom_right = if app.edge_to_edge() || app.prefs.status_bar { 0.0 } else { R3 };
     let bottom_left = if app.sidebar_visible() { 0.0 } else { bottom_right };
-    let main = container(main).width(Fill).height(Fill).style(move |_| {
-        style::rounded(background, Radius::default().bottom_right(bottom_right).bottom_left(bottom_left))
-    });
+    let main = pane(paint.view_bg(), Radius::default().bottom_right(bottom_right).bottom_left(bottom_left), main);
     let mut middle = row![];
     if app.sidebar_visible() {
         middle = middle.push(sidebar(app)).push(vertical_rule(&paint));

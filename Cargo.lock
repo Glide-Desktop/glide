@@ -1731,7 +1731,6 @@ version = "0.1.0"
 dependencies = [
  "glide-app",
  "glide-config",
- "glide-iced",
  "glide-paint",
  "glide-sdk",
  "glide-theme",

@@ -125,6 +125,18 @@ impl<Message> Widget<Message, Theme, Renderer> for Text<'_> {
             buffer.set_text(system.raw(), &self.content, &attributes, cosmic_text::Shaping::Advanced, None);
             buffer.shape_until_scroll(system.raw(), false);
             state.measured = text::measure(&buffer).0;
+            let align = match self.align {
+                alignment::Horizontal::Left => None,
+                alignment::Horizontal::Center => Some(cosmic_text::Align::Center),
+                alignment::Horizontal::Right => Some(cosmic_text::Align::Right),
+            };
+            if align.is_some() && buffer.layout_runs().nth(1).is_some() {
+                buffer.set_size(system.raw(), Some(state.measured.width.ceil()), None);
+                for line in &mut buffer.lines {
+                    line.set_align(align);
+                }
+                buffer.shape_until_scroll(system.raw(), false);
+            }
             state.buffer = Some(Arc::new(buffer));
             state.key = Some(key);
         }

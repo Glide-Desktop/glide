@@ -23,8 +23,9 @@ use crate::i18n::{Key as Text, Lang};
 use crate::syntax::{self, Language, Lines, Marks, Palette, Settings};
 use crate::tree::{self, Entry, Tree};
 use glide_app::menubar;
-use glide_iced::style::Paint;
+use glide_sdk::Paint;
 use glide_sdk::look::{self, Look};
+use glide_sdk::theme::use_ui_family;
 pub use glide_sdk::window::Frame;
 use glide_sdk::window::{Action as WindowAction, Window};
 
@@ -620,7 +621,7 @@ impl App {
             after: None,
             stamps: stamps(),
         };
-        glide_iced::style::use_ui_family(app.ui_family.as_deref());
+        use_ui_family(app.ui_family.as_deref());
         let mut tasks = vec![app.restore(&session)];
         for path in paths {
             tasks.push(app.open_path(path.clone()));
@@ -1138,7 +1139,7 @@ impl App {
         self.paint = look.paint();
         self.lang = look.lang();
         if self.ui_family != look.font_family {
-            glide_iced::style::use_ui_family(look.font_family.as_deref());
+            use_ui_family(look.font_family.as_deref());
             self.ui_family.clone_from(&look.font_family);
         }
         self.look = look;

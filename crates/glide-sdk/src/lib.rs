@@ -16,7 +16,8 @@ pub use widget::{Icon, Tone};
 pub use {glide_app, glide_iced, glide_theme, glide_ui, iced};
 
 pub mod theme {
-    pub use glide_iced::style::{R2, R3, SP1, SP2, SP3, SP4, SP5, SP6, over, to_iced};
+    pub use glide_iced::font::use_ui_family;
+    pub use glide_iced::style::{R2, R3, SEMIBOLD, SP1, SP2, SP3, SP4, SP5, SP6, over, to_iced};
     pub use glide_theme::elevation::Level;
     pub use glide_theme::shape::{R_ROUND, R1, R4};
     pub use glide_theme::{Accent, Appearance, TextStyle, Tokens, component, motion};

@@ -1,11 +1,13 @@
 mod buttons;
 mod cards;
 mod controls;
+mod editor;
 mod feedback;
 mod find;
 mod focus;
 mod inputs;
 mod layout;
+mod panes;
 mod popover;
 mod selection;
 mod strip;
@@ -34,6 +36,7 @@ pub use controls::{
     CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
     sized_spinner, sized_switch, slider, spinner, stepped_slider, switch,
 };
+pub use editor::{editor, markdown_settings, markdown_view};
 pub use feedback::{
     Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,
     key_combo, keycap, noted_banner, skeleton, status_badge, task_card,
@@ -49,6 +52,7 @@ pub use layout::{
     action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card, section,
     select_row, sidebar, sidebar_item, status_bar, status_button, surface, switch_row, table_header, tree_row, well,
 };
+pub use panes::{code_block, heading_row, pane, shortcut_list, stat_rows};
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
@@ -200,6 +204,14 @@ pub fn scrollable<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) 
     let paint = *paint;
     let bar = scroll::Scrollbar::new().width(6).scroller_width(6).spacing(SP1);
     scroll::Scrollable::with_direction(content, scroll::Direction::Vertical(bar))
+        .style(move |_, status| scrollable_style(&paint, status))
+}
+
+#[must_use]
+pub fn scrollable_x<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) -> scroll::Scrollable<'a, M> {
+    let paint = *paint;
+    let bar = scroll::Scrollbar::new().width(6).scroller_width(6).spacing(SP1);
+    scroll::Scrollable::with_direction(content, scroll::Direction::Horizontal(bar))
         .style(move |_, status| scrollable_style(&paint, status))
 }
 

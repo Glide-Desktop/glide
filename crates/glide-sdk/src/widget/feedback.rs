@@ -142,7 +142,7 @@ pub fn empty_state<'a, M: 'a>(
         content = content.push(text(title, TextStyle::HEAD));
     }
     if !body.is_empty() {
-        content = content.push(text(body, TextStyle::CALL).color(paint.fg_3()).align_x(Alignment::Center));
+        content = content.push(text(body, TextStyle::CALL).color(paint.fg_3()).align_x(Alignment::Center).width(Fill));
     }
     if let Some(action) = action {
         content = content.push(action);
@@ -160,7 +160,8 @@ pub fn empty_note<'a, M: 'a>(paint: &Paint, glyph: impl super::Glyph, title: &st
         content = content.push(text(title.to_string(), TextStyle::HEAD));
     }
     if !body.is_empty() {
-        content = content.push(text(body.to_string(), TextStyle::CAP).color(paint.fg_2()).align_x(Alignment::Center));
+        content = content
+            .push(text(body.to_string(), TextStyle::CAP).color(paint.fg_2()).align_x(Alignment::Center).width(Fill));
     }
     container(content).padding(Padding::from([SP5, SP4])).center_x(Fill).into()
 }

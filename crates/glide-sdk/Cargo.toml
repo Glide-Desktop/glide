@@ -19,6 +19,7 @@ iced = { version = "0.14.0", default-features = false, features = [
     "web-colors",
     "advanced",
     "canvas",
+    "markdown",
 ] }
 glide-app = { path = "../glide-app" }
 glide-config = { path = "../glide-config" }
