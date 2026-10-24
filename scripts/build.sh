@@ -8,7 +8,7 @@ set -eu
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE=release
 CHECKS=1
-MIN_RUST=1.89
+MIN_RUST=1.96
 
 for arg in "$@"; do
     case "$arg" in
