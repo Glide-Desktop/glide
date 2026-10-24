@@ -165,8 +165,13 @@ impl crate::GlideState {
         }
     }
 
-    pub fn show_prompt(&mut self, owner: &'static str, prompt: &Prompt, answer: oneshot::Sender<Answer>) {
+    pub fn show_prompt(&mut self, owner: &'static str, prompt: &Prompt, answer: oneshot::Sender<Answer>) -> u32 {
         let id = self.session.prompts.open(owner, answer);
+        self.update_prompt(id, prompt);
+        id
+    }
+
+    pub fn update_prompt(&mut self, id: u32, prompt: &Prompt) {
         self.notifications.push(&mut self.dock.icons, prompt.notification(id), true);
         self.refresh_topbar();
         self.queue_redraw();

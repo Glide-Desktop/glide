@@ -209,6 +209,10 @@ catalogue! {
     PermissionScreen => "{app} wants to record the screen", "{app} хоче записувати екран";
     PermissionBody => "Allow it only if you trust this program, then start it again.\n{path}", "Дозвольте, лише якщо довіряєте цій програмі, і запустіть її знову.\n{path}";
     PermissionAllow => "Allow", "Дозволити";
+    PermissionMany => "{app} asks for access", "{app} просить доступ";
+    AccessClipboard => "clipboard", "буфер обміну";
+    AccessInput => "keys in other apps", "клавіші в інших програмах";
+    AccessScreen => "screen recording", "запис екрана";
     CodeOffer => "Code from {app}: {code}", "Код від {app}: {code}";
     CodeOfferBody => "Insert it into the field you are typing in", "Вставити його в поле, де ви зараз вводите";
     CodeInsert => "Insert", "Вставити";

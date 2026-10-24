@@ -61,7 +61,7 @@ const BADGE_PAD: i32 = 6;
 const ALERT_ICON: i32 = 52;
 const ALERT_CLOSE: i32 = 28;
 const NOTICE_TITLE_LINES: usize = 2;
-const NOTICE_BODY_LINES: usize = 3;
+const NOTICE_BODY_LINES: usize = 4;
 const NOTICE_ROW_GAP: i32 = SP3;
 const BUTTON_H: i32 = 28;
 const BUTTON_PAD: i32 = 11;
@@ -1951,6 +1951,17 @@ mod tests {
             let cases = [
                 ("en", prompt(Lang::En)),
                 ("uk", Notice { waiting: 2, ..prompt(Lang::Uk) }),
+                (
+                    "many",
+                    Notice {
+                        title: "Signal просить доступ".into(),
+                        body:
+                            "Запис екрана · буфер обміну · клавіші в інших програмах\nДозвольте, лише якщо довіряєте \
+                               цій програмі, і запустіть її знову.\n/usr/lib/signal-desktop/signal-desktop"
+                                .into(),
+                        ..prompt(Lang::Uk)
+                    },
+                ),
                 (
                     "reply",
                     Notice {

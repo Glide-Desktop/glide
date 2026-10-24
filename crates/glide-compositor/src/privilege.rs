@@ -184,7 +184,14 @@ impl Gate {
     }
 }
 
-pub type Pending = Vec<(Access, String, oneshot::Receiver<Answer>)>;
+pub struct Request {
+    program: String,
+    accesses: Vec<Access>,
+    id: u32,
+    answer: oneshot::Receiver<Answer>,
+}
+
+pub type Pending = Vec<Request>;
 
 fn answered(receiver: &mut oneshot::Receiver<Answer>) -> Poll<Option<Answer>> {
     std::future::Future::poll(std::pin::Pin::new(receiver), &mut Context::from_waker(Waker::noop()))
@@ -196,6 +203,31 @@ fn ask_key(access: Access) -> Key {
         Access::Input => Key::PermissionInput,
         Access::Screen => Key::PermissionScreen,
     }
+}
+
+const fn access_key(access: Access) -> Key {
+    match access {
+        Access::Clipboard => Key::AccessClipboard,
+        Access::Input => Key::AccessInput,
+        Access::Screen => Key::AccessScreen,
+    }
+}
+
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+}
+
+fn prompt_for(program: &str, accesses: &[Access], app: Option<&crate::icon::DesktopApp>) -> Prompt {
+    let (name, icon) = presented(program, app);
+    let advice = t(Key::PermissionBody).replace("{path}", program);
+    let (summary, body) = if let [access] = accesses {
+        (t(ask_key(*access)).replace("{app}", &name), advice)
+    } else {
+        let list: Vec<&str> = accesses.iter().map(|access| t(access_key(*access))).collect();
+        (t(Key::PermissionMany).replace("{app}", &name), format!("{}\n{advice}", capitalised(&list.join(" · "))))
+    };
+    Prompt { icon, summary, body, accept: Some(t(Key::PermissionAllow).to_string()), reply: None, secret: false }
 }
 
 fn presented(program: &str, app: Option<&crate::icon::DesktopApp>) -> (String, String) {
@@ -222,32 +254,47 @@ fn save(permissions: Permissions) {
 impl GlideState {
     pub fn settle_permission_requests(&mut self) {
         for (access, program) in self.session.gate.take_asks() {
-            let app = self.app_directory.index().and_then(|index| index.match_process(Some(&program), None));
-            let (name, icon) = presented(&program, app);
-            let prompt = Prompt {
-                icon,
-                summary: t(ask_key(access)).replace("{app}", &name),
-                body: t(Key::PermissionBody).replace("{path}", &program),
-                accept: Some(t(Key::PermissionAllow).to_string()),
-                reply: None,
-                secret: false,
-            };
-            let (sender, receiver) = oneshot::channel();
-            self.show_prompt(OWNER, &prompt, sender);
             tracing::info!(?access, program, "asking whether a program may use a privileged protocol");
-            self.session.permission_prompts.push((access, program, receiver));
+            let known = self.session.permission_prompts.iter().position(|request| request.program == program);
+            let accesses = match known {
+                Some(index) => {
+                    let request = &mut self.session.permission_prompts[index];
+                    if !request.accesses.contains(&access) {
+                        request.accesses.push(access);
+                    }
+                    request.accesses.clone()
+                }
+                None => vec![access],
+            };
+            let app = self.app_directory.index().and_then(|index| index.match_process(Some(&program), None));
+            let prompt = prompt_for(&program, &accesses, app);
+            if let Some(index) = known {
+                let id = self.session.permission_prompts[index].id;
+                self.update_prompt(id, &prompt);
+            } else {
+                let (sender, answer) = oneshot::channel();
+                let id = self.show_prompt(OWNER, &prompt, sender);
+                self.session.permission_prompts.push(Request { program, accesses, id, answer });
+            }
         }
         if self.session.permission_prompts.is_empty() {
             return;
         }
-        for (access, program, mut receiver) in std::mem::take(&mut self.session.permission_prompts) {
-            match answered(&mut receiver) {
-                Poll::Pending => self.session.permission_prompts.push((access, program, receiver)),
+        for mut request in std::mem::take(&mut self.session.permission_prompts) {
+            let (accesses, program) = (&request.accesses, &request.program);
+            match answered(&mut request.answer) {
+                Poll::Pending => self.session.permission_prompts.push(request),
                 Poll::Ready(Some(Answer::Accept)) => {
-                    tracing::info!(?access, program, "privileged protocol allowed");
-                    save(self.session.gate.allow(access, &program));
+                    tracing::info!(?accesses, program, "privileged protocols allowed");
+                    let mut saved = None;
+                    for access in accesses {
+                        saved = Some(self.session.gate.allow(*access, program));
+                    }
+                    if let Some(permissions) = saved {
+                        save(permissions);
+                    }
                 }
-                Poll::Ready(_) => tracing::info!(?access, program, "privileged protocol refused for this session"),
+                Poll::Ready(_) => tracing::info!(?accesses, program, "privileged protocols refused for this session"),
             }
         }
     }
@@ -330,6 +377,24 @@ mod tests {
         assert_eq!(presented(program, None), ("signal-desktop".into(), "security-high".into()));
         let nameless = crate::icon::DesktopApp { name: " ".into(), icon: String::new(), ..signal };
         assert_eq!(presented(program, Some(&nameless)), ("signal-desktop".into(), "security-high".into()));
+    }
+
+    #[test]
+    fn one_prompt_names_every_access_a_program_asked_for() {
+        let program = "/usr/lib/signal-desktop/signal-desktop";
+        let single = prompt_for(program, &[Access::Screen], None);
+        assert_eq!(single.summary, t(Key::PermissionScreen).replace("{app}", "signal-desktop"));
+        assert!(single.body.ends_with(program), "the path stays the last line");
+
+        let all = prompt_for(program, &[Access::Screen, Access::Clipboard, Access::Input], None);
+        assert_eq!(all.summary, t(Key::PermissionMany).replace("{app}", "signal-desktop"));
+        let list = all.body.lines().next().unwrap_or_default().to_lowercase();
+        for key in [Key::AccessScreen, Key::AccessClipboard, Key::AccessInput] {
+            assert!(list.contains(t(key)), "{list:?} names {key:?}");
+        }
+        assert!(all.body.ends_with(program));
+        assert_eq!(all.accept.as_deref(), Some(t(Key::PermissionAllow)));
+        assert_eq!(capitalised("буфер"), "Буфер");
     }
 
     #[test]
