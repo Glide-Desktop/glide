@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use glide_config::desktop::entry_value as desktop_value;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserEntry {
     pub username: String,
@@ -227,26 +229,6 @@ fn default_sessions() -> Vec<SessionEntry> {
         exec: vec![glide_exec.to_string()],
         desktop_names: "Glide".to_string(),
     }]
-}
-
-fn desktop_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-    let mut in_entry = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-            continue;
-        }
-        if !in_entry {
-            continue;
-        }
-        if let Some((name, value)) = line.split_once('=')
-            && name.trim() == key
-        {
-            return Some(value.trim());
-        }
-    }
-    None
 }
 
 #[must_use]

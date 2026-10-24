@@ -160,7 +160,6 @@ pub fn managed_mime_types() -> Vec<&'static str> {
 
 #[must_use]
 pub fn parse_desktop(id: &str, text: &str, lang: &str) -> Option<DesktopApp> {
-    let mut in_entry = false;
     let mut name = None;
     let mut local_name = None;
     let mut comment = None;
@@ -174,19 +173,7 @@ pub fn parse_desktop(id: &str, text: &str, lang: &str) -> Option<DesktopApp> {
     let mut is_app = false;
     let local_key = format!("Name[{lang}]");
     let local_comment_key = format!("Comment[{lang}]");
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-            continue;
-        }
-        if !in_entry {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let (key, value) = (key.trim(), value.trim());
+    for (key, value) in glide_config::desktop::entry(text) {
         match key {
             "Name" => name = Some(value.to_string()),
             "Comment" => comment = Some(value.to_string()),

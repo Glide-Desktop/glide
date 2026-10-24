@@ -44,19 +44,8 @@ pub struct Fields {
 #[must_use]
 pub fn parse_fields(text: &str) -> Fields {
     let mut fields = Fields::default();
-    let mut in_entry = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-            continue;
-        }
-        if !in_entry {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            fields.values.entry(key.trim().to_string()).or_insert_with(|| value.trim().to_string());
-        }
+    for (key, value) in glide_config::desktop::entry(text) {
+        fields.values.entry(key.to_string()).or_insert_with(|| value.to_string());
     }
     fields.is_app = fields.values.get("Type").is_some_and(|kind| kind == "Application");
     fields

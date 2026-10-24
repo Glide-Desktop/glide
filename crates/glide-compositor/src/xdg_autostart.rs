@@ -79,7 +79,6 @@ fn on_path(program: &str) -> bool {
 
 #[must_use]
 pub fn parse_entry(text: &str, desktops: &[String], probe: &Probe<'_>) -> Option<Entry> {
-    let mut in_entry = false;
     let mut exec = None;
     let mut is_app = false;
     let mut skipped = false;
@@ -89,20 +88,8 @@ pub fn parse_entry(text: &str, desktops: &[String], probe: &Probe<'_>) -> Option
     let mut try_exec = None;
     let mut phase = Phase::default();
     let mut delay = 0;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-            continue;
-        }
-        if !in_entry {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim();
-        match key.trim() {
+    for (key, value) in glide_config::desktop::entry(text) {
+        match key {
             "Type" => is_app = value == "Application",
             "Exec" => exec = Some(value.to_string()),
             "Hidden" | "Terminal" => skipped |= value == "true",

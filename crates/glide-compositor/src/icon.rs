@@ -654,26 +654,9 @@ fn read_icon_key(path: &Path) -> Option<String> {
 
 fn read_desktop_key(path: &Path, key: &str) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
-    let mut in_entry = false;
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-            continue;
-        }
-        if !in_entry {
-            continue;
-        }
-        if let Some((name, value)) = line.split_once('=')
-            && name.trim() == key
-        {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
+    glide_config::desktop::entry(&contents)
+        .find(|&(name, value)| name == key && !value.is_empty())
+        .map(|(_, value)| value.to_string())
 }
 
 fn load_theme(name: &str, roots: &[PathBuf]) -> Option<Theme> {

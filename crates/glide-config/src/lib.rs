@@ -4,6 +4,7 @@ use std::{
 };
 
 pub mod autostart;
+pub mod desktop;
 mod keyboard;
 pub mod permissions;
 pub mod terminal;
