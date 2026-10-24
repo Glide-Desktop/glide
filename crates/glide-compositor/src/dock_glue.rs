@@ -220,11 +220,12 @@ impl GlideState {
             let is_focused = focused == Some(id);
             if let Some(existing) = apps.iter_mut().find(|app| app.app_id.eq_ignore_ascii_case(&key)) {
                 existing.focused |= is_focused;
+                existing.windows += 1;
                 continue;
             }
             let title = self.window_title(id).filter(|title| !title.trim().is_empty());
             let name = index_name.or(title).unwrap_or_else(|| key.clone());
-            apps.push(crate::dock::RunningApp { name, app_id: key, focused: is_focused });
+            apps.push(crate::dock::RunningApp { name, app_id: key, focused: is_focused, windows: 1 });
         }
 
         apps.sort_by_key(|app| app.app_id.to_lowercase());

@@ -417,6 +417,7 @@ impl DockItem {
 pub struct RunState {
     pub running: bool,
     pub focused: bool,
+    pub windows: u8,
     pub signal: Signal,
 }
 
@@ -442,6 +443,17 @@ impl RunState {
             RunIndicator::Running
         }
     }
+
+    fn dots(self) -> u8 {
+        self.windows.clamp(1, RUN_DOTS_MAX)
+    }
+}
+
+const RUN_DOTS_MAX: u8 = 3;
+
+const fn dots_width(dots: u8) -> i32 {
+    let dots = dots as i32;
+    dots * RUN_DOT + (dots - 1) * RUN_GAP
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -518,6 +530,7 @@ pub struct RunningApp {
     pub app_id: String,
     pub name: String,
     pub focused: bool,
+    pub windows: usize,
 }
 
 #[derive(Debug)]
@@ -568,7 +581,7 @@ struct Rasters {
     tile_layer: Buffers<i32>,
     drag_layer: Buffers<i32>,
     drag_shadow: Buffers<(i32, i32)>,
-    runs: Buffers<(i32, RunIndicator, i32)>,
+    runs: Buffers<(i32, RunIndicator, u8, i32)>,
     menu_row_layer: Buffers<i32>,
     press_layer: Buffers<i32>,
     tooltip: Buffers<(String, i32)>,
@@ -959,12 +972,15 @@ impl Dock {
                     Signal::Quiet
                 };
                 let mut state = RunState { signal, ..RunState::default() };
+                let mut windows = 0;
                 for app in running {
                     if app.app_id.eq_ignore_ascii_case(&item.app_id) {
                         state.running = true;
                         state.focused |= app.focused;
+                        windows += app.windows;
                     }
                 }
+                state.windows = u8::try_from(windows.min(usize::from(RUN_DOTS_MAX))).unwrap_or(RUN_DOTS_MAX);
                 state
             })
             .collect()
@@ -1568,8 +1584,9 @@ impl Dock {
     }
 
     fn run_width(&self, index: usize) -> i32 {
-        let focused = self.run.get(index).is_some_and(|state| state.focused);
-        let (from, to) = if focused { (RUN_DOT, RUN_BAR) } else { (RUN_BAR, RUN_DOT) };
+        let state = self.run.get(index).copied().unwrap_or_default();
+        let dots = dots_width(state.dots());
+        let (from, to) = if state.focused { (dots, RUN_BAR) } else { (RUN_BAR, dots) };
         let duration = t3();
         let elapsed = self.run_changed.get(index).map_or(duration, Instant::elapsed);
         if duration.is_zero() || elapsed >= duration {
@@ -2317,9 +2334,13 @@ fn push_run_indicator<R: ShellRenderer>(
         return;
     }
     let (theme, scale) = (frame.theme, frame.output_scale);
-    let kind = dock.run.get(index).copied().unwrap_or_default().indicator();
+    let state = dock.run.get(index).copied().unwrap_or_default();
+    let kind = state.indicator();
     let width = dock.run_width(index);
-    let buffer = cached(&mut dock.rasters.runs, (width, kind, scale), || draw_run_indicator(theme, width, kind, scale));
+    let dots = if state.focused || width != dots_width(state.dots()) { 1 } else { state.dots() };
+    let buffer = cached(&mut dock.rasters.runs, (width, kind, dots, scale), || {
+        draw_run_indicator(theme, (width, dots), kind, scale)
+    });
     let pos = Point::from((rect.loc.x + (theme.item_size - width) / 2, rect.loc.y + theme.item_size + RUN_GAP));
     frame.push(buffer, pos.to_f64(), opacity * unit_alpha(run_alpha), None);
 }
@@ -2458,9 +2479,19 @@ fn run_indicator_color(theme: &DockTheme, kind: RunIndicator) -> Color {
     }
 }
 
-fn draw_run_indicator(theme: &DockTheme, width: i32, kind: RunIndicator, scale: i32) -> Option<MemoryRenderBuffer> {
+fn draw_run_indicator(
+    theme: &DockTheme, (width, dots): (i32, u8), kind: RunIndicator, scale: i32,
+) -> Option<MemoryRenderBuffer> {
     let mut c = Canvas::new(width, RUN_THICKNESS, scale)?;
-    c.fill(c.full(), run_indicator_color(theme, kind), scale_f(RUN_THICKNESS) / 2.0);
+    let colour = run_indicator_color(theme, kind);
+    let radius = scale_f(RUN_THICKNESS) / 2.0;
+    if dots <= 1 {
+        c.fill(c.full(), colour, radius);
+    } else {
+        for dot in 0..i32::from(dots) {
+            c.fill(rect(dot * (RUN_DOT + RUN_GAP), 0, RUN_DOT, RUN_THICKNESS), colour, radius);
+        }
+    }
     Some(c.finish())
 }
 
@@ -2760,7 +2791,7 @@ mod tests {
         use super::*;
 
         fn running(app_id: &str) -> RunningApp {
-            RunningApp { name: app_id.to_string(), app_id: app_id.to_string(), focused: false }
+            RunningApp { name: app_id.to_string(), app_id: app_id.to_string(), focused: false, windows: 1 }
         }
 
         fn dock_with_one_running() -> Dock {
@@ -3236,6 +3267,31 @@ mod tests {
     }
 
     #[test]
+    fn every_window_of_an_unfocused_app_gets_a_dot_up_to_three_and_focus_keeps_the_bar() {
+        let mut dock = Dock::new(&config(0));
+        let mail = |windows, focused| RunningApp {
+            app_id: "org.example.Mail".to_string(),
+            name: "Mail".to_string(),
+            focused,
+            windows,
+        };
+        for (windows, dots) in [(1, 1), (2, 2), (5, 3)] {
+            dock.set_running(&[mail(windows, false)]);
+            let index = dock.items.iter().position(|item| item.app_id == "org.example.Mail").expect("tile");
+            dock.run_changed[index] = settled_stamp();
+            assert_eq!(dock.run[index].dots(), dots);
+            assert_eq!(dock.run_width(index), dots_width(dots), "{windows} windows");
+        }
+        assert_eq!(dots_width(3), 3 * RUN_DOT + 2 * RUN_GAP);
+        assert!(dots_width(RUN_DOTS_MAX) <= dock.theme.item_size, "three dots stay under their tile");
+        dock.set_running(&[mail(2, true)]);
+        let index = dock.items.iter().position(|item| item.app_id == "org.example.Mail").expect("tile");
+        dock.run_changed[index] = settled_stamp();
+        assert_eq!(dock.run_width(index), RUN_BAR);
+        assert_eq!(RunState { signal: Signal::Launching, ..RunState::default() }.dots(), 1, "a launch shows one dot");
+    }
+
+    #[test]
     fn the_run_indicator_has_its_own_band_clear_of_icon_and_shell_edge() {
         let dock = Dock::new(&config(2));
         let theme = &dock.theme;
@@ -3318,6 +3374,7 @@ mod tests {
             app_id: "org.example.Editor".to_string(),
             name: "Editor".to_string(),
             focused: true,
+            windows: 1,
         }]);
         assert!(dock.tile_rect_for_app(area(), "org.example.Editor").is_some());
     }
@@ -3340,7 +3397,7 @@ mod tests {
         use super::*;
 
         fn app(id: &str, focused: bool) -> RunningApp {
-            RunningApp { app_id: id.to_string(), name: id.to_string(), focused }
+            RunningApp { app_id: id.to_string(), name: id.to_string(), focused, windows: 1 }
         }
 
         #[test]
