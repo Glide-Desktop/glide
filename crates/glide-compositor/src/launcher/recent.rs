@@ -1,5 +1,3 @@
-use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 pub const LIMIT: usize = 200;
@@ -23,33 +21,7 @@ pub fn unescape_xml(text: &str) -> String {
     text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
-#[must_use]
-pub fn percent_decode(text: &str) -> Option<Vec<u8>> {
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = std::str::from_utf8(bytes.get(index + 1..index + 3)?).ok()?;
-            decoded.push(u8::from_str_radix(hex, 16).ok()?);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    Some(decoded)
-}
-
-#[must_use]
-pub fn path_from_uri(uri: &str) -> Option<PathBuf> {
-    let rest = uri.strip_prefix("file://")?;
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    if !rest.starts_with('/') {
-        return None;
-    }
-    Some(PathBuf::from(OsString::from_vec(percent_decode(rest)?)))
-}
+use glide_config::uri::local_path as path_from_uri;
 
 #[must_use]
 pub fn parse(text: &str) -> Vec<(PathBuf, String)> {
@@ -142,12 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn uris_are_decoded_strictly() {
-        assert_eq!(path_from_uri("file:///a%20b"), Some(PathBuf::from("/a b")));
-        assert_eq!(path_from_uri("file://localhost/etc/hosts"), Some(PathBuf::from("/etc/hosts")));
-        assert_eq!(path_from_uri("file:///broken%2"), None);
-        assert_eq!(path_from_uri("file://server/share"), None);
-        assert_eq!(path_from_uri("/plain/path"), None);
+    fn xml_entities_are_unescaped_once() {
         assert_eq!(unescape_xml("&lt;&amp;lt;&gt;"), "<&lt;>");
     }
 }

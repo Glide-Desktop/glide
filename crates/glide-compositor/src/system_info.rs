@@ -1391,20 +1391,7 @@ pub fn gvariant_string(value: &str) -> String {
 
 #[must_use]
 pub fn file_uri(path: &Path) -> Option<String> {
-    use std::fmt::Write as _;
-    use std::os::unix::ffi::OsStrExt;
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_bytes() {
-        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
-            uri.push(char::from(byte));
-        } else {
-            let _ = write!(uri, "%{byte:02X}");
-        }
-    }
-    Some(uri)
+    path.is_absolute().then(|| glide_config::uri::file_uri(path))
 }
 
 #[must_use]

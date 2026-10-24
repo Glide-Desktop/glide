@@ -1,4 +1,3 @@
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 pub const TERMINAL_BUS: &str = "org.glide.Terminal";
@@ -31,18 +30,7 @@ pub fn open_terminal_tab(directory: &Path, argv: &[String], token: &str) -> zbus
     Ok(())
 }
 
-#[must_use]
-pub fn file_uri(path: &Path) -> String {
-    let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_bytes() {
-        if byte.is_ascii_alphanumeric() || b"/-_.~".contains(&byte) {
-            uri.push(char::from(byte));
-        } else {
-            uri.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    uri
-}
+pub use glide_config::uri::file_uri;
 
 pub fn show_in_files(path: &Path, token: &str) -> zbus::Result<()> {
     let method = if path.is_dir() { "ShowFolders" } else { "ShowItems" };
@@ -64,10 +52,5 @@ mod tests {
         assert!(is_glide_terminal("/usr/local/bin/glide-terminal --working-directory ~"));
         assert!(!is_glide_terminal("alacritty"));
         assert!(!is_glide_terminal(""));
-    }
-
-    #[test]
-    fn uris_escape_everything_but_safe_bytes() {
-        assert_eq!(file_uri(Path::new("/home/me/My Docs/ü.txt")), "file:///home/me/My%20Docs/%C3%BC.txt");
     }
 }

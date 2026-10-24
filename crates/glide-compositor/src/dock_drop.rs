@@ -72,35 +72,15 @@ impl std::fmt::Debug for DockDrop {
     }
 }
 
-fn decode(text: &str) -> Vec<u8> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && let Some(byte) = text.get(index + 1..index + 3).and_then(|hex| u8::from_str_radix(hex, 16).ok())
-        {
-            out.push(byte);
-            index += 3;
-            continue;
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    out
-}
-
 #[must_use]
 pub fn local_paths(uri_list: &str) -> Vec<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
     uri_list
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .filter_map(|line| {
-            let rest = line.strip_prefix("file://")?;
-            let path = rest.find('/').map(|slash| &rest[slash..])?;
-            Some(PathBuf::from(std::ffi::OsString::from_vec(decode(path))))
+            let rest = line.trim().strip_prefix("file://")?;
+            let path = &rest[rest.find('/')?..];
+            Some(PathBuf::from(std::ffi::OsString::from_vec(glide_config::uri::decode(path))))
         })
         .collect()
 }

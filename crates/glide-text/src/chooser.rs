@@ -31,40 +31,7 @@ pub enum Chosen {
     Failed(String),
 }
 
-fn hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-#[must_use]
-pub fn uri_path(uri: &str) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStringExt;
-    let rest = uri.strip_prefix("file://")?;
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    if !rest.starts_with('/') {
-        return None;
-    }
-    let bytes = rest.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && let (Some(high), Some(low)) =
-                (bytes.get(index + 1).copied().and_then(hex), bytes.get(index + 2).copied().and_then(hex))
-        {
-            out.push(high * 16 + low);
-            index += 3;
-            continue;
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    (!out.contains(&0)).then(|| PathBuf::from(std::ffi::OsString::from_vec(out)))
-}
+pub use glide_config::uri::local_path as uri_path;
 
 fn nul_terminated(path: &Path) -> Vec<u8> {
     let mut bytes = path.as_os_str().as_encoded_bytes().to_vec();

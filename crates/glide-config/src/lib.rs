@@ -11,6 +11,7 @@ pub mod permissions;
 pub mod process;
 pub mod terminal;
 pub mod toolkits;
+pub mod uri;
 
 pub use file::{write_atomic, write_private};
 pub use keyboard::SystemKeyboard;

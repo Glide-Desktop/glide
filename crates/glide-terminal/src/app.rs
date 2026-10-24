@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -268,30 +267,7 @@ pub fn uri_path(arg: &str) -> PathBuf {
 
 #[must_use]
 pub(crate) fn local_uri_path(arg: &str) -> Option<PathBuf> {
-    let Some(rest) = arg.strip_prefix("file://") else { return Some(PathBuf::from(arg)) };
-    let slash = rest.find('/')?;
-    let host = &rest[..slash];
-    if !host.is_empty() && host != "localhost" {
-        return None;
-    }
-    let path = &rest[slash..];
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let decoded = (bytes[index] == b'%')
-            .then(|| bytes.get(index + 1..index + 3))
-            .flatten()
-            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
-        if let Some(byte) = decoded {
-            out.push(byte);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
-        }
-    }
-    (!out.contains(&0)).then(|| PathBuf::from(std::ffi::OsString::from_vec(out)))
+    if arg.starts_with("file://") { glide_config::uri::local_path(arg) } else { Some(PathBuf::from(arg)) }
 }
 
 #[must_use]

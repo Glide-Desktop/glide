@@ -153,31 +153,7 @@ pub fn better_candidate(current: Option<&Track>, candidate: &Track) -> bool {
 
 #[must_use]
 pub fn local_art_path(art_url: &str) -> Option<std::path::PathBuf> {
-    let trimmed = art_url.trim();
-    let path = trimmed.strip_prefix("file://")?;
-    let path = path.strip_prefix("localhost").unwrap_or(path);
-    let decoded = percent_decode(path);
-    let path = std::path::PathBuf::from(decoded);
-    path.is_file().then_some(path)
-}
-
-fn percent_decode(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 3 <= bytes.len() {
-            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
-            if let Some(value) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
-                out.push(value);
-                index += 3;
-                continue;
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    glide_config::uri::local_path(art_url).filter(|path| path.is_file())
 }
 
 #[cfg(test)]
@@ -269,15 +245,6 @@ mod tests {
         assert!(local_art_path("https://example.com/cover.jpg").is_none());
         assert!(local_art_path("").is_none());
         assert!(local_art_path("file:///definitely/not/here.png").is_none());
-    }
-
-    #[test]
-    fn a_percent_escaped_art_path_is_decoded() {
-        assert_eq!(percent_decode("/tmp/my%20cover.png"), "/tmp/my cover.png");
-        assert_eq!(percent_decode("/plain/path.png"), "/plain/path.png");
-        assert_eq!(percent_decode("/trailing%"), "/trailing%");
-        assert_eq!(percent_decode("/bad%zz"), "/bad%zz");
-        assert_eq!(percent_decode("/end%20"), "/end ");
     }
 
     #[test]
