@@ -1645,6 +1645,11 @@ impl Topbar {
         &self.system_status
     }
 
+    #[must_use]
+    pub const fn media(&self) -> Option<&MediaWidget> {
+        self.media.as_ref()
+    }
+
     pub fn set_nc_items(&mut self, items: Vec<crate::notifications::NcItem>) -> bool {
         if self.nc_items == items {
             return false;

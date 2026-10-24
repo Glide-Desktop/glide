@@ -2506,25 +2506,29 @@ impl GlideState {
         match hit {
             GreeterHit::Submit => self.submit_greeter_password(),
             GreeterHit::UserAvatar => self.greeter_cycle_user(),
+            GreeterHit::User(index) => self.greeter_select_user(index),
             GreeterHit::Session => greeter.toggle_session_menu(),
             GreeterHit::SessionItem(index) => greeter.select_session(index),
+            GreeterHit::PowerButton => greeter.toggle_power_menu(),
+            GreeterHit::Power(action) if greeter.armed() == Some(action) => self.greeter_power(action),
             GreeterHit::Power(action) => greeter.arm_power(action),
-            GreeterHit::PowerCancel => {
-                greeter.cancel_power_arm();
-            }
-            GreeterHit::PowerConfirm => {
-                if let Some(action) = greeter.armed() {
-                    self.greeter_power(action);
-                }
-            }
+            GreeterHit::Accessibility => greeter.toggle_a11y_menu(),
+            GreeterHit::ShowTyped => greeter.toggle_show_typed(),
             GreeterHit::KeyboardLayout => {
                 self.cycle_keyboard_layout();
                 self.sync_greeter_layout();
             }
-            GreeterHit::SessionMenu | GreeterHit::PowerCapsule => {}
-            GreeterHit::PasswordField | GreeterHit::Status | GreeterHit::None => {
-                greeter.close_session_menu();
-                greeter.cancel_power_arm();
+            GreeterHit::Media(button) => {
+                let command = match button {
+                    crate::greeter::MediaButton::Previous => glide_media::Command::Previous,
+                    crate::greeter::MediaButton::PlayPause => glide_media::Command::PlayPause,
+                    crate::greeter::MediaButton::Next => glide_media::Command::Next,
+                };
+                self.run_media_command(command);
+            }
+            GreeterHit::Menu | GreeterHit::Status => {}
+            GreeterHit::PasswordField | GreeterHit::None => {
+                greeter.close_menus();
             }
         }
         self.queue_redraw();

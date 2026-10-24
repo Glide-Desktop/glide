@@ -8,7 +8,7 @@ use glide_theme::{
     motion::{self, ease_out},
     shape,
 };
-use glide_ui::{Reveal, Tween};
+use glide_ui::Reveal;
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -27,57 +27,79 @@ use crate::{
     popup_menu::text_px as text_w,
 };
 
-const PAD_X: i32 = 36;
-const PAD_Y: i32 = 32;
-const DATE_H: i32 = 28;
-const TIME_H: i32 = 132;
-const CLOCK_H: i32 = DATE_H + 4 + TIME_H;
-const AVATAR: i32 = 108;
-const NAME_H: i32 = 24;
-const FIELD_W: i32 = 260;
-const FIELD_H: i32 = 40;
-const SUBMIT: i32 = 34;
-const HINT_H: i32 = 24;
-const AUTH_H: i32 = AVATAR + 14 + NAME_H + 14 + FIELD_H + 10 + HINT_H;
-const PILL_H: i32 = 42;
-const ITEM_H: i32 = 34;
-const ICON: i32 = 16;
-const SMALL_ICON: i32 = 14;
-const STATUS_TOP: i32 = 24;
-const STATUS_RIGHT: i32 = 28;
-const STATUS_H: i32 = 32;
-const MENU_MIN_W: i32 = 220;
-const MENU_MAX_W: i32 = 360;
-const MENU_ROW: i32 = 34;
-const MENU_GAP: i32 = 2;
+const NAV_RIGHT: i32 = 20;
+const NAV_TOP: i32 = 16;
+const NAV_H: i32 = 34;
+const NAV_ITEM: i32 = 32;
+const NAV_GAP: i32 = 2;
+const SEP_MARGIN: i32 = 6;
+const DATE_H: i32 = 16;
+const CLOCK_GAP: i32 = 6;
+const TIME_LOGIN: i32 = 128;
+const TIME_LOCK: i32 = 112;
+const AVATAR_LOGIN: i32 = 92;
+const AVATAR_LOCK: i32 = 72;
+const NAME_LOGIN: i32 = 28;
+const NAME_LOCK: i32 = 25;
+const BLOCK_W: i32 = 600;
+const FIELD_W: i32 = 320;
+const FIELD_H: i32 = 46;
+const GO: i32 = 36;
+const HINT_H: i32 = 18;
+const CHIP_H: i32 = 34;
+const CHIP_AVATAR: i32 = 26;
+const CHIP_GAP: i32 = 10;
+const MENU_GAP: i32 = 8;
 const MENU_PAD: i32 = 6;
+const MENU_NOTE_H: i32 = 26;
+const SESSION_MENU_W: i32 = 240;
+const POWER_MENU_W: i32 = 260;
+const SESSION_ROW: i32 = 34;
+const POWER_ROW: i32 = 38;
+const CARD_W: i32 = 360;
+const MEDIA_H: i32 = 60;
+const NOTICES_H: i32 = 44;
+const CARD_GAP: i32 = 8;
+const ARM_HOLD: Duration = Duration::from_secs(4);
 const MAX_DOTS: usize = 24;
 const MAX_PASSWORD_CHARS: usize = 512;
 const PASSWORD_CAPACITY: usize = MAX_PASSWORD_CHARS * 4;
 const ERROR_HOLD: Duration = Duration::from_millis(2500);
-const SPINNER_PERIOD: Duration = Duration::from_millis(600);
+const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 const SPINNER_STEPS: u32 = 36;
 const MAX_CACHED_ICONS: usize = 256;
+const SCRIM_ROWS: i32 = 64;
+const FAILLOCK_CONF: &str = "/etc/security/faillock.conf";
 
 const fn style(size_px: f32, line_height_px: f32, weight: u16, tracking_em: f32) -> TextStyle {
     TextStyle { size_px, line_height_px, weight, tracking_em, uppercase: false, tabular: false }
 }
 
-const TIME_STYLE: TextStyle = style(138.0, 132.0, 600, -0.05);
-const DATE_STYLE: TextStyle = style(21.0, 28.0, 550, -0.015);
-const INITIAL_STYLE: TextStyle = style(42.0, 48.0, 680, 0.0);
-const NAME_STYLE: TextStyle = style(18.0, 24.0, 630, -0.015);
-const FIELD_STYLE: TextStyle = style(14.0, 20.0, 400, 0.0);
-const HINT_STYLE: TextStyle = style(12.0, 18.0, 450, 0.0);
-const HINT_STRONG_STYLE: TextStyle = style(12.0, 18.0, 550, 0.0);
-const POWER_STYLE: TextStyle = style(12.0, 16.0, 500, -0.01);
-const QUESTION_STYLE: TextStyle = style(12.5, 16.0, 550, 0.0);
-const CONFIRM_STYLE: TextStyle = style(12.0, 16.0, 600, 0.0);
-const SESSION_STYLE: TextStyle = style(12.5, 16.0, 500, 0.0);
+const DATE_STYLE: TextStyle = style(11.5, 16.0, 600, 0.16);
+const TIME_LOGIN_STYLE: TextStyle = TextStyle { tabular: true, ..style(128.0, 128.0, 300, -0.04) };
+const TIME_LOCK_STYLE: TextStyle = TextStyle { tabular: true, ..style(112.0, 112.0, 300, -0.04) };
+const INITIAL_LOGIN: TextStyle = style(36.0, 40.0, 680, 0.0);
+const INITIAL_LOCK: TextStyle = style(28.0, 32.0, 680, 0.0);
+const INITIAL_CHIP: TextStyle = style(11.5, 14.0, 680, 0.0);
+const NAME_LOGIN_STYLE: TextStyle = style(22.0, 28.0, 650, -0.015);
+const NAME_LOCK_STYLE: TextStyle = style(19.0, 25.0, 650, -0.015);
+const FIELD_STYLE: TextStyle = style(14.5, 20.0, 400, 0.02);
+const DOTS_STYLE: TextStyle = style(14.5, 20.0, 400, 0.14);
+const HINT_STYLE: TextStyle = style(12.5, 18.0, 400, 0.0);
+const KBD_STYLE: TextStyle = style(12.0, 16.0, 600, 0.04);
+const NAV_STYLE: TextStyle = style(12.0, 16.0, 550, 0.0);
 const MENU_STYLE: TextStyle = style(13.0, 18.0, 400, 0.0);
-const MENU_ACTIVE_STYLE: TextStyle = style(13.0, 18.0, 500, 0.0);
-const STATUS_STYLE: TextStyle = style(11.5, 14.0, 550, 0.0);
-const KBD_STYLE: TextStyle = TextStyle { tabular: true, ..style(11.5, 14.0, 600, 0.0) };
+const MENU_ARMED_STYLE: TextStyle = style(13.0, 18.0, 600, 0.0);
+const MENU_NOTE_STYLE: TextStyle = style(11.5, 16.0, 400, 0.0);
+const CHIP_STYLE: TextStyle = style(12.5, 16.0, 550, 0.0);
+const PILL_STYLE: TextStyle = style(13.5, 18.0, 550, 0.0);
+const PILL_COUNT_STYLE: TextStyle = TextStyle { tabular: true, ..style(13.5, 18.0, 650, 0.0) };
+const BUSY_STYLE: TextStyle = style(14.0, 20.0, 550, 0.0);
+const MEDIA_TITLE_STYLE: TextStyle = style(13.5, 18.0, 640, 0.0);
+const MEDIA_SUB_STYLE: TextStyle = style(12.0, 16.0, 400, 0.0);
+const NOTICE_STYLE: TextStyle = style(12.5, 16.0, 550, 0.0);
+const NOTICE_NOTE_STYLE: TextStyle = style(11.5, 16.0, 400, 0.0);
+const BUBBLE_STYLE: TextStyle = style(11.0, 14.0, 700, 0.0);
 
 pub(crate) fn svg(stroke_width: f32, body: &str) -> String {
     format!(
@@ -87,25 +109,38 @@ pub(crate) fn svg(stroke_width: f32, body: &str) -> String {
     )
 }
 
+fn filled(body: &str) -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"black\">{body}</svg>"
+    )
+}
+
 mod icon {
-    pub const MOON: &str = r#"<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>"#;
-    pub const RESTART: &str = r#"<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>"#;
+    pub const MOON: &str = r#"<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>"#;
+    pub const RESTART: &str =
+        r#"<path d="M3 12a9 9 0 0 1 15.4-6.4L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.4 6.4L3 16M3 21v-5h5"/>"#;
     pub const POWER: &str = r#"<path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>"#;
-    pub const LAYERS: &str = r#"<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>"#;
-    pub const CHEVRON_DOWN: &str = r#"<polyline points="6 9 12 15 18 9"/>"#;
-    pub const ARROW_RIGHT: &str = r#"<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>"#;
-    pub const CHECK: &str = r#"<polyline points="20 6 9 17 4 12"/>"#;
-    pub const CLOSE: &str = r#"<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>"#;
-    pub const WIFI: &str = r#"<path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>"#;
+    pub const LAYERS: &str = r#"<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>"#;
+    pub const CHEVRON_DOWN: &str = r#"<path d="m6 9 6 6 6-6"/>"#;
+    pub const ARROW_RIGHT: &str = r#"<path d="M5 12h14M13 6l6 6-6 6"/>"#;
+    pub const CHECK: &str = r#"<path d="m5 12.5 4.5 4.5L19 7.5"/>"#;
+    pub const WIFI: &str = r#"<path d="M2 8.8a15 15 0 0 1 20 0"/><path d="M5 12.6a10 10 0 0 1 14 0"/><path d="M8.5 16.4a5 5 0 0 1 7 0"/><circle cx="12" cy="20" r="1"/>"#;
+    pub const KEYBOARD: &str = r#"<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7.5 14h9"/>"#;
+    pub const ACCESSIBILITY: &str =
+        r#"<circle cx="12" cy="4.5" r="1.6"/><path d="M5 8.5c2.3.7 4.6 1 7 1s4.7-.3 7-1M12 9.5V14m0 0-3 6m3-6 3 6"/>"#;
+    pub const CLOCK: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>"#;
+    pub const NOTE: &str =
+        r#"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"#;
+    pub const PLAY: &str = r#"<path d="M4.5 3v10l8-5z"/>"#;
+    pub const PAUSE: &str = r#"<path d="M5 3h2v10H5zM9 3h2v10H9z"/>"#;
+    pub const PREVIOUS: &str = r#"<path d="M5 3h1.5v10H5zM12 3v10l-6-5z"/>"#;
+    pub const NEXT: &str = r#"<path d="M11 3h-1.5v10H11zM4 3v10l6-5z"/>"#;
 }
 
 fn battery_svg(pct: u8) -> String {
-    let level = 11.0 * f32::from(pct.min(100)) / 100.0;
-    svg(
-        2.0,
-        &format!(
-            r#"<rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><rect x="4.5" y="9.5" width="{level:.2}" height="5" rx="0.5" fill="black" stroke="none"/>"#
-        ),
+    let level = 13.0 * f32::from(pct.min(100)) / 100.0;
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"28\" height=\"28\" viewBox=\"0 0 28 28\" fill=\"none\" stroke=\"black\" stroke-width=\"1.6\"><rect x=\"1\" y=\"8\" width=\"22\" height=\"12\" rx=\"3\"/><rect x=\"4\" y=\"11\" width=\"{level:.2}\" height=\"6\" rx=\"1.4\" fill=\"black\" stroke=\"none\"/><path d=\"M25 12v4\" stroke-linecap=\"round\"/></svg>"
     )
 }
 
@@ -114,22 +149,13 @@ fn spinner_svg(step: u32) -> String {
     svg(
         3.0,
         &format!(
-            r#"<circle cx="12" cy="12" r="9" stroke-opacity="0.35"/><path d="M12 3a9 9 0 0 1 9 9" transform="rotate({degrees} 12 12)"/>"#
+            r#"<circle cx="12" cy="12" r="9" stroke-opacity="0.3"/><path d="M12 3a9 9 0 0 1 9 9" transform="rotate({degrees} 12 12)"/>"#
         ),
     )
 }
 
 fn round_i32(value: f64) -> i32 {
     value.round() as i32
-}
-
-fn fade(color: Color, alpha: f64) -> Color {
-    let alpha = alpha.clamp(0.0, 1.0) as f32;
-    color.with_alpha(color.0[3] * alpha)
-}
-
-fn lerp(from: i32, to: i32, t: f64) -> i32 {
-    round_i32(f64::from(from) + f64::from(to - from) * t)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -148,7 +174,9 @@ impl Rect {
 
     #[must_use]
     pub fn contains(self, x: f64, y: f64) -> bool {
-        x >= f64::from(self.x)
+        self.w > 0
+            && self.h > 0
+            && x >= f64::from(self.x)
             && x < f64::from(self.x + self.w)
             && y >= f64::from(self.y)
             && y < f64::from(self.y + self.h)
@@ -189,6 +217,7 @@ pub enum PowerAction {
 
 impl PowerAction {
     pub const ALL: [Self; 3] = [Self::Sleep, Self::Restart, Self::ShutDown];
+    const LOCK: [Self; 2] = [Self::Restart, Self::ShutDown];
 
     const fn icon(self) -> &'static str {
         match self {
@@ -206,19 +235,11 @@ impl PowerAction {
         })
     }
 
-    fn question(self) -> &'static str {
+    fn again(self) -> &'static str {
         t(match self {
-            Self::Sleep => Key::GreeterAskSleep,
-            Self::Restart => Key::GreeterAskRestart,
-            Self::ShutDown => Key::GreeterAskShutDown,
-        })
-    }
-
-    fn confirm(self) -> &'static str {
-        t(match self {
-            Self::Sleep => Key::GreeterConfirmSleep,
-            Self::Restart => Key::GreeterRestart,
-            Self::ShutDown => Key::CommandShutDown,
+            Self::Sleep => Key::GreeterAgainSleep,
+            Self::Restart => Key::GreeterAgainRestart,
+            Self::ShutDown => Key::GreeterAgainShutDown,
         })
     }
 
@@ -226,7 +247,7 @@ impl PowerAction {
         !matches!(self, Self::Sleep)
     }
 
-    const fn index(self) -> usize {
+    const fn index(self) -> u64 {
         match self {
             Self::Sleep => 0,
             Self::Restart => 1,
@@ -244,20 +265,29 @@ pub enum AuthState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaButton {
+    Previous,
+    PlayPause,
+    Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GreeterHit {
     None,
     UserAvatar,
+    User(usize),
     PasswordField,
     Submit,
-    Power(PowerAction),
-    PowerConfirm,
-    PowerCancel,
-    PowerCapsule,
-    Session,
-    SessionMenu,
-    SessionItem(usize),
     KeyboardLayout,
+    Accessibility,
+    ShowTyped,
+    Session,
+    SessionItem(usize),
+    PowerButton,
+    Power(PowerAction),
+    Menu,
     Status,
+    Media(MediaButton),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +296,20 @@ pub enum Submit {
     Send(String),
     Queued,
     CreateSession(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockMedia {
+    pub title: String,
+    pub subtitle: String,
+    pub playing: bool,
+    pub accent: Color,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LockNotices {
+    pub count: usize,
+    pub apps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,38 +325,54 @@ struct Prompt {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MenuKind {
+    Session,
+    Power,
+    Accessibility,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Part {
     Clock,
-    Status,
+    Nav,
     Avatar,
     Name,
     Field,
     Hint,
-    Power,
-    Session,
+    Users,
     Menu,
+    Media,
+    Notices,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Palette {
-    fg_1: Color,
-    fg_2: Color,
-    fg_3: Color,
+    text: Color,
+    muted: Color,
+    faint: Color,
+    date: Color,
     white: Color,
     glass: Color,
-    glass_border: Color,
-    glass_card: Color,
+    glass_line: Color,
+    highlight: Color,
+    hover: Color,
+    open: Color,
+    separator: Color,
     popover: Color,
-    line: Color,
-    line_2: Color,
-    item_hover: Color,
+    popover_line: Color,
+    card: Color,
+    card_soft: Color,
+    card_line: Color,
     acc_bg: Color,
     acc_bg_hover: Color,
-    acc_ring: Color,
-    avatar_from: Color,
-    avatar_to: Color,
+    go_idle: Color,
     danger: Color,
+    danger_fill: Color,
     danger_soft: Color,
+    danger_line: Color,
+    wrong_line: Color,
+    wrong_text: Color,
+    caps_text: Color,
     revision: u64,
 }
 
@@ -320,36 +380,74 @@ impl Palette {
     fn new(accent: Accent) -> Self {
         let tokens = Tokens::new(Appearance::Dark, accent);
         let white = Color([1.0, 1.0, 1.0, 1.0]);
+        let ink = tokens.fg_1;
         let mut palette = Self {
-            fg_1: tokens.fg_1,
-            fg_2: tokens.fg_2,
-            fg_3: tokens.fg_3,
+            text: ink,
+            muted: ink.with_alpha(0.62),
+            faint: ink.with_alpha(0.5),
+            date: ink.with_alpha(0.7),
             white,
-            glass: tokens.shell_bg,
-            glass_border: tokens.shell_line,
-            glass_card: tokens.card_bg,
-            popover: tokens.popover_bg,
-            line: tokens.line,
-            line_2: tokens.line_2,
-            item_hover: tokens.fill_2,
+            glass: white.with_alpha(0.10),
+            glass_line: white.with_alpha(0.16),
+            highlight: white.with_alpha(0.08),
+            hover: white.with_alpha(0.10),
+            open: white.with_alpha(0.14),
+            separator: white.with_alpha(0.18),
+            popover: Color::from_rgb8(47, 46, 52, 0.94),
+            popover_line: white.with_alpha(0.09),
+            card: Color::from_rgb8(30, 29, 35, 0.5),
+            card_soft: Color::from_rgb8(30, 29, 35, 0.4),
+            card_line: white.with_alpha(0.08),
             acc_bg: tokens.acc_bg,
             acc_bg_hover: tokens.acc_bg_hover,
-            acc_ring: tokens.ramp[1].with_alpha(0.40),
-            avatar_from: tokens.ramp[2],
-            avatar_to: tokens.ramp[4],
+            go_idle: white.with_alpha(0.12),
             danger: tokens.danger,
-            danger_soft: tokens.danger_soft,
+            danger_fill: Color::from_rgb8(224, 101, 91, 1.0),
+            danger_soft: tokens.danger.with_alpha(0.16),
+            danger_line: tokens.danger.with_alpha(0.32),
+            wrong_line: Color::from_rgb8(255, 140, 128, 0.7),
+            wrong_text: Color::from_rgb8(255, 154, 144, 1.0),
+            caps_text: Color::from_rgb8(240, 199, 106, 1.0),
             revision: 0,
         };
-        palette.revision = Revision::new()
-            .color(palette.acc_bg)
-            .color(palette.acc_bg_hover)
-            .color(palette.acc_ring)
-            .color(palette.avatar_from)
-            .color(palette.avatar_to)
-            .color(palette.danger)
-            .finish();
+        palette.revision =
+            Revision::new().color(palette.text).color(palette.acc_bg).color(palette.acc_bg_hover).finish();
         palette
+    }
+}
+
+fn user_colors(seed: u32) -> (Color, Color) {
+    const PAIRS: [(Accent, Accent); 4] = [
+        (Accent::Blue, Accent::Purple),
+        (Accent::Amber, Accent::Red),
+        (Accent::Green, Accent::Teal),
+        (Accent::Orange, Accent::Purple),
+    ];
+    let (from, to) = PAIRS[seed as usize % PAIRS.len()];
+    (from.ramp()[2], to.ramp()[2])
+}
+
+fn bubble_colour(name: &str) -> Color {
+    let hash = name.bytes().fold(0_u32, |acc, byte| acc.wrapping_mul(31).wrapping_add(u32::from(byte)));
+    Accent::ALL[hash as usize % Accent::ALL.len()].ramp()[3]
+}
+
+struct NavRow {
+    right: i32,
+    separators: Vec<Rect>,
+}
+
+impl NavRow {
+    fn take(&mut self, width: i32) -> Rect {
+        let rect = Rect::new(self.right - width, NAV_TOP + (NAV_H - NAV_ITEM) / 2, width, NAV_ITEM);
+        self.right = rect.x - NAV_GAP;
+        rect
+    }
+
+    fn separate(&mut self) {
+        let x = self.right + NAV_GAP - SEP_MARGIN - 1;
+        self.separators.push(Rect::new(x, NAV_TOP + (NAV_H - 16) / 2, 1, 16));
+        self.right = x - SEP_MARGIN - NAV_GAP;
     }
 }
 
@@ -357,26 +455,26 @@ impl Palette {
 pub struct Layout {
     pub origin: (i32, i32),
     pub clock: Rect,
+    pub nav: Rect,
+    pub kbd: Rect,
+    pub a11y: Rect,
+    pub session: Rect,
+    pub status: Rect,
+    pub separators: Vec<Rect>,
+    pub power: Rect,
     pub avatar: Rect,
     pub name: Rect,
     pub field: Rect,
+    pub field_frame: Rect,
     pub submit: Rect,
     pub hint: Rect,
-    pub power: Rect,
-    pub power_frame: Rect,
-    pub power_items: [Rect; 3],
-    pub dividers: [Rect; 2],
-    pub question: Rect,
-    pub confirm: Rect,
-    pub cancel: Rect,
-    pub arm: f64,
-    pub session: Rect,
+    pub users: Vec<(usize, Rect)>,
+    pub users_frame: Rect,
     pub menu: Rect,
     pub menu_items: Vec<Rect>,
-    pub status: Rect,
-    pub kbd: Rect,
-    pub wifi: Option<Rect>,
-    pub battery: Option<Rect>,
+    pub media: Rect,
+    pub media_buttons: [Rect; 3],
+    pub notices: Rect,
 }
 
 struct Layer {
@@ -402,16 +500,21 @@ pub struct GreeterUi {
     error_at: Option<Instant>,
     error_held: bool,
     unavailable: bool,
-    arm: Option<PowerAction>,
-    arm_shown: PowerAction,
-    arm_reveal: Reveal,
+    menu: Option<MenuKind>,
+    menu_shown: MenuKind,
     menu_reveal: Reveal,
+    arm: Option<PowerAction>,
+    armed_at: Option<Instant>,
+    show_typed: bool,
+    failures: u32,
+    deny: Option<u32>,
+    locked_until: Option<Instant>,
     hover: GreeterHit,
-    power_hover: [Tween; 3],
-    session_lift: Tween,
     kbd_label: String,
     caps_lock: bool,
     status: GreeterStatus,
+    media: Option<LockMedia>,
+    notices: LockNotices,
     time: String,
     date: String,
     leaving: Option<Instant>,
@@ -435,14 +538,71 @@ pub(crate) fn solid_pixel(bgra: [u8; 4]) -> MemoryRenderBuffer {
     MemoryRenderBuffer::from_slice(&bgra, Fourcc::Argb8888, (1, 1), 1, Transform::Normal, None)
 }
 
+fn scrim_buffer() -> MemoryRenderBuffer {
+    let mut pixels = Vec::with_capacity(usize::try_from(SCRIM_ROWS * 4).unwrap_or(0));
+    for row in 0..SCRIM_ROWS {
+        let t = f64::from(row) / f64::from(SCRIM_ROWS - 1);
+        let alpha = 0.1 + (0.45 - 0.1) * t;
+        let channel = |value: f64| (value * alpha * 255.0).round() as u8;
+        pixels.extend_from_slice(&[channel(14.0 / 255.0), channel(10.0 / 255.0), channel(10.0 / 255.0)]);
+        pixels.push((alpha * 255.0).round() as u8);
+    }
+    MemoryRenderBuffer::from_slice(&pixels, Fourcc::Argb8888, (1, SCRIM_ROWS), 1, Transform::Normal, None)
+}
+
 fn is_generic_password_prompt(text: &str) -> bool {
     let lower = text.to_lowercase();
     lower.trim().is_empty() || lower.contains("password") || lower.contains("пароль")
 }
 
+#[must_use]
+pub fn faillock_deny(conf: &str) -> u32 {
+    conf.lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .filter_map(|line| line.split_once('='))
+        .find(|(key, _)| key.trim() == "deny")
+        .and_then(|(_, value)| value.trim().parse().ok())
+        .unwrap_or(3)
+}
+
+#[must_use]
+pub fn lockout_left(text: &str) -> Option<Duration> {
+    let lower = text.to_lowercase();
+    if !(lower.contains("lock") || lower.contains("блок")) {
+        return None;
+    }
+    let words: Vec<&str> = lower.split(|ch: char| !ch.is_alphanumeric()).filter(|word| !word.is_empty()).collect();
+    words.windows(2).find_map(|pair| {
+        let count: u64 = pair[0].parse().ok()?;
+        let unit = pair[1];
+        if unit.starts_with("min") || unit.starts_with("хв") {
+            Some(Duration::from_secs(count * 60))
+        } else if unit.starts_with("sec") || unit.starts_with("сек") {
+            Some(Duration::from_secs(count))
+        } else {
+            None
+        }
+    })
+}
+
+fn countdown(left: Duration) -> String {
+    let secs = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+fn plural(lang: crate::i18n::Lang, count: u64, keys: [Key; 3]) -> String {
+    let key = match lang.plural(count) {
+        glide_app::i18n::Plural::One => keys[0],
+        glide_app::i18n::Plural::Few => keys[1],
+        glide_app::i18n::Plural::Many => keys[2],
+    };
+    t(key).replace("{n}", &count.to_string())
+}
+
 impl GreeterUi {
     #[must_use]
     pub fn new(users: Vec<UserEntry>, sessions: Vec<SessionEntry>, accent: Accent) -> Self {
+        let deny = std::fs::read_to_string(FAILLOCK_CONF).ok().map(|conf| faillock_deny(&conf)).filter(|n| *n > 0);
         let mut ui = Self {
             users,
             active_user: 0,
@@ -458,16 +618,21 @@ impl GreeterUi {
             error_at: None,
             error_held: false,
             unavailable: false,
-            arm: None,
-            arm_shown: PowerAction::ShutDown,
-            arm_reveal: Reveal::closed().with_ease(ease_out),
+            menu: None,
+            menu_shown: MenuKind::Power,
             menu_reveal: Reveal::closed().with_ease(ease_out),
+            arm: None,
+            armed_at: None,
+            show_typed: false,
+            failures: 0,
+            deny,
+            locked_until: None,
             hover: GreeterHit::None,
-            power_hover: [Tween::at(0.0); 3],
-            session_lift: Tween::at(0.0),
             kbd_label: String::new(),
             caps_lock: false,
             status: GreeterStatus::default(),
+            media: None,
+            notices: LockNotices::default(),
             time: String::new(),
             date: String::new(),
             leaving: None,
@@ -476,7 +641,7 @@ impl GreeterUi {
             layout: None,
             layers: HashMap::new(),
             icons: HashMap::new(),
-            scrim: solid_pixel([5, 4, 4, 102]),
+            scrim: scrim_buffer(),
             dirty: true,
             mode: Mode::Login,
         };
@@ -546,8 +711,18 @@ impl GreeterUi {
         self.unavailable
     }
 
-    const fn editable(&self) -> bool {
-        matches!(self.auth, AuthState::Idle | AuthState::Error) && self.leaving.is_none()
+    fn locked_out(&self) -> Option<Duration> {
+        let until = self.locked_until?;
+        let left = until.saturating_duration_since(Instant::now());
+        (!left.is_zero()).then_some(left)
+    }
+
+    fn editable(&self) -> bool {
+        matches!(self.auth, AuthState::Idle | AuthState::Error) && self.leaving.is_none() && self.locked_out().is_none()
+    }
+
+    fn power_actions(&self) -> &'static [PowerAction] {
+        if self.is_lock() { &PowerAction::LOCK } else { &PowerAction::ALL }
     }
 
     fn clear_error(&mut self) {
@@ -596,57 +771,115 @@ impl GreeterUi {
     }
 
     pub fn cancel(&mut self) -> bool {
-        self.cancel_power_arm() || self.close_session_menu() || self.clear_password()
+        self.cancel_power_arm() || self.close_menus() || self.clear_password()
     }
 
-    pub fn cycle_user(&mut self) -> Option<String> {
-        if self.users.len() < 2 || !self.editable() {
-            return None;
-        }
-        self.active_user = (self.active_user + 1) % self.users.len();
+    fn reset_for_user(&mut self) {
         wipe(&mut self.password);
         self.prompt = None;
         self.queued = None;
         self.needs_session = false;
         self.clear_error();
         self.message = None;
+        self.failures = 0;
+        self.locked_until = None;
         self.dirty = true;
+    }
+
+    fn can_switch_user(&self) -> bool {
+        self.users.len() > 1
+            && matches!(self.auth, AuthState::Idle | AuthState::Error)
+            && self.leaving.is_none()
+            && !self.is_lock()
+    }
+
+    pub fn cycle_user(&mut self) -> Option<String> {
+        if !self.can_switch_user() {
+            return None;
+        }
+        self.active_user = (self.active_user + 1) % self.users.len();
+        self.reset_for_user();
         self.active_user().map(|user| user.username.clone())
     }
 
-    pub fn toggle_session_menu(&mut self) {
-        if self.sessions.is_empty() {
+    pub fn select_user(&mut self, index: usize) -> Option<String> {
+        if !self.can_switch_user() || index >= self.users.len() || index == self.active_user {
+            return None;
+        }
+        self.active_user = index;
+        self.reset_for_user();
+        self.active_user().map(|user| user.username.clone())
+    }
+
+    fn open_menu(&mut self, kind: MenuKind) {
+        if self.menu == Some(kind) {
+            self.close_menus();
             return;
         }
-        if self.menu_reveal.is_open() {
-            self.close_session_menu();
-        } else {
-            self.cancel_power_arm();
-            self.menu_reveal.open(motion::t2());
-            self.dirty = true;
+        if kind != MenuKind::Power {
+            self.arm = None;
+            self.armed_at = None;
         }
+        self.menu = Some(kind);
+        self.menu_shown = kind;
+        self.menu_reveal.open(motion::t2());
+        self.dirty = true;
+    }
+
+    pub fn toggle_session_menu(&mut self) {
+        if self.sessions.is_empty() || self.is_lock() {
+            return;
+        }
+        self.open_menu(MenuKind::Session);
+    }
+
+    pub fn toggle_power_menu(&mut self) {
+        self.open_menu(MenuKind::Power);
+    }
+
+    pub fn toggle_a11y_menu(&mut self) {
+        self.open_menu(MenuKind::Accessibility);
+    }
+
+    pub fn close_menus(&mut self) -> bool {
+        if self.menu.take().is_none() {
+            return false;
+        }
+        self.arm = None;
+        self.armed_at = None;
+        self.menu_reveal.close(motion::t2());
+        self.dirty = true;
+        true
     }
 
     pub fn close_session_menu(&mut self) -> bool {
-        let closed = self.menu_reveal.close(motion::t2());
-        self.dirty |= closed;
-        closed
+        if self.menu == Some(MenuKind::Session) { self.close_menus() } else { false }
     }
 
     pub fn select_session(&mut self, index: usize) {
         if index < self.sessions.len() {
             self.active_session = index;
-            self.close_session_menu();
+            self.close_menus();
             self.dirty = true;
         }
     }
 
+    pub fn toggle_show_typed(&mut self) {
+        self.show_typed = !self.show_typed;
+        self.dirty = true;
+    }
+
     pub fn arm_power(&mut self, action: PowerAction) {
-        self.close_session_menu();
+        if !self.power_actions().contains(&action) {
+            return;
+        }
+        if self.menu != Some(MenuKind::Power) {
+            self.menu = Some(MenuKind::Power);
+            self.menu_shown = MenuKind::Power;
+            self.menu_reveal.open(motion::t2());
+        }
         self.arm = Some(action);
-        self.arm_shown = action;
-        self.arm_reveal.open(motion::t3());
-        self.retarget_hover();
+        self.armed_at = Some(Instant::now());
         self.dirty = true;
     }
 
@@ -654,8 +887,7 @@ impl GreeterUi {
         if self.arm.take().is_none() {
             return false;
         }
-        self.arm_reveal.close(motion::t3());
-        self.retarget_hover();
+        self.armed_at = None;
         self.dirty = true;
         true
     }
@@ -680,12 +912,32 @@ impl GreeterUi {
         }
     }
 
+    pub fn set_media(&mut self, media: Option<LockMedia>) {
+        if self.media != media {
+            self.media = media;
+            self.dirty = true;
+        }
+    }
+
+    #[must_use]
+    pub const fn notice_count(&self) -> usize {
+        self.notices.count
+    }
+
+    pub fn set_notices(&mut self, notices: LockNotices) {
+        if self.notices != notices {
+            self.notices = notices;
+            self.dirty = true;
+        }
+    }
+
     pub fn submit(&mut self) -> Submit {
         if !self.editable() || self.password.is_empty() {
             return Submit::Nothing;
         }
         self.clear_error();
         self.message = None;
+        self.close_menus();
         self.pending_dots = self.password.chars().count();
         let password = std::mem::replace(&mut self.password, String::with_capacity(PASSWORD_CAPACITY));
         self.auth = AuthState::Authenticating;
@@ -740,14 +992,38 @@ impl GreeterUi {
     }
 
     pub fn set_auth_denied(&mut self, reason: Option<String>, fallback: &str) {
-        let held = reason.is_some();
-        self.set_auth_error(reason.unwrap_or_else(|| fallback.to_string()), false);
-        self.error_held = held;
+        let notice = self.message.as_ref().map(|(text, _)| text.clone());
+        let lockout = reason.as_deref().or(notice.as_deref()).and_then(lockout_left);
+        if let Some(left) = lockout {
+            let text = reason.or(notice).unwrap_or_default();
+            self.set_auth_error(text, false);
+            self.locked_until = Some(Instant::now() + left);
+            self.error_held = true;
+            return;
+        }
+        if let Some(reason) = reason {
+            self.set_auth_error(reason, false);
+            self.error_held = true;
+            return;
+        }
+        self.failures = self.failures.saturating_add(1);
+        let text = match self.deny.map(|deny| deny.saturating_sub(self.failures)) {
+            Some(left) if left > 0 => format!(
+                "{} {}",
+                t(Key::GreeterWrongShort),
+                plural(crate::i18n::language(), u64::from(left), [Key::PkLeftOne, Key::PkLeftFew, Key::PkLeftMany])
+            ),
+            _ => fallback.to_string(),
+        };
+        self.set_auth_error(text, false);
     }
 
     pub fn set_auth_success(&mut self) {
         self.auth = AuthState::Success;
         self.message = None;
+        self.failures = 0;
+        self.close_menus();
+        self.spinner_epoch = Instant::now();
         self.dirty = true;
     }
 
@@ -759,8 +1035,7 @@ impl GreeterUi {
     pub fn leave(&mut self) {
         if self.leaving.is_none() {
             self.leaving = Some(Instant::now());
-            self.cancel_power_arm();
-            self.close_session_menu();
+            self.close_menus();
             self.dirty = true;
         }
     }
@@ -791,7 +1066,7 @@ impl GreeterUi {
             return 0.0;
         }
         let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
-        -7.0 * (progress * std::f64::consts::TAU * 2.0).sin() * (1.0 - ease_out(progress))
+        -8.0 * (progress * std::f64::consts::TAU * 2.0).sin() * (1.0 - ease_out(progress))
     }
 
     fn spinner_step(&self) -> u32 {
@@ -808,7 +1083,9 @@ impl GreeterUi {
         let h24 = crate::topbar::calendar::default_24h(crate::topbar::calendar::env_locale_is_us());
         let full = crate::topbar::calendar::format_time(now.hour, now.minute, h24);
         let time = full.split(' ').next().unwrap_or_default().to_string();
-        let date = crate::i18n::long_date(crate::i18n::language(), now.weekday, now.day, now.month0);
+        let date = crate::i18n::long_date(crate::i18n::language(), now.weekday, now.day, now.month0)
+            .replace(", ", " · ")
+            .to_uppercase();
         if time != self.time || date != self.date {
             self.time = time;
             self.date = date;
@@ -821,29 +1098,19 @@ impl GreeterUi {
             return false;
         }
         self.hover = hit;
-        self.retarget_hover();
         self.dirty = true;
         true
     }
 
-    fn retarget_hover(&mut self) {
-        let duration = motion::t2();
-        for action in PowerAction::ALL {
-            let on = self.arm.is_none() && self.hover == GreeterHit::Power(action);
-            self.power_hover[action.index()].retarget(f64::from(u8::from(on)), duration, ease_out);
-        }
-        let lifted = self.hover == GreeterHit::Session;
-        self.session_lift.retarget(f64::from(u8::from(lifted)), duration, ease_out);
+    fn busy(&self) -> bool {
+        matches!(self.auth, AuthState::Authenticating | AuthState::Success)
     }
 
     fn is_animating(&self) -> bool {
         let (t2, t3) = (motion::t2(), motion::t3());
         self.error_at.is_some_and(|since| since.elapsed() < t3)
-            || self.arm_reveal.is_animating(t3)
             || self.menu_reveal.is_animating(t2)
-            || self.power_hover.iter().any(|tween| tween.is_animating(t2))
-            || self.session_lift.is_animating(t2)
-            || matches!(self.auth, AuthState::Authenticating | AuthState::Success)
+            || self.busy()
             || self.leaving.is_some()
     }
 
@@ -853,7 +1120,17 @@ impl GreeterUi {
             self.clear_error();
             self.dirty = true;
         }
-        self.arm_reveal.settle(motion::t3());
+        if self.armed_at.is_some_and(|at| at.elapsed() >= ARM_HOLD) {
+            self.cancel_power_arm();
+        }
+        if let Some(until) = self.locked_until {
+            if Instant::now() >= until {
+                self.locked_until = None;
+                self.failures = 0;
+                self.clear_error();
+            }
+            self.dirty = true;
+        }
         self.menu_reveal.settle(motion::t2());
         self.dirty || self.is_animating()
     }
@@ -868,35 +1145,35 @@ impl GreeterUi {
         }
         let x = pos.x - f64::from(layout.origin.0);
         let y = pos.y - f64::from(layout.origin.1);
-        if self.menu_reveal.is_open() {
+        if self.menu.is_some() {
             if let Some(index) = layout.menu_items.iter().position(|r| r.contains(x, y)) {
-                return GreeterHit::SessionItem(index);
+                return match self.menu_shown {
+                    MenuKind::Session => GreeterHit::SessionItem(index),
+                    MenuKind::Power => {
+                        self.power_actions().get(index).copied().map_or(GreeterHit::Menu, GreeterHit::Power)
+                    }
+                    MenuKind::Accessibility => GreeterHit::ShowTyped,
+                };
             }
             if layout.menu.contains(x, y) {
-                return GreeterHit::SessionMenu;
+                return GreeterHit::Menu;
             }
         }
-        if layout.arm >= 0.5 {
-            if layout.confirm.contains(x, y) {
-                return GreeterHit::PowerConfirm;
-            }
-            if layout.cancel.contains(x, y) {
-                return GreeterHit::PowerCancel;
-            }
-        } else if let Some(index) = layout.power_items.iter().position(|r| r.contains(x, y)) {
-            return GreeterHit::Power(PowerAction::ALL[index]);
+        let targets = [
+            (layout.power, GreeterHit::PowerButton),
+            (layout.session, GreeterHit::Session),
+            (layout.a11y, GreeterHit::Accessibility),
+            (layout.kbd, GreeterHit::KeyboardLayout),
+            (layout.status, GreeterHit::Status),
+            (layout.media_buttons[0], GreeterHit::Media(MediaButton::Previous)),
+            (layout.media_buttons[1], GreeterHit::Media(MediaButton::PlayPause)),
+            (layout.media_buttons[2], GreeterHit::Media(MediaButton::Next)),
+        ];
+        if let Some((_, hit)) = targets.iter().find(|(rect, _)| rect.contains(x, y)) {
+            return *hit;
         }
-        if layout.power.contains(x, y) {
-            return GreeterHit::PowerCapsule;
-        }
-        if layout.session.contains(x, y) {
-            return GreeterHit::Session;
-        }
-        if layout.kbd.contains(x, y) {
-            return GreeterHit::KeyboardLayout;
-        }
-        if layout.status.contains(x, y) {
-            return GreeterHit::Status;
+        if let Some((index, _)) = layout.users.iter().find(|(_, rect)| rect.contains(x, y)) {
+            return GreeterHit::User(*index);
         }
         if layout.avatar.contains(x, y) {
             return GreeterHit::UserAvatar;
@@ -918,143 +1195,149 @@ impl GreeterUi {
         self.status.battery.map(|(pct, _)| format!("{pct}%"))
     }
 
+    fn status_width(&self, painter: &Painter) -> i32 {
+        let wifi = self.status.wifi.map_or(0, |_| 15);
+        let battery = self.battery_label().map_or(0, |label| 19 + 6 + text_w(painter, &label, &NAV_STYLE));
+        let inner = wifi + battery + if wifi > 0 && battery > 0 { 12 } else { 0 };
+        if inner == 0 { 0 } else { inner + 12 }
+    }
+
+    fn layout_nav(&self, painter: &Painter, layout: &mut Layout, w: i32) {
+        let mut row = NavRow { right: w - NAV_RIGHT, separators: Vec::new() };
+        layout.power = row.take(NAV_ITEM);
+        row.separate();
+        let status_w = self.status_width(painter);
+        if status_w > 0 {
+            layout.status = row.take(status_w);
+            row.separate();
+        }
+        if !self.is_lock() && !self.sessions.is_empty() {
+            let label = text_w(painter, self.session_label(), &NAV_STYLE).min(220);
+            layout.session = row.take(10 + 15 + 7 + label + 7 + 11 + 10);
+        }
+        layout.a11y = row.take(NAV_ITEM);
+        if !self.kbd_label.is_empty() {
+            layout.kbd = row.take(10 + 16 + 7 + text_w(painter, &self.kbd_label, &KBD_STYLE) + 10);
+        }
+        let left = if layout.kbd.w > 0 { layout.kbd.x } else { layout.a11y.x };
+        layout.nav = Rect::new(left, NAV_TOP, w - NAV_RIGHT - left, NAV_H);
+        layout.separators = row.separators;
+    }
+
+    fn layout_menu(&self, painter: &Painter, layout: &mut Layout) {
+        let (anchor, width, rows, row_h, note) = match self.menu_shown {
+            MenuKind::Session => {
+                let widest =
+                    self.sessions.iter().map(|s| text_w(painter, &s.name, &MENU_STYLE)).max().unwrap_or(0) + 60;
+                (layout.session, widest.max(SESSION_MENU_W), self.sessions.len(), SESSION_ROW, 0)
+            }
+            MenuKind::Power => (layout.power, POWER_MENU_W, self.power_actions().len(), POWER_ROW, MENU_NOTE_H),
+            MenuKind::Accessibility => (layout.a11y, POWER_MENU_W, 1, POWER_ROW, 0),
+        };
+        let rows = i32::try_from(rows).unwrap_or(0);
+        let height = MENU_PAD * 2 + rows * row_h + note;
+        let right = if anchor.w > 0 { anchor.right() } else { layout.power.right() };
+        let menu = Rect::new(right - width, NAV_TOP + NAV_H + MENU_GAP, width, height);
+        layout.menu_items = (0..rows)
+            .map(|row| Rect::new(menu.x + MENU_PAD, menu.y + MENU_PAD + row * row_h, width - MENU_PAD * 2, row_h))
+            .collect();
+        layout.menu = menu;
+    }
+
+    fn block_height(&self, others: bool) -> i32 {
+        let (avatar, name, gap_name, gap_field) =
+            if self.is_lock() { (AVATAR_LOCK, NAME_LOCK, 12, 18) } else { (AVATAR_LOGIN, NAME_LOGIN, 16, 22) };
+        let users = if others { 22 + CHIP_H } else { 0 };
+        avatar + gap_name + name + gap_field + FIELD_H + 12 + HINT_H + users
+    }
+
+    fn other_users(&self) -> Vec<usize> {
+        if self.is_lock() {
+            return Vec::new();
+        }
+        (0..self.users.len()).filter(|index| *index != self.active_user).collect()
+    }
+
     #[must_use]
     pub fn compute_layout(&self, painter: &Painter, area: Rectangle<i32, Logical>) -> Layout {
         let (w, h) = (area.size.w, area.size.h);
-        let clock = Rect::new(PAD_X, PAD_Y + 4, (w - PAD_X * 2).max(0), CLOCK_H);
-        let bottom_y = h - PAD_Y - PILL_H;
-        let free = bottom_y - clock.bottom() - AUTH_H;
-        let top = (clock.bottom() + free / 2 - 10).max(clock.bottom() + 8);
+        let mut layout = Layout { origin: (area.loc.x, area.loc.y), ..Layout::default() };
+        self.layout_nav(painter, &mut layout, w);
 
-        let avatar = Rect::new((w - AVATAR) / 2, top, AVATAR, AVATAR);
-        let name = Rect::new((w - 320) / 2, avatar.bottom() + 14, 320, NAME_H);
-        let field = Rect::new((w - FIELD_W) / 2, name.bottom() + 14, FIELD_W, FIELD_H);
-        let submit = Rect::new(field.right() - 3 - SUBMIT, field.y + 3, SUBMIT, SUBMIT);
-        let hint = Rect::new((w - 420) / 2, field.bottom() + 10, 420, HINT_H);
+        let lock = self.is_lock();
+        let time_h = if lock { TIME_LOCK } else { TIME_LOGIN };
+        let date_y = round_i32(f64::from(h) * if lock { 0.09 } else { 0.115 }).max(NAV_TOP + NAV_H + 8);
+        layout.clock = Rect::new(0, date_y, w, DATE_H + CLOCK_GAP + time_h);
 
-        let mut layout =
-            Layout { origin: (area.loc.x, area.loc.y), clock, avatar, name, field, submit, hint, ..Layout::default() };
-        self.layout_power(painter, &mut layout, bottom_y);
-        if !self.is_lock() {
-            self.layout_session(painter, &mut layout, w, bottom_y);
+        let mut cards_bottom = layout.clock.bottom();
+        if lock {
+            let x = (w - CARD_W) / 2;
+            let mut y = layout.clock.bottom() + 26;
+            if self.media.is_some() {
+                layout.media = Rect::new(x, y, CARD_W, MEDIA_H);
+                let next = Rect::new(layout.media.right() - 8 - 32, y + (MEDIA_H - 32) / 2, 32, 32);
+                let play = Rect::new(next.x - 12 - GO, y + (MEDIA_H - GO) / 2, GO, GO);
+                let previous = Rect::new(play.x - 12 - 32, y + (MEDIA_H - 32) / 2, 32, 32);
+                layout.media_buttons = [previous, play, next];
+                y += MEDIA_H + CARD_GAP;
+            }
+            if self.notices.count > 0 {
+                layout.notices = Rect::new(x, y, CARD_W, NOTICES_H);
+                y += NOTICES_H + CARD_GAP;
+            }
+            cards_bottom = y - CARD_GAP;
         }
-        self.layout_status(painter, &mut layout, w);
+
+        let others = self.other_users();
+        let block_h = self.block_height(!others.is_empty());
+        let free = (h - layout.clock.bottom() - block_h) / 2 - 60;
+        let mut top = layout.clock.bottom() + free.max(40);
+        if lock && cards_bottom > layout.clock.bottom() {
+            top = top.max(cards_bottom + 60);
+        }
+        let (avatar_side, name_h, gap_name, gap_field) =
+            if lock { (AVATAR_LOCK, NAME_LOCK, 12, 18) } else { (AVATAR_LOGIN, NAME_LOGIN, 16, 22) };
+        let centre = w / 2;
+        layout.avatar = Rect::new(centre - avatar_side / 2, top, avatar_side, avatar_side);
+        layout.name = Rect::new(centre - BLOCK_W / 2, layout.avatar.bottom() + gap_name, BLOCK_W, name_h);
+        layout.field = Rect::new(centre - FIELD_W / 2, layout.name.bottom() + gap_field, FIELD_W, FIELD_H);
+        layout.field_frame = Rect::new(centre - BLOCK_W / 2, layout.field.y - 8, BLOCK_W, FIELD_H + 16);
+        layout.submit = Rect::new(layout.field.right() - 5 - GO, layout.field.y + (FIELD_H - GO) / 2, GO, GO);
+        layout.hint = Rect::new(centre - BLOCK_W / 2, layout.field.bottom() + 12, BLOCK_W, HINT_H);
+
+        if !others.is_empty() {
+            let widths: Vec<i32> = others
+                .iter()
+                .map(|index| 4 + CHIP_AVATAR + 8 + text_w(painter, &self.users[*index].display_name, &CHIP_STYLE) + 12)
+                .collect();
+            let total = widths.iter().sum::<i32>() + CHIP_GAP * (i32::try_from(widths.len()).unwrap_or(1) - 1);
+            let mut x = centre - total / 2;
+            let y = layout.hint.bottom() + 22;
+            layout.users = others
+                .iter()
+                .zip(widths)
+                .map(|(index, width)| {
+                    let rect = Rect::new(x, y, width, CHIP_H);
+                    x += width + CHIP_GAP;
+                    (*index, rect)
+                })
+                .collect();
+            layout.users_frame = Rect::new(centre - total / 2 - 4, y - 4, total + 8, CHIP_H + 8);
+        }
+
+        self.layout_menu(painter, &mut layout);
         layout
     }
 
-    fn layout_power(&self, painter: &Painter, layout: &mut Layout, bottom_y: i32) {
-        let arm = self.arm_reveal.value(motion::t3());
-        let labels = PowerAction::ALL.map(|action| text_w(painter, action.label(), &POWER_STYLE));
-        let reveal = self.power_hover.map(|tween| tween.value(motion::t2(), ease_out));
-        let button_w = |index: usize, t: f64| 10 + ICON + round_i32(f64::from(6 + labels[index]) * t) + 10;
-        let idle_w = |t: [f64; 3]| 2 + 4 + (0..3).map(|i| button_w(i, t[i])).sum::<i32>() + 10 + 4;
-        let armed_w = |action: PowerAction| {
-            2 + 12
-                + text_w(painter, action.question(), &QUESTION_STYLE)
-                + 8
-                + 24
-                + text_w(painter, action.confirm(), &CONFIRM_STYLE)
-                + 8
-                + 28
-                + 4
-        };
-        let power_x = PAD_X;
-        let current_w = lerp(idle_w(reveal), armed_w(self.arm_shown), arm);
-        let power = Rect::new(power_x, bottom_y, current_w, PILL_H);
-        let widest = PowerAction::ALL.into_iter().map(armed_w).max().unwrap_or(0).max(idle_w([1.0; 3]));
-        let power_frame = Rect::new(power_x, bottom_y, widest, PILL_H);
-
-        let mut power_items = [Rect::default(); 3];
-        let mut dividers = [Rect::default(); 2];
-        let mut x = power.x + 1 + 4;
-        for index in 0..3 {
-            let bw = button_w(index, reveal[index]);
-            power_items[index] = Rect::new(x, power.y + 4, bw, ITEM_H);
-            x += bw + 2;
-            if index < 2 {
-                dividers[index] = Rect::new(x, power.y + (PILL_H - 16) / 2, 1, 16);
-                x += 1 + 2;
-            }
-        }
-        let question_w = text_w(painter, self.arm_shown.question(), &QUESTION_STYLE);
-        let question = Rect::new(power.x + 1 + 12, power.y, question_w, PILL_H);
-        let confirm_w = 24 + text_w(painter, self.arm_shown.confirm(), &CONFIRM_STYLE);
-        let confirm = Rect::new(question.right() + 8, power.y + 6, confirm_w, 30);
-        let cancel = Rect::new(confirm.right() + 8, power.y + 7, 28, 28);
-        layout.power = power;
-        layout.power_frame = power_frame;
-        layout.power_items = power_items;
-        layout.dividers = dividers;
-        layout.question = question;
-        layout.confirm = confirm;
-        layout.cancel = cancel;
-        layout.arm = arm;
-    }
-
-    fn layout_session(&self, painter: &Painter, layout: &mut Layout, w: i32, bottom_y: i32) {
-        let label_w = text_w(painter, self.session_label(), &SESSION_STYLE).min(240);
-        let session_w = 2 + 16 + SMALL_ICON + 8 + label_w + 8 + 11 + 16;
-        let session = Rect::new(w - PAD_X - session_w, bottom_y, session_w, PILL_H);
-
-        let widest_item = self.sessions.iter().map(|s| text_w(painter, &s.name, &MENU_ACTIVE_STYLE)).max().unwrap_or(0);
-        let menu_w = (widest_item + MENU_PAD * 2 + 24 + 12 + 8).clamp(MENU_MIN_W, MENU_MAX_W);
-        let rows = i32::try_from(self.sessions.len()).unwrap_or(0);
-        let menu_h = MENU_PAD * 2 + rows * MENU_ROW + (rows - 1).max(0) * MENU_GAP;
-        let menu = Rect::new(session.right() - menu_w, session.y - 8 - menu_h, menu_w, menu_h);
-        let menu_items = (0..rows)
-            .map(|row| {
-                Rect::new(
-                    menu.x + MENU_PAD,
-                    menu.y + MENU_PAD + row * (MENU_ROW + MENU_GAP),
-                    menu.w - MENU_PAD * 2,
-                    MENU_ROW,
-                )
-            })
-            .collect();
-        layout.session = session;
-        layout.menu = menu;
-        layout.menu_items = menu_items;
-    }
-
-    fn layout_status(&self, painter: &Painter, layout: &mut Layout, w: i32) {
-        let mut right = w - STATUS_RIGHT;
-        let battery = self.battery_label().map(|label| {
-            let bw = 2 + 10 + SMALL_ICON + 6 + text_w(painter, &label, &STATUS_STYLE) + 10;
-            right -= bw;
-            let rect = Rect::new(right, STATUS_TOP, bw, STATUS_H);
-            right -= 8;
-            rect
-        });
-        let wifi = self.status.wifi.map(|_| {
-            let ww = 2 + 10 + SMALL_ICON + 10;
-            right -= ww;
-            let rect = Rect::new(right, STATUS_TOP, ww, STATUS_H);
-            right -= 8;
-            rect
-        });
-        let kbd_w = (2 + 18 + text_w(painter, &self.kbd_label, &KBD_STYLE)).max(STATUS_H);
-        let kbd = if self.kbd_label.is_empty() {
-            Rect::new(right, STATUS_TOP, 0, STATUS_H)
-        } else {
-            Rect::new(right - kbd_w, STATUS_TOP, kbd_w, STATUS_H)
-        };
-        let status_left = if kbd.w > 0 { kbd.x } else { right + 8 };
-        let status = Rect::new(status_left, STATUS_TOP, (w - STATUS_RIGHT - status_left).max(0), STATUS_H);
-        layout.status = status;
-        layout.kbd = kbd;
-        layout.wifi = wifi;
-        layout.battery = battery;
-    }
-
     fn field_text(&self) -> (String, bool) {
-        let visible = self.prompt.as_ref().is_some_and(|prompt| !prompt.secret);
-        if self.auth == AuthState::Authenticating || self.auth == AuthState::Success {
+        let visible = self.show_typed || self.prompt.as_ref().is_some_and(|prompt| !prompt.secret);
+        if self.busy() {
             return ("•".repeat(self.pending_dots.min(MAX_DOTS)), false);
         }
         if self.password.is_empty() {
             let placeholder =
                 self.prompt.as_ref().filter(|prompt| !is_generic_password_prompt(&prompt.text)).map_or_else(
-                    || t(Key::GreeterPassword).to_string(),
+                    || t(Key::PkPassword).to_string(),
                     |prompt| prompt.text.trim().trim_end_matches(':').to_string(),
                 );
             return (placeholder, true);
@@ -1066,75 +1349,117 @@ impl GreeterUi {
         ("•".repeat(count), false)
     }
 
-    fn hint(&self) -> (String, Tone, bool) {
+    fn hint(&self) -> (String, Tone) {
+        if self.locked_out().is_some() {
+            let key = if self.is_lock() { Key::GreeterLockedHintLock } else { Key::GreeterLockedHint };
+            return (t(key).to_string(), Tone::Info);
+        }
         if let Some((text, tone)) = &self.message {
-            return (text.clone(), *tone, *tone == Tone::Error);
+            return (text.lines().next().unwrap_or_default().to_string(), *tone);
         }
         if self.caps_lock && self.editable() {
-            return (t(Key::CapsLockOn).to_string(), Tone::Info, true);
+            return (t(Key::CapsLockOn).to_string(), Tone::Info);
         }
         let key = match (self.auth, self.is_lock()) {
             (AuthState::Authenticating, _) => Key::GreeterChecking,
-            (AuthState::Success, false) => Key::GreeterLoggingIn,
-            (AuthState::Success, true) => Key::LockUnlocking,
+            (AuthState::Success, _) => return (String::new(), Tone::Info),
             (AuthState::Idle | AuthState::Error, false) => Key::GreeterHint,
             (AuthState::Idle | AuthState::Error, true) => Key::LockHint,
         };
-        (t(key).to_string(), Tone::Info, false)
+        (t(key).to_string(), Tone::Info)
+    }
+
+    fn busy_label(&self) -> String {
+        if self.is_lock() {
+            t(Key::LockUnlocking).to_string()
+        } else {
+            t(Key::GreeterEntering).replace("{session}", self.session_label())
+        }
     }
 
     fn part_key(&self, part: Part, frame: Rect, painter_generation: u64) -> u64 {
         let base = Revision::new().u64(self.palette.revision).u64(painter_generation).i32(frame.w).i32(frame.h);
         let hover = |hit: GreeterHit| self.hover == hit;
         match part {
-            Part::Clock => base.str(&self.date).str(&self.time),
-            Part::Status => base
+            Part::Clock => base.str(&self.date).str(&self.time).bool(self.is_lock()),
+            Part::Nav => base
                 .str(&self.kbd_label)
-                .bool(hover(GreeterHit::KeyboardLayout))
+                .str(self.session_label())
                 .u64(u64::from(self.status.battery.map_or(255, |(pct, _)| pct)))
-                .bool(self.status.wifi.is_some()),
-            Part::Avatar => {
-                base.str(&self.active_user().map_or('?', |u| u.initial).to_string()).bool(hover(GreeterHit::UserAvatar))
-            }
+                .bool(self.status.wifi.is_some())
+                .u64(self.menu.map_or(0, |kind| kind as u64 + 1))
+                .u64(match self.hover {
+                    GreeterHit::KeyboardLayout => 1,
+                    GreeterHit::Accessibility => 2,
+                    GreeterHit::Session => 3,
+                    GreeterHit::PowerButton => 4,
+                    _ => 0,
+                }),
+            Part::Avatar => base
+                .str(&self.active_user().map_or('?', |u| u.initial).to_string())
+                .u64(u64::from(self.active_user().map_or(0, |u| u.uid)))
+                .bool(hover(GreeterHit::UserAvatar) && self.can_switch_user()),
             Part::Name => base.str(self.active_user().map_or("", |u| u.display_name.as_str())),
             Part::Field => {
                 let (text, placeholder) = self.field_text();
-                let busy = matches!(self.auth, AuthState::Authenticating | AuthState::Success);
+                let locked = self.locked_out().map(countdown);
                 base.str(&text)
                     .bool(placeholder)
                     .bool(self.auth == AuthState::Error)
                     .bool(self.editable())
                     .bool(hover(GreeterHit::Submit))
-                    .u64(if busy { u64::from(self.spinner_step()) + 1 } else { 0 })
+                    .u64(if self.busy() { u64::from(self.spinner_step()) + 1 } else { 0 })
+                    .str(locked.as_deref().unwrap_or_default())
+                    .str(&self.busy_label())
             }
             Part::Hint => {
-                let (text, tone, strong) = self.hint();
-                base.str(&text).bool(tone == Tone::Error).bool(strong)
+                let (text, tone) = self.hint();
+                base.str(&text).bool(tone == Tone::Error).bool(self.caps_lock)
             }
-            Part::Power => {
-                let layout = self.layout.as_ref();
-                base.f64(layout.map_or(0.0, |l| l.arm))
-                    .i32(layout.map_or(0, |l| l.power.w))
-                    .u64(self.arm_shown.index() as u64)
-                    .u64(match self.hover {
-                        GreeterHit::Power(action) => action.index() as u64 + 1,
-                        GreeterHit::PowerConfirm => 10,
-                        GreeterHit::PowerCancel => 11,
-                        GreeterHit::PowerCapsule => 12,
-                        _ => 0,
-                    })
-                    .f64(self.power_hover.iter().map(|tween| tween.value(motion::t2(), ease_out)).sum())
-            }
-            Part::Session => {
-                base.str(self.session_label()).bool(hover(GreeterHit::Session) || self.menu_reveal.is_open())
-            }
-            Part::Menu => {
-                let mut key = base.u64(self.active_session as u64).u64(match self.hover {
-                    GreeterHit::SessionItem(index) => index as u64 + 1,
+            Part::Users => {
+                let mut key = base.u64(match self.hover {
+                    GreeterHit::User(index) => index as u64 + 1,
                     _ => 0,
                 });
+                for (index, _) in self.layout.as_ref().map(|l| l.users.as_slice()).unwrap_or_default() {
+                    key = key.str(&self.users[*index].display_name);
+                }
+                key
+            }
+            Part::Menu => {
+                let mut key = base
+                    .u64(self.menu_shown as u64)
+                    .u64(self.active_session as u64)
+                    .u64(self.arm.map_or(9, PowerAction::index))
+                    .bool(self.show_typed)
+                    .u64(match self.hover {
+                        GreeterHit::SessionItem(index) => index as u64 + 1,
+                        GreeterHit::Power(action) => 20 + action.index(),
+                        GreeterHit::ShowTyped => 30,
+                        _ => 0,
+                    });
                 for session in &self.sessions {
                     key = key.str(&session.name);
+                }
+                key
+            }
+            Part::Media => {
+                let media = self.media.as_ref();
+                base.str(media.map_or("", |m| m.title.as_str()))
+                    .str(media.map_or("", |m| m.subtitle.as_str()))
+                    .bool(media.is_some_and(|m| m.playing))
+                    .color(media.map_or(self.palette.acc_bg, |m| m.accent))
+                    .u64(match self.hover {
+                        GreeterHit::Media(MediaButton::Previous) => 1,
+                        GreeterHit::Media(MediaButton::PlayPause) => 2,
+                        GreeterHit::Media(MediaButton::Next) => 3,
+                        _ => 0,
+                    })
+            }
+            Part::Notices => {
+                let mut key = base.u64(self.notices.count as u64);
+                for app in &self.notices.apps {
+                    key = key.str(app);
                 }
                 key
             }
@@ -1145,14 +1470,15 @@ impl GreeterUi {
     fn frame_of(part: Part, layout: &Layout) -> Rect {
         match part {
             Part::Clock => layout.clock,
-            Part::Status => layout.status.inflate(12),
+            Part::Nav => layout.nav.inflate(4),
             Part::Avatar => layout.avatar.inflate(40),
-            Part::Name => layout.name,
-            Part::Field => layout.field.inflate(4),
-            Part::Hint => layout.hint,
-            Part::Power => layout.power_frame.inflate(12),
-            Part::Session => layout.session.inflate(12),
+            Part::Name => layout.name.inflate(8),
+            Part::Field => layout.field_frame,
+            Part::Hint => layout.hint.inflate(4),
+            Part::Users => layout.users_frame,
             Part::Menu => layout.menu.inflate(48),
+            Part::Media => layout.media.inflate(24),
+            Part::Notices => layout.notices.inflate(24),
         }
     }
 
@@ -1161,233 +1487,360 @@ impl GreeterUi {
         let local = |rect: Rect| rect.local_to(frame);
         match part {
             Part::Clock => {
-                let full = Rect::new(0, 0, frame.w, DATE_H);
-                canvas.text(full, &self.date, p.fg_2, &DATE_STYLE, TextAlign::Center);
-                let time = Rect::new(0, DATE_H + 4, frame.w, TIME_H);
-                canvas.text(time, &self.time, p.fg_1, &TIME_STYLE, TextAlign::Center);
+                let date = Rect::new(0, 0, frame.w, DATE_H);
+                canvas.text(date, &self.date, p.date, &DATE_STYLE, TextAlign::Center);
+                let (style, height) =
+                    if self.is_lock() { (&TIME_LOCK_STYLE, TIME_LOCK) } else { (&TIME_LOGIN_STYLE, TIME_LOGIN) };
+                let time = Rect::new(0, DATE_H + CLOCK_GAP, frame.w, height);
+                canvas.text(time, &self.time, p.white.with_alpha(0.96), style, TextAlign::Center);
             }
-            Part::Status => self.draw_status(layout, frame, canvas),
+            Part::Nav => self.draw_nav(layout, frame, canvas),
             Part::Avatar => {
                 let avatar = local(layout.avatar);
                 let radius = shape::R_ROUND;
-                canvas.shadow(avatar, radius, 12, 36.0, Color([0.0, 0.0, 0.0, 0.35]));
-                if self.hover == GreeterHit::UserAvatar {
-                    canvas.stroke(avatar.inflate(4), 3.0, radius, p.acc_ring);
-                    canvas.stroke(avatar.inflate(2), 2.0, radius, p.glass_border);
+                canvas.shadow(avatar, radius, 12, 32.0, Color([0.0, 0.0, 0.0, 0.35]));
+                let user = self.active_user();
+                let (from, to) = user_colors(user.map_or(0, |u| u.uid));
+                canvas.gradient(avatar, radius, from, to);
+                let ring = if self.hover == GreeterHit::UserAvatar && self.can_switch_user() {
+                    p.white.with_alpha(0.4)
                 } else {
-                    canvas.stroke(avatar.inflate(2), 2.0, radius, p.glass_border);
-                }
-                canvas.gradient(avatar, radius, p.avatar_from, p.avatar_to);
-                let initial = self.active_user().map_or('?', |u| u.initial).to_string();
-                canvas.text(avatar, &initial, p.white, &INITIAL_STYLE, TextAlign::Center);
+                    p.white.with_alpha(0.18)
+                };
+                canvas.stroke(avatar, 1.0, radius, ring);
+                let initial = user.map_or('?', |u| u.initial).to_string();
+                let style = if self.is_lock() { &INITIAL_LOCK } else { &INITIAL_LOGIN };
+                canvas.text(avatar, &initial, p.white, style, TextAlign::Center);
             }
             Part::Name => {
                 let name = self.active_user().map_or("", |u| u.display_name.as_str());
-                let rect = Rect::new(0, 0, frame.w, frame.h);
-                canvas.text(rect, name, p.fg_1, &NAME_STYLE, TextAlign::Center);
+                let style = if self.is_lock() { &NAME_LOCK_STYLE } else { &NAME_LOGIN_STYLE };
+                canvas.text(local(layout.name), name, p.text, style, TextAlign::Center);
             }
             Part::Field => self.draw_field(layout, frame, canvas),
             Part::Hint => {
-                let (text, tone, strong) = self.hint();
-                let color = match tone {
-                    Tone::Error => p.danger,
-                    Tone::Info if self.message.is_some() => p.fg_2,
-                    Tone::Info => p.fg_3,
+                let (text, tone) = self.hint();
+                let colour = match tone {
+                    Tone::Error => p.wrong_text,
+                    Tone::Info if self.caps_lock && self.editable() && self.message.is_none() => p.caps_text,
+                    Tone::Info if self.auth == AuthState::Authenticating => p.text.with_alpha(0.75),
+                    Tone::Info => p.muted,
                 };
-                let style = if strong { &HINT_STRONG_STYLE } else { &HINT_STYLE };
-                let rect = Rect::new(0, 0, frame.w, frame.h);
-                canvas.text(rect, &text, color, style, TextAlign::Center);
+                canvas.text(local(layout.hint), &text, colour, &HINT_STYLE, TextAlign::Center);
             }
-            Part::Power => self.draw_power(layout, frame, canvas),
-            Part::Session => self.draw_session(layout, frame, canvas),
+            Part::Users => self.draw_users(layout, frame, canvas),
             Part::Menu => self.draw_menu(layout, frame, canvas),
+            Part::Media => self.draw_media(layout, frame, canvas),
+            Part::Notices => self.draw_notices(layout, frame, canvas),
         }
     }
 
-    fn draw_session(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
+    fn nav_button(&self, canvas: &mut Canvas<'_>, rect: Rect, hit: GreeterHit, open: bool) {
         let p = &self.palette;
-        let pill = layout.session.local_to(frame);
-        let hovered = self.hover == GreeterHit::Session || self.menu_reveal.is_open();
-        canvas.shadow(pill, shape::R2, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
-        let (fill, border, fg) =
-            if hovered { (p.glass_card, p.line_2, p.fg_1) } else { (p.glass, p.glass_border, p.fg_2) };
-        canvas.fill(pill, shape::R2, fill);
-        canvas.stroke(pill, 1.0, shape::R2, border);
-        let icon_x = pill.x + 1 + 16;
-        let icon_y = pill.y + (PILL_H - SMALL_ICON) / 2;
-        canvas.icon(&svg(2.0, icon::LAYERS), icon_x, icon_y, SMALL_ICON, fg);
-        let label_x = icon_x + SMALL_ICON + 8;
-        let label_right = pill.right() - 1 - 16 - 11 - 8;
-        let label = Rect::new(label_x, pill.y, label_right - label_x, PILL_H);
-        canvas.text(label, self.session_label(), fg, &SESSION_STYLE, TextAlign::Left);
-        let chevron_x = pill.right() - 1 - 16 - 11;
-        canvas.icon(&svg(2.5, icon::CHEVRON_DOWN), chevron_x, pill.y + (PILL_H - 11) / 2, 11, fg);
+        if open {
+            canvas.fill(rect, shape::R_ROUND, p.open);
+        } else if self.hover == hit {
+            canvas.fill(rect, shape::R_ROUND, p.hover);
+        }
+    }
+
+    fn draw_nav(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
+        let p = &self.palette;
+        let ink = p.text.with_alpha(0.88);
+        let local = |rect: Rect| rect.local_to(frame);
+        if layout.kbd.w > 0 {
+            let kbd = local(layout.kbd);
+            self.nav_button(canvas, kbd, GreeterHit::KeyboardLayout, false);
+            canvas.icon(&svg(1.9, icon::KEYBOARD), kbd.x + 10, kbd.y + (NAV_ITEM - 16) / 2, 16, ink);
+            let label = Rect::new(kbd.x + 10 + 16 + 7, kbd.y, kbd.w - 10 - 16 - 7, kbd.h);
+            canvas.text(label, &self.kbd_label, ink, &KBD_STYLE, TextAlign::Left);
+        }
+        let a11y = local(layout.a11y);
+        self.nav_button(canvas, a11y, GreeterHit::Accessibility, self.menu == Some(MenuKind::Accessibility));
+        let (x, y) = a11y.centre_square(16);
+        canvas.icon(&svg(2.0, icon::ACCESSIBILITY), x, y, 16, ink);
+        if layout.session.w > 0 {
+            let session = local(layout.session);
+            self.nav_button(canvas, session, GreeterHit::Session, self.menu == Some(MenuKind::Session));
+            canvas.icon(&svg(2.0, icon::LAYERS), session.x + 10, session.y + (NAV_ITEM - 15) / 2, 15, ink);
+            let label_x = session.x + 10 + 15 + 7;
+            let label = Rect::new(label_x, session.y, session.right() - 10 - 11 - 7 - label_x, session.h);
+            canvas.text(label, self.session_label(), ink, &NAV_STYLE, TextAlign::Left);
+            let chevron = svg(2.6, icon::CHEVRON_DOWN);
+            canvas.icon(&chevron, session.right() - 10 - 11, session.y + (NAV_ITEM - 11) / 2, 11, ink);
+        }
+        for separator in &layout.separators {
+            canvas.fill(local(*separator), 0.0, p.separator);
+        }
+        if layout.status.w > 0 {
+            let status = local(layout.status);
+            let mut x = status.x + 6;
+            if self.status.wifi.is_some() {
+                canvas.icon(&svg(2.0, icon::WIFI), x, status.y + (NAV_ITEM - 15) / 2, 15, ink);
+                x += 15 + 12;
+            }
+            if let (Some((pct, _)), Some(label)) = (self.status.battery, self.battery_label()) {
+                canvas.icon(&battery_svg(pct), x, status.y + (NAV_ITEM - 19) / 2, 19, ink);
+                let text = Rect::new(x + 19 + 6, status.y, status.right() - x - 19 - 6, status.h);
+                canvas.text(text, &label, ink, &NAV_STYLE, TextAlign::Left);
+            }
+        }
+        let power = local(layout.power);
+        self.nav_button(canvas, power, GreeterHit::PowerButton, self.menu == Some(MenuKind::Power));
+        let (x, y) = power.centre_square(16);
+        canvas.icon(&svg(2.1, icon::POWER), x, y, 16, ink);
     }
 
     fn draw_menu(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
         let p = &self.palette;
         let local = |rect: Rect| rect.local_to(frame);
         let menu = local(layout.menu);
-        canvas.shadow(menu, shape::R3, 16, 48.0, Color([0.0, 0.0, 0.0, 0.55]));
+        canvas.shadow(menu, shape::R3, 22, 52.0, Color([0.0, 0.0, 0.0, 0.5]));
         canvas.fill(menu, shape::R3, p.popover);
-        canvas.stroke(menu, 1.0, shape::R3, p.line_2);
-        for (index, (session, row)) in self.sessions.iter().zip(&layout.menu_items).enumerate() {
-            let row = local(*row);
-            let active = index == self.active_session;
-            let (fg, style) = if active {
-                canvas.fill(row, shape::R2, p.acc_bg);
-                (p.white, &MENU_ACTIVE_STYLE)
-            } else {
-                if self.hover == GreeterHit::SessionItem(index) {
-                    canvas.fill(row, shape::R2, p.white.with_alpha(0.08));
+        canvas.stroke(menu, 1.0, shape::R3, p.popover_line);
+        canvas.fill(Rect::new(menu.x + 8, menu.y + 1, menu.w - 16, 1), 0.0, p.white.with_alpha(0.07));
+        match self.menu_shown {
+            MenuKind::Session => {
+                for (index, (session, row)) in self.sessions.iter().zip(&layout.menu_items).enumerate() {
+                    let row = local(*row);
+                    if self.hover == GreeterHit::SessionItem(index) {
+                        canvas.fill(row, shape::R2, p.highlight);
+                    }
+                    let text = Rect::new(row.x + 10, row.y, row.w - 10 - 34, row.h);
+                    canvas.text(text, &session.name, p.text, &MENU_STYLE, TextAlign::Left);
+                    if index == self.active_session {
+                        let (_, y) = row.centre_square(14);
+                        canvas.icon(&svg(2.6, icon::CHECK), row.right() - 10 - 14, y, 14, p.acc_bg_hover);
+                    }
                 }
-                (p.fg_1, &MENU_STYLE)
-            };
-            let text = Rect::new(row.x + 12, row.y, row.w - 24 - 12 - 8, row.h);
-            canvas.text(text, &session.name, fg, style, TextAlign::Left);
-            if active {
-                let (_, y) = row.centre_square(12);
-                canvas.icon(&svg(3.0, icon::CHECK), row.right() - 12 - 12, y, 12, fg);
             }
-        }
-    }
-
-    fn draw_status(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
-        let p = &self.palette;
-        let pill = |canvas: &mut Canvas<'_>, rect: Rect, hovered: bool| {
-            canvas.shadow(rect, shape::R2, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
-            let (fill, border) = if hovered { (p.glass_card, p.line_2) } else { (p.glass, p.glass_border) };
-            canvas.fill(rect, shape::R2, fill);
-            canvas.stroke(rect, 1.0, shape::R2, border);
-        };
-        if layout.kbd.w > 0 {
-            let kbd = layout.kbd.local_to(frame);
-            let hovered = self.hover == GreeterHit::KeyboardLayout;
-            pill(canvas, kbd, hovered);
-            let fg = if hovered { p.fg_1 } else { p.fg_2 };
-            canvas.text(kbd, &self.kbd_label, fg, &KBD_STYLE, TextAlign::Center);
-        }
-        if let Some(wifi) = layout.wifi {
-            let wifi = wifi.local_to(frame);
-            pill(canvas, wifi, false);
-            let (x, y) = wifi.centre_square(SMALL_ICON);
-            canvas.icon(&svg(2.2, icon::WIFI), x, y, SMALL_ICON, p.fg_2);
-        }
-        if let (Some(battery), Some((pct, _))) = (layout.battery, self.status.battery) {
-            let battery = battery.local_to(frame);
-            pill(canvas, battery, false);
-            let icon_x = battery.x + 1 + 10;
-            let icon_y = battery.y + (STATUS_H - SMALL_ICON) / 2;
-            canvas.icon(&battery_svg(pct), icon_x, icon_y, SMALL_ICON, p.fg_2);
-            let text_x = icon_x + SMALL_ICON + 6;
-            let text = Rect::new(text_x, battery.y, battery.right() - 11 - text_x, STATUS_H);
-            canvas.text(text, &format!("{pct}%"), p.fg_2, &STATUS_STYLE, TextAlign::Left);
+            MenuKind::Power => {
+                for (action, row) in self.power_actions().iter().zip(&layout.menu_items) {
+                    let row = local(*row);
+                    let armed = self.arm == Some(*action);
+                    if armed {
+                        canvas.fill(row, shape::R2, if action.danger() { p.danger_fill } else { p.acc_bg });
+                    } else if self.hover == GreeterHit::Power(*action) {
+                        canvas.fill(row, shape::R2, p.highlight);
+                    }
+                    let ink = if armed { p.white } else { p.text };
+                    let (_, y) = row.centre_square(16);
+                    canvas.icon(&svg(2.0, action.icon()), row.x + 12, y, 16, ink);
+                    let text = Rect::new(row.x + 12 + 16 + 10, row.y, row.w - 12 - 16 - 10 - 8, row.h);
+                    let (label, style) =
+                        if armed { (action.again(), &MENU_ARMED_STYLE) } else { (action.label(), &MENU_STYLE) };
+                    canvas.text(text, label, ink, style, TextAlign::Left);
+                }
+                let last = layout.menu_items.last().copied().map_or(menu, local);
+                let note = Rect::new(menu.x + MENU_PAD + 10, last.bottom() + 6, menu.w - MENU_PAD * 2 - 20, 16);
+                canvas.text(note, t(Key::GreeterPowerNote), p.faint, &MENU_NOTE_STYLE, TextAlign::Left);
+            }
+            MenuKind::Accessibility => {
+                if let Some(row) = layout.menu_items.first().copied().map(local) {
+                    if self.hover == GreeterHit::ShowTyped {
+                        canvas.fill(row, shape::R2, p.highlight);
+                    }
+                    let text = Rect::new(row.x + 12, row.y, row.w - 12 - 34, row.h);
+                    canvas.text(text, t(Key::GreeterShowTyped), p.text, &MENU_STYLE, TextAlign::Left);
+                    if self.show_typed {
+                        let (_, y) = row.centre_square(14);
+                        canvas.icon(&svg(2.6, icon::CHECK), row.right() - 12 - 14, y, 14, p.acc_bg_hover);
+                    }
+                }
+            }
         }
     }
 
     fn draw_field(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
         let p = &self.palette;
         let field = layout.field.local_to(frame);
+        if self.auth == AuthState::Success {
+            let label = self.busy_label();
+            let text_w = text_w(canvas.painter, &label, &BUSY_STYLE);
+            let total = 18 + 10 + text_w;
+            let x = field.x + (field.w - total) / 2;
+            canvas.icon(&spinner_svg(self.spinner_step()), x, field.y + (FIELD_H - 18) / 2, 18, p.white);
+            let rect = Rect::new(x + 18 + 10, field.y, text_w + 2, FIELD_H);
+            canvas.text(rect, &label, p.text, &BUSY_STYLE, TextAlign::Left);
+            return;
+        }
+        if let Some(left) = self.locked_out() {
+            let label = t(Key::GreeterLockedFor);
+            let count = countdown(left);
+            let label_w = text_w(canvas.painter, label, &PILL_STYLE);
+            let count_w = text_w(canvas.painter, &count, &PILL_COUNT_STYLE);
+            let width = 18 + 17 + 10 + label_w + 10 + count_w + 18;
+            let pill = Rect::new(field.x + (field.w - width) / 2, field.y, width, FIELD_H);
+            canvas.fill(pill, shape::R_ROUND, p.danger_soft);
+            canvas.stroke(pill, 1.0, shape::R_ROUND, p.danger_line);
+            canvas.icon(&svg(2.0, icon::CLOCK), pill.x + 18, pill.y + (FIELD_H - 17) / 2, 17, p.danger);
+            let text_x = pill.x + 18 + 17 + 10;
+            canvas.text(Rect::new(text_x, pill.y, label_w + 2, FIELD_H), label, p.text, &PILL_STYLE, TextAlign::Left);
+            let count_rect = Rect::new(text_x + label_w + 10, pill.y, count_w + 2, FIELD_H);
+            canvas.text(count_rect, &count, p.danger, &PILL_COUNT_STYLE, TextAlign::Left);
+            return;
+        }
+        let wrong = self.auth == AuthState::Error;
+        if wrong {
+            canvas.fill(field.inflate(4), shape::R_ROUND, p.danger.with_alpha(0.18));
+        }
+        canvas.fill(field, shape::R_ROUND, p.glass);
+        canvas.stroke(field, 1.0, shape::R_ROUND, if wrong { p.wrong_line } else { p.glass_line });
+        canvas.fill(Rect::new(field.x + 20, field.y + 1, field.w - 40, 1), 0.0, p.highlight);
         let submit = layout.submit.local_to(frame);
-        canvas.fill(field, shape::R2, p.glass_card);
-
         let (text, placeholder) = self.field_text();
-        let text_x = field.x + 14;
-        let text_rect = Rect::new(text_x, field.y, submit.x - 6 - text_x, field.h);
-        let colour = if placeholder { p.fg_3 } else { p.fg_1 };
-        canvas.text(text_rect, &text, colour, &FIELD_STYLE, TextAlign::Left);
+        let text_x = field.x + 20;
+        let text_rect = Rect::new(text_x, field.y, submit.x - 8 - text_x, field.h);
+        let dots = !placeholder && !self.show_typed && self.prompt.as_ref().is_none_or(|prompt| prompt.secret);
+        let style = if dots { &DOTS_STYLE } else { &FIELD_STYLE };
+        let colour = if placeholder { p.faint } else { p.white };
+        let busy = self.busy();
+        canvas.text(text_rect, &text, if busy { colour.with_alpha(0.8) } else { colour }, style, TextAlign::Left);
         if self.editable() {
-            let typed_w = if placeholder { 0 } else { text_w(canvas.painter, &text, &FIELD_STYLE) + 1 };
+            let typed_w = if placeholder { 0 } else { text_w(canvas.painter, &text, style) + 1 };
             let caret_x = (text_x + typed_w).min(text_rect.right());
-            canvas.fill(Rect::new(caret_x, field.y + (field.h - 16) / 2, 1, 16), 0.0, p.acc_bg_hover);
+            canvas.fill(Rect::new(caret_x, field.y + (field.h - 18) / 2, 1, 18), 0.0, p.white.with_alpha(0.9));
         }
-
-        let fill = if self.hover == GreeterHit::Submit { p.acc_bg_hover } else { p.acc_bg };
-        canvas.fill(submit, shape::R1, fill);
-        let (x, y) = submit.centre_square(15);
-        if matches!(self.auth, AuthState::Authenticating | AuthState::Success) {
-            canvas.icon(&spinner_svg(self.spinner_step()), x, y, 15, p.white);
+        let ready = !self.password.is_empty() && self.editable();
+        let fill = if busy || ready {
+            if self.hover == GreeterHit::Submit && ready { p.acc_bg_hover } else { p.acc_bg }
         } else {
-            canvas.icon(&svg(2.5, icon::ARROW_RIGHT), x, y, 15, p.white);
-        }
-    }
-
-    fn draw_power(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
-        let p = &self.palette;
-        let capsule = layout.power.local_to(frame);
-        let hovered = matches!(
-            self.hover,
-            GreeterHit::Power(_) | GreeterHit::PowerCapsule | GreeterHit::PowerConfirm | GreeterHit::PowerCancel
-        );
-        let (fill, border) = if hovered { (p.glass_card, p.line_2) } else { (p.glass, p.glass_border) };
-        canvas.shadow(capsule, shape::R2, 2, 6.0, Color([0.0, 0.0, 0.0, 0.35]));
-        canvas.fill(capsule, shape::R2, fill);
-        canvas.stroke(capsule, 1.0, shape::R2, border);
-
-        let arm = layout.arm;
-        canvas.clipped(capsule.x + 1, capsule.right() - 1, |canvas| {
-            if arm < 0.5 {
-                self.draw_power_idle(layout, frame, canvas, 1.0 - arm * 2.0);
-            } else {
-                self.draw_power_armed(layout, frame, canvas, arm * 2.0 - 1.0);
-            }
-        });
-    }
-
-    fn draw_power_idle(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>, alpha: f64) {
-        let p = &self.palette;
-        for action in PowerAction::ALL {
-            let item = layout.power_items[action.index()].local_to(frame);
-            let reveal = self.power_hover[action.index()].value(motion::t2(), ease_out);
-            let active = self.hover == GreeterHit::Power(action);
-            let fg = match (active, action.danger()) {
-                (true, true) => p.danger,
-                (true, false) => p.fg_1,
-                (false, _) => p.fg_2,
-            };
-            if active {
-                let bg = if action.danger() { p.danger_soft } else { p.item_hover };
-                canvas.fill(item, shape::R1, fade(bg, alpha));
-            }
-            let icon_y = item.y + (ITEM_H - ICON) / 2;
-            canvas.icon(&svg(2.0, action.icon()), item.x + 10, icon_y, ICON, fade(fg, alpha));
-            if reveal > 0.01 {
-                let label_x = item.x + 10 + ICON + 6;
-                canvas.clipped(item.x, item.right() - 10, |canvas| {
-                    let label = Rect::new(label_x, item.y, 120, ITEM_H);
-                    canvas.text(label, action.label(), fade(fg, alpha * reveal), &POWER_STYLE, TextAlign::Left);
-                });
-            }
-        }
-        for divider in layout.dividers {
-            canvas.fill(divider.local_to(frame), 0.0, fade(p.line, alpha));
-        }
-    }
-
-    fn draw_power_armed(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>, alpha: f64) {
-        let p = &self.palette;
-        let action = self.arm_shown;
-        let question = layout.question.local_to(frame);
-        canvas.text(question, action.question(), fade(p.fg_1, alpha), &QUESTION_STYLE, TextAlign::Left);
-        let confirm = layout.confirm.local_to(frame);
-        let base = if action.danger() { p.danger } else { p.acc_bg };
-        canvas.fill(confirm, shape::R1, fade(base, alpha));
-        if self.hover == GreeterHit::PowerConfirm {
-            canvas.fill(confirm, shape::R1, fade(p.white.with_alpha(motion::ST_HOVER), alpha));
-        }
-        canvas.text(confirm, action.confirm(), fade(p.white, alpha), &CONFIRM_STYLE, TextAlign::Center);
-        let cancel = layout.cancel.local_to(frame);
-        let (bg, fg) = if self.hover == GreeterHit::PowerCancel {
-            (p.white.with_alpha(motion::ST_HOVER + motion::ST_HOVER), p.fg_1)
-        } else {
-            (p.white.with_alpha(motion::ST_HOVER), p.fg_2)
+            p.go_idle
         };
-        canvas.fill(cancel, shape::R1, fade(bg, alpha));
-        let (x, y) = cancel.centre_square(12);
-        canvas.icon(&svg(2.5, icon::CLOSE), x, y, 12, fade(fg, alpha));
+        canvas.fill(submit, shape::R_ROUND, fill);
+        let (x, y) = submit.centre_square(16);
+        if busy {
+            canvas.icon(&spinner_svg(self.spinner_step()), x, y, 16, p.white);
+        } else {
+            canvas.icon(&svg(2.4, icon::ARROW_RIGHT), x, y, 16, p.white);
+        }
     }
 
-    #[allow(clippy::too_many_lines)]
+    fn draw_users(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
+        let p = &self.palette;
+        for (index, rect) in &layout.users {
+            let chip = rect.local_to(frame);
+            let fill = if self.hover == GreeterHit::User(*index) { p.hover } else { p.white.with_alpha(0.06) };
+            canvas.fill(chip, shape::R_ROUND, fill);
+            let user = &self.users[*index];
+            let avatar = Rect::new(chip.x + 4, chip.y + (CHIP_H - CHIP_AVATAR) / 2, CHIP_AVATAR, CHIP_AVATAR);
+            let (from, to) = user_colors(user.uid);
+            canvas.gradient(avatar, shape::R_ROUND, from, to);
+            canvas.text(avatar, &user.initial.to_string(), p.white, &INITIAL_CHIP, TextAlign::Center);
+            let label = Rect::new(avatar.right() + 8, chip.y, chip.right() - avatar.right() - 8 - 8, chip.h);
+            canvas.text(label, &user.display_name, p.text.with_alpha(0.86), &CHIP_STYLE, TextAlign::Left);
+        }
+    }
+
+    fn draw_media(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
+        let p = &self.palette;
+        let Some(media) = self.media.as_ref() else {
+            return;
+        };
+        let card = layout.media.local_to(frame);
+        canvas.fill(card, shape::R3, p.card);
+        canvas.stroke(card, 1.0, shape::R3, p.card_line);
+        canvas.fill(Rect::new(card.x + 10, card.y + 1, card.w - 20, 1), 0.0, p.white.with_alpha(0.07));
+        let tile = Rect::new(card.x + 8, card.y + 8, 44, 44);
+        canvas.fill(tile, shape::R2, media.accent);
+        canvas.stroke(tile, 1.0, shape::R2, p.white.with_alpha(0.16));
+        let (x, y) = tile.centre_square(20);
+        canvas.icon(&svg(1.8, icon::NOTE), x, y, 20, p.white.with_alpha(0.85));
+        let [previous, play, next] = layout.media_buttons.map(|rect| rect.local_to(frame));
+        let text_x = tile.right() + 12;
+        let text_right = previous.x - 12;
+        let heading = Rect::new(text_x, card.y + 11, text_right - text_x, 18);
+        canvas.text(heading, &media.title, p.text, &MEDIA_TITLE_STYLE, TextAlign::Left);
+        let subtitle = Rect::new(text_x, heading.bottom() + 2, text_right - text_x, 16);
+        canvas.text(subtitle, &media.subtitle, p.muted, &MEDIA_SUB_STYLE, TextAlign::Left);
+        for (rect, button, glyph) in
+            [(previous, MediaButton::Previous, icon::PREVIOUS), (next, MediaButton::Next, icon::NEXT)]
+        {
+            if self.hover == GreeterHit::Media(button) {
+                canvas.fill(rect, shape::R_ROUND, p.hover);
+            }
+            let (x, y) = rect.centre_square(14);
+            canvas.icon(&filled(glyph), x, y, 14, p.text);
+        }
+        let fill = if self.hover == GreeterHit::Media(MediaButton::PlayPause) { p.acc_bg_hover } else { p.acc_bg };
+        canvas.fill(play, shape::R_ROUND, fill);
+        let (x, y) = play.centre_square(14);
+        canvas.icon(&filled(if media.playing { icon::PAUSE } else { icon::PLAY }), x, y, 14, p.white);
+    }
+
+    fn draw_notices(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
+        let p = &self.palette;
+        let card = layout.notices.local_to(frame);
+        canvas.fill(card, shape::R3, p.card_soft);
+        canvas.stroke(card, 1.0, shape::R3, p.card_line);
+        let mut x = card.x + 10;
+        let y = card.y + (NOTICES_H - 24) / 2;
+        let shown = self.notices.apps.iter().take(3).count();
+        for (index, app) in self.notices.apps.iter().take(3).enumerate() {
+            let bubble = Rect::new(x, y, 24, 24);
+            canvas.fill(bubble.inflate(2), shape::R_ROUND, Color::from_rgb8(36, 35, 42, 1.0));
+            canvas.fill(bubble, shape::R_ROUND, bubble_colour(app));
+            let initial = app.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default();
+            canvas.text(bubble, &initial, p.white, &BUBBLE_STYLE, TextAlign::Center);
+            if index + 1 < shown {
+                x += 10;
+            }
+        }
+        let text_x = if shown == 0 { card.x + 14 } else { x + 24 + 10 };
+        let note = t(Key::LockNoticesHidden);
+        let note_w = text_w(canvas.painter, note, &NOTICE_NOTE_STYLE);
+        let note_rect = Rect::new(card.right() - 14 - note_w, card.y, note_w + 2, NOTICES_H);
+        canvas.text(note_rect, note, p.faint, &NOTICE_NOTE_STYLE, TextAlign::Left);
+        let label = plural(
+            crate::i18n::language(),
+            self.notices.count as u64,
+            [Key::LockNoticesOne, Key::LockNoticesFew, Key::LockNoticesMany],
+        );
+        let label_rect = Rect::new(text_x, card.y, note_rect.x - 8 - text_x, NOTICES_H);
+        canvas.text(label_rect, &label, p.text, &NOTICE_STYLE, TextAlign::Left);
+    }
+
+    fn parts(&self, leave: f64) -> Vec<(Part, (f64, f64), f64)> {
+        let menu_t = self.menu_reveal.value(motion::t2());
+        let ui = 1.0 - leave;
+        let mut parts = Vec::with_capacity(10);
+        if menu_t > 0.0 {
+            parts.push((Part::Menu, (0.0, -6.0 * (1.0 - menu_t)), menu_t * ui));
+        }
+        parts.push((Part::Nav, (0.0, 0.0), ui));
+        parts.push((Part::Users, (0.0, 0.0), if self.busy() { 0.0 } else { ui }));
+        parts.push((Part::Hint, (0.0, 0.0), ui));
+        parts.push((Part::Field, (self.shake_offset(), 0.0), ui));
+        parts.push((Part::Name, (0.0, 0.0), ui));
+        parts.push((Part::Avatar, (0.0, 0.0), ui));
+        if self.notices.count > 0 {
+            parts.push((Part::Notices, (0.0, 0.0), ui));
+        }
+        if self.media.is_some() {
+            parts.push((Part::Media, (0.0, 0.0), ui));
+        }
+        parts.push((Part::Clock, (0.0, -20.0 * leave), ui));
+        parts
+    }
+
+    fn layer(&mut self, part: Part, layout: &Layout, painter: &Painter, buffer_scale: i32) -> Option<Rect> {
+        let frame = Self::frame_of(part, layout);
+        if frame.w <= 0 || frame.h <= 0 {
+            return None;
+        }
+        let key = self.part_key(part, frame, crate::paint::painter_generation());
+        let slot = (part, buffer_scale);
+        if self.layers.get(&slot).is_none_or(|layer| layer.key != key) {
+            let mut icons = std::mem::take(&mut self.icons);
+            let mut canvas = Canvas::new(frame.w, frame.h, buffer_scale, painter, &mut icons);
+            self.draw_part(part, layout, frame, &mut canvas);
+            let buffer = canvas.finish();
+            self.icons = icons;
+            self.layers.insert(slot, Layer { key, buffer });
+        }
+        Some(frame)
+    }
+
     pub fn render<R>(
         &mut self, renderer: &mut R, painter: &Painter, area: Rectangle<i32, Logical>, scale: Scale<f64>,
         buffer_scale: i32, primary: bool,
@@ -1398,73 +1851,28 @@ impl GreeterUi {
         let mut out = Vec::new();
         let size = area.size;
         let leave = self.leave_progress();
-        let full = |buffer: &MemoryRenderBuffer, alpha: f64, renderer: &mut R| {
-            let alpha = alpha.clamp(0.0, 1.0) as f32;
-            MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                (0.0, 0.0),
-                buffer,
-                Some(alpha),
-                Some(Rectangle::from_size((1.0, 1.0).into())),
-                Some(size),
-                Kind::Unspecified,
-            )
-            .ok()
-        };
 
         if primary && size.w > 0 && size.h > 0 && buffer_scale > 0 {
             let layout = self.compute_layout(painter, area);
             self.layout = Some(layout.clone());
-            let generation = crate::paint::painter_generation();
-            let menu_t = self.menu_reveal.value(motion::t2());
-            let lift = self.session_lift.value(motion::t2(), ease_out);
-            let shake = self.shake_offset();
-            let ui_alpha = 1.0 - leave;
-
-            let mut parts = Vec::with_capacity(9);
-            if menu_t > 0.0 && !self.sessions.is_empty() {
-                parts.push((Part::Menu, (0.0, 6.0 * (1.0 - menu_t) - 2.0 * lift), menu_t * ui_alpha));
-            }
-            parts.push((Part::Status, (0.0, 0.0), ui_alpha));
-            if !self.is_lock() {
-                parts.push((Part::Session, (0.0, 20.0 * leave - 2.0 * lift), ui_alpha));
-            }
-            parts.push((Part::Power, (0.0, 20.0 * leave), ui_alpha));
-            parts.push((Part::Hint, (0.0, 0.0), ui_alpha));
-            parts.push((Part::Field, (shake, 0.0), ui_alpha));
-            parts.push((Part::Name, (0.0, 0.0), ui_alpha));
-            parts.push((Part::Avatar, (0.0, 0.0), ui_alpha));
-            parts.push((Part::Clock, (0.0, -20.0 * leave), ui_alpha));
-
-            let mut icons = std::mem::take(&mut self.icons);
-            for (part, (dx, dy), alpha) in parts {
+            for (part, (dx, dy), alpha) in self.parts(leave) {
                 if alpha <= 0.0 {
                     continue;
                 }
-                let frame = Self::frame_of(part, &layout);
-                if frame.w <= 0 || frame.h <= 0 {
+                let Some(frame) = self.layer(part, &layout, painter, buffer_scale) else {
                     continue;
-                }
-                let key = self.part_key(part, frame, generation);
-                let slot = (part, buffer_scale);
-                if self.layers.get(&slot).is_none_or(|layer| layer.key != key) {
-                    let mut canvas = Canvas::new(frame.w, frame.h, buffer_scale, painter, &mut icons);
-                    self.draw_part(part, &layout, frame, &mut canvas);
-                    let buffer = canvas.finish();
-                    self.layers.insert(slot, Layer { key, buffer });
-                }
-                let Some(layer) = self.layers.get(&slot) else {
+                };
+                let Some(layer) = self.layers.get(&(part, buffer_scale)) else {
                     continue;
                 };
                 let location =
                     Point::<f64, Logical>::from((f64::from(frame.x) + dx, f64::from(frame.y) + dy)).to_physical(scale);
                 let location = Point::from((location.x.round(), location.y.round()));
-                let alpha = alpha.clamp(0.0, 1.0) as f32;
                 if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     location,
                     &layer.buffer,
-                    Some(alpha),
+                    Some(alpha.clamp(0.0, 1.0) as f32),
                     None,
                     None,
                     Kind::Unspecified,
@@ -1472,11 +1880,19 @@ impl GreeterUi {
                     out.push(element);
                 }
             }
-            self.icons = icons;
             self.dirty = false;
         }
 
-        if let Some(element) = full(&self.scrim, self.cover_alpha(), renderer) {
+        let alpha = self.cover_alpha().clamp(0.0, 1.0) as f32;
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (0.0, 0.0),
+            &self.scrim,
+            Some(alpha),
+            Some(Rectangle::from_size((1.0, f64::from(SCRIM_ROWS)).into())),
+            Some(size),
+            Kind::Unspecified,
+        ) {
             out.push(element);
         }
         out
@@ -1492,14 +1908,8 @@ pub(crate) struct Canvas<'a> {
     icons: &'a mut IconCache,
 }
 
-fn composite_over(dst: &mut [u8], src: &[u8], columns: Option<(usize, usize, usize)>) {
-    for (index, (d, s)) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)).enumerate() {
-        if let Some((stride, from, to)) = columns {
-            let column = index % stride;
-            if column < from || column >= to {
-                continue;
-            }
-        }
+fn composite_over(dst: &mut [u8], src: &[u8]) {
+    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
         let alpha = u16::from(s[3]);
         if alpha == 0 {
             continue;
@@ -1569,20 +1979,7 @@ impl<'a> Canvas<'a> {
         Painter::fill_rounded_rect_over(&mut layer, self.w, self.h, r.x, r.y + dy, r.w, r.h, self.scale, color, radius);
         let radius_px = crate::paint::css_blur_box_radius(blur) * self.scale;
         crate::paint::box_blur_rgba(&mut layer, self.w * self.scale, self.h * self.scale, radius_px);
-        composite_over(&mut self.buf, &layer, None);
-    }
-
-    fn clipped(&mut self, from_x: i32, to_x: i32, draw: impl FnOnce(&mut Self)) {
-        let len = self.buf.len();
-        let saved = std::mem::replace(&mut self.buf, vec![0; len]);
-        draw(self);
-        let layer = std::mem::replace(&mut self.buf, saved);
-        let stride = usize::try_from(self.w * self.scale).unwrap_or(0);
-        let from = usize::try_from((from_x * self.scale).max(0)).unwrap_or(0);
-        let to = usize::try_from((to_x * self.scale).max(0)).unwrap_or(0);
-        if stride > 0 {
-            composite_over(&mut self.buf, &layer, Some((stride, from, to)));
-        }
+        composite_over(&mut self.buf, &layer);
     }
 
     pub(crate) fn finish(self) -> MemoryRenderBuffer {
@@ -1642,11 +2039,11 @@ mod tests {
         assert_eq!(ui.active_session().unwrap().id, "glide");
         assert_eq!(ui.auth, AuthState::Idle);
         assert!(ui.armed().is_none());
-        assert!(!ui.menu_reveal.is_open());
+        assert!(ui.menu.is_none());
     }
 
     #[test]
-    fn multibyte_passwords_show_one_dot_per_character() {
+    fn multibyte_passwords_show_one_dot_per_character_until_typed_text_is_shown() {
         let mut ui = ui();
         for ch in "пароль".chars() {
             ui.type_char(ch);
@@ -1654,6 +2051,8 @@ mod tests {
         assert_eq!(ui.field_text(), ("••••••".to_string(), false));
         ui.backspace();
         assert_eq!(ui.field_text().0.chars().count(), 5);
+        ui.toggle_show_typed();
+        assert_eq!(ui.field_text(), ("парол".to_string(), false));
     }
 
     #[test]
@@ -1703,10 +2102,11 @@ mod tests {
     fn a_reason_from_pam_stays_until_the_next_key_but_a_wrong_password_fades() {
         let aged = Instant::now().checked_sub(ERROR_HOLD * 2).expect("the clock is past the hold");
         let mut ui = GreeterUi::lock(users().remove(0), Accent::Blue);
-        ui.set_auth_denied(Some("The account is locked due to 3 failed logins.".into()), "Wrong password");
+        ui.deny = None;
+        ui.set_auth_denied(Some("Authentication token is no longer valid.".into()), "Wrong password");
         ui.error_at = Some(aged);
         ui.tick();
-        assert_eq!(ui.hint().0, "The account is locked due to 3 failed logins.");
+        assert_eq!(ui.hint().0, "Authentication token is no longer valid.");
         ui.type_char('a');
         assert!(ui.message.is_none(), "typing dismisses it");
 
@@ -1715,6 +2115,51 @@ mod tests {
         ui.error_at = Some(aged);
         ui.tick();
         assert!(ui.message.is_none());
+    }
+
+    #[test]
+    fn wrong_passwords_count_down_the_faillock_attempts() {
+        let mut ui = ui();
+        ui.deny = Some(3);
+        ui.set_auth_denied(None, "Wrong password");
+        let first = ui.hint().0;
+        assert!(first.starts_with(t(Key::GreeterWrongShort)) && first.contains('2'), "{first}");
+        ui.set_auth_denied(None, "Wrong password");
+        let second = ui.hint().0;
+        assert!(second.starts_with(t(Key::GreeterWrongShort)) && second.contains('1'), "{second}");
+        ui.set_auth_denied(None, "Wrong password");
+        assert_eq!(ui.hint().0, "Wrong password", "no count once the attempts are spent");
+        ui.select_user(1);
+        assert_eq!(ui.failures, 0, "another user starts afresh");
+    }
+
+    #[test]
+    fn a_faillock_notice_locks_the_field_with_a_countdown() {
+        let mut ui = ui();
+        ui.on_notice("The account is locked due to 3 failed logins.\n(10 minutes left to unlock)".into(), false);
+        ui.set_auth_denied(None, "Wrong password");
+        let left = ui.locked_out().expect("locked");
+        assert!(left > Duration::from_mins(9) && left <= Duration::from_mins(10));
+        assert!(!ui.type_char('a'), "nothing can be typed while locked out");
+        assert_eq!(ui.hint().0, t(Key::GreeterLockedHint));
+        ui.locked_until = Instant::now().checked_sub(Duration::from_secs(1));
+        ui.tick();
+        assert!(ui.locked_out().is_none());
+        assert!(ui.type_char('a'));
+    }
+
+    #[test]
+    fn lockout_messages_parse_in_both_languages_and_unrelated_ones_do_not() {
+        assert_eq!(lockout_left("Wait 10 minutes"), None, "a lock word is required");
+        assert_eq!(
+            lockout_left("The account is locked due to 3 failed logins. (10 minutes left to unlock)"),
+            Some(Duration::from_mins(10))
+        );
+        assert_eq!(lockout_left("Обліковий запис заблоковано (5 хв до розблокування)"), Some(Duration::from_mins(5)));
+        assert_eq!(lockout_left("Last login: Mon 10 minutes ago"), None);
+        assert_eq!(countdown(Duration::from_millis(581_200)), "9:42");
+        assert_eq!(faillock_deny("# deny = 9\n deny= 5 # local\n"), 5);
+        assert_eq!(faillock_deny("unlock_time = 600"), 3);
     }
 
     #[test]
@@ -1729,12 +2174,13 @@ mod tests {
     }
 
     #[test]
-    fn cycling_users_wraps_and_resets_the_password() {
+    fn cycling_and_picking_users_reset_the_password() {
         let mut ui = ui();
         ui.type_char('a');
         assert_eq!(ui.cycle_user(), Some("guest".into()));
         assert!(ui.password.is_empty());
-        assert_eq!(ui.cycle_user(), Some("artem".into()));
+        assert_eq!(ui.select_user(1), None, "picking the active user does nothing");
+        assert_eq!(ui.select_user(0), Some("artem".into()));
     }
 
     #[test]
@@ -1742,29 +2188,42 @@ mod tests {
         let mut ui = ui();
         ui.type_char('a');
         ui.toggle_session_menu();
-        assert!(ui.menu_reveal.is_open());
+        assert_eq!(ui.menu, Some(MenuKind::Session));
         ui.arm_power(PowerAction::Restart);
-        assert!(!ui.menu_reveal.is_open(), "arming closes the menu");
+        assert_eq!(ui.menu, Some(MenuKind::Power), "arming opens the power menu");
         assert!(ui.cancel());
         assert!(ui.armed().is_none());
-        ui.toggle_session_menu();
         assert!(ui.cancel());
-        assert!(!ui.menu_reveal.is_open());
+        assert!(ui.menu.is_none());
         assert!(ui.cancel());
         assert!(ui.password.is_empty());
         assert!(!ui.cancel());
     }
 
     #[test]
-    fn enter_confirms_an_armed_power_action_only_with_an_empty_idle_field() {
+    fn an_armed_action_expires_and_enter_confirms_only_with_an_empty_field() {
         let mut ui = ui();
         assert_eq!(ui.confirmable(), None);
         ui.arm_power(PowerAction::ShutDown);
         assert_eq!(ui.confirmable(), Some(PowerAction::ShutDown));
         ui.type_char('a');
         assert_eq!(ui.confirmable(), None, "a typed password is submitted instead");
-        ui.submit();
-        assert_eq!(ui.confirmable(), None, "nothing is confirmed while a password is being checked");
+        ui.armed_at = Instant::now().checked_sub(ARM_HOLD * 2);
+        ui.tick();
+        assert_eq!(ui.armed(), None, "the second press has to come soon");
+        assert_eq!(ui.menu, Some(MenuKind::Power), "the menu stays open");
+    }
+
+    #[test]
+    fn the_lock_screen_offers_only_restart_and_shut_down() {
+        let mut ui = GreeterUi::lock(users().remove(0), Accent::Blue);
+        ui.arm_power(PowerAction::Sleep);
+        assert_eq!(ui.armed(), None);
+        ui.arm_power(PowerAction::Restart);
+        assert_eq!(ui.armed(), Some(PowerAction::Restart));
+        let layout = laid_out(&mut ui);
+        assert_eq!(layout.menu_items.len(), 2);
+        assert_eq!(ui.hit_test(centre(layout.menu_items[1])), GreeterHit::Power(PowerAction::ShutDown));
     }
 
     #[test]
@@ -1773,23 +2232,49 @@ mod tests {
         ui.toggle_session_menu();
         ui.select_session(1);
         assert_eq!(ui.active_session().unwrap().id, "sway");
-        assert!(!ui.menu_reveal.is_open());
+        assert!(ui.menu.is_none());
     }
 
     #[test]
-    fn hit_testing_follows_the_layout_the_render_path_stored() {
+    fn the_top_right_row_runs_layout_a11y_session_status_power() {
         let mut ui = ui();
-        ui.set_keyboard_layout("US".into());
+        ui.set_keyboard_layout("UK".into());
+        ui.set_status(GreeterStatus { battery: Some((87, false)), wifi: Some(3) });
         let layout = laid_out(&mut ui);
+        let order = [layout.kbd, layout.a11y, layout.session, layout.status, layout.power];
+        for pair in order.windows(2) {
+            assert!(pair[0].right() < pair[1].x, "{pair:?}");
+        }
+        assert_eq!(layout.power.right(), 1920 - NAV_RIGHT);
+        assert_eq!(layout.separators.len(), 2);
+        assert_eq!(ui.hit_test(centre(layout.kbd)), GreeterHit::KeyboardLayout);
+        assert_eq!(ui.hit_test(centre(layout.a11y)), GreeterHit::Accessibility);
+        assert_eq!(ui.hit_test(centre(layout.session)), GreeterHit::Session);
+        assert_eq!(ui.hit_test(centre(layout.power)), GreeterHit::PowerButton);
+        ui.toggle_power_menu();
+        let layout = laid_out(&mut ui);
+        assert_eq!(layout.menu.right(), layout.power.right(), "the menu hangs under its button");
+        assert!(layout.menu.y > layout.power.bottom());
+        assert_eq!(ui.hit_test(centre(layout.menu_items[0])), GreeterHit::Power(PowerAction::Sleep));
+    }
 
+    #[test]
+    fn the_auth_block_stacks_avatar_name_field_hint_and_other_users() {
+        let mut ui = ui();
+        let layout = laid_out(&mut ui);
+        assert!(layout.clock.bottom() < layout.avatar.y);
+        assert!(layout.avatar.bottom() < layout.name.y);
+        assert!(layout.name.bottom() < layout.field.y);
+        assert!(layout.field.bottom() < layout.hint.y);
+        assert_eq!((layout.field.w, layout.field.h), (FIELD_W, FIELD_H));
+        assert_eq!(layout.submit.right(), layout.field.right() - 5);
+        let [(index, chip)] = layout.users[..] else { panic!("one other user") };
+        assert_eq!(index, 1);
+        assert!(chip.y > layout.hint.bottom());
+        assert_eq!(ui.hit_test(centre(chip)), GreeterHit::User(1));
         assert_eq!(ui.hit_test(centre(layout.submit)), GreeterHit::Submit);
         assert_eq!(ui.hit_test(centre(layout.field)), GreeterHit::PasswordField);
         assert_eq!(ui.hit_test(centre(layout.avatar)), GreeterHit::UserAvatar);
-        assert_eq!(ui.hit_test(centre(layout.session)), GreeterHit::Session);
-        assert_eq!(ui.hit_test(centre(layout.kbd)), GreeterHit::KeyboardLayout);
-        for action in PowerAction::ALL {
-            assert_eq!(ui.hit_test(centre(layout.power_items[action.index()])), GreeterHit::Power(action));
-        }
         assert_eq!(ui.hit_test(Point::from((5.0, 5.0))), GreeterHit::None);
     }
 
@@ -1806,32 +2291,28 @@ mod tests {
     }
 
     #[test]
-    fn the_layout_keeps_every_block_on_screen_and_apart() {
-        let mut ui = ui();
-        let layout = laid_out(&mut ui);
-        assert!(layout.clock.bottom() < layout.avatar.y);
-        assert!(layout.hint.bottom() < layout.power.y);
-        assert!(layout.power.right() < layout.session.x);
-        assert_eq!(layout.power.y, layout.session.y);
-        assert!(layout.menu.bottom() < layout.session.y);
-        assert_eq!(layout.menu.right(), layout.session.right());
-        assert_eq!(layout.field.w, FIELD_W);
-        assert_eq!(layout.submit.right(), layout.field.right() - 3);
-    }
-
-    #[test]
-    fn the_lock_screen_has_no_session_picker_and_its_own_hints() {
+    fn the_lock_screen_has_media_and_notices_above_the_field_and_no_session() {
         let mut ui = GreeterUi::lock(users().remove(0), Accent::Blue);
-        assert!(ui.is_lock());
+        ui.set_media(Some(LockMedia {
+            title: "Nightcall".into(),
+            subtitle: "Kavinsky · Spotify".into(),
+            playing: true,
+            accent: Color::from_rgb8(107, 63, 143, 1.0),
+        }));
+        ui.set_notices(LockNotices { count: 3, apps: vec!["Telegram".into(), "Пошта".into()] });
         let layout = laid_out(&mut ui);
         assert_eq!(layout.session, Rect::default());
-        assert_eq!(ui.hit_test(centre(layout.submit)), GreeterHit::Submit);
+        assert!(layout.users.is_empty());
+        assert!(layout.clock.bottom() < layout.media.y);
+        assert!(layout.media.bottom() < layout.notices.y);
+        assert!(layout.notices.bottom() + 60 <= layout.avatar.y);
+        assert_eq!(ui.hit_test(centre(layout.media_buttons[1])), GreeterHit::Media(MediaButton::PlayPause));
         ui.toggle_session_menu();
-        assert!(!ui.menu_reveal.is_open());
+        assert!(ui.menu.is_none());
         assert_eq!(ui.cycle_user(), None);
         assert_eq!(ui.hint().0, t(Key::LockHint));
         ui.set_auth_success();
-        assert_eq!(ui.hint().0, t(Key::LockUnlocking));
+        assert_eq!(ui.busy_label(), t(Key::LockUnlocking));
     }
 
     #[test]
@@ -1889,10 +2370,16 @@ mod tests {
             icon::CHEVRON_DOWN,
             icon::ARROW_RIGHT,
             icon::CHECK,
-            icon::CLOSE,
             icon::WIFI,
+            icon::KEYBOARD,
+            icon::ACCESSIBILITY,
+            icon::CLOCK,
+            icon::NOTE,
         ] {
             assert!(crate::paint::render_svg(svg(2.0, body).as_bytes(), side).is_some(), "{body}");
+        }
+        for body in [icon::PLAY, icon::PAUSE, icon::PREVIOUS, icon::NEXT] {
+            assert!(crate::paint::render_svg(filled(body).as_bytes(), side).is_some(), "{body}");
         }
         assert!(crate::paint::render_svg(battery_svg(50).as_bytes(), side).is_some());
         assert!(crate::paint::render_svg(spinner_svg(7).as_bytes(), side).is_some());
@@ -1905,5 +2392,121 @@ mod tests {
         let alpha_at = |x: i32, y: i32| bytes[usize::try_from((y * side + x) * 4 + 3).unwrap()];
         assert!(alpha_at(side / 2, side / 8) > 0, "stem reaches the top");
         assert_eq!(alpha_at(side / 2, side * 5 / 8), 0, "no stem below the centre");
+    }
+
+    fn compose(ui: &mut GreeterUi, painter: &Painter, (w, h): (i32, i32), scale: i32) -> Vec<u8> {
+        let layout = ui.compute_layout(painter, Rectangle::from_size((w, h).into()));
+        ui.layout = Some(layout.clone());
+        let mut image = crate::raster::Canvas::new(w, h, scale).expect("canvas");
+        let full = image.full();
+        image.gradient(full, 0.0, Color::from_rgb8(31, 42, 70, 1.0), Color::from_rgb8(40, 30, 64, 1.0));
+        for row in 0..h {
+            let alpha = 0.1 + 0.35 * f64::from(row) / f64::from(h);
+            image.fill(crate::raster::rect(0, row, w, 1), Color::from_rgb8(10, 10, 14, alpha as f32), 0.0);
+        }
+        let mut parts = ui.parts(0.0);
+        parts.reverse();
+        for (part, _, alpha) in parts {
+            if alpha <= 0.0 {
+                continue;
+            }
+            let frame = GreeterUi::frame_of(part, &layout);
+            if frame.w <= 0 || frame.h <= 0 {
+                continue;
+            }
+            let mut icons = IconCache::new();
+            let mut canvas = Canvas::new(frame.w, frame.h, scale, painter, &mut icons);
+            ui.draw_part(part, &layout, frame, &mut canvas);
+            image.blit(&canvas.buf, crate::raster::rect(frame.x, frame.y, frame.w, frame.h));
+        }
+        image.buf
+    }
+
+    #[test]
+    #[ignore = "writes preview PNGs to $GLIDE_GREETER_PREVIEW"]
+    fn preview() {
+        let Some(dir) = std::env::var_os("GLIDE_GREETER_PREVIEW") else {
+            return;
+        };
+        let painter = Painter::new(14.0, None);
+        let size = (1280, 800);
+        let users = vec![
+            UserEntry { username: "artem".into(), display_name: "Артем".into(), uid: 1000, initial: 'А' },
+            UserEntry { username: "olena".into(), display_name: "Олена".into(), uid: 1001, initial: 'О' },
+            UserEntry { username: "guest".into(), display_name: "Гість".into(), uid: 1002, initial: 'Г' },
+        ];
+        let sessions = ["Glide", "GNOME", "Plasma (Wayland)"]
+            .into_iter()
+            .map(|name| SessionEntry {
+                id: name.to_lowercase(),
+                name: name.into(),
+                exec: vec![name.into()],
+                desktop_names: String::new(),
+            })
+            .collect::<Vec<_>>();
+        let status = GreeterStatus { battery: Some((87, false)), wifi: Some(3) };
+        let login = || {
+            let mut ui = GreeterUi::new(users.clone(), sessions.clone(), Accent::Blue);
+            ui.set_keyboard_layout("UK".into());
+            ui.set_status(status);
+            ui.time = "16:40".into();
+            ui.date = "ПʼЯТНИЦЯ · 24 ЖОВТНЯ".into();
+            ui.deny = Some(3);
+            ui
+        };
+        let lock = || {
+            let mut ui = GreeterUi::lock(users[0].clone(), Accent::Blue);
+            ui.set_keyboard_layout("UK".into());
+            ui.set_status(status);
+            ui.time = "16:40".into();
+            ui.date = "ПʼЯТНИЦЯ · 24 ЖОВТНЯ".into();
+            ui.set_media(Some(LockMedia {
+                title: "Nightcall".into(),
+                subtitle: "Kavinsky · Spotify".into(),
+                playing: true,
+                accent: Color::from_rgb8(107, 63, 143, 1.0),
+            }));
+            ui.set_notices(LockNotices {
+                count: 3, apps: vec!["Telegram".into(), "Пошта".into(), "Glide".into()]
+            });
+            ui
+        };
+        let mut cases: Vec<(&str, GreeterUi)> = Vec::new();
+        cases.push(("login", login()));
+        let mut typed = login();
+        "secret".chars().for_each(|ch| {
+            typed.type_char(ch);
+        });
+        cases.push(("login-typed", typed));
+        let mut wrong = login();
+        wrong.set_auth_denied(None, "Невірний пароль");
+        wrong.error_at = None;
+        cases.push(("login-wrong", wrong));
+        let mut locked = login();
+        locked.on_notice("The account is locked due to 3 failed logins. (10 minutes left to unlock)".into(), false);
+        locked.set_auth_denied(None, "x");
+        locked.error_at = None;
+        cases.push(("login-lockout", locked));
+        let mut power = login();
+        power.arm_power(PowerAction::ShutDown);
+        power.menu_reveal = Reveal::open_now();
+        cases.push(("login-power", power));
+        let mut session = login();
+        session.toggle_session_menu();
+        session.menu_reveal = Reveal::open_now();
+        cases.push(("login-session", session));
+        let mut entering = login();
+        entering.set_auth_success();
+        cases.push(("login-entering", entering));
+        cases.push(("lock", lock()));
+        let mut caps = lock();
+        caps.set_caps_lock(true);
+        cases.push(("lock-caps", caps));
+        for (name, mut ui) in cases {
+            let pixels = compose(&mut ui, &painter, size, 1);
+            let image = crate::shot::compose::Image::from_bgra(1280, 800, pixels).expect("image");
+            let png = crate::backend::screenshot::save_rgba(&image.into_straight(), 1280, 800, false).expect("png").png;
+            std::fs::write(std::path::Path::new(&dir).join(format!("greeter-{name}.png")), png).expect("write");
+        }
     }
 }

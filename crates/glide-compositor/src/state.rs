@@ -3315,8 +3315,7 @@ impl GlideState {
             GreetdReply::Error { auth, message } => {
                 tracing::warn!(auth, %message, "greetd error");
                 if auth {
-                    let wrong = crate::i18n::t(crate::i18n::Key::GreeterWrongPassword);
-                    greeter.set_auth_error(wrong.to_string(), false);
+                    greeter.set_auth_denied(None, crate::i18n::t(crate::i18n::Key::GreeterWrongPassword));
                     let user = greeter.active_user().map(|u| u.username.clone());
                     if let Some(user) = user {
                         self.send_greetd(GreetdCommand::CreateSession(user));
@@ -3576,6 +3575,39 @@ impl GlideState {
         }
     }
 
+    fn lock_media(&self) -> Option<crate::greeter::LockMedia> {
+        let media = self.topbar.media()?;
+        let subtitle = [media.artist.trim(), media.source.trim()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        Some(crate::greeter::LockMedia {
+            title: media.title.clone(),
+            subtitle,
+            playing: media.playing,
+            accent: media.accent,
+        })
+    }
+
+    fn lock_notices(&self) -> Option<crate::greeter::LockNotices> {
+        let count = self.notifications.unread();
+        if self.greeter.as_ref().is_some_and(|greeter| greeter.notice_count() == count) {
+            return None;
+        }
+        let mut apps: Vec<String> = Vec::new();
+        for item in self.notifications.nc_items() {
+            let app = item.app_name.trim().to_string();
+            if !app.is_empty() && !apps.contains(&app) {
+                apps.push(app);
+            }
+            if apps.len() == 3 {
+                break;
+            }
+        }
+        Some(crate::greeter::LockNotices { count, apps })
+    }
+
     fn finish_unlock(&mut self) {
         self.greeter = None;
         self.apply_keyboard_focus();
@@ -3622,10 +3654,18 @@ impl GlideState {
         }
     }
 
+    pub fn greeter_select_user(&mut self, index: usize) {
+        let user = self.greeter.as_mut().and_then(|greeter| greeter.select_user(index));
+        if let Some(user) = user {
+            self.send_greetd(crate::greeter::GreetdCommand::CreateSession(user));
+            self.queue_redraw();
+        }
+    }
+
     pub fn greeter_power(&mut self, action: crate::greeter::PowerAction) {
         use crate::greeter::PowerAction;
         if let Some(greeter) = self.greeter.as_mut() {
-            greeter.cancel_power_arm();
+            greeter.close_menus();
         }
         match action {
             PowerAction::Sleep => crate::system_info::suspend(),
@@ -3636,13 +3676,19 @@ impl GlideState {
     }
 
     pub fn tick_greeter(&mut self) -> bool {
-        let lock_status =
-            self.greeter.as_ref().is_some_and(crate::greeter::GreeterUi::is_lock).then(|| self.lock_status());
+        let locked = self.greeter.as_ref().is_some_and(crate::greeter::GreeterUi::is_lock);
+        let lock_status = locked.then(|| self.lock_status());
+        let media = if locked { self.lock_media() } else { None };
+        let notices = locked.then(|| self.lock_notices()).flatten();
         let Some(greeter) = self.greeter.as_mut() else {
             return false;
         };
         if let Some(status) = lock_status {
             greeter.set_status(status);
+            greeter.set_media(media);
+            if let Some(notices) = notices {
+                greeter.set_notices(notices);
+            }
             let animating = greeter.tick();
             if greeter.finished_leaving() {
                 self.finish_unlock();
