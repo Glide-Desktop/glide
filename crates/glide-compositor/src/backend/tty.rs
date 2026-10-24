@@ -1650,6 +1650,22 @@ impl GlideState {
             return;
         }
 
+        let masks = self.topbar.polkit_mask(output_rect);
+        if !masks.is_empty() {
+            let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
+            let [r, g, b, a] = tokens.island_bg.0;
+            let covers = masks.iter().map(|rect| {
+                let geometry = rect.to_f64().to_physical(scale).to_i32_round();
+                GlideRenderElements::LockBackdrop(SolidColorRenderElement::new(
+                    smithay::backend::renderer::element::Id::new(),
+                    geometry,
+                    smithay::backend::renderer::utils::CommitCounter::default(),
+                    [r * a, g * a, b * a, a],
+                    Kind::Unspecified,
+                ))
+            });
+            elements.splice(cursor_count..cursor_count, covers);
+        }
         let transform = output.current_transform();
         let capture_frame = |renderer: &mut GlesRenderer, elements: &[GlideRenderElements]| {
             super::screenshot::capture_frame(renderer, elements, output_mode, fractional, transform)
@@ -1717,6 +1733,7 @@ impl GlideState {
                 Err(err) => tracing::warn!(?err, "could not capture a mirrored frame"),
             }
         }
+        elements.drain(cursor_count..cursor_count + masks.len());
 
         let flash = self.screenshot_flash.alpha_on(&output, std::time::Instant::now());
         if flash > 0.0 {

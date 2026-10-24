@@ -13,6 +13,7 @@ use smithay::backend::renderer::element::{
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
 use super::glyphs::{Glyph, glyph};
+use super::polkit_view;
 use super::{
     Anim, BadgePop, Cache, E_IO, E_OUT, Frame, LocalRect, MEDIA_ART, MEDIA_ART_LARGE, MediaWidget, OpenPopup, Slot,
     SwitchMotion, Topbar, TopbarAction, TopbarTheme, calendar, draw_media_art, draw_switch, initial, local_rect,
@@ -145,6 +146,7 @@ pub(super) enum View {
     Pill,
     Media,
     Calendar,
+    Polkit,
 }
 
 impl View {
@@ -152,11 +154,22 @@ impl View {
         matches!(self, Self::Media | Self::Calendar)
     }
 
+    const fn dims(self) -> bool {
+        self.expanded() || matches!(self, Self::Polkit)
+    }
+
     const fn elevation(self) -> Level {
         match self {
             Self::Compact => Level::El1,
             Self::Alert | Self::Notice | Self::Pill => Level::El2,
-            Self::Media | Self::Calendar => Level::El3,
+            Self::Media | Self::Calendar | Self::Polkit => Level::El3,
+        }
+    }
+
+    const fn radius(self) -> f32 {
+        match self {
+            Self::Polkit => polkit_view::RADIUS,
+            _ => R2,
         }
     }
 
@@ -168,6 +181,7 @@ impl View {
             Self::Calendar => 3,
             Self::Notice => 4,
             Self::Pill => 5,
+            Self::Polkit => 6,
         }
     }
 }
@@ -238,7 +252,7 @@ pub(super) struct Island {
     peek: Option<u32>,
     first_item: usize,
     compact_w: i32,
-    backgrounds: HashMap<(i32, i32, i32), MemoryRenderBuffer>,
+    backgrounds: HashMap<(i32, i32, i32, u32), MemoryRenderBuffer>,
     shadows: HashMap<(u8, i32, i32, i32), MemoryRenderBuffer>,
     scrim_buffer: Option<MemoryRenderBuffer>,
     compact: Cache<CompactKey>,
@@ -251,6 +265,16 @@ pub(super) struct Island {
     bars_drawn: Option<Instant>,
     bar_ink: Option<Color>,
     bars: HashMap<(i32, i32), MemoryRenderBuffer>,
+    polkit: Option<crate::polkit::View>,
+    polkit_motion: crate::polkit::Motion,
+    polkit_rev: u64,
+    polkit_peek: bool,
+    polkit_layout: Option<((u64, Lang), polkit_view::Layout)>,
+    polkit_cache: Cache<(u64, Lang)>,
+    polkit_popover: Cache<Lang>,
+    polkit_popover_shadow: Cache<(i32, i32)>,
+    polkit_spinner: HashMap<(u32, i32), MemoryRenderBuffer>,
+    polkit_sweep: Vec<(Color, MemoryRenderBuffer)>,
 }
 
 impl Default for Island {
@@ -284,6 +308,16 @@ impl Default for Island {
             bars_drawn: None,
             bar_ink: None,
             bars: HashMap::new(),
+            polkit: None,
+            polkit_motion: crate::polkit::Motion::default(),
+            polkit_rev: 0,
+            polkit_peek: false,
+            polkit_layout: None,
+            polkit_cache: Cache::default(),
+            polkit_popover: Cache::default(),
+            polkit_popover_shadow: Cache::default(),
+            polkit_spinner: HashMap::new(),
+            polkit_sweep: Vec::new(),
         }
     }
 }
@@ -310,10 +344,29 @@ impl Island {
         self.nc.clear();
         self.bar_ink = None;
         self.bars.clear();
+        self.polkit_layout = None;
+        self.polkit_cache.clear();
+        self.polkit_popover.clear();
+        self.polkit_popover_shadow.clear();
+        self.polkit_spinner.clear();
+        self.polkit_sweep.clear();
     }
 
     pub(super) fn is_animating(&self) -> bool {
         self.fade.is_animating() || self.morph.is_animating() || self.scrim.is_animating() || self.bars_live()
+    }
+
+    fn polkit_layout(&mut self, painter: &Painter) -> Option<polkit_view::Layout> {
+        let view = self.polkit.as_ref()?;
+        let key = (self.polkit_rev, crate::i18n::language());
+        if let Some((cached, layout)) = self.polkit_layout.as_ref()
+            && *cached == key
+        {
+            return Some(layout.clone());
+        }
+        let layout = polkit_view::layout(painter, view);
+        self.polkit_layout = Some((key, layout.clone()));
+        Some(layout)
     }
 
     fn bars_live(&self) -> bool {
@@ -357,7 +410,7 @@ impl Island {
         self.view = view;
         self.fade.jump(0.0);
         self.fade.retarget(1.0, motion::t2(), E_IO);
-        self.scrim.retarget(if view.expanded() { 1.0 } else { 0.0 }, motion::t3(), E_IO);
+        self.scrim.retarget(if view.dims() { 1.0 } else { 0.0 }, motion::t3(), E_IO);
         true
     }
 
@@ -665,6 +718,9 @@ pub(super) fn format_duration(duration: Duration) -> String {
 
 impl Topbar {
     fn wanted_island_view(&self) -> View {
+        if self.island.polkit.is_some() {
+            return if self.island.fullscreen && !self.island.polkit_peek { View::Pill } else { View::Polkit };
+        }
         match self.open_popup {
             Some(OpenPopup::MediaPlayer) if self.media.is_some() => View::Media,
             Some(OpenPopup::NotificationCenter) => View::Calendar,
@@ -720,7 +776,7 @@ impl Topbar {
 
     #[must_use]
     pub fn floats(&self) -> bool {
-        self.covered() && matches!(self.island.view, View::Pill | View::Notice)
+        self.covered() && matches!(self.island.view, View::Pill | View::Notice | View::Polkit)
     }
 
     pub fn set_fullscreen(&mut self, fullscreen: bool) -> bool {
@@ -729,12 +785,58 @@ impl Topbar {
         }
         self.island.fullscreen = fullscreen;
         self.island.peek = None;
+        self.island.polkit_peek = false;
         self.sync_island();
         self.touch();
         true
     }
 
+    pub fn set_polkit(&mut self, view: Option<crate::polkit::View>, motion: crate::polkit::Motion) -> bool {
+        let moved = self.island.polkit_motion != motion;
+        self.island.polkit_motion = motion;
+        if self.island.polkit == view {
+            return moved;
+        }
+        if view.is_some() && self.island.polkit.is_none() && self.open_popup.is_some() {
+            self.close_popup();
+        }
+        if view.is_none() {
+            self.island.polkit_peek = false;
+        }
+        self.island.polkit = view;
+        self.island.polkit_rev = self.island.polkit_rev.wrapping_add(1);
+        self.sync_island();
+        self.touch();
+        true
+    }
+
+    #[must_use]
+    pub fn polkit_shown(&self) -> bool {
+        self.island.polkit.is_some() && self.island.view == View::Polkit
+    }
+
+    #[must_use]
+    pub fn polkit_mask(&self, output: Rectangle<i32, Logical>) -> Vec<LocalRect> {
+        if !self.polkit_shown() {
+            return Vec::new();
+        }
+        let island = self.island_target(output);
+        let popover = self
+            .island
+            .polkit_layout
+            .as_ref()
+            .and_then(|(_, layout)| layout.popover)
+            .map(|rect| shift(rect, island.loc));
+        std::iter::once(island).chain(popover).collect()
+    }
+
     pub fn peek_notice(&mut self) -> bool {
+        if self.island.polkit.is_some() {
+            self.island.polkit_peek = true;
+            self.sync_island();
+            self.touch();
+            return true;
+        }
         let Some(id) = self.island.notice.as_ref().map(|notice| notice.id) else {
             return false;
         };
@@ -745,6 +847,9 @@ impl Topbar {
     }
 
     pub(super) fn pill(&self) -> Option<Pill> {
+        if self.island.polkit.is_some() {
+            return Some(Pill { asks: true, dot: PillDot::Accent, more: 0 });
+        }
         if let Some(notice) = self.island.notice.as_ref() {
             let dot = if notice.asks {
                 PillDot::Accent
@@ -761,6 +866,9 @@ impl Topbar {
 
     fn pill_action(&self) -> Option<TopbarAction> {
         use crate::notifications::NotificationAction as Act;
+        if self.island.polkit.is_some() {
+            return Some(TopbarAction::PeekNotice);
+        }
         if let Some(notice) = self.island.notice.as_ref() {
             return Some(if notice.wants_attention() {
                 TopbarAction::PeekNotice
@@ -887,7 +995,7 @@ impl Topbar {
         match view {
             View::Media => Some(mini_width(painter, t(Key::Notifications))),
             View::Calendar => self.media.is_some().then(|| mini_width(painter, t(Key::Media))),
-            View::Compact | View::Alert | View::Notice | View::Pill => None,
+            View::Compact | View::Alert | View::Notice | View::Pill | View::Polkit => None,
         }
     }
 
@@ -908,6 +1016,9 @@ impl Topbar {
             View::Pill => (self.pill().map_or(COMPACT_W, |pill| pill_layout(painter, pill).width), COMPACT_H),
             View::Media => (WIDE, MEDIA_H),
             View::Calendar => (WIDE, calendar_height(self.nc_items.len())),
+            View::Polkit => {
+                (polkit_view::WIDTH, self.island.polkit_layout(painter).map_or(ALERT_H, |layout| layout.height))
+            }
         }
     }
 
@@ -955,6 +1066,13 @@ impl Topbar {
                 }
             }
             View::Pill => slots.push((Slot::Pill, target)),
+            View::Polkit => {
+                if let (Some(layout), Some(view)) = (self.island.polkit_layout(painter), self.island.polkit.as_ref()) {
+                    for (control, rect) in polkit_view::slots(&layout, view) {
+                        slots.push((Slot::Polkit(control), shift(rect, origin)));
+                    }
+                }
+            }
             View::Media | View::Calendar => {}
         }
         local_rect(centre - WIDE / 2, top, WIDE, COMPACT_H)
@@ -1610,6 +1728,142 @@ fn push_view<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, vi
         View::Pill => push_pill(topbar, frame, alpha, spot),
         View::Media => push_media(topbar, frame, alpha, spot),
         View::Calendar => push_calendar(topbar, frame, alpha, spot),
+        View::Polkit => push_polkit(topbar, frame, alpha, spot),
+    }
+}
+
+fn shake_offset(shaken: Option<Instant>, now: Instant) -> i32 {
+    let duration = motion::t3();
+    let Some(at) = shaken else {
+        return 0;
+    };
+    let elapsed = now.saturating_duration_since(at);
+    if duration.is_zero() || elapsed >= duration {
+        return 0;
+    }
+    let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
+    (-7.0 * (progress * std::f64::consts::TAU * 2.0).sin() * (1.0 - E_OUT.ease_f64(progress))).round() as i32
+}
+
+fn cycle(since: Option<Instant>, now: Instant, period: Duration) -> f64 {
+    let scale = motion::scale();
+    let Some(since) = since.filter(|_| scale > 0.0) else {
+        return 0.0;
+    };
+    let period = period.as_secs_f64() * f64::from(scale);
+    (now.saturating_duration_since(since).as_secs_f64() / period).fract()
+}
+
+const SPINNER_PERIOD: Duration = Duration::from_millis(800);
+const SWEEP_PERIOD: Duration = Duration::from_millis(1400);
+const SWEEP_SHARE: f64 = 0.34;
+
+fn push_polkit<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
+    let Some(layout) = topbar.island.polkit_layout(painter) else {
+        return;
+    };
+    let Some(view) = topbar.island.polkit.as_ref() else {
+        return;
+    };
+    let now = Instant::now();
+    let motion = topbar.island.polkit_motion;
+    let clip = topbar.island.rect(spot.strip);
+    let mut content = spot.content(polkit_view::WIDTH, layout.height);
+    content.loc.x += shake_offset(motion.shaken, now);
+    let theme = &topbar.theme;
+    let lang = crate::i18n::language();
+
+    if let Some(rect) = layout.popover {
+        let at = shift(rect, content.loc);
+        if let Some(buffer) = topbar
+            .island
+            .polkit_popover
+            .resolve(lang, output_scale, || polkit_view::paint_popover(painter, theme, output_scale))
+        {
+            push_buffer_alpha(renderer, buffer, at.loc, alpha, scale, elements);
+        }
+        let layers = shadow_layers(theme.dark, Level::El3);
+        let margin = shadow_margin(theme.dark, Level::El3);
+        let size = (rect.size.w, rect.size.h);
+        if let Some(buffer) = topbar.island.polkit_popover_shadow.resolve(size, output_scale, || {
+            crate::raster::shadow(size, margin, polkit_view::RADIUS, &layers, output_scale).map(|c| c.finish())
+        }) {
+            let corner = Point::from((at.loc.x - margin, at.loc.y - margin));
+            push_buffer_alpha(renderer, buffer, corner, alpha, scale, elements);
+        }
+    }
+
+    if view.stage == crate::polkit::Stage::Checking {
+        if let Some(rect) = polkit_view::spinner_rect(&layout) {
+            let turn = cycle(motion.checking, now, SPINNER_PERIOD);
+            let step = (turn * f64::from(polkit_view::SPINNER_STEPS)) as u32 % polkit_view::SPINNER_STEPS;
+            let key = (step, output_scale);
+            if !topbar.island.polkit_spinner.contains_key(&key)
+                && let Some(buffer) = polkit_view::paint_spinner(step, theme.active_label, output_scale)
+            {
+                topbar.island.polkit_spinner.insert(key, buffer);
+            }
+            if let Some(buffer) = topbar.island.polkit_spinner.get(&key) {
+                push_clipped(renderer, buffer, (shift(rect, content.loc), clip), alpha, scale, elements);
+            }
+        }
+        let inset = polkit_view::RADIUS as i32;
+        let track = local_rect(
+            clip.loc.x + inset,
+            clip.loc.y + clip.size.h - polkit_view::SWEEP_H,
+            (clip.size.w - inset * 2).max(0),
+            polkit_view::SWEEP_H,
+        );
+        let width = (f64::from(track.size.w) * SWEEP_SHARE).round() as i32;
+        let travel = f64::from(track.size.w + width);
+        let x = track.loc.x - width + (travel * cycle(motion.checking, now, SWEEP_PERIOD)).round() as i32;
+        let bar = local_rect(x, track.loc.y, width, track.size.h).intersection(track);
+        let parts = [(bar, theme.focus_line), (Some(track), theme.focus_line.with_alpha(0.15))];
+        for (rect, colour) in parts {
+            let Some(rect) = rect else {
+                continue;
+            };
+            if !topbar.island.polkit_sweep.iter().any(|(known, _)| *known == colour)
+                && let Some(mut c) = Canvas::new(1, 1, 1)
+            {
+                c.fill(c.full(), colour, 0.0);
+                topbar.island.polkit_sweep.push((colour, c.finish()));
+            }
+            if let Some((_, buffer)) = topbar.island.polkit_sweep.iter().find(|(known, _)| *known == colour) {
+                push_stretched(renderer, buffer, (Size::from((1, 1)), rect), alpha, scale, elements);
+            }
+        }
+    }
+
+    let key = (topbar.island.polkit_rev, lang);
+    let Some(buffer) = topbar
+        .island
+        .polkit_cache
+        .resolve(key, output_scale, || polkit_view::paint(painter, theme, view, &layout, output_scale, Some(icons)))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+}
+
+fn push_buffer_alpha<R: ShellRenderer>(
+    renderer: &mut R, buffer: &MemoryRenderBuffer, at: Point<i32, Logical>, alpha: f32, scale: Scale<f64>,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) {
+    if alpha <= 0.0 {
+        return;
+    }
+    if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        at.to_f64().to_physical(scale),
+        buffer,
+        Some(alpha.clamp(0.0, 1.0)),
+        None,
+        None,
+        Kind::Unspecified,
+    ) {
+        elements.push(element);
     }
 }
 
@@ -1754,7 +2008,8 @@ fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>,
     if rect.size.w <= 0 || rect.size.h <= 0 {
         return;
     }
-    let key = (rect.size.w, rect.size.h, output_scale);
+    let radius = topbar.island.view.radius();
+    let key = (rect.size.w, rect.size.h, output_scale, radius.to_bits());
     let island = &mut topbar.island;
     if island.backgrounds.len() >= SURFACE_CACHE_LIMIT && !island.backgrounds.contains_key(&key) {
         island.backgrounds.clear();
@@ -1763,7 +2018,7 @@ fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>,
         && let Some(canvas) = Canvas::popover(
             (rect.size.w, rect.size.h),
             output_scale,
-            R2,
+            radius,
             topbar.theme.island_bg,
             topbar.theme.island_line,
         )
@@ -1803,7 +2058,7 @@ fn push_shadow<R: ShellRenderer>(
     }
     if !island.shadows.contains_key(&key)
         && let Some(canvas) =
-            crate::raster::shadow((size.w, size.h), margin, R2, &shadow_layers(dark, level), output_scale)
+            crate::raster::shadow((size.w, size.h), margin, view.radius(), &shadow_layers(dark, level), output_scale)
     {
         island.shadows.insert(key, canvas.finish());
     }

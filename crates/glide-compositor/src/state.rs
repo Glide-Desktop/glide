@@ -405,6 +405,7 @@ pub struct SessionServices {
     pub keychain: crate::keychain::Keychain,
     pub autofill: Option<crate::autofill::Offer>,
     pub asks: crate::agent_prompt::Asks,
+    pub polkit: crate::polkit::Polkit,
     pub cast: crate::cast::Cast,
     pub gate: Arc<crate::privilege::Gate>,
     pub permission_prompts: crate::privilege::Pending,
@@ -1717,6 +1718,7 @@ impl GlideState {
     pub fn run_topbar_action(&mut self, action: crate::topbar::TopbarAction) {
         use crate::topbar::{OpenPopup, TopbarAction};
         match action {
+            TopbarAction::Polkit(control) => self.polkit_control(control),
             TopbarAction::MediaPlayPause => self.run_media_command(glide_media::Command::PlayPause),
             TopbarAction::MediaNext => self.run_media_command(glide_media::Command::Next),
             TopbarAction::MediaPrevious => self.run_media_command(glide_media::Command::Previous),
@@ -3330,6 +3332,7 @@ impl GlideState {
         }
         tracing::info!("locking the screen");
         self.lock_keychain();
+        self.cancel_all_polkit();
         let user = crate::greeter::current_user(&self.topbar.system_status().user_name);
         if self.lock_auth.is_none() {
             self.lock_auth = self.start_lock_auth(&user.username);

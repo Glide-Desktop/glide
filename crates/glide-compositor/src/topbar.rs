@@ -46,6 +46,9 @@ mod tray;
 #[path = "topbar_headset.rs"]
 mod headset_view;
 
+#[path = "topbar_polkit.rs"]
+mod polkit_view;
+
 pub use tray::{ICON as TRAY_ICON, IconArt, MAX_SCALE as TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon};
 
 pub use panels::{
@@ -330,6 +333,7 @@ pub enum TopbarAction {
     CalendarShift(i8),
     CalendarToday,
     Tray(TrayClick),
+    Polkit(crate::polkit::Control),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -411,6 +415,7 @@ pub enum Slot {
     CalPrev,
     CalNext,
     Tray(u16),
+    Polkit(crate::polkit::Control),
 }
 
 impl Slot {
@@ -454,6 +459,7 @@ impl Slot {
                     | Self::LayoutDropdown
                     | Self::Caffeine
                     | Self::Tray(_)
+                    | Self::Polkit(_)
             )
     }
 
@@ -542,6 +548,7 @@ impl Slot {
             | Self::QsWifi
             | Self::QsBluetooth
             | Self::QsNetbird => Some(glide_theme::shape::R_ROUND),
+            Self::Polkit(control) => polkit_view::layer_radius(control),
             _ => Some(glide_theme::shape::R2),
         }
     }
@@ -620,6 +627,7 @@ impl Slot {
             Self::CalPrev => TopbarAction::CalendarShift(-1),
             Self::CalNext => TopbarAction::CalendarShift(1),
             Self::Tray(id) => TopbarAction::Tray(TrayClick { id, button: TrayButton::Primary }),
+            Self::Polkit(control) => TopbarAction::Polkit(control),
         }
     }
 }
@@ -2993,6 +3001,8 @@ pub struct TopbarTheme {
     pub island_line: Color,
     pub ghost: Color,
     pub card: Color,
+    pub focus_line: Color,
+    pub view_bg: Color,
     pub battery_low_pct: u8,
     pub battery_percentage: bool,
     pub clock_date: bool,
@@ -3049,6 +3059,8 @@ impl TopbarTheme {
             island_line: t.island_line,
             ghost: t.fg_4,
             card: t.card_bg,
+            focus_line: t.acc_text,
+            view_bg: t.view_bg,
             battery_low_pct: BATTERY_LOW_PCT,
         }
     }
@@ -3087,6 +3099,8 @@ impl TopbarTheme {
             .color(self.island_line)
             .color(self.ghost)
             .color(self.card)
+            .color(self.focus_line)
+            .color(self.view_bg)
             .u64(u64::from(self.battery_low_pct))
             .bool(self.battery_percentage)
             .bool(self.clock_date)

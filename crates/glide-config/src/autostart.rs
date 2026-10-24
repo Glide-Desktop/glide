@@ -1,6 +1,17 @@
 use std::path::Path;
 
-const PROVIDED_BY_SHELL: [&str; 3] = ["nm-applet", "blueman-applet", "netbird-ui"];
+const PROVIDED_BY_SHELL: [&str; 10] = [
+    "nm-applet",
+    "blueman-applet",
+    "netbird-ui",
+    "polkit-gnome-authentication-agent-1",
+    "polkit-kde-authentication-agent-1",
+    "polkit-mate-authentication-agent-1",
+    "lxqt-policykit-agent",
+    "xfce-polkit",
+    "soteria",
+    "hyprpolkitagent",
+];
 
 #[must_use]
 pub fn provided_by_shell(exec: &str) -> bool {
@@ -31,6 +42,9 @@ mod tests {
             "'nm-applet' --indicator",
             "env FOO=1 nm-applet",
             "/usr/bin/env FOO=1 \"BAR=a\" blueman-applet",
+            "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1",
+            "/usr/lib/polkit-kde-authentication-agent-1",
+            "lxqt-policykit-agent",
         ] {
             assert!(provided_by_shell(exec), "{exec}");
         }

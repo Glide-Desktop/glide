@@ -41,7 +41,7 @@ distribution when something is missing.
 | `fcitx5` or `ibus` | input methods (CJK, Indic); started from `/etc/xdg/autostart` |
 | `brightnessctl`, `playerctl` | brightness and media keys |
 | `NetworkManager`, `bluez`, `power-profiles-daemon` | Wi-Fi, Bluetooth and power mode in quick settings |
-| a polkit agent (`polkit-gnome`, `polkit-mate`, `lxqt-policykit`, `polkit-kde-agent`, `xfce-polkit`, `soteria`) | password prompts in Settings; Glide starts the first one installed unless an agent is already running (`[general] polkit-agent = false` turns this off) |
+| `polkit` (with `polkit-agent-helper-1`) | administrator password prompts; Glide is its own polkit agent and asks in the status island (`[general] polkit-agent = false` turns it off, and then another agent has to be started through `[general] autostart`) |
 | `papirus-icon-theme` | the default icon set (falls back to Adwaita/hicolor) |
 
 Glide has its own notification daemon. Do not also run mako, dunst or swaync

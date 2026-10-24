@@ -126,6 +126,7 @@ pub enum KeyAction {
     MoveWindowToNeighbour(bool),
     Shell(crate::topbar::TopbarAction),
     Media(MediaKey),
+    Polkit(crate::polkit::Input),
     None,
 }
 
@@ -503,6 +504,23 @@ fn reply_active_shortcut(
         .or_else(|| process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym).filter(is_global_shortcut))
         .or_else(|| typed_char(modifiers, modified_sym).map(KeyAction::ReplyType))
         .unwrap_or(KeyAction::None)
+}
+
+fn polkit_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
+    use crate::polkit::Input;
+    let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+    let input = if matches(Keysym::Escape) {
+        Some(Input::Escape)
+    } else if matches(Keysym::Return) || matches(Keysym::KP_Enter) {
+        Some(Input::Submit)
+    } else if matches(Keysym::BackSpace) {
+        Some(if modifiers.ctrl { Input::Clear } else { Input::Backspace })
+    } else if modifiers.ctrl && !modifiers.alt && (matches(Keysym::u) || matches(Keysym::U)) {
+        Some(Input::Clear)
+    } else {
+        typed_char(modifiers, modified_sym).map(Input::Type)
+    };
+    vt_switch_shortcut(raw_syms, modified_sym).or_else(|| input.map(KeyAction::Polkit)).unwrap_or(KeyAction::None)
 }
 
 fn typed_char(modifiers: &ModifiersState, modified_sym: Keysym) -> Option<char> {
@@ -1534,6 +1552,7 @@ impl GlideState {
         let greeter_active = self.greeter.is_some();
         let layout_before = self.active_layout_index();
         let locked = self.session_lock.is_some();
+        let polkit_open = !locked && !greeter_active && self.polkit_focused();
         let handoff = self.handoff_blocks_input();
         let handoff_blocking = handoff || waking;
         let wake_types = waking && !handoff && greeter_active;
@@ -1600,6 +1619,10 @@ impl GlideState {
                         }
                         return FilterResult::Forward;
                     }
+                    if polkit_open {
+                        suppressed_keys.push(keycode);
+                        return FilterResult::Intercept(polkit_shortcut(modifiers, &binding_syms, shell_sym));
+                    }
                     let (syms, sym) = (&binding_syms, shell_sym);
                     let action = if shot_open {
                         Some(vt_switch_shortcut(syms, sym).unwrap_or_else(|| {
@@ -1659,7 +1682,7 @@ impl GlideState {
                 }
                 KeyState::Released => self.session.super_tap.release(is_super),
             };
-            if tapped && !self.screen_locked() && !handoff_blocking && !shortcuts_inhibited {
+            if tapped && !self.screen_locked() && !handoff_blocking && !shortcuts_inhibited && !polkit_open {
                 self.toggle_launcher();
             }
         }
@@ -1677,6 +1700,9 @@ impl GlideState {
 
         let mut action = action;
         self.sync_prompt_caps_lock();
+        if self.session.polkit.prompt.is_some() {
+            self.sync_polkit();
+        }
         let switched_by_xkb = self.active_layout_index() != layout_before;
         if switched_by_xkb {
             if action.is_some() {
@@ -1842,6 +1868,7 @@ impl GlideState {
             KeyAction::LauncherDeleteWord => self.edit_launcher(Launcher::delete_word),
             KeyAction::LauncherSelectAll => self.edit_launcher(Launcher::select_all),
             KeyAction::LauncherPaste => self.paste_into_launcher(),
+            KeyAction::Polkit(input) => self.polkit_key(input),
             KeyAction::ReplyType(ch) => {
                 if self.notifications.type_reply(ch) {
                     self.queue_redraw();
@@ -2426,6 +2453,13 @@ impl GlideState {
             return true;
         }
         if self.greeter_button(pos, button) {
+            return true;
+        }
+        if self.polkit_focused() {
+            let output = self.output_rect();
+            if self.topbar.contains(output, pos) {
+                self.topbar_button(pos, button);
+            }
             return true;
         }
         if self.shot_button(pos, button) {

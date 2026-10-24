@@ -248,7 +248,4 @@ if [ -n "$themes" ]; then
     echo "  Settings > Appearance > Other apps shows what is in use."
 fi
 echo
-echo "Password prompts for Settings need a polkit agent (polkit-gnome, polkit-kde,"
-echo "lxqt-policykit, mate-polkit, xfce-polkit or soteria); Glide starts the first one installed."
-echo
 echo "Glide has its own notification centre; do not autostart mako, dunst or swaync in this session."

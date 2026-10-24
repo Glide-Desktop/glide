@@ -55,7 +55,9 @@ mod osd;
 mod otp;
 mod overview;
 mod paint;
+mod polkit;
 mod polkit_agent;
+mod polkit_helper;
 mod popup_menu;
 mod power;
 mod power_dialog;
@@ -236,8 +238,10 @@ fn run() -> anyhow::Result<()> {
         let osd_animating = state.session.osd.tick(std::time::Instant::now());
         let wheel_animating = state.tick_smooth_wheel();
         let shot_animating = state.tick_shot();
+        let polkit_animating = state.tick_polkit();
 
         if toasts_animating
+            || polkit_animating
             || shot_animating
             || osd_animating
             || wheel_animating
@@ -287,7 +291,7 @@ fn init_session_services(
         xdg_autostart::spawn_all();
     }
     if config.general.polkit_agent {
-        polkit_agent::spawn_if_missing();
+        init_polkit_agent(event_loop, state);
     }
     init_topbar_clock(event_loop, state)?;
     init_system_status(event_loop);
@@ -402,6 +406,20 @@ fn init_disk_space(event_loop: &mut EventLoop<'static, GlideState>) {
     let (send, receiver) = sink::<disk_space::Low>("a low disk space warning");
     disk_space::start(send);
     watch(event_loop, receiver, "the disk space channel", GlideState::handle_low_disk);
+}
+
+fn init_polkit_agent(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (reports, report_channel) = sink::<polkit::Attempt>("a polkit helper report");
+    if !watch(event_loop, report_channel, "the polkit helper channel", GlideState::handle_polkit_report) {
+        return;
+    }
+    state.session.polkit.attach(reports);
+    let (send, receiver) = sink::<polkit_agent::Event>("a polkit authentication request");
+    if let Err(err) = polkit_agent::start(send) {
+        tracing::warn!("the polkit agent is unavailable ({err}); privileged actions cannot ask for a password");
+        return;
+    }
+    watch(event_loop, receiver, "the polkit agent channel", GlideState::handle_polkit);
 }
 
 fn init_network_agent(event_loop: &mut EventLoop<'static, GlideState>) {

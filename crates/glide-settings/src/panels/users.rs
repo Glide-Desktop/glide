@@ -58,7 +58,7 @@ mod tr {
         Others => "Other users", "Інші користувачі";
         NoOthers => "You are the only user", "Ви єдиний користувач";
         Saved => "Saved", "Збережено";
-        PolkitHint => "Some changes ask for your password through polkit. Without a polkit agent they fail with “Permission denied”.", "Деякі зміни просять пароль через polkit. Без агента polkit вони завершаться помилкою «Доступ заборонено».";
+        PolkitHint => "Some changes ask for your password in the status island at the top of the screen.", "Деякі зміни просять пароль в острові вгорі екрана.";
         Password => "Password", "Пароль";
         ChangePassword => "Change…", "Змінити…";
         SetPassword => "Password…", "Пароль…";

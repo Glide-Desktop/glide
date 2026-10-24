@@ -33,8 +33,8 @@ mod tr {
         EntriesHint => "Standard entries in ~/.config/autostart and /etc/xdg/autostart, shared with other desktops", "Стандартні записи в ~/.config/autostart і /etc/xdg/autostart, спільні з іншими середовищами";
         Launch => "Start autostart entries", "Запускати записи автозапуску";
         LaunchHint => "Takes effect the next time you sign in", "Діє з наступного входу";
-        PolkitAgent => "Start an authentication agent", "Запускати агент автентифікації";
-        PolkitAgentHint => "Asks for your password when an app needs administrator rights, unless one is already running", "Запитує пароль, коли програмі потрібні права адміністратора, якщо агент ще не запущено";
+        PolkitAgent => "Ask for administrator passwords", "Запитувати пароль адміністратора";
+        PolkitAgentHint => "Glide asks in the status island when an app needs administrator rights; turn it off only to use another polkit agent", "Glide запитує в острові, коли програмі потрібні права адміністратора; вимикайте, лише щоб користуватися іншим агентом polkit";
         NoEntries => "No autostart entries", "Немає записів автозапуску";
         OnlyIn => "Only for", "Лише для";
         NotHere => "Not for Glide", "Не для Glide";
