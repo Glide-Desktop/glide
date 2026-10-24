@@ -308,4 +308,30 @@ mod tests {
             assert_eq!(send(&mut element, &mut tree, &key(Named::Enter)), vec![3]);
         }
     }
+
+    #[test]
+    fn a_dropdown_inside_an_expander_or_a_track_shows_its_menu() {
+        let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        let menu = || crate::widget::popover::dropdown(&paint, vec!["a", "b"], None, "Pick", |_| 1u8);
+        for mut element in [
+            crate::anim::collapse(true, menu()),
+            crate::widget::selection::track(&paint, crate::widget::selection::Indicator::Thumb, Some(0), menu()),
+        ] {
+            let mut tree = Tree::new(&element);
+            tab(&mut element, &mut tree);
+            send(&mut element, &mut tree, &key(Named::Enter));
+            let renderer = renderer();
+            let limits = layout::Limits::new(Size::ZERO, Size::new(200.0, 200.0));
+            let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let viewport = Rectangle::with_size(Size::new(200.0, 200.0));
+            let overlay = element.as_widget_mut().overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                iced::Vector::ZERO,
+            );
+            assert!(overlay.is_some(), "the open menu is drawn as an overlay");
+        }
+    }
 }

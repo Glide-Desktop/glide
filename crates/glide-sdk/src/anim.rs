@@ -369,6 +369,14 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
         };
         self.content.as_widget().mouse_interaction(&tree.children[0], child, cursor, viewport, renderer)
     }
+
+    fn overlay<'b>(
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, M, Theme, Renderer>> {
+        let child = layout.children().next().filter(|_| self.open)?;
+        self.content.as_widget_mut().overlay(&mut tree.children[0], child, renderer, viewport, translation)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
