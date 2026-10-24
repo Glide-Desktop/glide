@@ -346,9 +346,6 @@ glide_app::catalogue! {
     GreeterToastRestart => "Restarting…", "Перезапуск…";
     GreeterToastShutDown => "Shutting down…", "Вимкнення…";
     GreeterPowerNote =>"The action runs on the second press.", "Дія спрацює з другого натискання.";
-    GreeterShowTyped => "Show typed characters", "Показувати введені символи";
-    GreeterContrast => "High contrast", "Висока контрастність";
-    GreeterStill => "Reduce motion", "Менше анімації";
     LockNoticesOne => "{n} new notification", "{n} нове сповіщення";
     LockNoticesFew => "{n} new notifications", "{n} нових сповіщення";
     LockNoticesMany => "{n} new notifications", "{n} нових сповіщень";
