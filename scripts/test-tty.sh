@@ -12,10 +12,8 @@
 # with no terminal, the client connected but never got mapped.
 #
 # Safety net: the compositor is killed after TIMEOUT seconds no matter what,
-# so a stuck session can never lock you out of the tty.
-#
-# The full manual checklist (what to click, drag, and watch for) lives in
-# docs/VERIFY.md — this script only runs the automated log checks below.
+# so a stuck session can never lock you out of the tty. It only runs the
+# automated log checks below; interaction still needs a person at the screen.
 
 set -uo pipefail
 
@@ -112,8 +110,8 @@ fi
 # ── Acceptance checks ─────────────────────────────────────────────────────
 # Checks that only need the compositor to have started successfully.
 # Interaction that needs a human — keyboard, vt-switch, overview, IPC hang
-# safety, and everything else that can't be grepped out of a log — lives in
-# docs/VERIFY.md instead. Also excluded on purpose: xcursor theme (an
+# safety, and everything else that can't be grepped out of a log — is checked
+# by hand. Also excluded on purpose: xcursor theme (an
 # environment detail, not a compositor bug signal), and client-connected /
 # window-mapped (client startup races the compositor; a flaky alacritty
 # launch shouldn't mask a clean compositor run, or vice versa).

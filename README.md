@@ -129,7 +129,7 @@ cargo test --workspace
 ```
 
 `scripts/test-tty.sh` runs a debug build from a free VT and checks the log.
-`docs/VERIFY.md` has the manual checklist. Project rules are in `AGENTS.md`.
+Project rules are in `AGENTS.md`.
 
 ## Writing apps for Glide
 
