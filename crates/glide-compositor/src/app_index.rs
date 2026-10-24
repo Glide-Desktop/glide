@@ -23,7 +23,8 @@ const SHARED_DIRS: [&str; 9] = [
 pub struct AppIndex {
     apps: Vec<DesktopApp>,
     by_id: HashMap<String, usize>,
-    program_dirs: Vec<Option<PathBuf>>,
+    targets: Vec<Option<PathBuf>>,
+    shared: HashSet<PathBuf>,
 }
 
 fn basename(path: &str) -> &str {
@@ -43,15 +44,14 @@ fn exec_binary(command: &str) -> Option<&str> {
     exec_program(command).map(basename)
 }
 
-fn program_dir(command: &str, search: &[PathBuf], shared: &HashSet<PathBuf>) -> Option<PathBuf> {
+fn exec_target(command: &str, search: &[PathBuf]) -> Option<PathBuf> {
     let program = exec_program(command)?;
     let found = if program.contains('/') {
         Some(PathBuf::from(program))
     } else {
         search.iter().map(|dir| dir.join(program)).find(|path| path.is_file())
     }?;
-    let dir = std::fs::canonicalize(found).ok()?.parent()?.to_path_buf();
-    (!shared.contains(&dir)).then_some(dir)
+    std::fs::canonicalize(found).ok()
 }
 
 fn extra_words(command: &str) -> usize {
@@ -62,8 +62,8 @@ impl AppIndex {
     #[must_use]
     pub fn new(apps: Vec<DesktopApp>) -> Self {
         let by_id = apps.iter().enumerate().map(|(index, app)| (app.id.to_lowercase(), index)).collect();
-        let program_dirs = vec![None; apps.len()];
-        Self { apps, by_id, program_dirs }
+        let targets = vec![None; apps.len()];
+        Self { apps, by_id, targets, shared: HashSet::new() }
     }
 
     #[must_use]
@@ -74,8 +74,8 @@ impl AppIndex {
             .filter_map(|dir| std::fs::canonicalize(dir).ok())
             .chain(SHARED_DIRS.iter().map(PathBuf::from))
             .collect();
-        let program_dirs = apps.iter().map(|app| program_dir(&app.command, &search, &shared)).collect();
-        Self { program_dirs, ..Self::new(apps) }
+        let targets = apps.iter().map(|app| exec_target(&app.command, &search)).collect();
+        Self { targets, shared, ..Self::new(apps) }
     }
 
     #[must_use]
@@ -114,16 +114,29 @@ impl AppIndex {
             .find(|app| {
                 exec_binary(&app.command).is_some_and(|bin| names.iter().any(|name| name.eq_ignore_ascii_case(bin)))
             })
+            .or_else(|| self.plainest(|target| Some(target) == exe.map(Path::new)))
             .or_else(|| names.iter().find_map(|name| self.by_id(&name.to_lowercase())))
-            .or_else(|| self.in_program_dir(exe?))
+            .or_else(|| self.beside(Path::new(exe?)))
     }
 
-    fn in_program_dir(&self, exe: &str) -> Option<&DesktopApp> {
-        let dir = Path::new(exe).parent()?;
+    fn beside(&self, exe: &Path) -> Option<&DesktopApp> {
+        let dir = exe.parent()?;
+        if self.shared.contains(dir) {
+            return None;
+        }
+        let mut targets = self.targets.iter().flatten().filter(|target| target.parent() == Some(dir));
+        let first = targets.next()?;
+        if targets.any(|target| target != first) {
+            return None;
+        }
+        self.plainest(|target| target == first)
+    }
+
+    fn plainest(&self, wanted: impl Fn(&Path) -> bool) -> Option<&DesktopApp> {
         self.apps
             .iter()
-            .zip(&self.program_dirs)
-            .filter(|(_, program_dir)| program_dir.as_deref() == Some(dir))
+            .zip(&self.targets)
+            .filter(|(_, target)| target.as_deref().is_some_and(&wanted))
             .min_by_key(|(app, _)| (extra_words(&app.command), app.command.len()))
             .map(|(app, _)| app)
     }
@@ -285,6 +298,36 @@ mod tests {
         assert_eq!(found.map(|app| app.name.as_str()), Some("LibreOffice"));
         let stranger = std::fs::canonicalize(root.join("bin")).expect("bin").join("python3");
         assert!(index.match_process(stranger.to_str(), None).is_none(), "a folder on PATH names no app");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_toolbox_folder_resolves_only_exact_targets_because_its_programs_are_different_apps() {
+        let root = std::env::temp_dir().join(format!("glide-app-index-qt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tools = root.join("lib/qt6/bin");
+        std::fs::create_dir_all(&tools).expect("tools dir");
+        std::fs::create_dir_all(root.join("bin")).expect("bin dir");
+        for (tool, link) in [("assistant", "assistant6"), ("designer", "designer6"), ("lupdate", "")] {
+            std::fs::write(tools.join(tool), b"").expect("tool");
+            if !link.is_empty() {
+                std::os::unix::fs::symlink(format!("../lib/qt6/bin/{tool}"), root.join("bin").join(link))
+                    .expect("link");
+            }
+        }
+
+        let index = AppIndex::located(
+            vec![
+                app("assistant", "Qt Assistant", "assistant6"),
+                app("designer", "Qt Widgets Designer", "designer6 %F"),
+            ],
+            root.join("bin").as_os_str(),
+        );
+        let tools = std::fs::canonicalize(&tools).expect("canonical tools");
+        let named = |tool: &str| index.match_process(tools.join(tool).to_str(), None).map(|app| app.name.clone());
+        assert_eq!(named("designer").as_deref(), Some("Qt Widgets Designer"));
+        assert_eq!(named("assistant").as_deref(), Some("Qt Assistant"));
+        assert_eq!(named("lupdate"), None, "a folder of distinct programs lends none of their names");
         let _ = std::fs::remove_dir_all(root);
     }
 
