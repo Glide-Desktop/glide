@@ -1,10 +1,8 @@
 use std::sync::{Arc, RwLock};
 
-use tiny_skia::{FilterQuality, Paint, Pattern, Pixmap, Rect, SpreadMode, Transform};
+use tiny_skia::{FilterQuality, Paint, Pattern, Pixmap, PixmapMut, Rect, SpreadMode, Transform};
 
 use glide_theme::WallpaperFit;
-
-use crate::copy_pixmap_into;
 
 static EMBEDDED_WALLPAPER_BYTES: &[u8] = include_bytes!("../assets/wallpaper.png");
 
@@ -101,14 +99,16 @@ pub fn saturate_in_place(buf: &mut [u8], factor: f32) {
         return;
     }
     let factor = factor.clamp(0.0, 4.0);
-
-    for px in buf.chunks_exact_mut(4) {
-        let (b, g, r) = (f32::from(px[0]), f32::from(px[1]), f32::from(px[2]));
-        let luma = r * W_R + g * W_G + b * W_B;
-        for (channel, value) in px.iter_mut().take(3).zip([b, g, r]) {
-            *channel = (luma + (value - luma) * factor + 0.5).clamp(0.0, 255.0) as u8;
+    let band = (buf.len() / 4).div_ceil(crate::blur::bands(buf.len())).max(1) * 4;
+    crate::blur::in_bands(buf, band, |_, pixels| {
+        for px in pixels.chunks_exact_mut(4) {
+            let (b, g, r) = (f32::from(px[0]), f32::from(px[1]), f32::from(px[2]));
+            let luma = r * W_R + g * W_G + b * W_B;
+            for (channel, value) in px.iter_mut().take(3).zip([b, g, r]) {
+                *channel = (luma + (value - luma) * factor + 0.5).clamp(0.0, 255.0) as u8;
+            }
         }
-    }
+    });
 }
 
 pub fn draw_wallpaper_into(buf: &mut [u8], out_w: i32, out_h: i32, fit: WallpaperFit) {
@@ -136,10 +136,20 @@ pub fn fit_transform(fit: WallpaperFit, src_w: f32, src_h: f32, out_w: f32, out_
 }
 
 pub fn compose_wallpaper(buf: &mut [u8], out_w: i32, out_h: i32, source: &Pixmap, fit: WallpaperFit) {
+    let rows = usize::try_from(out_h).unwrap_or(0);
+    let bands = match fit {
+        WallpaperFit::Cover | WallpaperFit::Tile => crate::blur::bands(usize::try_from(out_w).unwrap_or(0) * rows * 4),
+        WallpaperFit::Contain | WallpaperFit::Center => 1,
+    };
+    compose_banded(buf, out_w, out_h, source, fit, rows.div_ceil(bands).max(1));
+}
+
+fn compose_banded(buf: &mut [u8], out_w: i32, out_h: i32, source: &Pixmap, fit: WallpaperFit, band_rows: usize) {
     let (Ok(w), Ok(h)) = (u32::try_from(out_w), u32::try_from(out_h)) else {
         return;
     };
-    let Some(mut pixmap) = Pixmap::new(w, h) else {
+    let row = w as usize * 4;
+    let Some(buf) = buf.get_mut(..row * h as usize).filter(|buf| !buf.is_empty()) else {
         return;
     };
 
@@ -161,12 +171,19 @@ pub fn compose_wallpaper(buf: &mut [u8], out_w: i32, out_h: i32, source: &Pixmap
         return;
     };
 
-    let paint = Paint {
-        shader: Pattern::new(source.as_ref(), spread, FilterQuality::Bilinear, 1.0, transform),
-        ..Paint::default()
-    };
-    pixmap.fill_rect(fill_rect, &paint, Transform::identity(), None);
-    copy_pixmap_into(buf, pixmap);
+    crate::blur::in_bands(buf, row * band_rows, |start, pixels| {
+        let rows = u32::try_from(pixels.len() / row).unwrap_or(0);
+        if let Some(mut pixmap) = PixmapMut::from_bytes(pixels, w, rows) {
+            pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            let paint = Paint {
+                shader: Pattern::new(source.as_ref(), spread, FilterQuality::Bilinear, 1.0, transform),
+                ..Paint::default()
+            };
+            let top = (start / row) as f32;
+            pixmap.fill_rect(fill_rect, &paint, Transform::from_translate(0.0, -top), None);
+        }
+        pixels.chunks_exact_mut(4).for_each(|px| px.swap(0, 2));
+    });
 }
 
 #[cfg(test)]
@@ -292,6 +309,26 @@ mod tests {
         assert_eq!(compose(WallpaperFit::Center)[3], 0);
         compose(WallpaperFit::Contain);
         compose(WallpaperFit::Tile);
+    }
+
+    #[test]
+    fn composing_in_bands_matches_one_pass_over_the_whole_output() {
+        let mut source = Pixmap::new(37, 23).unwrap();
+        for (index, px) in source.pixels_mut().iter_mut().enumerate() {
+            let value = (index * 37 % 251) as u8;
+            *px = tiny_skia::ColorU8::from_rgba(value, value.wrapping_mul(3), 255 - value, 255).premultiply();
+        }
+        for fit in [WallpaperFit::Cover, WallpaperFit::Tile] {
+            let render = |band_rows| {
+                let mut buf = vec![7u8; 61 * 43 * 4];
+                compose_banded(&mut buf, 61, 43, &source, fit, band_rows);
+                buf
+            };
+            let whole = render(43);
+            for band_rows in [1, 5, 16] {
+                assert!(render(band_rows) == whole, "{fit:?} in bands of {band_rows} rows");
+            }
+        }
     }
 
     #[test]

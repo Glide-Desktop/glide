@@ -14,16 +14,44 @@ fn blur<const C: usize>(buf: &mut [u8], width: i32, height: i32, radius: i32) {
     if w == 0 || h == 0 || r == 0 || buf.len() < row * h {
         return;
     }
-    let buf = &mut buf[..row * h];
+    let band_rows = h.div_ceil(bands(row * h).min(h));
+    blur_banded::<C>(&mut buf[..row * h], w, r, band_rows);
+}
+
+fn blur_banded<const C: usize>(buf: &mut [u8], w: usize, r: usize, band_rows: usize) {
+    let row = w * C;
+    let h = buf.len() / row;
     let means: Vec<Mean> = (0..=(2 * r + 1).min(w.max(h))).map(Mean::of_count).collect();
     let mut scratch = vec![0u8; buf.len()];
-    let mut sums = vec![0u32; row];
+    let band = row * band_rows;
     for _ in 0..3 {
-        for (src, dst) in buf.chunks_exact(row).zip(scratch.chunks_exact_mut(row)) {
-            blur_row::<C>(src, dst, r, &means);
-        }
-        blur_columns(&scratch, buf, row, r, &means, &mut sums);
+        let source = &*buf;
+        in_bands(&mut scratch, band, |start, out| {
+            let lines = source[start..start + out.len()].chunks_exact(row);
+            lines.zip(out.chunks_exact_mut(row)).for_each(|(src, dst)| blur_row::<C>(src, dst, r, &means));
+        });
+        in_bands(buf, band, |start, out| blur_columns(&scratch, out, row, r, &means, start / row));
     }
+}
+
+const BYTES_PER_BAND: usize = 1 << 18;
+
+pub(crate) fn bands(bytes: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8);
+    if bytes < 2 * BYTES_PER_BAND { 1 } else { cores.min(bytes / BYTES_PER_BAND) }
+}
+
+pub(crate) fn in_bands(buf: &mut [u8], band: usize, work: impl Fn(usize, &mut [u8]) + Sync) {
+    if buf.len() <= band {
+        work(0, buf);
+        return;
+    }
+    std::thread::scope(|scope| {
+        for (index, chunk) in buf.chunks_mut(band).enumerate() {
+            let work = &work;
+            scope.spawn(move || work(index * band, chunk));
+        }
+    });
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,23 +93,24 @@ fn blur_row<const C: usize>(src: &[u8], dst: &mut [u8], r: usize, means: &[Mean]
     }
 }
 
-fn blur_columns(src: &[u8], dst: &mut [u8], row: usize, r: usize, means: &[Mean], sums: &mut [u32]) {
+fn blur_columns(src: &[u8], dst: &mut [u8], row: usize, r: usize, means: &[Mean], first: usize) {
     let rows = src.len() / row;
     let line = |y: usize| &src[y * row..(y + 1) * row];
     let add = |sums: &mut [u32], y: usize| sums.iter_mut().zip(line(y)).for_each(|(sum, &v)| *sum += u32::from(v));
     let remove = |sums: &mut [u32], y: usize| sums.iter_mut().zip(line(y)).for_each(|(sum, &v)| *sum -= u32::from(v));
-    sums.fill(0);
-    let mut count = r.min(rows - 1) + 1;
-    (0..count).for_each(|y| add(sums, y));
-    for (y, out) in dst.chunks_exact_mut(row).enumerate() {
+    let mut sums = vec![0u32; row];
+    let window = first.saturating_sub(r)..=(first + r).min(rows - 1);
+    let mut count = window.clone().count();
+    window.for_each(|y| add(&mut sums, y));
+    for (y, out) in dst.chunks_exact_mut(row).enumerate().map(|(offset, out)| (first + offset, out)) {
         let mean = means[count];
         out.iter_mut().zip(sums.iter()).for_each(|(px, &sum)| *px = mean.apply(sum));
         if y >= r {
-            remove(sums, y - r);
+            remove(&mut sums, y - r);
             count -= 1;
         }
         if y + r + 1 < rows {
-            add(sums, y + r + 1);
+            add(&mut sums, y + r + 1);
             count += 1;
         }
     }
@@ -223,6 +252,15 @@ mod tests {
                 .collect();
             let mut expected = buf.clone();
             reference(&mut expected, w, h, r, channels);
+            for band_rows in [h, 1, 2, 4] {
+                let mut banded = buf.clone();
+                if channels == 4 {
+                    blur_banded::<4>(&mut banded, w, r, band_rows);
+                } else {
+                    blur_banded::<1>(&mut banded, w, r, band_rows);
+                }
+                assert_eq!(banded, expected, "{w}x{h} r={r} channels={channels} bands of {band_rows} rows");
+            }
             let blur = if channels == 4 { box_blur_rgba } else { box_blur_alpha };
             blur(&mut buf, w as i32, h as i32, r as i32);
             assert_eq!(buf, expected, "{w}x{h} r={r} channels={channels}");
