@@ -2316,9 +2316,15 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         assert_eq!(gnome_color_scheme(glide_theme::Appearance::Dark), "prefer-dark");
         assert_eq!(gnome_accent(glide_theme::Accent::Amber), "yellow");
         assert_eq!(gnome_accent(glide_theme::Accent::Graphite), "slate");
-        assert_eq!(gtk_theme_for("'Adwaita'", glide_theme::Appearance::Dark), Some("Adwaita-dark"));
-        assert_eq!(gtk_theme_for("'Adwaita-dark'\n", glide_theme::Appearance::Light), Some("Adwaita"));
-        assert_eq!(gtk_theme_for("'Arc-Dark'", glide_theme::Appearance::Light), None);
+        assert_eq!(gtk_theme_for("'Arc-Dark'"), None);
+    }
+
+    #[test]
+    fn stock_adwaita_is_named_without_a_dark_suffix_because_gtk3_falls_back_to_light_on_a_missing_theme() {
+        use crate::system_info::gtk_theme_for;
+        assert_eq!(gtk_theme_for("'Adwaita'"), Some("Adwaita"));
+        assert_eq!(gtk_theme_for("'Adwaita-dark'\n"), Some("Adwaita"), "a stale Adwaita-dark must heal");
+        assert_eq!(gtk_theme_for(""), Some("Adwaita"));
     }
 
     #[test]

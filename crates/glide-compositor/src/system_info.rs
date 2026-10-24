@@ -1451,15 +1451,9 @@ pub const fn gnome_accent(accent: glide_theme::Accent) -> &'static str {
 }
 
 #[must_use]
-pub fn gtk_theme_for(current: &str, appearance: glide_theme::Appearance) -> Option<&'static str> {
+pub fn gtk_theme_for(current: &str) -> Option<&'static str> {
     let current = current.trim().trim_matches('\'');
-    if !matches!(current, "" | "Adwaita" | "Adwaita-dark" | "adwaita" | "adwaita-dark") {
-        return None;
-    }
-    Some(match appearance {
-        glide_theme::Appearance::Light => "Adwaita",
-        glide_theme::Appearance::Dark => "Adwaita-dark",
-    })
+    matches!(current, "" | "Adwaita" | "Adwaita-dark" | "adwaita" | "adwaita-dark").then_some("Adwaita")
 }
 
 static SYNCED_APPEARANCE: std::sync::Mutex<Option<DesktopAppearance>> = std::sync::Mutex::new(None);
@@ -1499,7 +1493,7 @@ pub fn sync_desktop_appearance(wanted: DesktopAppearance) {
             .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
             .unwrap_or_default();
         let theme = crate::theme_export::gtk3_theme(&current, wanted.appearance, wanted.toolkits)
-            .or_else(|| gtk_theme_for(&current, wanted.appearance).map(ToString::to_string));
+            .or_else(|| gtk_theme_for(&current).map(ToString::to_string));
         if let Some(theme) = theme.as_deref() {
             gsettings_set("gtk-theme", theme);
         }
