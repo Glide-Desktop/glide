@@ -7,6 +7,7 @@ pub mod autostart;
 pub mod desktop;
 mod keyboard;
 pub mod permissions;
+pub mod process;
 pub mod terminal;
 pub mod toolkits;
 

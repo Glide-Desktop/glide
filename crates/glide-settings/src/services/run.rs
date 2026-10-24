@@ -1,6 +1,7 @@
-use std::io::Read;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use glide_config::process::Failure;
 
 use iced::Task;
 use iced::futures::channel::oneshot;
@@ -89,44 +90,16 @@ struct Finished {
     stderr: String,
 }
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
-        }
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
-}
-
 fn run_within(program: &str, args: &[&str], deadline: Duration) -> Result<Finished, String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("{program}: {err}"))?;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if started.elapsed() < deadline => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
-    };
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
-    let status = status.ok_or_else(|| format!("{program}: no answer in {}s", deadline.as_secs()))?;
-    Ok(Finished { success: status.success(), stdout, stderr })
+    let output =
+        glide_config::process::run(Command::new(program).args(args), None, deadline).map_err(
+            |failure| match failure {
+                Failure::Spawn(err) => format!("{program}: {err}"),
+                Failure::Timeout => format!("{program}: no answer in {}s", deadline.as_secs()),
+            },
+        )?;
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    Ok(Finished { success: output.status.success(), stdout: text(&output.stdout), stderr: text(&output.stderr) })
 }
 
 #[must_use]

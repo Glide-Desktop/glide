@@ -1,9 +1,7 @@
-use std::io::{Read, Write};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::power::PowerAction;
 use crate::state::GlideState;
@@ -13,7 +11,6 @@ pub const RESCAN_INTERVAL: Duration = Duration::from_secs(10);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 const WIFI_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 const BLUETOOTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const POLL_STEP: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WifiNetwork {
@@ -700,45 +697,10 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Opti
 }
 
 fn run_with_input(program: &str, args: &[&str], input: Option<&str>, timeout: Duration) -> Option<Output> {
-    let mut child = Command::new(program)
-        .args(args)
-        .env("LC_ALL", "C")
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    if let Some(input) = input
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        let _ = stdin.write_all(input.as_bytes());
-        let _ = stdin.write_all(b"\n");
-    }
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_STEP),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    Some(Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
-}
-
-fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
-        }
-        bytes
-    })
+    let line = input.map(|text| zeroize::Zeroizing::new(format!("{text}\n")));
+    let mut command = Command::new(program);
+    command.args(args).env("LC_ALL", "C");
+    glide_config::process::run(&mut command, line.as_deref().map(String::as_bytes), timeout).ok()
 }
 
 fn wifi_connect_args(ssid: &str, has_password: bool, saved: bool) -> Vec<&str> {
@@ -1182,16 +1144,6 @@ mod tests {
         assert_eq!(wifi_connect_args("Home", false, true), ["con", "up", "id", "Home"]);
         let output = run_with_input("cat", &[], Some("hunter22"), Duration::from_secs(5)).expect("cat runs");
         assert_eq!(output.stdout, b"hunter22\n");
-    }
-
-    #[test]
-    fn output_larger_than_a_pipe_buffer_does_not_stall_the_child() {
-        let started = Instant::now();
-        let output = run_with_timeout("head", &["-c", "200000", "/dev/zero"], Duration::from_secs(10))
-            .expect("head finishes before the timeout");
-        assert!(output.status.success());
-        assert_eq!(output.stdout.len(), 200_000);
-        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     const SINKS_JSON: &str = r#"[
