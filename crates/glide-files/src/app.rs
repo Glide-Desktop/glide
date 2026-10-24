@@ -806,6 +806,11 @@ fn run(job: impl FnOnce() -> Outcome + Send + 'static) -> Task<Message> {
     Task::perform(blocking(job), |outcome| Message::Done(outcome.unwrap_or_default()))
 }
 
+fn quit<T>() -> Task<T> {
+    crate::config::flush_prefs();
+    iced::exit()
+}
+
 fn expire(id: u64) -> Task<Message> {
     Task::perform(blocking(|| std::thread::sleep(NOTICE_TIMEOUT)), move |_| Message::NoticeExpired(id))
 }
@@ -1313,7 +1318,7 @@ impl App {
                 }
             }
             Message::ChooserAccept => return self.chooser_accept(),
-            Message::ChooserCancel => return iced::exit(),
+            Message::ChooserCancel => return quit(),
             Message::Thumb(key, thumb) => {
                 self.thumbs.insert(key, thumb);
             }
@@ -1753,7 +1758,7 @@ impl App {
             Message::PaneResized(size) => self.pane = size,
             Message::Tick => return self.poll(),
             Message::Escape => return self.escape(),
-            Message::Quit if self.jobs.is_empty() => return iced::exit(),
+            Message::Quit if self.jobs.is_empty() => return quit(),
             Message::Quit if self.quit_requested.is_none() => return self.prompt(Dialog::Quit, String::new(), None),
             Message::Handles(handles) => self.handles = handles,
             Message::Dnd(event) => return self.on_dnd(event),
@@ -2363,7 +2368,7 @@ impl App {
             choices: chooser.answered_choices(),
         };
         crate::chooser::finish(&response);
-        iced::exit()
+        quit()
     }
 
     fn filter_for_chooser(&mut self) {
@@ -3249,7 +3254,7 @@ impl App {
                 };
                 let job = self.jobs.remove(index);
                 if self.quit_requested.is_some() {
-                    return if self.jobs.is_empty() { iced::exit() } else { Task::none() };
+                    return if self.jobs.is_empty() { quit() } else { Task::none() };
                 }
                 self.start_queued();
                 self.sync_dock();
@@ -3617,7 +3622,7 @@ impl App {
                 self.jobs.retain(|job| job.launch.is_none());
                 self.jobs.iter_mut().for_each(Job::stop);
                 self.sync_dock();
-                return if self.jobs.is_empty() { iced::exit() } else { Task::none() };
+                return if self.jobs.is_empty() { quit() } else { Task::none() };
             }
             Dialog::Repair(object) => return self.disk_job(object, DiskAction::Repair),
             Dialog::Replace(target) => {
@@ -3802,7 +3807,7 @@ impl App {
 
     fn poll(&mut self) -> Task<Message> {
         if self.quit_requested.is_some_and(|since| since.elapsed() >= QUIT_GRACE) {
-            return iced::exit();
+            return quit();
         }
         let drives = mounted_drives(self.lang);
         if drives != self.drives {
@@ -3856,7 +3861,7 @@ impl App {
             return self.close_search();
         }
         if self.chooser.is_some() {
-            return iced::exit();
+            return quit();
         }
         self.selection.clear();
         Task::none()

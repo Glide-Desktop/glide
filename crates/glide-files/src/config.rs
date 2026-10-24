@@ -147,8 +147,20 @@ fn prefs_path() -> Option<std::path::PathBuf> {
     Some(glide_config::state_home()?.join("glide/files-view"))
 }
 
+static PENDING: std::sync::Mutex<Option<(std::path::PathBuf, String)>> = std::sync::Mutex::new(None);
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn flush_prefs() {
+    let _writing = WRITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let latest = PENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some((path, text)) = latest {
+        let _ = glide_config::write_atomic(&path, text.as_bytes(), 0o644);
+    }
+}
+
 #[must_use]
 pub(crate) fn load_prefs() -> ViewPrefs {
+    flush_prefs();
     prefs_path()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|text| ViewPrefs::parse(&text))
@@ -157,6 +169,9 @@ pub(crate) fn load_prefs() -> ViewPrefs {
 
 pub(crate) fn save_prefs(prefs: &ViewPrefs) {
     if let Some(path) = prefs_path() {
-        let _ = glide_config::write_atomic(&path, prefs.render().as_bytes(), 0o644);
+        *PENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((path, prefs.render()));
+        if std::thread::Builder::new().name("glide-files-prefs".into()).spawn(flush_prefs).is_err() {
+            flush_prefs();
+        }
     }
 }
