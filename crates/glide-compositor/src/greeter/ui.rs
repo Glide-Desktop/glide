@@ -52,6 +52,8 @@ const CHIP_GAP: i32 = 10;
 const MENU_GAP: i32 = 8;
 const MENU_PAD: i32 = 6;
 const MENU_NOTE_H: i32 = 26;
+const MENU_SHADOW_DY: i32 = 22;
+const MENU_SHADOW_BLUR: i32 = 52;
 const SESSION_MENU_W: i32 = 240;
 const POWER_MENU_W: i32 = 260;
 const SESSION_ROW: i32 = 34;
@@ -1230,6 +1232,12 @@ impl GreeterUi {
         self.dirty = true;
     }
 
+    pub fn keep_toast(&mut self) {
+        if let Some((_, at)) = &mut self.toast {
+            *at = Instant::now();
+        }
+    }
+
     fn toast_label(&self) -> Option<&'static str> {
         let (action, _) = self.toast?;
         Some(t(match action {
@@ -1607,7 +1615,11 @@ impl GreeterUi {
             Part::Field => layout.field_frame,
             Part::Hint => layout.hint.inflate(4),
             Part::Users => layout.users_frame,
-            Part::Menu => layout.menu.inflate(80),
+            Part::Menu => {
+                let reach = MENU_SHADOW_BLUR * 3 / 2;
+                let frame = layout.menu.inflate(reach);
+                Rect::new(frame.x, frame.y, frame.w, frame.h + MENU_SHADOW_DY)
+            }
             Part::Media => layout.media.inflate(24),
             Part::Notices => layout.notices.inflate(24),
             Part::Toast => layout.toast.inflate(24),
@@ -1745,7 +1757,7 @@ impl GreeterUi {
         let p = &self.palette;
         let local = |rect: Rect| rect.local_to(frame);
         let menu = local(layout.menu);
-        canvas.shadow(menu, shape::R3, 22, 52.0, Color([0.0, 0.0, 0.0, 0.5]));
+        canvas.shadow(menu, shape::R3, MENU_SHADOW_DY, MENU_SHADOW_BLUR as f32, Color([0.0, 0.0, 0.0, 0.5]));
         canvas.fill(menu, shape::R3, p.popover);
         canvas.stroke(menu, 1.0, shape::R3, p.popover_line);
         canvas.fill(Rect::new(menu.x + 8, menu.y + 1, menu.w - 16, 1), 0.0, p.white.with_alpha(0.07));
@@ -2415,7 +2427,14 @@ mod tests {
         assert_eq!(layout.toast.x + layout.toast.w / 2, 960);
         assert_eq!(layout.toast.bottom(), 1080 - 32);
         assert_eq!(ui.parts(0.0)[0].0, Part::Toast, "the toast is drawn above everything");
-        ui.toast = ui.toast.map(|(action, _)| (action, Instant::now().checked_sub(TOAST_HOLD * 2).unwrap()));
+        let stale = |ui: &mut GreeterUi| {
+            ui.toast = ui.toast.map(|(action, _)| (action, Instant::now().checked_sub(TOAST_HOLD * 2).unwrap()));
+        };
+        stale(&mut ui);
+        ui.keep_toast();
+        ui.tick();
+        assert!(ui.toast_label().is_some(), "a session end still waiting for windows keeps the toast");
+        stale(&mut ui);
         ui.tick();
         assert_eq!(ui.toast_label(), None);
     }
@@ -2425,6 +2444,7 @@ mod tests {
         let mut ui = ui();
         ui.update_hover(GreeterHit::Session);
         ui.update_hover(GreeterHit::PowerButton);
+        ui.hover_at = Instant::now() + Duration::from_mins(1);
         if !motion::t1().is_zero() {
             assert!(ui.hover_amount(GreeterHit::PowerButton) < 1.0, "the new target fades in");
             assert!(ui.hover_amount(GreeterHit::Session) > 0.0, "the old one fades out");
@@ -2435,6 +2455,24 @@ mod tests {
         assert!(ui.hover_amount(GreeterHit::Session).abs() < f32::EPSILON);
         assert_eq!(ui.hover_signature(Part::Field), "", "parts without the hovered control keep their raster");
         assert_ne!(ui.hover_signature(Part::Nav), "");
+    }
+
+    #[test]
+    fn the_menu_layer_holds_its_whole_shadow() {
+        let mut ui = ui();
+        ui.toggle_power_menu();
+        let painter = Painter::new(14.0, None);
+        let layout = laid_out(&mut ui);
+        let frame = GreeterUi::frame_of(Part::Menu, &layout);
+        let mut icons = IconCache::new();
+        let mut canvas = Canvas::new(frame.w, frame.h, 1, &painter, &mut icons);
+        ui.draw_part(Part::Menu, &layout, frame, &mut canvas);
+        let (w, h) = (frame.w as usize, frame.h as usize);
+        let alpha = |x: usize, y: usize| canvas.buf[(y * w + x) * 4 + 3];
+        let edge = (0..w)
+            .flat_map(|x| [alpha(x, 0), alpha(x, h - 1)])
+            .chain((0..h).flat_map(|y| [alpha(0, y), alpha(w - 1, y)]));
+        assert!(edge.max().unwrap_or(0) <= 2, "the shadow is cut off at the layer edge");
     }
 
     #[test]

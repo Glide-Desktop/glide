@@ -3690,6 +3690,9 @@ impl GlideState {
             if let Some(notices) = notices {
                 greeter.set_notices(notices);
             }
+            if self.session.end.is_pending() {
+                greeter.keep_toast();
+            }
             let animating = greeter.tick();
             if greeter.finished_leaving() {
                 self.finish_unlock();
