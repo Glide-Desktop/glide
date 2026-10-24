@@ -63,58 +63,16 @@ use tr::Key as T;
 
 const MAX_RESULTS: usize = 8;
 
-const WEEKDAYS_EN: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const WEEKDAYS_UK: [&str; 7] = ["неділя", "понеділок", "вівторок", "середа", "четвер", "п'ятниця", "субота"];
-const WEEK_START_UK: [&str; 7] = ["неділі", "понеділка", "вівторка", "середи", "четверга", "п'ятниці", "суботи"];
-const MONTHS_EN: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-const MONTHS_UK: [&str; 12] = [
-    "січня",
-    "лютого",
-    "березня",
-    "квітня",
-    "травня",
-    "червня",
-    "липня",
-    "серпня",
-    "вересня",
-    "жовтня",
-    "листопада",
-    "грудня",
-];
-
-#[must_use]
-pub(crate) fn weekday_name(weekday: u8, lang: Lang) -> &'static str {
-    let index = usize::from(weekday % 7);
-    match lang {
-        Lang::Uk => WEEKDAYS_UK[index],
-        Lang::En => WEEKDAYS_EN[index],
-    }
-}
+const WEEK_START_UK: [&str; 7] = ["неділі", "понеділка", "вівторка", "середи", "четверга", "п\u{2019}ятниці", "суботи"];
 
 #[must_use]
 pub fn long_date(when: &Civil, lang: Lang) -> String {
-    let (months, suffix) = match lang {
-        Lang::Uk => (MONTHS_UK, " р."),
-        Lang::En => (MONTHS_EN, ""),
-    };
+    let suffix = lang.pick(" р.", "");
     format!(
         "{}, {} {} {}{suffix}",
-        weekday_name(when.weekday, lang),
+        lang.weekday(usize::from(when.weekday)),
         when.day,
-        months[usize::from(when.month.clamp(1, 12) - 1)],
+        lang.month_of_date(usize::from(when.month.clamp(1, 12) - 1)),
         when.year
     )
 }
@@ -561,7 +519,7 @@ impl Page {
         let week_start = self.week_start.map(|weekday| {
             let name = match c.lang {
                 Lang::Uk => WEEK_START_UK[usize::from(weekday % 7)],
-                Lang::En => weekday_name(weekday, c.lang),
+                Lang::En => c.lang.weekday(usize::from(weekday)),
             };
             Row::new(t, c.t(T::WeekStart))
                 .subtitle(c.t(T::WeekStartHint))

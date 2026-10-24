@@ -542,21 +542,6 @@ const MONTH_NAMES_UK: [&str; 12] = [
     "Листопад",
     "Грудень",
 ];
-const MONTH_NAMES_EN: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
 fn pick(lang: Lang, uk: &[&'static str], en: &[&'static str], index: u32) -> &'static str {
     let table = match lang {
         Lang::Uk => uk,
@@ -577,36 +562,19 @@ pub fn month_short(lang: Lang, month0: u32) -> &'static str {
 
 #[must_use]
 pub fn month_name(lang: Lang, month0: u32) -> &'static str {
-    pick(lang, &MONTH_NAMES_UK, &MONTH_NAMES_EN, month0)
+    match lang {
+        Lang::Uk => MONTH_NAMES_UK[month0 as usize % 12],
+        Lang::En => lang.month_of_date(month0 as usize),
+    }
 }
-
-const WEEKDAYS_LONG_UK: [&str; 7] =
-    ["неділя", "понеділок", "вівторок", "середа", "четвер", "п\u{2019}ятниця", "субота"];
-const WEEKDAYS_LONG_EN: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS_GENITIVE_UK: [&str; 12] = [
-    "січня",
-    "лютого",
-    "березня",
-    "квітня",
-    "травня",
-    "червня",
-    "липня",
-    "серпня",
-    "вересня",
-    "жовтня",
-    "листопада",
-    "грудня",
-];
 
 #[must_use]
 pub fn long_date(lang: Lang, weekday_from_sunday: u32, day: u32, month0: u32) -> String {
-    let weekday = pick(lang, &WEEKDAYS_LONG_UK, &WEEKDAYS_LONG_EN, weekday_from_sunday);
+    let weekday = lang.weekday(weekday_from_sunday as usize);
+    let month = lang.month_of_date(month0 as usize);
     match lang {
-        Lang::Uk => {
-            let month = pick(lang, &MONTHS_GENITIVE_UK, &MONTH_NAMES_EN, month0);
-            format!("{weekday}, {day} {month}")
-        }
-        Lang::En => format!("{weekday}, {} {day}", month_name(lang, month0)),
+        Lang::Uk => format!("{weekday}, {day} {month}"),
+        Lang::En => format!("{weekday}, {month} {day}"),
     }
 }
 

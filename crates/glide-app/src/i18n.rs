@@ -91,6 +91,50 @@ impl Lang {
             Self::En => en,
         }
     }
+
+    #[must_use]
+    pub const fn weekday(self, from_sunday: usize) -> &'static str {
+        let names = match self {
+            Self::Uk => ["неділя", "понеділок", "вівторок", "середа", "четвер", "п\u{2019}ятниця", "субота"],
+            Self::En => ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+        };
+        names[from_sunday % 7]
+    }
+
+    #[must_use]
+    pub const fn month_of_date(self, month0: usize) -> &'static str {
+        let names = match self {
+            Self::Uk => [
+                "січня",
+                "лютого",
+                "березня",
+                "квітня",
+                "травня",
+                "червня",
+                "липня",
+                "серпня",
+                "вересня",
+                "жовтня",
+                "листопада",
+                "грудня",
+            ],
+            Self::En => [
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ],
+        };
+        names[month0 % 12]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
