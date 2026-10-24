@@ -35,7 +35,6 @@ mod tr {
         TrayHint => "Tray icons of apps such as Telegram, Steam or Nextcloud", "Значки в треї від програм на кшталт Telegram, Steam чи Nextcloud";
         Menus => "App menus", "Меню програм";
         MenusHint => "Menus of the focused app sit next to its name, as on macOS", "Меню активної програми стоять поруч із її назвою, як у macOS";
-        Hidden => "The top bar is hidden", "Верхню панель приховано";
         SampleApp => "Files", "Файли";
         SampleMenus => "File   Edit   View", "Файл   Зміни   Вигляд";
         SampleDate => "Thu 24 Sep", "чт 24 вер.";
@@ -71,7 +70,6 @@ impl TimeFormat {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Msg {
-    Enabled(bool),
     ShowDate(bool),
     Format(TimeFormat),
     Battery(bool),
@@ -107,7 +105,6 @@ impl Pane for Page {
 
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
-            Msg::Enabled(on) => config.set_bool("topbar", "enabled", on),
             Msg::ShowDate(on) => config.set_bool("topbar", "clock-date", on),
             Msg::Format(TimeFormat::Auto) => config.remove("topbar", "clock-24h"),
             Msg::Format(TimeFormat::Hours24) => config.set_bool("topbar", "clock-24h", true),
@@ -122,19 +119,14 @@ impl Pane for Page {
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
-        let enabled = config.bool_or("topbar", "enabled", true);
         let switch_row = |title: &str, hint: &str, key: &str, msg: fn(bool) -> Msg| {
             switch_row(c, title, hint, config.bool_or("topbar", key, true), msg)
         };
         let preview = Group::new(t)
             .title(c.t(tr::Key::Preview))
             .description(c.t(tr::Key::PreviewHint))
-            .push(container(bar_preview(&c, config)).padding(8))
-            .push(switch_row(c.t(K::ShowTopBar), c.t(K::ShowTopBarHint), "enabled", Msg::Enabled));
+            .push(container(bar_preview(&c, config)).padding(8));
         let page = Column::new().spacing(theme::SECTION_GAP).push(preview.build());
-        if !enabled {
-            return page.into();
-        }
         let format = TimeFormat::from_config(config);
         let formats = vec![
             (TimeFormat::Auto, c.t(tr::Key::Auto).to_string()),
@@ -187,10 +179,6 @@ pub fn sample_clock(format: TimeFormat, lang: Lang, date: bool) -> String {
 
 fn bar_preview<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
-    let enabled = config.bool_or("topbar", "enabled", true);
-    if !enabled {
-        return sketch::screen(t, Length::Fill, 96.0, vec![sketch::caption(t, c.t(tr::Key::Hidden))]);
-    }
     let fg = t.fg_1();
     let dim = t.fg_2();
     let strong = TextStyle { weight: 600, ..TextStyle::CAP };

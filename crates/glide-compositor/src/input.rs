@@ -2015,7 +2015,7 @@ impl GlideState {
     }
 
     fn topbar_motion(&mut self, pos: Point<f64, Logical>) -> bool {
-        if self.session_lock.is_some() || !self.topbar.is_enabled() {
+        if self.session_lock.is_some() {
             return false;
         }
         if self.topbar_suppressed_on(self.output_rect()) {
@@ -2699,7 +2699,7 @@ impl GlideState {
     }
 
     fn topbar_scroll<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) -> bool {
-        if self.screen_locked() || !self.topbar.is_enabled() || self.topbar_suppressed_on(self.output_rect()) {
+        if self.screen_locked() || self.topbar_suppressed_on(self.output_rect()) {
             return false;
         }
         let pos = self.seat.get_pointer().expect("a pointer was added in GlideState::new").current_location();

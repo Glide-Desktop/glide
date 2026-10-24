@@ -141,7 +141,8 @@ impl NotificationsConfig {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct TopbarConfig {
-    pub enabled: bool,
+    #[serde(rename = "enabled")]
+    _enabled: bool,
     pub appearance: glide_theme::Appearance,
     pub appearance_schedule: bool,
     pub accent: glide_theme::Accent,
@@ -158,7 +159,7 @@ pub struct TopbarConfig {
 impl Default for TopbarConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            _enabled: true,
             appearance: glide_theme::Appearance::Dark,
             appearance_schedule: false,
             accent: glide_theme::Accent::Blue,
@@ -244,7 +245,7 @@ impl TopbarConfig {
     #[must_use]
     pub fn theme(self) -> crate::topbar::TopbarTheme {
         let tokens = glide_theme::Tokens::new(self.appearance, self.accent);
-        let mut theme = crate::topbar::TopbarTheme::from_tokens(&tokens, self.enabled);
+        let mut theme = crate::topbar::TopbarTheme::from_tokens(&tokens);
         theme.battery_low_pct = self.battery_low_pct.min(100);
         theme.battery_percentage = self.battery_percentage;
         theme.clock_date = self.clock_date;
@@ -1370,10 +1371,9 @@ impl Config {
         });
         state.max_volume_pct = self.topbar.max_volume_pct.clamp(100, 150);
         state.app_menus.registrar = self.topbar.appmenu_registrar;
-        state.set_global_menu_enabled(self.topbar.enabled && self.topbar.global_menu);
+        state.set_global_menu_enabled(self.topbar.global_menu);
         state.configure_tray(&self.topbar, self.dock.theme.icon_theme.clone());
         state.notifications.set_policy(self.notifications.policy());
-        state.notifications.set_glances(self.topbar.enabled);
         crate::cursor::set_configured_size(self.accessibility.cursor_size);
         if crate::cursor::set_configured_theme(self.general.cursor_theme.as_deref()) {
             state.reload_cursor_theme();
@@ -2077,6 +2077,12 @@ position = [2560, 0]
         let o = &config.overview;
         assert_eq!((o.gap, o.label, o.duration_ms), (40, false, 150));
         assert_eq!(o.close_hover_foreground, Color::from_hex("#0e0e0e").unwrap());
+    }
+
+    #[test]
+    fn the_retired_topbar_switch_still_parses_so_old_files_are_not_repaired_noisily() {
+        let config: Config = toml::from_str("[topbar]\nenabled = false\ntray = false\n").unwrap();
+        assert!(!config.topbar.tray, "deny_unknown_fields would have refused the whole table");
     }
 
     #[test]

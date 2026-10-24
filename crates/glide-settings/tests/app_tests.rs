@@ -531,8 +531,6 @@ fn top_bar_panel_writes_topbar_keys() {
         None,
         "auto must drop the key so the compositor follows the locale"
     );
-    let _ = app.update(Message::TopBar(Msg::Enabled(false)));
-    assert_eq!(app.config().get_bool("topbar", "enabled"), Some(false));
 }
 
 #[test]

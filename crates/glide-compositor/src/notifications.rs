@@ -626,8 +626,9 @@ pub struct Notifications {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Banners {
     #[default]
-    Toasts,
     Island,
+    #[cfg(test)]
+    Toasts,
 }
 
 impl Notifications {
@@ -636,6 +637,7 @@ impl Notifications {
         Self { theme, banners: Banners::Island, ..Self::default() }
     }
 
+    #[cfg(test)]
     pub const fn set_glances(&mut self, on: bool) {
         self.banners = if on { Banners::Island } else { Banners::Toasts };
     }

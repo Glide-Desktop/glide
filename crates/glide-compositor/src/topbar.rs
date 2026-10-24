@@ -989,9 +989,6 @@ impl Topbar {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        if !self.is_enabled() {
-            return false;
-        }
         let popup = self.popup_reveal.is_animating(motion::t2());
         let layers = self.hover_layers.values().chain(self.press_layers.values()).any(Anim::is_animating);
         let controls = [
@@ -1219,11 +1216,6 @@ impl Topbar {
         }
         self.raster_rev = current;
         self.invalidate();
-    }
-
-    #[must_use]
-    pub const fn is_enabled(&self) -> bool {
-        self.theme.enabled
     }
 
     #[must_use]
@@ -1645,9 +1637,6 @@ impl Topbar {
 
     #[must_use]
     pub fn contains(&self, output: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
-        if !self.is_enabled() {
-            return false;
-        }
         if self.rect(output).to_f64().contains(pos) || self.island_target(output).to_f64().contains(pos) {
             return true;
         }
@@ -2854,7 +2843,6 @@ fn app_chip_width(painter: &crate::paint::Painter, name: &str, has_icon: bool) -
 #[allow(clippy::struct_excessive_bools)] // Independent [topbar] switches, not a state machine
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopbarTheme {
-    pub enabled: bool,
     pub dark: bool,
     pub background: Color,
     pub popover_bg: Color,
@@ -2897,7 +2885,7 @@ pub struct TopbarTheme {
 
 impl TopbarTheme {
     #[must_use]
-    pub fn from_tokens(t: &glide_theme::Tokens, enabled: bool) -> Self {
+    pub fn from_tokens(t: &glide_theme::Tokens) -> Self {
         let dark = t.appearance == glide_theme::Appearance::Dark;
         let ramp_step = if dark { 2 } else { 3 };
         Self {
@@ -2907,7 +2895,6 @@ impl TopbarTheme {
             privacy_mic: glide_theme::Accent::Orange.ramp()[ramp_step],
             privacy_camera: t.ok,
             privacy_screen: glide_theme::Accent::Purple.ramp()[ramp_step],
-            enabled,
             dark,
             background: t.shell_bg,
             popover_bg: t.popover_bg,
@@ -2950,7 +2937,6 @@ impl TopbarTheme {
     #[must_use]
     pub fn revision(&self) -> u64 {
         glide_theme::Revision::new()
-            .bool(self.enabled)
             .bool(self.dark)
             .color(self.background)
             .color(self.popover_bg)
@@ -2996,7 +2982,7 @@ impl TopbarTheme {
 impl Default for TopbarTheme {
     fn default() -> Self {
         let tokens = glide_theme::Tokens::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
-        Self::from_tokens(&tokens, true)
+        Self::from_tokens(&tokens)
     }
 }
 
@@ -3010,10 +2996,6 @@ where
     R: ShellRenderer,
 {
     topbar.settle_motion();
-    if !topbar.is_enabled() {
-        return Vec::new();
-    }
-
     topbar.invalidate_stale_buffers();
     topbar.layout_slots(painter, output);
 
@@ -4848,8 +4830,6 @@ mod tests {
         assert_eq!(bar.action_at(Point::from((600.0, 17.0))), None, "empty space");
         assert!(!bar.contains(output(), Point::from((100.0, f64::from(HEIGHT) + 1.0))));
         assert!(bar.contains(output(), Point::from((100.0, 4.0))));
-        let disabled = Topbar::new(TopbarTheme { enabled: false, ..TopbarTheme::default() });
-        assert!(!disabled.contains(output(), Point::from((100.0, 4.0))));
 
         let painter = painter();
         let chip = PAD_X + app_chip_width(&painter, &bar.app_name, true);
@@ -5211,7 +5191,7 @@ mod tests {
     #[test]
     fn a_theme_built_from_light_tokens_is_not_dark() {
         let tokens = glide_theme::Tokens::new(glide_theme::Appearance::Light, glide_theme::Accent::Blue);
-        let theme = TopbarTheme::from_tokens(&tokens, true);
+        let theme = TopbarTheme::from_tokens(&tokens);
         assert!(!theme.dark);
         assert_ne!(theme.revision(), TopbarTheme::default().revision());
     }
@@ -5859,14 +5839,6 @@ mod tests {
         assert!(bar.set_hover(Some(track)));
         assert_eq!(bar.hovered, Some(Slot::QsVolumeTrack));
         assert!(bar.hover_layers.is_empty());
-    }
-
-    #[test]
-    fn a_disabled_topbar_never_asks_for_frames() {
-        let mut bar = Topbar::new(TopbarTheme { enabled: false, ..TopbarTheme::default() });
-        bar.toggle_popup(OpenPopup::QuickSettings);
-        bar.close_popup();
-        assert!(!bar.is_animating());
     }
 
     #[test]

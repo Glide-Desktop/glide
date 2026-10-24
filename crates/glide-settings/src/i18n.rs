@@ -107,8 +107,6 @@ catalogue! {
     AutohideNeverHint => "Always stays on screen", "Завжди на екрані";
     DockSize =>"Icon size", "Розмір іконок";
     TopBar => "Top bar", "Верхня панель";
-    ShowTopBar => "Show the top bar", "Показувати верхню панель";
-    ShowTopBarHint => "Clock, status, quick settings and notifications", "Годинник, стан, швидкі налаштування й сповіщення";
     GlobalMenu => "Global menu", "Глобальне меню";
     GlobalMenuHint => "Show the menus of the active app in the top bar", "Показувати меню активної програми у верхній панелі";
     AppMenuRegistrar => "Menus of Qt, Chrome and LibreOffice", "Меню Qt, Chrome і LibreOffice";

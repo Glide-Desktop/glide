@@ -1283,9 +1283,6 @@ impl GlideState {
     }
 
     pub fn refresh_topbar(&mut self) -> bool {
-        if !self.topbar.is_enabled() {
-            return false;
-        }
         let now = crate::topbar::calendar::LocalNow::now();
         let (app_id, app_name) = self.focused_app();
 
@@ -2900,7 +2897,7 @@ impl GlideState {
                     geometry.size.w,
                     geometry.size.h,
                 );
-                let reserved = if self.topbar.is_enabled() { crate::topbar::HEIGHT } else { 0 };
+                let reserved = crate::topbar::HEIGHT;
                 let work_area = glide_layout::Rectangle::from_loc_and_size(
                     geometry.loc.x + zone.loc.x,
                     geometry.loc.y + zone.loc.y + reserved,

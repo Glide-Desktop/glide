@@ -142,8 +142,7 @@ pub fn wants_menu(icon: &TrayIcon, button: TrayButton) -> bool {
 
 impl GlideState {
     pub fn configure_tray(&mut self, topbar: &crate::config::TopbarConfig, icon_theme: Option<String>) {
-        let enabled = topbar.enabled && topbar.tray;
-        if self.topbar.set_tray_enabled(enabled) {
+        if self.topbar.set_tray_enabled(topbar.tray) {
             self.queue_redraw();
         }
         let theme_changed = {
@@ -152,7 +151,7 @@ impl GlideState {
             *current = icon_theme;
             changed
         };
-        if enabled && !self.tray.started {
+        if topbar.tray && !self.tray.started {
             self.start_tray();
         } else if theme_changed && let Some(handle) = &self.tray.handle {
             handle.refresh();
