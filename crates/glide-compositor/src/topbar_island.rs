@@ -15,12 +15,12 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::glyphs::{Glyph, glyph};
 use super::{
     Anim, BadgePop, Cache, E_IO, E_OUT, Frame, LocalRect, MEDIA_ART, MEDIA_ART_LARGE, MediaWidget, OpenPopup, Slot,
-    SwitchMotion, Topbar, TopbarTheme, calendar, draw_media_art, draw_switch, initial, local_rect, motion,
-    numeric_label_width, push_buffer, scaled_about_centre, transport_enabled,
+    SwitchMotion, Topbar, TopbarAction, TopbarTheme, calendar, draw_media_art, draw_switch, initial, local_rect,
+    motion, numeric_label_width, push_buffer, scaled_about_centre, transport_enabled,
 };
 use crate::config::Color;
 use crate::i18n::Lang;
-use crate::notifications::NcItem;
+use crate::notifications::{NcItem, Notice, NoticeReply};
 use crate::paint::{Painter, TextAlign};
 use crate::popup_menu::text_px as text_w;
 use crate::raster::{Canvas, ShellRenderer};
@@ -60,6 +60,15 @@ const BADGE_H: i32 = 17;
 const BADGE_PAD: i32 = 6;
 const ALERT_ICON: i32 = 52;
 const ALERT_CLOSE: i32 = 28;
+const NOTICE_TITLE_LINES: usize = 2;
+const NOTICE_BODY_LINES: usize = 3;
+const NOTICE_ROW_GAP: i32 = SP3;
+const BUTTON_H: i32 = 28;
+const BUTTON_PAD: i32 = 11;
+const FIELD_H: i32 = 34;
+const FIELD_PAD: i32 = SP3;
+const SEND: i32 = 26;
+const CARET_H: i32 = 15;
 const HEADER_H: i32 = 24;
 const NC_HEADER_H: i32 = 26;
 const MINI_H: i32 = 22;
@@ -123,12 +132,16 @@ const ITEM_BODY_STYLE: TextStyle = style(11.5, 15.0, 400, false);
 const ITEM_TIME_STYLE: TextStyle = style(10.5, 14.0, 400, true);
 const COUNT_STYLE: TextStyle = style(9.5, 12.0, 600, true);
 const EMPTY_STYLE: TextStyle = style(12.5, 17.0, 400, false);
+const CAPTION_STYLE: TextStyle = style(12.0, 16.0, 500, false);
+const BUTTON_STYLE: TextStyle = style(12.5, 16.0, 560, false);
+const FIELD_STYLE: TextStyle = style(13.0, 18.0, 400, false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(super) enum View {
     #[default]
     Compact,
     Alert,
+    Notice,
     Media,
     Calendar,
 }
@@ -141,7 +154,7 @@ impl View {
     const fn elevation(self) -> Level {
         match self {
             Self::Compact => Level::El1,
-            Self::Alert => Level::El2,
+            Self::Alert | Self::Notice => Level::El2,
             Self::Media | Self::Calendar => Level::El3,
         }
     }
@@ -152,6 +165,7 @@ impl View {
             Self::Alert => 1,
             Self::Media => 2,
             Self::Calendar => 3,
+            Self::Notice => 4,
         }
     }
 }
@@ -194,6 +208,8 @@ pub(super) struct Island {
     scrim: Anim,
     alert: Option<(IslandAlert, Instant)>,
     alert_rev: u64,
+    notice: Option<Notice>,
+    notice_rev: u64,
     first_item: usize,
     compact_w: i32,
     backgrounds: HashMap<(i32, i32, i32), MemoryRenderBuffer>,
@@ -201,6 +217,7 @@ pub(super) struct Island {
     scrim_buffer: Option<MemoryRenderBuffer>,
     compact: Cache<CompactKey>,
     alert_cache: Cache<u64>,
+    notice_cache: Cache<u64>,
     media: Cache<MediaKey>,
     nc: Cache<NcKey>,
     epoch: Instant,
@@ -221,6 +238,8 @@ impl Default for Island {
             scrim: Anim::at(0.0),
             alert: None,
             alert_rev: 0,
+            notice: None,
+            notice_rev: 0,
             first_item: 0,
             compact_w: COMPACT_W,
             backgrounds: HashMap::new(),
@@ -228,6 +247,7 @@ impl Default for Island {
             scrim_buffer: None,
             compact: Cache::default(),
             alert_cache: Cache::default(),
+            notice_cache: Cache::default(),
             media: Cache::default(),
             nc: Cache::default(),
             epoch: Instant::now(),
@@ -254,6 +274,7 @@ impl Island {
         self.scrim_buffer = None;
         self.compact.clear();
         self.alert_cache.clear();
+        self.notice_cache.clear();
         self.media.clear();
         self.nc.clear();
         self.bar_ink = None;
@@ -372,6 +393,96 @@ fn alert_layout() -> AlertLayout {
     let icon = local_rect(ALERT_PAD, (ALERT_H - ALERT_ICON) / 2, ALERT_ICON, ALERT_ICON);
     let close = local_rect(ALERT_W - ALERT_PAD - ALERT_CLOSE, ALERT_PAD, ALERT_CLOSE, ALERT_CLOSE);
     AlertLayout { icon, text: (ALERT_PAD + ALERT_ICON + SP4, ALERT_W - ALERT_PAD - ALERT_CLOSE - SP3), close }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NoticeLayout {
+    height: i32,
+    icon: LocalRect,
+    close: LocalRect,
+    text: (i32, i32),
+    caption_y: i32,
+    badge: Option<LocalRect>,
+    title: Vec<String>,
+    body: Vec<String>,
+    body_y: i32,
+    row_y: i32,
+    buttons: Vec<LocalRect>,
+    field: Option<LocalRect>,
+    send: Option<LocalRect>,
+}
+
+const fn line_h(style: &TextStyle) -> i32 {
+    style.line_height_px as i32
+}
+
+fn notice_layout(painter: &Painter, notice: &Notice) -> NoticeLayout {
+    let icon = local_rect(ALERT_PAD, ALERT_PAD, ALERT_ICON, ALERT_ICON);
+    let close = local_rect(ALERT_W - ALERT_PAD - ALERT_CLOSE, ALERT_PAD, ALERT_CLOSE, ALERT_CLOSE);
+    let (left, right) = (ALERT_PAD + ALERT_ICON + SP4, ALERT_W - ALERT_PAD);
+    let beside_close = close.loc.x - SP3;
+    let caption_y = ALERT_PAD;
+    let badge = (notice.waiting > 0).then(|| {
+        let x = (left + text_w(painter, &notice.app, &CAPTION_STYLE) + SP2).min(beside_close);
+        let y = caption_y + (line_h(&CAPTION_STYLE) - BADGE_H) / 2;
+        local_rect(x, y, badge_width(painter, notice.waiting), BADGE_H)
+    });
+    let title_y = caption_y + line_h(&CAPTION_STYLE);
+    let title = crate::notifications::wrap_lines(
+        painter,
+        &notice.title,
+        &ALERT_TITLE_STYLE,
+        beside_close - left,
+        NOTICE_TITLE_LINES,
+    );
+    let body_y = title_y + line_h(&ALERT_TITLE_STYLE) * title.len() as i32;
+    let body = crate::notifications::wrap_paragraphs(
+        painter,
+        &notice.body,
+        &ALERT_BODY_STYLE,
+        right - left,
+        NOTICE_BODY_LINES,
+    );
+    let text_end = body_y + line_h(&ALERT_BODY_STYLE) * body.len() as i32;
+    let row_y = text_end + NOTICE_ROW_GAP;
+    let (mut buttons, mut field, mut send) = (Vec::new(), None, None);
+    let row_h = match &notice.reply {
+        Some(NoticeReply::Composing { .. }) => {
+            let rect = local_rect(left, row_y, right - left, FIELD_H);
+            send = Some(local_rect(right - SP1 - SEND, row_y + (FIELD_H - SEND) / 2, SEND, SEND));
+            field = Some(rect);
+            FIELD_H
+        }
+        Some(NoticeReply::Sent) => FIELD_H,
+        None if notice.buttons.is_empty() => 0,
+        None => {
+            let mut x = right;
+            for button in &notice.buttons {
+                let width = text_w(painter, button.label(), &BUTTON_STYLE) + BUTTON_PAD * 2;
+                x -= width;
+                buttons.push(local_rect(x, row_y, width, BUTTON_H));
+                x -= SP2;
+            }
+            BUTTON_H
+        }
+    };
+    let content_end = if row_h > 0 { row_y + row_h } else { text_end };
+    let height = (content_end + ALERT_PAD).max(ALERT_PAD * 2 + ALERT_ICON);
+    NoticeLayout {
+        height,
+        icon,
+        close,
+        text: (left, right),
+        caption_y,
+        badge,
+        title,
+        body,
+        body_y,
+        row_y,
+        buttons,
+        field,
+        send,
+    }
 }
 
 fn mini_width(painter: &Painter, label: &str) -> i32 {
@@ -499,6 +610,7 @@ impl Topbar {
         match self.open_popup {
             Some(OpenPopup::MediaPlayer) if self.media.is_some() => View::Media,
             Some(OpenPopup::NotificationCenter) => View::Calendar,
+            _ if self.island.notice.is_some() => View::Notice,
             _ if self.island.alert.is_some() => View::Alert,
             _ => View::Compact,
         }
@@ -532,6 +644,44 @@ impl Topbar {
         self.sync_island();
         self.touch();
         true
+    }
+
+    pub fn set_notice(&mut self, notice: Option<Notice>) -> bool {
+        if self.island.notice == notice {
+            return false;
+        }
+        self.island.notice = notice;
+        self.island.notice_rev = self.island.notice_rev.wrapping_add(1);
+        self.sync_island();
+        self.touch();
+        true
+    }
+
+    #[must_use]
+    pub fn notice(&self) -> Option<&Notice> {
+        self.island.notice.as_ref()
+    }
+
+    #[must_use]
+    pub fn held_notice(&self) -> Option<u32> {
+        let notice = self.island.notice.as_ref()?;
+        let over = self.hovered?;
+        over.on_notice().then_some(notice.id)
+    }
+
+    pub(super) fn notice_action(&self, slot: Slot) -> Option<TopbarAction> {
+        use crate::notifications::NotificationAction as Act;
+        let notice = self.island.notice.as_ref()?;
+        let id = notice.id;
+        let action = match slot {
+            Slot::Notice => Act::Activate(id),
+            Slot::NoticeClose => Act::Dismiss(id),
+            Slot::NoticeField => Act::OpenReply(id),
+            Slot::NoticeSend => Act::SendReply(id),
+            Slot::NoticeButton(index) => notice.buttons.get(usize::from(index))?.action(id),
+            _ => return None,
+        };
+        Some(TopbarAction::Notification(action))
     }
 
     pub(super) fn island_forget_alert(&mut self) {
@@ -600,7 +750,7 @@ impl Topbar {
         match view {
             View::Media => Some(mini_width(painter, t(Key::Notifications))),
             View::Calendar => self.media.is_some().then(|| mini_width(painter, t(Key::Media))),
-            View::Compact | View::Alert => None,
+            View::Compact | View::Alert | View::Notice => None,
         }
     }
 
@@ -613,6 +763,11 @@ impl Topbar {
                 (width, COMPACT_H)
             }
             View::Alert => (ALERT_W, ALERT_H),
+            View::Notice => {
+                let height =
+                    self.island.notice.as_ref().map_or(ALERT_H, |notice| notice_layout(painter, notice).height);
+                (ALERT_W, height)
+            }
             View::Media => (WIDE, MEDIA_H),
             View::Calendar => (WIDE, calendar_height(self.nc_items.len())),
         }
@@ -642,6 +797,24 @@ impl Topbar {
                 let layout = alert_layout();
                 slots.push((Slot::IslandAlertClose, shift(layout.close, origin)));
                 slots.push((Slot::IslandAlert, target));
+            }
+            View::Notice => {
+                if let Some(notice) = self.island.notice.as_ref() {
+                    let layout = notice_layout(painter, notice);
+                    slots.push((Slot::NoticeClose, shift(layout.close, origin)));
+                    for (index, rect) in layout.buttons.iter().enumerate() {
+                        if let Ok(index) = u8::try_from(index) {
+                            slots.push((Slot::NoticeButton(index), shift(*rect, origin)));
+                        }
+                    }
+                    if let Some(send) = layout.send {
+                        slots.push((Slot::NoticeSend, shift(send, origin)));
+                    }
+                    if let Some(field) = layout.field {
+                        slots.push((Slot::NoticeField, shift(field, origin)));
+                    }
+                    slots.push((Slot::Notice, target));
+                }
             }
             View::Media | View::Calendar => {}
         }
@@ -869,6 +1042,115 @@ fn paint_alert(c: &mut Canvas<'_>, ink: &Ink<'_>, alert: &IslandAlert) {
     }
     c.fill(layout.close, ink.theme.fill_2, R1);
     glyph(c, Glyph::Close, 12, layout.close, ink.theme.muted);
+}
+
+fn draw_notice(
+    ink: &Ink<'_>, notice: &Notice, scale: i32, icons: Option<&mut crate::icon::IconLoader>,
+) -> Option<MemoryRenderBuffer> {
+    let layout = notice_layout(ink.painter, notice);
+    let mut c = Canvas::new(ALERT_W, layout.height, scale)?.with_icons(icons);
+    paint_notice(&mut c, ink, notice, &layout);
+    Some(c.finish())
+}
+
+fn paint_notice(c: &mut Canvas<'_>, ink: &Ink<'_>, notice: &Notice, layout: &NoticeLayout) {
+    let theme = ink.theme;
+    if let Some(icon) = notice.icon.as_deref() {
+        let source = crate::notifications::ICON_SOURCE_PX;
+        let (x, y) = (layout.icon.loc.x, layout.icon.loc.y);
+        crate::paint::blit_icon_over(&mut c.buf, c.w, c.h, icon, source, ALERT_ICON, x, y, c.scale);
+    } else {
+        c.fill(layout.icon, theme.active_soft, R2);
+        glyph(c, Glyph::Bell, 26, layout.icon, theme.active_soft_label);
+    }
+    let (left, right) = layout.text;
+    let beside_close = layout.close.loc.x - SP3;
+    let caption_h = line_h(&CAPTION_STYLE);
+    let mut caption_left = left;
+    if notice.urgent {
+        let dot = local_rect(left, layout.caption_y + (caption_h - DOT) / 2, DOT, DOT);
+        c.fill(dot, theme.danger, R_ROUND);
+        caption_left += DOT + SP2;
+    }
+    let caption_right = layout.badge.map_or(beside_close, |badge| badge.loc.x - SP1);
+    let band = (caption_left, caption_right, layout.caption_y, layout.caption_y + caption_h);
+    c.text(ink.painter, band, TextAlign::Left, &notice.app, theme.faint, &CAPTION_STYLE);
+    if let Some(badge) = layout.badge {
+        c.fill(badge, theme.track_soft, R_ROUND);
+        let band = (badge.loc.x, badge.loc.x + badge.size.w, badge.loc.y, badge.loc.y + badge.size.h);
+        c.text(ink.painter, band, TextAlign::Center, &badge_label(notice.waiting), theme.muted, &BADGE_STYLE);
+    }
+    let mut y = layout.caption_y + caption_h;
+    let title_h = line_h(&ALERT_TITLE_STYLE);
+    for line in &layout.title {
+        c.text(
+            ink.painter,
+            (left, beside_close, y, y + title_h),
+            TextAlign::Left,
+            line,
+            theme.label,
+            &ALERT_TITLE_STYLE,
+        );
+        y += title_h;
+    }
+    let body_h = line_h(&ALERT_BODY_STYLE);
+    let mut y = layout.body_y;
+    for line in &layout.body {
+        c.text(ink.painter, (left, right, y, y + body_h), TextAlign::Left, line, theme.muted, &ALERT_BODY_STYLE);
+        y += body_h;
+    }
+    c.fill(layout.close, theme.fill_2, R1);
+    glyph(c, Glyph::Close, 12, layout.close, theme.muted);
+    for (index, (button, rect)) in notice.buttons.iter().zip(&layout.buttons).enumerate() {
+        let (fill, label) =
+            if index == 0 { (theme.active_background, theme.active_label) } else { (theme.track_soft, theme.label) };
+        c.fill(*rect, fill, R2);
+        let band = (rect.loc.x, rect.loc.x + rect.size.w, rect.loc.y, rect.loc.y + rect.size.h);
+        c.text(ink.painter, band, TextAlign::Center, button.label(), label, &BUTTON_STYLE);
+    }
+    match &notice.reply {
+        Some(NoticeReply::Composing { shown, placeholder, invalid }) => {
+            paint_reply_field(c, ink, layout, (shown, placeholder, *invalid));
+        }
+        Some(NoticeReply::Sent) => {
+            use crate::i18n::{Key, t};
+            let band = (left, right, layout.row_y, layout.row_y + FIELD_H);
+            c.text(ink.painter, band, TextAlign::Left, t(Key::Sent), theme.muted, &FIELD_STYLE);
+        }
+        None => {}
+    }
+}
+
+fn paint_reply_field(
+    c: &mut Canvas<'_>, ink: &Ink<'_>, layout: &NoticeLayout, (shown, placeholder, invalid): (&str, &str, bool),
+) {
+    let (Some(field), Some(send)) = (layout.field, layout.send) else {
+        return;
+    };
+    let theme = ink.theme;
+    c.fill(field, theme.card, R2);
+    c.stroke(field, 1.0, R2, if invalid { theme.danger } else { theme.active_background });
+    let text_left = field.loc.x + FIELD_PAD;
+    let text_right = send.loc.x - SP2;
+    let band = (text_left, text_right, field.loc.y, field.loc.y + FIELD_H);
+    if shown.is_empty() {
+        c.text(ink.painter, band, TextAlign::Left, placeholder, theme.faint, &FIELD_STYLE);
+    } else {
+        let tail = tail_that_fits(ink.painter, shown, text_right - text_left);
+        c.text(ink.painter, band, TextAlign::Left, tail, theme.label, &FIELD_STYLE);
+        let caret = text_left + text_w(ink.painter, tail, &FIELD_STYLE) + 1;
+        if caret < text_right {
+            c.fill(local_rect(caret, field.loc.y + (FIELD_H - CARET_H) / 2, 2, CARET_H), theme.active_background, 1.0);
+        }
+    }
+    c.fill(send, theme.active_background, R1);
+    glyph(c, Glyph::Send, 12, send, theme.active_label);
+}
+
+fn tail_that_fits<'a>(painter: &Painter, text: &'a str, width: i32) -> &'a str {
+    let starts: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
+    let first = starts.partition_point(|&start| text_w(painter, &text[start..], &FIELD_STYLE) > width);
+    starts.get(first).map_or("", |&start| &text[start..])
 }
 
 fn alert_lines(painter: &Painter, alert: &IslandAlert, width: i32) -> Vec<String> {
@@ -1168,6 +1450,7 @@ fn push_view<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, vi
     match view {
         View::Compact => push_compact(topbar, frame, alpha, spot),
         View::Alert => push_alert(topbar, frame, alpha, spot),
+        View::Notice => push_notice(topbar, frame, alpha, spot),
         View::Media => push_media(topbar, frame, alpha, spot),
         View::Calendar => push_calendar(topbar, frame, alpha, spot),
     }
@@ -1214,6 +1497,25 @@ fn push_alert<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
         .island
         .alert_cache
         .resolve(topbar.island.alert_rev, output_scale, || draw_alert(&ink, alert, output_scale, Some(icons)))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+}
+
+fn push_notice<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
+    let Some(notice) = topbar.island.notice.as_ref() else {
+        return;
+    };
+    let height = notice_layout(painter, notice).height;
+    let clip = topbar.island.rect(spot.strip);
+    let content = spot.content(ALERT_W, height);
+    let ink = Ink { painter, theme: &topbar.theme };
+    let Some(buffer) = topbar
+        .island
+        .notice_cache
+        .resolve(topbar.island.notice_rev, output_scale, || draw_notice(&ink, notice, output_scale, Some(icons)))
     else {
         return;
     };
@@ -1387,6 +1689,137 @@ mod tests {
 
     fn widths() -> ClockWidths {
         ClockWidths { date: 60, time: 34, badge: 0 }
+    }
+
+    fn prompt(lang: Lang) -> Notice {
+        use crate::notifications::NoticeButton;
+        let (title, body, allow, cancel) = match lang {
+            Lang::En => (
+                "Signal wants to type and read keys in other apps",
+                "Allow it only if you trust this program, then start it again.\n/usr/lib/signal-desktop/signal-desktop",
+                "Allow",
+                "Cancel",
+            ),
+            Lang::Uk => (
+                "Signal хоче вводити текст і читати клавіші в інших програмах",
+                "Дозвольте, лише якщо довіряєте цій програмі, і запустіть її знову.\n/usr/lib/signal-desktop/signal-desktop",
+                "Дозволити",
+                "Скасувати",
+            ),
+        };
+        Notice {
+            id: 7,
+            app: "Glide".into(),
+            title: title.into(),
+            body: body.into(),
+            icon: None,
+            buttons: vec![NoticeButton::Action(0, allow.into()), NoticeButton::Action(1, cancel.into())],
+            reply: None,
+            urgent: false,
+            waiting: 0,
+        }
+    }
+
+    fn painter() -> Painter {
+        Painter::new(14.0, None)
+    }
+
+    #[test]
+    fn a_prompt_keeps_its_whole_question_and_puts_the_primary_button_on_the_right() {
+        let painter = painter();
+        for lang in [Lang::En, Lang::Uk] {
+            let notice = prompt(lang);
+            let layout = notice_layout(&painter, &notice);
+            assert!(!layout.title.is_empty() && layout.title.len() <= NOTICE_TITLE_LINES);
+            assert!(layout.title.iter().all(|line| !line.ends_with('…')), "{lang:?}: {:?}", layout.title);
+            assert_eq!(layout.body.last().map(String::as_str), Some("/usr/lib/signal-desktop/signal-desktop"));
+            let [allow, cancel] = layout.buttons[..] else { panic!("two buttons") };
+            assert_eq!(allow.loc.x + allow.size.w, ALERT_W - ALERT_PAD, "the first button is the primary one");
+            assert!(cancel.loc.x + cancel.size.w < allow.loc.x);
+            assert_eq!(allow.loc.y + BUTTON_H + ALERT_PAD, layout.height);
+            assert!(layout.field.is_none() && layout.badge.is_none());
+        }
+    }
+
+    #[test]
+    fn a_reply_swaps_the_buttons_for_a_field_and_waiting_notices_show_a_count() {
+        let painter = painter();
+        let bare = notice_layout(&painter, &Notice { buttons: Vec::new(), body: String::new(), ..prompt(Lang::En) });
+        assert_eq!(bare.height, ALERT_PAD * 2 + ALERT_ICON, "never shorter than the icon");
+        let composing = Notice {
+            reply: Some(NoticeReply::Composing { shown: "hi".into(), placeholder: "Message".into(), invalid: false }),
+            waiting: 2,
+            ..prompt(Lang::En)
+        };
+        let layout = notice_layout(&painter, &composing);
+        let (field, send) = (layout.field.expect("field"), layout.send.expect("send"));
+        assert!(layout.buttons.is_empty());
+        assert_eq!(field.size.h, FIELD_H);
+        assert!(field.contains(send.loc) && field.loc.x + field.size.w > send.loc.x + send.size.w);
+        assert!(layout.badge.is_some_and(|badge| badge.loc.x < layout.close.loc.x));
+        let tail = tail_that_fits(&painter, "a very long reply indeed", 40);
+        assert!(tail.ends_with("indeed") || "indeed".ends_with(tail), "the caret end stays visible: {tail:?}");
+        assert!(text_w(&painter, tail, &FIELD_STYLE) <= 40);
+    }
+
+    #[test]
+    #[ignore = "writes preview PNGs to $GLIDE_ISLAND_PREVIEW"]
+    fn notice_preview() {
+        let Some(dir) = std::env::var_os("GLIDE_ISLAND_PREVIEW") else {
+            return;
+        };
+        let painter = painter();
+        let scale = 2;
+        for appearance in [glide_theme::Appearance::Dark, glide_theme::Appearance::Light] {
+            let theme = TopbarTheme::from_tokens(&glide_theme::Tokens::new(appearance, glide_theme::Accent::Blue));
+            let ink = Ink { painter: &painter, theme: &theme };
+            let cases = [
+                ("en", prompt(Lang::En)),
+                ("uk", Notice { waiting: 2, ..prompt(Lang::Uk) }),
+                (
+                    "reply",
+                    Notice {
+                        app: "Telegram".into(),
+                        title: "Olena".into(),
+                        body: "Are we still on for tonight?".into(),
+                        buttons: Vec::new(),
+                        reply: Some(NoticeReply::Composing {
+                            shown: "Yes, at seven".into(),
+                            placeholder: "Message…".into(),
+                            invalid: false,
+                        }),
+                        ..prompt(Lang::En)
+                    },
+                ),
+                (
+                    "urgent",
+                    Notice {
+                        title: "Battery is almost empty".into(),
+                        body: "5 % left. Plug in the charger.".into(),
+                        buttons: Vec::new(),
+                        urgent: true,
+                        ..prompt(Lang::En)
+                    },
+                ),
+            ];
+            for (name, notice) in cases {
+                let layout = notice_layout(&painter, &notice);
+                let mut c = Canvas::popover((ALERT_W, layout.height), scale, R2, theme.island_bg, theme.island_line)
+                    .expect("surface");
+                paint_notice(&mut c, &ink, &notice, &layout);
+                let (w, h) = ((ALERT_W * scale) as u32, (layout.height * scale) as u32);
+                let mut image = crate::shot::compose::Image::new(w + 64, h + 64).expect("image");
+                let shade = if appearance == glide_theme::Appearance::Dark { 30 } else { 230 };
+                let backdrop = vec![shade; ((w + 64) * (h + 64) * 4) as usize];
+                image.draw(&crate::shot::compose::Image::from_bgra(w + 64, h + 64, backdrop).expect("backdrop"), 0, 0);
+                image.draw(&crate::shot::compose::Image::from_bgra(w, h, c.buf.clone()).expect("notice"), 32, 32);
+                let png = crate::backend::screenshot::save_rgba(&image.into_straight(), w + 64, h + 64, false)
+                    .expect("png")
+                    .png;
+                let file = format!("notice-{name}-{appearance:?}.png").to_lowercase();
+                std::fs::write(std::path::Path::new(&dir).join(file), png).expect("write");
+            }
+        }
     }
 
     #[test]

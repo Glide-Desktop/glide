@@ -2047,16 +2047,17 @@ impl GlideState {
         let output = self.output_rect();
         let over = self.topbar.contains(output, pos);
         if self.topbar.set_hover(over.then_some(pos)) {
+            self.notifications.hold(self.topbar.held_notice());
             self.queue_redraw();
         }
         over
     }
 
     fn notifications_motion(&mut self, pos: Point<f64, Logical>) -> bool {
-        if self.session_lock.is_some() || !self.notifications.is_enabled() {
+        let output = self.output_rect();
+        if self.session_lock.is_some() || !self.notifications.is_enabled() || !self.topbar_suppressed_on(output) {
             return false;
         }
-        let output = self.output_rect();
         let over = self.notifications.contains(output, pos);
         if self.notifications.set_hover(over.then_some(pos)) {
             self.queue_redraw();
@@ -2517,7 +2518,8 @@ impl GlideState {
     }
 
     fn notifications_button(&mut self, pos: Point<f64, Logical>) -> bool {
-        if !self.notifications.contains(self.output_rect(), pos) {
+        let output = self.output_rect();
+        if !self.topbar_suppressed_on(output) || !self.notifications.contains(output, pos) {
             return false;
         }
         if self.notifications.set_pressed(Some(pos)) {

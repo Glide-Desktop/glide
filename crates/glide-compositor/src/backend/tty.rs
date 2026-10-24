@@ -1413,7 +1413,7 @@ impl GlideState {
             prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
         }
 
-        if !locked {
+        if !locked && topbar_hidden {
             let toasts = crate::notifications::render(
                 &mut self.notifications,
                 gles_renderer,

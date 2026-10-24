@@ -295,6 +295,7 @@ pub enum TopbarAction {
     OpenInputSettings,
     ClosePopup,
     DismissIslandAlert,
+    Notification(crate::notifications::NotificationAction),
     QsToggleWifi,
     QsToggleBluetooth,
     QsToggleNetbird,
@@ -330,6 +331,11 @@ pub enum Slot {
     IslandMedia,
     IslandAlert,
     IslandAlertClose,
+    Notice,
+    NoticeClose,
+    NoticeButton(u8),
+    NoticeField,
+    NoticeSend,
     IslandToMedia,
     IslandToNotifications,
     IslandCollapse,
@@ -399,6 +405,10 @@ impl Slot {
         matches!(self, Self::QsVolumeTrack | Self::QsMicTrack | Self::QsBrightnessTrack)
     }
 
+    pub(super) const fn on_notice(self) -> bool {
+        matches!(self, Self::Notice | Self::NoticeClose | Self::NoticeButton(_) | Self::NoticeField | Self::NoticeSend)
+    }
+
     const fn in_status_cluster(self) -> bool {
         matches!(self, Self::Status | Self::Search | Self::Privacy)
     }
@@ -410,6 +420,7 @@ impl Slot {
 
     const fn in_strip(self) -> bool {
         self.in_status_cluster()
+            || self.on_notice()
             || matches!(
                 self,
                 Self::MenuTitle(_)
@@ -481,10 +492,14 @@ impl Slot {
             | Self::QsDetailToggle
             | Self::QsPasswordField
             | Self::IslandAlert
+            | Self::Notice
+            | Self::NoticeField
             | Self::PopMediaSeek => None,
             Self::Clock
             | Self::IslandMedia
             | Self::IslandAlertClose
+            | Self::NoticeClose
+            | Self::NoticeSend
             | Self::IslandToMedia
             | Self::IslandToNotifications
             | Self::IslandCollapse
@@ -512,7 +527,14 @@ impl Slot {
         match self {
             Self::MenuTitle(index) => TopbarAction::OpenAppMenu(index),
             Self::MenuRow(path) => TopbarAction::AppMenuRow(path),
-            Self::Clock | Self::IslandAlert | Self::IslandToNotifications => TopbarAction::ToggleNotificationCenter,
+            Self::Clock
+            | Self::IslandAlert
+            | Self::IslandToNotifications
+            | Self::Notice
+            | Self::NoticeClose
+            | Self::NoticeButton(_)
+            | Self::NoticeField
+            | Self::NoticeSend => TopbarAction::ToggleNotificationCenter,
             Self::IslandMedia | Self::IslandToMedia => TopbarAction::ToggleMediaPlayer,
             Self::IslandAlertClose => TopbarAction::DismissIslandAlert,
             Self::IslandCollapse => TopbarAction::ClosePopup,
@@ -1115,6 +1137,9 @@ impl Topbar {
     }
 
     fn resolve(&self, slot: Slot) -> TopbarAction {
+        if let Some(action) = self.notice_action(slot) {
+            return action;
+        }
         match (slot, self.alert()) {
             (Slot::IslandAlert, Some(alert)) => TopbarAction::ActivateNotification(alert.id),
             _ => slot.action(),
@@ -4771,6 +4796,55 @@ mod tests {
         let mut player = with_popup(playing_bar(), OpenPopup::MediaPlayer);
         assert!(player.set_media(None));
         assert!(!player.has_open_popup(), "the player closes when the track goes away");
+    }
+
+    #[test]
+    fn an_interactive_notification_takes_the_island_and_each_part_answers_it() {
+        use crate::notifications::{Notice, NoticeButton, NoticeReply, NotificationAction as Act};
+        let mut bar = topbar_with(&["US", "UA"]);
+        let notice = Notice {
+            id: 9,
+            app: "Glide".into(),
+            title: "Pair with Buds?".into(),
+            body: "Check that both show 123456".into(),
+            icon: None,
+            buttons: vec![
+                NoticeButton::Reply("Reply".into()),
+                NoticeButton::Action(0, "Pair".into()),
+                NoticeButton::Settings("Settings".into()),
+            ],
+            reply: None,
+            urgent: false,
+            waiting: 0,
+        };
+        assert!(bar.set_notice(Some(notice.clone())) && !bar.set_notice(Some(notice.clone())));
+        let alert = IslandAlert { id: 1, heading: "Telegram".into(), summary: "hi".into(), icon: None };
+        bar.show_alert(alert, std::time::Instant::now());
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::IslandAlert).is_none(), "a question outranks a glance");
+        let expect = |bar: &Topbar, slot, action| {
+            assert_eq!(click(bar, slot), Some(TopbarAction::Notification(action)));
+        };
+        expect(&bar, Slot::NoticeButton(0), Act::OpenReply(9));
+        expect(&bar, Slot::NoticeButton(1), Act::Button(9, 0));
+        expect(&bar, Slot::NoticeButton(2), Act::Configure(9));
+        expect(&bar, Slot::NoticeClose, Act::Dismiss(9));
+        expect(&bar, Slot::Notice, Act::Activate(9));
+
+        let pos = centre(bar.slot_rect(Slot::NoticeClose).expect("close"));
+        assert!(bar.set_hover(Some(pos)));
+        assert_eq!(bar.held_notice(), Some(9), "hovering any part holds its timeout");
+
+        let composing = NoticeReply::Composing { shown: String::new(), placeholder: "…".into(), invalid: false };
+        assert!(bar.set_notice(Some(Notice { reply: Some(composing), ..notice })));
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::NoticeButton(0)).is_none());
+        expect(&bar, Slot::NoticeSend, Act::SendReply(9));
+        expect(&bar, Slot::NoticeField, Act::OpenReply(9));
+
+        assert!(bar.set_notice(None));
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::IslandAlert).is_some(), "the glance comes back once the question is gone");
     }
 
     #[test]

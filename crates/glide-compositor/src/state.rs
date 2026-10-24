@@ -1550,7 +1550,14 @@ impl GlideState {
         }
     }
 
+    pub fn sync_notice(&mut self) {
+        if self.topbar.set_notice(self.notifications.notice()) {
+            self.queue_redraw();
+        }
+    }
+
     pub fn show_glances(&mut self) {
+        self.sync_notice();
         if self.screen_locked() {
             return;
         }
@@ -1781,6 +1788,10 @@ impl GlideState {
             }
             TopbarAction::DismissIslandAlert => {
                 self.topbar.dismiss_alert();
+            }
+            TopbarAction::Notification(action) => {
+                self.run_notification_action(action);
+                self.sync_notice();
             }
             TopbarAction::OpenAppMenu(index) => self.open_app_menu(index),
             TopbarAction::AppMenuRow(path) => self.app_menu_row(path),

@@ -588,6 +588,84 @@ fn nc_item(notification: &Notification, age: Duration, icon: Option<&std::sync::
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoticeButton {
+    Reply(String),
+    Action(usize, String),
+    Settings(String),
+}
+
+impl NoticeButton {
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Reply(label) | Self::Action(_, label) | Self::Settings(label) => label,
+        }
+    }
+
+    #[must_use]
+    pub const fn action(&self, id: u32) -> NotificationAction {
+        match self {
+            Self::Reply(_) => NotificationAction::OpenReply(id),
+            Self::Action(index, _) => NotificationAction::Button(id, *index),
+            Self::Settings(_) => NotificationAction::Configure(id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoticeReply {
+    Composing { shown: String, placeholder: String, invalid: bool },
+    Sent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Notice {
+    pub id: u32,
+    pub app: String,
+    pub title: String,
+    pub body: String,
+    pub icon: Option<std::sync::Arc<Vec<u8>>>,
+    pub buttons: Vec<NoticeButton>,
+    pub reply: Option<NoticeReply>,
+    pub urgent: bool,
+    pub waiting: usize,
+}
+
+impl Notice {
+    fn of(entry: &Entry, waiting: usize) -> Self {
+        let notification = &entry.notification;
+        let reply_button = notification.reply.as_ref().map(|reply| NoticeButton::Reply(reply.label.clone()));
+        let actions = visible_buttons(notification)
+            .iter()
+            .enumerate()
+            .map(|(index, action)| NoticeButton::Action(index, action.label.clone()));
+        let settings = notification
+            .has_settings_action
+            .then(|| NoticeButton::Settings(crate::i18n::t(crate::i18n::Key::Configure).to_string()));
+        let reply = match entry.reply_phase() {
+            ReplyPhase::Closed => None,
+            ReplyPhase::Sent => Some(NoticeReply::Sent),
+            phase @ (ReplyPhase::Composing | ReplyPhase::Invalid) => Some(NoticeReply::Composing {
+                shown: visible_reply(entry, entry.reply_text.as_deref().unwrap_or_default()),
+                placeholder: reply_placeholder(entry),
+                invalid: phase == ReplyPhase::Invalid,
+            }),
+        };
+        Self {
+            id: notification.id,
+            app: notification.display_app().to_string(),
+            title: notification.summary.clone(),
+            body: notification.body.clone(),
+            icon: entry.icon.clone(),
+            buttons: reply_button.into_iter().chain(actions).chain(settings).collect(),
+            reply,
+            urgent: notification.urgency == Urgency::Critical && notification.category != crate::agent_prompt::CATEGORY,
+            waiting,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalEvent {
     Action { id: u32, key: String },
     Reply { id: u32, text: String },
@@ -843,6 +921,23 @@ impl Notifications {
     }
 
     #[must_use]
+    pub fn notice(&self) -> Option<Notice> {
+        let mut active = self.active();
+        let head = active.next()?;
+        let waiting = head.stacked.len() + active.map(Entry::group_size).sum::<usize>();
+        Some(Notice::of(head, waiting))
+    }
+
+    pub fn hold(&mut self, id: Option<u32>) {
+        let now = Instant::now();
+        let locked = self.locked_at.is_some();
+        for entry in self.active_mut() {
+            let held = id == Some(entry.notification.id);
+            entry.set_hovered(held || locked, now);
+        }
+    }
+
+    #[must_use]
     pub fn reply_target(&self) -> Option<u32> {
         self.active().find(|entry| entry.reply_text.is_some()).map(|entry| entry.notification.id)
     }
@@ -977,6 +1072,7 @@ impl Notifications {
     }
 
     pub fn settle(&mut self) -> bool {
+        self.retire_sent();
         self.retire_left();
         self.prune_layers();
         self.is_animating()
@@ -1628,6 +1724,30 @@ pub fn wrap_lines(
         }
     }
 
+    lines
+}
+
+#[must_use]
+pub fn wrap_paragraphs(
+    painter: &crate::paint::Painter, text: &str, style: &glide_theme::TextStyle, max_width: i32, max_lines: usize,
+) -> Vec<String> {
+    let paragraphs: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    let fits = |candidate: &str| text_px(painter, candidate, style) <= max_width;
+    let mut lines: Vec<String> = Vec::new();
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        let room = max_lines.saturating_sub(lines.len());
+        let mut wrapped = wrap_lines(painter, paragraph, style, max_width, room);
+        let cut = wrapped.len() == room && index + 1 < paragraphs.len();
+        lines.append(&mut wrapped);
+        if cut {
+            if let Some(last) = lines.last_mut()
+                && !last.ends_with('…')
+            {
+                *last = ellipsise(last, &fits);
+            }
+            break;
+        }
+    }
     lines
 }
 
@@ -2932,6 +3052,60 @@ mod tests {
         assert_eq!(word.len(), 1);
         assert!(text_px(&painter, &word[0], &style) <= body_width());
         assert!(wrap("   ", BODY_MAX_LINES).is_empty());
+    }
+
+    #[test]
+    fn the_island_notice_is_the_head_toast_with_its_buttons_reply_state_and_queue() {
+        let (mut store, mut icons) = store();
+        assert_eq!(store.notice(), None);
+        let question = Notification {
+            category: crate::agent_prompt::CATEGORY.into(),
+            urgency: Urgency::Critical,
+            actions: vec![
+                glide_notify::Action { key: "accept".into(), label: "Allow".into() },
+                glide_notify::Action { key: "decline".into(), label: "Cancel".into() },
+            ],
+            timeout: None,
+            ..from_app(1, "Glide")
+        };
+        assert!(store.push(&mut icons, question, false));
+        let notice = store.notice().expect("notice");
+        assert_eq!(notice.id, 1);
+        assert_eq!(notice.buttons, [NoticeButton::Action(0, "Allow".into()), NoticeButton::Action(1, "Cancel".into())]);
+        assert!(!notice.urgent, "a question is not an alarm");
+        assert_eq!(notice.waiting, 0);
+
+        assert!(store.push(&mut icons, repliable(2), false));
+        let notice = store.notice().expect("notice");
+        assert_eq!((notice.id, notice.waiting), (2, 1), "the newest leads and the other waits");
+        assert_eq!(notice.buttons.first(), Some(&NoticeButton::Reply("Reply".into())));
+        assert!(store.open_reply(2) && store.type_reply('h'));
+        assert!(matches!(
+            store.notice().and_then(|notice| notice.reply),
+            Some(NoticeReply::Composing { shown, .. }) if shown == "h"
+        ));
+    }
+
+    #[test]
+    fn holding_the_island_notice_freezes_its_timeout_and_a_sent_reply_retires_without_toasts() {
+        let (mut store, mut icons) = store();
+        assert!(store.push(&mut icons, notification(1), false));
+        store.hold(Some(1));
+        std::thread::sleep(Duration::from_millis(80));
+        store.tick();
+        assert!(store.notice().is_some(), "held past its 50 ms timeout");
+        store.hold(None);
+        std::thread::sleep(Duration::from_millis(80));
+        store.tick();
+        assert!(store.notice().is_none());
+
+        assert!(store.push(&mut icons, repliable(2), false));
+        assert!(store.open_reply(2) && store.type_reply('k') && store.send_reply());
+        if let Some(entry) = store.live.iter_mut().find(|entry| entry.notification.id == 2) {
+            entry.reply_sent_at = Instant::now().checked_sub(glide_theme::motion::t4());
+        }
+        store.settle();
+        assert!(store.notice().is_none(), "settle retires the sent reply now that render may not run");
     }
 
     #[test]

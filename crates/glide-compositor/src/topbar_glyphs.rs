@@ -23,6 +23,7 @@ pub(super) enum Glyph {
     SpeakerMuted,
     Bluetooth,
     Shield,
+    Send,
 }
 
 const SPEAKER: &str = "<path d=\"M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z\"/>";
@@ -31,7 +32,7 @@ const FAR_WAVE: &str = "<path d=\"M13.8 4.6a6.4 6.4 0 010 9\"/>";
 
 impl Glyph {
     #[cfg(test)]
-    pub(super) const ALL: [Self; 19] = [
+    pub(super) const ALL: [Self; 20] = [
         Self::Bell,
         Self::Quiet,
         Self::Play,
@@ -51,6 +52,7 @@ impl Glyph {
         Self::SpeakerMuted,
         Self::Bluetooth,
         Self::Shield,
+        Self::Send,
     ];
 
     fn body(self) -> String {
@@ -80,6 +82,7 @@ impl Glyph {
             Self::SpeakerMuted => return format!("{SPEAKER}<path d=\"M12.2 6.2l3.4 5.6M15.6 6.2l-3.4 5.6\"/>"),
             Self::Bluetooth => "<path d=\"M5 5.4l6 5.2-3 2.6V2.8l3 2.6-6 5.2\"/>",
             Self::Shield => "<path d=\"M8 2.2l4.8 1.8v3.6c0 3-2 5.2-4.8 6.2-2.8-1-4.8-3.2-4.8-6.2V4z\"/>",
+            Self::Send => "<path d=\"M8 13V3.5M4 7.5l4-4 4 4\"/>",
         };
         fixed.to_string()
     }
@@ -96,7 +99,7 @@ impl Glyph {
             Self::Play | Self::Pause | Self::Previous | Self::Next => None,
             Self::Bell => Some("1.6"),
             Self::Quiet => Some("1.3"),
-            Self::Collapse | Self::Close => Some("2.2"),
+            Self::Collapse | Self::Close | Self::Send => Some("2.2"),
             Self::Back | Self::Forward => Some("1.8"),
             Self::SpeakerSilent | Self::SpeakerLow | Self::SpeakerHigh | Self::SpeakerMuted | Self::Bluetooth => {
                 Some("1.4")
@@ -142,6 +145,7 @@ impl Glyph {
             Self::SpeakerHigh => "audio-volume-high",
             Self::Bluetooth => "bluetooth",
             Self::Shield => "network-vpn",
+            Self::Send => "go-up",
         }
     }
 }
