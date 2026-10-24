@@ -357,11 +357,6 @@ impl Registry {
     pub fn keys(&self) -> Vec<String> {
         self.items.iter().map(Address::key).collect()
     }
-
-    #[must_use]
-    pub fn has_hosts(&self) -> bool {
-        !self.hosts.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -584,7 +579,7 @@ mod tests {
         let gone = registry.vanish(":1.5");
         assert_eq!(gone, vec![address(":1.5", "/a"), address(":1.5", "/b")]);
         assert_eq!(registry.keys(), vec![String::from("org.example.Tray/c")]);
-        assert!(!registry.has_hosts());
+        assert!(registry.hosts.is_empty());
         assert!(registry.vanish(":1.99").is_empty());
         assert!(registry.remove_item(&address("org.example.Tray", "/c")));
         assert!(registry.items().is_empty());

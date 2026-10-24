@@ -33,7 +33,6 @@ iced = { version = "0.14.0", default-features = false, features = [
 glide-app = { path = "../glide-app" }
 glide-config = { path = "../glide-config" }
 glide-sdk = { path = "../glide-sdk" }
-raw-window-handle = "0.6"
 regex = "1"
 serde.workspace = true
 toml.workspace = true
@@ -58,6 +57,3 @@ tree-sitter-toml-ng = "0.7"
 tree-sitter-typescript = "0.23"
 tree-sitter-xml = "0.7"
 tree-sitter-yaml = "0.7"
-
-[dev-dependencies]
-iced_tiny_skia = { version = "0.14", default-features = false }

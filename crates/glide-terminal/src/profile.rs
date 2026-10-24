@@ -76,11 +76,6 @@ impl Palette {
     }
 
     #[must_use]
-    pub fn is_dark(&self) -> bool {
-        luma(self.background) < 0.5
-    }
-
-    #[must_use]
     pub fn indexed(&self, colors: &Colors, index: usize) -> Rgb {
         colors[index].unwrap_or_else(|| match index {
             0..16 => self.ansi[index],
@@ -163,10 +158,6 @@ impl Palette {
 pub fn mix(from: Rgb, to: Rgb, amount: f32) -> Rgb {
     let blend = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * amount).round() as u8;
     Rgb { r: blend(from.r, to.r), g: blend(from.g, to.g), b: blend(from.b, to.b) }
-}
-
-fn luma(color: Rgb) -> f32 {
-    (0.2126 * f32::from(color.r) + 0.7152 * f32::from(color.g) + 0.0722 * f32::from(color.b)) / 255.0
 }
 
 #[must_use]
@@ -265,7 +256,6 @@ mod tests {
             let palette = Profile::Meridian.palette(&tokens);
             assert_eq!(palette.background, token(tokens.term_bg));
             assert_eq!(palette.foreground, token(tokens.term_fg));
-            assert_eq!(palette.is_dark(), appearance == Appearance::Dark);
         }
     }
 

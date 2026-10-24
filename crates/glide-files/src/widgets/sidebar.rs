@@ -12,7 +12,6 @@ use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::theme;
 
-pub const ITEM_HEIGHT: f32 = theme::CONTROL;
 const EJECT: f32 = theme::SMALL_CONTROL;
 const JOBS_HEIGHT: f32 = 320.0;
 const GLYPH: f32 = 16.0;

@@ -379,13 +379,6 @@ impl Document {
         self.sync(before, kind)
     }
 
-    pub fn replace_selecting(&mut self, range: Range<usize>, with: &str) -> bool {
-        let start = range.start;
-        let changed = self.replace(range, with, Kind::Other);
-        self.select(start..start + with.len());
-        changed
-    }
-
     pub fn undo(&mut self) -> bool {
         let Some(step) = self.history.undo() else { return false };
         let (range, text, cursor) = (step.range, step.text.to_string(), step.cursor);
@@ -553,10 +546,11 @@ mod tests {
     }
 
     #[test]
-    fn replacing_a_range_selects_the_result_and_saving_marks_it_clean() {
+    fn replacing_a_range_and_saving_marks_it_clean() {
         let mut document = Document::new(1, 1);
         document.set_text("one two three".into());
-        document.replace_selecting(4..7, "2");
+        document.replace(4..7, "2", Kind::Other);
+        document.select(4..5);
         assert_eq!(document.text, "one 2 three");
         assert_eq!(document.selected(), 4..5);
         assert!(document.dirty());

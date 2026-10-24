@@ -432,11 +432,6 @@ impl Daemon {
             .map(|response| UpdateResult { success: response.success, error: response.error_msg })
     }
 
-    pub fn installer_result(&self) -> Result<UpdateResult, Error> {
-        self.call(CALL, |mut client| async move { client.get_installer_result(pb::InstallerResultRequest {}).await })
-            .map(|response| UpdateResult { success: response.success, error: response.error_msg })
-    }
-
     pub fn forwarding_rules(&self) -> Result<Vec<ForwardingRule>, Error> {
         let response =
             self.call(CALL, |mut client| async move { client.forwarding_rules(pb::EmptyRequest {}).await })?;

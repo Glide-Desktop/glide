@@ -35,7 +35,6 @@ glide-sdk = { path = "../glide-sdk" }
 glide-ipc = { path = "../glide-ipc" }
 glide-netbird = { path = "../glide-netbird" }
 glide-terminal = { path = "../glide-terminal" }
-thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml_edit = "0.25"

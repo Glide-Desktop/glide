@@ -60,7 +60,6 @@ impl NetworkState {
 }
 
 pub const WIFI_KIND: &str = "802-11-wireless";
-pub const ETHERNET_KIND: &str = "802-3-ethernet";
 pub const HOTSPOT_NAME: &str = "Glide Hotspot";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

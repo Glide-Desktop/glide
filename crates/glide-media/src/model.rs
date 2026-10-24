@@ -62,14 +62,6 @@ impl Track {
         let fraction = (position.as_secs_f64() / length.as_secs_f64()) as f32;
         Some(fraction.clamp(0.0, 1.0))
     }
-
-    #[must_use]
-    pub fn is_same_track(&self, other: &Self) -> bool {
-        self.bus == other.bus
-            && self.title == other.title
-            && self.artist == other.artist
-            && self.art_url == other.art_url
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,21 +262,6 @@ mod tests {
     fn the_current_player_always_updates_itself() {
         let current = player("a", Playback::Playing);
         assert!(better_candidate(Some(&current), &player("a", Playback::Paused)));
-    }
-
-    #[test]
-    fn the_same_track_is_recognised_across_position_updates() {
-        let first = Track {
-            bus: "a".to_string(),
-            title: "Song".to_string(),
-            position: Some(Duration::from_secs(1)),
-            ..Track::default()
-        };
-        let later = Track { position: Some(Duration::from_secs(9)), ..first.clone() };
-        assert!(first.is_same_track(&later));
-
-        let other = Track { title: "Another".to_string(), ..first.clone() };
-        assert!(!first.is_same_track(&other));
     }
 
     #[test]

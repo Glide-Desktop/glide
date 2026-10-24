@@ -182,11 +182,6 @@ impl Page {
         &self.state
     }
 
-    #[must_use]
-    pub fn confirm_delete(&self) -> Option<&str> {
-        self.confirm_delete.as_deref()
-    }
-
     fn begin(&mut self, busy: Option<String>) {
         self.busy = busy;
         self.error = None;

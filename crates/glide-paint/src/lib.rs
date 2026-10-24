@@ -170,11 +170,6 @@ impl Painter {
         }
     }
 
-    #[must_use]
-    pub const fn tabular_family_in_use(&self) -> Option<&'static str> {
-        self.mono_family
-    }
-
     const fn face_role(&self, tabular: bool) -> FaceRole {
         if tabular && self.mono_family.is_some() { FaceRole::Mono } else { FaceRole::Ui }
     }
@@ -299,7 +294,8 @@ impl Painter {
         if style.uppercase { std::borrow::Cow::Owned(text.to_uppercase()) } else { std::borrow::Cow::Borrowed(text) }
     }
 
-    pub fn draw_label_over(
+    #[cfg(test)]
+    fn draw_label_over(
         &self, buf: &mut [u8], width: i32, height: i32, x_min: i32, x_max: i32, scale: i32, align: TextAlign,
         text: &str, fg_argb: [u8; 4],
     ) {
@@ -835,74 +831,6 @@ pub fn fill_rounded_rect_gradient_over(
     pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaGlyph {
-    Play,
-    Pause,
-    Previous,
-    Next,
-}
-
-pub fn draw_media_glyph_over(
-    buf: &mut [u8], canvas_width: i32, canvas_height: i32, box_x: i32, box_y: i32, box_side: i32, scale: i32,
-    fg: Color, glyph: MediaGlyph,
-) {
-    let Some(mut pixmap) = over(buf, canvas_width, canvas_height, scale) else {
-        return;
-    };
-    let scale_f = scale as f32;
-    let side = box_side as f32 * scale_f;
-    let ox = box_x as f32 * scale_f;
-    let oy = box_y as f32 * scale_f;
-
-    let glyph_side = side * 0.56;
-    let left = ox + (side - glyph_side) / 2.0;
-    let top = oy + (side - glyph_side) / 2.0;
-    let right = left + glyph_side;
-    let bottom = top + glyph_side;
-    let mid_y = f32::midpoint(top, bottom);
-
-    let mut pb = tiny_skia::PathBuilder::new();
-    match glyph {
-        MediaGlyph::Play => {
-            pb.move_to(left + glyph_side * 0.12, top);
-            pb.line_to(right, mid_y);
-            pb.line_to(left + glyph_side * 0.12, bottom);
-            pb.close();
-        }
-        MediaGlyph::Pause => {
-            let bar = glyph_side * 0.30;
-            for (from, to) in [(left, left + bar), (right - bar, right)] {
-                if let Some(rect) = tiny_skia::Rect::from_ltrb(from, top, to, bottom) {
-                    pb.push_rect(rect);
-                }
-            }
-        }
-        MediaGlyph::Previous => {
-            let bar = glyph_side * 0.20;
-            if let Some(rect) = tiny_skia::Rect::from_ltrb(left, top, left + bar, bottom) {
-                pb.push_rect(rect);
-            }
-            pb.move_to(right, top);
-            pb.line_to(left + bar + glyph_side * 0.06, mid_y);
-            pb.line_to(right, bottom);
-            pb.close();
-        }
-        MediaGlyph::Next => {
-            let bar = glyph_side * 0.20;
-            if let Some(rect) = tiny_skia::Rect::from_ltrb(right - bar, top, right, bottom) {
-                pb.push_rect(rect);
-            }
-            pb.move_to(left, top);
-            pb.line_to(right - bar - glyph_side * 0.06, mid_y);
-            pb.line_to(left, bottom);
-            pb.close();
-        }
-    }
-
-    fill_solid(&mut pixmap, pb.finish(), bgr(fg));
-}
-
 #[must_use]
 pub fn decode_cover(data: &[u8], side: i32) -> Option<Vec<u8>> {
     if data.starts_with(&[0x89, b'P', b'N', b'G']) {
@@ -1019,98 +947,6 @@ pub fn draw_chevron_glyph_over(
             g.polyline(&[(2.6, 4.0), (5.0, 6.4), (7.4, 4.0)]);
         }
     });
-}
-
-pub struct BatteryRenderArgs {
-    pub canvas_width: i32,
-    pub canvas_height: i32,
-    pub pct: u8,
-    pub charging: bool,
-    pub scale: i32,
-    pub fg: Color,
-    pub ok_color: Color,
-    pub danger_color: Color,
-}
-
-pub fn draw_battery_glyph_over(buf: &mut [u8], args: &BatteryRenderArgs) {
-    let batt_w = 20;
-    let batt_h = 11;
-    let batt_x = (args.canvas_width - batt_w - 3) / 2;
-    let batt_y = (args.canvas_height - batt_h) / 2;
-
-    stroke_rounded_rect_over(
-        buf,
-        args.canvas_width,
-        args.canvas_height,
-        batt_x,
-        batt_y,
-        batt_w,
-        batt_h,
-        args.scale,
-        1.3,
-        3.0,
-        args.fg,
-    );
-
-    let tip_w = 2;
-    let tip_h = 5;
-    let tip_x = batt_x + batt_w;
-    let tip_y = batt_y + (batt_h - tip_h) / 2;
-    Painter::fill_rounded_rect_over(
-        buf,
-        args.canvas_width,
-        args.canvas_height,
-        tip_x,
-        tip_y,
-        tip_w,
-        tip_h,
-        args.scale,
-        args.fg,
-        1.0,
-    );
-
-    let max_fill_w = 14_f32;
-    let pct_clamped = args.pct.min(100);
-    let fill_w = ((max_fill_w * f32::from(pct_clamped)) / 100.0).max(2.0);
-    let fill_color = if args.charging {
-        args.ok_color
-    } else if pct_clamped <= 20 {
-        args.danger_color
-    } else {
-        args.fg
-    };
-
-    Painter::fill_rounded_rect_over(
-        buf,
-        args.canvas_width,
-        args.canvas_height,
-        batt_x + 2,
-        batt_y + 2,
-        fill_w.round() as i32,
-        batt_h - 4,
-        args.scale,
-        fill_color,
-        1.5,
-    );
-
-    if !args.charging {
-        return;
-    }
-    let Some(mut pixmap) = over(buf, args.canvas_width, args.canvas_height, args.scale) else {
-        return;
-    };
-    let scale_f = args.scale as f32;
-    let bcx = (batt_x as f32 + batt_w as f32 / 2.0) * scale_f;
-    let bcy = (batt_y as f32 + batt_h as f32 / 2.0) * scale_f;
-    let bolt_scale = scale_f * 0.9;
-    let mut bolt = tiny_skia::PathBuilder::new();
-    polyline(
-        &mut bolt,
-        [(0.6, -3.8), (-2.2, 0.4), (-0.2, 0.4), (-0.6, 3.8), (2.2, -0.4), (0.2, -0.4)]
-            .map(|(x, y)| (bcx + x * bolt_scale, bcy + y * bolt_scale)),
-    );
-    bolt.close();
-    fill_solid(&mut pixmap, bolt.finish(), bgr(args.fg));
 }
 
 pub fn draw_speaker_glyph_over(
@@ -1819,7 +1655,7 @@ mod tests {
         assert_eq!(tabular_family(std::iter::empty()), None);
 
         let painter = Painter::with_embedded_font_only(14.0);
-        assert_eq!(painter.tabular_family_in_use(), None);
+        assert_eq!(painter.mono_family, None);
         assert_eq!(painter.family_for(painter.face_role(true)), "Liberation Sans");
         let wide = painter.text_width_styled("00:00", &TextStyle::NUM);
         let narrow = painter.text_width_styled("11:11", &TextStyle::NUM);

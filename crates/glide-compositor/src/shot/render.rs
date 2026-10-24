@@ -1508,16 +1508,13 @@ mod tests {
     }
 
     fn wallpaper(width: u32, height: u32) -> Image {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../design/wallpaper.png");
-        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).expect("wallpaper")));
-        let mut reader = decoder.read_info().expect("png");
-        let mut buf = vec![0; reader.output_buffer_size().expect("size")];
-        let info = reader.next_frame(&mut buf).expect("frame");
+        let source = glide_paint::decode_wallpaper(glide_paint::embedded_wallpaper_bytes()).expect("wallpaper");
+        let (source_width, buf) = (source.width(), source.data());
         let mut image = Image::new(width, height).expect("image");
         for y in 0..height {
             for x in 0..width {
-                let (sx, sy) = (x * info.width / width, y * info.height / height);
-                let from = ((sy * info.width + sx) * 4) as usize;
+                let (sx, sy) = (x * source_width / width, y * source.height() / height);
+                let from = ((sy * source_width + sx) * 4) as usize;
                 let to = ((y * width + x) * 4) as usize;
                 image.data[to..to + 3].copy_from_slice(&buf[from..from + 3]);
                 image.data[to + 3] = 255;
