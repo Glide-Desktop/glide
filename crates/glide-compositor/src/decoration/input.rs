@@ -11,7 +11,7 @@ use smithay::{
             RelativeMotionEvent,
         },
     },
-    utils::{IsAlive, Serial},
+    utils::{IsAlive, Logical, Point, Serial},
 };
 
 use crate::{
@@ -54,13 +54,13 @@ fn release_held_grab_button(window: &GlideWindow, event: &ButtonEvent) {
     }
 }
 
-pub(crate) fn start_move(seat: &Seat<GlideState>, state: &mut GlideState, window: &GlideWindow, event: &ButtonEvent) {
-    let seat = seat.clone();
-    let window = window.clone();
-    let button = event.button;
-    let serial = event.serial;
+fn grab_when_idle(
+    seat: &Seat<GlideState>, state: &mut GlideState, window: &GlideWindow, event: &ButtonEvent,
+    begin: impl FnOnce(&mut GlideState, &GlideWindow, GrabStartData<GlideState>, Point<i32, Logical>) -> Option<Grab>
+    + 'static,
+) {
+    let (seat, window, button, serial) = (seat.clone(), window.clone(), event.button, event.serial);
     held_grab_button(&window).set(Some(button));
-
     state.loop_handle.insert_idle(move |state| {
         if held_grab_button(&window).take() != Some(button) {
             return;
@@ -68,18 +68,33 @@ pub(crate) fn start_move(seat: &Seat<GlideState>, state: &mut GlideState, window
         let Some(pointer) = seat.get_pointer() else {
             return;
         };
-
         state.finish_workspace_swipe();
-        let Some(initial_window_location) = state.space.element_location(&window) else {
+        let Some(location) = state.space.element_location(&window) else {
             return;
         };
-
         let start_data = GrabStartData { focus: None, button, location: pointer.current_location() };
-        let grab =
-            MoveSurfaceGrab::new(start_data, window.clone(), initial_window_location, state.is_size_locked(&window));
-        window.set_dragging(true);
-        pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Clear);
+        let clear = smithay::input::pointer::Focus::Clear;
+        match begin(state, &window, start_data, location) {
+            Some(Grab::Move(grab)) => pointer.set_grab(state, grab, serial, clear),
+            Some(Grab::Resize(grab, edges)) => {
+                pointer.set_grab(state, grab, serial, clear);
+                state.cursor_status = CursorImageStatus::Named(resize_cursor(edges));
+            }
+            None => return,
+        }
         state.queue_redraw();
+    });
+}
+
+enum Grab {
+    Move(MoveSurfaceGrab),
+    Resize(ResizeSurfaceGrab, ResizeEdge),
+}
+
+pub(crate) fn start_move(seat: &Seat<GlideState>, state: &mut GlideState, window: &GlideWindow, event: &ButtonEvent) {
+    grab_when_idle(seat, state, window, event, |state, window, start_data, location| {
+        window.set_dragging(true);
+        Some(Grab::Move(MoveSurfaceGrab::new(start_data, window.clone(), location, state.is_size_locked(window))))
     });
 }
 
@@ -89,35 +104,12 @@ pub(crate) fn start_resize(
     if state.is_size_locked(window) {
         return;
     }
-
-    let seat = seat.clone();
-    let window = window.clone();
-    let button = event.button;
-    let serial = event.serial;
-    held_grab_button(&window).set(Some(button));
-
-    state.loop_handle.insert_idle(move |state| {
-        if held_grab_button(&window).take() != Some(button) {
-            return;
+    grab_when_idle(seat, state, window, event, move |state, window, start_data, location| {
+        if state.is_size_locked(window) {
+            return None;
         }
-        let Some(pointer) = seat.get_pointer() else {
-            return;
-        };
-        if state.is_size_locked(&window) {
-            return;
-        }
-        state.finish_workspace_swipe();
-        let Some(location) = state.space.element_location(&window) else {
-            return;
-        };
-
-        let start_data = GrabStartData { focus: None, button, location: pointer.current_location() };
         let initial_rect = smithay::utils::Rectangle::new(location, window.geometry().size);
-
-        let grab = ResizeSurfaceGrab::start(start_data, window.clone(), edges, initial_rect);
-        pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Clear);
-
-        state.cursor_status = CursorImageStatus::Named(resize_cursor(edges));
+        Some(Grab::Resize(ResizeSurfaceGrab::start(start_data, window.clone(), edges, initial_rect), edges))
     });
 }
 
