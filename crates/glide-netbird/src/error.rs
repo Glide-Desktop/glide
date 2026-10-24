@@ -34,7 +34,7 @@ pub enum Reason {
 
 impl Error {
     #[must_use]
-    pub fn from_status(status: &tonic::Status) -> Self {
+    pub(crate) fn from_status(status: &tonic::Status) -> Self {
         if let Some(info) = status.get_details_error_info()
             && info.reason == PRIVILEGE_REASON
             && info.domain == PRIVILEGE_DOMAIN

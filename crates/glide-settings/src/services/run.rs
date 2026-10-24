@@ -8,7 +8,7 @@ use iced::futures::channel::oneshot;
 pub const SETTLE_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Debounce(Generation);
+pub(crate) struct Debounce(Generation);
 
 impl Debounce {
     pub fn schedule<M, F>(&mut self, message: F) -> Task<M>
@@ -31,7 +31,7 @@ impl Debounce {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Generation(u64);
+pub(crate) struct Generation(u64);
 
 impl Generation {
     pub fn bump(&mut self) -> u64 {

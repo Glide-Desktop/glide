@@ -267,7 +267,7 @@ pub fn uri_path(arg: &str) -> PathBuf {
 }
 
 #[must_use]
-pub fn local_uri_path(arg: &str) -> Option<PathBuf> {
+pub(crate) fn local_uri_path(arg: &str) -> Option<PathBuf> {
     let Some(rest) = arg.strip_prefix("file://") else { return Some(PathBuf::from(arg)) };
     let slash = rest.find('/')?;
     let host = &rest[..slash];
@@ -422,7 +422,7 @@ fn home() -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn directory_label(directory: Option<&Path>) -> String {
+pub(crate) fn directory_label(directory: Option<&Path>) -> String {
     let Some(directory) = directory else { return String::new() };
     if home().as_deref() == Some(directory) {
         return "~".to_string();
@@ -470,7 +470,7 @@ impl App {
         (app, task)
     }
 
-    pub fn with_launch(mut launch: Launch) -> (Self, Task<Message>) {
+    pub(crate) fn with_launch(mut launch: Launch) -> (Self, Task<Message>) {
         let look = ShellLook::load();
         motion::set_scale(look.motion_scale);
         let prefs = config::load();
@@ -572,7 +572,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn pane_focused(&self, id: PaneId) -> bool {
+    pub(crate) fn pane_focused(&self, id: PaneId) -> bool {
         self.reported_focus == Some(id)
     }
 
@@ -582,7 +582,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn man_topic(&self) -> Option<String> {
+    pub(crate) fn man_topic(&self) -> Option<String> {
         let selected = self.focused()?.term.lock().selection_to_string()?;
         let topic = selected.trim();
         let word = |c: char| c.is_alphanumeric() || "-_.:+".contains(c);
@@ -590,7 +590,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn blink_visible(&self) -> bool {
+    pub(crate) fn blink_visible(&self) -> bool {
         !self.window.focused
             || motion::is_disabled()
             || (self.typed.elapsed().as_millis() / BLINK.as_millis()).is_multiple_of(2)

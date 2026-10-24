@@ -26,7 +26,7 @@ pub struct Thumbnailer {
 }
 
 #[must_use]
-pub fn load_thumbnailers(data: &[PathBuf]) -> Vec<Thumbnailer> {
+pub(crate) fn load_thumbnailers(data: &[PathBuf]) -> Vec<Thumbnailer> {
     let mut found = Vec::new();
     for dir in data.iter().map(|dir| dir.join("thumbnailers")) {
         let Ok(files) = std::fs::read_dir(dir) else {
@@ -268,7 +268,7 @@ fn work() {
 }
 
 #[must_use]
-pub fn generate(
+pub(crate) fn generate(
     requests: Vec<(PathBuf, String)>, thumbnailers: &Arc<Vec<Thumbnailer>>, latest: &Arc<AtomicU64>, generation: u64,
 ) -> UnboundedReceiver<Result> {
     prune_once();

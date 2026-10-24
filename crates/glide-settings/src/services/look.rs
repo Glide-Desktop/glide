@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use super::gsettings::{self, Snapshot};
 
 pub const INTERFACE: &str = "org.gnome.desktop.interface";
-pub const DEFAULT_ICON_THEME: &str = "Papirus";
+pub(crate) const DEFAULT_ICON_THEME: &str = "Papirus";
 
-pub const PREVIEW_ICONS: &[&[&str]] = &[
+pub(crate) const PREVIEW_ICONS: &[&[&str]] = &[
     &["folder", "inode-directory"],
     &["user-home", "folder-home"],
     &["utilities-terminal", "org.gnome.Terminal", "terminal", "Alacritty"],
@@ -20,7 +20,7 @@ const SIZES: &[&str] = &["scalable", "256x256", "128x128", "96x96", "64x64", "48
 const CONTEXTS: &[&str] = &["places", "apps", "mimetypes", "categories", "devices"];
 
 #[must_use]
-pub fn parse_inherits(index: &str) -> Vec<String> {
+pub(crate) fn parse_inherits(index: &str) -> Vec<String> {
     index
         .lines()
         .filter_map(|line| line.trim().strip_prefix("Inherits="))
@@ -78,7 +78,7 @@ fn find_in(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn icon_preview(theme: Option<&str>) -> Vec<PathBuf> {
+pub(crate) fn icon_preview(theme: Option<&str>) -> Vec<PathBuf> {
     let roots = super::apps::theme_dirs();
     let mut chain = theme_chain(theme.unwrap_or(DEFAULT_ICON_THEME), &roots);
     for fallback in ["Adwaita", "breeze"] {
@@ -149,22 +149,22 @@ pub struct FontRendering {
 }
 
 #[must_use]
-pub fn font_rendering_from(snapshot: &Snapshot) -> Option<FontRendering> {
+pub(crate) fn font_rendering_from(snapshot: &Snapshot) -> Option<FontRendering> {
     let smoothing = snapshot.string(INTERFACE, "font-antialiasing").and_then(|key| Smoothing::from_key(&key))?;
     let hinting = snapshot.string(INTERFACE, "font-hinting").and_then(|key| Hinting::from_key(&key))?;
     Some(FontRendering { smoothing, hinting })
 }
 
 #[must_use]
-pub fn font_rendering() -> Option<FontRendering> {
+pub(crate) fn font_rendering() -> Option<FontRendering> {
     font_rendering_from(&Snapshot::read(&[INTERFACE]))
 }
 
-pub fn set_smoothing(mode: Smoothing) -> Result<String, String> {
+pub(crate) fn set_smoothing(mode: Smoothing) -> Result<String, String> {
     gsettings::set_string(INTERFACE, "font-antialiasing", mode.key())
 }
 
-pub fn set_hinting(mode: Hinting) -> Result<String, String> {
+pub(crate) fn set_hinting(mode: Hinting) -> Result<String, String> {
     gsettings::set_string(INTERFACE, "font-hinting", mode.key())
 }
 

@@ -227,7 +227,7 @@ pub enum Button {
 }
 
 #[must_use]
-pub fn mouse_report(
+pub(crate) fn mouse_report(
     mode: TermMode, button: Button, pressed: bool, column: usize, line: usize, modifiers: Modifiers,
 ) -> Option<Vec<u8>> {
     let base = match button {

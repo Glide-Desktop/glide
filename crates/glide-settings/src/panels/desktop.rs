@@ -102,9 +102,9 @@ pub enum Knob {
     Margin,
 }
 
-pub const DEFAULT_HOVER_SCALE: f64 = 1.06;
-pub const DEFAULT_HOVER_LIFT: i64 = 4;
-pub const DEFAULT_MARGIN: i64 = 12;
+pub(crate) const DEFAULT_HOVER_SCALE: f64 = 1.06;
+pub(crate) const DEFAULT_HOVER_LIFT: i64 = 4;
+pub(crate) const DEFAULT_MARGIN: i64 = 12;
 
 impl Knob {
     #[must_use]
@@ -478,7 +478,7 @@ impl Page {
     }
 }
 
-pub const PREVIEW_HEIGHT: f32 = 150.0;
+pub(crate) const PREVIEW_HEIGHT: f32 = 150.0;
 
 fn dock_preview<'a>(
     t: &ThemeState, pins: &[(&str, Option<&PathBuf>)], size: f64, scale: f64, lift: f64, margin: f64,

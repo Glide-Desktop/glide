@@ -87,12 +87,12 @@ pub struct Page {
 }
 
 #[must_use]
-pub fn mute_key(id: &str) -> String {
+pub(crate) fn mute_key(id: &str) -> String {
     id.strip_suffix(".desktop").unwrap_or(id).to_string()
 }
 
 #[must_use]
-pub fn add_muted(list: &[String], entry: &str) -> Option<Vec<String>> {
+pub(crate) fn add_muted(list: &[String], entry: &str) -> Option<Vec<String>> {
     let entry = entry.trim();
     if entry.is_empty() || list.iter().any(|item| item.eq_ignore_ascii_case(entry)) {
         return None;

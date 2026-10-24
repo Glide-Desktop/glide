@@ -71,18 +71,18 @@ pub const FALLBACK_OUTPUT: Rectangle = Rectangle::from_loc_and_size(0, 0, 1920, 
 const CASCADE_STEP: i32 = 32;
 
 #[must_use]
-pub fn keep_reachable(frame: Rectangle, area: Rectangle) -> Rectangle {
+pub(crate) fn keep_reachable(frame: Rectangle, area: Rectangle) -> Rectangle {
     let max_x = (area.loc.x + area.size.width - frame.size.width).max(area.loc.x);
     let max_y = (area.loc.y + area.size.height - frame.size.height).max(area.loc.y);
     Rectangle::new(Point::new(frame.loc.x.clamp(area.loc.x, max_x), frame.loc.y.clamp(area.loc.y, max_y)), frame.size)
 }
 
-pub const MOVE_MIN_VISIBLE_WIDTH: i32 = 64;
+pub(crate) const MOVE_MIN_VISIBLE_WIDTH: i32 = 64;
 
-pub const MOVE_MIN_GRIP_HEIGHT: i32 = 32;
+pub(crate) const MOVE_MIN_GRIP_HEIGHT: i32 = 32;
 
 #[must_use]
-pub fn keep_grip_reachable(frame: Rectangle, grip_height: i32, area: Rectangle) -> Rectangle {
+pub(crate) fn keep_grip_reachable(frame: Rectangle, grip_height: i32, area: Rectangle) -> Rectangle {
     let grip_height = grip_height.max(MOVE_MIN_GRIP_HEIGHT).min(frame.size.height).max(1);
     let visible = MOVE_MIN_VISIBLE_WIDTH.min(frame.size.width).max(1);
     let overhang = frame.size.width - visible;
@@ -137,7 +137,7 @@ impl Layout {
     }
 
     #[must_use]
-    pub fn placement_work_area(&self) -> Rectangle {
+    pub(crate) fn placement_work_area(&self) -> Rectangle {
         self.placement_anchor.map_or_else(|| self.primary_output_work_area(), |anchor| self.work_area_at(anchor))
     }
 
@@ -152,7 +152,7 @@ impl Layout {
     }
 
     #[must_use]
-    pub fn output_at(&self, point: Point) -> Option<&OutputInfo> {
+    pub(crate) fn output_at(&self, point: Point) -> Option<&OutputInfo> {
         self.outputs.iter().find(|output| output.geometry.contains(point))
     }
 
@@ -178,7 +178,7 @@ impl Layout {
     }
 
     #[must_use]
-    pub fn output_geometry_for_window(&self, w: WindowId) -> Rectangle {
+    pub(crate) fn output_geometry_for_window(&self, w: WindowId) -> Rectangle {
         self.output_for_window(w).map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
     }
 
@@ -191,7 +191,7 @@ impl Layout {
         self.policy
     }
 
-    pub const MAX_FIXED_WORKSPACES: usize = 36;
+    pub(crate) const MAX_FIXED_WORKSPACES: usize = 36;
 
     pub fn set_fixed_workspaces(&mut self, count: Option<usize>) -> bool {
         let count = count.map(|count| count.clamp(1, Self::MAX_FIXED_WORKSPACES));
@@ -348,7 +348,7 @@ impl Layout {
         self.workspaces.iter().position(|ws| ws.id == self.active)
     }
 
-    pub fn raise_window(&mut self, w: WindowId) -> bool {
+    pub(crate) fn raise_window(&mut self, w: WindowId) -> bool {
         let Some(ws_id) = self.windows.get(&w).map(|s| s.workspace_id) else {
             return false;
         };
@@ -766,7 +766,9 @@ impl Layout {
     }
 
     #[must_use]
-    pub fn calculate_centered_geometry(&self, content_size: Size, insets: Insets, index_on_ws: usize) -> Rectangle {
+    pub(crate) fn calculate_centered_geometry(
+        &self, content_size: Size, insets: Insets, index_on_ws: usize,
+    ) -> Rectangle {
         let work_area = self.placement_work_area();
         let frame_size = content_size.grow(insets);
 

@@ -84,7 +84,7 @@ pub fn parse_status(text: &str) -> SystemLocale {
 }
 
 #[must_use]
-pub fn read_system() -> SystemLocale {
+pub(crate) fn read_system() -> SystemLocale {
     let from_bus = system_proxy(DEST, PATH).ok().and_then(|proxy| proxy.get_property::<Vec<String>>("Locale").ok());
     if let Some(list) = from_bus {
         return parse_assignments(list.iter().map(String::as_str));
@@ -99,7 +99,7 @@ pub fn read_system() -> SystemLocale {
     parse_assignments(text.lines())
 }
 
-pub fn set_system(locale: &SystemLocale) -> Result<(), String> {
+pub(crate) fn set_system(locale: &SystemLocale) -> Result<(), String> {
     authorized_call(&system_proxy(DEST, PATH)?, "SetLocale", &(locale.assignments(), true))
 }
 
@@ -275,12 +275,12 @@ pub fn formats(locale: &str) -> Option<Formats> {
 }
 
 #[must_use]
-pub fn all_formats(locales: &[String]) -> Vec<Formats> {
+pub(crate) fn all_formats(locales: &[String]) -> Vec<Formats> {
     locales.iter().take(MAX_LOCALES).filter_map(|locale| formats(locale)).collect()
 }
 
 #[must_use]
-pub fn session_time_locale() -> String {
+pub(crate) fn session_time_locale() -> String {
     ["LC_ALL", "LC_TIME", "LANG"]
         .iter()
         .filter_map(|name| std::env::var(name).ok())

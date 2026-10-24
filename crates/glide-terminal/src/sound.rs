@@ -11,7 +11,7 @@ fn expand(path: &str) -> PathBuf {
 }
 
 #[must_use]
-pub fn bell_file(configured: Option<&str>) -> Option<PathBuf> {
+pub(crate) fn bell_file(configured: Option<&str>) -> Option<PathBuf> {
     if let Some(path) = configured.map(str::trim).filter(|path| !path.is_empty()) {
         return Some(expand(path)).filter(|path| path.is_file());
     }

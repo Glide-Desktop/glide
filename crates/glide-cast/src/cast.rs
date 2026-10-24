@@ -240,7 +240,7 @@ fn display_host(address: IpAddr) -> String {
 }
 
 #[must_use]
-pub const fn preference(hardware: bool) -> &'static [u8] {
+pub(crate) const fn preference(hardware: bool) -> &'static [u8] {
     if hardware { &formats::HARDWARE_PREFERENCE } else { &formats::SOFTWARE_PREFERENCE }
 }
 

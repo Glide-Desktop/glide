@@ -59,7 +59,7 @@ impl TimeFormat {
     }
 
     #[must_use]
-    pub fn uses_24h(self) -> bool {
+    pub(crate) fn uses_24h(self) -> bool {
         match self {
             Self::Hours24 => true,
             Self::Hours12 => false,

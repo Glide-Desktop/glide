@@ -1,4 +1,4 @@
-pub const DEVICES_PATH: &str = "/proc/bus/input/devices";
+pub(crate) const DEVICES_PATH: &str = "/proc/bus/input/devices";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerKind {

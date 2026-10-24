@@ -22,7 +22,7 @@ pub struct Spec {
 
 impl Spec {
     #[must_use]
-    pub fn bitrate_kbps(&self) -> u32 {
+    pub(crate) fn bitrate_kbps(&self) -> u32 {
         let pixels = self.video.mode.width * self.video.mode.height * self.video.mode.fps;
         (pixels / 8_000).clamp(2_000, 20_000)
     }
@@ -33,7 +33,7 @@ impl Spec {
 }
 
 #[must_use]
-pub fn hardware_encoder(available: impl Fn(&str) -> bool) -> bool {
+pub(crate) fn hardware_encoder(available: impl Fn(&str) -> bool) -> bool {
     ENCODERS[..3].iter().any(|name| available(name))
 }
 
@@ -97,7 +97,7 @@ pub fn description(spec: &Spec, available: impl Fn(&str) -> bool) -> Option<Stri
 }
 
 #[must_use]
-pub fn element_exists(name: &str) -> bool {
+pub(crate) fn element_exists(name: &str) -> bool {
     gst::ElementFactory::find(name).is_some()
 }
 
@@ -126,7 +126,7 @@ impl Stream {
         self.video.push_buffer(gst::Buffer::from_mut_slice(pixels)).map(|_| ()).map_err(|err| err.to_string())
     }
 
-    pub fn request_keyframe(&self) {
+    pub(crate) fn request_keyframe(&self) {
         let event = gstreamer_video::DownstreamForceKeyUnitEvent::builder().all_headers(true).build();
         self.video.send_event(event);
     }

@@ -62,7 +62,7 @@ impl State {
         Self { request, name, filter, confirm: None, choices }
     }
 
-    pub fn set_choice(&mut self, index: usize, value: String) {
+    pub(crate) fn set_choice(&mut self, index: usize, value: String) {
         let known = self.request.choices.get(index).is_some_and(|choice| {
             if choice.is_toggle() {
                 matches!(value.as_str(), "true" | "false")
@@ -75,14 +75,14 @@ impl State {
         }
     }
 
-    pub fn set_filter(&mut self, index: usize) {
+    pub(crate) fn set_filter(&mut self, index: usize) {
         if index < self.request.filters.len() {
             self.filter = Some(index);
         }
     }
 
     #[must_use]
-    pub fn filter_options(&self) -> Vec<Pick> {
+    pub(crate) fn filter_options(&self) -> Vec<Pick> {
         self.request
             .filters
             .iter()
@@ -92,31 +92,31 @@ impl State {
     }
 
     #[must_use]
-    pub fn choice_options(&self, index: usize) -> Vec<Pick> {
+    pub(crate) fn choice_options(&self, index: usize) -> Vec<Pick> {
         self.request.choices.get(index).map_or_else(Vec::new, |choice| {
             choice.options.iter().map(|(id, label)| Pick { index, id: id.clone(), label: label.clone() }).collect()
         })
     }
 
     #[must_use]
-    pub fn new_folder_offered(&self) -> bool {
+    pub(crate) fn new_folder_offered(&self) -> bool {
         matches!(self.request.mode, Mode::Save | Mode::SaveFiles) || self.picks_folders()
     }
 
     #[must_use]
-    pub fn name_stem(&self) -> usize {
+    pub(crate) fn name_stem(&self) -> usize {
         let name = self.name.trim_end();
         Path::new(name).file_stem().map_or(0, |stem| stem.to_string_lossy().chars().count())
     }
 
     #[must_use]
-    pub fn choice_is_on(&self, index: usize) -> bool {
+    pub(crate) fn choice_is_on(&self, index: usize) -> bool {
         self.request.choices.get(index).is_some_and(glide_app::chooser::Choice::is_toggle)
             && self.choices.get(index).is_some_and(|value| value == "true")
     }
 
     #[must_use]
-    pub fn answered_choices(&self) -> Vec<(String, String)> {
+    pub(crate) fn answered_choices(&self) -> Vec<(String, String)> {
         self.request
             .choices
             .iter()
@@ -126,12 +126,12 @@ impl State {
     }
 
     #[must_use]
-    pub const fn picks_folders(&self) -> bool {
+    pub(crate) const fn picks_folders(&self) -> bool {
         matches!(self.request.mode, Mode::Open) && self.request.directory
     }
 
     #[must_use]
-    pub fn active_filter(&self) -> Option<&Filter> {
+    pub(crate) fn active_filter(&self) -> Option<&Filter> {
         self.filter.and_then(|index| self.request.filters.get(index))
     }
 

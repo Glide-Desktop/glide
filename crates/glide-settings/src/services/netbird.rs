@@ -63,7 +63,7 @@ impl From<nb::Error> for Failure {
     }
 }
 
-pub fn open_uri(uri: &str) {
+pub(crate) fn open_uri(uri: &str) {
     let mut command = match std::env::var("BROWSER").ok().filter(|browser| !browser.trim().is_empty()) {
         Some(browser) => Command::new(browser),
         None => Command::new("xdg-open"),
@@ -219,12 +219,12 @@ fn parse_bool(value: &str) -> Option<bool> {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct ApplyRequest {
+pub(crate) struct ApplyRequest {
     pub profile: nb::ActiveProfile,
     pub patch: ConfigPatch,
 }
 
-pub fn parse_apply(args: &[String]) -> Result<ApplyRequest, String> {
+pub(crate) fn parse_apply(args: &[String]) -> Result<ApplyRequest, String> {
     let mut request = ApplyRequest::default();
     let mut words = args.iter();
     while let Some(word) = words.next() {
@@ -270,7 +270,7 @@ pub fn apply_privileged(args: &[String]) -> i32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BundleJob {
+pub(crate) struct BundleJob {
     pub options: nb::BundleOptions,
     pub trace: bool,
     pub packets: bool,
@@ -288,7 +288,7 @@ fn wait(limit: Duration, cancel: &AtomicBool) -> bool {
     true
 }
 
-pub fn create_bundle(job: BundleJob, cancel: &AtomicBool) -> Result<nb::BundleResult, Failure> {
+pub(crate) fn create_bundle(job: BundleJob, cancel: &AtomicBool) -> Result<nb::BundleResult, Failure> {
     let daemon = daemon()?;
     let previous = if job.trace { daemon.log_level().ok() } else { None };
     if job.trace {

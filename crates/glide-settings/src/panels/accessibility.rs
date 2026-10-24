@@ -54,8 +54,8 @@ const INTERFACE: &str = "org.gnome.desktop.interface";
 const A11Y: &str = "org.gnome.desktop.a11y.interface";
 const MOUSE: &str = "org.gnome.desktop.peripherals.mouse";
 
-pub const TEXT_SCALES: [f64; 4] = [1.0, 1.25, 1.5, 2.0];
-pub const CURSOR_SIZES: [i64; 5] = [24, 32, 48, 64, 96];
+pub(crate) const TEXT_SCALES: [f64; 4] = [1.0, 1.25, 1.5, 2.0];
+pub(crate) const CURSOR_SIZES: [i64; 5] = [24, 32, 48, 64, 96];
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -213,7 +213,7 @@ impl Page {
     }
 
     #[must_use]
-    pub fn text_scale(&self) -> f64 {
+    pub(crate) fn text_scale(&self) -> f64 {
         self.snapshot.double(INTERFACE, "text-scaling-factor").unwrap_or(1.0)
     }
 

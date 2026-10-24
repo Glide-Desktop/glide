@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::apps;
 
-pub const OVERRIDE_KEY: &str = "X-Glide-Override";
+pub(crate) const OVERRIDE_KEY: &str = "X-Glide-Override";
 
 #[allow(clippy::struct_excessive_bools)] // Independent facts read from a .desktop file, not a state machine
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -109,7 +109,7 @@ pub fn user_dir() -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn system_dirs() -> Vec<PathBuf> {
+pub(crate) fn system_dirs() -> Vec<PathBuf> {
     apps::config_dirs().into_iter().map(|dir| dir.join("autostart")).collect()
 }
 
@@ -248,7 +248,7 @@ pub fn enabled_text(text: &str, enabled: bool) -> String {
     set_key(&text, "Hidden", (!enabled).then_some("true"))
 }
 
-pub fn set_enabled(entry: &Entry, enabled: bool) -> Result<(), String> {
+pub(crate) fn set_enabled(entry: &Entry, enabled: bool) -> Result<(), String> {
     let describe = |path: &Path, err: std::io::Error| format!("{}: {err}", path.display());
     if let Some(user) = &entry.user_path {
         let text = std::fs::read_to_string(user).map_err(|err| describe(user, err))?;

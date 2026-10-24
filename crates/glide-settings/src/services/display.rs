@@ -2,7 +2,7 @@ use glide_ipc::{ModeInfo, OutputInfo, Request, Response};
 
 use super::{ipc, run};
 
-pub const SCALES: &[f64] = &[1.0, 1.25, 1.5, 1.75, 2.0];
+pub(crate) const SCALES: &[f64] = &[1.0, 1.25, 1.5, 1.75, 2.0];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Backlight {
@@ -38,7 +38,7 @@ pub fn read_backlight() -> Option<Backlight> {
     run::output("brightnessctl", &["-m", "-c", "backlight", "info"]).as_deref().and_then(parse_backlight)
 }
 
-pub fn set_brightness(device: &str, percent: u8) -> Result<String, String> {
+pub(crate) fn set_brightness(device: &str, percent: u8) -> Result<String, String> {
     let percent = format!("{}%", percent.clamp(1, 100));
     run::status("brightnessctl", &["-q", "-d", device, "set", &percent])
 }
@@ -66,7 +66,7 @@ pub fn mode_key(mode: &ModeInfo) -> String {
 }
 
 #[must_use]
-pub const fn hertz(lang: crate::i18n::Lang) -> &'static str {
+pub(crate) const fn hertz(lang: crate::i18n::Lang) -> &'static str {
     match lang {
         crate::i18n::Lang::Uk => "Гц",
         crate::i18n::Lang::En => "Hz",
@@ -74,7 +74,7 @@ pub const fn hertz(lang: crate::i18n::Lang) -> &'static str {
 }
 
 #[must_use]
-pub fn refresh_text(refresh_mhz: i32) -> String {
+pub(crate) fn refresh_text(refresh_mhz: i32) -> String {
     let text = format!("{:.3}", f64::from(refresh_mhz) / 1000.0);
     text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -118,8 +118,8 @@ pub fn diagonal_inches(physical_mm: (i32, i32)) -> Option<f64> {
     (w > 0 && h > 0).then(|| (f64::from(w).hypot(f64::from(h)) / 25.4 * 10.0).round() / 10.0)
 }
 
-pub const NIGHT_MIN_KELVIN: i64 = 2500;
-pub const NIGHT_MAX_KELVIN: i64 = 6000;
+pub(crate) const NIGHT_MIN_KELVIN: i64 = 2500;
+pub(crate) const NIGHT_MAX_KELVIN: i64 = 6000;
 const NEUTRAL_KELVIN: f64 = 6500.0;
 
 fn blackbody(kelvin: f64) -> (f64, f64) {

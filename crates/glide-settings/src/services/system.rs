@@ -91,7 +91,7 @@ pub fn parse_passwd_name(passwd: &str, user: &str) -> Option<String> {
 }
 
 #[must_use]
-pub fn vendor_name(id: &str) -> &'static str {
+pub(crate) fn vendor_name(id: &str) -> &'static str {
     match id.trim().trim_start_matches("0x") {
         "1002" => "AMD",
         "10de" => "NVIDIA",
@@ -244,7 +244,7 @@ pub fn clean_dmi(value: &str) -> String {
 }
 
 #[must_use]
-pub fn read_firmware() -> Firmware {
+pub(crate) fn read_firmware() -> Firmware {
     let dmi = |name: &str| clean_dmi(&read(Path::new("/sys/class/dmi/id").join(name)));
     Firmware {
         vendor: dmi("sys_vendor"),
@@ -279,7 +279,7 @@ pub fn battery_health(full: Option<u64>, design: Option<u64>) -> Option<u8> {
 }
 
 #[must_use]
-pub fn read_battery_dir(name: &str, dir: &Path) -> Option<BatteryInfo> {
+pub(crate) fn read_battery_dir(name: &str, dir: &Path) -> Option<BatteryInfo> {
     let field = |file: &str| read(dir.join(file)).trim().to_string();
     let number = |file: &str| field(file).parse::<u64>().ok();
     if field("type") != "Battery" || field("scope").eq_ignore_ascii_case("device") {
@@ -300,7 +300,7 @@ pub fn read_battery_dir(name: &str, dir: &Path) -> Option<BatteryInfo> {
 }
 
 #[must_use]
-pub fn batteries() -> Vec<BatteryInfo> {
+pub(crate) fn batteries() -> Vec<BatteryInfo> {
     let root = Path::new("/sys/class/power_supply");
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -329,7 +329,7 @@ const HOSTNAME1: &str = "org.freedesktop.hostname1";
 const HOSTNAME1_PATH: &str = "/org/freedesktop/hostname1";
 
 #[must_use]
-pub fn read_host_names() -> HostNames {
+pub(crate) fn read_host_names() -> HostNames {
     let from_bus = (|| {
         let proxy = system_proxy(HOSTNAME1, HOSTNAME1_PATH).ok()?;
         let get = |name: &str| proxy.get_property::<String>(name).unwrap_or_default();
@@ -389,7 +389,7 @@ pub fn plan_host_names(pretty: &str, current_static: &str) -> Option<(String, St
     Some((static_name, pretty))
 }
 
-pub fn set_host_names(pretty: &str, current_static: &str) -> Result<(), String> {
+pub(crate) fn set_host_names(pretty: &str, current_static: &str) -> Result<(), String> {
     let Some((static_name, pretty)) = plan_host_names(pretty, current_static) else {
         return Err(String::from("invalid hostname"));
     };
@@ -414,7 +414,7 @@ pub struct Details {
 }
 
 #[must_use]
-pub fn collect_details() -> Details {
+pub(crate) fn collect_details() -> Details {
     let release = read("/etc/os-release");
     let logo = os_release_value(&release, "LOGO");
     let display = super::display::read();

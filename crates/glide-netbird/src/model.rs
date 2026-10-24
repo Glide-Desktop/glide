@@ -47,7 +47,7 @@ impl State {
     }
 
     #[must_use]
-    pub const fn needs_down_before_switch(self) -> bool {
+    pub(crate) const fn needs_down_before_switch(self) -> bool {
         matches!(self, Self::Connected | Self::Connecting | Self::NeedsLogin | Self::LoginFailed | Self::SessionExpired)
     }
 }
@@ -416,7 +416,7 @@ pub struct Network {
 
 impl Network {
     #[must_use]
-    pub fn is_exit_node(&self) -> bool {
+    pub(crate) fn is_exit_node(&self) -> bool {
         is_default_route(&self.range)
     }
 

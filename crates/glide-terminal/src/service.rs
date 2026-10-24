@@ -49,7 +49,7 @@ fn quicklist(requests: UnboundedSender<Request>) -> glide_app::quicklist::QuickM
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TabEntry {
+pub(crate) struct TabEntry {
     pub id: u64,
     pub title: String,
     pub directory: String,
@@ -57,7 +57,7 @@ pub struct TabEntry {
 
 static TABS: Mutex<Vec<TabEntry>> = Mutex::new(Vec::new());
 
-pub fn publish_tabs(tabs: Vec<TabEntry>) {
+pub(crate) fn publish_tabs(tabs: Vec<TabEntry>) {
     *TABS.lock().unwrap_or_else(PoisonError::into_inner) = tabs;
 }
 

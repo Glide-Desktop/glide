@@ -11,7 +11,7 @@ use crate::i18n::{Key, Lang};
 use crate::icons::Icon;
 use crate::theme::{self, Side};
 
-pub const NAME_ID: &str = "chooser-name";
+pub(crate) const NAME_ID: &str = "chooser-name";
 const PREVIEW_ICON: f32 = 128.0;
 const PREVIEW_WIDTH: f32 = 216.0;
 const NAME_ROW: f32 = 560.0;

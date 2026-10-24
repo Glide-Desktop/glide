@@ -655,7 +655,7 @@ pub fn action_label(c: Ctx, action: &Action) -> String {
 }
 
 #[must_use]
-pub fn combo_text(bind: &Keybind) -> String {
+pub(crate) fn combo_text(bind: &Keybind) -> String {
     let mut parts: Vec<String> = bind.sorted_mods().iter().map(|m| m.label().to_string()).collect();
     parts.push(keybinds::key_label(&bind.key));
     parts.join("+")

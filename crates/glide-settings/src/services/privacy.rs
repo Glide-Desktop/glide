@@ -45,17 +45,17 @@ pub struct PrivacyState {
 pub(crate) use glide_config::data_home;
 
 #[must_use]
-pub fn recent_path() -> Option<PathBuf> {
+pub(crate) fn recent_path() -> Option<PathBuf> {
     data_home().map(|dir| dir.join("recently-used.xbel"))
 }
 
 #[must_use]
-pub fn trash_path() -> Option<PathBuf> {
+pub(crate) fn trash_path() -> Option<PathBuf> {
     data_home().map(|dir| dir.join("Trash"))
 }
 
 #[must_use]
-pub fn thumbnails_path() -> Option<PathBuf> {
+pub(crate) fn thumbnails_path() -> Option<PathBuf> {
     glide_config::cache_home().map(|dir| dir.join("thumbnails"))
 }
 
@@ -246,7 +246,7 @@ fn camera_openers() -> Vec<String> {
 }
 
 #[must_use]
-pub fn read_usage() -> (bool, Usage) {
+pub(crate) fn read_usage() -> (bool, Usage) {
     let dump = run::output("pw-dump", &[]);
     let pipewire = dump.is_some();
     let mut usage = dump.map(|text| parse_pw_dump(&text)).unwrap_or_default();
@@ -278,7 +278,7 @@ fn read_permissions() -> glide_config::permissions::Permissions {
     Permissions::path().and_then(|path| Permissions::load_from(&path).ok()).unwrap_or_default()
 }
 
-pub fn forget_permission(access: glide_config::permissions::Access, program: &str) -> Result<String, String> {
+pub(crate) fn forget_permission(access: glide_config::permissions::Access, program: &str) -> Result<String, String> {
     use glide_config::permissions::Permissions;
     let path = Permissions::path().ok_or("no state folder")?;
     let mut permissions = Permissions::load_from(&path).map_err(|err| err.to_string())?;
@@ -308,7 +308,7 @@ fn clear_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn empty_trash() -> Result<String, String> {
+pub(crate) fn empty_trash() -> Result<String, String> {
     let trash = trash_path().ok_or_else(|| "HOME is not set".to_string())?;
     for sub in ["files", "info", "expunged"] {
         clear_dir(&trash.join(sub)).map_err(|err| format!("{}: {err}", trash.join(sub).display()))?;
@@ -316,7 +316,7 @@ pub fn empty_trash() -> Result<String, String> {
     Ok(String::new())
 }
 
-pub fn clear_recent() -> Result<String, String> {
+pub(crate) fn clear_recent() -> Result<String, String> {
     let path = recent_path().ok_or_else(|| "HOME is not set".to_string())?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(String::new()),
@@ -325,7 +325,7 @@ pub fn clear_recent() -> Result<String, String> {
     }
 }
 
-pub fn clear_thumbnails() -> Result<String, String> {
+pub(crate) fn clear_thumbnails() -> Result<String, String> {
     let dir = thumbnails_path().ok_or_else(|| "HOME is not set".to_string())?;
     for size in THUMBNAIL_SIZES {
         clear_dir(&dir.join(size)).map_err(|err| format!("{}: {err}", dir.join(size).display()))?;

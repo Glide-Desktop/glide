@@ -319,7 +319,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn add_item(&mut self, address: Address) -> bool {
+    pub(crate) fn add_item(&mut self, address: Address) -> bool {
         if self.items.contains(&address) {
             return false;
         }
@@ -327,13 +327,13 @@ impl Registry {
         true
     }
 
-    pub fn remove_item(&mut self, address: &Address) -> bool {
+    pub(crate) fn remove_item(&mut self, address: &Address) -> bool {
         let before = self.items.len();
         self.items.retain(|known| known != address);
         self.items.len() != before
     }
 
-    pub fn add_host(&mut self, name: &str) -> bool {
+    pub(crate) fn add_host(&mut self, name: &str) -> bool {
         if name.is_empty() || self.hosts.iter().any(|host| host == name) {
             return false;
         }

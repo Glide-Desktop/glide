@@ -37,7 +37,7 @@ pub fn span(entries: &[Entry], index: usize) -> (f32, f32) {
 }
 
 #[must_use]
-pub fn options_at(window: Size) -> Point {
+pub(crate) fn options_at(window: Size) -> Point {
     options_for(window, WIDTH)
 }
 

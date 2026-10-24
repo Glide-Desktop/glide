@@ -21,7 +21,7 @@ use crate::theme::{self, ThemeState};
 use crate::widgets;
 
 pub const SEARCH_ID: &str = "glide-settings-search";
-pub const CONTENT_SCROLL_ID: &str = "glide-settings-content";
+pub(crate) const CONTENT_SCROLL_ID: &str = "glide-settings-content";
 
 macro_rules! declare_pages {
     ($($variant:ident => $module:ident,)*) => {
@@ -97,7 +97,7 @@ macro_rules! declare_pages {
             }
 
             #[must_use]
-            pub fn panel_status(&self, panel: Panel) -> Option<String> {
+            pub(crate) fn panel_status(&self, panel: Panel) -> Option<String> {
                 let c = self.ctx();
                 match panel {
                     $(Panel::$variant => Pane::sidebar_status(&self.pages.$module, c),)*
@@ -228,7 +228,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn search_query(&self) -> &str {
+    pub(crate) fn search_query(&self) -> &str {
         &self.search_query
     }
 
@@ -248,7 +248,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn current_account(&self) -> Option<&crate::services::accounts::Account> {
+    pub(crate) fn current_account(&self) -> Option<&crate::services::accounts::Account> {
         self.pages.users.state().me.as_ref()
     }
 

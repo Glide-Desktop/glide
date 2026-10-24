@@ -54,7 +54,7 @@ pub fn path() -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn state_dir() -> Option<PathBuf> {
+pub(crate) fn state_dir() -> Option<PathBuf> {
     Some(glide_config::state_home()?.join("glide").join("text"))
 }
 
@@ -119,14 +119,14 @@ pub struct Session {
 }
 
 #[must_use]
-pub fn load_session() -> Session {
+pub(crate) fn load_session() -> Session {
     state_dir()
         .and_then(|folder| std::fs::read_to_string(folder.join("session.toml")).ok())
         .and_then(|text| toml::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-pub fn save_session(session: &Session) -> std::io::Result<()> {
+pub(crate) fn save_session(session: &Session) -> std::io::Result<()> {
     let folder = state_dir().ok_or_else(|| std::io::Error::other("no state directory"))?;
     std::fs::create_dir_all(&folder)?;
     let text = toml::to_string(session).map_err(std::io::Error::other)?;
@@ -134,7 +134,7 @@ pub fn save_session(session: &Session) -> std::io::Result<()> {
 }
 
 #[must_use]
-pub fn drafts() -> Option<PathBuf> {
+pub(crate) fn drafts() -> Option<PathBuf> {
     Some(state_dir()?.join("drafts"))
 }
 

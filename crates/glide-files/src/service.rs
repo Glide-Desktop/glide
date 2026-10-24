@@ -68,7 +68,7 @@ fn quicklist(requests: UnboundedSender<Request>) -> glide_app::quicklist::QuickM
 }
 
 #[must_use]
-pub fn index_folders(root: &Path, depth: usize, limit: usize) -> Vec<PathBuf> {
+pub(crate) fn index_folders(root: &Path, depth: usize, limit: usize) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut level = vec![root.to_path_buf()];
     for _ in 0..depth {

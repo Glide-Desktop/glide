@@ -636,7 +636,7 @@ fn claim(value: Option<f32>, in_flight: &mut bool, pending: &mut bool) -> Option
     Some(value)
 }
 
-pub const DEVICE_LIST_LIMIT: usize = 6;
+pub(crate) const DEVICE_LIST_LIMIT: usize = 6;
 
 #[must_use]
 pub fn device_icon(name: &str, fallback: Icon) -> Icon {

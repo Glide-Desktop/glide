@@ -32,10 +32,10 @@ use glide_sdk::anim::{Fade, Speed};
 use glide_sdk::window::{Action as WindowAction, Frame, Window};
 
 pub const SEARCH_ID: &str = "search";
-pub const PATH_ID: &str = "path";
-pub const MODAL_ID: &str = "modal";
-pub const FILES_ID: &str = "files";
-pub const RENAME_ID: &str = "rename";
+pub(crate) const PATH_ID: &str = "path";
+pub(crate) const MODAL_ID: &str = "modal";
+pub(crate) const FILES_ID: &str = "files";
+pub(crate) const RENAME_ID: &str = "rename";
 
 const SEARCH_LIMIT: usize = 500;
 const OPEN_LIMIT: usize = 20;
@@ -296,7 +296,7 @@ pub struct Outcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arrival {
+pub(crate) enum Arrival {
     Initial,
     Refresh,
     Push,
@@ -441,7 +441,7 @@ pub enum Message {
     ToggleAlwaysOpen,
 }
 
-pub type ThumbKey = (PathBuf, Option<SystemTime>);
+pub(crate) type ThumbKey = (PathBuf, Option<SystemTime>);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DragArm {
@@ -451,7 +451,7 @@ enum DragArm {
 
 impl Message {
     #[must_use]
-    pub const fn chooser_allows(&self) -> bool {
+    pub(crate) const fn chooser_allows(&self) -> bool {
         !matches!(
             self,
             Self::Cut
@@ -774,7 +774,7 @@ pub struct Drag {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Band {
+pub(crate) struct Band {
     start: Option<Point>,
     end: Point,
     base: HashSet<PathBuf>,
@@ -818,7 +818,7 @@ fn terminal(dir: PathBuf, lang: Lang) -> Task<Message> {
 }
 
 #[must_use]
-pub fn volume_icon(volume: &Volume) -> Icon {
+pub(crate) fn volume_icon(volume: &Volume) -> Icon {
     if volume.removable { Icon::Usb } else { Icon::Drive }
 }
 
@@ -960,7 +960,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn place_title(&self) -> String {
+    pub(crate) fn place_title(&self) -> String {
         match &self.search {
             Some(search) if !search.query.trim().is_empty() => {
                 format!("{} «{}»", Key::Search.text(self.lang), search.query.trim())
@@ -1044,12 +1044,12 @@ impl App {
     }
 
     #[must_use]
-    pub fn is_searching(&self) -> bool {
+    pub(crate) fn is_searching(&self) -> bool {
         self.search.as_ref().is_some_and(|search| !search.query.trim().is_empty())
     }
 
     #[must_use]
-    pub fn is_cut(&self, path: &Path) -> bool {
+    pub(crate) fn is_cut(&self, path: &Path) -> bool {
         self.clipboard
             .as_ref()
             .is_some_and(|clip| clip.action == ClipboardAction::Cut && clip.paths.iter().any(|cut| cut == path))
@@ -1064,7 +1064,7 @@ impl App {
             .collect()
     }
 
-    pub fn selected_entries(&self) -> impl Iterator<Item = &FileEntry> {
+    pub(crate) fn selected_entries(&self) -> impl Iterator<Item = &FileEntry> {
         self.entries.iter().filter(|entry| self.selection.contains(&entry.path))
     }
 
@@ -1865,12 +1865,12 @@ impl App {
     }
 
     #[must_use]
-    pub fn can_go_back(&self) -> bool {
+    pub(crate) fn can_go_back(&self) -> bool {
         self.history_index > 0
     }
 
     #[must_use]
-    pub fn can_go_forward(&self) -> bool {
+    pub(crate) fn can_go_forward(&self) -> bool {
         self.history_index + 1 < self.history.len()
     }
 
@@ -2507,7 +2507,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn open_with_apps<'a>(
+    pub(crate) fn open_with_apps<'a>(
         &'a self, targets: &[Target], query: &str,
     ) -> (Vec<&'a crate::fs::DesktopApp>, Vec<&'a crate::fs::DesktopApp>) {
         let matching = self.extensions.listed_apps_for(targets);
@@ -2714,12 +2714,12 @@ impl App {
     }
 
     #[must_use]
-    pub fn bookmark_drop_offered(&self) -> bool {
+    pub(crate) fn bookmark_drop_offered(&self) -> bool {
         self.drag.as_ref().is_some_and(|drag| drag.folders && drag.paths.iter().any(|path| !self.is_bookmarked(path)))
     }
 
     #[must_use]
-    pub fn bookmark_drop_active(&self) -> bool {
+    pub(crate) fn bookmark_drop_active(&self) -> bool {
         self.drag.as_ref().is_some_and(|drag| drag.action == DropAction::Bookmark)
     }
 
@@ -2729,14 +2729,14 @@ impl App {
     }
 
     #[must_use]
-    pub fn is_bookmark_target(&self, path: &Path) -> bool {
+    pub(crate) fn is_bookmark_target(&self, path: &Path) -> bool {
         self.bookmark_drag.as_deref().is_some_and(|dragged| dragged != path)
             && self.hover_target.as_ref() == Some(&Hover::Place(path.to_path_buf()))
             && self.is_bookmarked(path)
     }
 
     #[must_use]
-    pub fn is_column_target(&self, column: ListColumn) -> bool {
+    pub(crate) fn is_column_target(&self, column: ListColumn) -> bool {
         self.column_drag.is_some_and(|dragged| dragged != column) && self.hover_target == Some(Hover::Column(column))
     }
 
@@ -2907,7 +2907,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn is_drop_target(&self, path: &Path) -> bool {
+    pub(crate) fn is_drop_target(&self, path: &Path) -> bool {
         self.drop_target.as_deref() == Some(path)
     }
 
@@ -2939,7 +2939,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn band_rect(&self) -> Option<iced::Rectangle> {
+    pub(crate) fn band_rect(&self) -> Option<iced::Rectangle> {
         let band = self.band.as_ref()?;
         let start = band.start?;
         (start.distance(band.end) >= DRAG_THRESHOLD).then(|| {
@@ -3007,7 +3007,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn drag_art(&self, path: &Path) -> Option<PathBuf> {
+    pub(crate) fn drag_art(&self, path: &Path) -> Option<PathBuf> {
         let entry = self.entries.iter().find(|entry| entry.path == path)?;
         if let Some(thumb) = self.thumbnail(entry) {
             return Some(thumb.clone());
@@ -3461,7 +3461,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn is_bookmarked(&self, path: &Path) -> bool {
+    pub(crate) fn is_bookmarked(&self, path: &Path) -> bool {
         self.bookmarks.iter().any(|mark| mark.path == path)
     }
 

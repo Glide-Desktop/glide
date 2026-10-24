@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-pub const ATTR: &str = "user.xdg.tags";
+pub(crate) const ATTR: &str = "user.xdg.tags";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {

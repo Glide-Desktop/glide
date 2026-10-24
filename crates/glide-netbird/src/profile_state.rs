@@ -34,19 +34,19 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 #[must_use]
-pub fn email_in(dir: &Path, id: &str) -> Option<String> {
+pub(crate) fn email_in(dir: &Path, id: &str) -> Option<String> {
     let text = fs::read_to_string(state_file(dir, id)?).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     value.get("email")?.as_str().filter(|email| !email.is_empty()).map(str::to_string)
 }
 
-pub fn store_email_in(dir: &Path, id: &str, email: &str) -> io::Result<()> {
+pub(crate) fn store_email_in(dir: &Path, id: &str, email: &str) -> io::Result<()> {
     let path = state_file(dir, id).ok_or_else(|| io::Error::other("invalid profile id"))?;
     let text = serde_json::to_vec(&serde_json::json!({ "email": email })).map_err(io::Error::other)?;
     write_private(&path, &text)
 }
 
-pub fn remove_in(dir: &Path, id: &str) -> io::Result<()> {
+pub(crate) fn remove_in(dir: &Path, id: &str) -> io::Result<()> {
     let Some(path) = state_file(dir, id) else {
         return Ok(());
     };
@@ -56,7 +56,7 @@ pub fn remove_in(dir: &Path, id: &str) -> io::Result<()> {
     }
 }
 
-pub fn mark_active_in(dir: &Path, id: &str) -> io::Result<()> {
+pub(crate) fn mark_active_in(dir: &Path, id: &str) -> io::Result<()> {
     if !valid_id(id) {
         return Err(io::Error::other("invalid profile id"));
     }
@@ -68,7 +68,7 @@ pub fn email(id: &str) -> Option<String> {
     email_in(&directory()?, id)
 }
 
-pub fn store_email(id: &str, email: &str) -> io::Result<()> {
+pub(crate) fn store_email(id: &str, email: &str) -> io::Result<()> {
     store_email_in(&directory().ok_or_else(|| io::Error::other("no config directory"))?, id, email)
 }
 
@@ -76,7 +76,7 @@ pub fn remove(id: &str) -> io::Result<()> {
     directory().map_or(Ok(()), |dir| remove_in(&dir, id))
 }
 
-pub fn mark_active(id: &str) -> io::Result<()> {
+pub(crate) fn mark_active(id: &str) -> io::Result<()> {
     mark_active_in(&directory().ok_or_else(|| io::Error::other("no config directory"))?, id)
 }
 

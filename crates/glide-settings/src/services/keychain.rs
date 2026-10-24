@@ -56,7 +56,7 @@ pub struct Draft {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DraftProblem {
+pub(crate) enum DraftProblem {
     NoLabel,
     NoTarget,
     NoPassword,
@@ -65,7 +65,7 @@ pub enum DraftProblem {
 
 impl Draft {
     #[must_use]
-    pub fn problem(&self) -> Option<DraftProblem> {
+    pub(crate) fn problem(&self) -> Option<DraftProblem> {
         if self.label.trim().is_empty() {
             Some(DraftProblem::NoLabel)
         } else if self.app.trim().is_empty() && self.program.trim().is_empty() {

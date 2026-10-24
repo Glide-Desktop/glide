@@ -318,7 +318,7 @@ impl Icon {
     }
 
     #[must_use]
-    pub fn for_signal(signal: u8) -> Self {
+    pub(crate) fn for_signal(signal: u8) -> Self {
         match signal {
             75.. => Self::Wifi,
             50..=74 => Self::Wifi3,
@@ -328,7 +328,7 @@ impl Icon {
     }
 
     #[must_use]
-    pub fn for_bluetooth(kind: &str) -> Self {
+    pub(crate) fn for_bluetooth(kind: &str) -> Self {
         match kind {
             "audio-headset" | "audio-headphones" => Self::Headphones,
             "audio-card" | "audio-speakers" => Self::Speaker,

@@ -75,7 +75,7 @@ impl Catalog {
     }
 
     #[must_use]
-    pub fn icon_of(&self, id: &str) -> Option<&PathBuf> {
+    pub(crate) fn icon_of(&self, id: &str) -> Option<&PathBuf> {
         let app = self.apps.iter().find(|app| app.id == id)?;
         self.icons.get(&app.icon)
     }
@@ -163,7 +163,7 @@ pub fn app_icon<'a, M: 'a>(t: &ThemeState, path: Option<&PathBuf>, name: &str, s
 }
 
 #[must_use]
-pub fn matches_query(file: &FileType, description: &str, query: &str) -> bool {
+pub(crate) fn matches_query(file: &FileType, description: &str, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return true;
@@ -191,7 +191,7 @@ impl Page {
     }
 
     #[must_use]
-    pub fn visible_types(&self) -> Vec<&'static FileType> {
+    pub(crate) fn visible_types(&self) -> Vec<&'static FileType> {
         FILE_TYPES
             .iter()
             .filter(|file| {

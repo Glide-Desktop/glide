@@ -12,7 +12,7 @@ use crate::theme;
 use crate::widgets;
 
 pub const TILE_SIZE: f32 = 24.0;
-pub const AVATAR_SIZE: f32 = 40.0;
+pub(crate) const AVATAR_SIZE: f32 = 40.0;
 pub const GROUP_GAP: f32 = 16.0;
 pub const ITEM_GAP: f32 = 2.0;
 pub const EDGE: f32 = 12.0;

@@ -31,7 +31,7 @@ impl Indent {
 }
 
 #[must_use]
-pub fn line_span(text: &str, selection: &Range<usize>) -> Range<usize> {
+pub(crate) fn line_span(text: &str, selection: &Range<usize>) -> Range<usize> {
     let start = text[..selection.start].rfind('\n').map_or(0, |at| at + 1);
     let last = if selection.end > selection.start && text[..selection.end].ends_with('\n') {
         selection.end - 1
@@ -52,7 +52,7 @@ fn leading(line: &str) -> &str {
 }
 
 #[must_use]
-pub fn toggle_comment(text: &str, selection: &Range<usize>, language: Language) -> Option<Change> {
+pub(crate) fn toggle_comment(text: &str, selection: &Range<usize>, language: Language) -> Option<Change> {
     let span = line_span(text, selection);
     let block = &text[span.clone()];
     if let Some(marker) = language.line_comment() {
@@ -95,7 +95,7 @@ pub fn toggle_comment(text: &str, selection: &Range<usize>, language: Language) 
 }
 
 #[must_use]
-pub fn duplicate(text: &str, selection: &Range<usize>) -> Change {
+pub(crate) fn duplicate(text: &str, selection: &Range<usize>) -> Change {
     if selection.start < selection.end {
         let copy = &text[selection.clone()];
         let at = selection.end;
@@ -108,7 +108,7 @@ pub fn duplicate(text: &str, selection: &Range<usize>) -> Change {
 }
 
 #[must_use]
-pub fn delete_lines(text: &str, selection: &Range<usize>) -> Change {
+pub(crate) fn delete_lines(text: &str, selection: &Range<usize>) -> Change {
     let span = line_span(text, selection);
     let range = if span.end < text.len() {
         span.start..span.end + 1
@@ -127,7 +127,7 @@ pub fn delete_lines(text: &str, selection: &Range<usize>) -> Change {
 }
 
 #[must_use]
-pub fn move_lines(text: &str, selection: &Range<usize>, up: bool) -> Option<Change> {
+pub(crate) fn move_lines(text: &str, selection: &Range<usize>, up: bool) -> Option<Change> {
     let span = line_span(text, selection);
     let block = &text[span.clone()];
     if up {
@@ -158,7 +158,7 @@ pub fn move_lines(text: &str, selection: &Range<usize>, up: bool) -> Option<Chan
 }
 
 #[must_use]
-pub fn join_lines(text: &str, selection: &Range<usize>) -> Option<Change> {
+pub(crate) fn join_lines(text: &str, selection: &Range<usize>) -> Option<Change> {
     let span = line_span(text, selection);
     let span = if span.start == line_span(text, &(selection.end..selection.end)).start {
         let next = text[span.end..].find('\n').map(|at| span.end + at)?;
@@ -177,7 +177,7 @@ pub fn join_lines(text: &str, selection: &Range<usize>) -> Option<Change> {
 }
 
 #[must_use]
-pub fn sort_lines(text: &str, selection: &Range<usize>) -> Option<Change> {
+pub(crate) fn sort_lines(text: &str, selection: &Range<usize>) -> Option<Change> {
     let span = line_span(text, selection);
     let mut lines: Vec<&str> = text[span.clone()].split('\n').collect();
     if lines.len() < 2 {
@@ -205,7 +205,7 @@ pub fn indent(text: &str, selection: &Range<usize>, indent: Indent) -> Change {
 }
 
 #[must_use]
-pub fn unindent(text: &str, selection: &Range<usize>, indent: Indent) -> Option<Change> {
+pub(crate) fn unindent(text: &str, selection: &Range<usize>, indent: Indent) -> Option<Change> {
     let span = line_span(text, selection);
     let width = indent.width.max(1);
     let lines: Vec<String> = text[span.clone()]
@@ -223,7 +223,7 @@ pub fn unindent(text: &str, selection: &Range<usize>, indent: Indent) -> Option<
 }
 
 #[must_use]
-pub fn change_case(text: &str, selection: &Range<usize>, case: Case) -> Option<Change> {
+pub(crate) fn change_case(text: &str, selection: &Range<usize>, case: Case) -> Option<Change> {
     let range = if selection.start == selection.end { word_at(text, selection.start)? } else { selection.clone() };
     let source = &text[range.clone()];
     let changed = match case {
@@ -251,7 +251,7 @@ pub fn change_case(text: &str, selection: &Range<usize>, case: Case) -> Option<C
 }
 
 #[must_use]
-pub fn word_at(text: &str, at: usize) -> Option<Range<usize>> {
+pub(crate) fn word_at(text: &str, at: usize) -> Option<Range<usize>> {
     let word = |c: char| c.is_alphanumeric() || c == '_';
     let start = text[..at].char_indices().rev().take_while(|(_, c)| word(*c)).last().map_or(at, |(index, _)| index);
     let end = text[at..].char_indices().find(|(_, c)| !word(*c)).map_or(text.len(), |(index, _)| at + index);
@@ -268,7 +268,7 @@ pub fn newline(text: &str, at: usize, auto_indent: bool) -> String {
 }
 
 #[must_use]
-pub fn trim_trailing(text: &str) -> Option<String> {
+pub(crate) fn trim_trailing(text: &str) -> Option<String> {
     let trimmed: Vec<&str> = text.split('\n').map(str::trim_end).collect();
     let joined = trimmed.join("\n");
     (joined != text).then_some(joined)

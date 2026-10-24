@@ -1,4 +1,4 @@
-pub const RULES_PATH: &str = "/usr/share/X11/xkb/rules/evdev.lst";
+pub(crate) const RULES_PATH: &str = "/usr/share/X11/xkb/rules/evdev.lst";
 
 pub const SWITCH_OPTIONS: &[&str] = &[
     "grp:win_space_toggle",
@@ -62,7 +62,7 @@ pub fn parse_layouts(text: &str) -> Vec<Layout> {
 }
 
 #[must_use]
-pub fn available_layouts() -> Vec<Layout> {
+pub(crate) fn available_layouts() -> Vec<Layout> {
     let parsed = std::fs::read_to_string(RULES_PATH).map(|text| parse_layouts(&text)).unwrap_or_default();
     if parsed.is_empty() {
         FALLBACK.iter().map(|(code, name)| Layout { code: (*code).to_string(), name: (*name).to_string() }).collect()
@@ -102,37 +102,37 @@ pub fn switch_option(options: &str) -> Option<&str> {
     options.split(',').map(str::trim).find(|option| option.starts_with("grp:"))
 }
 
-pub const COMPOSE_OPTIONS: &[&str] =
+pub(crate) const COMPOSE_OPTIONS: &[&str] =
     &["compose:ralt", "compose:rwin", "compose:menu", "compose:rctrl", "compose:caps", "compose:prsc", "compose:sclk"];
 
-pub const CAPS_OPTIONS: &[&str] =
+pub(crate) const CAPS_OPTIONS: &[&str] =
     &["caps:escape", "caps:swapescape", "ctrl:nocaps", "ctrl:swapcaps", "caps:backspace", "caps:none"];
 
-pub const SWAP_ALT_SUPER: &str = "altwin:swap_alt_win";
-pub const BOTH_SHIFTS_CAPS: &str = "shift:both_capslock";
-pub const NUMPAD_DIGITS: &str = "numpad:mac";
+pub(crate) const SWAP_ALT_SUPER: &str = "altwin:swap_alt_win";
+pub(crate) const BOTH_SHIFTS_CAPS: &str = "shift:both_capslock";
+pub(crate) const NUMPAD_DIGITS: &str = "numpad:mac";
 
 fn options_list(options: &str) -> impl Iterator<Item = &str> {
     options.split(',').map(str::trim).filter(|option| !option.is_empty())
 }
 
 #[must_use]
-pub fn is_compose_option(option: &str) -> bool {
+pub(crate) fn is_compose_option(option: &str) -> bool {
     option.starts_with("compose:")
 }
 
 #[must_use]
-pub fn is_caps_option(option: &str) -> bool {
+pub(crate) fn is_caps_option(option: &str) -> bool {
     option.starts_with("caps:") || matches!(option, "ctrl:nocaps" | "ctrl:swapcaps")
 }
 
 #[must_use]
-pub fn find_option(options: &str, family: fn(&str) -> bool) -> Option<&str> {
+pub(crate) fn find_option(options: &str, family: fn(&str) -> bool) -> Option<&str> {
     options_list(options).find(|option| family(option))
 }
 
 #[must_use]
-pub fn replace_option(options: &str, family: fn(&str) -> bool, next: Option<&str>) -> String {
+pub(crate) fn replace_option(options: &str, family: fn(&str) -> bool, next: Option<&str>) -> String {
     let mut kept: Vec<&str> = options_list(options).filter(|option| !family(option)).collect();
     if let Some(next) = next.map(str::trim).filter(|next| !next.is_empty()) {
         kept.push(next);
@@ -141,12 +141,12 @@ pub fn replace_option(options: &str, family: fn(&str) -> bool, next: Option<&str
 }
 
 #[must_use]
-pub fn has_option(options: &str, wanted: &str) -> bool {
+pub(crate) fn has_option(options: &str, wanted: &str) -> bool {
     options_list(options).any(|option| option == wanted)
 }
 
 #[must_use]
-pub fn set_option(options: &str, wanted: &str, on: bool) -> String {
+pub(crate) fn set_option(options: &str, wanted: &str, on: bool) -> String {
     let mut kept: Vec<&str> = options_list(options).filter(|option| *option != wanted).collect();
     if on {
         kept.push(wanted);

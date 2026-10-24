@@ -88,7 +88,7 @@ impl Preferences {
     }
 
     #[must_use]
-    pub fn term_config(&self) -> Config {
+    pub(crate) fn term_config(&self) -> Config {
         let shape = match self.cursor {
             Cursor::Block => CursorShape::Block,
             Cursor::Beam => CursorShape::Beam,

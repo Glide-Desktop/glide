@@ -59,7 +59,7 @@ impl NetworkState {
     }
 }
 
-pub const WIFI_KIND: &str = "802-11-wireless";
+pub(crate) const WIFI_KIND: &str = "802-11-wireless";
 pub const HOTSPOT_NAME: &str = "Glide Hotspot";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -269,7 +269,7 @@ pub fn parse_active_radio(text: &str) -> Option<(String, String, String)> {
 }
 
 #[must_use]
-pub fn read_details(device: Option<&str>, uuid: Option<&str>, wifi: bool) -> Details {
+pub(crate) fn read_details(device: Option<&str>, uuid: Option<&str>, wifi: bool) -> Details {
     let mut details = device
         .and_then(|device| {
             run::output(
@@ -319,11 +319,11 @@ fn modify(uuid: &str, key: &str, value: &str) -> Result<String, String> {
     run::status("nmcli", &["connection", "modify", "uuid", uuid, key, value])
 }
 
-pub fn set_metered(uuid: &str, metered: Metered) -> Result<String, String> {
+pub(crate) fn set_metered(uuid: &str, metered: Metered) -> Result<String, String> {
     modify(uuid, "connection.metered", metered.key())
 }
 
-pub fn set_autoconnect(uuid: &str, on: bool) -> Result<String, String> {
+pub(crate) fn set_autoconnect(uuid: &str, on: bool) -> Result<String, String> {
     modify(uuid, "connection.autoconnect", if on { "yes" } else { "no" })
 }
 
@@ -333,7 +333,7 @@ pub fn parse_dns_list(text: &str) -> Option<Vec<String>> {
     items.iter().all(|item| item.parse::<std::net::IpAddr>().is_ok()).then_some(items)
 }
 
-pub fn set_dns(uuid: &str, device: Option<&str>, servers: &[String]) -> Result<String, String> {
+pub(crate) fn set_dns(uuid: &str, device: Option<&str>, servers: &[String]) -> Result<String, String> {
     let (v4, v6): (Vec<&str>, Vec<&str>) =
         servers.iter().map(String::as_str).partition(|server| server.parse::<std::net::Ipv4Addr>().is_ok());
     let v4 = v4.join(",");
@@ -363,13 +363,13 @@ pub fn set_dns(uuid: &str, device: Option<&str>, servers: &[String]) -> Result<S
     }
 }
 
-pub fn reveal_password(uuid: &str) -> Result<String, String> {
+pub(crate) fn reveal_password(uuid: &str) -> Result<String, String> {
     let secret =
         run::status("nmcli", &["-s", "-g", "802-11-wireless-security.psk", "connection", "show", "uuid", uuid])?;
     if secret.is_empty() { Err("NetworkManager returned no password for this network".to_string()) } else { Ok(secret) }
 }
 
-pub fn stop_profile(uuid: &str) -> Result<String, String> {
+pub(crate) fn stop_profile(uuid: &str) -> Result<String, String> {
     run::status("nmcli", &["connection", "down", "uuid", uuid])
 }
 
@@ -410,17 +410,17 @@ pub fn password_from_bytes(bytes: &[u8]) -> String {
 }
 
 #[must_use]
-pub fn generate_password() -> Option<String> {
+pub(crate) fn generate_password() -> Option<String> {
     use std::io::Read;
     let mut bytes = [0u8; 12];
     std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes)).ok()?;
     Some(password_from_bytes(&bytes))
 }
 
-pub const MAX_SSID_BYTES: usize = 32;
+pub(crate) const MAX_SSID_BYTES: usize = 32;
 
 #[must_use]
-pub fn valid_ssid(ssid: &str) -> bool {
+pub(crate) fn valid_ssid(ssid: &str) -> bool {
     let ssid = ssid.trim();
     !ssid.is_empty() && ssid.len() <= MAX_SSID_BYTES
 }
@@ -586,7 +586,7 @@ pub fn parse_ssid_records(text: &str) -> Vec<String> {
 }
 
 #[must_use]
-pub fn profile_field(field: &str, uuids: &[&str]) -> Vec<String> {
+pub(crate) fn profile_field(field: &str, uuids: &[&str]) -> Vec<String> {
     let lookup = |batch: &[&str]| {
         let mut args = vec!["-e", "no", "-g", field, "connection", "show"];
         for uuid in batch {
@@ -791,7 +791,7 @@ fn bus_error(err: Failure) -> String {
     }
 }
 
-pub fn connect_hidden(ssid: &str, psk: Option<&str>) -> Result<String, String> {
+pub(crate) fn connect_hidden(ssid: &str, psk: Option<&str>) -> Result<String, String> {
     if !valid_ssid(ssid) {
         return Err(format!("A network name is 1 to {MAX_SSID_BYTES} bytes long"));
     }
@@ -811,7 +811,7 @@ fn activate_on_wifi(settings: Settings<'_>) -> Result<String, String> {
     .map_err(bus_error)
 }
 
-pub fn start_hotspot(ssid: &str, psk: &str) -> Result<String, String> {
+pub(crate) fn start_hotspot(ssid: &str, psk: &str) -> Result<String, String> {
     if !valid_ssid(ssid) || !valid_psk(psk) {
         return Err("The hotspot needs a name and a password of 8 to 63 characters".to_string());
     }
@@ -881,7 +881,7 @@ pub fn forget(uuid: &str) -> Result<String, String> {
     run::status("nmcli", &["connection", "delete", "uuid", uuid])
 }
 
-pub const PROXY: &str = "org.gnome.system.proxy";
+pub(crate) const PROXY: &str = "org.gnome.system.proxy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProxyMode {
@@ -1011,11 +1011,11 @@ impl ProxySettings {
 }
 
 #[must_use]
-pub fn read_proxy() -> ProxySettings {
+pub(crate) fn read_proxy() -> ProxySettings {
     ProxySettings::from_snapshot(&super::gsettings::Snapshot::read(&[PROXY]))
 }
 
-pub fn write_proxy(settings: &ProxySettings) -> Result<String, String> {
+pub(crate) fn write_proxy(settings: &ProxySettings) -> Result<String, String> {
     for (schema, key, value) in settings.changes() {
         super::gsettings::set(&schema, key, &value)?;
     }

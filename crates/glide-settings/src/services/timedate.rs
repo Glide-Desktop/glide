@@ -76,7 +76,7 @@ pub fn read() -> TimeState {
 }
 
 #[must_use]
-pub fn zone_names() -> Vec<String> {
+pub(crate) fn zone_names() -> Vec<String> {
     if let Some(text) = run::output("timedatectl", &["list-timezones", "--no-pager"]) {
         let zones: Vec<String> =
             text.lines().map(str::trim).filter(|zone| !zone.is_empty()).map(str::to_string).collect();
@@ -97,7 +97,7 @@ fn parse_tab_file(path: &std::path::Path) -> Vec<String> {
 }
 
 #[must_use]
-pub fn zones() -> Vec<ZoneEntry> {
+pub(crate) fn zones() -> Vec<ZoneEntry> {
     let now = tz::now();
     zone_names()
         .into_iter()
@@ -122,11 +122,11 @@ pub fn matches(entry: &ZoneEntry, query: &str) -> bool {
         || tz::format_offset(entry.offset).to_lowercase().contains(&query)
 }
 
-pub fn system_proxy(dest: &'static str, path: &'static str) -> Result<Proxy<'static>, String> {
+pub(crate) fn system_proxy(dest: &'static str, path: &'static str) -> Result<Proxy<'static>, String> {
     Connection::system().and_then(|bus| Proxy::new(&bus, dest, path, dest)).map_err(|err| err.to_string())
 }
 
-pub fn authorized_call<B>(proxy: &Proxy<'_>, method: &str, body: &B) -> Result<(), String>
+pub(crate) fn authorized_call<B>(proxy: &Proxy<'_>, method: &str, body: &B) -> Result<(), String>
 where
     B: serde::Serialize + zbus::zvariant::DynamicType,
 {
@@ -163,15 +163,15 @@ pub fn describe(err: &zbus::Error) -> String {
     }
 }
 
-pub fn set_timezone(zone: &str) -> Result<(), String> {
+pub(crate) fn set_timezone(zone: &str) -> Result<(), String> {
     call("SetTimezone", &(zone, true))
 }
 
-pub fn set_ntp(enabled: bool) -> Result<(), String> {
+pub(crate) fn set_ntp(enabled: bool) -> Result<(), String> {
     call("SetNTP", &(enabled, true))
 }
 
-pub fn set_time(utc_seconds: i64) -> Result<(), String> {
+pub(crate) fn set_time(utc_seconds: i64) -> Result<(), String> {
     call("SetTime", &(utc_seconds.saturating_mul(1_000_000), false, true))
 }
 
@@ -216,7 +216,7 @@ pub fn uses_12_hour(lc_all: Option<&str>, lc_time: Option<&str>, lang: Option<&s
 }
 
 #[must_use]
-pub fn env_uses_12_hour() -> bool {
+pub(crate) fn env_uses_12_hour() -> bool {
     let var = |name: &str| std::env::var(name).ok();
     uses_12_hour(var("LC_ALL").as_deref(), var("LC_TIME").as_deref(), var("LANG").as_deref())
 }

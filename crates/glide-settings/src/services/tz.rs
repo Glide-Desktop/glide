@@ -71,7 +71,7 @@ pub const fn civil_from_days(days: i64) -> (i64, u8, u8) {
 }
 
 #[must_use]
-pub const fn weekday_of_days(days: i64) -> u8 {
+pub(crate) const fn weekday_of_days(days: i64) -> u8 {
     (days + 4).rem_euclid(7) as u8
 }
 
@@ -279,7 +279,7 @@ impl Zone {
 }
 
 #[must_use]
-pub fn zoneinfo_dir() -> PathBuf {
+pub(crate) fn zoneinfo_dir() -> PathBuf {
     std::env::var_os("TZDIR")
         .filter(|dir| !dir.is_empty())
         .map_or_else(|| PathBuf::from("/usr/share/zoneinfo"), PathBuf::from)

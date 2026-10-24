@@ -100,7 +100,7 @@ pub fn dropdown<'a, M: Clone + 'a, T: ToString + PartialEq + Clone + 'a>(
 }
 
 #[must_use]
-pub fn flexible<'a, M: 'a>(content: impl Into<Element<'a, M>>, max_width: f32) -> Element<'a, M> {
+pub(crate) fn flexible<'a, M: 'a>(content: impl Into<Element<'a, M>>, max_width: f32) -> Element<'a, M> {
     container(content).width(Length::FillPortion(1)).max_width(max_width).into()
 }
 
@@ -208,7 +208,7 @@ pub fn micro_label<'a, M: 'a>(t: ThemeState, label: &str) -> Element<'a, M> {
 }
 
 #[must_use]
-pub fn status_dot<'a, M: 'a>(color: Color, size: f32) -> Element<'a, M> {
+pub(crate) fn status_dot<'a, M: 'a>(color: Color, size: f32) -> Element<'a, M> {
     sdk::dot(color, size)
 }
 

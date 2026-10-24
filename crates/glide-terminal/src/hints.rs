@@ -5,7 +5,7 @@ use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 
-pub const URLS: &str = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file:|git://|ssh:|ftp://)\
+pub(crate) const URLS: &str = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file:|git://|ssh:|ftp://)\
                         [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\"\\s{-}\\^⟨⟩`]+";
 const PATHS: &str = "(~|\\.\\.?)?/[^\u{0000}-\u{0020}\u{007F}:'\"<>|()\\[\\]{}`]+";
 const ALPHABET: &str = "asdfghjklqwertyuiopzxcvbnm";
@@ -15,7 +15,7 @@ const OPENABLE_SCHEMES: [&str; 13] =
     ["http", "https", "mailto", "ftp", "gemini", "gopher", "news", "magnet", "ipfs", "ipns", "git", "ssh", "file"];
 
 #[must_use]
-pub fn openable(uri: &str) -> bool {
+pub(crate) fn openable(uri: &str) -> bool {
     let uri = uri.trim();
     if uri.is_empty() || uri.starts_with('-') || uri.chars().any(char::is_control) {
         return false;
@@ -36,7 +36,7 @@ pub fn openable(uri: &str) -> bool {
 }
 
 #[must_use]
-pub fn openable_path(path: &Path) -> bool {
+pub(crate) fn openable_path(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("desktop")) {
         return false;
@@ -45,7 +45,7 @@ pub fn openable_path(path: &Path) -> bool {
 }
 
 #[must_use]
-pub fn clean_url(text: &str) -> &str {
+pub(crate) fn clean_url(text: &str) -> &str {
     let mut text = text;
     loop {
         let trimmed = text.trim_end_matches(['.', ',', ';', ':', '!', '?']);

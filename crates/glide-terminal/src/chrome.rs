@@ -101,7 +101,7 @@ fn find_height(app: &App) -> f32 {
 }
 
 #[must_use]
-pub fn pane_at(app: &App, (x, y): (f32, f32)) -> Option<pane_grid::Pane> {
+pub(crate) fn pane_at(app: &App, (x, y): (f32, f32)) -> Option<pane_grid::Pane> {
     let tab = app.tab()?;
     let mut top = HEADER + 1.0;
     if app.tabs.len() > 1 {

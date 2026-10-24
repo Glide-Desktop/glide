@@ -12,7 +12,7 @@ use crate::theme::{self, SP2, SP3};
 pub const SEARCH_WIDTH: f32 = 200.0;
 pub const WINDOW_CONTROL: f32 = theme::SMALL_CONTROL;
 pub const GAP: f32 = SP2;
-pub const INSET: f32 = SP3;
+pub(crate) const INSET: f32 = SP3;
 
 #[must_use]
 pub fn search_title(label: &str, query: &str, room: f32) -> String {
@@ -33,7 +33,7 @@ pub fn maximize_button(app: &App) -> Element<'_, Message> {
 }
 
 #[must_use]
-pub fn bar_background(app: &App) -> iced::Color {
+pub(crate) fn bar_background(app: &App) -> iced::Color {
     if app.is_idle() { app.theme.bar_bg_idle() } else { app.theme.bar_bg() }
 }
 
@@ -82,7 +82,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 }
 
 #[must_use]
-pub fn path_field(app: &App) -> Option<Element<'_, Message>> {
+pub(crate) fn path_field(app: &App) -> Option<Element<'_, Message>> {
     let path = app.path_edit.as_ref()?;
     let input = text_input(Key::PathPlaceholder.text(app.lang), path)
         .id(PATH_ID)

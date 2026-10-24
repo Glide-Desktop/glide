@@ -28,7 +28,7 @@ const PRIVACY: &str = "https://netbird.io/privacy";
 const MAX_EVENTS: usize = 10;
 
 #[must_use]
-pub const fn state_label(state: State) -> T {
+pub(crate) const fn state_label(state: State) -> T {
     match state {
         State::Connected => T::Connected,
         State::Connecting => T::Connecting,
@@ -77,7 +77,7 @@ fn matches(query: &str, fields: &[&str]) -> bool {
 }
 
 #[must_use]
-pub fn filtered_peers(page: &Page) -> Vec<&nb::Peer> {
+pub(crate) fn filtered_peers(page: &Page) -> Vec<&nb::Peer> {
     let mut peers: Vec<&nb::Peer> = page
         .snapshot
         .status
@@ -95,7 +95,7 @@ pub fn filtered_peers(page: &Page) -> Vec<&nb::Peer> {
 }
 
 #[must_use]
-pub fn filtered_resources(page: &Page) -> Vec<nb::Network> {
+pub(crate) fn filtered_resources(page: &Page) -> Vec<nb::Network> {
     let all = nb::resources(&page.snapshot.networks);
     all.iter()
         .filter(|network| match page.resource_filter {

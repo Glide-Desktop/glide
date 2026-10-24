@@ -96,7 +96,7 @@ const MONTHS_UK: [&str; 12] = [
 ];
 
 #[must_use]
-pub fn weekday_name(weekday: u8, lang: Lang) -> &'static str {
+pub(crate) fn weekday_name(weekday: u8, lang: Lang) -> &'static str {
     let index = usize::from(weekday % 7);
     match lang {
         Lang::Uk => WEEKDAYS_UK[index],
@@ -164,7 +164,7 @@ impl ClockFormat {
     }
 
     #[must_use]
-    pub fn twelve_hour(self, locale_twelve: bool) -> bool {
+    pub(crate) fn twelve_hour(self, locale_twelve: bool) -> bool {
         match self {
             Self::Auto => locale_twelve,
             Self::H24 => false,

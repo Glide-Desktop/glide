@@ -47,7 +47,7 @@ impl Trash {
     }
 
     #[must_use]
-    pub fn is_files_dir(&self, path: &Path) -> bool {
+    pub(crate) fn is_files_dir(&self, path: &Path) -> bool {
         path == self.files()
             || (path.file_name().is_some_and(|name| name == "files") && path.parent().is_some_and(is_volume_root))
     }

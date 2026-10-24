@@ -35,7 +35,7 @@ impl Peer {
 }
 
 #[must_use]
-pub fn sort_peers(mut peers: Vec<Peer>) -> Vec<Peer> {
+pub(crate) fn sort_peers(mut peers: Vec<Peer>) -> Vec<Peer> {
     peers.sort_by(|a, b| {
         b.is_display().cmp(&a.is_display()).then(b.strength.cmp(&a.strength)).then(a.name.cmp(&b.name))
     });
@@ -45,7 +45,7 @@ pub fn sort_peers(mut peers: Vec<Peer>) -> Vec<Peer> {
 type Settings<'a> = HashMap<&'static str, HashMap<&'static str, Value<'a>>>;
 
 #[must_use]
-pub fn connection_settings(peer_address: &str) -> Settings<'static> {
+pub(crate) fn connection_settings(peer_address: &str) -> Settings<'static> {
     let connection = HashMap::from([
         ("type", Value::from("wifi-p2p")),
         ("id", Value::from("Glide screen mirroring")),
@@ -89,12 +89,12 @@ impl P2p {
         Proxy::new(&self.bus, NM, self.device.as_str(), WIFI_P2P).map_err(failed)
     }
 
-    pub fn start_find(&self, seconds: i32) -> Result<(), String> {
+    pub(crate) fn start_find(&self, seconds: i32) -> Result<(), String> {
         let options = HashMap::from([("timeout", Value::from(seconds.clamp(1, 600)))]);
         self.p2p()?.call::<_, _, ()>("StartFind", &(options,)).map_err(failed)
     }
 
-    pub fn stop_find(&self) -> Result<(), String> {
+    pub(crate) fn stop_find(&self) -> Result<(), String> {
         self.p2p()?.call::<_, _, ()>("StopFind", &()).map_err(failed)
     }
 
@@ -144,7 +144,7 @@ impl P2p {
     }
 
     #[must_use]
-    pub fn local_address(&self, active: &OwnedObjectPath) -> Option<std::net::Ipv4Addr> {
+    pub(crate) fn local_address(&self, active: &OwnedObjectPath) -> Option<std::net::Ipv4Addr> {
         let config: OwnedObjectPath =
             Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).ok()?.get_property("Ip4Config").ok()?;
         let addresses: Vec<HashMap<String, zbus::zvariant::OwnedValue>> =

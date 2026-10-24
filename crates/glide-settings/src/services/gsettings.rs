@@ -182,6 +182,6 @@ pub fn set_bool(schema: &str, key: &str, value: bool) -> Result<String, String> 
     set(schema, key, if value { "true" } else { "false" })
 }
 
-pub fn set_string(schema: &str, key: &str, value: &str) -> Result<String, String> {
+pub(crate) fn set_string(schema: &str, key: &str, value: &str) -> Result<String, String> {
     set(schema, key, &quote(value))
 }

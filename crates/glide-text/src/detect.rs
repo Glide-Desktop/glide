@@ -50,7 +50,7 @@ pub fn by_name(path: &Path) -> Option<Language> {
 }
 
 #[must_use]
-pub fn trusts_name(language: Language) -> bool {
+pub(crate) fn trusts_name(language: Language) -> bool {
     language != Language::Plain
 }
 
@@ -230,7 +230,7 @@ fn scores(text: &str) -> Vec<(Language, f32)> {
 }
 
 #[must_use]
-pub fn error_ratio(language: Language, text: &str) -> Option<f32> {
+pub(crate) fn error_ratio(language: Language, text: &str) -> Option<f32> {
     let grammar = language.grammar()?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&grammar).ok()?;
@@ -272,7 +272,7 @@ fn json(text: &str) -> bool {
 }
 
 #[must_use]
-pub fn by_content(text: &str) -> Language {
+pub(crate) fn by_content(text: &str) -> Language {
     let text = sample(text);
     if text.trim().is_empty() {
         return Language::Plain;

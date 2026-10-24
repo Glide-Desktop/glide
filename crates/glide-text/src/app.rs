@@ -31,8 +31,8 @@ use glide_sdk::window::{Action as WindowAction, Window};
 
 pub const EDITOR: &str = "glide-text-editor";
 pub const FIND_ID: &str = "glide-text-find";
-pub const REPLACE_ID: &str = "glide-text-replace";
-pub const GOTO_ID: &str = "glide-text-goto";
+pub(crate) const REPLACE_ID: &str = "glide-text-replace";
+pub(crate) const GOTO_ID: &str = "glide-text-goto";
 const TICK: Duration = Duration::from_secs(1);
 const NOTICE: Duration = Duration::from_secs(4);
 const SESSION_EVERY: Duration = Duration::from_secs(10);
@@ -521,7 +521,7 @@ fn claim_primary() -> Option<std::fs::File> {
 }
 
 #[must_use]
-pub fn suggested_name(document: &Document, untitled: &str) -> String {
+pub(crate) fn suggested_name(document: &Document, untitled: &str) -> String {
     if let Some(name) = document.path.as_deref().and_then(Path::file_name) {
         return name.to_string_lossy().into_owned();
     }
@@ -710,7 +710,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn doc_name(&self, doc: &Document) -> String {
+    pub(crate) fn doc_name(&self, doc: &Document) -> String {
         doc.name(self.untitled())
     }
 
@@ -1225,7 +1225,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn sidebar_visible(&self) -> bool {
+    pub(crate) fn sidebar_visible(&self) -> bool {
         self.prefs.sidebar && self.window.size.width >= crate::chrome::SIDEBAR_MIN_WINDOW
     }
 
@@ -2166,7 +2166,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn find_label(&self) -> String {
+    pub(crate) fn find_label(&self) -> String {
         let Some(find) = &self.find else { return String::new() };
         if let Some(error) = &find.error {
             return error.clone();

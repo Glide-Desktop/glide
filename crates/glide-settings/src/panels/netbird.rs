@@ -372,7 +372,7 @@ impl Setting {
     }
 
     #[must_use]
-    pub const fn mdm_key(self) -> Option<&'static str> {
+    pub(crate) const fn mdm_key(self) -> Option<&'static str> {
         match self {
             Self::ConnectOnStartup => Some("disableAutoConnect"),
             Self::ClientRoutes => Some("disableClientRoutes"),
@@ -552,12 +552,12 @@ pub struct Page {
 const CLOUD_URL: &str = "https://api.netbird.io:443";
 
 #[must_use]
-pub fn is_cloud(url: &str) -> bool {
+pub(crate) fn is_cloud(url: &str) -> bool {
     url.is_empty() || url.trim_end_matches('/').trim_end_matches(":443") == CLOUD_URL.trim_end_matches(":443")
 }
 
 #[must_use]
-pub fn valid_url(url: &str) -> bool {
+pub(crate) fn valid_url(url: &str) -> bool {
     let url = url.trim();
     let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else {
         return false;
@@ -567,27 +567,27 @@ pub fn valid_url(url: &str) -> bool {
 }
 
 #[must_use]
-pub fn valid_interface(name: &str) -> bool {
+pub(crate) fn valid_interface(name: &str) -> bool {
     (1..=15).contains(&name.len()) && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
 #[must_use]
-pub fn parse_port(text: &str) -> Option<i64> {
+pub(crate) fn parse_port(text: &str) -> Option<i64> {
     text.trim().parse::<u16>().ok().map(i64::from)
 }
 
 #[must_use]
-pub fn parse_mtu(text: &str) -> Option<i64> {
+pub(crate) fn parse_mtu(text: &str) -> Option<i64> {
     text.trim().parse::<i64>().ok().filter(|mtu| (576..=8192).contains(mtu))
 }
 
 #[must_use]
-pub fn parse_minutes(text: &str) -> Option<u64> {
+pub(crate) fn parse_minutes(text: &str) -> Option<u64> {
     text.trim().parse::<u64>().ok().filter(|minutes| (1..=30).contains(minutes))
 }
 
 #[must_use]
-pub fn failure_text(lang: crate::i18n::Lang, failure: &Failure) -> Option<String> {
+pub(crate) fn failure_text(lang: crate::i18n::Lang, failure: &Failure) -> Option<String> {
     let error = match failure {
         Failure::Declined => return Some(T::Declined.text(lang).to_string()),
         Failure::Privilege { summary, .. } => return Some(summary.clone()),
@@ -704,7 +704,7 @@ impl Page {
         self.tab
     }
 
-    pub fn show_tab(&mut self, name: &str) {
+    pub(crate) fn show_tab(&mut self, name: &str) {
         self.tab = match name.trim().to_ascii_lowercase().as_str() {
             "peers" => Tab::Peers,
             "resources" | "networks" => Tab::Resources,
@@ -952,7 +952,7 @@ impl Page {
     }
 
     #[must_use]
-    pub fn capturing(&self) -> bool {
+    pub(crate) fn capturing(&self) -> bool {
         self.bundling.is_some() && self.bundle.capture
     }
 }

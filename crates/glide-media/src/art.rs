@@ -19,7 +19,7 @@ pub fn is_remote_art(url: &str) -> bool {
 }
 
 #[must_use]
-pub fn art_cache_dir() -> Option<PathBuf> {
+pub(crate) fn art_cache_dir() -> Option<PathBuf> {
     Some(glide_config::cache_home()?.join("glide/media-art"))
 }
 
@@ -28,12 +28,12 @@ fn fnv1a(text: &str) -> u64 {
 }
 
 #[must_use]
-pub fn cached_art_path(dir: &Path, url: &str) -> PathBuf {
+pub(crate) fn cached_art_path(dir: &Path, url: &str) -> PathBuf {
     dir.join(format!("{:016x}", fnv1a(url.trim())))
 }
 
 #[must_use]
-pub fn file_url(path: &Path) -> String {
+pub(crate) fn file_url(path: &Path) -> String {
     let raw = path.to_string_lossy();
     let mut out = String::with_capacity(raw.len() + 7);
     out.push_str("file://");
@@ -49,7 +49,7 @@ pub fn file_url(path: &Path) -> String {
     out
 }
 
-pub struct ArtFetcher {
+pub(crate) struct ArtFetcher {
     dir: Option<PathBuf>,
     requests: Option<mpsc::Sender<String>>,
     attempted: HashSet<String>,
@@ -98,7 +98,7 @@ impl ArtFetcher {
         None
     }
 
-    pub fn localise(&mut self, art_url: &mut String) {
+    pub(crate) fn localise(&mut self, art_url: &mut String) {
         if let Some(local) = self.resolve(art_url) {
             *art_url = local;
         }

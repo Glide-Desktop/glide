@@ -112,7 +112,7 @@ pub fn write_new_file(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBu
     Ok(dest)
 }
 
-pub fn move_path(source: &Path, dest: &Path) -> io::Result<()> {
+pub(crate) fn move_path(source: &Path, dest: &Path) -> io::Result<()> {
     match std::fs::rename(source, dest) {
         Err(err) if err.kind() == ErrorKind::CrossesDevices => {
             super::jobs::copy_exact(source, dest)?;

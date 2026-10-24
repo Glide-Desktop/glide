@@ -23,7 +23,7 @@ impl Mark {
 }
 
 #[must_use]
-pub fn is_mark(uri: &str) -> bool {
+pub(crate) fn is_mark(uri: &str) -> bool {
     uri.starts_with(PREFIX)
 }
 

@@ -177,11 +177,11 @@ pub fn read() -> BluetoothState {
     managed_objects().map(|objects| from_objects(&objects)).unwrap_or_default()
 }
 
-pub fn set_trusted(address: &str, trusted: bool) -> Result<String, String> {
+pub(crate) fn set_trusted(address: &str, trusted: bool) -> Result<String, String> {
     act(&[if trusted { "trust" } else { "untrust" }, address])
 }
 
-pub fn set_blocked(address: &str, blocked: bool) -> Result<String, String> {
+pub(crate) fn set_blocked(address: &str, blocked: bool) -> Result<String, String> {
     act(&[if blocked { "block" } else { "unblock" }, address])
 }
 
@@ -189,11 +189,11 @@ const fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 
-pub fn set_discoverable(on: bool) -> Result<String, String> {
+pub(crate) fn set_discoverable(on: bool) -> Result<String, String> {
     act(&["discoverable", on_off(on)])
 }
 
-pub fn set_pairable(on: bool) -> Result<String, String> {
+pub(crate) fn set_pairable(on: bool) -> Result<String, String> {
     act(&["pairable", on_off(on)])
 }
 
@@ -204,12 +204,12 @@ pub fn clean_alias(name: &str) -> Option<String> {
     (!name.is_empty() && name.len() <= 248).then(|| name.to_string())
 }
 
-pub fn set_adapter_alias(name: &str) -> Result<String, String> {
+pub(crate) fn set_adapter_alias(name: &str) -> Result<String, String> {
     let name = clean_alias(name).ok_or_else(|| "Enter a name".to_string())?;
     act(&["system-alias", &name])
 }
 
-pub fn set_device_alias(address: &str, name: &str) -> Result<String, String> {
+pub(crate) fn set_device_alias(address: &str, name: &str) -> Result<String, String> {
     let name = clean_alias(name).ok_or_else(|| "Enter a name".to_string())?;
     let result = (|| -> zbus::Result<()> {
         let objects = managed_objects()?;
@@ -232,7 +232,7 @@ pub fn set_device_alias(address: &str, name: &str) -> Result<String, String> {
     result.map(|()| String::new()).map_err(|err| format!("BlueZ: {err}"))
 }
 
-pub fn set_powered(on: bool) -> Result<String, String> {
+pub(crate) fn set_powered(on: bool) -> Result<String, String> {
     if on {
         let _ = run::status("rfkill", &["unblock", "bluetooth"]);
     }
@@ -243,7 +243,7 @@ pub fn scan() -> Result<String, String> {
     act(&["--timeout", "20", "scan", "on"])
 }
 
-pub fn pair_and_connect(address: &str) -> Result<String, String> {
+pub(crate) fn pair_and_connect(address: &str) -> Result<String, String> {
     act(&["--timeout", "20", "pair", address])?;
     let _ = act(&["trust", address]);
     connect(address)

@@ -91,7 +91,7 @@ const fn file_type(mime: &'static str, extension: &'static str, kind: Kind) -> F
     FileType { mime, extension, kind }
 }
 
-pub const FILE_TYPES: &[FileType] = &[
+pub(crate) const FILE_TYPES: &[FileType] = &[
     file_type("text/plain", ".txt", Kind::Documents),
     file_type("text/markdown", ".md", Kind::Documents),
     file_type("application/pdf", ".pdf", Kind::Documents),
@@ -343,7 +343,7 @@ pub(crate) fn desktop_names() -> Vec<String> {
 }
 
 #[must_use]
-pub fn mimeapps_paths() -> Vec<PathBuf> {
+pub(crate) fn mimeapps_paths() -> Vec<PathBuf> {
     let desktops = desktop_names();
     let mut bases: Vec<PathBuf> = Vec::new();
     bases.extend(config_home());
@@ -360,7 +360,7 @@ pub fn mimeapps_paths() -> Vec<PathBuf> {
 }
 
 #[must_use]
-pub fn load_mimeapps() -> Vec<MimeList> {
+pub(crate) fn load_mimeapps() -> Vec<MimeList> {
     mimeapps_paths()
         .iter()
         .filter_map(|path| std::fs::read_to_string(path).ok())
@@ -409,7 +409,7 @@ pub fn set_default(role: Role, app_id: &str) -> Result<String, String> {
     set_default_mimes(role.mime_types(), app_id)
 }
 
-pub fn set_default_mimes(mimes: &[&str], app_id: &str) -> Result<String, String> {
+pub(crate) fn set_default_mimes(mimes: &[&str], app_id: &str) -> Result<String, String> {
     let mut args = vec!["default", app_id];
     args.extend(mimes);
     run::status("xdg-mime", &args)
@@ -437,7 +437,7 @@ pub fn strip_defaults(text: &str, mimes: &[&str]) -> (String, usize) {
     (out, removed)
 }
 
-pub fn reset_defaults(mimes: &[&str]) -> Result<usize, String> {
+pub(crate) fn reset_defaults(mimes: &[&str]) -> Result<usize, String> {
     let Some(dir) = config_home() else {
         return Ok(0);
     };
@@ -458,7 +458,7 @@ pub fn reset_defaults(mimes: &[&str]) -> Result<usize, String> {
     Ok(total)
 }
 
-pub fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -497,7 +497,7 @@ fn unescape_xml(text: &str) -> String {
 }
 
 #[must_use]
-pub fn mime_description(mime: &str, lang: &str) -> Option<String> {
+pub(crate) fn mime_description(mime: &str, lang: &str) -> Option<String> {
     data_dirs().iter().find_map(|dir| {
         let path = dir.join("mime").join(format!("{mime}.xml"));
         std::fs::read_to_string(path).ok().and_then(|xml| parse_mime_comment(&xml, lang))
@@ -505,7 +505,7 @@ pub fn mime_description(mime: &str, lang: &str) -> Option<String> {
 }
 
 #[must_use]
-pub fn mime_descriptions(lang: &str) -> HashMap<&'static str, String> {
+pub(crate) fn mime_descriptions(lang: &str) -> HashMap<&'static str, String> {
     FILE_TYPES.iter().filter_map(|file| Some((file.mime, mime_description(file.mime, lang)?))).collect()
 }
 
@@ -522,7 +522,7 @@ const ICON_SUBDIRS: &[&str] = &[
 ];
 
 #[must_use]
-pub fn icon_candidates(base: &Path, theme: &str, name: &str) -> Vec<PathBuf> {
+pub(crate) fn icon_candidates(base: &Path, theme: &str, name: &str) -> Vec<PathBuf> {
     ICON_SUBDIRS
         .iter()
         .flat_map(|sub| ["svg", "png"].iter().map(move |ext| base.join(theme).join(sub).join(format!("{name}.{ext}"))))
@@ -530,7 +530,7 @@ pub fn icon_candidates(base: &Path, theme: &str, name: &str) -> Vec<PathBuf> {
 }
 
 #[must_use]
-pub fn icon_path(name: &str, theme: Option<&str>) -> Option<PathBuf> {
+pub(crate) fn icon_path(name: &str, theme: Option<&str>) -> Option<PathBuf> {
     let name = name.trim();
     if name.is_empty() {
         return None;
@@ -561,7 +561,9 @@ pub fn icon_path(name: &str, theme: Option<&str>) -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn icon_paths<'a>(names: impl IntoIterator<Item = &'a str>, theme: Option<&str>) -> HashMap<String, PathBuf> {
+pub(crate) fn icon_paths<'a>(
+    names: impl IntoIterator<Item = &'a str>, theme: Option<&str>,
+) -> HashMap<String, PathBuf> {
     let mut found = HashMap::new();
     for name in names {
         if found.contains_key(name) {
@@ -583,7 +585,7 @@ pub(crate) fn theme_dirs() -> Vec<PathBuf> {
 }
 
 #[must_use]
-pub fn is_icon_theme(dir: &Path) -> bool {
+pub(crate) fn is_icon_theme(dir: &Path) -> bool {
     let Ok(index) = std::fs::read_to_string(dir.join("index.theme")) else {
         return false;
     };
@@ -591,7 +593,7 @@ pub fn is_icon_theme(dir: &Path) -> bool {
 }
 
 #[must_use]
-pub fn icon_themes() -> Vec<String> {
+pub(crate) fn icon_themes() -> Vec<String> {
     let mut names: Vec<String> = theme_dirs()
         .iter()
         .filter_map(|dir| std::fs::read_dir(dir).ok())
@@ -621,7 +623,7 @@ pub fn cursor_themes_in(dirs: &[PathBuf]) -> Vec<String> {
 }
 
 #[must_use]
-pub fn cursor_themes() -> Vec<String> {
+pub(crate) fn cursor_themes() -> Vec<String> {
     cursor_themes_in(&theme_dirs())
 }
 
@@ -639,7 +641,7 @@ pub fn parse_font_families(text: &str) -> Vec<String> {
 }
 
 #[must_use]
-pub fn font_families() -> Vec<String> {
+pub(crate) fn font_families() -> Vec<String> {
     run::output("fc-list", &[":", "family"]).map(|text| parse_font_families(&text)).unwrap_or_default()
 }
 

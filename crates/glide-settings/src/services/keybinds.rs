@@ -4,8 +4,8 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Tab
 
 use super::config::ConfigStore;
 
-pub const DEFAULTS_TOML: &str = include_str!("default_keybinds.toml");
-pub const CONFIG_KEY: &str = "keybinds";
+pub(crate) const DEFAULTS_TOML: &str = include_str!("default_keybinds.toml");
+pub(crate) const CONFIG_KEY: &str = "keybinds";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mod {
@@ -50,7 +50,7 @@ impl Mod {
     }
 }
 
-pub const NAMED_ACTIONS: &[&str] = &[
+pub(crate) const NAMED_ACTIONS: &[&str] = &[
     "close-window",
     "close-app",
     "maximize",
@@ -202,7 +202,7 @@ pub struct Keybind {
 
 impl Keybind {
     #[must_use]
-    pub fn sorted_mods(&self) -> Vec<Mod> {
+    pub(crate) fn sorted_mods(&self) -> Vec<Mod> {
         let mut mods = self.mods.clone();
         mods.sort_unstable();
         mods.dedup();
@@ -216,7 +216,7 @@ impl Keybind {
     }
 }
 
-pub const NAMED_KEYS: &[&str] = &[
+pub(crate) const NAMED_KEYS: &[&str] = &[
     "Return",
     "Tab",
     "space",
@@ -300,7 +300,7 @@ pub fn is_valid_key(key: &str) -> bool {
 }
 
 #[must_use]
-pub fn normalize_key(input: &str) -> Option<String> {
+pub(crate) fn normalize_key(input: &str) -> Option<String> {
     if input == " " {
         return Some(String::from("space"));
     }
@@ -481,7 +481,7 @@ fn action_item(action: &Action) -> Item {
 }
 
 #[must_use]
-pub fn to_item(binds: &[Keybind]) -> Item {
+pub(crate) fn to_item(binds: &[Keybind]) -> Item {
     let mut tables = ArrayOfTables::new();
     for bind in binds {
         let mut table = Table::new();
@@ -515,7 +515,7 @@ pub fn current(config: &ConfigStore) -> Vec<Keybind> {
 }
 
 #[must_use]
-pub fn combo_for(binds: &[Keybind], action: &str) -> Option<String> {
+pub(crate) fn combo_for(binds: &[Keybind], action: &str) -> Option<String> {
     let bind = binds.iter().find(|bind| bind.action == Action::Named(action.to_string()))?;
     let mut parts: Vec<String> = bind.sorted_mods().iter().map(|m| m.key().to_string()).collect();
     parts.push(bind.key.clone());

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub const DIRECTORY: &str = "inode/directory";
-pub const OCTET_STREAM: &str = "application/octet-stream";
+pub(crate) const OCTET_STREAM: &str = "application/octet-stream";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MimeDb {
@@ -92,7 +92,7 @@ impl MimeDb {
     }
 
     #[must_use]
-    pub fn of_name(&self, path: &Path, is_dir: bool) -> String {
+    pub(crate) fn of_name(&self, path: &Path, is_dir: bool) -> String {
         self.classify(path, is_dir, false)
     }
 

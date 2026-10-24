@@ -52,7 +52,7 @@ impl AccelProfile {
 }
 
 #[must_use]
-pub const fn appearance_key(appearance: Appearance) -> &'static str {
+pub(crate) const fn appearance_key(appearance: Appearance) -> &'static str {
     match appearance {
         Appearance::Light => "light",
         Appearance::Dark => "dark",
@@ -113,16 +113,16 @@ fn system_keyboard() -> &'static glide_config::SystemKeyboard {
     static KEYBOARD: std::sync::OnceLock<glide_config::SystemKeyboard> = std::sync::OnceLock::new();
     KEYBOARD.get_or_init(glide_config::SystemKeyboard::detect)
 }
-pub const DEFAULT_REPEAT_DELAY: i64 = 200;
-pub const DEFAULT_REPEAT_RATE: i64 = 25;
+pub(crate) const DEFAULT_REPEAT_DELAY: i64 = 200;
+pub(crate) const DEFAULT_REPEAT_RATE: i64 = 25;
 pub const DEFAULT_ITEM_SIZE: i64 = 56;
 pub const DEFAULT_ICON_SIZE: i64 = 44;
-pub const DEFAULT_TITLEBAR_HEIGHT: i64 = 20;
-pub const DEFAULT_BORDER_WIDTH: i64 = 1;
-pub const DEFAULT_BLANK_AFTER: i64 = 600;
-pub const DEFAULT_BATTERY_LOW: i64 = 20;
-pub const DEFAULT_MAX_VOLUME: i64 = 100;
-pub const DEFAULT_NIGHT_LIGHT_KELVIN: i64 = 4000;
+pub(crate) const DEFAULT_TITLEBAR_HEIGHT: i64 = 20;
+pub(crate) const DEFAULT_BORDER_WIDTH: i64 = 1;
+pub(crate) const DEFAULT_BLANK_AFTER: i64 = 600;
+pub(crate) const DEFAULT_BATTERY_LOW: i64 = 20;
+pub(crate) const DEFAULT_MAX_VOLUME: i64 = 100;
+pub(crate) const DEFAULT_NIGHT_LIGHT_KELVIN: i64 = 4000;
 
 pub const SPEED_MIN: f64 = 0.5;
 pub const SPEED_MAX: f64 = 2.0;
@@ -335,7 +335,7 @@ impl ConfigStore {
         self.dirty = true;
     }
 
-    pub fn set_str(&mut self, table: &str, key: &str, text: &str) {
+    pub(crate) fn set_str(&mut self, table: &str, key: &str, text: &str) {
         self.set(table, key, value(text));
     }
 
@@ -343,7 +343,7 @@ impl ConfigStore {
         self.set(table, key, value(flag));
     }
 
-    pub fn set_int(&mut self, table: &str, key: &str, number: i64) {
+    pub(crate) fn set_int(&mut self, table: &str, key: &str, number: i64) {
         self.set(table, key, value(number));
     }
 
@@ -365,17 +365,17 @@ impl ConfigStore {
     }
 
     #[must_use]
-    pub fn int_or(&self, table: &str, key: &str, fallback: i64) -> i64 {
+    pub(crate) fn int_or(&self, table: &str, key: &str, fallback: i64) -> i64 {
         self.get_int(table, key).unwrap_or(fallback)
     }
 
     #[must_use]
-    pub fn bool_or(&self, table: &str, key: &str, fallback: bool) -> bool {
+    pub(crate) fn bool_or(&self, table: &str, key: &str, fallback: bool) -> bool {
         self.get_bool(table, key).unwrap_or(fallback)
     }
 
     #[must_use]
-    pub fn str_or(&self, table: &str, key: &str, fallback: &str) -> String {
+    pub(crate) fn str_or(&self, table: &str, key: &str, fallback: &str) -> String {
         self.get_str(table, key).unwrap_or(fallback).to_string()
     }
 
@@ -420,7 +420,7 @@ impl ConfigStore {
     }
 
     #[must_use]
-    pub fn appearance_scheduled(&self) -> bool {
+    pub(crate) fn appearance_scheduled(&self) -> bool {
         self.bool_or("topbar", "appearance-schedule", false)
     }
 
@@ -453,7 +453,7 @@ impl ConfigStore {
     }
 
     #[must_use]
-    pub const fn system_language(&self) -> Lang {
+    pub(crate) const fn system_language(&self) -> Lang {
         self.system_language
     }
 
@@ -502,7 +502,7 @@ impl ConfigStore {
     }
 
     #[must_use]
-    pub fn respect_system_motion(&self) -> bool {
+    pub(crate) fn respect_system_motion(&self) -> bool {
         self.bool_or("animations", "respect-system", true)
     }
 
@@ -622,7 +622,7 @@ impl ConfigStore {
         array.get_mut(index).expect("the index points inside the array")
     }
 
-    pub fn tag_output(&mut self, name: &str, make: &str, model: &str) {
+    pub(crate) fn tag_output(&mut self, name: &str, make: &str, model: &str) {
         let known = |text: &str| !text.trim().is_empty() && text.trim() != "Unknown";
         if self.error.is_some() || self.output_table(name).is_none() || !known(make) || !known(model) {
             return;
@@ -666,11 +666,11 @@ impl ConfigStore {
     }
 
     #[must_use]
-    pub fn output_snapshot(&self, name: &str) -> Option<Table> {
+    pub(crate) fn output_snapshot(&self, name: &str) -> Option<Table> {
         self.output_table(name).cloned()
     }
 
-    pub fn restore_output(&mut self, name: &str, snapshot: Option<&Table>) {
+    pub(crate) fn restore_output(&mut self, name: &str, snapshot: Option<&Table>) {
         let current = self.output_table(name).map(ToString::to_string);
         if self.error.is_some() || current == snapshot.map(ToString::to_string) {
             return;
@@ -696,7 +696,7 @@ impl ConfigStore {
         self.doc.get(key)
     }
 
-    pub fn set_root_item(&mut self, key: &str, item: Item) {
+    pub(crate) fn set_root_item(&mut self, key: &str, item: Item) {
         if self.error.is_some() {
             return;
         }
@@ -707,7 +707,7 @@ impl ConfigStore {
         self.dirty = true;
     }
 
-    pub fn remove_root_item(&mut self, key: &str) {
+    pub(crate) fn remove_root_item(&mut self, key: &str) {
         if self.error.is_some() {
             return;
         }

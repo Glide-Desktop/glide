@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
-pub const THUMB_WIDTH: u32 = 320;
-pub const MAX_PER_SOURCE: usize = 256;
-pub const MAX_PER_ROOT: usize = 64;
-pub const SOLID_SIZE: u32 = 64;
+pub(crate) const THUMB_WIDTH: u32 = 320;
+pub(crate) const MAX_PER_SOURCE: usize = 256;
+pub(crate) const MAX_PER_ROOT: usize = 64;
+pub(crate) const SOLID_SIZE: u32 = 64;
 
 static BUILTIN: &[u8] = include_bytes!("../../../glide-paint/assets/wallpaper.png");
 
@@ -37,7 +37,7 @@ impl Gallery {
 }
 
 #[must_use]
-pub fn is_screenshot(path: &Path) -> bool {
+pub(crate) fn is_screenshot(path: &Path) -> bool {
     path.file_name().is_some_and(|name| {
         let name = name.to_string_lossy().to_lowercase();
         ["screenshot", "screen shot", "знімок", "снимок", "grim"].iter().any(|marker| name.contains(marker))
@@ -45,7 +45,7 @@ pub fn is_screenshot(path: &Path) -> bool {
 }
 
 #[must_use]
-pub fn is_image(path: &Path) -> bool {
+pub(crate) fn is_image(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "jfif" | "png" | "webp"))
@@ -78,7 +78,7 @@ fn user_pictures_dir(home: &Path) -> PathBuf {
 }
 
 #[must_use]
-pub fn user_folder() -> Option<PathBuf> {
+pub(crate) fn user_folder() -> Option<PathBuf> {
     let home = home()?;
     let pictures = user_pictures_dir(&home);
     let dedicated = pictures.join("Wallpapers");
@@ -93,7 +93,7 @@ pub fn user_folder() -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn user_roots() -> Vec<PathBuf> {
+pub(crate) fn user_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let Some(home) = home() else {
         return roots;
@@ -138,7 +138,7 @@ pub fn user_roots() -> Vec<PathBuf> {
 }
 
 #[must_use]
-pub fn system_roots() -> Vec<PathBuf> {
+pub(crate) fn system_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut add = |p: PathBuf| {
         if !roots.contains(&p) {
@@ -333,7 +333,7 @@ fn thumbnail_of(image: &image::DynamicImage, path: PathBuf, source: Source) -> O
 }
 
 #[must_use]
-pub fn thumbnail_from(path: &Path, source: Source) -> Option<Thumbnail> {
+pub(crate) fn thumbnail_from(path: &Path, source: Source) -> Option<Thumbnail> {
     thumbnail_of(&image::open(path).ok()?, path.to_path_buf(), source)
 }
 
@@ -348,7 +348,7 @@ pub fn builtin() -> Option<Thumbnail> {
 }
 
 #[must_use]
-pub fn gallery(current: Option<&Path>) -> Gallery {
+pub(crate) fn gallery(current: Option<&Path>) -> Gallery {
     Gallery { builtin: builtin(), items: load(current) }
 }
 
@@ -367,7 +367,7 @@ pub fn load(current: Option<&Path>) -> Vec<Thumbnail> {
 }
 
 #[must_use]
-pub fn parse_hex(text: &str) -> Option<[u8; 3]> {
+pub(crate) fn parse_hex(text: &str) -> Option<[u8; 3]> {
     let digits = text.trim().trim_start_matches('#');
     if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
@@ -382,23 +382,23 @@ pub fn hex([r, g, b]: [u8; 3]) -> String {
 }
 
 #[must_use]
-pub fn solid_file_name(rgb: [u8; 3]) -> String {
+pub(crate) fn solid_file_name(rgb: [u8; 3]) -> String {
     format!("solid-{}.png", hex(rgb).trim_start_matches('#'))
 }
 
 #[must_use]
-pub fn solid_color(path: &Path) -> Option<[u8; 3]> {
+pub(crate) fn solid_color(path: &Path) -> Option<[u8; 3]> {
     let name = path.file_name()?.to_str()?;
     let digits = name.strip_prefix("solid-")?.strip_suffix(".png")?;
     parse_hex(digits)
 }
 
 #[must_use]
-pub fn solid_dir() -> Option<PathBuf> {
+pub(crate) fn solid_dir() -> Option<PathBuf> {
     super::privacy::data_home().map(|data| data.join("glide/solid"))
 }
 
-pub fn write_solid_in(dir: &Path, rgb: [u8; 3]) -> Result<PathBuf, String> {
+pub(crate) fn write_solid_in(dir: &Path, rgb: [u8; 3]) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
     let path = dir.join(solid_file_name(rgb));
     if path.is_file() {
@@ -417,12 +417,12 @@ pub fn write_solid_in(dir: &Path, rgb: [u8; 3]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-pub fn write_solid(rgb: [u8; 3]) -> Result<PathBuf, String> {
+pub(crate) fn write_solid(rgb: [u8; 3]) -> Result<PathBuf, String> {
     let dir = solid_dir().ok_or_else(|| String::from("no home directory"))?;
     write_solid_in(&dir, rgb)
 }
 
-pub fn open_user_folder() -> Result<(), String> {
+pub(crate) fn open_user_folder() -> Result<(), String> {
     let dir = user_folder().ok_or_else(|| String::from("no home directory"))?;
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     super::run::status("xdg-open", &[&dir.to_string_lossy()]).map(|_| ())

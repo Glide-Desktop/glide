@@ -105,9 +105,9 @@ mod tr {
 }
 
 const TABLE: &str = "gestures";
-pub const SENSITIVITY: RangeInclusive<f64> = 0.5..=2.0;
+pub(crate) const SENSITIVITY: RangeInclusive<f64> = 0.5..=2.0;
 pub const PAD_WIDTH: f32 = 360.0;
-pub const PAD_HEIGHT: f32 = 188.0;
+pub(crate) const PAD_HEIGHT: f32 = 188.0;
 const DOT: f32 = 18.0;
 const DOT_GAP: f32 = 8.0;
 const DEAD_ZONE: f64 = 12.0;

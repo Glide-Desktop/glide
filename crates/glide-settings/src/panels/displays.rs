@@ -50,7 +50,7 @@ mod tr {
     }
 }
 
-pub const CONFIRM_SECONDS: u8 = 15;
+pub(crate) const CONFIRM_SECONDS: u8 = 15;
 
 #[derive(Debug, Clone)]
 struct Snapshot {

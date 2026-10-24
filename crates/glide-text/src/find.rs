@@ -54,7 +54,7 @@ pub fn replacement(pattern: &Regex, query: &Query, found: &str, with: &str) -> S
 }
 
 #[must_use]
-pub fn replace_all(pattern: &Regex, query: &Query, text: &str, with: &str) -> (String, usize) {
+pub(crate) fn replace_all(pattern: &Regex, query: &Query, text: &str, with: &str) -> (String, usize) {
     let count = pattern.find_iter(text).filter(|found| !found.is_empty()).count();
     let replaced = if query.regex {
         pattern.replace_all(text, with).into_owned()

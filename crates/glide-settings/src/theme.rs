@@ -229,8 +229,8 @@ impl Default for ThemeState {
 pub const CONTROL_HEIGHT: f32 = glide_sdk::theme::component::CONTROL;
 pub const SMALL_CONTROL_HEIGHT: f32 = glide_sdk::theme::component::SMALL_CONTROL;
 pub const SIDEBAR_WIDTH: f32 = 256.0;
-pub const CONTENT_MAX_WIDTH: f32 = 680.0;
-pub const ROW_PADDING_Y: f32 = 5.0;
+pub(crate) const CONTENT_MAX_WIDTH: f32 = 680.0;
+pub(crate) const ROW_PADDING_Y: f32 = 5.0;
 pub const ROW_PADDING_X: f32 = 12.0;
 pub const SECTION_GAP: f32 = 24.0;
 pub const PAGE_PADDING_X: f32 = 32.0;
@@ -238,7 +238,7 @@ pub const PAGE_PADDING_TOP: f32 = 24.0;
 pub const RING_GAP: f32 = 4.0;
 
 #[must_use]
-pub fn ramp_color(accent: Accent, step: usize) -> iced::Color {
+pub(crate) fn ramp_color(accent: Accent, step: usize) -> iced::Color {
     to_iced_color(accent.ramp()[step.min(5)])
 }
 

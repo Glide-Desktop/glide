@@ -43,8 +43,8 @@ mod tr {
     }
 }
 
-pub const DEFAULT_FIXED: i64 = 4;
-pub const FIXED_CHOICES: [u8; 9] = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+pub(crate) const DEFAULT_FIXED: i64 = 4;
+pub(crate) const FIXED_CHOICES: [u8; 9] = [2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 #[derive(Debug, Clone, Copy)]
 pub enum Msg {

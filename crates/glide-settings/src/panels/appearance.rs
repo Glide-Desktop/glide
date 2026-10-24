@@ -477,7 +477,7 @@ impl Page {
     }
 }
 
-pub const SWATCH_SIZE: f32 = 24.0;
+pub(crate) const SWATCH_SIZE: f32 = 24.0;
 
 type ToolkitRow = (tr::Key, tr::Key, theme::Tone, tr::Key);
 

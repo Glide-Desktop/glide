@@ -10,11 +10,11 @@ pub struct Pin {
 }
 
 #[must_use]
-pub fn pins_path() -> Option<PathBuf> {
+pub(crate) fn pins_path() -> Option<PathBuf> {
     glide_config::xdg_path("glide", "pins.toml")
 }
 
-pub fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
+pub(crate) fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
     let doc = text.parse::<DocumentMut>().map_err(|err| err.message().trim().to_string())?;
     let Some(item) = doc.get("pinned") else {
         return Ok(Vec::new());
@@ -35,7 +35,7 @@ pub fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
 }
 
 #[must_use]
-pub fn render_pins(pins: &[Pin]) -> String {
+pub(crate) fn render_pins(pins: &[Pin]) -> String {
     let mut array = ArrayOfTables::new();
     for pin in pins {
         let mut table = Table::new();

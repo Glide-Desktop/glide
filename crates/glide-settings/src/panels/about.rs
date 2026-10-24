@@ -85,7 +85,7 @@ pub struct Page {
 }
 
 #[must_use]
-pub fn format_uptime(secs: u64, c: &Ctx) -> String {
+pub(crate) fn format_uptime(secs: u64, c: &Ctx) -> String {
     let days = secs / 86_400;
     let hours = secs % 86_400 / 3600;
     let minutes = secs % 3600 / 60;
@@ -110,7 +110,7 @@ fn chassis_key(chassis: &str) -> Option<T> {
 }
 
 #[must_use]
-pub fn display_line(output: &glide_ipc::OutputInfo, lang: Lang) -> String {
+pub(crate) fn display_line(output: &glide_ipc::OutputInfo, lang: Lang) -> String {
     let mut parts = vec![format!("{}×{}", output.width, output.height)];
     if output.refresh_mhz > 0 {
         parts.push(format!(

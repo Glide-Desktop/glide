@@ -45,10 +45,10 @@ impl ListColumn {
     }
 }
 
-pub const GRID_ZOOMS: usize = 6;
-pub const LIST_ZOOMS: usize = 4;
-pub const DEFAULT_GRID_ZOOM: u8 = 2;
-pub const DEFAULT_LIST_ZOOM: u8 = 1;
+pub(crate) const GRID_ZOOMS: usize = 6;
+pub(crate) const LIST_ZOOMS: usize = 4;
+pub(crate) const DEFAULT_GRID_ZOOM: u8 = 2;
+pub(crate) const DEFAULT_LIST_ZOOM: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewPrefs {
@@ -148,14 +148,14 @@ fn prefs_path() -> Option<std::path::PathBuf> {
 }
 
 #[must_use]
-pub fn load_prefs() -> ViewPrefs {
+pub(crate) fn load_prefs() -> ViewPrefs {
     prefs_path()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|text| ViewPrefs::parse(&text))
         .unwrap_or_default()
 }
 
-pub fn save_prefs(prefs: &ViewPrefs) {
+pub(crate) fn save_prefs(prefs: &ViewPrefs) {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 

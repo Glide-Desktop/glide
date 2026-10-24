@@ -446,11 +446,11 @@ fn swatches<'a>(
     .wrap()
 }
 
-pub const HERO_W: f32 = 400.0;
-pub const HERO_H: f32 = 225.0;
-pub const FIT_W: f32 = 96.0;
-pub const FIT_H: f32 = 54.0;
-pub const REFERENCE_WIDTH: f32 = 1920.0;
+pub(crate) const HERO_W: f32 = 400.0;
+pub(crate) const HERO_H: f32 = 225.0;
+pub(crate) const FIT_W: f32 = 96.0;
+pub(crate) const FIT_H: f32 = 54.0;
+pub(crate) const REFERENCE_WIDTH: f32 = 1920.0;
 
 const fn fit_keys(fit: WallpaperFit) -> (K, tr::Key) {
     match fit {

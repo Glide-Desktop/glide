@@ -437,7 +437,7 @@ impl Document {
         self.changed_on_disk = false;
     }
 
-    pub fn redetect(&mut self) -> bool {
+    pub(crate) fn redetect(&mut self) -> bool {
         self.detect_pending = false;
         if self.pinned.is_some() {
             return false;

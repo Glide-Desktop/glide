@@ -151,7 +151,7 @@ fn load() -> Snapshot {
 
 impl Snapshot {
     #[must_use]
-    pub fn formats_for(&self, code: &str) -> Option<&Formats> {
+    pub(crate) fn formats_for(&self, code: &str) -> Option<&Formats> {
         let code = locale::normalise(code);
         self.formats.iter().find(|formats| locale::normalise(&formats.locale) == code)
     }

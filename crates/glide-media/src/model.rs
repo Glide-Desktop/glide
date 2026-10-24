@@ -14,7 +14,7 @@ pub enum Playback {
 
 impl Playback {
     #[must_use]
-    pub fn from_wire(value: &str) -> Self {
+    pub(crate) fn from_wire(value: &str) -> Self {
         match value {
             "Playing" => Self::Playing,
             "Paused" => Self::Paused,

@@ -11,7 +11,7 @@ const fn mode(bit: u8, width: u32, height: u32, fps: u32, interlaced: bool) -> M
     Mode { bit, width, height, fps, interlaced }
 }
 
-pub const CEA: [Mode; 17] = [
+pub(crate) const CEA: [Mode; 17] = [
     mode(0, 640, 480, 60, false),
     mode(1, 720, 480, 60, false),
     mode(2, 720, 480, 60, true),
@@ -31,21 +31,21 @@ pub const CEA: [Mode; 17] = [
     mode(16, 1920, 1080, 24, false),
 ];
 
-pub const SOFTWARE_PREFERENCE: [u8; 6] = [7, 6, 5, 12, 10, 0];
-pub const HARDWARE_PREFERENCE: [u8; 7] = [8, 7, 6, 13, 12, 5, 0];
+pub(crate) const SOFTWARE_PREFERENCE: [u8; 6] = [7, 6, 5, 12, 10, 0];
+pub(crate) const HARDWARE_PREFERENCE: [u8; 7] = [8, 7, 6, 13, 12, 5, 0];
 
-pub const PROFILE_CBP: u8 = 0x01;
-pub const PROFILE_CHP: u8 = 0x02;
+pub(crate) const PROFILE_CBP: u8 = 0x01;
+pub(crate) const PROFILE_CHP: u8 = 0x02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct H264 {
+pub(crate) struct H264 {
     pub profile: u8,
     pub level: u8,
     pub cea: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VideoFormats {
+pub(crate) struct VideoFormats {
     pub native: u8,
     pub codecs: Vec<H264>,
 }
@@ -55,7 +55,7 @@ fn hex<T: TryFrom<u32>>(token: &str) -> Option<T> {
 }
 
 #[must_use]
-pub fn parse_video_formats(value: &str) -> Option<VideoFormats> {
+pub(crate) fn parse_video_formats(value: &str) -> Option<VideoFormats> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("none") {
         return None;
@@ -83,7 +83,7 @@ pub struct Video {
 }
 
 #[must_use]
-pub fn choose_video(formats: &VideoFormats, preference: &[u8]) -> Option<Video> {
+pub(crate) fn choose_video(formats: &VideoFormats, preference: &[u8]) -> Option<Video> {
     let codec =
         formats.codecs.iter().find(|codec| codec.profile & PROFILE_CBP != 0).or_else(|| formats.codecs.first())?;
     let bit = preference.iter().copied().find(|bit| codec.cea & (1 << bit) != 0)?;
@@ -97,7 +97,7 @@ fn highest_bit(byte: u8) -> Option<u8> {
 }
 
 #[must_use]
-pub fn video_formats_line(video: Video) -> String {
+pub(crate) fn video_formats_line(video: Video) -> String {
     format!(
         "{:02x} 00 {:02x} {:02x} {:08x} 00000000 00000000 00 0000 0000 00 none none",
         video.mode.bit << 3,
@@ -124,7 +124,7 @@ impl Audio {
 }
 
 #[must_use]
-pub fn choose_audio(value: &str) -> Option<Audio> {
+pub(crate) fn choose_audio(value: &str) -> Option<Audio> {
     let codecs: Vec<(String, u32)> = value
         .split(',')
         .filter_map(|codec| {
@@ -143,7 +143,7 @@ pub fn choose_audio(value: &str) -> Option<Audio> {
 }
 
 #[must_use]
-pub fn client_rtp_port(value: &str) -> Option<u16> {
+pub(crate) fn client_rtp_port(value: &str) -> Option<u16> {
     let mut tokens = value.split_whitespace();
     let profile = tokens.next()?;
     profile.to_ascii_uppercase().starts_with("RTP/AVP/UDP").then_some(())?;

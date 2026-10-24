@@ -194,7 +194,7 @@ fn measure(path: &Path, cancel: &AtomicBool) -> Size {
 }
 
 #[must_use]
-pub fn tree_size(path: &Path) -> (u64, usize) {
+pub(crate) fn tree_size(path: &Path) -> (u64, usize) {
     let size = measure(path, &AtomicBool::new(false));
     (size.bytes, size.items.saturating_sub(1))
 }

@@ -299,7 +299,7 @@ pub fn order_batteries(names: &mut [String]) {
 }
 
 #[must_use]
-pub fn read_state() -> PowerState {
+pub(crate) fn read_state() -> PowerState {
     let mut state = PowerState::default();
     let root = Path::new("/sys/class/power_supply");
     let mut batteries = Vec::new();
@@ -333,6 +333,6 @@ pub fn read_state() -> PowerState {
     state
 }
 
-pub fn set_profile(profile: Profile) -> Result<String, String> {
+pub(crate) fn set_profile(profile: Profile) -> Result<String, String> {
     run::status("powerprofilesctl", &["set", profile.key()])
 }

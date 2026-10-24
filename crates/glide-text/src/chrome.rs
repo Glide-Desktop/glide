@@ -26,8 +26,8 @@ use crate::syntax::{Bridge, Highlight, Language};
 
 pub const HEADER: f32 = 38.0;
 pub const STATUS: f32 = 26.0;
-pub const SIDEBAR: f32 = 248.0;
-pub const SIDEBAR_MIN_WINDOW: f32 = 560.0;
+pub(crate) const SIDEBAR: f32 = 248.0;
+pub(crate) const SIDEBAR_MIN_WINDOW: f32 = 560.0;
 const TABS: f32 = 36.0;
 const CONTROL: f32 = component::SMALL_CONTROL;
 const MENU_WIDTH: f32 = 300.0;
@@ -690,7 +690,7 @@ fn nested(app: &App, items: Vec<Item>) -> Vec<Item> {
 }
 
 #[must_use]
-pub fn export_menu(app: &App) -> (Vec<glide_app::menubar::Entry>, Vec<Command>) {
+pub(crate) fn export_menu(app: &App) -> (Vec<glide_app::menubar::Entry>, Vec<Command>) {
     let menus: Vec<glide_sdk::menu::Menu<Command>> = Bar::ALL
         .into_iter()
         .map(|bar| glide_sdk::menu::Menu::new(bar.key().text(app.lang), nested(app, bar_items(app, bar))))

@@ -23,7 +23,7 @@ use crate::theme::{self, Side, ThemeState, window_corners};
 
 pub const SIDEBAR_WIDTH: f32 = 208.0;
 pub const HEADER_HEIGHT: f32 = 35.0;
-pub const PATHBAR_HEIGHT: f32 = 28.0;
+pub(crate) const PATHBAR_HEIGHT: f32 = 28.0;
 pub const TRASH_BANNER: f32 = glide_sdk::widget::INFO_BAR;
 pub const CONTROL: f32 = theme::SMALL_CONTROL;
 
@@ -260,7 +260,7 @@ impl glide_sdk::widget::Glyph for Icon {
 }
 
 #[must_use]
-pub fn file_icon<'a>(app: &App, entry: &FileEntry, size: f32) -> Element<'a, Message> {
+pub(crate) fn file_icon<'a>(app: &App, entry: &FileEntry, size: f32) -> Element<'a, Message> {
     let opacity = if app.is_cut(&entry.path) { 0.45 } else { 1.0 };
     if size >= 32.0
         && let Some(thumb) = app.thumbnail(entry)

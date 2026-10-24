@@ -117,7 +117,7 @@ fn mounted_fuse(dir: &Path) -> bool {
 }
 
 #[must_use]
-pub fn find_mount(phone: &Phone) -> Option<PathBuf> {
+pub(crate) fn find_mount(phone: &Phone) -> Option<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(gvfs_root()) {
         let found = entries
             .flatten()

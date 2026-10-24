@@ -5,8 +5,8 @@ use glide_ipc::keychain::{Candidate, Hidden, Request, Response};
 
 use crate::vault::{self, Contents, Error, Item, Key, Params, Secret};
 
-pub const PROGRAM_ATTRIBUTE: &str = "glide:program";
-pub const APP_ATTRIBUTE: &str = "glide:app";
+pub(crate) const PROGRAM_ATTRIBUTE: &str = "glide:program";
+pub(crate) const APP_ATTRIBUTE: &str = "glide:app";
 const USERNAME_ATTRIBUTES: [&str; 3] = ["username", "username_value", "user"];
 
 #[must_use]
@@ -106,7 +106,7 @@ impl Daemon {
         self.open.as_ref().map(|(contents, _)| contents)
     }
 
-    pub fn add_login(&mut self, login: Login) -> Result<u64, Response> {
+    pub(crate) fn add_login(&mut self, login: Login) -> Result<u64, Response> {
         let now = now();
         let mut id = 0;
         let item = Item {
@@ -125,7 +125,7 @@ impl Daemon {
         }
     }
 
-    pub fn update_login(&mut self, id: u64, login: Login) -> Response {
+    pub(crate) fn update_login(&mut self, id: u64, login: Login) -> Response {
         if self.contents().is_some_and(|contents| contents.get(id).is_none()) {
             return Response::Error { message: "no such item".into() };
         }
@@ -147,7 +147,7 @@ impl Daemon {
     }
 }
 
-pub const LOGIN_COLLECTION: &str = "login";
+pub(crate) const LOGIN_COLLECTION: &str = "login";
 
 #[derive(Debug, Clone)]
 pub struct Login {

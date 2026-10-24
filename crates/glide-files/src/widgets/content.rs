@@ -154,7 +154,7 @@ pub fn column_width(column: ListColumn, lang: Lang) -> f32 {
 }
 
 #[must_use]
-pub fn column_label(column: ListColumn, lang: crate::i18n::Lang) -> &'static str {
+pub(crate) fn column_label(column: ListColumn, lang: crate::i18n::Lang) -> &'static str {
     match column {
         ListColumn::Size => Key::ColSize,
         ListColumn::Modified => Key::ColModified,
@@ -167,7 +167,7 @@ pub fn column_label(column: ListColumn, lang: crate::i18n::Lang) -> &'static str
 }
 
 #[must_use]
-pub fn tag_color(color: tags::Color) -> Color {
+pub(crate) fn tag_color(color: tags::Color) -> Color {
     let [r, g, b] = color.rgb();
     Color::from_rgb8(r, g, b)
 }

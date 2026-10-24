@@ -1,4 +1,4 @@
-pub const CONTROL_PORT: u16 = 7236;
+pub(crate) const CONTROL_PORT: u16 = 7236;
 const DEVICE_INFO: u8 = 0;
 const SESSION_AVAILABLE: u16 = 0b01 << 4;
 const MAX_THROUGHPUT_MBPS: u16 = 200;
@@ -22,7 +22,7 @@ impl Role {
     }
 
     #[must_use]
-    pub const fn shows_video(self) -> bool {
+    pub(crate) const fn shows_video(self) -> bool {
         matches!(self, Self::PrimarySink | Self::DualRole)
     }
 }
@@ -37,7 +37,7 @@ pub struct DeviceInfo {
 }
 
 #[must_use]
-pub fn source_subelements() -> Vec<u8> {
+pub(crate) fn source_subelements() -> Vec<u8> {
     let info = SESSION_AVAILABLE;
     let mut bytes = vec![DEVICE_INFO, 0, 6];
     bytes.extend_from_slice(&info.to_be_bytes());
@@ -47,7 +47,7 @@ pub fn source_subelements() -> Vec<u8> {
 }
 
 #[must_use]
-pub fn device_info(subelements: &[u8]) -> Option<DeviceInfo> {
+pub(crate) fn device_info(subelements: &[u8]) -> Option<DeviceInfo> {
     let mut rest = subelements;
     while rest.len() >= 3 {
         let id = rest[0];

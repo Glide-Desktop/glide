@@ -189,7 +189,7 @@ pub fn open(file: &[u8], password: &[u8]) -> Result<(Contents, Key), Error> {
     Ok((contents, key))
 }
 
-pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let dir = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent folder"))?;

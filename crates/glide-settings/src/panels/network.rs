@@ -81,7 +81,7 @@ mod tr {
 use tr::Key as T;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Expanded {
+pub(crate) enum Expanded {
     Wifi(String),
     Wired(String),
     Hidden,
@@ -1176,7 +1176,7 @@ fn security_label(c: &Ctx, key_mgmt: &str) -> String {
 }
 
 #[must_use]
-pub fn ssid_too_long(ssid: &str) -> bool {
+pub(crate) fn ssid_too_long(ssid: &str) -> bool {
     ssid.trim().len() > network::MAX_SSID_BYTES
 }
 

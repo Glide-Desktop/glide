@@ -6,7 +6,7 @@ use crate::formats::{self, Audio, Video};
 const VERSION: &str = "RTSP/1.0";
 const WFD_URI: &str = "rtsp://localhost/wfd1.0";
 const MAX_MESSAGE: usize = 64 * 1024;
-pub const SESSION_TIMEOUT_SECONDS: u32 = 30;
+pub(crate) const SESSION_TIMEOUT_SECONDS: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Start {
@@ -43,7 +43,7 @@ impl Message {
     }
 
     #[must_use]
-    pub fn with_parameters(mut self, body: String) -> Self {
+    pub(crate) fn with_parameters(mut self, body: String) -> Self {
         self.headers.push(("Content-Type".into(), "text/parameters".into()));
         self.body = body;
         self
@@ -55,12 +55,12 @@ impl Message {
     }
 
     #[must_use]
-    pub fn cseq(&self) -> Option<u32> {
+    pub(crate) fn cseq(&self) -> Option<u32> {
         self.header("CSeq")?.trim().parse().ok()
     }
 
     #[must_use]
-    pub fn parameters(&self) -> HashMap<String, String> {
+    pub(crate) fn parameters(&self) -> HashMap<String, String> {
         self.body
             .lines()
             .map(str::trim)
@@ -73,7 +73,7 @@ impl Message {
     }
 
     #[must_use]
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut text = match &self.start {
             Start::Request { method, uri } => format!("{method} {uri} {VERSION}\r\n"),
             Start::Response { code, reason } => format!("{VERSION} {code} {reason}\r\n"),
@@ -91,7 +91,7 @@ impl Message {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReadError {
+pub(crate) enum ReadError {
     TooLarge,
     Malformed(String),
 }
@@ -106,7 +106,7 @@ impl Reader {
         self.buffer.extend_from_slice(bytes);
     }
 
-    pub fn next_message(&mut self) -> Result<Option<Message>, ReadError> {
+    pub(crate) fn next_message(&mut self) -> Result<Option<Message>, ReadError> {
         let Some(end) = self.buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
             return if self.buffer.len() > MAX_MESSAGE { Err(ReadError::TooLarge) } else { Ok(None) };
         };
@@ -215,12 +215,12 @@ impl Session {
         self.send(Message::request("OPTIONS", "*").with("Require", "org.wfa.wfd1.0"), Pending::Options)
     }
 
-    pub fn keepalive(&mut self) -> Message {
+    pub(crate) fn keepalive(&mut self) -> Message {
         let message = Message::request("GET_PARAMETER", WFD_URI).with("Session", self.id.clone());
         self.send(message, Pending::KeepAlive)
     }
 
-    pub fn teardown(&mut self) -> Message {
+    pub(crate) fn teardown(&mut self) -> Message {
         let message =
             Message::request("SET_PARAMETER", WFD_URI).with_parameters("wfd_trigger_method: TEARDOWN\r\n".into());
         self.send(message, Pending::TriggerTeardown)

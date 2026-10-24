@@ -115,7 +115,7 @@ enum FaceRole {
 type StyleKey = (FaceRole, u32, u16, u32, bool);
 
 #[must_use]
-pub fn tabular_family<'a>(available: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
+pub(crate) fn tabular_family<'a>(available: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     available.into_iter().any(|family| family.trim().eq_ignore_ascii_case(TABULAR_FAMILY)).then_some(TABULAR_FAMILY)
 }
 
@@ -846,12 +846,12 @@ pub fn decode_cover(data: &[u8], side: i32) -> Option<Vec<u8>> {
 }
 
 #[must_use]
-pub fn render_webp(data: &[u8], side: i32) -> Option<Vec<u8>> {
+pub(crate) fn render_webp(data: &[u8], side: i32) -> Option<Vec<u8>> {
     fit_into_square(wallpaper::decode_webp(data)?, side)
 }
 
 #[must_use]
-pub fn render_jpeg(data: &[u8], side: i32) -> Option<Vec<u8>> {
+pub(crate) fn render_jpeg(data: &[u8], side: i32) -> Option<Vec<u8>> {
     fit_into_square(wallpaper::decode_jpeg(data)?, side)
 }
 
@@ -968,7 +968,7 @@ pub fn draw_speaker_glyph_over(
     });
 }
 
-pub fn draw_wifi_waves_level_over(
+pub(crate) fn draw_wifi_waves_level_over(
     buf: &mut [u8], canvas_width: i32, canvas_height: i32, side: f32, stroke_width: f32, level: u8, scale: i32,
     fg: Color, muted_fg: Color,
 ) {
@@ -1101,7 +1101,7 @@ stroked_glyphs! {
 }
 
 #[must_use]
-pub fn resample_square(src: &[u8], src_px: i32, dst_px: i32) -> Option<Vec<u8>> {
+pub(crate) fn resample_square(src: &[u8], src_px: i32, dst_px: i32) -> Option<Vec<u8>> {
     let (src_u, dst_u) = (u32::try_from(src_px).ok()?, u32::try_from(dst_px).ok()?);
     if src_u == 0 || dst_u == 0 || src.len() < (src_u * src_u * 4) as usize {
         return None;

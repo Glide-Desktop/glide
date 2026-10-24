@@ -157,7 +157,7 @@ impl Language {
     }
 
     #[must_use]
-    pub const fn line_comment(self) -> Option<&'static str> {
+    pub(crate) const fn line_comment(self) -> Option<&'static str> {
         match self {
             Self::Rust
             | Self::JavaScript
@@ -175,7 +175,7 @@ impl Language {
     }
 
     #[must_use]
-    pub const fn block_comment(self) -> Option<(&'static str, &'static str)> {
+    pub(crate) const fn block_comment(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Markdown | Self::Html | Self::Xml => Some(("<!--", "-->")),
             Self::Css | Self::C | Self::Cpp | Self::Rust | Self::JavaScript | Self::TypeScript | Self::Tsx => {
@@ -188,7 +188,7 @@ impl Language {
     }
 
     #[must_use]
-    pub fn grammar(self) -> Option<tree_sitter::Language> {
+    pub(crate) fn grammar(self) -> Option<tree_sitter::Language> {
         let function = match self {
             Self::Plain => return None,
             Self::Markdown => tree_sitter_md::LANGUAGE,
@@ -417,7 +417,7 @@ fn combine(stack: &[Style]) -> Style {
 }
 
 #[must_use]
-pub fn line_starts(text: &str) -> Vec<usize> {
+pub(crate) fn line_starts(text: &str) -> Vec<usize> {
     std::iter::once(0).chain(text.match_indices('\n').map(|(at, _)| at + 1)).collect()
 }
 
@@ -540,7 +540,7 @@ impl Highlight {
     }
 }
 
-pub type Marks = Vec<(usize, Range<usize>, bool)>;
+pub(crate) type Marks = Vec<(usize, Range<usize>, bool)>;
 
 #[must_use]
 pub fn marks(text: &str, found: &[Range<usize>], current: Option<usize>) -> Marks {
@@ -576,7 +576,7 @@ impl PartialEq for Settings {
     }
 }
 
-pub struct Bridge {
+pub(crate) struct Bridge {
     lines: Arc<Lines>,
     palette: Palette,
     marks: Arc<Marks>,

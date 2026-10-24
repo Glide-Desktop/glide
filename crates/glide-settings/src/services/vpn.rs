@@ -4,8 +4,8 @@ use std::time::Duration;
 use super::network::split_terse;
 use super::run;
 
-pub const WIREGUARD: &str = "wireguard";
-pub const PLUGIN: &str = "vpn";
+pub(crate) const WIREGUARD: &str = "wireguard";
+pub(crate) const PLUGIN: &str = "vpn";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Vpn {
@@ -42,7 +42,7 @@ impl Vpn {
 }
 
 #[must_use]
-pub fn protocol_label(short: &str) -> String {
+pub(crate) fn protocol_label(short: &str) -> String {
     match short {
         "openvpn" => "OpenVPN".to_string(),
         "wireguard" => "WireGuard".to_string(),
@@ -177,7 +177,7 @@ pub struct VpnDetails {
 }
 
 #[must_use]
-pub fn parse_vpn_data(data: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_vpn_data(data: &str) -> Vec<(String, String)> {
     data.split(", ")
         .filter_map(|pair| {
             let (key, value) = pair.split_once('=')?;
@@ -244,7 +244,7 @@ fn read_plugins() -> Vec<Plugin> {
 const MAX_CANDIDATE_BYTES: u64 = 256 * 1024;
 
 #[must_use]
-pub fn find_candidates() -> Vec<Candidate> {
+pub(crate) fn find_candidates() -> Vec<Candidate> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
     };
@@ -294,7 +294,7 @@ pub fn read() -> VpnState {
 }
 
 #[must_use]
-pub fn read_details(uuid: &str) -> VpnDetails {
+pub(crate) fn read_details(uuid: &str) -> VpnDetails {
     run::output(
         "nmcli",
         &[
@@ -319,7 +319,7 @@ pub fn connect(uuid: &str) -> Result<String, String> {
 }
 
 #[must_use]
-pub fn needs_secrets(message: &str) -> bool {
+pub(crate) fn needs_secrets(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     [
         "secrets were required",
@@ -350,7 +350,7 @@ impl Secret {
 }
 
 #[must_use]
-pub fn secret_keys(service: &str) -> (&'static str, Option<&'static str>) {
+pub(crate) fn secret_keys(service: &str) -> (&'static str, Option<&'static str>) {
     match service.rsplit('.').next().unwrap_or_default() {
         "vpnc" => ("Xauth password", None),
         "libreswan" => ("xauthpassword", None),
@@ -360,7 +360,7 @@ pub fn secret_keys(service: &str) -> (&'static str, Option<&'static str>) {
 }
 
 #[must_use]
-pub fn passwd_file_text(service: &str, password: &Secret, otp: &Secret) -> String {
+pub(crate) fn passwd_file_text(service: &str, password: &Secret, otp: &Secret) -> String {
     let (password_key, otp_key) = secret_keys(service);
     let mut text = format!("vpn.secrets.{password_key}:{}\n", single_line(&password.0));
     if let Some(otp_key) = otp_key
@@ -408,7 +408,9 @@ impl Drop for SecretFile {
     }
 }
 
-pub fn connect_with_secrets(uuid: &str, service: &str, password: &Secret, otp: &Secret) -> Result<String, String> {
+pub(crate) fn connect_with_secrets(
+    uuid: &str, service: &str, password: &Secret, otp: &Secret,
+) -> Result<String, String> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| "XDG_RUNTIME_DIR is not set".to_string())?;
@@ -431,7 +433,7 @@ pub fn delete(uuid: &str) -> Result<String, String> {
     run::status("nmcli", &["connection", "delete", "uuid", uuid])
 }
 
-pub fn set_autoconnect(uuid: &str, on: bool) -> Result<String, String> {
+pub(crate) fn set_autoconnect(uuid: &str, on: bool) -> Result<String, String> {
     run::status(
         "nmcli",
         &["connection", "modify", "uuid", uuid, "connection.autoconnect", if on { "yes" } else { "no" }],
@@ -447,7 +449,7 @@ pub fn rename(uuid: &str, name: &str) -> Result<String, String> {
 }
 
 #[must_use]
-pub fn expand_home(path: &str) -> PathBuf {
+pub(crate) fn expand_home(path: &str) -> PathBuf {
     let path = path.trim();
     match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
@@ -455,7 +457,7 @@ pub fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-pub fn inspect(path: &str) -> Result<(PathBuf, String), String> {
+pub(crate) fn inspect(path: &str) -> Result<(PathBuf, String), String> {
     let path = expand_home(path);
     let meta = std::fs::metadata(&path).map_err(|err| format!("{}: {err}", path.display()))?;
     if !meta.is_file() || meta.len() > MAX_CANDIDATE_BYTES {

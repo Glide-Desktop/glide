@@ -63,8 +63,8 @@ mod tr {
     }
 }
 
-pub const BLANK_CHOICES: &[i64] = &[60, 120, 300, 600, 900, 1800, 0];
-pub const SUSPEND_CHOICES: &[i64] = &[900, 1800, 3600, 7200, 0];
+pub(crate) const BLANK_CHOICES: &[i64] = &[60, 120, 300, 600, 900, 1800, 0];
+pub(crate) const SUSPEND_CHOICES: &[i64] = &[900, 1800, 3600, 7200, 0];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Blank {

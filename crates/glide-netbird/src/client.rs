@@ -191,7 +191,9 @@ impl Daemon {
         self.login_with(None, None)
     }
 
-    pub fn login_with(&self, management_url: Option<String>, setup_key: Option<String>) -> Result<LoginStart, Error> {
+    pub(crate) fn login_with(
+        &self, management_url: Option<String>, setup_key: Option<String>,
+    ) -> Result<LoginStart, Error> {
         let active = self.active_profile().unwrap_or_default();
         let username = if active.username.is_empty() { current_user() } else { active.username.clone() };
         let request = pb::LoginRequest {

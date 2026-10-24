@@ -66,7 +66,7 @@ pub fn quote(path: &std::path::Path) -> String {
 }
 
 #[must_use]
-pub fn quote_bytes(path: &std::path::Path) -> Vec<u8> {
+pub(crate) fn quote_bytes(path: &std::path::Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     if path.to_str().is_some() {
         return quote(path).into_bytes();

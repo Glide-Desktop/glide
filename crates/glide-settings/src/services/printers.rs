@@ -3,8 +3,8 @@ use std::process::{Command, Stdio};
 
 use super::run;
 
-pub const CUPS_URL: &str = "http://localhost:631";
-pub const TEST_PAGE: &str = "/usr/share/cups/data/testprint";
+pub(crate) const CUPS_URL: &str = "http://localhost:631";
+pub(crate) const TEST_PAGE: &str = "/usr/share/cups/data/testprint";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrinterState {
@@ -185,15 +185,15 @@ pub fn cancel(job: &str) -> Result<String, String> {
     c_locale("cancel", &[job])
 }
 
-pub fn set_enabled(name: &str, enabled: bool) -> Result<String, String> {
+pub(crate) fn set_enabled(name: &str, enabled: bool) -> Result<String, String> {
     c_locale(if enabled { "cupsenable" } else { "cupsdisable" }, &[name])
 }
 
-pub fn print_test_page(name: &str) -> Result<String, String> {
+pub(crate) fn print_test_page(name: &str) -> Result<String, String> {
     c_locale("lp", &["-d", name, TEST_PAGE])
 }
 
-pub fn open_web_interface() -> Result<String, String> {
+pub(crate) fn open_web_interface() -> Result<String, String> {
     Command::new("xdg-open")
         .arg(CUPS_URL)
         .stdin(Stdio::null())

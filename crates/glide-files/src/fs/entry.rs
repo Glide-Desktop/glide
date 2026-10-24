@@ -209,7 +209,7 @@ impl LocalTime {
     }
 
     #[must_use]
-    pub fn day_number(self) -> i64 {
+    pub(crate) fn day_number(self) -> i64 {
         days_from_civil(self.year, self.month, self.day)
     }
 

@@ -8,7 +8,7 @@ enum Phase {
     Closing,
 }
 
-pub type Ease = fn(f64) -> f64;
+pub(crate) type Ease = fn(f64) -> f64;
 
 pub(crate) fn fraction(since: Instant, duration: Duration) -> f64 {
     if duration.is_zero() {

@@ -161,7 +161,7 @@ pub fn cache_dir(home: &Path) -> PathBuf {
 }
 
 #[must_use]
-pub fn trash_dir(home: &Path) -> PathBuf {
+pub(crate) fn trash_dir(home: &Path) -> PathBuf {
     glide_config::data_home().unwrap_or_else(|| home.join(".local/share")).join("Trash")
 }
 
@@ -259,7 +259,7 @@ pub fn measure_tree(home: &Path, roots: &[(Category, PathBuf)]) -> HomeUsage {
 }
 
 #[must_use]
-pub fn measure_home() -> HomeUsage {
+pub(crate) fn measure_home() -> HomeUsage {
     let (home, roots) = roots();
     measure_tree(&home, &roots)
 }
@@ -289,7 +289,7 @@ fn remove_children(dir: &Path) -> (u64, usize) {
     (freed, failed)
 }
 
-pub fn clear_cache() -> Result<u64, String> {
+pub(crate) fn clear_cache() -> Result<u64, String> {
     let home = home_dir().ok_or_else(|| String::from("HOME is not set"))?;
     let cache = cache_dir(&home);
     if cache == home || !cache.starts_with(&home) {
@@ -299,7 +299,7 @@ pub fn clear_cache() -> Result<u64, String> {
     Ok(freed)
 }
 
-pub fn empty_trash() -> Result<u64, String> {
+pub(crate) fn empty_trash() -> Result<u64, String> {
     let home = home_dir().ok_or_else(|| String::from("HOME is not set"))?;
     let trash = trash_dir(&home);
     let before = measure_tree(&trash, &[]).total;

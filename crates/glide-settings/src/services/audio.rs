@@ -12,12 +12,12 @@ use super::run;
 
 pub const SINK: &str = "@DEFAULT_AUDIO_SINK@";
 pub const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
-pub const PULSE_SINK: &str = "@DEFAULT_SINK@";
-pub const PULSE_SOURCE: &str = "@DEFAULT_SOURCE@";
-pub const SOUNDS_DIR: &str = "/usr/share/sounds/freedesktop/stereo";
-pub const METER_DURATION: Duration = Duration::from_secs(10);
-pub const METER_RATE: usize = 16_000;
-pub const METER_CHUNK: usize = METER_RATE / 10 * 2;
+pub(crate) const PULSE_SINK: &str = "@DEFAULT_SINK@";
+pub(crate) const PULSE_SOURCE: &str = "@DEFAULT_SOURCE@";
+pub(crate) const SOUNDS_DIR: &str = "/usr/share/sounds/freedesktop/stereo";
+pub(crate) const METER_DURATION: Duration = Duration::from_secs(10);
+pub(crate) const METER_RATE: usize = 16_000;
+pub(crate) const METER_CHUNK: usize = METER_RATE / 10 * 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
@@ -104,12 +104,12 @@ pub struct AudioState {
 
 impl AudioState {
     #[must_use]
-    pub fn default_sink(&self) -> Option<&Device> {
+    pub(crate) fn default_sink(&self) -> Option<&Device> {
         self.sinks.iter().find(|device| device.is_default)
     }
 
     #[must_use]
-    pub fn default_source(&self) -> Option<&Device> {
+    pub(crate) fn default_source(&self) -> Option<&Device> {
         self.sources.iter().find(|device| device.is_default)
     }
 }
@@ -305,7 +305,7 @@ pub fn read() -> AudioState {
     }
 }
 
-pub fn set_volume(target: &str, volume: f32) -> Result<String, String> {
+pub(crate) fn set_volume(target: &str, volume: f32) -> Result<String, String> {
     let volume = format!("{:.2}", volume.clamp(0.0, 1.5));
     run::status("wpctl", &["set-volume", target, &volume])
 }
@@ -314,19 +314,19 @@ fn percent(volume: f32) -> String {
     format!("{:.1}%", volume.clamp(0.0, 1.5) * 100.0)
 }
 
-pub fn set_output_volume(volume: f32, balance: Option<f32>) -> Result<String, String> {
+pub(crate) fn set_output_volume(volume: f32, balance: Option<f32>) -> Result<String, String> {
     match balance.filter(|balance| balance.abs() > 0.005) {
         Some(balance) => set_balance(volume, balance),
         None => set_volume(SINK, volume),
     }
 }
 
-pub fn set_balance(volume: f32, balance: f32) -> Result<String, String> {
+pub(crate) fn set_balance(volume: f32, balance: f32) -> Result<String, String> {
     let (left, right) = split_balance(volume, balance);
     run::status("pactl", &["set-sink-volume", PULSE_SINK, &percent(left), &percent(right)])
 }
 
-pub fn set_muted(target: &str, muted: bool) -> Result<String, String> {
+pub(crate) fn set_muted(target: &str, muted: bool) -> Result<String, String> {
     run::status("wpctl", &["set-mute", target, if muted { "1" } else { "0" }])
 }
 
@@ -334,11 +334,11 @@ pub fn set_default(id: u32) -> Result<String, String> {
     run::status("wpctl", &["set-default", &id.to_string()])
 }
 
-pub fn set_stream_volume(index: u32, volume: f32) -> Result<String, String> {
+pub(crate) fn set_stream_volume(index: u32, volume: f32) -> Result<String, String> {
     run::status("pactl", &["set-sink-input-volume", &index.to_string(), &percent(volume)])
 }
 
-pub fn set_stream_muted(index: u32, muted: bool) -> Result<String, String> {
+pub(crate) fn set_stream_muted(index: u32, muted: bool) -> Result<String, String> {
     run::status("pactl", &["set-sink-input-mute", &index.to_string(), if muted { "1" } else { "0" }])
 }
 

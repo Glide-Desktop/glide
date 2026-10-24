@@ -176,7 +176,7 @@ pub struct Page {
 }
 
 pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-pub const SCROLL_RANGE: std::ops::RangeInclusive<f64> = 0.25..=3.0;
+pub(crate) const SCROLL_RANGE: std::ops::RangeInclusive<f64> = 0.25..=3.0;
 
 const TOUCHPAD_SPEED: &str = "touchpad-accel-speed";
 const TOUCHPAD_PROFILE: &str = "touchpad-accel-profile";
@@ -184,7 +184,7 @@ const TOUCHPAD_NATURAL: &str = "touchpad-natural-scroll";
 const TOUCHPAD_SCROLL: &str = "touchpad-scroll-factor";
 
 #[must_use]
-pub fn mouse_scroll_factor(config: &ConfigStore) -> f64 {
+pub(crate) fn mouse_scroll_factor(config: &ConfigStore) -> f64 {
     config.get_float("input", "scroll-factor").unwrap_or(1.0)
 }
 

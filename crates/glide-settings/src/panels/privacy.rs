@@ -416,7 +416,7 @@ fn footprint(c: &Ctx, footprint: Footprint) -> String {
 }
 
 #[must_use]
-pub fn lock_label(c: &Ctx, seconds: i64) -> String {
+pub(crate) fn lock_label(c: &Ctx, seconds: i64) -> String {
     match seconds {
         0 => c.t(T::AtOnce).to_string(),
         seconds if seconds < 0 => c.t(T::Never).to_string(),

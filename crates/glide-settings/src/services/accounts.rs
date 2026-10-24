@@ -76,7 +76,7 @@ pub fn parse_session_ids(text: &str) -> Vec<String> {
 }
 
 #[must_use]
-pub fn parse_properties(text: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_properties(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| line.split_once('='))
         .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
@@ -366,16 +366,18 @@ pub fn hash_password(password: &str) -> Result<String, String> {
         .ok_or_else(|| "openssl could not hash the password".to_string())
 }
 
-pub fn set_password(path: &str, password: &str) -> Result<String, String> {
+pub(crate) fn set_password(path: &str, password: &str) -> Result<String, String> {
     let hash = hash_password(password)?;
     call_user_with(path, "SetPassword", &(hash, String::new()))
 }
 
-pub fn set_account_type(path: &str, administrator: bool) -> Result<String, String> {
+pub(crate) fn set_account_type(path: &str, administrator: bool) -> Result<String, String> {
     call_user_with(path, "SetAccountType", &(i32::from(administrator),))
 }
 
-pub fn create_user(user_name: &str, real_name: &str, administrator: bool, password: &str) -> Result<String, String> {
+pub(crate) fn create_user(
+    user_name: &str, real_name: &str, administrator: bool, password: &str,
+) -> Result<String, String> {
     if let Some(problem) = user_name_problem(user_name) {
         return Err(format!("{problem:?}"));
     }
@@ -386,7 +388,7 @@ pub fn create_user(user_name: &str, real_name: &str, administrator: bool, passwo
     call_user_with(path.as_str(), "SetPassword", &(hash, String::new()))
 }
 
-pub fn delete_user(uid: u64, remove_files: bool) -> Result<String, String> {
+pub(crate) fn delete_user(uid: u64, remove_files: bool) -> Result<String, String> {
     call_manager::<_, ()>("DeleteUser", &(uid.cast_signed(), remove_files)).map(|()| String::new())
 }
 
@@ -397,7 +399,7 @@ pub fn clean_real_name(name: &str) -> Option<String> {
     (name.chars().count() <= 255).then_some(name)
 }
 
-pub fn set_real_name(path: &str, name: &str) -> Result<String, String> {
+pub(crate) fn set_real_name(path: &str, name: &str) -> Result<String, String> {
     let name = clean_real_name(name).ok_or_else(|| "That name is too long".to_string())?;
     call_user(path, "SetRealName", &name)
 }
@@ -418,11 +420,11 @@ pub fn set_icon(path: &str, file: &str) -> Result<String, String> {
     call_user(path, "SetIconFile", &file.to_string_lossy())
 }
 
-pub fn set_linger(user: &str, on: bool) -> Result<String, String> {
+pub(crate) fn set_linger(user: &str, on: bool) -> Result<String, String> {
     let verb = if on { "enable-linger" } else { "disable-linger" };
     run::status("loginctl", &[verb, user])
 }
 
-pub fn terminate_session(id: &str) -> Result<String, String> {
+pub(crate) fn terminate_session(id: &str) -> Result<String, String> {
     run::status("loginctl", &["terminate-session", id])
 }

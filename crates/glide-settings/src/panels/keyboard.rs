@@ -64,7 +64,7 @@ mod tr {
 }
 
 pub const LAYOUT_SCOPE: &str = "layout-scope";
-pub const NEW_WINDOW_LAYOUT: &str = "new-window-layout";
+pub(crate) const NEW_WINDOW_LAYOUT: &str = "new-window-layout";
 
 pub const SCOPES: [(&str, tr::Key); 4] = [
     ("global", tr::Key::ScopeGlobal),
@@ -73,7 +73,7 @@ pub const SCOPES: [(&str, tr::Key); 4] = [
     ("window", tr::Key::ScopeWindow),
 ];
 
-pub const NEW_WINDOW_LAYOUTS: [(&str, tr::Key); 2] =
+pub(crate) const NEW_WINDOW_LAYOUTS: [(&str, tr::Key); 2] =
     [("default", tr::Key::NewWindowDefault), ("current", tr::Key::NewWindowCurrent)];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

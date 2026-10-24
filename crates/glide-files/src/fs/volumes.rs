@@ -328,7 +328,7 @@ impl Disks {
         Err(last)
     }
 
-    pub fn unmount(&self, volume: &Volume) -> Result<(), DiskError> {
+    pub(crate) fn unmount(&self, volume: &Volume) -> Result<(), DiskError> {
         self.call::<_, ()>(&volume.object, FILESYSTEM, "Unmount", &(options(&[]),))?;
         if let Some(backing) = &volume.backing {
             let _ = self.call::<_, ()>(backing, ENCRYPTED, "Lock", &(options(&[]),));
@@ -352,7 +352,7 @@ impl Disks {
         Err(DiskError::Failed(String::from("no filesystem after unlocking")))
     }
 
-    pub fn eject(&self, volume: &Volume) -> Result<(), DiskError> {
+    pub(crate) fn eject(&self, volume: &Volume) -> Result<(), DiskError> {
         let siblings: Vec<Volume> = self
             .volumes()?
             .into_iter()
@@ -377,7 +377,7 @@ impl Disks {
         self.call::<_, ()>(drive, DRIVE, method, &(options(&[]),))
     }
 
-    pub fn repair(&self, volume: &Volume) -> Result<Mounted, DiskError> {
+    pub(crate) fn repair(&self, volume: &Volume) -> Result<Mounted, DiskError> {
         let (supported, tool): (bool, String) =
             self.call(MANAGER_PATH, MANAGER, "CanRepair", &(volume.fs_type.as_str(),))?;
         if !supported {

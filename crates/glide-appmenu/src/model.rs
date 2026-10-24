@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-pub const GTK_MENUS_INTERFACE: &str = "org.gtk.Menus";
-pub const GTK_ACTIONS_INTERFACE: &str = "org.gtk.Actions";
-pub const DBUSMENU_INTERFACE: &str = "com.canonical.dbusmenu";
+pub(crate) const GTK_MENUS_INTERFACE: &str = "org.gtk.Menus";
+pub(crate) const GTK_ACTIONS_INTERFACE: &str = "org.gtk.Actions";
+pub(crate) const DBUSMENU_INTERFACE: &str = "com.canonical.dbusmenu";
 
 const MAX_DEPTH: usize = 16;
 
@@ -195,12 +195,12 @@ fn pair_of(map: &HashMap<String, OwnedValue>, key: &str) -> Option<(u32, u32)> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ActionInfo {
+pub(crate) struct ActionInfo {
     pub enabled: bool,
     pub state: Option<OwnedValue>,
 }
 
-pub type GtkMenus = HashMap<(u32, u32), Vec<HashMap<String, OwnedValue>>>;
+pub(crate) type GtkMenus = HashMap<(u32, u32), Vec<HashMap<String, OwnedValue>>>;
 
 fn gtk_toggle(action: Option<&ActionInfo>, target: Option<&OwnedValue>) -> Toggle {
     let Some(state) = action.and_then(|info| info.state.as_ref()) else {
@@ -214,7 +214,7 @@ fn gtk_toggle(action: Option<&ActionInfo>, target: Option<&OwnedValue>) -> Toggl
 }
 
 #[must_use]
-pub fn build_gtk_menu(
+pub(crate) fn build_gtk_menu(
     menus: &GtkMenus, root: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>,
 ) -> Vec<MenuItem> {
     build_gtk_level(menus, root, actions, &mut Vec::new())
@@ -294,7 +294,7 @@ fn tidy_separators(items: &mut Vec<MenuItem>) {
 }
 
 #[must_use]
-pub fn gtk_referenced_groups(menus: &GtkMenus) -> Vec<u32> {
+pub(crate) fn gtk_referenced_groups(menus: &GtkMenus) -> Vec<u32> {
     let mut groups: Vec<u32> = menus
         .values()
         .flatten()
@@ -306,10 +306,10 @@ pub fn gtk_referenced_groups(menus: &GtkMenus) -> Vec<u32> {
     groups
 }
 
-pub type DbusMenuNode = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
+pub(crate) type DbusMenuNode = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
 #[must_use]
-pub fn build_dbusmenu(root: &DbusMenuNode) -> Vec<MenuItem> {
+pub(crate) fn build_dbusmenu(root: &DbusMenuNode) -> Vec<MenuItem> {
     build_dbusmenu_children(&root.2, 0)
 }
 

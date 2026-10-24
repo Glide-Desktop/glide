@@ -155,7 +155,7 @@ fn desktop_apps(roots: &Roots, lang: Lang) -> Vec<DesktopApp> {
     apps
 }
 
-pub fn set_default_app(mime: &str, app: &str) -> io::Result<()> {
+pub(crate) fn set_default_app(mime: &str, app: &str) -> io::Result<()> {
     let file = glide_config::config_home()
         .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "no config directory"))?
         .join("mimeapps.list");

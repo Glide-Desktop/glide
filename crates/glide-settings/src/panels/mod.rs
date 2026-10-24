@@ -150,7 +150,7 @@ macro_rules! declare_panels {
             }
 
             #[must_use]
-            pub const fn polls(self) -> bool {
+            pub(crate) const fn polls(self) -> bool {
                 match self {
                     $(Self::$variant => <$module::Page as Pane>::POLLS,)*
                 }
@@ -172,7 +172,7 @@ macro_rules! panel_meta {
             }
 
             #[must_use]
-            pub const fn description_key(self) -> Key {
+            pub(crate) const fn description_key(self) -> Key {
                 match self {
                     $(Self::$variant => Key::$about,)*
                 }

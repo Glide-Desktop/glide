@@ -98,7 +98,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 }
 
 #[must_use]
-pub fn crumbs_row(app: &App) -> Element<'_, Message> {
+pub(crate) fn crumbs_row(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let paint = super::paint(t);
     let crumbs = trail(app);
