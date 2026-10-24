@@ -3,6 +3,8 @@ use std::{
     sync::{PoisonError, RwLock},
 };
 
+use crate::on_path;
+
 const KNOWN: [(&str, &[&str]); 13] = [
     ("glide-terminal", &["-e"]),
     ("xdg-terminal-exec", &[]),
@@ -55,13 +57,6 @@ pub fn exec_args(terminal: &str) -> &'static [&'static str] {
 pub fn pick(configured: Option<&str>, environment: Option<&str>, installed: impl Fn(&str) -> bool) -> String {
     let named = usable(configured).or_else(|| usable(environment).filter(|terminal| installed(command_word(terminal))));
     named.or_else(|| KNOWN.iter().map(|(name, _)| *name).find(|name| installed(name))).unwrap_or(FALLBACK).to_string()
-}
-
-fn on_path(name: &str) -> bool {
-    if name.contains('/') {
-        return Path::new(name).is_file();
-    }
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
 }
 
 #[must_use]

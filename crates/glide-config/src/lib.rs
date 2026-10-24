@@ -46,6 +46,14 @@ pub fn state_home() -> Option<PathBuf> {
     user_dir(var("XDG_STATE_HOME"), home(), ".local/state")
 }
 
+#[must_use]
+pub fn on_path(program: &str) -> bool {
+    if program.contains('/') {
+        return std::path::Path::new(program).is_file();
+    }
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+}
+
 fn search_path(key: &str, default: &str) -> Vec<PathBuf> {
     let list = std::env::var_os(key).filter(|value| !value.is_empty()).unwrap_or_else(|| default.into());
     std::env::split_paths(&list).collect()

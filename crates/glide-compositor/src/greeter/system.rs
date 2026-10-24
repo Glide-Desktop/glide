@@ -209,13 +209,7 @@ fn session_is_installed(path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return false;
     };
-    let Some(try_exec) = desktop_value(&text, "TryExec") else {
-        return true;
-    };
-    if try_exec.contains('/') {
-        return Path::new(try_exec).exists();
-    }
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(try_exec).exists()))
+    desktop_value(&text, "TryExec").is_none_or(glide_config::on_path)
 }
 
 fn default_sessions() -> Vec<SessionEntry> {

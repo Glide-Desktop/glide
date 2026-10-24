@@ -139,9 +139,7 @@ pub fn scan() -> Vec<Phone> {
     phones
 }
 
-fn installed(tool: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
-}
+use glide_config::on_path as installed;
 
 fn quiet(program: &str, args: &[&str]) -> Result<(), String> {
     let output =

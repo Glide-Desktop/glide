@@ -68,9 +68,7 @@ pub fn socket_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET))
 }
 
-fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-}
+use glide_config::on_path;
 
 #[must_use]
 pub fn installed() -> bool {

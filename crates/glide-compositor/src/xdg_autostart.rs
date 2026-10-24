@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Phase {
@@ -69,13 +69,7 @@ fn exec_command(exec: &str) -> String {
     exec.split_whitespace().filter(|word| !(word.len() == 2 && word.starts_with('%'))).collect::<Vec<_>>().join(" ")
 }
 
-fn on_path(program: &str) -> bool {
-    let path = Path::new(program);
-    if path.is_absolute() {
-        return path.is_file();
-    }
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-}
+use glide_config::on_path;
 
 #[must_use]
 pub fn parse_entry(text: &str, desktops: &[String], probe: &Probe<'_>) -> Option<Entry> {

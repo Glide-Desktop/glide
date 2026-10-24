@@ -549,13 +549,7 @@ fn number(group: &Group, key: &str) -> Option<usize> {
 }
 
 fn installed(group: &Group) -> bool {
-    let Some(program) = group.get("TryExec").map(|value| value.trim()) else {
-        return true;
-    };
-    if program.contains('/') {
-        return Path::new(program).is_file();
-    }
-    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+    group.get("TryExec").is_none_or(|program| glide_config::on_path(program.trim()))
 }
 
 fn usable(group: &Group) -> bool {

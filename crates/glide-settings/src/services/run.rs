@@ -112,7 +112,4 @@ pub fn status_within(program: &str, args: &[&str], deadline: Duration) -> Result
     settle(finished.success, &finished.stdout, &finished.stderr)
 }
 
-#[must_use]
-pub fn available(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-}
+pub use glide_config::on_path as available;

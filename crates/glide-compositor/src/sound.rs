@@ -42,9 +42,7 @@ fn resolve(sound: &Sound) -> Option<PathBuf> {
     }
 }
 
-fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-}
+use glide_config::on_path;
 
 pub fn play(sound: Sound) {
     let spawned = std::thread::Builder::new().name("glide-sound".into()).spawn(move || {

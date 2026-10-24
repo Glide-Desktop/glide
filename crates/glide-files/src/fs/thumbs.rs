@@ -39,14 +39,7 @@ pub(crate) fn load_thumbnailers(data: &[PathBuf]) -> Vec<Thumbnailer> {
             let value = |key: &str| {
                 text.lines().find_map(|line| line.trim().strip_prefix(key)?.strip_prefix('=')).map(str::trim)
             };
-            let installed = value("TryExec").is_none_or(|program| {
-                if program.contains('/') {
-                    Path::new(program).is_file()
-                } else {
-                    std::env::var_os("PATH")
-                        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
-                }
-            });
+            let installed = value("TryExec").is_none_or(glide_config::on_path);
             if let (true, Some(exec), Some(mimes)) = (installed, value("Exec"), value("MimeType")) {
                 found.push(Thumbnailer {
                     exec: exec.to_string(),

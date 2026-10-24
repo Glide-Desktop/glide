@@ -108,13 +108,7 @@ pub fn desktops() -> Vec<String> {
     if names.is_empty() { vec![String::from("glide")] } else { names }
 }
 
-fn on_path(program: &str) -> bool {
-    let path = Path::new(program);
-    if path.is_absolute() {
-        return path.is_file();
-    }
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-}
+use glide_config::on_path;
 
 fn desktop_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
