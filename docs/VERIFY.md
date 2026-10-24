@@ -196,7 +196,7 @@ Ctrl+Alt+F3 and a text login.
 ## Quick settings
 
 53. **Layout.** Open quick settings in light and dark, at scale 1 and 2,
-    side by side with `design/quick-settings-concept.html`: spacing, radii,
+    side by side with the Quick Settings concept in `design/library`: spacing, radii,
     the top bezel line, tile colours, slider thumbs (hover ring, drag ring)
     and the battery card match. Click the Wi-Fi badge: the radio toggles;
     click the rest of the card: the network list opens.

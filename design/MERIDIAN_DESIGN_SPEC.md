@@ -100,7 +100,7 @@ Meridian побудовано навколо трьох правил, які у�
 
 ## 3. Кольори: акцентна система
 
-Meridian підтримує **8 акцентних кольорів**, кожен із рампою в 6 щаблів (від найсвітлішого до найтемнішого). Усі маппінги обчислюються в JS залежно від теми.
+Meridian підтримує **8 акцентних кольорів**, кожен із рампою в 6 щаблів (від найсвітлішого до найтемнішого). Маппінги залежно від теми обчислює `glide_theme::Tokens::new` (рампи — у `glide-theme/src/palette.rs`).
 
 ### 3.1 Рампи
 
@@ -233,7 +233,7 @@ Meridian підтримує **8 акцентних кольорів**, коже�
 
 ## 8. Шари стану
 
-Реалізація через CSS pseudo-element `::before` з `background: currentColor`:
+У Rust шар — це `Color::state_layer` із силою `glide_theme::motion::ST_HOVER` / `ST_PRESS` / `ST_DRAG`; у вебконцептах `design/library` — псевдоелемент `::before` з `background: currentColor`:
 
 ```css
 .layer::before {
