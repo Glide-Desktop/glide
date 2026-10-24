@@ -1,32 +1,6 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Lang {
-    #[default]
-    Uk,
-    En,
-}
-
-impl Lang {
-    #[must_use]
-    pub fn from_env() -> Self {
-        let var = |name: &str| std::env::var(name).ok();
-        Self::from_locale_vars(var("LC_ALL").as_deref(), var("LC_MESSAGES").as_deref(), var("LANG").as_deref())
-    }
-
-    #[must_use]
-    pub fn from_locale_vars(lc_all: Option<&str>, lc_messages: Option<&str>, lang: Option<&str>) -> Self {
-        let locale = [lc_all, lc_messages, lang]
-            .into_iter()
-            .flatten()
-            .map(str::trim)
-            .find(|value| !value.is_empty())
-            .unwrap_or_default();
-        let base = locale.split(['_', '.', '@']).next().unwrap_or_default();
-        if base.eq_ignore_ascii_case("uk") { Self::Uk } else { Self::En }
-    }
-}
+pub use glide_app::i18n::Lang;
 
 static LANG: AtomicU8 = AtomicU8::new(0);
 
@@ -42,34 +16,7 @@ pub fn language() -> Lang {
     }
 }
 
-macro_rules! catalogue {
-    ($($key:ident => $en:literal, $uk:literal;)*) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub enum Key {
-            $($key,)*
-        }
-
-        impl Key {
-            pub const ALL: &'static [Self] = &[$(Self::$key,)*];
-        }
-
-        #[allow(clippy::too_many_lines)]
-        const fn uk(key: Key) -> &'static str {
-            match key {
-                $(Key::$key => $uk,)*
-            }
-        }
-
-        #[allow(clippy::too_many_lines)]
-        const fn en(key: Key) -> &'static str {
-            match key {
-                $(Key::$key => $en,)*
-            }
-        }
-    };
-}
-
-catalogue! {
+glide_app::catalogue! {
     Open => "Open", "Відкрити";
     NewWindow => "New Window", "Нове вікно";
     PinToDock => "Pin to Dock", "Закріпити в доку";
@@ -493,10 +440,7 @@ catalogue! {
 
 #[must_use]
 pub fn t(key: Key) -> &'static str {
-    match language() {
-        Lang::Uk => uk(key),
-        Lang::En => en(key),
-    }
+    key.text(language())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -544,10 +488,7 @@ pub fn elapsed_label(elapsed_secs: u64) -> String {
 
 #[must_use]
 pub fn relative_label(lang: Lang, minutes: u64, now: Option<LocalDay>, then: Option<LocalDay>) -> String {
-    let text = |key| match lang {
-        Lang::Uk => uk(key),
-        Lang::En => en(key),
-    };
+    let text = |key: Key| key.text(lang);
     if minutes < 1 {
         return text(Key::JustNow).to_string();
     }
@@ -683,14 +624,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_key_has_a_non_empty_translation_in_both_languages() {
-        for key in Key::ALL {
-            assert!(!uk(*key).is_empty(), "{key:?} uk");
-            assert!(!en(*key).is_empty(), "{key:?} en");
-        }
-    }
-
-    #[test]
     fn long_dates_use_full_weekdays_and_the_genitive_month_in_ukrainian() {
         assert_eq!(long_date(Lang::Uk, 5, 25, 8), "п\u{2019}ятниця, 25 вересня");
         assert_eq!(long_date(Lang::En, 5, 25, 8), "Friday, September 25");
@@ -700,7 +633,7 @@ mod tests {
     #[test]
     fn only_micro_labels_are_uppercase_in_the_catalogue() {
         for key in Key::ALL {
-            for text in [uk(*key), en(*key)] {
+            for text in [key.uk(), key.en()] {
                 let letters: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
                 assert!(
                     letters.len() < 2 || letters.iter().any(|c| c.is_lowercase()),
@@ -718,7 +651,7 @@ mod tests {
     fn elapsed_labels_pick_the_unit_from_the_magnitude() {
         let noon = Some(day(12 * 60, 2, 12));
         let label = |minutes| relative_label(Lang::Uk, minutes, noon, noon);
-        assert_eq!(label(0), uk(Key::JustNow));
+        assert_eq!(label(0), Key::JustNow.uk());
         assert_eq!(label(5), "5 хв");
         assert_eq!(label(125), "2 год");
     }
@@ -745,17 +678,5 @@ mod tests {
     #[test]
     fn an_unknown_calendar_falls_back_to_hours() {
         assert_eq!(relative_label(Lang::En, 3000, None, None), "50 h");
-    }
-
-    #[test]
-    fn the_locale_picks_ukrainian_only_for_uk() {
-        let pick = Lang::from_locale_vars;
-        assert_eq!(pick(None, None, Some("uk_UA.UTF-8")), Lang::Uk);
-        assert_eq!(pick(None, None, Some("en_US.UTF-8")), Lang::En);
-        assert_eq!(pick(None, None, None), Lang::En);
-        assert_eq!(pick(Some("C"), None, Some("uk_UA.UTF-8")), Lang::En);
-        assert_eq!(pick(Some(""), Some("uk_UA"), Some("en_GB")), Lang::Uk);
-        assert_eq!(pick(None, Some("de_DE"), Some("uk_UA")), Lang::En);
-        assert_eq!(pick(None, None, Some("uk")), Lang::Uk);
     }
 }

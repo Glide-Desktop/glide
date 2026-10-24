@@ -385,10 +385,7 @@ fn read_desktop_app(path: &Path) -> Option<DesktopApp> {
 }
 
 fn ui_language_code() -> &'static str {
-    match crate::i18n::language() {
-        crate::i18n::Lang::Uk => "uk",
-        crate::i18n::Lang::En => "en",
-    }
+    crate::i18n::language().key()
 }
 
 fn locale_rank(locale: Option<&str>, lang: &str) -> u8 {

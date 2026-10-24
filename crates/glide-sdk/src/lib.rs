@@ -12,6 +12,7 @@ pub mod widget;
 pub mod window;
 
 pub use app::{App, Chrome, Harness, Settings, Shell, run};
+pub use glide_app::catalogue;
 pub use glide_iced::Paint;
 pub use look::{Lang, Look};
 pub use menu::{Item, Menu};

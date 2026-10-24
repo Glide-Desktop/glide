@@ -3382,10 +3382,7 @@ impl GlideState {
         crate::shell_bus::Snapshot {
             appearance: self.shell_palette.0,
             accent: self.shell_palette.1,
-            language: match crate::i18n::language() {
-                crate::i18n::Lang::Uk => "uk",
-                crate::i18n::Lang::En => "en",
-            },
+            language: crate::i18n::language().key(),
             animation_scale: f64::from(glide_theme::motion::scale()),
             reduced_motion: self.motion.respect_system && self.topbar.system_status().reduced_motion,
             font_family: self.font_family.clone().unwrap_or_default(),
