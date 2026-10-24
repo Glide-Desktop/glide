@@ -51,6 +51,45 @@ impl Generation {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct Jobs {
+    pub(crate) loading: bool,
+    pub(crate) pending: u32,
+    pub(crate) generation: Generation,
+    pub(crate) busy: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+impl Jobs {
+    pub(crate) fn begin(&mut self, busy: Option<String>) {
+        self.busy = busy;
+        self.error = None;
+        self.generation.bump();
+        self.loading = false;
+        self.pending += 1;
+    }
+
+    pub(crate) fn finish(&mut self, result: Option<Result<String, String>>) {
+        self.pending = self.pending.saturating_sub(1);
+        if self.pending == 0 {
+            self.busy = None;
+        }
+        if let Some(Err(err)) = result {
+            self.error = Some(err);
+        }
+        self.generation.bump();
+        self.loading = false;
+    }
+
+    pub(crate) fn start_loading(&mut self) -> Option<u64> {
+        if self.loading || self.pending > 0 {
+            return None;
+        }
+        self.loading = true;
+        Some(self.generation.current())
+    }
+}
+
 pub async fn blocking<T, F>(job: F) -> Option<T>
 where
     T: Send + 'static,

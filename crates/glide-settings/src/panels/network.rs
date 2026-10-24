@@ -9,7 +9,7 @@ use crate::services::config::ConfigStore;
 use crate::services::network::{
     self, AccessPoint, Details, Metered, NetworkState, Profile, ProxyMode, ProxySettings, Rescan, Secret,
 };
-use crate::services::run::{Generation, blocking};
+use crate::services::run::{Generation, Jobs, blocking};
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row, actions, chevron, form_row, lines, note, sheet};
 
@@ -137,15 +137,11 @@ pub enum Msg {
 #[derive(Debug, Default)]
 pub struct Page {
     state: NetworkState,
-    loading: bool,
+    jobs: Jobs,
     loaded: bool,
     scanning: bool,
     expanded: Option<Expanded>,
     password: Secret,
-    busy: Option<String>,
-    error: Option<String>,
-    generation: Generation,
-    pending: u32,
     details: Option<Details>,
     details_generation: Generation,
     details_loading: bool,
@@ -188,7 +184,7 @@ impl Pane for Page {
     const POLLS: bool = true;
 
     fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
-        if self.loaded || self.loading {
+        if self.loaded || self.jobs.loading {
             return Task::none();
         }
         if self.hotspot_ssid.is_empty() {
@@ -215,12 +211,8 @@ impl Pane for Page {
 
 impl Page {
     fn refresh(&mut self, rescan: Rescan) -> Task<Msg> {
-        if self.loading || self.pending > 0 {
-            return Task::none();
-        }
-        self.loading = true;
+        let Some(generation) = self.jobs.start_loading() else { return Task::none() };
         self.scanning = rescan == Rescan::Yes;
-        let generation = self.generation.current();
         Task::perform(blocking(move || network::read(rescan)), move |state| {
             Msg::Loaded(generation, state.unwrap_or_default())
         })
@@ -297,12 +289,8 @@ impl Page {
     fn run(
         &mut self, busy: Option<String>, job: impl FnOnce() -> Result<String, String> + Send + 'static,
     ) -> Task<Msg> {
-        self.busy = busy;
-        self.error = None;
-        self.generation.bump();
-        self.loading = false;
+        self.jobs.begin(busy);
         self.scanning = false;
-        self.pending += 1;
         Task::perform(blocking(job), Msg::Done)
     }
 
@@ -320,10 +308,10 @@ impl Page {
             self.proxy_saved = false;
         }
         match msg {
-            Msg::Loaded(generation, _) if !self.generation.is_current(generation) => {}
+            Msg::Loaded(generation, _) if !self.jobs.generation.is_current(generation) => {}
             Msg::Loaded(_, state) => {
                 self.state = state;
-                self.loading = false;
+                self.jobs.loading = false;
                 self.loaded = true;
                 self.scanning = false;
                 if let Some(Expanded::Wifi(ssid)) = &self.expanded
@@ -334,9 +322,9 @@ impl Page {
             }
             Msg::Refresh => return self.refresh(Rescan::Auto),
             Msg::Rescan => {
-                if self.pending == 0 {
-                    self.generation.bump();
-                    self.loading = false;
+                if self.jobs.pending == 0 {
+                    self.jobs.generation.bump();
+                    self.jobs.loading = false;
                 }
                 return self.refresh(Rescan::Yes);
             }
@@ -415,12 +403,12 @@ impl Page {
                 return self.run(None, move || network::set_metered(&uuid, metered));
             }
             Msg::Reveal(uuid) => {
-                self.error = None;
+                self.jobs.error = None;
                 return Task::perform(blocking(move || network::reveal_password(&uuid)), Msg::Revealed);
             }
             Msg::Revealed(result) => match result {
                 Some(Ok(secret)) => self.revealed = Some(Secret(secret)),
-                Some(Err(err)) => self.error = Some(err),
+                Some(Err(err)) => self.jobs.error = Some(err),
                 None => {}
             },
             Msg::Conceal => self.revealed = None,
@@ -496,7 +484,7 @@ impl Page {
                     return Task::none();
                 }
                 let draft = self.proxy_draft.clone();
-                self.error = None;
+                self.jobs.error = None;
                 return Task::perform(blocking(move || network::write_proxy(&draft)), Msg::ProxyApplied);
             }
             Msg::ProxyApplied(result) => match result {
@@ -504,19 +492,11 @@ impl Page {
                     self.proxy = self.proxy_draft.clone();
                     self.proxy_saved = true;
                 }
-                Some(Err(err)) => self.error = Some(err),
+                Some(Err(err)) => self.jobs.error = Some(err),
                 None => {}
             },
             Msg::Done(result) => {
-                self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 {
-                    self.busy = None;
-                }
-                if let Some(Err(err)) = result {
-                    self.error = Some(err);
-                }
-                self.generation.bump();
-                self.loading = false;
+                self.jobs.finish(result);
                 return Task::batch([self.refresh(Rescan::Auto), self.load_details()]);
             }
         }
@@ -570,6 +550,7 @@ impl Page {
         };
         let radio_on = self.state.wifi_enabled && !self.state.airplane;
         let error = self
+            .jobs
             .error
             .as_deref()
             .map(|error| if error == network::WRONG_PASSWORD { c.t(T::WrongPassword) } else { error });
@@ -611,7 +592,7 @@ impl Page {
                 Some(_) => format!("{} “{}”", c.t(T::HotspotOn), self.sharing_as()),
                 None => c.t(T::HotspotHint).to_string(),
             };
-            let busy = self.busy.as_deref() == Some(network::HOTSPOT_NAME);
+            let busy = self.jobs.busy.as_deref() == Some(network::HOTSPOT_NAME);
             let usable = self.state.wifi_enabled && !self.state.airplane;
             let suffix: Element<'_, Msg> = if busy {
                 widgets::spinner_label(t, c.t(T::Busy))
@@ -706,7 +687,7 @@ impl Page {
             group = group.push(widgets::list_empty(t, Icon::WifiOff, c.t(K::NoNetworks), ""));
         }
         for point in &self.state.networks {
-            let busy = self.busy.as_deref() == Some(point.ssid.as_str());
+            let busy = self.jobs.busy.as_deref() == Some(point.ssid.as_str());
             let subtitle = if busy {
                 c.t(K::Connecting)
             } else if point.in_use {

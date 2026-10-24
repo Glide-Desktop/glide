@@ -7,7 +7,7 @@ use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::config::ConfigStore;
-use crate::services::run::{Generation, blocking};
+use crate::services::run::{Generation, Jobs, blocking};
 use crate::services::vpn::{self, Candidate, Secret, Vpn, VpnDetails, VpnState};
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
@@ -109,11 +109,7 @@ pub struct Page {
     secrets: Option<Prompt>,
     state: VpnState,
     loaded: bool,
-    loading: bool,
-    generation: Generation,
-    pending: u32,
-    busy: Option<String>,
-    error: Option<String>,
+    jobs: Jobs,
     notice: Option<String>,
     expanded: Option<String>,
     details: Option<VpnDetails>,
@@ -133,7 +129,7 @@ impl Pane for Page {
 
     fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
         let scan = self.scan();
-        if self.loaded || self.loading {
+        if self.loaded || self.jobs.loading {
             return scan;
         }
         Task::batch([self.refresh(), scan])
@@ -154,11 +150,7 @@ impl Pane for Page {
 
 impl Page {
     pub fn refresh(&mut self) -> Task<Msg> {
-        if self.loading || self.pending > 0 {
-            return Task::none();
-        }
-        self.loading = true;
-        let generation = self.generation.current();
+        let Some(generation) = self.jobs.start_loading() else { return Task::none() };
         Task::perform(blocking(vpn::read), move |state| Msg::Loaded(generation, state.unwrap_or_default()))
     }
 
@@ -183,12 +175,8 @@ impl Page {
     }
 
     fn begin(&mut self, busy: Option<String>) {
-        self.busy = busy;
-        self.error = None;
+        self.jobs.begin(busy);
         self.notice = None;
-        self.generation.bump();
-        self.loading = false;
-        self.pending += 1;
     }
 
     fn run(
@@ -228,10 +216,10 @@ impl Page {
     #[allow(clippy::too_many_lines)] // One match arm per message keeps the panel's state machine in one place
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
-            Msg::Loaded(generation, _) if !self.generation.is_current(generation) => {}
+            Msg::Loaded(generation, _) if !self.jobs.generation.is_current(generation) => {}
             Msg::Loaded(_, state) => {
                 self.state = state;
-                self.loading = false;
+                self.jobs.loading = false;
                 self.loaded = true;
                 if let Some(uuid) = &self.expanded
                     && self.state.find(uuid).is_none()
@@ -283,7 +271,7 @@ impl Page {
                 let Some(prompt) = self.secrets.as_mut() else {
                     return Task::none();
                 };
-                if prompt.password.is_empty() || self.busy.is_some() {
+                if prompt.password.is_empty() || self.jobs.busy.is_some() {
                     return Task::none();
                 }
                 let password = std::mem::take(&mut prompt.password);
@@ -341,12 +329,12 @@ impl Page {
             }
             Msg::Inspect => {
                 let path = self.path.clone();
-                self.error = None;
+                self.jobs.error = None;
                 return Task::perform(blocking(move || vpn::inspect(&path)), Msg::Inspected);
             }
             Msg::Inspected(result) => match result {
                 Some(Ok(selected)) => self.selected = Some(selected),
-                Some(Err(err)) => self.error = Some(err),
+                Some(Err(err)) => self.jobs.error = Some(err),
                 None => {}
             },
             Msg::Pick(path, kind) => {
@@ -358,7 +346,7 @@ impl Page {
                     return Task::none();
                 };
                 self.importing = true;
-                self.error = None;
+                self.jobs.error = None;
                 self.notice = None;
                 return Task::perform(blocking(move || vpn::import(&path, &kind)), Msg::Imported);
             }
@@ -370,23 +358,15 @@ impl Page {
                         self.path.clear();
                         self.notice = Some(String::new());
                     }
-                    Some(Err(err)) => self.error = Some(err),
+                    Some(Err(err)) => self.jobs.error = Some(err),
                     None => {}
                 }
-                self.generation.bump();
-                self.loading = false;
+                self.jobs.generation.bump();
+                self.jobs.loading = false;
                 return Task::batch([self.refresh(), self.scan()]);
             }
             Msg::Done(result) => {
-                self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 {
-                    self.busy = None;
-                }
-                if let Some(Err(err)) = result {
-                    self.error = Some(err);
-                }
-                self.generation.bump();
-                self.loading = false;
+                self.jobs.finish(result);
                 return Task::batch([self.refresh(), self.load_details()]);
             }
         }
@@ -426,7 +406,7 @@ impl Page {
             Some(pill),
         )]
         .spacing(theme::SECTION_GAP);
-        if let Some(error) = &self.error {
+        if let Some(error) = &self.jobs.error {
             page = page.push(widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, error.as_str(), None));
         }
         if self.notice.is_some() {
@@ -453,8 +433,8 @@ impl Page {
 
     fn connection_row<'a>(&'a self, c: &Ctx, vpn: &'a Vpn) -> Element<'a, Msg> {
         let t = c.theme;
-        let busy = self.busy.as_deref() == Some(vpn.uuid.as_str());
-        let idle = self.busy.is_none();
+        let busy = self.jobs.busy.as_deref() == Some(vpn.uuid.as_str());
+        let idle = self.jobs.busy.is_none();
         let subtitle = if busy || vpn.activating() {
             c.t(T::Activating).to_string()
         } else if vpn.active {
@@ -553,7 +533,7 @@ impl Page {
 
     fn secrets_sheet<'a>(&'a self, c: &Ctx, prompt: &'a Prompt) -> Element<'a, Msg> {
         let t = c.theme;
-        let submit = (!prompt.password.is_empty() && self.busy.is_none()).then_some(Msg::SubmitSecrets);
+        let submit = (!prompt.password.is_empty() && self.jobs.busy.is_none()).then_some(Msg::SubmitSecrets);
         let mut rows: Vec<Element<'a, Msg>> =
             vec![note(t, Icon::Warning, c.t(if prompt.rejected { T::PasswordRejected } else { T::PasswordNeeded }))];
         rows.push(form_row(
@@ -592,7 +572,7 @@ impl Page {
         }
         rows.push(actions(vec![
             widgets::secondary(t, c.t(K::Cancel), Some(Msg::CancelSecrets)),
-            if self.busy.as_deref() == Some(prompt.uuid.as_str()) {
+            if self.jobs.busy.as_deref() == Some(prompt.uuid.as_str()) {
                 widgets::spinner_label(t, c.t(T::Activating))
             } else {
                 widgets::primary(t, c.t(T::ConnectButton), submit)

@@ -7,7 +7,7 @@ use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::bluetooth::{self, BluetoothState, BtDevice, DeviceKind};
 use crate::services::config::ConfigStore;
-use crate::services::run::{Generation, blocking};
+use crate::services::run::{Jobs, blocking};
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
 use crate::widgets::{actions, chevron, form_row, lines, note, sheet};
@@ -80,13 +80,9 @@ pub enum Msg {
 #[derive(Debug, Default)]
 pub struct Page {
     state: BluetoothState,
-    loading: bool,
+    jobs: Jobs,
     loaded: bool,
     scanning: bool,
-    busy: Option<String>,
-    error: Option<String>,
-    generation: Generation,
-    pending: u32,
     expanded: Option<String>,
     adapter_name: Option<String>,
     device_name: String,
@@ -100,7 +96,7 @@ impl Pane for Page {
     const POLLS: bool = true;
 
     fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
-        if self.loaded || self.loading {
+        if self.loaded || self.jobs.loading {
             return Task::none();
         }
         self.refresh()
@@ -109,10 +105,10 @@ impl Pane for Page {
     #[allow(clippy::too_many_lines)] // One match arm per message keeps the panel's state machine in one place
     fn update(&mut self, msg: Msg, _c: Ctx, _config: &mut ConfigStore) -> Task<Msg> {
         match msg {
-            Msg::Loaded(generation, _) if !self.generation.is_current(generation) => {}
+            Msg::Loaded(generation, _) if !self.jobs.generation.is_current(generation) => {}
             Msg::Loaded(_, state) => {
                 self.state = state;
-                self.loading = false;
+                self.jobs.loading = false;
                 self.loaded = true;
                 if let Some(address) = &self.expanded
                     && self.state.device(address).is_none_or(|device| !device.paired)
@@ -127,13 +123,13 @@ impl Pane for Page {
             }
             Msg::Scan => {
                 self.scanning = true;
-                self.error = None;
+                self.jobs.error = None;
                 return Task::batch([Task::perform(blocking(bluetooth::scan), Msg::Scanned), self.refresh()]);
             }
             Msg::Scanned(result) => {
                 self.scanning = false;
                 if let Some(Err(err)) = result {
-                    self.error = Some(err);
+                    self.jobs.error = Some(err);
                 }
                 return self.refresh();
             }
@@ -197,15 +193,7 @@ impl Pane for Page {
             }
             Msg::CancelEdit => self.adapter_name = None,
             Msg::Done(result) => {
-                self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 {
-                    self.busy = None;
-                }
-                if let Some(Err(err)) = result {
-                    self.error = Some(err);
-                }
-                self.generation.bump();
-                self.loading = false;
+                self.jobs.finish(result);
                 return self.refresh();
             }
         }
@@ -239,7 +227,7 @@ impl Pane for Page {
                 Some(widgets::switch(t, self.state.powered, Msg::Power)),
             ),
             blocked,
-            error_banner(t, self.error.as_deref()),
+            error_banner(t, self.jobs.error.as_deref()),
         ]
         .spacing(theme::SECTION_GAP);
         if !self.state.powered {
@@ -286,22 +274,14 @@ impl Pane for Page {
 
 impl Page {
     fn refresh(&mut self) -> Task<Msg> {
-        if self.loading || self.pending > 0 {
-            return Task::none();
-        }
-        self.loading = true;
-        let generation = self.generation.current();
+        let Some(generation) = self.jobs.start_loading() else { return Task::none() };
         Task::perform(blocking(bluetooth::read), move |state| Msg::Loaded(generation, state.unwrap_or_default()))
     }
 
     fn run(
         &mut self, busy: Option<String>, job: impl FnOnce() -> Result<String, String> + Send + 'static,
     ) -> Task<Msg> {
-        self.busy = busy;
-        self.error = None;
-        self.generation.bump();
-        self.loading = false;
-        self.pending += 1;
+        self.jobs.begin(busy);
         Task::perform(blocking(job), Msg::Done)
     }
 
@@ -380,8 +360,8 @@ impl Page {
 
     fn device_row<'a>(&'a self, c: &Ctx, device: &'a BtDevice) -> Element<'a, Msg> {
         let t = c.theme;
-        let busy = self.busy.as_deref() == Some(device.address.as_str());
-        let idle = self.busy.is_none();
+        let busy = self.jobs.busy.as_deref() == Some(device.address.as_str());
+        let idle = self.jobs.busy.is_none();
         let kind = kind_label(c, bluetooth::device_kind(&device.icon));
         let subtitle = if busy {
             c.t(K::Working).to_string()
@@ -475,7 +455,7 @@ impl Page {
         rows.push(actions(vec![widgets::danger(
             t,
             c.t(K::Forget),
-            self.busy.is_none().then_some(Msg::Remove(address)),
+            self.jobs.busy.is_none().then_some(Msg::Remove(address)),
         )]));
         sheet(t, rows)
     }

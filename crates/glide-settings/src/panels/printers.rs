@@ -9,7 +9,7 @@ use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::config::ConfigStore;
 use crate::services::printers::{self, Job, PrintState, Printer, PrinterState};
-use crate::services::run::{Generation, blocking};
+use crate::services::run::{Jobs, blocking};
 use crate::theme;
 use crate::widgets::{self, Group, Row};
 
@@ -69,13 +69,10 @@ pub enum Msg {
 #[derive(Debug, Default)]
 pub struct Page {
     state: PrintState,
-    loading: bool,
+    jobs: Jobs,
     loaded: bool,
     selected: Option<String>,
-    error: Option<String>,
     info: Option<String>,
-    pending: u32,
-    generation: Generation,
 }
 
 impl Pane for Page {
@@ -85,7 +82,7 @@ impl Pane for Page {
     const POLLS: bool = true;
 
     fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
-        if self.loaded || self.loading {
+        if self.loaded || self.jobs.loading {
             return Task::none();
         }
         self.refresh()
@@ -93,10 +90,10 @@ impl Pane for Page {
 
     fn update(&mut self, msg: Msg, c: Ctx, _config: &mut ConfigStore) -> Task<Msg> {
         match msg {
-            Msg::Loaded(generation, _) if !self.generation.is_current(generation) => {}
+            Msg::Loaded(generation, _) if !self.jobs.generation.is_current(generation) => {}
             Msg::Loaded(_, state) => {
                 self.state = state;
-                self.loading = false;
+                self.jobs.loading = false;
                 self.loaded = true;
                 if let Some(name) = &self.selected
                     && !self.state.printers.iter().any(|printer| &printer.name == name)
@@ -130,14 +127,13 @@ impl Pane for Page {
                 });
             }
             Msg::Done(result) | Msg::TestSent(result @ Some(Err(_))) => {
-                if let Some(Err(err)) = result {
-                    self.error = Some(err);
-                }
-                return self.finish();
+                self.jobs.finish(result);
+                return self.refresh();
             }
             Msg::TestSent(_) => {
                 self.info = Some(c.t(T::TestPageSent).to_string());
-                return self.finish();
+                self.jobs.finish(None);
+                return self.refresh();
             }
         }
         Task::none()
@@ -153,7 +149,7 @@ impl Pane for Page {
         let not_running = (!self.state.running)
             .then(|| widgets::banner(t, crate::theme::Tone::Warn, Icon::Warning, c.t(T::NotRunning), None));
         let info = self.info.as_deref().map(|info| widgets::banner(t, crate::theme::Tone::Ok, Icon::Check, info, None));
-        let page = column![self.hero(&c), not_running, error_banner(t, self.error.as_deref()), info]
+        let page = column![self.hero(&c), not_running, error_banner(t, self.jobs.error.as_deref()), info]
             .spacing(theme::SECTION_GAP);
         if self.state.printers.is_empty() {
             return page
@@ -174,11 +170,7 @@ impl Pane for Page {
 
 impl Page {
     fn refresh(&mut self) -> Task<Msg> {
-        if self.loading || self.pending > 0 {
-            return Task::none();
-        }
-        self.loading = true;
-        let generation = self.generation.current();
+        let Some(generation) = self.jobs.start_loading() else { return Task::none() };
         Task::perform(blocking(printers::read), move |state| Msg::Loaded(generation, state.unwrap_or_default()))
     }
 
@@ -186,19 +178,9 @@ impl Page {
         &mut self, job: impl FnOnce() -> Result<String, String> + Send + 'static,
         done: fn(Option<Result<String, String>>) -> Msg,
     ) -> Task<Msg> {
-        self.generation.bump();
-        self.loading = false;
-        self.pending += 1;
-        self.error = None;
+        self.jobs.begin(None);
         self.info = None;
         Task::perform(blocking(job), done)
-    }
-
-    fn finish(&mut self) -> Task<Msg> {
-        self.pending = self.pending.saturating_sub(1);
-        self.generation.bump();
-        self.loading = false;
-        self.refresh()
     }
 
     fn hero(&self, c: &Ctx) -> Element<'_, Msg> {
@@ -266,7 +248,7 @@ impl Page {
 
     fn details<'a>(&'a self, c: &Ctx, printer: &'a Printer) -> Vec<Element<'a, Msg>> {
         let t = c.theme;
-        let busy = self.pending > 0;
+        let busy = self.jobs.pending > 0;
         let name = printer.name.clone();
         let mut rows = Vec::new();
         if let Some(uri) = &printer.device {
@@ -313,7 +295,7 @@ impl Page {
         if self.state.jobs.is_empty() {
             return group.push(Row::new(t, c.t(T::QueueEmpty)).dimmed(true).build()).build();
         }
-        let busy = self.pending > 0;
+        let busy = self.jobs.pending > 0;
         group.extend(self.state.jobs.iter().map(|job| job_row(c, job, busy))).build()
     }
 }

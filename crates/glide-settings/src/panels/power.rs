@@ -9,7 +9,7 @@ use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::config::{ConfigStore, DEFAULT_BATTERY_LOW, DEFAULT_BLANK_AFTER};
 use crate::services::power::{self, BatteryDetails, LidAction, PowerState, Profile};
-use crate::services::run::{Debounce, Generation, blocking};
+use crate::services::run::{Debounce, Jobs, blocking};
 use crate::theme::{self, Accent, Tone};
 use crate::widgets::{self, Group, Row};
 
@@ -97,11 +97,8 @@ pub enum Msg {
 pub struct Page {
     state: PowerState,
     loaded: bool,
-    loading: bool,
+    jobs: Jobs,
     battery_low: Option<f64>,
-    error: Option<String>,
-    generation: Generation,
-    pending: u32,
     settle: Debounce,
 }
 
@@ -151,7 +148,7 @@ impl Pane for Page {
     const POLLS: bool = true;
 
     fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
-        if self.loaded || self.loading {
+        if self.loaded || self.jobs.loading {
             return Task::none();
         }
         self.refresh()
@@ -163,11 +160,11 @@ impl Pane for Page {
 
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
-            Msg::Loaded(generation, _) if !self.generation.is_current(generation) => {}
+            Msg::Loaded(generation, _) if !self.jobs.generation.is_current(generation) => {}
             Msg::Loaded(_, state) => {
                 self.state = state;
                 self.loaded = true;
-                self.loading = false;
+                self.jobs.loading = false;
             }
             Msg::Blank(choice) => config.set_int("general", "blank-after-seconds", choice.seconds),
             Msg::Suspend(choice) => config.set_int("general", "suspend-after-seconds", choice.seconds),
@@ -188,8 +185,7 @@ impl Pane for Page {
             Msg::ShowPercentage(on) => config.set_bool("topbar", "battery-percentage", on),
             Msg::Profile(profile) => {
                 self.state.profile = Some(profile);
-                self.invalidate();
-                self.pending += 1;
+                self.jobs.begin(None);
                 return Task::perform(blocking(move || power::set_profile(profile)), Msg::Done);
             }
             Msg::ChargeLimit(enabled) => {
@@ -198,17 +194,11 @@ impl Pane for Page {
                 };
                 limit.enabled = enabled;
                 let path = limit.path.clone();
-                self.invalidate();
-                self.pending += 1;
+                self.jobs.begin(None);
                 return Task::perform(blocking(move || power::set_charge_limit(&path, enabled)), Msg::Done);
             }
             Msg::Done(result) => {
-                self.error = match result {
-                    Some(Err(err)) => Some(err),
-                    _ => None,
-                };
-                self.pending = self.pending.saturating_sub(1);
-                self.invalidate();
+                self.jobs.finish(result);
                 return self.refresh();
             }
         }
@@ -217,7 +207,7 @@ impl Pane for Page {
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
-        let mut page = column![error_banner(t, self.error.as_deref())].spacing(theme::SECTION_GAP);
+        let mut page = column![error_banner(t, self.jobs.error.as_deref())].spacing(theme::SECTION_GAP);
         if self.state.battery.is_some() {
             page = page.push(self.battery_hero(&c, config));
             if let Some(limit) = &self.state.charge_limit {
@@ -259,17 +249,8 @@ impl Pane for Page {
 
 impl Page {
     fn refresh(&mut self) -> Task<Msg> {
-        if self.loading || self.pending > 0 {
-            return Task::none();
-        }
-        self.loading = true;
-        let generation = self.generation.current();
+        let Some(generation) = self.jobs.start_loading() else { return Task::none() };
         Task::perform(blocking(power::read_state), move |state| Msg::Loaded(generation, state.unwrap_or_default()))
-    }
-
-    fn invalidate(&mut self) {
-        self.generation.bump();
-        self.loading = false;
     }
 
     fn battery_hero<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
