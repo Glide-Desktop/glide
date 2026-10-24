@@ -68,9 +68,8 @@ fn open_log_file() -> Option<(PathBuf, File)> {
 }
 
 fn log_dir() -> PathBuf {
-    let runtime = || std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from);
     glide_config::state_home()
-        .or_else(runtime)
+        .or_else(glide_config::runtime_dir)
         .map_or_else(|| std::env::temp_dir().join(format!("glide-{}", std::process::id())), |base| base.join("glide"))
 }
 

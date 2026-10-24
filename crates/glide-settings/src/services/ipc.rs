@@ -16,16 +16,7 @@ pub enum IpcEvent {
 
 #[must_use]
 pub fn socket_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GLIDE_IPC_SOCK").filter(|path| !path.is_empty()) {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    let display = std::env::var("WAYLAND_DISPLAY").ok()?;
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
-    let path = PathBuf::from(runtime).join(format!("glide-{display}.sock"));
-    path.exists().then_some(path)
+    glide_ipc::client::socket_path().filter(|path| path.exists())
 }
 
 fn connect() -> Result<UnixStream, String> {

@@ -93,17 +93,10 @@ pub fn recent_files(
         .collect()
 }
 
-fn data_home(home: Option<&Path>) -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home.map(|home| home.join(".local/share")))
-}
-
 #[must_use]
 pub fn load() -> Vec<RecentFile> {
-    let home = std::env::var_os("HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from);
-    let Some(file) = data_home(home.as_deref()).map(|dir| dir.join("recently-used.xbel")) else {
+    let home = glide_config::home();
+    let Some(file) = glide_config::data_home().map(|dir| dir.join("recently-used.xbel")) else {
         return Vec::new();
     };
     let Ok(text) = std::fs::read_to_string(&file) else {

@@ -202,11 +202,7 @@ pub fn parse_drop(mime: &str, bytes: &[u8], spool_dir: &std::path::Path) -> Vec<
 }
 
 fn spool_dir() -> PathBuf {
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
+    let cache = glide_config::cache_home().unwrap_or_else(std::env::temp_dir);
     let root = cache.join("glide/dropped");
     if let Ok(entries) = std::fs::read_dir(&root) {
         let day = Duration::from_hours(24);

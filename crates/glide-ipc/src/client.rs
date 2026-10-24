@@ -9,12 +9,16 @@ const ACTIVATION_TIMEOUT: Duration = Duration::from_millis(400);
 
 #[must_use]
 pub fn socket_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GLIDE_IPC_SOCK").filter(|path| !path.is_empty()) {
-        return Some(PathBuf::from(path));
+    let named = std::env::var_os("GLIDE_IPC_SOCK").filter(|path| !path.is_empty()).map(PathBuf::from);
+    let derived = || {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty())?;
+        let display = std::env::var("WAYLAND_DISPLAY").ok().filter(|display| !display.is_empty())?;
+        Some(PathBuf::from(runtime).join(format!("glide-{display}.sock")))
+    };
+    match named {
+        Some(path) if path.exists() => Some(path),
+        named => derived().filter(|path| path.exists()).or(named).or_else(derived),
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty())?;
-    let display = std::env::var("WAYLAND_DISPLAY").ok().filter(|display| !display.is_empty())?;
-    Some(PathBuf::from(runtime).join(format!("glide-{display}.sock")))
 }
 
 pub fn exchange(request: &Request, timeout: Duration) -> std::io::Result<Response> {

@@ -87,9 +87,7 @@ impl Drop for IpcServer {
     }
 }
 
-fn socket_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from)
-}
+use glide_config::runtime_dir as socket_dir;
 
 fn socket_file_name(socket_name: &std::ffi::OsStr) -> String {
     format!("glide-{}.sock", socket_name.to_string_lossy())

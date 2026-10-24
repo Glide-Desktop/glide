@@ -411,9 +411,7 @@ impl Drop for SecretFile {
 pub(crate) fn connect_with_secrets(
     uuid: &str, service: &str, password: &Secret, otp: &Secret,
 ) -> Result<String, String> {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or_else(|| "XDG_RUNTIME_DIR is not set".to_string())?;
+    let dir = glide_config::runtime_dir().ok_or_else(|| "XDG_RUNTIME_DIR is not set".to_string())?;
     let file = SecretFile::create(&dir, &passwd_file_text(service, password, otp))?;
     let path = file.0.to_string_lossy().into_owned();
     let result = run::status_within(

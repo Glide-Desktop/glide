@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use glide_config::toolkits::Support;
@@ -11,22 +11,13 @@ const QT_SCHEME: &str = "Glide.conf";
 const KDE_SCHEME: &str = "Glide";
 const QT_FONT_POINTS: u32 = 11;
 
-fn home_dir(var: &str, fallback: &str) -> Option<PathBuf> {
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(fallback)))
-}
-
 fn named(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 pub fn export(look: &DesktopAppearance, gtk_theme: Option<&str>) {
     remember(look.toolkits);
-    let (Some(config), Some(data)) =
-        (home_dir("XDG_CONFIG_HOME", ".config"), home_dir("XDG_DATA_HOME", ".local/share"))
-    else {
+    let (Some(config), Some(data)) = (glide_config::config_home(), glide_config::data_home()) else {
         return;
     };
     let tokens = Tokens::new(look.appearance, look.accent);

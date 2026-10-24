@@ -16,7 +16,12 @@ pub use file::{write_atomic, write_private};
 pub use keyboard::SystemKeyboard;
 
 fn var(key: &str) -> Option<PathBuf> {
-    std::env::var_os(key).filter(|value| !value.is_empty()).map(PathBuf::from)
+    std::env::var_os(key).map(PathBuf::from).filter(|path| path.is_absolute())
+}
+
+#[must_use]
+pub fn runtime_dir() -> Option<PathBuf> {
+    var("XDG_RUNTIME_DIR")
 }
 
 fn user_dir(xdg: Option<PathBuf>, home: Option<PathBuf>, fallback: &str) -> Option<PathBuf> {
