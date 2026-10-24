@@ -92,7 +92,7 @@ fn classify(interface: &str, member: &str, path: &str, session: &str) -> Option<
     }
 }
 
-fn session_path(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
+pub fn session_path(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
     let manager = Proxy::new(connection, LOGIN1, MANAGER_PATH, MANAGER)?;
     if let Ok(id) = std::env::var("XDG_SESSION_ID")
         && !id.is_empty()

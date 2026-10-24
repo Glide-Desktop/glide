@@ -415,6 +415,14 @@ impl crate::GlideState {
     }
 
     fn open_polkit(&mut self, request: Request, answer: oneshot::Sender<bool>) {
+        if self.switcher_open() {
+            self.cancel_switcher();
+        }
+        self.cancel_power_dialog();
+        self.power_dialog = None;
+        if self.shot_active() {
+            self.cancel_shot();
+        }
         let mut prompt = Prompt::new(request, answer);
         let (exe, argv0) = prompt.request.caller.map(read_process).unwrap_or_default();
         let app = self.app_directory.index().and_then(|index| index.match_process(exe.as_deref(), argv0.as_deref()));

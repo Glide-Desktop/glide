@@ -146,21 +146,21 @@ fn session_id(connection: &Connection) -> Option<String> {
     if let Some(id) = std::env::var("XDG_SESSION_ID").ok().filter(|id| !id.trim().is_empty()) {
         return Some(id);
     }
-    let manager =
-        Proxy::new(connection, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
-            .ok()?;
-    let path: OwnedObjectPath = manager.call("GetSessionByPID", &(std::process::id(),)).ok()?;
+    let path: OwnedObjectPath = crate::logind::session_path(connection).ok()?;
     let session = Proxy::new(connection, "org.freedesktop.login1", path, "org.freedesktop.login1.Session").ok()?;
     session.get_property::<String>("Id").ok().filter(|id| !id.is_empty())
 }
 
 fn register(connection: &Connection) -> zbus::Result<()> {
     let Some(id) = session_id(connection) else {
-        return Err(zbus::Error::Failure("this process belongs to no logind session".into()));
+        tracing::warn!("no logind session to register the polkit agent for; password prompts will not appear");
+        return Err(zbus::Error::Failure("this user has no logind session".into()));
     };
     let subject = ("unix-session", HashMap::from([("session-id", Value::from(id.as_str()))]));
     let authority = Proxy::new(connection, AUTHORITY, AUTHORITY_PATH, "org.freedesktop.PolicyKit1.Authority")?;
-    authority.call_method("RegisterAuthenticationAgent", &(subject, locale(), AGENT_PATH))?;
+    authority
+        .call_method("RegisterAuthenticationAgent", &(subject, locale(), AGENT_PATH))
+        .inspect_err(|err| tracing::warn!(%err, session = id, "polkit refused the authentication agent"))?;
     tracing::info!(session = id, "registered the polkit authentication agent");
     Ok(())
 }
@@ -209,6 +209,43 @@ mod tests {
         let caller = HashMap::from([("polkit.caller-pid".to_string(), "377".to_string())]);
         let fallback = request("a".into(), "m".into(), String::new(), &caller, "c".into(), "artem".into());
         assert_eq!((fallback.caller, fallback.program), (Some(377), None));
+    }
+
+    #[test]
+    #[ignore = "registers a short-lived agent with the system polkitd"]
+    fn the_system_authority_accepts_the_agent_for_this_users_session() {
+        let sink: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(|_| {});
+        let connection = serve(Builder::system().expect("system bus"), sink).expect("served");
+        assert!(session_id(&connection).is_some(), "a logind session for this user");
+        register(&connection).expect("polkitd accepts the agent");
+    }
+
+    #[test]
+    #[ignore = "asks the system polkitd for an interactive check and cancels it"]
+    fn the_system_authority_hands_a_request_over_and_takes_a_cancel() {
+        let (sender, events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let sink: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(move |event| {
+            let _ = sender.lock().unwrap_or_else(PoisonError::into_inner).send(event);
+        });
+        let connection = serve(Builder::system().expect("system bus"), sink).expect("served");
+        register(&connection).expect("polkitd accepts the agent");
+        let check = std::process::Command::new("pkcheck")
+            .args(["--action-id", "org.freedesktop.timedate1.set-time", "--allow-user-interaction", "--process"])
+            .arg(std::process::id().to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("pkcheck");
+        let Ok(Event::Begin(request, answer)) = events.recv_timeout(Duration::from_secs(10)) else {
+            panic!("polkitd sent no request");
+        };
+        assert_eq!(request.action, "org.freedesktop.timedate1.set-time");
+        assert!(!request.cookie.is_empty() && !request.message.is_empty());
+        assert!(!request.user.is_empty());
+        answer.send(false);
+        let status = check.wait_with_output().expect("pkcheck finished").status;
+        assert!(!status.success(), "a cancelled request is not authorised");
     }
 
     #[test]

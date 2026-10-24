@@ -1717,6 +1717,13 @@ impl GlideState {
 
     pub fn run_topbar_action(&mut self, action: crate::topbar::TopbarAction) {
         use crate::topbar::{OpenPopup, TopbarAction};
+        let opens_island = matches!(action, TopbarAction::ToggleNotificationCenter | TopbarAction::ToggleQuickSettings);
+        if opens_island && self.session.polkit.prompt.is_some() {
+            if self.topbar.peek_notice() {
+                self.queue_redraw();
+            }
+            return;
+        }
         match action {
             TopbarAction::Polkit(control) => self.polkit_control(control),
             TopbarAction::MediaPlayPause => self.run_media_command(glide_media::Command::PlayPause),
