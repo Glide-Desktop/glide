@@ -82,10 +82,6 @@ impl GlideWindow {
         title.filter(|t| !t.trim().is_empty()).or(app_id).unwrap_or_else(|| "Untitled".to_string())
     }
 
-    pub(crate) const fn insets_left() -> i32 {
-        0
-    }
-
     pub(crate) fn begin_open_animation(&self, origin: Option<Rectangle<i32, Logical>>, frame: Rectangle<i32, Logical>) {
         if open_scale_duration().is_zero() {
             return;

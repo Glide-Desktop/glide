@@ -884,7 +884,7 @@ impl OverviewUi {
 
             let buffer_offset = window.geometry().loc;
             let content_origin = Point::from((
-                preview.origin.loc.x + GlideWindow::insets_left() - buffer_offset.x,
+                preview.origin.loc.x - buffer_offset.x,
                 preview.origin.loc.y + window.header_height() - buffer_offset.y,
             ));
             let real_physical = content_origin.to_f64().to_physical(scale).to_i32_round();

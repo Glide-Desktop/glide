@@ -114,7 +114,7 @@ fn dock_thumbnail(
     let frame_origin = live.content.loc - origin;
     let buffer_offset = window.geometry().loc;
     let content_origin = Point::<i32, Logical>::from((
-        frame_origin.x + crate::window::GlideWindow::insets_left() - buffer_offset.x,
+        frame_origin.x - buffer_offset.x,
         frame_origin.y + window.header_height() - buffer_offset.y,
     ));
     let real = content_origin.to_f64().to_physical(scale).to_i32_round();
