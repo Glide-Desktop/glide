@@ -248,28 +248,23 @@ fn clip_uniforms(
 }
 
 #[derive(Debug)]
-pub struct ClippedSurfaceElement<R: Renderer> {
-    inner: WaylandSurfaceRenderElement<R>,
+pub struct Clipped<E> {
+    inner: E,
     clip: RoundedClip,
     id: Id,
 }
 
-impl<R> ClippedSurfaceElement<R>
-where
-    R: Renderer + smithay::backend::renderer::ImportAll,
-    R::TextureId: Texture + 'static,
-{
-    pub fn new(inner: WaylandSurfaceRenderElement<R>, clip: RoundedClip) -> Self {
+pub type ClippedSurfaceElement<R> = Clipped<WaylandSurfaceRenderElement<R>>;
+pub type ClippedMemoryElement<R> = Clipped<MemoryRenderBufferRenderElement<R>>;
+
+impl<E: Element> Clipped<E> {
+    pub fn new(inner: E, clip: RoundedClip) -> Self {
         let id = inner.id().namespaced(clip.damage_key());
         Self { inner, clip, id }
     }
 }
 
-impl<R> Element for ClippedSurfaceElement<R>
-where
-    R: Renderer + smithay::backend::renderer::ImportAll,
-    R::TextureId: Texture + 'static,
-{
+impl<E: Element> Element for Clipped<E> {
     fn id(&self) -> &Id {
         &self.id
     }
@@ -341,62 +336,6 @@ where
             ),
             WaylandSurfaceTexture::SolidColor(_) => self.inner.draw(frame, src, dst, damage, opaque_regions, cache),
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct ClippedMemoryElement<R: Renderer> {
-    inner: MemoryRenderBufferRenderElement<R>,
-    clip: RoundedClip,
-    id: Id,
-}
-
-impl<R: Renderer> ClippedMemoryElement<R> {
-    pub fn new(inner: MemoryRenderBufferRenderElement<R>, clip: RoundedClip) -> Self {
-        let id = inner.id().namespaced(clip.damage_key());
-        Self { inner, clip, id }
-    }
-}
-
-impl<R: Renderer> Element for ClippedMemoryElement<R> {
-    fn id(&self) -> &Id {
-        &self.id
-    }
-
-    fn current_commit(&self) -> CommitCounter {
-        self.inner.current_commit()
-    }
-
-    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.inner.geometry(scale)
-    }
-
-    fn location(&self, scale: Scale<f64>) -> Point<i32, Physical> {
-        self.inner.location(scale)
-    }
-
-    fn src(&self) -> Rectangle<f64, BufferCoord> {
-        self.inner.src()
-    }
-
-    fn transform(&self) -> Transform {
-        self.inner.transform()
-    }
-
-    fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
-        self.inner.damage_since(scale, commit)
-    }
-
-    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        OpaqueRegions::default()
-    }
-
-    fn alpha(&self) -> f32 {
-        self.inner.alpha()
-    }
-
-    fn kind(&self) -> Kind {
-        self.inner.kind()
     }
 }
 

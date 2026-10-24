@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use glide_appmenu::strip_mnemonic;
 use zbus::zvariant::OwnedValue;
 
 pub const INTERFACE: &str = "com.canonical.Unity.LauncherEntry";
@@ -43,23 +44,6 @@ pub fn gone(bus: String) -> EntryUpdate {
 }
 
 type MenuNode = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
-
-#[must_use]
-pub fn strip_mnemonic(label: &str) -> String {
-    let mut out = String::with_capacity(label.len());
-    let mut chars = label.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '_' {
-            if chars.peek() == Some(&'_') {
-                out.push('_');
-                chars.next();
-            }
-            continue;
-        }
-        out.push(ch);
-    }
-    out
-}
 
 #[must_use]
 pub fn quick_items(children: Vec<OwnedValue>) -> Vec<(i32, String)> {
