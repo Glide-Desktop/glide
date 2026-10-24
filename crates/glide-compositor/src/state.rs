@@ -3666,6 +3666,7 @@ impl GlideState {
         use crate::greeter::PowerAction;
         if let Some(greeter) = self.greeter.as_mut() {
             greeter.close_menus();
+            greeter.power_started(action);
         }
         match action {
             PowerAction::Sleep => crate::system_info::suspend(),

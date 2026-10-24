@@ -61,6 +61,8 @@ const MEDIA_H: i32 = 60;
 const NOTICES_H: i32 = 44;
 const CARD_GAP: i32 = 8;
 const ARM_HOLD: Duration = Duration::from_secs(4);
+const TOAST_HOLD: Duration = Duration::from_millis(1800);
+const TOAST_H: i32 = 36;
 const MAX_DOTS: usize = 24;
 const MAX_PASSWORD_CHARS: usize = 512;
 const PASSWORD_CAPACITY: usize = MAX_PASSWORD_CHARS * 4;
@@ -272,6 +274,51 @@ pub enum MediaButton {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aid {
+    ShowTyped,
+    Contrast,
+    Still,
+}
+
+impl Aid {
+    const ALL: [Self; 3] = [Self::ShowTyped, Self::Contrast, Self::Still];
+
+    fn label(self) -> &'static str {
+        t(match self {
+            Self::ShowTyped => Key::GreeterShowTyped,
+            Self::Contrast => Key::GreeterContrast,
+            Self::Still => Key::GreeterStill,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Aids {
+    show_typed: bool,
+    contrast: bool,
+    still: bool,
+}
+
+impl Aids {
+    fn get(self, aid: Aid) -> bool {
+        match aid {
+            Aid::ShowTyped => self.show_typed,
+            Aid::Contrast => self.contrast,
+            Aid::Still => self.still,
+        }
+    }
+
+    fn toggle(&mut self, aid: Aid) {
+        let flag = match aid {
+            Aid::ShowTyped => &mut self.show_typed,
+            Aid::Contrast => &mut self.contrast,
+            Aid::Still => &mut self.still,
+        };
+        *flag = !*flag;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GreeterHit {
     None,
     UserAvatar,
@@ -280,7 +327,7 @@ pub enum GreeterHit {
     Submit,
     KeyboardLayout,
     Accessibility,
-    ShowTyped,
+    Aid(Aid),
     Session,
     SessionItem(usize),
     PowerButton,
@@ -343,6 +390,25 @@ enum Part {
     Menu,
     Media,
     Notices,
+    Toast,
+}
+
+impl Part {
+    fn owning(hit: GreeterHit) -> Option<Self> {
+        Some(match hit {
+            GreeterHit::None => return None,
+            GreeterHit::UserAvatar => Self::Avatar,
+            GreeterHit::User(_) => Self::Users,
+            GreeterHit::PasswordField | GreeterHit::Submit => Self::Field,
+            GreeterHit::KeyboardLayout
+            | GreeterHit::Accessibility
+            | GreeterHit::Session
+            | GreeterHit::PowerButton
+            | GreeterHit::Status => Self::Nav,
+            GreeterHit::SessionItem(_) | GreeterHit::Power(_) | GreeterHit::Aid(_) | GreeterHit::Menu => Self::Menu,
+            GreeterHit::Media(_) => Self::Media,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -377,30 +443,31 @@ struct Palette {
 }
 
 impl Palette {
-    fn new(accent: Accent) -> Self {
+    fn new(accent: Accent, contrast: bool) -> Self {
         let tokens = Tokens::new(Appearance::Dark, accent);
         let white = Color([1.0, 1.0, 1.0, 1.0]);
         let ink = tokens.fg_1;
+        let pick = |soft: f32, strong: f32| if contrast { strong } else { soft };
         let mut palette = Self {
             text: ink,
-            muted: ink.with_alpha(0.62),
-            faint: ink.with_alpha(0.5),
-            date: ink.with_alpha(0.7),
+            muted: ink.with_alpha(pick(0.62, 0.92)),
+            faint: ink.with_alpha(pick(0.5, 0.85)),
+            date: ink.with_alpha(pick(0.7, 0.95)),
             white,
-            glass: white.with_alpha(0.10),
-            glass_line: white.with_alpha(0.16),
-            highlight: white.with_alpha(0.08),
-            hover: white.with_alpha(0.10),
-            open: white.with_alpha(0.14),
-            separator: white.with_alpha(0.18),
-            popover: Color::from_rgb8(47, 46, 52, 0.94),
-            popover_line: white.with_alpha(0.09),
-            card: Color::from_rgb8(30, 29, 35, 0.5),
-            card_soft: Color::from_rgb8(30, 29, 35, 0.4),
-            card_line: white.with_alpha(0.08),
+            glass: white.with_alpha(pick(0.10, 0.20)),
+            glass_line: white.with_alpha(pick(0.16, 0.45)),
+            highlight: white.with_alpha(pick(0.08, 0.16)),
+            hover: white.with_alpha(pick(0.10, 0.20)),
+            open: white.with_alpha(pick(0.14, 0.26)),
+            separator: white.with_alpha(pick(0.18, 0.40)),
+            popover: Color::from_rgb8(47, 46, 52, pick(0.94, 1.0)),
+            popover_line: white.with_alpha(pick(0.09, 0.30)),
+            card: Color::from_rgb8(30, 29, 35, pick(0.5, 0.88)),
+            card_soft: Color::from_rgb8(30, 29, 35, pick(0.4, 0.84)),
+            card_line: white.with_alpha(pick(0.08, 0.30)),
             acc_bg: tokens.acc_bg,
             acc_bg_hover: tokens.acc_bg_hover,
-            go_idle: white.with_alpha(0.12),
+            go_idle: white.with_alpha(pick(0.12, 0.24)),
             danger: tokens.danger,
             danger_fill: Color::from_rgb8(224, 101, 91, 1.0),
             danger_soft: tokens.danger.with_alpha(0.16),
@@ -410,8 +477,12 @@ impl Palette {
             caps_text: Color::from_rgb8(240, 199, 106, 1.0),
             revision: 0,
         };
-        palette.revision =
-            Revision::new().color(palette.text).color(palette.acc_bg).color(palette.acc_bg_hover).finish();
+        palette.revision = Revision::new()
+            .color(palette.text)
+            .color(palette.acc_bg)
+            .color(palette.acc_bg_hover)
+            .bool(contrast)
+            .finish();
         palette
     }
 }
@@ -475,6 +546,7 @@ pub struct Layout {
     pub media: Rect,
     pub media_buttons: [Rect; 3],
     pub notices: Rect,
+    pub toast: Rect,
 }
 
 struct Layer {
@@ -505,11 +577,14 @@ pub struct GreeterUi {
     menu_reveal: Reveal,
     arm: Option<PowerAction>,
     armed_at: Option<Instant>,
-    show_typed: bool,
+    aids: Aids,
     failures: u32,
     deny: Option<u32>,
     locked_until: Option<Instant>,
     hover: GreeterHit,
+    hover_from: GreeterHit,
+    hover_at: Instant,
+    toast: Option<(PowerAction, Instant)>,
     kbd_label: String,
     caps_lock: bool,
     status: GreeterStatus,
@@ -520,6 +595,7 @@ pub struct GreeterUi {
     leaving: Option<Instant>,
     spinner_epoch: Instant,
     palette: Palette,
+    accent: Accent,
     layout: Option<Layout>,
     layers: HashMap<(Part, i32), Layer>,
     icons: IconCache,
@@ -623,11 +699,14 @@ impl GreeterUi {
             menu_reveal: Reveal::closed().with_ease(ease_out),
             arm: None,
             armed_at: None,
-            show_typed: false,
+            aids: Aids::default(),
             failures: 0,
             deny,
             locked_until: None,
             hover: GreeterHit::None,
+            hover_from: GreeterHit::None,
+            hover_at: Instant::now(),
+            toast: None,
             kbd_label: String::new(),
             caps_lock: false,
             status: GreeterStatus::default(),
@@ -637,7 +716,8 @@ impl GreeterUi {
             date: String::new(),
             leaving: None,
             spinner_epoch: Instant::now(),
-            palette: Palette::new(accent),
+            palette: Palette::new(accent, false),
+            accent,
             layout: None,
             layers: HashMap::new(),
             icons: HashMap::new(),
@@ -823,7 +903,7 @@ impl GreeterUi {
         }
         self.menu = Some(kind);
         self.menu_shown = kind;
-        self.menu_reveal.open(motion::t2());
+        self.menu_reveal.open(self.pace(motion::t2()));
         self.dirty = true;
     }
 
@@ -848,7 +928,7 @@ impl GreeterUi {
         }
         self.arm = None;
         self.armed_at = None;
-        self.menu_reveal.close(motion::t2());
+        self.menu_reveal.close(self.pace(motion::t2()));
         self.dirty = true;
         true
     }
@@ -865,9 +945,16 @@ impl GreeterUi {
         }
     }
 
-    pub fn toggle_show_typed(&mut self) {
-        self.show_typed = !self.show_typed;
+    pub fn toggle_aid(&mut self, aid: Aid) {
+        self.aids.toggle(aid);
+        if aid == Aid::Contrast {
+            self.palette = Palette::new(self.accent, self.aids.contrast);
+        }
         self.dirty = true;
+    }
+
+    fn pace(&self, duration: Duration) -> Duration {
+        if self.aids.still { Duration::ZERO } else { duration }
     }
 
     pub fn arm_power(&mut self, action: PowerAction) {
@@ -877,7 +964,7 @@ impl GreeterUi {
         if self.menu != Some(MenuKind::Power) {
             self.menu = Some(MenuKind::Power);
             self.menu_shown = MenuKind::Power;
-            self.menu_reveal.open(motion::t2());
+            self.menu_reveal.open(self.pace(motion::t2()));
         }
         self.arm = Some(action);
         self.armed_at = Some(Instant::now());
@@ -1065,7 +1152,7 @@ impl GreeterUi {
         let Some(since) = self.error_at else {
             return 0.0;
         };
-        let duration = motion::t3();
+        let duration = self.pace(motion::t3());
         let elapsed = since.elapsed();
         if duration.is_zero() || elapsed >= duration {
             return 0.0;
@@ -1102,9 +1189,54 @@ impl GreeterUi {
         if self.hover == hit {
             return false;
         }
+        self.hover_from = self.hover;
         self.hover = hit;
+        self.hover_at = Instant::now();
         self.dirty = true;
         true
+    }
+
+    fn hover_level(&self) -> f64 {
+        let duration = self.pace(motion::t1());
+        if duration.is_zero() {
+            return 1.0;
+        }
+        ease_out((self.hover_at.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0))
+    }
+
+    fn hover_amount(&self, hit: GreeterHit) -> f32 {
+        let level = (self.hover_level() * 8.0).round() / 8.0;
+        let amount = if self.hover == hit {
+            level
+        } else if self.hover_from == hit {
+            1.0 - level
+        } else {
+            0.0
+        };
+        amount as f32
+    }
+
+    fn hover_signature(&self, part: Part) -> String {
+        let mine = |hit: GreeterHit| if Part::owning(hit) == Some(part) { hit } else { GreeterHit::None };
+        let (now, before) = (mine(self.hover), mine(self.hover_from));
+        if now == GreeterHit::None && before == GreeterHit::None {
+            return String::new();
+        }
+        format!("{now:?}{before:?}{}", (self.hover_level() * 8.0).round())
+    }
+
+    pub fn power_started(&mut self, action: PowerAction) {
+        self.toast = Some((action, Instant::now()));
+        self.dirty = true;
+    }
+
+    fn toast_label(&self) -> Option<&'static str> {
+        let (action, _) = self.toast?;
+        Some(t(match action {
+            PowerAction::Sleep => Key::GreeterToastSleep,
+            PowerAction::Restart => Key::GreeterToastRestart,
+            PowerAction::ShutDown => Key::GreeterToastShutDown,
+        }))
     }
 
     fn busy(&self) -> bool {
@@ -1112,9 +1244,11 @@ impl GreeterUi {
     }
 
     fn is_animating(&self) -> bool {
-        let (t2, t3) = (motion::t2(), motion::t3());
+        let (t2, t3) = (self.pace(motion::t2()), self.pace(motion::t3()));
         self.error_at.is_some_and(|since| since.elapsed() < t3)
             || self.menu_reveal.is_animating(t2)
+            || self.hover_level() < 1.0
+            || self.toast.is_some()
             || self.busy()
             || self.leaving.is_some()
     }
@@ -1128,6 +1262,10 @@ impl GreeterUi {
         if self.armed_at.is_some_and(|at| at.elapsed() >= ARM_HOLD) {
             self.cancel_power_arm();
         }
+        if self.toast.is_some_and(|(_, at)| at.elapsed() >= TOAST_HOLD) {
+            self.toast = None;
+            self.dirty = true;
+        }
         if let Some(until) = self.locked_until {
             if Instant::now() >= until {
                 self.locked_until = None;
@@ -1136,7 +1274,7 @@ impl GreeterUi {
             }
             self.dirty = true;
         }
-        self.menu_reveal.settle(motion::t2());
+        self.menu_reveal.settle(self.pace(motion::t2()));
         self.dirty || self.is_animating()
     }
 
@@ -1157,7 +1295,7 @@ impl GreeterUi {
                     MenuKind::Power => {
                         self.power_actions().get(index).copied().map_or(GreeterHit::Menu, GreeterHit::Power)
                     }
-                    MenuKind::Accessibility => GreeterHit::ShowTyped,
+                    MenuKind::Accessibility => Aid::ALL.get(index).copied().map_or(GreeterHit::Menu, GreeterHit::Aid),
                 };
             }
             if layout.menu.contains(x, y) {
@@ -1237,7 +1375,10 @@ impl GreeterUi {
                 (layout.session, widest.max(SESSION_MENU_W), self.sessions.len(), SESSION_ROW, 0)
             }
             MenuKind::Power => (layout.power, POWER_MENU_W, self.power_actions().len(), POWER_ROW, MENU_NOTE_H),
-            MenuKind::Accessibility => (layout.a11y, POWER_MENU_W, 1, POWER_ROW, 0),
+            MenuKind::Accessibility => {
+                let widest = Aid::ALL.iter().map(|aid| text_w(painter, aid.label(), &MENU_STYLE)).max().unwrap_or(0);
+                (layout.a11y, (widest + 12 + 34 + MENU_PAD * 2).max(POWER_MENU_W), Aid::ALL.len(), POWER_ROW, 0)
+            }
         };
         let rows = i32::try_from(rows).unwrap_or(0);
         let height = MENU_PAD * 2 + rows * row_h + note;
@@ -1331,11 +1472,15 @@ impl GreeterUi {
         }
 
         self.layout_menu(painter, &mut layout);
+        if let Some(label) = self.toast_label() {
+            let width = 16 + 14 + 8 + text_w(painter, label, &MENU_STYLE) + 16;
+            layout.toast = Rect::new(centre - width / 2, h - 32 - TOAST_H, width, TOAST_H);
+        }
         layout
     }
 
     fn field_text(&self) -> (String, bool) {
-        let visible = self.show_typed || self.prompt.as_ref().is_some_and(|prompt| !prompt.secret);
+        let visible = self.aids.show_typed || self.prompt.as_ref().is_some_and(|prompt| !prompt.secret);
         if self.busy() {
             return ("•".repeat(self.pending_dots.min(MAX_DOTS)), false);
         }
@@ -1384,35 +1529,28 @@ impl GreeterUi {
 
     fn part_key(&self, part: Part, frame: Rect, painter_generation: u64) -> u64 {
         let base = Revision::new().u64(self.palette.revision).u64(painter_generation).i32(frame.w).i32(frame.h);
-        let hover = |hit: GreeterHit| self.hover == hit;
+        let hovered = base.str(&self.hover_signature(part));
         match part {
             Part::Clock => base.str(&self.date).str(&self.time).bool(self.is_lock()),
-            Part::Nav => base
+            Part::Nav => hovered
                 .str(&self.kbd_label)
                 .str(self.session_label())
                 .u64(u64::from(self.status.battery.map_or(255, |(pct, _)| pct)))
                 .bool(self.status.wifi.is_some())
-                .u64(self.menu.map_or(0, |kind| kind as u64 + 1))
-                .u64(match self.hover {
-                    GreeterHit::KeyboardLayout => 1,
-                    GreeterHit::Accessibility => 2,
-                    GreeterHit::Session => 3,
-                    GreeterHit::PowerButton => 4,
-                    _ => 0,
-                }),
-            Part::Avatar => base
+                .u64(self.menu.map_or(0, |kind| kind as u64 + 1)),
+            Part::Avatar => hovered
                 .str(&self.active_user().map_or('?', |u| u.initial).to_string())
                 .u64(u64::from(self.active_user().map_or(0, |u| u.uid)))
-                .bool(hover(GreeterHit::UserAvatar) && self.can_switch_user()),
+                .bool(self.can_switch_user()),
             Part::Name => base.str(self.active_user().map_or("", |u| u.display_name.as_str())),
             Part::Field => {
                 let (text, placeholder) = self.field_text();
                 let locked = self.locked_out().map(countdown);
-                base.str(&text)
+                hovered
+                    .str(&text)
                     .bool(placeholder)
                     .bool(self.auth == AuthState::Error)
                     .bool(self.editable())
-                    .bool(hover(GreeterHit::Submit))
                     .u64(if self.busy() { u64::from(self.spinner_step()) + 1 } else { 0 })
                     .str(locked.as_deref().unwrap_or_default())
                     .str(&self.busy_label())
@@ -1422,27 +1560,19 @@ impl GreeterUi {
                 base.str(&text).bool(tone == Tone::Error).bool(self.caps_lock)
             }
             Part::Users => {
-                let mut key = base.u64(match self.hover {
-                    GreeterHit::User(index) => index as u64 + 1,
-                    _ => 0,
-                });
+                let mut key = hovered;
                 for (index, _) in self.layout.as_ref().map(|l| l.users.as_slice()).unwrap_or_default() {
                     key = key.str(&self.users[*index].display_name);
                 }
                 key
             }
             Part::Menu => {
-                let mut key = base
+                let mut key = hovered
                     .u64(self.menu_shown as u64)
                     .u64(self.active_session as u64)
                     .u64(self.arm.map_or(9, PowerAction::index))
-                    .bool(self.show_typed)
-                    .u64(match self.hover {
-                        GreeterHit::SessionItem(index) => index as u64 + 1,
-                        GreeterHit::Power(action) => 20 + action.index(),
-                        GreeterHit::ShowTyped => 30,
-                        _ => 0,
-                    });
+                    .bool(self.aids.show_typed)
+                    .bool(self.aids.still);
                 for session in &self.sessions {
                     key = key.str(&session.name);
                 }
@@ -1450,16 +1580,11 @@ impl GreeterUi {
             }
             Part::Media => {
                 let media = self.media.as_ref();
-                base.str(media.map_or("", |m| m.title.as_str()))
+                hovered
+                    .str(media.map_or("", |m| m.title.as_str()))
                     .str(media.map_or("", |m| m.subtitle.as_str()))
                     .bool(media.is_some_and(|m| m.playing))
                     .color(media.map_or(self.palette.acc_bg, |m| m.accent))
-                    .u64(match self.hover {
-                        GreeterHit::Media(MediaButton::Previous) => 1,
-                        GreeterHit::Media(MediaButton::PlayPause) => 2,
-                        GreeterHit::Media(MediaButton::Next) => 3,
-                        _ => 0,
-                    })
             }
             Part::Notices => {
                 let mut key = base.u64(self.notices.count as u64);
@@ -1468,6 +1593,7 @@ impl GreeterUi {
                 }
                 key
             }
+            Part::Toast => base.str(self.toast_label().unwrap_or_default()).u64(u64::from(self.spinner_step())),
         }
         .finish()
     }
@@ -1481,9 +1607,10 @@ impl GreeterUi {
             Part::Field => layout.field_frame,
             Part::Hint => layout.hint.inflate(4),
             Part::Users => layout.users_frame,
-            Part::Menu => layout.menu.inflate(48),
+            Part::Menu => layout.menu.inflate(80),
             Part::Media => layout.media.inflate(24),
             Part::Notices => layout.notices.inflate(24),
+            Part::Toast => layout.toast.inflate(24),
         }
     }
 
@@ -1507,11 +1634,8 @@ impl GreeterUi {
                 let user = self.active_user();
                 let (from, to) = user_colors(user.map_or(0, |u| u.uid));
                 canvas.gradient(avatar, radius, from, to);
-                let ring = if self.hover == GreeterHit::UserAvatar && self.can_switch_user() {
-                    p.white.with_alpha(0.4)
-                } else {
-                    p.white.with_alpha(0.18)
-                };
+                let lift = if self.can_switch_user() { self.hover_amount(GreeterHit::UserAvatar) } else { 0.0 };
+                let ring = p.white.with_alpha(0.18 + 0.22 * lift);
                 canvas.stroke(avatar, 1.0, radius, ring);
                 let initial = user.map_or('?', |u| u.initial).to_string();
                 let style = if self.is_lock() { &INITIAL_LOCK } else { &INITIAL_LOGIN };
@@ -1537,6 +1661,27 @@ impl GreeterUi {
             Part::Menu => self.draw_menu(layout, frame, canvas),
             Part::Media => self.draw_media(layout, frame, canvas),
             Part::Notices => self.draw_notices(layout, frame, canvas),
+            Part::Toast => self.draw_toast(layout, frame, canvas),
+        }
+    }
+
+    fn draw_toast(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
+        let p = &self.palette;
+        let Some(label) = self.toast_label() else {
+            return;
+        };
+        let pill = layout.toast.local_to(frame);
+        canvas.fill(pill, shape::R_ROUND, Color::from_rgb8(30, 29, 35, 0.8));
+        canvas.stroke(pill, 1.0, shape::R_ROUND, p.white.with_alpha(0.1));
+        canvas.icon(&spinner_svg(self.spinner_step()), pill.x + 16, pill.y + (TOAST_H - 14) / 2, 14, p.white);
+        let text = Rect::new(pill.x + 16 + 14 + 8, pill.y, pill.w - 16 - 14 - 8 - 12, TOAST_H);
+        canvas.text(text, label, p.text, &MENU_STYLE, TextAlign::Left);
+    }
+
+    fn layered(&self, canvas: &mut Canvas<'_>, rect: Rect, radius: f32, colour: Color, hit: GreeterHit) {
+        let amount = self.hover_amount(hit);
+        if amount > 0.0 {
+            canvas.fill(rect, radius, colour.with_alpha(colour.0[3] * amount));
         }
     }
 
@@ -1544,8 +1689,8 @@ impl GreeterUi {
         let p = &self.palette;
         if open {
             canvas.fill(rect, shape::R_ROUND, p.open);
-        } else if self.hover == hit {
-            canvas.fill(rect, shape::R_ROUND, p.hover);
+        } else {
+            self.layered(canvas, rect, shape::R_ROUND, p.hover, hit);
         }
     }
 
@@ -1608,9 +1753,7 @@ impl GreeterUi {
             MenuKind::Session => {
                 for (index, (session, row)) in self.sessions.iter().zip(&layout.menu_items).enumerate() {
                     let row = local(*row);
-                    if self.hover == GreeterHit::SessionItem(index) {
-                        canvas.fill(row, shape::R2, p.highlight);
-                    }
+                    self.layered(canvas, row, shape::R2, p.highlight, GreeterHit::SessionItem(index));
                     let text = Rect::new(row.x + 10, row.y, row.w - 10 - 34, row.h);
                     canvas.text(text, &session.name, p.text, &MENU_STYLE, TextAlign::Left);
                     if index == self.active_session {
@@ -1625,8 +1768,8 @@ impl GreeterUi {
                     let armed = self.arm == Some(*action);
                     if armed {
                         canvas.fill(row, shape::R2, if action.danger() { p.danger_fill } else { p.acc_bg });
-                    } else if self.hover == GreeterHit::Power(*action) {
-                        canvas.fill(row, shape::R2, p.highlight);
+                    } else {
+                        self.layered(canvas, row, shape::R2, p.highlight, GreeterHit::Power(*action));
                     }
                     let ink = if armed { p.white } else { p.text };
                     let (_, y) = row.centre_square(16);
@@ -1641,13 +1784,12 @@ impl GreeterUi {
                 canvas.text(note, t(Key::GreeterPowerNote), p.faint, &MENU_NOTE_STYLE, TextAlign::Left);
             }
             MenuKind::Accessibility => {
-                if let Some(row) = layout.menu_items.first().copied().map(local) {
-                    if self.hover == GreeterHit::ShowTyped {
-                        canvas.fill(row, shape::R2, p.highlight);
-                    }
+                for (aid, row) in Aid::ALL.into_iter().zip(&layout.menu_items) {
+                    let row = local(*row);
+                    self.layered(canvas, row, shape::R2, p.highlight, GreeterHit::Aid(aid));
                     let text = Rect::new(row.x + 12, row.y, row.w - 12 - 34, row.h);
-                    canvas.text(text, t(Key::GreeterShowTyped), p.text, &MENU_STYLE, TextAlign::Left);
-                    if self.show_typed {
+                    canvas.text(text, aid.label(), p.text, &MENU_STYLE, TextAlign::Left);
+                    if self.aids.get(aid) {
                         let (_, y) = row.centre_square(14);
                         canvas.icon(&svg(2.6, icon::CHECK), row.right() - 12 - 14, y, 14, p.acc_bg_hover);
                     }
@@ -1696,7 +1838,7 @@ impl GreeterUi {
         let (text, placeholder) = self.field_text();
         let text_x = field.x + 20;
         let text_rect = Rect::new(text_x, field.y, submit.x - 8 - text_x, field.h);
-        let dots = !placeholder && !self.show_typed && self.prompt.as_ref().is_none_or(|prompt| prompt.secret);
+        let dots = !placeholder && !self.aids.show_typed && self.prompt.as_ref().is_none_or(|prompt| prompt.secret);
         let style = if dots { &DOTS_STYLE } else { &FIELD_STYLE };
         let colour = if placeholder { p.faint } else { p.white };
         let busy = self.busy();
@@ -1707,12 +1849,10 @@ impl GreeterUi {
             canvas.fill(Rect::new(caret_x, field.y + (field.h - 18) / 2, 1, 18), 0.0, p.white.with_alpha(0.9));
         }
         let ready = !self.password.is_empty() && self.editable();
-        let fill = if busy || ready {
-            if self.hover == GreeterHit::Submit && ready { p.acc_bg_hover } else { p.acc_bg }
-        } else {
-            p.go_idle
-        };
-        canvas.fill(submit, shape::R_ROUND, fill);
+        canvas.fill(submit, shape::R_ROUND, if busy || ready { p.acc_bg } else { p.go_idle });
+        if ready {
+            self.layered(canvas, submit, shape::R_ROUND, p.acc_bg_hover, GreeterHit::Submit);
+        }
         let (x, y) = submit.centre_square(16);
         if busy {
             canvas.icon(&spinner_svg(self.spinner_step()), x, y, 16, p.white);
@@ -1725,8 +1865,8 @@ impl GreeterUi {
         let p = &self.palette;
         for (index, rect) in &layout.users {
             let chip = rect.local_to(frame);
-            let fill = if self.hover == GreeterHit::User(*index) { p.hover } else { p.white.with_alpha(0.06) };
-            canvas.fill(chip, shape::R_ROUND, fill);
+            canvas.fill(chip, shape::R_ROUND, p.white.with_alpha(0.06));
+            self.layered(canvas, chip, shape::R_ROUND, p.white.with_alpha(0.05), GreeterHit::User(*index));
             let user = &self.users[*index];
             let avatar = Rect::new(chip.x + 4, chip.y + (CHIP_H - CHIP_AVATAR) / 2, CHIP_AVATAR, CHIP_AVATAR);
             let (from, to) = user_colors(user.uid);
@@ -1761,14 +1901,12 @@ impl GreeterUi {
         for (rect, button, glyph) in
             [(previous, MediaButton::Previous, icon::PREVIOUS), (next, MediaButton::Next, icon::NEXT)]
         {
-            if self.hover == GreeterHit::Media(button) {
-                canvas.fill(rect, shape::R_ROUND, p.hover);
-            }
+            self.layered(canvas, rect, shape::R_ROUND, p.hover, GreeterHit::Media(button));
             let (x, y) = rect.centre_square(14);
             canvas.icon(&filled(glyph), x, y, 14, p.text);
         }
-        let fill = if self.hover == GreeterHit::Media(MediaButton::PlayPause) { p.acc_bg_hover } else { p.acc_bg };
-        canvas.fill(play, shape::R_ROUND, fill);
+        canvas.fill(play, shape::R_ROUND, p.acc_bg);
+        self.layered(canvas, play, shape::R_ROUND, p.acc_bg_hover, GreeterHit::Media(MediaButton::PlayPause));
         let (x, y) = play.centre_square(14);
         canvas.icon(&filled(if media.playing { icon::PAUSE } else { icon::PLAY }), x, y, 14, p.white);
     }
@@ -1806,9 +1944,12 @@ impl GreeterUi {
     }
 
     fn parts(&self, leave: f64) -> Vec<(Part, (f64, f64), f64)> {
-        let menu_t = self.menu_reveal.value(motion::t2());
+        let menu_t = self.menu_reveal.value(self.pace(motion::t2()));
         let ui = 1.0 - leave;
-        let mut parts = Vec::with_capacity(10);
+        let mut parts = Vec::with_capacity(11);
+        if self.toast_label().is_some() {
+            parts.push((Part::Toast, (0.0, 0.0), 1.0));
+        }
         if menu_t > 0.0 {
             parts.push((Part::Menu, (0.0, -6.0 * (1.0 - menu_t)), menu_t * ui));
         }
@@ -2056,8 +2197,30 @@ mod tests {
         assert_eq!(ui.field_text(), ("••••••".to_string(), false));
         ui.backspace();
         assert_eq!(ui.field_text().0.chars().count(), 5);
-        ui.toggle_show_typed();
+        ui.toggle_aid(Aid::ShowTyped);
         assert_eq!(ui.field_text(), ("парол".to_string(), false));
+    }
+
+    #[test]
+    fn the_accessibility_menu_toggles_typed_text_contrast_and_motion() {
+        let mut ui = ui();
+        ui.toggle_a11y_menu();
+        let layout = laid_out(&mut ui);
+        assert_eq!(layout.menu_items.len(), Aid::ALL.len());
+        assert_eq!(layout.menu.right(), layout.a11y.right(), "the menu hangs under its button");
+        for (aid, row) in Aid::ALL.into_iter().zip(&layout.menu_items) {
+            assert_eq!(ui.hit_test(centre(*row)), GreeterHit::Aid(aid));
+        }
+        let soft = ui.palette.revision;
+        ui.toggle_aid(Aid::Contrast);
+        assert_ne!(ui.palette.revision, soft, "every cached part is redrawn in the new palette");
+        assert!(ui.palette.muted.0[3] > 0.9);
+        ui.toggle_aid(Aid::Still);
+        assert_eq!(ui.pace(motion::t2()), Duration::ZERO);
+        ui.update_hover(GreeterHit::Session);
+        assert!((ui.hover_amount(GreeterHit::Session) - 1.0).abs() < f32::EPSILON, "hover snaps without motion");
+        ui.toggle_aid(Aid::Contrast);
+        assert_eq!(ui.palette.revision, soft);
     }
 
     #[test]
@@ -2240,6 +2403,38 @@ mod tests {
         let layout = laid_out(&mut ui);
         assert_eq!(layout.menu_items.len(), 2);
         assert_eq!(ui.hit_test(centre(layout.menu_items[1])), GreeterHit::Power(PowerAction::ShutDown));
+    }
+
+    #[test]
+    fn a_started_power_action_shows_a_centred_toast_that_leaves_on_its_own() {
+        let mut ui = ui();
+        assert!(ui.parts(0.0).iter().all(|(part, ..)| *part != Part::Toast));
+        ui.power_started(PowerAction::ShutDown);
+        assert_eq!(ui.toast_label(), Some(t(Key::GreeterToastShutDown)));
+        let layout = laid_out(&mut ui);
+        assert_eq!(layout.toast.x + layout.toast.w / 2, 960);
+        assert_eq!(layout.toast.bottom(), 1080 - 32);
+        assert_eq!(ui.parts(0.0)[0].0, Part::Toast, "the toast is drawn above everything");
+        ui.toast = ui.toast.map(|(action, _)| (action, Instant::now().checked_sub(TOAST_HOLD * 2).unwrap()));
+        ui.tick();
+        assert_eq!(ui.toast_label(), None);
+    }
+
+    #[test]
+    fn hover_crossfades_between_the_old_and_the_new_target() {
+        let mut ui = ui();
+        ui.update_hover(GreeterHit::Session);
+        ui.update_hover(GreeterHit::PowerButton);
+        if !motion::t1().is_zero() {
+            assert!(ui.hover_amount(GreeterHit::PowerButton) < 1.0, "the new target fades in");
+            assert!(ui.hover_amount(GreeterHit::Session) > 0.0, "the old one fades out");
+            assert!(ui.is_animating());
+        }
+        ui.hover_at = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+        assert!((ui.hover_amount(GreeterHit::PowerButton) - 1.0).abs() < f32::EPSILON);
+        assert!(ui.hover_amount(GreeterHit::Session).abs() < f32::EPSILON);
+        assert_eq!(ui.hover_signature(Part::Field), "", "parts without the hovered control keep their raster");
+        assert_ne!(ui.hover_signature(Part::Nav), "");
     }
 
     #[test]
@@ -2511,6 +2706,16 @@ mod tests {
         session.toggle_session_menu();
         session.menu_reveal = Reveal::open_now();
         cases.push(("login-session", session));
+        let mut aids = login();
+        aids.toggle_aid(Aid::Contrast);
+        aids.toggle_a11y_menu();
+        aids.menu_reveal = Reveal::open_now();
+        aids.update_hover(GreeterHit::Aid(Aid::Still));
+        aids.hover_at = Instant::now().checked_sub(Duration::from_secs(1)).expect("instant");
+        cases.push(("login-a11y-contrast", aids));
+        let mut toast = lock();
+        toast.power_started(PowerAction::ShutDown);
+        cases.push(("lock-toast", toast));
         let mut entering = login();
         entering.set_auth_success();
         cases.push(("login-entering", entering));

@@ -342,8 +342,13 @@ glide_app::catalogue! {
     GreeterAgainSleep => "Again to sleep", "Ще раз — сон";
     GreeterAgainRestart => "Again to restart", "Ще раз — перезапуск";
     GreeterAgainShutDown => "Again to shut down", "Ще раз — вимкнути";
-    GreeterPowerNote => "The action runs on the second press.", "Дія спрацює з другого натискання.";
+    GreeterToastSleep => "Going to sleep…", "Перехід у сон…";
+    GreeterToastRestart => "Restarting…", "Перезапуск…";
+    GreeterToastShutDown => "Shutting down…", "Вимкнення…";
+    GreeterPowerNote =>"The action runs on the second press.", "Дія спрацює з другого натискання.";
     GreeterShowTyped => "Show typed characters", "Показувати введені символи";
+    GreeterContrast => "High contrast", "Висока контрастність";
+    GreeterStill => "Reduce motion", "Менше анімації";
     LockNoticesOne => "{n} new notification", "{n} нове сповіщення";
     LockNoticesFew => "{n} new notifications", "{n} нових сповіщення";
     LockNoticesMany => "{n} new notifications", "{n} нових сповіщень";

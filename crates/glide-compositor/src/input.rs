@@ -2513,7 +2513,7 @@ impl GlideState {
             GreeterHit::Power(action) if greeter.armed() == Some(action) => self.greeter_power(action),
             GreeterHit::Power(action) => greeter.arm_power(action),
             GreeterHit::Accessibility => greeter.toggle_a11y_menu(),
-            GreeterHit::ShowTyped => greeter.toggle_show_typed(),
+            GreeterHit::Aid(aid) => greeter.toggle_aid(aid),
             GreeterHit::KeyboardLayout => {
                 self.cycle_keyboard_layout();
                 self.sync_greeter_layout();
