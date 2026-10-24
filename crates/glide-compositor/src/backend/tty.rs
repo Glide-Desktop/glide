@@ -1202,19 +1202,17 @@ impl GlideState {
             return;
         }
         surface.switched_off = false;
-        let scale = Scale::from(output.current_scale().fractional_scale());
+        let fractional = output.current_scale().fractional_scale();
+        let integer_scale = output.current_scale().integer_scale();
+        let scale = Scale::from(fractional);
+        let painter = crate::paint::current();
 
         let icon = match &cursor_status {
             CursorImageStatus::Named(icon) => *icon,
             _ => CursorIcon::Default,
         };
-        let (cursor_buffer, named) = resolve_cursor_buffer(
-            cursor,
-            cursor_buffers,
-            icon,
-            output.current_scale().integer_scale().cast_unsigned(),
-            elapsed,
-        );
+        let (cursor_buffer, named) =
+            resolve_cursor_buffer(cursor, cursor_buffers, icon, integer_scale.cast_unsigned(), elapsed);
         let cursor_hotspot = cursor_hotspot(&cursor_status, named);
         pointer_element.set_buffer(cursor_buffer);
         pointer_element.set_status(cursor_status);
@@ -1222,13 +1220,7 @@ impl GlideState {
         let output_mode = output.current_mode().map_or((1920, 1080), |m| (m.size.w, m.size.h));
         let (phys_w, phys_h) = output_mode;
         let wallpaper_fit = self.wallpaper_fit;
-        let wallpaper_key = (
-            phys_w,
-            phys_h,
-            wallpaper_fit,
-            glide_paint::wallpaper_generation(),
-            output.current_scale().fractional_scale().to_bits(),
-        );
+        let wallpaper_key = (phys_w, phys_h, wallpaper_fit, glide_paint::wallpaper_generation(), fractional.to_bits());
         if surface.wallpaper_key != Some(wallpaper_key) {
             let mut buf = vec![0; usize::try_from(phys_w * phys_h * 4).unwrap_or_default()];
             glide_paint::draw_wallpaper_into(&mut buf, phys_w, phys_h, wallpaper_fit);
@@ -1247,12 +1239,7 @@ impl GlideState {
             };
             surface.wallpaper_buf = Some(make_buffer(&buf));
             let mut blurred = buf.clone();
-            glide_paint::box_blur_rgba(
-                &mut blurred,
-                phys_w,
-                phys_h,
-                backdrop_box_radius(output.current_scale().fractional_scale()),
-            );
+            glide_paint::box_blur_rgba(&mut blurred, phys_w, phys_h, backdrop_box_radius(fractional));
             glide_paint::saturate_in_place(&mut blurred, BACKDROP_SATURATION);
             surface.wallpaper_blur_buf = Some(make_buffer(&blurred));
             surface.wallpaper_blur_rgba = Some(std::sync::Arc::new(blurred));
@@ -1261,12 +1248,8 @@ impl GlideState {
             surface.wallpaper_key = Some(wallpaper_key);
         }
 
-        let logical_size = {
-            let fractional = output.current_scale().fractional_scale();
-            let w = (f64::from(phys_w) / fractional).round() as i32;
-            let h = (f64::from(phys_h) / fractional).round() as i32;
-            (w, h)
-        };
+        let logical_size =
+            ((f64::from(phys_w) / fractional).round() as i32, (f64::from(phys_h) / fractional).round() as i32);
         let output_geometry =
             self.space.output_geometry(&output).unwrap_or_else(|| Rectangle::from_size(logical_size.into()));
         let primary = self.space.outputs().next() == Some(&output);
@@ -1281,20 +1264,9 @@ impl GlideState {
         let mut elements = Vec::new();
         let mut blur_patches: Vec<Rectangle<i32, Logical>> = Vec::new();
         if let Some(greeter) = self.greeter.as_mut().filter(|_| !unlocking) {
-            let painter = crate::paint::current();
-            elements.extend(
-                greeter
-                    .render(
-                        gles_renderer,
-                        &painter,
-                        Rectangle::new(output_geometry.loc, logical_size.into()),
-                        scale,
-                        output.current_scale().integer_scale(),
-                        primary,
-                    )
-                    .into_iter()
-                    .map(GlideRenderElements::Memory),
-            );
+            let area = Rectangle::new(output_geometry.loc, logical_size.into());
+            let drawn = greeter.render(gles_renderer, &painter, area, scale, integer_scale, primary);
+            elements.extend(drawn.into_iter().map(GlideRenderElements::Memory));
             if let Some(buffer) = surface.wallpaper_blur_buf.as_ref() {
                 elements.extend(backdrop_element(gles_renderer, buffer, 1.0, output_mode, logical_size));
             }
@@ -1351,7 +1323,6 @@ impl GlideState {
                 let (appearance, accent) = self.shell_palette;
                 let tokens = glide_theme::Tokens::new(appearance, accent);
                 let position = (preview.rect.loc - output_geometry.loc).to_f64().to_physical(scale);
-                let integer_scale = output.current_scale().integer_scale();
                 let alpha = preview.alpha();
                 if let Some(buffer) = preview.buffer(tokens.acc_soft, tokens.acc_bg, integer_scale)
                     && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
@@ -1382,11 +1353,11 @@ impl GlideState {
                 launcher,
                 gles_renderer,
                 &mut self.launcher_icons,
-                &crate::paint::current(),
+                &painter,
                 &self.launcher_theme,
                 launcher_area,
                 scale,
-                output.current_scale().integer_scale(),
+                integer_scale,
             );
             let mut ordered: Vec<GlideRenderElements> = grid
                 .into_iter()
@@ -1404,7 +1375,7 @@ impl GlideState {
             pixels: pixels.as_slice(),
             width: phys_w,
             height: phys_h,
-            fractional_scale: output.current_scale().fractional_scale(),
+            fractional_scale: fractional,
             generation: glide_paint::wallpaper_generation(),
         });
         let dock_hidden = backdrop_t.max(launcher_openness).max(self.dock.autohide_level()).clamp(0.0, 1.0);
@@ -1414,10 +1385,10 @@ impl GlideState {
             crate::dock::render(
                 &mut self.dock,
                 gles_renderer,
-                &crate::paint::current(),
+                &painter,
                 dock_area,
                 scale,
-                output.current_scale().integer_scale(),
+                integer_scale,
                 dock_hidden,
                 dock_backdrop.as_ref(),
             )
@@ -1427,8 +1398,6 @@ impl GlideState {
             dock.into_iter().map(|element| GlideRenderElements::RelocatedMemory(relocate(element, shell_offset))),
         );
         if !locked && !dock_hidden_here && dock_hidden <= 0.0 {
-            let painter = crate::paint::current();
-            let integer_scale = output.current_scale().integer_scale();
             let mut group = Vec::new();
             if let Some((preview, theme, layout, revision)) = self.dock.preview_parts(dock_area) {
                 let drawn = crate::dock_preview::render(
@@ -1465,11 +1434,11 @@ impl GlideState {
             let topbar = crate::topbar::render(
                 &mut self.topbar,
                 gles_renderer,
-                &crate::paint::current(),
+                &painter,
                 &mut self.dock.icons,
                 output_rect,
                 scale,
-                output.current_scale().integer_scale(),
+                integer_scale,
                 (dock_backdrop.as_ref(), topbar_hidden),
             );
             prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
@@ -1480,11 +1449,11 @@ impl GlideState {
                 switcher,
                 gles_renderer,
                 &mut self.launcher_icons,
-                &crate::paint::current(),
+                &painter,
                 &self.launcher_theme,
                 launcher_area,
                 scale,
-                output.current_scale().integer_scale(),
+                integer_scale,
                 dock_backdrop.as_ref(),
             );
             prepend(
@@ -1502,12 +1471,12 @@ impl GlideState {
                 dialog,
                 gles_renderer,
                 &mut self.launcher_icons,
-                &crate::paint::current(),
+                &painter,
                 self.launcher_theme.revision(),
                 &crate::power_dialog::Palette::from_tokens(&tokens),
                 output_rect,
                 scale,
-                output.current_scale().integer_scale(),
+                integer_scale,
             );
             if openness > 0.0 {
                 let mut ordered: Vec<GlideRenderElements> =
@@ -1547,8 +1516,6 @@ impl GlideState {
         if let Some(session) = self.session.shot.as_mut().filter(|session| session.shows_on(&output)) {
             let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
             let palette = crate::shot::render::Palette::from_tokens(&tokens);
-            let painter = crate::paint::current();
-            let integer_scale = output.current_scale().integer_scale();
             let mut cache = std::mem::take(&mut session.cache);
             let pieces = session.scene().map_or_else(Vec::new, |scene| {
                 crate::shot::render::render(
@@ -1576,8 +1543,6 @@ impl GlideState {
         if osd_alpha > 0.0 && primary {
             let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
             let area = crate::osd::Osd::rect(output_rect);
-            let painter = crate::paint::current();
-            let integer_scale = output.current_scale().integer_scale();
             if let Some(buffer) = self.session.osd.buffer(&painter, &mut self.launcher_icons, &tokens, integer_scale)
                 && let Ok(element) =
                     smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
@@ -1609,18 +1574,9 @@ impl GlideState {
         prepend(&mut elements, ordered);
 
         if let Some(greeter) = self.greeter.as_mut().filter(|_| unlocking) {
-            let mut cover: Vec<GlideRenderElements> = greeter
-                .render(
-                    gles_renderer,
-                    &crate::paint::current(),
-                    Rectangle::new(output_geometry.loc, logical_size.into()),
-                    scale,
-                    output.current_scale().integer_scale(),
-                    primary,
-                )
-                .into_iter()
-                .map(GlideRenderElements::Memory)
-                .collect();
+            let area = Rectangle::new(output_geometry.loc, logical_size.into());
+            let drawn = greeter.render(gles_renderer, &painter, area, scale, integer_scale, primary);
+            let mut cover: Vec<GlideRenderElements> = drawn.into_iter().map(GlideRenderElements::Memory).collect();
             if let Some(buffer) = surface.wallpaper_blur_buf.as_ref() {
                 cover.extend(backdrop_element(
                     gles_renderer,
@@ -1634,26 +1590,21 @@ impl GlideState {
         }
 
         if let Some(handoff) = self.handoff.as_mut() {
-            let covered: Vec<GlideRenderElements> = handoff
-                .cover
-                .render(
-                    gles_renderer,
-                    &crate::paint::current(),
-                    logical_size.into(),
-                    scale,
-                    output.current_scale().integer_scale(),
-                    handoff.alpha(),
-                )
-                .into_iter()
-                .map(GlideRenderElements::Memory)
-                .collect();
+            let drawn = handoff.cover.render(
+                gles_renderer,
+                &painter,
+                logical_size.into(),
+                scale,
+                integer_scale,
+                handoff.alpha(),
+            );
+            let covered: Vec<GlideRenderElements> = drawn.into_iter().map(GlideRenderElements::Memory).collect();
             handoff.mark_frame();
             cursor_count += covered.len();
             prepend(&mut elements, covered);
         }
 
         if let Some(buffer) = surface.wallpaper_blur_buf.as_mut() {
-            let fractional = output.current_scale().fractional_scale();
             for rect in blur_patches {
                 let local = Rectangle::new(rect.loc - output_geometry.loc, rect.size);
                 let src = Rectangle::<f64, Logical>::new(
@@ -1699,17 +1650,14 @@ impl GlideState {
             return;
         }
 
+        let transform = output.current_transform();
+        let capture_frame = |renderer: &mut GlesRenderer, elements: &[GlideRenderElements]| {
+            super::screenshot::capture_frame(renderer, elements, output_mode, fractional, transform)
+        };
         if self.pending_screenshot.as_ref() == Some(&output) {
             self.pending_screenshot = None;
-            match super::screenshot::capture_frame(
-                gles_renderer,
-                &elements[cursor_count..],
-                output_mode,
-                output.current_scale().fractional_scale(),
-                output.current_transform(),
-            ) {
+            match capture_frame(gles_renderer, &elements[cursor_count..]) {
                 Ok(pixels) => {
-                    let fractional = output.current_scale().fractional_scale();
                     if let Some(capture) = self.session.capture.take().filter(|capture| capture.output == output) {
                         self.loop_handle.insert_idle(move |state| {
                             state.deliver_capture(&capture, &pixels, output_mode, fractional);
@@ -1733,7 +1681,6 @@ impl GlideState {
         }
 
         if let Some(capture) = self.session.window_capture.take_if(|capture| capture.output == output) {
-            let fractional = output.current_scale().fractional_scale();
             let window = &capture.window;
             let geometry = window.geometry();
             let header = window.header_height();
@@ -1762,24 +1709,10 @@ impl GlideState {
             }
         }
 
-        let captured = self.screencopy.has_pending_for(&output).then(|| {
-            super::screenshot::capture_frame(
-                gles_renderer,
-                &elements,
-                output_mode,
-                output.current_scale().fractional_scale(),
-                output.current_transform(),
-            )
-        });
+        let captured = self.screencopy.has_pending_for(&output).then(|| capture_frame(gles_renderer, &elements));
 
         if self.session.cast.frame_due(&output) {
-            match super::screenshot::capture_frame(
-                gles_renderer,
-                &elements,
-                output_mode,
-                output.current_scale().fractional_scale(),
-                output.current_transform(),
-            ) {
+            match capture_frame(gles_renderer, &elements) {
                 Ok(pixels) => self.session.cast.push_frame(pixels),
                 Err(err) => tracing::warn!(?err, "could not capture a mirrored frame"),
             }
