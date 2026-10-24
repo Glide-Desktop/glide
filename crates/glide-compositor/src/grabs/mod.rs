@@ -52,6 +52,40 @@ macro_rules! forward_pointer_events {
     };
 }
 
+macro_rules! forward_touch_events {
+    () => {
+        fn down(
+            &mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>,
+            _focus: Option<(WlSurface, Point<f64, Logical>)>, event: &DownEvent,
+        ) {
+            handle.down(data, None, event);
+        }
+
+        fn frame(&mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>) {
+            handle.frame(data);
+        }
+
+        fn cancel(&mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>) {
+            handle.cancel(data);
+            handle.unset_grab(self, data);
+        }
+
+        fn shape(&mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>, event: &ShapeEvent) {
+            handle.shape(data, event);
+        }
+
+        fn orientation(
+            &mut self, data: &mut GlideState, handle: &mut TouchInnerHandle<'_, GlideState>, event: &OrientationEvent,
+        ) {
+            handle.orientation(data, event);
+        }
+
+        fn start_data(&self) -> &TouchGrabStartData<GlideState> {
+            &self.start_data
+        }
+    };
+}
+
 pub mod move_grab;
 pub use move_grab::{MoveSurfaceGrab, TouchMoveGrab};
 
