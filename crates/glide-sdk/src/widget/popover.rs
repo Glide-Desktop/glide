@@ -130,21 +130,7 @@ impl<'a, M: 'a> Widget<M, Theme, Renderer> for Tooltip<'a, M> {
         })
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[&self.content]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    forward!(content: children, diff, size, layout, operate, draw, mouse_interaction);
 
     fn update(
         &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
@@ -184,19 +170,6 @@ impl<'a, M: 'a> Widget<M, Theme, Renderer> for Tooltip<'a, M> {
         {
             shell.request_redraw();
         }
-    }
-
-    fn draw(
-        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
-        cursor: mouse::Cursor, viewport: &Rectangle,
-    ) {
-        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
-    }
-
-    fn mouse_interaction(
-        &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
     }
 
     fn overlay<'b>(
@@ -361,21 +334,7 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
         })
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.anchor)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[&self.anchor]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.anchor.as_widget().size()
-    }
-
-    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.anchor.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    forward!(anchor: children, diff, size, layout);
 
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
         let state = tree.state.downcast_mut::<Shown>();

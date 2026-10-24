@@ -8,7 +8,7 @@ use glide_ui::Tween;
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Renderer as _};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
-use iced::advanced::{Clipboard, Shell, overlay};
+use iced::advanced::{Clipboard, Shell};
 use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Transformation, Vector, mouse, window};
 
 #[derive(Debug, Clone, Copy)]
@@ -218,29 +218,7 @@ impl<M> Widget<M, Theme, Renderer> for Animate<'_, M> {
         tree::State::new(Motion::at(self.from.unwrap_or(self.target)))
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[&self.content]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn size_hint(&self) -> Size<Length> {
-        self.content.as_widget().size_hint()
-    }
-
-    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
-
-    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
-        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
-    }
+    forward!(content: children, diff, size, size_hint, layout, operate, mouse_interaction, overlay<M>);
 
     fn update(
         &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
@@ -290,19 +268,6 @@ impl<M> Widget<M, Theme, Renderer> for Animate<'_, M> {
             }
         }
     }
-
-    fn mouse_interaction(
-        &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
-    }
-
-    fn overlay<'b>(
-        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
-        translation: Vector,
-    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
-        self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)
-    }
 }
 
 impl<'a, M: 'a> From<Animate<'a, M>> for Element<'a, M> {
@@ -330,13 +295,7 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
         tree::State::new(Motion::at(if self.open { 1.0 } else { 0.0 }))
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[&self.content]);
-    }
+    forward!(content: children, diff);
 
     fn size(&self) -> Size<Length> {
         Size::new(self.content.as_widget().size().width, Length::Shrink)
@@ -450,21 +409,7 @@ impl<M> Widget<M, Theme, Renderer> for Spin<'_, M> {
         tree::State::new(Clock::default())
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[&self.content]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    forward!(content: children, diff, size, layout, operate, mouse_interaction, overlay<M>);
 
     fn update(
         &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,

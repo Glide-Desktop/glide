@@ -1,3 +1,6 @@
+#[macro_use]
+mod forward;
+
 pub mod anim;
 pub mod app;
 pub mod i18n;

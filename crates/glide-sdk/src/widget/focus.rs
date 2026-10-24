@@ -1,10 +1,10 @@
 use glide_iced::Paint;
-use iced::advanced::layout::{self, Layout};
+use iced::advanced::layout::Layout;
 use iced::advanced::renderer::{self, Quad, Renderer as _};
 use iced::advanced::widget::{Id, Operation, Tree, Widget, operation, tree};
-use iced::advanced::{Clipboard, Shell, overlay};
+use iced::advanced::{Clipboard, Shell};
 use iced::keyboard::{self, Key, key::Named};
-use iced::{Border, Color, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector, mouse, window};
+use iced::{Border, Color, Element, Event, Rectangle, Renderer, Theme, mouse, window};
 
 use crate::anim::{Motion, Speed};
 
@@ -152,25 +152,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Focus<'_, M> {
         tree::State::new(Ring::default())
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[&self.content]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
-
-    fn size_hint(&self) -> Size<Length> {
-        self.content.as_widget().size_hint()
-    }
-
-    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
-    }
+    forward!(content: children, diff, size, size_hint, layout, mouse_interaction, overlay<M>);
 
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
         let ring = tree.state.downcast_mut::<Ring>();
@@ -227,24 +209,13 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Focus<'_, M> {
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
         tree.state.downcast_ref::<Ring>().draw(renderer, &self.paint, layout.bounds(), self.radius, self.inset);
     }
-
-    fn mouse_interaction(
-        &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
-    }
-
-    fn overlay<'b>(
-        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
-        translation: Vector,
-    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
-        self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced::Size;
+    use iced::advanced::layout;
     use iced::advanced::widget::operation::focusable::focus_next;
     use iced::keyboard::{Location, Modifiers};
     use iced::widget::{Column, Space};
@@ -322,5 +293,19 @@ mod tests {
         assert!(send(&mut element, &mut tree, &key(Named::Enter)).is_empty());
         send(&mut element, &mut tree, &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)));
         assert!(send(&mut element, &mut tree, &key(Named::ArrowRight)).is_empty(), "a click takes keyboard focus away");
+    }
+
+    #[test]
+    fn tab_reaches_a_control_wrapped_in_a_tooltip_or_a_spinner() {
+        let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        let control = || focusable(&paint, Space::new().width(20).height(20), 4.0).on_activate(Some(3));
+        for mut element in [
+            crate::widget::popover::tooltip(&paint, control(), "Hint"),
+            crate::anim::spin(std::time::Duration::from_secs(1), |_| control()),
+        ] {
+            let mut tree = Tree::new(&element);
+            tab(&mut element, &mut tree);
+            assert_eq!(send(&mut element, &mut tree, &key(Named::Enter)), vec![3]);
+        }
     }
 }

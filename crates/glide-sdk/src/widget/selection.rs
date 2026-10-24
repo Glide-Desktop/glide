@@ -13,8 +13,8 @@ use iced::advanced::{Clipboard, Shell, overlay};
 use iced::keyboard::key::Named;
 use iced::widget::{Column, Row, Space, button, container, mouse_area, row};
 use iced::{
-    Alignment, Border, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Shadow, Size, Theme, Vector,
-    mouse, window,
+    Alignment, Border, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Shadow, Theme, Vector, mouse,
+    window,
 };
 
 use super::controls::{Check, mark};
@@ -92,17 +92,7 @@ impl<M> Widget<M, Theme, Renderer> for Track<'_, M> {
         })
     }
 
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&[&self.content]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.content.as_widget().size()
-    }
+    forward!(content: children, diff, size);
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
         let child = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits);
@@ -636,8 +626,8 @@ pub fn radio_group<'a, T: Copy + PartialEq + 'a, M: Clone + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::Point;
     use iced::widget::Space;
+    use iced::{Point, Size};
 
     fn renderer() -> Renderer {
         Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)))
