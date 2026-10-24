@@ -1,34 +1,81 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsStr,
+    path::{Path, PathBuf},
     sync::{Arc, mpsc},
 };
 
 use crate::icon::DesktopApp;
 
+const SHARED_DIRS: [&str; 9] = [
+    "/opt",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/libexec",
+    "/usr/local/lib",
+    "/usr/share",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib/aarch64-linux-gnu",
+    "/",
+];
+
 #[derive(Debug, Default)]
 pub struct AppIndex {
     apps: Vec<DesktopApp>,
     by_id: HashMap<String, usize>,
+    program_dirs: Vec<Option<PathBuf>>,
 }
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-fn exec_binary(command: &str) -> Option<&str> {
+fn exec_program(command: &str) -> Option<&str> {
     let mut words = command.split_whitespace();
     let mut first = words.next()?;
     if basename(first) == "env" {
         first = words.find(|word| !word.contains('=') && !word.starts_with('-'))?;
     }
-    Some(basename(first.trim_matches('"')))
+    Some(first.trim_matches('"'))
+}
+
+fn exec_binary(command: &str) -> Option<&str> {
+    exec_program(command).map(basename)
+}
+
+fn program_dir(command: &str, search: &[PathBuf], shared: &HashSet<PathBuf>) -> Option<PathBuf> {
+    let program = exec_program(command)?;
+    let found = if program.contains('/') {
+        Some(PathBuf::from(program))
+    } else {
+        search.iter().map(|dir| dir.join(program)).find(|path| path.is_file())
+    }?;
+    let dir = std::fs::canonicalize(found).ok()?.parent()?.to_path_buf();
+    (!shared.contains(&dir)).then_some(dir)
+}
+
+fn extra_words(command: &str) -> usize {
+    command.split_whitespace().filter(|word| !word.starts_with('%')).count()
 }
 
 impl AppIndex {
     #[must_use]
     pub fn new(apps: Vec<DesktopApp>) -> Self {
         let by_id = apps.iter().enumerate().map(|(index, app)| (app.id.to_lowercase(), index)).collect();
-        Self { apps, by_id }
+        let program_dirs = vec![None; apps.len()];
+        Self { apps, by_id, program_dirs }
+    }
+
+    #[must_use]
+    pub fn located(apps: Vec<DesktopApp>, search: &OsStr) -> Self {
+        let search: Vec<PathBuf> = std::env::split_paths(search).collect();
+        let shared: HashSet<PathBuf> = search
+            .iter()
+            .filter_map(|dir| std::fs::canonicalize(dir).ok())
+            .chain(SHARED_DIRS.iter().map(PathBuf::from))
+            .collect();
+        let program_dirs = apps.iter().map(|app| program_dir(&app.command, &search, &shared)).collect();
+        Self { program_dirs, ..Self::new(apps) }
     }
 
     #[must_use]
@@ -68,6 +115,17 @@ impl AppIndex {
                 exec_binary(&app.command).is_some_and(|bin| names.iter().any(|name| name.eq_ignore_ascii_case(bin)))
             })
             .or_else(|| names.iter().find_map(|name| self.by_id(&name.to_lowercase())))
+            .or_else(|| self.in_program_dir(exe?))
+    }
+
+    fn in_program_dir(&self, exe: &str) -> Option<&DesktopApp> {
+        let dir = Path::new(exe).parent()?;
+        self.apps
+            .iter()
+            .zip(&self.program_dirs)
+            .filter(|(_, program_dir)| program_dir.as_deref() == Some(dir))
+            .min_by_key(|(app, _)| (extra_words(&app.command), app.command.len()))
+            .map(|(app, _)| app)
     }
 
     fn by_id(&self, id: &str) -> Option<&DesktopApp> {
@@ -96,7 +154,8 @@ fn read_process(pid: i32) -> (Option<String>, Option<String>) {
 pub fn start(sink: impl Fn(Reply) + Send + 'static) -> Option<mpsc::Sender<i32>> {
     let (tx, rx) = mpsc::channel::<i32>();
     let spawned = std::thread::Builder::new().name("glide-app-index".into()).spawn(move || {
-        let index = Arc::new(AppIndex::new(crate::icon::list_applications()));
+        let search = std::env::var_os("PATH").unwrap_or_default();
+        let index = Arc::new(AppIndex::located(crate::icon::list_applications(), &search));
         sink(Reply::Index(index.clone()));
         while let Ok(pid) = rx.recv() {
             let (exe, argv0) = read_process(pid);
@@ -198,6 +257,35 @@ mod tests {
     fn an_unknown_process_resolves_to_nothing() {
         assert!(index().match_process(Some("/usr/bin/sh"), Some("sh")).is_none());
         assert!(index().match_process(None, None).is_none());
+    }
+
+    #[test]
+    fn a_helper_binary_beside_the_exec_target_resolves_to_the_plainest_entry_of_its_folder() {
+        let root = std::env::temp_dir().join(format!("glide-app-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let program = root.join("lib/libreoffice/program");
+        std::fs::create_dir_all(&program).expect("program dir");
+        std::fs::create_dir_all(root.join("bin")).expect("bin dir");
+        std::fs::write(program.join("soffice"), b"#!/bin/sh\n").expect("launcher script");
+        std::fs::write(program.join("soffice.bin"), b"").expect("real binary");
+        std::os::unix::fs::symlink("../lib/libreoffice/program/soffice", root.join("bin/libreoffice")).expect("link");
+        std::fs::write(root.join("bin/sh"), b"").expect("shell");
+
+        let index = AppIndex::located(
+            vec![
+                app("libreoffice-calc", "LibreOffice Calc", "libreoffice --calc %U"),
+                app("libreoffice-startcenter", "LibreOffice", "libreoffice %U"),
+                app("libreoffice-writer", "LibreOffice Writer", "libreoffice --writer %U"),
+                app("shell", "Shell", "sh"),
+            ],
+            root.join("bin").as_os_str(),
+        );
+        let exe = std::fs::canonicalize(program.join("soffice.bin")).expect("canonical exe");
+        let found = index.match_process(exe.to_str(), None);
+        assert_eq!(found.map(|app| app.name.as_str()), Some("LibreOffice"));
+        let stranger = std::fs::canonicalize(root.join("bin")).expect("bin").join("python3");
+        assert!(index.match_process(stranger.to_str(), None).is_none(), "a folder on PATH names no app");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
