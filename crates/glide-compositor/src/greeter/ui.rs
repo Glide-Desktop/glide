@@ -783,6 +783,7 @@ impl GreeterUi {
         self.message = None;
         self.failures = 0;
         self.locked_until = None;
+        self.close_menus();
         self.dirty = true;
     }
 
@@ -960,6 +961,10 @@ impl GreeterUi {
     }
 
     pub fn on_question(&mut self, secret: bool, text: String) -> Option<String> {
+        if matches!(self.message, Some((_, Tone::Info))) {
+            self.message = None;
+            self.dirty = true;
+        }
         if let Some(password) = self.queued.take() {
             return Some(password);
         }
@@ -2131,6 +2136,17 @@ mod tests {
         assert_eq!(ui.hint().0, "Wrong password", "no count once the attempts are spent");
         ui.select_user(1);
         assert_eq!(ui.failures, 0, "another user starts afresh");
+    }
+
+    #[test]
+    fn a_notice_from_an_earlier_conversation_never_locks_a_later_attempt() {
+        let mut ui = ui();
+        ui.deny = None;
+        ui.on_notice("The account is locked due to 3 failed logins. (1 minutes left to unlock)".into(), false);
+        assert_eq!(ui.on_question(true, "Password:".into()), None);
+        ui.set_auth_denied(None, "Wrong password");
+        assert!(ui.locked_out().is_none(), "a new prompt starts a new conversation");
+        assert_eq!(ui.hint().0, "Wrong password");
     }
 
     #[test]

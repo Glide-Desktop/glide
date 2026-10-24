@@ -3488,10 +3488,10 @@ impl GlideState {
             return;
         };
         if greeter.armed() == Some(PowerAction::ShutDown) {
-            greeter.cancel_power_arm();
-        } else {
-            greeter.arm_power(PowerAction::ShutDown);
+            self.greeter_power(PowerAction::ShutDown);
+            return;
         }
+        greeter.arm_power(PowerAction::ShutDown);
         self.queue_redraw();
     }
 
@@ -3592,7 +3592,7 @@ impl GlideState {
 
     fn lock_notices(&self) -> Option<crate::greeter::LockNotices> {
         let count = self.notifications.unread();
-        if self.greeter.as_ref().is_some_and(|greeter| greeter.notice_count() == count) {
+        if count == 0 && self.greeter.as_ref().is_some_and(|greeter| greeter.notice_count() == 0) {
             return None;
         }
         let mut apps: Vec<String> = Vec::new();
