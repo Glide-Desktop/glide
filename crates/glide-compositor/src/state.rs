@@ -471,7 +471,7 @@ impl GlideState {
             screenshot_flash: crate::screenshot_ui::Flash::default(),
             app_menus,
             tray: crate::tray::TrayService::default(),
-            notifications: crate::notifications::Notifications::new(crate::notifications::NotificationTheme::default()),
+            notifications: crate::notifications::Notifications::new(),
             screencopy,
             launcher: None,
             launcher_theme: crate::launcher::LauncherTheme::default(),
@@ -1551,7 +1551,10 @@ impl GlideState {
     }
 
     pub fn sync_notice(&mut self) {
-        if self.topbar.set_notice(self.notifications.notice()) {
+        let fullscreen = self.fullscreen_focused_on(self.output_rect());
+        let covered = self.topbar.set_fullscreen(fullscreen);
+        let notice = self.topbar.set_notice(self.notifications.notice());
+        if covered || notice {
             self.queue_redraw();
         }
     }
@@ -1765,18 +1768,12 @@ impl GlideState {
                     crate::qs_net::request(crate::qs_net::NetRequest::ScanInputs);
                 }
             }
-            TopbarAction::ClearAllNotifications => {
-                self.notifications.clear_all();
-                self.refresh_topbar();
-            }
-            TopbarAction::ActivateNotification(id) => {
-                self.activate_notification(id);
-                self.refresh_topbar();
-            }
-            TopbarAction::DismissNotification(id) => {
-                self.notifications.dismiss(id);
-                self.refresh_topbar();
-            }
+            TopbarAction::ClearAllNotifications
+            | TopbarAction::ActivateNotification(_)
+            | TopbarAction::DismissNotification(_)
+            | TopbarAction::DismissIslandAlert
+            | TopbarAction::Notification(_)
+            | TopbarAction::PeekNotice => self.run_notification_topbar_action(action),
             TopbarAction::OpenInputSettings => {
                 self.topbar.close_popup();
                 let _ = crate::spawn_shell_command(
@@ -1785,13 +1782,6 @@ impl GlideState {
             }
             TopbarAction::ClosePopup => {
                 self.topbar.close_popup();
-            }
-            TopbarAction::DismissIslandAlert => {
-                self.topbar.dismiss_alert();
-            }
-            TopbarAction::Notification(action) => {
-                self.run_notification_action(action);
-                self.sync_notice();
             }
             TopbarAction::OpenAppMenu(index) => self.open_app_menu(index),
             TopbarAction::AppMenuRow(path) => self.app_menu_row(path),
@@ -1811,6 +1801,35 @@ impl GlideState {
             other => self.handle_qs_action(other),
         }
         self.queue_redraw();
+    }
+
+    fn run_notification_topbar_action(&mut self, action: crate::topbar::TopbarAction) {
+        use crate::topbar::TopbarAction;
+        match action {
+            TopbarAction::ClearAllNotifications => {
+                self.notifications.clear_all();
+                self.refresh_topbar();
+            }
+            TopbarAction::ActivateNotification(id) => {
+                self.activate_notification(id);
+                self.refresh_topbar();
+            }
+            TopbarAction::DismissNotification(id) => {
+                self.notifications.dismiss(id);
+                self.refresh_topbar();
+            }
+            TopbarAction::DismissIslandAlert => {
+                self.topbar.dismiss_alert();
+            }
+            TopbarAction::Notification(action) => {
+                self.run_notification_action(action);
+                self.sync_notice();
+            }
+            TopbarAction::PeekNotice => {
+                self.topbar.peek_notice();
+            }
+            _ => {}
+        }
     }
 
     pub fn broadcast_layout(&mut self) {

@@ -79,6 +79,8 @@ catalogue! {
     InputSettings => "Input Settings", "Налаштування вводу";
     Notifications => "Notifications", "Сповіщення";
     ClearAll => "Clear All", "Очистити все";
+    NewNotification => "New notification", "Нове сповіщення";
+    NeedsAnswer => "Needs your answer", "Потрібна відповідь";
     NoNewNotifications => "No new notifications", "Немає нових сповіщень";
     CalendarAndNotifications => "Calendar & Notifications", "Календар та сповіщення";
     Media => "Media", "Медіа";

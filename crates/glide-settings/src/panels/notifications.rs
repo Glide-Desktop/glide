@@ -1,7 +1,7 @@
 use glide_sdk::theme::TextStyle;
-use glide_sdk::widget::{mock as sketch, text};
+use glide_sdk::widget::text;
 use iced::widget::{column, container, row};
-use iced::{Alignment, Element, Fill, Length, Task};
+use iced::{Alignment, Element, Fill, Task};
 
 use super::common::{Choice, gated, presets, toggle};
 use super::{Ctx, Pane};
@@ -9,7 +9,7 @@ use crate::icons::Icon;
 use crate::services::apps::{self, DesktopApp};
 use crate::services::config::{ConfigStore, parse_clock};
 use crate::services::run::blocking;
-use crate::theme::{self, ThemeState};
+use crate::theme;
 use crate::widgets::form_row;
 use crate::widgets::{self, Group, Row};
 
@@ -29,10 +29,7 @@ mod tr {
         Sounds => "Play sounds", "Відтворювати звуки";
         SoundsHint => "When an app asks for one; never during Do Not Disturb", "Коли програма просить; ніколи в режимі «Не турбувати»";
         Banners => "Banners", "Банери";
-        BannersHint => "Where banners appear and how long they stay", "Де з'являються банери і скільки тримаються";
-        TopLeft => "Top left", "Угорі ліворуч";
-        TopCenter => "Top centre", "Угорі по центру";
-        TopRight => "Top right", "Угорі праворуч";
+        BannersHint => "New notifications appear in the status island at the top of the screen", "Нові сповіщення з'являються в острові стану вгорі екрана";
         Duration => "Show banners for", "Показувати банери";
         DurationHint => "Urgent and persistent notifications stay until dismissed", "Термінові та постійні сповіщення лишаються, доки їх не закрити";
         AppDecides => "As the app asks", "Як просить програма";
@@ -44,10 +41,6 @@ mod tr {
         AddName => "Or type a name", "Або введіть назву";
         Add => "Add", "Додати";
         Remove => "Allow banners", "Дозволити банери";
-        PreviewApp => "Messages", "Повідомлення";
-        PreviewTitle => "Olena", "Олена";
-        PreviewBody => "See you at seven?", "Побачимося о сьомій?";
-        Now => "now", "щойно";
     }
 }
 
@@ -55,40 +48,6 @@ use tr::Key as T;
 
 const SECTION: &str = "notifications";
 const DURATIONS: [i64; 7] = [0, 3, 5, 8, 12, 20, 30];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Position {
-    TopLeft,
-    TopCenter,
-    #[default]
-    TopRight,
-}
-
-impl Position {
-    pub const ALL: [Self; 3] = [Self::TopLeft, Self::TopCenter, Self::TopRight];
-
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::TopLeft => "top-left",
-            Self::TopCenter => "top-center",
-            Self::TopRight => "top-right",
-        }
-    }
-
-    #[must_use]
-    pub fn from_key(key: &str) -> Self {
-        Self::ALL.into_iter().find(|position| position.key() == key).unwrap_or_default()
-    }
-
-    const fn label(self) -> T {
-        match self {
-            Self::TopLeft => T::TopLeft,
-            Self::TopCenter => T::TopCenter,
-            Self::TopRight => T::TopRight,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppChoice {
@@ -111,7 +70,6 @@ pub enum Msg {
     To(String),
     AllowCritical(bool),
     Sounds(bool),
-    Position(Position),
     Duration(Choice),
     Mute(AppChoice),
     NameInput(String),
@@ -185,7 +143,6 @@ impl Pane for Page {
             Msg::To(value) => self.to = Some(set_clock(config, "to", value)),
             Msg::AllowCritical(on) => config.set_bool(SECTION, "allow-critical", on),
             Msg::Sounds(on) => config.set_bool(SECTION, "sounds", on),
-            Msg::Position(position) => config.set_str(SECTION, "position", position.key()),
             Msg::Duration(duration) => config.set_int(SECTION, "banner-seconds", duration.value),
             Msg::Mute(choice) => {
                 mute(config, &mute_key(&choice.id));
@@ -207,7 +164,6 @@ impl Pane for Page {
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let dnd = config.bool_or(SECTION, "do-not-disturb", false);
-        let position = Position::from_key(&config.str_or(SECTION, "position", "top-right"));
         let hero = widgets::section_hero(
             c.theme,
             if dnd { Icon::Moon } else { Icon::Bell },
@@ -216,7 +172,7 @@ impl Pane for Page {
             c.t(if dnd { T::DndOn } else { T::DndOff }),
             Some(toggle(c, dnd, Msg::Dnd)),
         );
-        column![hero, self.quiet(&c, config), banners(&c, config, position, dnd), self.muted(&c, config),]
+        column![hero, self.quiet(&c, config), banners(&c, config), self.muted(&c, config),]
             .spacing(theme::SECTION_GAP)
             .into()
     }
@@ -326,21 +282,8 @@ impl Page {
     }
 }
 
-fn banners<'a>(c: &Ctx, config: &'a ConfigStore, position: Position, dnd: bool) -> Element<'a, Msg> {
+fn banners<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
-    let cards = row(Position::ALL.map(|option| {
-        container(widgets::radio_card(
-            t,
-            screen(t, option, dnd),
-            c.t(option.label()),
-            None,
-            option == position,
-            Msg::Position(option),
-        ))
-        .width(Fill)
-        .into()
-    }))
-    .spacing(12);
     let seconds = config.int_or(SECTION, "banner-seconds", 0);
     let (options, selected) = presets(&DURATIONS, seconds, |seconds| {
         if seconds == 0 { c.t(T::AppDecides).to_string() } else { format!("{seconds} {}", c.t(T::Seconds)) }
@@ -348,50 +291,11 @@ fn banners<'a>(c: &Ctx, config: &'a ConfigStore, position: Position, dnd: bool) 
     Group::new(t)
         .title(c.t(T::Banners))
         .description(c.t(T::BannersHint))
-        .push(container(gated(*c, cards)).padding([8.0, theme::ROW_PADDING_X - 4.0]))
         .push(
             Row::new(t, c.t(T::Duration))
                 .subtitle(c.t(T::DurationHint))
                 .suffix(gated(*c, widgets::dropdown(t, options, selected, Msg::Duration, 200.0)))
                 .build(),
         )
-        .push(container(preview(c)).padding([8.0, theme::ROW_PADDING_X]))
         .build()
-}
-
-#[must_use]
-pub fn screen<'a>(t: ThemeState, position: Position, dnd: bool) -> Element<'a, Msg> {
-    let banner = if dnd { t.fill_3() } else { t.acc_bg() };
-    let toast = sketch::block(banner, 44.0, 14.0, theme::R1);
-    let placed = match position {
-        Position::TopLeft => container(toast).align_left(Fill),
-        Position::TopCenter => container(toast).center_x(Fill),
-        Position::TopRight => container(toast).align_right(Fill),
-    };
-    sketch::surface(
-        t.fill_2(),
-        theme::R2,
-        column![sketch::block(t.fill_3(), Fill, 6.0, theme::R1), placed.padding([0, 6])].spacing(5),
-    )
-    .width(Length::Fixed(132.0))
-    .height(Length::Fixed(72.0))
-    .padding(4)
-    .into()
-}
-
-fn preview<'a>(c: &Ctx) -> Element<'a, Msg> {
-    let t = c.theme;
-    let body = row![
-        widgets::tile(Icon::Bell, super::Panel::Notifications.color(), 32.0),
-        column![
-            text(format!("{} · {}", c.t(T::PreviewApp), c.t(T::Now)), TextStyle::CAP).color(t.fg_3()),
-            text(c.t(T::PreviewTitle), TextStyle::WIN_TITLE).color(t.fg_1()),
-            text(c.t(T::PreviewBody), TextStyle::CALL).color(t.fg_2()),
-        ]
-        .spacing(1)
-        .width(Fill),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
-    container(glide_sdk::widget::card(&widgets::paint(&t), body)).max_width(360).into()
 }

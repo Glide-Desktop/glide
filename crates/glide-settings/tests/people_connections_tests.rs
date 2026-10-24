@@ -10,14 +10,13 @@ fn app(text: &str) -> App {
 
 #[test]
 fn notification_settings_write_the_keys_the_compositor_reads() {
-    use glide_settings::panels::notifications::{AppChoice, Msg, Position};
+    use glide_settings::panels::notifications::{AppChoice, Msg};
     let mut app = app("");
     let _ = app.update(Message::Notifications(Msg::Dnd(true)));
     let _ = app.update(Message::Notifications(Msg::Schedule(true)));
     let _ = app.update(Message::Notifications(Msg::From("23:15".to_string())));
     let _ = app.update(Message::Notifications(Msg::To("7:5".to_string())));
     let _ = app.update(Message::Notifications(Msg::AllowCritical(false)));
-    let _ = app.update(Message::Notifications(Msg::Position(Position::TopCenter)));
     let _ = app.update(Message::Notifications(Msg::Mute(AppChoice {
         id: "org.telegram.desktop.desktop".to_string(),
         name: "Telegram".to_string(),
@@ -32,7 +31,6 @@ fn notification_settings_write_the_keys_the_compositor_reads() {
     assert_eq!(config.get_str("notifications", "from"), Some("23:15"));
     assert_eq!(config.get_str("notifications", "to"), None, "an invalid time is never written");
     assert_eq!(config.get_bool("notifications", "allow-critical"), Some(false));
-    assert_eq!(config.get_str("notifications", "position"), Some("top-center"));
     assert_eq!(
         config.get_str_array("notifications", "muted-apps"),
         vec!["org.telegram.desktop", "Steam"],

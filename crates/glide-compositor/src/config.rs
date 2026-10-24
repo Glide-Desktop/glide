@@ -74,17 +74,6 @@ pub struct AccessibilityConfig {
     pub cursor_size: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
-pub enum BannerPositionConfig {
-    #[default]
-    #[serde(rename = "top-right")]
-    Right,
-    #[serde(rename = "top-center")]
-    Center,
-    #[serde(rename = "top-left")]
-    Left,
-}
-
 #[allow(clippy::struct_excessive_bools)] // Independent [notifications] switches mirrored from glide.toml
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
@@ -95,7 +84,8 @@ pub struct NotificationsConfig {
     pub to: String,
     pub allow_critical: bool,
     pub banner_seconds: u32,
-    pub position: BannerPositionConfig,
+    #[serde(rename = "position")]
+    _position: Option<toml::Value>,
     pub muted_apps: Vec<String>,
     pub sounds: bool,
 }
@@ -109,7 +99,7 @@ impl Default for NotificationsConfig {
             to: "07:00".to_string(),
             allow_critical: true,
             banner_seconds: 0,
-            position: BannerPositionConfig::default(),
+            _position: None,
             muted_apps: Vec::new(),
             sounds: true,
         }
@@ -119,18 +109,12 @@ impl Default for NotificationsConfig {
 impl NotificationsConfig {
     #[must_use]
     pub fn policy(&self) -> crate::notifications::NotificationPolicy {
-        use crate::notifications::BannerPosition;
         crate::notifications::NotificationPolicy {
             do_not_disturb: self.do_not_disturb,
             schedule: if self.schedule { parse_clock(&self.from).zip(parse_clock(&self.to)) } else { None },
             allow_critical: self.allow_critical,
             banner_timeout: (self.banner_seconds > 0)
                 .then(|| std::time::Duration::from_secs(u64::from(self.banner_seconds.min(600)))),
-            position: match self.position {
-                BannerPositionConfig::Right => BannerPosition::Right,
-                BannerPositionConfig::Center => BannerPosition::Center,
-                BannerPositionConfig::Left => BannerPosition::Left,
-            },
             muted: self.muted_apps.iter().map(|app| app.trim().to_string()).filter(|app| !app.is_empty()).collect(),
             sounds: self.sounds,
         }
@@ -1381,7 +1365,6 @@ impl Config {
         self.announce_problems(state);
         state.refresh_topbar();
         state.launcher_theme = crate::launcher::LauncherTheme::from_dock(&dock.theme, &palette);
-        state.notifications.set_theme(&crate::notifications::NotificationTheme::from_tokens(&palette));
         if state.applied_config.icon_theme_changed(self.dock.theme.icon_theme.as_deref()) {
             state.launcher_icons = crate::icon::IconLoader::new(self.dock.theme.icon_theme.clone());
         }
@@ -2322,7 +2305,6 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         assert_eq!(policy.schedule, Some((22 * 60 + 30, 7 * 60 + 15)));
         assert!(!policy.allow_critical);
         assert_eq!(policy.banner_timeout, Some(std::time::Duration::from_secs(12)));
-        assert_eq!(policy.position, crate::notifications::BannerPosition::Center);
         assert_eq!(policy.muted.len(), 2);
         assert_eq!(config.accessibility.cursor_size, Some(48));
         assert_eq!(config.outputs[0].scale, Some(1.25));

@@ -142,6 +142,7 @@ pub(super) enum View {
     Compact,
     Alert,
     Notice,
+    Pill,
     Media,
     Calendar,
 }
@@ -154,7 +155,7 @@ impl View {
     const fn elevation(self) -> Level {
         match self {
             Self::Compact => Level::El1,
-            Self::Alert | Self::Notice => Level::El2,
+            Self::Alert | Self::Notice | Self::Pill => Level::El2,
             Self::Media | Self::Calendar => Level::El3,
         }
     }
@@ -166,6 +167,7 @@ impl View {
             Self::Media => 2,
             Self::Calendar => 3,
             Self::Notice => 4,
+            Self::Pill => 5,
         }
     }
 }
@@ -196,6 +198,28 @@ impl IslandAlert {
 type CompactKey = (u64, String, String, usize, u8, i32, ClockWidths);
 type MediaKey = (u64, Option<u16>, i32, Lang);
 type NcKey = (u64, bool, (u8, u8), Option<Slot>, usize, Option<i32>, Lang);
+type PillKey = (Pill, Lang);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum PillDot {
+    None,
+    Accent,
+    Danger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Pill {
+    asks: bool,
+    dot: PillDot,
+    more: usize,
+}
+
+impl Pill {
+    fn label(self) -> &'static str {
+        use crate::i18n::{Key, t};
+        t(if self.asks { Key::NeedsAnswer } else { Key::NewNotification })
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct Island {
@@ -210,6 +234,8 @@ pub(super) struct Island {
     alert_rev: u64,
     notice: Option<Notice>,
     notice_rev: u64,
+    fullscreen: bool,
+    peek: Option<u32>,
     first_item: usize,
     compact_w: i32,
     backgrounds: HashMap<(i32, i32, i32), MemoryRenderBuffer>,
@@ -218,6 +244,7 @@ pub(super) struct Island {
     compact: Cache<CompactKey>,
     alert_cache: Cache<u64>,
     notice_cache: Cache<u64>,
+    pill_cache: Cache<PillKey>,
     media: Cache<MediaKey>,
     nc: Cache<NcKey>,
     epoch: Instant,
@@ -240,6 +267,8 @@ impl Default for Island {
             alert_rev: 0,
             notice: None,
             notice_rev: 0,
+            fullscreen: false,
+            peek: None,
             first_item: 0,
             compact_w: COMPACT_W,
             backgrounds: HashMap::new(),
@@ -248,6 +277,7 @@ impl Default for Island {
             compact: Cache::default(),
             alert_cache: Cache::default(),
             notice_cache: Cache::default(),
+            pill_cache: Cache::default(),
             media: Cache::default(),
             nc: Cache::default(),
             epoch: Instant::now(),
@@ -275,6 +305,7 @@ impl Island {
         self.compact.clear();
         self.alert_cache.clear();
         self.notice_cache.clear();
+        self.pill_cache.clear();
         self.media.clear();
         self.nc.clear();
         self.bar_ink = None;
@@ -485,6 +516,33 @@ fn notice_layout(painter: &Painter, notice: &Notice) -> NoticeLayout {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PillLayout {
+    width: i32,
+    dot: Option<LocalRect>,
+    text: (i32, i32),
+    badge: Option<LocalRect>,
+}
+
+fn pill_layout(painter: &Painter, pill: Pill) -> PillLayout {
+    let mut x = COMPACT_PAD;
+    let dot = (pill.dot != PillDot::None).then(|| {
+        let rect = local_rect(x, (COMPACT_H - DOT) / 2, DOT, DOT);
+        x += DOT + SUB_GAP;
+        rect
+    });
+    let text_w_px = text_w(painter, pill.label(), &TITLE_STYLE);
+    let text = (x, x + text_w_px);
+    x += text_w_px;
+    let badge = (pill.more > 0).then(|| {
+        let width = badge_width(painter, pill.more);
+        let rect = local_rect(x + SUB_GAP, (COMPACT_H - BADGE_H) / 2, width, BADGE_H);
+        x += SUB_GAP + width;
+        rect
+    });
+    PillLayout { width: x + COMPACT_PAD, dot, text, badge }
+}
+
 fn mini_width(painter: &Painter, label: &str) -> i32 {
     MINI_PAD * 2 + MINI_ICON + MINI_GAP + text_w(painter, label, &MINI_STYLE)
 }
@@ -610,6 +668,16 @@ impl Topbar {
         match self.open_popup {
             Some(OpenPopup::MediaPlayer) if self.media.is_some() => View::Media,
             Some(OpenPopup::NotificationCenter) => View::Calendar,
+            _ if self.covered() => {
+                let peeking = self.island.notice.as_ref().is_some_and(|notice| self.island.peek == Some(notice.id));
+                if peeking {
+                    View::Notice
+                } else if self.pill().is_some() {
+                    View::Pill
+                } else {
+                    View::Compact
+                }
+            }
             _ if self.island.notice.is_some() => View::Notice,
             _ if self.island.alert.is_some() => View::Alert,
             _ => View::Compact,
@@ -646,9 +714,75 @@ impl Topbar {
         true
     }
 
+    pub(super) const fn covered(&self) -> bool {
+        self.island.fullscreen && self.open_popup.is_none()
+    }
+
+    #[must_use]
+    pub fn floats(&self) -> bool {
+        self.covered() && matches!(self.island.view, View::Pill | View::Notice)
+    }
+
+    pub fn set_fullscreen(&mut self, fullscreen: bool) -> bool {
+        if self.island.fullscreen == fullscreen {
+            return false;
+        }
+        self.island.fullscreen = fullscreen;
+        self.island.peek = None;
+        self.sync_island();
+        self.touch();
+        true
+    }
+
+    pub fn peek_notice(&mut self) -> bool {
+        let Some(id) = self.island.notice.as_ref().map(|notice| notice.id) else {
+            return false;
+        };
+        self.island.peek = Some(id);
+        self.sync_island();
+        self.touch();
+        true
+    }
+
+    pub(super) fn pill(&self) -> Option<Pill> {
+        if let Some(notice) = self.island.notice.as_ref() {
+            let dot = if notice.asks {
+                PillDot::Accent
+            } else if notice.urgent {
+                PillDot::Danger
+            } else {
+                PillDot::None
+            };
+            return Some(Pill { asks: notice.asks, dot, more: notice.waiting });
+        }
+        self.island.alert.as_ref()?;
+        Some(Pill { asks: false, dot: PillDot::None, more: self.badge_shown().saturating_sub(1) })
+    }
+
+    fn pill_action(&self) -> Option<TopbarAction> {
+        use crate::notifications::NotificationAction as Act;
+        if let Some(notice) = self.island.notice.as_ref() {
+            return Some(if notice.wants_attention() {
+                TopbarAction::PeekNotice
+            } else {
+                TopbarAction::Notification(Act::Activate(notice.id))
+            });
+        }
+        let pill = self.pill()?;
+        let (alert, _) = self.island.alert.as_ref()?;
+        Some(if pill.more > 0 {
+            TopbarAction::ToggleNotificationCenter
+        } else {
+            TopbarAction::ActivateNotification(alert.id)
+        })
+    }
+
     pub fn set_notice(&mut self, notice: Option<Notice>) -> bool {
         if self.island.notice == notice {
             return false;
+        }
+        if notice.as_ref().map(|notice| notice.id) != self.island.peek {
+            self.island.peek = None;
         }
         self.island.notice = notice;
         self.island.notice_rev = self.island.notice_rev.wrapping_add(1);
@@ -671,6 +805,9 @@ impl Topbar {
 
     pub(super) fn notice_action(&self, slot: Slot) -> Option<TopbarAction> {
         use crate::notifications::NotificationAction as Act;
+        if slot == Slot::Pill {
+            return self.pill_action();
+        }
         let notice = self.island.notice.as_ref()?;
         let id = notice.id;
         let action = match slot {
@@ -701,7 +838,7 @@ impl Topbar {
         let Some((_, until)) = self.island.alert.as_ref() else {
             return false;
         };
-        let hovered = matches!(self.hovered, Some(Slot::IslandAlert | Slot::IslandAlertClose));
+        let hovered = matches!(self.hovered, Some(Slot::IslandAlert | Slot::IslandAlertClose | Slot::Pill));
         if now < *until || hovered {
             return false;
         }
@@ -750,7 +887,7 @@ impl Topbar {
         match view {
             View::Media => Some(mini_width(painter, t(Key::Notifications))),
             View::Calendar => self.media.is_some().then(|| mini_width(painter, t(Key::Media))),
-            View::Compact | View::Alert | View::Notice => None,
+            View::Compact | View::Alert | View::Notice | View::Pill => None,
         }
     }
 
@@ -768,6 +905,7 @@ impl Topbar {
                     self.island.notice.as_ref().map_or(ALERT_H, |notice| notice_layout(painter, notice).height);
                 (ALERT_W, height)
             }
+            View::Pill => (self.pill().map_or(COMPACT_W, |pill| pill_layout(painter, pill).width), COMPACT_H),
             View::Media => (WIDE, MEDIA_H),
             View::Calendar => (WIDE, calendar_height(self.nc_items.len())),
         }
@@ -816,6 +954,7 @@ impl Topbar {
                     slots.push((Slot::Notice, target));
                 }
             }
+            View::Pill => slots.push((Slot::Pill, target)),
             View::Media | View::Calendar => {}
         }
         local_rect(centre - WIDE / 2, top, WIDE, COMPACT_H)
@@ -1042,6 +1181,23 @@ fn paint_alert(c: &mut Canvas<'_>, ink: &Ink<'_>, alert: &IslandAlert) {
     }
     c.fill(layout.close, ink.theme.fill_2, R1);
     glyph(c, Glyph::Close, 12, layout.close, ink.theme.muted);
+}
+
+fn draw_pill(ink: &Ink<'_>, pill: Pill, scale: i32) -> Option<MemoryRenderBuffer> {
+    let layout = pill_layout(ink.painter, pill);
+    let mut c = Canvas::new(layout.width, COMPACT_H, scale)?;
+    let theme = ink.theme;
+    if let Some(dot) = layout.dot {
+        let colour = if pill.dot == PillDot::Danger { theme.danger } else { theme.active_background };
+        c.fill(dot, colour, R_ROUND);
+    }
+    c.label(ink.painter, layout.text, TextAlign::Left, pill.label(), theme.label, &TITLE_STYLE);
+    if let Some(badge) = layout.badge {
+        c.fill(badge, theme.active_background, R_ROUND);
+        let band = (badge.loc.x, badge.loc.x + badge.size.w, badge.loc.y, badge.loc.y + badge.size.h);
+        c.text(ink.painter, band, TextAlign::Center, &badge_label(pill.more), theme.active_label, &BADGE_STYLE);
+    }
+    Some(c.finish())
 }
 
 fn draw_notice(
@@ -1451,6 +1607,7 @@ fn push_view<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, vi
         View::Compact => push_compact(topbar, frame, alpha, spot),
         View::Alert => push_alert(topbar, frame, alpha, spot),
         View::Notice => push_notice(topbar, frame, alpha, spot),
+        View::Pill => push_pill(topbar, frame, alpha, spot),
         View::Media => push_media(topbar, frame, alpha, spot),
         View::Calendar => push_calendar(topbar, frame, alpha, spot),
     }
@@ -1497,6 +1654,23 @@ fn push_alert<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
         .island
         .alert_cache
         .resolve(topbar.island.alert_rev, output_scale, || draw_alert(&ink, alert, output_scale, Some(icons)))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+}
+
+fn push_pill<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
+    let Some(pill) = topbar.pill() else {
+        return;
+    };
+    let width = pill_layout(painter, pill).width;
+    let clip = topbar.island.rect(spot.strip);
+    let content = spot.content(width, COMPACT_H);
+    let ink = Ink { painter, theme: &topbar.theme };
+    let key: PillKey = (pill, crate::i18n::language());
+    let Some(buffer) = topbar.island.pill_cache.resolve(key, output_scale, || draw_pill(&ink, pill, output_scale))
     else {
         return;
     };
@@ -1716,6 +1890,7 @@ mod tests {
             buttons: vec![NoticeButton::Action(0, allow.into()), NoticeButton::Action(1, cancel.into())],
             reply: None,
             urgent: false,
+            asks: true,
             waiting: 0,
         }
     }

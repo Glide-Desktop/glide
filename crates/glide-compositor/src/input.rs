@@ -2018,7 +2018,7 @@ impl GlideState {
         if self.session_lock.is_some() {
             return false;
         }
-        if self.topbar_suppressed_on(self.output_rect()) {
+        if self.topbar_suppressed_on(self.output_rect()) && !self.topbar.floats() {
             if self.topbar.set_hover(None) {
                 self.queue_redraw();
             }
@@ -2048,18 +2048,6 @@ impl GlideState {
         let over = self.topbar.contains(output, pos);
         if self.topbar.set_hover(over.then_some(pos)) {
             self.notifications.hold(self.topbar.held_notice());
-            self.queue_redraw();
-        }
-        over
-    }
-
-    fn notifications_motion(&mut self, pos: Point<f64, Logical>) -> bool {
-        let output = self.output_rect();
-        if self.session_lock.is_some() || !self.notifications.is_enabled() || !self.topbar_suppressed_on(output) {
-            return false;
-        }
-        let over = self.notifications.contains(output, pos);
-        if self.notifications.set_hover(over.then_some(pos)) {
             self.queue_redraw();
         }
         over
@@ -2139,9 +2127,8 @@ impl GlideState {
         }
         let over_launcher = self.launcher_motion(pos);
         let over_topbar = self.topbar_motion(pos);
-        let over_notifications = self.notifications_motion(pos);
         let over_dock = self.dock_motion(pos);
-        if over_dock || over_launcher || over_topbar || over_notifications {
+        if over_dock || over_launcher || over_topbar {
             return None;
         }
         if !self.layout.overview_active() {
@@ -2175,11 +2162,11 @@ impl GlideState {
 
     fn clear_shell_hover(&mut self) {
         let topbar = self.topbar.set_hover(None);
-        let notifications = self.notifications.set_hover(None);
+        self.notifications.hold(None);
         let keyboard = self.dock.keyboard_active();
         let dock = !keyboard && self.dock.set_hover(None);
         let dock_menu = !keyboard && self.dock.set_menu_hover(None);
-        if topbar || notifications || dock || dock_menu {
+        if topbar || dock || dock_menu {
             self.queue_redraw();
         }
     }
@@ -2393,9 +2380,7 @@ impl GlideState {
     fn shell_release(&mut self, pos: Point<f64, Logical>, button: u32) {
         self.active_slider_drag = None;
         self.topbar.set_slider_dragging(false);
-        let topbar_released = self.topbar.set_pressed(None);
-        let toast_released = self.notifications.set_pressed(None);
-        if topbar_released || toast_released {
+        if self.topbar.set_pressed(None) {
             self.queue_redraw();
         }
         if button == BTN_LEFT {
@@ -2427,9 +2412,6 @@ impl GlideState {
             return true;
         }
         if self.topbar_button(pos, button) {
-            return true;
-        }
-        if self.notifications_button(pos) {
             return true;
         }
         if self.launcher_button(pos, button) {
@@ -2491,7 +2473,7 @@ impl GlideState {
 
     fn topbar_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
         let output = self.output_rect();
-        if !self.topbar_suppressed_on(output) && self.topbar.contains(output, pos) {
+        if (self.topbar.floats() || !self.topbar_suppressed_on(output)) && self.topbar.contains(output, pos) {
             if let Some(mut action) = self.topbar.action_at(pos) {
                 if let crate::topbar::TopbarAction::Tray(click) = &mut action {
                     click.button = crate::topbar::TrayButton::from_code(button);
@@ -2515,20 +2497,6 @@ impl GlideState {
             return true;
         }
         false
-    }
-
-    fn notifications_button(&mut self, pos: Point<f64, Logical>) -> bool {
-        let output = self.output_rect();
-        if !self.topbar_suppressed_on(output) || !self.notifications.contains(output, pos) {
-            return false;
-        }
-        if self.notifications.set_pressed(Some(pos)) {
-            self.queue_redraw();
-        }
-        if let Some(action) = self.notifications.action_at(pos) {
-            self.run_notification_action(action);
-        }
-        true
     }
 
     fn launcher_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {

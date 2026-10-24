@@ -1399,7 +1399,7 @@ impl GlideState {
         );
 
         let output_rect = Rectangle::from_size(logical_size.into());
-        if !locked && !topbar_hidden {
+        if !locked && (!topbar_hidden || self.topbar.floats()) {
             let topbar = crate::topbar::render(
                 &mut self.topbar,
                 gles_renderer,
@@ -1408,21 +1408,9 @@ impl GlideState {
                 output_rect,
                 scale,
                 output.current_scale().integer_scale(),
-                dock_backdrop.as_ref(),
+                (dock_backdrop.as_ref(), topbar_hidden),
             );
             prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
-        }
-
-        if !locked && topbar_hidden {
-            let toasts = crate::notifications::render(
-                &mut self.notifications,
-                gles_renderer,
-                &crate::paint::current(),
-                output_rect,
-                scale,
-                output.current_scale().integer_scale(),
-            );
-            prepend(&mut elements, toasts.into_iter().map(GlideRenderElements::Memory));
         }
 
         if let Some(switcher) = self.switcher.as_mut().filter(|_| !locked && primary) {

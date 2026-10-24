@@ -296,6 +296,7 @@ pub enum TopbarAction {
     ClosePopup,
     DismissIslandAlert,
     Notification(crate::notifications::NotificationAction),
+    PeekNotice,
     QsToggleWifi,
     QsToggleBluetooth,
     QsToggleNetbird,
@@ -336,6 +337,7 @@ pub enum Slot {
     NoticeButton(u8),
     NoticeField,
     NoticeSend,
+    Pill,
     IslandToMedia,
     IslandToNotifications,
     IslandCollapse,
@@ -406,7 +408,15 @@ impl Slot {
     }
 
     pub(super) const fn on_notice(self) -> bool {
-        matches!(self, Self::Notice | Self::NoticeClose | Self::NoticeButton(_) | Self::NoticeField | Self::NoticeSend)
+        matches!(
+            self,
+            Self::Notice
+                | Self::NoticeClose
+                | Self::NoticeButton(_)
+                | Self::NoticeField
+                | Self::NoticeSend
+                | Self::Pill
+        )
     }
 
     const fn in_status_cluster(self) -> bool {
@@ -494,6 +504,7 @@ impl Slot {
             | Self::IslandAlert
             | Self::Notice
             | Self::NoticeField
+            | Self::Pill
             | Self::PopMediaSeek => None,
             Self::Clock
             | Self::IslandMedia
@@ -534,7 +545,8 @@ impl Slot {
             | Self::NoticeClose
             | Self::NoticeButton(_)
             | Self::NoticeField
-            | Self::NoticeSend => TopbarAction::ToggleNotificationCenter,
+            | Self::NoticeSend
+            | Self::Pill => TopbarAction::ToggleNotificationCenter,
             Self::IslandMedia | Self::IslandToMedia => TopbarAction::ToggleMediaPlayer,
             Self::IslandAlertClose => TopbarAction::DismissIslandAlert,
             Self::IslandCollapse => TopbarAction::ClosePopup,
@@ -1669,6 +1681,9 @@ impl Topbar {
 
     #[must_use]
     pub fn contains(&self, output: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
+        if self.covered() {
+            return self.floats() && self.island_target(output).to_f64().contains(pos);
+        }
         if self.rect(output).to_f64().contains(pos) || self.island_target(output).to_f64().contains(pos) {
             return true;
         }
@@ -1813,6 +1828,10 @@ impl Topbar {
 
         let menu_limit = island.loc.x - glide_theme::spacing::SP3;
         let mut menu = self.layout_app_menu(painter, output, strip, menu_limit);
+        if self.covered() {
+            slots.clear();
+            menu.titles.clear();
+        }
         slots.append(&mut menu.titles);
         if !(self.popup_reveal.is_open() && Self::island_owns(self.open_popup)) {
             slots.extend(island_slots);
@@ -3022,7 +3041,7 @@ impl Default for TopbarTheme {
 pub fn render<R>(
     topbar: &mut Topbar, renderer: &mut R, painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader,
     output: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
-    backdrop: Option<&crate::dock::Backdrop<'_>>,
+    (backdrop, bar_hidden): (Option<&crate::dock::Backdrop<'_>>, bool),
 ) -> Vec<MemoryRenderBufferRenderElement<R>>
 where
     R: ShellRenderer,
@@ -3033,6 +3052,14 @@ where
 
     let strip = topbar.rect(output);
     let mut frame = Frame { renderer, painter, icons, scale, output_scale, elements: Vec::new() };
+
+    if bar_hidden {
+        if topbar.floats() {
+            push_state_layers(topbar, &mut frame);
+            island::push(topbar, &mut frame, output);
+        }
+        return frame.elements;
+    }
 
     push_state_layers(topbar, &mut frame);
     push_quick_settings(topbar, &mut frame);
@@ -4815,6 +4842,7 @@ mod tests {
             ],
             reply: None,
             urgent: false,
+            asks: true,
             waiting: 0,
         };
         assert!(bar.set_notice(Some(notice.clone())) && !bar.set_notice(Some(notice.clone())));
@@ -4845,6 +4873,56 @@ mod tests {
         assert!(bar.set_notice(None));
         bar.layout_slots(&painter(), output());
         assert!(bar.slot_rect(Slot::IslandAlert).is_some(), "the glance comes back once the question is gone");
+    }
+
+    #[test]
+    fn over_fullscreen_only_a_pill_floats_and_its_click_fits_what_it_announces() {
+        use crate::notifications::{Notice, NoticeButton, NotificationAction as Act};
+        let mut bar = topbar_with(&["US", "UA"]);
+        assert!(bar.set_fullscreen(true));
+        bar.layout_slots(&painter(), output());
+        assert!(!bar.floats(), "nothing to announce, nothing drawn over the window");
+        assert!(!bar.contains(output(), Point::from((100.0, 4.0))));
+
+        let alert = IslandAlert { id: 4, heading: "Telegram".into(), summary: "hi".into(), icon: None };
+        bar.show_alert(alert, std::time::Instant::now());
+        bar.layout_slots(&painter(), output());
+        assert!(bar.floats());
+        assert!(bar.slot_rect(Slot::Clock).is_none() && bar.slot_rect(Slot::Status).is_none(), "the bar stays away");
+        assert_eq!(click(&bar, Slot::Pill), Some(TopbarAction::ActivateNotification(4)), "one glance opens itself");
+
+        let question = Notice {
+            id: 9,
+            app: "Glide".into(),
+            title: "Allow?".into(),
+            body: String::new(),
+            icon: None,
+            buttons: vec![NoticeButton::Action(0, "Allow".into())],
+            reply: None,
+            urgent: false,
+            asks: true,
+            waiting: 0,
+        };
+        assert!(bar.set_notice(Some(question.clone())));
+        bar.layout_slots(&painter(), output());
+        assert_eq!(click(&bar, Slot::Pill), Some(TopbarAction::PeekNotice), "a question is shown, not answered");
+        assert!(bar.peek_notice());
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::Pill).is_none());
+        assert_eq!(click(&bar, Slot::NoticeButton(0)), Some(TopbarAction::Notification(Act::Button(9, 0))));
+
+        let plain = Notice { id: 10, buttons: Vec::new(), asks: false, ..question };
+        assert!(bar.set_notice(Some(plain.clone())));
+        bar.layout_slots(&painter(), output());
+        assert_eq!(click(&bar, Slot::Pill), Some(TopbarAction::Notification(Act::Activate(10))), "peek ends with it");
+        assert!(bar.set_notice(Some(Notice { waiting: 2, ..plain })));
+        bar.layout_slots(&painter(), output());
+        assert_eq!(click(&bar, Slot::Pill), Some(TopbarAction::PeekNotice), "several are walked through one by one");
+
+        assert!(bar.set_fullscreen(false));
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::Notice).is_some() && bar.slot_rect(Slot::Clock).is_none());
+        assert!(bar.slot_rect(Slot::Status).is_some(), "the bar is back");
     }
 
     #[test]
