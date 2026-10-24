@@ -435,11 +435,6 @@ impl Slot {
         matches!(self, Self::Status | Self::Search | Self::Privacy | Self::Headset)
     }
 
-    const fn in_privacy_popup(self) -> bool {
-        let _ = self;
-        false
-    }
-
     const fn in_headset_popup(self) -> bool {
         matches!(self, Self::HeadsetOutput | Self::HeadsetDisconnect | Self::HeadsetSettings)
     }
@@ -2431,7 +2426,7 @@ fn popup_slots(popup: OpenPopup) -> fn(Slot) -> bool {
         OpenPopup::LanguageMenu => Slot::in_lang_menu,
         OpenPopup::MediaPlayer => Slot::in_media_popup,
         OpenPopup::AppMenu => Slot::in_app_menu,
-        OpenPopup::Privacy => Slot::in_privacy_popup,
+        OpenPopup::Privacy => |_| false,
         OpenPopup::Headset => Slot::in_headset_popup,
     }
 }
