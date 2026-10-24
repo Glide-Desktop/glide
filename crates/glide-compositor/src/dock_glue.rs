@@ -34,6 +34,18 @@ pub fn dock_click(candidates: &[(WindowId, bool)], focused: Option<WindowId>) ->
 }
 
 #[must_use]
+pub fn cycled(windows: &[WindowId], focused: Option<WindowId>, steps: i32) -> Option<WindowId> {
+    let count = i64::try_from(windows.len()).ok().filter(|count| *count > 0)?;
+    let current = focused.and_then(|id| windows.iter().position(|window| *window == id));
+    let next = match current {
+        Some(current) => (i64::try_from(current).ok()? + i64::from(steps)).rem_euclid(count),
+        None if steps > 0 => 0,
+        None => count - 1,
+    };
+    windows.get(usize::try_from(next).ok()?).copied()
+}
+
+#[must_use]
 pub fn most_recent_first(windows: &[WindowId], history: &[WindowId]) -> Vec<WindowId> {
     let mut ordered: Vec<WindowId> = Vec::with_capacity(windows.len());
     for id in history {
@@ -362,6 +374,19 @@ impl GlideState {
         }
     }
 
+    pub fn cycle_app_windows(&mut self, index: usize, steps: i32) {
+        let Some(item) = self.dock.items().get(index).filter(|item| item.action == DockAction::Activate) else {
+            return;
+        };
+        let windows = self.windows_for_app(&item.app_id);
+        let Some(next) = cycled(&windows, self.layout.focused_window(), steps) else {
+            return;
+        };
+        self.activate_window_animated(next);
+        self.refresh_dock();
+        self.queue_redraw();
+    }
+
     pub fn run_dock_menu_item(&mut self, index: usize, item: DockMenuItem) {
         let Some(tile) = self.dock.items().get(index).cloned() else {
             return;
@@ -636,6 +661,18 @@ mod tests {
 
     fn id(n: u64) -> WindowId {
         WindowId::from_u64(n)
+    }
+
+    #[test]
+    fn the_wheel_walks_an_apps_windows_in_a_stable_ring() {
+        let windows = [id(3), id(5), id(9)];
+        assert_eq!(cycled(&windows, Some(id(5)), 1), Some(id(9)));
+        assert_eq!(cycled(&windows, Some(id(9)), 1), Some(id(3)), "it wraps");
+        assert_eq!(cycled(&windows, Some(id(3)), -1), Some(id(9)));
+        assert_eq!(cycled(&windows, Some(id(3)), 4), Some(id(5)));
+        assert_eq!(cycled(&windows, None, 1), Some(id(3)), "from another app the first comes forward");
+        assert_eq!(cycled(&windows, Some(id(42)), -1), Some(id(9)));
+        assert_eq!(cycled(&[], Some(id(1)), 1), None);
     }
 
     #[test]

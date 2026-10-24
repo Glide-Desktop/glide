@@ -570,6 +570,7 @@ pub struct Dock {
     badges: HashMap<String, Badge>,
     badge_fades: HashMap<String, (glide_ui::Tween, Badge)>,
     focus_wells: Layers,
+    scroll: crate::system_info::ScrollAccumulator,
 }
 
 type Buffers<K> = HashMap<K, MemoryRenderBuffer>;
@@ -652,6 +653,7 @@ impl Dock {
             badges: HashMap::new(),
             badge_fades: HashMap::new(),
             focus_wells: HashMap::new(),
+            scroll: crate::system_info::ScrollAccumulator::default(),
         }
     }
 
@@ -1326,6 +1328,10 @@ impl Dock {
             self.menu_rows.entry(row).or_insert_with(|| glide_ui::Tween::at(0.0)).retarget(1.0, duration, ease_io);
         }
         true
+    }
+
+    pub fn scroll_steps(&mut self, delta: crate::system_info::ScrollDelta) -> i32 {
+        self.scroll.feed(delta)
     }
 
     pub fn set_hover(&mut self, index: Option<usize>) -> bool {

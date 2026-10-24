@@ -686,6 +686,18 @@ pub fn touch_output_index(names: &[String]) -> Option<usize> {
     Some(internal.unwrap_or(0))
 }
 
+fn scroll_delta<I: InputBackend>(event: &I::PointerAxisEvent) -> crate::system_info::ScrollDelta {
+    use crate::system_info::ScrollDelta;
+    match (event.source(), event.amount_v120(Axis::Vertical)) {
+        (AxisSource::Wheel | AxisSource::WheelTilt, Some(v120)) => ScrollDelta::Wheel(v120),
+        (AxisSource::Wheel | AxisSource::WheelTilt, None) => {
+            ScrollDelta::Wheel(event.amount(Axis::Vertical).unwrap_or(0.0) * 120.0 / 15.0)
+        }
+        (AxisSource::Finger, _) if event.amount(Axis::Vertical) == Some(0.0) => ScrollDelta::Stop,
+        _ => ScrollDelta::Continuous(event.amount(Axis::Vertical).unwrap_or(0.0)),
+    }
+}
+
 fn axis_amount<I: InputBackend>(event: &I::PointerAxisEvent, axis: Axis) -> f64 {
     event.amount(axis).unwrap_or_else(|| event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0)
 }
@@ -2676,16 +2688,7 @@ impl GlideState {
         let Some(slot) = self.topbar.slot_at(pos) else {
             return self.topbar.contains(self.output_rect(), pos);
         };
-        let delta = match (event.source(), event.amount_v120(Axis::Vertical)) {
-            (AxisSource::Wheel | AxisSource::WheelTilt, Some(v120)) => crate::system_info::ScrollDelta::Wheel(v120),
-            (AxisSource::Wheel | AxisSource::WheelTilt, None) => {
-                crate::system_info::ScrollDelta::Wheel(event.amount(Axis::Vertical).unwrap_or(0.0) * 120.0 / 15.0)
-            }
-            (AxisSource::Finger, _) if event.amount(Axis::Vertical) == Some(0.0) => {
-                crate::system_info::ScrollDelta::Stop
-            }
-            _ => crate::system_info::ScrollDelta::Continuous(event.amount(Axis::Vertical).unwrap_or(0.0)),
-        };
+        let delta = scroll_delta::<I>(event);
         if let crate::topbar::Slot::Tray(id) = slot {
             self.scroll_tray(id, delta);
             return true;
@@ -2724,8 +2727,37 @@ impl GlideState {
         true
     }
 
+    fn dock_scroll<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) -> bool {
+        if self.screen_locked()
+            || !self.dock.is_enabled()
+            || self.dock.is_hidden()
+            || self.layout.overview_active()
+            || self.dock_suppressed()
+        {
+            return false;
+        }
+        let pos = self.seat.get_pointer().expect("a pointer was added in GlideState::new").current_location();
+        let area = self.dock_area();
+        if !self.dock.contains(area, pos) {
+            return false;
+        }
+        let Some(index) = self.dock.item_at(area, pos) else {
+            return true;
+        };
+        let steps = self.dock.scroll_steps(scroll_delta::<I>(event));
+        if steps != 0 {
+            self.cycle_app_windows(index, steps);
+        }
+        true
+    }
+
     fn handle_pointer_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
-        if self.greeter.is_some() || self.shot_active() || self.picker_active() || self.topbar_scroll::<I>(event) {
+        if self.greeter.is_some()
+            || self.shot_active()
+            || self.picker_active()
+            || self.topbar_scroll::<I>(event)
+            || self.dock_scroll::<I>(event)
+        {
             return;
         }
         if self.launcher.as_ref().is_some_and(|launcher| !launcher.is_closing()) {
