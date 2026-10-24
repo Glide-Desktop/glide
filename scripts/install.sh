@@ -46,6 +46,7 @@ SOUNDDIR="$PREFIX/share/glide/sounds"
 SESSIONDIR=/usr/share/wayland-sessions
 PORTALDIR=/usr/share/xdg-desktop-portal
 DBUSDIR=/usr/share/dbus-1/services
+INTERFACEDIR=/usr/share/dbus-1/interfaces
 SEARCHDIR=/usr/share/gnome-shell/search-providers
 PAMDIR=/etc/pam.d
 if [ "$PREFIX" = /usr ]; then
@@ -59,6 +60,7 @@ FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files
 $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-catalog.desktop $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
 $DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service
+$INTERFACEDIR/org.glide.Shell1.xml
 $SEARCHDIR/glide-files-search-provider.ini $SEARCHDIR/glide-terminal-search-provider.ini
 $UNITDIR/glide.service $UNITDIR/glide-shutdown.target $PAMDIR/glide-lock"
 
@@ -127,6 +129,9 @@ done
 for name in org.glide.Files.service org.glide.Terminal.service; do
     sed "s|^Exec=/usr/local/bin/|Exec=$BINDIR/|" "$ROOT/data/$name" > "$DESTDIR$DBUSDIR/$name"
     chmod 644 "$DESTDIR$DBUSDIR/$name"
+done
+for name in org.glide.Shell1.xml; do
+    install -Dm644 "$ROOT/data/dbus/$name" "$DESTDIR$INTERFACEDIR/$name"
 done
 install -Dm644 "$ROOT/data/pam.d/glide-lock" "$DESTDIR$PAMDIR/glide-lock"
 

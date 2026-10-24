@@ -1,0 +1,60 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  org.glide.Shell1, served by the glide compositor as org.glide.Shell at
+  /org/glide/Shell1 on the session bus.
+
+  This file is the contract. The compositor's tests check that the served
+  interface has exactly these members; a change here that removes or alters a
+  member needs a new interface name (org.glide.Shell2).
+
+  Every property emits org.freedesktop.DBus.Properties.PropertiesChanged when
+  it changes, carrying only the properties that changed.
+-->
+<node>
+  <interface name="org.glide.Shell1">
+    <!-- "light" or "dark", with the appearance schedule applied. -->
+    <property name="Appearance" type="s" access="read"/>
+    <!-- The accent name: "blue", "teal", "green", ... -->
+    <property name="Accent" type="s" access="read"/>
+    <!-- The shell language: "uk" or "en". -->
+    <property name="Language" type="s" access="read"/>
+    <!-- Multiplier for every duration; 0 when animations are off or reduced motion applies. -->
+    <property name="AnimationScale" type="d" access="read"/>
+    <property name="ReducedMotion" type="b" access="read"/>
+    <!-- The UI font family; empty for the default. -->
+    <property name="FontFamily" type="s" access="read"/>
+    <!-- The icon theme; empty for the default. -->
+    <property name="IconTheme" type="s" access="read"/>
+    <property name="Locked" type="b" access="read"/>
+    <!-- 0-based index of the active workspace. -->
+    <property name="ActiveWorkspace" type="u" access="read"/>
+    <!-- The Meridian token sheet for the effective appearance and accent, as JSON. -->
+    <property name="Tokens" type="s" access="read"/>
+
+    <!--
+      A granted xdg-activation token, only for the caller whose process (or an
+      ancestor of it) owns the keyboard-focused client. Fails with
+      org.freedesktop.DBus.Error.AccessDenied otherwise.
+    -->
+    <method name="ActivationToken">
+      <arg type="s" direction="out"/>
+    </method>
+    <!-- Every window of the calling process gets the shell's shared frame. -->
+    <method name="FrameWindows"/>
+    <method name="Lock"/>
+    <!--
+      kind: "volume", "brightness", "keyboard-brightness" or "caps-lock";
+      level: 0-100; on: the state for caps-lock, or false for muted.
+    -->
+    <method name="ShowOsd">
+      <arg name="kind" type="s" direction="in"/>
+      <arg name="level" type="u" direction="in"/>
+      <arg name="on" type="b" direction="in"/>
+    </method>
+    <!-- view: "" for the main view, or "wifi", "bluetooth", "sound", "battery", "netbird". -->
+    <method name="OpenQuickSettings">
+      <arg name="view" type="s" direction="in"/>
+    </method>
+  </interface>
+</node>

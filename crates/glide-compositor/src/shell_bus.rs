@@ -292,6 +292,23 @@ mod tests {
     }
 
     #[test]
+    fn the_served_interface_matches_its_published_contract() {
+        let Some(bus) = crate::test_bus::private_bus() else {
+            return;
+        };
+        let sink: Sink = Arc::new(|_| {});
+        let _handle = serve(bus.builder(), Snapshot::default(), sink).expect("serve");
+        let served = crate::test_bus::introspect(&bus, BUS_NAME, PATH);
+        let contract = crate::test_bus::members(include_str!("../../../data/dbus/org.glide.Shell1.xml"), INTERFACE);
+        assert_eq!(contract.len(), 15, "ten properties and five methods");
+        assert_eq!(
+            crate::test_bus::members(&served, INTERFACE),
+            contract,
+            "a change to org.glide.Shell1 goes into data/dbus first; removing or altering a member needs Shell2"
+        );
+    }
+
+    #[test]
     fn frame_windows_reports_the_calling_process() {
         let Some(bus) = crate::test_bus::private_bus() else {
             return;

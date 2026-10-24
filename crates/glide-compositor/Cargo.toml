@@ -65,3 +65,6 @@ features = [
     "wayland_frontend",
     "desktop",
 ]
+
+[dev-dependencies]
+roxmltree = "0.21"
