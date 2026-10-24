@@ -177,7 +177,7 @@ impl GlideState {
 
     fn ask_keychain_password(&mut self, wrong: bool) {
         let prompt = Prompt {
-            icon: "dialog-password",
+            icon: "dialog-password".into(),
             summary: t(Key::KeychainUnlock).to_string(),
             body: t(if wrong { Key::KeychainWrong } else { Key::KeychainUnlockBody }).to_string(),
             accept: None,

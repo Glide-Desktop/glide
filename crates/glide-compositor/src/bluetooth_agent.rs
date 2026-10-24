@@ -51,7 +51,7 @@ impl Request {
     #[must_use]
     pub fn prompt(&self) -> Prompt {
         let ask = |summary: Key, body: Key, device: &str, code: &str, accept: Option<Key>| Prompt {
-            icon: "bluetooth",
+            icon: "bluetooth".into(),
             summary: fill(summary, device, code),
             body: fill(body, device, code),
             accept: accept.map(|key| t(key).to_string()),

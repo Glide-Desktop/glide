@@ -198,6 +198,13 @@ fn ask_key(access: Access) -> Key {
     }
 }
 
+fn presented(program: &str, app: Option<&crate::icon::DesktopApp>) -> (String, String) {
+    let binary = Path::new(program).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or(program);
+    let name = app.map(|app| app.name.trim()).filter(|name| !name.is_empty()).unwrap_or(binary);
+    let icon = app.map(|app| app.icon.trim()).filter(|icon| !icon.is_empty()).unwrap_or("security-high");
+    (name.to_string(), icon.to_string())
+}
+
 fn save(permissions: Permissions) {
     let Some(path) = Permissions::path() else {
         return;
@@ -215,10 +222,11 @@ fn save(permissions: Permissions) {
 impl GlideState {
     pub fn settle_permission_requests(&mut self) {
         for (access, program) in self.session.gate.take_asks() {
-            let name = Path::new(&program).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or(&program);
+            let app = self.app_directory.index().and_then(|index| index.match_process(Some(&program), None));
+            let (name, icon) = presented(&program, app);
             let prompt = Prompt {
-                icon: "security-high",
-                summary: t(ask_key(access)).replace("{app}", name),
+                icon,
+                summary: t(ask_key(access)).replace("{app}", &name),
                 body: t(Key::PermissionBody).replace("{path}", &program),
                 accept: Some(t(Key::PermissionAllow).to_string()),
                 reply: None,
@@ -307,6 +315,21 @@ mod tests {
         assert_eq!(gate.take_asks(), vec![(Access::Clipboard, "/usr/bin/wl-paste".to_string())]);
         assert!(!gate.decide_and_ask(Access::Clipboard, false, Some(program)));
         assert!(gate.take_asks().is_empty());
+    }
+
+    #[test]
+    fn a_prompt_names_the_desktop_entry_and_falls_back_to_the_binary_name() {
+        let program = "/usr/lib/signal-desktop/signal-desktop";
+        let signal = crate::icon::DesktopApp {
+            id: "signal".into(),
+            name: "Signal".into(),
+            icon: "signal-desktop".into(),
+            ..crate::icon::DesktopApp::default()
+        };
+        assert_eq!(presented(program, Some(&signal)), ("Signal".into(), "signal-desktop".into()));
+        assert_eq!(presented(program, None), ("signal-desktop".into(), "security-high".into()));
+        let nameless = crate::icon::DesktopApp { name: " ".into(), icon: String::new(), ..signal };
+        assert_eq!(presented(program, Some(&nameless)), ("signal-desktop".into(), "security-high".into()));
     }
 
     #[test]

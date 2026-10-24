@@ -4,6 +4,7 @@ use crate::{notifications::LocalEvent, oneshot};
 
 pub const ACCEPT: &str = "accept";
 pub const DECLINE: &str = "decline";
+pub const CATEGORY: &str = "x-glide.prompt";
 const FIRST_ID: u32 = u32::MAX - 1000;
 const SLOTS: u32 = 500;
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -17,7 +18,7 @@ pub enum Answer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
-    pub icon: &'static str,
+    pub icon: String,
     pub summary: String,
     pub body: String,
     pub accept: Option<String>,
@@ -35,7 +36,7 @@ impl Prompt {
         glide_notify::Notification {
             id,
             app_name: "Glide".to_string(),
-            app_icon: self.icon.to_string(),
+            app_icon: self.icon.clone(),
             summary: self.summary.clone(),
             body: self.body.clone(),
             actions: accept.into_iter().chain([decline]).collect(),
@@ -46,6 +47,7 @@ impl Prompt {
                 secret: self.secret,
             }),
             urgency: glide_notify::Urgency::Critical,
+            category: CATEGORY.to_string(),
             resident: true,
             transient: true,
             timeout: Some(TIMEOUT),
@@ -301,7 +303,7 @@ mod tests {
     #[test]
     fn a_prompt_toast_stays_until_answered_and_offers_cancel() {
         let prompt = Prompt {
-            icon: "bluetooth",
+            icon: "bluetooth".into(),
             summary: "Pair?".into(),
             body: "Check the code".into(),
             accept: Some("Pair".into()),

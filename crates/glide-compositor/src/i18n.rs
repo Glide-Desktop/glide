@@ -205,7 +205,7 @@ catalogue! {
     PermissionClipboard => "{app} wants to read and change the clipboard", "{app} хоче читати й змінювати буфер обміну";
     PermissionInput => "{app} wants to type and read keys in other apps", "{app} хоче вводити текст і читати клавіші в інших програмах";
     PermissionScreen => "{app} wants to record the screen", "{app} хоче записувати екран";
-    PermissionBody => "{path}\nAllow it only if you trust this program, then start it again.", "{path}\nДозвольте, лише якщо довіряєте цій програмі, і запустіть її знову.";
+    PermissionBody => "Allow it only if you trust this program, then start it again.\n{path}", "Дозвольте, лише якщо довіряєте цій програмі, і запустіть її знову.\n{path}";
     PermissionAllow => "Allow", "Дозволити";
     CodeOffer => "Code from {app}: {code}", "Код від {app}: {code}";
     CodeOfferBody => "Insert it into the field you are typing in", "Вставити його в поле, де ви зараз вводите";

@@ -121,7 +121,7 @@ impl Request {
             (false, Kind::Other) => Key::NetOtherBody,
         };
         Prompt {
-            icon: if self.kind == Kind::Vpn { "network-vpn" } else { "network-wireless" },
+            icon: if self.kind == Kind::Vpn { "network-vpn" } else { "network-wireless" }.into(),
             summary: fill(Key::NetPasswordSummary, &self.name, ""),
             body: fill(body, &self.name, ""),
             accept: None,

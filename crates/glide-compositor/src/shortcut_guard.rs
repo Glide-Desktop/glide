@@ -52,7 +52,7 @@ impl GlideState {
             Decision::Ask => {
                 let name = if app.is_empty() { t(Key::SomeApp).to_string() } else { app.clone() };
                 let prompt = Prompt {
-                    icon: "input-keyboard",
+                    icon: "input-keyboard".into(),
                     summary: t(Key::ShortcutsAsk).replace("{app}", &name),
                     body: t(Key::ShortcutsAskBody).to_string(),
                     accept: Some(t(Key::ShortcutsAllow).to_string()),
