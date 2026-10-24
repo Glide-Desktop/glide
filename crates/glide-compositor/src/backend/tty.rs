@@ -102,6 +102,35 @@ fn prepend(elements: &mut Vec<GlideRenderElements>, front: impl IntoIterator<Ite
     elements.splice(0..0, front);
 }
 
+fn dock_thumbnail(
+    renderer: &mut GlesRenderer, window: &crate::window::GlideWindow,
+    (frame_width, live): (i32, crate::dock_preview::Live), scale: smithay::utils::Scale<f64>,
+    origin: Point<i32, Logical>,
+) -> Vec<GlideRenderElements> {
+    if frame_width <= 0 || live.content.size.w <= 0 {
+        return Vec::new();
+    }
+    let factor = f64::from(live.content.size.w) / f64::from(frame_width);
+    let frame_origin = live.content.loc - origin;
+    let buffer_offset = window.geometry().loc;
+    let content_origin = Point::<i32, Logical>::from((
+        frame_origin.x + crate::window::GlideWindow::insets_left() - buffer_offset.x,
+        frame_origin.y + window.header_height() - buffer_offset.y,
+    ));
+    let real = content_origin.to_f64().to_physical(scale).to_i32_round();
+    let frame_physical = frame_origin.to_f64().to_physical(scale).to_i32_round();
+    let shape = crate::window::PreviewShape { radius: crate::dock_preview::THUMB_RADIUS, scale: factor };
+    window
+        .preview_render_elements(renderer, real, scale, live.alpha, shape)
+        .into_iter()
+        .map(|element| {
+            let scaled = RescaleRenderElement::from_element(element, frame_physical, factor);
+            let placed = RelocateRenderElement::from_element(scaled, (0, 0), Relocate::Relative);
+            GlideRenderElements::Overview(crate::overview::OverviewRenderElement::Preview(placed))
+        })
+        .collect()
+}
+
 fn backdrop_element(
     renderer: &mut GlesRenderer, buffer: &MemoryRenderBuffer, alpha: f32, (phys_w, phys_h): (i32, i32),
     logical_size: (i32, i32),
@@ -1397,6 +1426,39 @@ impl GlideState {
             &mut elements,
             dock.into_iter().map(|element| GlideRenderElements::RelocatedMemory(relocate(element, shell_offset))),
         );
+        if !locked && !dock_hidden_here && dock_hidden <= 0.0 {
+            let painter = crate::paint::current();
+            let integer_scale = output.current_scale().integer_scale();
+            let mut group = Vec::new();
+            if let Some((preview, theme, layout, revision)) = self.dock.preview_parts(dock_area) {
+                let drawn = crate::dock_preview::render(
+                    preview,
+                    gles_renderer,
+                    &painter,
+                    theme,
+                    &layout,
+                    (scale, integer_scale, revision),
+                );
+                let memory = |element| GlideRenderElements::RelocatedMemory(relocate(element, shell_offset));
+                group.extend(drawn.top.into_iter().map(memory));
+                for live in drawn.live {
+                    let id = glide_layout::WindowId::from_u64(live.id);
+                    let (Some(window), Some(state)) = (self.window_map.get(&id), self.layout.window_state(id)) else {
+                        continue;
+                    };
+                    let frame = state.frame_geometry().size;
+                    group.extend(dock_thumbnail(
+                        gles_renderer,
+                        window,
+                        (frame.width, live),
+                        scale,
+                        output_geometry.loc,
+                    ));
+                }
+                group.extend(drawn.base.into_iter().map(memory));
+            }
+            prepend(&mut elements, group);
+        }
 
         let output_rect = Rectangle::from_size(logical_size.into());
         if !locked && (!topbar_hidden || self.topbar.floats()) {

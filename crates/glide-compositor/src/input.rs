@@ -2081,6 +2081,20 @@ impl GlideState {
             return true;
         }
         let over = self.dock.contains(area, pos);
+        if !over
+            && self.dock.preview_open()
+            && let Some(layout) = self.dock.preview_layout(area).filter(|layout| layout.keeps(pos))
+        {
+            let hover = self.dock.set_hover(None);
+            let thumb = self.dock.set_preview_hover(layout.hit(pos));
+            if hover || thumb {
+                self.queue_redraw();
+            }
+            return true;
+        }
+        if self.dock.set_preview_hover(None) {
+            self.queue_redraw();
+        }
         let item = if over { self.dock.item_at(area, pos) } else { None };
         let keyboard = self.dock.keyboard_active();
         let tile_changed = (!keyboard || item.is_some()) && self.dock.set_hover(item);
@@ -2583,11 +2597,39 @@ impl GlideState {
         true
     }
 
+    fn dock_preview_button(&mut self, area: Rectangle<i32, Logical>, pos: Point<f64, Logical>, button: u32) -> bool {
+        use crate::dock_preview::PreviewHit;
+        if !self.dock.preview_open() {
+            return false;
+        }
+        let Some(layout) = self.dock.preview_layout(area).filter(|layout| layout.panel.to_f64().contains(pos)) else {
+            return false;
+        };
+        let index = self.dock.preview_index();
+        match (layout.hit(pos), button) {
+            (Some(PreviewHit::Close(id) | PreviewHit::Window(id)), BTN_MIDDLE) | (Some(PreviewHit::Close(id)), _) => {
+                self.send_close_to(glide_layout::WindowId::from_u64(id));
+            }
+            (Some(PreviewHit::Window(id)), BTN_LEFT) => {
+                self.dock.hide_preview();
+                if let Some(index) = index {
+                    self.run_dock_menu_item(index, crate::dock::DockMenuItem::Window(id));
+                }
+            }
+            _ => {}
+        }
+        self.queue_redraw();
+        true
+    }
+
     fn dock_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
         if !self.dock.is_enabled() || self.layout.overview_active() || self.dock_suppressed() {
             return false;
         }
         let area = self.dock_area();
+        if self.dock_preview_button(area, pos, button) {
+            return true;
+        }
         if let Some(item) = self.dock.menu_item_at(pos) {
             let index = self.dock.menu_index();
             self.dock.close_menu();

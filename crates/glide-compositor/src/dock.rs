@@ -571,6 +571,7 @@ pub struct Dock {
     badge_fades: HashMap<String, (glide_ui::Tween, Badge)>,
     focus_wells: Layers,
     scroll: crate::system_info::ScrollAccumulator,
+    preview: Option<crate::dock_preview::Preview>,
 }
 
 type Buffers<K> = HashMap<K, MemoryRenderBuffer>;
@@ -654,6 +655,7 @@ impl Dock {
             badge_fades: HashMap::new(),
             focus_wells: HashMap::new(),
             scroll: crate::system_info::ScrollAccumulator::default(),
+            preview: None,
         }
     }
 
@@ -749,7 +751,11 @@ impl Dock {
     }
 
     fn is_engaged(&self) -> bool {
-        self.menu.is_some() || self.drag.is_some() || self.hover.target().is_some() || self.keyboard
+        self.menu.is_some()
+            || self.drag.is_some()
+            || self.hover.target().is_some()
+            || self.keyboard
+            || self.preview_open()
     }
 
     pub fn begin_keyboard(&mut self) -> bool {
@@ -900,6 +906,9 @@ impl Dock {
         self.rasters = Rasters::default();
         for tile in &mut self.tiles {
             tile.clear();
+        }
+        if let Some(preview) = self.preview.as_mut() {
+            preview.clear_rasters();
         }
     }
 
@@ -1242,6 +1251,7 @@ impl Dock {
 
     pub fn open_menu(&mut self, index: usize, area: Rectangle<i32, Logical>, context: &MenuContext) -> bool {
         self.fit_to(area);
+        self.hide_preview();
         let entries = self.menu_entries(index, context);
         if entries.is_empty() {
             return false;
@@ -1334,6 +1344,78 @@ impl Dock {
         self.scroll.feed(delta)
     }
 
+    #[must_use]
+    pub fn preview_candidate(&self) -> Option<usize> {
+        if self.menu.is_some() || self.is_dragging() || self.keyboard || self.is_hidden() {
+            return None;
+        }
+        if self.hover_since?.elapsed() < crate::dock_preview::dwell() {
+            return None;
+        }
+        self.hover
+            .target()
+            .filter(|index| self.items.get(*index).is_some_and(|item| item.action == DockAction::Activate))
+    }
+
+    pub fn show_preview(&mut self, index: usize, windows: Vec<crate::dock_preview::PreviewWindow>) -> bool {
+        let Some(app_id) = self.items.get(index).map(|item| item.app_id.clone()) else {
+            return false;
+        };
+        match self.preview.as_mut() {
+            Some(preview) if preview.app_id == app_id => {
+                let reopened = !preview.is_open();
+                preview.index = index;
+                preview.reopen();
+                let changed = preview.set_windows(windows);
+                reopened || changed
+            }
+            _ => {
+                self.preview = Some(crate::dock_preview::Preview::new(index, app_id, windows));
+                self.tooltip_reveal.close(t1());
+                true
+            }
+        }
+    }
+
+    pub fn hide_preview(&mut self) -> bool {
+        match self.preview.as_mut() {
+            Some(preview) if preview.is_open() => {
+                preview.close();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[must_use]
+    pub fn preview_open(&self) -> bool {
+        self.preview.as_ref().is_some_and(crate::dock_preview::Preview::is_open)
+    }
+
+    #[must_use]
+    pub fn preview_layout(&self, area: Rectangle<i32, Logical>) -> Option<crate::dock_preview::PreviewLayout> {
+        let preview = self.preview.as_ref().filter(|preview| preview.is_visible())?;
+        let tile = *self.item_rects(area).get(preview.index)?;
+        Some(crate::dock_preview::layout(preview.windows(), tile, self.theme.hover_lift, area))
+    }
+
+    #[must_use]
+    pub fn preview_index(&self) -> Option<usize> {
+        self.preview.as_ref().filter(|preview| preview.is_open()).map(|preview| preview.index)
+    }
+
+    pub fn set_preview_hover(&mut self, hit: Option<crate::dock_preview::PreviewHit>) -> bool {
+        self.preview.as_mut().is_some_and(|preview| preview.set_hover(hit))
+    }
+
+    pub fn preview_parts(
+        &mut self, area: Rectangle<i32, Logical>,
+    ) -> Option<(&mut crate::dock_preview::Preview, &DockTheme, crate::dock_preview::PreviewLayout, u64)> {
+        let layout = self.preview_layout(area)?;
+        let preview = self.preview.as_mut()?;
+        Some((preview, &self.theme, layout, self.raster_rev))
+    }
+
     pub fn set_hover(&mut self, index: Option<usize>) -> bool {
         let changed = self.hover.set_with(index, t2());
         if changed {
@@ -1388,6 +1470,12 @@ impl Dock {
         if !self.tooltip_reveal.is_open() && !self.tooltip_reveal.is_visible(t1()) {
             self.tooltip = None;
         }
+        if let Some(preview) = self.preview.as_mut() {
+            preview.settle();
+        }
+        if self.preview.as_ref().is_some_and(|preview| !preview.is_visible()) {
+            self.preview = None;
+        }
         prune_layers(&mut self.hover_layers, t1());
         prune_layers(&mut self.press_layers, t1());
         prune_layers(&mut self.menu_rows, t1());
@@ -1403,7 +1491,7 @@ impl Dock {
     }
 
     fn tooltip_index(&self) -> Option<usize> {
-        if self.menu.is_some() || self.is_dragging() {
+        if self.menu.is_some() || self.is_dragging() || self.preview_open() {
             return None;
         }
         let since = self.hover_since?;
@@ -1424,7 +1512,9 @@ impl Dock {
             || self.hide.is_animating()
             || self.reveal_until.is_some()
             || (self.edge_since.is_some() && self.is_hidden());
+        let preview = self.preview.as_ref().is_some_and(crate::dock_preview::Preview::is_animating);
         autohide
+            || preview
             || any_animating(&self.focus_wells, t2())
             || self.is_bouncing(now)
             || self.badge_fades_animating()
@@ -1511,6 +1601,7 @@ impl Dock {
             fade_all(&mut self.hover_layers, t1());
             fade_all(&mut self.press_layers, t1());
             self.tooltip_reveal.close(t1());
+            self.hide_preview();
         }
         true
     }
@@ -3270,6 +3361,40 @@ mod tests {
             assert!((dropped[0] - 300.5).abs() < 1.0, "it sets off from the drop point");
             assert!(dock.is_animating());
         }
+    }
+
+    #[test]
+    fn a_window_preview_replaces_the_tooltip_after_the_dwell_and_keeps_the_dock_up() {
+        let mut dock = Dock::new(&config(0));
+        dock.set_running(&[RunningApp {
+            app_id: "org.example.Mail".to_string(),
+            name: "Mail".to_string(),
+            focused: false,
+            windows: 2,
+        }]);
+        let index = dock.items.iter().position(|item| item.app_id == "org.example.Mail").expect("tile");
+        let launcher = dock.items.iter().position(|item| item.action == DockAction::OpenLauncher).expect("launcher");
+        dock.set_hover(Some(index));
+        assert_eq!(dock.preview_candidate(), None, "not before the dwell");
+        dock.hover_since = Instant::now().checked_sub(crate::dock_preview::dwell());
+        assert_eq!(dock.preview_candidate(), Some(index));
+        assert_eq!(dock.tooltip_index(), Some(index));
+
+        let window =
+            crate::dock_preview::PreviewWindow { id: 1, title: "Inbox".into(), minimized: false, size: (800, 600) };
+        assert!(dock.show_preview(index, vec![window.clone()]));
+        assert!(!dock.show_preview(index, vec![window]), "the same windows change nothing");
+        assert_eq!(dock.tooltip_index(), None, "the preview takes the tooltip's place");
+        assert_eq!(dock.preview_index(), Some(index));
+        dock.set_hover(None);
+        assert!(dock.is_engaged(), "the dock stays up while the pointer is on the preview");
+        let layout = dock.preview_layout(area()).expect("layout");
+        assert!(layout.panel.loc.y + layout.panel.size.h < dock.item_rects(area())[index].loc.y);
+        assert!(dock.hide_preview() && !dock.preview_open());
+
+        dock.set_hover(Some(launcher));
+        dock.hover_since = Instant::now().checked_sub(crate::dock_preview::dwell());
+        assert_eq!(dock.preview_candidate(), None, "the launcher keeps its tooltip");
     }
 
     #[test]

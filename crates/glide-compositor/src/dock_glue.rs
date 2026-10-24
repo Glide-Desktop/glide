@@ -374,6 +374,50 @@ impl GlideState {
         }
     }
 
+    fn preview_windows(&self, index: usize) -> Vec<crate::dock_preview::PreviewWindow> {
+        self.dock_menu_context(index)
+            .windows
+            .into_iter()
+            .filter_map(|window| {
+                let frame = self.layout.window_state(WindowId::from_u64(window.id))?.frame_geometry();
+                Some(crate::dock_preview::PreviewWindow {
+                    id: window.id,
+                    title: window.title,
+                    minimized: window.minimized,
+                    size: (frame.size.width, frame.size.height),
+                })
+            })
+            .collect()
+    }
+
+    pub fn sync_dock_preview(&mut self) -> bool {
+        let blocked = self.screen_locked()
+            || !self.dock.is_enabled()
+            || self.layout.overview_active()
+            || self.launcher.is_some()
+            || self.dock_suppressed();
+        if blocked {
+            return self.dock.hide_preview();
+        }
+        let area = self.dock_area();
+        let pos = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let index = self.dock.preview_candidate().or_else(|| {
+            let index = self.dock.preview_index()?;
+            let pos = pos?;
+            let over_tile = self.dock.item_at(area, pos) == Some(index);
+            let keeps = self.dock.preview_layout(area).is_some_and(|layout| layout.keeps(pos));
+            (over_tile || keeps).then_some(index)
+        });
+        let Some(index) = index else {
+            return self.dock.hide_preview();
+        };
+        let windows = self.preview_windows(index);
+        if windows.is_empty() {
+            return self.dock.hide_preview();
+        }
+        self.dock.show_preview(index, windows)
+    }
+
     pub fn cycle_app_windows(&mut self, index: usize, steps: i32) {
         let Some(item) = self.dock.items().get(index).filter(|item| item.action == DockAction::Activate) else {
             return;

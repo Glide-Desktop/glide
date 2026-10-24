@@ -24,6 +24,7 @@ mod decoration;
 mod disk_space;
 mod dock;
 mod dock_drop;
+mod dock_preview;
 mod focus;
 mod focused_field;
 mod force_quit;
@@ -222,7 +223,8 @@ fn run() -> anyhow::Result<()> {
         let geometry_animating = state.any_window_geometry_animating();
         let snapshots_animating = state.snapshots.tick();
         let dock_autohide = state.update_dock_autohide();
-        let dock_animating = dock_autohide || state.dock.is_animating();
+        let dock_preview = state.sync_dock_preview();
+        let dock_animating = dock_autohide || dock_preview || state.dock.is_animating();
         let launcher_animating = state.tick_launcher();
         let switcher_animating = state.tick_switcher();
         let power_dialog_animating = state.tick_power_dialog();
