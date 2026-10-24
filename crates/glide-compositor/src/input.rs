@@ -2602,9 +2602,12 @@ impl GlideState {
         if !self.dock.preview_open() {
             return false;
         }
-        let Some(layout) = self.dock.preview_layout(area).filter(|layout| layout.panel.to_f64().contains(pos)) else {
+        let Some(layout) = self.dock.preview_layout(area).filter(|layout| layout.keeps(pos)) else {
             return false;
         };
+        if !layout.panel.to_f64().contains(pos) && self.dock.contains(area, pos) {
+            return false;
+        }
         let index = self.dock.preview_index();
         match (layout.hit(pos), button) {
             (Some(PreviewHit::Close(id) | PreviewHit::Window(id)), BTN_MIDDLE) | (Some(PreviewHit::Close(id)), _) => {
@@ -2773,6 +2776,7 @@ impl GlideState {
         if self.screen_locked()
             || !self.dock.is_enabled()
             || self.dock.is_hidden()
+            || self.launcher.is_some()
             || self.layout.overview_active()
             || self.dock_suppressed()
         {
