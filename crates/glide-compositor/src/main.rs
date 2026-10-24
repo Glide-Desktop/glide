@@ -35,6 +35,7 @@ mod handoff;
 mod headset;
 mod i18n;
 mod icon;
+mod identity;
 mod idle;
 mod input;
 mod ipc;

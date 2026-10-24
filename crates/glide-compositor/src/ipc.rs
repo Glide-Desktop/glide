@@ -262,11 +262,11 @@ fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::R
     Ok(())
 }
 
-use crate::privilege::peer_pid;
+use crate::identity::peer_pid;
 
 fn may_capture_silently(stream: &UnixStream, state: &GlideState) -> bool {
-    let program = crate::privilege::Identity::of_stream(stream).program;
-    state.session.gate.decide_and_ask(glide_config::permissions::Access::Screen, false, program.as_deref())
+    let attested = crate::identity::Identity::of_stream(stream).attested();
+    state.session.gate.decide_and_ask(glide_config::permissions::Access::Screen, attested.as_ref())
 }
 
 fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {

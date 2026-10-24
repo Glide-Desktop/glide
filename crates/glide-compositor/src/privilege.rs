@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll, Waker};
@@ -9,6 +8,7 @@ use smithay::reexports::wayland_server::Client;
 
 use crate::agent_prompt::{Answer, Prompt};
 use crate::i18n::{Key, t};
+use crate::identity::Attested;
 use crate::{GlideState, oneshot};
 
 const OWNER: &str = "permissions";
@@ -24,41 +24,6 @@ const GLIDE_PROGRAMS: [&str; 8] = [
     "glide-keychain",
 ];
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Identity {
-    pub program: Option<PathBuf>,
-}
-
-impl Identity {
-    #[must_use]
-    pub fn of_stream(stream: &UnixStream) -> Self {
-        Self { program: peer_pid(stream).and_then(program_of) }
-    }
-}
-
-#[must_use]
-pub fn peer_pid(stream: &UnixStream) -> Option<i32> {
-    use std::os::fd::AsRawFd;
-    let mut credentials = libc::ucred { pid: 0, uid: 0, gid: 0 };
-    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY: `credentials` and `len` are live locals sized for SO_PEERCRED, and the fd belongs to `stream`.
-    let status = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut credentials).cast(),
-            &raw mut len,
-        )
-    };
-    (status == 0 && credentials.pid > 0).then_some(credentials.pid)
-}
-
-#[must_use]
-pub fn program_of(pid: i32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/exe")).ok().filter(|path| path.is_absolute())
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -68,21 +33,18 @@ pub enum Decision {
 
 #[must_use]
 pub fn decide(
-    access: Access, sandboxed: bool, program: Option<&Path>, permissions: &Permissions, own_dir: Option<&Path>,
+    access: Access, attested: Option<&Attested>, permissions: &Permissions, own_dir: Option<&Path>,
 ) -> Decision {
-    if sandboxed {
-        return Decision::Deny;
-    }
-    let Some(program) = program else {
+    let Some(Attested::Program(program)) = attested else {
         return Decision::Deny;
     };
     if trusted(access, program, own_dir) {
         return Decision::Allow;
     }
-    let Some(name) = program.to_str() else {
+    if program.to_str().is_none() {
         return Decision::Deny;
-    };
-    match permissions.remembered(access, name) {
+    }
+    match permissions.remembered(access, &Attested::Program(program.clone()).key()) {
         Some(true) => Decision::Allow,
         Some(false) => Decision::Deny,
         None => Decision::Ask,
@@ -139,20 +101,27 @@ impl Gate {
         let Some(state) = client.get_data::<crate::state::ClientState>() else {
             return false;
         };
-        self.decide_and_ask(access, state.security_context.is_some(), state.identity.program.as_deref())
+        let attested = match &state.security_context {
+            Some(context) => Some(Attested::Sandboxed {
+                engine: context.sandbox_engine.clone().unwrap_or_default(),
+                app_id: context.app_id.clone().unwrap_or_default(),
+            }),
+            None => state.identity.attested(),
+        };
+        self.decide_and_ask(access, attested.as_ref())
     }
 
-    pub fn decide_and_ask(&self, access: Access, sandboxed: bool, program: Option<&Path>) -> bool {
+    pub fn decide_and_ask(&self, access: Access, attested: Option<&Attested>) -> bool {
         let decision = {
             let permissions = self.permissions.read().unwrap_or_else(PoisonError::into_inner);
-            decide(access, sandboxed, program, &permissions, self.own_dir.as_deref())
+            decide(access, attested, &permissions, self.own_dir.as_deref())
         };
         match decision {
             Decision::Allow => true,
             Decision::Deny => false,
             Decision::Ask => {
-                if let Some(program) = program.and_then(Path::to_str) {
-                    self.ask(access, program);
+                if let Some(attested) = attested {
+                    self.ask(access, &attested.key());
                 }
                 false
             }
@@ -218,8 +187,9 @@ fn capitalised(text: &str) -> String {
     chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
-fn prompt_for(program: &str, accesses: &[Access], app: Option<&crate::icon::DesktopApp>) -> Prompt {
-    let (name, icon) = presented(program, app);
+fn prompt_for(program: &str, accesses: &[Access], presented: crate::identity::Presented) -> Prompt {
+    let name = presented.name;
+    let icon = presented.icon.unwrap_or_else(|| "security-high".to_string());
     let advice = t(Key::PermissionBody).replace("{path}", program);
     let (summary, body) = if let [access] = accesses {
         (t(ask_key(*access)).replace("{app}", &name), advice)
@@ -228,13 +198,6 @@ fn prompt_for(program: &str, accesses: &[Access], app: Option<&crate::icon::Desk
         (t(Key::PermissionMany).replace("{app}", &name), format!("{}\n{advice}", capitalised(&list.join(" · "))))
     };
     Prompt { icon, summary, body, accept: Some(t(Key::PermissionAllow).to_string()), reply: None, secret: false }
-}
-
-fn presented(program: &str, app: Option<&crate::icon::DesktopApp>) -> (String, String) {
-    let binary = Path::new(program).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or(program);
-    let name = app.map(|app| app.name.trim()).filter(|name| !name.is_empty()).unwrap_or(binary);
-    let icon = app.map(|app| app.icon.trim()).filter(|icon| !icon.is_empty()).unwrap_or("security-high");
-    (name.to_string(), icon.to_string())
 }
 
 fn save(permissions: Permissions) {
@@ -266,8 +229,9 @@ impl GlideState {
                 }
                 None => vec![access],
             };
-            let app = self.app_directory.index().and_then(|index| index.match_process(Some(&program), None));
-            let prompt = prompt_for(&program, &accesses, app);
+            let attested = crate::identity::Attested::Program(PathBuf::from(&program));
+            let presented = crate::identity::present(&attested, self.app_directory.index());
+            let prompt = prompt_for(&program, &accesses, presented);
             if let Some(index) = known {
                 let id = self.session.permission_prompts[index].id;
                 self.update_prompt(id, &prompt);
@@ -306,18 +270,21 @@ mod tests {
 
     const OWN: &str = "/opt/glide/bin";
 
-    fn decide_for(access: Access, program: &str, permissions: &Permissions) -> Decision {
-        decide(access, false, Some(Path::new(program)), permissions, Some(Path::new(OWN)))
+    fn program(path: &str) -> Attested {
+        Attested::Program(PathBuf::from(path))
+    }
+
+    fn decide_for(access: Access, path: &str, permissions: &Permissions) -> Decision {
+        decide(access, Some(&program(path)), permissions, Some(Path::new(OWN)))
     }
 
     #[test]
     fn a_sandboxed_or_unidentified_client_is_refused_without_asking() {
-        let permissions = Permissions::default();
-        assert_eq!(
-            decide(Access::Clipboard, true, Some(Path::new("/usr/bin/wl-paste")), &permissions, None),
-            Decision::Deny
-        );
-        assert_eq!(decide(Access::Clipboard, false, None, &permissions, None), Decision::Deny);
+        let mut permissions = Permissions::default();
+        let flatpak = Attested::Sandboxed { engine: "flatpak".into(), app_id: "org.example.Paste".into() };
+        permissions.remember(Access::Clipboard, &flatpak.key(), true);
+        assert_eq!(decide(Access::Clipboard, Some(&flatpak), &permissions, None), Decision::Deny);
+        assert_eq!(decide(Access::Clipboard, None, &permissions, None), Decision::Deny);
     }
 
     #[test]
@@ -355,38 +322,25 @@ mod tests {
     #[test]
     fn a_program_is_asked_once_per_session_however_often_it_binds() {
         let gate = Gate::new(Permissions::default(), None);
-        let program = Path::new("/usr/bin/wl-paste");
+        let paste = program("/usr/bin/wl-paste");
         for _ in 0..3 {
-            assert!(!gate.decide_and_ask(Access::Clipboard, false, Some(program)));
+            assert!(!gate.decide_and_ask(Access::Clipboard, Some(&paste)));
         }
         assert_eq!(gate.take_asks(), vec![(Access::Clipboard, "/usr/bin/wl-paste".to_string())]);
-        assert!(!gate.decide_and_ask(Access::Clipboard, false, Some(program)));
+        assert!(!gate.decide_and_ask(Access::Clipboard, Some(&paste)));
         assert!(gate.take_asks().is_empty());
-    }
-
-    #[test]
-    fn a_prompt_names_the_desktop_entry_and_falls_back_to_the_binary_name() {
-        let program = "/usr/lib/signal-desktop/signal-desktop";
-        let signal = crate::icon::DesktopApp {
-            id: "signal".into(),
-            name: "Signal".into(),
-            icon: "signal-desktop".into(),
-            ..crate::icon::DesktopApp::default()
-        };
-        assert_eq!(presented(program, Some(&signal)), ("Signal".into(), "signal-desktop".into()));
-        assert_eq!(presented(program, None), ("signal-desktop".into(), "security-high".into()));
-        let nameless = crate::icon::DesktopApp { name: " ".into(), icon: String::new(), ..signal };
-        assert_eq!(presented(program, Some(&nameless)), ("signal-desktop".into(), "security-high".into()));
     }
 
     #[test]
     fn one_prompt_names_every_access_a_program_asked_for() {
         let program = "/usr/lib/signal-desktop/signal-desktop";
-        let single = prompt_for(program, &[Access::Screen], None);
+        let presented = crate::identity::present(&crate::identity::Attested::Program(program.into()), None);
+        let single = prompt_for(program, &[Access::Screen], presented.clone());
         assert_eq!(single.summary, t(Key::PermissionScreen).replace("{app}", "signal-desktop"));
+        assert_eq!(single.icon, "security-high", "the shield stands in for a program without an entry");
         assert!(single.body.ends_with(program), "the path stays the last line");
 
-        let all = prompt_for(program, &[Access::Screen, Access::Clipboard, Access::Input], None);
+        let all = prompt_for(program, &[Access::Screen, Access::Clipboard, Access::Input], presented);
         assert_eq!(all.summary, t(Key::PermissionMany).replace("{app}", "signal-desktop"));
         let list = all.body.lines().next().unwrap_or_default().to_lowercase();
         for key in [Key::AccessScreen, Key::AccessClipboard, Key::AccessInput] {
@@ -400,10 +354,10 @@ mod tests {
     #[test]
     fn allowing_a_program_lets_its_next_connection_in() {
         let gate = Gate::new(Permissions::default(), None);
-        let program = Path::new("/usr/bin/grim");
-        assert!(!gate.decide_and_ask(Access::Screen, false, Some(program)));
+        let grim = program("/usr/bin/grim");
+        assert!(!gate.decide_and_ask(Access::Screen, Some(&grim)));
         let saved = gate.allow(Access::Screen, "/usr/bin/grim");
         assert_eq!(saved.remembered(Access::Screen, "/usr/bin/grim"), Some(true));
-        assert!(gate.decide_and_ask(Access::Screen, false, Some(program)));
+        assert!(gate.decide_and_ask(Access::Screen, Some(&grim)));
     }
 }

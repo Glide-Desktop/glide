@@ -533,7 +533,7 @@ impl GlideState {
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, (), state| {
-                let identity = crate::privilege::Identity::of_stream(&client_stream);
+                let identity = crate::identity::Identity::of_stream(&client_stream);
                 let client_state = ClientState { identity, ..ClientState::default() };
                 if let Err(err) = state.display_handle.insert_client(client_stream, Arc::new(client_state)) {
                     tracing::warn!("dropping new wayland client: {err}");
@@ -3783,7 +3783,7 @@ pub(crate) fn window_surface(window: &GlideWindow) -> &WlSurface {
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
-    pub identity: crate::privilege::Identity,
+    pub identity: crate::identity::Identity,
 }
 
 impl ClientData for ClientState {
