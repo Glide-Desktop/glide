@@ -44,16 +44,8 @@ impl Permissions {
     }
 
     pub fn save_to(&self, path: &Path) -> io::Result<()> {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
         let text = toml::to_string(self).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        let dir = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent folder"))?;
-        std::fs::create_dir_all(dir)?;
-        let temp = dir.join(format!(".permissions.{}.tmp", std::process::id()));
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temp, path)
+        crate::write_private(path, text.as_bytes())
     }
 
     #[must_use]

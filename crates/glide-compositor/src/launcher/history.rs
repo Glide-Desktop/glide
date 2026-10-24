@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 const HALF_LIFE_DAYS: f64 = 14.0;
@@ -79,19 +78,7 @@ impl LaunchHistory {
     }
 
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension(format!(
-            "json.{}.{}.tmp",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&tmp, self.to_json())?;
-        std::fs::rename(&tmp, path).inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        })
+        glide_config::write_atomic(path, self.to_json().as_bytes(), 0o644)
     }
 
     pub fn save_in_background(self) {

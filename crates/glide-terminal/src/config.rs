@@ -1,7 +1,4 @@
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use alacritty_terminal::term::Config;
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
@@ -102,8 +99,6 @@ impl Preferences {
     }
 }
 
-static WRITES: AtomicU64 = AtomicU64::new(0);
-
 #[must_use]
 pub fn path() -> Option<PathBuf> {
     glide_config::xdg_path("glide", "terminal.toml")
@@ -134,24 +129,7 @@ fn save_profile(path: &Path, profile: Profile) -> std::io::Result<()> {
         toml::to_string(&Preferences { profile, ..Preferences::default() }).map_err(std::io::Error::other)?;
     let source: toml_edit::DocumentMut = serialized.parse().map_err(std::io::Error::other)?;
     document["profile"] = source["profile"].clone();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let id = WRITES.fetch_add(1, Ordering::Relaxed);
-    let temporary = path.with_extension(format!("toml.{}.{id}.tmp", std::process::id()));
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
-    let result = (|| {
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            file.set_permissions(metadata.permissions())?;
-        }
-        file.write_all(document.to_string().as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, &path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    result
+    glide_config::write_atomic(&path, document.to_string().as_bytes(), 0o600)
 }
 
 #[must_use]
@@ -193,8 +171,7 @@ mod tests {
 
     #[test]
     fn saving_a_profile_preserves_comments_unknown_keys_and_rejects_invalid_preferences() {
-        let folder =
-            std::env::temp_dir().join(format!("glide-terminal-config-{}", WRITES.fetch_add(1, Ordering::Relaxed)));
+        let folder = std::env::temp_dir().join(format!("glide-terminal-config-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("terminal.toml");
         let text = "# preserve me\nfont-size = 17.0\nfuture-option = true\n";

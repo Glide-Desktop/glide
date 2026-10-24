@@ -1,6 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::io;
 use std::path::{Path, PathBuf};
 
 fn valid_id(id: &str) -> bool {
@@ -19,19 +18,7 @@ fn state_file(dir: &Path, id: &str) -> Option<PathBuf> {
     valid_id(id).then(|| dir.join(format!("{id}.state.json")))
 }
 
-fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let dir = path.parent().ok_or_else(|| io::Error::other("no parent directory"))?;
-    fs::create_dir_all(dir)?;
-    let temp = dir.join(format!(".{}.tmp", path.file_name().and_then(|name| name.to_str()).unwrap_or("state")));
-    match fs::remove_file(&temp) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
-        _ => {}
-    }
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    fs::rename(&temp, path)
-}
+use glide_config::write_private;
 
 #[must_use]
 pub(crate) fn email_in(dir: &Path, id: &str) -> Option<String> {
@@ -129,7 +116,6 @@ mod tests {
         store_email_in(&dir, "default", "me@example.com").expect("store");
         let mode = fs::metadata(dir.join("default.state.json")).expect("meta").permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-        assert!(!temp.exists());
         assert_eq!(email_in(&dir, "default").as_deref(), Some("me@example.com"));
         fs::remove_dir_all(&dir).expect("cleanup");
     }

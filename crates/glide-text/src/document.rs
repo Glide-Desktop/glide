@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -135,21 +134,8 @@ pub fn read(path: &Path) -> Result<Decoded, LoadError> {
 }
 
 pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<SystemTime> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let folder = target.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let name = target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let mode = std::fs::metadata(&target).map_or(0o644, |meta| meta.permissions().mode() & 0o7777);
-    let temporary = folder.join(format!(".{name}.glide-text-{}", std::process::id()));
-    let written = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(mode))?;
-        std::fs::rename(&temporary, &target)
-    })();
-    if let Err(error) = written {
-        let _ = std::fs::remove_file(&temporary);
+    if let Err(error) = glide_config::write_atomic(&target, bytes, 0o644) {
         if error.kind() != std::io::ErrorKind::PermissionDenied && error.kind() != std::io::ErrorKind::AlreadyExists {
             return Err(error);
         }

@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io;
-use std::path::Path;
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
@@ -189,17 +187,7 @@ pub fn open(file: &[u8], password: &[u8]) -> Result<(Contents, Key), Error> {
     Ok((contents, key))
 }
 
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let dir = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent folder"))?;
-    std::fs::create_dir_all(dir)?;
-    let temp = dir.join(format!(".keychain.{}.tmp", std::process::id()));
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&temp, path)
-}
+pub(crate) use glide_config::write_private as write_atomically;
 
 #[cfg(test)]
 mod tests {

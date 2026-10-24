@@ -5,12 +5,14 @@ use std::{
 
 pub mod autostart;
 pub mod desktop;
+mod file;
 mod keyboard;
 pub mod permissions;
 pub mod process;
 pub mod terminal;
 pub mod toolkits;
 
+pub use file::{write_atomic, write_private};
 pub use keyboard::SystemKeyboard;
 
 fn var(key: &str) -> Option<PathBuf> {

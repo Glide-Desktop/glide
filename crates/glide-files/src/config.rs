@@ -156,29 +156,7 @@ pub(crate) fn load_prefs() -> ViewPrefs {
 }
 
 pub(crate) fn save_prefs(prefs: &ViewPrefs) {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    let Some(path) = prefs_path() else {
-        return;
-    };
-    if let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_err()
-    {
-        return;
-    }
-    let (temporary, mut file) = loop {
-        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-        let temporary = path.with_extension(format!("{}.{serial}.tmp", std::process::id()));
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
-            Ok(file) => break (temporary, file),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return,
-        }
-    };
-    if file.write_all(prefs.render().as_bytes()).and_then(|()| std::fs::rename(&temporary, &path)).is_err() {
-        let _ = std::fs::remove_file(temporary);
+    if let Some(path) = prefs_path() {
+        let _ = glide_config::write_atomic(&path, prefs.render().as_bytes(), 0o644);
     }
 }

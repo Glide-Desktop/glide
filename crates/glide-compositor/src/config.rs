@@ -802,58 +802,13 @@ fn save_pins(pinned: impl Iterator<Item = PinnedApp>) {
     let Ok(text) = toml::to_string_pretty(&pins) else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
     if let Err(err) = write_atomic(&path, text.as_bytes()) {
         tracing::error!(path = %path.display(), "failed to save dock pins: {err}");
     }
 }
 
-fn temp_sibling(target: &Path) -> PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut name = std::ffi::OsString::from(".");
-    name.push(target.file_name().unwrap_or_default());
-    name.push(format!(".{}.{serial}.glide.tmp", std::process::id()));
-    target.with_file_name(name)
-}
-
-fn resolve_symlinks(target: &Path) -> PathBuf {
-    let mut resolved = target.to_path_buf();
-    for _ in 0..40 {
-        let Ok(link) = fs::read_link(&resolved) else {
-            break;
-        };
-        resolved = match resolved.parent() {
-            Some(parent) if link.is_relative() => parent.join(link),
-            _ => link,
-        };
-    }
-    resolved
-}
-
 pub fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-
-    let target = &resolve_symlinks(target);
-    let tmp = temp_sibling(target);
-    let written = (|| {
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-        fs::rename(&tmp, target)
-    })();
-    if written.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    written?;
-    if let Some(dir) = target.parent()
-        && let Ok(dir) = fs::File::open(if dir.as_os_str().is_empty() { Path::new(".") } else { dir })
-    {
-        let _ = dir.sync_all();
-    }
-    Ok(())
+    glide_config::write_atomic(target, contents, 0o644)
 }
 
 #[must_use]
@@ -1614,17 +1569,6 @@ mod tests {
             .collect();
         names.sort();
         names
-    }
-
-    #[test]
-    fn atomic_write_twice_keeps_the_latest_contents_and_leaves_no_temp_file() {
-        let dir = scratch_dir("atomic");
-        let target = dir.join("pins.toml");
-        write_atomic(&target, b"first = 1\n").expect("first write succeeds");
-        write_atomic(&target, b"second = 2\n").expect("second write succeeds");
-        assert_eq!(fs::read_to_string(&target).expect("target exists"), "second = 2\n");
-        assert_eq!(file_names(&dir), vec!["pins.toml".to_owned()]);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
