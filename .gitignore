@@ -1,6 +1,10 @@
 /target
 /dist
 
+# The design/library web app (React + Mantine): installed packages and build output.
+/design/library/node_modules
+/design/library/dist
+
 # Agent/session artifacts.
 #
 # These are scratch output from AI coding sessions (transcripts, per-agent
