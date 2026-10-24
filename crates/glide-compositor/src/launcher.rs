@@ -330,7 +330,7 @@ fn grid_for(area: Rectangle<i32, Logical>) -> Grid {
 }
 
 fn open_duration() -> Duration {
-    glide_theme::motion::t3()
+    glide_theme::motion::t4()
 }
 const OPEN_RISE: f64 = 16.0;
 const OPEN_SCALE: f64 = 0.97;
@@ -461,6 +461,7 @@ pub struct Launcher {
     started: Instant,
     from: f64,
     release: Option<glide_theme::motion::Release>,
+    scene: Duration,
     scroll: f64,
     scroll_latched: bool,
     page_offset: glide_ui::Tween,
@@ -568,6 +569,7 @@ impl Launcher {
             started: Instant::now(),
             from: 0.0,
             release: None,
+            scene: open_duration(),
             scroll: 0.0,
             scroll_latched: false,
             page_offset: glide_ui::Tween::at(0.0),
@@ -1147,8 +1149,14 @@ impl Launcher {
         self.results.len().div_ceil(self.grid().per_page()).max(1)
     }
 
+    #[must_use]
+    pub const fn with_scene(mut self, scene: Duration) -> Self {
+        self.scene = scene;
+        self
+    }
+
     fn duration(&self) -> Duration {
-        self.release.map_or_else(open_duration, |release| release.duration)
+        self.release.map_or(self.scene, |release| release.duration)
     }
 
     fn elapsed_fraction(&self) -> f64 {
@@ -1161,9 +1169,12 @@ impl Launcher {
     }
 
     fn progress(&self) -> f64 {
+        self.scene_progress(glide_theme::motion::E_OUT)
+    }
+
+    fn scene_progress(&self, curve: glide_theme::motion::CubicBezier) -> f64 {
         let fraction = self.elapsed_fraction();
-        let eased =
-            self.release.map_or_else(|| glide_theme::motion::E_OUT.ease_f64(fraction), |release| release.at(fraction));
+        let eased = self.release.map_or_else(|| curve.ease_f64(fraction), |release| release.at(fraction));
         match self.phase {
             Phase::Open => 1.0,
             Phase::Opening => self.from + (1.0 - self.from) * eased,
@@ -1175,6 +1186,11 @@ impl Launcher {
     #[must_use]
     pub fn openness(&self) -> f64 {
         self.progress()
+    }
+
+    #[must_use]
+    pub fn backdrop_openness(&self) -> f64 {
+        self.scene_progress(glide_theme::motion::E_IO)
     }
 
     fn start(&mut self, phase: Phase, release: Option<glide_theme::motion::Release>) {
@@ -1215,7 +1231,7 @@ impl Launcher {
     pub fn release_gesture(&mut self, open: bool, velocity: f64) {
         let current = self.progress();
         let distance = if open { 1.0 - current } else { -current };
-        let release = glide_theme::motion::Release::new(distance, velocity, open_duration());
+        let release = glide_theme::motion::Release::new(distance, velocity, self.scene);
         self.start(if open { Phase::Opening } else { Phase::Closing }, Some(release));
     }
 
@@ -1528,7 +1544,7 @@ where
         .collect();
 
     let mut scrim_color = theme.background.0;
-    scrim_color[3] *= alpha;
+    scrim_color[3] *= launcher.backdrop_openness().clamp(0.0, 1.0) as f32;
     launcher.scrim.update((area.size.w, area.size.h), scrim_color);
     elements.push(LauncherRenderElement::Solid(SolidColorRenderElement::from_buffer(
         &launcher.scrim,
@@ -2535,6 +2551,19 @@ mod tests {
 
     mod animation {
         use super::*;
+
+        #[test]
+        fn it_moves_in_the_overviews_rhythm_content_on_e_out_and_backdrop_on_e_io() {
+            let scene = Duration::from_millis(400);
+            let mut launcher = launcher(1).with_scene(scene);
+            assert_eq!(launcher.duration(), scene, "the overview's scene length, not a shorter one of its own");
+            launcher.started = Instant::now().checked_sub(scene / 4).expect("process uptime");
+            let (content, backdrop) = (launcher.openness(), launcher.backdrop_openness());
+            assert!(content > backdrop, "the backdrop eases in and out like the overview's: {content} vs {backdrop}");
+            assert_eq!(open_duration(), glide_theme::motion::t4());
+            launcher.phase = Phase::Open;
+            assert!((launcher.backdrop_openness() - 1.0).abs() < f64::EPSILON);
+        }
 
         #[test]
         fn it_opens_to_one_closes_back_and_asks_to_be_dropped_when_done() {

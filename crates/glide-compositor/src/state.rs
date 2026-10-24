@@ -2022,7 +2022,8 @@ impl GlideState {
     pub fn begin_interactive_launcher(&mut self, progress: f64) {
         if self.launcher.is_none() {
             let area = self.launcher_area();
-            let mut launcher = crate::launcher::Launcher::new(Vec::new(), area);
+            let mut launcher =
+                crate::launcher::Launcher::new(Vec::new(), area).with_scene(self.overview_theme.duration());
             launcher.set_windows(self.open_windows_for_search());
             launcher.set_providers(self.search_providers());
             self.launcher = Some(launcher);
@@ -2042,7 +2043,8 @@ impl GlideState {
             None => {
                 self.begin_close_overview(None);
                 let area = self.launcher_area();
-                let mut launcher = crate::launcher::Launcher::new(Vec::new(), area);
+                let mut launcher =
+                    crate::launcher::Launcher::new(Vec::new(), area).with_scene(self.overview_theme.duration());
                 launcher.set_windows(self.open_windows_for_search());
                 launcher.set_providers(self.search_providers());
                 self.launcher = Some(launcher);

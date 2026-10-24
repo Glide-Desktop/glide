@@ -1376,7 +1376,7 @@ impl GlideState {
             let index = above_windows_index(&elements);
             elements.splice(index..index, snapshots.into_iter().map(GlideRenderElements::Snapshot));
         }
-        let launcher_openness = self.launcher.as_ref().map_or(0.0, crate::launcher::Launcher::openness);
+        let launcher_openness = self.launcher.as_ref().map_or(0.0, crate::launcher::Launcher::backdrop_openness);
         if let Some(launcher) = self.launcher.as_mut().filter(|_| !locked && primary) {
             let grid = crate::launcher::render(
                 launcher,
