@@ -364,6 +364,14 @@ impl Entry {
         }
     }
 
+    fn holds_prompt(&self) -> bool {
+        is_prompt(&self.notification) || self.stacked.iter().any(is_prompt)
+    }
+
+    fn rank(&self) -> u8 {
+        if is_prompt(&self.notification) { 2 } else { u8::from(self.notification.urgency == Urgency::Critical) }
+    }
+
     fn owns(&self, id: u32) -> bool {
         self.notification.id == id || self.stacked.iter().any(|notification| notification.id == id)
     }
@@ -587,6 +595,10 @@ fn nc_item(notification: &Notification, age: Duration, icon: Option<&std::sync::
     }
 }
 
+fn is_prompt(notification: &Notification) -> bool {
+    notification.category == crate::agent_prompt::CATEGORY
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoticeButton {
     Reply(String),
@@ -659,7 +671,7 @@ impl Notice {
             icon: entry.icon.clone(),
             buttons: reply_button.into_iter().chain(actions).chain(settings).collect(),
             reply,
-            urgent: notification.urgency == Urgency::Critical && notification.category != crate::agent_prompt::CATEGORY,
+            urgent: notification.urgency == Urgency::Critical && !is_prompt(notification),
             waiting,
         }
     }
@@ -922,10 +934,10 @@ impl Notifications {
 
     #[must_use]
     pub fn notice(&self) -> Option<Notice> {
-        let mut active = self.active();
-        let head = active.next()?;
-        let waiting = head.stacked.len() + active.map(Entry::group_size).sum::<usize>();
-        Some(Notice::of(head, waiting))
+        let top = self.active().map(Entry::rank).max()?;
+        let head = self.active().find(|entry| entry.rank() == top)?;
+        let total: usize = self.active().map(Entry::group_size).sum();
+        Some(Notice::of(head, total - 1))
     }
 
     pub fn hold(&mut self, id: Option<u32>) {
@@ -1111,7 +1123,12 @@ impl Notifications {
             if active.len() <= MAX_VISIBLE {
                 return;
             }
-            let Some(&last) = active.last() else {
+            let Some(&last) = active
+                .iter()
+                .rev()
+                .filter(|index| !self.live[**index].holds_prompt())
+                .min_by_key(|index| self.live[**index].rank())
+            else {
                 return;
             };
             for id in self.live[last].ids() {
@@ -1162,7 +1179,7 @@ impl Notifications {
         }
 
         let id = notification.id;
-        let group = notification.group_key();
+        let group = if is_prompt(&notification) { String::new() } else { notification.group_key() };
         let icon = load_icon(icons, &notification);
         let now = Instant::now();
         let mut entry = Entry {
@@ -1221,11 +1238,12 @@ impl Notifications {
         self.live.retain(|slot| !slot.owns(id));
         self.buffers.retain(|(key, _, _), _| *key != id);
 
-        if let Some(index) = self
-            .live
-            .iter()
-            .position(|slot| !slot.leaving() && !group.is_empty() && slot.notification.group_key() == group)
-        {
+        if let Some(index) = self.live.iter().position(|slot| {
+            !slot.leaving()
+                && !group.is_empty()
+                && !is_prompt(&slot.notification)
+                && slot.notification.group_key() == group
+        }) {
             let previous = self.live.remove(index);
             self.buffers.retain(|(key, _, _), _| *key != previous.notification.id);
             entry.stacked = std::iter::once(previous.notification)
@@ -3076,14 +3094,51 @@ mod tests {
         assert_eq!(notice.waiting, 0);
 
         assert!(store.push(&mut icons, repliable(2), false));
+        assert_eq!(store.notice().map(|notice| (notice.id, notice.waiting)), Some((1, 1)), "the question leads");
+        assert!(store.remove(1, CloseReason::Dismissed, true));
+        assert!(store.push(&mut icons, repliable(3), false));
         let notice = store.notice().expect("notice");
-        assert_eq!((notice.id, notice.waiting), (2, 1), "the newest leads and the other waits");
+        assert_eq!((notice.id, notice.waiting), (3, 1), "otherwise the newest leads and the other waits");
         assert_eq!(notice.buttons.first(), Some(&NoticeButton::Reply("Reply".into())));
-        assert!(store.open_reply(2) && store.type_reply('h'));
+        assert!(store.open_reply(3) && store.type_reply('h'));
         assert!(matches!(
             store.notice().and_then(|notice| notice.reply),
             Some(NoticeReply::Composing { shown, .. }) if shown == "h"
         ));
+    }
+
+    #[test]
+    fn questions_lead_the_queue_never_stack_and_are_never_evicted() {
+        let (mut store, mut icons) = store();
+        let question = |id: u32| Notification {
+            category: crate::agent_prompt::CATEGORY.into(),
+            urgency: Urgency::Critical,
+            timeout: None,
+            ..from_app(id, "Glide")
+        };
+        assert!(store.push(&mut icons, question(1), false));
+        assert!(store.push(&mut icons, question(2), false));
+        let battery = Notification { urgency: Urgency::Critical, timeout: None, ..from_app(3, "Glide") };
+        assert!(store.push(&mut icons, battery, false));
+        assert_eq!(
+            store.live.iter().map(|entry| entry.stacked.len()).sum::<usize>(),
+            0,
+            "nothing stacks on a question"
+        );
+        assert_eq!(store.notice().map(|notice| (notice.id, notice.waiting)), Some((2, 2)));
+
+        for id in 10..20 {
+            assert!(store.push(
+                &mut icons,
+                Notification { timeout: None, ..from_app(id, &format!("App {id}")) },
+                false
+            ));
+        }
+        let kept: Vec<u32> = store.active().map(|entry| entry.notification.id).collect();
+        assert!(kept.contains(&1) && kept.contains(&2), "{kept:?}");
+        assert_eq!(store.notice().map(|notice| notice.id), Some(2), "newer chatter never jumps a question");
+        assert!(store.remove(2, CloseReason::Dismissed, true) && store.remove(1, CloseReason::Dismissed, true));
+        assert_eq!(store.notice().map(|notice| notice.id), Some(3), "then the critical notice");
     }
 
     #[test]
