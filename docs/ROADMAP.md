@@ -75,11 +75,11 @@ action handlers beyond MIME types.
 | 1 | GTK and Qt follow Glide | Theme export, adw-gtk3, qt5ct/qt6ct and Kvantum exist; Qt apps were never checked live | Needs the concrete failures. xdg-desktop-portal-gtk already serves `org.freedesktop.appearance` from the gsettings Glide writes |
 | 2 | First-run onboarding | Only a welcome notification (`welcome.rs`) | `glide-welcome` SDK app on top of P3 |
 | 3 | "What's new" window with animated demos | Absent | Same app as 2, opened once per new version |
-| 4 | Dock: several windows per app | One run dot; windows only in the context menu | Shell polish: one dot per window (up to three) and a window picker on scroll; clicks stay macOS-style (AGENTS.md: no cycling) unless the user decides otherwise |
+| 4 | Dock: several windows per app | Done: one dot per window (up to three), the wheel walks the windows, hovering shows live window previews; clicks stay macOS-style | — |
 | 5 | Dock: progress from a window | `LauncherEntry` progress per desktop ID exists | Check which apps send it; window progress in `glide_window_v1` (P4) |
-| 6 | Launcher animation in step with the overview | Separate curves | Shell polish |
+| 6 | Launcher animation in step with the overview | Done: the overview's scene length and curves (content E_OUT, backdrop E_IO) | — |
 | 7 | Lock N seconds after the screen blanks | `[general] lock-after-seconds` exists (0 = with the blank; skipped without libpam) | Exists; needs what did not happen on the user's machine |
-| 8 | Connected headset widget | Only pause-on-disconnect (`headset.rs`) | Shell polish: headset row with battery in quick settings and an island glance on connect |
+| 8 | Connected headset widget | Done: island glance on connect with battery, battery on the quick-settings output pill | A dedicated headset card (per-bud battery, codec) needs vendor data BlueZ does not expose |
 | 9 | ScreenCast | Routed to xdg-desktop-portal-wlr over SHM screencopy; its chooser is not configured and the failure was not recorded | Find what fails first; native PipeWire backend with a Glide picker in P4 |
 | 10 | Tiling | Edge snapping and keyboard halves only | Separate track after P2 |
 

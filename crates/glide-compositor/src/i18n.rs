@@ -80,6 +80,8 @@ catalogue! {
     Notifications => "Notifications", "Сповіщення";
     ClearAll => "Clear All", "Очистити все";
     NewNotification => "New notification", "Нове сповіщення";
+    HeadsetConnected => "Connected", "Підключено";
+    HeadsetBattery => "battery {pct}%", "заряд {pct}%";
     NeedsAnswer => "Needs your answer", "Потрібна відповідь";
     NoNewNotifications => "No new notifications", "Немає нових сповіщень";
     CalendarAndNotifications => "Calendar & Notifications", "Календар та сповіщення";

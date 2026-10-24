@@ -727,6 +727,7 @@ pub struct Topbar {
     media_rev: u64,
     track_rev: u64,
     status_rev: u64,
+    headsets: Vec<crate::headset::Headset>,
     detail_rev: u64,
     nc_rev: u64,
 
@@ -1423,10 +1424,48 @@ impl Topbar {
     }
 
     fn output_label(&self) -> String {
-        self.qs_panel.active_output().map_or_else(
-            || crate::i18n::t(crate::i18n::Key::SettingsSound).to_string(),
-            |output| output.description.clone(),
-        )
+        let Some(output) = self.qs_panel.active_output() else {
+            return crate::i18n::t(crate::i18n::Key::SettingsSound).to_string();
+        };
+        let battery = self
+            .headsets
+            .iter()
+            .find(|headset| output.name.to_ascii_uppercase().contains(&headset.mac.to_ascii_uppercase()))
+            .and_then(|headset| headset.battery);
+        battery.map_or_else(|| output.description.clone(), |level| format!("{} · {level}%", output.description))
+    }
+
+    pub fn set_headset(&mut self, headset: crate::headset::Headset) {
+        self.headsets.retain(|known| known.mac != headset.mac);
+        self.headsets.push(headset);
+        self.headsets_changed();
+    }
+
+    pub fn set_headset_battery(&mut self, mac: &str, level: u8) -> bool {
+        let Some(headset) = self.headsets.iter_mut().find(|headset| headset.mac == mac) else {
+            return false;
+        };
+        if headset.battery == Some(level) {
+            return false;
+        }
+        headset.battery = Some(level);
+        self.headsets_changed();
+        true
+    }
+
+    pub fn forget_headset(&mut self, mac: &str) -> bool {
+        let before = self.headsets.len();
+        self.headsets.retain(|headset| headset.mac != mac);
+        let changed = self.headsets.len() != before;
+        if changed {
+            self.headsets_changed();
+        }
+        changed
+    }
+
+    fn headsets_changed(&mut self) {
+        self.status_rev = self.status_rev.wrapping_add(1);
+        self.touch();
     }
 
     #[must_use]
@@ -6140,6 +6179,31 @@ mod tests {
         bar.apply_net_event(crate::qs_net::NetEvent::Inputs(vec![device("mic", true, "audio-input-microphone")]));
         bar.layout_slots(&painter(), output());
         bar
+    }
+
+    #[test]
+    fn a_connected_headset_shows_its_battery_on_the_output_pill() {
+        let mut bar = topbar_with(&["US"]);
+        bar.apply_net_event(crate::qs_net::NetEvent::Outputs(vec![
+            device("bluez_output.AA_BB_CC_DD_EE_FF.1", true, "audio-headset"),
+            device("speakers", false, "audio-speakers"),
+        ]));
+        let plain = bar.output_label();
+        let headset = crate::headset::Headset {
+            mac: "AA_BB_CC_DD_EE_FF".into(),
+            name: "Buds".into(),
+            icon: "audio-headset".into(),
+            battery: None,
+        };
+        let before = bar.status_rev;
+        bar.set_headset(headset);
+        assert_ne!(bar.status_rev, before, "the quick settings raster follows the headset");
+        assert_eq!(bar.output_label(), plain, "no battery reported, nothing added");
+        assert!(bar.set_headset_battery("AA_BB_CC_DD_EE_FF", 72) && !bar.set_headset_battery("AA_BB_CC_DD_EE_FF", 72));
+        assert_eq!(bar.output_label(), format!("{plain} · 72%"));
+        assert!(!bar.set_headset_battery("11_22_33_44_55_66", 10), "an unknown device changes nothing");
+        assert!(bar.forget_headset("AA_BB_CC_DD_EE_FF"));
+        assert_eq!(bar.output_label(), plain);
     }
 
     #[test]

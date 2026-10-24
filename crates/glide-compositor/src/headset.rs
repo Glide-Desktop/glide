@@ -10,6 +10,8 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 const BLUEZ: &str = "org.bluez";
 const TRANSPORT: &str = "org.bluez.MediaTransport1";
 const DEVICE: &str = "org.bluez.Device1";
+const BATTERY: &str = "org.bluez.Battery1";
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const RULES: [&str; 2] = [
     "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
@@ -26,10 +28,46 @@ pub enum Output {
     Jack,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Headset {
+    pub mac: String,
+    pub name: String,
+    pub icon: String,
+    pub battery: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     HeadsetVolume,
     Unplugged(Output),
+    Connected { headset: Headset, announce: bool },
+    Battery { mac: String, level: u8 },
+    Disconnected { mac: String },
+}
+
+#[must_use]
+pub fn mac_of(path: &str) -> Option<&str> {
+    path.rsplit('/').next()?.strip_prefix("dev_").filter(|mac| !mac.is_empty())
+}
+
+fn is_audio(icon: &str) -> bool {
+    matches!(icon, "audio-headset" | "audio-headphones")
+}
+
+#[must_use]
+pub fn headset_from(path: &str, device: &HashMap<String, OwnedValue>, battery: Option<u8>) -> Option<Headset> {
+    let text = |key: &str| device.get(key).and_then(|value| String::try_from(value.clone()).ok()).unwrap_or_default();
+    let icon = text("Icon");
+    if !is_audio(&icon) {
+        return None;
+    }
+    let mac = mac_of(path)?.to_string();
+    let name = [text("Alias"), text("Name")].into_iter().find(|name| !name.trim().is_empty()).unwrap_or(mac.clone());
+    Some(Headset { mac, name, icon, battery })
+}
+
+fn percentage(properties: &HashMap<String, OwnedValue>) -> Option<u8> {
+    properties.get("Percentage").and_then(|value| u8::try_from(value.clone()).ok())
 }
 
 #[derive(Debug, Clone)]
@@ -150,60 +188,114 @@ fn transport_facts(properties: &HashMap<String, OwnedValue>) -> (String, String)
 
 type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
 
-fn seed(connection: &Connection, transports: &mut Transports) {
+fn seed(connection: &Connection, transports: &mut Transports) -> Vec<Event> {
     let objects = Proxy::new(connection, BLUEZ, "/", OBJECT_MANAGER)
         .and_then(|manager| manager.call_method("GetManagedObjects", &()))
         .and_then(|reply| reply.body().deserialize::<Managed>());
     let Ok(objects) = objects else {
-        return;
+        return Vec::new();
     };
     let now = Instant::now();
+    let mut events = Vec::new();
     for (path, interfaces) in objects {
         if let Some(properties) = interfaces.get(TRANSPORT) {
             let (device, state) = transport_facts(properties);
             transports.seed(path.as_str(), &device, &state, now);
         }
+        let connected = interfaces
+            .get(DEVICE)
+            .and_then(|device| device.get("Connected"))
+            .and_then(|value| bool::try_from(value.clone()).ok());
+        let battery = interfaces.get(BATTERY).and_then(percentage);
+        if connected == Some(true)
+            && let Some(headset) =
+                interfaces.get(DEVICE).and_then(|device| headset_from(path.as_str(), device, battery))
+        {
+            events.push(Event::Connected { headset, announce: false });
+        }
     }
+    events
 }
 
-fn bluez_event(message: &zbus::Message, transports: &mut Transports) -> Option<Event> {
+fn all_properties(connection: &Connection, path: &str, interface: &str) -> Option<HashMap<String, OwnedValue>> {
+    Proxy::new(connection, BLUEZ, path, PROPERTIES)
+        .and_then(|proxy| proxy.call_method("GetAll", &(interface,)))
+        .and_then(|reply| reply.body().deserialize::<HashMap<String, OwnedValue>>())
+        .ok()
+}
+
+fn connected_headset(connection: &Connection, path: &str) -> Option<Event> {
+    let device = all_properties(connection, path, DEVICE)?;
+    let battery = all_properties(connection, path, BATTERY).as_ref().and_then(percentage);
+    headset_from(path, &device, battery).map(|headset| Event::Connected { headset, announce: true })
+}
+
+fn bluez_event(connection: &Connection, message: &zbus::Message, transports: &mut Transports) -> Vec<Event> {
     let header = message.header();
     let now = Instant::now();
-    match header.member()?.as_str() {
+    let Some(member) = header.member() else {
+        return Vec::new();
+    };
+    match member.as_str() {
         "PropertiesChanged" => {
-            let path = header.path()?.to_string();
-            let (interface, changed, _) =
-                message.body().deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>().ok()?;
+            let Some(path) = header.path().map(ToString::to_string) else {
+                return Vec::new();
+            };
+            let Ok((interface, changed, _)) =
+                message.body().deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+            else {
+                return Vec::new();
+            };
             match interface.as_str() {
                 TRANSPORT => {
                     let state = changed.get("State").and_then(|value| String::try_from(value.clone()).ok());
-                    transports
-                        .changed(&path, state.as_deref(), changed.contains_key("Volume"), now)
-                        .then_some(Event::HeadsetVolume)
+                    let volume = transports.changed(&path, state.as_deref(), changed.contains_key("Volume"), now);
+                    volume.then_some(Event::HeadsetVolume).into_iter().collect()
                 }
-                DEVICE => {
-                    let connected = changed.get("Connected").and_then(|value| bool::try_from(value.clone()).ok());
-                    (connected == Some(false) && transports.device_disconnected(&path, now))
-                        .then_some(Event::Unplugged(Output::Bluetooth))
-                }
-                _ => None,
+                DEVICE => match changed.get("Connected").and_then(|value| bool::try_from(value.clone()).ok()) {
+                    Some(false) => {
+                        let unplugged = transports.device_disconnected(&path, now);
+                        let gone = mac_of(&path).map(|mac| Event::Disconnected { mac: mac.to_string() });
+                        unplugged.then_some(Event::Unplugged(Output::Bluetooth)).into_iter().chain(gone).collect()
+                    }
+                    Some(true) => connected_headset(connection, &path).into_iter().collect(),
+                    None => Vec::new(),
+                },
+                BATTERY => percentage(&changed)
+                    .zip(mac_of(&path))
+                    .map(|(level, mac)| Event::Battery { mac: mac.to_string(), level })
+                    .into_iter()
+                    .collect(),
+                _ => Vec::new(),
             }
         }
         "InterfacesAdded" => {
-            let (path, interfaces) =
-                message.body().deserialize::<(OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>)>().ok()?;
-            let (device, state) = transport_facts(interfaces.get(TRANSPORT)?);
-            transports.appeared(path.as_str(), &device, &state, now);
-            None
+            let Ok((path, interfaces)) =
+                message.body().deserialize::<(OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>)>()
+            else {
+                return Vec::new();
+            };
+            if let Some(transport) = interfaces.get(TRANSPORT) {
+                let (device, state) = transport_facts(transport);
+                transports.appeared(path.as_str(), &device, &state, now);
+            }
+            interfaces
+                .get(BATTERY)
+                .and_then(percentage)
+                .zip(mac_of(path.as_str()))
+                .map(|(level, mac)| Event::Battery { mac: mac.to_string(), level })
+                .into_iter()
+                .collect()
         }
         "InterfacesRemoved" => {
-            let (path, interfaces) = message.body().deserialize::<(OwnedObjectPath, Vec<String>)>().ok()?;
-            if interfaces.iter().any(|name| name == TRANSPORT) {
+            if let Ok((path, interfaces)) = message.body().deserialize::<(OwnedObjectPath, Vec<String>)>()
+                && interfaces.iter().any(|name| name == TRANSPORT)
+            {
                 transports.removed(path.as_str(), now);
             }
-            None
+            Vec::new()
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -215,9 +307,14 @@ fn watch_bluez(sink: impl Fn(Event) + Send + 'static) -> anyhow::Result<()> {
     }
     std::thread::Builder::new().name("glide-headset-bt".into()).spawn(move || {
         let mut transports = Transports::default();
-        seed(&connection, &mut transports);
+        for event in seed(&connection, &mut transports) {
+            sink(event);
+        }
         for message in MessageIterator::from(&connection) {
-            if let Some(event) = message.ok().and_then(|message| bluez_event(&message, &mut transports)) {
+            let Ok(message) = message else {
+                continue;
+            };
+            for event in bluez_event(&connection, &message, &mut transports) {
                 sink(event);
             }
         }
@@ -320,8 +417,46 @@ impl crate::GlideState {
                     media.pause_all();
                 }
             }
+            Event::Connected { headset, announce } => {
+                tracing::info!(name = headset.name, battery = ?headset.battery, "a headset is connected");
+                if announce && !self.screen_locked() {
+                    let icon = self
+                        .dock
+                        .icons
+                        .load_named(&headset.icon, crate::notifications::ICON_SOURCE_PX)
+                        .map(|bytes| std::sync::Arc::new(bytes.to_vec()));
+                    let alert = crate::topbar::IslandAlert {
+                        id: 0,
+                        heading: headset.name.clone(),
+                        summary: connected_line(headset.battery),
+                        icon,
+                    };
+                    self.topbar.show_alert(alert, now);
+                }
+                self.topbar.set_headset(headset);
+                self.queue_redraw();
+            }
+            Event::Battery { mac, level } => {
+                if self.topbar.set_headset_battery(&mac, level) {
+                    self.queue_redraw();
+                }
+            }
+            Event::Disconnected { mac } => {
+                if self.topbar.forget_headset(&mac) {
+                    self.queue_redraw();
+                }
+            }
         }
     }
+}
+
+fn connected_line(battery: Option<u8>) -> String {
+    use crate::i18n::{Key, t};
+    let connected = t(Key::HeadsetConnected);
+    battery.map_or_else(
+        || connected.to_string(),
+        |level| format!("{connected} · {}", t(Key::HeadsetBattery).replace("{pct}", &level.to_string())),
+    )
 }
 
 #[cfg(test)]
@@ -330,6 +465,33 @@ mod tests {
 
     const BUDS: &str = "/org/bluez/hci0/dev_AA";
     const FD: &str = "/org/bluez/hci0/dev_AA/sep1/fd0";
+
+    fn device(icon: &str, alias: &str) -> HashMap<String, OwnedValue> {
+        let text = |value: &str| OwnedValue::try_from(zbus::zvariant::Value::from(value)).expect("a string value");
+        HashMap::from([("Icon".to_string(), text(icon)), ("Alias".to_string(), text(alias))])
+    }
+
+    #[test]
+    fn only_headphones_and_headsets_count_and_they_are_named_by_their_alias() {
+        assert_eq!(mac_of(BUDS), Some("AA"));
+        assert_eq!(mac_of("/org/bluez/hci0"), None);
+        let buds = headset_from(BUDS, &device("audio-headset", "AirPods Pro"), Some(80)).expect("a headset");
+        assert_eq!(
+            buds,
+            Headset { mac: "AA".into(), name: "AirPods Pro".into(), icon: "audio-headset".into(), battery: Some(80) }
+        );
+        assert!(headset_from(BUDS, &device("input-mouse", "MX Master"), None).is_none(), "a mouse is no headset");
+        let unnamed = headset_from(BUDS, &device("audio-headphones", " "), None).expect("headphones");
+        assert_eq!(unnamed.name, "AA", "the address stands in for a missing name");
+    }
+
+    #[test]
+    fn the_connect_glance_names_the_battery_only_when_bluez_reports_it() {
+        use crate::i18n::{Key, t};
+        assert_eq!(connected_line(None), t(Key::HeadsetConnected));
+        let with_battery = connected_line(Some(64));
+        assert!(with_battery.starts_with(t(Key::HeadsetConnected)) && with_battery.contains("64%"), "{with_battery}");
+    }
 
     #[test]
     fn a_swipe_on_settled_buds_is_a_headset_volume_change() {
