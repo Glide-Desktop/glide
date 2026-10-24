@@ -438,7 +438,28 @@ impl GlideState {
 
     pub fn activate_notification(&mut self, id: u32) {
         let token = self.mint_granted_token(None);
-        self.notifications.activate(id, Some(&token));
+        if self.topbar.alert().is_some_and(|alert| alert.id == id) {
+            self.topbar.dismiss_alert();
+        }
+        if let Some(app) = self.notifications.activate(id, Some(&token)) {
+            self.raise_app(&app);
+        }
+    }
+
+    fn raise_app(&mut self, app: &str) {
+        let mut windows = self.windows_for_app(&self.dock_key_for_desktop_id(app));
+        if windows.is_empty()
+            && let Some(id) = self.app_directory.index().and_then(|index| index.get(app)).map(|entry| entry.id.clone())
+        {
+            windows = self.windows_for_app(&self.dock_key_for_desktop_id(&id));
+        }
+        let ordered = most_recent_first(&windows, &self.focus_history);
+        let candidates: Vec<(WindowId, bool)> = ordered.iter().map(|id| (*id, self.is_minimized(*id))).collect();
+        if let DockClick::Activate(id) = dock_click(&candidates, self.layout.focused_window()) {
+            self.activate_window_animated(id);
+            self.refresh_dock();
+            self.queue_redraw();
+        }
     }
 
     pub fn open_terminal_tab(&mut self) {

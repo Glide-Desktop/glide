@@ -1111,7 +1111,14 @@ impl Topbar {
     pub fn focused_action(&self) -> Option<TopbarAction> {
         let slot = self.focused?;
         self.slot_rect(slot)?;
-        Some(slot.action())
+        Some(self.resolve(slot))
+    }
+
+    fn resolve(&self, slot: Slot) -> TopbarAction {
+        match (slot, self.alert()) {
+            (Slot::IslandAlert, Some(alert)) => TopbarAction::ActivateNotification(alert.id),
+            _ => slot.action(),
+        }
     }
 
     pub fn focus_adjust(&mut self, delta: i8) -> Option<TopbarAction> {
@@ -1674,7 +1681,7 @@ impl Topbar {
                 let pct = (ratio * 100.0).round() as u8;
                 TopbarAction::MediaSeek(pct)
             }
-            other => other.action(),
+            other => self.resolve(*other),
         })
     }
 
@@ -4767,7 +4774,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_notification_flashes_in_the_island_and_opens_the_centre() {
+    fn a_new_notification_flashes_in_the_island_and_a_click_runs_its_own_action() {
         let mut bar = topbar_with(&["US", "UA"]);
         let start = std::time::Instant::now();
         let alert = IslandAlert { id: 1, heading: "Telegram".into(), summary: "Olena: hi".into(), icon: None };
@@ -4777,7 +4784,7 @@ mod tests {
         let below = Point::from((centre(close).x, f64::from(HEIGHT) + 6.0));
         assert!(bar.contains(output(), below), "the alert is taller than the bar and still takes clicks");
         assert_eq!(click(&bar, Slot::IslandAlertClose), Some(TopbarAction::DismissIslandAlert));
-        assert_eq!(click(&bar, Slot::IslandAlert), Some(TopbarAction::ToggleNotificationCenter));
+        assert_eq!(click(&bar, Slot::IslandAlert), Some(TopbarAction::ActivateNotification(1)));
         assert!(bar.slot_rect(Slot::Clock).is_none());
         assert!(!bar.tick_island(start + island::ALERT_HOLD / 2));
         assert!(bar.tick_island(start + island::ALERT_HOLD));

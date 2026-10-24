@@ -1271,13 +1271,13 @@ impl Notifications {
         self.remove(head, CloseReason::Dismissed, true);
     }
 
-    pub fn activate(&mut self, id: u32, token: Option<&str>) {
+    pub fn activate(&mut self, id: u32, token: Option<&str>) -> Option<String> {
         let Some(entry) = self.active().find(|entry| entry.notification.id == id) else {
-            self.activate_kept(id, token);
-            return;
+            return self.activate_kept(id, token);
         };
         let has_default = entry.notification.has_default_action;
         let resident = entry.notification.resident;
+        let app = app_to_raise(&entry.notification);
         if let Some(handle) = self.handle.as_ref()
             && has_default
         {
@@ -1286,18 +1286,19 @@ impl Notifications {
         if !resident {
             self.remove(id, CloseReason::Dismissed, true);
         }
+        app
     }
 
-    fn activate_kept(&mut self, id: u32, token: Option<&str>) {
-        let Some(kept) = self.archive.iter().find(|kept| kept.notification.id == id) else {
-            return;
-        };
+    fn activate_kept(&mut self, id: u32, token: Option<&str>) -> Option<String> {
+        let kept = self.archive.iter().find(|kept| kept.notification.id == id)?;
+        let app = app_to_raise(&kept.notification);
         if let Some(handle) = self.handle.as_ref()
             && kept.notification.has_default_action
         {
             handle.invoked(id, glide_notify::ACTION_DEFAULT, token);
         }
         self.forget_kept(id);
+        app
     }
 
     #[must_use]
@@ -1473,6 +1474,17 @@ impl Notifications {
         self.slots = slots;
         self.layer_slots = layer_slots;
     }
+}
+
+fn app_to_raise(notification: &Notification) -> Option<String> {
+    if notification.has_default_action || is_local(notification.id) {
+        return None;
+    }
+    [&notification.desktop_entry, &notification.app_name]
+        .into_iter()
+        .map(|name| name.trim())
+        .find(|name| !name.is_empty())
+        .map(str::to_string)
 }
 
 fn layer_alpha(layers: &std::collections::HashMap<Hit, Tween>, hit: Hit) -> f32 {
@@ -2920,6 +2932,25 @@ mod tests {
         assert_eq!(word.len(), 1);
         assert!(text_px(&painter, &word[0], &style) <= body_width());
         assert!(wrap("   ", BODY_MAX_LINES).is_empty());
+    }
+
+    #[test]
+    fn a_click_without_a_default_action_raises_the_app_instead() {
+        let (mut store, mut icons) = store();
+        store.set_glances(true);
+        let plain = Notification { desktop_entry: "org.telegram.desktop".into(), ..from_app(1, "Telegram") };
+        assert!(store.push(&mut icons, plain, false));
+        assert_eq!(store.activate(1, None).as_deref(), Some("org.telegram.desktop"));
+        assert!(store.nc_items().is_empty(), "the click reads it");
+
+        let handled = Notification { has_default_action: true, ..from_app(2, "Telegram") };
+        assert!(store.push(&mut icons, handled, false));
+        assert_eq!(store.activate(2, None), None, "the app opens the chat itself");
+
+        assert!(store.push(&mut icons, from_app(3, "Mail"), false));
+        assert_eq!(store.activate(3, None).as_deref(), Some("Mail"), "the name stands in for a missing entry");
+        assert_eq!(store.activate(99, None), None);
+        assert_eq!(app_to_raise(&Notification { id: LOCAL_ID_FLOOR + 5, ..from_app(5, "Glide") }), None);
     }
 
     #[test]
