@@ -4,7 +4,6 @@ pub mod audio;
 pub mod autostart;
 pub mod bluetooth;
 pub mod config;
-pub mod desktop;
 pub mod display;
 pub mod dock;
 pub mod gsettings;

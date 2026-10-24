@@ -12,7 +12,6 @@ use crate::panels::{
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;
-use crate::services::desktop as desktop_sync;
 use crate::services::ipc::{self, IpcEvent, ReloadError};
 use crate::services::run::blocking;
 use crate::services::system;
@@ -34,7 +33,6 @@ macro_rules! declare_pages {
             ClearSearch,
             SelectNext,
             SelectPrevious,
-            DesktopSynced,
             Reloaded(Option<Result<(), ReloadError>>),
             Ipc(IpcEvent),
             Tick,
@@ -126,12 +124,9 @@ pub struct App {
     user_name: String,
     login: String,
     pages: Pages,
-    synced: Option<DesktopLook>,
     netbird: bool,
     width: f32,
 }
-
-type DesktopLook = (theme::Appearance, theme::Accent, Option<String>);
 
 pub const COMPACT_BELOW: f32 = 940.0;
 
@@ -164,7 +159,6 @@ impl App {
             user_name: String::new(),
             login: String::new(),
             pages: Pages::default(),
-            synced: None,
             netbird: false,
             width: 1000.0,
         }
@@ -319,26 +313,13 @@ impl App {
         self.select(next)
     }
 
-    fn sync_desktop(&mut self) -> Task<Message> {
-        let wanted: DesktopLook =
-            (self.theme.appearance(), self.config.accent(), self.config.optional_str("dock", "icon-theme"));
-        if self.config.path().is_none() || self.synced.as_ref() == Some(&wanted) {
-            return Task::none();
-        }
-        self.synced = Some(wanted.clone());
-        let (appearance, accent, icons) = wanted;
-        Task::perform(blocking(move || desktop_sync::sync(appearance, accent, icons.as_deref())), |_| {
-            Message::DesktopSynced
-        })
-    }
-
     fn commit(&mut self, task: Task<Message>) -> Task<Message> {
         if !self.config.take_dirty() {
             return task;
         }
         self.apply_edited_look();
         match self.config.save() {
-            Ok(()) => Task::batch([task, Task::perform(blocking(ipc::reload), Message::Reloaded), self.sync_desktop()]),
+            Ok(()) => Task::batch([task, Task::perform(blocking(ipc::reload), Message::Reloaded)]),
             Err(err) => {
                 self.notice = Some(Notice { text: format!("{}: {err}", K::SaveFailed.text(self.lang)), error: true });
                 task
@@ -364,7 +345,6 @@ impl App {
             }
             Message::SelectNext => self.step(true),
             Message::SelectPrevious => self.step(false),
-            Message::DesktopSynced => Task::none(),
             Message::Reloaded(result) => match result {
                 Some(Ok(())) => {
                     self.online = true;

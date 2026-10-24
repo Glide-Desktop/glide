@@ -583,17 +583,6 @@ fn battery_and_power_profiles_parse() {
 }
 
 #[test]
-fn desktop_theme_maps_to_gnome_settings() {
-    use glide_settings::services::desktop;
-    assert_eq!(desktop::color_scheme(Appearance::Light), "prefer-light");
-    assert_eq!(desktop::color_scheme(Appearance::Dark), "prefer-dark");
-    let accents: Vec<&str> = Accent::ALL.iter().map(|a| desktop::gnome_accent(*a)).collect();
-    assert_eq!(accents, vec!["blue", "teal", "green", "yellow", "orange", "red", "purple", "slate"]);
-    assert_eq!(desktop::gtk_theme_for("'Adwaita'\n", Appearance::Dark), Some("Adwaita-dark"));
-    assert_eq!(desktop::gtk_theme_for("'Arc'", Appearance::Dark), None);
-}
-
-#[test]
 fn proc_input_devices_are_split_into_mice_and_touchpads() {
     use glide_settings::services::pointer::{self, PointerKind};
     let text = "I: Bus=0011 Vendor=0002 Product=0007 Version=01b1\n\
