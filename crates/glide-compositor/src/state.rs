@@ -1792,6 +1792,10 @@ impl GlideState {
             TopbarAction::TogglePrivacy => {
                 self.topbar.toggle_popup(OpenPopup::Privacy);
             }
+            TopbarAction::ToggleHeadset
+            | TopbarAction::HeadsetUseOutput
+            | TopbarAction::HeadsetDisconnect
+            | TopbarAction::HeadsetSettings => self.run_headset_action(action),
             TopbarAction::CalendarShift(delta) => {
                 self.topbar.shift_calendar(i32::from(delta));
             }

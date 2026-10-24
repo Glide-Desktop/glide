@@ -43,6 +43,9 @@ mod status;
 #[path = "topbar_tray.rs"]
 mod tray;
 
+#[path = "topbar_headset.rs"]
+mod headset_view;
+
 pub use tray::{ICON as TRAY_ICON, IconArt, MAX_SCALE as TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon};
 
 pub use panels::{
@@ -258,6 +261,7 @@ pub enum OpenPopup {
     MediaPlayer,
     AppMenu,
     Privacy,
+    Headset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -319,6 +323,10 @@ pub enum TopbarAction {
     QsPanel(PanelAction),
     ToggleLauncher,
     TogglePrivacy,
+    ToggleHeadset,
+    HeadsetUseOutput,
+    HeadsetDisconnect,
+    HeadsetSettings,
     CalendarShift(i8),
     CalendarToday,
     Tray(TrayClick),
@@ -395,6 +403,10 @@ pub enum Slot {
     QsDetailSettings,
     Search,
     Privacy,
+    Headset,
+    HeadsetOutput,
+    HeadsetDisconnect,
+    HeadsetSettings,
     CalMonth,
     CalPrev,
     CalNext,
@@ -420,12 +432,16 @@ impl Slot {
     }
 
     const fn in_status_cluster(self) -> bool {
-        matches!(self, Self::Status | Self::Search | Self::Privacy)
+        matches!(self, Self::Status | Self::Search | Self::Privacy | Self::Headset)
     }
 
     const fn in_privacy_popup(self) -> bool {
         let _ = self;
         false
+    }
+
+    const fn in_headset_popup(self) -> bool {
+        matches!(self, Self::HeadsetOutput | Self::HeadsetDisconnect | Self::HeadsetSettings)
     }
 
     const fn in_strip(self) -> bool {
@@ -491,6 +507,7 @@ impl Slot {
             && !self.in_lang_menu()
             && !self.in_notification_center()
             && !self.in_app_menu()
+            && !self.in_headset_popup()
     }
 
     const fn state_layer_radius(self) -> Option<f32> {
@@ -600,6 +617,10 @@ impl Slot {
             Self::QsDetailSettings => TopbarAction::QsPanel(PanelAction::Settings),
             Self::Search => TopbarAction::ToggleLauncher,
             Self::Privacy => TopbarAction::TogglePrivacy,
+            Self::Headset => TopbarAction::ToggleHeadset,
+            Self::HeadsetOutput => TopbarAction::HeadsetUseOutput,
+            Self::HeadsetDisconnect => TopbarAction::HeadsetDisconnect,
+            Self::HeadsetSettings => TopbarAction::HeadsetSettings,
             Self::CalMonth => TopbarAction::CalendarToday,
             Self::CalPrev => TopbarAction::CalendarShift(-1),
             Self::CalNext => TopbarAction::CalendarShift(1),
@@ -747,6 +768,7 @@ pub struct Topbar {
     qs_confirm_cache: Cache<QsPowerKey>,
     qs_bg_cache: Cache<(i32, i32)>,
     qs_detail_cache: Cache<(u64, u64, Option<Slot>, Detail)>,
+    headset_cache: Cache<headset_view::HeadsetKey>,
     lang_menu_cache: Cache<(u64, usize, Option<Slot>)>,
     raster_rev: u64,
 
@@ -806,6 +828,7 @@ impl Topbar {
         self.qs_confirm_cache.clear();
         self.qs_bg_cache.clear();
         self.qs_detail_cache.clear();
+        self.headset_cache.clear();
         self.lang_menu_cache.clear();
         self.menu_titles.clear();
         self.menu_rasters.clear();
@@ -1441,16 +1464,22 @@ impl Topbar {
         self.headsets_changed();
     }
 
-    pub fn set_headset_battery(&mut self, mac: &str, level: u8) -> bool {
+    pub fn update_headset(&mut self, mac: &str, change: impl FnOnce(&mut crate::headset::Headset)) -> bool {
         let Some(headset) = self.headsets.iter_mut().find(|headset| headset.mac == mac) else {
             return false;
         };
-        if headset.battery == Some(level) {
+        let before = headset.clone();
+        change(headset);
+        if *headset == before {
             return false;
         }
-        headset.battery = Some(level);
         self.headsets_changed();
         true
+    }
+
+    #[must_use]
+    pub fn headset(&self) -> Option<&crate::headset::Headset> {
+        self.headsets.last()
     }
 
     pub fn forget_headset(&mut self, mac: &str) -> bool {
@@ -1458,6 +1487,9 @@ impl Topbar {
         self.headsets.retain(|headset| headset.mac != mac);
         let changed = self.headsets.len() != before;
         if changed {
+            if self.headsets.is_empty() && self.open_popup == Some(OpenPopup::Headset) {
+                self.close_popup();
+            }
             self.headsets_changed();
         }
         changed
@@ -1879,7 +1911,8 @@ impl Topbar {
         let mut popup_slots = std::mem::take(&mut menu.rows);
         let popup_rect = self
             .layout_popup(painter, (output, strip), (lang_rect, menu.anchor), &mut popup_slots)
-            .or_else(|| self.layout_status_popup(&slots, output, strip.loc.y));
+            .or_else(|| self.layout_status_popup(&slots, output, strip.loc.y))
+            .or_else(|| self.layout_headset_popup(&slots, output, strip.loc.y, &mut popup_slots));
         if self.popup_reveal.is_open() {
             slots.extend(popup_slots.iter().copied());
         }
@@ -1916,7 +1949,7 @@ impl Topbar {
                 },
                 popup_slots,
             )),
-            Some(OpenPopup::Privacy) | None => None,
+            Some(OpenPopup::Privacy | OpenPopup::Headset) | None => None,
         }
     }
 
@@ -2399,6 +2432,7 @@ fn popup_slots(popup: OpenPopup) -> fn(Slot) -> bool {
         OpenPopup::MediaPlayer => Slot::in_media_popup,
         OpenPopup::AppMenu => Slot::in_app_menu,
         OpenPopup::Privacy => Slot::in_privacy_popup,
+        OpenPopup::Headset => Slot::in_headset_popup,
     }
 }
 
@@ -3598,6 +3632,7 @@ fn draw_caffeine(
 fn push_status<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) {
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     status::push_popups(topbar, renderer, painter, scale, output_scale, elements);
+    headset_view::push_popup(topbar, renderer, painter, icons, scale, output_scale, elements);
     status::push_cluster(topbar, renderer, painter, icons, scale, output_scale, elements);
 }
 
@@ -6194,16 +6229,59 @@ mod tests {
             name: "Buds".into(),
             icon: "audio-headset".into(),
             battery: None,
+            address: "AA:BB:CC:DD:EE:FF".into(),
+            volume: None,
+            profile: crate::headset::Profile::default(),
         };
         let before = bar.status_rev;
         bar.set_headset(headset);
         assert_ne!(bar.status_rev, before, "the quick settings raster follows the headset");
         assert_eq!(bar.output_label(), plain, "no battery reported, nothing added");
-        assert!(bar.set_headset_battery("AA_BB_CC_DD_EE_FF", 72) && !bar.set_headset_battery("AA_BB_CC_DD_EE_FF", 72));
+        let charge = |bar: &mut Topbar, mac: &str| bar.update_headset(mac, |headset| headset.battery = Some(72));
+        assert!(charge(&mut bar, "AA_BB_CC_DD_EE_FF") && !charge(&mut bar, "AA_BB_CC_DD_EE_FF"));
         assert_eq!(bar.output_label(), format!("{plain} · 72%"));
-        assert!(!bar.set_headset_battery("11_22_33_44_55_66", 10), "an unknown device changes nothing");
+        assert!(!charge(&mut bar, "11_22_33_44_55_66"), "an unknown device changes nothing");
         assert!(bar.forget_headset("AA_BB_CC_DD_EE_FF"));
         assert_eq!(bar.output_label(), plain);
+    }
+
+    #[test]
+    fn a_connected_headset_gets_an_applet_that_opens_its_own_popover() {
+        let mut bar = topbar_with(&["US"]);
+        bar.apply_net_event(crate::qs_net::NetEvent::Outputs(vec![
+            device("speakers", true, "audio-speakers"),
+            device("bluez_output.AA_BB_CC_DD_EE_FF.1", false, "audio-headset"),
+        ]));
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::Headset).is_none(), "no headset, no applet");
+        bar.set_headset(crate::headset::Headset {
+            mac: "AA_BB_CC_DD_EE_FF".into(),
+            name: "Buds".into(),
+            icon: "audio-headset".into(),
+            battery: Some(64),
+            address: "AA:BB:CC:DD:EE:FF".into(),
+            volume: None,
+            profile: crate::headset::Profile::default(),
+        });
+        bar.layout_slots(&painter(), output());
+        let applet = bar.slot_rect(Slot::Headset).expect("the applet");
+        let status = bar.slot_rect(Slot::Status).expect("the status block");
+        assert!(applet.loc.x + applet.size.w <= status.loc.x, "the applet sits left of the status block");
+        assert_eq!(click(&bar, Slot::Headset), Some(TopbarAction::ToggleHeadset));
+
+        assert!(bar.toggle_popup(OpenPopup::Headset));
+        bar.layout_slots(&painter(), output());
+        let popup = bar.popup_rect.expect("the popover");
+        assert!(popup.loc.y > applet.loc.y + applet.size.h, "the popover opens under the bar");
+        assert_eq!(click(&bar, Slot::HeadsetOutput), Some(TopbarAction::HeadsetUseOutput));
+        assert_eq!(click(&bar, Slot::HeadsetDisconnect), Some(TopbarAction::HeadsetDisconnect));
+        assert_eq!(click(&bar, Slot::HeadsetSettings), Some(TopbarAction::HeadsetSettings));
+        assert_eq!(bar.headset_output().map(|output| output.name.as_str()), Some("bluez_output.AA_BB_CC_DD_EE_FF.1"));
+
+        assert!(bar.forget_headset("AA_BB_CC_DD_EE_FF"));
+        assert_eq!(bar.open_popup(), None, "the popover goes with the headset");
+        bar.layout_slots(&painter(), output());
+        assert!(bar.slot_rect(Slot::Headset).is_none());
     }
 
     #[test]

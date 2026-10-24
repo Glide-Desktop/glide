@@ -119,8 +119,12 @@ pub fn privacy_entries(status: &SystemStatus, screen_clients: &[String]) -> Vec<
 }
 
 #[must_use]
-pub fn cluster_order(privacy_dots: bool) -> Vec<Slot> {
-    let mut order = vec![Slot::Status, Slot::Search];
+pub fn cluster_order(privacy_dots: bool, headset: bool) -> Vec<Slot> {
+    let mut order = vec![Slot::Status];
+    if headset {
+        order.push(Slot::Headset);
+    }
+    order.push(Slot::Search);
     if privacy_dots {
         order.push(Slot::Privacy);
     }
@@ -263,6 +267,9 @@ impl Topbar {
         match slot {
             Slot::Status => block_width(painter, &self.system_status, self.theme.battery_percentage),
             Slot::Privacy => privacy_width(self.indicators.reserved_count()),
+            Slot::Headset => {
+                self.headset().map_or(CONTROL_W, |headset| super::headset_view::applet_width(painter, headset))
+            }
             _ => CONTROL_W,
         }
     }
@@ -271,7 +278,7 @@ impl Topbar {
         &self, painter: &crate::paint::Painter, mut right: i32, y: i32,
         slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
     ) -> i32 {
-        let order = cluster_order(self.indicators.reserved_count() > 0);
+        let order = cluster_order(self.indicators.reserved_count() > 0, self.headset().is_some());
         for (index, slot) in order.into_iter().enumerate() {
             if index > 0 {
                 right -= ITEM_GAP;
@@ -306,6 +313,7 @@ struct ClusterPaint<'a> {
     open: Option<OpenPopup>,
     levels: [f64; 3],
     reserved: [bool; 3],
+    headset: Option<&'a crate::headset::Headset>,
 }
 
 pub(super) fn push_cluster<R>(
@@ -350,6 +358,7 @@ pub(super) fn push_cluster<R>(
         open,
         levels,
         reserved: topbar.indicators.reserved,
+        headset: topbar.headsets.last(),
     };
     let local: Vec<(Slot, i32, i32)> =
         items.iter().map(|(slot, rect)| (*slot, rect.loc.x - left, rect.size.w)).collect();
@@ -365,6 +374,7 @@ const fn opens(slot: Slot) -> Option<OpenPopup> {
     match slot {
         Slot::Status => Some(OpenPopup::QuickSettings),
         Slot::Privacy => Some(OpenPopup::Privacy),
+        Slot::Headset => Some(OpenPopup::Headset),
         _ => None,
     }
 }
@@ -413,6 +423,11 @@ fn draw_cluster(
             }
             Slot::Search => glyph(&mut c, Glyph::Search, ICON, column(x, width), fg),
             Slot::Privacy => draw_dots(&mut c, ctx, x),
+            Slot::Headset => {
+                if let Some(headset) = ctx.headset {
+                    super::headset_view::draw_applet(&mut c, ctx.painter, ctx.theme, headset, x, fg);
+                }
+            }
             _ => {}
         }
     }
@@ -573,8 +588,13 @@ mod tests {
 
     #[test]
     fn the_cluster_is_the_status_block_then_search_then_privacy() {
-        assert_eq!(cluster_order(true), vec![Slot::Status, Slot::Search, Slot::Privacy]);
-        assert_eq!(cluster_order(false), vec![Slot::Status, Slot::Search]);
+        assert_eq!(cluster_order(true, false), vec![Slot::Status, Slot::Search, Slot::Privacy]);
+        assert_eq!(cluster_order(false, false), vec![Slot::Status, Slot::Search]);
+        assert_eq!(
+            cluster_order(false, true),
+            vec![Slot::Status, Slot::Headset, Slot::Search],
+            "a connected headset sits beside the status block"
+        );
     }
 
     #[test]

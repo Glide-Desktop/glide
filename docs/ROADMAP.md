@@ -79,7 +79,7 @@ action handlers beyond MIME types.
 | 5 | Dock: progress from a window | `LauncherEntry` progress per desktop ID exists | Check which apps send it; window progress in `glide_window_v1` (P4) |
 | 6 | Launcher animation in step with the overview | Done: the overview's scene length and curves (content E_OUT, backdrop E_IO) | — |
 | 7 | Lock N seconds after the screen blanks | `[general] lock-after-seconds` exists (0 = with the blank; skipped without libpam) | Exists; needs what did not happen on the user's machine |
-| 8 | Connected headset widget | Done: island glance on connect with battery, battery on the quick-settings output pill | A dedicated headset card (per-bud battery, codec) needs vendor data BlueZ does not expose |
+| 8 | Connected headset widget | Done: island glance on connect, a top-bar applet with the battery that opens a popover (battery, volume, mode, codec, play here, disconnect) | Per-bud battery, ANC and in-ear state need vendor data BlueZ does not expose |
 | 9 | ScreenCast | Routed to xdg-desktop-portal-wlr over SHM screencopy; its chooser is not configured and the failure was not recorded | Find what fails first; native PipeWire backend with a Glide picker in P4 |
 | 10 | Tiling | Edge snapping and keyboard halves only | Separate track after P2 |
 

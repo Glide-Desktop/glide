@@ -82,6 +82,14 @@ catalogue! {
     NewNotification => "New notification", "Нове сповіщення";
     HeadsetConnected => "Connected", "Підключено";
     HeadsetBattery => "battery {pct}%", "заряд {pct}%";
+    HsBattery => "Battery", "Заряд";
+    HsVolume => "Volume", "Гучність";
+    HsMode => "Mode", "Режим";
+    HsCodec => "Codec", "Кодек";
+    HsMusic => "Music", "Музика";
+    HsCalls => "Calls", "Дзвінки";
+    HsPlayingHere => "sound plays here", "звук іде сюди";
+    HsUseOutput => "Play Sound Here", "Виводити звук сюди";
     NeedsAnswer => "Needs your answer", "Потрібна відповідь";
     NoNewNotifications => "No new notifications", "Немає нових сповіщень";
     CalendarAndNotifications => "Calendar & Notifications", "Календар та сповіщення";

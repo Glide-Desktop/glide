@@ -28,12 +28,27 @@ pub enum Output {
     Jack,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Music,
+    Calls,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Profile {
+    pub mode: Option<Mode>,
+    pub codec: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Headset {
     pub mac: String,
     pub name: String,
     pub icon: String,
     pub battery: Option<u8>,
+    pub address: String,
+    pub volume: Option<u8>,
+    pub profile: Profile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +57,60 @@ pub enum Event {
     Unplugged(Output),
     Connected { headset: Headset, announce: bool },
     Battery { mac: String, level: u8 },
+    Volume { mac: String, level: u8 },
+    Profile { mac: String, profile: Profile },
     Disconnected { mac: String },
+}
+
+const CODECS: [&str; 12] =
+    ["sbc_xq", "sbc", "aac", "aptx_hd", "aptx_ll", "aptx", "ldac", "opus_05", "opus", "lc3", "msbc", "cvsd"];
+
+#[must_use]
+pub fn parse_profile(active: &str) -> Profile {
+    let active = active.trim().to_ascii_lowercase();
+    let mode = if active.starts_with("a2dp") {
+        Some(Mode::Music)
+    } else if active.starts_with("headset") || active.starts_with("handsfree") || active.contains("head-unit") {
+        Some(Mode::Calls)
+    } else {
+        None
+    };
+    let codec = CODECS
+        .iter()
+        .find(|codec| active.ends_with(&format!("-{codec}")) || active.ends_with(&format!("_{codec}")))
+        .map(|codec| codec.replace('_', "-").to_ascii_uppercase())
+        .or_else(|| (mode == Some(Mode::Music)).then(|| "SBC".to_string()));
+    Profile { mode, codec }
+}
+
+#[must_use]
+pub fn card_profile(cards: &str, mac: &str) -> Option<Profile> {
+    let serde_json::Value::Array(cards) = serde_json::from_str::<serde_json::Value>(cards).ok()? else {
+        return None;
+    };
+    let wanted = mac.to_ascii_uppercase();
+    cards
+        .iter()
+        .find(|card| {
+            card.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name.to_ascii_uppercase().contains(&wanted))
+        })
+        .and_then(|card| card.get("active_profile").and_then(serde_json::Value::as_str))
+        .map(parse_profile)
+}
+
+fn read_profile(mac: &str) -> Option<Profile> {
+    pactl(&["--format=json", "list", "cards"]).and_then(|cards| card_profile(&cards, mac))
+}
+
+#[must_use]
+pub fn volume_pct(raw: u16) -> u8 {
+    u8::try_from((u32::from(raw.min(127)) * 100 + 63) / 127).unwrap_or(100)
+}
+
+fn transport_volume(properties: &HashMap<String, OwnedValue>) -> Option<u8> {
+    properties.get("Volume").and_then(|value| u16::try_from(value.clone()).ok()).map(volume_pct)
 }
 
 #[must_use]
@@ -63,7 +131,8 @@ pub fn headset_from(path: &str, device: &HashMap<String, OwnedValue>, battery: O
     }
     let mac = mac_of(path)?.to_string();
     let name = [text("Alias"), text("Name")].into_iter().find(|name| !name.trim().is_empty()).unwrap_or(mac.clone());
-    Some(Headset { mac, name, icon, battery })
+    let address = Some(text("Address")).filter(|address| !address.is_empty()).unwrap_or_else(|| mac.replace('_', ":"));
+    Some(Headset { mac, name, icon, battery, address, volume: None, profile: Profile::default() })
 }
 
 fn percentage(properties: &HashMap<String, OwnedValue>) -> Option<u8> {
@@ -91,6 +160,11 @@ impl Transports {
 
     pub fn appeared(&mut self, path: &str, device: &str, state: &str, now: Instant) {
         self.seed(path, device, state, now + SETTLE);
+    }
+
+    #[must_use]
+    pub fn device_of(&self, path: &str) -> Option<String> {
+        self.known.get(path).map(|transport| transport.device.clone())
     }
 
     fn leave_active(&mut self, path: &str, now: Instant) {
@@ -196,25 +270,38 @@ fn seed(connection: &Connection, transports: &mut Transports) -> Vec<Event> {
         return Vec::new();
     };
     let now = Instant::now();
-    let mut events = Vec::new();
-    for (path, interfaces) in objects {
+    let mut volumes: HashMap<String, u8> = HashMap::new();
+    for (path, interfaces) in &objects {
         if let Some(properties) = interfaces.get(TRANSPORT) {
             let (device, state) = transport_facts(properties);
             transports.seed(path.as_str(), &device, &state, now);
+            if let Some(volume) = transport_volume(properties) {
+                volumes.insert(device, volume);
+            }
         }
+    }
+    let mut events = Vec::new();
+    for (path, interfaces) in &objects {
         let connected = interfaces
             .get(DEVICE)
             .and_then(|device| device.get("Connected"))
             .and_then(|value| bool::try_from(value.clone()).ok());
         let battery = interfaces.get(BATTERY).and_then(percentage);
         if connected == Some(true)
-            && let Some(headset) =
+            && let Some(mut headset) =
                 interfaces.get(DEVICE).and_then(|device| headset_from(path.as_str(), device, battery))
         {
+            headset.volume = volumes.get(path.as_str()).copied();
+            headset.profile = read_profile(&headset.mac).unwrap_or_default();
             events.push(Event::Connected { headset, announce: false });
         }
     }
     events
+}
+
+fn profile_event(device: &str) -> Option<Event> {
+    let mac = mac_of(device)?;
+    read_profile(mac).map(|profile| Event::Profile { mac: mac.to_string(), profile })
 }
 
 fn all_properties(connection: &Connection, path: &str, interface: &str) -> Option<HashMap<String, OwnedValue>> {
@@ -249,8 +336,13 @@ fn bluez_event(connection: &Connection, message: &zbus::Message, transports: &mu
             match interface.as_str() {
                 TRANSPORT => {
                     let state = changed.get("State").and_then(|value| String::try_from(value.clone()).ok());
-                    let volume = transports.changed(&path, state.as_deref(), changed.contains_key("Volume"), now);
-                    volume.then_some(Event::HeadsetVolume).into_iter().collect()
+                    let swiped = transports.changed(&path, state.as_deref(), changed.contains_key("Volume"), now);
+                    let device = transports.device_of(&path);
+                    let level = transport_volume(&changed)
+                        .zip(device.as_deref().and_then(mac_of))
+                        .map(|(level, mac)| Event::Volume { mac: mac.to_string(), level });
+                    let profile = state.and(device.as_deref()).and_then(profile_event);
+                    swiped.then_some(Event::HeadsetVolume).into_iter().chain(level).chain(profile).collect()
                 }
                 DEVICE => match changed.get("Connected").and_then(|value| bool::try_from(value.clone()).ok()) {
                     Some(false) => {
@@ -275,17 +367,23 @@ fn bluez_event(connection: &Connection, message: &zbus::Message, transports: &mu
             else {
                 return Vec::new();
             };
+            let mut events = Vec::new();
             if let Some(transport) = interfaces.get(TRANSPORT) {
                 let (device, state) = transport_facts(transport);
                 transports.appeared(path.as_str(), &device, &state, now);
+                let level = transport_volume(transport)
+                    .zip(mac_of(&device))
+                    .map(|(level, mac)| Event::Volume { mac: mac.to_string(), level });
+                events.extend(level.into_iter().chain(profile_event(&device)));
             }
-            interfaces
-                .get(BATTERY)
-                .and_then(percentage)
-                .zip(mac_of(path.as_str()))
-                .map(|(level, mac)| Event::Battery { mac: mac.to_string(), level })
-                .into_iter()
-                .collect()
+            events.extend(
+                interfaces
+                    .get(BATTERY)
+                    .and_then(percentage)
+                    .zip(mac_of(path.as_str()))
+                    .map(|(level, mac)| Event::Battery { mac: mac.to_string(), level }),
+            );
+            events
         }
         "InterfacesRemoved" => {
             if let Ok((path, interfaces)) = message.body().deserialize::<(OwnedObjectPath, Vec<String>)>()
@@ -398,6 +496,37 @@ impl Session {
 }
 
 impl crate::GlideState {
+    pub(crate) fn run_headset_action(&mut self, action: crate::topbar::TopbarAction) {
+        use crate::qs_net::{NetRequest, request};
+        use crate::topbar::{OpenPopup, TopbarAction};
+        match action {
+            TopbarAction::ToggleHeadset => {
+                self.topbar.toggle_popup(OpenPopup::Headset);
+                if self.topbar.open_popup() == Some(OpenPopup::Headset) {
+                    request(NetRequest::ScanOutputs);
+                }
+            }
+            TopbarAction::HeadsetUseOutput => {
+                if let Some(output) = self.topbar.headset_output().filter(|output| !output.active).cloned() {
+                    self.topbar.begin_connect(&output.name);
+                    request(NetRequest::UseOutput { name: output.name });
+                }
+            }
+            TopbarAction::HeadsetDisconnect => {
+                if let Some(address) = self.topbar.headset().map(|headset| headset.address.clone()) {
+                    self.topbar.close_popup();
+                    request(NetRequest::Bluetooth { mac: address, connect: false });
+                }
+            }
+            TopbarAction::HeadsetSettings => {
+                self.topbar.close_popup();
+                crate::qs_net::open_settings_panel("bluetooth");
+            }
+            _ => return,
+        }
+        self.queue_redraw();
+    }
+
     pub fn handle_headset(&mut self, event: Event) {
         let now = Instant::now();
         match event {
@@ -437,7 +566,17 @@ impl crate::GlideState {
                 self.queue_redraw();
             }
             Event::Battery { mac, level } => {
-                if self.topbar.set_headset_battery(&mac, level) {
+                if self.topbar.update_headset(&mac, |headset| headset.battery = Some(level)) {
+                    self.queue_redraw();
+                }
+            }
+            Event::Volume { mac, level } => {
+                if self.topbar.update_headset(&mac, |headset| headset.volume = Some(level)) {
+                    self.queue_redraw();
+                }
+            }
+            Event::Profile { mac, profile } => {
+                if self.topbar.update_headset(&mac, |headset| headset.profile = profile) {
                     self.queue_redraw();
                 }
             }
@@ -478,11 +617,38 @@ mod tests {
         let buds = headset_from(BUDS, &device("audio-headset", "AirPods Pro"), Some(80)).expect("a headset");
         assert_eq!(
             buds,
-            Headset { mac: "AA".into(), name: "AirPods Pro".into(), icon: "audio-headset".into(), battery: Some(80) }
+            Headset {
+                mac: "AA".into(),
+                name: "AirPods Pro".into(),
+                icon: "audio-headset".into(),
+                battery: Some(80),
+                address: "AA".into(),
+                volume: None,
+                profile: Profile::default(),
+            }
         );
         assert!(headset_from(BUDS, &device("input-mouse", "MX Master"), None).is_none(), "a mouse is no headset");
         let unnamed = headset_from(BUDS, &device("audio-headphones", " "), None).expect("headphones");
         assert_eq!(unnamed.name, "AA", "the address stands in for a missing name");
+    }
+
+    #[test]
+    fn the_card_profile_names_the_mode_and_the_codec() {
+        assert_eq!(parse_profile("a2dp-sink-aac"), Profile { mode: Some(Mode::Music), codec: Some("AAC".into()) });
+        assert_eq!(parse_profile("a2dp-sink"), Profile { mode: Some(Mode::Music), codec: Some("SBC".into()) });
+        assert_eq!(
+            parse_profile("a2dp-sink-sbc_xq"),
+            Profile { mode: Some(Mode::Music), codec: Some("SBC-XQ".into()) }
+        );
+        assert_eq!(
+            parse_profile("headset-head-unit-msbc"),
+            Profile { mode: Some(Mode::Calls), codec: Some("MSBC".into()) }
+        );
+        assert_eq!(parse_profile("off"), Profile::default());
+        let cards = r#"[{"name":"bluez_card.AA_BB","active_profile":"a2dp-sink-ldac"},{"name":"alsa_card.pci","active_profile":"output:analog-stereo"}]"#;
+        assert_eq!(card_profile(cards, "aa_bb").and_then(|profile| profile.codec), Some("LDAC".into()));
+        assert_eq!(card_profile(cards, "CC_DD"), None);
+        assert_eq!((volume_pct(0), volume_pct(64), volume_pct(127), volume_pct(400)), (0, 50, 100, 100));
     }
 
     #[test]

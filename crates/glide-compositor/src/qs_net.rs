@@ -845,7 +845,7 @@ fn scan_detail(detail: Detail) {
     }
 }
 
-fn open_settings_panel(slug: &str) {
+pub(crate) fn open_settings_panel(slug: &str) {
     let mut command = Command::new("glide-settings");
     command.arg(slug);
     if let Err(err) = crate::spawn_detached(command) {
