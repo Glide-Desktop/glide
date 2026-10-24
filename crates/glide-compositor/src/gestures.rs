@@ -1157,4 +1157,90 @@ mod tests {
         assert!(v_up > 0.5);
         assert_eq!(settle(SHELL_DESKTOP, 0.10, v_up, false), SHELL_OVERVIEW);
     }
+
+    #[test]
+    fn rubber_banding_resists_more_the_further_it_is_pulled() {
+        let sw = 1920.0;
+        let mut slope = 1.0;
+        for dx in (0..200).map(|step| f64::from(step) * 50.0) {
+            let next = calculate_rubber_band(dx + 1.0, sw) - calculate_rubber_band(dx, sw);
+            assert!(next > 0.0 && next <= slope + 1e-9, "slope at {dx}: {next}");
+            slope = next;
+        }
+        for width in [0.0, -1920.0] {
+            assert_eq!(calculate_rubber_band(100.0, width), 0.0);
+            assert_eq!(normalized_progress(100.0, width), 0.0);
+            assert_eq!(normalized_velocity_x(500.0, width), 0.0);
+        }
+    }
+
+    #[test]
+    fn the_commit_thresholds_are_strict_and_the_outer_edges_never_commit() {
+        let target = |active, total, progress, velocity| {
+            decide_workspace_settlement(active, total, progress, velocity, false).target
+        };
+        assert_eq!(target(2, 5, 0.35, 0.0), None);
+        assert_eq!(target(2, 5, -0.35, 0.0), None);
+        assert_eq!(target(2, 5, 0.35001, 0.0), Some(WorkspaceTarget::Next));
+        assert_eq!(target(2, 5, -0.36, 0.0), Some(WorkspaceTarget::Previous));
+        assert_eq!(target(1, 4, 0.15, 0.50), None);
+        assert_eq!(target(1, 4, 0.15, 0.50001), Some(WorkspaceTarget::Next));
+        assert_eq!(target(1, 4, 0.0, 1.5), None);
+        for dx in [500.0, 5000.0, 100_000.0] {
+            let left = normalized_progress(effective_displacement(0, 4, dx, 1920.0), 1920.0);
+            let right = normalized_progress(effective_displacement(3, 4, -dx, 1920.0), 1920.0);
+            assert_eq!(target(0, 4, left, -2.0), None);
+            assert_eq!(target(3, 4, right, 2.0), None);
+        }
+        assert_eq!(target(0, 1, 0.5, 1.0), None);
+        assert_eq!(target(0, 0, 0.5, 1.0), None);
+    }
+
+    #[test]
+    fn velocity_forgets_samples_older_than_its_window() {
+        let mut tracker = VelocityTracker::new(Duration::from_millis(100));
+        let t0 = Instant::now();
+        tracker.push(t0, -10.0, 0.0);
+        tracker.push(t0 + Duration::from_millis(20), -20.0, 0.0);
+        assert!(tracker.velocity_x() < 0.0);
+        tracker.push(t0 + Duration::from_millis(150), 50.0, 0.0);
+        tracker.push(t0 + Duration::from_millis(170), 50.0, 0.0);
+        assert!(tracker.velocity_x() > 0.0);
+        tracker.reset();
+        assert_eq!(tracker.velocity_x(), 0.0);
+    }
+
+    #[test]
+    fn a_workspace_swipe_settles_on_its_target_and_rubber_bands_when_reversed_past_the_edge() {
+        let sw = 1920.0;
+        let mut state = WorkspaceSwipeState::new(1, 3, sw);
+        state.update(-0.4 * SWIPE_DISTANCE);
+        assert!((state.current_progress() - 0.40).abs() < 1e-6);
+        let settle = decide_workspace_settlement(1, 3, state.current_progress(), 0.0, false);
+        assert_eq!(settle.target, Some(WorkspaceTarget::Next));
+        state.phase = WorkspaceSwipePhase::Settling {
+            started: Instant::now().checked_sub(Duration::from_millis(500)).unwrap(),
+            release: Release { duration: Duration::from_millis(200), slope: 0.0 },
+            from_progress: state.current_progress(),
+            target_progress: settle.target_progress,
+            target_workspace: settle.target,
+        };
+        assert!((state.current_progress() - 1.0).abs() < 1e-6);
+
+        let mut state = WorkspaceSwipeState::new(0, 3, sw);
+        state.update(-300.0);
+        state.update(800.0);
+        assert!(is_at_boundary(0, 3, state.raw_delta_x));
+        assert!(state.effective_x() < 0.25 * sw && state.current_progress().abs() < 0.25);
+    }
+
+    #[test]
+    fn an_axis_once_chosen_stays_locked() {
+        let mut tracker = TouchpadGestureTracker::new(SHELL_DESKTOP);
+        let t = Instant::now();
+        tracker.update(t, 13.0, 0.0);
+        assert_eq!(tracker.kind, GestureKind::Workspace);
+        tracker.update(t, 0.0, 100.0);
+        assert_eq!(tracker.kind, GestureKind::Workspace);
+    }
 }
