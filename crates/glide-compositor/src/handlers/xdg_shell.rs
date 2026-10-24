@@ -58,15 +58,10 @@ impl XdgShellHandler for GlideState {
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;
         };
-        let Some(window) = self.window_map.get(&id) else {
+        if !self.window_map.contains_key(&id) {
             return;
-        };
-        let (title, _) = toplevel_title_and_app_id(surface.wl_surface());
-        if let Some(title) = title.clone()
-            && let Some(mut deco) = window.try_decoration_state_mut()
-        {
-            deco.header.set_title(title);
         }
+        let (title, _) = toplevel_title_and_app_id(surface.wl_surface());
         self.ipc_subscribers
             .broadcast(&glide_ipc::Event::TitleChanged { id: id.as_u64(), title: title.unwrap_or_default() });
         self.refresh_dock();

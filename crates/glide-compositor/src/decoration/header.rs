@@ -56,7 +56,6 @@ pub struct HeaderBar {
     pub(crate) height: i32,
     pub(crate) width: i32,
     pub(crate) content_height: i32,
-    pub(crate) title: String,
     pub(crate) pointer_loc: Option<Point<f64, Logical>>,
     pub(crate) menu: glide_ui::Reveal,
     pub(crate) menu_t: Fade,
@@ -82,38 +81,22 @@ pub struct HeaderBar {
     pub(crate) buffers: std::collections::HashMap<i32, HeaderBuffers>,
 }
 
+type ButtonKey = (i32, [u32; 4], [u32; 4], bool, bool);
+type MenuKey = (i32, i32, Vec<u8>, bool, u32, u64);
+
 #[derive(Debug, Default)]
 pub(crate) struct HeaderBuffers {
     pub(crate) titlebar: Option<MemoryRenderBuffer>,
     pub(crate) maximize: Option<MemoryRenderBuffer>,
     pub(crate) close: Option<MemoryRenderBuffer>,
     pub(crate) menu: Option<MemoryRenderBuffer>,
-    last_redraw: Option<RedrawSnapshot>,
+    titlebar_key: Option<(i32, i32, [u32; 4], u32)>,
+    button_keys: [Option<ButtonKey>; 2],
+    menu_key: Option<MenuKey>,
 }
 
-// Orthogonal states that hold in any combination; an enum would lose information.
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RedrawSnapshot {
-    width: i32,
-    height: i32,
-    scale: i32,
-    focused: bool,
-    maximized: bool,
-    theme_rev: u32,
-    painter_gen: u64,
-    title: String,
-    hovered: Option<HitZone>,
-    hover_t_bits: u32,
-    focus_fade_bits: u32,
-    pressed: Option<HitZone>,
-    press_zone: Option<HitZone>,
-    press_t_bits: u32,
-    dragging: bool,
-    menu_visible: bool,
-    menu_width: i32,
-    menu_hover: Option<usize>,
-    menu_row_alpha: Vec<u8>,
+fn bits(colour: Color) -> [u32; 4] {
+    colour.0.map(f32::to_bits)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,15 +267,6 @@ impl HeaderBar {
         }
         let t = elapsed.as_secs_f64() / duration.as_secs_f64();
         ease_io(t) as f32
-    }
-
-    pub fn set_title(&mut self, title: String) {
-        if self.title != title {
-            self.title = title;
-            for buffers in self.buffers.values_mut() {
-                buffers.titlebar = None;
-            }
-        }
     }
 
     #[must_use]
@@ -613,35 +587,11 @@ impl HeaderBar {
             Vec::new()
         };
 
-        let snapshot = RedrawSnapshot {
-            width: self.width,
-            height: self.height,
-            scale,
-            focused: self.focused,
-            maximized: self.maximized,
-            theme_rev: self.theme_rev,
-            painter_gen: crate::paint::painter_generation(),
-            title: self.title.clone(),
-            hovered,
-            hover_t_bits: hover_t.to_bits(),
-            focus_fade_bits: focus_fade_t.to_bits(),
-            pressed,
-            press_zone,
-            press_t_bits: press_t.to_bits(),
-            dragging: self.dragging,
-            menu_visible,
-            menu_width: self.menu_width,
-            menu_hover: self.menu_hover.filter(|_| menu_visible),
-            menu_row_alpha: menu_row_alpha.clone(),
-        };
         let container_h = self.menu_container_height();
         let menu_w = self.menu_panel_rect().size.width;
         let button_size = self.button_size();
         let buffers = self.buffers.entry(scale).or_default();
-        if buffers.last_redraw.as_ref() == Some(&snapshot) {
-            return false;
-        }
-        buffers.last_redraw = Some(snapshot);
+        let mut changed = false;
 
         let theme = &self.theme;
         let mix = |from: crate::config::Color, to: crate::config::Color| {
@@ -662,7 +612,10 @@ impl HeaderBar {
 
         let corner_radius = if self.maximized { 0.0 } else { theme.corner_radius };
 
-        {
+        let titlebar_key = (self.width, self.height, bits(bg_color), corner_radius.to_bits());
+        if buffers.titlebar_key != Some(titlebar_key) {
+            buffers.titlebar_key = Some(titlebar_key);
+            changed = true;
             let w = self.width;
             let h = self.height;
             let (pw, ph) = (w * scale, h * scale);
@@ -689,8 +642,10 @@ impl HeaderBar {
             if self.maximized { Painter::draw_icon_restore } else { Painter::draw_icon_maximize };
 
         let fg_hover = Color([1.0, 1.0, 1.0, 1.0]);
-        for (buf, zone, normal, hover_bg, fg, icon) in &mut [
+        let [maximize_key, close_key] = &mut buffers.button_keys;
+        for (key, buf, zone, normal, hover_bg, fg, icon) in [
             (
+                maximize_key,
                 &mut buffers.maximize,
                 HitZone::Maximize,
                 theme.maximize_button,
@@ -699,6 +654,7 @@ impl HeaderBar {
                 maximize_icon,
             ),
             (
+                close_key,
                 &mut buffers.close,
                 HitZone::Close,
                 theme.close_button,
@@ -707,15 +663,31 @@ impl HeaderBar {
                 Painter::draw_icon_close,
             ),
         ] {
-            let is_hovered = hovered == Some(*zone);
-            let is_pressed = pressed == Some(*zone);
-            let zone_press_t = if press_zone == Some(*zone) { press_t } else { 0.0 };
+            let is_hovered = hovered == Some(zone);
+            let is_pressed = pressed == Some(zone);
+            let zone_press_t = if press_zone == Some(zone) { press_t } else { 0.0 };
             let (btn_bg, btn_fg) =
-                button_colors(*normal, *hover_bg, *fg, fg_hover, hover_t, is_hovered, zone_press_t, self.focused);
-            redraw_button(buf, button_size, scale, btn_bg, btn_fg, is_pressed, *icon);
+                button_colors(normal, hover_bg, fg, fg_hover, hover_t, is_hovered, zone_press_t, self.focused);
+            let restore = self.maximized && zone == HitZone::Maximize;
+            let button_key = (button_size, bits(btn_bg), bits(btn_fg), is_pressed, restore);
+            if *key != Some(button_key) {
+                *key = Some(button_key);
+                changed = true;
+                redraw_button(buf, button_size, scale, btn_bg, btn_fg, is_pressed, icon);
+            }
         }
 
-        if menu_visible {
+        let menu_key = (
+            menu_w,
+            container_h,
+            menu_row_alpha.clone(),
+            self.maximized,
+            self.theme_rev,
+            crate::paint::painter_generation(),
+        );
+        if menu_visible && buffers.menu_key.as_ref() != Some(&menu_key) {
+            buffers.menu_key = Some(menu_key);
+            changed = true;
             let (pw, ph) = (menu_w * scale, container_h * scale);
             let buf = buffers.menu.get_or_insert_with(|| {
                 MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
@@ -767,10 +739,11 @@ impl HeaderBar {
                 }
                 Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
             });
-        } else {
-            buffers.menu = None;
+        } else if !menu_visible && buffers.menu.take().is_some() {
+            buffers.menu_key = None;
+            changed = true;
         }
 
-        true
+        changed
     }
 }
