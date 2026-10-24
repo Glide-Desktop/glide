@@ -1,71 +1,88 @@
 pub fn box_blur_rgba(buf: &mut [u8], width: i32, height: i32, radius: i32) {
-    if radius <= 0 || width <= 0 || height <= 0 {
-        return;
-    }
-    let Ok(len) = usize::try_from(width * height) else {
-        return;
-    };
-    if buf.len() < len * 4 {
-        return;
-    }
-
-    let mut plane = vec![0u8; len];
-    for channel in 0..4 {
-        for (i, px) in plane.iter_mut().enumerate() {
-            *px = buf[i * 4 + channel];
-        }
-        box_blur_alpha(&mut plane, width, height, radius);
-        for (i, px) in plane.iter().enumerate() {
-            buf[i * 4 + channel] = *px;
-        }
-    }
+    blur::<4>(buf, width, height, radius);
 }
 
 pub(crate) fn box_blur_alpha(alpha: &mut [u8], width: i32, height: i32, radius: i32) {
-    if radius <= 0 || width <= 0 || height <= 0 {
-        return;
-    }
-    let Ok(len) = usize::try_from(width * height) else {
+    blur::<1>(alpha, width, height, radius);
+}
+
+fn blur<const C: usize>(buf: &mut [u8], width: i32, height: i32, radius: i32) {
+    let (Ok(w), Ok(h), Ok(r)) = (usize::try_from(width), usize::try_from(height), usize::try_from(radius)) else {
         return;
     };
-    if alpha.len() < len {
+    let row = w * C;
+    if w == 0 || h == 0 || r == 0 || buf.len() < row * h {
         return;
     }
-
-    let mut scratch = vec![0u8; len];
+    let buf = &mut buf[..row * h];
+    let means: Vec<Mean> = (0..=(2 * r + 1).min(w.max(h))).map(Mean::of_count).collect();
+    let mut scratch = vec![0u8; buf.len()];
+    let mut sums = vec![0u32; row];
     for _ in 0..3 {
-        box_blur_pass(alpha, &mut scratch, width, height, radius, true);
-        box_blur_pass(&scratch, alpha, width, height, radius, false);
+        for (src, dst) in buf.chunks_exact(row).zip(scratch.chunks_exact_mut(row)) {
+            blur_row::<C>(src, dst, r, &means);
+        }
+        blur_columns(&scratch, buf, row, r, &means, &mut sums);
     }
 }
 
-fn rounded_mean(sum: i64, count: i64) -> u8 {
-    let count = count.max(1);
-    u8::try_from((sum + count / 2) / count).unwrap_or(u8::MAX)
+#[derive(Debug, Clone, Copy)]
+struct Mean {
+    half: u32,
+    reciprocal: u64,
 }
 
-fn box_blur_pass(src: &[u8], dst: &mut [u8], width: i32, height: i32, radius: i32, horizontal: bool) {
-    let (len, lines, step, line_step) = if horizontal { (width, height, 1, width) } else { (height, width, width, 1) };
-    for line in 0..lines {
-        let at = |i: i32| (line * line_step + i * step) as usize;
-        let mut sum: i64 = 0;
-        let mut count: i64 = 0;
-        for i in 0..=radius.min(len - 1) {
-            sum += i64::from(src[at(i)]);
+impl Mean {
+    fn of_count(count: usize) -> Self {
+        let count = count.max(1) as u64;
+        Self { half: (count / 2) as u32, reciprocal: (1 << 48) / count + 1 }
+    }
+
+    fn apply(self, sum: u32) -> u8 {
+        ((u64::from(sum + self.half) * self.reciprocal) >> 48).min(255) as u8
+    }
+}
+
+fn blur_row<const C: usize>(src: &[u8], dst: &mut [u8], r: usize, means: &[Mean]) {
+    let len = src.len() / C;
+    let pixel = |i: usize| -> [u32; C] { std::array::from_fn(|c| u32::from(src[i * C + c])) };
+    let mut count = r.min(len - 1) + 1;
+    let mut sums = [0u32; C];
+    for i in 0..count {
+        sums.iter_mut().zip(pixel(i)).for_each(|(sum, v)| *sum += v);
+    }
+    for (i, out) in dst.chunks_exact_mut(C).enumerate() {
+        let mean = means[count];
+        out.iter_mut().zip(sums).for_each(|(px, sum)| *px = mean.apply(sum));
+        if i >= r {
+            sums.iter_mut().zip(pixel(i - r)).for_each(|(sum, v)| *sum -= v);
+            count -= 1;
+        }
+        if i + r + 1 < len {
+            sums.iter_mut().zip(pixel(i + r + 1)).for_each(|(sum, v)| *sum += v);
             count += 1;
         }
-        for i in 0..len {
-            dst[at(i)] = rounded_mean(sum, count);
-            let leaving = i - radius;
-            let entering = i + radius + 1;
-            if leaving >= 0 {
-                sum -= i64::from(src[at(leaving)]);
-                count -= 1;
-            }
-            if entering < len {
-                sum += i64::from(src[at(entering)]);
-                count += 1;
-            }
+    }
+}
+
+fn blur_columns(src: &[u8], dst: &mut [u8], row: usize, r: usize, means: &[Mean], sums: &mut [u32]) {
+    let rows = src.len() / row;
+    let line = |y: usize| &src[y * row..(y + 1) * row];
+    let add = |sums: &mut [u32], y: usize| sums.iter_mut().zip(line(y)).for_each(|(sum, &v)| *sum += u32::from(v));
+    let remove = |sums: &mut [u32], y: usize| sums.iter_mut().zip(line(y)).for_each(|(sum, &v)| *sum -= u32::from(v));
+    sums.fill(0);
+    let mut count = r.min(rows - 1) + 1;
+    (0..count).for_each(|y| add(sums, y));
+    for (y, out) in dst.chunks_exact_mut(row).enumerate() {
+        let mean = means[count];
+        out.iter_mut().zip(sums.iter()).for_each(|(px, &sum)| *px = mean.apply(sum));
+        if y >= r {
+            remove(sums, y - r);
+            count -= 1;
+        }
+        if y + r + 1 < rows {
+            add(sums, y + r + 1);
+            count += 1;
         }
     }
 }
@@ -155,11 +172,61 @@ mod tests {
 
     #[test]
     fn the_window_mean_rounds_to_nearest_instead_of_truncating() {
-        assert_eq!(rounded_mean(3, 2), 2);
-        assert_eq!(rounded_mean(5, 3), 2);
-        assert_eq!(rounded_mean(4, 3), 1);
-        assert_eq!(rounded_mean(255 * 7, 7), 255);
-        assert_eq!(rounded_mean(0, 0), 0);
+        let of = |sum: usize, count: usize| usize::from(Mean::of_count(count).apply(sum as u32));
+        assert_eq!(of(3, 2), 2);
+        assert_eq!(of(5, 3), 2);
+        assert_eq!(of(4, 3), 1);
+        assert_eq!(of(255 * 7, 7), 255);
+        for count in (1..=5000).chain([65_536, 1_000_000]) {
+            for sum in [0, 1, count / 2, count, 127 * count + count / 2, 255 * count - 1, 255 * count] {
+                assert_eq!(of(sum, count), (sum + count / 2) / count, "{sum} / {count}");
+            }
+        }
+    }
+
+    fn reference(buf: &mut [u8], width: usize, height: usize, radius: usize, channels: usize) {
+        let pass = |src: &[u8], dst: &mut [u8], horizontal: bool| {
+            let (len, lines) = if horizontal { (width, height) } else { (height, width) };
+            for channel in 0..channels {
+                for line in 0..lines {
+                    let at = |i: usize| {
+                        let (x, y) = if horizontal { (i, line) } else { (line, i) };
+                        (y * width + x) * channels + channel
+                    };
+                    for i in 0..len {
+                        let window = i.saturating_sub(radius)..=(i + radius).min(len - 1);
+                        let count = window.clone().count();
+                        let sum: usize = window.map(|j| usize::from(src[at(j)])).sum();
+                        dst[at(i)] = ((sum + count / 2) / count) as u8;
+                    }
+                }
+            }
+        };
+        let mut scratch = vec![0u8; buf.len()];
+        for _ in 0..3 {
+            pass(buf, &mut scratch, true);
+            pass(&scratch, buf, false);
+        }
+    }
+
+    #[test]
+    fn the_blur_matches_a_plain_window_mean_to_the_bit() {
+        let mut seed = 0x2545_f491_u32;
+        for (w, h, r, channels) in [(17, 9, 3, 4), (5, 23, 7, 1), (31, 31, 40, 4), (1, 12, 2, 1), (12, 1, 5, 4)] {
+            let mut buf: Vec<u8> = (0..w * h * channels)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    (seed >> 24) as u8
+                })
+                .collect();
+            let mut expected = buf.clone();
+            reference(&mut expected, w, h, r, channels);
+            let blur = if channels == 4 { box_blur_rgba } else { box_blur_alpha };
+            blur(&mut buf, w as i32, h as i32, r as i32);
+            assert_eq!(buf, expected, "{w}x{h} r={r} channels={channels}");
+        }
     }
 
     #[test]
