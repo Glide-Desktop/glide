@@ -74,11 +74,37 @@ pub(crate) fn decode_jpeg(bytes: &[u8]) -> Option<Pixmap> {
 static WALLPAPER_SOURCE: RwLock<Option<Arc<Pixmap>>> = RwLock::new(None);
 static WALLPAPER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+static WALLPAPER_REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn init_wallpaper(override_bytes: Option<&[u8]>) {
+    install(WALLPAPER_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, override_bytes);
+}
+
+fn install(request: u64, override_bytes: Option<&[u8]>) {
     let decoded = override_bytes.and_then(decode_wallpaper).or_else(|| decode_wallpaper(embedded_wallpaper_bytes()));
     let mut slot = WALLPAPER_SOURCE.write().expect(crate::NEVER_POISONED);
-    *slot = decoded.map(Arc::new);
-    WALLPAPER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if WALLPAPER_REQUESTS.load(std::sync::atomic::Ordering::Relaxed) == request {
+        *slot = decoded.map(Arc::new);
+        WALLPAPER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+pub fn load_wallpaper(path: Option<std::path::PathBuf>, done: impl FnOnce(Option<std::io::Error>) + Send + 'static) {
+    let request = WALLPAPER_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let load = move || {
+        let read = path.map(std::fs::read).transpose();
+        let (bytes, error) = match read {
+            Ok(bytes) => (bytes, None),
+            Err(error) => (None, Some(error)),
+        };
+        install(request, bytes.as_deref());
+        done(error);
+    };
+    if WALLPAPER_SOURCE.read().expect(crate::NEVER_POISONED).is_none() {
+        load();
+    } else {
+        let _ = std::thread::Builder::new().name("glide-wallpaper".into()).spawn(load);
+    }
 }
 
 #[must_use]
@@ -329,6 +355,19 @@ mod tests {
                 assert!(render(band_rows) == whole, "{fit:?} in bands of {band_rows} rows");
             }
         }
+    }
+
+    #[test]
+    fn a_wallpaper_that_cannot_be_read_reports_why_and_keeps_an_image() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        load_wallpaper(Some("/nonexistent/glide-wallpaper.png".into()), move |error| {
+            let _ = sender.send(error.map(|error| error.kind()));
+        });
+        let reported = receiver.recv_timeout(std::time::Duration::from_secs(10)).expect("the load finishes");
+        assert_eq!(reported, Some(std::io::ErrorKind::NotFound));
+        let mut buf = vec![0u8; 4 * 4 * 4];
+        draw_wallpaper_into(&mut buf, 4, 4, WallpaperFit::Cover);
+        assert!(buf.chunks_exact(4).all(|px| px[3] == 255));
     }
 
     #[test]

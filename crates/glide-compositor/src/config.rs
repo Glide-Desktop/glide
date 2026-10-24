@@ -1336,14 +1336,16 @@ impl Config {
         state.refresh_painter_font();
 
         if state.applied_config.wallpaper_changed(self.general.wallpaper.as_deref()) {
-            let wallpaper_bytes = self.general.wallpaper.as_ref().and_then(|path| {
-                fs::read(path)
-                    .inspect_err(|err| {
-                        tracing::warn!(path = %path.display(), "failed to read wallpaper: {err}");
-                    })
-                    .ok()
+            let (sender, receiver) = smithay::reexports::calloop::channel::channel::<()>();
+            let _ = state.loop_handle.insert_source(receiver, |_, (), state| state.queue_redraw());
+            let path = self.general.wallpaper.clone();
+            let shown = path.as_ref().map(|path| path.display().to_string()).unwrap_or_default();
+            glide_paint::load_wallpaper(path, move |error| {
+                if let Some(err) = error {
+                    tracing::warn!(path = %shown, "failed to read wallpaper: {err}");
+                }
+                let _ = sender.send(());
             });
-            glide_paint::init_wallpaper(wallpaper_bytes.as_deref());
         }
 
         if let Ok(height) = i32::try_from(self.decorations.height) {

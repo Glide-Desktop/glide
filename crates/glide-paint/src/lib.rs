@@ -28,7 +28,7 @@ pub enum TextAlign {
 mod wallpaper;
 pub use wallpaper::{
     compose_wallpaper, decode_wallpaper, desaturate_in_place, draw_wallpaper_into, embedded_wallpaper_bytes,
-    fit_transform, init_wallpaper, saturate_in_place, wallpaper_generation,
+    fit_transform, init_wallpaper, load_wallpaper, saturate_in_place, wallpaper_generation,
 };
 
 mod blur;
