@@ -54,6 +54,7 @@ pub fn view<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         Page::Feedback => feedback(catalog, shell),
         Page::Layout => layout(catalog, shell),
         Page::Cards => cards(catalog, shell),
+        Page::Secrets => secrets(catalog, shell),
         Page::Overlays => overlays(shell),
         Page::Type => typography(shell),
         Page::Motion => motion(catalog, shell),
@@ -932,6 +933,149 @@ fn tables<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
     ]
     .spacing(SP3)
     .into()
+}
+
+fn secrets<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let secret = "c7#Vq2!mWx9tLp4Rz8";
+    let field = column![
+        ui::secret_field(paint, secret)
+            .revealed(catalog.revealed)
+            .on_reveal(Message::Reveal, shell.t("Показати", "Show"), shell.t("Сховати", "Hide"))
+            .on_copy(Message::Said("copy"), shell.t("Скопіювати", "Copy")),
+        ui::password_text(paint, secret, ui::SECRET),
+    ]
+    .spacing(SP3);
+    let meters = Column::with_children(
+        [
+            (ui::Strength::Weak, shell.t("Слабкий", "Weak")),
+            (ui::Strength::Fair, shell.t("Середній", "Fair")),
+            (ui::Strength::Strong, shell.t("Надійний", "Strong")),
+            (ui::Strength::VeryStrong, shell.t("Дуже надійний", "Very strong")),
+        ]
+        .into_iter()
+        .map(|(strength, label)| ui::strength_line(paint, strength, label)),
+    )
+    .spacing(SP2);
+    let codes = wrap(vec![ui::totp(paint, "482913", 17, 30), ui::totp(paint, "482913", 4, 30)]);
+    let chips = wrap(vec![
+        ui::vault_chip(paint, "Bitwarden", ui::VaultState::Synced),
+        ui::vault_chip(paint, shell.t("Особисте", "Personal"), ui::VaultState::Local),
+        ui::vault_chip(paint, shell.t("Bitwarden · дім", "Bitwarden · home"), ui::VaultState::Pending),
+        ui::vault_chip(paint, shell.t("Розблоковано", "Unlocked"), ui::VaultState::Unlocked),
+        ui::vault_chip(paint, "Bitwarden", ui::VaultState::Current),
+    ]);
+    let tiles = wrap(vec![
+        ui::mark_tile(paint, "GitHub", 22.0, false),
+        ui::mark_tile(paint, "GitHub", 32.0, false),
+        ui::mark_tile(paint, "GitHub", 40.0, true),
+        ui::mark_tile(paint, "GitHub", 56.0, true),
+        ui::glyph_tile(paint, Icon::File, 40.0, false),
+    ]);
+    let rows = column![
+        ui::entry_row(
+            paint,
+            ui::mark_tile(paint, "GitHub", 32.0, true),
+            "GitHub",
+            "artem-dev",
+            vec![ui::dot(paint.ok(), 6.0)],
+            catalog.version == 0,
+            Message::Version(0),
+        ),
+        ui::entry_row(
+            paint,
+            ui::mark_tile(paint, "Telegram", 32.0, false),
+            "Telegram Desktop",
+            "@artem_k",
+            vec![ui::dot(paint.fg_4(), 6.0)],
+            catalog.version == 1,
+            Message::Version(1),
+        ),
+    ]
+    .spacing(2);
+    let code: Element<'_, Message> = ui::code_input(paint, &catalog.code, 6, Message::Code).into();
+    let link = ui::link_field(
+        paint,
+        "https://send.bitwarden.com/#/8sKq2Lw7RzaxX0Tb/Hq9nV2c",
+        shell.t("Скопіювати", "Copy"),
+        Some(Message::Said("copy link")),
+    );
+    let qr = ui::qr_code(paint, "https://send.bitwarden.com/#/8sKq2Lw7RzaxX0Tb/Hq9nV2c", 148.0);
+    let mut blocks = vec![
+        demo(shell, shell.t("Поле секрету", "Secret field"), field),
+        demo(shell, shell.t("Сила пароля", "Password strength"), meters),
+        demo(shell, shell.t("Код підтвердження", "Verification code"), codes),
+        demo(shell, shell.t("Введення коду", "Code entry"), code),
+        demo(shell, shell.t("Сховища", "Vaults"), column![chips, tiles].spacing(SP3)),
+        demo(shell, shell.t("Рядки записів", "Entry rows"), rows),
+    ];
+    blocks.extend(choices(catalog, shell));
+    blocks.push(demo(shell, shell.t("Посилання", "Link"), column![link, qr].spacing(SP3)));
+    page(
+        shell,
+        Page::Secrets,
+        shell.t(
+            "Поля секретів, сила пароля, коди TOTP, стани сховищ і посилання для надсилання.",
+            "Secret fields, password strength, TOTP codes, vault states and share links.",
+        ),
+        blocks,
+    )
+}
+
+fn choices<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Vec<Element<'a, Message>> {
+    let paint = shell.paint();
+    let field_of = |label: &str, value: &str, differs: bool| ui::DiffField {
+        label: label.to_string(),
+        value: value.to_string(),
+        differs,
+        extra: None,
+    };
+    let versions = row![
+        ui::diff_card(
+            paint,
+            shell.t("Цей пристрій", "This device"),
+            shell.t("сьогодні 14:02, офлайн", "today 14:02, offline"),
+            None,
+            vec![field_of(shell.t("Пароль", "Password"), "quartz-lantern-91-bloom", true)],
+            catalog.version == 0,
+            Message::Version(0),
+        ),
+        ui::diff_card(
+            paint,
+            shell.t("Сервер", "Server"),
+            shell.t("сьогодні 14:10", "today 14:10"),
+            Some(shell.t("Новіша", "Newer")),
+            vec![field_of(shell.t("Пароль", "Password"), "Hx8$pQ2m!Lw9vRt4", true)],
+            catalog.version == 1,
+            Message::Version(1),
+        ),
+    ]
+    .spacing(SP3);
+    let stats = row![
+        ui::stat_choice(
+            paint,
+            "7",
+            paint.danger(),
+            shell.t("Слабкі", "Weak"),
+            shell.t("Легко підібрати", "Easy to guess"),
+            catalog.filter == 0,
+            Message::Filter(0),
+        ),
+        ui::stat_choice(
+            paint,
+            "12",
+            paint.warn(),
+            shell.t("Повторені", "Reused"),
+            shell.t("5 однакових паролів", "5 shared passwords"),
+            catalog.filter == 1,
+            Message::Filter(1),
+        ),
+    ]
+    .spacing(SP3);
+    vec![
+        demo(shell, shell.t("Версії запису", "Item versions"), versions),
+        demo(shell, shell.t("Фільтри перевірки", "Check filters"), stats),
+    ]
 }
 
 fn overlays(shell: &Shell<Message>) -> Element<'_, Message> {

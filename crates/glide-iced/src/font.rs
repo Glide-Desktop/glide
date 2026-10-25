@@ -2,6 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static REVISION: AtomicU64 = AtomicU64::new(0);
 
+pub const TABULAR: iced::Font =
+    iced::Font { family: iced::font::Family::Name(glide_paint::TABULAR_FAMILY), ..iced::Font::DEFAULT };
+
 pub fn use_ui_family(requested: Option<&str>) -> String {
     use iced::advanced::graphics::text::cosmic_text::fontdb::{Family, Query, Style, Weight};
     let mut system =

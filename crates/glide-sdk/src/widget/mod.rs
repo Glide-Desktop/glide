@@ -15,6 +15,7 @@ pub mod mock;
 mod panes;
 mod pointer;
 mod popover;
+mod secrets;
 mod selection;
 mod strip;
 
@@ -68,6 +69,12 @@ pub use media::{
 pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, split_view, stat_rows};
 pub use pointer::{ContextArea, context_area, reveal};
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
+pub use secrets::{
+    CODE, CodeSize, DiffField, ENTRY_ROW, Glyphs, HALO, MASK, QrModules, SECRET, SecretField, Strength, VaultState,
+    classify, code_cells, code_input, copy_button, countdown_ring, diff_card, entry_row, glyph_tile, grouped_code,
+    halo, link_field, mark_tile, masked, only_digits, password_text, qr_code, runs, secret_field, secret_value,
+    stat_choice, strength_line, strength_meter, tinted_tile, totp, vault_chip, wide_button,
+};
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
     page_dots, radio_group, segmented, sidebar_list, swatch, swatches, tabs, track,
