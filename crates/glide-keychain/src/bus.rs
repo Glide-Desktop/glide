@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use glide_ipc::keychain::{Hidden, Request, Response};
+use glide_ipc::keychain::{Request, Response};
 use zbus::fdo;
 use zbus::message::Header;
 
-use crate::daemon::{APP_ATTRIBUTE, Daemon, Login, PROGRAM_ATTRIBUTE};
+use crate::daemon::{Daemon, mutates};
 
 pub const BUS_NAME: &str = "org.glide.Keychain";
 pub const PATH: &str = "/org/glide/Keychain1";
+pub const INTERFACE: &str = "org.glide.Keychain1";
+pub const CLIENT: &str = "glide-passwords";
 
 pub type Events = Arc<dyn Fn(Response) + Send + Sync>;
 
@@ -31,130 +33,31 @@ impl Keychain {
         if program.is_some_and(|program| self.allowed.contains(&program)) {
             Ok(())
         } else {
-            Err(fdo::Error::AccessDenied("only Glide Settings may manage the keychain".into()))
+            Err(fdo::Error::AccessDenied("only Glide Passwords may open the keychain".into()))
         }
     }
-
-    fn run(&self, request: Request) -> Response {
-        self.daemon.lock().unwrap_or_else(PoisonError::into_inner).handle(request)
-    }
-
-    fn with<R>(&self, work: impl FnOnce(&mut Daemon) -> R) -> R {
-        work(&mut self.daemon.lock().unwrap_or_else(PoisonError::into_inner))
-    }
 }
-
-fn failed(response: Response) -> fdo::Error {
-    match response {
-        Response::Locked => fdo::Error::Failed("locked".into()),
-        Response::WrongPassword => fdo::Error::AuthFailed("wrong password".into()),
-        Response::Error { message } => fdo::Error::Failed(message),
-        other => fdo::Error::Failed(format!("{other:?}")),
-    }
-}
-
-fn done(response: Response) -> fdo::Result<()> {
-    match response {
-        Response::Done => Ok(()),
-        other => Err(failed(other)),
-    }
-}
-
-type Row = (u64, String, String, String, String, u64);
 
 #[zbus::interface(name = "org.glide.Keychain1")]
 impl Keychain {
-    async fn status(
-        &self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<(bool, bool)> {
-        self.authorize(&header, connection).await?;
-        match self.run(Request::Status) {
-            Response::Status { exists, unlocked } => Ok((exists, unlocked)),
-            other => Err(failed(other)),
-        }
-    }
-
-    async fn create(
-        &self, password: String, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<()> {
-        self.authorize(&header, connection).await?;
-        done(self.run(Request::Create { password: Hidden::new(password) }))
-    }
-
-    async fn request_unlock(
-        &self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<()> {
-        self.authorize(&header, connection).await?;
-        (self.events)(Response::UnlockRequested);
-        Ok(())
-    }
-
-    async fn lock(
-        &self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<()> {
-        self.authorize(&header, connection).await?;
-        done(self.run(Request::Lock))
-    }
-
-    async fn items(
-        &self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<Vec<Row>> {
-        self.authorize(&header, connection).await?;
-        self.with(|daemon| {
-            let contents = daemon.contents().ok_or_else(|| failed(Response::Locked))?;
-            Ok(contents
-                .items
-                .iter()
-                .map(|item| {
-                    let attribute = |key: &str| item.attributes.get(key).cloned().unwrap_or_default();
-                    (
-                        item.id,
-                        item.label.clone(),
-                        crate::daemon::username(item),
-                        attribute(APP_ATTRIBUTE),
-                        attribute(PROGRAM_ATTRIBUTE),
-                        item.modified,
-                    )
-                })
-                .collect())
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)] // D-Bus method arguments plus the two injected header and connection
-    async fn add(
-        &self, label: String, username: String, password: String, app: String, program: String,
-        #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<u64> {
-        self.authorize(&header, connection).await?;
-        let login = Login { label, username, password: Hidden::new(password), app, program };
-        self.with(|daemon| daemon.add_login(login)).map_err(failed)
-    }
-
-    #[allow(clippy::too_many_arguments)] // D-Bus method arguments plus the two injected header and connection
-    async fn update(
-        &self, id: u64, label: String, username: String, password: String, app: String, program: String,
-        #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<()> {
-        self.authorize(&header, connection).await?;
-        let login = Login { label, username, password: Hidden::new(password), app, program };
-        done(self.with(|daemon| daemon.update_login(id, login)))
-    }
-
-    async fn delete(
-        &self, id: u64, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
-    ) -> fdo::Result<()> {
-        self.authorize(&header, connection).await?;
-        done(self.with(|daemon| daemon.delete(id)))
-    }
-
-    async fn password(
-        &self, id: u64, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    async fn call(
+        &self, request: String, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
     ) -> fdo::Result<String> {
         self.authorize(&header, connection).await?;
-        match self.run(Request::Secret { id }) {
-            Response::Secret { secret } => Ok(secret.expose().to_string()),
-            other => Err(failed(other)),
+        let request: Request = serde_json::from_str(&request)
+            .map_err(|err| fdo::Error::InvalidArgs(format!("unreadable request: {err}")))?;
+        let changes = mutates(&request);
+        let response = match request {
+            Request::RequestUnlock { vault } => {
+                (self.events)(Response::UnlockRequested { vault });
+                Response::Done
+            }
+            request => self.daemon.lock().unwrap_or_else(PoisonError::into_inner).handle(request),
+        };
+        if changes {
+            (self.events)(Response::Changed);
         }
+        serde_json::to_string(&response).map_err(|err| fdo::Error::Failed(err.to_string()))
     }
 }
 
@@ -168,11 +71,15 @@ pub fn serve_on(
     builder.name(BUS_NAME)?.serve_at(PATH, keychain)?.build()
 }
 
+pub fn announce(connection: &zbus::blocking::Connection) {
+    let _ = connection.emit_signal(None::<()>, PATH, INTERFACE, "Changed", &());
+}
+
 #[must_use]
-pub fn settings_program() -> Vec<PathBuf> {
+pub fn client_program() -> Vec<PathBuf> {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("glide-settings")))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(CLIENT)))
         .and_then(|path| path.canonicalize().ok())
         .into_iter()
         .collect()

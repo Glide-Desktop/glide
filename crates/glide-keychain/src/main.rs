@@ -1,11 +1,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use glide_ipc::keychain::{EVENT, Envelope, Request, Response};
 use glide_keychain::bus;
-use glide_keychain::daemon::{Daemon, default_path};
+use glide_keychain::daemon::{Daemon, default_path, mutates};
 use glide_keychain::vault::Params;
 use zeroize::Zeroizing;
 
@@ -49,11 +49,22 @@ fn main() {
     };
     let daemon = Arc::new(Mutex::new(Daemon::new(path, Params::DEFAULT)));
     let events_writer = Arc::clone(&writer);
+    let connection: Arc<OnceLock<zbus::blocking::Connection>> = Arc::new(OnceLock::new());
+    let announcer = Arc::clone(&connection);
     let events: bus::Events = Arc::new(move |body| {
+        if body == Response::Changed
+            && let Some(connection) = announcer.get()
+        {
+            bus::announce(connection);
+        }
         send(&events_writer, &Envelope { id: EVENT, body });
     });
-    let _bus = bus::serve(bus::Keychain::new(Arc::clone(&daemon), events, bus::settings_program()))
-        .inspect_err(|err| eprintln!("glide-keychain: {} is not on the session bus ({err})", bus::BUS_NAME));
+    match bus::serve(bus::Keychain::new(Arc::clone(&daemon), Arc::clone(&events), bus::client_program())) {
+        Ok(served) => {
+            let _ = connection.set(served);
+        }
+        Err(err) => eprintln!("glide-keychain: {} is not on the session bus ({err})", bus::BUS_NAME),
+    }
     let mut reader = BufReader::new(channel);
     let mut line = Zeroizing::new(String::new());
     loop {
@@ -64,7 +75,11 @@ fn main() {
         }
         let reply = match serde_json::from_str::<Envelope<Request>>(&line) {
             Ok(request) => {
+                let changes = mutates(&request.body);
                 let body = daemon.lock().unwrap_or_else(PoisonError::into_inner).handle(request.body);
+                if changes && let Some(connection) = connection.get() {
+                    bus::announce(connection);
+                }
                 Envelope { id: request.id, body }
             }
             Err(err) => Envelope { id: EVENT, body: Response::Error { message: format!("unreadable request: {err}") } },

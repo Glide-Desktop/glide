@@ -3,7 +3,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 
-use glide_ipc::keychain::{Envelope, Hidden, Request, Response};
+use glide_ipc::keychain::{Envelope, Hidden, LOCAL, Request, Response};
 
 struct Daemon {
     child: std::process::Child,
@@ -52,9 +52,12 @@ fn the_daemon_answers_over_the_socket_it_was_given_as_stdin() {
     assert_eq!(daemon.ask(Request::Status), Response::Status { exists: false, unlocked: false });
     assert_eq!(daemon.ask(Request::Create { password: Hidden::new("pw".into()) }), Response::Done);
     assert!(home.join("glide/keychain").exists());
-    assert_eq!(daemon.ask(Request::Lock), Response::Done);
-    assert_eq!(daemon.ask(Request::Unlock { password: Hidden::new("wrong".into()) }), Response::WrongPassword);
-    assert_eq!(daemon.ask(Request::Unlock { password: Hidden::new("pw".into()) }), Response::Done);
+    assert_eq!(daemon.ask(Request::Lock { vault: None }), Response::Done);
+    assert_eq!(
+        daemon.ask(Request::Unlock { vault: LOCAL.into(), password: Hidden::new("wrong".into()) }),
+        Response::WrongPassword
+    );
+    assert_eq!(daemon.ask(Request::Unlock { vault: LOCAL.into(), password: Hidden::new("pw".into()) }), Response::Done);
     assert_eq!(
         daemon.ask(Request::Candidates { program: Some("/usr/bin/x".into()), app_id: None }),
         Response::Candidates { list: vec![] }

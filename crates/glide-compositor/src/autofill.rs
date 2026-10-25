@@ -1,4 +1,4 @@
-use glide_ipc::keychain::{Candidate, Request, Response};
+use glide_ipc::keychain::{Candidate, ItemRef, Request, Response, SecretKind};
 use smithay::reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use crate::focused_field::Kind;
@@ -20,13 +20,14 @@ pub struct Offer {
 }
 
 #[must_use]
-pub fn fill_key(id: u64) -> String {
-    format!("{FILL_PREFIX}{id}")
+pub fn fill_key(item: &ItemRef) -> String {
+    format!("{FILL_PREFIX}{}/{}", item.vault, item.id)
 }
 
 #[must_use]
-pub fn parse_fill_key(key: &str) -> Option<u64> {
-    key.strip_prefix(FILL_PREFIX)?.parse().ok()
+pub fn parse_fill_key(key: &str) -> Option<ItemRef> {
+    let (vault, id) = key.strip_prefix(FILL_PREFIX)?.split_once('/')?;
+    (!vault.is_empty() && !id.is_empty()).then(|| ItemRef::new(vault, id))
 }
 
 impl GlideState {
@@ -119,7 +120,7 @@ impl GlideState {
                     .map(|choice| {
                         let name = if choice.username.is_empty() { &choice.label } else { &choice.username };
                         glide_notify::Action {
-                            key: fill_key(choice.id),
+                            key: fill_key(&choice.item),
                             label: t(Key::PasswordFill).replace("{name}", name),
                         }
                     })
@@ -144,13 +145,13 @@ impl GlideState {
         self.notifications.dismiss(FILL_ID);
         self.queue_redraw();
         if key == UNLOCK {
-            self.unlock_keychain(Self::list_candidates);
+            self.unlock_keychain(None, Self::list_candidates);
             return;
         }
-        let (Some(id), Some(offer)) = (parse_fill_key(key), self.session.autofill.clone()) else {
+        let (Some(item), Some(offer)) = (parse_fill_key(key), self.session.autofill.clone()) else {
             return;
         };
-        self.keychain(Request::Secret { id }, move |state, response| {
+        self.keychain(Request::Secret { item, secret: SecretKind::Password }, move |state, response| {
             if let Response::Secret { secret } = response {
                 let delivered = state.deliver_text(&offer.surface, secret.expose());
                 tracing::info!(?delivered, app = offer.app, "filled a saved password");
@@ -165,9 +166,11 @@ mod tests {
 
     #[test]
     fn a_fill_key_names_the_item_it_fills() {
-        assert_eq!(parse_fill_key(&fill_key(42)), Some(42));
+        let item = ItemRef::new("bw-1", "5f3c-9a");
+        assert_eq!(parse_fill_key(&fill_key(&item)), Some(item));
         assert_eq!(parse_fill_key(UNLOCK), None);
         assert_eq!(parse_fill_key("fill:x"), None);
+        assert_eq!(parse_fill_key("fill:/x"), None);
     }
 
     #[test]

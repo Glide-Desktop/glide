@@ -10,7 +10,6 @@ pub mod gsettings;
 pub mod input;
 pub mod ipc;
 pub mod keybinds;
-pub mod keychain;
 pub mod locale;
 pub mod look;
 pub mod netbird;

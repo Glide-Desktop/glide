@@ -207,7 +207,6 @@ pub enum SettingsPanel {
     Gestures,
     Accessibility,
     Privacy,
-    Passwords,
     Users,
     DateTime,
     Region,
@@ -224,7 +223,7 @@ fn netbird_installed() -> bool {
 }
 
 impl SettingsPanel {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 30] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -247,7 +246,6 @@ impl SettingsPanel {
         Self::Gestures,
         Self::Accessibility,
         Self::Privacy,
-        Self::Passwords,
         Self::Users,
         Self::DateTime,
         Self::Region,
@@ -283,7 +281,6 @@ impl SettingsPanel {
             Self::Gestures => "gestures",
             Self::Accessibility => "accessibility",
             Self::Privacy => "privacy",
-            Self::Passwords => "passwords",
             Self::Users => "users",
             Self::DateTime => "datetime",
             Self::Region => "region",
@@ -320,7 +317,6 @@ impl SettingsPanel {
             Self::Gestures => Key::SettingsGestures,
             Self::Accessibility => Key::SettingsAccessibility,
             Self::Privacy => Key::SettingsPrivacy,
-            Self::Passwords => Key::SettingsPasswords,
             Self::Users => Key::SettingsUsers,
             Self::DateTime => Key::SettingsDateTime,
             Self::Region => Key::SettingsRegion,
@@ -378,7 +374,6 @@ impl SettingsPanel {
             Self::Privacy => {
                 &["privacy", "security", "screen lock", "camera", "конфіденційність", "безпека", "блокування"]
             }
-            Self::Passwords => &["passwords", "keychain", "logins", "autofill", "паролі", "зв'язка ключів"],
             Self::Users => &["users", "account", "avatar", "користувачі", "обліковий запис"],
             Self::DateTime => &["date", "time", "time zone", "clock", "дата", "час", "часовий пояс"],
             Self::Region => &["region", "language", "locale", "formats", "регіон", "мова", "формати"],
@@ -895,7 +890,6 @@ mod tests {
                 "gestures",
                 "accessibility",
                 "privacy",
-                "passwords",
                 "users",
                 "datetime",
                 "region",
@@ -919,7 +913,6 @@ mod tests {
             ("autostart", SettingsPanel::Startup),
             ("printers", SettingsPanel::Printers),
             ("privacy", SettingsPanel::Privacy),
-            ("keychain", SettingsPanel::Passwords),
         ] {
             let entries = build_entries(&[], &[], &Sources::default(), query);
             let first = entries.iter().find_map(|entry| match entry {

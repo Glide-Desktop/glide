@@ -15,7 +15,6 @@ pub mod netbird;
 pub mod network;
 pub mod night_light;
 pub mod notifications;
-pub mod passwords;
 pub mod power;
 pub mod printers;
 pub mod privacy;
@@ -116,7 +115,6 @@ macro_rules! with_panels {
             Gestures => gestures,
             Accessibility => accessibility,
             Privacy => privacy,
-            Passwords => passwords,
             Users => users,
             DateTime => date_time,
             Region => region,
@@ -224,7 +222,6 @@ panel_meta! {
     Gestures: PanelGestures, AboutGestures, "gestures", Gesture, Terracotta 2;
     Accessibility: PanelAccessibility, AboutAccessibility, "accessibility", Accessibility, Malachite 2;
     Privacy: PanelPrivacy, AboutPrivacy, "privacy", Hand, Amethyst 2;
-    Passwords: PanelPasswords, AboutPasswords, "passwords", Key, Conifer 2;
     Users: PanelUsers, AboutUsers, "users", Users, Terracotta 4;
     DateTime: PanelDateTime, AboutDateTime, "datetime", Clock, Cinnabar 5;
     Region: PanelRegion, AboutRegion, "region", Globe, Conifer 4;
@@ -259,7 +256,7 @@ impl Panel {
         },
         Group { title: Key::GroupHardware, panels: &[Self::Displays, Self::NightLight, Self::Power, Self::Printers] },
         Group { title: Key::GroupInput, panels: &[Self::Keyboard, Self::Shortcuts, Self::Mouse, Self::Gestures] },
-        Group { title: Key::GroupPeople, panels: &[Self::Accessibility, Self::Privacy, Self::Passwords, Self::Users] },
+        Group { title: Key::GroupPeople, panels: &[Self::Accessibility, Self::Privacy, Self::Users] },
         Group {
             title: Key::GroupSystem,
             panels: &[

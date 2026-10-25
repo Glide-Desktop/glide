@@ -182,7 +182,6 @@ glide_app::catalogue! {
     SettingsGestures => "Gestures", "Жести";
     SettingsAccessibility => "Accessibility", "Доступність";
     SettingsPrivacy => "Privacy & Security", "Конфіденційність і безпека";
-    SettingsPasswords => "Passwords", "Паролі";
     SettingsUsers => "Users", "Користувачі";
     SettingsDateTime => "Date & Time", "Дата й час";
     SettingsRegion => "Region & Language", "Регіон і мова";
@@ -218,7 +217,7 @@ glide_app::catalogue! {
     PasswordOfferLocked => "The keychain is locked", "Зв'язка ключів заблокована";
     PasswordOfferLockedBody => "Unlock it to fill a saved password for {app}", "Розблокуйте її, щоб вставити збережений пароль для {app}";
     PasswordFill => "Fill {name}", "Вставити {name}";
-    PasswordNoneSaved => "No saved password matches this app. Add one in Settings › Passwords.", "Для цієї програми немає збереженого пароля. Додайте його в Налаштуваннях › Паролі.";
+    PasswordNoneSaved => "No saved password matches this app. Add one in Passwords.", "Для цієї програми немає збереженого пароля. Додайте його в застосунку «Паролі».";
     CastTitle => "Screen mirroring", "Дублювання екрана";
     CastSearching => "Looking for displays…", "Шукаю дисплеї поблизу…";
     CastSearchingBody => "Turn on screen mirroring (Miracast) on the TV", "Увімкніть дублювання екрана (Miracast) на телевізорі";
@@ -233,7 +232,8 @@ glide_app::catalogue! {
     CastFailed => "Mirroring stopped: {reason}", "Трансляцію зупинено: {reason}";
     CastUnavailable => "Screen mirroring is unavailable: {reason}", "Дублювання екрана недоступне: {reason}";
     CastIndicator => "Mirroring to {name}", "Трансляція на {name}";
-    PasswordNoKeychain => "Create a keychain in Settings › Passwords first.", "Спершу створіть зв'язку ключів у Налаштуваннях › Паролі.";    SomeApp => "An app", "Програма";
+    PasswordNoKeychain => "Create a vault in Passwords first.", "Спершу створіть сховище в застосунку «Паролі».";
+    SomeApp => "An app", "Програма";
     PowerCountdownLogOut => "You will be logged out automatically in {n} s.", "Сеанс буде завершено автоматично через {n} с.";
     PowerCountdownRestart => "The computer will restart automatically in {n} s.", "Комп\u{2019}ютер буде перезавантажено автоматично через {n} с.";
     PowerCountdownShutDown => "The computer will shut down automatically in {n} s.", "Комп\u{2019}ютер буде вимкнено автоматично через {n} с.";

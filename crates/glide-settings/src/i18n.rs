@@ -37,7 +37,6 @@ catalogue! {
     PanelShortcuts => "Keyboard Shortcuts", "Сполучення клавіш";
     PanelAccessibility => "Accessibility", "Доступність";
     PanelPrivacy => "Privacy & Security", "Конфіденційність і безпека";
-    PanelPasswords => "Passwords", "Паролі";
     PanelUsers => "Users", "Користувачі";
     PanelDateTime => "Date & Time", "Дата й час";
     PanelRegion => "Region & Language", "Регіон і мова";
@@ -77,7 +76,6 @@ catalogue! {
     AboutShortcuts => "Key combinations for the shell and apps", "Сполучення клавіш для оболонки й програм";
     AboutAccessibility => "Seeing, pointing and motion", "Зір, вказівник і рух";
     AboutPrivacy => "Screen lock, history and what apps can see", "Блокування екрана, історія та що бачать програми";
-    AboutPasswords => "The keychain and the passwords Glide fills in", "Зв'язка ключів і паролі, які вставляє Glide";
     AboutUsers => "Accounts on this computer", "Облікові записи на цьому комп'ютері";
     AboutDateTime => "Time zone, clock format and synchronisation", "Часовий пояс, формат годинника й синхронізація";
     AboutRegion => "Language, formats and locale", "Мова, формати й локаль";

@@ -3,6 +3,7 @@ use std::fmt;
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use glide_ipc::keychain::{AppLink, Site};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -54,12 +55,82 @@ pub struct Item {
     pub content_type: String,
     pub created: u64,
     pub modified: u64,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub sites: Vec<Site>,
+    #[serde(default)]
+    pub apps: Vec<AppLink>,
+    #[serde(default)]
+    pub fields: Vec<StoredField>,
+    #[serde(default)]
+    pub totp: Secret,
+    #[serde(default)]
+    pub folder: String,
+    #[serde(default)]
+    pub favorite: bool,
+    #[serde(default)]
+    pub deleted: Option<u64>,
+    #[serde(default)]
+    pub history: Vec<PastSecret>,
+    #[serde(default)]
+    pub card: Option<StoredCard>,
+}
+
+impl Item {
+    #[must_use]
+    pub fn new(collection: &str, label: &str, now: u64) -> Self {
+        Self {
+            id: 0,
+            collection: collection.into(),
+            label: label.into(),
+            attributes: BTreeMap::new(),
+            secret: Secret::default(),
+            content_type: "text/plain".into(),
+            created: now,
+            modified: now,
+            notes: String::new(),
+            sites: Vec::new(),
+            apps: Vec::new(),
+            fields: Vec::new(),
+            totp: Secret::default(),
+            folder: String::new(),
+            favorite: false,
+            deleted: None,
+            history: Vec::new(),
+            card: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredField {
+    pub name: String,
+    pub value: Secret,
+    pub hidden: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PastSecret {
+    pub secret: Secret,
+    pub until: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCard {
+    pub holder: String,
+    pub brand: String,
+    pub number: Secret,
+    pub code: Secret,
+    pub expiry: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contents {
     pub items: Vec<Item>,
     pub next_id: u64,
+    #[serde(default)]
+    pub folders: Vec<String>,
 }
 
 impl Contents {
@@ -196,16 +267,19 @@ mod tests {
     const FAST: Params = Params { memory_kib: 64, passes: 1, lanes: 1 };
 
     fn item(label: &str, secret: &str, attributes: &[(&str, &str)]) -> Item {
-        Item {
-            id: 0,
-            collection: "login".into(),
-            label: label.into(),
-            attributes: attributes.iter().map(|(key, value)| ((*key).to_string(), (*value).to_string())).collect(),
-            secret: Secret::new(secret.as_bytes().to_vec()),
-            content_type: "text/plain".into(),
-            created: 1,
-            modified: 1,
-        }
+        let mut item = Item::new("login", label, 1);
+        item.attributes = attributes.iter().map(|(key, value)| ((*key).to_string(), (*value).to_string())).collect();
+        item.secret = Secret::new(secret.as_bytes().to_vec());
+        item
+    }
+
+    #[test]
+    fn a_file_written_before_the_new_fields_still_opens() {
+        let old = r#"{"items":[{"id":1,"collection":"login","label":"Telegram","attributes":{"username":"me"},"secret":[104,105],"content_type":"text/plain","created":1,"modified":2}],"next_id":1}"#;
+        let contents: Contents = serde_json::from_str(old).unwrap();
+        assert_eq!(contents.items[0].label, "Telegram");
+        assert!(contents.items[0].sites.is_empty() && contents.items[0].deleted.is_none());
+        assert!(contents.folders.is_empty());
     }
 
     fn sample() -> Contents {

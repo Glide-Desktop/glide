@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use glide_ipc::keychain::Response;
+use glide_ipc::keychain::{AppLink, Draft, Hidden, LOCAL, Request, Response, SecretKind};
 use glide_keychain::bus::{self, Keychain};
 use glide_keychain::daemon::Daemon;
 use glide_keychain::vault::Params;
@@ -45,10 +45,13 @@ fn temp(name: &str) -> PathBuf {
     dir.join("keychain")
 }
 
-type Row = (u64, String, String, String, String, u64);
+fn call(proxy: &zbus::blocking::Proxy<'_>, request: &Request) -> Response {
+    let reply: String = proxy.call("Call", &(serde_json::to_string(request).unwrap(),)).unwrap();
+    serde_json::from_str(&reply).unwrap()
+}
 
 #[test]
-fn settings_manages_logins_over_the_bus() {
+fn the_passwords_app_manages_items_over_the_bus() {
     let Some(bus) = private_bus() else {
         return;
     };
@@ -62,28 +65,34 @@ fn settings_manages_logins_over_the_bus() {
     );
     let _server = bus::serve_on(builder(&bus), keychain).unwrap();
     let client = builder(&bus).build().unwrap();
-    let proxy = zbus::blocking::Proxy::new(&client, bus::BUS_NAME, bus::PATH, "org.glide.Keychain1").unwrap();
+    let proxy = zbus::blocking::Proxy::new(&client, bus::BUS_NAME, bus::PATH, bus::INTERFACE).unwrap();
 
-    let status: (bool, bool) = proxy.call("Status", &()).unwrap();
-    assert_eq!(status, (false, false));
-    proxy.call::<_, _, ()>("Create", &("pw",)).unwrap();
-    let id: u64 = proxy.call("Add", &("Telegram", "me", "s3cret", "org.telegram.desktop", "")).unwrap();
-    let rows: Vec<Row> = proxy.call("Items", &()).unwrap();
-    assert_eq!(rows.len(), 1);
+    assert_eq!(call(&proxy, &Request::Status), Response::Status { exists: false, unlocked: false });
+    assert_eq!(call(&proxy, &Request::Create { password: Hidden::new("pw".into()) }), Response::Done);
+    let draft = Draft {
+        vault: LOCAL.into(),
+        name: "Telegram".into(),
+        username: "me".into(),
+        password: Some(Hidden::new("s3cret".into())),
+        apps: vec![AppLink { name: "Telegram".into(), app_id: "org.telegram.desktop".into(), program: String::new() }],
+        ..Draft::default()
+    };
+    let Response::Saved { item } = call(&proxy, &Request::Save { draft: Box::new(draft) }) else { panic!() };
+    let Response::Items { list } = call(&proxy, &Request::Items) else { panic!() };
+    assert_eq!((list.len(), list[0].name.as_str(), list[0].username.as_str()), (1, "Telegram", "me"));
     assert_eq!(
-        (rows[0].0, rows[0].1.as_str(), rows[0].2.as_str(), rows[0].3.as_str()),
-        (id, "Telegram", "me", "org.telegram.desktop")
+        call(&proxy, &Request::Secret { item, secret: SecretKind::Password }),
+        Response::Secret { secret: Hidden::new("s3cret".into()) }
     );
-    let password: String = proxy.call("Password", &(id,)).unwrap();
-    assert_eq!(password, "s3cret");
-    proxy.call::<_, _, ()>("Update", &(id, "Telegram", "you", "", "org.telegram.desktop", "")).unwrap();
-    let rows: Vec<Row> = proxy.call("Items", &()).unwrap();
-    assert_eq!(rows[0].2, "you");
-    proxy.call::<_, _, ()>("Delete", &(id,)).unwrap();
-    proxy.call::<_, _, ()>("Lock", &()).unwrap();
-    assert!(proxy.call::<_, _, Vec<Row>>("Items", &()).is_err(), "a locked keychain lists nothing");
-    proxy.call::<_, _, ()>("RequestUnlock", &()).unwrap();
-    assert_eq!(*events.lock().unwrap(), [Response::UnlockRequested], "the compositor is asked to show its prompt");
+    assert_eq!(call(&proxy, &Request::Lock { vault: None }), Response::Done);
+    assert_eq!(call(&proxy, &Request::Items), Response::Items { list: Vec::new() }, "a locked vault lists nothing");
+    assert_eq!(call(&proxy, &Request::RequestUnlock { vault: Some(LOCAL.into()) }), Response::Done);
+    let events = events.lock().unwrap();
+    assert!(
+        events.contains(&Response::UnlockRequested { vault: Some(LOCAL.into()) }),
+        "the compositor shows its prompt"
+    );
+    assert!(events.contains(&Response::Changed), "changes are announced");
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
@@ -95,11 +104,11 @@ fn any_other_program_is_refused() {
     let keychain = Keychain::new(
         Arc::new(Mutex::new(Daemon::new(temp("refused"), FAST))),
         Arc::new(|_| {}),
-        vec![PathBuf::from("/usr/bin/glide-settings")],
+        vec![PathBuf::from("/usr/bin/glide-passwords")],
     );
     let _server = bus::serve_on(builder(&bus), keychain).unwrap();
     let client = builder(&bus).build().unwrap();
-    let proxy = zbus::blocking::Proxy::new(&client, bus::BUS_NAME, bus::PATH, "org.glide.Keychain1").unwrap();
-    let refused = proxy.call::<_, _, (bool, bool)>("Status", &()).unwrap_err();
+    let proxy = zbus::blocking::Proxy::new(&client, bus::BUS_NAME, bus::PATH, bus::INTERFACE).unwrap();
+    let refused = proxy.call::<_, _, String>("Call", &(r#"{"type":"status"}"#,)).unwrap_err();
     assert!(refused.to_string().contains("AccessDenied"), "{refused}");
 }
