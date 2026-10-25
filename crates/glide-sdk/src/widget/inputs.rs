@@ -54,6 +54,21 @@ pub fn field<'a, M: Clone + 'a>(paint: &Paint, input: text_input::TextInput<'a, 
 }
 
 #[must_use]
+pub fn field_with<'a, M: Clone + 'a>(
+    paint: &Paint, lead: Option<Element<'a, M>>, input: text_input::TextInput<'a, M>, trailing: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    let mut content = row![].spacing(SP2).align_y(Alignment::Center);
+    if let Some(lead) = lead {
+        content = content.push(lead);
+    }
+    content = content.push(styled(paint, input));
+    for element in trailing {
+        content = content.push(element);
+    }
+    well(paint, content, Validity::Neutral)
+}
+
+#[must_use]
 pub fn inline_style(paint: &Paint, status: text_input::Status) -> text_input::Style {
     let border = match status {
         text_input::Status::Focused { .. } => paint.acc_bg(),

@@ -7,9 +7,7 @@ use zbus::message::Header;
 
 use crate::daemon::{Daemon, mutates};
 
-pub const BUS_NAME: &str = "org.glide.Keychain";
-pub const PATH: &str = "/org/glide/Keychain1";
-pub const INTERFACE: &str = "org.glide.Keychain1";
+pub use glide_ipc::keychain::{BUS_INTERFACE as INTERFACE, BUS_NAME, BUS_PATH as PATH};
 pub const CLIENT: &str = "glide-passwords";
 
 pub type Events = Arc<dyn Fn(Response) + Send + Sync>;
@@ -72,7 +70,7 @@ pub fn serve_on(
 }
 
 pub fn announce(connection: &zbus::blocking::Connection) {
-    let _ = connection.emit_signal(None::<()>, PATH, INTERFACE, "Changed", &());
+    let _ = connection.emit_signal(None::<()>, PATH, INTERFACE, glide_ipc::keychain::CHANGED, &());
 }
 
 #[must_use]

@@ -1,14 +1,14 @@
 use std::borrow::Cow;
 
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, SP3, SP4};
+use glide_iced::style::{self, R2, SP2, SP3, SP4};
 use glide_iced::widgets;
 use glide_theme::elevation::{self, Level};
 use glide_theme::shape::R1;
 use glide_theme::{TextStyle, component};
 use iced::border::Radius;
-use iced::widget::{Row, button as control, container};
-use iced::{Border, Color, Element, Fill, Length, Padding, Shadow, Vector};
+use iced::widget::{Row, button as control, container, row};
+use iced::{Alignment, Border, Color, Element, Fill, Length, Padding, Shadow, Vector};
 
 use super::focus::activatable;
 use super::popover::tooltip;
@@ -113,6 +113,33 @@ pub fn sized_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let paint = *paint;
     let control = control(container(text(label, size.label()).wrapping(Wrapping::None)).center_y(Fill))
+        .on_press_maybe(message.clone())
+        .height(size.height())
+        .padding(Padding::from([0.0, size.padding()]));
+    activatable(&paint, widgets::button(control, move |status| button_style(&paint, tone, status)), R2, message)
+}
+
+#[must_use]
+pub fn tone_ink(paint: &Paint, tone: Tone) -> Color {
+    match tone {
+        Tone::Accent => paint.acc_fg(),
+        Tone::Tonal => paint.acc_soft_fg(),
+        Tone::Neutral | Tone::Outline => paint.fg_1(),
+        Tone::Ghost => paint.fg_2(),
+        Tone::Danger => paint.danger(),
+    }
+}
+
+#[must_use]
+pub fn glyph_button<'a, M: Clone + 'a>(
+    paint: &Paint, glyph: impl Glyph, label: impl Into<Cow<'a, str>>, tone: Tone, size: Size, message: Option<M>,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let ink = if message.is_some() { tone_ink(&paint, tone) } else { paint.fg_4() };
+    let content = row![icon(glyph, 14.0, ink), text(label, size.label()).wrapping(Wrapping::None)]
+        .spacing(if size == Size::Small { 6.0 } else { SP2 })
+        .align_y(Alignment::Center);
+    let control = control(container(content).center_y(Fill))
         .on_press_maybe(message.clone())
         .height(size.height())
         .padding(Padding::from([0.0, size.padding()]));

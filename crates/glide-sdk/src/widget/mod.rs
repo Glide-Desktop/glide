@@ -32,8 +32,9 @@ use iced::widget::{Space, container, scrollable as scroll};
 use iced::{Background, Border, Color, Element, Fill, Shadow};
 
 pub use buttons::{
-    Size, Tone, button, button_style, compact_button, danger, flat_toggle_button, ghost, icon_button, link, linked,
-    outline, primary, secondary, sized_button, sized_icon_button, sized_toggle_button, toggle_button, tonal,
+    Size, Tone, button, button_style, compact_button, danger, flat_toggle_button, ghost, glyph_button, icon_button,
+    link, linked, outline, primary, secondary, sized_button, sized_icon_button, sized_toggle_button, toggle_button,
+    tonal, tone_ink,
 };
 pub use cards::{
     choice_card, grid, hero_card, legend, page_header, preview_card, preview_ring_style, sample_well, stat_tile,
@@ -52,7 +53,7 @@ pub use find::{FIND_FIELD, FindBar, INFO_BAR, bar_strip, find_bar, info_bar};
 pub use focus::{Focus, RING, focusable};
 pub use form::{action_bar, boxed_input, form_row, hint_line, key_values, sheet};
 pub use inputs::{
-    Validity, bare_text_area_style, field, hinted_search_input, inline_field, inline_style, input_style,
+    Validity, bare_text_area_style, field, field_with, hinted_search_input, inline_field, inline_style, input_style,
     password_field, search_field, search_input, stepper, text_area_style, text_field, validated_field,
 };
 pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
@@ -70,10 +71,11 @@ pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, sp
 pub use pointer::{ContextArea, context_area, reveal};
 pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
 pub use secrets::{
-    CODE, CodeSize, DiffField, ENTRY_ROW, Glyphs, HALO, MASK, QrModules, SECRET, SecretField, Strength, VaultState,
-    classify, code_cells, code_input, copy_button, countdown_ring, diff_card, entry_row, glyph_tile, grouped_code,
-    halo, link_field, mark_tile, masked, only_digits, password_text, qr_code, runs, secret_field, secret_value,
-    stat_choice, strength_line, strength_meter, tinted_tile, totp, vault_chip, wide_button,
+    CODE, CodeSize, DiffField, ENTRY_ROW, FIELD_ROW, Glyphs, HALO, MASK, QrModules, SECRET, SecretField, Strength,
+    SyncLine, VaultState, caption_row, classify, code_cells, code_input, copy_button, countdown_ring, diff_card,
+    entry_row, field_row, glyph_tile, grouped_code, halo, link_field, mark_tile, masked, only_digits, option_card,
+    password_text, qr_code, runs, secret_field, secret_value, stat_choice, strength_line, strength_meter, sync_card,
+    tinted_tile, totp, vault_chip, wide_button,
 };
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,

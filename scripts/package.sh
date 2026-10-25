@@ -30,10 +30,10 @@ STAGE="$REPO/dist/$NAME"
 
 rm -rf "$STAGE"
 install -d "$STAGE/bin" "$STAGE/data" "$STAGE/scripts"
-for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-catalog glide-portal glide-keychain; do
+for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-catalog glide-portal glide-keychain; do
     install -m755 "$REPO/target/release/$bin" "$STAGE/bin/$bin"
 done
-for f in glide-session glide-lock glide.desktop glide.service glide-shutdown.target glide-portals.conf glide.portal org.freedesktop.impl.portal.desktop.glide.service org.glide.Files.service org.glide.Terminal.service glide-files-search-provider.ini glide-terminal-search-provider.ini glide-settings.desktop glide-files.desktop glide-terminal.desktop glide-text.desktop glide-catalog.desktop greetd-glide.toml; do
+for f in glide-session glide-lock glide.desktop glide.service glide-shutdown.target glide-portals.conf glide.portal org.freedesktop.impl.portal.desktop.glide.service org.glide.Files.service org.glide.Terminal.service glide-files-search-provider.ini glide-terminal-search-provider.ini glide-settings.desktop glide-files.desktop glide-terminal.desktop glide-text.desktop glide-passwords.desktop glide-catalog.desktop greetd-glide.toml; do
     cp -p "$REPO/data/$f" "$STAGE/data/$f"
 done
 install -Dm644 "$REPO/data/pam.d/glide-lock" "$STAGE/data/pam.d/glide-lock"

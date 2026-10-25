@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, R3, SP1, SP2, SP3};
+use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4};
 use glide_iced::widgets;
 use glide_theme::shape::R1;
 use glide_theme::{TextStyle, component};
@@ -776,6 +776,90 @@ pub fn wide_button<'a, M: Clone + 'a>(
     paint: &Paint, label: impl Into<Cow<'a, str>>, tone: Tone, message: Option<M>,
 ) -> Element<'a, M> {
     container(button(paint, label, tone, message)).width(Length::Fill).center_x(Fill).into()
+}
+
+#[must_use]
+pub fn option_card<'a, M: Clone + 'a>(
+    paint: &Paint, lead: impl Into<Element<'a, M>>, title: impl Into<Cow<'a, str>>, body: impl Into<Cow<'a, str>>,
+    selected: bool, message: Option<M>,
+) -> Element<'a, M> {
+    let enabled = message.is_some();
+    let paint = if enabled { *paint } else { paint.faded(0.55) };
+    let content = column![lead.into(), text(title, TextStyle::HEAD), text(body, TextStyle::CAP).color(paint.fg_3())]
+        .spacing(SP2)
+        .width(Fill);
+    let card =
+        control(container(content).padding(SP4).width(Fill)).on_press_maybe(message.clone()).padding(0).width(Fill);
+    let card = widgets::button(card, move |status| {
+        let mut style = style::flat(paint.layered(paint.card_bg(), status), paint.fg_1(), R3);
+        style.border =
+            Border { color: if selected { paint.acc_bg() } else { paint.line() }, width: 1.0, radius: R3.into() };
+        style
+    });
+    let framed = halo(card, selected.then(|| paint.acc_ring()), R3);
+    focusable(&paint, framed, R3 + HALO).on_activate(message).into()
+}
+
+pub const FIELD_ROW: f32 = 44.0;
+
+#[must_use]
+pub fn field_row<'a, M: 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, value: impl Into<Element<'a, M>>, trailing: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    let lines = column![text(label, TextStyle::CAP).color(paint.fg_3()), value.into()].spacing(2).width(Fill);
+    let content = row![lines, Row::with_children(trailing).spacing(SP1).align_y(Alignment::Center)]
+        .spacing(SP3)
+        .align_y(Alignment::Center);
+    container(row![Space::new().height(FIELD_ROW), content].align_y(Alignment::Center))
+        .padding(Padding::from([SP1, SP3]))
+        .width(Fill)
+        .into()
+}
+
+pub struct SyncLine<'a> {
+    pub label: Cow<'a, str>,
+    pub status: Cow<'a, str>,
+    pub state: VaultState,
+}
+
+#[must_use]
+pub fn sync_card<'a, M: 'a>(paint: &Paint, lines: Vec<SyncLine<'a>>, note: Option<Cow<'a, str>>) -> Element<'a, M> {
+    let paint = *paint;
+    let mut content = Column::new().spacing(SP2);
+    for line in lines {
+        let (lead, ink) = match line.state {
+            VaultState::Synced => (paint.ok(), paint.fg_3()),
+            VaultState::Pending => (paint.warn(), paint.warn()),
+            VaultState::Local | VaultState::Unlocked => (paint.fg_4(), paint.fg_3()),
+            VaultState::Current => (paint.acc_bg(), paint.fg_3()),
+        };
+        content = content.push(
+            row![
+                dot(lead, 8.0),
+                text(line.label, TextStyle::CAP).width(Fill).wrapping(Wrapping::None),
+                text(line.status, TextStyle::CAP).color(ink).wrapping(Wrapping::None),
+            ]
+            .spacing(SP2)
+            .align_y(Alignment::Center),
+        );
+    }
+    if let Some(note) = note {
+        content =
+            content.push(container(text(note, TextStyle::CAP).color(paint.fg_3())).padding(Padding::ZERO.left(SP4)));
+    }
+    container(content).padding(SP3).width(Fill).style(move |_| style::rounded(paint.fill_1(), R3)).into()
+}
+
+#[must_use]
+pub fn caption_row<'a, M: 'a>(
+    paint: &Paint, left: impl Into<Cow<'a, str>>, right: impl Into<Cow<'a, str>>,
+) -> Element<'a, M> {
+    row![
+        text(left, TextStyle::MICRO).color(paint.fg_3()).width(Fill),
+        text(right, TextStyle::MICRO).color(paint.fg_3()),
+    ]
+    .padding(Padding::from([SP2, SP3]))
+    .into()
 }
 
 #[cfg(test)]

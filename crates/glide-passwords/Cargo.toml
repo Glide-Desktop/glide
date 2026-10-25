@@ -1,0 +1,42 @@
+[package]
+name = "glide-passwords"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "glide_passwords"
+path = "src/lib.rs"
+
+[[bin]]
+name = "glide-passwords"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "wayland",
+    "tokio",
+    "svg",
+    "image",
+    "web-colors",
+    "advanced",
+] }
+glide-app = { path = "../glide-app" }
+glide-config = { path = "../glide-config" }
+glide-ipc = { path = "../glide-ipc" }
+glide-sdk = { path = "../glide-sdk" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+zbus.workspace = true
+getrandom = "0.4"
+tokio = { version = "1", features = ["sync", "time"] }
+bip39 = { version = "3", default-features = false }

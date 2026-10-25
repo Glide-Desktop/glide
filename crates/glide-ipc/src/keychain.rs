@@ -31,6 +31,10 @@ impl fmt::Debug for Hidden {
 }
 
 pub const LOCAL: &str = "local";
+pub const BUS_NAME: &str = "org.glide.Keychain";
+pub const BUS_PATH: &str = "/org/glide/Keychain1";
+pub const BUS_INTERFACE: &str = "org.glide.Keychain1";
+pub const CHANGED: &str = "Changed";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ItemRef {
