@@ -260,6 +260,7 @@ glide_app::catalogue! {
     PwConnect => "Connect an account", "Під'єднати акаунт";
     PwThisApp => "this app", "цьому застосунку";
     PwCopied => "Password copied", "Пароль скопійовано";
+    PwNotFilled => "This field could not be filled. Copy the password instead, or allow typing in Passwords settings.", "Не вдалося вставити в це поле. Скопіюйте пароль або дозвольте набір клавішами в налаштуваннях Паролів.";
     PwGenerated => "A new password is copied", "Новий пароль скопійовано";
     FillSource => "{app} · Passwords", "{app} · Паролі";
     FillTitle => "Insert a saved password?", "Вставити збережений пароль?";

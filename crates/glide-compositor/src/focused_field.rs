@@ -97,6 +97,14 @@ impl GlideState {
     }
 
     pub fn deliver_text(&mut self, target: &WlSurface, text: &str) -> Delivery {
+        self.deliver(target, text, true)
+    }
+
+    pub fn deliver_secret(&mut self, target: &WlSurface, text: &str, may_type: bool) -> Delivery {
+        self.deliver(target, text, may_type)
+    }
+
+    fn deliver(&mut self, target: &WlSurface, text: &str, may_type: bool) -> Delivery {
         if self.screen_locked() || self.focused_surface().as_ref() != Some(target) {
             return Delivery::Refused;
         }
@@ -111,6 +119,9 @@ impl GlideState {
         if committed {
             text_input.done(false);
             return Delivery::Committed;
+        }
+        if !may_type {
+            return Delivery::Refused;
         }
         self.type_text(text)
     }

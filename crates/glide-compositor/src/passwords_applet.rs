@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use glide_config::passwords::Prefs;
 use glide_ipc::keychain::{Candidate, ItemKind, Request, Response, SecretKind, Summary, SyncState, Vault};
@@ -11,6 +11,7 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use smithay::wayland::selection::data_device::{clear_data_device_selection, current_data_device_selection_userdata};
 
+use crate::focused_field::Delivery;
 use crate::i18n::{Key, t};
 use crate::launcher::field::CaretMove;
 use crate::state::{ClientState, GlideState};
@@ -46,6 +47,41 @@ pub struct Session {
     recent: Vec<Row>,
     vaults: HashMap<String, (String, Dot)>,
     clear: Option<RegistrationToken>,
+    idle: IdleLock,
+}
+
+const IDLE_FLOOR: Duration = Duration::from_mins(1);
+const PREFS_STALE: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Default)]
+struct IdleLock {
+    read: Option<(Instant, u32)>,
+    locked_for: Option<Instant>,
+}
+
+impl IdleLock {
+    fn due(&mut self, now: Instant, last_input: Option<Instant>, read: impl FnOnce() -> u32) -> bool {
+        let Some(last) = last_input else {
+            return false;
+        };
+        let idle = now.saturating_duration_since(last);
+        if idle < IDLE_FLOOR || self.locked_for == Some(last) {
+            return false;
+        }
+        let minutes = match self.read {
+            Some((at, minutes)) if now.saturating_duration_since(at) < PREFS_STALE => minutes,
+            _ => {
+                let minutes = read();
+                self.read = Some((now, minutes));
+                minutes
+            }
+        };
+        if minutes == 0 || idle < Duration::from_mins(u64::from(minutes)) {
+            return false;
+        }
+        self.locked_for = Some(last);
+        true
+    }
 }
 
 #[must_use]
@@ -477,6 +513,7 @@ impl GlideState {
         let target = self.session.passwords.target.as_ref().map(|target| target.surface.clone());
         self.topbar.close_popup();
         let item = row.item.clone();
+        let may_type = Prefs::load().type_fallback;
         match action {
             MenuAction::Open => self.open_passwords_app(),
             MenuAction::Copy => {
@@ -488,8 +525,8 @@ impl GlideState {
             }
             MenuAction::Username => {
                 if let Some(target) = target {
-                    let delivered = self.deliver_text(&target, &row.username);
-                    tracing::info!(?delivered, "filled a saved user name from the top bar");
+                    let delivered = self.deliver_secret(&target, &row.username, may_type);
+                    self.report_fill(delivered, "user name");
                 }
             }
             MenuAction::Password => {
@@ -498,8 +535,8 @@ impl GlideState {
                 };
                 self.keychain(Request::Secret { item, secret: SecretKind::Password }, move |state, response| {
                     if let Response::Secret { secret } = response {
-                        let delivered = state.deliver_text(&target, secret.expose());
-                        tracing::info!(?delivered, "filled a saved password from the top bar");
+                        let delivered = state.deliver_secret(&target, secret.expose(), may_type);
+                        state.report_fill(delivered, "password");
                     }
                 });
             }
@@ -510,10 +547,14 @@ impl GlideState {
                 let username = row.username;
                 self.keychain(Request::Secret { item, secret: SecretKind::Password }, move |state, response| {
                     if let Response::Secret { secret } = response {
-                        let name = state.deliver_text(&target, &username);
-                        let tab = state.type_into(&target, "\t");
-                        let password = state.deliver_text(&target, secret.expose());
-                        tracing::info!(?name, ?tab, ?password, "filled a saved login from the top bar");
+                        let name = state.deliver_secret(&target, &username, may_type);
+                        if name == Delivery::Refused {
+                            state.report_fill(name, "login");
+                            return;
+                        }
+                        let _ = state.type_into(&target, "\t");
+                        let password = state.deliver_secret(&target, secret.expose(), may_type);
+                        state.report_fill(password, "login");
                     }
                 });
             }
@@ -523,12 +564,32 @@ impl GlideState {
                 };
                 self.keychain(Request::Totp { item }, move |state, response| {
                     if let Response::Code { code } = response {
-                        let delivered = state.deliver_text(&target, &code.code);
-                        tracing::info!(?delivered, "filled a one-time code from the top bar");
+                        let delivered = state.deliver_secret(&target, &code.code, may_type);
+                        state.report_fill(delivered, "one-time code");
                     }
                 });
             }
         }
+    }
+
+    pub(crate) fn report_fill(&mut self, delivered: Delivery, what: &str) {
+        tracing::info!(?delivered, what, "filled a saved secret");
+        if delivered == Delivery::Refused {
+            self.passwords_notice(Key::PwNotFilled);
+        }
+    }
+
+    fn passwords_notice(&mut self, notice: Key) {
+        let toast = glide_notify::Notification {
+            id: NOTICE_ID,
+            app_name: "Glide".to_string(),
+            app_icon: "dialog-password".to_string(),
+            summary: t(notice).to_string(),
+            transient: true,
+            ..glide_notify::Notification::default()
+        };
+        self.notifications.push(&mut self.dock.icons, toast, true);
+        self.queue_redraw();
     }
 
     fn generate_password(&mut self) {
@@ -541,8 +602,9 @@ impl GlideState {
     }
 
     fn copy_secret(&mut self, secret: &str, notice: Key) {
-        self.copy_to_clipboard(secret);
-        let clear_after = Prefs::load().clear_after;
+        let prefs = Prefs::load();
+        self.copy_secret_to_clipboard(secret, prefs.private_clipboard);
+        let clear_after = prefs.clear_after;
         if let Some(token) = self.session.passwords.clear.take() {
             self.loop_handle.remove(token);
         }
@@ -563,21 +625,20 @@ impl GlideState {
                 Err(err) => tracing::error!(?err, "failed to arm the clipboard clearing timer"),
             }
         }
-        let toast = glide_notify::Notification {
-            id: NOTICE_ID,
-            app_name: "Glide".to_string(),
-            app_icon: "dialog-password".to_string(),
-            summary: t(notice).to_string(),
-            transient: true,
-            ..glide_notify::Notification::default()
-        };
-        self.notifications.push(&mut self.dock.icons, toast, true);
-        self.queue_redraw();
+        self.passwords_notice(notice);
     }
 
     fn open_passwords_app(&mut self) {
         if let Err(err) = self.spawn_user_command(APP) {
             tracing::warn!(%err, "failed to start Passwords");
+        }
+    }
+
+    pub(crate) fn tick_keychain_idle(&mut self, now: Instant) {
+        let last = self.session.last_user_input;
+        if self.session.passwords.idle.due(now, last, || Prefs::load().lock_after) {
+            tracing::info!("locking the keychain after the idle time set in Passwords");
+            self.lock_keychain();
         }
     }
 
@@ -638,6 +699,23 @@ mod tests {
             strength: 0,
             reused: 0,
         }
+    }
+
+    #[test]
+    fn the_keychain_locks_once_per_idle_stretch_after_the_chosen_minutes() {
+        let start = Instant::now();
+        let mut idle = IdleLock::default();
+        let at = |minutes: u64| start + Duration::from_mins(minutes);
+        assert!(!idle.due(at(4), Some(start), || 5), "not before the chosen time");
+        assert!(!idle.due(at(5), Some(start), || 0), "a choice changed to never is read again and holds");
+        assert!(idle.due(at(6), Some(start), || 5));
+        assert!(!idle.due(at(7), Some(start), || 5), "one lock per idle stretch");
+        let touched = at(8);
+        assert!(!idle.due(at(10), Some(touched), || 5));
+        assert!(idle.due(at(14), Some(touched), || 5), "input starts the count again");
+        let mut never = IdleLock::default();
+        assert!(!never.due(at(90), Some(start), || 0), "0 keeps the keychain open");
+        assert!(!never.due(at(90), None, || 5), "no input yet, no idle time");
     }
 
     #[test]

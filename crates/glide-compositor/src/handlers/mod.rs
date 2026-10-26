@@ -67,10 +67,10 @@ impl SelectionHandler for GlideState {
     type SelectionUserData = crate::clipboard::Owned;
 
     fn send_selection(
-        &mut self, _ty: smithay::wayland::selection::SelectionTarget, _mime_type: String, fd: std::os::fd::OwnedFd,
+        &mut self, _ty: smithay::wayland::selection::SelectionTarget, mime_type: String, fd: std::os::fd::OwnedFd,
         _seat: Seat<Self>, user_data: &Self::SelectionUserData,
     ) {
-        crate::clipboard::write(user_data.clone(), fd);
+        crate::clipboard::write(user_data.clone(), mime_type, fd);
     }
 }
 

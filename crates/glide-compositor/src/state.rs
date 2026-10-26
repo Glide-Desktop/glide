@@ -3340,7 +3340,9 @@ impl GlideState {
             return;
         }
         tracing::info!("locking the screen");
-        self.lock_keychain();
+        if glide_config::passwords::Prefs::load().lock_with_screen {
+            self.lock_keychain();
+        }
         self.abort_keychain_unlock();
         self.cancel_all_polkit();
         let user = crate::greeter::current_user(&self.topbar.system_status().user_name);

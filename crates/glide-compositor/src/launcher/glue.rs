@@ -200,6 +200,20 @@ impl GlideState {
         );
     }
 
+    pub fn copy_secret_to_clipboard(&mut self, secret: &str, private: bool) {
+        if !private {
+            self.copy_to_clipboard(secret);
+            return;
+        }
+        let mimes = TEXT_MIMES.iter().chain([&crate::clipboard::PASSWORD_HINT]).map(ToString::to_string).collect();
+        set_data_device_selection(
+            &self.display_handle,
+            &self.seat,
+            mimes,
+            crate::clipboard::Owned::Secret(Arc::<str>::from(secret)),
+        );
+    }
+
     pub fn paste_into_launcher(&mut self) {
         let own = current_data_device_selection_userdata(&self.seat).map(|own| own.text().map(str::to_string));
         if let Some(own) = own {

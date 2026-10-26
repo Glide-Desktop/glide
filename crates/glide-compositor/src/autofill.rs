@@ -47,6 +47,9 @@ impl GlideState {
             self.note_login_offer(false);
             return;
         }
+        if !glide_config::passwords::Prefs::load().offer {
+            return;
+        }
         let Some(surface) = self.focused_surface() else {
             return;
         };
@@ -190,10 +193,11 @@ impl GlideState {
         let (Some(item), Some(offer)) = (parse_fill_key(key), self.session.autofill.clone()) else {
             return;
         };
+        let may_type = glide_config::passwords::Prefs::load().type_fallback;
         self.keychain(Request::Secret { item, secret: SecretKind::Password }, move |state, response| {
             if let Response::Secret { secret } = response {
-                let delivered = state.deliver_text(&offer.surface, secret.expose());
-                tracing::info!(?delivered, app = offer.app, "filled a saved password");
+                let delivered = state.deliver_secret(&offer.surface, secret.expose(), may_type);
+                state.report_fill(delivered, "password");
             }
         });
     }
