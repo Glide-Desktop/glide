@@ -142,6 +142,7 @@ impl Prompt {
         let master = current.kind != VaultKind::Local;
         let chips = if chain.vaults.len() + chain.unlocked.len() > 1 { chips(chain) } else { Vec::new() };
         let body = match current.kind {
+            _ if current.id == glide_ipc::keychain::LOGIN => t(Key::KcLogin).to_string(),
             VaultKind::Bitwarden => t(Key::KcBitwarden).replace("{account}", &current.account),
             VaultKind::KeePass => t(Key::KcKeePass).replace("{name}", &current.name),
             VaultKind::Local => t(Key::KcLocal).replace("{name}", &current.name),
@@ -347,6 +348,18 @@ mod tests {
         assert!(view.chips.is_empty());
         assert_eq!(view.hint, Hint::Keys { skip: None });
         assert!(view.body.contains("Особисте"));
+    }
+
+    #[test]
+    fn the_app_keys_ask_for_the_login_password_not_a_vault_password() {
+        let login = Chain {
+            vaults: vec![vault(glide_ipc::keychain::LOGIN, "Ключі програм", VaultKind::Local)],
+            wrong: true,
+            ..Chain::default()
+        };
+        let view = Prompt::default().view(&login, "artem", false).expect("a current vault");
+        assert_eq!(view.body, t(Key::KcLogin));
+        assert_eq!(view.hint, Hint::Wrong { master: false, caps: false });
     }
 
     #[test]

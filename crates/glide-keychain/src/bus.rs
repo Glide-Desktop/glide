@@ -50,6 +50,7 @@ impl Keychain {
                 (self.events)(Response::UnlockRequested { vault, requester: None });
                 Response::Done
             }
+            Request::LoginPassword { .. } => Response::Unsupported,
             request => {
                 let service = Arc::clone(&self.service);
                 blocking::unblock(move || service.handle(request)).await

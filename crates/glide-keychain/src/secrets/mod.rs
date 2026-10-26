@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use glide_ipc::keychain::{LOCAL, Request, Response};
+use glide_ipc::keychain::{LOGIN, Response};
 use zbus::fdo;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
@@ -107,7 +107,7 @@ impl Secrets {
     }
 
     fn unlocked(&self) -> bool {
-        self.service.daemon().local_unlocked()
+        self.service.daemon().app_secrets_unlocked()
     }
 
     fn items(&self) -> Option<Vec<Item>> {
@@ -357,11 +357,8 @@ impl ServiceObject {
     }
 
     fn lock(&self, objects: Vec<OwnedObjectPath>) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
-        let response = self.secrets.service.handle(Request::Lock { vault: Some(LOCAL.into()) });
-        if response == Response::Done {
-            (self.secrets.events)(Response::Changed);
-        }
-        (objects, path(NONE))
+        let _ = objects;
+        (Vec::new(), path(NONE))
     }
 
     fn get_secrets(
@@ -604,7 +601,8 @@ impl PromptObject {
     ) {
         let _ = window_id;
         let requester = caller_program(&header, connection).await;
-        (self.secrets.events)(Response::UnlockRequested { vault: Some(LOCAL.into()), requester });
+        let closed = self.secrets.service.prompts_closed();
+        (self.secrets.events)(Response::UnlockRequested { vault: Some(LOGIN.into()), requester });
         let (secrets, path, connection) = (Arc::clone(&self.secrets), self.path.clone(), connection.clone());
         let spawned = std::thread::Builder::new().name("glide-secrets-prompt".into()).spawn(move || {
             let started = Instant::now();
@@ -613,6 +611,9 @@ impl PromptObject {
                     return;
                 }
                 std::thread::sleep(PROMPT_POLL);
+                if secrets.service.prompts_closed() != closed && !secrets.unlocked() {
+                    break;
+                }
             }
             let Some(pending) = lock(&secrets.prompts).remove(&path) else {
                 return;

@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
-use glide_ipc::keychain::{EVENT, Envelope, Hidden, Request, Response, Vault};
+use glide_ipc::keychain::{EVENT, Envelope, Hidden, LOGIN, Request, Response, SyncState, Vault, VaultKind};
 use zeroize::Zeroizing;
 
 use crate::state::GlideState;
@@ -49,6 +49,20 @@ pub fn locked_chain(vaults: Vec<Vault>, only: Option<&str>) -> Vec<Vault> {
         .into_iter()
         .filter(|vault| vault.exists && !vault.unlocked && only.is_none_or(|only| vault.id == only))
         .collect()
+}
+
+fn login_vault() -> Vault {
+    Vault {
+        id: LOGIN.into(),
+        name: crate::i18n::t(crate::i18n::Key::KcLoginName).to_string(),
+        kind: VaultKind::Local,
+        account: String::new(),
+        server: String::new(),
+        exists: true,
+        unlocked: false,
+        sync: SyncState::Local,
+        count: 0,
+    }
 }
 
 type Unlocked = Box<dyn FnOnce(&mut GlideState)>;
@@ -218,6 +232,12 @@ impl GlideState {
             return;
         }
         self.session.keychain.unlocking = Some(Chain::default());
+        if vault.as_deref() == Some(LOGIN) {
+            let vaults = vec![login_vault()];
+            self.session.keychain.unlocking = Some(Chain { vaults, requester, ..Chain::default() });
+            self.ask_keychain_password();
+            return;
+        }
         self.keychain(Request::Vaults, move |state, response| {
             let Response::Vaults { list, .. } = response else {
                 state.finish_keychain_unlock(false);
@@ -225,6 +245,10 @@ impl GlideState {
             };
             let vaults = locked_chain(list, vault.as_deref());
             if vaults.is_empty() {
+                tracing::info!(
+                    vault = vault.as_deref().unwrap_or("-"),
+                    "nothing to unlock; the request is answered as done"
+                );
                 state.finish_keychain_unlock(true);
                 return;
             }
@@ -303,6 +327,7 @@ impl GlideState {
     fn finish_keychain_unlock(&mut self, unlocked: bool) {
         self.session.keychain.unlocking = None;
         self.close_keychain_prompt();
+        self.keychain(Request::PromptClosed, |_, _| {});
         let waiting = std::mem::take(&mut self.session.keychain.after_unlock);
         if self.topbar.open_popup() != Some(crate::topbar::OpenPopup::Passwords) {
             self.sync_passwords_applet();

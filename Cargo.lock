@@ -2075,9 +2075,11 @@ dependencies = [
  "getrandom 0.4.3",
  "glide-config",
  "glide-ipc",
+ "glide-login-key",
  "hkdf",
  "hmac 0.12.1",
  "keepass",
+ "libc",
  "pbkdf2",
  "rsa",
  "serde",
@@ -2094,6 +2096,15 @@ name = "glide-layout"
 version = "0.1.0"
 dependencies = [
  "glide-geom",
+]
+
+[[package]]
+name = "glide-login-key"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "sha2 0.10.9",
+ "zeroize",
 ]
 
 [[package]]

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -17,6 +18,7 @@ pub struct Service {
     daemon: Arc<Mutex<Daemon>>,
     wake: mpsc::Sender<bool>,
     secrets_toggle: std::sync::OnceLock<Toggle>,
+    prompts_closed: AtomicU64,
 }
 
 impl std::fmt::Debug for Service {
@@ -37,11 +39,16 @@ impl Service {
         if let Err(err) = spawned {
             eprintln!("glide-keychain: vaults will not sync in the background ({err})");
         }
-        Arc::new(Self { daemon, wake, secrets_toggle: std::sync::OnceLock::new() })
+        Arc::new(Self { daemon, wake, secrets_toggle: std::sync::OnceLock::new(), prompts_closed: AtomicU64::new(0) })
     }
 
     pub fn on_secret_service(&self, toggle: Toggle) {
         let _ = self.secrets_toggle.set(toggle);
+    }
+
+    #[must_use]
+    pub fn prompts_closed(&self) -> u64 {
+        self.prompts_closed.load(Ordering::Acquire)
     }
 
     pub fn daemon(&self) -> MutexGuard<'_, Daemon> {
@@ -79,6 +86,10 @@ impl Service {
             Request::Export { vault, password } => {
                 let records = self.daemon().export_records(vault.as_deref());
                 export_response(&records, &password)
+            }
+            Request::PromptClosed => {
+                self.prompts_closed.fetch_add(1, Ordering::AcqRel);
+                Response::Done
             }
             Request::SecretService { enabled } => match self.secrets_toggle.get() {
                 Some(toggle) => {
@@ -131,6 +142,7 @@ fn sync_loop(daemon: &Mutex<Daemon>, signals: &mpsc::Receiver<bool>, events: &Ev
         let force = signals.try_iter().fold(force, |any, next| any || next);
         let (jobs, now) = {
             let mut daemon = lock();
+            daemon.take_login_handoff();
             (daemon.sync_jobs(force), daemon.now())
         };
         if jobs.is_empty() {

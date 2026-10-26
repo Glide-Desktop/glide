@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod kdbx;
 pub mod leaks;
 pub mod local;
+pub mod login;
 pub mod provider;
 pub mod secrets;
 pub mod service;

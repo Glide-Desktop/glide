@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use glide_ipc::keychain::{
-    Candidate, Card, Code, Detail, Field, Folder, Hidden, ItemKind, ItemRef, Keep, LOCAL, Report, Request, Response,
-    SecretKind, Summary, Vault, strength,
+    Candidate, Card, Code, Detail, Field, Folder, Hidden, ItemKind, ItemRef, Keep, LOCAL, LOGIN, Report, Request,
+    Response, SecretKind, Summary, Vault, strength,
 };
 
 use crate::bitwarden::{Bitwarden, LoginError, SyncDone, SyncJob};
 use crate::local::Local;
+use crate::login::LoginKeyring;
 use crate::provider::{Fault, Provider, Record};
 use crate::totp::Totp;
 use crate::vault::Params;
@@ -26,6 +27,20 @@ pub struct Daemon {
     clock: fn() -> u64,
     accounts: Option<PathBuf>,
     leaks: crate::leaks::Leaks,
+    login: Option<Login>,
+}
+
+struct Login {
+    keyring: LoginKeyring,
+    user: String,
+    uid: u32,
+    runtime: Option<PathBuf>,
+}
+
+fn take_file(path: &std::path::Path) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+    let bytes = zeroize::Zeroizing::new(std::fs::read(path).ok()?);
+    let _ = std::fs::remove_file(path);
+    Some(bytes)
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -111,6 +126,12 @@ impl Daemon {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         let name = if settings.local_name.trim().is_empty() { LOCAL_NAME } else { settings.local_name.as_str() };
+        let login = path.parent().zip(crate::login::current_user()).map(|(dir, (user, uid))| Login {
+            keyring: LoginKeyring::load(dir),
+            user,
+            uid,
+            runtime: None,
+        });
         let mut providers: Vec<Box<dyn Provider>> = vec![Box::new(Local::new(path, params, name))];
         for account in Bitwarden::load_all(&accounts) {
             providers.push(Box::new(account));
@@ -120,6 +141,7 @@ impl Daemon {
         }
         let mut daemon = Self::with_providers(providers);
         daemon.accounts = Some(accounts);
+        daemon.login = login;
         if daemon.index(&settings.default).is_ok() {
             daemon.default = settings.default;
         }
@@ -128,7 +150,14 @@ impl Daemon {
 
     #[must_use]
     pub fn with_providers(providers: Vec<Box<dyn Provider>>) -> Self {
-        Self { providers, default: LOCAL.into(), clock: now, accounts: None, leaks: crate::leaks::Leaks::default() }
+        Self {
+            providers,
+            default: LOCAL.into(),
+            clock: now,
+            accounts: None,
+            leaks: crate::leaks::Leaks::default(),
+            login: None,
+        }
     }
 
     fn store_settings(&self) {
@@ -227,18 +256,87 @@ impl Daemon {
     }
 
     #[must_use]
-    pub fn local_unlocked(&self) -> bool {
-        self.provider(LOCAL).is_ok_and(Provider::unlocked)
+    pub fn app_secrets_unlocked(&self) -> bool {
+        self.login.as_ref().is_some_and(|login| login.keyring.unlocked())
     }
 
     pub fn app_secrets(&self) -> Result<Vec<crate::vault::Item>, Fault> {
-        Ok(self.provider(LOCAL)?.app_secrets()?.to_vec())
+        Ok(self.login.as_ref().ok_or(Fault::Unsupported)?.keyring.items()?.to_vec())
     }
 
     pub fn edit_app_secrets(
         &mut self, edit: &mut dyn FnMut(&mut Vec<crate::vault::Item>, &mut u64),
     ) -> Result<(), Fault> {
-        self.provider_mut(LOCAL)?.edit_app_secrets(edit)
+        self.login.as_mut().ok_or(Fault::Unsupported)?.keyring.edit(edit)
+    }
+
+    fn unlock_login(&mut self, password: &Hidden, verified: bool) -> Response {
+        let Some(login) = self.login.as_mut() else {
+            return Response::Unsupported;
+        };
+        let Some(wrapping) = glide_login_key::wrapping_key(password.expose().as_bytes(), &login.user, login.uid) else {
+            return Response::Error { message: "the login password could not be stretched".into() };
+        };
+        let result = login.keyring.offer(&wrapping, verified);
+        self.migrate_app_secrets();
+        done(result)
+    }
+
+    pub fn watch_login_handoff(&mut self, runtime: PathBuf) {
+        if let Some(login) = self.login.as_mut() {
+            login.runtime = Some(runtime);
+        }
+        self.take_login_handoff();
+    }
+
+    pub fn take_login_handoff(&mut self) {
+        let Some(login) = self.login.as_mut() else {
+            return;
+        };
+        let Some(runtime) = login.runtime.clone() else {
+            return;
+        };
+        if let Some(bytes) = take_file(&runtime.join(glide_login_key::KEY_FILE))
+            && let Some(wrapping) = glide_login_key::key_from(&bytes)
+            && let Err(fault) = login.keyring.offer(&wrapping, true)
+        {
+            eprintln!("glide-keychain: the login password from this session did not open the login keyring ({fault})");
+        }
+        if let Some(bytes) = take_file(&runtime.join(glide_login_key::REKEY_FILE))
+            && let Some((old, new)) = glide_login_key::rekey_from(&bytes)
+            && let Err(fault) = login.keyring.rekey(&old, &new)
+        {
+            eprintln!("glide-keychain: the login keyring did not follow the password change ({fault})");
+        }
+        self.migrate_app_secrets();
+    }
+
+    fn migrate_app_secrets(&mut self) {
+        let Ok(old) = self.provider(LOCAL).and_then(|local| local.app_secrets().map(<[_]>::to_vec)) else {
+            return;
+        };
+        if old.is_empty() || !self.app_secrets_unlocked() {
+            return;
+        }
+        let moved = self.edit_app_secrets(&mut |items, next| {
+            for item in &old {
+                if items.iter().any(|known| known.attributes == item.attributes) {
+                    continue;
+                }
+                *next += 1;
+                items.push(crate::vault::Item { id: *next, ..item.clone() });
+            }
+        });
+        match moved {
+            Ok(()) => {
+                let cleared =
+                    self.provider_mut(LOCAL).and_then(|local| local.edit_app_secrets(&mut |items, _| items.clear()));
+                if let Err(fault) = cleared {
+                    eprintln!("glide-keychain: program secrets were copied but stay in the local vault too ({fault})");
+                }
+            }
+            Err(fault) => eprintln!("glide-keychain: program secrets stay in the local vault ({fault})"),
+        }
     }
 
     #[must_use]
@@ -564,7 +662,15 @@ impl Daemon {
             },
             Request::Vaults => Response::Vaults { list: self.vaults(), default: self.default.clone() },
             Request::Create { password } => done(self.provider_mut(LOCAL).and_then(|local| local.create(&password))),
-            Request::Unlock { vault, password } => done(self.provider_mut(&vault).and_then(|p| p.unlock(&password))),
+            Request::Unlock { vault, password } if vault == LOGIN => self.unlock_login(&password, false),
+            Request::Unlock { vault, password } => {
+                let response = done(self.provider_mut(&vault).and_then(|p| p.unlock(&password)));
+                if vault == LOCAL && response == Response::Done {
+                    self.migrate_app_secrets();
+                }
+                response
+            }
+            Request::LoginPassword { password } => self.unlock_login(&password, true),
             Request::Lock { vault: Some(vault) } => done(self.provider_mut(&vault).map(|provider| provider.lock())),
             Request::Lock { vault: None } => {
                 for provider in &mut self.providers {
@@ -572,7 +678,7 @@ impl Daemon {
                 }
                 Response::Done
             }
-            Request::RequestUnlock { .. } => Response::Done,
+            Request::RequestUnlock { .. } | Request::PromptClosed => Response::Done,
             Request::ChangePassword { vault, old, new } => {
                 done(self.provider_mut(&vault).and_then(|provider| provider.change_password(&old, &new)))
             }
@@ -745,6 +851,73 @@ mod tests {
         let mut daemon = Daemon::new(path.clone(), FAST).with_clock(|| NOW);
         assert_eq!(daemon.handle(Request::Create { password: hidden("pw") }), Response::Done);
         (daemon, path)
+    }
+
+    #[test]
+    fn program_secrets_kept_in_the_local_vault_move_to_the_login_keyring_when_it_opens() {
+        let path = temp("migrate");
+        let mut local = Local::new(path.clone(), FAST, LOCAL_NAME);
+        local.create(&hidden("pw")).unwrap();
+        local
+            .edit_app_secrets(&mut |items, next| {
+                *next += 1;
+                let mut item = crate::vault::Item::new(crate::local::SERVICE_COLLECTION, "Chrome Safe Storage", 1);
+                item.id = *next;
+                item.attributes.insert("application".into(), "chrome".into());
+                items.push(item);
+            })
+            .unwrap();
+        drop(local);
+        let mut daemon = Daemon::new(path.clone(), FAST);
+        assert!(daemon.app_secrets_unlocked(), "program secrets need no password of their own");
+        assert!(daemon.app_secrets().unwrap().is_empty());
+        assert_eq!(daemon.handle(Request::Unlock { vault: LOCAL.into(), password: hidden("pw") }), Response::Done);
+        let moved = daemon.app_secrets().unwrap();
+        assert_eq!(moved.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(), ["Chrome Safe Storage"]);
+        assert!(daemon.provider(LOCAL).unwrap().app_secrets().unwrap().is_empty(), "the local vault lets them go");
+        assert_eq!(daemon.handle(Request::Lock { vault: None }), Response::Done);
+        assert!(daemon.app_secrets_unlocked(), "locking every vault leaves program secrets open");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_key_left_by_the_login_opens_the_app_keys_and_a_password_change_follows() {
+        let path = temp("handoff");
+        let runtime = path.with_file_name("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let (user, uid) = crate::login::current_user().unwrap();
+        let key = |password: &str| glide_login_key::wrapping_key(password.as_bytes(), &user, uid).unwrap();
+        let store = |daemon: &mut Daemon| {
+            daemon
+                .edit_app_secrets(&mut |items, next| {
+                    *next += 1;
+                    items.push(crate::vault::Item {
+                        id: *next,
+                        ..crate::vault::Item::new(crate::local::SERVICE_COLLECTION, "Chrome Safe Storage", 1)
+                    });
+                })
+                .unwrap();
+        };
+        std::fs::write(runtime.join(glide_login_key::KEY_FILE), key("first").as_ref()).unwrap();
+        let mut daemon = Daemon::new(path.clone(), FAST);
+        daemon.watch_login_handoff(runtime.clone());
+        assert!(!runtime.join(glide_login_key::KEY_FILE).exists(), "the key is taken off the runtime folder");
+        store(&mut daemon);
+
+        let mut next_login = Daemon::new(path.clone(), FAST);
+        assert!(!next_login.app_secrets_unlocked(), "the keyring was wrapped by the login password");
+        std::fs::write(runtime.join(glide_login_key::KEY_FILE), key("first").as_ref()).unwrap();
+        next_login.watch_login_handoff(runtime.clone());
+        assert_eq!(next_login.app_secrets().unwrap().len(), 1);
+
+        let rekey = glide_login_key::rekey_bytes(&key("first"), &key("second"));
+        std::fs::write(runtime.join(glide_login_key::REKEY_FILE), &*rekey).unwrap();
+        next_login.take_login_handoff();
+        let mut after = Daemon::new(path.clone(), FAST);
+        let first = Request::Unlock { vault: LOGIN.into(), password: hidden("first") };
+        assert_eq!(after.handle(first), Response::WrongPassword);
+        assert_eq!(after.handle(Request::Unlock { vault: LOGIN.into(), password: hidden("second") }), Response::Done);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     fn login(name: &str, password: &str, app: &str) -> Draft {

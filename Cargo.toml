@@ -13,6 +13,7 @@ members = [
     "crates/glide-layout",
     "crates/glide-ipc",
     "crates/glide-keychain",
+    "crates/glide-login-key",
     "crates/glide-media",
     "crates/glide-netbird",
     "crates/glide-notify",

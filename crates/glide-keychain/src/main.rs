@@ -61,7 +61,11 @@ fn main() {
         send(&events_writer, &Envelope { id: EVENT, body });
     });
     let index = secrets::index::path_beside(&path);
-    let service = Service::start(Daemon::new(path, Params::DEFAULT), Arc::clone(&events));
+    let mut daemon = Daemon::new(path, Params::DEFAULT);
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
+        daemon.watch_login_handoff(runtime.into());
+    }
+    let service = Service::start(daemon, Arc::clone(&events));
     match bus::serve(bus::Keychain::new(Arc::clone(&service), Arc::clone(&events), bus::client_program())) {
         Ok(served) => {
             let store = Secrets::new(Arc::clone(&service), Arc::clone(&events), index);

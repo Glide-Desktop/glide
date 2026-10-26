@@ -31,6 +31,7 @@ impl fmt::Debug for Hidden {
 }
 
 pub const LOCAL: &str = "local";
+pub const LOGIN: &str = "login";
 pub const BUS_NAME: &str = "org.glide.Keychain";
 pub const BUS_PATH: &str = "/org/glide/Keychain1";
 pub const BUS_INTERFACE: &str = "org.glide.Keychain1";
@@ -357,6 +358,10 @@ pub enum Request {
     RequestUnlock {
         vault: Option<String>,
     },
+    LoginPassword {
+        password: Hidden,
+    },
+    PromptClosed,
     ChangePassword {
         vault: String,
         old: Hidden,

@@ -21,6 +21,8 @@ data-encoding = "2"
 getrandom = "0.4"
 glide-config = { path = "../glide-config" }
 glide-ipc = { path = "../glide-ipc" }
+glide-login-key = { path = "../glide-login-key" }
+libc = "0.2"
 hmac = "0.12"
 keepass = { version = "0.17", features = ["save_kdbx4"] }
 serde.workspace = true

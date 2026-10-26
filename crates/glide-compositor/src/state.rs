@@ -360,6 +360,7 @@ pub struct GlideState {
     pub greeter: Option<crate::greeter::GreeterUi>,
     pub greeter_handle: Option<crate::greeter::GreetdHandle>,
     pub lock_auth: Option<crate::greeter::pam::Authenticator>,
+    lock_password: Option<zeroize::Zeroizing<String>>,
     pub session: SessionServices,
     pub handoff: Option<crate::handoff::Handoff>,
     pub shell_cursor: Option<smithay::input::pointer::CursorIcon>,
@@ -519,6 +520,7 @@ impl GlideState {
             greeter: None,
             greeter_handle: None,
             lock_auth: None,
+            lock_password: None,
             session: SessionServices { gate, ..SessionServices::default() },
             handoff: None,
             shell_cursor: None,
@@ -3589,6 +3591,7 @@ impl GlideState {
             greeter::pam::Verdict,
             i18n::{Key, t},
         };
+        let password = self.lock_password.take();
         let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock()) else {
             return;
         };
@@ -3597,6 +3600,12 @@ impl GlideState {
                 tracing::info!("screen unlocked");
                 greeter.set_auth_success();
                 greeter.leave();
+                if let Some(password) = password {
+                    let password = glide_ipc::keychain::Hidden::new(password.as_str().to_owned());
+                    self.keychain(glide_ipc::keychain::Request::LoginPassword { password }, |_, response| {
+                        tracing::info!(?response, "the login password was offered to the app keys");
+                    });
+                }
             }
             Verdict::Denied(message) => {
                 tracing::info!("lock screen authentication failed");
@@ -3618,9 +3627,9 @@ impl GlideState {
         if greeter.submit() == crate::greeter::Submit::Nothing {
             return;
         }
-        let sent = greeter
-            .take_queued()
-            .is_some_and(|password| self.lock_auth.as_ref().is_some_and(|auth| auth.check(password)));
+        let queued = greeter.take_queued();
+        self.lock_password = queued.as_ref().map(|password| zeroize::Zeroizing::new(password.clone()));
+        let sent = queued.is_some_and(|password| self.lock_auth.as_ref().is_some_and(|auth| auth.check(password)));
         if !sent {
             greeter.set_auth_error(t(Key::LockUnavailable).to_string(), false);
         }

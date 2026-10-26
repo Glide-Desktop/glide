@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use glide_ipc::keychain::{Hidden, LOCAL, Request, Response};
+use glide_ipc::keychain::{Hidden, LOGIN, Request, Response};
 use glide_keychain::daemon::Daemon;
 use glide_keychain::secrets::{self, BUS_NAME, ROOT, Secrets};
 use glide_keychain::service::Service;
@@ -95,13 +95,12 @@ fn secret_tool(bus: &Bus, args: &[&str], input: Option<&str>) -> Option<(bool, S
 }
 
 #[test]
-fn libsecret_stores_and_finds_a_secret_through_glide() {
+fn libsecret_stores_and_finds_a_secret_without_any_vault_or_password() {
     let Some(bus) = private_bus() else {
         return;
     };
     let path = temp("libsecret");
     let service = Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {}));
-    assert_eq!(service.handle(Request::Create { password: Hidden::new("pw".into()) }), Response::Done);
     let server = connect(&bus);
     let store = Secrets::new(Arc::clone(&service), Arc::new(|_| {}), secrets::index::path_beside(&path));
     secrets::serve(&server, &store).unwrap();
@@ -121,27 +120,81 @@ fn libsecret_stores_and_finds_a_secret_through_glide() {
     assert!(cleared, "secret-tool clear failed: {log}");
     let (_, gone) = secret_tool(&bus, &["lookup", "service", "git", "user", "artem"], None).unwrap();
     assert!(gone.trim().is_empty(), "the cleared secret is gone");
+    assert!(!path.exists(), "program secrets never create the password vault");
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+fn serve(
+    bus: &Bus, service: &Arc<Service>, path: &std::path::Path, events: glide_keychain::service::Events,
+) -> zbus::blocking::Connection {
+    let server = connect(bus);
+    let store = Secrets::new(Arc::clone(service), events, secrets::index::path_beside(path));
+    secrets::serve(&server, &store).unwrap();
+    secrets::claim(&server, true);
+    server
+}
+
+#[test]
+fn a_keyring_wrapped_by_the_login_password_waits_for_it_and_a_closed_island_answers_at_once() {
+    let (Some(first), Some(second)) = (private_bus(), private_bus()) else {
+        return;
+    };
+    let path = temp("wrapped");
+    let service = Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {}));
+    let _first_server = serve(&first, &service, &path, Arc::new(|_| {}));
+    let client = connect(&first);
+    let root = proxy(&client, ROOT, SERVICE);
+    let (_, session): (OwnedValue, OwnedObjectPath) = root.call("OpenSession", &("plain", Value::from(""))).unwrap();
+    let collection = proxy(&client, "/org/freedesktop/secrets/collection/login", COLLECTION);
+    let (item, _) = create(&collection, &session, b"chrome-key-0451");
+    assert_eq!(service.handle(Request::LoginPassword { password: Hidden::new("login-pw".into()) }), Response::Done);
+    assert_eq!(service.handle(Request::Lock { vault: None }), Response::Done);
+    let still: HashMap<OwnedObjectPath, SecretValue> = root.call("GetSecrets", &(vec![item.clone()], session)).unwrap();
+    assert_eq!(still[&item].2, b"chrome-key-0451", "locking the vaults leaves program secrets open");
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&events);
+    let restarted = Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {}));
+    let _second_server = serve(&second, &restarted, &path, Arc::new(move |event| seen.lock().unwrap().push(event)));
+    let client = connect(&second);
+    let root = proxy(&client, ROOT, SERVICE);
+    let (_, session): (OwnedValue, OwnedObjectPath) = root.call("OpenSession", &("plain", Value::from(""))).unwrap();
+    let found: Found = root.call("SearchItems", &(chrome(),)).unwrap();
+    assert_eq!(found, (Vec::new(), vec![item.clone()]), "after a restart the wrapped keyring waits for the login");
+
+    let (_, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) = root.call("Unlock", &(vec![item.clone()],)).unwrap();
+    let prompt_proxy = proxy(&client, prompt.as_str(), "org.freedesktop.Secret.Prompt");
+    let mut completed = prompt_proxy.receive_signal("Completed").unwrap();
+    let () = prompt_proxy.call("Prompt", &("",)).unwrap();
+    assert!(events.lock().unwrap().iter().any(|event| matches!(
+        event,
+        Response::UnlockRequested { vault: Some(vault), .. } if vault == LOGIN
+    )));
+    let asked = std::time::Instant::now();
+    assert_eq!(restarted.handle(Request::PromptClosed), Response::Done);
+    let (dismissed, _): (bool, OwnedValue) = completed.next().unwrap().body().deserialize().unwrap();
+    assert!(
+        dismissed && asked.elapsed() < std::time::Duration::from_secs(5),
+        "a closed island never keeps a program waiting"
+    );
+
+    let wrong = Request::Unlock { vault: LOGIN.into(), password: Hidden::new("nope".into()) };
+    assert_eq!(restarted.handle(wrong), Response::WrongPassword);
+    let right = Request::Unlock { vault: LOGIN.into(), password: Hidden::new("login-pw".into()) };
+    assert_eq!(restarted.handle(right), Response::Done);
+    let open: HashMap<OwnedObjectPath, SecretValue> = root.call("GetSecrets", &(vec![item.clone()], session)).unwrap();
+    assert_eq!(open[&item].2, b"chrome-key-0451");
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 #[test]
-fn programs_store_and_read_secrets_that_stay_encrypted_and_wait_for_the_island_when_locked() {
+fn programs_store_and_read_secrets_that_stay_encrypted() {
     let Some(bus) = private_bus() else {
         return;
     };
     let path = temp("flow");
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&events);
     let service = Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {}));
-    assert_eq!(service.handle(Request::Create { password: Hidden::new("pw".into()) }), Response::Done);
-    let server = connect(&bus);
-    let store = Secrets::new(
-        Arc::clone(&service),
-        Arc::new(move |event| seen.lock().unwrap().push(event)),
-        secrets::index::path_beside(&path),
-    );
-    secrets::serve(&server, &store).unwrap();
-    secrets::claim(&server, true);
+    let _server = serve(&bus, &service, &path, Arc::new(|_| {}));
     let client = connect(&bus);
     let root = proxy(&client, ROOT, SERVICE);
 
@@ -180,36 +233,10 @@ fn programs_store_and_read_secrets_that_stay_encrypted_and_wait_for_the_island_w
     let plain: SecretValue = item_proxy.call("GetSecret", &(session.clone(),)).unwrap();
     assert_eq!(plain.2, b"sealed-write", "a sealed write is stored as its plain text");
 
-    let vault = std::fs::read(&path).unwrap();
-    assert!(!vault.windows(15).any(|window| window == b"chrome-key-0451"), "the vault file holds ciphertext only");
+    let keyring = std::fs::read(path.with_file_name("login-keyring")).unwrap();
+    assert!(!keyring.windows(12).any(|window| window == b"sealed-write"), "the keyring file holds ciphertext only");
     let index = std::fs::read_to_string(secrets::index::path_beside(&path)).unwrap();
     assert!(!index.contains("chrome"), "the lookup index holds salted hashes only");
-
-    assert_eq!(service.handle(Request::Lock { vault: None }), Response::Done);
-    let found: Found = root.call("SearchItems", &(chrome(),)).unwrap();
-    assert_eq!(found, (Vec::new(), vec![item.clone()]), "a locked item is still found, as locked");
-    let locked =
-        root.call::<_, _, HashMap<OwnedObjectPath, SecretValue>>("GetSecrets", &(vec![item.clone()], session.clone()));
-    assert!(locked.unwrap_err().to_string().contains("IsLocked"));
-
-    let (unlocked, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) =
-        root.call("Unlock", &(vec![item.clone()],)).unwrap();
-    assert!(unlocked.is_empty() && prompt.as_str() != "/");
-    let prompt_proxy = proxy(&client, prompt.as_str(), "org.freedesktop.Secret.Prompt");
-    let mut completed = prompt_proxy.receive_signal("Completed").unwrap();
-    let () = prompt_proxy.call("Prompt", &("",)).unwrap();
-    let me = std::env::current_exe().unwrap().display().to_string();
-    assert!(
-        events.lock().unwrap().contains(&Response::UnlockRequested { vault: Some(LOCAL.into()), requester: Some(me) }),
-        "the compositor asks in the island, naming the program that asked"
-    );
-    assert_eq!(
-        service.handle(Request::Unlock { vault: LOCAL.into(), password: Hidden::new("pw".into()) }),
-        Response::Done
-    );
-    let signal = completed.next().unwrap();
-    let (dismissed, _): (bool, OwnedValue) = signal.body().deserialize().unwrap();
-    assert!(!dismissed, "the prompt completes once the island unlocked the keychain");
 
     let item_proxy = proxy(&client, item.as_str(), ITEM);
     let secret = (session.clone(), Vec::<u8>::new(), b"rotated".to_vec(), "text/plain");
