@@ -9,5 +9,5 @@ pub mod widgets;
 
 pub use app::{App, Message};
 pub use i18n::{Key, Lang};
-pub use panels::Panel;
+pub use panels::{Category, Panel};
 pub use theme::{Accent, Appearance, ThemeState};

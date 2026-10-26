@@ -26,7 +26,6 @@ catalogue! {
     PanelWindows => "Windows", "Вікна";
     PanelPower => "Power & Battery", "Живлення й батарея";
     PanelApps => "Default Apps", "Типові програми";
-    PanelTerminal => "Terminal", "Термінал";
     PanelVpn => "VPN", "VPN";
     PanelNetbird => "NetBird", "NetBird";
     PanelNotifications => "Notifications", "Сповіщення";
@@ -45,12 +44,21 @@ catalogue! {
     PanelPrinters => "Printers", "Принтери";
 
     GroupConnections => "Connections", "З'єднання";
-    GroupAlerts => "Alerts", "Сповіщення";
+    GroupAlerts => "Notifications & sound", "Сповіщення й звук";
     GroupPersonalisation => "Personalisation", "Персоналізація";
-    GroupHardware => "Hardware", "Обладнання";
+    GroupHardware => "Screen & devices", "Екран і пристрої";
     GroupInput => "Input", "Введення";
-    GroupPeople => "Privacy & people", "Люди й безпека";
+    GroupApps => "Apps", "Програми";
+    GroupPeople => "Security & people", "Безпека й люди";
     GroupSystem => "System", "Система";
+
+    CategoryDesktop => "Desktop", "Робочий стіл";
+    AboutCategoryVpn => "Private networks, WireGuard tunnels and the NetBird mesh", "Приватні мережі, тунелі WireGuard і mesh-мережа NetBird";
+    AboutCategoryAppearance => "Style, accent colour, wallpaper, fonts and motion", "Стиль, колір акценту, шпалери, шрифти й рух";
+    AboutCategoryDesktop => "Dock, top bar, windows, workspaces and the overview", "Док, верхня панель, вікна, робочі простори й огляд";
+    AboutCategoryDisplays => "Arrangement, resolution, scale and night light", "Розташування, роздільність, масштаб і нічне світло";
+    AboutCategoryKeyboard => "Input sources, special keys and keyboard shortcuts", "Розкладки, спеціальні клавіші й комбінації клавіш";
+    AboutCategoryMouse => "Pointer speed, scrolling, tapping and touchpad gestures", "Швидкість вказівника, прокручування, дотики й жести тачпада";
 
     AboutNetwork => "Wi-Fi, wired connections and saved networks", "Wi-Fi, дротові з'єднання та збережені мережі";
     AboutBluetooth => "Pair and connect wireless devices", "Під'єднання та сполучення бездротових пристроїв";
@@ -64,7 +72,6 @@ catalogue! {
     AboutMouse => "Pointer speed, scrolling and tapping", "Швидкість вказівника, прокрутка й дотики";
     AboutGestures => "Touchpad swipes for workspaces and the overview, and a place to practise them", "Свайпи тачпадом для робочих просторів і огляду та місце, щоб їх випробувати";
     AboutApps => "Which apps open links, mail, files and media", "Які програми відкривають посилання, пошту, файли й медіа";
-    AboutTerminal => "Profile, font and behaviour of the Glide terminal", "Профіль, шрифт і поведінка термінала Glide";
     AboutSystem => "This computer and the Glide session", "Цей комп'ютер і сеанс Glide";
     AboutVpn => "Virtual private networks and WireGuard tunnels", "Віртуальні приватні мережі та тунелі WireGuard";
     AboutNetbird => "Your NetBird mesh network: peers, resources, exit nodes and profiles", "Ваша мережа NetBird: вузли, ресурси, вихідні вузли та профілі";

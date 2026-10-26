@@ -2211,7 +2211,6 @@ dependencies = [
  "glide-ipc",
  "glide-netbird",
  "glide-sdk",
- "glide-terminal",
  "glide-theme",
  "iced",
  "image",

@@ -23,7 +23,6 @@ pub mod shortcuts;
 pub mod sound;
 pub mod startup;
 pub mod storage;
-pub mod terminal;
 pub mod topbar;
 pub mod users;
 pub mod vpn;
@@ -119,7 +118,6 @@ macro_rules! with_panels {
             DateTime => date_time,
             Region => region,
             Apps => apps,
-            Terminal => terminal,
             Startup => startup,
             Storage => storage,
             Printers => printers,
@@ -226,56 +224,187 @@ panel_meta! {
     DateTime: PanelDateTime, AboutDateTime, "datetime", Clock, Cinnabar 5;
     Region: PanelRegion, AboutRegion, "region", Globe, Conifer 4;
     Apps: PanelApps, AboutApps, "default-apps", Apps, Amber 3;
-    Terminal: PanelTerminal, AboutTerminal, "terminal", Terminal, Graphite 2;
     Startup: PanelStartup, AboutStartup, "startup", Rocket, Terracotta 5;
     Storage: PanelStorage, AboutStorage, "storage", Drive, Conifer 5;
     Printers: PanelPrinters, AboutPrinters, "printers", Printer, Graphite 4;
     About: PanelAbout, AboutSystem, "about", Info, Amber 5;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Category {
+    Network,
+    Bluetooth,
+    Vpn,
+    Notifications,
+    Sound,
+    Appearance,
+    Desktop,
+    Displays,
+    Power,
+    Printers,
+    Keyboard,
+    Mouse,
+    Apps,
+    Startup,
+    Privacy,
+    Accessibility,
+    Users,
+    DateTime,
+    Region,
+    Storage,
+    About,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Group {
     pub title: Key,
-    pub panels: &'static [Panel],
+    pub categories: &'static [Category],
 }
 
-impl Panel {
+impl Category {
+    pub const ALL: &'static [Self] = &[
+        Self::Network,
+        Self::Bluetooth,
+        Self::Vpn,
+        Self::Notifications,
+        Self::Sound,
+        Self::Appearance,
+        Self::Desktop,
+        Self::Displays,
+        Self::Power,
+        Self::Printers,
+        Self::Keyboard,
+        Self::Mouse,
+        Self::Apps,
+        Self::Startup,
+        Self::Privacy,
+        Self::Accessibility,
+        Self::Users,
+        Self::DateTime,
+        Self::Region,
+        Self::Storage,
+        Self::About,
+    ];
+
     pub const GROUPS: &'static [Group] = &[
-        Group { title: Key::GroupConnections, panels: &[Self::Network, Self::Bluetooth, Self::Vpn, Self::Netbird] },
-        Group { title: Key::GroupAlerts, panels: &[Self::Notifications, Self::Sound] },
-        Group {
-            title: Key::GroupPersonalisation,
-            panels: &[
-                Self::Appearance,
-                Self::Wallpaper,
-                Self::Desktop,
-                Self::TopBar,
-                Self::Windows,
-                Self::Multitasking,
-            ],
-        },
-        Group { title: Key::GroupHardware, panels: &[Self::Displays, Self::NightLight, Self::Power, Self::Printers] },
-        Group { title: Key::GroupInput, panels: &[Self::Keyboard, Self::Shortcuts, Self::Mouse, Self::Gestures] },
-        Group { title: Key::GroupPeople, panels: &[Self::Accessibility, Self::Privacy, Self::Users] },
-        Group {
-            title: Key::GroupSystem,
-            panels: &[
-                Self::DateTime,
-                Self::Region,
-                Self::Apps,
-                Self::Terminal,
-                Self::Startup,
-                Self::Storage,
-                Self::About,
-            ],
-        },
+        Group { title: Key::GroupConnections, categories: &[Self::Network, Self::Bluetooth, Self::Vpn] },
+        Group { title: Key::GroupAlerts, categories: &[Self::Notifications, Self::Sound] },
+        Group { title: Key::GroupPersonalisation, categories: &[Self::Appearance, Self::Desktop] },
+        Group { title: Key::GroupHardware, categories: &[Self::Displays, Self::Power, Self::Printers] },
+        Group { title: Key::GroupInput, categories: &[Self::Keyboard, Self::Mouse] },
+        Group { title: Key::GroupApps, categories: &[Self::Apps, Self::Startup] },
+        Group { title: Key::GroupPeople, categories: &[Self::Privacy, Self::Accessibility, Self::Users] },
+        Group { title: Key::GroupSystem, categories: &[Self::DateTime, Self::Region, Self::Storage, Self::About] },
     ];
 
     #[must_use]
-    pub fn group(self) -> &'static Group {
-        Self::GROUPS.iter().find(|group| group.panels.contains(&self)).unwrap_or(&Self::GROUPS[Self::GROUPS.len() - 1])
+    pub const fn panels(self) -> &'static [Panel] {
+        match self {
+            Self::Network => &[Panel::Network],
+            Self::Bluetooth => &[Panel::Bluetooth],
+            Self::Vpn => &[Panel::Vpn, Panel::Netbird],
+            Self::Notifications => &[Panel::Notifications],
+            Self::Sound => &[Panel::Sound],
+            Self::Appearance => &[Panel::Appearance, Panel::Wallpaper],
+            Self::Desktop => &[Panel::Desktop, Panel::TopBar, Panel::Windows, Panel::Multitasking],
+            Self::Displays => &[Panel::Displays, Panel::NightLight],
+            Self::Power => &[Panel::Power],
+            Self::Printers => &[Panel::Printers],
+            Self::Keyboard => &[Panel::Keyboard, Panel::Shortcuts],
+            Self::Mouse => &[Panel::Mouse, Panel::Gestures],
+            Self::Apps => &[Panel::Apps],
+            Self::Startup => &[Panel::Startup],
+            Self::Privacy => &[Panel::Privacy],
+            Self::Accessibility => &[Panel::Accessibility],
+            Self::Users => &[Panel::Users],
+            Self::DateTime => &[Panel::DateTime],
+            Self::Region => &[Panel::Region],
+            Self::Storage => &[Panel::Storage],
+            Self::About => &[Panel::About],
+        }
     }
 
+    #[must_use]
+    pub const fn first(self) -> Panel {
+        self.panels()[0]
+    }
+
+    #[must_use]
+    pub fn of(panel: Panel) -> Self {
+        Self::ALL.iter().copied().find(|category| category.panels().contains(&panel)).unwrap_or(Self::About)
+    }
+
+    #[must_use]
+    pub fn group(self) -> &'static Group {
+        Self::GROUPS
+            .iter()
+            .find(|group| group.categories.contains(&self))
+            .unwrap_or(&Self::GROUPS[Self::GROUPS.len() - 1])
+    }
+
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            _ => self.first().slug(),
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self, lang: Lang) -> &'static str {
+        match self {
+            Self::Desktop => Key::CategoryDesktop.text(lang),
+            _ => self.first().label(lang),
+        }
+    }
+
+    #[must_use]
+    pub const fn description(self, lang: Lang) -> &'static str {
+        match self {
+            Self::Vpn => Key::AboutCategoryVpn.text(lang),
+            Self::Appearance => Key::AboutCategoryAppearance.text(lang),
+            Self::Desktop => Key::AboutCategoryDesktop.text(lang),
+            Self::Displays => Key::AboutCategoryDisplays.text(lang),
+            Self::Keyboard => Key::AboutCategoryKeyboard.text(lang),
+            Self::Mouse => Key::AboutCategoryMouse.text(lang),
+            _ => self.first().description(lang),
+        }
+    }
+
+    #[must_use]
+    pub const fn icon(self) -> Icon {
+        match self {
+            Self::Desktop => Icon::Desktop,
+            _ => self.first().icon(),
+        }
+    }
+
+    #[must_use]
+    pub fn color(self) -> Color {
+        self.first().color()
+    }
+
+    #[must_use]
+    pub fn matches(self, query: &str) -> bool {
+        self.panels().iter().any(|panel| panel.matches(query))
+            || [Lang::Uk, Lang::En]
+                .iter()
+                .any(|lang| self.label(*lang).to_lowercase().contains(&query.trim().to_lowercase()))
+    }
+
+    #[must_use]
+    pub fn matched_panel(self, query: &str) -> Option<Panel> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return None;
+        }
+        self.panels().iter().copied().find(|panel| panel.label_matches(&query)).or_else(|| {
+            self.panels().iter().copied().find(|panel| panel.keywords().iter().any(|word| word.contains(&query)))
+        })
+    }
+}
+
+impl Panel {
     fn label_matches(self, query: &str) -> bool {
         [Lang::Uk, Lang::En].iter().any(|lang| self.label(*lang).to_lowercase().contains(query))
     }

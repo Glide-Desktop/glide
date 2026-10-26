@@ -97,6 +97,10 @@ pub enum Icon {
     ArrowUp,
     ArrowDown,
     Pinch,
+    Desktop,
+    Home,
+    Cast,
+    Tv,
 }
 
 impl Icon {
@@ -219,6 +223,12 @@ impl Icon {
                 "<circle cx='9' cy='8' r='3.5'/><path d='M2.5 20a6.5 6.5 0 0 1 13 0'/><path d='M15.5 4.8a3.5 3.5 0 0 1 0 6.4M18 14.2a6.5 6.5 0 0 1 3.5 5.8'/>"
             ),
             Self::Clock => glyph!("<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3.5 2'/>"),
+            Self::Desktop => glyph!("<rect x='3' y='3' width='18' height='13' rx='2'/><path d='M3 7.5h18M8 20h8'/>"),
+            Self::Home => glyph!("<path d='M3 11l9-8 9 8v10h-6v-6H9v6H3z'/>"),
+            Self::Cast => {
+                glyph!("<rect x='3' y='4' width='18' height='13' rx='2'/><path d='M12 14V8M9 10.5l3-3 3 3M8 21h8'/>")
+            }
+            Self::Tv => glyph!("<rect x='2' y='7' width='20' height='13' rx='2'/><path d='M8 3l4 4 4-4'/>"),
             Self::Globe => glyph!(
                 "<circle cx='12' cy='12' r='9'/><path d='M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18'/>"
             ),

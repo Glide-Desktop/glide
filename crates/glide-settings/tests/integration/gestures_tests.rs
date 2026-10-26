@@ -164,5 +164,5 @@ fn the_gestures_panel_is_findable() {
     assert_eq!(Panel::from_slug("swipe"), Some(Panel::Gestures));
     assert!(Panel::Gestures.matches("жест"));
     assert!(Panel::Gestures.matches("pinch"));
-    assert_eq!(Panel::Gestures.group().title, Panel::Mouse.group().title);
+    assert_eq!(glide_settings::Category::of(Panel::Gestures), glide_settings::Category::Mouse);
 }

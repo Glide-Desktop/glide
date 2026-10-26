@@ -211,7 +211,6 @@ pub enum SettingsPanel {
     DateTime,
     Region,
     Apps,
-    Terminal,
     Startup,
     Storage,
     About,
@@ -223,7 +222,7 @@ fn netbird_installed() -> bool {
 }
 
 impl SettingsPanel {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 29] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -250,7 +249,6 @@ impl SettingsPanel {
         Self::DateTime,
         Self::Region,
         Self::Apps,
-        Self::Terminal,
         Self::Startup,
         Self::Storage,
         Self::About,
@@ -285,7 +283,6 @@ impl SettingsPanel {
             Self::DateTime => "datetime",
             Self::Region => "region",
             Self::Apps => "apps",
-            Self::Terminal => "terminal",
             Self::Startup => "startup",
             Self::Storage => "storage",
             Self::About => "about",
@@ -321,7 +318,6 @@ impl SettingsPanel {
             Self::DateTime => Key::SettingsDateTime,
             Self::Region => Key::SettingsRegion,
             Self::Apps => Key::SettingsApps,
-            Self::Terminal => Key::SettingsTerminal,
             Self::Startup => Key::SettingsStartup,
             Self::Storage => Key::SettingsStorage,
             Self::About => Key::SettingsAbout,
@@ -378,9 +374,6 @@ impl SettingsPanel {
             Self::DateTime => &["date", "time", "time zone", "clock", "дата", "час", "часовий пояс"],
             Self::Region => &["region", "language", "locale", "formats", "регіон", "мова", "формати"],
             Self::Apps => &["apps", "applications", "default apps", "застосунки", "програми"],
-            Self::Terminal => {
-                &["terminal", "shell", "console", "profile", "термінал", "оболонка", "консоль", "профіль"]
-            }
             Self::Startup => &["startup", "autostart", "автозапуск"],
             Self::Storage => &["storage", "disk", "space", "drives", "сховище", "диск", "місце"],
             Self::About => &["about", "system", "version", "про систему", "система"],
@@ -894,7 +887,6 @@ mod tests {
                 "datetime",
                 "region",
                 "apps",
-                "terminal",
                 "startup",
                 "storage",
                 "about"

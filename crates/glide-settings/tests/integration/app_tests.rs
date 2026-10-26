@@ -4,7 +4,7 @@ use glide_settings::panels::{appearance, displays, keyboard, mouse, region};
 use glide_settings::services::config::ConfigStore;
 use glide_settings::services::input::SWITCH_OPTIONS;
 use glide_settings::services::ipc::ReloadError;
-use glide_settings::{Accent, App, Appearance, Key, Lang, Panel};
+use glide_settings::{Accent, App, Appearance, Category, Key, Lang, Panel};
 
 fn app(config: &str) -> App {
     App::with_config(ConfigStore::parse(config))
@@ -38,8 +38,18 @@ fn every_panel_has_a_distinct_label_and_sits_in_exactly_one_group() {
         assert_eq!(labels.len(), Panel::ALL.len());
     }
     for panel in Panel::ALL {
-        let hits = Panel::GROUPS.iter().filter(|group| group.panels.contains(panel)).count();
-        assert_eq!(hits, 1, "{panel:?}");
+        let hits = Category::ALL.iter().filter(|category| category.panels().contains(panel)).count();
+        assert_eq!(hits, 1, "{panel:?} belongs to exactly one sidebar entry");
+    }
+    for category in Category::ALL {
+        let hits = Category::GROUPS.iter().filter(|group| group.categories.contains(category)).count();
+        assert_eq!(hits, 1, "{category:?}");
+    }
+    for lang in [Lang::Uk, Lang::En] {
+        let mut labels: Vec<&str> = Category::ALL.iter().map(|category| category.label(lang)).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), Category::ALL.len());
     }
 }
 
@@ -73,24 +83,38 @@ fn command_line_slugs_open_panels() {
 }
 
 #[test]
-fn search_filters_visible_panels_and_enter_opens_the_first_hit() {
+fn search_filters_visible_categories_and_enter_opens_the_first_hit() {
     let mut app = app("");
     let _ = app.update(Message::SearchChanged(String::from("resolution")));
-    assert_eq!(app.visible_panels(), vec![Panel::Displays]);
+    assert_eq!(app.visible_categories(), vec![Category::Displays]);
     let _ = app.update(Message::SearchSubmitted);
     assert_eq!(app.active_panel(), Panel::Displays);
     let _ = app.update(Message::ClearSearch);
-    assert_eq!(app.visible_panels().len(), Panel::ALL.len() - 1, "NetBird stays hidden until it is installed");
+    assert_eq!(app.visible_categories().len(), Category::ALL.len());
 }
 
 #[test]
-fn the_netbird_panel_is_listed_only_when_netbird_is_installed() {
+fn a_hit_inside_a_merged_entry_opens_its_tab() {
+    let mut app = app("");
+    let _ = app.update(Message::SearchChanged(String::from("шпалери")));
+    assert_eq!(app.visible_categories(), vec![Category::Appearance]);
+    let _ = app.update(Message::SearchSubmitted);
+    assert_eq!(app.active_panel(), Panel::Wallpaper);
+    let _ = app.update(Message::ClearSearch);
+    let _ = app.update(Message::CategorySelected(Category::Desktop));
+    assert_eq!(app.active_panel(), Panel::Desktop, "a sidebar click opens the first tab");
+}
+
+#[test]
+fn the_netbird_tab_is_listed_only_when_netbird_is_installed() {
     let hidden = app("");
-    assert!(!hidden.visible_panels().contains(&Panel::Netbird));
+    assert_eq!(hidden.category_panels(Category::Vpn), vec![Panel::Vpn]);
     let mut shown = app("").with_netbird(true);
-    assert_eq!(shown.visible_panels().len(), Panel::ALL.len());
+    assert_eq!(shown.category_panels(Category::Vpn), vec![Panel::Vpn, Panel::Netbird]);
     let _ = shown.update(Message::SearchChanged(String::from("exit node")));
-    assert_eq!(shown.visible_panels(), vec![Panel::Netbird]);
+    assert_eq!(shown.visible_categories(), vec![Category::Vpn]);
+    let _ = shown.update(Message::SearchSubmitted);
+    assert_eq!(shown.active_panel(), Panel::Netbird);
     assert_eq!(Panel::from_slug("netbird"), Some(Panel::Netbird), "the quick settings link resolves either way");
 }
 
@@ -99,9 +123,18 @@ fn search_with_no_hits_leaves_the_active_panel_alone() {
     let mut app = app("");
     let _ = app.update(Message::PanelSelected(Panel::Keyboard));
     let _ = app.update(Message::SearchChanged(String::from("zzzz")));
-    assert!(app.visible_panels().is_empty());
+    assert!(app.visible_categories().is_empty());
     let _ = app.update(Message::SearchSubmitted);
     assert_eq!(app.active_panel(), Panel::Keyboard);
+}
+
+#[test]
+fn a_second_launch_opens_the_panel_it_names() {
+    let mut app = app("");
+    let _ = app.open_args(&[String::from("power")]);
+    assert_eq!(app.active_panel(), Panel::Power);
+    let _ = app.open_args(&[]);
+    assert_eq!(app.active_panel(), Panel::Power, "no argument keeps the current panel");
 }
 
 #[test]
@@ -815,28 +848,25 @@ fn sidebar_shortcuts_step_through_panels() {
 
 #[test]
 fn stepping_walks_the_sidebar_in_group_order_and_wraps() {
-    let order: Vec<Panel> = Panel::GROUPS
-        .iter()
-        .flat_map(|group| group.panels.iter().copied())
-        .filter(|panel| *panel != Panel::Netbird)
-        .collect();
+    let order: Vec<Category> = Category::GROUPS.iter().flat_map(|group| group.categories.iter().copied()).collect();
     let mut app = app("");
-    let _ = app.update(Message::PanelSelected(order[0]));
+    let _ = app.update(Message::CategorySelected(order[0]));
     for expected in order.iter().skip(1) {
         let _ = app.update(Message::SelectNext);
-        assert_eq!(app.active_panel(), *expected);
+        assert_eq!(app.active_category(), *expected);
+        assert_eq!(app.active_panel(), expected.first());
     }
     let _ = app.update(Message::SelectNext);
-    assert_eq!(app.active_panel(), order[0]);
+    assert_eq!(app.active_category(), order[0]);
     let _ = app.update(Message::SelectPrevious);
-    assert_eq!(app.active_panel(), order[order.len() - 1]);
+    assert_eq!(app.active_category(), order[order.len() - 1]);
 }
 
 #[test]
-fn every_panel_knows_its_sidebar_group() {
-    for group in Panel::GROUPS {
-        for panel in group.panels {
-            assert_eq!(panel.group().title, group.title, "{panel:?}");
+fn every_category_knows_its_sidebar_group() {
+    for group in Category::GROUPS {
+        for category in group.categories {
+            assert_eq!(category.group().title, group.title, "{category:?}");
         }
     }
 }

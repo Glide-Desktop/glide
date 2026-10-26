@@ -6,9 +6,9 @@ use iced::{Element, Fill, Subscription, Task};
 use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::panels::{
-    Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop, displays,
-    gestures, keyboard, mouse, multitasking, netbird, network, night_light, notifications, power, printers, privacy,
-    region, shortcuts, sound, startup, storage, terminal, topbar, users, vpn, wallpaper, windows, with_panels,
+    Category, Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop,
+    displays, gestures, keyboard, mouse, multitasking, netbird, network, night_light, notifications, power, printers,
+    privacy, region, shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;
@@ -27,6 +27,7 @@ macro_rules! declare_pages {
         #[derive(Debug, Clone)]
         pub enum Message {
             PanelSelected(Panel),
+            CategorySelected(Category),
             SearchChanged(String),
             SearchSubmitted,
             FocusSearch,
@@ -242,13 +243,34 @@ impl App {
     }
 
     #[must_use]
-    pub fn visible_panels(&self) -> Vec<Panel> {
-        Panel::GROUPS
+    pub fn active_category(&self) -> Category {
+        Category::of(self.active_panel)
+    }
+
+    #[must_use]
+    pub fn category_panels(&self, category: Category) -> Vec<Panel> {
+        category.panels().iter().copied().filter(|panel| *panel != Panel::Netbird || self.netbird).collect()
+    }
+
+    #[must_use]
+    pub fn visible_categories(&self) -> Vec<Category> {
+        Category::GROUPS
             .iter()
-            .flat_map(|group| group.panels.iter().copied())
-            .filter(|panel| *panel != Panel::Netbird || self.netbird)
-            .filter(|panel| panel.matches(&self.search_query))
+            .flat_map(|group| group.categories.iter().copied())
+            .filter(|category| category.matches(&self.search_query))
             .collect()
+    }
+
+    #[must_use]
+    pub(crate) fn category_status(&self, category: Category) -> Option<String> {
+        self.category_panels(category).into_iter().find_map(|panel| self.panel_status(panel))
+    }
+
+    fn search_target(&self, category: Category) -> Panel {
+        category
+            .matched_panel(&self.search_query)
+            .filter(|panel| self.category_panels(category).contains(panel))
+            .unwrap_or_else(|| category.first())
     }
 
     const fn ctx(&self) -> Ctx {
@@ -306,16 +328,17 @@ impl App {
     }
 
     fn step(&mut self, forward: bool) -> Task<Message> {
-        let visible = self.visible_panels();
+        let visible = self.visible_categories();
         if visible.is_empty() {
             return Task::none();
         }
-        let next = match visible.iter().position(|panel| *panel == self.active_panel) {
+        let current = self.active_category();
+        let next = match visible.iter().position(|category| *category == current) {
             Some(index) if forward => visible[(index + 1) % visible.len()],
             Some(index) => visible[(index + visible.len() - 1) % visible.len()],
             None => visible[0],
         };
-        self.select(next)
+        self.select(self.search_target(next))
     }
 
     fn commit(&mut self, task: Task<Message>) -> Task<Message> {
@@ -335,12 +358,17 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::PanelSelected(panel) => self.select(panel),
+            Message::CategorySelected(category) => {
+                let panel =
+                    if self.search_query.trim().is_empty() { category.first() } else { self.search_target(category) };
+                self.select(panel)
+            }
             Message::SearchChanged(query) => {
                 self.search_query = query;
                 Task::none()
             }
-            Message::SearchSubmitted => match self.visible_panels().first() {
-                Some(&panel) => self.select(panel),
+            Message::SearchSubmitted => match self.visible_categories().first() {
+                Some(&category) => self.select(self.search_target(category)),
                 None => Task::none(),
             },
             Message::FocusSearch => iced::widget::operation::focus(SEARCH_ID),
@@ -427,16 +455,22 @@ impl App {
         let panel_view = self.view_page(c);
 
         let panel = self.active_panel;
+        let category = self.active_category();
         let mut body = column![widgets::page_title(
             t,
-            panel.icon(),
-            panel.color(),
-            Some(c.t(panel.group().title)),
-            panel.label(self.lang),
-            Some(panel.description(self.lang)),
+            category.icon(),
+            category.color(),
+            Some(c.t(category.group().title)),
+            category.label(self.lang),
+            Some(category.description(self.lang)),
             None,
         )]
         .spacing(theme::SECTION_GAP);
+        let tabs = self.category_panels(category);
+        if tabs.len() > 1 {
+            let options: Vec<(Panel, &str)> = tabs.iter().map(|tab| (*tab, tab.label(self.lang))).collect();
+            body = body.push(glide_sdk::widget::tabs(&widgets::paint(&t), &options, panel, Message::PanelSelected));
+        }
         if let Some(error) = self.config.error() {
             let lead = match self.config.fault() {
                 Some(ConfigFault::Io) => K::ConfigUnreadable,

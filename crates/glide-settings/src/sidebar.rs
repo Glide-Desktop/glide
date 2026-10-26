@@ -7,7 +7,7 @@ use iced::{Alignment, Element, Fill, Length, Padding};
 use crate::app::{App, Message, SEARCH_ID};
 use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
-use crate::panels::{Ctx, Panel};
+use crate::panels::{Category, Ctx, Panel};
 use crate::theme;
 use crate::widgets;
 
@@ -66,50 +66,47 @@ fn account_card<'a>(app: &'a App, c: &Ctx, selected: bool, user: &'a str, login:
     sdk::profile_card(&widgets::paint(&t), avatar, name, subtitle, selected, Message::PanelSelected(Panel::Users))
 }
 
-fn item<'a>(app: &'a App, c: &Ctx, panel: Panel, first_hit: bool) -> Element<'a, Message> {
+fn hit_label(category: Category, query: &str, lang: Lang) -> Option<String> {
+    let panel = category.matched_panel(query)?;
+    let label = category.label(lang);
+    if label.to_lowercase().contains(&query.trim().to_lowercase()) {
+        return None;
+    }
+    let tab = panel.label(lang);
+    Some(if tab == label { panel.matched_keyword(query).unwrap_or_default().to_string() } else { tab.to_string() })
+}
+
+fn item<'a>(app: &'a App, c: &Ctx, category: Category, first_hit: bool) -> Element<'a, Message> {
     let t = c.theme;
     let paint = widgets::paint(&t);
     let query = app.search_query();
     let searching = !query.trim().is_empty();
-    let selected = app.active_panel() == panel;
+    let selected = app.active_category() == category;
     let trailing_color = if selected { t.acc_soft_fg() } else { t.fg_3() };
-    let label = panel.label(c.lang);
+    let label = category.label(c.lang);
     let mut trailing = Row::new().spacing(SP1 + 2.0).align_y(Alignment::Center);
     if searching {
-        if let Some(word) = panel.matched_keyword(query) {
+        if let Some(word) = hit_label(category, query, c.lang).filter(|word| !word.is_empty()) {
             trailing = trailing.push(text(word, TextStyle::CAP).color(trailing_color).wrapping(Wrapping::None));
         }
         if first_hit {
             trailing = trailing.push(widgets::key_cap(t, "↵"));
         }
-    } else if let Some(status) = app.panel_status(panel) {
+    } else if let Some(status) = app.category_status(category) {
         trailing = trailing.push(text(status, TextStyle::CAP).color(trailing_color).wrapping(Wrapping::None));
     }
     sdk::SidebarItem::new(&paint, label)
-        .leading(widgets::tile(panel.icon(), panel.color(), TILE_SIZE))
+        .leading(widgets::tile(category.icon(), category.color(), TILE_SIZE))
         .matched(highlight(label, query))
         .accessory(trailing)
         .selected(selected)
         .current(selected)
-        .on_press(Some(Message::PanelSelected(panel)))
+        .on_press(Some(Message::CategorySelected(category)))
         .into()
 }
 
 fn group_heading<'a>(c: &Ctx, title: K) -> Element<'a, Message> {
     container(widgets::micro_label(c.theme, c.t(title))).padding(Padding::from([0, 10]).bottom(4)).into()
-}
-
-fn footer<'a>(c: &Ctx, online: bool) -> Element<'a, Message> {
-    let t = c.theme;
-    let paint = widgets::paint(&t);
-    let (dot, label) = if online { (t.ok(), K::CompositorOnline) } else { (t.fg_4(), K::CompositorOffline) };
-    let version = text(format!("Glide {}", env!("CARGO_PKG_VERSION")), TextStyle::CAP).color(t.fg_3());
-    let status = sdk::SidebarItem::new(&paint, c.t(label))
-        .leading(widgets::status_dot(dot, 8.0))
-        .ink(Some(t.fg_2()))
-        .accessory(version.wrapping(Wrapping::None))
-        .on_press(Some(Message::PanelSelected(Panel::About)));
-    column![sdk::separator(&paint), container(status).padding([6.0, EDGE - 4.0])].into()
 }
 
 fn no_results<'a>(c: &Ctx) -> Element<'a, Message> {
@@ -120,21 +117,22 @@ pub fn view<'a>(app: &'a App, c: Ctx, user: &'a str, login: &'a str) -> Element<
     let t = c.theme;
     let query = app.search_query();
     let searching = !query.trim().is_empty();
-    let visible = app.visible_panels();
+    let visible = app.visible_categories();
 
     let mut groups = Column::new().spacing(GROUP_GAP);
     if searching && !visible.is_empty() {
         let found = text(results_label(c.lang, visible.len()), TextStyle::CAP).color(t.fg_3());
         groups = groups.push(container(found).padding([0, 10]));
     }
-    for group in Panel::GROUPS {
-        let hits: Vec<Panel> = group.panels.iter().copied().filter(|panel| visible.contains(panel)).collect();
+    for group in Category::GROUPS {
+        let hits: Vec<Category> =
+            group.categories.iter().copied().filter(|category| visible.contains(category)).collect();
         if hits.is_empty() {
             continue;
         }
         let mut items = Column::new().spacing(ITEM_GAP).push(group_heading(&c, group.title));
-        for panel in hits {
-            items = items.push(item(app, &c, panel, searching && visible[0] == panel));
+        for category in hits {
+            items = items.push(item(app, &c, category, searching && visible[0] == category));
         }
         groups = groups.push(items);
     }
@@ -149,6 +147,6 @@ pub fn view<'a>(app: &'a App, c: Ctx, user: &'a str, login: &'a str) -> Element<
     let paint = widgets::paint(&t);
     let list =
         sdk::scrollable(&paint, container(groups).padding(Padding::from([EDGE + 4.0, EDGE]).bottom(EDGE))).height(Fill);
-    let body = column![top, list, footer(&c, app.online())].width(Length::Fixed(theme::SIDEBAR_WIDTH));
+    let body = column![top, list].width(Length::Fixed(theme::SIDEBAR_WIDTH));
     sdk::pane(t.sidebar_bg(), 0.0, body).width(Length::Shrink).into()
 }
