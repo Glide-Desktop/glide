@@ -1,7 +1,7 @@
 use alacritty_terminal::index::Direction;
 use iced::border::Radius;
 use iced::widget::{Space, column, container, pane_grid, row, text_input};
-use iced::{Alignment, Color, Element, Fill, Rectangle, Size};
+use iced::{Alignment, Color, Element, Fill, Padding, Rectangle, Size};
 
 use crate::app::{App, Command, Confirm, FIND_ID, Menu, MenuKind, Message, shortcut_label};
 use crate::i18n::Key;
@@ -19,7 +19,7 @@ use glide_sdk::window::{Action as WindowAction, resize_handles};
 use glide_sdk::{Paint, Tone};
 
 pub const HEADER: f32 = glide_sdk::window::HEADER;
-const FIND: f32 = component::LARGE_CONTROL;
+const FIND_WIDTH: f32 = 520.0;
 const TAB_WIDEST: f32 = 220.0;
 const MENU_WIDTH: f32 = 264.0;
 const PANE_MIN: f32 = 50.0;
@@ -118,30 +118,28 @@ fn find_bar(app: &App) -> Element<'_, Message> {
     } else {
         format!("{} / {}", find.index, find.total)
     };
-    glide_sdk::widget::find_bar(&paint, input)
-        .narrow(app.window.size.width < 680.0)
-        .height(find_height(app))
+    let width = (app.window.size.width - 2.0 * SP3 - 2.0 * SP2).clamp(0.0, FIND_WIDTH);
+    let bar = glide_sdk::widget::find_bar(&paint, input)
+        .narrow(width < FIND_WIDTH)
+        .floating(width)
         .steps(
             (Message::Command(Command::FindUp), Key::FindPrevious.text(app.lang)),
             (Message::Command(Command::FindDown), Key::FindNext.text(app.lang)),
         )
         .toggle("Aa", Key::CaseSensitive.text(app.lang), find.case, Message::FindCase)
         .status(count, false)
-        .done(Key::Done.text(app.lang), Message::FindClose)
+        .done(Key::Done.text(app.lang), Message::FindClose);
+    container(bar)
+        .width(Fill)
+        .align_x(Alignment::End)
+        .padding(Padding { top: HEADER + 1.0 + SP2, right: SP3, ..Padding::ZERO })
         .into()
-}
-
-fn find_height(app: &App) -> f32 {
-    if app.window.size.width < 680.0 { 84.0 } else { FIND }
 }
 
 #[must_use]
 pub(crate) fn pane_at(app: &App, (x, y): (f32, f32)) -> Option<pane_grid::Pane> {
     let tab = app.tab()?;
-    let mut top = HEADER + 1.0;
-    if app.find.is_some() {
-        top += find_height(app) + 1.0;
-    }
+    let top = HEADER + 1.0;
     let size = Size::new(app.window.size.width, (app.window.size.height - top).max(0.0));
     let point = iced::Point::new(x, y - top);
     tab.panes
@@ -426,14 +424,13 @@ fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
-    let mut body = column![header(app)];
-    if app.find.is_some() {
-        body = body.push(rule(&paint)).push(find_bar(app));
-    }
-    body = body.push(rule(&paint)).push(content(app));
+    let body = column![header(app), rule(&paint), content(app)];
     let mut layers: Vec<Element<'_, Message>> = vec![body.into()];
     if !app.edge_to_edge() {
         layers.push(resize_handles(Message::Window));
+    }
+    if app.find.is_some() {
+        layers.push(find_bar(app));
     }
     if let Some(error) = app.error.as_ref().filter(|_| !app.tabs.is_empty()) {
         layers.push(toast_pill(&paint, 1.0, error, Some(paint.danger()), None, app.window.size));

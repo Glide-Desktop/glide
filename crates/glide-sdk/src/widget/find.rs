@@ -27,6 +27,7 @@ pub struct FindBar<'a, M> {
     replace: Option<Replace<'a, M>>,
     narrow: bool,
     height: Option<f32>,
+    floating: Option<f32>,
 }
 
 #[must_use]
@@ -43,6 +44,7 @@ pub fn find_bar<'a, M>(paint: &Paint, input: TextInput<'a, M>) -> FindBar<'a, M>
         replace: None,
         narrow: false,
         height: None,
+        floating: None,
     }
 }
 
@@ -95,6 +97,12 @@ impl<'a, M> FindBar<'a, M> {
         self.height = Some(height);
         self
     }
+
+    #[must_use]
+    pub fn floating(mut self, width: f32) -> Self {
+        self.floating = Some(width);
+        self
+    }
 }
 
 impl<'a, M: Clone + 'a> From<FindBar<'a, M>> for Element<'a, M> {
@@ -143,6 +151,9 @@ impl<'a, M: Clone + 'a> From<FindBar<'a, M>> for Element<'a, M> {
                 replace = replace.push(compact_button(&paint, label, Tone::Neutral, Some(message)));
             }
             body = body.push(replace);
+        }
+        if let Some(width) = bar.floating {
+            return super::popover(&paint, container(body).padding(Padding::from([0.0, SP1])).width(width));
         }
         match bar.height {
             Some(height) => {
