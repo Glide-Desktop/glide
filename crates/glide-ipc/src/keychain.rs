@@ -364,6 +364,7 @@ pub enum Request {
     CheckLeaks,
     Import { vault: String, contents: Hidden, password: Option<Hidden> },
     Export { vault: Option<String>, password: Hidden },
+    SecretService { enabled: bool },
     RemoveVault { vault: String },
     RenameVault { vault: String, name: String },
     SetDefault { vault: String },

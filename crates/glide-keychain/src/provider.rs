@@ -176,6 +176,14 @@ pub trait Provider: std::marker::Send {
         Err(Fault::Unsupported)
     }
 
+    fn app_secrets(&self) -> Result<&[crate::vault::Item], Fault> {
+        Err(Fault::Unsupported)
+    }
+
+    fn edit_app_secrets(&mut self, _edit: &mut dyn FnMut(&mut Vec<crate::vault::Item>, &mut u64)) -> Result<(), Fault> {
+        Err(Fault::Unsupported)
+    }
+
     fn begin_sync(&mut self, _force: bool, _now: u64) -> Option<crate::bitwarden::SyncJob> {
         None
     }

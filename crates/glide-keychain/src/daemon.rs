@@ -189,6 +189,21 @@ impl Daemon {
     }
 
     #[must_use]
+    pub fn local_unlocked(&self) -> bool {
+        self.provider(LOCAL).is_ok_and(Provider::unlocked)
+    }
+
+    pub fn app_secrets(&self) -> Result<Vec<crate::vault::Item>, Fault> {
+        Ok(self.provider(LOCAL)?.app_secrets()?.to_vec())
+    }
+
+    pub fn edit_app_secrets(
+        &mut self, edit: &mut dyn FnMut(&mut Vec<crate::vault::Item>, &mut u64),
+    ) -> Result<(), Fault> {
+        self.provider_mut(LOCAL)?.edit_app_secrets(edit)
+    }
+
+    #[must_use]
     pub fn export_records(&self, vault: Option<&str>) -> Vec<Record> {
         self.open_records()
             .filter(|(provider, record)| {

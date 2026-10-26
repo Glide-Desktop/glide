@@ -4,6 +4,7 @@ pub mod daemon;
 pub mod leaks;
 pub mod local;
 pub mod provider;
+pub mod secrets;
 pub mod service;
 pub mod totp;
 pub mod transfer;

@@ -11,9 +11,12 @@ pub type Events = Arc<dyn Fn(Response) + Send + Sync>;
 
 const TICK: Duration = Duration::from_mins(1);
 
+type Toggle = Box<dyn Fn(bool) + Send + Sync>;
+
 pub struct Service {
     daemon: Arc<Mutex<Daemon>>,
     wake: mpsc::Sender<bool>,
+    secrets_toggle: std::sync::OnceLock<Toggle>,
 }
 
 impl std::fmt::Debug for Service {
@@ -34,7 +37,11 @@ impl Service {
         if let Err(err) = spawned {
             eprintln!("glide-keychain: vaults will not sync in the background ({err})");
         }
-        Arc::new(Self { daemon, wake })
+        Arc::new(Self { daemon, wake, secrets_toggle: std::sync::OnceLock::new() })
+    }
+
+    pub fn on_secret_service(&self, toggle: Toggle) {
+        let _ = self.secrets_toggle.set(toggle);
     }
 
     pub fn daemon(&self) -> MutexGuard<'_, Daemon> {
@@ -73,6 +80,13 @@ impl Service {
                 let records = self.daemon().export_records(vault.as_deref());
                 export_response(&records, &password)
             }
+            Request::SecretService { enabled } => match self.secrets_toggle.get() {
+                Some(toggle) => {
+                    toggle(enabled);
+                    Response::Done
+                }
+                None => Response::Unsupported,
+            },
             Request::CheckLeaks => {
                 let hashes = self.daemon().leak_hashes();
                 match crate::leaks::check(&hashes, crate::leaks::fetch_range) {

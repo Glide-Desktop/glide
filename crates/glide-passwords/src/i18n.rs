@@ -336,6 +336,7 @@ glide_sdk::catalogue! {
     RemoveVault => "Remove vault", "Прибрати сховище";
     NewVaultPassword => "New password", "Новий пароль";
     Soon => "Not ready yet", "Ще не готово";
+    SecretServiceOff => "Programs can no longer read what they saved here. Chrome, for one, cannot open its saved passwords until this is on again.", "Програми більше не прочитають збережене тут. Chrome, наприклад, не відкриє свої паролі, доки це знову не ввімкнете.";
     ImportTitle => "Import passwords", "Імпорт паролів";
     ImportAccept => "Import", "Імпортувати";
     FileTooBig => "The file is too big to import", "Файл завеликий для імпорту";

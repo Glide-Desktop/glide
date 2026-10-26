@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use glide_ipc::keychain::{EVENT, Envelope, Request, Response};
 use glide_keychain::bus;
 use glide_keychain::daemon::{Daemon, default_path, mutates};
+use glide_keychain::secrets::{self, Secrets};
 use glide_keychain::service::Service;
 use glide_keychain::vault::Params;
 use zeroize::Zeroizing;
@@ -59,9 +60,17 @@ fn main() {
         }
         send(&events_writer, &Envelope { id: EVENT, body });
     });
+    let index = secrets::index::path_beside(&path);
     let service = Service::start(Daemon::new(path, Params::DEFAULT), Arc::clone(&events));
     match bus::serve(bus::Keychain::new(Arc::clone(&service), Arc::clone(&events), bus::client_program())) {
         Ok(served) => {
+            let store = Secrets::new(Arc::clone(&service), Arc::clone(&events), index);
+            if let Err(err) = secrets::serve(&served, &store) {
+                eprintln!("glide-keychain: the Secret Service objects were not served ({err})");
+            }
+            secrets::claim(&served, glide_config::passwords::Prefs::load().secret_service);
+            let toggler = served.clone();
+            service.on_secret_service(Box::new(move |enabled| secrets::claim(&toggler, enabled)));
             let _ = connection.set(served);
         }
         Err(err) => eprintln!("glide-keychain: {} is not on the session bus ({err})", bus::BUS_NAME),

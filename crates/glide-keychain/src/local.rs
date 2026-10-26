@@ -21,7 +21,10 @@ struct Open {
     records: Vec<Record>,
     folders: Vec<String>,
     next_id: u64,
+    services: Vec<Item>,
 }
+
+pub const SERVICE_COLLECTION: &str = "secret-service";
 
 const fn collection(kind: ItemKind) -> &'static str {
     match kind {
@@ -118,7 +121,7 @@ impl Local {
     fn save_file(&self) -> Result<(), Fault> {
         let open = self.opened()?;
         let contents = Contents {
-            items: open.records.iter().map(item).collect(),
+            items: open.records.iter().map(item).chain(open.services.iter().cloned()).collect(),
             next_id: open.next_id,
             folders: open.folders.clone(),
         };
@@ -132,13 +135,16 @@ impl Local {
 
     fn adopt(&mut self, contents: &Contents, key: Key) {
         let mut folders = contents.folders.clone();
-        let records: Vec<Record> = contents.items.iter().map(record).collect();
+        let (services, logins): (Vec<&Item>, Vec<&Item>) =
+            contents.items.iter().partition(|item| item.collection == SERVICE_COLLECTION);
+        let records: Vec<Record> = logins.into_iter().map(record).collect();
         for record in &records {
             if !record.folder.is_empty() && !folders.contains(&record.folder) {
                 folders.push(record.folder.clone());
             }
         }
-        self.open = Some(Open { key, records, folders, next_id: contents.next_id });
+        let services = services.into_iter().cloned().collect();
+        self.open = Some(Open { key, records, folders, next_id: contents.next_id, services });
     }
 }
 
@@ -246,6 +252,19 @@ impl Provider for Local {
 
     fn rename(&mut self, name: &str) {
         self.name = name.to_string();
+    }
+
+    fn app_secrets(&self) -> Result<&[Item], Fault> {
+        Ok(&self.opened()?.services)
+    }
+
+    fn edit_app_secrets(&mut self, edit: &mut dyn FnMut(&mut Vec<Item>, &mut u64)) -> Result<(), Fault> {
+        let open = self.opened_mut()?;
+        edit(&mut open.services, &mut open.next_id);
+        for service in &mut open.services {
+            service.collection = SERVICE_COLLECTION.to_string();
+        }
+        self.save_file()
     }
 }
 
