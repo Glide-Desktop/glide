@@ -27,6 +27,28 @@ impl Speed {
     pub const GROW: Self = Self { duration: motion::t3, ease: motion::ease_over };
     pub const FADE: Self = Self { duration: motion::t2, ease: motion::ease_io };
     pub const ARRIVE: Self = Self { duration: motion::t4, ease: motion::ease_out };
+    pub const SHAKE: Self = Self { duration: motion::t3, ease: linear };
+}
+
+const fn linear(progress: f64) -> f64 {
+    progress
+}
+
+#[must_use]
+pub fn shake_offset(progress: f32) -> f32 {
+    if progress <= 0.0 || progress >= 1.0 {
+        return 0.0;
+    }
+    let settle = motion::ease_out(f64::from(progress)) as f32;
+    -8.0 * (progress * std::f32::consts::TAU * 2.0).sin() * (1.0 - settle)
+}
+
+#[must_use]
+pub fn shake<'a, M: 'a>(count: u32, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let content = content.into();
+    animate(count as f32, Speed::SHAKE, move |_| content)
+        .offset(|value| Vector::new(shake_offset(value.fract()), 0.0))
+        .into()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -465,6 +487,15 @@ mod tests {
         fade.set(false, middle);
         assert!((fade.progress(middle) - halfway).abs() < 1e-4, "reversing keeps the current value");
         assert!(fade.is_settled_off(middle + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_shake_swings_both_ways_and_comes_to_rest() {
+        let samples: Vec<f32> = (0..=20).map(|step| shake_offset(step as f32 / 20.0)).collect();
+        assert_eq!((samples[0], samples[20]), (0.0, 0.0));
+        assert!(samples.iter().any(|offset| *offset > 0.5) && samples.iter().any(|offset| *offset < -2.0));
+        assert!(samples.iter().all(|offset| offset.abs() <= 8.0));
+        assert!(samples[17].abs() < samples[2].abs(), "the swing dies down");
     }
 
     #[test]

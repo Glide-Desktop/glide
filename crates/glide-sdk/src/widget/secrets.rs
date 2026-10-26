@@ -422,12 +422,19 @@ pub struct CodeInput<'a, M> {
     count: usize,
     id: Option<iced::widget::Id>,
     invalid: bool,
+    shakes: u32,
     size: CodeSize,
     on_input: Box<dyn Fn(String) -> M + 'a>,
     on_submit: Option<M>,
 }
 
 impl<'a, M: Clone + 'a> CodeInput<'a, M> {
+    #[must_use]
+    pub fn shake(mut self, shakes: u32) -> Self {
+        self.shakes = shakes;
+        self
+    }
+
     #[must_use]
     pub fn id(mut self, id: impl Into<iced::widget::Id>) -> Self {
         self.id = Some(id.into());
@@ -463,6 +470,7 @@ pub fn code_input<'a, M: Clone + 'a>(
         count,
         id: None,
         invalid: false,
+        shakes: 0,
         size: CodeSize::Compact,
         on_input: Box::new(on_input),
         on_submit: None,
@@ -477,8 +485,8 @@ impl<'a, M: Clone + 'a> From<CodeInput<'a, M>> for Element<'a, M> {
 
 impl<'a, M: Clone + 'a> CodeInput<'a, M> {
     fn build(self) -> Element<'a, M> {
-        let Self { paint, value, count, id, invalid, size, on_input, on_submit } = self;
-        let cells = code_cells(&paint, &value, count, true, invalid, size);
+        let Self { paint, value, count, id, invalid, shakes, size, on_input, on_submit } = self;
+        let cells = crate::anim::shake(shakes, code_cells(&paint, &value, count, true, invalid, size));
         let mut capture: TextInput<'a, M> = text_input("", &value)
             .on_input(move |typed| on_input(only_digits(&typed, count)))
             .size(1)

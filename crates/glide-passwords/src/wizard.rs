@@ -63,6 +63,7 @@ pub struct Wizard {
     pub name: String,
     pub busy: bool,
     pub error: Option<String>,
+    pub shakes: u32,
     pub vault: Option<String>,
     pub api: Option<ApiDraft>,
     pub prompt: Prompt,
@@ -177,6 +178,7 @@ fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
     match result {
         Ok(Response::NeedsTwoFactor { .. }) if retried && wizard.prompt == Prompt::TwoStep => {
             wizard.error = Some(Key::WrongCode.text(lang).into());
+            wizard.shakes += 1;
             wizard.code.clear();
         }
         Ok(Response::NeedsTwoFactor { methods }) => {
@@ -194,6 +196,7 @@ fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
         Ok(Response::NeedsDeviceCode) => {
             if retried && wizard.prompt == Prompt::Device {
                 wizard.error = Some(Key::WrongCode.text(lang).into());
+                wizard.shakes += 1;
             }
             wizard.prompt = Prompt::Device;
             wizard.method = None;
@@ -582,6 +585,7 @@ fn two_factor_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> 
                 ui::code_input(&paint, &wizard.code, 6, |value| Message::Wizard(Event::Code(value)))
                     .size(CodeSize::Large)
                     .invalid(wizard.error.is_some())
+                    .shake(wizard.shakes)
                     .on_submit(Message::Wizard(Event::SignIn)),
             )
             .center_x(Fill),
