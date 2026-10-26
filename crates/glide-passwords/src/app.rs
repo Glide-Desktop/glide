@@ -179,6 +179,23 @@ pub async fn load() -> Result<Snapshot, String> {
     Ok(snapshot)
 }
 
+pub const ITEM_ARGUMENT: &str = "--item";
+
+#[must_use]
+pub fn item_argument(mut args: impl Iterator<Item = String>) -> Option<ItemRef> {
+    let value = loop {
+        let arg = args.next()?;
+        if arg == ITEM_ARGUMENT {
+            break args.next()?;
+        }
+        if let Some(value) = arg.strip_prefix("--item=") {
+            break value.to_string();
+        }
+    };
+    let (vault, id) = value.split_once('/')?;
+    (!vault.is_empty() && !id.is_empty()).then(|| ItemRef::new(vault, id))
+}
+
 pub fn ask(
     request: Request, done: impl Fn(Result<Response, String>) -> Message + std::marker::Send + 'static,
 ) -> Task<Message> {
@@ -199,7 +216,7 @@ impl App {
             vault: None,
             section: Section::Logins,
             query: String::new(),
-            selected: None,
+            selected: item_argument(std::env::args().skip(1)),
             detail: None,
             revealed: None,
             code: None,
@@ -775,6 +792,16 @@ impl glide_sdk::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_item_argument_names_a_vault_and_an_id() {
+        let args = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>().into_iter();
+        assert_eq!(item_argument(args(&["--item", "bw-1/5f3c"])), Some(ItemRef::new("bw-1", "5f3c")));
+        assert_eq!(item_argument(args(&["--item=local/a"])), Some(ItemRef::new("local", "a")));
+        assert_eq!(item_argument(args(&["--item", "nothing"])), None);
+        assert_eq!(item_argument(args(&["--item"])), None);
+        assert_eq!(item_argument(args(&[])), None);
+    }
 
     #[test]
     fn sites_get_a_scheme_when_they_lack_one() {

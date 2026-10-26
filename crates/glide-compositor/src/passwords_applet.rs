@@ -515,7 +515,7 @@ impl GlideState {
         let item = row.item.clone();
         let may_type = Prefs::load().type_fallback;
         match action {
-            MenuAction::Open => self.open_passwords_app(),
+            MenuAction::Open => self.open_passwords_item(&item),
             MenuAction::Copy => {
                 self.keychain(Request::Secret { item, secret: SecretKind::Password }, |state, response| {
                     if let Response::Secret { secret } = response {
@@ -626,6 +626,13 @@ impl GlideState {
             }
         }
         self.passwords_notice(notice);
+    }
+
+    fn open_passwords_item(&mut self, item: &glide_ipc::keychain::ItemRef) {
+        let command = format!("{APP} --item {}", crate::dock_drop::shell_quote(&format!("{}/{}", item.vault, item.id)));
+        if let Err(err) = self.spawn_user_command(&command) {
+            tracing::warn!(%err, "failed to start Passwords");
+        }
     }
 
     fn open_passwords_app(&mut self) {
