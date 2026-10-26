@@ -343,7 +343,7 @@ the spec's motion table; the catalogue shows each of them.
 | Widget | Notes |
 |---|---|
 | `tab_strip(paint, tabs, active)` → `.height`, `.widest`, `.bare`, `.hovered`, `.on_select`, `.on_reorder(from, to)`, `.on_close`; `Tab::new(id, label)` → `.mark`, `.lead(icon, severity)`, `.hint`; `Mark::{None, Dot, Alert}` | Document tabs with close buttons on hover and marks. The strip owns dragging: a pressed tab follows the pointer above the others (El2), asks for `on_reorder` once its centre passes a neighbour, and every tab slides to its slot over t2 E_OUT, keyed by `id`, so give each tab a stable id. `lead` puts a glyph, a 2 px stripe and, on the active tab, the severity's soft tint on a tab (Glide Terminal uses it for root and SSH). `bare` drops the bar background so the strip can sit in a window header. |
-| `find_bar(paint, text_input)` → `.status`, `.steps`, `.toggle`, `.extra`, `.done`, `.replace`, `.narrow`, `.height` | A find (and replace) bar. |
+| `find_bar(paint, text_input)` → `.status`, `.steps`, `.toggle`, `.extra`, `.done`, `.replace`, `.narrow`, `.height`, `.floating(width)` | A find (and replace) bar: a strip, or with `floating` a popover card to lay over the content so opening it does not resize what it searches. |
 | `bar_strip(paint, Option<Severity>, content)`, `info_bar(paint, Option<Severity>, title, detail, actions)`, `INFO_BAR` | A strip under the header; the info bar is a 36 px title, detail and actions. |
 
 **Window**
