@@ -34,6 +34,8 @@ struct Settings {
     default: String,
     #[serde(default)]
     local_name: String,
+    #[serde(default)]
+    keepass: Vec<crate::kdbx::Registered>,
 }
 
 fn settings_path(accounts: &std::path::Path) -> PathBuf {
@@ -80,6 +82,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::Restore { .. }
             | Request::Purge { .. }
             | Request::AddBitwarden { .. }
+            | Request::AddKeePass { .. }
             | Request::CheckLeaks
             | Request::Import { .. }
             | Request::RemoveVault { .. }
@@ -112,6 +115,9 @@ impl Daemon {
         for account in Bitwarden::load_all(&accounts) {
             providers.push(Box::new(account));
         }
+        for registered in settings.keepass.iter().cloned() {
+            providers.push(Box::new(crate::kdbx::KeePass::new(registered)));
+        }
         let mut daemon = Self::with_providers(providers);
         daemon.accounts = Some(accounts);
         if daemon.index(&settings.default).is_ok() {
@@ -130,7 +136,8 @@ impl Daemon {
             return;
         };
         let local_name = self.provider(LOCAL).map(|local| local.vault().name).unwrap_or_default();
-        let settings = Settings { default: self.default.clone(), local_name };
+        let keepass = self.providers.iter().filter_map(|provider| provider.registration()).collect();
+        let settings = Settings { default: self.default.clone(), local_name, keepass };
         if let Ok(bytes) = serde_json::to_vec_pretty(&settings) {
             if let Some(dir) = accounts.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -162,6 +169,36 @@ impl Daemon {
         }
         self.providers.push(Box::new(account));
         Response::VaultAdded { vault }
+    }
+
+    fn add_keepass(&mut self, path: &str, password: &Hidden, name: &str) -> Response {
+        let path = PathBuf::from(path.trim());
+        if !path.is_absolute() {
+            return Response::Error { message: "the KeePass file needs a full path".into() };
+        }
+        if let Some(known) = self
+            .providers
+            .iter()
+            .position(|provider| provider.registration().is_some_and(|registered| registered.path == path))
+        {
+            let vault = self.providers[known].vault().id;
+            return self.providers[known].unlock(password).map_or_else(failed, |()| Response::VaultAdded { vault });
+        }
+        let number = (1..=self.providers.len() + 1)
+            .find(|number| self.index(&format!("keepass-{number}")).is_err())
+            .unwrap_or(self.providers.len() + 1);
+        let name = match name.trim() {
+            "" => path.file_stem().map_or_else(|| "KeePass".to_string(), |stem| stem.to_string_lossy().into_owned()),
+            name => name.to_string(),
+        };
+        let id = format!("keepass-{number}");
+        let mut vault = crate::kdbx::KeePass::new(crate::kdbx::Registered { id: id.clone(), name, path });
+        if let Err(fault) = vault.unlock(password) {
+            return failed(fault);
+        }
+        self.providers.push(Box::new(vault));
+        self.store_settings();
+        Response::VaultAdded { vault: id }
     }
 
     fn add_bitwarden(&mut self, login: &glide_ipc::keychain::Login) -> Response {
@@ -583,6 +620,7 @@ impl Daemon {
     fn accounts(&mut self, request: Request) -> Response {
         match request {
             Request::AddBitwarden { login } => self.add_bitwarden(&login),
+            Request::AddKeePass { path, password, name } => self.add_keepass(&path, &password, &name),
             Request::CheckLeaks => self.check_leaks(),
             Request::Import { vault, contents, password, binary } => {
                 match crate::transfer::parse_file(contents.expose(), binary, password.as_ref().map(Hidden::expose)) {
@@ -844,6 +882,33 @@ mod tests {
         let Response::Report { report } = daemon.handle(Request::Report) else { panic!() };
         assert_eq!(report.leaked, [item]);
         assert!(daemon.leak_hashes().is_empty(), "checked passwords wait a day");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_keepass_database_joins_as_a_vault_and_is_remembered() {
+        let (mut daemon, path) = daemon("keepass");
+        let file = path.with_file_name("Family.kdbx");
+        crate::kdbx::vault_tests_sample(&file, "door");
+        let add = |password: &str| Request::AddKeePass {
+            path: file.display().to_string(),
+            password: hidden(password),
+            name: String::new(),
+        };
+        assert_eq!(daemon.handle(add("window")), Response::WrongPassword);
+        assert_eq!(daemon.handle(add("door")), Response::VaultAdded { vault: "keepass-1".into() });
+        assert_eq!(daemon.handle(add("door")), Response::VaultAdded { vault: "keepass-1".into() }, "added once");
+        let Response::Items { list } = daemon.handle(Request::Items) else { panic!() };
+        assert!(list.iter().any(|item| item.item.vault == "keepass-1" && item.name == "Jira"));
+
+        let mut again = Daemon::new(path.clone(), FAST).with_clock(|| NOW);
+        let Response::Vaults { list, .. } = again.handle(Request::Vaults) else { panic!() };
+        let keepass = list.iter().find(|vault| vault.id == "keepass-1").expect("remembered");
+        assert_eq!((keepass.name.as_str(), keepass.unlocked), ("Family", false));
+        assert_eq!(again.handle(Request::RemoveVault { vault: "keepass-1".into() }), Response::Done);
+        assert!(file.exists(), "removing the vault leaves the file alone");
+        let again = Daemon::new(path.clone(), FAST).with_clock(|| NOW);
+        assert!(again.provider("keepass-1").is_err());
         cleanup(&path);
     }
 

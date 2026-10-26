@@ -139,12 +139,12 @@ impl Prompt {
     #[must_use]
     pub fn view(&self, chain: &Chain, user: &str, caps_lock: bool) -> Option<View> {
         let current = chain.current()?;
-        let master = current.kind == VaultKind::Bitwarden;
+        let master = current.kind != VaultKind::Local;
         let chips = if chain.vaults.len() + chain.unlocked.len() > 1 { chips(chain) } else { Vec::new() };
-        let body = if master {
-            t(Key::KcBitwarden).replace("{account}", &current.account)
-        } else {
-            t(Key::KcLocal).replace("{name}", &current.name)
+        let body = match current.kind {
+            VaultKind::Bitwarden => t(Key::KcBitwarden).replace("{account}", &current.account),
+            VaultKind::KeePass => t(Key::KcKeePass).replace("{name}", &current.name),
+            VaultKind::Local => t(Key::KcLocal).replace("{name}", &current.name),
         };
         let hint = if self.checking.is_some() {
             Hint::Checking
@@ -347,6 +347,15 @@ mod tests {
         assert!(view.chips.is_empty());
         assert_eq!(view.hint, Hint::Keys { skip: None });
         assert!(view.body.contains("Особисте"));
+    }
+
+    #[test]
+    fn a_keepass_database_asks_for_its_master_password() {
+        let single =
+            Chain { vaults: vec![vault("keepass-1", "Family", VaultKind::KeePass)], wrong: true, ..Chain::default() };
+        let view = Prompt::default().view(&single, "artem", false).expect("a current vault");
+        assert!(view.body.contains("KeePass") && view.body.contains("Family"), "{}", view.body);
+        assert_eq!(view.hint, Hint::Wrong { master: true, caps: false });
     }
 
     #[test]

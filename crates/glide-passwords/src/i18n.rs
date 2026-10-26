@@ -339,6 +339,9 @@ glide_sdk::catalogue! {
     ItemsFew => "{n} items", "{n} записи";
     ItemsMany => "{n} items", "{n} записів";
     RemoveVault => "Remove vault", "Прибрати сховище";
+    Reread => "Read the file again", "Перечитати файл";
+    ForgetFile => "Remove from the list (the file stays)", "Прибрати зі списку (файл лишиться)";
+    OpenBadge => "Open", "Відкрито";
     NewVaultPassword => "New password", "Новий пароль";
     Soon => "Not ready yet", "Ще не готово";
     SecretServiceOff => "Programs can no longer read what they saved here. Chrome, for one, cannot open its saved passwords until this is on again.", "Програми більше не прочитають збережене тут. Chrome, наприклад, не відкриє свої паролі, доки це знову не ввімкнете.";

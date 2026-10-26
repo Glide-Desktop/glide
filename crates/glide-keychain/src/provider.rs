@@ -180,6 +180,10 @@ pub trait Provider: std::marker::Send {
 
     fn rename(&mut self, _name: &str) {}
 
+    fn registration(&self) -> Option<crate::kdbx::Registered> {
+        None
+    }
+
     fn forget(&mut self) -> Result<(), Fault> {
         Err(Fault::Unsupported)
     }

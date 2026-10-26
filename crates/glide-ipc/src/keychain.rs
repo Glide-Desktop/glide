@@ -54,6 +54,8 @@ impl ItemRef {
 pub enum VaultKind {
     Local,
     Bitwarden,
+    #[serde(rename = "keepass")]
+    KeePass,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,6 +397,11 @@ pub enum Request {
     Report,
     AddBitwarden {
         login: Box<Login>,
+    },
+    AddKeePass {
+        path: String,
+        password: Hidden,
+        name: String,
     },
     SendLoginEmail {
         login: Box<Login>,

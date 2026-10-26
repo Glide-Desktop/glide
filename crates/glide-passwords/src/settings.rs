@@ -62,13 +62,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::LeakCheck(on) => app.prefs.leak_check = on,
         Event::Default(vault) => return ask(Request::SetDefault { vault }, Message::Done),
         Event::VaultMenu(vault) => {
-            let items = vec![
-                Item::action(app.t(Key::Sync), Message::Settings(Event::Sync(vault.clone()))),
-                Item::action(app.t(Key::ChangeVaultPassword), Message::Settings(Event::ChangePassword(vault.clone()))),
-                Item::separator(),
-                Item::action(app.t(Key::RemoveVault), Message::Settings(Event::Remove(vault))),
-            ];
-            shell.context_menu(items);
+            shell.context_menu(vault_menu(app, vault));
             save = false;
         }
         Event::Sync(vault) => return ask(Request::Sync { vault: Some(vault) }, Message::Done),
@@ -152,6 +146,22 @@ fn choice<'a, T: PartialEq + Clone + 'a>(
         .into()
 }
 
+fn vault_menu(app: &App, vault: String) -> Vec<Item<Message>> {
+    if app.data.vaults.iter().any(|known| known.id == vault && known.kind == VaultKind::KeePass) {
+        return vec![
+            Item::action(app.t(Key::Reread), Message::Settings(Event::Sync(vault.clone()))),
+            Item::separator(),
+            Item::action(app.t(Key::ForgetFile), Message::Settings(Event::Remove(vault))),
+        ];
+    }
+    vec![
+        Item::action(app.t(Key::Sync), Message::Settings(Event::Sync(vault.clone()))),
+        Item::action(app.t(Key::ChangeVaultPassword), Message::Settings(Event::ChangePassword(vault.clone()))),
+        Item::separator(),
+        Item::action(app.t(Key::RemoveVault), Message::Settings(Event::Remove(vault))),
+    ]
+}
+
 fn vault_rows(app: &App) -> Vec<Element<'_, Message>> {
     let paint = app.paint;
     let t = |key: Key| key.text(app.lang);
@@ -163,11 +173,18 @@ fn vault_rows(app: &App) -> Vec<Element<'_, Message>> {
                 (Icon::Cloud, true)
             }
             VaultKind::Bitwarden => (Icon::Server, false),
+            VaultKind::KeePass => (Icon::Key, false),
         };
         let items = plural(app.lang, u64::from(vault.count), [Key::ItemsOne, Key::ItemsFew, Key::ItemsMany]);
         let mut subtitle = match vault.kind {
             VaultKind::Local => format!("{} · {items}", t(Key::OnDeviceTitle)),
             VaultKind::Bitwarden => format!("{} · {} · {items}", vault.account, vault.server),
+            VaultKind::KeePass => {
+                let file = std::path::Path::new(&vault.server)
+                    .file_name()
+                    .map_or_else(|| vault.server.clone(), |name| name.to_string_lossy().into_owned());
+                format!("KeePass · {file} · {items}")
+            }
         };
         if let SyncState::Offline { pending } = vault.sync
             && pending > 0
@@ -177,6 +194,9 @@ fn vault_rows(app: &App) -> Vec<Element<'_, Message>> {
         }
         let status: Element<'_, Message> = if vault.unlocked {
             match vault.sync {
+                SyncState::Local if vault.kind == VaultKind::KeePass => {
+                    ui::badge(&paint, t(Key::OpenBadge), Severity::Ok)
+                }
                 SyncState::Local => ui::sized_button(
                     &paint,
                     t(Key::ChangeVaultPassword),
@@ -193,7 +213,7 @@ fn vault_rows(app: &App) -> Vec<Element<'_, Message>> {
             ui::badge(&paint, t(Key::LockedBadge), Severity::Neutral)
         };
         let mut suffix = row![status].spacing(SP2).align_y(Alignment::Center);
-        if vault.kind == VaultKind::Bitwarden {
+        if vault.kind != VaultKind::Local {
             suffix = suffix.push(ui::icon_button(
                 &paint,
                 Icon::More,

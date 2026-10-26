@@ -170,6 +170,7 @@ fn sidebar(app: &App) -> Element<'_, Message> {
     let glyph = match app.vault.as_ref().and_then(|id| app.data.vaults.iter().find(|vault| &vault.id == id)) {
         None => Icon::Grid,
         Some(vault) if vault.kind == glide_ipc::keychain::VaultKind::Local => Icon::Drive,
+        Some(vault) if vault.kind == glide_ipc::keychain::VaultKind::KeePass => Icon::Key,
         Some(_) => Icon::Cloud,
     };
     let total = model::count(&app.data.items, None, Section::All);
