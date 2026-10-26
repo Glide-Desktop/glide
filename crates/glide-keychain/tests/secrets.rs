@@ -73,6 +73,57 @@ fn create(
     collection.call("CreateItem", &(properties, secret, true)).unwrap()
 }
 
+fn secret_tool(bus: &Bus, args: &[&str], input: Option<&str>) -> Option<(bool, String)> {
+    use std::io::Write;
+    let mut child = Command::new("secret-tool")
+        .args(args)
+        .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .inspect_err(|err| eprintln!("no secret-tool ({err}); skipping"))
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    if let Some(input) = input {
+        stdin.write_all(input.as_bytes()).ok()?;
+    }
+    drop(stdin);
+    let output = child.wait_with_output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr);
+    Some((output.status.success(), text))
+}
+
+#[test]
+fn libsecret_stores_and_finds_a_secret_through_glide() {
+    let Some(bus) = private_bus() else {
+        return;
+    };
+    let path = temp("libsecret");
+    let service = Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {}));
+    assert_eq!(service.handle(Request::Create { password: Hidden::new("pw".into()) }), Response::Done);
+    let server = connect(&bus);
+    let store = Secrets::new(Arc::clone(&service), Arc::new(|_| {}), secrets::index::path_beside(&path));
+    secrets::serve(&server, &store).unwrap();
+    secrets::claim(&server, true);
+    let Some((stored, log)) =
+        secret_tool(&bus, &["store", "--label=git: example.org", "service", "git", "user", "artem"], Some("tok-9f2"))
+    else {
+        return;
+    };
+    assert!(stored, "secret-tool store failed: {log}");
+    let (found, value) = secret_tool(&bus, &["lookup", "service", "git", "user", "artem"], None).unwrap();
+    assert!(found, "secret-tool lookup failed: {value}");
+    assert_eq!(value.trim(), "tok-9f2");
+    let (_, missing) = secret_tool(&bus, &["lookup", "service", "git", "user", "someone"], None).unwrap();
+    assert!(missing.trim().is_empty());
+    let (cleared, log) = secret_tool(&bus, &["clear", "service", "git"], None).unwrap();
+    assert!(cleared, "secret-tool clear failed: {log}");
+    let (_, gone) = secret_tool(&bus, &["lookup", "service", "git", "user", "artem"], None).unwrap();
+    assert!(gone.trim().is_empty(), "the cleared secret is gone");
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
 #[test]
 fn programs_store_and_read_secrets_that_stay_encrypted_and_wait_for_the_island_when_locked() {
     let Some(bus) = private_bus() else {
