@@ -214,7 +214,7 @@ impl App {
 
     #[must_use]
     pub fn title(&self) -> String {
-        String::from(K::Settings.text(self.lang))
+        format!("{} — {}", self.active_category().label(self.lang), K::Settings.text(self.lang))
     }
 
     #[must_use]

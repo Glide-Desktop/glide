@@ -167,7 +167,16 @@ fn theme_follows_the_config_file() {
     assert_eq!(app.theme.appearance(), Appearance::Light);
     assert_eq!(app.theme.accent(), Accent::Amethyst);
     assert_eq!(app.lang(), Lang::En);
-    assert_eq!(app.title(), "Settings");
+    assert_eq!(app.title(), "Overview — Settings");
+}
+
+#[test]
+fn the_window_title_names_the_page_on_screen() {
+    let mut app = app("[general]\nlanguage = \"uk\"\n");
+    let _ = app.open_args(&["sound".to_string()]);
+    assert_eq!(app.title(), "Звук — Налаштування");
+    let _ = app.open_args(&["netbird".to_string()]);
+    assert_eq!(app.title(), "VPN — Налаштування", "a stacked page is titled by its sidebar entry");
 }
 
 #[test]
