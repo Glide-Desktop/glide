@@ -11,6 +11,22 @@ const BODY_LIMIT: u64 = 256 * 1024 * 1024;
 pub const CLIENT_ID: &str = "cli";
 pub const DEVICE_TYPE: &str = "8";
 pub const DEVICE_NAME: &str = "Glide";
+pub const CLIENT_NAME: &str = "cli";
+pub const CLIENT_VERSION: &str = "2025.1.0";
+
+fn identify(
+    mut request: ureq::http::Request<ureq::SendBody>, next: ureq::middleware::MiddlewareNext,
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let headers = request.headers_mut();
+    for (name, value) in [
+        ("Bitwarden-Client-Name", CLIENT_NAME),
+        ("Bitwarden-Client-Version", CLIENT_VERSION),
+        ("Device-Type", DEVICE_TYPE),
+    ] {
+        headers.insert(name, ureq::http::HeaderValue::from_static(value));
+    }
+    next.handle(request)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Endpoints {
@@ -133,6 +149,8 @@ fn auth_error(body: &Value) -> ApiError {
         ApiError::DeviceVerification
     } else if lower.contains("username or password") || lower.contains("invalid_username_or_password") {
         ApiError::WrongPassword
+    } else if lower.contains("totp") || lower.contains("two-step token") || lower.contains("two factor token") {
+        ApiError::TwoFactor(Vec::new())
     } else {
         ApiError::Rejected(message)
     }
@@ -146,6 +164,7 @@ impl Client {
             .timeout_global(Some(TIMEOUT))
             .timeout_connect(Some(CONNECT_TIMEOUT))
             .user_agent(concat!("Glide-Passwords/", env!("CARGO_PKG_VERSION")))
+            .middleware(identify)
             .build()
             .into();
         Self { agent, endpoints }
@@ -160,8 +179,11 @@ impl Client {
             .limit(BODY_LIMIT)
             .read_to_string()
             .map_err(|err| ApiError::Offline(err.to_string()))?;
-        let value =
-            if body.trim().is_empty() { Value::Null } else { serde_json::from_str(&body).unwrap_or(Value::Null) };
+        let value = if body.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&body).unwrap_or_else(|_| Value::String(body.trim().to_string()))
+        };
         Ok((status, value))
     }
 
@@ -233,9 +255,16 @@ impl Client {
         Self::checked(Self::finish(self.agent.post(&url).send_json(body))?)
     }
 
-    pub fn register(&self, body: &Value) -> Result<Value, ApiError> {
-        let url = format!("{}/accounts/register", self.endpoints.identity);
-        Self::checked(Self::finish(self.agent.post(&url).send_json(body))?)
+    pub fn register(&self, email: &str, name: &str, finish: &Value) -> Result<Value, ApiError> {
+        let start = format!("{}/accounts/register/send-verification-email", self.endpoints.identity);
+        let request = json!({ "email": email, "name": name, "receiveMarketingEmails": false });
+        let token = Self::checked(Self::finish(self.agent.post(&start).send_json(&request))?)?;
+        let mut body = finish.clone();
+        if let (Some(object), Some(token)) = (body.as_object_mut(), token.as_str()) {
+            object.insert("emailVerificationToken".into(), json!(token));
+        }
+        let url = format!("{}/accounts/register/finish", self.endpoints.identity);
+        Self::checked(Self::finish(self.agent.post(&url).send_json(&body))?)
     }
 }
 
@@ -291,6 +320,8 @@ mod tests {
         assert_eq!(auth_error(&model), ApiError::WrongPassword);
         let device = json!({"error_description": "New device verification required."});
         assert_eq!(auth_error(&device), ApiError::DeviceVerification);
+        let code = json!({"message": "Invalid TOTP code! Server time: 2026-10-26 11:16:40 UTC IP: 127.0.0.1"});
+        assert_eq!(auth_error(&code), ApiError::TwoFactor(Vec::new()), "a rejected code asks for another one");
     }
 
     #[test]

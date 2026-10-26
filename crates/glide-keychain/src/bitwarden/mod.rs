@@ -8,6 +8,8 @@ pub mod sync;
 #[cfg(test)]
 mod fake;
 #[cfg(test)]
+mod live;
+#[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
@@ -152,7 +154,7 @@ fn decode(cache: &Value, user: &SymmetricKey) -> (Keys, HashMap<String, String>,
             }
         }
     }
-    let keys = Keys { user: user.clone(), orgs };
+    let keys = Keys { user: user.clone(), orgs, owner: text(&profile, "id").map(str::to_string) };
     let mut folders = HashMap::new();
     for folder in list(cache, "folders") {
         if let (Some(id), Some(name)) = (text(folder, "id"), text(folder, "name"))
@@ -341,7 +343,7 @@ impl Bitwarden {
         let session = Session::new(&self.account, user.clone(), hash, tokens);
         self.open = Some(Open {
             session,
-            keys: Keys { user, orgs: HashMap::new() },
+            keys: Keys { user, orgs: HashMap::new(), owner: None },
             records: Vec::new(),
             raw: HashMap::new(),
             folders: HashMap::new(),

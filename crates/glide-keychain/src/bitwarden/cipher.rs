@@ -16,6 +16,7 @@ const HISTORY: usize = 5;
 pub struct Keys {
     pub user: SymmetricKey,
     pub orgs: HashMap<String, SymmetricKey>,
+    pub owner: Option<String>,
 }
 
 impl Keys {
@@ -242,6 +243,9 @@ pub fn request(record: &Record, raw: Option<&Value>, keys: &Keys, folder: Option
     body.insert("favorite".into(), json!(record.favorite));
     body.insert("folderId".into(), folder.map_or(Value::Null, |id| json!(id)));
     body.insert("lastKnownRevisionDate".into(), field(raw, "revisionDate").cloned().unwrap_or(Value::Null));
+    if let Some(owner) = &keys.owner {
+        body.insert("encryptedFor".into(), json!(owner));
+    }
     if known && (record.kind == ItemKind::Login || field(raw, "login").is_some_and(Value::is_object)) {
         let mut login = field(raw, "login").and_then(Value::as_object).cloned().unwrap_or_default();
         login.insert("username".into(), sealed(&key, &record.username)?);
@@ -302,7 +306,7 @@ mod tests {
     use super::*;
 
     fn keys() -> Keys {
-        Keys { user: SymmetricKey::generate().expect("key"), orgs: HashMap::new() }
+        Keys { user: SymmetricKey::generate().expect("key"), orgs: HashMap::new(), owner: Some("u1".into()) }
     }
 
     fn sample() -> Record {
