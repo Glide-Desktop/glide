@@ -19,6 +19,7 @@ pub enum Page {
     Feedback,
     Layout,
     Cards,
+    Insight,
     Secrets,
     Overlays,
     Type,
@@ -28,7 +29,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Overview,
         Self::Buttons,
         Self::Inputs,
@@ -36,6 +37,7 @@ impl Page {
         Self::Feedback,
         Self::Layout,
         Self::Cards,
+        Self::Insight,
         Self::Secrets,
         Self::Overlays,
         Self::Type,
@@ -54,6 +56,7 @@ impl Page {
             Self::Feedback => ("Стан і відгук", "Feedback"),
             Self::Layout => ("Розмітка", "Layout"),
             Self::Cards => ("Картки й списки", "Cards and lists"),
+            Self::Insight => ("Стан і огляди", "Status and summaries"),
             Self::Secrets => ("Секрети", "Secrets"),
             Self::Overlays => ("Оверлеї", "Overlays"),
             Self::Type => ("Типографіка й кольори", "Type and colour"),
@@ -71,7 +74,7 @@ impl Page {
             Self::Buttons | Self::Selection => Icon::Check,
             Self::Inputs => Icon::Search,
             Self::Secrets => Icon::Eye,
-            Self::Feedback => Icon::Refresh,
+            Self::Feedback | Self::Insight => Icon::Refresh,
             Self::Layout | Self::Cards => Icon::Folder,
             Self::Overlays => Icon::More,
             Self::Type => Icon::File,
@@ -233,10 +236,16 @@ pub struct Catalog {
     pub dock_count: u32,
     pub dock_progress: f32,
     pub dock_urgent: bool,
+    pub issue_open: bool,
+    pub info_open: bool,
+    pub plan: Fruit,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    IssueOpen,
+    InfoOpen,
+    Plan(Fruit),
     Page(usize),
     Look(Look),
     Accent(Option<Accent>),
@@ -432,6 +441,9 @@ impl App for Catalog {
             dock_count: 0,
             dock_progress: 0.0,
             dock_urgent: false,
+            issue_open: false,
+            info_open: false,
+            plan: Fruit::Pear,
         };
         (catalog, Task::none())
     }
@@ -448,6 +460,9 @@ impl App for Catalog {
     fn update(&mut self, message: Message, shell: &mut Shell<Message>) -> Task<Message> {
         match message {
             Message::Page(index) => self.page = Page::ALL.get(index).copied().unwrap_or(Page::Overview),
+            Message::IssueOpen => self.issue_open = !self.issue_open,
+            Message::InfoOpen => self.info_open = !self.info_open,
+            Message::Plan(fruit) => self.plan = fruit,
             Message::Look(look) => {
                 self.look = look;
                 self.apply_preview(shell);

@@ -54,6 +54,7 @@ pub fn view<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         Page::Feedback => feedback(catalog, shell),
         Page::Layout => layout(catalog, shell),
         Page::Cards => cards(catalog, shell),
+        Page::Insight => insight(catalog, shell),
         Page::Secrets => secrets(catalog, shell),
         Page::Overlays => overlays(shell),
         Page::Type => typography(shell),
@@ -813,6 +814,106 @@ fn card_group<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a
                 .on_press(Message::Said("Details")),
         )
         .build()
+}
+
+fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let ramp = |step: usize| glide_sdk::theme::to_iced(paint.tokens.ramp[step]);
+    let issue = ui::Issue::new(paint, shell.t("Мало місця на диску", "Low on disk space"))
+        .summary(shell.t("Вільно 4 % — звільніть місце", "4 % free — make some room"))
+        .details([String::from("/dev/nvme0n1p2 · ext4"), String::from("12,4 ГБ / 476 ГБ")], catalog.issue_open)
+        .toggle(Message::IssueOpen, shell.t("Детальніше", "Details"), shell.t("Сховати", "Hide"))
+        .action(ui::button(paint, shell.t("Відкрити", "Open"), Tone::Neutral, Some(Message::Said("Open"))));
+    let glances = row![
+        ui::Glance::new(paint, Icon::Folder, ramp(3), shell.t("Сховище", "Storage"))
+            .headline(shell.t("212 ГБ вільно", "212 GB free"))
+            .meter(0.55, paint.acc_bg())
+            .detail(shell.t("з 476 ГБ", "of 476 GB"))
+            .on_press(Message::Said("Storage")),
+        ui::Glance::new(paint, Icon::Bell, ramp(4), "Wi-Fi")
+            .headline("Home")
+            .aside(ui::signal_bars(paint, 3, 4))
+            .detail(shell.t("Підключено", "Connected")),
+    ]
+    .spacing(SP3);
+    let facts = ui::fact_grid(
+        paint,
+        vec![
+            (shell.t("Процесор", "Processor").into(), "AMD Ryzen 7 7840U".into()),
+            (shell.t("Пам'ять", "Memory").into(), "32 ГБ · 17,6 ГБ вільно".into()),
+            (shell.t("Графіка", "Graphics").into(), "AMD Radeon 780M".into()),
+        ],
+        2,
+    );
+    let stages = ui::stage_track(
+        paint,
+        &[
+            ui::Stage::new(0.2, shell.t("гасне", "dims"), paint.acc_bg()),
+            ui::Stage::new(0.5, shell.t("блокується", "locks"), paint.warn()),
+            ui::Stage::new(0.85, shell.t("сон", "sleeps"), paint.ok()),
+        ],
+    );
+    let plans = ui::choice_tiles(
+        paint,
+        vec![
+            (Fruit::Apple, shell.t("Заощадження", "Saver").into(), shell.t("Довше працює", "Lasts longer").into()),
+            (Fruit::Pear, shell.t("Збалансовано", "Balanced").into(), shell.t("Як зазвичай", "As usual").into()),
+            (Fruit::Plum, shell.t("Швидкодія", "Performance").into(), shell.t("Найшвидше", "Fastest").into()),
+        ],
+        catalog.plan,
+        Message::Plan,
+    );
+    let chips = ui::status_chips(
+        paint,
+        vec![(paint.ok(), "GTK 4".into()), (paint.warn(), "GTK 3".into()), (paint.fg_4(), "Kvantum".into())],
+    );
+    let header = row![
+        ui::section_heading(paint, shell.t("Шрифти й іконки", "Fonts and icons")),
+        Space::new().width(Fill),
+        ui::reset_action(
+            paint,
+            shell.t("1 змінено", "1 changed"),
+            shell.t("Скинути", "Reset"),
+            Some(Message::Said("Reset"))
+        ),
+    ]
+    .align_y(Alignment::Center);
+    let small = wrap(vec![
+        chips,
+        ui::info_button(paint, catalog.info_open, Message::InfoOpen),
+        ui::applies_chip(paint, shell.t("після повторного входу", "after signing in again"), true),
+        ui::applies_chip(paint, shell.t("одразу", "right away"), false),
+    ]);
+    let pictures = row![
+        mock::desktop(paint, 160.0),
+        mock::theme_sample(paint, 196.0, 124.0),
+        mock::split_theme_sample(
+            glide_sdk::Paint::new(glide_sdk::theme::Appearance::Light, Accent::Blue),
+            glide_sdk::Paint::new(glide_sdk::theme::Appearance::Dark, Accent::Blue),
+            196.0,
+            124.0,
+        ),
+    ]
+    .spacing(SP3)
+    .align_y(Alignment::Center);
+    page(
+        shell,
+        Page::Insight,
+        shell.t(
+            "Те, з чого складено «Огляд» Налаштувань: проблеми, стислі картки, факти й етапи.",
+            "What the Settings overview is built from: issues, glance cards, facts and stages.",
+        ),
+        vec![
+            demo(shell, shell.t("Проблема", "Issue"), issue),
+            ui::section(paint, shell.t("Картки-огляди", "Glance cards"), glances),
+            ui::section(paint, shell.t("Факти", "Facts"), facts),
+            demo(shell, shell.t("Етапи", "Stages"), stages),
+            ui::section(paint, shell.t("Вибір плиткою", "Choice tiles"), plans),
+            ui::section(paint, shell.t("Заголовок зі скиданням", "Heading with reset"), header),
+            demo(shell, shell.t("Позначки", "Marks"), small),
+            ui::section(paint, shell.t("Ескізи", "Sketches"), pictures),
+        ],
+    )
 }
 
 fn small_pieces<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
