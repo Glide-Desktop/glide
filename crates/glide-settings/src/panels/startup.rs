@@ -13,7 +13,7 @@ use crate::services::apps::{self, DesktopApp};
 use crate::services::autostart::{self, Entry};
 use crate::services::config::ConfigStore;
 use crate::services::run::{Generation, blocking};
-use crate::theme::{self, Tone};
+use crate::theme;
 use crate::widgets::{self, Group, Row};
 
 mod tr {
@@ -21,24 +21,27 @@ mod tr {
         Heading => "Startup apps", "Автозапуск";
         Starting => "start when you sign in", "запускаються під час входу";
         Nothing => "Nothing starts when you sign in", "Під час входу нічого не запускається";
-        Commands => "Started by Glide", "Запускає Glide";
-        CommandsHint => "Run in this order every time you sign in to Glide", "Виконуються в цьому порядку щоразу, коли ви входите в Glide";
+        Commands => "Commands", "Команди";
+        CommandsHint => "Glide runs them in this order every time you sign in", "Glide виконує їх у цьому порядку щоразу, коли ви входите";
+        Skipped => "Skipped", "Пропущено";
+        SkippedHint => "Entries that do not start in Glide, and why", "Записи, які в Glide не запускаються, і чому";
+        AndMore => "and", "і ще";
         NoCommands => "No apps or commands yet", "Поки немає програм чи команд";
         AddApp => "Add an app", "Додати програму";
         ChooseApp => "Choose an app…", "Оберіть програму…";
         AddCommand => "Add a command", "Додати команду";
         CommandPlaceholder => "nm-applet --indicator", "nm-applet --indicator";
         Add => "Add", "Додати";
-        Entries => "Autostart entries", "Записи автозапуску";
-        EntriesHint => "Standard entries in ~/.config/autostart and /etc/xdg/autostart, shared with other desktops", "Стандартні записи в ~/.config/autostart і /etc/xdg/autostart, спільні з іншими середовищами";
-        Launch => "Start autostart entries", "Запускати записи автозапуску";
-        LaunchHint => "Takes effect the next time you sign in", "Діє з наступного входу";
+        Entries => "Apps", "Програми";
+        EntriesHint => "Apps that start when you sign in", "Програми, що запускаються під час входу";
+        Launch => "Start standard autostart entries", "Запускати стандартні записи автозапуску";
+        LaunchHint => "Shared with other desktops, from ~/.config/autostart. Takes effect the next time you sign in", "Спільні з іншими середовищами, з ~/.config/autostart. Діє з наступного входу";
         PolkitAgent => "Ask for administrator passwords", "Запитувати пароль адміністратора";
         PolkitAgentHint => "Glide asks in the status island when an app needs administrator rights; turn it off only to use another polkit agent", "Glide запитує в острові, коли програмі потрібні права адміністратора; вимикайте, лише щоб користуватися іншим агентом polkit";
         NoEntries => "No autostart entries", "Немає записів автозапуску";
         OnlyIn => "Only for", "Лише для";
         NotHere => "Not for Glide", "Не для Glide";
-        Replaced => "Glide does this itself. To start it anyway, add it under Started by Glide", "Glide робить це сам. Щоб усе одно запускати, додайте його в «Запускає Glide»";
+        Replaced => "Glide does this itself. To start it anyway, add it under Commands", "Glide робить це сам. Щоб усе одно запускати, додайте його в «Команди»";
         Missing => "The program is not installed", "Програму не встановлено";
         Conditional => "Starts only when its own condition holds, checked at login", "Запускається лише коли виконується його умова; перевіряється під час входу";
         Yours => "Added by you", "Додано вами";
@@ -203,8 +206,9 @@ impl Pane for Page {
         column![
             self.hero(c, config),
             error_banner(c.theme, self.error.as_deref()),
+            self.apps_group(c, config),
             self.commands_group(c, config),
-            self.entries_group(c, config),
+            self.skipped_group(c, config),
         ]
         .spacing(theme::SECTION_GAP)
         .into()
@@ -301,71 +305,117 @@ impl Page {
         group.build()
     }
 
-    fn entries_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn apps_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let launching = Self::launches_entries(config);
-        let mut group = Group::new(t)
-            .title(c.t(T::Entries))
-            .description(c.t(T::EntriesHint))
-            .push(switch_row(*c, c.t(T::Launch), c.t(T::LaunchHint), launching, Msg::Launch))
+        let group = Group::new(t).title(c.t(T::Entries)).description(c.t(T::EntriesHint));
+        if !self.loaded {
+            return group.push(Row::new(t, c.t(T::Loading)).dimmed(true).build()).build();
+        }
+        let applying: Vec<&Entry> = self.catalog.entries.iter().filter(|entry| skip_reason(entry).is_none()).collect();
+        if applying.is_empty() {
+            return group.push(Row::new(t, c.t(T::NoEntries)).dimmed(true).build()).build();
+        }
+        applying
+            .into_iter()
+            .fold(group, |group, entry| {
+                let subtitle = if entry.conditional {
+                    c.t(T::Conditional).to_string()
+                } else if entry.removable() {
+                    c.t(T::Yours).to_string()
+                } else if entry.comment.is_empty() {
+                    entry.exec.clone()
+                } else {
+                    entry.comment.clone()
+                };
+                let id = entry.id.clone();
+                let mut suffix = row![widgets::inert(
+                    t,
+                    launching && !self.busy,
+                    widgets::switch(t, entry.enabled, move |on| Msg::Toggle(id.clone(), on)),
+                )]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                if entry.removable() {
+                    suffix = suffix.push(widgets::icon_button(
+                        t,
+                        Icon::Trash,
+                        (!self.busy).then_some(Msg::Remove(entry.id.clone())),
+                    ));
+                }
+                group.push(
+                    Row::new(t, entry.name.clone())
+                        .subtitle(subtitle)
+                        .prefix(app_icon(&t, self.catalog.icons.get(&entry.icon), &entry.name, 28.0))
+                        .suffix(suffix)
+                        .dimmed(!launching)
+                        .build(),
+                )
+            })
+            .build()
+    }
+
+    fn skipped_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+        let t = c.theme;
+        let mut lines: Vec<(Skip, Vec<&Entry>)> = Vec::new();
+        for entry in &self.catalog.entries {
+            let Some(reason) = skip_reason(entry) else { continue };
+            match lines.iter_mut().find(|(known, _)| matches!(known, Skip::Elsewhere(_)) && *known == reason) {
+                Some((_, entries)) => entries.push(entry),
+                None => lines.push((reason, vec![entry])),
+            }
+        }
+        let mut group = Group::new(t).title(c.t(T::Skipped)).description(c.t(T::SkippedHint));
+        for (reason, entries) in lines {
+            let first = entries[0];
+            let title = if entries.len() > 1 {
+                format!("{} {} {}", first.name, c.t(T::AndMore), entries.len() - 1)
+            } else {
+                first.name.clone()
+            };
+            let subtitle = match reason {
+                Skip::Replaced => c.t(T::Replaced).to_string(),
+                Skip::Missing => c.t(T::Missing).to_string(),
+                Skip::Elsewhere(only_in) if only_in.is_empty() => c.t(T::NotHere).to_string(),
+                Skip::Elsewhere(only_in) => format!("{} {}", c.t(T::OnlyIn), only_in),
+            };
+            group = group.push(
+                Row::new(t, title)
+                    .subtitle(subtitle)
+                    .prefix(app_icon(&t, self.catalog.icons.get(&first.icon), &first.name, 28.0))
+                    .dimmed(true)
+                    .build(),
+            );
+        }
+        group
+            .push(switch_row(*c, c.t(T::Launch), c.t(T::LaunchHint), Self::launches_entries(config), Msg::Launch))
             .push(switch_row(
                 *c,
                 c.t(T::PolkitAgent),
                 c.t(T::PolkitAgentHint),
                 config.bool_or("general", "polkit-agent", true),
                 Msg::PolkitAgent,
-            ));
-        if !self.loaded {
-            return group.push(Row::new(t, c.t(T::Loading)).dimmed(true).build()).build();
-        }
-        if self.catalog.entries.is_empty() {
-            return group.push(Row::new(t, c.t(T::NoEntries)).dimmed(true).build()).build();
-        }
-        for entry in &self.catalog.entries {
-            let reason = if !entry.desktop_ok {
-                Some(if entry.only_in.is_empty() {
-                    c.t(T::NotHere).to_string()
-                } else {
-                    format!("{} {}", c.t(T::OnlyIn), entry.only_in.join(", "))
-                })
-            } else if entry.replaced {
-                Some(c.t(T::Replaced).to_string())
-            } else if !entry.runnable {
-                Some(c.t(T::Missing).to_string())
-            } else if entry.conditional {
-                Some(c.t(T::Conditional).to_string())
-            } else {
-                None
-            };
-            let applies = reason.is_none();
-            let subtitle = reason
-                .unwrap_or_else(|| if entry.comment.is_empty() { entry.exec.clone() } else { entry.comment.clone() });
-            let (tone, origin) = if entry.removable() { (Tone::Accent, T::Yours) } else { (Tone::Neutral, T::System) };
-            let mut suffix = row![widgets::pill(t, tone, c.t(origin))].spacing(8).align_y(Alignment::Center);
-            if applies {
-                let id = entry.id.clone();
-                suffix = suffix.push(widgets::inert(
-                    t,
-                    launching && !self.busy,
-                    widgets::switch(t, entry.enabled, move |on| Msg::Toggle(id.clone(), on)),
-                ));
-            }
-            if entry.removable() {
-                suffix = suffix.push(widgets::icon_button(
-                    t,
-                    Icon::Trash,
-                    (!self.busy).then_some(Msg::Remove(entry.id.clone())),
-                ));
-            }
-            group = group.push(
-                Row::new(t, entry.name.clone())
-                    .subtitle(subtitle)
-                    .prefix(app_icon(&t, self.catalog.icons.get(&entry.icon), &entry.name, 28.0))
-                    .suffix(suffix)
-                    .dimmed(!applies || !launching)
-                    .build(),
-            );
-        }
-        group.build()
+            ))
+            .build()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Skip {
+    Elsewhere(String),
+    Replaced,
+    Missing,
+}
+
+#[must_use]
+pub(crate) fn skip_reason(entry: &Entry) -> Option<Skip> {
+    if !entry.desktop_ok {
+        Some(Skip::Elsewhere(entry.only_in.join(", ")))
+    } else if entry.replaced {
+        Some(Skip::Replaced)
+    } else if entry.runnable {
+        None
+    } else {
+        Some(Skip::Missing)
     }
 }
