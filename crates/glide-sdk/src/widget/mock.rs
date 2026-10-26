@@ -383,6 +383,139 @@ pub fn document<'a, M: 'a>(
 }
 
 #[must_use]
+pub fn desktop<'a, M: 'a>(paint: impl Into<Paint>, height: f32) -> Element<'a, M> {
+    let paint = paint.into();
+    let accent = paint.acc_bg();
+    let line = |width: f32, alpha: f32| block(Color { a: alpha, ..paint.fg_3() }, width, 7.0, R1);
+    let body = column![
+        line(150.0, 0.55),
+        line(112.0, 0.4),
+        line(130.0, 0.32),
+        Space::new().height(Fill),
+        row![Space::new().width(Fill), block(accent, 62.0, 18.0, R1)],
+    ]
+    .spacing(7)
+    .padding(12);
+    let (bg, ring) = (paint.win_bg(), paint.line_2());
+    let front = container(column![block(paint.bar_bg(), Fill, 16.0, 0.0), body].width(Fill).height(Fill))
+        .width(220)
+        .height(height * 0.56)
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(bg)),
+            border: Border { color: ring, width: 1.0, radius: R2.into() },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                offset: Vector::new(0.0, 6.0),
+                blur_radius: 16.0,
+            },
+            ..container::Style::default()
+        });
+    let ramp = paint.tokens.ramp;
+    let tiles = Row::with_children(
+        std::iter::once(accent)
+            .chain(ramp[1..=4].iter().map(|colour| style::to_iced(*colour)))
+            .map(|colour| block(colour, 16.0, 16.0, R1)),
+    )
+    .spacing(5);
+    let windows =
+        Stack::with_children([at(0.0, 0.0, window(paint, 220.0, height * 0.5)), at(110.0, height * 0.12, front)])
+            .width(330)
+            .height(height * 0.7);
+    let layers = vec![
+        topbar_strip(&paint, accent),
+        container(windows).center_x(Fill).padding(Padding::ZERO.top(28.0)).into(),
+        bottom(8.0, dock(paint, tiles)),
+    ];
+    screen(paint, Fill, height, layers)
+}
+
+#[must_use]
+pub fn theme_sample<'a, M: 'a>(paint: impl Into<Paint>, width: f32, height: f32) -> Element<'a, M> {
+    let paint = paint.into();
+    surface(paint.sunken_bg(), R2, sample_window(&paint, width)).padding(12).width(width).height(height).into()
+}
+
+#[must_use]
+pub fn split_theme_sample<'a, M: 'a>(
+    left: impl Into<Paint>, right: impl Into<Paint>, width: f32, height: f32,
+) -> Element<'a, M> {
+    let (left, right) = (left.into(), right.into());
+    let half = width / 2.0;
+    let side = |paint: &Paint, radius: Radius, padding: Padding| -> Element<'a, M> {
+        surface(paint.sunken_bg(), radius, sample_window(paint, half))
+            .padding(padding)
+            .width(half)
+            .height(height)
+            .into()
+    };
+    row![
+        side(&left, Radius::new(0.0).top_left(R2).bottom_left(R2), Padding::new(12.0).right(0.0)),
+        side(&right, Radius::new(0.0).top_right(R2).bottom_right(R2), Padding::new(12.0).left(0.0)),
+    ]
+    .into()
+}
+
+fn sample_window<'a, M: 'a>(paint: &Paint, width: f32) -> Container<'a, M> {
+    let paint = *paint;
+    let bar = |color, width: f32, height: f32| block(color, width, height, R1);
+    let card = surface(
+        paint.card_bg(),
+        R1,
+        column![
+            bar(paint.fg_3(), (width * 0.28).min(56.0), 5.0),
+            bar(paint.fill_3(), (width * 0.4).min(80.0), 5.0),
+            bar(paint.fill_3(), (width * 0.32).min(64.0), 5.0),
+            Space::new().height(Fill),
+            row![Space::new().width(Fill), bar(paint.acc_bg(), 30.0, 10.0)],
+        ]
+        .spacing(6),
+    )
+    .padding(8)
+    .width(Fill)
+    .height(Fill);
+    let mut content = Row::new().spacing(6);
+    if width >= 150.0 {
+        let sidebar = surface(
+            paint.sidebar_bg(),
+            R1,
+            column![
+                bar(paint.acc_soft(), 34.0, 7.0),
+                bar(paint.fill_3(), 26.0, 5.0),
+                bar(paint.fill_3(), 30.0, 5.0),
+                bar(paint.fill_3(), 22.0, 5.0),
+            ]
+            .spacing(6),
+        )
+        .padding(6)
+        .height(Fill);
+        content = content.push(sidebar);
+    }
+    outlined_surface(paint.win_bg(), paint.line_2(), 1.0, R2, content.push(card)).padding(6).width(Fill).height(Fill)
+}
+
+fn topbar_strip<'a, M: 'a>(paint: &Paint, accent: Color) -> Element<'a, M> {
+    let fg = paint.fg_3();
+    surface(
+        paint.bar_bg(),
+        0.0,
+        row![
+            block(fg, 22.0, 5.0, R1),
+            Space::new().width(Fill),
+            block(accent, 60.0, 6.0, R1),
+            Space::new().width(Fill),
+            block(fg, 16.0, 5.0, R1),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([0.0, 10.0]))
+    .width(Fill)
+    .height(16)
+    .center_y(16.0)
+    .into()
+}
+
+#[must_use]
 pub fn schedule_bar<'a, M: 'a>(spans: &[(u16, u16)], total: u16, on: Color, off: Color, height: f32) -> Element<'a, M> {
     let piece = |from: u16, to: u16, color: Color| -> Option<Element<'a, M>> {
         (to > from).then(|| block(color, Length::FillPortion(to - from), Fill, R1))

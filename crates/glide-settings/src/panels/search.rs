@@ -9,7 +9,7 @@ use iced::widget::Column;
 use iced::{Element, Task};
 
 use super::apps::app_icon;
-use super::common::{gated, switch_row, toggle};
+use super::common::{switch_row, toggle};
 use super::{Ctx, Pane, Panel};
 use crate::i18n::Lang;
 use crate::icons::Icon;
@@ -260,7 +260,7 @@ fn opening_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         )
         .push(
             Row::new(t, c.t(T::Change))
-                .suffix(gated(*c, widgets::disclosure(t, None)))
+                .suffix(widgets::disclosure(t, None))
                 .on_press(Msg::Open(Panel::Shortcuts))
                 .build(),
         )
