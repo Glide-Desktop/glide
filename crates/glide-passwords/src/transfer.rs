@@ -278,12 +278,20 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
             let mut content = Column::new()
                 .spacing(SP4)
                 .push(heading(Key::ExportTitle, Key::ExportBody))
-                .push(crate::view::secret_input(&paint, t(Key::FilePassword), password, |value| {
-                    Message::Transfer(Event::ExportPassword(value))
-                }))
-                .push(crate::view::secret_input(&paint, t(Key::RepeatPassword), repeat, |value| {
-                    Message::Transfer(Event::ExportRepeat(value))
-                }));
+                .push(crate::wizard::labelled(
+                    &paint,
+                    t(Key::FilePassword),
+                    crate::view::secret_input(&paint, t(Key::FilePassword), password, |value| {
+                        Message::Transfer(Event::ExportPassword(value))
+                    }),
+                ))
+                .push(crate::wizard::labelled(
+                    &paint,
+                    t(Key::RepeatPassword),
+                    crate::view::secret_input(&paint, t(Key::RepeatPassword), repeat, |value| {
+                        Message::Transfer(Event::ExportRepeat(value))
+                    }),
+                ));
             if *mismatch {
                 content = content.push(ui::text(t(Key::Mismatch), TextStyle::CAP).color(paint.danger()));
             }

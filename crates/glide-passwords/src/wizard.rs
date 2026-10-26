@@ -378,7 +378,7 @@ fn choice_card<'a>(
     ui::option_card(paint, ui::glyph_tile(paint, glyph, 40.0, selected), title, body, selected, message)
 }
 
-fn labelled<'a>(paint: &Paint, label: &'a str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+pub fn labelled<'a>(paint: &Paint, label: &'a str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     column![ui::text(label, TextStyle { weight: 520, ..TextStyle::CAP }).color(paint.fg_2()), control.into()]
         .spacing(6)
         .into()
