@@ -84,14 +84,14 @@ macro_rules! declare_pages {
                 }
             }
 
-            fn view_page(&self, c: Ctx) -> Element<'_, Message> {
-                match self.active_panel {
+            fn view_panel(&self, panel: Panel, c: Ctx) -> Element<'_, Message> {
+                match panel {
                     $(Panel::$variant => Pane::view(&self.pages.$module, c, &self.config).map(Message::$variant),)*
                 }
             }
 
-            fn page_subscription(&self) -> Subscription<Message> {
-                match self.active_panel {
+            fn panel_subscription(&self, panel: Panel) -> Subscription<Message> {
+                match panel {
                     $(Panel::$variant => Pane::subscription(&self.pages.$module).map(Message::$variant),)*
                 }
             }
@@ -328,13 +328,23 @@ impl App {
         }
     }
 
+    fn shown_panels(&self) -> Vec<Panel> {
+        let category = self.active_category();
+        if category.stacked() { self.category_panels(category) } else { vec![self.active_panel] }
+    }
+
     fn select(&mut self, panel: Panel) -> Task<Message> {
         let switched = self.active_panel != panel;
+        let category_switched = Category::of(panel) != self.active_category();
         if switched {
-            self.leave_page(self.active_panel);
+            for shown in self.shown_panels() {
+                if category_switched || !self.active_category().stacked() {
+                    self.leave_page(shown);
+                }
+            }
         }
         self.active_panel = panel;
-        let open = self.open_page(panel);
+        let open = Task::batch(self.shown_panels().into_iter().map(|shown| self.open_page(shown)).collect::<Vec<_>>());
         if switched {
             Task::batch([
                 open,
@@ -445,7 +455,9 @@ impl App {
                 IpcEvent::OutputChanged => self.broadcast(PageEvent::OutputsChanged),
                 IpcEvent::LayoutChanged(_) => Task::none(),
             },
-            Message::Tick => self.tick_page(self.active_panel),
+            Message::Tick => {
+                Task::batch(self.shown_panels().into_iter().map(|panel| self.tick_page(panel)).collect::<Vec<_>>())
+            }
             Message::Clock => {
                 let changed = self.config.refresh_if_changed();
                 if changed { self.broadcast(PageEvent::Reloaded) } else { Task::none() }
@@ -463,12 +475,11 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = vec![
-            Subscription::run(ipc::events).map(Message::Ipc),
-            iced::time::every(CLOCK).map(|_| Message::Clock),
-            self.page_subscription(),
-        ];
-        if self.active_panel.polls() {
+        let shown = self.shown_panels();
+        let mut subscriptions =
+            vec![Subscription::run(ipc::events).map(Message::Ipc), iced::time::every(CLOCK).map(|_| Message::Clock)];
+        subscriptions.extend(shown.iter().map(|panel| self.panel_subscription(*panel)));
+        if shown.iter().any(|panel| panel.polls()) {
             subscriptions.push(iced::time::every(Duration::from_secs(4)).map(|_| Message::Tick));
         }
         Subscription::batch(subscriptions)
@@ -489,7 +500,14 @@ impl App {
     fn view_content(&self) -> Element<'_, Message> {
         let c = self.ctx();
         let t = c.theme;
-        let panel_view = self.view_page(c);
+        let shown = self.shown_panels();
+        let panel_view: Element<'_, Message> = if shown.len() > 1 {
+            iced::widget::Column::with_children(shown.iter().map(|panel| self.view_panel(*panel, c)))
+                .spacing(theme::SECTION_GAP * 2.0)
+                .into()
+        } else {
+            self.view_panel(self.active_panel, c)
+        };
 
         let panel = self.active_panel;
         let category = self.active_category();
@@ -504,7 +522,7 @@ impl App {
         )]
         .spacing(theme::SECTION_GAP);
         let tabs = self.category_panels(category);
-        if tabs.len() > 1 {
+        if tabs.len() > 1 && !category.stacked() {
             let options: Vec<(Panel, &str)> = tabs.iter().map(|tab| (*tab, tab.label(self.lang))).collect();
             body = body.push(glide_sdk::widget::tabs(&widgets::paint(&t), &options, panel, Message::PanelSelected));
         }

@@ -30,6 +30,18 @@ fn only_micro_labels_may_be_uppercase() {
 }
 
 #[test]
+fn vpn_and_netbird_share_one_page_while_other_merged_entries_keep_tabs() {
+    let app = app("").with_netbird(true);
+    assert!(Category::Vpn.stacked());
+    assert_eq!(app.category_panels(Category::Vpn), [Panel::Vpn, Panel::Netbird]);
+    for category in Category::ALL.iter().filter(|category| **category != Category::Vpn) {
+        assert!(!category.stacked(), "{category:?} keeps its tabs");
+    }
+    let without = self::app("").with_netbird(false);
+    assert_eq!(without.category_panels(Category::Vpn), [Panel::Vpn], "no NetBird section without NetBird");
+}
+
+#[test]
 fn every_panel_has_a_distinct_label_and_sits_in_exactly_one_group() {
     for lang in [Lang::Uk, Lang::En] {
         let mut labels: Vec<&str> = Panel::ALL.iter().map(|p| p.label(lang)).collect();

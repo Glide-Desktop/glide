@@ -371,6 +371,11 @@ impl Category {
     }
 
     #[must_use]
+    pub const fn stacked(self) -> bool {
+        matches!(self, Self::Vpn)
+    }
+
+    #[must_use]
     pub const fn first(self) -> Panel {
         self.panels()[0]
     }
