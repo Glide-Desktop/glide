@@ -140,6 +140,7 @@ compositor's shadow, ring and corner clip around it.
 | `window_changed(shell)` | no | Runs after the window was resized, focused or unfocused, maximized, made fullscreen or restored; `shell.window()` holds the new state. Apps with their own chrome copy it here instead of subscribing to window events, and send window commands (`window::Action::Drag`, `ToggleMaximize`, `ToggleFullscreen`, `Minimize`, `Activate`, `Attention`, `Resize`) through `shell.window_action`. |
 | `paint(shell)` | no | The colours the window's iced theme and background follow; defaults to `shell.paint()`. |
 | `look_changed(shell)` | no | Runs after the host applied a new look — a Shell1 property, reduced motion, a `glide.toml` edit or the scheduled appearance turning — with `shell.look()` and `shell.paint()` already updated. Apps that cache colours, icons or translated names refresh them here instead of watching the look themselves. |
+| `reopened(args, shell)` | no | Only with `Settings::single_instance`: another launch of the app was forwarded here with its command-line arguments. The host has already raised the window with the launch's activation token; the app shows what `args` asks for (a page, a file). |
 
 `Settings::new(app_id)` takes the Wayland app id, which must equal the
 desktop file name (`org.example.Notes` ↔ `org.example.Notes.desktop`): the
@@ -151,6 +152,18 @@ and resize edges around `view`; `Chrome::Own` hands the whole window to
 yourself) and leaves every key and the close request to the app;
 `Chrome::Server` asks the compositor for its own frame. Glide's Files,
 Terminal and Text run with `Own`, Settings with `Server`.
+
+`.single_instance(bus_name)` keeps one window per session. Before iced
+starts, `run` claims `bus_name` on the session bus (`DoNotQueue`); when
+another process holds it, the launch calls
+`org.glide.Instance1.Open(args, activation_token)` on that process and exits
+without opening a window. The running app gets the call as
+`App::reopened(args, shell)` after its window was activated with the token
+(`XDG_ACTIVATION_TOKEN`, else `DESKTOP_STARTUP_ID`). Without a session bus the
+app simply runs on its own. `glide_sdk::instance` exposes the same pieces
+(`claim_on`, `requests`, `launch_token`, `Claim::{First, Forwarded, Alone}`)
+for apps that need them outside `run`. Settings uses
+`org.glide.Settings`.
 
 ## The `Shell` handle
 
@@ -280,7 +293,7 @@ the spec's motion table; the catalogue shows each of them.
 |---|---|
 | `card(paint, content)`, `action_card(paint, content, msg)`, `card_style`, `tinted_card_style(paint, tint)` | Action cards lift 3 px on hover (E_OVER); the tinted card washes its top in a colour. |
 | `Group::new(paint)` | Boxed-list section: `.title`, `.description`, `.suffix`, `.push` / `.push_maybe` / `.extend` rows, `.build()`. |
-| `ListRow::new(paint, title)` | 44 px row around 34 px controls: `.subtitle`, `.prefix`, `.suffix`, `.on_press` (R2 hover layer, keyboard focus), `.dimmed`, `.stacked(bool)` (suffix below the label on narrow windows). |
+| `ListRow::new(paint, title)` | 44 px row around 34 px controls: `.subtitle`, `.prefix`, `.suffix`, `.on_press` (R2 hover layer, keyboard focus), `.dimmed`, `.stacked(bool)` (suffix below the label on narrow windows), `.changed(bool)` (an accent dot before the title: the value differs from its default). |
 | `list(paint, rows)`, `list_row(paint, title, subtitle, trailing)`, `action_row(…, msg)`, `switch_row(…, on, Option<on_toggle>)` | Shortcuts built on the two above; switch rows toggle from anywhere on them. |
 | `facts(paint, rows, label_width)`, `well(paint, content)`, `sample_well(paint, content)`, `select_row(paint, leading, label, selected, msg)` | Key/value lines; a fill-1 well; a sunken sample area; a pickable row with a check. |
 | `expander(paint, title, open, on_toggle, content)`, `disclosure(paint, value)`, `inert(paint, enabled, content)` | Unfolds over t3 E_OUT; a value with a chevron; a veil over controls that cannot be used. |
@@ -306,8 +319,23 @@ the spec's motion table; the catalogue shows each of them.
 | `level_meter(paint, level, peak, Severity)`, `level_control(paint, glyph, mute, slider, level, muted)`, `slider_readout(paint, leading, slider, readout, dimmed)`, `range_slider(paint, low, slider, high)`, `frame_button(paint, content, selected, msg)` | Meters and labelled sliders; a picture button with the selection ring. |
 | `editor(paint, content)`, `text_area(paint, content)`, `markdown_settings(paint, size, mono)`, `markdown_view(paint, items, settings, viewer)`, `code_block(paint, content, padding)`, `shortcut_list(paint, sections)`, `scrollable_x` | A full-window editor, a bordered text area, a Markdown preview with its code blocks, a shortcut reference, a horizontal scroller. |
 | `split_view(paint, state, view)`, `palette_swatch(paint, background, foreground, accents, font, size)`, `context_area(content, on_right_press)`, `reveal(id, top, bottom)` | A Meridian pane grid; a colour-scheme sample; right-click with position and Ctrl+wheel zoom; scroll a range into view. |
-| `mock::*` | Illustration primitives for previews: `screen`, `topbar`, `bar`, `window`, `titled_window`, `dock`, `mini_dock`, `wallpaper`, `monitor`, `battery`, `touchpad`, `mouse`, `document`, `schedule_bar`, `glyph_well`, `sample_area`, `click_target`, `dots`, `ring_dot`, `gradient_strip`, `block`, `outlined`, `surface`, `outlined_surface`, `at`, `centered`, `bottom`, `caption`. |
+| `mock::*` | Illustration primitives for previews: `screen`, `topbar`, `bar`, `window`, `titled_window`, `dock`, `mini_dock`, `wallpaper`, `monitor`, `battery`, `touchpad`, `mouse`, `document`, `schedule_bar`, `glyph_well`, `sample_area`, `click_target`, `dots`, `ring_dot`, `gradient_strip`, `block`, `outlined`, `surface`, `outlined_surface`, `at`, `centered`, `bottom`, `caption`; whole scenes: `desktop(paint, height)` (bar, two windows and a dock over the accent gradient), `desktop_over(paint, screen, w, h)` (bar and dock over your own picture), `lock_screen`, `theme_sample(paint, w, h)` and `split_theme_sample(light, dark, w, h)` (an app window in one look, or half in each). |
+| `captioned_picture(paint, handle, height, radius, Option<caption>)` | A cover-fit tile with a bubble label in its corner. |
 | `cells::*` | Drawing a monospace character grid inside a custom widget's `draw`: `Metrics::measure(font, size, line_height)` (cell size, baseline, `grid(bounds)`, `locate(point, grid)`), `Painter` (`fill` merges backgrounds into runs that bleed to the edges and corners, `glyph` batches ASCII runs, `text` for other glyphs, `symbol` draws box-drawing and block elements as quads instead of font glyphs, `underline` in five styles, `strike`, `caret` (beam, underline, block; hollow when unfocused), `gutter` and `band` marks, `scrollbar`, `badges` for labels on their own layer) and `thumb` for the scrollbar's hit area. Glide Terminal draws its panes with it. |
+
+**Status and summaries**
+
+| Widget | Notes |
+|---|---|
+| `Issue::new(paint, title)` → `.summary`, `.details(lines, open)`, `.toggle(msg, more, less)`, `.action`, `.severity` | A problem row: a plain-language summary, technical lines folded behind a link, an action button. |
+| `Glance::new(paint, glyph, colour, title)` → `.headline`, `.detail`, `.meter(fraction, colour)`, `.aside`, `.on_press` | A summary card (network, storage, battery) that lifts like an action card when it has a message. |
+| `fact_grid(paint, facts, per_line)` | Label-over-value cells in a card, `per_line` to a line. |
+| `stage_track(paint, &[Stage::new(at, label, colour)])` | Points along a timeline (dims → locks → sleeps); stages may arrive in any order. |
+| `choice_tiles(paint, options, selected, on_select)` | Equal tiles with a title and a hint; the chosen one has a 2 px accent border. |
+| `status_chips(paint, items)`, `signal_bars(paint, level, steps)` | Fill-1 chips led by a coloured dot; rising bars. |
+| `info_button(paint, open, msg)`, `INFO_BUTTON` | A 22 px round "i" that turns acc-soft while its help is open. |
+| `reset_action(paint, note, label, Option<msg>)`, `applies_chip(paint, label, notable)` | "N changed · Reset" for a section heading (`Group::suffix`); a CAP chip saying when a change takes effect, warn-tinted when it needs a restart. |
+| `section_heading(paint, title)` | A HEAD heading aligned with group titles, for sections that are not a `Group`. |
 
 **Bars and strips**
 
