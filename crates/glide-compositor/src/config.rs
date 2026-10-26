@@ -1384,6 +1384,10 @@ fn parse_keysym(s: &str) -> Option<Keysym> {
     }
 }
 
+pub(crate) fn named_action(name: &str) -> Option<crate::input::KeyAction> {
+    parse_action(&KeyActionConfig::Simple(name.to_string()))
+}
+
 fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
     use crate::input::KeyAction;
     match cfg {

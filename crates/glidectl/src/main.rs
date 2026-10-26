@@ -187,6 +187,7 @@ COMMANDS:
     window move <N|next|prev>  Move focused window to workspace
     reload                     Reload configuration from glide.toml
     lock                       Lock the screen
+    action <name>              Run a named shell action, as a keybind would (e.g. screen-mirroring)
     exec <command...>          Execute shell command
     subscribe                  Stream window/focus/workspace events until Ctrl+C
     dpms <on|off>              Turn the outputs on or blank them
@@ -241,6 +242,10 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
         "quit" => Ok(Request::Quit),
         "reload" => Ok(Request::Reload),
         "lock" => Ok(Request::Lock),
+        "action" => match args.get(1) {
+            Some(name) => Ok(Request::Action { name: name.clone() }),
+            None => anyhow::bail!("Usage: glidectl action <name>"),
+        },
         "outputs" | "output" => Ok(Request::ListOutputs),
         "night-light" | "nightlight" => match args.get(1).map(String::as_str) {
             Some("on") => Ok(Request::NightLight { on: Some(true) }),
@@ -403,6 +408,7 @@ mod tests {
         assert_eq!(parse(&["subscribe"]), Request::Subscribe);
         assert_eq!(parse(&["sub"]), Request::Subscribe);
         assert_eq!(parse(&["lock"]), Request::Lock);
+        assert_eq!(parse(&["action", "screen-mirroring"]), Request::Action { name: "screen-mirroring".into() });
     }
 
     #[test]

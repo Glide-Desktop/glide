@@ -173,7 +173,10 @@ pub struct ListRow<'a, M> {
     stacked: bool,
     strong: bool,
     beside: Option<Element<'a, M>>,
+    changed: bool,
 }
+
+pub const CHANGED_MARK: f32 = 6.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TitleInk {
@@ -196,7 +199,14 @@ impl<'a, M: Clone + 'a> ListRow<'a, M> {
             stacked: false,
             strong: false,
             beside: None,
+            changed: false,
         }
+    }
+
+    #[must_use]
+    pub const fn changed(mut self, changed: bool) -> Self {
+        self.changed = changed;
+        self
     }
 
     #[must_use]
@@ -274,14 +284,18 @@ impl<'a, M: Clone + 'a> ListRow<'a, M> {
 
 impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
     fn from(item: ListRow<'a, M>) -> Self {
-        let ListRow { paint, title, subtitle, prefix, suffix, message, ink, stacked, strong, beside } = item;
+        let ListRow { paint, title, subtitle, prefix, suffix, message, ink, stacked, strong, beside, changed } = item;
         let ink = match ink {
             TitleInk::Plain => paint.fg_1(),
             TitleInk::Dimmed => paint.fg_3(),
             TitleInk::Accent => paint.acc_text(),
         };
         let style = if strong { TextStyle::HEAD } else { TextStyle::BODY };
-        let mut head = row![text(title, style).color(ink)].spacing(SP2).align_y(Alignment::Center);
+        let mut head = row![].spacing(SP2).align_y(Alignment::Center);
+        if changed {
+            head = head.push(super::feedback::dot(paint.acc_bg(), CHANGED_MARK));
+        }
+        head = head.push(text(title, style).color(ink));
         if let Some(beside) = beside {
             head = head.push(beside);
         }

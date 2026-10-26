@@ -8,6 +8,7 @@ mod find;
 mod focus;
 mod form;
 mod inputs;
+mod insight;
 mod items;
 mod layout;
 mod media;
@@ -56,12 +57,16 @@ pub use inputs::{
     Validity, bare_text_area_style, field, field_with, hinted_search_input, inline_field, inline_style, input_style,
     password_field, search_field, search_input, stepper, text_area_style, text_field, validated_field,
 };
+pub use insight::{
+    Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, reset_action,
+    section_heading, signal_bars, stage_track, status_chips,
+};
 pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
 pub use layout::{
-    Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW, action_card,
-    action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card, section,
-    select_row, sidebar, sidebar_item, status_bar, status_button, status_strip, surface, switch_row, table_header,
-    tree_row, well,
+    CHANGED_MARK, Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW,
+    action_card, action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card,
+    section, select_row, sidebar, sidebar_item, status_bar, status_button, status_strip, surface, switch_row,
+    table_header, tree_row, well,
 };
 pub use media::{
     Art, art, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider, slider_readout,

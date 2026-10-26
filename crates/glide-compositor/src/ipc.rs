@@ -402,6 +402,13 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             state.lock_screen();
             Response::Ok
         }
+        Request::Action { name } => match crate::config::named_action(&name) {
+            Some(action) => {
+                state.run_key_action(action);
+                Response::Ok
+            }
+            None => Response::Error { message: format!("no action named {name}") },
+        },
         Request::ActivationToken { .. }
         | Request::Screenshot
         | Request::ScreenshotArea

@@ -43,6 +43,7 @@ pub enum Request {
     ScreenshotArea,
     PickColor,
     ScanQr,
+    Action { name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
