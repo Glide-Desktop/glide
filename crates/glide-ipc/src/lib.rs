@@ -42,6 +42,7 @@ pub enum Request {
     Screenshot,
     ScreenshotArea,
     PickColor,
+    ScanQr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +170,9 @@ pub enum Response {
         red: f64,
         green: f64,
         blue: f64,
+    },
+    QrCodes {
+        codes: Vec<keychain::Hidden>,
     },
     #[serde(other)]
     Unknown,

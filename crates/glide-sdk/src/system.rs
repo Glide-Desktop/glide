@@ -87,6 +87,15 @@ pub fn open_quick_settings(view: QuickSettings) -> zbus::Result<()> {
     shell_call::<_, ()>("OpenQuickSettings", &(view,))
 }
 
+pub fn scan_screen_qr() -> Result<Vec<glide_ipc::keychain::Hidden>, String> {
+    let request = glide_ipc::Request::ScanQr;
+    match glide_ipc::client::exchange(&request, std::time::Duration::from_secs(10)).map_err(|err| err.to_string())? {
+        glide_ipc::Response::QrCodes { codes } => Ok(codes),
+        glide_ipc::Response::Error { message } => Err(message),
+        other => Err(format!("unexpected answer: {other:?}")),
+    }
+}
+
 #[must_use]
 pub fn activation_token(app_id: &str) -> Option<String> {
     shell_call::<_, String>("ActivationToken", &())

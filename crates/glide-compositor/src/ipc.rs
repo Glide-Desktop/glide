@@ -275,8 +275,10 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
         Err(err) => Err(format!("IPC request was not valid UTF-8: {err}")),
     };
 
-    if let Ok(request @ (Request::Screenshot | Request::ScreenshotArea | Request::PickColor)) = &request {
-        if matches!(request, Request::Screenshot) && !may_capture_silently(stream, state) {
+    if let Ok(request @ (Request::Screenshot | Request::ScreenshotArea | Request::PickColor | Request::ScanQr)) =
+        &request
+    {
+        if matches!(request, Request::Screenshot | Request::ScanQr) && !may_capture_silently(stream, state) {
             reply(
                 stream,
                 &Response::Error { message: "this program may not take screenshots; Glide asked you".into() },
@@ -287,6 +289,7 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
             Ok(waiter) => match request {
                 Request::ScreenshotArea => state.open_shot(Some(waiter)),
                 Request::PickColor => state.start_picker(waiter),
+                Request::ScanQr => state.start_qr_scan(waiter),
                 _ => state.request_screenshot_for(waiter),
             },
             Err(err) => reply(stream, &Response::Error { message: err.to_string() }),
@@ -399,9 +402,11 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             state.lock_screen();
             Response::Ok
         }
-        Request::ActivationToken { .. } | Request::Screenshot | Request::ScreenshotArea | Request::PickColor => {
-            Response::Error { message: "this request needs a client connection".into() }
-        }
+        Request::ActivationToken { .. }
+        | Request::Screenshot
+        | Request::ScreenshotArea
+        | Request::PickColor
+        | Request::ScanQr => Response::Error { message: "this request needs a client connection".into() },
     }
 }
 

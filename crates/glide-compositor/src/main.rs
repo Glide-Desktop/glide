@@ -64,6 +64,7 @@ mod popup_menu;
 mod power;
 mod power_dialog;
 mod privilege;
+mod qr_scan;
 mod qs_net;
 mod raster;
 mod removable;

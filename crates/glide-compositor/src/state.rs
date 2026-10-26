@@ -382,6 +382,7 @@ pub struct SessionServices {
     pub modal_windows: std::collections::HashSet<glide_layout::WindowId>,
     pub framed_pids: crate::framed::FramedClients,
     pub capture: Option<crate::screen_picker::Capture>,
+    pub qr_scan: Option<crate::qr_scan::Scan>,
     pub end: crate::session_end::SessionEnd,
     pub battery_alert: crate::battery_alert::BatteryAlert,
     pub announced_config_keys: Vec<String>,

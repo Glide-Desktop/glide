@@ -97,6 +97,8 @@ glide_sdk::catalogue! {
     Folder => "Folder", "Тека";
     NoFolder => "No folder", "Без теки";
     TotpKey => "TOTP key", "Ключ TOTP";
+    ScanQr => "Scan a QR code on the screen", "Сканувати QR-код з екрана";
+    NoQrOnScreen => "No QR code with a TOTP key is on the screen", "На екрані немає QR-коду з ключем TOTP";
     Generate => "Generate", "Згенерувати";
     GoesToHistory => "The previous one goes to history", "Попередній піде в історію";
     Site => "Site", "Сайт";

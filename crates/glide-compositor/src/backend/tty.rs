@@ -1678,6 +1678,8 @@ impl GlideState {
                         self.loop_handle.insert_idle(move |state| {
                             state.deliver_capture(&capture, &pixels, output_mode, fractional);
                         });
+                    } else if let Some(scan) = self.session.qr_scan.take_if(|scan| scan.output == output) {
+                        crate::qr_scan::deliver(scan, pixels, output_mode);
                     } else if self.session.shot.as_ref().is_some_and(|session| session.awaiting_freeze(&output)) {
                         let frozen = output.clone();
                         self.loop_handle.insert_idle(move |state| {

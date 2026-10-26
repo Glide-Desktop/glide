@@ -320,6 +320,11 @@ fn print_response(response: &Response) {
         Response::ActivationToken { token } => println!("{token}"),
         Response::Screenshot { path } => println!("{path}"),
         Response::Color { red, green, blue } => println!("{red:.4} {green:.4} {blue:.4}"),
+        Response::QrCodes { codes } => {
+            for code in codes {
+                println!("{}", code.expose());
+            }
+        }
         Response::Outputs { list } => {
             println!("{:<12} {:<28} {:<22} {:<7} {:<12}", "NAME", "MODEL", "MODE", "SCALE", "POSITION");
             println!("{}", "-".repeat(84));

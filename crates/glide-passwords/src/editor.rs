@@ -71,6 +71,17 @@ impl Clone for Editor {
 }
 
 impl Editor {
+    pub fn take_scan(&mut self, scanned: crate::scan::Scanned) {
+        self.totp = scanned.key;
+        if self.name.trim().is_empty() && !scanned.issuer.is_empty() {
+            self.name = scanned.issuer;
+            self.invalid = false;
+        }
+        if self.username.trim().is_empty() {
+            self.username = scanned.account;
+        }
+    }
+
     #[must_use]
     pub fn blank(kind: ItemKind, vault: String) -> Self {
         Self {
@@ -175,6 +186,8 @@ pub enum Event {
     Password(String),
     TogglePassword,
     Totp(String),
+    ScanQr,
+    Scanned(Result<Vec<Hidden>, String>),
     Vault(String),
     Folder(String),
     SiteUri(usize, String),
@@ -200,11 +213,18 @@ pub enum Event {
     Cancel,
 }
 
-pub fn update(app: &mut App, event: Event, _shell: &mut Shell<Message>) -> Task<Message> {
+pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
+    let lang = app.lang;
     let Some(editor) = app.editor.as_mut() else {
         return Task::none();
     };
     match event {
+        Event::ScanQr => return crate::scan::screen(|result| Message::Editor(Event::Scanned(result))),
+        Event::Scanned(Ok(codes)) => match crate::scan::first_totp(&codes) {
+            Some(scanned) => editor.take_scan(scanned),
+            None => shell.toast(Key::NoQrOnScreen.text(lang)),
+        },
+        Event::Scanned(Err(message)) => shell.toast(message),
         Event::Name(value) => {
             editor.name = value;
             editor.invalid = false;
@@ -297,6 +317,9 @@ fn labelled<'a>(label: &'a str, control: impl Into<Element<'a, Message>>, paint:
 }
 
 fn grouped_key(key: &str) -> String {
+    if key.contains("://") {
+        return key.to_string();
+    }
     let compact: Vec<char> = key.chars().filter(|ch| !ch.is_whitespace()).collect();
     compact.chunks(4).map(|chunk| chunk.iter().collect::<String>()).collect::<Vec<_>>().join(" ")
 }
@@ -401,7 +424,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
                     text_input("JBSW Y3DP EHPK 3PXP", &grouped_key(&editor.totp))
                         .on_input(|value| Message::Editor(Event::Totp(value.split_whitespace().collect())))
                         .size(13),
-                    Vec::new(),
+                    vec![ui::icon_button(
+                        &paint,
+                        Icon::Qr,
+                        t(Key::ScanQr),
+                        Some(Message::Editor(Event::ScanQr)),
+                        false,
+                    )],
                 ),
                 &paint,
             );

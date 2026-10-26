@@ -7,6 +7,7 @@ pub mod i18n;
 pub mod icons;
 pub mod model;
 pub mod prefs;
+pub mod scan;
 pub mod security;
 pub mod sends;
 pub mod settings;
