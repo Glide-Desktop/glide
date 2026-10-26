@@ -26,12 +26,18 @@ mod tr {
         Display => "Display", "Дисплей";
         DisplayValue => "The one under the pointer", "Той, де вказівник";
         DisplayHint => "A copy of it, scaled to the TV", "Його копія, масштабована під телевізор";
-        Sound => "Sound", "Звук";
-        SoundValue => "On the TV", "На телевізорі";
-        SoundHint => "What plays through the default output", "Те, що грає через типовий вихід";
+        Sound => "Sound on the TV", "Звук на телевізорі";
+        SoundHint => "What plays through the default output goes along", "Те, що грає через типовий вихід, іде разом із зображенням";
         Quality => "Picture", "Зображення";
-        QualityValue => "The best the TV accepts", "Найкраще, що приймає телевізор";
+        Best => "Best", "Найкраще";
+        Smooth => "Smoother", "Плавніше";
         QualityHint => "Up to 1080p at 60 frames with a hardware encoder, 30 without", "До 1080p 60 кадрів з апаратним кодуванням, 30 без нього";
+        SmoothHint => "At most 720p, easier on a weak Wi-Fi link or an old computer", "Не більше 720p, легше для слабкого Wi-Fi чи старого комп’ютера";
+        During => "While mirroring", "Під час трансляції";
+        Awake => "Keep the screen on", "Не гасити екран";
+        AwakeHint => "The screen does not go dark or lock while the TV shows it", "Екран не гасне й не блокується, поки його показує телевізор";
+        Banners => "Notification banners", "Банери сповіщень";
+        BannersHint => "Set on the Screen Sharing page", "Налаштовуються на сторінці «Трансляція екрана»";
         Shortcut => "Keyboard shortcut", "Комбінація клавіш";
         ShortcutHint => "Also the Mirror the screen command in the launcher", "Також команда «Дублювання екрана» в лаунчері";
         NoShortcut => "Not set", "Не призначено";
@@ -105,8 +111,13 @@ pub enum Msg {
     Checked(Readiness),
     Search,
     Started(Option<Result<(), String>>),
+    Smooth(bool),
+    Audio(bool),
+    Awake(bool),
     Open(Panel),
 }
+
+const TABLE: &str = "cast";
 
 #[derive(Debug, Default)]
 pub struct Page {
@@ -149,8 +160,14 @@ impl Pane for Page {
         })
     }
 
-    fn update(&mut self, msg: Msg, _c: Ctx, _config: &mut ConfigStore) -> Task<Msg> {
+    fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
+            Msg::Smooth(true) => config.set_str(TABLE, "quality", "smooth"),
+            Msg::Smooth(false) => config.remove(TABLE, "quality"),
+            Msg::Audio(true) => config.remove(TABLE, "audio"),
+            Msg::Audio(false) => config.set_bool(TABLE, "audio", false),
+            Msg::Awake(true) => config.remove(TABLE, "keep-screen-on"),
+            Msg::Awake(false) => config.set_bool(TABLE, "keep-screen-on", false),
             Msg::Checked(readiness) => self.readiness = Some(readiness),
             Msg::Search => {
                 self.error = None;
@@ -180,11 +197,44 @@ impl Pane for Page {
         let hint = if c.online { c.t(T::HeroHint) } else { c.t(T::Offline) };
         let hero = widgets::section_hero(t, Icon::Tv, Panel::Miracast.color(), c.t(T::Hero), hint, Some(action));
         let value = |text: T| sdk::text(c.t(text), TextStyle::CALL).color(t.fg_2());
+        let smooth = config.str_or(TABLE, "quality", "best") == "smooth";
+        let audio = config.bool_or(TABLE, "audio", true);
+        let awake = config.bool_or(TABLE, "keep-screen-on", true);
+        let qualities = vec![(false, c.t(T::Best).to_string()), (true, c.t(T::Smooth).to_string())];
         let what = Group::new(t)
             .title(c.t(T::What))
             .push(Row::new(t, c.t(T::Display)).subtitle(c.t(T::DisplayHint)).suffix(value(T::DisplayValue)).build())
-            .push(Row::new(t, c.t(T::Sound)).subtitle(c.t(T::SoundHint)).suffix(value(T::SoundValue)).build())
-            .push(Row::new(t, c.t(T::Quality)).subtitle(c.t(T::QualityHint)).suffix(value(T::QualityValue)).build());
+            .push(
+                Row::new(t, c.t(T::Sound))
+                    .subtitle(c.t(T::SoundHint))
+                    .changed(!audio)
+                    .suffix(super::common::toggle(c, audio, Msg::Audio))
+                    .build(),
+            )
+            .push(
+                Row::new(t, c.t(T::Quality))
+                    .subtitle(c.t(if smooth { T::SmoothHint } else { T::QualityHint }))
+                    .changed(smooth)
+                    .suffix(super::common::gated(c, widgets::segmented(t, qualities, smooth, Msg::Smooth)))
+                    .stacked(t.compact)
+                    .build(),
+            );
+        let during = Group::new(t)
+            .title(c.t(T::During))
+            .push(
+                Row::new(t, c.t(T::Awake))
+                    .subtitle(c.t(T::AwakeHint))
+                    .changed(!awake)
+                    .suffix(super::common::toggle(c, awake, Msg::Awake))
+                    .build(),
+            )
+            .push(
+                Row::new(t, c.t(T::Banners))
+                    .subtitle(c.t(T::BannersHint))
+                    .suffix(widgets::disclosure(t, None))
+                    .on_press(Msg::Open(Panel::ScreenShare))
+                    .build(),
+            );
         let combo = keybinds::combo_for(&keybinds::current(config), "screen-mirroring");
         let shortcut = Row::new(t, c.t(T::Shortcut))
             .subtitle(c.t(T::ShortcutHint))
@@ -194,8 +244,9 @@ impl Pane for Page {
             })
             .on_press(Msg::Open(Panel::Shortcuts))
             .build();
-        let mut page = column![hero, error_banner(t, self.error.as_deref()), what.push(shortcut).build()]
-            .spacing(theme::SECTION_GAP);
+        let mut page =
+            column![hero, error_banner(t, self.error.as_deref()), what.build(), during.push(shortcut).build()]
+                .spacing(theme::SECTION_GAP);
         if let Some(ready) = self.readiness {
             let (encoder_ok, encoder_value, encoder_hint) = match ready.encoder {
                 Encoder::Hardware => (true, c.t(T::Hardware), T::QualityHint),

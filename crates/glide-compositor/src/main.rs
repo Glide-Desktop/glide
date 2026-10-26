@@ -403,7 +403,7 @@ fn init_keychain(event_loop: &mut EventLoop<'static, GlideState>, state: &mut Gl
 fn init_cast(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
     let (send, receiver) = sink::<cast::Event>("a screen mirroring event");
     if watch(event_loop, receiver, "the screen mirroring channel", GlideState::handle_cast) {
-        state.session.cast = cast::Cast::new(std::sync::Arc::new(send));
+        state.session.cast.attach(std::sync::Arc::new(send));
     }
 }
 

@@ -34,6 +34,7 @@ pub struct Config {
     pub workspaces: WorkspaceConfig,
     pub windows: WindowsConfig,
     pub launcher: LauncherConfig,
+    pub cast: CastConfig,
     pub keybinds: Vec<KeybindConfig>,
     pub decorations: DecorationTheme,
     pub overview: OverviewTheme,
@@ -987,6 +988,41 @@ impl Default for WindowsConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CastQuality {
+    #[default]
+    Best,
+    Smooth,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CastConfig {
+    pub quality: CastQuality,
+    pub audio: bool,
+    pub keep_screen_on: bool,
+}
+
+impl Default for CastConfig {
+    fn default() -> Self {
+        Self { quality: CastQuality::Best, audio: true, keep_screen_on: true }
+    }
+}
+
+impl CastConfig {
+    #[must_use]
+    pub const fn options(self) -> glide_cast::cast::Options {
+        glide_cast::cast::Options {
+            quality: match self.quality {
+                CastQuality::Best => glide_cast::cast::Quality::Best,
+                CastQuality::Smooth => glide_cast::cast::Quality::Smooth,
+            },
+            audio: self.audio,
+        }
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)] // Independent [launcher] switches mirrored from glide.toml
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
@@ -1320,6 +1356,7 @@ impl Config {
         state.edge_snapping = self.windows.edge_snapping;
         state.launcher_options = self.launcher.options();
         state.super_tap_enabled = self.launcher.super_tap;
+        state.session.cast.configure(self.cast.options(), self.cast.keep_screen_on);
         state.gestures.config = self.gestures;
     }
 
@@ -1585,6 +1622,19 @@ mod tests {
         let mirror: Config = toml::from_str("[displays]\narrangement = \"mirror\"\n").expect("config");
         assert_eq!(mirror.displays.arrangement, Arrangement::Mirror);
         assert!(toml::from_str::<Config>("[displays]\narrangement = \"clone\"\n").is_err());
+    }
+
+    #[test]
+    fn casting_aims_for_the_best_picture_with_sound_unless_told_otherwise() {
+        let defaults = Config::default().cast;
+        assert_eq!(defaults.options(), glide_cast::cast::Options::default());
+        assert!(defaults.keep_screen_on);
+        let config: Config =
+            toml::from_str("[cast]\nquality = \"smooth\"\naudio = false\nkeep-screen-on = false\n").expect("config");
+        let options = config.cast.options();
+        assert_eq!(options.quality, glide_cast::cast::Quality::Smooth);
+        assert!(!options.audio && !config.cast.keep_screen_on);
+        assert!(toml::from_str::<Config>("[cast]\nquality = \"4k\"\n").is_err());
     }
 
     #[test]

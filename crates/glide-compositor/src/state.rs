@@ -3504,7 +3504,7 @@ impl GlideState {
 
     pub fn tick_idle(&mut self) {
         use crate::{idle::Step, system_info::BatteryState};
-        let inhibited = self.is_idle_inhibited() || self.topbar.caffeinated();
+        let inhibited = self.is_idle_inhibited() || self.topbar.caffeinated() || self.session.cast.keeps_awake();
         let on_battery =
             self.topbar.system_status().battery.is_some_and(|battery| battery.state == BatteryState::Discharging);
         for step in self.idle.poll(std::time::Instant::now(), inhibited, on_battery).into_iter().flatten() {

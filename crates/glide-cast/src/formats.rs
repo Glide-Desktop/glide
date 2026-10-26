@@ -33,6 +33,8 @@ pub(crate) const CEA: [Mode; 17] = [
 
 pub(crate) const SOFTWARE_PREFERENCE: [u8; 6] = [7, 6, 5, 12, 10, 0];
 pub(crate) const HARDWARE_PREFERENCE: [u8; 7] = [8, 7, 6, 13, 12, 5, 0];
+pub(crate) const SOFTWARE_PREFERENCE_720: [u8; 4] = [6, 5, 10, 0];
+pub(crate) const HARDWARE_PREFERENCE_720: [u8; 4] = [6, 5, 10, 0];
 
 pub(crate) const PROFILE_CBP: u8 = 0x01;
 pub(crate) const PROFILE_CHP: u8 = 0x02;

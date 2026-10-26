@@ -86,13 +86,15 @@ pub struct Source {
     pub size: (u32, u32),
 }
 
-pub fn start(peer: Peer, source: Source, status: impl Fn(Status) + Send + 'static) -> std::io::Result<Handle> {
+pub fn start(
+    peer: Peer, source: Source, options: Options, status: impl Fn(Status) + Send + 'static,
+) -> std::io::Result<Handle> {
     let (stop, stopped) = mpsc::channel();
     let stream = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&stream);
     std::thread::Builder::new().name("glide-cast".into()).spawn(move || {
         status(Status::Connecting(peer.name.clone()));
-        let outcome = run(&peer, source, &stopped, &slot, &status);
+        let outcome = run(&peer, source, options, &stopped, &slot, &status);
         slot.lock().unwrap_or_else(PoisonError::into_inner).take();
         status(Status::Ended(outcome.err()));
     })?;
@@ -100,11 +102,11 @@ pub fn start(peer: Peer, source: Source, status: impl Fn(Status) + Send + 'stati
 }
 
 fn run(
-    peer: &Peer, source: Source, stopped: &mpsc::Receiver<()>, slot: &Arc<Mutex<Option<(Stream, Mode)>>>,
-    status: &impl Fn(Status),
+    peer: &Peer, source: Source, options: Options, stopped: &mpsc::Receiver<()>,
+    slot: &Arc<Mutex<Option<(Stream, Mode)>>>, status: &impl Fn(Status),
 ) -> Result<(), String> {
     gstreamer::init().map_err(|err| format!("GStreamer did not start: {err}"))?;
-    let preference = preference(crate::pipeline::hardware_encoder(crate::pipeline::element_exists));
+    let preference = preference(crate::pipeline::hardware_encoder(crate::pipeline::element_exists), options.quality);
     let p2p = P2p::open()?;
     let _ = p2p.stop_find();
     let active = p2p.connect(peer, CONNECT_TIMEOUT)?;
@@ -112,7 +114,7 @@ fn run(
         let local = wait_for(ADDRESS_WAIT, stopped, || p2p.local_address(&active))?
             .ok_or("the Wi-Fi Direct link got no address")?;
         let (tcp, display) = accept(local, stopped)?.ok_or("the display did not open its control connection")?;
-        let link = Link { tcp, display, local, source, preference };
+        let link = Link { tcp, display, local, source, preference, audio: options.audio };
         link.serve(stopped, slot, status)
     })();
     let _ = p2p.disconnect(&active);
@@ -150,6 +152,7 @@ struct Link {
     local: Ipv4Addr,
     source: Source,
     preference: &'static [u8],
+    audio: bool,
 }
 
 impl Link {
@@ -197,7 +200,7 @@ impl Link {
                             let choice = negotiated.clone().ok_or("PLAY came before negotiation")?;
                             let spec = Spec {
                                 video: choice.video,
-                                audio: choice.audio,
+                                audio: choice.audio.filter(|_| self.audio),
                                 host: display_host(self.display.ip()),
                                 port: choice.sink_rtp_port,
                                 frame_format: self.source.frame_format,
@@ -240,13 +243,49 @@ fn display_host(address: IpAddr) -> String {
 }
 
 #[must_use]
-pub(crate) const fn preference(hardware: bool) -> &'static [u8] {
-    if hardware { &formats::HARDWARE_PREFERENCE } else { &formats::SOFTWARE_PREFERENCE }
+pub(crate) const fn preference(hardware: bool, quality: Quality) -> &'static [u8] {
+    match (hardware, quality) {
+        (true, Quality::Best) => &formats::HARDWARE_PREFERENCE,
+        (false, Quality::Best) => &formats::SOFTWARE_PREFERENCE,
+        (true, Quality::Smooth) => &formats::HARDWARE_PREFERENCE_720,
+        (false, Quality::Smooth) => &formats::SOFTWARE_PREFERENCE_720,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quality {
+    #[default]
+    Best,
+    Smooth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    pub quality: Quality,
+    pub audio: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { quality: Quality::Best, audio: true }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_smooth_quality_never_offers_more_than_720p() {
+        for hardware in [false, true] {
+            let modes = preference(hardware, Quality::Smooth);
+            assert!(modes.iter().all(|bit| formats::CEA[usize::from(*bit)].height <= 720), "{modes:?}");
+            assert_eq!(modes.last(), Some(&0), "640×480 stays as the last resort");
+            assert!(
+                preference(hardware, Quality::Best).iter().any(|bit| formats::CEA[usize::from(*bit)].height == 1080)
+            );
+        }
+    }
 
     #[test]
     fn a_mapped_ipv6_peer_streams_to_its_ipv4_address() {
@@ -314,7 +353,7 @@ mod tests {
             let (tcp, display) = listener.accept().unwrap();
             let source = Source { frame_format: "BGRx", size: (800, 500) };
             let preference = &formats::SOFTWARE_PREFERENCE;
-            let link = Link { tcp, display, local: Ipv4Addr::LOCALHOST, source, preference };
+            let link = Link { tcp, display, local: Ipv4Addr::LOCALHOST, source, preference, audio: true };
             let statuses = Mutex::new(Vec::new());
             let outcome = link.serve(&stopped, &source_slot, &|status| statuses.lock().unwrap().push(status));
             (outcome, statuses.into_inner().unwrap())

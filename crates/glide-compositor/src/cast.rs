@@ -38,12 +38,23 @@ pub struct Cast {
     searching: bool,
     displays: Vec<Peer>,
     active: Option<Active>,
+    options: glide_cast::cast::Options,
+    keep_awake: bool,
 }
 
 impl Cast {
+    pub fn attach(&mut self, send: Send) {
+        self.send = Some(send);
+    }
+
+    pub const fn configure(&mut self, options: glide_cast::cast::Options, keep_awake: bool) {
+        self.options = options;
+        self.keep_awake = keep_awake;
+    }
+
     #[must_use]
-    pub fn new(send: Send) -> Self {
-        Self { send: Some(send), ..Self::default() }
+    pub fn keeps_awake(&self) -> bool {
+        self.keep_awake && self.active.is_some()
     }
 
     #[must_use]
@@ -201,7 +212,8 @@ impl GlideState {
         let size = (u32::try_from(mode.size.w).unwrap_or(0), u32::try_from(mode.size.h).unwrap_or(0));
         let source = Source { frame_format: FRAME_FORMAT, size };
         let name = peer.name.clone();
-        match glide_cast::cast::start(peer, source, move |status| send(Event::Status(status))) {
+        let options = self.session.cast.options;
+        match glide_cast::cast::start(peer, source, options, move |status| send(Event::Status(status))) {
             Ok(handle) => {
                 tracing::info!(display = name, output = output.name(), "mirroring started");
                 self.session.cast.active = Some(Active { handle, output, name, interval: None, last_frame: None });
