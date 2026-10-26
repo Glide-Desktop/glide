@@ -35,6 +35,7 @@ struct Login {
     user: String,
     uid: u32,
     runtime: Option<PathBuf>,
+    handed_off: bool,
 }
 
 fn take_file(path: &std::path::Path) -> Option<zeroize::Zeroizing<Vec<u8>>> {
@@ -131,6 +132,7 @@ impl Daemon {
             user,
             uid,
             runtime: None,
+            handed_off: false,
         });
         let mut providers: Vec<Box<dyn Provider>> = vec![Box::new(Local::new(path, params, name))];
         for account in Bitwarden::load_all(&accounts) {
@@ -274,6 +276,9 @@ impl Daemon {
         let Some(login) = self.login.as_mut() else {
             return Response::Unsupported;
         };
+        if verified && !login.handed_off && login.keyring.guard() != crate::login::Guard::Login {
+            return Response::Done;
+        }
         let Some(wrapping) = glide_login_key::wrapping_key(password.expose().as_bytes(), &login.user, login.uid) else {
             return Response::Error { message: "the login password could not be stretched".into() };
         };
@@ -296,11 +301,16 @@ impl Daemon {
         let Some(runtime) = login.runtime.clone() else {
             return;
         };
-        if let Some(bytes) = take_file(&runtime.join(glide_login_key::KEY_FILE))
+        if !login.handed_off
+            && let Ok(bytes) = std::fs::read(runtime.join(glide_login_key::KEY_FILE)).map(zeroize::Zeroizing::new)
             && let Some(wrapping) = glide_login_key::key_from(&bytes)
-            && let Err(fault) = login.keyring.offer(&wrapping, true)
         {
-            eprintln!("glide-keychain: the login password from this session did not open the login keyring ({fault})");
+            login.handed_off = true;
+            if let Err(fault) = login.keyring.offer(&wrapping, true) {
+                eprintln!(
+                    "glide-keychain: the login password from this session did not open the login keyring ({fault})"
+                );
+            }
         }
         if let Some(bytes) = take_file(&runtime.join(glide_login_key::REKEY_FILE))
             && let Some((old, new)) = glide_login_key::rekey_from(&bytes)
@@ -881,6 +891,21 @@ mod tests {
     }
 
     #[test]
+    fn without_the_login_module_the_lock_screen_never_turns_the_key_file_into_a_password_prompt() {
+        let path = temp("no-module");
+        let mut daemon = Daemon::new(path.clone(), FAST);
+        daemon
+            .edit_app_secrets(&mut |items, next| {
+                *next += 1;
+                items.push(crate::vault::Item { id: *next, ..crate::vault::Item::new("", "Chrome Safe Storage", 1) });
+            })
+            .unwrap();
+        assert_eq!(daemon.handle(Request::LoginPassword { password: hidden("login") }), Response::Done);
+        assert!(Daemon::new(path.clone(), FAST).app_secrets_unlocked(), "the next login opens it without a word");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn the_key_left_by_the_login_opens_the_app_keys_and_a_password_change_follows() {
         let path = temp("handoff");
         let runtime = path.with_file_name("runtime");
@@ -901,12 +926,13 @@ mod tests {
         std::fs::write(runtime.join(glide_login_key::KEY_FILE), key("first").as_ref()).unwrap();
         let mut daemon = Daemon::new(path.clone(), FAST);
         daemon.watch_login_handoff(runtime.clone());
-        assert!(!runtime.join(glide_login_key::KEY_FILE).exists(), "the key is taken off the runtime folder");
         store(&mut daemon);
+        let mut restarted = Daemon::new(path.clone(), FAST);
+        assert!(!restarted.app_secrets_unlocked(), "the keyring was wrapped by the login password");
+        restarted.watch_login_handoff(runtime.clone());
+        assert!(restarted.app_secrets_unlocked(), "a daemon restarted in the same session still finds the key");
 
         let mut next_login = Daemon::new(path.clone(), FAST);
-        assert!(!next_login.app_secrets_unlocked(), "the keyring was wrapped by the login password");
-        std::fs::write(runtime.join(glide_login_key::KEY_FILE), key("first").as_ref()).unwrap();
         next_login.watch_login_handoff(runtime.clone());
         assert_eq!(next_login.app_secrets().unwrap().len(), 1);
 

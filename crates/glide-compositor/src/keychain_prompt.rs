@@ -318,6 +318,7 @@ mod tests {
             wrong: false,
             unlocked: vec!["local".into()],
             requester: None,
+            login: false,
         }
     }
 

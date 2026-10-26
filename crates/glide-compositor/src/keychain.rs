@@ -34,6 +34,7 @@ pub struct Chain {
     pub wrong: bool,
     pub unlocked: Vec<String>,
     pub requester: Option<String>,
+    pub login: bool,
 }
 
 impl Chain {
@@ -62,6 +63,12 @@ fn login_vault() -> Vault {
         unlocked: false,
         sync: SyncState::Local,
         count: 0,
+    }
+}
+
+fn join_login(chain: &mut Chain) {
+    if chain.login && !chain.vaults.is_empty() && !chain.vaults.iter().any(|vault| vault.id == LOGIN) {
+        chain.vaults.push(login_vault());
     }
 }
 
@@ -228,7 +235,12 @@ impl GlideState {
         &mut self, vault: Option<String>, requester: Option<String>, then: impl FnOnce(&mut Self) + 'static,
     ) {
         self.session.keychain.after_unlock.push(Box::new(then));
-        if self.session.keychain.unlocking.is_some() {
+        if let Some(chain) = self.session.keychain.unlocking.as_mut() {
+            if vault.as_deref() == Some(LOGIN) {
+                chain.login = true;
+                join_login(chain);
+                self.queue_redraw();
+            }
             return;
         }
         self.session.keychain.unlocking = Some(Chain::default());
@@ -243,7 +255,11 @@ impl GlideState {
                 state.finish_keychain_unlock(false);
                 return;
             };
-            let vaults = locked_chain(list, vault.as_deref());
+            let login = state.session.keychain.unlocking.as_ref().is_some_and(|chain| chain.login);
+            let mut vaults = locked_chain(list, vault.as_deref());
+            if vaults.is_empty() && login {
+                vaults.push(login_vault());
+            }
             if vaults.is_empty() {
                 tracing::info!(
                     vault = vault.as_deref().unwrap_or("-"),
@@ -252,7 +268,9 @@ impl GlideState {
                 state.finish_keychain_unlock(true);
                 return;
             }
-            state.session.keychain.unlocking = Some(Chain { vaults, requester, ..Chain::default() });
+            let mut chain = Chain { vaults, requester, login, ..Chain::default() };
+            join_login(&mut chain);
+            state.session.keychain.unlocking = Some(chain);
             state.ask_keychain_password();
         });
     }
@@ -344,6 +362,18 @@ impl GlideState {
 mod tests {
     use super::*;
     use glide_ipc::keychain::{SyncState, VaultKind};
+
+    #[test]
+    fn a_program_asking_during_another_unlock_joins_that_chain_once() {
+        let mut chain = Chain { vaults: vec![vault("bw-1", true, false)], login: true, ..Chain::default() };
+        join_login(&mut chain);
+        join_login(&mut chain);
+        let ids: Vec<&str> = chain.vaults.iter().map(|vault| vault.id.as_str()).collect();
+        assert_eq!(ids, ["bw-1", LOGIN]);
+        let mut waiting = Chain { login: true, ..Chain::default() };
+        join_login(&mut waiting);
+        assert!(waiting.vaults.is_empty(), "a chain still waiting for its vault list takes the app keys on arrival");
+    }
 
     fn vault(id: &str, exists: bool, unlocked: bool) -> Vault {
         Vault {

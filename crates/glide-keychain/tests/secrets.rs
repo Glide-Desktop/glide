@@ -140,7 +140,14 @@ fn a_keyring_wrapped_by_the_login_password_waits_for_it_and_a_closed_island_answ
         return;
     };
     let path = temp("wrapped");
-    let service = Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {}));
+    let runtime = path.with_file_name("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let (user, uid) = glide_keychain::login::current_user().unwrap();
+    let key = glide_login_key::wrapping_key(b"login-pw", &user, uid).unwrap();
+    std::fs::write(runtime.join(glide_login_key::KEY_FILE), key.as_ref()).unwrap();
+    let mut daemon = Daemon::new(path.clone(), FAST);
+    daemon.watch_login_handoff(runtime);
+    let service = Service::start(daemon, Arc::new(|_| {}));
     let _first_server = serve(&first, &service, &path, Arc::new(|_| {}));
     let client = connect(&first);
     let root = proxy(&client, ROOT, SERVICE);
