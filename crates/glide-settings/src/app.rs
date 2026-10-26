@@ -7,8 +7,8 @@ use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::panels::{
     Category, Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop,
-    displays, gestures, keyboard, mouse, multitasking, netbird, network, night_light, notifications, power, printers,
-    privacy, region, shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
+    displays, gestures, home, keyboard, mouse, multitasking, netbird, network, night_light, notifications, power,
+    printers, privacy, region, shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;
@@ -153,7 +153,7 @@ impl App {
             theme,
             lang: config.language(),
             config,
-            active_panel: Panel::Appearance,
+            active_panel: Panel::Home,
             search_query: String::new(),
             online: false,
             notice: None,
@@ -357,7 +357,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::PanelSelected(panel) => self.select(panel),
+            Message::PanelSelected(panel) | Message::Home(home::Msg::Open(panel)) => self.select(panel),
             Message::CategorySelected(category) => {
                 let panel =
                     if self.search_query.trim().is_empty() { category.first() } else { self.search_target(category) };
@@ -460,7 +460,7 @@ impl App {
             t,
             category.icon(),
             category.color(),
-            Some(c.t(category.group().title)),
+            Some(c.t(category.group().title.unwrap_or(K::Settings))),
             category.label(self.lang),
             Some(category.description(self.lang)),
             None,

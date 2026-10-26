@@ -8,6 +8,7 @@ pub mod date_time;
 pub mod desktop;
 pub mod displays;
 pub mod gestures;
+pub mod home;
 pub mod keyboard;
 pub mod mouse;
 pub mod multitasking;
@@ -93,6 +94,7 @@ pub trait Pane: Default {
 macro_rules! with_panels {
     ($callback:ident) => {
         $callback! {
+            Home => home,
             Network => network,
             Bluetooth => bluetooth,
             Vpn => vpn,
@@ -199,6 +201,7 @@ macro_rules! panel_meta {
 }
 
 panel_meta! {
+    Home: PanelHome, AboutHome, "home", Home, Graphite 2;
     Network: PanelNetwork, AboutNetwork, "network", Wifi, Azurit 3;
     Bluetooth: PanelBluetooth, AboutBluetooth, "bluetooth", Bluetooth, Azurit 4;
     Vpn: PanelVpn, AboutVpn, "vpn", Shield, Azurit 5;
@@ -232,6 +235,7 @@ panel_meta! {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Category {
+    Home,
     Network,
     Bluetooth,
     Vpn,
@@ -257,12 +261,13 @@ pub enum Category {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Group {
-    pub title: Key,
+    pub title: Option<Key>,
     pub categories: &'static [Category],
 }
 
 impl Category {
     pub const ALL: &'static [Self] = &[
+        Self::Home,
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -287,19 +292,24 @@ impl Category {
     ];
 
     pub const GROUPS: &'static [Group] = &[
-        Group { title: Key::GroupConnections, categories: &[Self::Network, Self::Bluetooth, Self::Vpn] },
-        Group { title: Key::GroupAlerts, categories: &[Self::Notifications, Self::Sound] },
-        Group { title: Key::GroupPersonalisation, categories: &[Self::Appearance, Self::Desktop] },
-        Group { title: Key::GroupHardware, categories: &[Self::Displays, Self::Power, Self::Printers] },
-        Group { title: Key::GroupInput, categories: &[Self::Keyboard, Self::Mouse] },
-        Group { title: Key::GroupApps, categories: &[Self::Apps, Self::Startup] },
-        Group { title: Key::GroupPeople, categories: &[Self::Privacy, Self::Accessibility, Self::Users] },
-        Group { title: Key::GroupSystem, categories: &[Self::DateTime, Self::Region, Self::Storage, Self::About] },
+        Group { title: None, categories: &[Self::Home] },
+        Group { title: Some(Key::GroupConnections), categories: &[Self::Network, Self::Bluetooth, Self::Vpn] },
+        Group { title: Some(Key::GroupAlerts), categories: &[Self::Notifications, Self::Sound] },
+        Group { title: Some(Key::GroupPersonalisation), categories: &[Self::Appearance, Self::Desktop] },
+        Group { title: Some(Key::GroupHardware), categories: &[Self::Displays, Self::Power, Self::Printers] },
+        Group { title: Some(Key::GroupInput), categories: &[Self::Keyboard, Self::Mouse] },
+        Group { title: Some(Key::GroupApps), categories: &[Self::Apps, Self::Startup] },
+        Group { title: Some(Key::GroupPeople), categories: &[Self::Privacy, Self::Accessibility, Self::Users] },
+        Group {
+            title: Some(Key::GroupSystem),
+            categories: &[Self::DateTime, Self::Region, Self::Storage, Self::About],
+        },
     ];
 
     #[must_use]
     pub const fn panels(self) -> &'static [Panel] {
         match self {
+            Self::Home => &[Panel::Home],
             Self::Network => &[Panel::Network],
             Self::Bluetooth => &[Panel::Bluetooth],
             Self::Vpn => &[Panel::Vpn, Panel::Netbird],

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4};
+use glide_iced::style::{self, R2, R3, SP1, SP2, SP3};
 use glide_iced::widgets;
 use glide_theme::TextStyle;
 use glide_theme::elevation::Level;
@@ -398,7 +398,7 @@ pub fn choice_tiles<'a, M: Clone + 'a, T: Copy + PartialEq + 'a>(
 
 #[must_use]
 pub fn section_heading<'a, M: 'a>(paint: &Paint, title: impl Into<Cow<'a, str>>) -> Element<'a, M> {
-    container(text(title, TextStyle::HEAD).color(paint.fg_1())).padding(Padding::ZERO.left(SP1).top(SP4)).into()
+    container(text(title, TextStyle::HEAD).color(paint.fg_1())).padding(Padding::ZERO.left(SP1)).into()
 }
 
 #[cfg(test)]

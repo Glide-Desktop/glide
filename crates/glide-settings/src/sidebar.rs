@@ -130,7 +130,10 @@ pub fn view<'a>(app: &'a App, c: Ctx, user: &'a str, login: &'a str) -> Element<
         if hits.is_empty() {
             continue;
         }
-        let mut items = Column::new().spacing(ITEM_GAP).push(group_heading(&c, group.title));
+        let mut items = Column::new().spacing(ITEM_GAP);
+        if let Some(title) = group.title {
+            items = items.push(group_heading(&c, title));
+        }
         for category in hits {
             items = items.push(item(app, &c, category, searching && visible[0] == category));
         }

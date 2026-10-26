@@ -229,7 +229,7 @@ impl Default for ThemeState {
 pub const CONTROL_HEIGHT: f32 = glide_sdk::theme::component::CONTROL;
 pub const SMALL_CONTROL_HEIGHT: f32 = glide_sdk::theme::component::SMALL_CONTROL;
 pub const SIDEBAR_WIDTH: f32 = 256.0;
-pub(crate) const CONTENT_MAX_WIDTH: f32 = 680.0;
+pub(crate) const CONTENT_MAX_WIDTH: f32 = 860.0;
 pub(crate) const ROW_PADDING_Y: f32 = 5.0;
 pub const ROW_PADDING_X: f32 = 12.0;
 pub const SECTION_GAP: f32 = 24.0;

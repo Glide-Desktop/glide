@@ -13,6 +13,8 @@ catalogue! {
     ConfigRejected => "Glide rejected glide.toml:", "Glide відхилив glide.toml:";
     ConfigUnreadable => "glide.toml could not be read, so settings are read-only until it is accessible:", "Не вдалося прочитати glide.toml, тому налаштування доступні лише для читання, доки файл недоступний:";
 
+    PanelHome => "Overview", "Огляд";
+    AboutHome => "This computer at a glance, and what needs attention", "Стан комп’ютера одним поглядом і те, що потребує уваги";
     PanelNetwork => "Network", "Мережа";
     PanelBluetooth => "Bluetooth", "Bluetooth";
     PanelAppearance => "Appearance", "Вигляд";

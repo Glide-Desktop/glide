@@ -129,6 +129,18 @@ fn search_with_no_hits_leaves_the_active_panel_alone() {
 }
 
 #[test]
+fn the_overview_opens_first_and_flags_a_settings_file_it_cannot_save() {
+    let mut app = app("");
+    assert_eq!(app.active_panel(), Panel::Home);
+    let page = glide_settings::panels::home::Page::default();
+    assert!(page.problems(&ConfigStore::parse("")).is_empty(), "nothing to report before anything was read");
+    let broken = ConfigStore::parse("[topbar\n");
+    assert_eq!(page.problems(&broken), vec![glide_settings::panels::home::Problem::ReadOnly]);
+    let _ = app.update(Message::Home(glide_settings::panels::home::Msg::Open(Panel::Storage)));
+    assert_eq!(app.active_panel(), Panel::Storage, "a tile opens its page");
+}
+
+#[test]
 fn a_second_launch_opens_the_panel_it_names() {
     let mut app = app("");
     let _ = app.open_args(&[String::from("power")]);
