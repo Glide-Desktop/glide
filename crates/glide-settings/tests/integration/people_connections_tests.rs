@@ -430,6 +430,16 @@ fn vpn_details_read_the_gateway_from_plugin_data() {
     assert_eq!(details.user, "artem");
     assert_eq!(details.addresses, vec!["10.8.0.2/24"]);
     assert_eq!(details.dns, vec!["10.8.0.1"]);
+    assert!(!details.only_own_network);
+    assert!(details.search.is_empty());
+}
+
+#[test]
+fn vpn_details_read_split_tunnelling_and_search_domains() {
+    let details = vpn::parse_details("ipv4.never-default:yes\nipv4.dns-search:office.lan,corp.example\n");
+    assert!(details.only_own_network);
+    assert_eq!(details.search, vec!["office.lan", "corp.example"]);
+    assert!(!vpn::parse_details("ipv4.never-default:no\nipv4.dns-search:\n").only_own_network);
 }
 
 #[test]

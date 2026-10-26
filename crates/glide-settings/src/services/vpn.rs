@@ -174,6 +174,9 @@ pub struct VpnDetails {
     pub dns: Vec<String>,
     pub listen_port: String,
     pub banner: String,
+    pub only_own_network: bool,
+    pub search: Vec<String>,
+    pub transfer: Option<(u64, u64)>,
 }
 
 #[must_use]
@@ -217,6 +220,10 @@ pub fn parse_details(text: &str) -> VpnDetails {
                 details.addresses.push(value.to_string());
             }
             "IP4.DNS" | "IP6.DNS" if !value.is_empty() => details.dns.push(value.to_string()),
+            "ipv4.never-default" => details.only_own_network = value == "yes",
+            "ipv4.dns-search" => {
+                details.search.extend(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string));
+            }
             _ => {}
         }
     }
@@ -294,13 +301,13 @@ pub fn read() -> VpnState {
 }
 
 #[must_use]
-pub(crate) fn read_details(uuid: &str) -> VpnDetails {
-    run::output(
+pub(crate) fn read_details(uuid: &str, device: &str) -> VpnDetails {
+    let mut details = run::output(
         "nmcli",
         &[
             "-t",
             "-f",
-            "vpn.data,vpn.user-name,wireguard.listen-port,VPN.GATEWAY,VPN.BANNER,IP4.ADDRESS,IP4.DNS,IP6.ADDRESS,IP6.DNS",
+            "vpn.data,vpn.user-name,wireguard.listen-port,ipv4.never-default,ipv4.dns-search,VPN.GATEWAY,VPN.BANNER,IP4.ADDRESS,IP4.DNS,IP6.ADDRESS,IP6.DNS",
             "connection",
             "show",
             "uuid",
@@ -308,7 +315,27 @@ pub(crate) fn read_details(uuid: &str) -> VpnDetails {
         ],
     )
     .map(|text| parse_details(&text))
-    .unwrap_or_default()
+    .unwrap_or_default();
+    details.transfer = transfer(device);
+    details
+}
+
+fn transfer(device: &str) -> Option<(u64, u64)> {
+    if device.is_empty() || device.contains('/') || device.starts_with('.') {
+        return None;
+    }
+    let read = |name: &str| -> Option<u64> {
+        std::fs::read_to_string(format!("/sys/class/net/{device}/statistics/{name}")).ok()?.trim().parse().ok()
+    };
+    Some((read("rx_bytes")?, read("tx_bytes")?))
+}
+
+pub fn set_only_own_network(uuid: &str, only: bool) -> Result<String, String> {
+    let value = if only { "yes" } else { "no" };
+    run::status(
+        "nmcli",
+        &["connection", "modify", "uuid", uuid, "ipv4.never-default", value, "ipv6.never-default", value],
+    )
 }
 
 const CONNECT_WAIT: &str = "40";

@@ -8,10 +8,11 @@ use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::config::ConfigStore;
 use crate::services::run::{Generation, Jobs, blocking};
+use crate::services::system::format_bytes;
 use crate::services::vpn::{self, Candidate, Secret, Vpn, VpnDetails, VpnState};
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
-use crate::widgets::{actions, form_row, lines, note, sheet};
+use crate::widgets::{actions, form_row, note, sheet};
 
 mod tr {
     crate::i18n::catalogue! {
@@ -58,7 +59,15 @@ mod tr {
         OtpHint => "Leave empty if not required", "Залиште порожнім, якщо не потрібен";
         ConnectButton => "Connect", "Під'єднати";
         External => "Managed elsewhere", "Керується ззовні";
-        ExternalHint => "Another program, such as NetBird, set this tunnel up, so it can only be changed there", "Цей тунель налаштувала інша програма, наприклад NetBird, тож змінити його можна лише там";
+        SearchDomains => "Search domains", "Пошукові домени";
+        Transferred => "Transferred", "Передано";
+        Routing => "What goes through the VPN", "Що пускати через VPN";
+        AllTraffic => "All traffic", "Увесь трафік";
+        OwnNetwork => "Only its network", "Лише його мережу";
+        AllTrafficHint => "Everything you open on the internet goes through the tunnel", "Усе, що ви відкриваєте в інтернеті, іде через тунель";
+        OwnNetworkHint => "The internet goes directly; only the VPN's own addresses use the tunnel", "Інтернет іде напряму, через тунель — лише адреси самої мережі VPN";
+        NextConnect => "after reconnecting", "після перепід'єднання";
+        ExternalHint =>"Another program, such as NetBird, set this tunnel up, so it can only be changed there", "Цей тунель налаштувала інша програма, наприклад NetBird, тож змінити його можна лише там";
     }
 }
 
@@ -72,6 +81,7 @@ pub enum Msg {
     Connect(String),
     Disconnect(String),
     Autoconnect(String, bool),
+    OnlyOwnNetwork(String, bool),
     NameInput(String),
     Rename(String),
     AskDelete(String),
@@ -164,7 +174,8 @@ impl Page {
             return Task::none();
         };
         let key = uuid.clone();
-        Task::perform(blocking(move || vpn::read_details(&uuid)), move |details| {
+        let device = self.state.find(&uuid).filter(|vpn| vpn.active).map(|vpn| vpn.device.clone()).unwrap_or_default();
+        Task::perform(blocking(move || vpn::read_details(&uuid, &device)), move |details| {
             Msg::DetailsLoaded(key, details.unwrap_or_default())
         })
     }
@@ -300,6 +311,12 @@ impl Page {
                     vpn.autoconnect = on;
                 }
                 return self.run(None, move || vpn::set_autoconnect(&uuid, on));
+            }
+            Msg::OnlyOwnNetwork(uuid, only) => {
+                if let Some(details) = self.details.as_mut() {
+                    details.only_own_network = only;
+                }
+                return self.run(None, move || vpn::set_only_own_network(&uuid, only));
             }
             Msg::NameInput(name) => self.name = name,
             Msg::Rename(uuid) => {
@@ -489,14 +506,43 @@ impl Page {
             if !details.listen_port.is_empty() {
                 info.push((c.t(T::ListenPort).to_string(), details.listen_port.clone()));
             }
+            if !details.search.is_empty() {
+                info.push((c.t(T::SearchDomains).to_string(), details.search.join(", ")));
+            }
+            if let Some((received, sent)) = details.transfer {
+                info.push((
+                    c.t(T::Transferred).to_string(),
+                    format!("↓ {} · ↑ {}", format_bytes(received, c.lang), format_bytes(sent, c.lang)),
+                ));
+            }
         }
         if vpn.active && !vpn.device.is_empty() {
             info.push((c.t(T::Interface).to_string(), vpn.device.clone()));
         }
-        let mut rows: Vec<Element<'a, Msg>> = vec![lines(t, info)];
+        let per_line = if t.compact { 1 } else { 2 };
+        let mut rows: Vec<Element<'a, Msg>> = vec![glide_sdk::widget::fact_grid(&widgets::paint(&t), info, per_line)];
         if vpn.external {
             rows.push(note(t, Icon::Info, c.t(T::ExternalHint)));
             return sheet(t, rows);
+        }
+        if let Some(details) = &self.details {
+            let uuid = vpn.uuid.clone();
+            let choices = vec![(false, c.t(T::AllTraffic).to_string()), (true, c.t(T::OwnNetwork).to_string())];
+            let paint = widgets::paint(&t);
+            let mut control = row![].spacing(8).align_y(Alignment::Center);
+            if vpn.active {
+                control = control.push(glide_sdk::widget::applies_chip(&paint, c.t(T::NextConnect), false));
+            }
+            let control = control.push(widgets::segmented(t, choices, details.only_own_network, move |only| {
+                Msg::OnlyOwnNetwork(uuid.clone(), only)
+            }));
+            rows.push(
+                Row::new(t, c.t(T::Routing))
+                    .subtitle(c.t(if details.only_own_network { T::OwnNetworkHint } else { T::AllTrafficHint }))
+                    .suffix(control)
+                    .stacked(t.compact)
+                    .build(),
+            );
         }
         let valid = !self.name.trim().is_empty() && self.name.trim() != vpn.name;
         let rename = valid.then(|| Msg::Rename(vpn.uuid.clone()));
