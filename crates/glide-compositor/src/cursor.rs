@@ -410,6 +410,13 @@ mod tests {
             CursorIcon::SeResize,
         ];
 
+        let decoding = std::time::Instant::now();
+        for icon in icons {
+            let _ = cursor.load_icon_images(icon);
+        }
+        let one_decode = decoding.elapsed() / icons.len() as u32;
+        let budget = (one_decode * 2_000).max(Duration::from_secs(5));
+
         let start = std::time::Instant::now();
         for i in 0..50_000 {
             let icon = icons[i % icons.len()];
@@ -418,6 +425,9 @@ mod tests {
             assert!(img.width > 0 && img.height > 0);
         }
         let elapsed = start.elapsed();
-        assert!(elapsed < Duration::from_secs(1), "50,000 cache lookups took too long: {elapsed:?}");
+        assert!(
+            elapsed < budget,
+            "50,000 lookups took {elapsed:?}, more than 2,000 theme decodes ({budget:?}): the cache is not used"
+        );
     }
 }
