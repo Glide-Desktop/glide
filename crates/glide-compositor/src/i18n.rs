@@ -173,6 +173,7 @@ glide_app::catalogue! {
     SettingsLockScreen => "Lock Screen", "Екран блокування";
     SettingsScreenShare => "Screen Sharing", "Трансляція екрана";
     SettingsMiracast => "Wireless Display", "Бездротовий дисплей";
+    SettingsPasswords => "Passwords & Autofill", "Паролі й автозаповнення";
     SettingsVpn => "VPN connections", "З\u{2019}єднання VPN";
     SettingsNotifications => "Notifications", "Сповіщення";
     SettingsWallpaper => "Wallpaper", "Шпалери";

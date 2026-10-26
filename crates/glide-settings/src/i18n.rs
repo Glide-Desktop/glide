@@ -21,6 +21,8 @@ catalogue! {
     AboutScreenShare => "Who can see your screen, and how apps ask for it", "Хто бачить ваш екран і як програми про це просять";
     PanelMiracast => "Wireless Display", "Бездротовий дисплей";
     AboutMiracast => "Mirror the screen to a TV or projector with Miracast", "Дублювання екрана на телевізор чи проєктор через Miracast";
+    PanelPasswords => "Passwords & Autofill", "Паролі й автозаповнення";
+    AboutPasswords => "Offering saved passwords, the clipboard and locking the vaults", "Пропозиції паролів, буфер обміну й блокування сховищ";
     PanelNetwork => "Network", "Мережа";
     PanelBluetooth => "Bluetooth", "Bluetooth";
     PanelAppearance => "Appearance", "Вигляд";

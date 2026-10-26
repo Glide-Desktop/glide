@@ -18,6 +18,7 @@ pub mod netbird;
 pub mod network;
 pub mod night_light;
 pub mod notifications;
+pub mod passwords;
 pub mod power;
 pub mod printers;
 pub mod privacy;
@@ -122,6 +123,7 @@ macro_rules! with_panels {
             Accessibility => accessibility,
             LockScreen => lock_screen,
             Privacy => privacy,
+            Passwords => passwords,
             Users => users,
             DateTime => date_time,
             Region => region,
@@ -232,6 +234,7 @@ panel_meta! {
     Accessibility: PanelAccessibility, AboutAccessibility, "accessibility", Accessibility, Malachite 2;
     LockScreen: PanelLockScreen, AboutLockScreen, "lock-screen", Lock, Cinnabar 2;
     Privacy: PanelPrivacy, AboutPrivacy, "privacy", Hand, Amethyst 2;
+    Passwords: PanelPasswords, AboutPasswords, "passwords", Key, Amber 4;
     Users: PanelUsers, AboutUsers, "users", Users, Terracotta 4;
     DateTime: PanelDateTime, AboutDateTime, "datetime", Clock, Cinnabar 5;
     Region: PanelRegion, AboutRegion, "region", Globe, Conifer 4;
@@ -263,6 +266,7 @@ pub enum Category {
     Startup,
     LockScreen,
     Privacy,
+    Passwords,
     Accessibility,
     Users,
     DateTime,
@@ -298,6 +302,7 @@ impl Category {
         Self::Startup,
         Self::LockScreen,
         Self::Privacy,
+        Self::Passwords,
         Self::Accessibility,
         Self::Users,
         Self::DateTime,
@@ -319,7 +324,7 @@ impl Category {
         Group { title: Some(Key::GroupApps), categories: &[Self::Apps, Self::Startup] },
         Group {
             title: Some(Key::GroupPeople),
-            categories: &[Self::LockScreen, Self::Privacy, Self::Accessibility, Self::Users],
+            categories: &[Self::LockScreen, Self::Privacy, Self::Passwords, Self::Accessibility, Self::Users],
         },
         Group {
             title: Some(Key::GroupSystem),
@@ -349,6 +354,7 @@ impl Category {
             Self::Apps => &[Panel::Apps],
             Self::Startup => &[Panel::Startup],
             Self::Privacy => &[Panel::Privacy],
+            Self::Passwords => &[Panel::Passwords],
             Self::Accessibility => &[Panel::Accessibility],
             Self::Users => &[Panel::Users],
             Self::DateTime => &[Panel::DateTime],

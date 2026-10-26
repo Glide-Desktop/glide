@@ -299,7 +299,11 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
         }
         RowGlyph::Command(SystemCommand::Lock)
         | RowGlyph::Settings(
-            SettingsPanel::Vpn | SettingsPanel::Netbird | SettingsPanel::Privacy | SettingsPanel::LockScreen,
+            SettingsPanel::Vpn
+            | SettingsPanel::Netbird
+            | SettingsPanel::Privacy
+            | SettingsPanel::LockScreen
+            | SettingsPanel::Passwords,
         ) => p::draw_lock_glyph_over,
         RowGlyph::Command(SystemCommand::Restart | SystemCommand::ShutDown)
         | RowGlyph::Settings(SettingsPanel::Power) => p::draw_power_glyph_over,

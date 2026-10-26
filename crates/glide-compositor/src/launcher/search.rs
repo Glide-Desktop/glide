@@ -210,6 +210,7 @@ pub enum SettingsPanel {
     Accessibility,
     LockScreen,
     Privacy,
+    Passwords,
     Users,
     DateTime,
     Region,
@@ -225,7 +226,7 @@ fn netbird_installed() -> bool {
 }
 
 impl SettingsPanel {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -251,6 +252,7 @@ impl SettingsPanel {
         Self::Accessibility,
         Self::LockScreen,
         Self::Privacy,
+        Self::Passwords,
         Self::Users,
         Self::DateTime,
         Self::Region,
@@ -288,6 +290,7 @@ impl SettingsPanel {
             Self::Accessibility => "accessibility",
             Self::LockScreen => "lock-screen",
             Self::Privacy => "privacy",
+            Self::Passwords => "passwords",
             Self::Users => "users",
             Self::DateTime => "datetime",
             Self::Region => "region",
@@ -326,6 +329,7 @@ impl SettingsPanel {
             Self::Accessibility => Key::SettingsAccessibility,
             Self::LockScreen => Key::SettingsLockScreen,
             Self::Privacy => Key::SettingsPrivacy,
+            Self::Passwords => Key::SettingsPasswords,
             Self::Users => Key::SettingsUsers,
             Self::DateTime => Key::SettingsDateTime,
             Self::Region => Key::SettingsRegion,
@@ -389,6 +393,7 @@ impl SettingsPanel {
                 &["lock screen", "screen lock", "lock", "blank", "idle", "екран блокування", "блокування", "замок"]
             }
             Self::Privacy => &["privacy", "security", "camera", "clipboard", "конфіденційність", "безпека"],
+            Self::Passwords => &["passwords", "autofill", "keychain", "паролі", "автозаповнення"],
             Self::Users => &["users", "account", "avatar", "користувачі", "обліковий запис"],
             Self::DateTime => &["date", "time", "time zone", "clock", "дата", "час", "часовий пояс"],
             Self::Region => &["region", "language", "locale", "formats", "регіон", "мова", "формати"],
@@ -905,6 +910,7 @@ mod tests {
                 "accessibility",
                 "lock-screen",
                 "privacy",
+                "passwords",
                 "users",
                 "datetime",
                 "region",
