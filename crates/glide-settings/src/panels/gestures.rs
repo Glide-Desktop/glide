@@ -108,8 +108,6 @@ const TABLE: &str = "gestures";
 pub(crate) const SENSITIVITY: RangeInclusive<f64> = 0.5..=2.0;
 pub const PAD_WIDTH: f32 = 360.0;
 pub(crate) const PAD_HEIGHT: f32 = 188.0;
-const DOT: f32 = 18.0;
-const DOT_GAP: f32 = 8.0;
 const DEAD_ZONE: f64 = 12.0;
 const TRAVEL: f64 = 0.3;
 
@@ -672,40 +670,23 @@ fn goals<'a>(c: &Ctx, done: &[Goal]) -> Element<'a, Msg> {
     container(column![header, pills.wrap()].spacing(8)).padding([10.0, theme::ROW_PADDING_X]).width(Fill).into()
 }
 
-fn fingers_layers<'a>(t: &ThemeState, sample: &GestureSample, natural: bool) -> Vec<Element<'a, Msg>> {
-    let mut layers = Vec::new();
-    if let Some(glyph) = direction(sample, natural).icon()
-        && sample.kind == GestureKind::Swipe
-    {
-        layers.push(sketch::centered(widgets::icon(glyph, 64.0, t.acc_soft())));
-    }
-    let gap = match sample.kind {
-        GestureKind::Pinch => (DOT_GAP * sample.scale as f32).clamp(0.0, 60.0),
-        _ => DOT_GAP,
-    };
-    let (x, y) = if sample.kind == GestureKind::Swipe { finger_offset(sample, natural) } else { (0.0, 0.0) };
-    let width = sketch::dots_width(sample.fingers, DOT, gap);
-    let left = (PAD_WIDTH / 2.0 + x - width / 2.0).max(0.0);
-    let top = (PAD_HEIGHT / 2.0 + y - DOT / 2.0).max(0.0);
-    layers.push(sketch::at(left, top, sketch::dots(t.acc_bg(), sample.fingers, DOT, gap)));
-    layers
-}
-
 fn pad<'a>(c: &Ctx, live: Option<&GestureSample>, practising: bool, natural: bool) -> Element<'a, Msg> {
     let t = c.theme;
-    let mut layers: Vec<Element<'a, Msg>> = Vec::new();
-    if let Some(sample) = live {
-        layers.extend(fingers_layers(&t, sample, natural));
+    let contents = if let Some(sample) = live {
+        let swipe = sample.kind == GestureKind::Swipe;
+        let behind =
+            direction(sample, natural).icon().filter(|_| swipe).map(|glyph| widgets::icon(glyph, 64.0, t.acc_soft()));
+        let gap = match sample.kind {
+            GestureKind::Pinch => (sketch::FINGER_GAP * sample.scale as f32).clamp(0.0, 60.0),
+            _ => sketch::FINGER_GAP,
+        };
+        let offset = if swipe { finger_offset(sample, natural) } else { (0.0, 0.0) };
+        sketch::FingerPad::Live { count: sample.fingers, offset, gap, behind }
     } else {
         let (caption, color) = if practising { (tr::Key::PlaceFingers, t.fg_2()) } else { (tr::Key::Idle, t.fg_3()) };
-        let ghost = iced::Color { a: 0.35, ..t.fg_3() };
-        layers.push(sketch::centered(
-            column![sketch::dots(ghost, 3, DOT, DOT_GAP), text(c.t(caption), TextStyle::CALL).color(color)]
-                .spacing(14)
-                .align_x(Alignment::Center),
-        ));
-    }
-    sketch::sample_area(t, Length::Fixed(PAD_WIDTH), Length::Fixed(PAD_HEIGHT), layers)
+        sketch::FingerPad::Idle { caption: c.t(caption).to_string(), color }
+    };
+    sketch::finger_pad(t, PAD_WIDTH, PAD_HEIGHT, contents)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -717,30 +698,13 @@ enum Art {
 }
 
 fn art<'a>(t: &ThemeState, art: Art) -> Element<'a, Msg> {
-    let accent = t.acc_bg();
-    let arrow = t.acc_text();
-    let content: Element<'a, Msg> = match art {
-        Art::Sideways(count) => row![
-            widgets::icon(Icon::ArrowLeft, 11.0, arrow),
-            sketch::dots(accent, count, 5.0, 2.0),
-            widgets::icon(Icon::ArrowRight, 11.0, arrow),
-        ]
-        .spacing(3)
-        .align_y(Alignment::Center)
-        .into(),
-        Art::Up(count) => column![widgets::icon(Icon::ArrowUp, 11.0, arrow), sketch::dots(accent, count, 5.0, 2.0)]
-            .spacing(2)
-            .align_x(Alignment::Center)
-            .into(),
-        Art::Scroll => column![
-            widgets::icon(Icon::ArrowUp, 9.0, arrow),
-            sketch::dots(accent, 2, 5.0, 2.0),
-            widgets::icon(Icon::ArrowDown, 9.0, arrow),
-        ]
-        .spacing(1)
-        .align_x(Alignment::Center)
-        .into(),
-        Art::Pinch => widgets::icon(Icon::Pinch, 18.0, arrow),
-    };
-    sketch::glyph_well(*t, 48.0, 34.0, content)
+    let arrow = |glyph: Icon, side: f32| Some(widgets::icon(glyph, side, t.acc_text()));
+    match art {
+        Art::Sideways(count) => {
+            sketch::gesture_hint(*t, count, arrow(Icon::ArrowLeft, 11.0), arrow(Icon::ArrowRight, 11.0), false)
+        }
+        Art::Up(count) => sketch::gesture_hint(*t, count, arrow(Icon::ArrowUp, 11.0), None, true),
+        Art::Scroll => sketch::gesture_hint(*t, 2, arrow(Icon::ArrowUp, 9.0), arrow(Icon::ArrowDown, 9.0), true),
+        Art::Pinch => sketch::glyph_well(*t, 48.0, 34.0, widgets::icon(Icon::Pinch, 18.0, t.acc_text())),
+    }
 }

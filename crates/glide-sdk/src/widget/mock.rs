@@ -534,6 +534,57 @@ pub fn bar_scene<'a, M: 'a>(
     )
 }
 
+pub const FINGER: f32 = 18.0;
+pub const FINGER_GAP: f32 = 8.0;
+
+pub enum FingerPad<'a, M> {
+    Idle { caption: String, color: Color },
+    Live { count: u32, offset: (f32, f32), gap: f32, behind: Option<Element<'a, M>> },
+}
+
+#[must_use]
+pub fn finger_pad<'a, M: 'a>(
+    paint: impl Into<Paint>, width: f32, height: f32, contents: FingerPad<'a, M>,
+) -> Element<'a, M> {
+    let paint = paint.into();
+    let layers: Vec<Element<'a, M>> = match contents {
+        FingerPad::Idle { caption, color } => {
+            let ghost = Color { a: 0.35, ..paint.fg_3() };
+            vec![centered(
+                column![dots(ghost, 3, FINGER, FINGER_GAP), text(caption, TextStyle::CALL).color(color)]
+                    .spacing(14)
+                    .align_x(Alignment::Center),
+            )]
+        }
+        FingerPad::Live { count, offset: (x, y), gap, behind } => {
+            let span = dots_width(count, FINGER, gap);
+            let left = (width / 2.0 + x - span / 2.0).max(0.0);
+            let top = (height / 2.0 + y - FINGER / 2.0).max(0.0);
+            behind
+                .map(centered)
+                .into_iter()
+                .chain(std::iter::once(at(left, top, dots(paint.acc_bg(), count, FINGER, gap))))
+                .collect()
+        }
+    };
+    sample_area(paint, Length::Fixed(width), Length::Fixed(height), layers)
+}
+
+#[must_use]
+pub fn gesture_hint<'a, M: 'a>(
+    paint: impl Into<Paint>, fingers: u32, before: Option<Element<'a, M>>, after: Option<Element<'a, M>>,
+    vertical: bool,
+) -> Element<'a, M> {
+    let paint = paint.into();
+    let pieces = before.into_iter().chain(std::iter::once(dots(paint.acc_bg(), fingers, 5.0, 2.0))).chain(after);
+    let content: Element<'a, M> = if vertical {
+        Column::with_children(pieces).spacing(1).align_x(Alignment::Center).into()
+    } else {
+        Row::with_children(pieces).spacing(3).align_y(Alignment::Center).into()
+    };
+    glyph_well(paint, 48.0, 34.0, content)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TouchpadGesture {
     Plain,
