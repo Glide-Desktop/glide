@@ -75,7 +75,7 @@ pub use media::{
 pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, split_view, stat_rows};
 pub use pointer::{ContextArea, context_area, reveal};
 pub use popover::{
-    Popup, RowMarks, Tooltip, bubble, dropdown, dropdown_decorated, dropdown_with, menu_button, tooltip,
+    MenuAction, Popup, RowMarks, Tooltip, bubble, dropdown, dropdown_decorated, dropdown_with, menu_button, tooltip,
 };
 pub use secrets::{
     CODE, CodeSize, DiffField, ENTRY_ROW, FIELD_ROW, Glyphs, HALO, MASK, QrModules, SECRET, SecretField, Strength,

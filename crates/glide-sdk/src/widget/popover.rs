@@ -579,6 +579,25 @@ fn decorated_row<'a, M: Clone + 'a>(
             text(tail, TextStyle::CAP).font(glide_iced::font::TABULAR).color(paint.fg_3()).wrapping(Wrapping::None),
         );
     }
+    menu_row(&paint, line, highlighted, message)
+}
+
+fn action_row<'a, M: Clone + 'a>(
+    paint: &Paint, glyph: Icon, label: String, highlighted: bool, message: M,
+) -> Element<'a, M> {
+    let line = row![
+        container(icon(glyph, 14.0, paint.acc_text())).center(14),
+        text(label, TextStyle::MENU_ITEM).color(paint.acc_text()).wrapping(Wrapping::None),
+    ]
+    .spacing(SP2)
+    .align_y(Alignment::Center);
+    menu_row(paint, line, highlighted, message)
+}
+
+fn menu_row<'a, M: Clone + 'a>(
+    paint: &Paint, line: impl Into<Element<'a, M>>, highlighted: bool, message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
     let content =
         container(line).center_y(component::MENU_ITEM).width(Fill).padding(Padding::from([0.0, SP2])).clip(true);
     let row = widgets::container(content, move |hover, press| {
@@ -658,20 +677,47 @@ pub fn dropdown_with<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
 
 pub type RowMarks = (Option<iced::Color>, Option<String>);
 
+#[derive(Debug, Clone)]
+pub struct MenuAction<M> {
+    pub glyph: Icon,
+    pub label: String,
+    pub message: M,
+}
+
+impl<M> MenuAction<M> {
+    #[must_use]
+    pub fn new(glyph: Icon, label: impl Into<String>, message: M) -> Self {
+        Self { glyph, label: label.into(), message }
+    }
+}
+
+fn picked<T: Clone, M: Clone>(
+    options: &[T], footer: Option<&MenuAction<M>>, index: usize, on_select: &dyn Fn(T) -> M,
+) -> M {
+    match options.get(index) {
+        Some(option) => on_select(option.clone()),
+        None => footer.map(|action| action.message.clone()).expect("keyboard rows past the options are the footer"),
+    }
+}
+
 #[must_use]
+#[allow(clippy::too_many_arguments)] // The opener (lead, style), the options with their selection, marks and pick, and a footer row
 pub fn dropdown_decorated<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
     paint: &Paint, lead: Option<Element<'a, M>>, style: TextStyle, options: Vec<T>, selected: Option<T>,
-    on_select: impl Fn(T) -> M + 'a, decorate: impl Fn(&T) -> RowMarks + 'a,
+    on_select: impl Fn(T) -> M + 'a, decorate: impl Fn(&T) -> RowMarks + 'a, footer: Option<MenuAction<M>>,
 ) -> Element<'a, M> {
     let paint = *paint;
     let label = selected.as_ref().map_or_else(String::new, ToString::to_string);
     let anchor = opener(&paint, lead, label, style, paint.fg_1(), Length::Fill);
     let count = options.len();
+    let rows = count + usize::from(footer.is_some());
     let options = std::rc::Rc::new(options);
     let on_select = std::rc::Rc::new(on_select);
-    let (pick_options, pick) = (std::rc::Rc::clone(&options), std::rc::Rc::clone(&on_select));
+    let footer = std::rc::Rc::new(footer);
+    let (pick_options, pick, pick_footer) =
+        (std::rc::Rc::clone(&options), std::rc::Rc::clone(&on_select), std::rc::Rc::clone(&footer));
     Popup::new(&paint, anchor, move |paint, highlight| {
-        let rows = options
+        let mut rows: Vec<Element<'a, M>> = options
             .iter()
             .enumerate()
             .map(|(index, option)| {
@@ -685,9 +731,19 @@ pub fn dropdown_decorated<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + '
                 )
             })
             .collect();
+        if let Some(action) = footer.as_ref() {
+            rows.push(container(super::separator(paint)).padding(Padding::from([SP1, SP2])).into());
+            rows.push(action_row(
+                paint,
+                action.glyph,
+                action.label.clone(),
+                highlight == Some(count),
+                action.message.clone(),
+            ));
+        }
         menu_card(paint, rows)
     })
-    .keyboard(count, move |index| pick(pick_options[index].clone()))
+    .keyboard(rows, move |index| picked(&pick_options, pick_footer.as_ref().as_ref(), index, &*pick))
     .into()
 }
 
@@ -728,6 +784,16 @@ mod tests {
         let (at, side) = place(low, Size::new(200.0, 300.0), bounds, GAP, false);
         assert_eq!(side, Side::Above);
         assert!(at.y + 300.0 <= 520.0);
+    }
+
+    #[test]
+    fn the_keyboard_row_after_the_options_picks_the_footer_action() {
+        let options = ["a", "b"];
+        let footer = MenuAction::new(Icon::Plus, "Add", "added");
+        let on_select: &dyn Fn(&'static str) -> &'static str = &|option| option;
+        assert_eq!(picked(&options, Some(&footer), 1, on_select), "b");
+        assert_eq!(picked(&options, Some(&footer), 2, on_select), "added");
+        assert_eq!(picked(&options, None, 0, on_select), "a");
     }
 
     #[test]

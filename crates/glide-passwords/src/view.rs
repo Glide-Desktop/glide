@@ -197,6 +197,7 @@ fn sidebar(app: &App) -> Element<'_, Message> {
                 .find(|(id, ..)| *id == option.0)
                 .map_or((None, None), |(_, colour, count)| (*colour, Some(count.clone())))
         },
+        Some(ui::MenuAction::new(ui::Icon::Plus, app.t(Key::AddVaultEllipsis), Message::OpenWizard)),
     );
     let mut column = Column::new().spacing(2).push(container(picker).padding(Padding::from([0.0, SP1]).bottom(SP1)));
     column = column.push(heading(&paint, app.t(Key::Categories), SP3));
