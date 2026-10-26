@@ -96,6 +96,7 @@ pub struct NotificationsConfig {
     pub headset_notices: bool,
     pub code_offers: bool,
     pub hide_while_sharing: bool,
+    pub hide_content_while_sharing: bool,
 }
 
 impl Default for NotificationsConfig {
@@ -116,6 +117,7 @@ impl Default for NotificationsConfig {
             headset_notices: true,
             code_offers: true,
             hide_while_sharing: true,
+            hide_content_while_sharing: true,
         }
     }
 }
@@ -138,6 +140,7 @@ impl NotificationsConfig {
                 headsets: self.headset_notices,
                 codes: self.code_offers,
                 quiet_while_sharing: self.hide_while_sharing,
+                private_while_sharing: self.hide_content_while_sharing,
             },
         }
     }

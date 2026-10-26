@@ -236,6 +236,7 @@ glide_app::catalogue! {
     CastFailed => "Mirroring stopped: {reason}", "Трансляцію зупинено: {reason}";
     CastUnavailable => "Screen mirroring is unavailable: {reason}", "Дублювання екрана недоступне: {reason}";
     CastIndicator => "Mirroring to {name}", "Трансляція на {name}";
+    HiddenWhileSharing => "Hidden while the screen is shared", "Приховано, поки екран транслюється";
     PasswordNoKeychain => "Create a vault in Passwords first.", "Спершу створіть сховище в застосунку «Паролі».";
     PwInsertPassword => "Insert password", "Вставити пароль";
     PwInsertUsername => "Insert user name", "Вставити ім'я користувача";

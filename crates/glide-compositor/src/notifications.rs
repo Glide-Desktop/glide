@@ -194,12 +194,29 @@ pub struct SystemNotices {
     pub headsets: bool,
     pub codes: bool,
     pub quiet_while_sharing: bool,
+    pub private_while_sharing: bool,
 }
 
 impl Default for SystemNotices {
     fn default() -> Self {
-        Self { drives: true, disk_space: true, headsets: true, codes: true, quiet_while_sharing: true }
+        Self {
+            drives: true,
+            disk_space: true,
+            headsets: true,
+            codes: true,
+            quiet_while_sharing: true,
+            private_while_sharing: true,
+        }
     }
+}
+
+#[must_use]
+pub fn redacted(items: Vec<NcItem>, hide: bool) -> Vec<NcItem> {
+    if !hide {
+        return items;
+    }
+    let hidden = crate::i18n::t(crate::i18n::Key::HiddenWhileSharing);
+    items.into_iter().map(|item| NcItem { body: hidden.to_string(), ..item }).collect()
 }
 
 impl Default for NotificationPolicy {
@@ -1293,6 +1310,23 @@ mod tests {
             assert!(store.live.iter().any(|entry| entry.owns(id)), "{id} keeps its toast");
         }
         assert!(store.take_glances().is_empty());
+    }
+
+    #[test]
+    fn the_centre_hides_bodies_only_while_asked_to() {
+        let item = NcItem {
+            id: 1,
+            app_name: "Telegram".into(),
+            title: "Olena".into(),
+            body: "The door code is 4821".into(),
+            time: "now".into(),
+            icon: None,
+            count: 1,
+        };
+        assert_eq!(redacted(vec![item.clone()], false)[0].body, item.body);
+        let hidden = redacted(vec![item.clone()], true);
+        assert_ne!(hidden[0].body, item.body);
+        assert_eq!((hidden[0].title.as_str(), hidden[0].app_name.as_str()), ("Olena", "Telegram"));
     }
 
     #[test]

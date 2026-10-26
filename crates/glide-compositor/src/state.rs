@@ -1315,7 +1315,8 @@ impl GlideState {
         dirty |= self.topbar.set_dnd(self.notifications.dnd());
         dirty |= self.topbar.set_unread(self.notifications.unread());
         if self.topbar.open_popup() == Some(crate::topbar::OpenPopup::NotificationCenter) {
-            dirty |= self.topbar.set_nc_items(self.notifications.nc_items());
+            let hide = self.notifications.policy().system.private_while_sharing && self.topbar.sharing_screen();
+            dirty |= self.topbar.set_nc_items(crate::notifications::redacted(self.notifications.nc_items(), hide));
         }
         dirty |= self.refresh_app_menu();
         dirty

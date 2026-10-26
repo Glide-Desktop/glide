@@ -23,6 +23,8 @@ mod tr {
         Always => "Always on", "Завжди";
         WhileSharing => "While the screen is shared", "Поки екран транслюється";
         HideBanners => "Hide notification banners", "Приховувати банери сповіщень";
+        HideContent => "Hide what notifications say in the centre", "Приховувати вміст сповіщень у центрі";
+        HideContentHint => "The app and the title stay; the text reads as hidden", "Програма й заголовок лишаються, текст показано як прихований";
         HideBannersHint => "They wait in the notification centre. Urgent ones still show", "Вони чекають у центрі сповіщень. Термінові все одно показуються";
         Secrets => "Passwords stay covered", "Паролі лишаються закритими";
         SecretsHint => "Password prompts, vault unlocking and the Passwords menu reach the stream as a closed panel", "Запити паролів, розблокування сховищ і меню «Паролі» потрапляють у трансляцію закритою панеллю";
@@ -52,6 +54,7 @@ pub enum Msg {
     Forget(String),
     Forgotten(Option<Result<String, String>>),
     HideBanners(bool),
+    HideContent(bool),
     Open(Panel),
 }
 
@@ -133,6 +136,8 @@ impl Pane for Page {
         match msg {
             Msg::HideBanners(true) => config.remove("notifications", "hide-while-sharing"),
             Msg::HideBanners(false) => config.set_bool("notifications", "hide-while-sharing", false),
+            Msg::HideContent(true) => config.remove("notifications", "hide-content-while-sharing"),
+            Msg::HideContent(false) => config.set_bool("notifications", "hide-content-while-sharing", false),
             Msg::Loaded(state) => {
                 self.state = *state;
                 self.loading = false;
@@ -184,6 +189,7 @@ impl Pane for Page {
             )
         };
         let quiet = config.bool_or("notifications", "hide-while-sharing", true);
+        let private = config.bool_or("notifications", "hide-content-while-sharing", true);
         let facts = Group::new(t)
             .title(c.t(T::WhileSharing))
             .push(
@@ -192,6 +198,14 @@ impl Pane for Page {
                     .changed(!quiet)
                     .prefix(widgets::icon(Icon::Bell, 18.0, t.fg_2()))
                     .suffix(super::common::toggle(c, quiet, Msg::HideBanners))
+                    .build(),
+            )
+            .push(
+                Row::new(t, c.t(T::HideContent))
+                    .subtitle(c.t(T::HideContentHint))
+                    .changed(!private)
+                    .prefix(widgets::icon(Icon::Eye, 18.0, t.fg_2()))
+                    .suffix(super::common::toggle(c, private, Msg::HideContent))
                     .build(),
             )
             .push(
