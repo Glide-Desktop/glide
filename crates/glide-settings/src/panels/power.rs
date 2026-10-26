@@ -39,6 +39,8 @@ mod tr {
         BlankLinkHint => "Set on the Lock Screen page", "Налаштовується на сторінці «Екран блокування»";
         Away => "What happens when you step away", "Що відбувається, коли ви відходите";
         ChargingWarnings => "Charging and warnings", "Заряджання й попередження";
+        AutoSaver => "Save power when the battery runs low", "Економія при низькому заряді";
+        AutoSaverHint => "Switches to Power Saver at the warning level and back to your mode once you plug in", "Вмикає «Економію» на порозі попередження і повертає ваш режим після підключення";
         NeedsAdmin => "asks for an administrator password", "потрібен пароль адміністратора";
         BatteryWarningHint => "A critical warning always comes at 5 %", "Критичне попередження завжди на 5 %";
         AwayHint => "One chain: the screen goes dark, the session locks, the computer sleeps", "Один ланцюжок: екран гасне, сеанс блокується, комп’ютер засинає";
@@ -93,6 +95,7 @@ impl std::fmt::Display for Blank {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Loaded(u64, PowerState),
+    AutoSaver(bool),
     Suspend(Blank),
     SuspendOnBattery(Blank),
     BatteryLow(f64),
@@ -177,6 +180,8 @@ impl Pane for Page {
                 self.loaded = true;
                 self.jobs.loading = false;
             }
+            Msg::AutoSaver(true) => config.set_bool("topbar", "battery-saver", true),
+            Msg::AutoSaver(false) => config.remove("topbar", "battery-saver"),
             Msg::Suspend(choice) => config.set_int("general", "suspend-after-seconds", choice.seconds),
             Msg::SuspendOnBattery(choice) => {
                 config.set_int("general", "suspend-on-battery-after-seconds", choice.seconds);
@@ -432,6 +437,14 @@ impl Page {
                     .stacked(t.compact)
                     .build(),
             )
+            .push_maybe(self.state.profiles_available.then(|| {
+                let on = config.bool_or("topbar", "battery-saver", false);
+                Row::new(t, c.t(tr::Key::AutoSaver))
+                    .subtitle(c.t(tr::Key::AutoSaverHint))
+                    .changed(on)
+                    .suffix(toggle(*c, on, Msg::AutoSaver))
+                    .build()
+            }))
             .push(percentage_link(c, config))
             .build()
     }

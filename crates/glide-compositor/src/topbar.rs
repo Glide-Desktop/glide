@@ -1360,6 +1360,11 @@ impl Topbar {
         self.theme.battery_low_pct
     }
 
+    #[must_use]
+    pub const fn battery_saver(&self) -> bool {
+        self.theme.battery_saver
+    }
+
     pub fn set_caffeinated(&mut self, on: bool) {
         if self.caffeinated == on {
             return;
@@ -3083,6 +3088,7 @@ pub struct TopbarTheme {
     pub focus_line: Color,
     pub view_bg: Color,
     pub battery_low_pct: u8,
+    pub battery_saver: bool,
     pub battery_percentage: bool,
     pub clock_date: bool,
     pub clock_24h: Option<bool>,
@@ -3142,6 +3148,7 @@ impl TopbarTheme {
             focus_line: t.acc_text,
             view_bg: t.view_bg,
             battery_low_pct: BATTERY_LOW_PCT,
+            battery_saver: false,
         }
     }
 

@@ -152,6 +152,7 @@ pub struct TopbarConfig {
     pub appearance_schedule: bool,
     pub accent: glide_theme::Accent,
     pub battery_low_pct: u8,
+    pub battery_saver: bool,
     pub max_volume_pct: u8,
     pub global_menu: bool,
     pub appmenu_registrar: bool,
@@ -169,6 +170,7 @@ impl Default for TopbarConfig {
             appearance_schedule: false,
             accent: glide_theme::Accent::Blue,
             battery_low_pct: 20,
+            battery_saver: false,
             max_volume_pct: 100,
             global_menu: true,
             appmenu_registrar: true,
@@ -252,6 +254,7 @@ impl TopbarConfig {
         let tokens = glide_theme::Tokens::new(self.appearance, self.accent);
         let mut theme = crate::topbar::TopbarTheme::from_tokens(&tokens);
         theme.battery_low_pct = self.battery_low_pct.min(100);
+        theme.battery_saver = self.battery_saver;
         theme.battery_percentage = self.battery_percentage;
         theme.clock_date = self.clock_date;
         theme.clock_24h = self.clock_24h;

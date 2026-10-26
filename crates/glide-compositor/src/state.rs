@@ -387,6 +387,7 @@ pub struct SessionServices {
     pub qr_scan: Option<crate::qr_scan::Scan>,
     pub end: crate::session_end::SessionEnd,
     pub battery_alert: crate::battery_alert::BatteryAlert,
+    pub battery_saver: crate::battery_alert::Saver,
     pub announced_config_keys: Vec<String>,
     pub prompts: crate::agent_prompt::Prompts,
     pub bell: Option<std::time::Instant>,
@@ -1332,6 +1333,16 @@ impl GlideState {
             self.queue_redraw();
         }
         let alert = self.session.battery_alert.update(status.battery_pct, discharging, self.topbar.battery_low_pct());
+        if let Some(profile) = self.session.battery_saver.update(
+            self.topbar.battery_saver(),
+            status.battery_pct,
+            discharging,
+            self.topbar.battery_low_pct(),
+            status.power_profile,
+        ) {
+            tracing::info!(?profile, "switching the power profile for the battery");
+            crate::system_info::set_power_profile(profile);
+        }
         let pct = status.battery_pct.unwrap_or_default();
         if self.topbar.set_system_status(status) {
             self.apply_motion_scale();

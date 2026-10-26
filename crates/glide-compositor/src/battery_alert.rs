@@ -1,3 +1,5 @@
+use crate::system_info::PowerProfile;
+
 pub const CRITICAL_PCT: u8 = 5;
 const RECOVERY_MARGIN: u8 = 3;
 
@@ -38,9 +40,64 @@ impl BatteryAlert {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct Saver {
+    restore: Option<PowerProfile>,
+}
+
+impl Saver {
+    pub fn update(
+        &mut self, enabled: bool, pct: Option<u8>, discharging: bool, low_pct: u8, current: Option<PowerProfile>,
+    ) -> Option<PowerProfile> {
+        match self.restore {
+            None => {
+                let low = discharging && pct.is_some_and(|pct| pct <= low_pct);
+                let previous = current.filter(|profile| *profile != PowerProfile::PowerSaver);
+                let previous = previous.filter(|_| enabled && low)?;
+                self.restore = Some(previous);
+                Some(PowerProfile::PowerSaver)
+            }
+            Some(previous) if !discharging => {
+                self.restore = None;
+                (current == Some(PowerProfile::PowerSaver)).then_some(previous)
+            }
+            Some(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_saver_steps_in_at_the_warning_and_hands_back_on_the_charger() {
+        let mut saver = Saver::default();
+        let balanced = Some(PowerProfile::Balanced);
+        assert_eq!(saver.update(true, Some(40), true, 20, balanced), None);
+        assert_eq!(saver.update(true, Some(20), true, 20, balanced), Some(PowerProfile::PowerSaver));
+        let saving = Some(PowerProfile::PowerSaver);
+        assert_eq!(saver.update(true, Some(18), true, 20, saving), None, "switched once");
+        assert_eq!(saver.update(true, Some(18), false, 20, saving), Some(PowerProfile::Balanced));
+        assert_eq!(saver.update(true, Some(19), false, 20, balanced), None);
+    }
+
+    #[test]
+    fn the_saver_stays_away_when_off_already_saving_or_overruled() {
+        let mut saver = Saver::default();
+        assert_eq!(saver.update(false, Some(10), true, 20, Some(PowerProfile::Performance)), None);
+        assert_eq!(saver.update(true, Some(10), true, 20, Some(PowerProfile::PowerSaver)), None);
+        assert_eq!(saver.update(true, Some(10), true, 20, None), None, "no power-profiles-daemon");
+        assert_eq!(
+            saver.update(true, Some(10), true, 20, Some(PowerProfile::Performance)),
+            Some(PowerProfile::PowerSaver)
+        );
+        assert_eq!(
+            saver.update(true, Some(10), false, 20, Some(PowerProfile::Balanced)),
+            None,
+            "the user already picked another profile, so it is left alone"
+        );
+    }
 
     fn run(alert: &mut BatteryAlert, samples: &[(u8, bool)]) -> Vec<Level> {
         samples.iter().filter_map(|&(pct, discharging)| alert.update(Some(pct), discharging, 20)).collect()
