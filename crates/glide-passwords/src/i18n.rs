@@ -206,6 +206,10 @@ glide_sdk::catalogue! {
     ConfirmSignIn => "Confirm the sign-in", "Підтвердьте вхід";
     ConfirmBody => "Enter the six-digit code from your authenticator app for {email}.", "Введіть шестизначний код із застосунку-автентифікатора для {email}.";
     EmailCodeBody => "Enter the code Bitwarden sent to {email}.", "Введіть код, який Bitwarden надіслав на {email}.";
+    ConfirmDevice => "Confirm this device", "Підтвердьте цей пристрій";
+    DeviceCodeBody => "Bitwarden sent a code to {email} to confirm that signing in from Glide is you.", "Bitwarden надіслав код на {email}, щоб підтвердити, що вхід із Glide — це ви.";
+    EmailSent => "Bitwarden sent a code to your email", "Bitwarden надіслав код на пошту";
+    WrongCode => "That code did not fit. Check it and try again.", "Код не підійшов. Перевірте його й спробуйте ще раз.";
     Remember => "Remember this device", "Запам'ятати цей пристрій";
     OtherMethod => "Another way: email code", "Інший спосіб: код поштою";
     Confirm => "Confirm", "Підтвердити";

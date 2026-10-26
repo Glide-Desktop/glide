@@ -20,9 +20,14 @@ pub struct State {
     pub folders: Vec<Value>,
     pub sends: Vec<Value>,
     pub requests: Vec<String>,
+    pub known_devices: Vec<String>,
+    pub verify_devices: bool,
+    pub emails: Vec<String>,
     tokens: Vec<String>,
     next: u64,
 }
+
+pub const DEVICE_OTP: &str = "424242";
 
 impl State {
     fn stamp(&mut self) -> (String, String) {
@@ -157,12 +162,31 @@ fn route(shared: &Shared, method: &str, path: &str, body: &str, bearer: &str) ->
             if !allowed {
                 return (400, json!({ "error": "invalid_grant", "error_description": "invalid_username_or_password" }));
             }
+            let device = get("deviceIdentifier").unwrap_or_default().to_string();
+            if get("grant_type") == Some("password") && state.verify_devices && !state.known_devices.contains(&device) {
+                if get("newDeviceOtp") != Some(DEVICE_OTP) {
+                    return (
+                        400,
+                        json!({ "error": "invalid_grant", "error_description": "New device verification required." }),
+                    );
+                }
+                state.known_devices.push(device);
+            }
             let token = format!("token-{}", state.tokens.len());
             state.tokens.push(token.clone());
             (
                 200,
                 json!({ "access_token": token, "refresh_token": "refresh", "expires_in": 3600, "Key": shared.protected }),
             )
+        }
+        ("POST", "/api/two-factor/send-email-login") => {
+            let request: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+            if text(&request, "masterPasswordHash") != Some(shared.hash.as_str()) {
+                return (400, json!({ "message": "invalid_username_or_password" }));
+            }
+            let device = text(&request, "deviceIdentifier").unwrap_or_default().to_string();
+            state.emails.push(device);
+            (200, Value::Null)
         }
         _ if !state.tokens.iter().any(|token| token == bearer) => (401, json!({ "message": "unauthorised" })),
         ("GET", "/api/sync?excludeDomains=true") => (

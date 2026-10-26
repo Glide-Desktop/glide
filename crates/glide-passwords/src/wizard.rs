@@ -1,9 +1,9 @@
 use glide_ipc::keychain::{ApiKey, Hidden, Login, Request, Response, SyncState, TwoFactor, TwoFactorMethod};
 use glide_sdk::theme::{SP1, SP2, SP3, SP4, SP5, TextStyle};
-use glide_sdk::widget::{self as ui, CodeSize, ListRow, Size, Tone};
+use glide_sdk::widget::{self as ui, CodeSize, ListRow, Tone};
 use glide_sdk::{Paint, Shell};
 use iced::widget::{Column, Row, Space, column, container, row, text_input};
-use iced::{Alignment, Element, Fill, Length, Padding, Task};
+use iced::{Alignment, Element, Fill, Task};
 
 use crate::app::{App, Message, ask};
 use crate::i18n::Key;
@@ -65,6 +65,14 @@ pub struct Wizard {
     pub error: Option<String>,
     pub vault: Option<String>,
     pub api: Option<ApiDraft>,
+    pub prompt: Prompt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Prompt {
+    #[default]
+    TwoStep,
+    Device,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -110,12 +118,11 @@ impl Wizard {
             email: self.email.trim().to_string(),
             password: Hidden::new(self.password.clone()),
             name: if self.name.trim().is_empty() { "Bitwarden".to_string() } else { self.name.trim().to_string() },
-            two_factor: self.method.filter(|_| !self.code.is_empty()).map(|method| TwoFactor {
-                method,
-                code: self.code.clone(),
-                remember: self.remember,
-            }),
-            device_code: None,
+            two_factor: self
+                .method
+                .filter(|_| !self.code.is_empty() && self.prompt == Prompt::TwoStep)
+                .map(|method| TwoFactor { method, code: self.code.clone(), remember: self.remember }),
+            device_code: (self.prompt == Prompt::Device && !self.code.is_empty()).then(|| self.code.clone()),
             api_key: self.api.as_ref().map(|api| ApiKey {
                 client_id: api.client_id.trim().to_string(),
                 client_secret: Hidden::new(api.client_secret.trim().to_string()),
@@ -148,6 +155,7 @@ pub enum Event {
     TogglePassword,
     SignIn,
     Reply(Result<Response, String>),
+    EmailSent(Result<Response, String>),
     Code(String),
     Remember(bool),
     OtherMethod,
@@ -157,6 +165,61 @@ pub enum Event {
     ApiKey(bool),
     ClientId(String),
     ClientSecret(String),
+}
+
+fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
+    let lang = app.lang;
+    let Some(wizard) = app.wizard.as_mut() else {
+        return Task::none();
+    };
+    wizard.busy = false;
+    let retried = wizard.step == Step::TwoFactor && !wizard.code.is_empty();
+    match result {
+        Ok(Response::NeedsTwoFactor { .. }) if retried && wizard.prompt == Prompt::TwoStep => {
+            wizard.error = Some(Key::WrongCode.text(lang).into());
+            wizard.code.clear();
+        }
+        Ok(Response::NeedsTwoFactor { methods }) => {
+            wizard.method = methods
+                .iter()
+                .copied()
+                .find(|method| *method == TwoFactorMethod::Authenticator)
+                .or_else(|| methods.first().copied());
+            wizard.methods = methods;
+            wizard.code.clear();
+            wizard.remember |= wizard.step != Step::TwoFactor;
+            wizard.prompt = Prompt::TwoStep;
+            wizard.step = Step::TwoFactor;
+        }
+        Ok(Response::NeedsDeviceCode) => {
+            if retried && wizard.prompt == Prompt::Device {
+                wizard.error = Some(Key::WrongCode.text(lang).into());
+            }
+            wizard.prompt = Prompt::Device;
+            wizard.method = None;
+            wizard.methods.clear();
+            wizard.code.clear();
+            wizard.step = Step::TwoFactor;
+        }
+        Ok(Response::VaultAdded { vault }) => {
+            wizard.vault = Some(vault);
+            if wizard.name.trim().is_empty() {
+                wizard.name = "Bitwarden".to_string();
+            }
+            wizard.step = Step::Sync;
+            wizard.password.clear();
+            return app.reload();
+        }
+        Ok(Response::WrongPassword) => {
+            wizard.error = Some(
+                lang.pick("Пошта або майстер-пароль не підходять", "The email or master password is wrong").into(),
+            );
+        }
+        Ok(Response::Unsupported) => wizard.error = Some(Key::NotAvailable.text(lang).into()),
+        Ok(Response::Error { message }) | Err(message) => wizard.error = Some(message),
+        Ok(_) => {}
+    }
+    Task::none()
 }
 
 pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
@@ -179,6 +242,8 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
                 Step::TwoFactor => Step::Login,
                 other => other,
             };
+            wizard.prompt = Prompt::TwoStep;
+            wizard.code.clear();
         }
         Event::Server(server) => wizard.server = server,
         Event::Url(value) => wizard.url = value,
@@ -194,42 +259,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
                 Message::Wizard(Event::Reply(result))
             });
         }
-        Event::Reply(result) => {
-            wizard.busy = false;
-            match result {
-                Ok(Response::NeedsTwoFactor { methods }) => {
-                    wizard.method = methods
-                        .iter()
-                        .copied()
-                        .find(|method| *method == TwoFactorMethod::Authenticator)
-                        .or_else(|| methods.first().copied());
-                    wizard.methods = methods;
-                    wizard.code.clear();
-                    wizard.remember |= wizard.step != Step::TwoFactor;
-                    wizard.step = Step::TwoFactor;
-                }
-                Ok(Response::VaultAdded { vault }) => {
-                    wizard.vault = Some(vault);
-                    if wizard.name.trim().is_empty() {
-                        wizard.name = "Bitwarden".to_string();
-                    }
-                    wizard.step = Step::Sync;
-                    wizard.password.clear();
-                    return app.reload();
-                }
-                Ok(Response::WrongPassword) => {
-                    wizard.error = Some(
-                        app.lang
-                            .pick("Пошта або майстер-пароль не підходять", "The email or master password is wrong")
-                            .into(),
-                    );
-                }
-                Ok(Response::Unsupported) => wizard.error = Some(Key::NotAvailable.text(app.lang).into()),
-                Ok(Response::Error { message }) => wizard.error = Some(message),
-                Ok(_) => {}
-                Err(err) => wizard.error = Some(err),
-            }
-        }
+        Event::Reply(result) => return reply(app, result),
         Event::Code(value) => {
             wizard.code = ui::only_digits(&value, 6);
             if wizard.code.len() == 6 && !wizard.busy {
@@ -242,11 +272,18 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
             if let Some(method) = next {
                 wizard.method = Some(method);
                 wizard.code.clear();
+                wizard.error = None;
                 if method == TwoFactorMethod::Email {
-                    shell.toast(app.lang.pick("Bitwarden надішле код на пошту", "Bitwarden will email a code"));
+                    let login = Box::new(wizard.login());
+                    return ask(Request::SendLoginEmail { login }, |result| Message::Wizard(Event::EmailSent(result)));
                 }
             }
         }
+        Event::EmailSent(result) => match result {
+            Ok(Response::Done) => shell.toast(Key::EmailSent.text(app.lang)),
+            Ok(Response::Error { message }) | Err(message) => wizard.error = Some(message),
+            Ok(_) => {}
+        },
         Event::Name(value) => wizard.name = value,
         Event::Finish => {
             if let (Some(vault), false) = (wizard.vault.clone(), wizard.name.trim().is_empty()) {
@@ -527,12 +564,14 @@ fn two_factor_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> 
     let t = |key: Key| key.text(app.lang);
     let mut content = Column::new().spacing(SP5);
     {
-        let body = if wizard.method == Some(TwoFactorMethod::Email) {
-            t(Key::EmailCodeBody).replace("{email}", wizard.email.trim())
+        let (heading, body) = if wizard.prompt == Prompt::Device {
+            (Key::ConfirmDevice, Key::DeviceCodeBody)
+        } else if wizard.method == Some(TwoFactorMethod::Email) {
+            (Key::ConfirmSignIn, Key::EmailCodeBody)
         } else {
-            t(Key::ConfirmBody).replace("{email}", wizard.email.trim())
+            (Key::ConfirmSignIn, Key::ConfirmBody)
         };
-        content = content.push(title(app, Key::ConfirmSignIn, body));
+        content = content.push(title(app, heading, t(body).replace("{email}", wizard.email.trim())));
         content = content.push(
             container(
                 ui::code_input(&paint, &wizard.code, 6, |value| Message::Wizard(Event::Code(value)))
@@ -542,13 +581,15 @@ fn two_factor_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> 
             )
             .center_x(Fill),
         );
-        content = content.push(
-            row![
-                ui::text(t(Key::Remember), TextStyle::CALL).width(Fill),
-                ui::switch(&paint, wizard.remember, Some(|on| Message::Wizard(Event::Remember(on)))),
-            ]
-            .align_y(Alignment::Center),
-        );
+        if wizard.prompt == Prompt::TwoStep {
+            content = content.push(
+                row![
+                    ui::text(t(Key::Remember), TextStyle::CALL).width(Fill),
+                    ui::switch(&paint, wizard.remember, Some(|on| Message::Wizard(Event::Remember(on)))),
+                ]
+                .align_y(Alignment::Center),
+            );
+        }
         if wizard.methods.len() > 1 {
             content = content.push(ui::link(&paint, t(Key::OtherMethod), Some(Message::Wizard(Event::OtherMethod))));
         }
@@ -675,6 +716,48 @@ fn create_view<'a>(app: &'a App, form: &'a Create) -> Element<'a, Message> {
         ]
         .spacing(SP2),
     );
-    let _ = (Size::Small, Padding::ZERO, Length::Fill);
     crate::view::dialog_frame(app, 480.0, content, Message::CreateVault(CreateEvent::Close))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn filled() -> Wizard {
+        Wizard {
+            email: " artem@example.com ".into(),
+            password: "pw".into(),
+            method: Some(TwoFactorMethod::Authenticator),
+            code: "123456".into(),
+            ..Wizard::default()
+        }
+    }
+
+    #[test]
+    fn a_two_step_code_goes_with_its_method() {
+        let login = filled().login();
+        assert_eq!(login.email, "artem@example.com");
+        assert_eq!(
+            login.two_factor.map(|two| (two.method, two.code)),
+            Some((TwoFactorMethod::Authenticator, "123456".into()))
+        );
+        assert_eq!(login.device_code, None);
+    }
+
+    #[test]
+    fn a_device_code_is_sent_as_one_and_not_as_a_two_step_code() {
+        let login = Wizard { prompt: Prompt::Device, ..filled() }.login();
+        assert_eq!(login.device_code.as_deref(), Some("123456"));
+        assert!(login.two_factor.is_none());
+    }
+
+    #[test]
+    fn an_own_server_needs_https_unless_it_is_this_machine() {
+        let mut wizard =
+            Wizard { server: Server::Own, url: "http://vault.lan".into(), code: String::new(), ..filled() };
+        assert!(!wizard.can_sign_in());
+        wizard.url = "https://vault.lan/".into();
+        assert!(wizard.can_sign_in());
+        assert_eq!(wizard.server_url(), "https://vault.lan");
+    }
 }

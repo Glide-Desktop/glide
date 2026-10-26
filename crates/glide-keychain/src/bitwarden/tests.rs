@@ -88,6 +88,22 @@ fn a_wrong_master_password_is_told_apart() {
 }
 
 #[test]
+fn a_new_device_is_confirmed_once_and_keeps_its_id() {
+    let server = Server::start();
+    server.state.lock().expect("state").verify_devices = true;
+    let home = dir("device");
+    assert_eq!(Bitwarden::login(&home, &login(&server), NOW).map(|_| ()), Err(super::LoginError::DeviceCode));
+    let mut confirmed = login(&server);
+    confirmed.device_code = Some(super::fake::DEVICE_OTP.into());
+    let first = Bitwarden::login(&home, &confirmed, NOW).expect("a confirmed device signs in");
+    let second = Bitwarden::login(&home, &login(&server), NOW).expect("the same device needs no code again");
+    assert_eq!(first.account().device, second.account().device);
+    Bitwarden::send_login_email(&home, &login(&server)).expect("email");
+    assert_eq!(server.state.lock().expect("state").emails, [first.account().device.clone()]);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
 fn offline_changes_queue_and_reach_the_server_with_its_ids() {
     let server = Server::start();
     let home = dir("offline");

@@ -47,6 +47,15 @@ impl Service {
         let wake = force || mutates(&request);
         let response = match request {
             Request::AddBitwarden { login } => self.add_bitwarden(&login),
+            Request::SendLoginEmail { login } => {
+                let dir = self.daemon().accounts_dir();
+                match dir {
+                    Some(dir) => {
+                        Bitwarden::send_login_email(&dir, &login).map_or_else(login_failed, |()| Response::Done)
+                    }
+                    None => Response::Unsupported,
+                }
+            }
             request => self.daemon().handle(request),
         };
         if wake {

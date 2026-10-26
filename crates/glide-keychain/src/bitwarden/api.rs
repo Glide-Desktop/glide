@@ -228,6 +228,11 @@ impl Client {
         self.send("DELETE", path, token, None)
     }
 
+    pub fn post_public(&self, path: &str, body: &Value) -> Result<Value, ApiError> {
+        let url = format!("{}{path}", self.endpoints.api);
+        Self::checked(Self::finish(self.agent.post(&url).send_json(body))?)
+    }
+
     pub fn register(&self, body: &Value) -> Result<Value, ApiError> {
         let url = format!("{}/accounts/register", self.endpoints.identity);
         Self::checked(Self::finish(self.agent.post(&url).send_json(body))?)

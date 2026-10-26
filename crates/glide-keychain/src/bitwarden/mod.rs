@@ -231,17 +231,44 @@ impl Bitwarden {
         &self.account
     }
 
-    pub fn login(dir: &Path, login: &Login, now: u64) -> Result<Self, LoginError> {
-        let client = Client::new(Endpoints::for_server(&login.server));
+    fn device_id(dir: &Path) -> Result<String, LoginError> {
+        let path = dir.join("device-id");
+        if let Ok(known) = std::fs::read_to_string(&path)
+            && known.trim().len() == 36
+        {
+            return Ok(known.trim().to_string());
+        }
+        let failed = |err: &dyn std::fmt::Display| LoginError::Failed(err.to_string());
+        let device = crypto::uuid_v4().map_err(|err| failed(&err))?;
+        std::fs::create_dir_all(dir).map_err(|err| failed(&err))?;
+        crate::vault::write_atomically(&path, device.as_bytes()).map_err(|err| failed(&err))?;
+        Ok(device)
+    }
+
+    fn master(client: &Client, login: &Login) -> Result<(String, Kdf, Zeroizing<[u8; 32]>), LoginError> {
         let email = crypto::normalize_email(&login.email);
         let prelogin = client.prelogin(&email).map_err(login_error)?;
         let kdf = Kdf::from_prelogin(prelogin.kdf, prelogin.iterations, prelogin.memory, prelogin.parallelism)
             .map_err(|err| LoginError::Failed(err.to_string()))?;
         let master = crypto::master_key(login.password.expose().as_bytes(), &email, kdf)
             .map_err(|err| LoginError::Failed(err.to_string()))?;
+        Ok((email, kdf, master))
+    }
+
+    pub fn send_login_email(dir: &Path, login: &Login) -> Result<(), LoginError> {
+        let client = Client::new(Endpoints::for_server(&login.server));
+        let (email, _, master) = Self::master(&client, login)?;
+        let hash = Zeroizing::new(crypto::master_password_hash(&master, login.password.expose().as_bytes()));
+        let body = json!({ "email": email, "masterPasswordHash": *hash, "deviceIdentifier": Self::device_id(dir)? });
+        client.post_public("/two-factor/send-email-login", &body).map(drop).map_err(login_error)
+    }
+
+    pub fn login(dir: &Path, login: &Login, now: u64) -> Result<Self, LoginError> {
+        let client = Client::new(Endpoints::for_server(&login.server));
+        let (email, kdf, master) = Self::master(&client, login)?;
         let hash = Zeroizing::new(crypto::master_password_hash(&master, login.password.expose().as_bytes()));
         let fresh_id = || crypto::uuid_v4().map_err(|err| LoginError::Failed(err.to_string()));
-        let device = fresh_id()?;
+        let device = Self::device_id(dir)?;
         let body = Self::grant(&client, &email, &hash, &device, login).map_err(login_error)?;
         let protected =
             text(&body, "Key").ok_or_else(|| LoginError::Failed("the server sent no account key".into()))?;

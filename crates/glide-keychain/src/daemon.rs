@@ -498,6 +498,10 @@ impl Daemon {
     fn accounts(&mut self, request: Request) -> Response {
         match request {
             Request::AddBitwarden { login } => self.add_bitwarden(&login),
+            Request::SendLoginEmail { login } => match self.accounts.clone() {
+                Some(dir) => Bitwarden::send_login_email(&dir, &login).map_or_else(login_failed, |()| Response::Done),
+                None => Response::Unsupported,
+            },
             Request::RenameVault { vault, name } => {
                 let result = self.provider_mut(&vault).map(|provider| provider.rename(name.trim()));
                 self.store_settings();
