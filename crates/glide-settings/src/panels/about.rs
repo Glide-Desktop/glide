@@ -17,8 +17,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 mod tr {
     crate::i18n::catalogue! {
-        Copy => "Copy", "Копіювати";
-        CopyReport => "Copy system report", "Копіювати звіт";
+        CopyReport => "Copy system report", "Скопіювати звіт";
+        Display => "Display", "Дисплей";
+        CyclesShort => "cycles", "циклів";
+        Desktop => "Desktop", "Робочий стіл";
         Copied => "Copied to the clipboard", "Скопійовано в буфер обміну";
         DeviceName => "Device name", "Назва пристрою";
         DeviceNameHint => "Shown to other devices on the network and over Bluetooth", "Її бачать інші пристрої в мережі та через Bluetooth";
@@ -29,33 +31,22 @@ mod tr {
         Cancel => "Cancel", "Скасувати";
         InvalidName => "Use letters, digits, spaces or dashes", "Використовуйте літери, цифри, пробіли або дефіси";
         Saving => "Saving…", "Збереження…";
-        NoHostnamed => "hostnamed is not available, so the name can only be viewed", "Служба hostnamed недоступна, тому назву можна лише переглядати";
         MemoryInUse => "memory in use", "пам'яті зайнято";
         DiskFree => "free on the system disk", "вільно на системному диску";
         Threads => "threads", "потоків";
-        Running => "running", "працює";
-        Model => "Model", "Модель";
+        Running => "since the last restart", "без перезавантаження";
         Chassis => "Type", "Тип";
         ChassisLaptop => "Laptop", "Ноутбук";
         ChassisDesktop => "Desktop", "Настільний комп'ютер";
         ChassisTablet => "Tablet", "Планшет";
         ChassisVm => "Virtual machine", "Віртуальна машина";
         ChassisServer => "Server", "Сервер";
-        Displays => "Displays", "Дисплеї";
-        Available => "available", "доступно";
+        Available => "free", "вільно";
         Battery => "Battery", "Батарея";
         Health => "Health", "Стан";
-        HealthHint => "Capacity compared with a new battery", "Ємність порівняно з новою батареєю";
-        Cycles => "Charge cycles", "Цикли заряджання";
-        Technology => "Chemistry", "Тип елементів";
-        Firmware => "Firmware", "Мікропрограма";
-        BiosVendor => "Vendor", "Постачальник";
-        BiosVersion => "Version", "Версія";
-        BiosDate => "Release date", "Дата випуску";
+        Firmware => "Firmware", "Прошивка";
+        BiosDate => "Firmware date", "Дата прошивки";
         Board => "Motherboard", "Материнська плата";
-        GlideVersion => "Glide Settings", "Налаштування Glide";
-        OsVersion => "Version", "Версія";
-        Website => "Website", "Вебсайт";
     }
 }
 
@@ -64,7 +55,6 @@ use tr::Key as T;
 #[derive(Debug, Clone)]
 pub enum Msg {
     Loaded(u64, Box<Details>),
-    Copy,
     CopyReport,
     StartRename,
     Name(String),
@@ -136,30 +126,6 @@ pub fn device_name(details: &Details) -> String {
 }
 
 impl Page {
-    #[must_use]
-    pub fn summary(&self) -> String {
-        let Some(details) = &self.details else {
-            return String::new();
-        };
-        let info = &details.info;
-        let mut lines = vec![
-            format!("Glide {VERSION}"),
-            format!("Host: {}", device_name(details)),
-            format!("OS: {}", info.os_name),
-            format!("Kernel: {}", info.kernel),
-            format!("CPU: {} ({} threads)", info.cpu, info.cores),
-            format!("Memory: {}", format_memory(info.memory_bytes, Lang::En)),
-        ];
-        lines.extend(info.gpus.iter().map(|gpu| format!("GPU: {gpu}")));
-        lines.push(format!(
-            "Disk: {} free of {}",
-            format_bytes(info.disk_free, Lang::En),
-            format_bytes(info.disk_total, Lang::En)
-        ));
-        lines.push(format!("Session: {}", info.session));
-        lines.join("\n")
-    }
-
     #[must_use]
     pub fn report(&self) -> String {
         let Some(details) = &self.details else {
@@ -273,10 +239,6 @@ impl Pane for Page {
                     self.loading = false;
                 }
             }
-            Msg::Copy => {
-                self.copied = true;
-                return iced::clipboard::write(self.summary());
-            }
             Msg::CopyReport => {
                 self.copied = true;
                 return iced::clipboard::write(self.report());
@@ -316,25 +278,21 @@ impl Pane for Page {
         Task::none()
     }
 
-    fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn view<'a>(&'a self, c: Ctx, _config: &'a ConfigStore) -> Element<'a, Msg> {
         let c = &c;
         let t = c.theme;
         let Some(details) = &self.details else {
             return widgets::empty_state(t, Icon::Info, c.t(K::Loading), "");
         };
-        let mut page = column![self.hero(c, details)]
-            .spacing(theme::SECTION_GAP)
-            .push(error_banner(t, self.error.as_deref()))
-            .push(self.name_group(c, details))
-            .push(stats(c, details))
-            .push(hardware_group(c, details));
-        if !details.batteries.is_empty() {
-            page = page.push(battery_group(c, details));
+        let mut page =
+            column![self.hero(c, details)].spacing(theme::SECTION_GAP).push(error_banner(t, self.error.as_deref()));
+        if self.editing.is_some() {
+            page = page.push(self.name_group(c, details));
         }
-        if let Some(firmware) = firmware_group(c, details) {
-            page = page.push(firmware);
-        }
-        page.push(software_group(c, details, config)).into()
+        page.push(stats(c, details))
+            .push(facts_section(c, c.t(K::Hardware), hardware_facts(c, details)))
+            .push(facts_section(c, c.t(K::Software), software_facts(c, details)))
+            .into()
     }
 }
 
@@ -346,39 +304,29 @@ impl Page {
             Some(path) => glide_sdk::widget::photo(path, 72.0, 0.0),
             None => widgets::tile(Icon::Logo, t.acc_bg(), 72.0),
         };
-        let spec = |glyph: Icon, label: String| {
-            row![widgets::icon(glyph, 14.0, t.fg_3()), text(label, TextStyle::CAP).color(t.fg_2())]
-                .spacing(6)
-                .align_y(Alignment::Center)
-        };
-        let mut specs = row![].spacing(20).align_y(Alignment::Center);
-        if !info.cpu.is_empty() {
-            specs = specs.push(spec(Icon::Cpu, info.cpu.clone()));
-        }
-        if info.memory_bytes > 0 {
-            specs = specs.push(spec(Icon::Memory, format_memory(info.memory_bytes, c.lang)));
-        }
-        if let Some(gpu) = info.gpus.first() {
-            specs = specs.push(spec(Icon::Display, gpu.clone()));
-        }
         let os = if info.os_name.is_empty() { String::from("Linux") } else { info.os_name.clone() };
-        let actions: Element<'a, Msg> = if self.copied {
+        let model = joined(&details.firmware.vendor, &details.firmware.product);
+        let line = [model, os, format!("Glide {VERSION}")]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let copy: Element<'a, Msg> = if self.copied {
             widgets::status_pill(t, Tone::Ok, c.t(T::Copied))
         } else {
-            row![
-                widgets::secondary(t, c.t(T::Copy), Some(Msg::Copy)),
-                widgets::tonal(t, c.t(T::CopyReport), Some(Msg::CopyReport)),
-            ]
-            .spacing(8)
-            .into()
+            widgets::secondary(t, c.t(T::CopyReport), Some(Msg::CopyReport))
         };
+        let mut actions = row![].spacing(8);
+        if details.names.available {
+            let rename = self.editing.is_none().then_some(Msg::StartRename);
+            actions = actions.push(widgets::secondary(t, c.t(T::Rename), rename));
+        }
+        let actions = actions.push(copy);
         let body = column![
             logo,
             widgets::gap(8.0),
             text(device_name(details), TextStyle::T1).color(t.fg_1()),
-            text(format!("Glide {VERSION} · {os}"), TextStyle::CALL).color(t.fg_2()),
-            widgets::gap(8.0),
-            specs.wrap().vertical_spacing(6),
+            text(line, TextStyle::CALL).color(t.fg_2()),
             widgets::gap(12.0),
             actions,
         ]
@@ -418,28 +366,8 @@ impl Page {
                     ))
                     .build(),
             );
-        } else {
-            group = group.push(
-                Row::new(t, device_name(details))
-                    .subtitle(format!(
-                        "{}: {}",
-                        c.t(T::NetworkName),
-                        if details.names.static_name.is_empty() {
-                            details.names.hostname.clone()
-                        } else {
-                            details.names.static_name.clone()
-                        }
-                    ))
-                    .prefix(widgets::tile(Icon::Pencil, t.fill_3(), 28.0))
-                    .suffix(widgets::secondary(t, c.t(T::Rename), details.names.available.then_some(Msg::StartRename)))
-                    .build(),
-            );
         }
-        let mut column = column![group.build()].spacing(12);
-        if !details.names.available {
-            column = column.push(widgets::banner(t, Tone::Warn, Icon::Info, c.t(T::NoHostnamed), None));
-        }
-        column.into()
+        group.build()
     }
 }
 
@@ -476,152 +404,79 @@ fn stats<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
     widgets::stat_row(t, tiles)
 }
 
-fn info_row<'a>(c: &Ctx, title: impl Into<String>, value: String) -> Row<'a, Msg> {
-    Row::new(c.theme, title).suffix(text(value, TextStyle::CALL).color(c.theme.fg_2()))
-}
-
 fn joined(first: &str, second: &str) -> String {
     format!("{first} {second}").trim().to_string()
 }
 
-fn hardware_group<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
+fn facts_section<'a>(c: &Ctx, title: &'a str, facts: Vec<(String, String)>) -> Element<'a, Msg> {
+    let paint = widgets::paint(&c.theme);
+    column![
+        glide_sdk::widget::section_heading(&paint, title),
+        glide_sdk::widget::fact_grid(&paint, facts, if c.theme.compact { 1 } else { 2 }),
+    ]
+    .spacing(8)
+    .into()
+}
+
+fn hardware_facts(c: &Ctx, details: &Details) -> Vec<(String, String)> {
     let info = &details.info;
-    let firmware = &details.firmware;
-    let mut group = Group::new(c.theme).title(c.t(K::Hardware));
-    let model = joined(&firmware.vendor, &firmware.product);
-    if !model.is_empty() {
-        group = group.push(info_row(c, c.t(T::Model), model).subtitle(firmware.version.clone()).build());
-    }
-    if let Some(key) = chassis_key(&details.names.chassis) {
-        group = group.push(info_row(c, c.t(T::Chassis), c.t(key).to_string()).build());
-    }
-    group = group
-        .push(
-            info_row(c, c.t(K::Processor), info.cpu.clone())
-                .subtitle(format!("{} {}", info.cores, c.t(K::Threads)))
-                .build(),
-        )
-        .push(
-            info_row(c, c.t(K::Memory), format_memory(info.memory_bytes, c.lang))
-                .subtitle(format!("{} {}", format_memory(details.memory_available, c.lang), c.t(T::Available)))
-                .build(),
-        )
-        .extend(info.gpus.iter().map(|gpu| info_row(c, c.t(K::Graphics), gpu.clone()).build()));
-    for output in &details.displays {
-        let name = joined(&output.make, &output.model);
-        group = group.push(
-            info_row(c, c.t(T::Displays), display_line(output, c.lang))
-                .subtitle(if name.is_empty() { output.name.clone() } else { format!("{} · {name}", output.name) })
-                .build(),
-        );
+    let mut facts = Vec::new();
+    let mut push = |label: &str, value: String| {
+        if !value.trim().is_empty() {
+            facts.push((label.to_string(), value));
+        }
+    };
+    push(c.t(K::Processor), info.cpu.clone());
+    push(
+        c.t(K::Memory),
+        format!(
+            "{} · {} {}",
+            format_memory(info.memory_bytes, c.lang),
+            format_memory(details.memory_available, c.lang),
+            c.t(T::Available)
+        ),
+    );
+    for gpu in &info.gpus {
+        push(c.t(K::Graphics), gpu.clone());
     }
     if info.disk_total > 0 {
-        let disk = format!(
-            "{} {} {}",
-            format_bytes(info.disk_free, c.lang),
-            c.t(K::FreeOf),
-            format_bytes(info.disk_total, c.lang)
-        );
-        group = group.push(info_row(c, c.t(K::Disk), disk).build());
+        let free = format_bytes(info.disk_free, c.lang);
+        push(c.t(K::Disk), format!("{} · {free} {}", format_bytes(info.disk_total, c.lang), c.t(T::Available)));
     }
-    group.build()
-}
-
-fn battery_group<'a>(c: &Ctx, details: &'a Details) -> Element<'a, Msg> {
-    let t = c.theme;
-    let mut group = Group::new(t).title(c.t(T::Battery));
+    for output in &details.displays {
+        push(c.t(T::Display), display_line(output, c.lang));
+    }
     for battery in &details.batteries {
-        let title = joined(&battery.manufacturer, &battery.model);
-        let mut line = Row::new(t, if title.is_empty() { battery.name.clone() } else { title }).prefix(widgets::tile(
-            Icon::Battery,
-            ramp_color(Accent::Conifer, 3),
-            28.0,
-        ));
-        if !battery.technology.is_empty() {
-            line = line.subtitle(format!("{}: {}", c.t(T::Technology), battery.technology));
-        }
-        if let Some(percent) = battery.percent {
-            line = line.suffix(
-                column![
-                    text(format!("{percent}%"), TextStyle { weight: 600, ..TextStyle::NUM }).color(t.fg_1()),
-                    container(widgets::progress_bar(t, f32::from(percent) / 100.0)).width(96),
-                ]
-                .spacing(4)
-                .align_x(Alignment::End),
-            );
-        }
-        group = group.push(line.build());
+        let mut parts = Vec::new();
         if let Some(health) = battery.health {
-            let tone = match health {
-                80.. => Tone::Ok,
-                60..=79 => Tone::Warn,
-                _ => Tone::Danger,
-            };
-            group = group.push(
-                Row::new(t, c.t(T::Health))
-                    .subtitle(c.t(T::HealthHint))
-                    .suffix(widgets::pill(t, tone, format!("{health}%")))
-                    .build(),
-            );
+            parts.push(format!("{} {health}%", c.t(T::Health)));
         }
         if let Some(cycles) = battery.cycles {
-            group = group.push(info_row(c, c.t(T::Cycles), cycles.to_string()).build());
+            parts.push(format!("{cycles} {}", c.t(T::CyclesShort)));
         }
+        push(c.t(T::Battery), parts.join(" · "));
     }
-    group.build()
+    if let Some(key) = chassis_key(&details.names.chassis) {
+        push(c.t(T::Chassis), c.t(key).to_string());
+    }
+    facts
 }
 
-fn firmware_group<'a>(c: &Ctx, details: &'a Details) -> Option<Element<'a, Msg>> {
-    let t = c.theme;
-    let firmware = &details.firmware;
-    let rows: Vec<(String, String)> = [
-        (T::BiosVendor, &firmware.bios_vendor),
-        (T::BiosVersion, &firmware.bios_version),
-        (T::BiosDate, &firmware.bios_date),
-        (T::Board, &firmware.board),
-    ]
-    .into_iter()
-    .filter(|(_, value)| !value.is_empty())
-    .map(|(key, value)| (c.t(key).to_string(), value.clone()))
-    .collect();
-    if rows.is_empty() {
-        return None;
-    }
-    Some(Group::new(t).title(c.t(T::Firmware)).extend(widgets::info_rows(t, rows)).build())
-}
-
-fn software_group<'a>(c: &Ctx, details: &'a Details, config: &'a ConfigStore) -> Element<'a, Msg> {
-    let t = c.theme;
+fn software_facts(c: &Ctx, details: &Details) -> Vec<(String, String)> {
     let info = &details.info;
-    let config_path = config.path().map_or_else(|| String::from("—"), |path| path.display().to_string());
-    let mut group = Group::new(t).title(c.t(K::Software)).push(
-        info_row(c, c.t(K::OperatingSystem), info.os_name.clone())
-            .subtitle(if details.os_version.is_empty() {
-                String::new()
-            } else {
-                format!("{} {}", c.t(T::OsVersion), details.os_version)
-            })
-            .build(),
-    );
-    if !details.os_url.is_empty() {
-        group = group.push(info_row(c, c.t(T::Website), details.os_url.clone()).build());
-    }
-    group
-        .extend([
-            info_row(c, c.t(K::Kernel), info.kernel.clone()).build(),
-            info_row(c, c.t(K::WindowingSystem), format!("{} · Glide", info.session)).build(),
-            info_row(c, c.t(T::GlideVersion), VERSION.to_string()).build(),
-            info_row(c, c.t(K::Uptime), format_uptime(info.uptime_secs, c)).build(),
-        ])
-        .push(
-            Row::new(t, c.t(K::ConfigFile))
-                .subtitle(config_path)
-                .suffix(if c.online {
-                    widgets::pill(t, Tone::Ok, c.t(K::CompositorOnline))
-                } else {
-                    widgets::pill(t, Tone::Warn, c.t(K::CompositorOffline))
-                })
-                .build(),
-        )
-        .build()
+    let firmware = &details.firmware;
+    let mut facts = Vec::new();
+    let mut push = |label: &str, value: String| {
+        if !value.trim().is_empty() {
+            facts.push((label.to_string(), value));
+        }
+    };
+    push(c.t(K::OperatingSystem), joined(&info.os_name, &details.os_version));
+    push(c.t(K::Kernel), info.kernel.clone());
+    let session = if info.session.is_empty() { String::new() } else { format!(" · {}", info.session) };
+    push(c.t(T::Desktop), format!("Glide {VERSION}{session}"));
+    push(c.t(T::Firmware), joined(&firmware.bios_vendor, &firmware.bios_version));
+    push(c.t(T::BiosDate), firmware.bios_date.clone());
+    push(c.t(T::Board), firmware.board.clone());
+    facts
 }
