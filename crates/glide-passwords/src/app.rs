@@ -357,6 +357,10 @@ impl App {
         )
     }
 
+    pub fn check_leaks(&self) -> Task<Message> {
+        if self.prefs.leak_check { ask(Request::CheckLeaks, Message::Done) } else { Task::none() }
+    }
+
     fn after(&mut self, result: Result<Response, String>, shell: &mut Shell<Message>) {
         match result {
             Ok(Response::WrongPassword) => shell.toast(self.t(Key::WrongPassword)),
@@ -406,7 +410,7 @@ impl App {
                 self.section = section;
                 self.editor = None;
                 if section == Section::Check {
-                    return Task::none();
+                    return self.check_leaks();
                 }
                 self.keep_selection()
             }

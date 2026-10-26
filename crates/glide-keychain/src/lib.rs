@@ -1,6 +1,7 @@
 pub mod bitwarden;
 pub mod bus;
 pub mod daemon;
+pub mod leaks;
 pub mod local;
 pub mod provider;
 pub mod service;

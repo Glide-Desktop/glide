@@ -361,6 +361,7 @@ pub enum Request {
     Report,
     AddBitwarden { login: Box<Login> },
     SendLoginEmail { login: Box<Login> },
+    CheckLeaks,
     RemoveVault { vault: String },
     RenameVault { vault: String, name: String },
     SetDefault { vault: String },

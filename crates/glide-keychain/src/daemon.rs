@@ -25,6 +25,7 @@ pub struct Daemon {
     default: String,
     clock: fn() -> u64,
     accounts: Option<PathBuf>,
+    leaks: crate::leaks::Leaks,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -79,6 +80,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::Restore { .. }
             | Request::Purge { .. }
             | Request::AddBitwarden { .. }
+            | Request::CheckLeaks
             | Request::RemoveVault { .. }
             | Request::RenameVault { .. }
             | Request::SetDefault { .. }
@@ -118,7 +120,7 @@ impl Daemon {
 
     #[must_use]
     pub fn with_providers(providers: Vec<Box<dyn Provider>>) -> Self {
-        Self { providers, default: LOCAL.into(), clock: now, accounts: None }
+        Self { providers, default: LOCAL.into(), clock: now, accounts: None, leaks: crate::leaks::Leaks::default() }
     }
 
     fn store_settings(&self) {
@@ -167,6 +169,32 @@ impl Daemon {
         match Bitwarden::login(&dir, login, (self.clock)()) {
             Ok(account) => self.adopt_bitwarden(account),
             Err(error) => login_failed(error),
+        }
+    }
+
+    #[must_use]
+    pub fn leak_hashes(&self) -> Vec<String> {
+        let hashes: Vec<String> = self
+            .open_records()
+            .filter(|(_, record)| record.kind == ItemKind::Login && !record.password.expose().is_empty())
+            .map(|(_, record)| crate::leaks::sha1_hex(&record.password_text()))
+            .collect();
+        self.leaks.stale(hashes.iter(), (self.clock)())
+    }
+
+    pub fn store_leaks(&mut self, found: HashMap<String, bool>) {
+        let now = (self.clock)();
+        self.leaks.store(found, now);
+    }
+
+    fn check_leaks(&mut self) -> Response {
+        let hashes = self.leak_hashes();
+        match crate::leaks::check(&hashes, crate::leaks::fetch_range) {
+            Ok(found) => {
+                self.store_leaks(found);
+                Response::Done
+            }
+            Err(message) => Response::Error { message },
         }
     }
 
@@ -398,6 +426,9 @@ impl Daemon {
             if strength(&record.password_text()) <= 1 {
                 report.weak.push(item.clone());
             }
+            if self.leaks.leaked(&crate::leaks::sha1_hex(&record.password_text())) {
+                report.leaked.push(item.clone());
+            }
             if at.saturating_sub(record.modified) > OLD_AFTER {
                 report.old.push(item);
             }
@@ -498,6 +529,7 @@ impl Daemon {
     fn accounts(&mut self, request: Request) -> Response {
         match request {
             Request::AddBitwarden { login } => self.add_bitwarden(&login),
+            Request::CheckLeaks => self.check_leaks(),
             Request::SendLoginEmail { login } => match self.accounts.clone() {
                 Some(dir) => Bitwarden::send_login_email(&dir, &login).map_or_else(login_failed, |()| Response::Done),
                 None => Response::Unsupported,
@@ -718,6 +750,21 @@ mod tests {
             panic!()
         };
         assert_eq!(list.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["GitHub", "MyGit"]);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_leaked_password_shows_in_the_report_and_is_not_asked_again_for_a_day() {
+        let (mut daemon, path) = daemon("leaks");
+        let item = save(&mut daemon, login("Router", "password", ""));
+        save(&mut daemon, login("GitHub", "c7#Vq2!mWx9tLp4Rz8", ""));
+        let hashes = daemon.leak_hashes();
+        assert_eq!(hashes.len(), 2);
+        let found = crate::leaks::check(&hashes, |_| Ok("1E4C9B93F3F0682250B6CF8331B7EE68FD8:12\n".into())).unwrap();
+        daemon.store_leaks(found);
+        let Response::Report { report } = daemon.handle(Request::Report) else { panic!() };
+        assert_eq!(report.leaked, [item]);
+        assert!(daemon.leak_hashes().is_empty(), "checked passwords wait a day");
         cleanup(&path);
     }
 

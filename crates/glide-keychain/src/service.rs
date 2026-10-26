@@ -56,6 +56,16 @@ impl Service {
                     None => Response::Unsupported,
                 }
             }
+            Request::CheckLeaks => {
+                let hashes = self.daemon().leak_hashes();
+                match crate::leaks::check(&hashes, crate::leaks::fetch_range) {
+                    Ok(found) => {
+                        self.daemon().store_leaks(found);
+                        Response::Done
+                    }
+                    Err(message) => Response::Error { message },
+                }
+            }
             request => self.daemon().handle(request),
         };
         if wake {

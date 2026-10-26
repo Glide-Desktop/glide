@@ -45,6 +45,7 @@ pub struct PasswordChange {
 
 pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
     let mut save = true;
+    let leak_check_turned_on = matches!(event, Event::LeakCheck(true)) && !app.prefs.leak_check;
     match event {
         Event::Click(action) => app.prefs.click = action,
         Event::Offer(on) => app.prefs.offer = on,
@@ -119,6 +120,9 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
     }
     if save {
         app.prefs.save();
+        if leak_check_turned_on {
+            return app.check_leaks();
+        }
     }
     Task::none()
 }
