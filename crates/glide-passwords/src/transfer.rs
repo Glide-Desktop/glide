@@ -12,9 +12,29 @@ use crate::i18n::{Key, plural};
 const MAX_IMPORT: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
+pub struct Payload {
+    pub text: Hidden,
+    pub binary: bool,
+}
+
+impl Payload {
+    #[must_use]
+    pub fn of(bytes: Vec<u8>) -> Self {
+        match String::from_utf8(bytes) {
+            Ok(text) => Self { text: Hidden::new(text), binary: false },
+            Err(raw) => {
+                use base64::Engine as _;
+                let bytes = zeroize::Zeroizing::new(raw.into_bytes());
+                Self { text: Hidden::new(base64::engine::general_purpose::STANDARD.encode(&*bytes)), binary: true }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Transfer {
-    Importing { contents: Hidden },
-    ImportPassword { contents: Hidden, password: String, wrong: bool, busy: bool },
+    Importing { contents: Payload },
+    ImportPassword { contents: Payload, password: String, wrong: bool, busy: bool },
     Export { password: String, repeat: String, mismatch: bool, busy: bool },
     Saving { data: String, count: u32 },
 }
@@ -23,7 +43,7 @@ pub enum Transfer {
 pub enum Event {
     Import,
     ImportChosen(Chosen),
-    ImportRead(Result<Hidden, String>),
+    ImportRead(Result<Payload, String>),
     ImportDone(Result<Response, String>),
     Password(String),
     SubmitPassword,
@@ -37,12 +57,12 @@ pub enum Event {
     Close,
 }
 
-fn read(path: &std::path::Path) -> Result<Hidden, String> {
+fn read(path: &std::path::Path) -> Result<Payload, String> {
     let size = std::fs::metadata(path).map_err(|err| err.to_string())?.len();
     if size > MAX_IMPORT {
         return Err(String::new());
     }
-    std::fs::read_to_string(path).map(Hidden::new).map_err(|err| err.to_string())
+    std::fs::read(path).map(Payload::of).map_err(|err| err.to_string())
 }
 
 fn choose_import(app: &App) -> Task<Message> {
@@ -62,8 +82,8 @@ fn target(app: &App) -> String {
     if app.data.default.is_empty() { glide_ipc::keychain::LOCAL.to_string() } else { app.data.default.clone() }
 }
 
-fn import(app: &App, contents: Hidden, password: Option<Hidden>) -> Task<Message> {
-    let request = Request::Import { vault: target(app), contents, password };
+fn import(app: &App, contents: Payload, password: Option<Hidden>) -> Task<Message> {
+    let request = Request::Import { vault: target(app), contents: contents.text, password, binary: contents.binary };
     ask(request, |result| Message::Transfer(Event::ImportDone(result)))
 }
 
@@ -251,12 +271,18 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let close = Message::Transfer(Event::Close);
     let content: Column<'_, Message> = match app.transfer.as_ref()? {
         Transfer::Saving { .. } | Transfer::Importing { .. } => return None,
-        Transfer::ImportPassword { password, wrong, busy, .. } => {
-            let mut content = Column::new().spacing(SP4).push(heading(Key::FilePassword, Key::FilePasswordBody)).push(
-                crate::view::secret_input(&paint, t(Key::FilePassword), password, |value| {
-                    Message::Transfer(Event::Password(value))
-                }),
-            );
+        Transfer::ImportPassword { contents, password, wrong, busy } => {
+            let (title, body) = if contents.binary {
+                (Key::KeePassPassword, Key::KeePassPasswordBody)
+            } else {
+                (Key::FilePassword, Key::FilePasswordBody)
+            };
+            let mut content = Column::new().spacing(SP4).push(heading(title, body)).push(crate::view::secret_input(
+                &paint,
+                t(title),
+                password,
+                |value| Message::Transfer(Event::Password(value)),
+            ));
             if *wrong {
                 content = content.push(ui::text(t(Key::FileWrongPassword), TextStyle::CAP).color(paint.danger()));
             }
@@ -312,6 +338,14 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_files_go_as_they_are_and_databases_as_base64() {
+        let text = Payload::of(b"name,password\n".to_vec());
+        assert_eq!((text.text.expose(), text.binary), ("name,password\n", false));
+        let database = Payload::of(vec![0x03, 0xd9, 0xa2, 0x9a, 0x67]);
+        assert_eq!((database.text.expose(), database.binary), ("A9mimmc=", true));
+    }
 
     #[test]
     fn the_export_file_is_named_after_the_day() {

@@ -342,41 +342,117 @@ pub struct Report {
 pub enum Request {
     Status,
     Vaults,
-    Create { password: Hidden },
-    Unlock { vault: String, password: Hidden },
-    Lock { vault: Option<String> },
-    RequestUnlock { vault: Option<String> },
-    ChangePassword { vault: String, old: Hidden, new: Hidden },
+    Create {
+        password: Hidden,
+    },
+    Unlock {
+        vault: String,
+        password: Hidden,
+    },
+    Lock {
+        vault: Option<String>,
+    },
+    RequestUnlock {
+        vault: Option<String>,
+    },
+    ChangePassword {
+        vault: String,
+        old: Hidden,
+        new: Hidden,
+    },
     Items,
-    Item { item: ItemRef },
-    Secret { item: ItemRef, secret: SecretKind },
-    Totp { item: ItemRef },
-    Save { draft: Box<Draft> },
-    Trash { item: ItemRef },
-    Restore { item: ItemRef },
-    Purge { item: ItemRef },
+    Item {
+        item: ItemRef,
+    },
+    Secret {
+        item: ItemRef,
+        secret: SecretKind,
+    },
+    Totp {
+        item: ItemRef,
+    },
+    Save {
+        draft: Box<Draft>,
+    },
+    Trash {
+        item: ItemRef,
+    },
+    Restore {
+        item: ItemRef,
+    },
+    Purge {
+        item: ItemRef,
+    },
     Folders,
-    Candidates { program: Option<String>, app_id: Option<String> },
-    Search { query: String, limit: u32 },
+    Candidates {
+        program: Option<String>,
+        app_id: Option<String>,
+    },
+    Search {
+        query: String,
+        limit: u32,
+    },
     Report,
-    AddBitwarden { login: Box<Login> },
-    SendLoginEmail { login: Box<Login> },
+    AddBitwarden {
+        login: Box<Login>,
+    },
+    SendLoginEmail {
+        login: Box<Login>,
+    },
     CheckLeaks,
-    Import { vault: String, contents: Hidden, password: Option<Hidden> },
-    Export { vault: Option<String>, password: Hidden },
-    SecretService { enabled: bool },
-    RemoveVault { vault: String },
-    RenameVault { vault: String, name: String },
-    SetDefault { vault: String },
-    Sync { vault: Option<String> },
+    Import {
+        vault: String,
+        contents: Hidden,
+        password: Option<Hidden>,
+        #[serde(default)]
+        binary: bool,
+    },
+    Export {
+        vault: Option<String>,
+        password: Hidden,
+    },
+    SecretService {
+        enabled: bool,
+    },
+    RemoveVault {
+        vault: String,
+    },
+    RenameVault {
+        vault: String,
+        name: String,
+    },
+    SetDefault {
+        vault: String,
+    },
+    Sync {
+        vault: Option<String>,
+    },
     Conflicts,
-    Resolve { item: ItemRef, keep: Keep },
+    Resolve {
+        item: ItemRef,
+        keep: Keep,
+    },
     Sends,
-    CreateSend { draft: Box<SendDraft> },
-    SendText { vault: String, id: String },
-    EditSend { id: String, draft: Box<SendDraft>, keep_password: bool },
-    DisableSend { vault: String, id: String },
-    DeleteSend { vault: String, id: String },
+    CreateSend {
+        draft: Box<SendDraft>,
+    },
+    SendText {
+        vault: String,
+        id: String,
+    },
+    EditSend {
+        id: String,
+        draft: Box<SendDraft>,
+        keep_password: bool,
+    },
+    DisableSend {
+        vault: String,
+        id: String,
+    },
+    DeleteSend {
+        vault: String,
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -584,8 +584,8 @@ impl Daemon {
         match request {
             Request::AddBitwarden { login } => self.add_bitwarden(&login),
             Request::CheckLeaks => self.check_leaks(),
-            Request::Import { vault, contents, password } => {
-                match crate::transfer::parse(contents.expose(), password.as_ref().map(Hidden::expose)) {
+            Request::Import { vault, contents, password, binary } => {
+                match crate::transfer::parse_file(contents.expose(), binary, password.as_ref().map(Hidden::expose)) {
                     Ok(drafts) => {
                         let total = drafts.len() as u32;
                         let mut count = 0;
@@ -853,7 +853,7 @@ mod tests {
         let csv = "name,url,username,password\nGitHub,https://github.com,artem,hunter2\n,,,\nRouter,,admin,admin123\n";
         let contents = hidden(csv);
         assert_eq!(
-            daemon.handle(Request::Import { vault: LOCAL.into(), contents, password: None }),
+            daemon.handle(Request::Import { vault: LOCAL.into(), contents, password: None, binary: false }),
             Response::Imported { count: 2, skipped: 0 }
         );
         let Response::Exported { data, count } =
@@ -864,14 +864,20 @@ mod tests {
         assert_eq!(count, 2);
         assert!(!data.contains("hunter2"));
         assert_eq!(
-            daemon.handle(Request::Import { vault: LOCAL.into(), contents: hidden(&data), password: None }),
+            daemon.handle(Request::Import {
+                vault: LOCAL.into(),
+                contents: hidden(&data),
+                password: None,
+                binary: false
+            }),
             Response::NeedsFilePassword
         );
         assert_eq!(
             daemon.handle(Request::Import {
                 vault: LOCAL.into(),
                 contents: hidden(&data),
-                password: Some(hidden("file pw"))
+                password: Some(hidden("file pw")),
+                binary: false
             }),
             Response::Imported { count: 2, skipped: 0 }
         );

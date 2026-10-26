@@ -63,8 +63,8 @@ impl Service {
                     None => Response::Unsupported,
                 }
             }
-            Request::Import { vault, contents, password } => {
-                match crate::transfer::parse(contents.expose(), password.as_ref().map(Hidden::expose)) {
+            Request::Import { vault, contents, password, binary } => {
+                match crate::transfer::parse_file(contents.expose(), binary, password.as_ref().map(Hidden::expose)) {
                     Ok(drafts) => {
                         let total = drafts.len() as u32;
                         let mut count = 0;

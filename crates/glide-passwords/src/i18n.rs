@@ -347,6 +347,8 @@ glide_sdk::catalogue! {
     FileTooBig => "The file is too big to import", "Файл завеликий для імпорту";
     FilePassword => "File password", "Пароль файлу";
     FilePasswordBody => "This export is protected with a password. Enter the one it was saved with.", "Цей експорт захищено паролем. Введіть пароль, з яким його зберегли.";
+    KeePassPassword => "Master password", "Майстер-пароль";
+    KeePassPasswordBody => "This is a KeePass database. Enter its master password; key files are not supported.", "Це база KeePass. Введіть її майстер-пароль; файли-ключі не підтримуються.";
     FileWrongPassword => "That password does not open the file", "Цей пароль не відкриває файл";
     ImportEmpty => "No items were found in the file", "У файлі не знайшлося записів";
     ImportedOne => "Imported {n} item", "Імпортовано {n} запис";

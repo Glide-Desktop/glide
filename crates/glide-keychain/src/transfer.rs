@@ -71,11 +71,11 @@ fn column(header: &[Zeroizing<String>], names: &[&str]) -> Option<usize> {
     })
 }
 
-fn hidden(text: &str) -> Option<Hidden> {
+pub(crate) fn hidden(text: &str) -> Option<Hidden> {
     (!text.is_empty()).then(|| Hidden::new(text.to_string()))
 }
 
-fn site_or_app(uri: &str, matching: Matching) -> (Option<Site>, Option<AppLink>) {
+pub(crate) fn site_or_app(uri: &str, matching: Matching) -> (Option<Site>, Option<AppLink>) {
     let uri = uri.trim();
     if uri.is_empty() {
         return (None, None);
@@ -240,6 +240,25 @@ fn protected_key(value: &Value, password: &str) -> Result<SymmetricKey, ImportEr
     let derived = crypto::derive_key(password.as_bytes(), salt.as_bytes(), kdf)
         .map_err(|err| ImportError::Unsupported(err.to_string()))?;
     Ok(SymmetricKey::stretch(&derived))
+}
+
+pub fn parse_file(contents: &str, binary: bool, password: Option<&str>) -> Result<Vec<Draft>, ImportError> {
+    use base64::Engine as _;
+    if !binary {
+        return parse(contents, password);
+    }
+    let bytes = Zeroizing::new(
+        base64::engine::general_purpose::STANDARD
+            .decode(contents.trim())
+            .map_err(|_| ImportError::Malformed("the file did not arrive intact".into()))?,
+    );
+    if crate::kdbx::is_kdbx(&bytes) {
+        return crate::kdbx::parse(&bytes, password);
+    }
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => parse(text, password),
+        Err(_) => Err(ImportError::Unsupported("this file is not a CSV, JSON or KeePass export".into())),
+    }
 }
 
 pub fn parse(input: &str, password: Option<&str>) -> Result<Vec<Draft>, ImportError> {
