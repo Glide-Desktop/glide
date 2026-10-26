@@ -181,6 +181,54 @@ fn two_step(server: &str) {
     let _ = (std::fs::remove_dir_all(home), std::fs::remove_dir_all(again));
 }
 
+fn through_the_service(server: &str) {
+    use glide_ipc::keychain::{Request, Response};
+    let email = format!("glide-service-{}-{}@example.org", std::process::id(), now());
+    register(server, &email, Kdf::Pbkdf2 { iterations: 600_000 });
+    let home = dir("service");
+    let daemon =
+        crate::daemon::Daemon::new(home.join("keychain"), crate::vault::Params { memory_kib: 64, passes: 1, lanes: 1 });
+    let service = crate::service::Service::start(daemon, std::sync::Arc::new(|_| {}));
+    let Response::VaultAdded { vault } =
+        service.handle(Request::AddBitwarden { login: Box::new(login(server, &email)) })
+    else {
+        panic!("the account was not added");
+    };
+    let draft = Draft { vault: vault.clone(), ..draft(None, None, "Hetzner", "Hx8$pQ2m") };
+    let Response::Saved { item } = service.handle(Request::Save { draft: Box::new(draft) }) else {
+        panic!("the item was not saved");
+    };
+    assert!(!item.id.starts_with("new:"));
+    assert_eq!(service.handle(Request::Lock { vault: None }), Response::Done);
+    let unlock = Request::Unlock { vault: vault.clone(), password: Hidden::new(PASSWORD.into()) };
+    assert_eq!(service.handle(unlock), Response::Done);
+    let Response::Items { list } = service.handle(Request::Items) else { panic!() };
+    assert!(list.iter().any(|summary| summary.item == item && summary.name == "Hetzner"));
+    let started = std::time::Instant::now();
+    loop {
+        let Response::Vaults { list, .. } = service.handle(Request::Vaults) else { panic!() };
+        let state = list.into_iter().find(|known| known.id == vault).expect("vault").sync;
+        if matches!(state, SyncState::Synced { .. }) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the background sync did not finish: {state:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let secret = Request::Secret { item, secret: glide_ipc::keychain::SecretKind::Password };
+    assert_eq!(service.handle(secret), Response::Secret { secret: Hidden::new("Hx8$pQ2m".into()) });
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+#[ignore = "needs a Vaultwarden or Bitwarden server in GLIDE_VAULTWARDEN"]
+fn a_real_server_through_the_service() {
+    let server = std::env::var("GLIDE_VAULTWARDEN").expect("GLIDE_VAULTWARDEN=http://127.0.0.1:8765");
+    through_the_service(&server);
+}
+
 #[test]
 #[ignore = "needs a Vaultwarden or Bitwarden server in GLIDE_VAULTWARDEN"]
 fn a_real_server_round_trip() {
