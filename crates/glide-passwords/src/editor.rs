@@ -2,7 +2,7 @@ use glide_ipc::keychain::{
     AppLink, CardDraft, Detail, Draft, FieldDraft, Hidden, ItemKind, ItemRef, Matching, Request, Site,
 };
 use glide_sdk::theme::{SP2, SP3, SP4, SP5, SP6, TextStyle};
-use glide_sdk::widget::{self as ui, Severity, Size, Tone};
+use glide_sdk::widget::{self as ui, Size, Tone};
 use glide_sdk::{Paint, Shell};
 use iced::widget::{Column, Space, column, container, row, text_editor, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding, Task};
@@ -296,6 +296,11 @@ fn labelled<'a>(label: &'a str, control: impl Into<Element<'a, Message>>, paint:
     column![text_label(paint, label), control.into()].spacing(6).width(Fill).into()
 }
 
+fn grouped_key(key: &str) -> String {
+    let compact: Vec<char> = key.chars().filter(|ch| !ch.is_whitespace()).collect();
+    compact.chunks(4).map(|chunk| chunk.iter().collect::<String>()).collect::<Vec<_>>().join(" ")
+}
+
 fn text_label<'a>(paint: &Paint, label: &'a str) -> Element<'a, Message> {
     ui::text(label, TextStyle { weight: 520, ..TextStyle::CAP }).color(paint.fg_2()).into()
 }
@@ -351,8 +356,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .map(|vault| labeled(vault.id.clone(), vault.name.clone()))
         .collect();
     let chosen = vaults.iter().find(|vault| vault.0 == editor.vault).cloned();
-    let vault_pick =
-        ui::dropdown(&paint, vaults, chosen, t(Key::Vault), |picked| Message::Editor(Event::Vault(picked.0)));
+    let vault_pick = ui::dropdown_with(
+        &paint,
+        Some(crate::view::vault_dot(app, &editor.vault)),
+        TextStyle::CALL,
+        vaults,
+        chosen,
+        t(Key::Vault),
+        |picked| Message::Editor(Event::Vault(picked.0)),
+    );
     let mut folders: Vec<Labeled<String>> = vec![labeled(String::new(), t(Key::NoFolder).to_string())];
     for folder in app.data.folders.iter().filter(|folder| folder.vault == editor.vault) {
         if !folders.iter().any(|known| known.0 == folder.name) {
@@ -363,8 +375,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
         folders.push(labeled(editor.folder.clone(), editor.folder.clone()));
     }
     let folder_chosen = folders.iter().find(|folder| folder.0 == editor.folder).cloned();
-    let folder_pick =
-        ui::dropdown(&paint, folders, folder_chosen, t(Key::Folder), |picked| Message::Editor(Event::Folder(picked.0)));
+    let folder_pick = ui::dropdown_with(
+        &paint,
+        Some(ui::icon(Icon::Folder, 14.0, paint.fg_3())),
+        TextStyle::CALL,
+        folders,
+        folder_chosen,
+        t(Key::Folder),
+        |picked| Message::Editor(Event::Folder(picked.0)),
+    );
 
     let mut form = Column::new().spacing(SP4).push(name_row).push(
         row![labelled(t(Key::Vault), vault_pick, &paint), labelled(t(Key::Folder), folder_pick, &paint)].spacing(SP4),
@@ -376,12 +395,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 labelled(t(Key::Username), input(&paint, t(Key::Username), &editor.username, Event::Username), &paint);
             let totp = labelled(
                 t(Key::TotpKey),
-                ui::field(
+                ui::field_with(
                     &paint,
-                    text_input("JBSW Y3DP EHPK 3PXP", &editor.totp)
-                        .on_input(|value| Message::Editor(Event::Totp(value)))
-                        .font(glide_sdk::glide_iced::font::TABULAR)
+                    None,
+                    text_input("JBSW Y3DP EHPK 3PXP", &grouped_key(&editor.totp))
+                        .on_input(|value| Message::Editor(Event::Totp(value.split_whitespace().collect())))
                         .size(13),
+                    Vec::new(),
                 ),
                 &paint,
             );
@@ -438,6 +458,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let notes = ui::text_area(&paint, &editor.notes)
         .placeholder(t(Key::NotesPlaceholder))
         .on_action(|action| Message::Editor(Event::Notes(action)))
+        .size(TextStyle::BODY.size_px)
         .height(if editor.kind == ItemKind::Note { 260.0 } else { 84.0 })
         .padding(Padding::from([SP2, SP3]));
     form = form.push(labelled(t(Key::NotesPlaceholder), notes, &paint));
@@ -482,8 +503,7 @@ fn password_block<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> 
     );
     let input = text_input(t(Key::Password), &editor.password)
         .secure(!editor.shown)
-        .font(glide_sdk::glide_iced::font::TABULAR)
-        .size(14.5)
+        .size(14.0)
         .on_input(|value| Message::Editor(Event::Password(value)));
     let field = ui::field_with(
         &paint,
@@ -570,6 +590,7 @@ fn links_block<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
                             text_input("org.example.App", &link.app_id)
                                 .on_input(move |value| Message::Editor(Event::AppId(index, value)))
                                 .font(glide_sdk::glide_iced::font::TABULAR)
+                                .align_x(iced::alignment::Horizontal::Right)
                                 .size(12)
                                 .style(move |_, status| ui::input_style(&paint, status)),
                         )
@@ -577,7 +598,12 @@ fn links_block<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
                         .into(),
                     ],
                 ),
-                container(ui::badge(&paint, t(Key::AppKind), Severity::Neutral)).width(150).center_x(150),
+                container(ui::text(t(Key::AppKind), TextStyle::CALL).color(paint.fg_3()))
+                    .width(150)
+                    .height(glide_sdk::theme::component::CONTROL)
+                    .center_y(glide_sdk::theme::component::CONTROL)
+                    .padding(Padding::from([0.0, SP3]))
+                    .style(move |_| glide_sdk::glide_iced::style::rounded(paint.fill_1(), glide_sdk::theme::R2)),
                 ui::icon_button(
                     &paint,
                     Icon::Close,

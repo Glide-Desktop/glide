@@ -69,7 +69,9 @@ pub use media::{
 };
 pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, split_view, stat_rows};
 pub use pointer::{ContextArea, context_area, reveal};
-pub use popover::{Popup, Tooltip, bubble, dropdown, menu_button, tooltip};
+pub use popover::{
+    Popup, RowMarks, Tooltip, bubble, dropdown, dropdown_decorated, dropdown_with, menu_button, tooltip,
+};
 pub use secrets::{
     CODE, CodeSize, DiffField, ENTRY_ROW, FIELD_ROW, Glyphs, HALO, MASK, QrModules, SECRET, SecretField, Strength,
     SyncLine, VaultState, caption_row, classify, code_cells, code_input, copy_button, countdown_ring, diff_card,
@@ -79,7 +81,7 @@ pub use secrets::{
 };
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
-    page_dots, radio_group, segmented, sidebar_list, swatch, swatches, tabs, track,
+    page_dots, radio_group, segmented, segmented_fill, sidebar_list, swatch, swatches, tabs, track,
 };
 pub use strip::{Mark, TAB_GAP, TAB_PAD, Tab, TabStrip, tab_slot, tab_strip};
 

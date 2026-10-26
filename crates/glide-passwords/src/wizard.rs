@@ -1,4 +1,4 @@
-use glide_ipc::keychain::{Hidden, Login, Request, Response, SyncState, TwoFactor, TwoFactorMethod};
+use glide_ipc::keychain::{ApiKey, Hidden, Login, Request, Response, SyncState, TwoFactor, TwoFactorMethod};
 use glide_sdk::theme::{SP1, SP2, SP3, SP4, SP5, TextStyle};
 use glide_sdk::widget::{self as ui, CodeSize, ListRow, Size, Tone};
 use glide_sdk::{Paint, Shell};
@@ -64,6 +64,33 @@ pub struct Wizard {
     pub busy: bool,
     pub error: Option<String>,
     pub vault: Option<String>,
+    pub api: Option<ApiDraft>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApiDraft {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+fn api_event(wizard: &mut Wizard, event: Event) {
+    match event {
+        Event::ApiKey(on) => {
+            wizard.api = on.then(ApiDraft::default);
+            wizard.error = None;
+        }
+        Event::ClientId(value) => {
+            if let Some(api) = wizard.api.as_mut() {
+                api.client_id = value;
+            }
+        }
+        Event::ClientSecret(value) => {
+            if let Some(api) = wizard.api.as_mut() {
+                api.client_secret = value;
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Wizard {
@@ -89,6 +116,10 @@ impl Wizard {
                 remember: self.remember,
             }),
             device_code: None,
+            api_key: self.api.as_ref().map(|api| ApiKey {
+                client_id: api.client_id.trim().to_string(),
+                client_secret: Hidden::new(api.client_secret.trim().to_string()),
+            }),
         }
     }
 
@@ -97,7 +128,11 @@ impl Wizard {
         let address = self.server != Server::Own
             || self.url.trim().starts_with("https://")
             || self.url.trim().starts_with("http://localhost");
-        address && self.email.contains('@') && !self.password.is_empty() && !self.busy
+        let key = self
+            .api
+            .as_ref()
+            .is_none_or(|api| api.client_id.trim().starts_with("user.") && !api.client_secret.trim().is_empty());
+        address && key && self.email.contains('@') && !self.password.is_empty() && !self.busy
     }
 }
 
@@ -119,6 +154,9 @@ pub enum Event {
     Name(String),
     Finish,
     Close,
+    ApiKey(bool),
+    ClientId(String),
+    ClientSecret(String),
 }
 
 pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
@@ -147,6 +185,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::Email(value) => wizard.email = value,
         Event::Password(value) => wizard.password = value,
         Event::TogglePassword => wizard.shown = !wizard.shown,
+        event @ (Event::ApiKey(_) | Event::ClientId(_) | Event::ClientSecret(_)) => api_event(wizard, event),
         Event::SignIn => {
             wizard.busy = true;
             wizard.error = None;
@@ -166,10 +205,14 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
                         .or_else(|| methods.first().copied());
                     wizard.methods = methods;
                     wizard.code.clear();
+                    wizard.remember |= wizard.step != Step::TwoFactor;
                     wizard.step = Step::TwoFactor;
                 }
                 Ok(Response::VaultAdded { vault }) => {
                     wizard.vault = Some(vault);
+                    if wizard.name.trim().is_empty() {
+                        wizard.name = "Bitwarden".to_string();
+                    }
                     wizard.step = Step::Sync;
                     wizard.password.clear();
                     return app.reload();
@@ -375,6 +418,32 @@ fn kind_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
     content
 }
 
+fn api_key_fields<'a>(app: &'a App, api: &'a ApiDraft) -> Element<'a, Message> {
+    let paint = app.paint;
+    let t = |key: Key| key.text(app.lang);
+    let id = labelled(
+        &paint,
+        "client_id",
+        ui::field(
+            &paint,
+            text_input("user.xxxxxxxx-xxxx-…", &api.client_id)
+                .on_input(|value| Message::Wizard(Event::ClientId(value)))
+                .font(glide_sdk::glide_iced::font::TABULAR)
+                .size(13),
+        ),
+    );
+    let secret = labelled(
+        &paint,
+        "client_secret",
+        crate::view::secret_input(&paint, "client_secret", &api.client_secret, |value| {
+            Message::Wizard(Event::ClientSecret(value))
+        }),
+    );
+    column![row![id, secret].spacing(SP3), ui::text(t(Key::ApiKeyHint), TextStyle::CAP).color(paint.fg_3()),]
+        .spacing(6)
+        .into()
+}
+
 fn login_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
     let paint = app.paint;
     let t = |key: Key| key.text(app.lang);
@@ -384,7 +453,7 @@ fn login_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
         let mut server = Column::new()
             .spacing(6)
             .push(ui::text(t(Key::Server), TextStyle { weight: 520, ..TextStyle::CAP }).color(paint.fg_2()));
-        server = server.push(ui::segmented(
+        server = server.push(ui::segmented_fill(
             &paint,
             &[(Server::Us, "bitwarden.com"), (Server::Eu, "bitwarden.eu"), (Server::Own, t(Key::OwnServer))],
             wizard.server,
@@ -422,6 +491,14 @@ fn login_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
                 |value| Message::Wizard(Event::Password(value)),
                 Message::Wizard(Event::TogglePassword),
             ),
+        ));
+        if let Some(api) = wizard.api.as_ref() {
+            content = content.push(api_key_fields(app, api));
+        }
+        content = content.push(ui::link(
+            &paint,
+            t(if wizard.api.is_some() { Key::WithoutApiKey } else { Key::WithApiKey }),
+            Some(Message::Wizard(Event::ApiKey(wizard.api.is_none()))),
         ));
         if let Some(error) = &wizard.error {
             content = content.push(ui::text(error.as_str(), TextStyle::CAP).color(paint.danger()));
@@ -505,18 +582,29 @@ fn sync_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
         let count = vault.map_or(0, |vault| vault.count);
         content = content.push(title(app, Key::Loading, t(Key::LoadingBody).to_string()));
         content = content.push(ui::progress(&paint, if done { Some(1.0) } else { None }));
-        let check = |ok: bool| -> Element<'_, Message> {
-            if ok { ui::icon(Icon::Check, 16.0, paint.ok()) } else { ui::sized_spinner(&paint, 16.0) }
+        let stages = [vault.is_some(), done, done, done];
+        let first_open = stages.iter().position(|ok| !ok);
+        let lead = |index: usize| -> Element<'_, Message> {
+            if stages[index] {
+                ui::icon(Icon::Check, 16.0, paint.ok())
+            } else if first_open == Some(index) {
+                ui::sized_spinner(&paint, 16.0)
+            } else {
+                container(ui::dot(paint.fg_4(), 8.0)).center(16).into()
+            }
         };
+        let waiting = |index: usize| !stages[index] && first_open != Some(index);
         content = content.push(ui::list(
             &paint,
             vec![
-                ListRow::new(paint, t(Key::KeysDone)).prefix(check(vault.is_some())).into(),
+                ListRow::new(paint, t(Key::KeysDone)).prefix(lead(0)).into(),
                 ListRow::new(paint, t(Key::ItemsLoaded))
-                    .prefix(check(done))
+                    .prefix(lead(1))
+                    .dimmed(waiting(1))
                     .suffix(ui::text(count.to_string(), TextStyle::NUM).color(paint.fg_2()))
                     .into(),
-                ListRow::new(paint, t(Key::FoldersLoaded)).prefix(check(done)).into(),
+                ListRow::new(paint, t(Key::FoldersLoaded)).prefix(lead(2)).dimmed(waiting(2)).into(),
+                ListRow::new(paint, t(Key::SendsLoaded)).prefix(lead(3)).dimmed(waiting(3)).into(),
             ],
         ));
         content = content.push(labelled(

@@ -282,6 +282,14 @@ pub struct Login {
     pub name: String,
     pub two_factor: Option<TwoFactor>,
     pub device_code: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<ApiKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiKey {
+    pub client_id: String,
+    pub client_secret: Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

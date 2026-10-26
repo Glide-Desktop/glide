@@ -109,11 +109,17 @@ pub fn text_field<'a, M: Clone + 'a>(
 }
 
 fn trailing<'a, M: Clone + 'a>(paint: &Paint, glyph: Icon, message: M) -> Element<'a, M> {
+    trailing_sized(paint, glyph, 12.0, 22.0, message)
+}
+
+fn trailing_sized<'a, M: Clone + 'a>(
+    paint: &Paint, glyph: Icon, side: f32, box_side: f32, message: M,
+) -> Element<'a, M> {
     let paint = *paint;
-    let control = control(container(icon(glyph, 12.0, paint.fg_3())).center(Fill))
+    let control = control(container(icon(glyph, side, paint.fg_2())).center(Fill))
         .on_press(message)
-        .width(22)
-        .height(22)
+        .width(box_side)
+        .height(box_side)
         .padding(0);
     widgets::button(control, move |status| {
         let mut style = button_style(&paint, Tone::Ghost, status);
@@ -149,7 +155,9 @@ pub fn hinted_search_input<'a, M: Clone + 'a>(
     } else if let Some(hint) = hint {
         content = content.push(hint);
     }
-    well(paint, content, Validity::Neutral)
+    let inner =
+        container(content).height(component::CONTROL).padding(Padding::from([0.0, SP3])).center_y(component::CONTROL);
+    widgets::search_field(inner, paint)
 }
 
 #[must_use]
@@ -157,7 +165,9 @@ pub fn password_field<'a, M: Clone + 'a>(
     paint: &Paint, placeholder: &str, value: &str, revealed: bool, on_input: impl Fn(String) -> M + 'a, on_reveal: M,
 ) -> Element<'a, M> {
     let input = styled(paint, text_input(placeholder, value).secure(!revealed).on_input(on_input));
-    let content = row![input, trailing(paint, Icon::Eye, on_reveal)].spacing(SP2).align_y(Alignment::Center);
+    let glyph = if revealed { Icon::EyeOff } else { Icon::Eye };
+    let content =
+        row![input, trailing_sized(paint, glyph, 16.0, 28.0, on_reveal)].spacing(SP2).align_y(Alignment::Center);
     well(paint, content, Validity::Neutral)
 }
 

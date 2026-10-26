@@ -69,8 +69,20 @@ pub fn field<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, paint: &Pa
     Element::new(Decorated {
         child: child.into(),
         decoration: Decoration::Field(FieldColors {
-            background: paint.fill_1(),
+            background: paint.view_bg(),
             border: paint.line_2(),
+            accent: paint.acc_bg(),
+            ring: crate::style::to_iced(paint.tokens.acc_ring),
+        }),
+    })
+}
+
+pub fn search_field<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, paint: &Paint) -> Element<'a, Message> {
+    Element::new(Decorated {
+        child: child.into(),
+        decoration: Decoration::Field(FieldColors {
+            background: paint.fill_1(),
+            border: Color::TRANSPARENT,
             accent: paint.acc_bg(),
             ring: crate::style::to_iced(paint.tokens.acc_ring),
         }),
@@ -82,7 +94,7 @@ pub fn tinted_field<'a, Message: 'a>(
 ) -> Element<'a, Message> {
     Element::new(Decorated {
         child: child.into(),
-        decoration: Decoration::Field(FieldColors { background: paint.fill_1(), border: accent, accent, ring }),
+        decoration: Decoration::Field(FieldColors { background: paint.view_bg(), border: accent, accent, ring }),
     })
 }
 

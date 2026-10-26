@@ -10,12 +10,9 @@ use std::time::Instant;
 use glide_ipc::keychain::{EVENT, Envelope, Hidden, Request, Response, Vault};
 use zeroize::Zeroizing;
 
-use crate::agent_prompt::{Answer, Prompt};
-use crate::i18n::{Key, t};
 use crate::state::GlideState;
 
 const PROGRAM: &str = "glide-keychain";
-const OWNER: &str = "keychain";
 
 type Reply = Box<dyn FnOnce(&mut GlideState, Response)>;
 
@@ -27,6 +24,7 @@ pub struct Keychain {
     unlocking: Option<Chain>,
     after_unlock: Vec<Unlocked>,
     pub revision: u64,
+    pub prompt: Option<crate::keychain_prompt::Prompt>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -183,13 +181,16 @@ impl GlideState {
                 }
             }
             Response::UnlockRequested { vault } => self.unlock_keychain(vault, |_| {}),
-            Response::Changed => self.session.keychain.revision += 1,
+            Response::Changed => {
+                self.session.keychain.revision += 1;
+                self.sync_passwords_applet();
+            }
             other => tracing::debug!(?other, "an unexpected keychain event"),
         }
     }
 
     pub fn lock_keychain(&mut self) {
-        self.keychain(Request::Lock { vault: None }, |_, _| {});
+        self.keychain(Request::Lock { vault: None }, |state, _| state.sync_passwords_applet());
     }
 
     pub fn unlock_keychain(&mut self, vault: Option<String>, then: impl FnOnce(&mut Self) + 'static) {
@@ -222,24 +223,22 @@ impl GlideState {
         let Some(chain) = self.session.keychain.unlocking.as_ref() else {
             return;
         };
-        let Some(vault) = chain.current() else {
+        if chain.current().is_none() {
             let any = !chain.unlocked.is_empty();
             self.finish_keychain_unlock(any);
             return;
-        };
-        let body = if chain.wrong { t(Key::KeychainWrong).to_string() } else { vault.name.clone() };
-        let prompt = Prompt {
-            icon: "dialog-password".into(),
-            summary: t(Key::KeychainUnlock).to_string(),
-            body,
-            accept: None,
-            reply: Some((t(Key::KeychainUnlockAction).to_string(), t(Key::KeychainPlaceholder).to_string())),
-            secret: true,
-        };
-        self.ask(OWNER, &prompt, |state, answer| match answer {
-            Some(Answer::Text(password)) => state.submit_vault_password(Hidden::new(password)),
-            _ => state.finish_keychain_unlock(false),
-        });
+        }
+        if self.screen_locked() {
+            self.finish_keychain_unlock(false);
+            return;
+        }
+        self.open_keychain_prompt();
+    }
+
+    pub fn abort_keychain_unlock(&mut self) {
+        if self.session.keychain.unlocking.is_some() {
+            self.finish_keychain_unlock(false);
+        }
     }
 
     pub fn submit_vault_password(&mut self, password: Hidden) {
@@ -284,7 +283,11 @@ impl GlideState {
 
     fn finish_keychain_unlock(&mut self, unlocked: bool) {
         self.session.keychain.unlocking = None;
+        self.close_keychain_prompt();
         let waiting = std::mem::take(&mut self.session.keychain.after_unlock);
+        if self.topbar.open_popup() != Some(crate::topbar::OpenPopup::Passwords) {
+            self.sync_passwords_applet();
+        }
         if unlocked {
             for then in waiting {
                 then(self);

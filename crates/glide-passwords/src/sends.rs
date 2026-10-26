@@ -16,7 +16,10 @@ pub enum Lifetime {
     Day,
     Week,
     Month,
+    Custom(u32),
 }
+
+pub const CUSTOM_DAYS: (u32, u32) = (1, 31);
 
 impl Lifetime {
     #[must_use]
@@ -26,6 +29,7 @@ impl Lifetime {
             Self::Day => 24,
             Self::Week => 24 * 7,
             Self::Month => 24 * 30,
+            Self::Custom(days) => 24 * days,
         }
     }
 }
@@ -46,7 +50,10 @@ pub struct SendForm {
     pub selected: Option<(String, String)>,
     pub query: String,
     pub busy: bool,
+    pub copied_at: Option<u64>,
 }
+
+const COPIED_HOLD: u64 = 2;
 
 impl Default for SendForm {
     fn default() -> Self {
@@ -65,6 +72,7 @@ impl Default for SendForm {
             selected: None,
             query: String::new(),
             busy: false,
+            copied_at: None,
         }
     }
 }
@@ -123,6 +131,8 @@ fn describe(lang: Lang, send: &Send, now: u64) -> String {
         } else {
             t(Key::ExpiresDays).replace("{n}", &hours.div_ceil(24).to_string())
         });
+    } else if now - ends < 86_400 {
+        parts.push(t(Key::ExpiredHoursAgo).replace("{n}", &((now - ends) / 3600).max(1).to_string()));
     } else {
         parts.push(t(Key::ExpiredAgo).replace("{n}", &((now - ends) / 86_400).to_string()));
     }
@@ -204,7 +214,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::CopyLink => {
             if let Some(send) = &form.created {
                 let link = send.link.clone();
-                shell.toast(app.t(Key::CopiedLink));
+                form.copied_at = Some(app.now);
                 let _ = Copied::Link;
                 return iced::clipboard::write(link);
             }
@@ -313,6 +323,39 @@ fn heading<'a>(paint: &glide_sdk::Paint, label: String) -> Element<'a, Message> 
     container(ui::text(label, TextStyle::MICRO).color(paint.fg_3())).padding(Padding::from([SP1, SP3])).into()
 }
 
+fn lifetime_rows(app: &App) -> Vec<Element<'_, Message>> {
+    let paint = app.paint;
+    let t = |key: Key| key.text(app.lang);
+    let lifetime = app.send.lifetime;
+    let custom = if let Lifetime::Custom(days) = lifetime { Lifetime::Custom(days) } else { Lifetime::Custom(3) };
+    let lifetimes = [
+        (Lifetime::Hour, t(Key::OneHour)),
+        (Lifetime::Day, t(Key::OneDay)),
+        (Lifetime::Week, t(Key::SevenDays)),
+        (Lifetime::Month, t(Key::ThirtyDays)),
+        (custom, t(Key::CustomLifetime)),
+    ];
+    let mut rows = vec![
+        ListRow::new(paint, t(Key::Lifetime))
+            .suffix(ui::segmented(&paint, &lifetimes, lifetime, |value| Message::Sends(Event::Lifetime(value))))
+            .into(),
+    ];
+    if let Lifetime::Custom(days) = lifetime {
+        rows.push(
+            ListRow::new(paint, t(Key::CustomDays))
+                .suffix(ui::stepper(
+                    &paint,
+                    days,
+                    (days > CUSTOM_DAYS.0).then(|| days - 1),
+                    (days < CUSTOM_DAYS.1).then(|| days + 1),
+                    |value| Message::Sends(Event::Lifetime(Lifetime::Custom(value))),
+                ))
+                .into(),
+        );
+    }
+    rows
+}
+
 fn form_view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let t = |key: Key| key.text(app.lang);
@@ -336,12 +379,6 @@ fn form_view(app: &App) -> Element<'_, Message> {
             .padding(Padding::from([SP2, SP3])),
     ]
     .spacing(6);
-    let lifetimes = [
-        (Lifetime::Hour, t(Key::OneHour)),
-        (Lifetime::Day, t(Key::OneDay)),
-        (Lifetime::Week, t(Key::SevenDays)),
-        (Lifetime::Month, t(Key::ThirtyDays)),
-    ];
     let servers: Vec<Labeled<String>> = app
         .data
         .vaults
@@ -350,10 +387,8 @@ fn form_view(app: &App) -> Element<'_, Message> {
         .map(|vault| labeled(vault.id.clone(), format!("{} · {}", vault.name, vault.account)))
         .collect();
     let chosen = servers.iter().find(|server| server.0 == form.vault).cloned().or_else(|| servers.first().cloned());
-    let mut options = vec![
-        ListRow::new(paint, t(Key::Lifetime))
-            .suffix(ui::segmented(&paint, &lifetimes, form.lifetime, |value| Message::Sends(Event::Lifetime(value))))
-            .into(),
+    let mut options = lifetime_rows(app);
+    options.extend([
         ListRow::new(paint, t(Key::MaxOpens))
             .suffix(ui::stepper(
                 &paint,
@@ -367,7 +402,7 @@ fn form_view(app: &App) -> Element<'_, Message> {
             .subtitle(t(Key::OtherChannel))
             .suffix(ui::switch(&paint, form.protect, Some(|on| Message::Sends(Event::Protect(on)))))
             .into(),
-    ];
+    ]);
     if form.protect {
         options.push(
             container(crate::view::secret_input(&paint, t(Key::OpenPassword), &form.password, |value| {
@@ -390,10 +425,16 @@ fn form_view(app: &App) -> Element<'_, Message> {
     options.push(
         ListRow::new(paint, t(Key::SendVia))
             .suffix(
-                container(ui::dropdown(&paint, servers, chosen, t(Key::SendVia), |picked| {
-                    Message::Sends(Event::Vault(picked.0))
-                }))
-                .width(260),
+                container(ui::dropdown_with(
+                    &paint,
+                    Some(crate::view::vault_dot(app, chosen.as_ref().map_or("", |server| server.0.as_str()))),
+                    TextStyle::CALL,
+                    servers,
+                    chosen.clone(),
+                    t(Key::SendVia),
+                    |picked| Message::Sends(Event::Vault(picked.0)),
+                ))
+                .width(320),
             )
             .into(),
     );
@@ -422,7 +463,7 @@ fn created_view<'a>(app: &'a App, send: &'a Send) -> Element<'a, Message> {
     let ends = send.expires.unwrap_or(send.deletion);
     let summary = t(Key::LinkSummary)
         .replace("{name}", &send.name)
-        .replace("{date}", &crate::i18n::date(app.lang, ends, app.now))
+        .replace("{date}", &crate::i18n::moment(app.lang, ends, app.now))
         .replace("{n}", &send.max_access.unwrap_or_default().to_string());
     let head = row![
         ui::tinted_tile(Icon::Check, 56.0, paint.ok_soft(), paint.ok()),
@@ -431,17 +472,19 @@ fn created_view<'a>(app: &'a App, send: &'a Send) -> Element<'a, Message> {
     ]
     .spacing(SP4)
     .align_y(Alignment::Center);
-    let link = ui::link_field(&paint, &send.link, t(Key::Copy), Some(Message::Sends(Event::CopyLink)));
-    let qr = ui::card(
+    let copied = app.send.copied_at.is_some_and(|at| app.now < at + COPIED_HOLD);
+    let label = if copied { t(Key::CopiedShort) } else { t(Key::Copy) };
+    let link = ui::link_field(&paint, &send.link, label, Some(Message::Sends(Event::CopyLink)));
+    let qr = container(ui::card(
         &paint,
         column![
             ui::qr_code(&paint, &send.link, 148.0),
             ui::text(t(Key::PointCamera), TextStyle::CAP).color(paint.fg_3()),
         ]
         .spacing(SP2)
-        .align_x(Alignment::Center)
-        .padding(SP4),
-    );
+        .align_x(Alignment::Center),
+    ))
+    .width(192);
     let side = column![
         ui::text(t(Key::SendHeading), TextStyle::MICRO).color(paint.fg_3()),
         row![

@@ -404,6 +404,7 @@ pub struct SessionServices {
     pub otp: Option<crate::otp::Code>,
     pub keychain: crate::keychain::Keychain,
     pub autofill: Option<crate::autofill::Offer>,
+    pub passwords: crate::passwords_applet::Session,
     pub asks: crate::agent_prompt::Asks,
     pub polkit: crate::polkit::Polkit,
     pub cast: crate::cast::Cast,
@@ -1718,7 +1719,7 @@ impl GlideState {
     pub fn run_topbar_action(&mut self, action: crate::topbar::TopbarAction) {
         use crate::topbar::{OpenPopup, TopbarAction};
         let opens_island = matches!(action, TopbarAction::ToggleNotificationCenter | TopbarAction::ToggleQuickSettings);
-        if opens_island && self.session.polkit.prompt.is_some() {
+        if opens_island && (self.session.polkit.prompt.is_some() || self.session.keychain.prompt.is_some()) {
             if self.topbar.peek_notice() {
                 self.queue_redraw();
             }
@@ -1726,6 +1727,7 @@ impl GlideState {
         }
         match action {
             TopbarAction::Polkit(control) => self.polkit_control(control),
+            TopbarAction::Keychain(control) => self.keychain_control(control),
             TopbarAction::MediaPlayPause => self.run_media_command(glide_media::Command::PlayPause),
             TopbarAction::MediaNext => self.run_media_command(glide_media::Command::Next),
             TopbarAction::MediaPrevious => self.run_media_command(glide_media::Command::Previous),
@@ -1805,6 +1807,7 @@ impl GlideState {
             | TopbarAction::HeadsetUseOutput
             | TopbarAction::HeadsetDisconnect
             | TopbarAction::HeadsetSettings => self.run_headset_action(action),
+            action if action.for_passwords() => self.run_passwords_action(action),
             TopbarAction::CalendarShift(delta) => {
                 self.topbar.shift_calendar(i32::from(delta));
             }
@@ -3338,6 +3341,7 @@ impl GlideState {
         }
         tracing::info!("locking the screen");
         self.lock_keychain();
+        self.abort_keychain_unlock();
         self.cancel_all_polkit();
         let user = crate::greeter::current_user(&self.topbar.system_status().user_name);
         if self.lock_auth.is_none() {

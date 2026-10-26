@@ -14,14 +14,17 @@ fn fields(app: &App, own: &Detail, other: &Detail, password: &Hidden, other_pass
         label: t(Key::Username).to_string(),
         value: own.summary.username.clone(),
         differs: own.summary.username != other.summary.username,
-        extra: None,
+        ..DiffField::default()
     }];
     let differs = password.expose() != other_password.expose();
+    let strength = crate::view::strength(glide_ipc::keychain::strength(password.expose()));
     fields.push(DiffField {
         label: if differs { t(Key::PasswordDiffers).to_string() } else { t(Key::Password).to_string() },
         value: password.expose().to_string(),
         differs,
-        extra: crate::view::strength(glide_ipc::keychain::strength(password.expose())),
+        extra: strength,
+        extra_label: strength.map(|level| crate::view::strength_name(app.lang, level).to_string()),
+        mono: true,
     });
     if !own.notes.is_empty() || !other.notes.is_empty() {
         let differs = own.notes != other.notes;
@@ -29,7 +32,7 @@ fn fields(app: &App, own: &Detail, other: &Detail, password: &Hidden, other_pass
             label: if differs { t(Key::NotesDiffer).to_string() } else { t(Key::Notes).to_string() },
             value: own.notes.clone(),
             differs,
-            extra: None,
+            ..DiffField::default()
         });
     }
     let sites = |detail: &Detail| detail.sites.iter().map(|site| site.uri.clone()).collect::<Vec<_>>().join(", ");
@@ -37,7 +40,7 @@ fn fields(app: &App, own: &Detail, other: &Detail, password: &Hidden, other_pass
         label: t(Key::SitesApps).to_string(),
         value: sites(own),
         differs: sites(own) != sites(other),
-        extra: None,
+        ..DiffField::default()
     });
     fields
 }
@@ -47,7 +50,18 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let conflict: &Conflict = app.data.conflicts.first()?;
     let paint = app.paint;
     let t = |key: Key| key.text(app.lang);
-    let date = |unix: u64| crate::i18n::date(app.lang, unix, app.now);
+    let offline = app
+        .data
+        .vaults
+        .iter()
+        .find(|vault| vault.id == conflict.item.vault)
+        .is_some_and(|vault| matches!(vault.sync, glide_ipc::keychain::SyncState::Offline { .. }));
+    let stamp = |unix: u64| crate::i18n::stamp(app.lang, unix, app.now);
+    let local_when = if offline {
+        format!("{}, {}", stamp(conflict.local_modified), t(Key::OfflineStatus))
+    } else {
+        stamp(conflict.local_modified)
+    };
     let head = row![
         ui::tinted_tile(Icon::Warning, 40.0, paint.warn_soft(), paint.warn()),
         column![
@@ -63,7 +77,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let local = ui::diff_card(
         &paint,
         t(Key::ThisDevice),
-        date(conflict.local_modified),
+        local_when,
         (!newer).then_some(t(Key::Newer)),
         fields(app, &conflict.local, &conflict.remote, &conflict.local_password, &conflict.remote_password),
         app.conflict_pick == 0,
@@ -72,7 +86,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let remote = ui::diff_card(
         &paint,
         t(Key::ServerVersion).replace("{vault}", app.vault_name(&conflict.item.vault)),
-        date(conflict.remote_modified),
+        stamp(conflict.remote_modified),
         newer.then_some(t(Key::Newer)),
         fields(app, &conflict.remote, &conflict.local, &conflict.remote_password, &conflict.local_password),
         app.conflict_pick == 1,

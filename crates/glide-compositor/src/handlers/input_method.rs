@@ -27,6 +27,7 @@ impl TextInputActivation for GlideState {
 
     fn deactivated(&mut self) {
         self.session.text_field = None;
+        self.note_login_offer(false);
     }
 }
 

@@ -8,7 +8,18 @@ use crate::state::{ClientState, GlideState};
 pub const FILL_ID: u32 = u32::MAX - 10;
 pub const UNLOCK: &str = "unlock";
 const FILL_PREFIX: &str = "fill:";
-const MAX_CHOICES: usize = 3;
+const LATER: &str = "later";
+const OTHER: &str = "other";
+
+#[must_use]
+fn more_logins(lang: crate::i18n::Lang, n: usize) -> String {
+    let key = match lang.plural(n as u64) {
+        glide_app::i18n::Plural::One => Key::FillMoreOne,
+        glide_app::i18n::Plural::Few => Key::FillMoreFew,
+        glide_app::i18n::Plural::Many => Key::FillMoreMany,
+    };
+    key.text(lang).replace("{n}", &n.to_string())
+}
 
 #[derive(Debug, Clone)]
 pub struct Offer {
@@ -33,6 +44,7 @@ pub fn parse_fill_key(key: &str) -> Option<ItemRef> {
 impl GlideState {
     pub fn offer_passwords(&mut self) {
         if !self.session.text_field.is_some_and(|field| field.kind == Kind::Password) {
+            self.note_login_offer(false);
             return;
         }
         let Some(surface) = self.focused_surface() else {
@@ -59,7 +71,11 @@ impl GlideState {
             .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.identity.program.clone()))
             .map(|path| path.display().to_string());
         let (title, app_id) = crate::state::toplevel_title_and_app_id(&surface);
-        let app = app_id.clone().or(title).unwrap_or_default();
+        let app = crate::topbar::app_display_name(
+            app_id.as_deref().unwrap_or_default(),
+            title.as_deref().unwrap_or_default(),
+        );
+        let app = if app.trim().is_empty() { t(Key::PwThisApp).to_string() } else { app };
         self.session.autofill = Some(Offer { surface, program, app_id, app, asked });
         self.keychain(Request::Status, move |state, response| match response {
             Response::Status { exists: true, unlocked: true } => state.list_candidates(),
@@ -75,7 +91,11 @@ impl GlideState {
         };
         let request = Request::Candidates { program: offer.program, app_id: offer.app_id };
         self.keychain(request, move |state, response| match response {
-            Response::Candidates { list } if !list.is_empty() => state.show_fill_offer(Some(list)),
+            Response::Candidates { list } if !list.is_empty() => {
+                let same = state.focused_surface().as_ref() == Some(&offer.surface);
+                state.note_login_offer(same);
+                state.show_fill_offer(Some(list));
+            }
             Response::Candidates { .. } if offer.asked => state.show_fill_notice(Key::PasswordNoneSaved),
             Response::Locked => state.show_fill_offer(None),
             _ => {}
@@ -106,31 +126,41 @@ impl GlideState {
         if self.focused_surface().as_ref() != Some(&offer.surface) {
             return;
         }
+        let later = glide_notify::Action { key: LATER.into(), label: t(Key::FillLater).into() };
         let (summary, body, actions) = match choices {
             None => (
-                t(Key::PasswordOfferLocked).to_string(),
-                t(Key::PasswordOfferLockedBody).replace("{app}", &offer.app),
-                vec![glide_notify::Action { key: UNLOCK.into(), label: t(Key::KeychainUnlockAction).into() }],
+                t(Key::PwLockedTitle).to_string(),
+                t(Key::PwLockedBody).replace("{app}", &offer.app),
+                vec![glide_notify::Action { key: UNLOCK.into(), label: t(Key::PwUnlock).into() }, later],
             ),
-            Some(list) => (
-                t(Key::PasswordOffer).replace("{app}", &offer.app),
-                list.iter().take(MAX_CHOICES).map(|choice| choice.label.as_str()).collect::<Vec<_>>().join(" · "),
-                list.iter()
-                    .take(MAX_CHOICES)
-                    .map(|choice| {
-                        let name = if choice.username.is_empty() { &choice.label } else { &choice.username };
-                        glide_notify::Action {
-                            key: fill_key(&choice.item),
-                            label: t(Key::PasswordFill).replace("{name}", name),
-                        }
-                    })
-                    .collect(),
-            ),
+            Some(list) => {
+                let Some(first) = list.first() else {
+                    return;
+                };
+                let name = if first.username.is_empty() { &first.label } else { &first.username };
+                let title =
+                    if first.item.vault == glide_ipc::keychain::LOCAL { Key::FillTitle } else { Key::FillCloudTitle };
+                let mut body = t(Key::FillFound).replace("{name}", name).replace("{vault}", &first.vault_name);
+                if list.len() > 1 {
+                    body.push(' ');
+                    body.push_str(&more_logins(crate::i18n::language(), list.len() - 1));
+                }
+                let mut actions = vec![glide_notify::Action {
+                    key: fill_key(&first.item),
+                    label: t(Key::PasswordFill).replace("{name}", name),
+                }];
+                if list.len() > 1 {
+                    actions.push(glide_notify::Action { key: OTHER.into(), label: t(Key::FillOther).into() });
+                }
+                actions.push(later);
+                (t(title).to_string(), body, actions)
+            }
         };
         let notice = glide_notify::Notification {
             id: FILL_ID,
-            app_name: "Glide".to_string(),
+            app_name: t(Key::FillSource).replace("{app}", &offer.app),
             app_icon: "dialog-password".to_string(),
+            desktop_entry: offer.app_id.clone().unwrap_or_default(),
             summary,
             body,
             actions,
@@ -146,6 +176,15 @@ impl GlideState {
         self.queue_redraw();
         if key == UNLOCK {
             self.unlock_keychain(None, Self::list_candidates);
+            return;
+        }
+        if key == LATER {
+            return;
+        }
+        if key == OTHER {
+            if let Some(offer) = self.session.autofill.clone() {
+                self.open_passwords_popup(offer.surface);
+            }
             return;
         }
         let (Some(item), Some(offer)) = (parse_fill_key(key), self.session.autofill.clone()) else {
@@ -171,6 +210,16 @@ mod tests {
         assert_eq!(parse_fill_key(UNLOCK), None);
         assert_eq!(parse_fill_key("fill:x"), None);
         assert_eq!(parse_fill_key("fill:/x"), None);
+    }
+
+    #[test]
+    fn the_other_logins_are_counted_with_the_right_plural() {
+        use crate::i18n::Lang;
+        assert_eq!(more_logins(Lang::Uk, 1), "Ще 1 логін підходить цьому застосунку.");
+        assert_eq!(more_logins(Lang::Uk, 3), "Ще 3 логіни підходять цьому застосунку.");
+        assert_eq!(more_logins(Lang::Uk, 11), "Ще 11 логінів підходять цьому застосунку.");
+        assert_eq!(more_logins(Lang::En, 1), "1 more login fits this app.");
+        assert_eq!(more_logins(Lang::En, 2), "2 more logins fit this app.");
     }
 
     #[test]

@@ -259,21 +259,28 @@ fn segment_button<'a, M: Clone + 'a>(
 pub fn segmented<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
     paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M,
 ) -> Element<'a, M> {
+    segmented_sized(paint, options, selected, on_select, Length::Shrink)
+}
+
+#[must_use]
+pub fn segmented_fill<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
+    paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M,
+) -> Element<'a, M> {
+    segmented_sized(paint, options, selected, on_select, Length::Fill)
+}
+
+fn segmented_sized<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
+    paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M, width: Length,
+) -> Element<'a, M> {
     let paint = *paint;
     let index = options.iter().position(|(value, _)| *value == selected);
     let segments = options.iter().map(|(value, label)| {
         let active = *value == selected;
-        segment_button(
-            &paint,
-            label.clone().into(),
-            active,
-            on_select(*value),
-            component::SMALL_CONTROL,
-            Length::Shrink,
-        )
+        segment_button(&paint, label.clone().into(), active, on_select(*value), component::SMALL_CONTROL, width)
     });
-    let content = Row::with_children(segments).spacing(2);
+    let content = Row::with_children(segments).spacing(2).width(width);
     let control = container(track(&paint, Indicator::Thumb, index, content))
+        .width(width)
         .padding((component::CONTROL - component::SMALL_CONTROL) / 2.0)
         .style(move |_| style::rounded(paint.fill_1(), R2));
     arrows(&paint, control, R2, options, index, on_select)

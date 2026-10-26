@@ -49,6 +49,12 @@ mod headset_view;
 #[path = "topbar_polkit.rs"]
 mod polkit_view;
 
+#[path = "topbar_passwords.rs"]
+pub mod passwords_view;
+
+#[path = "topbar_keychain.rs"]
+mod keychain_view;
+
 pub use tray::{ICON as TRAY_ICON, IconArt, MAX_SCALE as TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon};
 
 pub use panels::{
@@ -265,6 +271,7 @@ pub enum OpenPopup {
     AppMenu,
     Privacy,
     Headset,
+    Passwords,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -330,10 +337,20 @@ pub enum TopbarAction {
     HeadsetUseOutput,
     HeadsetDisconnect,
     HeadsetSettings,
+    TogglePasswords,
+    PasswordsField,
+    PasswordsRow(u8),
+    PasswordsMenu(u8),
+    PasswordsGenerate,
+    PasswordsOpen,
+    PasswordsUnlock,
+    PasswordsCreate,
+    PasswordsConnect,
     CalendarShift(i8),
     CalendarToday,
     Tray(TrayClick),
     Polkit(crate::polkit::Control),
+    Keychain(crate::keychain_prompt::Control),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -411,11 +428,21 @@ pub enum Slot {
     HeadsetOutput,
     HeadsetDisconnect,
     HeadsetSettings,
+    Passwords,
+    PwField,
+    PwRow(u8),
+    PwMenu(u8),
+    PwGenerate,
+    PwOpen,
+    PwUnlock,
+    PwCreate,
+    PwConnect,
     CalMonth,
     CalPrev,
     CalNext,
     Tray(u16),
     Polkit(crate::polkit::Control),
+    Keychain(crate::keychain_prompt::Control),
 }
 
 impl Slot {
@@ -437,11 +464,25 @@ impl Slot {
     }
 
     const fn in_status_cluster(self) -> bool {
-        matches!(self, Self::Status | Self::Search | Self::Privacy | Self::Headset)
+        matches!(self, Self::Status | Self::Search | Self::Privacy | Self::Headset | Self::Passwords)
     }
 
     const fn in_headset_popup(self) -> bool {
         matches!(self, Self::HeadsetOutput | Self::HeadsetDisconnect | Self::HeadsetSettings)
+    }
+
+    pub(super) const fn in_passwords_popup(self) -> bool {
+        matches!(
+            self,
+            Self::PwField
+                | Self::PwRow(_)
+                | Self::PwMenu(_)
+                | Self::PwGenerate
+                | Self::PwOpen
+                | Self::PwUnlock
+                | Self::PwCreate
+                | Self::PwConnect
+        )
     }
 
     const fn in_strip(self) -> bool {
@@ -460,6 +501,7 @@ impl Slot {
                     | Self::Caffeine
                     | Self::Tray(_)
                     | Self::Polkit(_)
+                    | Self::Keychain(_)
             )
     }
 
@@ -509,6 +551,7 @@ impl Slot {
             && !self.in_notification_center()
             && !self.in_app_menu()
             && !self.in_headset_popup()
+            && !self.in_passwords_popup()
     }
 
     const fn state_layer_radius(self) -> Option<f32> {
@@ -549,6 +592,7 @@ impl Slot {
             | Self::QsBluetooth
             | Self::QsNetbird => Some(glide_theme::shape::R_ROUND),
             Self::Polkit(control) => polkit_view::layer_radius(control),
+            Self::Keychain(control) => keychain_view::layer_radius(control),
             _ => Some(glide_theme::shape::R2),
         }
     }
@@ -623,11 +667,21 @@ impl Slot {
             Self::HeadsetOutput => TopbarAction::HeadsetUseOutput,
             Self::HeadsetDisconnect => TopbarAction::HeadsetDisconnect,
             Self::HeadsetSettings => TopbarAction::HeadsetSettings,
+            Self::Passwords => TopbarAction::TogglePasswords,
+            Self::PwField => TopbarAction::PasswordsField,
+            Self::PwRow(index) => TopbarAction::PasswordsRow(index),
+            Self::PwMenu(index) => TopbarAction::PasswordsMenu(index),
+            Self::PwGenerate => TopbarAction::PasswordsGenerate,
+            Self::PwOpen => TopbarAction::PasswordsOpen,
+            Self::PwUnlock => TopbarAction::PasswordsUnlock,
+            Self::PwCreate => TopbarAction::PasswordsCreate,
+            Self::PwConnect => TopbarAction::PasswordsConnect,
             Self::CalMonth => TopbarAction::CalendarToday,
             Self::CalPrev => TopbarAction::CalendarShift(-1),
             Self::CalNext => TopbarAction::CalendarShift(1),
             Self::Tray(id) => TopbarAction::Tray(TrayClick { id, button: TrayButton::Primary }),
             Self::Polkit(control) => TopbarAction::Polkit(control),
+            Self::Keychain(control) => TopbarAction::Keychain(control),
         }
     }
 }
@@ -772,6 +826,11 @@ pub struct Topbar {
     qs_bg_cache: Cache<(i32, i32)>,
     qs_detail_cache: Cache<(u64, u64, Option<Slot>, Detail)>,
     headset_cache: Cache<headset_view::HeadsetKey>,
+    passwords: passwords_view::Applet,
+    passwords_menu_rect: Option<Rectangle<i32, Logical>>,
+    passwords_rect: Option<Rectangle<i32, Logical>>,
+    passwords_cache: Cache<passwords_view::PasswordsKey>,
+    passwords_menu_cache: Cache<passwords_view::PasswordsKey>,
     lang_menu_cache: Cache<(u64, usize, Option<Slot>)>,
     raster_rev: u64,
 
@@ -832,6 +891,8 @@ impl Topbar {
         self.qs_bg_cache.clear();
         self.qs_detail_cache.clear();
         self.headset_cache.clear();
+        self.passwords_cache.clear();
+        self.passwords_menu_cache.clear();
         self.lang_menu_cache.clear();
         self.menu_titles.clear();
         self.menu_rasters.clear();
@@ -1772,6 +1833,12 @@ impl Topbar {
         {
             return true;
         }
+        if self.popup_reveal.is_open()
+            && self.open_popup == Some(OpenPopup::Passwords)
+            && self.passwords_menu_rect.is_some_and(|menu| menu.to_f64().contains(pos))
+        {
+            return true;
+        }
         self.popup_reveal.is_open()
             && self.open_popup == Some(OpenPopup::AppMenu)
             && self.menu_panels.iter().any(|panel| panel.rect.to_f64().contains(pos))
@@ -1917,10 +1984,15 @@ impl Topbar {
         }
 
         let mut popup_slots = std::mem::take(&mut menu.rows);
-        let popup_rect = self
+        let mut popup_rect = self
             .layout_popup(painter, (output, strip), (lang_rect, menu.anchor), &mut popup_slots)
             .or_else(|| self.layout_status_popup(&slots, output, strip.loc.y))
             .or_else(|| self.layout_headset_popup(&slots, output, strip.loc.y, &mut popup_slots));
+        if popup_rect.is_none() {
+            popup_rect = self.layout_passwords_popup(&slots, output, strip.loc.y, &mut popup_slots);
+        } else {
+            self.passwords_menu_rect = None;
+        }
         if self.popup_reveal.is_open() {
             slots.extend(popup_slots.iter().copied());
         }
@@ -1957,7 +2029,7 @@ impl Topbar {
                 },
                 popup_slots,
             )),
-            Some(OpenPopup::Privacy | OpenPopup::Headset) | None => None,
+            Some(OpenPopup::Privacy | OpenPopup::Headset | OpenPopup::Passwords) | None => None,
         }
     }
 
@@ -2441,6 +2513,7 @@ fn popup_slots(popup: OpenPopup) -> fn(Slot) -> bool {
         OpenPopup::AppMenu => Slot::in_app_menu,
         OpenPopup::Privacy => |_| false,
         OpenPopup::Headset => Slot::in_headset_popup,
+        OpenPopup::Passwords => Slot::in_passwords_popup,
     }
 }
 
@@ -2997,6 +3070,7 @@ pub struct TopbarTheme {
     pub danger: Color,
     pub ok_soft: Color,
     pub danger_soft: Color,
+    pub warn: Color,
     pub line: Color,
     pub line_2: Color,
     pub fill_2: Color,
@@ -3055,6 +3129,7 @@ impl TopbarTheme {
             danger: t.danger,
             ok_soft: t.ok_soft,
             danger_soft: t.danger_soft,
+            warn: t.warn,
             line: t.line,
             line_2: t.line_2,
             fill_2: t.fill_2,
@@ -3647,6 +3722,7 @@ fn push_status<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) 
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     status::push_popups(topbar, renderer, painter, scale, output_scale, elements);
     headset_view::push_popup(topbar, renderer, painter, icons, scale, output_scale, elements);
+    passwords_view::push_popup(topbar, renderer, painter, icons, scale, output_scale, elements);
     status::push_cluster(topbar, renderer, painter, icons, scale, output_scale, elements);
 }
 

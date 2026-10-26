@@ -13,6 +13,7 @@ use smithay::backend::renderer::element::{
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
 use super::glyphs::{Glyph, glyph};
+use super::keychain_view;
 use super::polkit_view;
 use super::{
     Anim, BadgePop, Cache, E_IO, E_OUT, Frame, LocalRect, MEDIA_ART, MEDIA_ART_LARGE, MediaWidget, OpenPopup, Slot,
@@ -147,6 +148,7 @@ pub(super) enum View {
     Media,
     Calendar,
     Polkit,
+    Keychain,
 }
 
 impl View {
@@ -155,20 +157,21 @@ impl View {
     }
 
     const fn dims(self) -> bool {
-        self.expanded() || matches!(self, Self::Polkit)
+        self.expanded() || matches!(self, Self::Polkit | Self::Keychain)
     }
 
     const fn elevation(self) -> Level {
         match self {
             Self::Compact => Level::El1,
             Self::Alert | Self::Notice | Self::Pill => Level::El2,
-            Self::Media | Self::Calendar | Self::Polkit => Level::El3,
+            Self::Media | Self::Calendar | Self::Polkit | Self::Keychain => Level::El3,
         }
     }
 
     const fn radius(self) -> f32 {
         match self {
             Self::Polkit => polkit_view::RADIUS,
+            Self::Keychain => keychain_view::RADIUS,
             _ => R2,
         }
     }
@@ -182,6 +185,7 @@ impl View {
             Self::Notice => 4,
             Self::Pill => 5,
             Self::Polkit => 6,
+            Self::Keychain => 7,
         }
     }
 }
@@ -275,6 +279,11 @@ pub(super) struct Island {
     polkit_popover_shadow: Cache<(i32, i32)>,
     polkit_spinner: HashMap<(u32, i32), MemoryRenderBuffer>,
     polkit_sweep: Vec<(Color, MemoryRenderBuffer)>,
+    keychain: Option<crate::keychain_prompt::View>,
+    keychain_motion: crate::polkit::Motion,
+    keychain_rev: u64,
+    keychain_layout: Option<((u64, Lang), keychain_view::Layout)>,
+    keychain_cache: Cache<(u64, Lang)>,
 }
 
 impl Default for Island {
@@ -318,6 +327,11 @@ impl Default for Island {
             polkit_popover_shadow: Cache::default(),
             polkit_spinner: HashMap::new(),
             polkit_sweep: Vec::new(),
+            keychain: None,
+            keychain_motion: crate::polkit::Motion::default(),
+            keychain_rev: 0,
+            keychain_layout: None,
+            keychain_cache: Cache::default(),
         }
     }
 }
@@ -350,6 +364,8 @@ impl Island {
         self.polkit_popover_shadow.clear();
         self.polkit_spinner.clear();
         self.polkit_sweep.clear();
+        self.keychain_layout = None;
+        self.keychain_cache.clear();
     }
 
     pub(super) fn is_animating(&self) -> bool {
@@ -366,6 +382,19 @@ impl Island {
         }
         let layout = polkit_view::layout(painter, view);
         self.polkit_layout = Some((key, layout.clone()));
+        Some(layout)
+    }
+
+    fn keychain_layout(&mut self, painter: &Painter) -> Option<keychain_view::Layout> {
+        let view = self.keychain.as_ref()?;
+        let key = (self.keychain_rev, crate::i18n::language());
+        if let Some((cached, layout)) = self.keychain_layout.as_ref()
+            && *cached == key
+        {
+            return Some(layout.clone());
+        }
+        let layout = keychain_view::layout(painter, view);
+        self.keychain_layout = Some((key, layout.clone()));
         Some(layout)
     }
 
@@ -721,6 +750,9 @@ impl Topbar {
         if self.island.polkit.is_some() {
             return if self.island.fullscreen && !self.island.polkit_peek { View::Pill } else { View::Polkit };
         }
+        if self.island.keychain.is_some() {
+            return if self.island.fullscreen && !self.island.polkit_peek { View::Pill } else { View::Keychain };
+        }
         match self.open_popup {
             Some(OpenPopup::MediaPlayer) if self.media.is_some() => View::Media,
             Some(OpenPopup::NotificationCenter) => View::Calendar,
@@ -776,7 +808,7 @@ impl Topbar {
 
     #[must_use]
     pub fn floats(&self) -> bool {
-        self.covered() && matches!(self.island.view, View::Pill | View::Notice | View::Polkit)
+        self.covered() && matches!(self.island.view, View::Pill | View::Notice | View::Polkit | View::Keychain)
     }
 
     pub fn set_fullscreen(&mut self, fullscreen: bool) -> bool {
@@ -800,11 +832,30 @@ impl Topbar {
         if view.is_some() && self.island.polkit.is_none() && self.open_popup.is_some() {
             self.close_popup();
         }
-        if view.is_none() {
+        if view.is_none() && self.island.keychain.is_none() {
             self.island.polkit_peek = false;
         }
         self.island.polkit = view;
         self.island.polkit_rev = self.island.polkit_rev.wrapping_add(1);
+        self.sync_island();
+        self.touch();
+        true
+    }
+
+    pub fn set_keychain(&mut self, view: Option<crate::keychain_prompt::View>, motion: crate::polkit::Motion) -> bool {
+        let moved = self.island.keychain_motion != motion;
+        self.island.keychain_motion = motion;
+        if self.island.keychain == view {
+            return moved;
+        }
+        if view.is_some() && self.island.keychain.is_none() && self.open_popup.is_some() {
+            self.close_popup();
+        }
+        if view.is_none() && self.island.polkit.is_none() {
+            self.island.polkit_peek = false;
+        }
+        self.island.keychain = view;
+        self.island.keychain_rev = self.island.keychain_rev.wrapping_add(1);
         self.sync_island();
         self.touch();
         true
@@ -816,22 +867,31 @@ impl Topbar {
     }
 
     #[must_use]
-    pub fn polkit_mask(&self, output: Rectangle<i32, Logical>) -> Vec<LocalRect> {
-        if !self.polkit_shown() {
-            return Vec::new();
+    pub fn keychain_shown(&self) -> bool {
+        self.island.keychain.is_some() && self.island.view == View::Keychain
+    }
+
+    #[must_use]
+    pub fn capture_mask(&self, output: Rectangle<i32, Logical>) -> Vec<LocalRect> {
+        let mut masks = Vec::new();
+        if self.polkit_shown() || self.keychain_shown() {
+            let island = self.island_target(output);
+            let popover = self
+                .island
+                .polkit_layout
+                .as_ref()
+                .filter(|_| self.polkit_shown())
+                .and_then(|(_, layout)| layout.popover)
+                .map(|rect| shift(rect, island.loc));
+            masks.push(island);
+            masks.extend(popover);
         }
-        let island = self.island_target(output);
-        let popover = self
-            .island
-            .polkit_layout
-            .as_ref()
-            .and_then(|(_, layout)| layout.popover)
-            .map(|rect| shift(rect, island.loc));
-        std::iter::once(island).chain(popover).collect()
+        masks.extend(self.passwords_mask());
+        masks
     }
 
     pub fn peek_notice(&mut self) -> bool {
-        if self.island.polkit.is_some() {
+        if self.island.polkit.is_some() || self.island.keychain.is_some() {
             self.island.polkit_peek = true;
             self.sync_island();
             self.touch();
@@ -847,7 +907,7 @@ impl Topbar {
     }
 
     pub(super) fn pill(&self) -> Option<Pill> {
-        if self.island.polkit.is_some() {
+        if self.island.polkit.is_some() || self.island.keychain.is_some() {
             return Some(Pill { asks: true, dot: PillDot::Accent, more: 0 });
         }
         if let Some(notice) = self.island.notice.as_ref() {
@@ -866,7 +926,7 @@ impl Topbar {
 
     fn pill_action(&self) -> Option<TopbarAction> {
         use crate::notifications::NotificationAction as Act;
-        if self.island.polkit.is_some() {
+        if self.island.polkit.is_some() || self.island.keychain.is_some() {
             return Some(TopbarAction::PeekNotice);
         }
         if let Some(notice) = self.island.notice.as_ref() {
@@ -995,7 +1055,7 @@ impl Topbar {
         match view {
             View::Media => Some(mini_width(painter, t(Key::Notifications))),
             View::Calendar => self.media.is_some().then(|| mini_width(painter, t(Key::Media))),
-            View::Compact | View::Alert | View::Notice | View::Pill | View::Polkit => None,
+            View::Compact | View::Alert | View::Notice | View::Pill | View::Polkit | View::Keychain => None,
         }
     }
 
@@ -1018,6 +1078,9 @@ impl Topbar {
             View::Calendar => (WIDE, calendar_height(self.nc_items.len())),
             View::Polkit => {
                 (polkit_view::WIDTH, self.island.polkit_layout(painter).map_or(ALERT_H, |layout| layout.height))
+            }
+            View::Keychain => {
+                (keychain_view::WIDTH, self.island.keychain_layout(painter).map_or(ALERT_H, |layout| layout.height))
             }
         }
     }
@@ -1070,6 +1133,15 @@ impl Topbar {
                 if let (Some(layout), Some(view)) = (self.island.polkit_layout(painter), self.island.polkit.as_ref()) {
                     for (control, rect) in polkit_view::slots(&layout, view) {
                         slots.push((Slot::Polkit(control), shift(rect, origin)));
+                    }
+                }
+            }
+            View::Keychain => {
+                if let (Some(layout), Some(view)) =
+                    (self.island.keychain_layout(painter), self.island.keychain.as_ref())
+                {
+                    for (control, rect) in keychain_view::slots(&layout, view) {
+                        slots.push((Slot::Keychain(control), shift(rect, origin)));
                     }
                 }
             }
@@ -1729,7 +1801,49 @@ fn push_view<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, vi
         View::Media => push_media(topbar, frame, alpha, spot),
         View::Calendar => push_calendar(topbar, frame, alpha, spot),
         View::Polkit => push_polkit(topbar, frame, alpha, spot),
+        View::Keychain => push_keychain(topbar, frame, alpha, spot),
     }
+}
+
+fn push_keychain<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
+    let Some(layout) = topbar.island.keychain_layout(painter) else {
+        return;
+    };
+    let Some(view) = topbar.island.keychain.as_ref() else {
+        return;
+    };
+    let now = Instant::now();
+    let motion = topbar.island.keychain_motion;
+    let clip = topbar.island.rect(spot.strip);
+    let mut content = spot.content(keychain_view::WIDTH, layout.height);
+    content.loc.x += shake_offset(motion.shaken, now);
+    let theme = &topbar.theme;
+
+    if view.checking {
+        let rect = keychain_view::spinner_rect(&layout);
+        let turn = cycle(motion.checking, now, SPINNER_PERIOD);
+        let step = (turn * f64::from(polkit_view::SPINNER_STEPS)) as u32 % polkit_view::SPINNER_STEPS;
+        let key = (step, output_scale);
+        if !topbar.island.polkit_spinner.contains_key(&key)
+            && let Some(buffer) = polkit_view::paint_spinner(step, theme.active_label, output_scale)
+        {
+            topbar.island.polkit_spinner.insert(key, buffer);
+        }
+        if let Some(buffer) = topbar.island.polkit_spinner.get(&key) {
+            push_clipped(renderer, buffer, (shift(rect, content.loc), clip), alpha, scale, elements);
+        }
+    }
+
+    let key = (topbar.island.keychain_rev, crate::i18n::language());
+    let Some(buffer) = topbar
+        .island
+        .keychain_cache
+        .resolve(key, output_scale, || keychain_view::paint(painter, theme, view, &layout, output_scale))
+    else {
+        return;
+    };
+    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
 }
 
 fn shake_offset(shaken: Option<Instant>, now: Instant) -> i32 {

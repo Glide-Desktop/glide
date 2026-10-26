@@ -41,6 +41,7 @@ mod idle;
 mod input;
 mod ipc;
 mod keychain;
+mod keychain_prompt;
 mod launcher;
 mod layout_scope;
 mod lid;
@@ -55,6 +56,7 @@ mod osd;
 mod otp;
 mod overview;
 mod paint;
+mod passwords_applet;
 mod polkit;
 mod polkit_agent;
 mod polkit_helper;
@@ -239,9 +241,11 @@ fn run() -> anyhow::Result<()> {
         let wheel_animating = state.tick_smooth_wheel();
         let shot_animating = state.tick_shot();
         let polkit_animating = state.tick_polkit();
+        let keychain_animating = state.tick_keychain_prompt();
 
         if toasts_animating
             || polkit_animating
+            || keychain_animating
             || shot_animating
             || osd_animating
             || wheel_animating
@@ -389,7 +393,7 @@ fn init_keychain(event_loop: &mut EventLoop<'static, GlideState>, state: &mut Gl
     match keychain::Keychain::start(send) {
         Ok(keychain) => {
             state.session.keychain = keychain;
-            state.keychain(glide_ipc::keychain::Request::Status, |_, _| {});
+            state.sync_passwords_applet();
         }
         Err(err) => tracing::warn!(%err, "the keychain link is unavailable; saved passwords cannot be filled"),
     }

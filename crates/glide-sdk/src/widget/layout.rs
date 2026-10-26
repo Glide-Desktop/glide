@@ -67,10 +67,10 @@ pub fn list<'a, M: 'a>(paint: &Paint, rows: Vec<Element<'a, M>>) -> Element<'a, 
     for (index, item) in rows.into_iter().enumerate() {
         items = items.push(item);
         if index + 1 < count {
-            items = items.push(container(separator(&paint)).padding(Padding::from([0.0, SP3])));
+            items = items.push(separator(&paint));
         }
     }
-    let boxed = container(items).padding(SP1).width(Fill).style(move |_| card_style(&paint));
+    let boxed = container(items).width(Fill).style(move |_| card_style(&paint));
     widgets::surface(boxed, &paint, Level::El1, R3)
 }
 
@@ -169,8 +169,17 @@ pub struct ListRow<'a, M> {
     prefix: Option<Element<'a, M>>,
     suffix: Option<Element<'a, M>>,
     message: Option<M>,
-    dimmed: bool,
+    ink: TitleInk,
     stacked: bool,
+    strong: bool,
+    beside: Option<Element<'a, M>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleInk {
+    Plain,
+    Dimmed,
+    Accent,
 }
 
 impl<'a, M: Clone + 'a> ListRow<'a, M> {
@@ -183,9 +192,29 @@ impl<'a, M: Clone + 'a> ListRow<'a, M> {
             prefix: None,
             suffix: None,
             message: None,
-            dimmed: false,
+            ink: TitleInk::Plain,
             stacked: false,
+            strong: false,
+            beside: None,
         }
+    }
+
+    #[must_use]
+    pub const fn strong(mut self) -> Self {
+        self.strong = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn accent(mut self) -> Self {
+        self.ink = TitleInk::Accent;
+        self
+    }
+
+    #[must_use]
+    pub fn beside(mut self, beside: impl Into<Element<'a, M>>) -> Self {
+        self.beside = Some(beside.into());
+        self
     }
 
     #[must_use]
@@ -223,7 +252,11 @@ impl<'a, M: Clone + 'a> ListRow<'a, M> {
 
     #[must_use]
     pub fn dimmed(mut self, dimmed: bool) -> Self {
-        self.dimmed = dimmed;
+        if dimmed {
+            self.ink = TitleInk::Dimmed;
+        } else if self.ink == TitleInk::Dimmed {
+            self.ink = TitleInk::Plain;
+        }
         self
     }
 
@@ -241,9 +274,18 @@ impl<'a, M: Clone + 'a> ListRow<'a, M> {
 
 impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
     fn from(item: ListRow<'a, M>) -> Self {
-        let ListRow { paint, title, subtitle, prefix, suffix, message, dimmed, stacked } = item;
-        let ink = if dimmed { paint.fg_3() } else { paint.fg_1() };
-        let mut labels = column![text(title, TextStyle::BODY).color(ink)].spacing(1).width(Fill);
+        let ListRow { paint, title, subtitle, prefix, suffix, message, ink, stacked, strong, beside } = item;
+        let ink = match ink {
+            TitleInk::Plain => paint.fg_1(),
+            TitleInk::Dimmed => paint.fg_3(),
+            TitleInk::Accent => paint.acc_text(),
+        };
+        let style = if strong { TextStyle::HEAD } else { TextStyle::BODY };
+        let mut head = row![text(title, style).color(ink)].spacing(SP2).align_y(Alignment::Center);
+        if let Some(beside) = beside {
+            head = head.push(beside);
+        }
+        let mut labels = column![head].spacing(1).width(Fill);
         if let Some(subtitle) = subtitle {
             labels = labels.push(text(subtitle, TextStyle::CAP).color(paint.fg_2()));
         }

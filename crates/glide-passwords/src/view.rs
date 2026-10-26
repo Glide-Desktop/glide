@@ -167,7 +167,36 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             .map(|vault| labeled(Some(vault.id.clone()), vault.name.clone())),
     );
     let chosen = vaults.iter().find(|choice| choice.0 == app.vault).cloned();
-    let picker = ui::dropdown(&paint, vaults, chosen, app.t(Key::AllVaults), |picked| Message::Vault(picked.0));
+    let glyph = match app.vault.as_ref().and_then(|id| app.data.vaults.iter().find(|vault| &vault.id == id)) {
+        None => Icon::Grid,
+        Some(vault) if vault.kind == glide_ipc::keychain::VaultKind::Local => Icon::Drive,
+        Some(_) => Icon::Cloud,
+    };
+    let total = model::count(&app.data.items, None, Section::All);
+    let marks: Vec<(Option<String>, Option<iced::Color>, String)> = std::iter::once((None, None, total.to_string()))
+        .chain(app.data.vaults.iter().filter(|vault| vault.exists).map(|vault| {
+            let colour = match model::vault_state(vault) {
+                VaultState::Synced => paint.ok(),
+                VaultState::Pending => paint.warn(),
+                _ => paint.fg_4(),
+            };
+            (Some(vault.id.clone()), Some(colour), vault.count.to_string())
+        }))
+        .collect();
+    let picker = ui::dropdown_decorated(
+        &paint,
+        Some(ui::glyph_tile(&paint, glyph, 22.0, true)),
+        TextStyle { weight: 600, ..TextStyle::CALL },
+        vaults,
+        chosen,
+        |picked| Message::Vault(picked.0),
+        move |option: &Labeled<Option<String>>| {
+            marks
+                .iter()
+                .find(|(id, ..)| *id == option.0)
+                .map_or((None, None), |(_, colour, count)| (*colour, Some(count.clone())))
+        },
+    );
     let mut column = Column::new().spacing(2).push(container(picker).padding(Padding::from([0.0, SP1]).bottom(SP1)));
     column = column.push(heading(&paint, app.t(Key::Categories), SP3));
     for section in Section::CATEGORIES {
@@ -217,12 +246,21 @@ fn heading<'a>(paint: &Paint, label: &'a str, top: f32) -> Element<'a, Message> 
         .into()
 }
 
+pub fn vault_dot<'a>(app: &App, vault: &str) -> Element<'a, Message> {
+    let paint = app.paint;
+    let colour = match app.data.vaults.iter().find(|known| known.id == vault).map(model::vault_state) {
+        Some(VaultState::Synced) => paint.ok(),
+        Some(VaultState::Pending) => paint.warn(),
+        _ => paint.fg_4(),
+    };
+    ui::dot(colour, 8.0)
+}
+
 fn sync_card(app: &App) -> Element<'_, Message> {
-    let lines = app
-        .data
-        .vaults
-        .iter()
-        .filter(|vault| vault.exists)
+    let mut vaults: Vec<&glide_ipc::keychain::Vault> = app.data.vaults.iter().filter(|vault| vault.exists).collect();
+    vaults.sort_by_key(|vault| vault.id != app.data.default);
+    let lines = vaults
+        .into_iter()
         .map(|vault| {
             let state = model::vault_state(vault);
             let status = match (&vault.sync, vault.unlocked) {
@@ -453,11 +491,9 @@ fn detail_rows<'a>(app: &'a App, detail: &'a glide_ipc::keychain::Detail) -> Vec
             rows.push(ui::field_row(
                 &paint,
                 t(Key::Code),
-                ui::text(ui::grouped_code(&code.code), ui::CODE).color(if urgent {
-                    paint.danger()
-                } else {
-                    paint.acc_text()
-                }),
+                ui::text(ui::grouped_code(&code.code), ui::CODE)
+                    .font(glide_sdk::glide_iced::font::TABULAR)
+                    .color(if urgent { paint.danger() } else { paint.acc_text() }),
                 vec![
                     ui::countdown_ring(&paint, code.seconds_left, code.period),
                     ui::copy_button(&paint, t(Key::CopyCode), Message::Copy(Copied::Code)),
@@ -468,6 +504,7 @@ fn detail_rows<'a>(app: &'a App, detail: &'a glide_ipc::keychain::Detail) -> Vec
             let created = crate::i18n::date(app.lang, passkey.created, app.now);
             rows.push(
                 ListRow::new(paint, t(Key::Passkey))
+                    .strong()
                     .subtitle(t(Key::PasskeyCreated).replace("{site}", &passkey.rp_id).replace("{date}", &created))
                     .prefix(ui::glyph_tile(&paint, Icon::Passkey, 32.0, true))
                     .suffix(ui::badge(&paint, t(Key::PasskeySynced), Severity::Accent))
@@ -541,7 +578,11 @@ fn detail_links<'a>(app: &'a App, detail: &'a glide_ipc::keychain::Detail) -> El
             let name = if link.name.is_empty() { link.app_id.clone() } else { link.name.clone() };
             links.push(
                 ListRow::new(paint, name)
-                    .subtitle(link.app_id.clone())
+                    .beside(
+                        ui::text(link.app_id.clone(), TextStyle::CAP)
+                            .font(glide_sdk::glide_iced::font::TABULAR)
+                            .color(paint.fg_3()),
+                    )
                     .prefix(ui::icon(Icon::App, 18.0, paint.fg_3()))
                     .suffix(ui::text(t(Key::AppKind), TextStyle::CAP).color(paint.fg_3()))
                     .into(),
@@ -550,6 +591,7 @@ fn detail_links<'a>(app: &'a App, detail: &'a glide_ipc::keychain::Detail) -> El
         if !summary.deleted {
             links.push(
                 ListRow::new(paint, t(Key::Bind))
+                    .accent()
                     .prefix(ui::icon(Icon::Plus, 18.0, paint.acc_text()))
                     .on_press(Message::Edit)
                     .into(),
@@ -596,7 +638,9 @@ fn content(app: &App) -> Element<'_, Message> {
         return container(ui::spinner(&paint, true)).center(Fill).into();
     }
     if let Some(failure) = &app.failure {
-        return container(ui::empty_state(&paint, Icon::Warning, app.t(Key::DaemonMissing), failure, None))
+        let body = if crate::app::daemon_absent(failure) { app.t(Key::DaemonMissingBody) } else { failure.as_str() };
+        let retry = ui::sized_button(&paint, app.t(Key::TryAgain), Tone::Neutral, Size::Small, Some(Message::Reload));
+        return container(ui::empty_state(&paint, Icon::Warning, app.t(Key::DaemonMissing), body, Some(retry)))
             .center(Fill)
             .into();
     }

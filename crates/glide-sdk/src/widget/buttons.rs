@@ -164,9 +164,8 @@ pub fn compact_button<'a, M: Clone + 'a>(
 pub fn link<'a, M: Clone + 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, message: Option<M>) -> Element<'a, M> {
     let paint = *paint;
     let enabled = message.is_some();
-    let control = control(text(label, TextStyle { weight: 600, ..TextStyle::CALL }))
-        .on_press_maybe(message.clone())
-        .padding(Padding::from([style::SP1, style::SP2]));
+    let control =
+        control(text(label, TextStyle::CALL)).on_press_maybe(message.clone()).padding(Padding::from([2.0, 0.0]));
     let control = widgets::button(control, move |status| {
         let mut style = button_style(&paint, Tone::Ghost, status);
         if enabled {

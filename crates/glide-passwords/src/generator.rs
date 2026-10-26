@@ -27,6 +27,16 @@ pub enum Event {
     Copy,
     Use,
     Close,
+    History,
+    Pick(usize),
+}
+
+const HISTORY: usize = 10;
+
+fn remember(app: &mut App, value: &str) {
+    app.generated.retain(|known| known.as_str() != value);
+    app.generated.insert(0, zeroize::Zeroizing::new(value.to_string()));
+    app.generated.truncate(HISTORY);
 }
 
 pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
@@ -58,13 +68,22 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
             state.again();
         }
         Event::Again => state.again(),
+        Event::History => state.history = !state.history,
+        Event::Pick(index) => {
+            if let Some(value) = app.generated.get(index) {
+                state.value = value.to_string();
+                state.history = false;
+            }
+        }
         Event::Copy => {
             let value = state.value.clone();
+            remember(app, &value);
             shell.toast(app.t(Key::CopiedPassword));
             return iced::clipboard::write(value);
         }
         Event::Use => {
             let value = state.value.clone();
+            remember(app, &value);
             app.generator = None;
             if let Some(editor) = app.editor.as_mut() {
                 editor.password = value;
@@ -74,6 +93,29 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::Close => app.generator = None,
     }
     Task::none()
+}
+
+fn history_rows(app: &App) -> Element<'_, Message> {
+    let paint = app.paint;
+    let rows = app.generated.iter().enumerate().map(|(index, past)| -> Element<'_, Message> {
+        iced::widget::button(
+            container(ui::password_text(&paint, past.as_str(), ui::SECRET))
+                .padding(Padding::from([SP1, SP2]))
+                .width(Fill),
+        )
+        .on_press(Message::Generator(Event::Pick(index)))
+        .padding(0)
+        .width(Fill)
+        .style(move |_, status| {
+            glide_sdk::glide_iced::style::flat(
+                paint.layered(iced::Color::TRANSPARENT, status),
+                paint.fg_1(),
+                glide_sdk::theme::R2,
+            )
+        })
+        .into()
+    });
+    Column::with_children(rows).spacing(2).into()
 }
 
 #[must_use]
@@ -117,7 +159,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         crate::view::strength_name(app.lang, strength),
         amount_text(app.lang, recipe.mode, recipe.amount())
     );
-    let modes = ui::segmented(
+    let modes = ui::segmented_fill(
         &paint,
         &[(Mode::Password, t(Key::ModePassword)), (Mode::Phrase, t(Key::ModePhrase)), (Mode::Pin, t(Key::ModePin))],
         recipe.mode,
@@ -146,7 +188,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .spacing(6)
     .padding(Padding::from([0.0, SP1]));
     let switches = switches(app, recipe);
+    let history = ui::glyph_button(
+        &paint,
+        Icon::History,
+        t(Key::HistoryButton),
+        if state.history { Tone::Tonal } else { Tone::Ghost },
+        ButtonSize::Small,
+        (!app.generated.is_empty() || state.history).then_some(Message::Generator(Event::History)),
+    );
     let footer = row![
+        history,
         Space::new().width(Fill),
         ui::sized_button(
             &paint,
@@ -159,15 +210,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(SP2)
     .align_y(Alignment::Center);
-    let content = Column::new()
+    let mut content = Column::new()
         .spacing(SP3)
         .push(value)
-        .push(container(ui::strength_line(&paint, strength, label)).padding(Padding::from([0.0, SP1])))
-        .push(modes)
-        .push(amount)
-        .push(Column::with_children(switches))
-        .push(ui::separator(&paint))
-        .push(footer);
+        .push(container(ui::strength_line(&paint, strength, label)).padding(Padding::from([0.0, SP1])));
+    if state.history {
+        content = content.push(history_rows(app));
+    } else {
+        content = content.push(modes).push(amount).push(Column::with_children(switches));
+    }
+    let content = content.push(ui::separator(&paint)).push(footer);
     container(ui::popover(&paint, container(content).padding(SP2).width(Fill))).width(POPOVER).into()
 }
 

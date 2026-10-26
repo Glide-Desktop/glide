@@ -559,16 +559,28 @@ fn menu_card<'a, M: 'a>(paint: &Paint, rows: Vec<Element<'a, M>>) -> Element<'a,
 fn option_row<'a, M: Clone + 'a>(
     paint: &Paint, label: String, checked: bool, highlighted: bool, message: M,
 ) -> Element<'a, M> {
+    decorated_row(paint, label, (None, None), checked, highlighted, message)
+}
+
+fn decorated_row<'a, M: Clone + 'a>(
+    paint: &Paint, label: String, (dot, tail): (Option<iced::Color>, Option<String>), checked: bool, highlighted: bool,
+    message: M,
+) -> Element<'a, M> {
     let paint = *paint;
-    let mark: Element<'a, M> =
-        if checked { icon(Icon::Check, 14.0, paint.acc_bg()) } else { Space::new().width(14).height(14).into() };
-    let content = container(
-        row![mark, text(label, TextStyle::MENU_ITEM).wrapping(Wrapping::None)].spacing(SP2).align_y(Alignment::Center),
-    )
-    .center_y(component::MENU_ITEM)
-    .width(Fill)
-    .padding(Padding::from([0.0, SP2]))
-    .clip(true);
+    let mark: Element<'a, M> = match dot {
+        _ if checked => icon(Icon::Check, 14.0, paint.acc_bg()),
+        Some(colour) => container(super::dot(colour, 8.0)).center(14).into(),
+        None => Space::new().width(14).height(14).into(),
+    };
+    let mut line =
+        row![mark, text(label, TextStyle::MENU_ITEM).wrapping(Wrapping::None)].spacing(SP2).align_y(Alignment::Center);
+    if let Some(tail) = tail {
+        line = line.push(Space::new().width(Fill)).push(
+            text(tail, TextStyle::CAP).font(glide_iced::font::TABULAR).color(paint.fg_3()).wrapping(Wrapping::None),
+        );
+    }
+    let content =
+        container(line).center_y(component::MENU_ITEM).width(Fill).padding(Padding::from([0.0, SP2])).clip(true);
     let row = widgets::container(content, move |hover, press| {
         let lit = if highlighted { 1.0 } else { hover.max(press) };
         container::Style {
@@ -579,11 +591,15 @@ fn option_row<'a, M: Clone + 'a>(
     iced::widget::mouse_area(row).on_press(message).interaction(mouse::Interaction::Pointer).into()
 }
 
-fn opener<'a, M: 'a>(paint: &Paint, label: String, color: iced::Color, width: Length) -> Element<'a, M> {
+fn opener<'a, M: 'a>(
+    paint: &Paint, lead: Option<Element<'a, M>>, label: String, style: TextStyle, color: iced::Color, width: Length,
+) -> Element<'a, M> {
     let paint = *paint;
-    let mut content = row![text(label, TextStyle::CALL).color(color).wrapping(Wrapping::None)]
-        .spacing(SP2)
-        .align_y(Alignment::Center);
+    let mut content = row![].spacing(SP2).align_y(Alignment::Center);
+    if let Some(lead) = lead {
+        content = content.push(lead);
+    }
+    content = content.push(text(label, style).color(color).wrapping(Wrapping::None));
     if width == Length::Fill {
         content = content.push(Space::new().width(Fill));
     }
@@ -595,10 +611,7 @@ fn opener<'a, M: 'a>(paint: &Paint, label: String, color: iced::Color, width: Le
             .width(width),
         move |hover, press| {
             let background = paint.layer(paint.fill_1(), glide_theme::motion::ST_HOVER * hover + 0.05 * press);
-            container::Style {
-                border: iced::Border { color: paint.line(), width: 1.0, radius: R2.into() },
-                ..style::rounded(background, R2)
-            }
+            style::rounded(background, R2)
         },
     )
 }
@@ -607,10 +620,18 @@ fn opener<'a, M: 'a>(paint: &Paint, label: String, color: iced::Color, width: Le
 pub fn dropdown<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
     paint: &Paint, options: Vec<T>, selected: Option<T>, placeholder: &str, on_select: impl Fn(T) -> M + 'a,
 ) -> Element<'a, M> {
+    dropdown_with(paint, None, TextStyle::CALL, options, selected, placeholder, on_select)
+}
+
+#[must_use]
+pub fn dropdown_with<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
+    paint: &Paint, lead: Option<Element<'a, M>>, style: TextStyle, options: Vec<T>, selected: Option<T>,
+    placeholder: &str, on_select: impl Fn(T) -> M + 'a,
+) -> Element<'a, M> {
     let paint = *paint;
     let label = selected.as_ref().map_or_else(|| placeholder.to_string(), ToString::to_string);
     let color = if selected.is_some() { paint.fg_1() } else { paint.fg_3() };
-    let anchor = opener(&paint, label, color, Length::Fill);
+    let anchor = opener(&paint, lead, label, style, color, Length::Fill);
     let count = options.len();
     let options = std::rc::Rc::new(options);
     let on_select = std::rc::Rc::new(on_select);
@@ -635,13 +656,48 @@ pub fn dropdown<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
     .into()
 }
 
+pub type RowMarks = (Option<iced::Color>, Option<String>);
+
+#[must_use]
+pub fn dropdown_decorated<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
+    paint: &Paint, lead: Option<Element<'a, M>>, style: TextStyle, options: Vec<T>, selected: Option<T>,
+    on_select: impl Fn(T) -> M + 'a, decorate: impl Fn(&T) -> RowMarks + 'a,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let label = selected.as_ref().map_or_else(String::new, ToString::to_string);
+    let anchor = opener(&paint, lead, label, style, paint.fg_1(), Length::Fill);
+    let count = options.len();
+    let options = std::rc::Rc::new(options);
+    let on_select = std::rc::Rc::new(on_select);
+    let (pick_options, pick) = (std::rc::Rc::clone(&options), std::rc::Rc::clone(&on_select));
+    Popup::new(&paint, anchor, move |paint, highlight| {
+        let rows = options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| {
+                decorated_row(
+                    paint,
+                    option.to_string(),
+                    decorate(option),
+                    selected.as_ref() == Some(option),
+                    highlight == Some(index),
+                    on_select(option.clone()),
+                )
+            })
+            .collect();
+        menu_card(paint, rows)
+    })
+    .keyboard(count, move |index| pick(pick_options[index].clone()))
+    .into()
+}
+
 #[must_use]
 pub fn menu_button<'a, M: Clone + 'a>(
     paint: &Paint, label: &'a str, items: Vec<(String, M)>, width: f32,
 ) -> Element<'a, M> {
     let count = items.len();
     let picks: Vec<M> = items.iter().map(|(_, message)| message.clone()).collect();
-    let anchor = opener(paint, label.to_string(), paint.fg_1(), Length::Shrink);
+    let anchor = opener(paint, None, label.to_string(), TextStyle::CALL, paint.fg_1(), Length::Shrink);
     Popup::new(paint, anchor, move |paint, highlight| {
         let rows = items
             .iter()

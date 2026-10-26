@@ -362,7 +362,7 @@ fn digit_cell<'a, M: 'a>(
     let content: Element<'a, M> = match digit {
         Some(digit) => text(
             digit.to_string(),
-            TextStyle { size_px: glyph, line_height_px: glyph * 1.3, weight: 600, ..TextStyle::NUM },
+            TextStyle { size_px: glyph, line_height_px: glyph * 1.3, weight: 500, ..TextStyle::NUM },
         )
         .color(paint.fg_1())
         .into(),
@@ -536,11 +536,14 @@ pub fn vault_chip<'a, M: 'a>(paint: &Paint, label: impl Into<Cow<'a, str>>, stat
         .into()
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct DiffField {
     pub label: String,
     pub value: String,
     pub differs: bool,
     pub extra: Option<Strength>,
+    pub extra_label: Option<String>,
+    pub mono: bool,
 }
 
 #[must_use]
@@ -567,9 +570,14 @@ pub fn diff_card<'a, M: Clone + 'a>(
         let mut lines =
             column![text(field.label, TextStyle::CAP).color(if field.differs { paint.warn() } else { paint.fg_3() })]
                 .spacing(2);
-        lines = lines.push(text(field.value, TextStyle::CALL));
+        let value = text(field.value, TextStyle::CALL);
+        lines = lines.push(if field.mono { value.font(glide_iced::font::TABULAR) } else { value });
         if let Some(strength) = field.extra {
-            lines = lines.push(strength_meter(&paint, Some(strength)));
+            let mut meter = row![strength_meter(&paint, Some(strength))].spacing(SP2).align_y(Alignment::Center);
+            if let Some(label) = field.extra_label {
+                meter = meter.push(text(label, TextStyle::CAP).color(paint.fg_3()));
+            }
+            lines = lines.push(meter);
         }
         body = body.push(super::separator(&paint)).push(
             container(lines)

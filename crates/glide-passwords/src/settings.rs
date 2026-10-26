@@ -151,10 +151,16 @@ fn vault_rows(app: &App) -> Vec<Element<'_, Message>> {
             VaultKind::Bitwarden => (Icon::Server, false),
         };
         let items = plural(app.lang, u64::from(vault.count), [Key::ItemsOne, Key::ItemsFew, Key::ItemsMany]);
-        let subtitle = match vault.kind {
+        let mut subtitle = match vault.kind {
             VaultKind::Local => format!("{} · {items}", t(Key::OnDeviceTitle)),
             VaultKind::Bitwarden => format!("{} · {} · {items}", vault.account, vault.server),
         };
+        if let SyncState::Offline { pending } = vault.sync
+            && pending > 0
+        {
+            let queued = plural(app.lang, u64::from(pending), [Key::QueuedOne, Key::QueuedFew, Key::QueuedMany]);
+            subtitle = format!("{subtitle} · {queued}");
+        }
         let status: Element<'_, Message> = if vault.unlocked {
             match vault.sync {
                 SyncState::Local => ui::sized_button(
@@ -184,6 +190,7 @@ fn vault_rows(app: &App) -> Vec<Element<'_, Message>> {
         }
         rows.push(
             ListRow::new(paint, vault.name.clone())
+                .strong()
                 .subtitle(subtitle)
                 .prefix(ui::glyph_tile(&paint, glyph, 32.0, highlighted))
                 .suffix(suffix)
@@ -197,13 +204,20 @@ fn vault_rows(app: &App) -> Vec<Element<'_, Message>> {
         .filter(|vault| vault.exists)
         .map(|vault| labeled(vault.id.clone(), vault.name.clone()))
         .collect();
-    rows.push(
-        ListRow::new(paint, t(Key::SaveNewIn))
-            .suffix(choice(app, defaults, &app.data.default, |vault| Message::Settings(Event::Default(vault))))
-            .into(),
+    let chosen = defaults.iter().find(|option| option.0 == app.data.default).cloned();
+    let default_pick = ui::dropdown_with(
+        &paint,
+        Some(crate::view::vault_dot(app, &app.data.default)),
+        TextStyle::CALL,
+        defaults,
+        chosen,
+        "",
+        |picked: Labeled<String>| Message::Settings(Event::Default(picked.0)),
     );
+    rows.push(ListRow::new(paint, t(Key::SaveNewIn)).suffix(container(default_pick).width(200)).into());
     rows.push(
         ListRow::new(paint, t(Key::AddVaultEllipsis))
+            .accent()
             .prefix(ui::icon(Icon::Plus, 18.0, paint.acc_text()))
             .on_press(Message::OpenWizard)
             .into(),

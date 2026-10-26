@@ -81,6 +81,7 @@ pub enum KeyAction {
     TopbarActivate,
     QsBack,
     QsField(crate::topbar::FieldKey),
+    Passwords(crate::passwords_applet::PwKey),
     SwitchWindows(bool),
     SwitchAppWindows(bool),
     SwitcherStep(i32),
@@ -127,6 +128,7 @@ pub enum KeyAction {
     Shell(crate::topbar::TopbarAction),
     Media(MediaKey),
     Polkit(crate::polkit::Input),
+    Keychain(crate::keychain_prompt::Input),
     None,
 }
 
@@ -504,6 +506,25 @@ fn reply_active_shortcut(
         .or_else(|| process_keyboard_shortcut(keybinds, modifiers, raw_syms, modified_sym).filter(is_global_shortcut))
         .or_else(|| typed_char(modifiers, modified_sym).map(KeyAction::ReplyType))
         .unwrap_or(KeyAction::None)
+}
+
+fn keychain_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
+    use crate::keychain_prompt::Input;
+    let matches = |want: Keysym| modified_sym == want || raw_syms.contains(&want);
+    let input = if matches(Keysym::Escape) {
+        Some(Input::Escape)
+    } else if matches(Keysym::Return) || matches(Keysym::KP_Enter) {
+        Some(Input::Submit)
+    } else if matches(Keysym::Tab) || matches(Keysym::ISO_Left_Tab) {
+        Some(Input::Skip)
+    } else if matches(Keysym::BackSpace) {
+        Some(if modifiers.ctrl { Input::Clear } else { Input::Backspace })
+    } else if modifiers.ctrl && !modifiers.alt && (matches(Keysym::u) || matches(Keysym::U)) {
+        Some(Input::Clear)
+    } else {
+        typed_char(modifiers, modified_sym).map(Input::Type)
+    };
+    vt_switch_shortcut(raw_syms, modified_sym).or_else(|| input.map(KeyAction::Keychain)).unwrap_or(KeyAction::None)
 }
 
 fn polkit_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym) -> KeyAction {
@@ -1540,6 +1561,7 @@ impl GlideState {
         let replying = self.notifications.reply_target().is_some();
         let topbar_popup = self.topbar.has_open_popup();
         let qs_mode = self.topbar.qs_key_mode();
+        let passwords_popup = self.topbar.open_popup() == Some(crate::topbar::OpenPopup::Passwords);
         let dock_menu = self.dock.menu_rect().is_some();
         let dock_keys = self.dock.keyboard_active();
         let power_open = self.power_dialog_open();
@@ -1553,6 +1575,7 @@ impl GlideState {
         let layout_before = self.active_layout_index();
         let locked = self.session_lock.is_some();
         let polkit_open = !locked && !greeter_active && self.polkit_focused();
+        let keychain_open = !locked && !greeter_active && !polkit_open && self.keychain_focused();
         let handoff = self.handoff_blocks_input();
         let handoff_blocking = handoff || waking;
         let wake_types = waking && !handoff && greeter_active;
@@ -1623,6 +1646,10 @@ impl GlideState {
                         suppressed_keys.push(keycode);
                         return FilterResult::Intercept(polkit_shortcut(modifiers, &binding_syms, shell_sym));
                     }
+                    if keychain_open {
+                        suppressed_keys.push(keycode);
+                        return FilterResult::Intercept(keychain_shortcut(modifiers, &binding_syms, shell_sym));
+                    }
                     let (syms, sym) = (&binding_syms, shell_sym);
                     let action = if shot_open {
                         Some(vt_switch_shortcut(syms, sym).unwrap_or_else(|| {
@@ -1641,7 +1668,10 @@ impl GlideState {
                     } else if overview_active {
                         Some(overview_active_shortcut(&keybinds, modifiers, syms, sym))
                     } else if topbar_popup && !exclusive {
-                        topbar_popup_shortcut(&keybinds, modifiers, syms, sym, qs_mode)
+                        passwords_popup
+                            .then(|| crate::passwords_applet::shortcut(modifiers, syms, sym).map(KeyAction::Passwords))
+                            .flatten()
+                            .or_else(|| topbar_popup_shortcut(&keybinds, modifiers, syms, sym, qs_mode))
                     } else if dock_menu && !exclusive {
                         dock_menu_shortcut(&keybinds, modifiers, syms, sym, dock_keys)
                     } else if dock_keys && !exclusive {
@@ -1682,7 +1712,13 @@ impl GlideState {
                 }
                 KeyState::Released => self.session.super_tap.release(is_super),
             };
-            if tapped && !self.screen_locked() && !handoff_blocking && !shortcuts_inhibited && !polkit_open {
+            if tapped
+                && !self.screen_locked()
+                && !handoff_blocking
+                && !shortcuts_inhibited
+                && !polkit_open
+                && !keychain_open
+            {
                 self.toggle_launcher();
             }
         }
@@ -1702,6 +1738,9 @@ impl GlideState {
         self.sync_prompt_caps_lock();
         if self.session.polkit.prompt.is_some() {
             self.sync_polkit();
+        }
+        if self.session.keychain.prompt.is_some() {
+            self.sync_keychain_prompt();
         }
         let switched_by_xkb = self.active_layout_index() != layout_before;
         if switched_by_xkb {
@@ -1869,6 +1908,7 @@ impl GlideState {
             KeyAction::LauncherSelectAll => self.edit_launcher(Launcher::select_all),
             KeyAction::LauncherPaste => self.paste_into_launcher(),
             KeyAction::Polkit(input) => self.polkit_key(input),
+            KeyAction::Keychain(input) => self.keychain_key(input),
             KeyAction::ReplyType(ch) => {
                 if self.notifications.type_reply(ch) {
                     self.queue_redraw();
@@ -1942,6 +1982,7 @@ impl GlideState {
                 }
             }
             KeyAction::QsField(key) => self.run_qs_field_key(key),
+            KeyAction::Passwords(key) => self.run_passwords_key(key),
             KeyAction::GreeterType(ch) => {
                 if self.greeter.as_mut().is_some_and(|g| g.type_char(ch)) {
                     self.queue_redraw();
@@ -2455,7 +2496,7 @@ impl GlideState {
         if self.greeter_button(pos, button) {
             return true;
         }
-        if self.polkit_focused() {
+        if self.polkit_focused() || self.keychain_focused() {
             let output = self.output_rect();
             if self.topbar.contains(output, pos) {
                 self.topbar_button(pos, button);

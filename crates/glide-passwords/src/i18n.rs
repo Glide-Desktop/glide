@@ -86,6 +86,7 @@ glide_sdk::catalogue! {
     CopiedPassword => "Password copied", "Пароль скопійовано";
     CopiedCode => "Code copied", "Код скопійовано";
     CopiedLink => "Link copied", "Посилання скопійовано";
+    CopiedShort => "Copied", "Скопійовано";
     ClearsIn => "clears in {n} s", "очиститься через {n} с";
     Okay => "OK", "Гаразд";
     EditTitle => "Edit item", "Редагування запису";
@@ -155,6 +156,15 @@ glide_sdk::catalogue! {
     OneDay => "1 day", "1 день";
     SevenDays => "7 days", "7 днів";
     ThirtyDays => "30 days", "30 днів";
+    CustomLifetime => "Custom…", "Своє…";
+    WithApiKey => "Sign in with an API key", "Увійти з ключем API";
+    WithoutApiKey => "Sign in without an API key", "Увійти без ключа API";
+    ApiKeyHint => "Bitwarden web vault › Settings › Security › Keys › View API key. The master password still unlocks the vault.", "Вебсховище Bitwarden › Налаштування › Безпека › Ключі › Переглянути ключ API. Майстер-пароль однаково потрібен, щоб відкрити сховище.";
+    QueuedOne => "{n} change queued", "{n} зміна в черзі";
+    QueuedFew => "{n} changes queued", "{n} зміни в черзі";
+    QueuedMany => "{n} changes queued", "{n} змін у черзі";
+    CustomDays => "Days", "Днів";
+    ExpiredHoursAgo => "Expired {n} h ago", "Спливло {n} год тому";
     MaxOpens => "Maximum opens", "Максимум відкриттів";
     OpenPassword => "Password to open", "Пароль на відкриття";
     OtherChannel => "Pass it on another channel", "Передайте його іншим каналом";
@@ -204,6 +214,7 @@ glide_sdk::catalogue! {
     KeysDone => "Keys decrypted", "Ключі розшифровано";
     ItemsLoaded => "Items", "Записи";
     FoldersLoaded => "Folders and organisation collections", "Теки й колекції організацій";
+    SendsLoaded => "Sends", "Надіслане";
     NameInApp => "Name in Passwords", "Назва в Паролях";
     CreateVault => "Create a vault", "Створити сховище";
     CreateVaultBody => "Choose a password for the vault on this device. It cannot be recovered if you forget it.", "Виберіть пароль для сховища на цьому пристрої. Якщо його забути, відновити записи не вийде.";
@@ -305,6 +316,8 @@ glide_sdk::catalogue! {
     NotAvailable => "Bitwarden accounts are not supported by this build yet", "Ця збірка ще не підтримує акаунти Bitwarden";
     WrongPassword => "That password does not open the vault", "Цей пароль не відкриває сховище";
     DaemonMissing => "The keychain is not running", "Сховище паролів не запущено";
+    DaemonMissingBody => "Glide starts it with the session. If Glide was just updated, log out and back in. Passwords will connect by itself as soon as it appears.", "Його запускає Glide разом із сеансом. Якщо Glide щойно оновили, вийдіть і знову увійдіть. Паролі під'єднаються самі, щойно сховище з'явиться.";
+    TryAgain => "Try again", "Спробувати знову";
     File => "File", "Файл";
     Edit => "Edit", "Правка";
     View => "View", "Вигляд";
@@ -320,6 +333,8 @@ glide_sdk::catalogue! {
     NewVaultPassword => "New password", "Новий пароль";
     Soon => "Not ready yet", "Ще не готово";
     Yesterday => "yesterday", "вчора";
+    TodayAt => "today at {t}", "сьогодні о {t}";
+    TomorrowAt => "tomorrow at {t}", "завтра о {t}";
 }
 
 #[must_use]
@@ -357,6 +372,48 @@ pub fn date(lang: Lang, unix: u64, now: u64) -> String {
 }
 
 #[must_use]
+pub fn utc_offset(now: u64) -> i64 {
+    let Some(minute) = glide_config::local_minute() else {
+        return 0;
+    };
+    let utc = (now % 86_400) as i64 / 60 * 60;
+    let mut offset = i64::from(minute) * 60 - utc;
+    if offset > 14 * 3600 {
+        offset -= 86_400;
+    } else if offset < -12 * 3600 {
+        offset += 86_400;
+    }
+    offset
+}
+
+#[must_use]
+pub fn moment(lang: Lang, unix: u64, now: u64) -> String {
+    moment_at(lang, unix, now, utc_offset(now))
+}
+
+#[must_use]
+pub fn stamp(lang: Lang, unix: u64, now: u64) -> String {
+    let offset = utc_offset(now);
+    let at = unix as i64 + offset;
+    let time = format!("{:02}:{:02}", at.rem_euclid(86_400) / 3600, at.rem_euclid(3600) / 60);
+    format!("{} {time}", date(lang, unix, now))
+}
+
+#[must_use]
+pub fn moment_at(lang: Lang, unix: u64, now: u64, offset: i64) -> String {
+    let (at, today) = (unix as i64 + offset, now as i64 + offset);
+    let time = format!("{:02}:{:02}", at.rem_euclid(86_400) / 3600, at.rem_euclid(3600) / 60);
+    let day = |seconds: i64| seconds.div_euclid(86_400);
+    if day(at) == day(today) {
+        Key::TodayAt.text(lang).replace("{t}", &time)
+    } else if day(at) == day(today) + 1 {
+        Key::TomorrowAt.text(lang).replace("{t}", &time)
+    } else {
+        date(lang, unix, now)
+    }
+}
+
+#[must_use]
 pub const fn civil(unix: u64) -> (i64, u32, u32) {
     let days = (unix / 86_400) as i64 + 719_468;
     let era = days.div_euclid(146_097);
@@ -383,6 +440,16 @@ mod tests {
         assert_eq!(date(Lang::Uk, later - 60, later), "сьогодні");
         assert_eq!(date(Lang::Uk, later - 86_400, later), "вчора");
         assert!(date(Lang::Uk, 1_704_067_200, later).ends_with("2024"));
+    }
+
+    #[test]
+    fn moments_say_today_or_tomorrow_with_the_local_time() {
+        let midnight = 20_750 * 86_400;
+        let now = midnight + 10 * 3600;
+        assert_eq!(moment_at(Lang::Uk, now + 3600, now, 0), "сьогодні о 11:00");
+        assert_eq!(moment_at(Lang::Uk, now + 26 * 3600 + 32 * 60, now, 0), "завтра о 12:32");
+        assert_eq!(moment_at(Lang::Uk, now + 15 * 3600, now, 2 * 3600), "завтра о 03:00");
+        assert_eq!(moment_at(Lang::En, now + 3 * 86_400, now, 0), date(Lang::En, now + 3 * 86_400, now));
     }
 
     #[test]

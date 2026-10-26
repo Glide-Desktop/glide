@@ -1650,7 +1650,7 @@ impl GlideState {
             return;
         }
 
-        let masks = self.topbar.polkit_mask(output_rect);
+        let masks = self.topbar.capture_mask(output_rect);
         if !masks.is_empty() {
             let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
             let [r, g, b, a] = tokens.island_bg.0;

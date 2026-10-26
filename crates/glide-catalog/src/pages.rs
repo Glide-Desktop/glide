@@ -1028,7 +1028,7 @@ fn choices<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Vec<Element<'
         label: label.to_string(),
         value: value.to_string(),
         differs,
-        extra: None,
+        ..ui::DiffField::default()
     };
     let versions = row![
         ui::diff_card(

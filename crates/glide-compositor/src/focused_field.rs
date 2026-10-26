@@ -115,6 +115,13 @@ impl GlideState {
         self.type_text(text)
     }
 
+    pub fn type_into(&mut self, target: &WlSurface, text: &str) -> Delivery {
+        if self.screen_locked() || self.focused_surface().as_ref() != Some(target) {
+            return Delivery::Refused;
+        }
+        self.type_text(text)
+    }
+
     fn type_text(&mut self, text: &str) -> Delivery {
         self.restore_seat_keymap();
         let Some(keyboard) = self.seat.get_keyboard() else {

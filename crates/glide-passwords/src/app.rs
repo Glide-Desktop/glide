@@ -87,19 +87,28 @@ pub enum Message {
     OpenLink(String),
     Ignored,
     Quit,
+    Reload,
+}
+
+const RETRY: Duration = Duration::from_secs(3);
+
+#[must_use]
+pub fn daemon_absent(failure: &str) -> bool {
+    failure.contains("ServiceUnknown") || failure.contains("NameHasNoOwner") || failure.contains("not activatable")
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Generating {
     pub recipe: Recipe,
     pub value: String,
+    pub history: bool,
 }
 
 impl Generating {
     pub fn fresh() -> Self {
         let recipe = Recipe::default();
         let value = recipe.generate(&mut System);
-        Self { recipe, value }
+        Self { recipe, value, history: false }
     }
 
     pub fn again(&mut self) {
@@ -125,6 +134,7 @@ pub struct App {
     pub code: Option<Code>,
     pub editor: Option<Editor>,
     pub generator: Option<Generating>,
+    pub generated: Vec<zeroize::Zeroizing<String>>,
     pub send: SendForm,
     pub wizard: Option<Wizard>,
     pub create: Option<wizard::Create>,
@@ -195,6 +205,7 @@ impl App {
             code: None,
             editor: None,
             generator: None,
+            generated: Vec::new(),
             send: SendForm::default(),
             wizard: None,
             create: None,
@@ -386,6 +397,7 @@ impl App {
                 self.loaded = true;
                 Task::none()
             }
+            Message::Reload => Task::perform(load(), Message::Loaded),
             Message::Vault(vault) => {
                 self.vault = vault;
                 self.keep_selection()
@@ -694,6 +706,9 @@ impl App {
         let mut subscriptions = vec![Subscription::run(client::changes).map(|()| Message::Changed)];
         if self.code.is_some() || self.section == Section::Sends {
             subscriptions.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
+        }
+        if self.failure.is_some() {
+            subscriptions.push(iced::time::every(RETRY).map(|_| Message::Reload));
         }
         Subscription::batch(subscriptions)
     }

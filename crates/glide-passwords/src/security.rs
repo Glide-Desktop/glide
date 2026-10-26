@@ -27,6 +27,7 @@ fn item_row<'a>(app: &'a App, item: &ItemRef) -> Option<Element<'a, Message>> {
     ));
     Some(
         ListRow::new(paint, summary.name.clone())
+            .strong()
             .subtitle(subtitle)
             .prefix(ui::mark_tile(&paint, &summary.name, 32.0, false))
             .suffix(suffix)
