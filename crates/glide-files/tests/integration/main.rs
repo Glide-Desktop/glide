@@ -1,0 +1,10 @@
+mod actions_tests;
+mod app_tests;
+mod dnd_protocol_tests;
+mod dnd_tests;
+mod features_tests;
+mod fs_tests;
+mod jobs_tests;
+mod listing_tests;
+mod stage5_tests;
+mod volume_tests;

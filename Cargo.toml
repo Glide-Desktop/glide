@@ -39,6 +39,12 @@ repository = "https://github.com/artem/glide"
 debug = "line-tables-only"
 lto = "thin"
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.dev.package.argon2]
 opt-level = 3
 
