@@ -1,4 +1,5 @@
 pub mod index;
+pub mod session;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use self::index::Index;
+use self::session::SessionKey;
 use crate::service::{Events, Service};
 use crate::vault::{Item, Secret};
 
@@ -72,7 +74,7 @@ pub struct Secrets {
     events: Events,
     index_path: PathBuf,
     index: Mutex<Index>,
-    sessions: Mutex<BTreeSet<String>>,
+    sessions: Mutex<HashMap<String, Option<SessionKey>>>,
     prompts: Mutex<HashMap<String, Pending>>,
     registered: Mutex<BTreeSet<u64>>,
     next: AtomicU64,
@@ -97,7 +99,7 @@ impl Secrets {
             events,
             index_path,
             index: Mutex::new(index),
-            sessions: Mutex::new(BTreeSet::new()),
+            sessions: Mutex::new(HashMap::new()),
             prompts: Mutex::new(HashMap::new()),
             registered: Mutex::new(BTreeSet::new()),
             next: AtomicU64::new(1),
@@ -150,18 +152,33 @@ impl Secrets {
         items.into_iter().find(|item| item.id == id).ok_or_else(|| Error::NoSuchObject(format!("no item {id}")))
     }
 
-    fn check_session(&self, session: &ObjectPath<'_>) -> Result<(), Error> {
-        if lock(&self.sessions).contains(session.as_str()) {
-            Ok(())
-        } else {
-            Err(Error::NoSession(format!("no session {session}")))
-        }
+    fn check_session(&self, session: &ObjectPath<'_>) -> Result<Option<SessionKey>, Error> {
+        lock(&self.sessions)
+            .get(session.as_str())
+            .cloned()
+            .ok_or_else(|| Error::NoSession(format!("no session {session}")))
     }
 
-    fn secret_of(item: &Item, session: &ObjectPath<'_>) -> SecretValue {
+    fn secret_of(item: &Item, session: &ObjectPath<'_>, key: Option<&SessionKey>) -> Result<SecretValue, Error> {
         let content_type =
             if item.content_type.is_empty() { "text/plain".to_string() } else { item.content_type.clone() };
-        (session.to_owned().into(), Vec::new(), item.secret.expose().to_vec(), content_type)
+        let (parameters, value) = match key {
+            Some(key) => key
+                .seal(item.secret.expose())
+                .ok_or_else(|| Error::ZBus(zbus::Error::Failure("the secret could not be sealed".into())))?,
+            None => (Vec::new(), item.secret.expose().to_vec()),
+        };
+        Ok((session.to_owned().into(), parameters, value, content_type))
+    }
+
+    fn incoming(&self, secret: &SecretValue) -> Result<Secret, Error> {
+        match self.check_session(&secret.0.as_ref())? {
+            Some(key) => key
+                .open(&secret.1, &secret.2)
+                .map(|plain| Secret::new(plain.to_vec()))
+                .ok_or_else(|| Error::ZBus(zbus::Error::Failure("the secret does not decrypt".into()))),
+            None => Ok(Secret::new(secret.2.clone())),
+        }
     }
 
     fn edit(&self, mut change: impl FnMut(&mut Vec<Item>, &mut u64)) -> Result<(), Error> {
@@ -292,16 +309,25 @@ impl ServiceObject {
     async fn open_session(
         &self, algorithm: &str, input: OwnedValue, #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> Result<(OwnedValue, OwnedObjectPath), Error> {
-        drop(input);
-        if algorithm != "plain" {
-            return Err(not_supported("only the plain algorithm is offered"));
-        }
+        let (output, key): (OwnedValue, Option<SessionKey>) = match algorithm {
+            session::PLAIN => (Value::from("").try_into().expect("s is owned"), None),
+            session::DH => {
+                let peer = Vec::<u8>::try_from(input).map_err(|_| {
+                    Error::ZBus(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs("expected ay".into()))))
+                })?;
+                let (public, key) = session::agree(&peer).ok_or_else(|| {
+                    Error::ZBus(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs("bad public key".into()))))
+                })?;
+                (Value::from(public).try_into().expect("ay is owned"), Some(key))
+            }
+            _ => return Err(not_supported("the algorithm is not offered")),
+        };
         let session = self.secrets.new_path("session");
-        lock(&self.secrets.sessions).insert(session.clone());
+        lock(&self.secrets.sessions).insert(session.clone(), key);
         let _ = server
             .at(session.as_str(), SessionObject { secrets: Arc::clone(&self.secrets), path: session.clone() })
             .await;
-        Ok((Value::from("").try_into().expect("s is owned"), path(&session)))
+        Ok((output, path(&session)))
     }
 
     fn create_collection(
@@ -341,16 +367,17 @@ impl ServiceObject {
     fn get_secrets(
         &self, items: Vec<OwnedObjectPath>, session: ObjectPath<'_>,
     ) -> Result<HashMap<OwnedObjectPath, SecretValue>, Error> {
-        self.secrets.check_session(&session)?;
+        let key = self.secrets.check_session(&session)?;
         let all = self.secrets.items().ok_or_else(|| Error::IsLocked("the keychain is locked".into()))?;
-        Ok(items
-            .into_iter()
-            .filter_map(|object| {
-                let id = item_id(object.as_str())?;
-                let item = all.iter().find(|item| item.id == id)?;
-                Some((object, Secrets::secret_of(item, &session)))
-            })
-            .collect())
+        let mut found = HashMap::new();
+        for object in items {
+            let Some(item) = item_id(object.as_str()).and_then(|id| all.iter().find(|item| item.id == id)) else {
+                continue;
+            };
+            let value = Secrets::secret_of(item, &session, key.as_ref())?;
+            found.insert(object, value);
+        }
+        Ok(found)
     }
 
     fn read_alias(&self, name: &str) -> OwnedObjectPath {
@@ -390,12 +417,11 @@ impl CollectionObject {
         &self, properties: HashMap<String, OwnedValue>, secret: SecretValue, replace: bool,
         #[zbus(object_server)] server: &zbus::ObjectServer, #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(OwnedObjectPath, OwnedObjectPath), Error> {
-        let session = secret.0.as_ref();
-        self.secrets.check_session(&session)?;
+        let value = self.secrets.incoming(&secret)?;
         let pending = Pending::Create {
             label: label_of(&properties),
             attributes: attributes_of(&properties),
-            secret: Secret::new(secret.2),
+            secret: value,
             content_type: secret.3,
             replace,
         };
@@ -468,17 +494,17 @@ impl ItemObject {
     }
 
     fn get_secret(&self, session: ObjectPath<'_>) -> Result<SecretValue, Error> {
-        self.secrets.check_session(&session)?;
+        let key = self.secrets.check_session(&session)?;
         let item = self.secrets.item(self.id)?;
-        Ok(Secrets::secret_of(&item, &session))
+        Secrets::secret_of(&item, &session, key.as_ref())
     }
 
     async fn set_secret(
         &self, secret: SecretValue, #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), Error> {
-        self.secrets.check_session(&secret.0.as_ref())?;
+        let value = self.secrets.incoming(&secret)?;
         let (id, at) = (self.id, now());
-        let (value, content_type) = (Secret::new(secret.2), secret.3);
+        let content_type = secret.3;
         self.secrets.edit(|items, _| {
             if let Some(item) = items.iter_mut().find(|item| item.id == id) {
                 item.secret = value.clone();

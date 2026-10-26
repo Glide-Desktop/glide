@@ -15,6 +15,7 @@ const FAST: Params = Params { memory_kib: 64, passes: 1, lanes: 1 };
 const SERVICE: &str = "org.freedesktop.Secret.Service";
 const COLLECTION: &str = "org.freedesktop.Secret.Collection";
 const ITEM: &str = "org.freedesktop.Secret.Item";
+const DH: &str = "dh-ietf1024-sha256-aes128-cbc-pkcs7";
 
 struct Bus {
     child: Child,
@@ -93,11 +94,10 @@ fn programs_store_and_read_secrets_that_stay_encrypted_and_wait_for_the_island_w
     let client = connect(&bus);
     let root = proxy(&client, ROOT, SERVICE);
 
-    let refused = root.call::<_, _, (OwnedValue, OwnedObjectPath)>(
-        "OpenSession",
-        &("dh-ietf1024-sha256-aes128-cbc-pkcs7", Value::from(vec![1u8])),
-    );
-    assert!(refused.unwrap_err().to_string().contains("NotSupported"), "libsecret falls back to plain on NotSupported");
+    let refused = root.call::<_, _, (OwnedValue, OwnedObjectPath)>("OpenSession", &(DH, Value::from(vec![1u8])));
+    assert!(refused.unwrap_err().to_string().contains("InvalidArgs"), "a public key outside the group is refused");
+    let unknown = root.call::<_, _, (OwnedValue, OwnedObjectPath)>("OpenSession", &("rot13", Value::from("")));
+    assert!(unknown.unwrap_err().to_string().contains("NotSupported"));
     let (_, session): (OwnedValue, OwnedObjectPath) = root.call("OpenSession", &("plain", Value::from(""))).unwrap();
     let alias: OwnedObjectPath = root.call("ReadAlias", &("default",)).unwrap();
     let collection = proxy(&client, alias.as_str(), COLLECTION);
@@ -111,6 +111,23 @@ fn programs_store_and_read_secrets_that_stay_encrypted_and_wait_for_the_island_w
     let secrets: HashMap<OwnedObjectPath, SecretValue> =
         root.call("GetSecrets", &(vec![item.clone()], session.clone())).unwrap();
     assert_eq!(secrets[&item].2, b"chrome-key-0451");
+
+    let (dh, public) = secrets::session::Client::start().unwrap();
+    let (reply, sealed_session): (OwnedValue, OwnedObjectPath) =
+        root.call("OpenSession", &(DH, Value::from(public))).unwrap();
+    let key = dh.finish(&Vec::<u8>::try_from(reply).unwrap());
+    let (iv, value): (Vec<u8>, Vec<u8>) = {
+        let secrets: HashMap<OwnedObjectPath, SecretValue> =
+            root.call("GetSecrets", &(vec![item.clone()], sealed_session.clone())).unwrap();
+        (secrets[&item].1.clone(), secrets[&item].2.clone())
+    };
+    assert_ne!(value, b"chrome-key-0451", "a DH session carries ciphertext over the bus");
+    assert_eq!(key.open(&iv, &value).unwrap().as_slice(), b"chrome-key-0451");
+    let (iv, value) = key.seal(b"sealed-write").unwrap();
+    let item_proxy = proxy(&client, item.as_str(), ITEM);
+    let () = item_proxy.call("SetSecret", &((sealed_session, iv, value, "text/plain"),)).unwrap();
+    let plain: SecretValue = item_proxy.call("GetSecret", &(session.clone(),)).unwrap();
+    assert_eq!(plain.2, b"sealed-write", "a sealed write is stored as its plain text");
 
     let vault = std::fs::read(&path).unwrap();
     assert!(!vault.windows(15).any(|window| window == b"chrome-key-0451"), "the vault file holds ciphertext only");
