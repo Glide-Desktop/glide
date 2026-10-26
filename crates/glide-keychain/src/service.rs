@@ -2,10 +2,10 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use glide_ipc::keychain::{Login, Request, Response};
+use glide_ipc::keychain::{Hidden, Login, Request, Response};
 
 use crate::bitwarden::Bitwarden;
-use crate::daemon::{Daemon, login_failed, mutates};
+use crate::daemon::{Daemon, export_response, import_failed, login_failed, mutates};
 
 pub type Events = Arc<dyn Fn(Response) + Send + Sync>;
 
@@ -55,6 +55,23 @@ impl Service {
                     }
                     None => Response::Unsupported,
                 }
+            }
+            Request::Import { vault, contents, password } => {
+                match crate::transfer::parse(contents.expose(), password.as_ref().map(Hidden::expose)) {
+                    Ok(drafts) => {
+                        let total = drafts.len() as u32;
+                        let mut count = 0;
+                        for draft in drafts {
+                            count += u32::from(self.daemon().import_one(&vault, draft));
+                        }
+                        Response::Imported { count, skipped: total - count }
+                    }
+                    Err(error) => import_failed(&error),
+                }
+            }
+            Request::Export { vault, password } => {
+                let records = self.daemon().export_records(vault.as_deref());
+                export_response(&records, &password)
             }
             Request::CheckLeaks => {
                 let hashes = self.daemon().leak_hashes();

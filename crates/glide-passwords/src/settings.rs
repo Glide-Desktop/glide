@@ -392,7 +392,7 @@ fn lower(app: &App) -> Column<'_, Message> {
                         t(Key::ImportButton),
                         Tone::Neutral,
                         Size::Small,
-                        Some(Message::Settings(Event::Soon))
+                        Some(Message::Transfer(crate::transfer::Event::Import))
                     ))
                     .into(),
                 ListRow::new(paint, t(Key::ExportLabel))
@@ -402,7 +402,7 @@ fn lower(app: &App) -> Column<'_, Message> {
                         t(Key::ExportButton),
                         Tone::Neutral,
                         Size::Small,
-                        Some(Message::Settings(Event::Soon))
+                        Some(Message::Transfer(crate::transfer::Event::Export))
                     ))
                     .into(),
             ],

@@ -73,6 +73,7 @@ pub enum Message {
     Generator(generator::Event),
     Sends(sends::Event),
     Wizard(wizard::Event),
+    Transfer(crate::transfer::Event),
     OpenWizard,
     CreateVault(wizard::CreateEvent),
     Settings(settings::Event),
@@ -139,6 +140,7 @@ pub struct App {
     pub wizard: Option<Wizard>,
     pub create: Option<wizard::Create>,
     pub settings: bool,
+    pub transfer: Option<crate::transfer::Transfer>,
     pub password_change: Option<crate::settings::PasswordChange>,
     pub edit_when_loaded: bool,
     pub generate_on_edit: bool,
@@ -227,6 +229,7 @@ impl App {
             wizard: None,
             create: None,
             settings: false,
+            transfer: None,
             password_change: None,
             edit_when_loaded: false,
             generate_on_edit: false,
@@ -619,6 +622,7 @@ impl App {
             Message::Generator(event) => generator::update(self, event, shell),
             Message::Sends(event) => sends::update(self, event, shell),
             Message::Wizard(event) => wizard::update(self, event, shell),
+            Message::Transfer(event) => crate::transfer::update(self, event, shell),
             Message::OpenWizard => {
                 self.settings = false;
                 self.wizard = Some(Wizard::default());

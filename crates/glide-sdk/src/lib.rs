@@ -3,6 +3,7 @@ mod forward;
 
 pub mod anim;
 pub mod app;
+pub mod chooser;
 pub mod i18n;
 pub mod look;
 pub mod menu;

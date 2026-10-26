@@ -14,7 +14,6 @@ use iced::widget::operation;
 use iced::widget::text_editor::{Action, Binding, KeyPress, Status};
 use iced::{Point, Subscription, Task, clipboard, window};
 
-use crate::chooser::{self, Ask, Chosen, Purpose};
 use crate::config::{self, Preferences, Session, SessionTab};
 use crate::document::{self, Decoded, Document, Encoding, Ending, LoadError};
 use crate::edit::{self, Case, Indent};
@@ -25,6 +24,7 @@ use crate::syntax::{self, Language, Lines, Marks, Palette, Settings};
 use crate::tree::{self, Entry, Tree};
 use glide_app::menubar;
 use glide_sdk::Paint;
+use glide_sdk::chooser::{self, Ask, Chosen, Purpose};
 use glide_sdk::look::{self, Look};
 pub use glide_sdk::window::Frame;
 use glide_sdk::window::{Action as WindowAction, Window};

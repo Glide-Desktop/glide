@@ -61,14 +61,17 @@ pub fn normalize_email(email: &str) -> String {
 }
 
 pub fn master_key(password: &[u8], email: &str, kdf: Kdf) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
-    let salt = normalize_email(email);
+    derive_key(password, normalize_email(email).as_bytes(), kdf)
+}
+
+pub fn derive_key(password: &[u8], salt: &[u8], kdf: Kdf) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     let mut key = Zeroizing::new([0u8; 32]);
     match kdf {
         Kdf::Pbkdf2 { iterations } => {
-            pbkdf2::pbkdf2_hmac::<Sha256>(password, salt.as_bytes(), iterations, key.as_mut());
+            pbkdf2::pbkdf2_hmac::<Sha256>(password, salt, iterations, key.as_mut());
         }
         Kdf::Argon2id { iterations, memory_mib, parallelism } => {
-            let salt = Sha256::digest(salt.as_bytes());
+            let salt = Sha256::digest(salt);
             let params = argon2::Params::new(memory_mib * 1024, iterations, parallelism, Some(32))
                 .map_err(|_| CryptoError::Kdf)?;
             argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)

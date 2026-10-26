@@ -44,7 +44,7 @@ fn portal(ask: &Ask) -> zbus::Result<Chosen> {
     let sender =
         connection.unique_name().map(|name| name.trim_start_matches(':').replace('.', "_")).unwrap_or_default();
     let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |elapsed| elapsed.subsec_nanos());
-    let token = format!("glide_text_{}_{nanos}", std::process::id());
+    let token = format!("glide_{}_{nanos}", std::process::id());
     let request = format!("{PORTAL_PATH}/request/{sender}/{token}");
     let response = zbus::blocking::Proxy::new(&connection, PORTAL, request.as_str(), "org.freedesktop.portal.Request")?;
     let mut signals = response.receive_signal("Response")?;
@@ -115,7 +115,7 @@ fn files_app(ask: &Ask) -> Chosen {
 
 pub fn spawn(ask: Ask) -> oneshot::Receiver<Chosen> {
     let (sender, receiver) = oneshot::channel();
-    let spawned = std::thread::Builder::new().name("glide-text-chooser".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("glide-chooser".into()).spawn(move || {
         let chosen = portal(&ask).unwrap_or_else(|_| files_app(&ask));
         let _ = sender.send(chosen);
     });

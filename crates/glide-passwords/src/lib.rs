@@ -10,6 +10,7 @@ pub mod prefs;
 pub mod security;
 pub mod sends;
 pub mod settings;
+pub mod transfer;
 pub mod view;
 pub mod wizard;
 

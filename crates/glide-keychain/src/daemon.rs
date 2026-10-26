@@ -81,6 +81,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::Purge { .. }
             | Request::AddBitwarden { .. }
             | Request::CheckLeaks
+            | Request::Import { .. }
             | Request::RemoveVault { .. }
             | Request::RenameVault { .. }
             | Request::SetDefault { .. }
@@ -187,6 +188,22 @@ impl Daemon {
         self.leaks.store(found, now);
     }
 
+    #[must_use]
+    pub fn export_records(&self, vault: Option<&str>) -> Vec<Record> {
+        self.open_records()
+            .filter(|(provider, record)| {
+                record.deleted.is_none() && vault.is_none_or(|vault| provider.vault().id == vault)
+            })
+            .map(|(_, record)| record.clone())
+            .collect()
+    }
+
+    pub fn import_one(&mut self, vault: &str, mut draft: glide_ipc::keychain::Draft) -> bool {
+        draft.vault = vault.to_string();
+        draft.item = None;
+        matches!(self.handle(Request::Save { draft: Box::new(draft) }), Response::Saved { .. })
+    }
+
     fn check_leaks(&mut self) -> Response {
         let hashes = self.leak_hashes();
         match crate::leaks::check(&hashes, crate::leaks::fetch_range) {
@@ -291,6 +308,27 @@ impl Daemon {
     fn detail(&self, item: &ItemRef) -> Result<Detail, Fault> {
         let record = self.record(item)?;
         Ok(record_detail(&item.vault, record, &self.reuse()))
+    }
+}
+
+#[must_use]
+pub fn import_failed(error: &crate::transfer::ImportError) -> Response {
+    match error {
+        crate::transfer::ImportError::NeedsPassword => Response::NeedsFilePassword,
+        crate::transfer::ImportError::WrongPassword => Response::WrongPassword,
+        other => Response::Error { message: other.to_string() },
+    }
+}
+
+#[must_use]
+pub fn export_response(records: &[Record], password: &Hidden) -> Response {
+    if password.is_empty() {
+        return Response::Error { message: "an export needs a file password".into() };
+    }
+    let borrowed: Vec<&Record> = records.iter().collect();
+    match crate::transfer::export(&borrowed, password.expose()) {
+        Ok(data) => Response::Exported { data, count: records.len() as u32 },
+        Err(error) => Response::Error { message: error.to_string() },
     }
 }
 
@@ -530,6 +568,23 @@ impl Daemon {
         match request {
             Request::AddBitwarden { login } => self.add_bitwarden(&login),
             Request::CheckLeaks => self.check_leaks(),
+            Request::Import { vault, contents, password } => {
+                match crate::transfer::parse(contents.expose(), password.as_ref().map(Hidden::expose)) {
+                    Ok(drafts) => {
+                        let total = drafts.len() as u32;
+                        let mut count = 0;
+                        for draft in drafts {
+                            count += u32::from(self.import_one(&vault, draft));
+                        }
+                        Response::Imported { count, skipped: total - count }
+                    }
+                    Err(error) => import_failed(&error),
+                }
+            }
+            Request::Export { vault, password } => {
+                let records = self.export_records(vault.as_deref());
+                export_response(&records, &password)
+            }
             Request::SendLoginEmail { login } => match self.accounts.clone() {
                 Some(dir) => Bitwarden::send_login_email(&dir, &login).map_or_else(login_failed, |()| Response::Done),
                 None => Response::Unsupported,
@@ -765,6 +820,39 @@ mod tests {
         let Response::Report { report } = daemon.handle(Request::Report) else { panic!() };
         assert_eq!(report.leaked, [item]);
         assert!(daemon.leak_hashes().is_empty(), "checked passwords wait a day");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn an_import_fills_the_chosen_vault_and_an_export_carries_it_back() {
+        let (mut daemon, path) = daemon("transfer");
+        let csv = "name,url,username,password\nGitHub,https://github.com,artem,hunter2\n,,,\nRouter,,admin,admin123\n";
+        let contents = hidden(csv);
+        assert_eq!(
+            daemon.handle(Request::Import { vault: LOCAL.into(), contents, password: None }),
+            Response::Imported { count: 2, skipped: 0 }
+        );
+        let Response::Exported { data, count } =
+            daemon.handle(Request::Export { vault: None, password: hidden("file pw") })
+        else {
+            panic!()
+        };
+        assert_eq!(count, 2);
+        assert!(!data.contains("hunter2"));
+        assert_eq!(
+            daemon.handle(Request::Import { vault: LOCAL.into(), contents: hidden(&data), password: None }),
+            Response::NeedsFilePassword
+        );
+        assert_eq!(
+            daemon.handle(Request::Import {
+                vault: LOCAL.into(),
+                contents: hidden(&data),
+                password: Some(hidden("file pw"))
+            }),
+            Response::Imported { count: 2, skipped: 0 }
+        );
+        let Response::Items { list } = daemon.handle(Request::Items) else { panic!() };
+        assert_eq!(list.len(), 4);
         cleanup(&path);
     }
 

@@ -6,4 +6,5 @@ pub mod local;
 pub mod provider;
 pub mod service;
 pub mod totp;
+pub mod transfer;
 pub mod vault;

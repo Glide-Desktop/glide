@@ -687,6 +687,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(sheet) = crate::wizard::view(app) {
         layers.push(sheet);
     }
+    if let Some(sheet) = crate::transfer::view(app) {
+        layers.push(sheet);
+    }
     stack(layers).into()
 }
 

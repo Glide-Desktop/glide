@@ -1,5 +1,4 @@
 pub mod app;
-pub mod chooser;
 mod chrome;
 pub mod config;
 pub mod detect;
