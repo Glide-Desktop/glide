@@ -44,6 +44,7 @@ pub enum Request {
     PickColor,
     ScanQr,
     Action { name: String },
+    IdleInhibitors,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +175,10 @@ pub enum Response {
     },
     QrCodes {
         codes: Vec<keychain::Hidden>,
+    },
+    IdleInhibitors {
+        apps: Vec<String>,
+        caffeine: bool,
     },
     #[serde(other)]
     Unknown,

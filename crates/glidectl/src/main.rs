@@ -187,6 +187,7 @@ COMMANDS:
     window move <N|next|prev>  Move focused window to workspace
     reload                     Reload configuration from glide.toml
     lock                       Lock the screen
+    inhibitors                 List what keeps the screen from going dark
     action <name>              Run a named shell action, as a keybind would (e.g. screen-mirroring)
     exec <command...>          Execute shell command
     subscribe                  Stream window/focus/workspace events until Ctrl+C
@@ -242,6 +243,7 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
         "quit" => Ok(Request::Quit),
         "reload" => Ok(Request::Reload),
         "lock" => Ok(Request::Lock),
+        "inhibitors" => Ok(Request::IdleInhibitors),
         "action" => match args.get(1) {
             Some(name) => Ok(Request::Action { name: name.clone() }),
             None => anyhow::bail!("Usage: glidectl action <name>"),
@@ -330,6 +332,14 @@ fn print_response(response: &Response) {
                 println!("{}", code.expose());
             }
         }
+        Response::IdleInhibitors { apps, caffeine } => {
+            for app in apps {
+                println!("{app}");
+            }
+            if *caffeine {
+                println!("caffeine");
+            }
+        }
         Response::Outputs { list } => {
             println!("{:<12} {:<28} {:<22} {:<7} {:<12}", "NAME", "MODEL", "MODE", "SCALE", "POSITION");
             println!("{}", "-".repeat(84));
@@ -408,6 +418,7 @@ mod tests {
         assert_eq!(parse(&["subscribe"]), Request::Subscribe);
         assert_eq!(parse(&["sub"]), Request::Subscribe);
         assert_eq!(parse(&["lock"]), Request::Lock);
+        assert_eq!(parse(&["inhibitors"]), Request::IdleInhibitors);
         assert_eq!(parse(&["action", "screen-mirroring"]), Request::Action { name: "screen-mirroring".into() });
     }
 

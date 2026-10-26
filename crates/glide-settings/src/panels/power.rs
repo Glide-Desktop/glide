@@ -39,6 +39,9 @@ mod tr {
         BlankLinkHint => "Set on the Lock Screen page", "Налаштовується на сторінці «Екран блокування»";
         Away => "What happens when you step away", "Що відбувається, коли ви відходите";
         ChargingWarnings => "Charging and warnings", "Заряджання й попередження";
+        Paused => "The chain is paused right now", "Зараз ланцюжок призупинено";
+        PausedHint => "Kept awake by {apps}. The countdown starts again when they let go", "Не дає гасити: {apps}. Відлік почнеться заново, коли вони відпустять";
+        Caffeine => "Caffeine in the top bar", "Кофеїн у верхній панелі";
         AutoSaver => "Save power when the battery runs low", "Економія при низькому заряді";
         AutoSaverHint => "Switches to Power Saver at the warning level and back to your mode once you plug in", "Вмикає «Економію» на порозі попередження і повертає ваш режим після підключення";
         NeedsAdmin => "asks for an administrator password", "потрібен пароль адміністратора";
@@ -92,9 +95,37 @@ impl std::fmt::Display for Blank {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Inhibitors {
+    pub apps: Vec<String>,
+    pub caffeine: bool,
+}
+
+impl Inhibitors {
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.caffeine || !self.apps.is_empty()
+    }
+}
+
+const fn holder_words(lang: crate::i18n::Lang) -> [&'static str; 3] {
+    match lang {
+        crate::i18n::Lang::Uk => ["блокувальник", "блокувальники", "блокувальників"],
+        crate::i18n::Lang::En => ["inhibitor", "inhibitors", "inhibitors"],
+    }
+}
+
+fn read_inhibitors() -> Option<Inhibitors> {
+    match crate::services::ipc::request(&glide_ipc::Request::IdleInhibitors).ok()? {
+        glide_ipc::Response::IdleInhibitors { apps, caffeine } => Some(Inhibitors { apps, caffeine }),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Msg {
     Loaded(u64, PowerState),
+    Inhibitors(Option<Inhibitors>),
     AutoSaver(bool),
     Suspend(Blank),
     SuspendOnBattery(Blank),
@@ -114,6 +145,7 @@ pub struct Page {
     jobs: Jobs,
     battery_low: Option<f64>,
     settle: Debounce,
+    inhibitors: Inhibitors,
 }
 
 #[must_use]
@@ -180,6 +212,7 @@ impl Pane for Page {
                 self.loaded = true;
                 self.jobs.loading = false;
             }
+            Msg::Inhibitors(found) => self.inhibitors = found.unwrap_or_default(),
             Msg::AutoSaver(true) => config.set_bool("topbar", "battery-saver", true),
             Msg::AutoSaver(false) => config.remove("topbar", "battery-saver"),
             Msg::Suspend(choice) => config.set_int("general", "suspend-after-seconds", choice.seconds),
@@ -259,7 +292,10 @@ impl Pane for Page {
 impl Page {
     fn refresh(&mut self) -> Task<Msg> {
         let Some(generation) = self.jobs.start_loading() else { return Task::none() };
-        Task::perform(blocking(power::read_state), move |state| Msg::Loaded(generation, state.unwrap_or_default()))
+        Task::batch([
+            Task::perform(blocking(power::read_state), move |state| Msg::Loaded(generation, state.unwrap_or_default())),
+            Task::perform(blocking(read_inhibitors), |found| Msg::Inhibitors(found.flatten())),
+        ])
     }
 
     fn battery_hero<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
@@ -488,6 +524,23 @@ impl Page {
             .push(Row::new(t, c.t(K::PluggedIn)).stacked(true).suffix(lane(on_ac)).build());
         if self.state.battery.is_some() {
             group = group.push(Row::new(t, c.t(K::OnBattery)).stacked(true).suffix(lane(on_battery)).build());
+        }
+        if self.inhibitors.any() {
+            let mut holders = self.inhibitors.apps.clone();
+            if self.inhibitors.caffeine {
+                holders.push(c.t(tr::Key::Caffeine).to_string());
+            }
+            group = group.push(
+                Row::new(t, c.t(tr::Key::Paused))
+                    .subtitle(c.t(tr::Key::PausedHint).replace("{apps}", &holders.join(", ")))
+                    .prefix(widgets::tile(Icon::Moon, t.acc_soft(), 28.0))
+                    .suffix(widgets::pill(
+                        t,
+                        Tone::Accent,
+                        glide_sdk::i18n::count(holders.len() as u64, c.lang, holder_words(c.lang)),
+                    ))
+                    .build(),
+            );
         }
         group.extend(self.sleep_rows(c, config)).build()
     }

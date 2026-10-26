@@ -409,6 +409,9 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             }
             None => Response::Error { message: format!("no action named {name}") },
         },
+        Request::IdleInhibitors => {
+            Response::IdleInhibitors { apps: state.idle_inhibitor_apps(), caffeine: state.topbar.caffeinated() }
+        }
         Request::ActivationToken { .. }
         | Request::Screenshot
         | Request::ScreenshotArea

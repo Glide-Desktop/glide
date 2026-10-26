@@ -236,7 +236,7 @@ impl GlideState {
         focus.wl_surface().map(Cow::into_owned)
     }
 
-    fn surface_app_id(&self, surface: &WlSurface) -> Option<String> {
+    pub(crate) fn surface_app_id(&self, surface: &WlSurface) -> Option<String> {
         let mut root = root_of(surface);
         if let Some(popup) = self.popups.find_popup(&root)
             && let Ok(toplevel) = find_popup_root_surface(&popup)

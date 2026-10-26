@@ -29,23 +29,28 @@ pub enum Event {
 #[derive(Debug, Default)]
 struct Cookies {
     last: u32,
-    held: HashMap<u32, String>,
+    held: HashMap<u32, (String, String)>,
 }
 
 impl Cookies {
+    #[cfg(test)]
     fn take(&mut self, owner: &str) -> u32 {
+        self.take_for(owner, "")
+    }
+
+    fn take_for(&mut self, owner: &str, app: &str) -> u32 {
         loop {
             self.last = self.last.checked_add(1).unwrap_or(1);
             if !self.held.contains_key(&self.last) {
                 break;
             }
         }
-        self.held.insert(self.last, owner.to_string());
+        self.held.insert(self.last, (owner.to_string(), app.trim().to_string()));
         self.last
     }
 
     fn release(&mut self, cookie: u32, owner: &str) -> bool {
-        let matches = self.held.get(&cookie).is_some_and(|held| held == owner);
+        let matches = self.held.get(&cookie).is_some_and(|(held, _)| held == owner);
         if matches {
             self.held.remove(&cookie);
         }
@@ -54,12 +59,20 @@ impl Cookies {
 
     fn forget(&mut self, owner: &str) -> bool {
         let before = self.held.len();
-        self.held.retain(|_, held| held != owner);
+        self.held.retain(|_, (held, _)| held != owner);
         self.held.len() != before
     }
 
     fn any(&self) -> bool {
         !self.held.is_empty()
+    }
+
+    fn apps(&self) -> Vec<String> {
+        let mut apps: Vec<String> =
+            self.held.values().map(|(_, app)| app.clone()).filter(|app| !app.is_empty()).collect();
+        apps.sort();
+        apps.dedup();
+        apps
     }
 }
 
@@ -96,7 +109,7 @@ impl ScreenSaver {
     fn inhibit(&self, application_name: &str, reason_for_inhibit: &str, #[zbus(header)] header: Header<'_>) -> u32 {
         let owner = sender(&header);
         tracing::info!(app = application_name, reason = reason_for_inhibit, "an app is keeping the screen on");
-        self.0.edit(|cookies| cookies.take(&owner))
+        self.0.edit(|cookies| cookies.take_for(&owner, application_name))
     }
 
     fn un_inhibit(&self, cookie: u32, #[zbus(header)] header: Header<'_>) {
@@ -151,12 +164,18 @@ pub struct Handle {
     inhibited: bool,
     active: bool,
     changes: mpsc::Sender<bool>,
+    shared: Arc<Shared>,
 }
 
 impl Handle {
     #[must_use]
     pub const fn inhibited(&self) -> bool {
         self.inhibited
+    }
+
+    #[must_use]
+    pub fn apps(&self) -> Vec<String> {
+        self.shared.cookies.lock().unwrap_or_else(PoisonError::into_inner).apps()
     }
 
     pub const fn set_inhibited(&mut self, inhibited: bool) {
@@ -221,10 +240,11 @@ fn serve(mut builder: Builder<'_>, sink: Box<dyn Fn(Event) + Send + Sync>) -> an
     })?;
 
     let (changes, receiver) = mpsc::channel();
+    let announcer = shared.clone();
     std::thread::Builder::new()
         .name("glide-screensaver-state".into())
-        .spawn(move || announce(&connection, &shared, receiver))?;
-    Ok(Handle { inhibited: false, active: false, changes })
+        .spawn(move || announce(&connection, &announcer, receiver))?;
+    Ok(Handle { inhibited: false, active: false, changes, shared })
 }
 
 #[cfg(test)]
@@ -304,6 +324,19 @@ mod tests {
     }
 
     #[test]
+    fn inhibitors_are_named_by_the_app_that_asked() {
+        let mut cookies = Cookies::default();
+        let video = cookies.take_for(":1.10", "Firefox");
+        cookies.take_for(":1.11", " Firefox ");
+        cookies.take_for(":1.12", "");
+        cookies.take_for(":1.13", "mpv");
+        assert_eq!(cookies.apps(), ["Firefox", "mpv"], "unnamed ones are left out and names appear once");
+        cookies.release(video, ":1.10");
+        cookies.forget(":1.11");
+        assert_eq!(cookies.apps(), ["mpv"]);
+    }
+
+    #[test]
     fn a_wrapped_counter_skips_zero_and_cookies_still_held() {
         let mut cookies = Cookies { last: u32::MAX - 1, ..Cookies::default() };
         assert_eq!(cookies.take("a"), u32::MAX);
@@ -345,7 +378,9 @@ mod tests {
     #[test]
     fn the_handle_announces_each_state_change_once() {
         let (changes, announced) = mpsc::channel();
-        let mut handle = Handle { inhibited: false, active: false, changes };
+        let shared =
+            Arc::new(Shared { cookies: Mutex::default(), active: AtomicBool::new(false), sink: Box::new(|_| {}) });
+        let mut handle = Handle { inhibited: false, active: false, changes, shared };
         for active in [false, true, true, false] {
             handle.set_active(active);
         }

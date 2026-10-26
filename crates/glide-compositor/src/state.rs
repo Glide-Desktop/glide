@@ -1162,6 +1162,20 @@ impl GlideState {
             || self.session.screensaver.as_ref().is_some_and(crate::screensaver::Handle::inhibited)
     }
 
+    #[must_use]
+    pub fn idle_inhibitor_apps(&self) -> Vec<String> {
+        let mut apps: Vec<String> = self
+            .idle_inhibited_surfaces
+            .iter()
+            .filter(|surface| smithay::utils::IsAlive::alive(*surface))
+            .filter_map(|surface| self.surface_app_id(surface))
+            .collect();
+        apps.extend(self.session.screensaver.as_ref().map(crate::screensaver::Handle::apps).unwrap_or_default());
+        apps.sort();
+        apps.dedup();
+        apps
+    }
+
     pub fn refresh_idle_inhibit(&mut self) {
         let inhibited = self.is_idle_inhibited();
         self.protocols.idle_notifier_state.set_is_inhibited(inhibited);
