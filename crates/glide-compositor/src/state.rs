@@ -336,6 +336,8 @@ pub struct GlideState {
     pub snap_preview: Option<crate::snap::SnapPreview>,
     pub snap_dwell: crate::snap::EdgeDwell,
     pub edge_snapping: bool,
+    pub launcher_options: crate::launcher::search::Options,
+    pub super_tap_enabled: bool,
     pub hot_corner: crate::snap::HotCorner,
     pub drag: crate::drag_assist::DragState,
     pub max_volume_pct: u8,
@@ -491,6 +493,8 @@ impl GlideState {
             snap_preview: None,
             snap_dwell: crate::snap::EdgeDwell::default(),
             edge_snapping: true,
+            launcher_options: crate::launcher::search::Options::default(),
+            super_tap_enabled: true,
             hot_corner: crate::snap::HotCorner::default(),
             drag: crate::drag_assist::DragState::default(),
             max_volume_pct: 100,
@@ -2039,8 +2043,9 @@ impl GlideState {
     pub fn begin_interactive_launcher(&mut self, progress: f64) {
         if self.launcher.is_none() {
             let area = self.launcher_area();
-            let mut launcher =
-                crate::launcher::Launcher::new(Vec::new(), area).with_scene(self.overview_theme.duration());
+            let mut launcher = crate::launcher::Launcher::new(Vec::new(), area)
+                .with_scene(self.overview_theme.duration())
+                .with_options(self.launcher_options.clone());
             launcher.set_windows(self.open_windows_for_search());
             launcher.set_providers(self.search_providers());
             self.launcher = Some(launcher);
@@ -2060,8 +2065,9 @@ impl GlideState {
             None => {
                 self.begin_close_overview(None);
                 let area = self.launcher_area();
-                let mut launcher =
-                    crate::launcher::Launcher::new(Vec::new(), area).with_scene(self.overview_theme.duration());
+                let mut launcher = crate::launcher::Launcher::new(Vec::new(), area)
+                    .with_scene(self.overview_theme.duration())
+                    .with_options(self.launcher_options.clone());
                 launcher.set_windows(self.open_windows_for_search());
                 launcher.set_providers(self.search_providers());
                 self.launcher = Some(launcher);

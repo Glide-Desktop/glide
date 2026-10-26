@@ -33,6 +33,7 @@ pub struct Config {
     pub general: GeneralConfig,
     pub workspaces: WorkspaceConfig,
     pub windows: WindowsConfig,
+    pub launcher: LauncherConfig,
     pub keybinds: Vec<KeybindConfig>,
     pub decorations: DecorationTheme,
     pub overview: OverviewTheme,
@@ -963,6 +964,44 @@ impl Default for WindowsConfig {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent [launcher] switches mirrored from glide.toml
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct LauncherConfig {
+    pub windows: bool,
+    pub recent_files: bool,
+    pub settings: bool,
+    pub providers: bool,
+    pub disabled_providers: Vec<String>,
+    pub super_tap: bool,
+}
+
+impl Default for LauncherConfig {
+    fn default() -> Self {
+        Self {
+            windows: true,
+            recent_files: true,
+            settings: true,
+            providers: true,
+            disabled_providers: Vec::new(),
+            super_tap: true,
+        }
+    }
+}
+
+impl LauncherConfig {
+    #[must_use]
+    pub fn options(&self) -> crate::launcher::search::Options {
+        crate::launcher::search::Options {
+            windows: self.windows,
+            files: self.recent_files,
+            settings: self.settings,
+            providers: self.providers,
+            disabled_providers: self.disabled_providers.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NewWindowPolicyConfig {
@@ -1256,6 +1295,8 @@ impl Config {
             state.sync_ext_workspaces();
         }
         state.edge_snapping = self.windows.edge_snapping;
+        state.launcher_options = self.launcher.options();
+        state.super_tap_enabled = self.launcher.super_tap;
         state.gestures.config = self.gestures;
     }
 
@@ -1521,6 +1562,21 @@ mod tests {
         let mirror: Config = toml::from_str("[displays]\narrangement = \"mirror\"\n").expect("config");
         assert_eq!(mirror.displays.arrangement, Arrangement::Mirror);
         assert!(toml::from_str::<Config>("[displays]\narrangement = \"clone\"\n").is_err());
+    }
+
+    #[test]
+    fn the_launcher_searches_everything_until_a_section_is_switched_off() {
+        assert_eq!(Config::default().launcher.options(), crate::launcher::search::Options::default());
+        assert!(Config::default().launcher.super_tap);
+        let config: Config = toml::from_str(
+            "[launcher]\nrecent-files = false\nsuper-tap = false\ndisabled-providers = [\"org.gnome.Nautilus\"]\n",
+        )
+        .expect("config");
+        let options = config.launcher.options();
+        assert!(options.windows && options.settings && options.providers);
+        assert!(!options.files);
+        assert!(!config.launcher.super_tap);
+        assert!(!options.allows_provider("org.gnome.Nautilus.desktop"));
     }
 
     #[test]

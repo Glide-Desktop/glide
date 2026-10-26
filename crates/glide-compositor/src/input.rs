@@ -1713,6 +1713,7 @@ impl GlideState {
                 KeyState::Released => self.session.super_tap.release(is_super),
             };
             if tapped
+                && self.super_tap_enabled
                 && !self.screen_locked()
                 && !handoff_blocking
                 && !shortcuts_inhibited

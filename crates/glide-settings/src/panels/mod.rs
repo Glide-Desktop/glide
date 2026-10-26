@@ -24,6 +24,7 @@ pub mod printers;
 pub mod privacy;
 pub mod region;
 pub mod screen_share;
+pub mod search;
 pub mod shortcuts;
 pub mod sound;
 pub mod startup;
@@ -127,6 +128,7 @@ macro_rules! with_panels {
             Users => users,
             DateTime => date_time,
             Region => region,
+            Search => search,
             Apps => apps,
             Startup => startup,
             Storage => storage,
@@ -238,6 +240,7 @@ panel_meta! {
     Users: PanelUsers, AboutUsers, "users", Users, Terracotta 4;
     DateTime: PanelDateTime, AboutDateTime, "datetime", Clock, Cinnabar 5;
     Region: PanelRegion, AboutRegion, "region", Globe, Conifer 4;
+    Search: PanelSearch, AboutSearch, "search", Search, Conifer 2;
     Apps: PanelApps, AboutApps, "default-apps", Apps, Amber 3;
     Startup: PanelStartup, AboutStartup, "startup", Rocket, Terracotta 5;
     Storage: PanelStorage, AboutStorage, "storage", Drive, Conifer 5;
@@ -262,6 +265,7 @@ pub enum Category {
     Printers,
     Keyboard,
     Mouse,
+    Search,
     Apps,
     Startup,
     LockScreen,
@@ -298,6 +302,7 @@ impl Category {
         Self::Printers,
         Self::Keyboard,
         Self::Mouse,
+        Self::Search,
         Self::Apps,
         Self::Startup,
         Self::LockScreen,
@@ -321,7 +326,7 @@ impl Category {
             categories: &[Self::Displays, Self::Power, Self::ScreenShare, Self::Miracast, Self::Printers],
         },
         Group { title: Some(Key::GroupInput), categories: &[Self::Keyboard, Self::Mouse] },
-        Group { title: Some(Key::GroupApps), categories: &[Self::Apps, Self::Startup] },
+        Group { title: Some(Key::GroupApps), categories: &[Self::Search, Self::Apps, Self::Startup] },
         Group {
             title: Some(Key::GroupPeople),
             categories: &[Self::LockScreen, Self::Privacy, Self::Passwords, Self::Accessibility, Self::Users],
@@ -351,6 +356,7 @@ impl Category {
             Self::Keyboard => &[Panel::Keyboard, Panel::Shortcuts],
             Self::Mouse => &[Panel::Mouse, Panel::Gestures],
             Self::LockScreen => &[Panel::LockScreen],
+            Self::Search => &[Panel::Search],
             Self::Apps => &[Panel::Apps],
             Self::Startup => &[Panel::Startup],
             Self::Privacy => &[Panel::Privacy],
@@ -486,6 +492,7 @@ impl Panel {
             "autostart" => Some(Self::Startup),
             "disk" => Some(Self::Storage),
             "keybinds" => Some(Self::Shortcuts),
+            "launcher" => Some(Self::Search),
             "workspaces" | "overview" => Some(Self::Multitasking),
             "gesture" | "swipe" => Some(Self::Gestures),
             _ => None,

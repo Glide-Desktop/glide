@@ -8,8 +8,8 @@ use crate::icons::Icon;
 use crate::panels::{
     Category, Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop,
     displays, gestures, home, keyboard, lock_screen, miracast, mouse, multitasking, netbird, network, night_light,
-    notifications, passwords, power, printers, privacy, region, screen_share, shortcuts, sound, startup, storage,
-    topbar, users, vpn, wallpaper, windows, with_panels,
+    notifications, passwords, power, printers, privacy, region, screen_share, search, shortcuts, sound, startup,
+    storage, topbar, users, vpn, wallpaper, windows, with_panels,
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;
@@ -366,6 +366,7 @@ impl App {
             | Message::Miracast(miracast::Msg::Open(panel))
             | Message::Privacy(privacy::Msg::Open(panel))
             | Message::Passwords(passwords::Msg::Open(panel))
+            | Message::Search(search::Msg::Open(panel))
             | Message::TopBar(topbar::Msg::Open(panel)) => self.select(panel),
             Message::CategorySelected(category) => {
                 let panel =

@@ -326,6 +326,7 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
             | SettingsPanel::Users
             | SettingsPanel::DateTime
             | SettingsPanel::Region
+            | SettingsPanel::Search
             | SettingsPanel::Apps
             | SettingsPanel::Startup
             | SettingsPanel::Storage

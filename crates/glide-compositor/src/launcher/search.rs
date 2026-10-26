@@ -214,6 +214,7 @@ pub enum SettingsPanel {
     Users,
     DateTime,
     Region,
+    Search,
     Apps,
     Startup,
     Storage,
@@ -226,7 +227,7 @@ fn netbird_installed() -> bool {
 }
 
 impl SettingsPanel {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -256,6 +257,7 @@ impl SettingsPanel {
         Self::Users,
         Self::DateTime,
         Self::Region,
+        Self::Search,
         Self::Apps,
         Self::Startup,
         Self::Storage,
@@ -294,6 +296,7 @@ impl SettingsPanel {
             Self::Users => "users",
             Self::DateTime => "datetime",
             Self::Region => "region",
+            Self::Search => "search",
             Self::Apps => "apps",
             Self::Startup => "startup",
             Self::Storage => "storage",
@@ -333,6 +336,7 @@ impl SettingsPanel {
             Self::Users => Key::SettingsUsers,
             Self::DateTime => Key::SettingsDateTime,
             Self::Region => Key::SettingsRegion,
+            Self::Search => Key::SettingsSearch,
             Self::Apps => Key::SettingsApps,
             Self::Startup => Key::SettingsStartup,
             Self::Storage => Key::SettingsStorage,
@@ -397,6 +401,7 @@ impl SettingsPanel {
             Self::Users => &["users", "account", "avatar", "користувачі", "обліковий запис"],
             Self::DateTime => &["date", "time", "time zone", "clock", "дата", "час", "часовий пояс"],
             Self::Region => &["region", "language", "locale", "formats", "регіон", "мова", "формати"],
+            Self::Search => &["search", "launcher", "super", "пошук", "запускач"],
             Self::Apps => &["apps", "applications", "default apps", "застосунки", "програми"],
             Self::Startup => &["startup", "autostart", "автозапуск"],
             Self::Storage => &["storage", "disk", "space", "drives", "сховище", "диск", "місце"],
@@ -548,10 +553,35 @@ pub fn run_entries(text: &str) -> Vec<Entry> {
     if command.is_empty() { Vec::new() } else { vec![Entry::Run(command.to_string())] }
 }
 
+#[allow(clippy::struct_excessive_bools)] // One switch per launcher section, from [launcher] in glide.toml
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub windows: bool,
+    pub files: bool,
+    pub settings: bool,
+    pub providers: bool,
+    pub disabled_providers: Vec<String>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { windows: true, files: true, settings: true, providers: true, disabled_providers: Vec::new() }
+    }
+}
+
+impl Options {
+    #[must_use]
+    pub fn allows_provider(&self, desktop_id: &str) -> bool {
+        self.providers
+            && !self.disabled_providers.iter().any(|id| glide_config::search_providers::same_app(id, desktop_id))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sources<'a> {
     pub windows: &'a [OpenWindow],
     pub files: &'a [super::recent::RecentFile],
+    pub hide_settings: bool,
 }
 
 #[must_use]
@@ -598,6 +628,7 @@ pub fn build_entries(apps: &[DesktopApp], ranked_apps: &[usize], sources: &Sourc
         ranked(
             SettingsPanel::ALL
                 .into_iter()
+                .filter(|_| !sources.hide_settings)
                 .filter(|panel| *panel != SettingsPanel::Netbird || netbird_installed())
                 .map(|panel| (panel, phrase_score(panel.title(), panel.keywords(), &needle))),
             long_enough,
@@ -785,7 +816,7 @@ mod tests {
             window(11, "Untitled", ""),
         ];
         let found = |query| {
-            build_entries(&apps, &[], &Sources { windows: &windows, files: &[] }, query)
+            build_entries(&apps, &[], &Sources { windows: &windows, ..Sources::default() }, query)
                 .into_iter()
                 .filter(|entry| entry.section() == Section::Windows)
                 .collect::<Vec<_>>()
@@ -810,7 +841,7 @@ mod tests {
             folder: "~".to_string(),
         };
         let files = vec![file("budget.ods"), file("notes.txt"), file("old budget.ods")];
-        let sources = Sources { windows: &[], files: &files };
+        let sources = Sources { files: &files, ..Sources::default() };
         let found: Vec<Entry> = build_entries(&[], &[], &sources, "budget")
             .into_iter()
             .filter(|entry| entry.section() == Section::Files)
@@ -857,6 +888,18 @@ mod tests {
         assert!(entries.contains(&Entry::Settings(SettingsPanel::Network)));
         let entries = build_entries(&[], &[], &Sources::default(), "гучн");
         assert!(entries.contains(&Entry::Settings(SettingsPanel::Sound)));
+        let hidden = Sources { hide_settings: true, ..Sources::default() };
+        let entries = build_entries(&[], &[], &hidden, "wifi");
+        assert!(entries.iter().all(|entry| entry.section() != Section::Settings), "{entries:?}");
+    }
+
+    #[test]
+    fn disabled_providers_match_with_or_without_the_desktop_suffix() {
+        let options = Options { disabled_providers: vec!["org.gnome.Nautilus".into()], ..Options::default() };
+        assert!(!options.allows_provider("org.gnome.Nautilus.desktop"));
+        assert!(options.allows_provider("org.gnome.Calculator.desktop"));
+        let off = Options { providers: false, ..Options::default() };
+        assert!(!off.allows_provider("org.gnome.Calculator.desktop"));
     }
 
     #[test]
@@ -914,6 +957,7 @@ mod tests {
                 "users",
                 "datetime",
                 "region",
+                "search",
                 "apps",
                 "startup",
                 "storage",

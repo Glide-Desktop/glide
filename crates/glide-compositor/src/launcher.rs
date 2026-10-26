@@ -482,6 +482,7 @@ pub struct Launcher {
     provided: Vec<providers::Found>,
     provider_query: String,
     provider_generation: u64,
+    options: search::Options,
     prompt: Prompt,
     selected: Option<usize>,
     history: history::LaunchHistory,
@@ -591,6 +592,7 @@ impl Launcher {
             provided: Vec::new(),
             provider_query: String::new(),
             provider_generation: 0,
+            options: search::Options::default(),
             prompt: Prompt::Search,
             selected: None,
             history: history::LaunchHistory::default(),
@@ -831,6 +833,7 @@ impl Launcher {
         self.provided.clear();
         self.provider_generation += 1;
         if let Some(handle) = self.providers.as_ref()
+            && self.options.providers
             && query.chars().count() >= providers::MIN_QUERY
         {
             handle.query(self.provider_generation, providers::terms(&query));
@@ -841,6 +844,7 @@ impl Launcher {
         self.provided
             .iter()
             .enumerate()
+            .filter(|(_, found)| self.options.allows_provider(&found.desktop_id))
             .map(|(index, found)| search::Entry::Provided {
                 index,
                 app: self.apps.iter().position(|app| app.id.trim_end_matches(".desktop") == found.desktop_id),
@@ -948,7 +952,11 @@ impl Launcher {
         self.entries = if self.run_mode() {
             search::run_entries(self.field.text())
         } else {
-            let sources = search::Sources { windows: &self.windows, files: &self.recent };
+            let sources = search::Sources {
+                windows: if self.options.windows { &self.windows } else { &[] },
+                files: if self.options.files { &self.recent } else { &[] },
+                hide_settings: !self.options.settings,
+            };
             search::build_entries(&self.apps, &self.results, &sources, self.field.text())
         };
         if !self.run_mode() {
@@ -1152,6 +1160,12 @@ impl Launcher {
     #[must_use]
     pub const fn with_scene(mut self, scene: Duration) -> Self {
         self.scene = scene;
+        self
+    }
+
+    #[must_use]
+    pub fn with_options(mut self, options: search::Options) -> Self {
+        self.options = options;
         self
     }
 
