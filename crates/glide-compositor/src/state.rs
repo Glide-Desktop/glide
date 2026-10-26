@@ -3465,6 +3465,8 @@ impl GlideState {
     pub fn sync_session_hints(&mut self) {
         let (locked, idle) = (self.screen_locked(), self.idle.is_idle());
         self.notifications.set_locked(locked);
+        let sharing = self.topbar.sharing_screen();
+        self.notifications.set_inhibited(sharing && self.notifications.policy().system.quiet_while_sharing);
         if let Some(logind) = self.session.logind.as_mut() {
             logind.set_locked(locked);
             logind.set_idle(idle);

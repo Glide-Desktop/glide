@@ -193,11 +193,12 @@ pub struct SystemNotices {
     pub disk_space: bool,
     pub headsets: bool,
     pub codes: bool,
+    pub quiet_while_sharing: bool,
 }
 
 impl Default for SystemNotices {
     fn default() -> Self {
-        Self { drives: true, disk_space: true, headsets: true, codes: true }
+        Self { drives: true, disk_space: true, headsets: true, codes: true, quiet_while_sharing: true }
     }
 }
 

@@ -214,6 +214,11 @@ impl Topbar {
         true
     }
 
+    #[must_use]
+    pub fn sharing_screen(&self) -> bool {
+        !self.system_status.privacy.screen.is_empty() || !self.indicators.screen_clients.is_empty()
+    }
+
     fn privacy_active(&self) -> [bool; 3] {
         let entries = privacy_entries(&self.system_status, &self.indicators.screen_clients);
         PrivacyKind::ALL.map(|kind| entries.iter().any(|(active, _)| *active == kind))
@@ -602,6 +607,16 @@ mod tests {
             vec![Slot::Status, Slot::Headset, Slot::Search, Slot::Passwords],
             "a connected headset sits beside the status block"
         );
+    }
+
+    #[test]
+    fn the_screen_counts_as_shared_through_the_portal_or_a_direct_capture() {
+        let mut bar = crate::topbar::Topbar::new(crate::topbar::TopbarTheme::default());
+        assert!(!bar.sharing_screen());
+        bar.set_screen_capture(vec!["wf-recorder".into()]);
+        assert!(bar.sharing_screen());
+        bar.set_screen_capture(Vec::new());
+        assert!(!bar.sharing_screen());
     }
 
     #[test]

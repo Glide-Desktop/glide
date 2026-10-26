@@ -94,6 +94,7 @@ pub struct NotificationsConfig {
     pub disk_space_notices: bool,
     pub headset_notices: bool,
     pub code_offers: bool,
+    pub hide_while_sharing: bool,
 }
 
 impl Default for NotificationsConfig {
@@ -113,6 +114,7 @@ impl Default for NotificationsConfig {
             disk_space_notices: true,
             headset_notices: true,
             code_offers: true,
+            hide_while_sharing: true,
         }
     }
 }
@@ -134,6 +136,7 @@ impl NotificationsConfig {
                 disk_space: self.disk_space_notices,
                 headsets: self.headset_notices,
                 codes: self.code_offers,
+                quiet_while_sharing: self.hide_while_sharing,
             },
         }
     }
@@ -1586,12 +1589,12 @@ mod tests {
         let policy = Config::default().notifications.policy();
         assert_eq!(policy.system, crate::notifications::SystemNotices::default());
         let config: Config = toml::from_str(
-            "[notifications]\nsilent-apps = [\"Telegram\"]\ndrive-notices = false\ncode-offers = false\n",
+            "[notifications]\nsilent-apps = [\"Telegram\"]\ndrive-notices = false\ncode-offers = false\nhide-while-sharing = false\n",
         )
         .expect("config");
         let policy = config.notifications.policy();
         assert_eq!(policy.silent, ["Telegram"]);
-        assert!(!policy.system.drives && !policy.system.codes);
+        assert!(!policy.system.drives && !policy.system.codes && !policy.system.quiet_while_sharing);
         assert!(policy.system.disk_space && policy.system.headsets);
     }
 

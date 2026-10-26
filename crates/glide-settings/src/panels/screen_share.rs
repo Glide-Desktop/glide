@@ -22,6 +22,8 @@ mod tr {
         Quiet => "Not shared", "Не транслюється";
         Always => "Always on", "Завжди";
         WhileSharing => "While the screen is shared", "Поки екран транслюється";
+        HideBanners => "Hide notification banners", "Приховувати банери сповіщень";
+        HideBannersHint => "They wait in the notification centre. Urgent ones still show", "Вони чекають у центрі сповіщень. Термінові все одно показуються";
         Secrets => "Passwords stay covered", "Паролі лишаються закритими";
         SecretsHint => "Password prompts, vault unlocking and the Passwords menu reach the stream as a closed panel", "Запити паролів, розблокування сховищ і меню «Паролі» потрапляють у трансляцію закритою панеллю";
         Dot => "A purple dot in the top bar", "Фіолетова крапка у верхній панелі";
@@ -49,6 +51,7 @@ pub enum Msg {
     Loaded(Box<PrivacyState>),
     Forget(String),
     Forgotten(Option<Result<String, String>>),
+    HideBanners(bool),
     Open(Panel),
 }
 
@@ -126,8 +129,10 @@ impl Pane for Page {
         self.reload()
     }
 
-    fn update(&mut self, msg: Msg, _c: Ctx, _config: &mut ConfigStore) -> Task<Msg> {
+    fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
+            Msg::HideBanners(true) => config.remove("notifications", "hide-while-sharing"),
+            Msg::HideBanners(false) => config.set_bool("notifications", "hide-while-sharing", false),
             Msg::Loaded(state) => {
                 self.state = *state;
                 self.loading = false;
@@ -155,7 +160,7 @@ impl Pane for Page {
         (!self.state.usage.screen.is_empty()).then(|| c.t(T::Live).to_string())
     }
 
-    fn view<'a>(&'a self, c: Ctx, _config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let sharing = &self.state.usage.screen;
         let purple = ramp_color(Accent::Amethyst, 3);
@@ -178,8 +183,17 @@ impl Pane for Page {
                 Some(widgets::status_pill(t, Tone::Accent, c.t(T::Live))),
             )
         };
+        let quiet = config.bool_or("notifications", "hide-while-sharing", true);
         let facts = Group::new(t)
             .title(c.t(T::WhileSharing))
+            .push(
+                Row::new(t, c.t(T::HideBanners))
+                    .subtitle(c.t(T::HideBannersHint))
+                    .changed(!quiet)
+                    .prefix(widgets::icon(Icon::Bell, 18.0, t.fg_2()))
+                    .suffix(super::common::toggle(c, quiet, Msg::HideBanners))
+                    .build(),
+            )
             .push(
                 Row::new(t, c.t(T::Secrets))
                     .subtitle(c.t(T::SecretsHint))
