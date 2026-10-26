@@ -134,6 +134,25 @@ pub const COMPACT_BELOW: f32 = 940.0;
 
 const CLOCK: Duration = Duration::from_secs(2);
 
+fn appearance_status(config: &ConfigStore, c: &Ctx) -> String {
+    let key = if config.appearance_scheduled() {
+        crate::i18n::Key::StatusAuto
+    } else {
+        match config.appearance() {
+            crate::theme::Appearance::Light => crate::i18n::Key::Light,
+            crate::theme::Appearance::Dark => crate::i18n::Key::Dark,
+        }
+    };
+    c.t(key).to_string()
+}
+
+const fn language_status(lang: crate::i18n::Lang) -> &'static str {
+    match lang {
+        crate::i18n::Lang::Uk => "Українська",
+        crate::i18n::Lang::En => "English",
+    }
+}
+
 #[must_use]
 pub fn minute_now() -> Option<u16> {
     let now = crate::services::tz::Zone::system().local(crate::services::tz::now());
@@ -264,7 +283,15 @@ impl App {
 
     #[must_use]
     pub(crate) fn category_status(&self, category: Category) -> Option<String> {
-        self.category_panels(category).into_iter().find_map(|panel| self.panel_status(panel))
+        let c = self.ctx();
+        self.category_panels(category)
+            .into_iter()
+            .find_map(|panel| self.panel_status(panel).or_else(|| self.pages.home.status_of(panel, c)))
+            .or_else(|| match category {
+                Category::Appearance => Some(appearance_status(&self.config, &c)),
+                Category::Region => Some(language_status(self.config.language()).to_string()),
+                _ => None,
+            })
     }
 
     fn search_target(&self, category: Category) -> Panel {

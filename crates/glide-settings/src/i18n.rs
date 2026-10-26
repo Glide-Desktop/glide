@@ -185,6 +185,7 @@ catalogue! {
     CommandPlaceholder => "nm-applet --indicator", "nm-applet --indicator";
     Add => "Add", "Додати";
 
+    StatusAuto => "Auto", "Авто";
     Light => "Light", "Світлий";
     Dark => "Dark", "Темний";
     Style => "Style", "Стиль";

@@ -263,6 +263,24 @@ fn storage_tile(c: &Ctx, disk: &Volume) -> Element<'static, Msg> {
         .build()
 }
 
+impl Page {
+    #[must_use]
+    pub fn status_of(&self, panel: Panel, c: Ctx) -> Option<String> {
+        let snapshot = self.snapshot.as_ref()?;
+        match panel {
+            Panel::Network => snapshot.network.active().map(|active| active.ssid.clone()).or_else(|| {
+                snapshot.network.wired.iter().any(|wired| wired.connected).then(|| c.t(T::Wired).to_string())
+            }),
+            Panel::Sound => snapshot.audio.output.map(|level| {
+                if level.muted { c.t(T::Muted).to_string() } else { format!("{} %", (level.volume * 100.0).round()) }
+            }),
+            Panel::Power => snapshot.power.battery.map(|battery| format!("{} %", battery.percent)),
+            Panel::Storage => snapshot.disk.as_ref().map(|disk| format_bytes(disk.avail, c.lang)),
+            _ => None,
+        }
+    }
+}
+
 impl Pane for Page {
     type Msg = Msg;
 
