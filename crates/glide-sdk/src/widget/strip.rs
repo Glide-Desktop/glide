@@ -596,6 +596,24 @@ mod tests {
             messages
         }
 
+        fn draw(&mut self, x: f32) {
+            let mut renderer =
+                Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+            let mut element = Self::strip(&self.paint, &self.order);
+            self.tree.diff(&element);
+            let limits = layout::Limits::new(Size::ZERO, Self::SIZE);
+            let node = element.as_widget_mut().layout(&mut self.tree, &renderer, &limits);
+            element.as_widget().draw(
+                &self.tree,
+                &mut renderer,
+                &Theme::Dark,
+                &renderer::Style::default(),
+                Layout::new(&node),
+                mouse::Cursor::Available(Point::new(x, 18.0)),
+                &Rectangle::with_size(Self::SIZE),
+            );
+        }
+
         fn moved(&mut self, x: f32) -> Vec<Sent> {
             self.send(&Event::Mouse(mouse::Event::CursorMoved { position: Point::new(x, 18.0) }), x)
         }
@@ -616,6 +634,7 @@ mod tests {
         assert!(bench.state().lifted().is_none());
         assert_eq!(bench.moved(grab + 0.6 * (tab + GAP)), vec![Sent::Reorder(0, 1)]);
         assert_eq!(bench.order, vec![20, 10, 30]);
+        bench.draw(grab + 0.6 * (tab + GAP));
         assert!(bench.moved(grab + 0.7 * (tab + GAP)).is_empty(), "the same slot is not asked for twice");
         assert_eq!(bench.moved(grab + 900.0), vec![Sent::Reorder(1, 2)]);
         assert_eq!(bench.order, vec![20, 30, 10]);
