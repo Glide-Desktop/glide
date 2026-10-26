@@ -399,6 +399,7 @@ pub struct SessionServices {
     pub appearance_schedule: bool,
     pub lid_hidden: Vec<Output>,
     pub arrangement: crate::config::Arrangement,
+    pub primary_output: Option<String>,
     pub mirrors: Vec<Output>,
     pub shortcuts: crate::shortcut_guard::ShortcutGuard,
     pub netbird: crate::netbird::Session,
@@ -1122,7 +1123,17 @@ impl GlideState {
     pub fn apply_output_configs(&mut self) {
         self.apply_arrangement();
         let mut outputs: Vec<Output> = self.space.outputs().cloned().collect();
-        outputs.sort_by_key(|output| (!crate::lid::is_internal(&output.name()), output.name()));
+        let names: Vec<String> = outputs.iter().map(Output::name).collect();
+        let primary = crate::mirror::shell_first(&names, self.session.primary_output.as_deref());
+        outputs.sort_by_key(|output| {
+            (Some(output.name()) != primary, !crate::lid::is_internal(&output.name()), output.name())
+        });
+        if primary.is_some() && names.first() != primary.as_ref() {
+            tracing::info!(?primary, "the chosen primary display takes the dock and the top bar");
+            for output in &outputs {
+                self.space.unmap_output(output);
+            }
+        }
         let mut next_x = 0;
         for output in outputs {
             let identity = crate::config::OutputIdentity::of(&output);

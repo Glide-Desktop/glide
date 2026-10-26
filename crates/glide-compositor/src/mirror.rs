@@ -12,6 +12,12 @@ pub fn primary<'a>(candidates: &[&'a str]) -> Option<&'a str> {
 }
 
 #[must_use]
+pub fn shell_first(mapped: &[String], chosen: Option<&str>) -> Option<String> {
+    let chosen = chosen?;
+    mapped.iter().find(|name| name.as_str() == chosen).cloned()
+}
+
+#[must_use]
 pub fn fit(source: (i32, i32), target: (i32, i32)) -> (f64, Point<i32, Physical>) {
     if source.0 <= 0 || source.1 <= 0 || target.0 <= 0 || target.1 <= 0 {
         return (1.0, Point::from((0, 0)));
@@ -72,6 +78,14 @@ impl GlideState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chosen_primary_display_counts_only_while_it_is_connected() {
+        let mapped = vec!["eDP-1".to_string(), "HDMI-A-1".to_string()];
+        assert_eq!(shell_first(&mapped, Some("HDMI-A-1")).as_deref(), Some("HDMI-A-1"));
+        assert_eq!(shell_first(&mapped, Some("DP-2")), None, "an unplugged choice leaves the usual order");
+        assert_eq!(shell_first(&mapped, None), None);
+    }
 
     #[test]
     fn the_internal_panel_leads_the_mirror_and_otherwise_the_first_connector_by_name() {

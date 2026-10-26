@@ -47,6 +47,9 @@ mod tr {
         KeepChanges => "Keep changes", "Залишити зміни";
         Revert => "Revert", "Повернути";
         Millimetres => "mm", "мм";
+        Primary => "Main display", "Основний дисплей";
+        PrimaryHint => "The dock, the top bar, the launcher and the overview show here", "Тут показуються док, верхня панель, лаунчер і огляд";
+        PrimaryAutomatic => "Automatic · built-in first", "Автоматично · спершу вбудований";
         Lid => "Lid closed with another display connected", "Кришка закрита, підключено інший дисплей";
         LidHint => "The built-in screen turns off and everything moves to the other display. Opening the lid brings it back as it was.", "Вбудований екран вимикається, усе переїжджає на інший дисплей. Відкриєте кришку — повернеться як було.";
     }
@@ -178,6 +181,7 @@ pub enum Msg {
     Mode(ModeChoice),
     Move(bool),
     Arrange(Arrangement),
+    Primary(ModeChoice),
     Brightness(f64),
     SettleBrightness(u64),
     BrightnessDone(Option<Result<String, String>>),
@@ -320,6 +324,10 @@ impl Page {
                 config.set_str(DISPLAYS, ARRANGEMENT, arrangement.key());
                 return self.guard_change(before, config);
             }
+            Msg::Primary(choice) => match choice.key {
+                Some(name) => config.set_str(DISPLAYS, "primary", &name),
+                None => config.remove(DISPLAYS, "primary"),
+            },
             Msg::Brightness(value) => {
                 let value = value.round().clamp(1.0, 100.0) as u8;
                 self.brightness.value = Some(value);
@@ -473,6 +481,7 @@ impl Page {
                 .build()
         });
         page.push(self.arrangement(&c, config))
+            .push(self.primary_group(&c, config))
             .push(self.output_group(&c, config))
             .push(lid)
             .push(self.details_group(&c, config))
@@ -547,6 +556,43 @@ impl Page {
         ]
         .spacing(8)
         .into()
+    }
+
+    fn primary_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Option<Element<'a, Msg>> {
+        let t = c.theme;
+        if self.state.outputs.len() < 2 || Arrangement::of(config) != Arrangement::Extend {
+            return None;
+        }
+        let chosen = config.optional_str(DISPLAYS, "primary");
+        let label = |output: &OutputInfo| {
+            let model = format!("{} {}", output.make, output.model).trim().to_string();
+            if model.is_empty() || model == "Unknown Unknown" {
+                output.name.clone()
+            } else {
+                format!("{model} · {}", output.name)
+            }
+        };
+        let mut options = vec![ModeChoice { key: None, label: c.t(tr::Key::PrimaryAutomatic).to_string() }];
+        options.extend(
+            self.state.outputs.iter().map(|output| ModeChoice { key: Some(output.name.clone()), label: label(output) }),
+        );
+        let selected = options.iter().find(|choice| choice.key == chosen).cloned();
+        Some(
+            Group::new(t)
+                .push(
+                    Row::new(t, c.t(tr::Key::Primary))
+                        .subtitle(c.t(tr::Key::PrimaryHint))
+                        .changed(chosen.is_some())
+                        .suffix(widgets::inert(
+                            t,
+                            c.writable,
+                            widgets::dropdown(t, options, selected, Msg::Primary, 260.0),
+                        ))
+                        .stacked(t.compact)
+                        .build(),
+                )
+                .build(),
+        )
     }
 
     fn mode_rows<'a>(&'a self, c: &Ctx, config: &'a ConfigStore, output: &'a OutputInfo) -> Vec<Element<'a, Msg>> {

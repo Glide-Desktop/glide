@@ -64,10 +64,11 @@ pub enum Arrangement {
     Mirror,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DisplaysConfig {
     pub arrangement: Arrangement,
+    pub primary: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
@@ -1436,6 +1437,8 @@ impl Config {
         state.input_config.clone_from(&self.input);
         state.output_configs.clone_from(&self.outputs);
         state.session.arrangement = self.displays.arrangement;
+        state.session.primary_output =
+            self.displays.primary.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(str::to_string);
         state.apply_device_configs();
         state.refresh_painter_font();
 
@@ -1624,6 +1627,9 @@ mod tests {
         assert_eq!(Config::default().displays.arrangement, Arrangement::Extend);
         let mirror: Config = toml::from_str("[displays]\narrangement = \"mirror\"\n").expect("config");
         assert_eq!(mirror.displays.arrangement, Arrangement::Mirror);
+        assert_eq!(Config::default().displays.primary, None);
+        let chosen: Config = toml::from_str("[displays]\nprimary = \"HDMI-A-1\"\n").expect("config");
+        assert_eq!(chosen.displays.primary.as_deref(), Some("HDMI-A-1"));
         assert!(toml::from_str::<Config>("[displays]\narrangement = \"clone\"\n").is_err());
     }
 
