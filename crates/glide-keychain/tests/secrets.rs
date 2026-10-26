@@ -198,9 +198,10 @@ fn programs_store_and_read_secrets_that_stay_encrypted_and_wait_for_the_island_w
     let prompt_proxy = proxy(&client, prompt.as_str(), "org.freedesktop.Secret.Prompt");
     let mut completed = prompt_proxy.receive_signal("Completed").unwrap();
     let () = prompt_proxy.call("Prompt", &("",)).unwrap();
+    let me = std::env::current_exe().unwrap().display().to_string();
     assert!(
-        events.lock().unwrap().contains(&Response::UnlockRequested { vault: Some(LOCAL.into()) }),
-        "the compositor asks in the island"
+        events.lock().unwrap().contains(&Response::UnlockRequested { vault: Some(LOCAL.into()), requester: Some(me) }),
+        "the compositor asks in the island, naming the program that asked"
     );
     assert_eq!(
         service.handle(Request::Unlock { vault: LOCAL.into(), password: Hidden::new("pw".into()) }),

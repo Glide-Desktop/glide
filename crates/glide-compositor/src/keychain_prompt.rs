@@ -46,6 +46,7 @@ pub enum Hint {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct View {
+    pub app: Option<String>,
     pub chips: Vec<(String, Chip)>,
     pub body: String,
     pub user: String,
@@ -156,6 +157,7 @@ impl Prompt {
             Hint::Keys { skip: more.then(|| current.name.clone()) }
         };
         Some(View {
+            app: chain.requester.clone(),
             chips,
             body,
             user: user.to_string(),
@@ -314,7 +316,18 @@ mod tests {
             index: 1,
             wrong: false,
             unlocked: vec!["local".into()],
+            requester: None,
         }
+    }
+
+    #[test]
+    fn a_program_that_asked_is_named_in_the_prompt() {
+        let asked = Chain { requester: Some("Google Chrome".into()), ..chain() };
+        assert_eq!(
+            Prompt::default().view(&asked, "artem", false).and_then(|view| view.app).as_deref(),
+            Some("Google Chrome")
+        );
+        assert_eq!(Prompt::default().view(&chain(), "artem", false).and_then(|view| view.app), None);
     }
 
     #[test]

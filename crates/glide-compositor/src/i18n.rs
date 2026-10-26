@@ -273,6 +273,7 @@ glide_app::catalogue! {
     FillLater => "Not now", "Не зараз";
     KcApp => "Passwords", "Паролі";
     KcAsks => "asks to unlock a vault", "просять розблокувати сховище";
+    KcAsksOne => "asks to unlock a vault", "просить розблокувати сховище";
     KcBitwarden => "Bitwarden master password for {account}", "Майстер-пароль Bitwarden для {account}";
     KcLocal => "Password of the «{name}» vault", "Пароль сховища «{name}»";
     KcMaster => "Master password", "Майстер-пароль";

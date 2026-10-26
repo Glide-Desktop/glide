@@ -404,7 +404,7 @@ pub enum Response {
     NeedsFilePassword,
     Unsupported,
     Error { message: String },
-    UnlockRequested { vault: Option<String> },
+    UnlockRequested { vault: Option<String>, requester: Option<String> },
     Changed,
     Stopped,
 }

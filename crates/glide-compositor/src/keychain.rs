@@ -33,6 +33,7 @@ pub struct Chain {
     pub index: usize,
     pub wrong: bool,
     pub unlocked: Vec<String>,
+    pub requester: Option<String>,
 }
 
 impl Chain {
@@ -180,7 +181,10 @@ impl GlideState {
                     callback(self, Response::Error { message: "the keychain stopped".into() });
                 }
             }
-            Response::UnlockRequested { vault } => self.unlock_keychain(vault, |_| {}),
+            Response::UnlockRequested { vault, requester } => {
+                let app = requester.map(|program| self.program_name(&program));
+                self.unlock_keychain_for(vault, app, |_| {});
+            }
             Response::Changed => {
                 self.session.keychain.revision += 1;
                 self.sync_passwords_applet();
@@ -194,6 +198,21 @@ impl GlideState {
     }
 
     pub fn unlock_keychain(&mut self, vault: Option<String>, then: impl FnOnce(&mut Self) + 'static) {
+        self.unlock_keychain_for(vault, None, then);
+    }
+
+    fn program_name(&self, program: &str) -> String {
+        let entry = self.app_directory.index().and_then(|index| index.match_process(Some(program), None));
+        entry.map(|app| app.name.clone()).filter(|name| !name.trim().is_empty()).unwrap_or_else(|| {
+            std::path::Path::new(program)
+                .file_name()
+                .map_or_else(|| program.to_string(), |name| name.to_string_lossy().into_owned())
+        })
+    }
+
+    pub fn unlock_keychain_for(
+        &mut self, vault: Option<String>, requester: Option<String>, then: impl FnOnce(&mut Self) + 'static,
+    ) {
         self.session.keychain.after_unlock.push(Box::new(then));
         if self.session.keychain.unlocking.is_some() {
             return;
@@ -209,7 +228,7 @@ impl GlideState {
                 state.finish_keychain_unlock(true);
                 return;
             }
-            state.session.keychain.unlocking = Some(Chain { vaults, ..Chain::default() });
+            state.session.keychain.unlocking = Some(Chain { vaults, requester, ..Chain::default() });
             state.ask_keychain_password();
         });
     }

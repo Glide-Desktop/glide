@@ -598,9 +598,13 @@ pub struct PromptObject {
 
 #[zbus::interface(name = "org.freedesktop.Secret.Prompt")]
 impl PromptObject {
-    fn prompt(&self, window_id: &str, #[zbus(connection)] connection: &zbus::Connection) {
+    async fn prompt(
+        &self, window_id: &str, #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) {
         let _ = window_id;
-        (self.secrets.events)(Response::UnlockRequested { vault: Some(LOCAL.into()) });
+        let requester = caller_program(&header, connection).await;
+        (self.secrets.events)(Response::UnlockRequested { vault: Some(LOCAL.into()), requester });
         let (secrets, path, connection) = (Arc::clone(&self.secrets), self.path.clone(), connection.clone());
         let spawned = std::thread::Builder::new().name("glide-secrets-prompt".into()).spawn(move || {
             let started = Instant::now();
@@ -634,6 +638,13 @@ impl PromptObject {
 
     #[zbus(signal)]
     async fn completed(emitter: &SignalEmitter<'_>, dismissed: bool, result: Value<'_>) -> zbus::Result<()>;
+}
+
+async fn caller_program(header: &zbus::message::Header<'_>, connection: &zbus::Connection) -> Option<String> {
+    let sender = header.sender()?.to_owned();
+    let proxy = fdo::DBusProxy::new(connection).await.ok()?;
+    let pid = proxy.get_connection_unix_process_id(sender.into()).await.ok()?;
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|path| path.display().to_string())
 }
 
 async fn complete(connection: &zbus::Connection, at: &str, dismissed: bool, result: OwnedValue) -> zbus::Result<()> {

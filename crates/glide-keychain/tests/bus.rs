@@ -90,7 +90,7 @@ fn the_passwords_app_manages_items_over_the_bus() {
     assert_eq!(call(&proxy, &Request::RequestUnlock { vault: Some(LOCAL.into()) }), Response::Done);
     let events = events.lock().unwrap();
     assert!(
-        events.contains(&Response::UnlockRequested { vault: Some(LOCAL.into()) }),
+        events.contains(&Response::UnlockRequested { vault: Some(LOCAL.into()), requester: None }),
         "the compositor shows its prompt"
     );
     assert!(events.contains(&Response::Changed), "changes are announced");

@@ -47,7 +47,7 @@ impl Keychain {
         let changes = mutates(&request);
         let response = match request {
             Request::RequestUnlock { vault } => {
-                (self.events)(Response::UnlockRequested { vault });
+                (self.events)(Response::UnlockRequested { vault, requester: None });
                 Response::Done
             }
             request => {

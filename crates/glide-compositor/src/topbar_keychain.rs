@@ -195,7 +195,7 @@ struct Ink<'a> {
     theme: &'a TopbarTheme,
 }
 
-fn draw_head(c: &mut Canvas<'_>, ink: &Ink<'_>, layout: &Layout) {
+fn draw_head(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) {
     let theme = ink.theme;
     let tile = layout.tile;
     c.fill(tile, theme.active_soft, R3);
@@ -211,9 +211,12 @@ fn draw_head(c: &mut Canvas<'_>, ink: &Ink<'_>, layout: &Layout) {
     let right = layout.close.loc.x - GAP;
     let top = layout.title_y;
     let band = |left: i32| (left, right, top, top + line_h(&TITLE));
-    let app = t(Key::KcApp);
+    let (app, asks) = match &view.app {
+        Some(app) => (app.as_str(), Key::KcAsksOne),
+        None => (t(Key::KcApp), Key::KcAsks),
+    };
     c.text(ink.painter, band(layout.text_x), TextAlign::Left, app, theme.active_soft_label, &TITLE);
-    let rest = format!(" {}", t(Key::KcAsks));
+    let rest = format!(" {}", t(asks));
     let left = layout.text_x + text_w(ink.painter, app, &TITLE);
     c.text(ink.painter, band(left), TextAlign::Left, &rest, theme.label, &TITLE);
     let band = (layout.text_x, right, layout.body_y, layout.body_y + line_h(&CALL));
@@ -401,7 +404,7 @@ pub(super) fn paint(
 fn paint_into(c: &mut Canvas<'_>, painter: &Painter, theme: &TopbarTheme, view: &View, layout: &Layout) {
     let ink = Ink { painter, theme };
     draw_footer(c, &ink, layout);
-    draw_head(c, &ink, layout);
+    draw_head(c, &ink, view, layout);
     draw_chips(c, &ink, view, layout);
     draw_field(c, &ink, view, layout);
     draw_hint(c, &ink, view, layout);
@@ -413,6 +416,7 @@ mod tests {
 
     fn view() -> View {
         View {
+            app: None,
             chips: vec![
                 ("Особисте".into(), Chip::Done),
                 ("Bitwarden".into(), Chip::Current),
@@ -480,6 +484,7 @@ mod tests {
             let theme = TopbarTheme::from_tokens(&glide_theme::Tokens::new(appearance, glide_theme::Accent::Blue));
             let cases = [
                 ("ask", view()),
+                ("program", View { app: Some("Google Chrome".into()), chips: Vec::new(), ..view() }),
                 ("wrong", View { hint: Hint::Wrong { master: true, caps: true }, bullets: 0, ready: false, ..view() }),
                 ("checking", View { hint: Hint::Checking, checking: true, ready: false, ..view() }),
                 (
