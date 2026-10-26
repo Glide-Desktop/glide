@@ -69,8 +69,8 @@ pub use layout::{
     table_header, tree_row, well,
 };
 pub use media::{
-    Art, art, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider, slider_readout,
-    svg_glyph,
+    Art, art, captioned_picture, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider,
+    slider_readout, svg_glyph,
 };
 pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, split_view, stat_rows};
 pub use pointer::{ContextArea, context_area, reveal};

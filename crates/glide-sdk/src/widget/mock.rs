@@ -431,6 +431,21 @@ pub fn desktop<'a, M: 'a>(paint: impl Into<Paint>, height: f32) -> Element<'a, M
 }
 
 #[must_use]
+pub fn desktop_over<'a, M: 'a>(
+    paint: impl Into<Paint>, screen: impl Into<Element<'a, M>>, width: f32, height: f32,
+) -> Element<'a, M> {
+    let paint = paint.into();
+    let preview = Stack::with_children([
+        screen.into(),
+        column![topbar(paint), Space::new().height(Fill)].into(),
+        bottom(6.0, mini_dock(paint)),
+    ])
+    .width(width)
+    .height(height);
+    outlined_surface(Color::TRANSPARENT, paint.line_2(), 1.0, R2, preview).width(width).height(height).clip(true).into()
+}
+
+#[must_use]
 pub fn theme_sample<'a, M: 'a>(paint: impl Into<Paint>, width: f32, height: f32) -> Element<'a, M> {
     let paint = paint.into();
     surface(paint.sunken_bg(), R2, sample_window(&paint, width)).padding(12).width(width).height(height).into()

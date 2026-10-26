@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::text;
-use iced::widget::{Row as IcedRow, column, container, row, space};
-use iced::{Alignment, Color, ContentFit, Element, Fill, Length, Task};
+use iced::widget::{Row as IcedRow, column, container, row};
+use iced::{Alignment, Color, Element, Fill, Length, Task};
 
 use super::common::gated;
 use super::{Ctx, Pane};
@@ -287,22 +287,7 @@ impl Page {
             ),
         };
         let screen = render(&t, &look, fit, backdrop(config), HERO_W, HERO_H);
-        let preview = iced::widget::stack![
-            screen,
-            column![sketch::topbar(t), space().height(Fill)],
-            container(sketch::mini_dock(t))
-                .width(Fill)
-                .height(Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::End)
-                .padding(iced::Padding::ZERO.bottom(6.0)),
-        ]
-        .width(HERO_W)
-        .height(HERO_H);
-        let framed = sketch::outlined_surface(iced::Color::TRANSPARENT, t.line_2(), 1.0, theme::R2, preview)
-            .width(HERO_W)
-            .height(HERO_H)
-            .clip(true);
+        let framed = sketch::desktop_over(t, screen, HERO_W, HERO_H);
         let status: Element<'a, Msg> = if self.loading {
             widgets::spinner_label(t, c.t(K::Loading))
         } else {
@@ -490,18 +475,7 @@ fn render<'a>(
 }
 
 fn picture<'a>(thumb: &Thumbnail, badge: Option<&'a str>, t: &ThemeState) -> Element<'a, Msg> {
-    let shot = glide_sdk::widget::picture(thumb.handle.clone(), Fill, TILE_H, ContentFit::Cover, theme::R2);
-    match badge {
-        Some(label) => iced::widget::stack![
-            shot,
-            container(glide_sdk::widget::bubble(&widgets::paint(t), text(label, TextStyle::CAP)))
-                .padding(6)
-                .align_bottom(Fill)
-                .align_left(Fill),
-        ]
-        .into(),
-        None => shot,
-    }
+    glide_sdk::widget::captioned_picture(&widgets::paint(t), thumb.handle.clone(), TILE_H, theme::R2, badge)
 }
 
 pub const TILE_H: f32 = 84.0;

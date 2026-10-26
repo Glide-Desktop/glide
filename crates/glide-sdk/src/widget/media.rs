@@ -83,6 +83,21 @@ pub fn picture<'a, M: 'a>(
 }
 
 #[must_use]
+pub fn captioned_picture<'a, M: 'a>(
+    paint: &Paint, image_handle: image::Handle, height: f32, radius: f32, caption: Option<&'a str>,
+) -> Element<'a, M> {
+    let shot = picture(image_handle, Fill, height, ContentFit::Cover, radius);
+    match caption {
+        Some(label) => iced::widget::stack![
+            shot,
+            container(super::bubble(paint, text(label, TextStyle::CAP))).padding(6).align_bottom(Fill).align_left(Fill),
+        ]
+        .into(),
+        None => shot,
+    }
+}
+
+#[must_use]
 pub fn level_meter<'a, M: 'a>(paint: &Paint, level: f32, peak: f32, severity: Severity) -> Element<'a, M> {
     let tone = match severity {
         Severity::Danger => paint.danger(),
