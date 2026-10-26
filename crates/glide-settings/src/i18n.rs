@@ -247,7 +247,7 @@ catalogue! {
     NotConnected => "Not connected", "Не під'єднано";
     Wired => "Wired", "Дротова";
     CableUnplugged => "Cable unplugged", "Кабель від'єднано";
-    Networks => "Networks", "Мережі";
+    Networks => "Networks nearby", "Мережі поруч";
     NoNetworks => "No networks in range", "Немає мереж поблизу";
     Scanning => "Scanning…", "Пошук…";
     Connecting => "Connecting…", "Під'єднання…";
@@ -272,7 +272,7 @@ catalogue! {
     BluetoothBlocked => "The adapter is blocked by rfkill. Turning Bluetooth on unblocks it.", "Адаптер заблоковано rfkill. Увімкнення Bluetooth розблокує його.";
     MyDevices => "My devices", "Мої пристрої";
     NoPairedDevices => "No paired devices", "Немає спарених пристроїв";
-    NearbyDevices => "Nearby devices", "Пристрої поблизу";
+    NearbyDevices => "Devices nearby", "Пристрої поруч";
     NearbyHint => "Put the device in pairing mode, then search", "Переведіть пристрій у режим спарювання й запустіть пошук";
     NoNearbyDevices => "Nothing found yet", "Поки нічого не знайдено";
     Search => "Search", "Шукати";

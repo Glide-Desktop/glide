@@ -15,6 +15,7 @@ use crate::widgets::{self, Group, Row, actions, chevron, form_row, lines, note, 
 
 mod tr {
     crate::i18n::catalogue! {
+        Other => "Other", "Інше";
         Airplane => "Airplane mode", "Режим польоту";
         AirplaneHint => "Turns off Wi-Fi, Bluetooth and mobile radios", "Вимикає Wi-Fi, Bluetooth і мобільний зв'язок";
         AirplaneOn => "Airplane mode is on", "Увімкнено режим польоту";
@@ -564,10 +565,10 @@ impl Page {
                 Some(widgets::switch(t, self.state.wifi_enabled, Msg::ToggleWifi)),
             ),
             error_banner(t, error),
-            self.radios(c),
             radio_on.then(|| self.networks(c)),
-            (!self.state.wired.is_empty()).then(|| self.wired(c)),
             self.known(c),
+            self.radios(c),
+            (!self.state.wired.is_empty()).then(|| self.wired(c)),
             self.proxy.available.then(|| self.proxy_group(c)),
         ]
         .spacing(theme::SECTION_GAP)
@@ -576,7 +577,7 @@ impl Page {
 
     fn radios(&self, c: &Ctx) -> Element<'_, Msg> {
         let t = c.theme;
-        let mut group = Group::new(t);
+        let mut group = Group::new(t).title(c.t(T::Other));
         if self.state.rfkill {
             group = group.push(
                 Row::new(t, c.t(T::Airplane))
