@@ -37,7 +37,10 @@ mod tr {
         Hidden => "Hidden", "Приховано";
         BlankLink => "Turning off the screen and locking", "Гасіння екрана і блокування";
         BlankLinkHint => "Set on the Lock Screen page", "Налаштовується на сторінці «Екран блокування»";
-        Away => "When you step away", "Коли ви відходите";
+        Away => "What happens when you step away", "Що відбувається, коли ви відходите";
+        ChargingWarnings => "Charging and warnings", "Заряджання й попередження";
+        NeedsAdmin => "asks for an administrator password", "потрібен пароль адміністратора";
+        BatteryWarningHint => "A critical warning always comes at 5 %", "Критичне попередження завжди на 5 %";
         AwayHint => "One chain: the screen goes dark, the session locks, the computer sleeps", "Один ланцюжок: екран гасне, сеанс блокується, комп’ютер засинає";
         StageBlank => "screen off", "екран гасне";
         StageLock => "lock", "блокування";
@@ -215,23 +218,11 @@ impl Pane for Page {
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let mut page = column![error_banner(t, self.jobs.error.as_deref())].spacing(theme::SECTION_GAP);
-        if self.state.battery.is_some() {
+        let battery = self.state.battery.is_some();
+        if battery {
             page = page.push(self.battery_hero(&c, config));
-            if let Some(limit) = &self.state.charge_limit {
-                let hint = c.t(tr::Key::PreserveHealthHint).replace("{}", &limit.end.to_string());
-                let row = Row::new(t, c.t(tr::Key::PreserveHealth))
-                    .subtitle(hint)
-                    .suffix(toggle(c, limit.enabled, Msg::ChargeLimit))
-                    .build();
-                page = page.push(Group::new(t).title(c.t(tr::Key::Charging)).push(row).build());
-            }
-            if let Some(details) = &self.state.details {
-                if let Some(stats) = stats(&c, details) {
-                    page = page.push(stats);
-                }
-                if let Some(info) = info(&c, details) {
-                    page = page.push(info);
-                }
+            if let Some(stats) = self.state.details.as_ref().and_then(|details| stats(&c, details)) {
+                page = page.push(stats);
             }
         } else if self.loaded {
             page = page.push(widgets::section_hero(
@@ -247,9 +238,14 @@ impl Pane for Page {
             page = page.push(self.profile_group(&c));
         }
         page = page.push(self.away_group(&c, config));
-        page = page.push(self.saving_group(&c, config));
+        if battery || !self.loaded {
+            page = page.push(self.charging_group(&c, config));
+        }
         if let Some(policy) = self.state.logind {
             page = page.push(self.lid_group(&c, policy));
+        }
+        if let Some(info) = self.state.details.as_ref().filter(|_| battery).and_then(|details| info(&c, details)) {
+            page = page.push(info);
         }
         page.into()
     }
@@ -355,10 +351,10 @@ impl Page {
             .into()
     }
 
-    fn saving_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn sleep_rows<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Vec<Element<'a, Msg>> {
         let t = c.theme;
-        let timeout = |key: &str, fallback: i64, choices: &[i64]| {
-            let current = config.int_or("general", key, fallback);
+        let timeout = |key: &str, choices: &[i64]| {
+            let current = config.int_or("general", key, 0);
             let labels: Vec<Blank> = (!choices.contains(&current))
                 .then_some(current)
                 .into_iter()
@@ -366,55 +362,78 @@ impl Page {
                 .map(|seconds| Blank { seconds, label: blank_label(seconds, *c) })
                 .collect();
             let selected = labels.iter().find(|blank| blank.seconds == current).cloned();
-            (labels, selected)
+            (labels, selected, current)
         };
-        let (sleep_labels, sleep_selected) = timeout("suspend-after-seconds", 0, SUSPEND_CHOICES);
-        let low = self.battery_low.unwrap_or(config.int_or("topbar", "battery-low-pct", DEFAULT_BATTERY_LOW) as f64);
-        let moon = || widgets::tile(Icon::Moon, theme::ramp_color(Accent::Azurit, 4), theme::SMALL_CONTROL_HEIGHT);
-        let mut saving = Group::new(t).title(c.t(K::PowerSaving)).push(lock_link(c, config)).push(
+        let (labels, selected, current) = timeout("suspend-after-seconds", SUSPEND_CHOICES);
+        let mut rows = vec![
             Row::new(t, c.t(tr::Key::SleepIdle))
                 .subtitle(c.t(tr::Key::SleepIdleHint))
-                .prefix(moon())
-                .suffix(gated(*c, widgets::dropdown(t, sleep_labels, sleep_selected, Msg::Suspend, 160.0)))
+                .changed(current != 0)
+                .suffix(gated(*c, widgets::dropdown(t, labels, selected, Msg::Suspend, 160.0)))
                 .build(),
-        );
+        ];
         if self.state.battery.is_some() || !self.loaded {
-            let (labels, selected) = timeout("suspend-on-battery-after-seconds", 0, SUSPEND_CHOICES);
-            saving = saving
-                .push(
-                    Row::new(t, c.t(tr::Key::SleepIdleBattery))
-                        .subtitle(c.t(tr::Key::SleepIdleBatteryHint))
-                        .prefix(moon())
-                        .suffix(gated(*c, widgets::dropdown(t, labels, selected, Msg::SuspendOnBattery, 160.0)))
-                        .build(),
-                )
-                .push(
-                    Row::new(t, c.t(K::BatteryWarning))
-                        .subtitle(format!("{low:.0}%"))
-                        .prefix(widgets::tile(
-                            Icon::Warning,
-                            theme::ramp_color(Accent::Amber, 3),
-                            theme::SMALL_CONTROL_HEIGHT,
-                        ))
-                        .suffix(gated(
-                            *c,
-                            widgets::flexible(
-                                widgets::value_slider(
-                                    t,
-                                    5.0..=50.0,
-                                    low,
-                                    1.0,
-                                    Msg::BatteryLow,
-                                    Some(Msg::CommitBatteryLow),
-                                ),
-                                240.0,
-                            ),
-                        ))
-                        .build(),
-                )
-                .push(percentage_link(c, config));
+            let (labels, selected, current) = timeout("suspend-on-battery-after-seconds", SUSPEND_CHOICES);
+            rows.push(
+                Row::new(t, c.t(tr::Key::SleepIdleBattery))
+                    .subtitle(c.t(tr::Key::SleepIdleBatteryHint))
+                    .changed(current != 0)
+                    .suffix(gated(*c, widgets::dropdown(t, labels, selected, Msg::SuspendOnBattery, 160.0)))
+                    .build(),
+            );
         }
-        saving.build()
+        rows.push(lock_link(c, config));
+        rows
+    }
+
+    fn charging_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+        let t = c.theme;
+        let stored = config.int_or("topbar", "battery-low-pct", DEFAULT_BATTERY_LOW);
+        let low = self.battery_low.unwrap_or(stored as f64);
+        let mut group = Group::new(t).title(c.t(tr::Key::ChargingWarnings));
+        if let Some(limit) = &self.state.charge_limit {
+            let hint = c.t(tr::Key::PreserveHealthHint).replace("{}", &limit.end.to_string());
+            group = group.push(
+                Row::new(t, c.t(tr::Key::PreserveHealth))
+                    .subtitle(hint)
+                    .suffix(
+                        row![
+                            glide_sdk::widget::applies_chip(&widgets::paint(&t), c.t(tr::Key::NeedsAdmin), false),
+                            toggle(*c, limit.enabled, Msg::ChargeLimit),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .build(),
+            );
+        }
+        group
+            .push(
+                Row::new(t, c.t(K::BatteryWarning))
+                    .subtitle(c.t(tr::Key::BatteryWarningHint))
+                    .changed(stored != DEFAULT_BATTERY_LOW)
+                    .suffix(gated(
+                        *c,
+                        glide_sdk::widget::slider_readout(
+                            &widgets::paint(&t),
+                            None,
+                            widgets::value_slider(
+                                t,
+                                5.0..=50.0,
+                                low,
+                                1.0,
+                                Msg::BatteryLow,
+                                Some(Msg::CommitBatteryLow),
+                            ),
+                            format!("{low:.0} %"),
+                            false,
+                        ),
+                    ))
+                    .stacked(t.compact)
+                    .build(),
+            )
+            .push(percentage_link(c, config))
+            .build()
     }
 
     fn away_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
@@ -457,7 +476,7 @@ impl Page {
         if self.state.battery.is_some() {
             group = group.push(Row::new(t, c.t(K::OnBattery)).stacked(true).suffix(lane(on_battery)).build());
         }
-        group.build()
+        group.extend(self.sleep_rows(c, config)).build()
     }
 
     fn lid_group(&self, c: &Ctx, policy: power::LogindPolicy) -> Element<'_, Msg> {
