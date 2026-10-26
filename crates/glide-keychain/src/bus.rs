@@ -1,27 +1,27 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use glide_ipc::keychain::{Request, Response};
 use zbus::fdo;
 use zbus::message::Header;
 
-use crate::daemon::{Daemon, mutates};
+use crate::daemon::mutates;
+pub use crate::service::Events;
+use crate::service::Service;
 
 pub use glide_ipc::keychain::{BUS_INTERFACE as INTERFACE, BUS_NAME, BUS_PATH as PATH};
 pub const CLIENT: &str = "glide-passwords";
 
-pub type Events = Arc<dyn Fn(Response) + Send + Sync>;
-
 pub struct Keychain {
-    daemon: Arc<Mutex<Daemon>>,
+    service: Arc<Service>,
     events: Events,
     allowed: Vec<PathBuf>,
 }
 
 impl Keychain {
     #[must_use]
-    pub fn new(daemon: Arc<Mutex<Daemon>>, events: Events, allowed: Vec<PathBuf>) -> Self {
-        Self { daemon, events, allowed }
+    pub fn new(service: Arc<Service>, events: Events, allowed: Vec<PathBuf>) -> Self {
+        Self { service, events, allowed }
     }
 
     async fn authorize(&self, header: &Header<'_>, connection: &zbus::Connection) -> fdo::Result<()> {
@@ -50,7 +50,10 @@ impl Keychain {
                 (self.events)(Response::UnlockRequested { vault });
                 Response::Done
             }
-            request => self.daemon.lock().unwrap_or_else(PoisonError::into_inner).handle(request),
+            request => {
+                let service = Arc::clone(&self.service);
+                blocking::unblock(move || service.handle(request)).await
+            }
         };
         if changes {
             (self.events)(Response::Changed);

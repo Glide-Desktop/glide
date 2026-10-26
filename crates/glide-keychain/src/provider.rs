@@ -175,4 +175,10 @@ pub trait Provider: std::marker::Send {
     fn forget(&mut self) -> Result<(), Fault> {
         Err(Fault::Unsupported)
     }
+
+    fn begin_sync(&mut self, _force: bool, _now: u64) -> Option<crate::bitwarden::SyncJob> {
+        None
+    }
+
+    fn finish_sync(&mut self, _done: crate::bitwarden::SyncDone, _now: u64) {}
 }

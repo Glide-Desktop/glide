@@ -6,6 +6,7 @@ use glide_ipc::keychain::{
     SecretKind, Summary, Vault, strength,
 };
 
+use crate::bitwarden::{Bitwarden, LoginError, SyncDone, SyncJob};
 use crate::local::Local;
 use crate::provider::{Fault, Provider, Record};
 use crate::totp::Totp;
@@ -23,6 +24,19 @@ pub struct Daemon {
     providers: Vec<Box<dyn Provider>>,
     default: String,
     clock: fn() -> u64,
+    accounts: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Settings {
+    #[serde(default)]
+    default: String,
+    #[serde(default)]
+    local_name: String,
+}
+
+fn settings_path(accounts: &std::path::Path) -> PathBuf {
+    accounts.with_file_name("keychain-settings.json")
 }
 
 impl std::fmt::Debug for Daemon {
@@ -79,12 +93,96 @@ pub fn mutates(request: &Request) -> bool {
 impl Daemon {
     #[must_use]
     pub fn new(path: PathBuf, params: Params) -> Self {
-        Self::with_providers(vec![Box::new(Local::new(path, params, LOCAL_NAME))])
+        let accounts = path.with_file_name("bitwarden");
+        Self::with_accounts(path, params, accounts)
+    }
+
+    #[must_use]
+    pub fn with_accounts(path: PathBuf, params: Params, accounts: PathBuf) -> Self {
+        let settings: Settings = std::fs::read(settings_path(&accounts))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let name = if settings.local_name.trim().is_empty() { LOCAL_NAME } else { settings.local_name.as_str() };
+        let mut providers: Vec<Box<dyn Provider>> = vec![Box::new(Local::new(path, params, name))];
+        for account in Bitwarden::load_all(&accounts) {
+            providers.push(Box::new(account));
+        }
+        let mut daemon = Self::with_providers(providers);
+        daemon.accounts = Some(accounts);
+        if daemon.index(&settings.default).is_ok() {
+            daemon.default = settings.default;
+        }
+        daemon
     }
 
     #[must_use]
     pub fn with_providers(providers: Vec<Box<dyn Provider>>) -> Self {
-        Self { providers, default: LOCAL.into(), clock: now }
+        Self { providers, default: LOCAL.into(), clock: now, accounts: None }
+    }
+
+    fn store_settings(&self) {
+        let Some(accounts) = &self.accounts else {
+            return;
+        };
+        let local_name = self.provider(LOCAL).map(|local| local.vault().name).unwrap_or_default();
+        let settings = Settings { default: self.default.clone(), local_name };
+        if let Ok(bytes) = serde_json::to_vec_pretty(&settings) {
+            if let Some(dir) = accounts.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = crate::vault::write_atomically(&settings_path(accounts), &bytes);
+        }
+    }
+
+    #[must_use]
+    pub fn accounts_dir(&self) -> Option<PathBuf> {
+        self.accounts.clone()
+    }
+
+    #[must_use]
+    pub fn now(&self) -> u64 {
+        (self.clock)()
+    }
+
+    pub fn adopt_bitwarden(&mut self, account: Bitwarden) -> Response {
+        let vault = account.vault().id;
+        if let Some(existing) = self.providers.iter().position(|provider| {
+            let known = provider.vault();
+            known.kind == glide_ipc::keychain::VaultKind::Bitwarden
+                && known.account == account.account().email
+                && known.server == account.vault().server
+        }) {
+            let _ = self.providers[existing].forget();
+            self.providers.remove(existing);
+        }
+        self.providers.push(Box::new(account));
+        Response::VaultAdded { vault }
+    }
+
+    fn add_bitwarden(&mut self, login: &glide_ipc::keychain::Login) -> Response {
+        let Some(dir) = self.accounts.clone() else {
+            return Response::Unsupported;
+        };
+        match Bitwarden::login(&dir, login, (self.clock)()) {
+            Ok(account) => self.adopt_bitwarden(account),
+            Err(error) => login_failed(error),
+        }
+    }
+
+    pub fn sync_jobs(&mut self, force: bool) -> Vec<(String, SyncJob)> {
+        let now = (self.clock)();
+        self.providers
+            .iter_mut()
+            .filter_map(|provider| provider.begin_sync(force, now).map(|job| (provider.vault().id, job)))
+            .collect()
+    }
+
+    pub fn finish_sync(&mut self, vault: &str, done: SyncDone) {
+        let now = (self.clock)();
+        if let Ok(provider) = self.provider_mut(vault) {
+            provider.finish_sync(done, now);
+        }
     }
 
     #[must_use]
@@ -164,38 +262,54 @@ impl Daemon {
 
     fn detail(&self, item: &ItemRef) -> Result<Detail, Fault> {
         let record = self.record(item)?;
-        let reuse = self.reuse();
-        let card = record.card.as_ref().map(|card| {
-            let number = text(&card.number);
-            let digits: String = number.chars().filter(char::is_ascii_digit).collect();
-            Card {
-                holder: card.holder.clone(),
-                brand: card.brand.clone(),
-                last_digits: digits.chars().skip(digits.len().saturating_sub(4)).collect(),
-                expiry: card.expiry.clone(),
-            }
-        });
-        Ok(Detail {
-            summary: Self::summary(&item.vault, record, &reuse),
-            notes: record.notes.clone(),
-            sites: record.sites.clone(),
-            apps: record.apps.clone(),
-            fields: record
-                .fields
-                .iter()
-                .map(|field| Field {
-                    name: field.name.clone(),
-                    value: if field.hidden { String::new() } else { text(&field.value) },
-                    hidden: field.hidden,
-                })
-                .collect(),
-            passkeys: record.passkeys.clone(),
-            history: record.history.len() as u32,
-            card,
-            password_length: record.password_text().chars().count() as u32,
-        })
+        Ok(record_detail(&item.vault, record, &self.reuse()))
     }
+}
 
+#[must_use]
+pub fn login_failed(error: LoginError) -> Response {
+    match error {
+        LoginError::TwoFactor(methods) => Response::NeedsTwoFactor { methods },
+        LoginError::DeviceCode => Response::NeedsDeviceCode,
+        LoginError::WrongPassword => Response::WrongPassword,
+        LoginError::Failed(message) => Response::Error { message },
+    }
+}
+
+#[must_use]
+pub(crate) fn record_detail(vault: &str, record: &Record, reuse: &HashMap<String, Vec<ItemRef>>) -> Detail {
+    let card = record.card.as_ref().map(|card| {
+        let number = text(&card.number);
+        let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+        Card {
+            holder: card.holder.clone(),
+            brand: card.brand.clone(),
+            last_digits: digits.chars().skip(digits.len().saturating_sub(4)).collect(),
+            expiry: card.expiry.clone(),
+        }
+    });
+    Detail {
+        summary: Daemon::summary(vault, record, reuse),
+        notes: record.notes.clone(),
+        sites: record.sites.clone(),
+        apps: record.apps.clone(),
+        fields: record
+            .fields
+            .iter()
+            .map(|field| Field {
+                name: field.name.clone(),
+                value: if field.hidden { String::new() } else { text(&field.value) },
+                hidden: field.hidden,
+            })
+            .collect(),
+        passkeys: record.passkeys.clone(),
+        history: record.history.len() as u32,
+        card,
+        password_length: record.password_text().chars().count() as u32,
+    }
+}
+
+impl Daemon {
     fn secret(&self, item: &ItemRef, kind: &SecretKind) -> Result<Hidden, Fault> {
         let record = self.record(item)?;
         let secret = match kind {
@@ -383,12 +497,16 @@ impl Daemon {
 
     fn accounts(&mut self, request: Request) -> Response {
         match request {
+            Request::AddBitwarden { login } => self.add_bitwarden(&login),
             Request::RenameVault { vault, name } => {
-                done(self.provider_mut(&vault).map(|provider| provider.rename(name.trim())))
+                let result = self.provider_mut(&vault).map(|provider| provider.rename(name.trim()));
+                self.store_settings();
+                done(result)
             }
             Request::SetDefault { vault } => match self.index(&vault) {
                 Ok(_) => {
                     self.default = vault;
+                    self.store_settings();
                     Response::Done
                 }
                 Err(fault) => failed(fault),
@@ -436,6 +554,7 @@ impl Daemon {
                         if self.default == vault {
                             self.default = LOCAL.into();
                         }
+                        self.store_settings();
                         done(result)
                     }
                     Err(fault) => failed(fault),

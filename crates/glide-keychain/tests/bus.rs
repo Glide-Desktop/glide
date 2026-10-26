@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use glide_ipc::keychain::{AppLink, Draft, Hidden, LOCAL, Request, Response, SecretKind};
 use glide_keychain::bus::{self, Keychain};
 use glide_keychain::daemon::Daemon;
+use glide_keychain::service::Service;
 use glide_keychain::vault::Params;
 
 const FAST: Params = Params { memory_kib: 64, passes: 1, lanes: 1 };
@@ -59,7 +60,7 @@ fn the_passwords_app_manages_items_over_the_bus() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
     let keychain = Keychain::new(
-        Arc::new(Mutex::new(Daemon::new(path.clone(), FAST))),
+        Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {})),
         Arc::new(move |event| seen.lock().unwrap().push(event)),
         vec![std::env::current_exe().unwrap().canonicalize().unwrap()],
     );
@@ -102,7 +103,7 @@ fn any_other_program_is_refused() {
         return;
     };
     let keychain = Keychain::new(
-        Arc::new(Mutex::new(Daemon::new(temp("refused"), FAST))),
+        Service::start(Daemon::new(temp("refused"), FAST), Arc::new(|_| {})),
         Arc::new(|_| {}),
         vec![PathBuf::from("/usr/bin/glide-passwords")],
     );

@@ -7,7 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+aes = "0.8"
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+hkdf = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+rsa = { version = "0.9", default-features = false, features = ["std"] }
+ureq = { version = "3", features = ["json"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+blocking = "1"
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 data-encoding = "2"
 getrandom = "0.4"
