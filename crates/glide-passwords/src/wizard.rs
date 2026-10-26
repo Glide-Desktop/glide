@@ -1,7 +1,8 @@
 use glide_ipc::keychain::{ApiKey, Hidden, Login, Request, Response, SyncState, TwoFactor, TwoFactorMethod};
+use glide_sdk::chooser::{self, Ask, Chosen, Purpose};
 use glide_sdk::theme::{SP1, SP2, SP3, SP4, SP5, TextStyle};
 use glide_sdk::widget::{self as ui, CodeSize, ListRow, Tone};
-use glide_sdk::{Paint, Shell};
+use glide_sdk::{Lang, Paint, Shell};
 use iced::widget::{Column, Row, Space, column, container, row, text_input};
 use iced::{Alignment, Element, Fill, Task};
 
@@ -19,13 +20,14 @@ pub enum Step {
     Login,
     TwoFactor,
     Sync,
+    KeePass,
 }
 
 impl Step {
     const fn number(self) -> usize {
         match self {
             Self::Kind => 1,
-            Self::Login => 2,
+            Self::Login | Self::KeePass => 2,
             Self::TwoFactor => 3,
             Self::Sync => 4,
         }
@@ -37,6 +39,7 @@ pub enum Kind {
     #[default]
     Bitwarden,
     Local,
+    KeePass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,6 +70,13 @@ pub struct Wizard {
     pub vault: Option<String>,
     pub api: Option<ApiDraft>,
     pub prompt: Prompt,
+    pub file: Option<std::path::PathBuf>,
+}
+
+impl Wizard {
+    const fn steps(&self) -> usize {
+        if matches!(self.kind, Kind::KeePass) { 2 } else { 4 }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -166,6 +176,51 @@ pub enum Event {
     ApiKey(bool),
     ClientId(String),
     ClientSecret(String),
+    FileChosen(Chosen),
+    OpenFile,
+}
+
+fn keepass_event(wizard: &mut Wizard, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
+    match event {
+        Event::FileChosen(Chosen::Paths(paths)) => {
+            if let Some(path) = paths.into_iter().next() {
+                if wizard.name.trim().is_empty() {
+                    wizard.name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+                }
+                wizard.file = Some(path);
+                wizard.password.clear();
+                wizard.error = None;
+                wizard.step = Step::KeePass;
+            }
+        }
+        Event::FileChosen(Chosen::Failed(message)) => shell.toast(message),
+        Event::OpenFile => {
+            let Some(path) = wizard.file.as_ref().filter(|_| !wizard.password.is_empty() && !wizard.busy) else {
+                return Task::none();
+            };
+            let request = Request::AddKeePass {
+                path: path.display().to_string(),
+                password: Hidden::new(wizard.password.clone()),
+                name: wizard.name.trim().to_string(),
+            };
+            wizard.busy = true;
+            wizard.error = None;
+            return ask(request, |result| Message::Wizard(Event::Reply(result)));
+        }
+        _ => {}
+    }
+    Task::none()
+}
+
+fn choose_file(lang: Lang) -> Task<Message> {
+    let ask = Ask {
+        purpose: Purpose::Open,
+        title: Key::OpenKeePass.text(lang).to_string(),
+        accept: Key::OpenAccept.text(lang).to_string(),
+        name: None,
+        folder: glide_config::home(),
+    };
+    Task::perform(chooser::spawn(ask), |chosen| Message::Wizard(Event::FileChosen(chosen.unwrap_or(Chosen::Cancelled))))
 }
 
 fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
@@ -204,6 +259,10 @@ fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
             wizard.code.clear();
             wizard.step = Step::TwoFactor;
         }
+        Ok(Response::VaultAdded { .. }) if wizard.kind == Kind::KeePass => {
+            app.wizard = None;
+            return app.reload();
+        }
         Ok(Response::VaultAdded { vault }) => {
             wizard.vault = Some(vault);
             if wizard.name.trim().is_empty() {
@@ -212,6 +271,11 @@ fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
             wizard.step = Step::Sync;
             wizard.password.clear();
             return app.reload();
+        }
+        Ok(Response::WrongPassword) if wizard.kind == Kind::KeePass => {
+            wizard.error = Some(lang.pick("Майстер-пароль не підійшов", "The master password is wrong").into());
+            wizard.password.clear();
+            wizard.shakes += 1;
         }
         Ok(Response::WrongPassword) => {
             wizard.error = Some(
@@ -236,17 +300,19 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
     };
     match event {
         Event::Kind(kind) => wizard.kind = kind,
-        Event::Next => {
-            if wizard.kind == Kind::Local {
+        Event::Next => match wizard.kind {
+            Kind::Local => {
                 app.wizard = None;
                 return Task::done(Message::CreateVault(CreateEvent::Open));
             }
-            wizard.step = Step::Login;
-        }
+            Kind::KeePass => return choose_file(app.lang),
+            Kind::Bitwarden => wizard.step = Step::Login,
+        },
+        event @ (Event::FileChosen(_) | Event::OpenFile) => return keepass_event(wizard, event, shell),
         Event::Back => {
             wizard.error = None;
             wizard.step = match wizard.step {
-                Step::Login => Step::Kind,
+                Step::Login | Step::KeePass => Step::Kind,
                 Step::TwoFactor => Step::Login,
                 other => other,
             };
@@ -368,9 +434,9 @@ pub fn create(app: &mut App, event: CreateEvent, shell: &mut Shell<Message>) -> 
     Task::none()
 }
 
-fn dots<'a>(paint: &Paint, step: Step) -> Element<'a, Message> {
+fn dots<'a>(paint: &Paint, step: Step, total: usize) -> Element<'a, Message> {
     let current = step.number();
-    let dots = (1..=4).map(|index| {
+    let dots = (1..=total).map(|index| {
         let color = if index <= current { paint.acc_bg() } else { paint.fill_3() };
         let width = if index == current { 22.0 } else { 6.0 };
         container(Space::new().width(width).height(6))
@@ -401,10 +467,15 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let paint = app.paint;
     let t = |key: Key| key.text(app.lang);
     let head = row![
-        ui::text(t(Key::StepOf).replace("{n}", &wizard.step.number().to_string()), TextStyle::CAP)
-            .color(paint.fg_3())
-            .width(Fill),
-        dots(&paint, wizard.step),
+        ui::text(
+            t(Key::StepOf)
+                .replace("{n}", &wizard.step.number().to_string())
+                .replace("{total}", &wizard.steps().to_string()),
+            TextStyle::CAP
+        )
+        .color(paint.fg_3())
+        .width(Fill),
+        dots(&paint, wizard.step, wizard.steps()),
     ]
     .align_y(Alignment::Center);
     let body = match wizard.step {
@@ -412,6 +483,7 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
         Step::Login => login_step(app, wizard),
         Step::TwoFactor => two_factor_step(app, wizard),
         Step::Sync => sync_step(app, wizard),
+        Step::KeePass => keepass_step(app, wizard),
     };
     let content = column![head, body].spacing(SP5);
     Some(crate::view::dialog_frame(app, 560.0, content, Message::Wizard(Event::Close)))
@@ -447,7 +519,14 @@ fn kind_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
                     wizard.kind == Kind::Local,
                     Some(Message::Wizard(Event::Kind(Kind::Local)))
                 ),
-                choice_card(&paint, Icon::Note, t(Key::KeePass), t(Key::KeePassBody), false, None),
+                choice_card(
+                    &paint,
+                    Icon::Note,
+                    t(Key::KeePass),
+                    t(Key::KeePassBody),
+                    wizard.kind == Kind::KeePass,
+                    Some(Message::Wizard(Event::Kind(Kind::KeePass)))
+                ),
             ]
             .spacing(SP3),
         );
@@ -461,6 +540,66 @@ fn kind_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
         );
     }
     content
+}
+
+fn keepass_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
+    let paint = app.paint;
+    let t = |key: Key| key.text(app.lang);
+    let path = wizard.file.as_deref().unwrap_or_else(|| std::path::Path::new(""));
+    let file_name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let folder = path.parent().map(|dir| dir.display().to_string()).unwrap_or_default();
+    let file = ListRow::new(paint, file_name)
+        .strong()
+        .subtitle(folder)
+        .prefix(ui::glyph_tile(&paint, Icon::Key, 32.0, true))
+        .suffix(ui::sized_button(
+            &paint,
+            t(Key::OtherFile),
+            Tone::Neutral,
+            ui::Size::Small,
+            Some(Message::Wizard(Event::Next)),
+        ));
+    let name = labelled(
+        &paint,
+        t(Key::VaultName),
+        ui::field(
+            &paint,
+            text_input(t(Key::VaultName), &wizard.name).on_input(|value| Message::Wizard(Event::Name(value))),
+        ),
+    );
+    let password = labelled(
+        &paint,
+        t(Key::MasterPassword),
+        glide_sdk::anim::shake(
+            wizard.shakes,
+            crate::view::secret_input(&paint, t(Key::MasterPassword), &wizard.password, |value| {
+                Message::Wizard(Event::Password(value))
+            }),
+        ),
+    );
+    let mut content = Column::new()
+        .spacing(SP5)
+        .push(title(app, Key::OpenKeePass, t(Key::OpenKeePassBody).to_string()))
+        .push(ui::list(&paint, vec![file.into()]))
+        .push(column![name, password].spacing(SP4));
+    if let Some(error) = &wizard.error {
+        content = content.push(ui::text(error.as_str(), TextStyle::CAP).color(paint.danger()));
+    }
+    let ready = !wizard.password.is_empty() && !wizard.busy;
+    content.push(
+        row![
+            ui::secondary(&paint, t(Key::Back), Message::Wizard(Event::Back)),
+            Space::new().width(Fill),
+            ui::sized_button(
+                &paint,
+                t(Key::OpenAccept),
+                Tone::Accent,
+                ui::Size::Medium,
+                ready.then_some(Message::Wizard(Event::OpenFile))
+            ),
+        ]
+        .spacing(SP2),
+    )
 }
 
 fn api_key_fields<'a>(app: &'a App, api: &'a ApiDraft) -> Element<'a, Message> {

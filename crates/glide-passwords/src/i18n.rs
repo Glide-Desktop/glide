@@ -188,7 +188,12 @@ glide_sdk::catalogue! {
     DeleteSend => "Delete", "Видалити";
     Done => "Done", "Готово";
     NeedsServer => "Add a Bitwarden account to send secrets.", "Щоб надсилати секрети, додайте акаунт Bitwarden.";
-    StepOf => "Step {n} of 4", "Крок {n} з 4";
+    StepOf => "Step {n} of {total}", "Крок {n} з {total}";
+    OpenKeePass => "Open a KeePass database", "Відкрити базу KeePass";
+    OpenKeePassBody => "Passwords works with this file directly: edits from KeePassXC show up here and edits made here show up there. The master password is not stored on disk.", "Паролі працюють просто з цим файлом: зміни з KeePassXC видно тут, а зроблені тут — там. Майстер-пароль на диску не зберігається.";
+    OpenAccept => "Open", "Відкрити";
+    OtherFile => "Other file…", "Інший файл…";
+    VaultName => "Name in Passwords", "Назва в Паролях";
     AddVault => "Add a vault", "Додати сховище";
     AddVaultBody => "Every vault has its own password. You can search and fill from all of them at once.", "Кожне сховище має власний пароль. Шукати й вставляти можна з усіх одразу.";
     Bitwarden => "Bitwarden", "Bitwarden";
@@ -196,7 +201,7 @@ glide_sdk::catalogue! {
     OnDeviceTitle => "On this device", "На цьому пристрої";
     OnDeviceBody => "An encrypted file. No server, no sync.", "Зашифрований файл. Без сервера й синхронізації.";
     KeePass => "KeePass file", "Файл KeePass";
-    KeePassBody => "Later: open a .kdbx file.", "Згодом: відкрити .kdbx.";
+    KeePassBody => "Open a .kdbx file. Edits are written back into it.", "Відкрити .kdbx. Зміни записуються в сам файл.";
     Next => "Next", "Далі";
     SignInBitwarden => "Sign in to Bitwarden", "Увійти в Bitwarden";
     MasterNote => "The master password never leaves this computer: only a key made from it goes to the server.", "Майстер-пароль не залишає цей комп'ютер: на сервер іде лише ключ, похідний від нього.";
