@@ -47,6 +47,8 @@ mod tr {
         KeepChanges => "Keep changes", "Залишити зміни";
         Revert => "Revert", "Повернути";
         Millimetres => "mm", "мм";
+        Lid => "Lid closed with another display connected", "Кришка закрита, підключено інший дисплей";
+        LidHint => "The built-in screen turns off and everything moves to the other display. Opening the lid brings it back as it was.", "Вбудований екран вимикається, усе переїжджає на інший дисплей. Відкриєте кришку — повернеться як було.";
     }
 }
 
@@ -460,8 +462,19 @@ impl Page {
                 })
                 .into();
         }
+        let lid = self.state.outputs.iter().any(|output| display::is_internal(&output.name)).then(|| {
+            Group::new(t)
+                .push(
+                    Row::new(t, c.t(tr::Key::Lid))
+                        .subtitle(c.t(tr::Key::LidHint))
+                        .prefix(widgets::icon(Icon::Display, 18.0, t.fg_2()))
+                        .build(),
+                )
+                .build()
+        });
         page.push(self.arrangement(&c, config))
             .push(self.output_group(&c, config))
+            .push(lid)
             .push(self.details_group(&c, config))
             .into()
     }
