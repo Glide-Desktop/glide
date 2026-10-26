@@ -121,7 +121,7 @@ pub struct Code {
 
 impl GlideState {
     pub fn remember_code(&mut self, notification: &glide_notify::Notification) {
-        if crate::notifications::is_local(notification.id) {
+        if crate::notifications::is_local(notification.id) || !self.notifications.policy().system.codes {
             return;
         }
         let Some(digits) = extract(&notification.summary, &notification.body) else {

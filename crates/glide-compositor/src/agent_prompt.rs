@@ -186,6 +186,18 @@ impl crate::GlideState {
 
     pub fn tick_local_notifications(&mut self) {
         self.show_glances();
+        if let Some(senders) = self.notifications.senders_to_save(std::time::Instant::now())
+            && let Some(path) = glide_config::senders::Senders::path()
+        {
+            let spawned = std::thread::Builder::new().name("glide-senders".into()).spawn(move || {
+                if let Err(err) = senders.save_to(&path) {
+                    tracing::warn!(%err, "could not save the list of notification senders");
+                }
+            });
+            if let Err(err) = spawned {
+                tracing::warn!(%err, "could not start the notification sender writer");
+            }
+        }
         for event in self.notifications.take_local_events() {
             if let LocalEvent::Action { id: crate::disk_space::NOTICE_ID, key } = &event
                 && key == crate::disk_space::OPEN_STORAGE

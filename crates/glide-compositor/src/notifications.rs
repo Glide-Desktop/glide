@@ -181,7 +181,24 @@ pub struct NotificationPolicy {
     pub allow_critical: bool,
     pub banner_timeout: Option<Duration>,
     pub muted: Vec<String>,
+    pub silent: Vec<String>,
     pub sounds: bool,
+    pub system: SystemNotices,
+}
+
+#[allow(clippy::struct_excessive_bools)] // One switch per kind of notice Glide raises itself
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemNotices {
+    pub drives: bool,
+    pub disk_space: bool,
+    pub headsets: bool,
+    pub codes: bool,
+}
+
+impl Default for SystemNotices {
+    fn default() -> Self {
+        Self { drives: true, disk_space: true, headsets: true, codes: true }
+    }
 }
 
 impl Default for NotificationPolicy {
@@ -192,7 +209,9 @@ impl Default for NotificationPolicy {
             allow_critical: true,
             banner_timeout: None,
             muted: Vec::new(),
+            silent: Vec::new(),
             sounds: true,
+            system: SystemNotices::default(),
         }
     }
 }
@@ -200,19 +219,30 @@ impl Default for NotificationPolicy {
 impl NotificationPolicy {
     #[must_use]
     pub fn mutes(&self, notification: &Notification) -> bool {
-        let names = [notification.desktop_entry.trim(), notification.app_name.trim()];
-        self.muted.iter().any(|muted| {
-            let muted = muted.trim();
-            !muted.is_empty()
-                && names.iter().any(|name| {
-                    !name.is_empty()
-                        && (name.eq_ignore_ascii_case(muted)
-                            || name.strip_suffix(".desktop").is_some_and(|stem| stem.eq_ignore_ascii_case(muted))
-                            || muted.strip_suffix(".desktop").is_some_and(|stem| stem.eq_ignore_ascii_case(name)))
-                })
-        })
+        listed(&self.muted, notification)
     }
 
+    #[must_use]
+    pub fn hushes(&self, notification: &Notification) -> bool {
+        listed(&self.silent, notification)
+    }
+}
+
+fn listed(list: &[String], notification: &Notification) -> bool {
+    let names = [notification.desktop_entry.trim(), notification.app_name.trim()];
+    list.iter().any(|muted| {
+        let muted = muted.trim();
+        !muted.is_empty()
+            && names.iter().any(|name| {
+                !name.is_empty()
+                    && (name.eq_ignore_ascii_case(muted)
+                        || name.strip_suffix(".desktop").is_some_and(|stem| stem.eq_ignore_ascii_case(muted))
+                        || muted.strip_suffix(".desktop").is_some_and(|stem| stem.eq_ignore_ascii_case(name)))
+            })
+    })
+}
+
+impl NotificationPolicy {
     #[must_use]
     pub fn wants_dnd(&self, minute_of_day: u16) -> Option<bool> {
         let (from, to) = self.schedule?;
@@ -386,6 +416,20 @@ pub struct Notifications {
     locked_at: Option<Instant>,
     banners: Banners,
     pending_glances: Vec<Glance>,
+    senders: SenderLog,
+}
+
+#[derive(Debug, Default)]
+struct SenderLog {
+    list: glide_config::senders::Senders,
+    unsaved: bool,
+    saved_at: Option<Instant>,
+}
+
+const SENDERS_SAVE_EVERY: Duration = Duration::from_secs(30);
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -400,6 +444,31 @@ impl Notifications {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn load_senders(&mut self, senders: glide_config::senders::Senders) {
+        self.senders = SenderLog { list: senders, ..SenderLog::default() };
+    }
+
+    fn note_sender(&mut self, notification: &Notification) {
+        if is_local(notification.id) {
+            return;
+        }
+        if let Some(key) = glide_config::senders::key(&notification.desktop_entry, &notification.app_name) {
+            self.senders.list.note(&key, &notification.app_name, unix_now());
+            self.senders.unsaved = true;
+        }
+    }
+
+    pub fn senders_to_save(&mut self, now: Instant) -> Option<glide_config::senders::Senders> {
+        let log = &mut self.senders;
+        let due = log.saved_at.is_none_or(|saved| now.duration_since(saved) >= SENDERS_SAVE_EVERY);
+        if !log.unsaved || !due {
+            return None;
+        }
+        log.unsaved = false;
+        log.saved_at = Some(now);
+        Some(log.list.clone())
     }
 
     #[cfg(test)]
@@ -455,7 +524,8 @@ impl Notifications {
 
     #[must_use]
     pub fn audible(&self, notification: &Notification) -> Option<glide_notify::Sound> {
-        let wanted = self.policy.sounds && notification.sound != glide_notify::Sound::None;
+        let wanted =
+            self.policy.sounds && notification.sound != glide_notify::Sound::None && !self.policy.hushes(notification);
         (wanted && !self.silences(notification)).then(|| notification.sound.clone())
     }
 
@@ -723,6 +793,9 @@ impl Notifications {
 
     pub fn push(&mut self, icons: &mut crate::icon::IconLoader, notification: Notification, replaces: bool) -> bool {
         let notification = self.policy.shape(notification);
+        if !replaces {
+            self.note_sender(&notification);
+        }
         self.forget_kept(notification.id);
         if self.silences(&notification) {
             let icon = load_icon(icons, &notification);
@@ -1219,6 +1292,34 @@ mod tests {
             assert!(store.live.iter().any(|entry| entry.owns(id)), "{id} keeps its toast");
         }
         assert!(store.take_glances().is_empty());
+    }
+
+    #[test]
+    fn a_silent_app_keeps_its_banner_but_plays_no_sound() {
+        let (mut store, _) = store();
+        store.set_policy(NotificationPolicy { silent: vec!["Telegram".into()], ..NotificationPolicy::default() });
+        let loud = |app: &str| Notification {
+            sound: glide_notify::Sound::Named("message-new-instant".into()),
+            ..from_app(1, app)
+        };
+        assert_eq!(store.audible(&loud("Telegram")), None);
+        assert!(!store.silences(&loud("Telegram")), "its banner still shows");
+        assert!(store.audible(&loud("Firefox")).is_some());
+    }
+
+    #[test]
+    fn senders_are_noted_once_per_new_notification_and_saved_at_most_every_half_minute() {
+        let (mut store, mut icons) = store();
+        store.push(&mut icons, from_app(1, "Telegram"), false);
+        store.push(&mut icons, Notification { body: "edit".into(), ..from_app(1, "Telegram") }, true);
+        store.push(&mut icons, Notification { id: LOCAL_ID_FLOOR, ..from_app(0, "Glide") }, false);
+        let start = Instant::now();
+        let saved = store.senders_to_save(start).expect("a new sender is due");
+        assert_eq!(saved.apps.len(), 1, "local notices are not senders");
+        assert_eq!(saved.apps["Telegram"].count, 1, "a replacement is not a new notification");
+        store.push(&mut icons, from_app(2, "Telegram"), false);
+        assert!(store.senders_to_save(start + Duration::from_secs(5)).is_none());
+        assert!(store.senders_to_save(start + SENDERS_SAVE_EVERY).is_some());
     }
 
     #[test]

@@ -95,6 +95,9 @@ impl crate::GlideState {
     pub fn handle_low_disk(&mut self, low: Low) {
         use crate::i18n::{Key, t};
         tracing::warn!(free = low.free, "the home disk is almost full");
+        if !self.notifications.policy().system.disk_space {
+            return;
+        }
         let notice = glide_notify::Notification {
             id: NOTICE_ID,
             app_name: "Glide".to_string(),

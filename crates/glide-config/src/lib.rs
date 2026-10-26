@@ -11,6 +11,7 @@ pub mod passwords;
 pub mod permissions;
 pub mod process;
 pub mod search_providers;
+pub mod senders;
 pub mod terminal;
 pub mod toolkits;
 pub mod uri;

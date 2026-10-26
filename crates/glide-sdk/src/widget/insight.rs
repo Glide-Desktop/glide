@@ -401,6 +401,19 @@ pub fn choice_tiles<'a, M: Clone + 'a, T: Copy + PartialEq + 'a>(
 }
 
 #[must_use]
+pub fn labelled_switch<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, on: bool, on_toggle: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
+    row![
+        text(label, TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None),
+        super::sized_switch(paint, on, super::SwitchSize::Bar, on_toggle),
+    ]
+    .spacing(SP1 + 2.0)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+#[must_use]
 pub fn section_heading<'a, M: 'a>(paint: &Paint, title: impl Into<Cow<'a, str>>) -> Element<'a, M> {
     container(text(title, TextStyle::HEAD).color(paint.fg_1())).padding(Padding::ZERO.left(SP1)).into()
 }

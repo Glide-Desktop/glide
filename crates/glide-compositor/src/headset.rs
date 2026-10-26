@@ -548,7 +548,7 @@ impl crate::GlideState {
             }
             Event::Connected { headset, announce } => {
                 tracing::info!(name = headset.name, battery = ?headset.battery, "a headset is connected");
-                if announce && !self.screen_locked() {
+                if announce && !self.screen_locked() && self.notifications.policy().system.headsets {
                     let icon = self
                         .dock
                         .icons

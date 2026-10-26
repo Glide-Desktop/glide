@@ -160,6 +160,9 @@ impl crate::GlideState {
         match event {
             Event::Added(volume) => {
                 tracing::info!(path = volume.path, label = volume.label, "a removable drive was connected");
+                if !self.notifications.policy().system.drives {
+                    return;
+                }
                 let id = self.session.volumes.open(&volume.path);
                 let name = if volume.label.is_empty() { t(Key::RemovableDrive).to_string() } else { volume.label };
                 let notice = glide_notify::Notification {

@@ -88,7 +88,12 @@ pub struct NotificationsConfig {
     #[serde(rename = "position")]
     _position: Option<toml::Value>,
     pub muted_apps: Vec<String>,
+    pub silent_apps: Vec<String>,
     pub sounds: bool,
+    pub drive_notices: bool,
+    pub disk_space_notices: bool,
+    pub headset_notices: bool,
+    pub code_offers: bool,
 }
 
 impl Default for NotificationsConfig {
@@ -102,7 +107,12 @@ impl Default for NotificationsConfig {
             banner_seconds: 0,
             _position: None,
             muted_apps: Vec::new(),
+            silent_apps: Vec::new(),
             sounds: true,
+            drive_notices: true,
+            disk_space_notices: true,
+            headset_notices: true,
+            code_offers: true,
         }
     }
 }
@@ -117,7 +127,14 @@ impl NotificationsConfig {
             banner_timeout: (self.banner_seconds > 0)
                 .then(|| std::time::Duration::from_secs(u64::from(self.banner_seconds.min(600)))),
             muted: self.muted_apps.iter().map(|app| app.trim().to_string()).filter(|app| !app.is_empty()).collect(),
+            silent: self.silent_apps.iter().map(|app| app.trim().to_string()).filter(|app| !app.is_empty()).collect(),
             sounds: self.sounds,
+            system: crate::notifications::SystemNotices {
+                drives: self.drive_notices,
+                disk_space: self.disk_space_notices,
+                headsets: self.headset_notices,
+                codes: self.code_offers,
+            },
         }
     }
 }
@@ -1562,6 +1579,20 @@ mod tests {
         let mirror: Config = toml::from_str("[displays]\narrangement = \"mirror\"\n").expect("config");
         assert_eq!(mirror.displays.arrangement, Arrangement::Mirror);
         assert!(toml::from_str::<Config>("[displays]\narrangement = \"clone\"\n").is_err());
+    }
+
+    #[test]
+    fn system_notices_stay_on_until_settings_turns_one_off() {
+        let policy = Config::default().notifications.policy();
+        assert_eq!(policy.system, crate::notifications::SystemNotices::default());
+        let config: Config = toml::from_str(
+            "[notifications]\nsilent-apps = [\"Telegram\"]\ndrive-notices = false\ncode-offers = false\n",
+        )
+        .expect("config");
+        let policy = config.notifications.policy();
+        assert_eq!(policy.silent, ["Telegram"]);
+        assert!(!policy.system.drives && !policy.system.codes);
+        assert!(policy.system.disk_space && policy.system.headsets);
     }
 
     #[test]

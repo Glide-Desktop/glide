@@ -555,6 +555,7 @@ fn init_quick_settings_network(event_loop: &mut EventLoop<'static, GlideState>) 
 }
 
 fn init_notifications(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    state.notifications.load_senders(glide_config::senders::Senders::load());
     let (send, receiver) = sink::<glide_notify::NotifyEvent>("a notification");
     match glide_notify::start(std::sync::Arc::new(send)) {
         Ok(handle) => state.notifications.attach(handle),

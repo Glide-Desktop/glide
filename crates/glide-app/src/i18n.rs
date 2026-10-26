@@ -172,6 +172,30 @@ pub fn count(count: u64, lang: Lang, [one, few, many]: [&str; 3]) -> String {
 }
 
 #[must_use]
+pub fn ago(seconds: u64, lang: Lang) -> String {
+    let (amount, unit) = match seconds {
+        0..60 => return lang.pick("щойно", "just now").to_string(),
+        60..3600 => (seconds / 60, lang.pick("хв", "min")),
+        3600..86_400 => (seconds / 3600, lang.pick("год", "h")),
+        _ => {
+            let days = seconds / 86_400;
+            let noun = match (lang, lang.plural(days)) {
+                (Lang::En, Plural::One) => "day",
+                (Lang::En, _) => "days",
+                (Lang::Uk, Plural::One) => "день",
+                (Lang::Uk, Plural::Few) => "дні",
+                (Lang::Uk, Plural::Many) => "днів",
+            };
+            (days, noun)
+        }
+    };
+    match lang {
+        Lang::Uk => format!("{amount} {unit} тому"),
+        Lang::En => format!("{amount} {unit} ago"),
+    }
+}
+
+#[must_use]
 pub fn problems<K: Text>(keys: &[K]) -> Vec<String> {
     let mut found = Vec::new();
     for key in keys {
@@ -296,6 +320,16 @@ mod tests {
         assert_eq!(count(3, Lang::Uk, files), "3 файли");
         assert_eq!(count(11, Lang::Uk, files), "11 файлів");
         assert_eq!(count(2, Lang::En, ["file", "files", "files"]), "2 files");
+    }
+
+    #[test]
+    fn ago_reads_as_a_short_phrase_in_either_language() {
+        assert_eq!(ago(20, Lang::Uk), "щойно");
+        assert_eq!(ago(5 * 60, Lang::Uk), "5 хв тому");
+        assert_eq!(ago(3 * 3600, Lang::En), "3 h ago");
+        assert_eq!(ago(2 * 86_400, Lang::Uk), "2 дні тому");
+        assert_eq!(ago(5 * 86_400, Lang::Uk), "5 днів тому");
+        assert_eq!(ago(86_400, Lang::En), "1 day ago");
     }
 
     #[test]

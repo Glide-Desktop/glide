@@ -58,8 +58,8 @@ pub use inputs::{
     password_field, search_field, search_input, stepper, text_area_style, text_field, validated_field,
 };
 pub use insight::{
-    Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, reset_action,
-    section_heading, signal_bars, stage_track, status_chips,
+    Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, labelled_switch,
+    reset_action, section_heading, signal_bars, stage_track, status_chips,
 };
 pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
 pub use layout::{
