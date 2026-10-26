@@ -15,6 +15,7 @@ fn main() -> iced::Result {
     let settings = glide_sdk::Settings::new("glide-settings")
         .size(width, height)
         .min_size(760.0, 480.0)
+        .single_instance("org.glide.Settings")
         .chrome(glide_sdk::Chrome::Server);
     glide_sdk::run::<App>(settings)
 }

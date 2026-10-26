@@ -33,6 +33,7 @@ pub struct Settings {
     pub min_size: Option<Size>,
     pub fonts: Vec<Cow<'static, [u8]>>,
     pub chrome: Chrome,
+    pub single_instance: Option<String>,
 }
 
 impl Settings {
@@ -44,7 +45,14 @@ impl Settings {
             min_size: Some(Size::new(420.0, 300.0)),
             fonts: Vec::new(),
             chrome: Chrome::Standard,
+            single_instance: None,
         }
+    }
+
+    #[must_use]
+    pub fn single_instance(mut self, bus_name: impl Into<String>) -> Self {
+        self.single_instance = Some(bus_name.into());
+        self
     }
 
     #[must_use]
@@ -293,6 +301,10 @@ pub trait App: Sized + 'static {
     ) -> Task<Self::Message> {
         Task::none()
     }
+
+    fn reopened(&mut self, _args: Vec<String>, _shell: &mut Shell<Self::Message>) -> Task<Self::Message> {
+        Task::none()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -312,11 +324,13 @@ pub enum Event<M> {
     Dialog(Answer),
     ToastAction,
     CloseRequested,
+    Reopened(crate::instance::Opened),
 }
 
 struct Host<A: App> {
     app: A,
     chrome: Chrome,
+    single: bool,
     shell: Shell<A::Message>,
     shell_look: Option<glide_app::Look>,
     font_family: Option<String>,
@@ -330,7 +344,7 @@ struct Host<A: App> {
 const BAR_START: f32 = SP2 + component::SMALL_CONTROL + SP2;
 
 impl<A: App> Host<A> {
-    fn boot(app_id: &str, chrome: Chrome) -> (Self, Task<Event<A::Message>>) {
+    fn boot(app_id: &str, chrome: Chrome, single: bool) -> (Self, Task<Event<A::Message>>) {
         let look = Look::load();
         motion::set_scale(look.motion_scale);
         let font_family = look.font_family.clone();
@@ -347,6 +361,7 @@ impl<A: App> Host<A> {
         let mut host = Self {
             app,
             chrome,
+            single,
             shell,
             shell_look: None,
             font_family,
@@ -469,6 +484,18 @@ impl<A: App> Host<A> {
                 None => Task::none(),
             },
             Event::CloseRequested => self.app.close_requested(&mut self.shell).map(Event::App),
+            Event::Reopened(opened) => {
+                if let Some(handles) = self.handles.filter(|_| !opened.token.is_empty()) {
+                    let token = opened.token;
+                    let _ = std::thread::Builder::new().name("glide-sdk-activate".into()).spawn(move || {
+                        if let Err(err) = glide_app::activation::activate(handles.display, handles.surface, &token) {
+                            tracing::debug!("could not activate the window: {err}");
+                        }
+                    });
+                }
+                self.shell.window_action(Action::Activate);
+                self.app.reopened(opened.args, &mut self.shell).map(Event::App)
+            }
         }
     }
 
@@ -704,6 +731,9 @@ impl<A: App> Host<A> {
         if self.shell_look.is_none() {
             subscriptions.push(Subscription::run(look::motion_changes).map(Event::Motion));
         }
+        if self.single {
+            subscriptions.push(Subscription::run(crate::instance::requests).map(Event::Reopened));
+        }
         if let Some(handles) = self.handles.filter(|_| !self.menus.is_empty()) {
             subscriptions.push(Subscription::run_with(handles, menubar::events).map(Event::MenuBar));
         }
@@ -715,6 +745,17 @@ impl<A: App> Host<A> {
 }
 
 pub fn run<A: App>(settings: Settings) -> iced::Result {
+    let single = match settings.single_instance.as_deref() {
+        Some(name) => {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            match crate::instance::claim(name, &args, &crate::instance::launch_token()) {
+                crate::instance::Claim::Forwarded => return Ok(()),
+                crate::instance::Claim::First => true,
+                crate::instance::Claim::Alone => false,
+            }
+        }
+        None => false,
+    };
     let chrome = settings.chrome;
     let server = chrome == Chrome::Server;
     let window = iced::window::Settings {
@@ -734,7 +775,7 @@ pub fn run<A: App>(settings: Settings) -> iced::Result {
         .fonts
         .into_iter()
         .fold(
-            iced::application(move || Host::<A>::boot(&app_id, chrome), Host::<A>::update, Host::<A>::view),
+            iced::application(move || Host::<A>::boot(&app_id, chrome, single), Host::<A>::update, Host::<A>::view),
             iced::Application::font,
         )
         .title(|host: &Host<A>| host.app.title(&host.shell))
@@ -766,6 +807,7 @@ impl<A: App> Harness<A> {
         let mut host = Host {
             app,
             chrome: Chrome::Standard,
+            single: false,
             shell,
             shell_look: None,
             font_family: None,

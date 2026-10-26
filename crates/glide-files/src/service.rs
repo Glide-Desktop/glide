@@ -218,7 +218,7 @@ pub fn claim(target: Option<&Path>) -> Claim {
     let flags = RequestNameFlags::DoNotQueue.into();
     match connection.request_name_with_flags(OWN_NAME, flags) {
         Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {}
-        Ok(_) => {
+        Ok(_) | Err(zbus::Error::NameTaken) => {
             return if forward(&connection, target) { Claim::Forwarded } else { Claim::Unavailable };
         }
         Err(_) => return Claim::Unavailable,

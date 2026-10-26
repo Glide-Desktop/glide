@@ -5,6 +5,7 @@ pub mod anim;
 pub mod app;
 pub mod chooser;
 pub mod i18n;
+pub mod instance;
 pub mod look;
 pub mod menu;
 pub mod overlay;

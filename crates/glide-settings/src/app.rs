@@ -180,14 +180,9 @@ impl App {
         app.online = ipc::socket_path().is_some();
         app.user_name = system::user_name();
         app.login = std::env::var("USER").unwrap_or_default();
-        let initial = std::env::args().nth(1).and_then(|arg| Panel::from_slug(&arg)).unwrap_or(Panel::Appearance);
-        if initial == Panel::Netbird
-            && let Some(section) = std::env::args().nth(2)
-        {
-            app.pages.netbird.show_tab(&section);
-        }
-        let task = app.select(initial);
-        let task = if initial == Panel::Users {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let task = app.open_args(&args);
+        let task = if app.active_panel == Panel::Users {
             task
         } else {
             let c = app.ctx();
@@ -298,6 +293,16 @@ impl App {
         } else {
             open
         }
+    }
+
+    pub fn open_args(&mut self, args: &[String]) -> Task<Message> {
+        let panel = args.first().and_then(|arg| Panel::from_slug(arg)).unwrap_or(self.active_panel);
+        if panel == Panel::Netbird
+            && let Some(section) = args.get(1)
+        {
+            self.pages.netbird.show_tab(section);
+        }
+        self.select(panel)
     }
 
     fn step(&mut self, forward: bool) -> Task<Message> {
@@ -496,6 +501,10 @@ impl glide_sdk::App for App {
             shortcut(event.clone())
         };
         message.map_or_else(Task::none, |message| Self::update(self, message))
+    }
+
+    fn reopened(&mut self, args: Vec<String>, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        self.open_args(&args)
     }
 
     fn title(&self, _: &glide_sdk::Shell<Message>) -> String {
