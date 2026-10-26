@@ -18,6 +18,7 @@ members = [
     "crates/glide-netbird",
     "crates/glide-notify",
     "crates/glide-paint",
+    "crates/glide-pam",
     "crates/glide-passwords",
     "crates/glide-portal",
     "crates/glide-sdk",

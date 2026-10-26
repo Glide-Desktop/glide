@@ -2163,6 +2163,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glide-pam"
+version = "0.1.0"
+dependencies = [
+ "glide-login-key",
+ "libc",
+ "zeroize",
+]
+
+[[package]]
 name = "glide-passwords"
 version = "0.1.0"
 dependencies = [

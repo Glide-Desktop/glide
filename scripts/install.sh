@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install (or remove) a built Glide system-wide.
 #
-# Usage: sudo scripts/install.sh [--prefix DIR] [--destdir DIR] [--from DIR] [--dm] [--uninstall]
+# Usage: sudo scripts/install.sh [--prefix DIR] [--destdir DIR] [--from DIR] [--dm] [--pam] [--uninstall]
 #
 #   --prefix DIR   install prefix (default /usr/local)
 #   --destdir DIR  stage into DIR instead of / (for distribution packages)
@@ -9,7 +9,9 @@
 #                  glide-files, glide-terminal, glide-text, glide-passwords, glide-catalog, glide-portal and glide-keychain binaries (default: bin/ of a
 #                  release tarball, else target/release of the source tree)
 #   --dm           install and configure glide-dm (via greetd) as system display manager
-#   --uninstall    remove every file this script installs
+#   --pam          add pam_glide_keychain to /etc/pam.d/greetd and /etc/pam.d/passwd,
+#                  so the login password opens the app keys and a password change follows
+#   --uninstall    remove every file this script installs, and its PAM lines
 #
 # Run scripts/build.sh as your normal user first; this script never compiles.
 set -eu
@@ -20,6 +22,7 @@ DESTDIR=""
 FROM=""
 UNINSTALL=0
 INSTALL_DM=0
+INSTALL_PAM=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -31,8 +34,9 @@ while [ $# -gt 0 ]; do
         --from=*) FROM="${1#*=}"; shift ;;
         --dm|--with-dm) INSTALL_DM=1; shift ;;
         --without-dm|--no-dm) INSTALL_DM=0; shift ;;
+        --pam) INSTALL_PAM=1; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
-        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -49,6 +53,19 @@ DBUSDIR=/usr/share/dbus-1/services
 INTERFACEDIR=/usr/share/dbus-1/interfaces
 SEARCHDIR=/usr/share/gnome-shell/search-providers
 PAMDIR=/etc/pam.d
+PAM_MODULE=pam_glide_keychain.so
+PAM_MODULEDIR=/usr/lib/security
+for dir in /usr/lib/security /usr/lib64/security /usr/lib/x86_64-linux-gnu/security /lib/x86_64-linux-gnu/security \
+    /usr/lib/aarch64-linux-gnu/security /lib/aarch64-linux-gnu/security /lib/security; do
+    if [ -e "$dir/pam_unix.so" ]; then
+        PAM_MODULEDIR="$dir"
+        break
+    fi
+done
+# The leading "-" lets PAM skip the line silently when the module is gone.
+PAM_LINES="greetd:-auth optional $PAM_MODULE
+greetd:-session optional $PAM_MODULE
+passwd:-password optional $PAM_MODULE"
 if [ "$PREFIX" = /usr ]; then
     UNITDIR=/usr/lib/systemd/user
 else
@@ -62,7 +79,26 @@ $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.gli
 $DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service
 $INTERFACEDIR/org.glide.Shell1.xml
 $SEARCHDIR/glide-files-search-provider.ini $SEARCHDIR/glide-terminal-search-provider.ini
-$UNITDIR/glide.service $UNITDIR/glide-shutdown.target $PAMDIR/glide-lock"
+$UNITDIR/glide.service $UNITDIR/glide-shutdown.target $PAMDIR/glide-lock $PAM_MODULEDIR/$PAM_MODULE"
+
+pam_lines() {
+    action="$1"
+    echo "$PAM_LINES" | while IFS=: read -r service line; do
+        file="$DESTDIR$PAMDIR/$service"
+        [ -f "$file" ] || continue
+        if [ "$action" = add ]; then
+            if ! grep -qxF -- "$line" "$file"; then
+                printf '%s\n' "$line" >> "$file"
+                echo "added \"$line\" to $file"
+            fi
+        elif grep -qxF -- "$line" "$file"; then
+            grep -vxF -- "$line" "$file" > "$file.glide-tmp"
+            cat "$file.glide-tmp" > "$file"
+            rm -f "$file.glide-tmp"
+            echo "removed \"$line\" from $file"
+        fi
+    done
+}
 
 if [ -z "$DESTDIR" ] && [ "$(id -u)" -ne 0 ]; then
     echo "error: run as root (sudo $0 $*), or pass --destdir to stage files" >&2
@@ -70,6 +106,7 @@ if [ -z "$DESTDIR" ] && [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
+    pam_lines remove
     for f in $FILES; do
         if [ -e "$DESTDIR$f" ]; then
             rm -f "$DESTDIR$f"
@@ -100,8 +137,8 @@ if [ -z "$FROM" ]; then
         FROM="$ROOT/target/release"
     fi
 fi
-for bin in $BINARIES; do
-    if [ ! -x "$FROM/$bin" ]; then
+for bin in $BINARIES libpam_glide_keychain.so; do
+    if [ ! -e "$FROM/$bin" ]; then
         echo "error: $FROM/$bin not found. Build first with: scripts/build.sh" >&2
         exit 1
     fi
@@ -135,6 +172,10 @@ for name in org.glide.Shell1.xml; do
     install -Dm644 "$ROOT/data/dbus/$name" "$DESTDIR$INTERFACEDIR/$name"
 done
 install -Dm644 "$ROOT/data/pam.d/glide-lock" "$DESTDIR$PAMDIR/glide-lock"
+install -Dm755 "$FROM/libpam_glide_keychain.so" "$DESTDIR$PAM_MODULEDIR/$PAM_MODULE"
+if [ "$INSTALL_PAM" -eq 1 ]; then
+    pam_lines add
+fi
 
 install -d "$DESTDIR$SESSIONDIR" "$DESTDIR$UNITDIR"
 sed "s|^Exec=.*|Exec=$BINDIR/glide-session|" "$ROOT/data/glide.desktop" > "$DESTDIR$SESSIONDIR/glide.desktop"
@@ -247,6 +288,12 @@ if [ -n "$themes" ]; then
     echo "  qt6ct, qt5ct               Qt 6 / Qt 5 apps in Glide colours"
     echo "  kvantum                    Qt controls in the Glide shapes"
     echo "  Settings > Appearance > Other apps shows what is in use."
+fi
+if [ "$INSTALL_PAM" -eq 0 ] && ! grep -qs "$PAM_MODULE" "$DESTDIR$PAMDIR/greetd"; then
+    echo
+    echo "The login password does not open the app keys yet (Chrome and other Secret Service"
+    echo "programs then keep their key in a private file). Run again with --pam to add"
+    echo "$PAM_MODULE to $PAMDIR/greetd and $PAMDIR/passwd."
 fi
 echo
 echo "Glide has its own notification centre; do not autostart mako, dunst or swaync in this session."

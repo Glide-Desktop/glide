@@ -97,6 +97,7 @@ fi
 
 cd "$REPO"
 cargo build --locked --profile "$PROFILE" --workspace --bins
+cargo build --locked --profile "$PROFILE" -p glide-pam
 
 OUT="$REPO/target/release"
 [ "$PROFILE" = dev ] && OUT="$REPO/target/debug"
@@ -106,5 +107,6 @@ echo "built:"
 for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-catalog glide-portal glide-keychain; do
     echo "  $OUT/$bin"
 done
+echo "  $OUT/libpam_glide_keychain.so"
 echo
 echo "next: sudo scripts/install.sh"
