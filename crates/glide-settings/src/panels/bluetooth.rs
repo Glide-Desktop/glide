@@ -351,7 +351,10 @@ impl Page {
         if !adapter.address.is_empty() {
             group = group.push(
                 Row::new(t, c.t(T::Address))
-                    .suffix(iced::widget::text(adapter.address.clone()).size(13).color(t.fg_2()))
+                    .suffix(
+                        glide_sdk::widget::text(adapter.address.clone(), glide_sdk::theme::TextStyle::CALL)
+                            .color(t.fg_2()),
+                    )
                     .build(),
             );
         }
