@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{mock as sketch, text};
-use iced::widget::{Column, column, container, row, space};
-use iced::{Alignment, Color, Element, Fill, Length, Task};
+use iced::widget::{Column, column, container, row};
+use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::{choice, gated, switch_row, toggle};
 use super::{Ctx, Pane, Panel};
@@ -551,14 +551,14 @@ impl Page {
 type Card<V> = (V, PadArt, T, T);
 
 const SCROLL_CARDS: [Card<ScrollMethod>; 2] = [
-    (ScrollMethod::TwoFinger, PadArt::TwoFinger, T::TwoFinger, T::TwoFingerHint),
-    (ScrollMethod::Edge, PadArt::Edge, T::Edge, T::EdgeHint),
+    (ScrollMethod::TwoFinger, PadArt::TwoFingerScroll, T::TwoFinger, T::TwoFingerHint),
+    (ScrollMethod::Edge, PadArt::EdgeScroll, T::Edge, T::EdgeHint),
 ];
 
 const CLICK_CARDS: [Card<ClickMethod>; 3] = [
     (ClickMethod::Default, PadArt::Plain, T::ClickDefault, T::ClickDefaultHint),
-    (ClickMethod::Areas, PadArt::Areas, T::ClickAreas, T::ClickAreasHint),
-    (ClickMethod::Clickfinger, PadArt::Fingers, T::ClickFingers, T::ClickFingersHint),
+    (ClickMethod::Areas, PadArt::ClickAreas, T::ClickAreas, T::ClickAreasHint),
+    (ClickMethod::Clickfinger, PadArt::ClickFingers, T::ClickFingers, T::ClickFingersHint),
 ];
 
 fn choice_section<'a, V: Copy + PartialEq>(
@@ -654,60 +654,10 @@ fn scroll_row<'a>(c: &Ctx, factor: f64, slider: Slider) -> Element<'a, Msg> {
         .build()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PadArt {
-    Plain,
-    TwoFinger,
-    Edge,
-    Areas,
-    Fingers,
-}
-
-fn finger<'a>(color: Color) -> Element<'a, Msg> {
-    sketch::ring_dot(color, 12.0)
-}
+use sketch::TouchpadGesture as PadArt;
 
 fn pad_art<'a>(t: &ThemeState, art: PadArt) -> Element<'a, Msg> {
-    use sketch::block;
-    let dot = t.acc_bg();
-    let overlay: Element<'a, Msg> = match art {
-        PadArt::Plain => container(block(t.line_2(), Fill, Length::Fixed(1.0), 0.0))
-            .padding(iced::Padding::ZERO.top(50).left(6).right(6))
-            .into(),
-        PadArt::TwoFinger => container(
-            column![
-                widgets::icon(Icon::ChevronUp, 12.0, t.acc_text()),
-                row![finger(dot), finger(dot)].spacing(6),
-                widgets::icon(Icon::ChevronDown, 12.0, t.acc_text()),
-            ]
-            .spacing(1)
-            .align_x(Alignment::Center),
-        )
-        .center(Fill)
-        .into(),
-        PadArt::Edge => row![
-            space().width(Fill),
-            sketch::surface(t.acc_soft(), theme::R1, finger(dot)).center_x(Length::Fixed(18.0)).center_y(Fill),
-        ]
-        .padding(4)
-        .into(),
-        PadArt::Areas => column![
-            space().height(Fill),
-            row![
-                block(t.fill_3(), Fill, Length::Fixed(18.0), theme::R1),
-                block(t.acc_bg(), Fill, Length::Fixed(18.0), theme::R1),
-            ]
-            .spacing(2),
-        ]
-        .padding(4)
-        .into(),
-        PadArt::Fingers => container(row![finger(dot), finger(dot)].spacing(6))
-            .center_x(Fill)
-            .align_bottom(Fill)
-            .padding(iced::Padding::ZERO.bottom(10))
-            .into(),
-    };
-    sketch::touchpad(*t, overlay)
+    sketch::touchpad_gesture(*t, art)
 }
 
 fn mouse_art<'a>(t: &ThemeState, left_handed: bool) -> Element<'a, Msg> {

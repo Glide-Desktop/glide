@@ -1,7 +1,7 @@
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::text;
-use iced::widget::{Column, container, row, space};
-use iced::{Alignment, Element, Fill, Length, Task};
+use iced::widget::{Column, container, row};
+use iced::{Alignment, Element, Task};
 
 use super::common::switch_row;
 use super::{Ctx, Pane};
@@ -196,24 +196,5 @@ fn bar_preview<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
         battery = battery.push(text("80%", TextStyle::CAP).color(fg));
     }
     right = right.push(battery).push(widgets::icon(Icon::Grid, 13.0, fg));
-    let bar = sketch::bar(
-        t,
-        30.0,
-        row![
-            container(left).width(Length::FillPortion(1)),
-            container(clock).center_x(Length::Shrink),
-            container(right).width(Length::FillPortion(1)).align_x(Alignment::End),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    );
-    sketch::screen(
-        t,
-        Length::Fill,
-        96.0,
-        vec![
-            iced::widget::column![bar, space().height(Fill)].into(),
-            sketch::at(40.0, 44.0, sketch::window(t, 180.0, 70.0)),
-        ],
-    )
+    sketch::bar_scene(t, left, clock, right, 96.0)
 }

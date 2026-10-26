@@ -1,7 +1,7 @@
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::text;
 use iced::widget::{Column, container, row};
-use iced::{Alignment, Element, Length, Task};
+use iced::{Alignment, Element, Task};
 
 use super::common::{gated, switch_row, toggle};
 use super::desktop::NewWindow;
@@ -164,16 +164,10 @@ fn snapping_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
     let on = config.bool_or("windows", "edge-snapping", true);
     let zone = |left: f32, width: f32, label: tr::Key| -> Element<'a, Msg> {
-        let fill = if on { t.acc_soft() } else { t.fill_2() };
-        let stroke = if on { t.acc_bg() } else { t.line_2() };
-        let highlight = sketch::outlined(fill, stroke, 1.5, width, 52.0, theme::R1);
-        iced::widget::column![
-            sketch::screen(t, Length::Fixed(112.0), 68.0, vec![sketch::at(left, 12.0, highlight)],),
-            text(c.t(label), TextStyle::CAP).color(t.fg_2()),
-        ]
-        .spacing(6)
-        .align_x(Alignment::Center)
-        .into()
+        iced::widget::column![sketch::snap_zone(t, left, width, on), text(c.t(label), TextStyle::CAP).color(t.fg_2()),]
+            .spacing(6)
+            .align_x(Alignment::Center)
+            .into()
     };
     let zones = row![
         zone(4.0, 50.0, tr::Key::LeftHalf),
@@ -216,24 +210,9 @@ fn shortcuts_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
 }
 
 fn workspace_sketch<'a>(t: &ThemeState, policy: NewWindow) -> Element<'a, Msg> {
-    let t = *t;
-    let screen = |layers: Vec<Element<'a, Msg>>| sketch::screen(t, Length::Fixed(88.0), 58.0, layers);
-    match policy {
-        NewWindow::NewWorkspace => row![
-            screen(vec![sketch::at(10.0, 10.0, sketch::window(t, 60.0, 38.0))]),
-            screen(vec![sketch::at(14.0, 12.0, sketch::window(t, 60.0, 38.0))]),
-        ]
-        .spacing(8)
-        .into(),
-        NewWindow::ActiveWorkspace => screen(vec![
-            sketch::at(8.0, 8.0, sketch::window(t, 52.0, 34.0)),
-            sketch::at(28.0, 18.0, sketch::window(t, 52.0, 34.0)),
-        ]),
-    }
+    sketch::new_window_placement(*t, policy == NewWindow::NewWorkspace)
 }
 
 fn corner_sketch<'a>(t: &ThemeState) -> Element<'a, Msg> {
-    let t = *t;
-    let accent = t.acc_bg();
-    sketch::screen(t, Length::Fixed(44.0), 30.0, vec![sketch::at(1.0, 1.0, sketch::block(accent, 9.0, 9.0, theme::R1))])
+    sketch::hot_corner(*t)
 }

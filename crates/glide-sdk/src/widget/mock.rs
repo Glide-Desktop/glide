@@ -509,6 +509,133 @@ fn sample_window<'a, M: 'a>(paint: &Paint, width: f32) -> Container<'a, M> {
     outlined_surface(paint.win_bg(), paint.line_2(), 1.0, R2, content.push(card)).padding(6).width(Fill).height(Fill)
 }
 
+#[must_use]
+pub fn bar_scene<'a, M: 'a>(
+    paint: impl Into<Paint>, left: impl Into<Element<'a, M>>, center: impl Into<Element<'a, M>>,
+    right: impl Into<Element<'a, M>>, height: f32,
+) -> Element<'a, M> {
+    let paint = paint.into();
+    let strip = bar(
+        paint,
+        30.0,
+        row![
+            container(left).width(Length::FillPortion(1)),
+            container(center).center_x(Length::Shrink),
+            container(right).width(Length::FillPortion(1)).align_x(Alignment::End),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    );
+    screen(
+        paint,
+        Fill,
+        height,
+        vec![column![strip, Space::new().height(Fill)].into(), at(40.0, 44.0, window(paint, 180.0, 70.0))],
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchpadGesture {
+    Plain,
+    TwoFingerScroll,
+    EdgeScroll,
+    ClickAreas,
+    ClickFingers,
+}
+
+#[must_use]
+pub fn touchpad_gesture<'a, M: 'a>(paint: impl Into<Paint>, gesture: TouchpadGesture) -> Element<'a, M> {
+    let paint = paint.into();
+    let dot = paint.acc_bg();
+    let finger = || ring_dot(dot, 12.0);
+    let overlay: Element<'a, M> = match gesture {
+        TouchpadGesture::Plain => container(block(paint.line_2(), Fill, Length::Fixed(1.0), 0.0))
+            .padding(Padding::ZERO.top(50).left(6).right(6))
+            .into(),
+        TouchpadGesture::TwoFingerScroll => container(
+            column![
+                icon(super::Icon::Up, 12.0, paint.acc_text()),
+                row![finger(), finger()].spacing(6),
+                icon(super::Icon::Down, 12.0, paint.acc_text()),
+            ]
+            .spacing(1)
+            .align_x(Alignment::Center),
+        )
+        .center(Fill)
+        .into(),
+        TouchpadGesture::EdgeScroll => row![
+            Space::new().width(Fill),
+            surface(paint.acc_soft(), R1, finger()).center_x(Length::Fixed(18.0)).center_y(Fill),
+        ]
+        .padding(4)
+        .into(),
+        TouchpadGesture::ClickAreas => column![
+            Space::new().height(Fill),
+            row![
+                block(paint.fill_3(), Fill, Length::Fixed(18.0), R1),
+                block(paint.acc_bg(), Fill, Length::Fixed(18.0), R1)
+            ]
+            .spacing(2),
+        ]
+        .padding(4)
+        .into(),
+        TouchpadGesture::ClickFingers => container(row![finger(), finger()].spacing(6))
+            .center_x(Fill)
+            .align_bottom(Fill)
+            .padding(Padding::ZERO.bottom(10))
+            .into(),
+    };
+    touchpad(paint, overlay)
+}
+
+#[must_use]
+pub fn new_window_placement<'a, M: 'a>(paint: impl Into<Paint>, own_workspace: bool) -> Element<'a, M> {
+    let paint = paint.into();
+    let frame = |layers: Vec<Element<'a, M>>| screen(paint, Length::Fixed(88.0), 58.0, layers);
+    if own_workspace {
+        row![
+            frame(vec![at(10.0, 10.0, window(paint, 60.0, 38.0))]),
+            frame(vec![at(14.0, 12.0, window(paint, 60.0, 38.0))]),
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        frame(vec![at(8.0, 8.0, window(paint, 52.0, 34.0)), at(28.0, 18.0, window(paint, 52.0, 34.0))])
+    }
+}
+
+#[must_use]
+pub fn hot_corner<'a, M: 'a>(paint: impl Into<Paint>) -> Element<'a, M> {
+    let paint = paint.into();
+    screen(paint, Length::Fixed(44.0), 30.0, vec![at(1.0, 1.0, block(paint.acc_bg(), 9.0, 9.0, R1))])
+}
+
+#[must_use]
+pub fn snap_zone<'a, M: 'a>(paint: impl Into<Paint>, left: f32, width: f32, on: bool) -> Element<'a, M> {
+    let paint = paint.into();
+    let (fill, stroke) = if on { (paint.acc_soft(), paint.acc_bg()) } else { (paint.fill_2(), paint.line_2()) };
+    screen(paint, Length::Fixed(112.0), 68.0, vec![at(left, 12.0, outlined(fill, stroke, 1.5, width, 52.0, R1))])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockHiding {
+    WhenCovered,
+    Always,
+    Never,
+}
+
+#[must_use]
+pub fn dock_hiding<'a, M: 'a>(paint: impl Into<Paint>, hiding: DockHiding) -> Element<'a, M> {
+    let paint = paint.into();
+    let window = window(paint, 96.0, 44.0);
+    let layers: Vec<Element<'a, M>> = match hiding {
+        DockHiding::WhenCovered => vec![at(18.0, 26.0, window), at(39.0, 70.0, mini_dock(paint))],
+        DockHiding::Always => vec![at(18.0, 14.0, window), bottom(0.0, block(paint.acc_bg(), 40.0, 3.0, R1))],
+        DockHiding::Never => vec![at(18.0, 10.0, window), bottom(4.0, mini_dock(paint))],
+    };
+    screen(paint, Length::Fixed(132.0), 80.0, layers)
+}
+
 fn topbar_strip<'a, M: 'a>(paint: &Paint, accent: Color) -> Element<'a, M> {
     let fg = paint.fg_3();
     surface(

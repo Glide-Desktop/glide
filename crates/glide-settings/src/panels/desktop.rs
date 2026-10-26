@@ -503,15 +503,10 @@ fn dock_preview<'a>(
 }
 
 fn autohide_sketch<'a>(t: &ThemeState, mode: Autohide) -> Element<'a, Msg> {
-    let t = *t;
-    let window = sketch::window(t, 96.0, 44.0);
-    let dock = sketch::mini_dock(t);
-    let layers: Vec<Element<'a, Msg>> = match mode {
-        Autohide::Smart => vec![sketch::at(18.0, 26.0, window), sketch::at(39.0, 70.0, dock)],
-        Autohide::Always => {
-            vec![sketch::at(18.0, 14.0, window), sketch::bottom(0.0, sketch::block(t.acc_bg(), 40.0, 3.0, theme::R1))]
-        }
-        Autohide::Never => vec![sketch::at(18.0, 10.0, window), sketch::bottom(4.0, dock)],
+    let hiding = match mode {
+        Autohide::Smart => sketch::DockHiding::WhenCovered,
+        Autohide::Always => sketch::DockHiding::Always,
+        Autohide::Never => sketch::DockHiding::Never,
     };
-    sketch::screen(t, Length::Fixed(132.0), 80.0, layers)
+    sketch::dock_hiding(*t, hiding)
 }
