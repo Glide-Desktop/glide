@@ -30,7 +30,7 @@ use crate::i18n::{Key as Text, Lang};
 use crate::input;
 use crate::marks::{self, Mark};
 use crate::profile::Profile;
-use crate::session::{self, Bus, Feed, Launch, Pane, PaneId};
+use crate::session::{self, Bus, Context, Feed, Launch, Pane, PaneId};
 use crate::sound;
 use crate::terminal::{Action, Flash, Fonts, Look};
 
@@ -168,12 +168,31 @@ pub struct Tab {
     pub profile: Profile,
     pub bell: bool,
     pub activity: bool,
+    pub hint: String,
 }
 
 impl Tab {
     #[must_use]
     pub fn focused(&self) -> Option<&Pane> {
         self.panes.get(self.focus)
+    }
+
+    #[must_use]
+    pub fn context(&self) -> &Context {
+        let focused = self.focused().map(|pane| &pane.context).filter(|context| **context != Context::Local);
+        focused
+            .or_else(|| self.panes.iter().map(|(_, pane)| &pane.context).find(|context| context.root()))
+            .or_else(|| self.panes.iter().map(|(_, pane)| &pane.context).find(|context| **context != Context::Local))
+            .unwrap_or(&Context::Local)
+    }
+
+    fn describe(&mut self, lang: Lang) {
+        let process = self.focused().map(|pane| pane.process.clone()).unwrap_or_default();
+        self.hint = match self.context() {
+            Context::Local => String::new(),
+            Context::Elevated => format!("{} · {process}", Text::Elevated.text(lang)),
+            remote @ Context::Remote { .. } => format!("SSH · {}", remote.address().unwrap_or_default()),
+        };
     }
 
     fn handle(&self, id: PaneId) -> Option<pane_grid::Pane> {
@@ -603,6 +622,9 @@ impl App {
         if let Some(title) = pane.title.as_deref().filter(|title| !title.trim().is_empty()) {
             return title.to_string();
         }
+        if let Some(address) = pane.context.short_address() {
+            return address;
+        }
         if pane.busy { pane.process.clone() } else { directory_label(pane.directory.as_deref()) }
     }
 
@@ -793,6 +815,7 @@ impl App {
                     for (_, pane) in tab.panes.iter_mut() {
                         pane.refresh();
                     }
+                    tab.describe(self.lang);
                 }
                 self.settle_prompts();
                 self.publish_tabs();
@@ -991,7 +1014,9 @@ impl App {
         let (panes, focus) = pane_grid::State::new(pane);
         let profile = self.tab().map_or(self.prefs.profile, |tab| tab.profile);
         let index = if self.tabs.is_empty() { 0 } else { self.active + 1 };
-        self.tabs.insert(index, Tab { id: TabId(self.next_id), panes, focus, profile, bell: false, activity: false });
+        let tab =
+            Tab { id: TabId(self.next_id), panes, focus, profile, bell: false, activity: false, hint: String::new() };
+        self.tabs.insert(index, tab);
         self.next_id += 1;
         self.active = index;
     }

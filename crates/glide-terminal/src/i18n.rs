@@ -49,4 +49,5 @@ glide_sdk::catalogue! {
     FindPrevious => "Previous Match", "Попередній збіг";
     FindNext => "Next Match", "Наступний збіг";
     Options => "Options", "Параметри";
+    Elevated => "Root privileges", "Права root";
 }

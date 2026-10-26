@@ -1,25 +1,26 @@
 use alacritty_terminal::index::Direction;
 use iced::border::Radius;
-use iced::widget::{Space, column, pane_grid, row, text_input};
-use iced::{Color, Element, Fill, Rectangle, Size};
+use iced::widget::{Space, column, container, pane_grid, row, text_input};
+use iced::{Alignment, Color, Element, Fill, Rectangle, Size};
 
 use crate::app::{App, Command, Confirm, FIND_ID, Menu, MenuKind, Message, shortcut_label};
 use crate::i18n::Key;
 use crate::marks::Mark;
 use crate::profile::{Profile, color};
+use crate::session::Context;
 use crate::terminal::Terminal;
 use glide_sdk::overlay::{ringed, toast_pill};
 use glide_sdk::theme::{R2, R3, SP2, SP3, TextStyle, component, motion};
 use glide_sdk::widget::{
-    Icon, button, empty_state, grid, icon_button, palette_swatch, pane, preview_card, separator as rule, split_view,
-    text,
+    Icon, Severity, Wrapping, button, empty_state, grid, icon_button, palette_swatch, pane, preview_card,
+    separator as rule, split_view, status_badge, text, tooltip,
 };
 use glide_sdk::window::{Action as WindowAction, resize_handles};
 use glide_sdk::{Paint, Tone};
 
-pub const HEADER: f32 = 35.0;
-const TABS: f32 = component::LARGE_CONTROL;
+pub const HEADER: f32 = glide_sdk::window::HEADER;
 const FIND: f32 = component::LARGE_CONTROL;
+const TAB_WIDEST: f32 = 220.0;
 const MENU_WIDTH: f32 = 264.0;
 const PANE_MIN: f32 = 50.0;
 const SWATCH: Size = Size::new(96.0, 44.0);
@@ -31,13 +32,43 @@ fn header(app: &App) -> Element<'_, Message> {
         app.menu.as_ref().is_some_and(|menu| matches!(menu.kind, MenuKind::Options | MenuKind::Profiles));
     let new_tab = Some(Message::Command(Command::NewTab));
     let options = Some(Message::Command(Command::Options));
+    let center = if app.tabs.len() > 1 { tab_bar(app) } else { context_title(app) };
     let header = glide_sdk::window::Header::new("")
         .labels(Key::Maximize.text(app.lang), Key::CloseWindow.text(app.lang))
         .height(HEADER)
         .context(Message::HeaderMenu)
+        .center(center)
         .trailing(icon_button(&controls, Icon::Plus, Key::NewTab.text(app.lang), new_tab, false))
         .trailing(icon_button(&controls, Icon::More, Key::Options.text(app.lang), options, options_open));
     glide_sdk::window::header(&app.paint, &window, header, Message::Window, Message::Command(Command::CloseWindow), 0.0)
+}
+
+fn lead(context: &Context) -> Option<(Icon, Severity)> {
+    let severity = if context.root() { Severity::Danger } else { Severity::Accent };
+    match context {
+        Context::Local => None,
+        Context::Elevated => Some((Icon::Shield, severity)),
+        Context::Remote { .. } => Some((Icon::Server, severity)),
+    }
+}
+
+fn context_title(app: &App) -> Element<'_, Message> {
+    let paint = app.paint;
+    let mut title = row![].spacing(SP2).align_y(Alignment::Center);
+    if let Some(tab) = app.tab() {
+        let context = tab.context();
+        let label = match context {
+            Context::Local => None,
+            Context::Elevated => Some(String::from("root")),
+            remote @ Context::Remote { .. } => remote.short_address().map(|address| format!("ssh · {address}")),
+        };
+        if let (Some(label), Some((_, severity))) = (label, lead(context)) {
+            title = title.push(tooltip(&paint, status_badge(&paint, label, severity), &tab.hint));
+        }
+    }
+    let color = if app.window.focused { paint.fg_1() } else { paint.fg_3() };
+    title = title.push(text(app.title(), TextStyle::WIN_TITLE).color(color).wrapping(Wrapping::None));
+    container(title).center_x(Fill).center_y(HEADER).clip(true).into()
 }
 
 fn tab_bar(app: &App) -> Element<'_, Message> {
@@ -53,11 +84,17 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
             } else {
                 Mark::None
             };
-            Tab::new(tab.id.0, app.tab_title(tab)).mark(mark)
+            let mut item = Tab::new(tab.id.0, app.tab_title(tab)).mark(mark);
+            if let Some((glyph, severity)) = lead(tab.context()) {
+                item = item.lead(glyph, severity).hint(&tab.hint);
+            }
+            item
         })
         .collect();
     tab_strip(&app.paint, tabs, app.active)
-        .height(TABS)
+        .height(HEADER)
+        .widest(TAB_WIDEST)
+        .bare()
         .on_select(Message::TabPressed)
         .hovered(app.hovered_tab, Message::TabHovered)
         .on_reorder(Message::TabMoved)
@@ -102,9 +139,6 @@ fn find_height(app: &App) -> f32 {
 pub(crate) fn pane_at(app: &App, (x, y): (f32, f32)) -> Option<pane_grid::Pane> {
     let tab = app.tab()?;
     let mut top = HEADER + 1.0;
-    if app.tabs.len() > 1 {
-        top += TABS + 1.0;
-    }
     if app.find.is_some() {
         top += find_height(app) + 1.0;
     }
@@ -393,9 +427,6 @@ fn dialog<'a>(app: &'a App, confirm: &'a Confirm) -> Element<'a, Message> {
 pub fn view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let mut body = column![header(app)];
-    if app.tabs.len() > 1 {
-        body = body.push(rule(&paint)).push(tab_bar(app));
-    }
     if app.find.is_some() {
         body = body.push(rule(&paint)).push(find_bar(app));
     }

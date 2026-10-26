@@ -96,6 +96,97 @@ impl Dimensions for Cells {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Context {
+    #[default]
+    Local,
+    Elevated,
+    Remote {
+        login: Option<String>,
+        host: String,
+    },
+}
+
+impl Context {
+    #[must_use]
+    pub fn root(&self) -> bool {
+        match self {
+            Self::Local => false,
+            Self::Elevated => true,
+            Self::Remote { login, .. } => login.as_deref() == Some("root"),
+        }
+    }
+
+    #[must_use]
+    pub fn address(&self) -> Option<String> {
+        let Self::Remote { login, host } = self else { return None };
+        Some(login.as_ref().map_or_else(|| host.clone(), |login| format!("{login}@{host}")))
+    }
+
+    #[must_use]
+    pub fn short_address(&self) -> Option<String> {
+        let Self::Remote { login, host } = self else { return None };
+        let numeric = host.contains(':') || host.chars().all(|c| c.is_ascii_digit() || c == '.');
+        let host = if numeric { host.as_str() } else { host.split('.').next().unwrap_or(host) };
+        Some(login.as_ref().map_or_else(|| host.to_string(), |login| format!("{login}@{host}")))
+    }
+}
+
+const ELEVATORS: [&str; 6] = ["sudo", "doas", "su", "run0", "pkexec", "sudo-rs"];
+const REMOTES: [&str; 3] = ["ssh", "mosh", "autossh"];
+const SSH_VALUED: &str = "bceilmopBDEFIJLOPQRSwW";
+
+#[must_use]
+fn remote(args: &[&str]) -> Option<Context> {
+    let mut login = None;
+    let mut args = args.iter();
+    let destination = loop {
+        let arg = *args.next()?;
+        if arg == "--" {
+            break *args.next()?;
+        }
+        if arg.starts_with("--") {
+            continue;
+        }
+        let Some(flags) = arg.strip_prefix('-').filter(|flags| !flags.is_empty()) else { break arg };
+        if let Some((at, flag)) = flags.char_indices().find(|(_, flag)| SSH_VALUED.contains(*flag)) {
+            let rest = &flags[at + flag.len_utf8()..];
+            let value = if rest.is_empty() { args.next().copied() } else { Some(rest) };
+            if flag == 'l' {
+                login = value;
+            }
+        }
+    };
+    let destination = destination.strip_prefix("ssh://").map_or(destination, |rest| {
+        rest.rsplit_once(':').filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit())).map_or(rest, |(at, _)| at)
+    });
+    let (user, host) = destination.rsplit_once('@').map_or((None, destination), |(user, host)| (Some(user), host));
+    (!host.is_empty()).then(|| Context::Remote {
+        login: user.or(login).filter(|login| !login.is_empty()).map(str::to_string),
+        host: host.to_string(),
+    })
+}
+
+#[must_use]
+fn effective_uid(status: &str) -> Option<u32> {
+    status.lines().find_map(|line| line.strip_prefix("Uid:")?.split_whitespace().nth(1)?.parse().ok())
+}
+
+fn context(pid: i32, process: &str) -> Context {
+    let name = process.trim_start_matches('-');
+    if REMOTES.contains(&name)
+        && let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline"))
+    {
+        let cmdline = String::from_utf8_lossy(&cmdline);
+        let args: Vec<&str> = cmdline.split('\0').skip(1).filter(|arg| !arg.is_empty()).collect();
+        if let Some(remote) = remote(&args) {
+            return remote;
+        }
+    }
+    let uid = std::fs::read_to_string(format!("/proc/{pid}/status")).ok().and_then(|status| effective_uid(&status));
+    if uid == Some(0) || ELEVATORS.contains(&name) { Context::Elevated } else { Context::Local }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub command: Option<(String, Vec<String>)>,
     pub directory: Option<PathBuf>,
@@ -115,6 +206,7 @@ pub struct Pane {
     pub process: String,
     pub directory: Option<PathBuf>,
     pub busy: bool,
+    pub context: Context,
     pub exit: Option<ExitStatus>,
 }
 
@@ -172,6 +264,7 @@ impl Pane {
             process: String::new(),
             directory: launch.directory.clone(),
             busy: false,
+            context: Context::Local,
             exit: None,
         };
         pane.refresh();
@@ -209,6 +302,7 @@ impl Pane {
     pub fn refresh(&mut self) {
         if self.exit.is_some() {
             self.busy = false;
+            self.context = Context::Local;
             return;
         }
         let pid = self.foreground().unwrap_or(self.shell);
@@ -219,6 +313,7 @@ impl Pane {
             self.directory = Some(directory);
         }
         self.busy = running_program(pid, self.shell, self.shell_name.as_deref(), &self.process);
+        self.context = context(pid, &self.process);
     }
 }
 
@@ -296,6 +391,85 @@ mod tests {
         assert!(running_program(13, 12, Some("bash"), "sleep"));
         assert!(!running_program(12, 12, Some("bash"), "bash"));
         assert!(!running_program(12, 12, Some("bash"), "-bash"));
+    }
+
+    fn host(args: &[&str]) -> Option<(Option<String>, String)> {
+        match remote(args)? {
+            Context::Remote { login, host } => Some((login, host)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn the_ssh_destination_is_the_first_argument_no_option_takes() {
+        let pair = |login: Option<&str>, host: &str| Some((login.map(str::to_string), host.to_string()));
+        assert_eq!(host(&["artem@prod-01.glide.lan"]), pair(Some("artem"), "prod-01.glide.lan"));
+        assert_eq!(host(&["-p", "2222", "-i", "~/.ssh/id", "db"]), pair(None, "db"));
+        assert_eq!(host(&["-vp2222", "-A", "db", "uptime"]), pair(None, "db"));
+        assert_eq!(host(&["-l", "root", "db"]), pair(Some("root"), "db"));
+        assert_eq!(host(&["-oProxyJump=bastion", "me@db"]), pair(Some("me"), "db"));
+        assert_eq!(host(&["ssh://ops@10.0.0.7:2200"]), pair(Some("ops"), "10.0.0.7"));
+        assert_eq!(host(&["--", "-weird"]), pair(None, "-weird"));
+        assert_eq!(host(&["--ssh=ssh -p 22", "me@box"]), pair(Some("me"), "box"));
+        assert_eq!(host(&["-V"]), None);
+        assert_eq!(host(&["-p"]), None);
+        assert_eq!(host(&["user@"]), None);
+    }
+
+    #[test]
+    fn remote_addresses_shorten_names_but_keep_numeric_hosts_whole() {
+        let remote = |login: Option<&str>, host: &str| Context::Remote {
+            login: login.map(str::to_string),
+            host: host.to_string(),
+        };
+        assert_eq!(remote(Some("artem"), "prod-01.glide.lan").short_address().as_deref(), Some("artem@prod-01"));
+        assert_eq!(remote(None, "10.0.0.7").short_address().as_deref(), Some("10.0.0.7"));
+        assert_eq!(remote(None, "fe80::1").short_address().as_deref(), Some("fe80::1"));
+        assert_eq!(remote(Some("artem"), "prod-01.glide.lan").address().as_deref(), Some("artem@prod-01.glide.lan"));
+        assert!(remote(Some("root"), "db").root());
+        assert!(!remote(Some("artem"), "db").root());
+        assert!(Context::Elevated.root());
+        assert_eq!(Context::Local.address(), None);
+    }
+
+    #[test]
+    fn the_effective_uid_is_the_second_field_of_the_uid_line() {
+        let status = "Name:\tsudo\nUmask:\t0022\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\n";
+        assert_eq!(effective_uid(status), Some(0));
+        assert_eq!(effective_uid("Uid:\t1000\t1000\t1000\t1000\n"), Some(1000));
+        assert_eq!(effective_uid("Name:\tx\n"), None);
+    }
+
+    #[test]
+    fn a_program_named_like_ssh_or_sudo_marks_its_pane() {
+        let dir = std::env::temp_dir().join(format!("glide-terminal-context-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let seen = |name: &str, args: &[&str]| {
+            let link = dir.join(name);
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink("/bin/sh", &link).expect("link");
+            let mut child = std::process::Command::new(&link).args(args).spawn().expect("spawn");
+            let pid = i32::try_from(child.id()).expect("pid");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut seen = None;
+            while seen.is_none() && Instant::now() < deadline {
+                let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+                let started = std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|args| !args.is_empty());
+                if comm.trim() == name && started {
+                    seen = Some(context(pid, name));
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            seen.expect("the program started under its own name")
+        };
+        let ssh = seen("ssh", &["-c", "sleep 5; :", "artem@prod-01"]);
+        assert_eq!(ssh.address().as_deref(), Some("artem@prod-01"));
+        assert_eq!(seen("sudo", &["-c", "sleep 5; :"]), Context::Elevated);
+        assert_eq!(seen("plain", &["-c", "sleep 5; :"]), Context::Local);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
