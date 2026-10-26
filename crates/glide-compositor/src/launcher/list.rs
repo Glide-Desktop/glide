@@ -303,11 +303,10 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
         ) => p::draw_lock_glyph_over,
         RowGlyph::Command(SystemCommand::Restart | SystemCommand::ShutDown)
         | RowGlyph::Settings(SettingsPanel::Power) => p::draw_power_glyph_over,
-        RowGlyph::Settings(SettingsPanel::Network) | RowGlyph::Command(SystemCommand::ScreenMirroring) => {
-            p::draw_wifi_waves_glyph_over
-        }
+        RowGlyph::Settings(SettingsPanel::Network | SettingsPanel::Miracast)
+        | RowGlyph::Command(SystemCommand::ScreenMirroring) => p::draw_wifi_waves_glyph_over,
         RowGlyph::Settings(SettingsPanel::Bluetooth) => p::draw_bluetooth_glyph_over,
-        RowGlyph::Settings(SettingsPanel::Displays) => p::draw_sun_glyph_over,
+        RowGlyph::Settings(SettingsPanel::Displays | SettingsPanel::ScreenShare) => p::draw_sun_glyph_over,
         RowGlyph::Settings(SettingsPanel::Keyboard | SettingsPanel::Shortcuts) => p::draw_keyboard_glyph_over,
         RowGlyph::Settings(
             SettingsPanel::Notifications

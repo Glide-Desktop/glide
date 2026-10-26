@@ -171,6 +171,8 @@ glide_app::catalogue! {
     SettingsApps => "Apps", "Програми за замовчуванням";
     SettingsAbout => "About", "Про систему";
     SettingsLockScreen => "Lock Screen", "Екран блокування";
+    SettingsScreenShare => "Screen Sharing", "Трансляція екрана";
+    SettingsMiracast => "Wireless Display", "Бездротовий дисплей";
     SettingsVpn => "VPN connections", "З\u{2019}єднання VPN";
     SettingsNotifications => "Notifications", "Сповіщення";
     SettingsWallpaper => "Wallpaper", "Шпалери";

@@ -300,8 +300,10 @@ impl<'a, M: Clone + 'a> From<Glance<'a, M>> for Element<'a, M> {
         if let Some(aside) = aside {
             top = top.push(aside);
         }
-        let mut content =
-            Column::new().spacing(SP2).push(top).push(text(headline, TextStyle::T3).wrapping(Wrapping::WordOrGlyph));
+        let mut content = Column::new().spacing(SP2).push(top);
+        if !headline.is_empty() {
+            content = content.push(text(headline, TextStyle::T3).wrapping(Wrapping::WordOrGlyph));
+        }
         if let Some((fraction, color)) = meter {
             content = content.push(super::cards::usage_bar(&paint, &[(fraction, color)], 6.0));
         }

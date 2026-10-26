@@ -92,9 +92,10 @@ fn sidebar_tiles_are_twenty_four_pixels_on_the_spacing_scale() {
 
 #[test]
 fn every_sidebar_tile_has_its_own_colour() {
-    for (index, panel) in Panel::ALL.iter().enumerate() {
-        for other in &Panel::ALL[index + 1..] {
-            assert_ne!(panel.color(), other.color(), "{panel:?} and {other:?}");
+    use glide_settings::Category;
+    for (index, category) in Category::ALL.iter().enumerate() {
+        for other in &Category::ALL[index + 1..] {
+            assert_ne!(category.color(), other.color(), "{category:?} and {other:?}");
         }
     }
 }

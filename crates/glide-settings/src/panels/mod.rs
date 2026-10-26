@@ -11,6 +11,7 @@ pub mod gestures;
 pub mod home;
 pub mod keyboard;
 pub mod lock_screen;
+pub mod miracast;
 pub mod mouse;
 pub mod multitasking;
 pub mod netbird;
@@ -21,6 +22,7 @@ pub mod power;
 pub mod printers;
 pub mod privacy;
 pub mod region;
+pub mod screen_share;
 pub mod shortcuts;
 pub mod sound;
 pub mod startup;
@@ -111,6 +113,8 @@ macro_rules! with_panels {
             Displays => displays,
             NightLight => night_light,
             Power => power,
+            ScreenShare => screen_share,
+            Miracast => miracast,
             Keyboard => keyboard,
             Shortcuts => shortcuts,
             Mouse => mouse,
@@ -219,6 +223,8 @@ panel_meta! {
     Displays: PanelDisplays, AboutDisplays, "displays", Display, Malachite 3;
     NightLight: PanelNightLight, AboutNightLight, "night-light", Moon, Amber 4;
     Power: PanelPower, AboutPower, "power", Battery, Conifer 3;
+    ScreenShare: PanelScreenShare, AboutScreenShare, "screen-sharing", Cast, Amethyst 5;
+    Miracast: PanelMiracast, AboutMiracast, "wireless-display", Tv, Terracotta 2;
     Keyboard: PanelKeyboard, AboutKeyboard, "keyboard", Keyboard, Graphite 3;
     Shortcuts: PanelShortcuts, AboutShortcuts, "shortcuts", Command, Graphite 5;
     Mouse: PanelMouse, AboutMouse, "mouse", Mouse, Terracotta 3;
@@ -248,6 +254,8 @@ pub enum Category {
     Desktop,
     Displays,
     Power,
+    ScreenShare,
+    Miracast,
     Printers,
     Keyboard,
     Mouse,
@@ -281,6 +289,8 @@ impl Category {
         Self::Desktop,
         Self::Displays,
         Self::Power,
+        Self::ScreenShare,
+        Self::Miracast,
         Self::Printers,
         Self::Keyboard,
         Self::Mouse,
@@ -301,7 +311,10 @@ impl Category {
         Group { title: Some(Key::GroupConnections), categories: &[Self::Network, Self::Bluetooth, Self::Vpn] },
         Group { title: Some(Key::GroupAlerts), categories: &[Self::Notifications, Self::Sound] },
         Group { title: Some(Key::GroupPersonalisation), categories: &[Self::Appearance, Self::Desktop] },
-        Group { title: Some(Key::GroupHardware), categories: &[Self::Displays, Self::Power, Self::Printers] },
+        Group {
+            title: Some(Key::GroupHardware),
+            categories: &[Self::Displays, Self::Power, Self::ScreenShare, Self::Miracast, Self::Printers],
+        },
         Group { title: Some(Key::GroupInput), categories: &[Self::Keyboard, Self::Mouse] },
         Group { title: Some(Key::GroupApps), categories: &[Self::Apps, Self::Startup] },
         Group {
@@ -327,6 +340,8 @@ impl Category {
             Self::Desktop => &[Panel::Desktop, Panel::TopBar, Panel::Windows, Panel::Multitasking],
             Self::Displays => &[Panel::Displays, Panel::NightLight],
             Self::Power => &[Panel::Power],
+            Self::ScreenShare => &[Panel::ScreenShare],
+            Self::Miracast => &[Panel::Miracast],
             Self::Printers => &[Panel::Printers],
             Self::Keyboard => &[Panel::Keyboard, Panel::Shortcuts],
             Self::Mouse => &[Panel::Mouse, Panel::Gestures],

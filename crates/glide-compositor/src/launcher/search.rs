@@ -200,6 +200,8 @@ pub enum SettingsPanel {
     Displays,
     NightLight,
     Power,
+    ScreenShare,
+    Miracast,
     Printers,
     Keyboard,
     Shortcuts,
@@ -223,7 +225,7 @@ fn netbird_installed() -> bool {
 }
 
 impl SettingsPanel {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -239,6 +241,8 @@ impl SettingsPanel {
         Self::Displays,
         Self::NightLight,
         Self::Power,
+        Self::ScreenShare,
+        Self::Miracast,
         Self::Printers,
         Self::Keyboard,
         Self::Shortcuts,
@@ -274,6 +278,8 @@ impl SettingsPanel {
             Self::Displays => "displays",
             Self::NightLight => "night-light",
             Self::Power => "power",
+            Self::ScreenShare => "screen-sharing",
+            Self::Miracast => "wireless-display",
             Self::Printers => "printers",
             Self::Keyboard => "keyboard",
             Self::Shortcuts => "shortcuts",
@@ -310,6 +316,8 @@ impl SettingsPanel {
             Self::Displays => Key::SettingsDisplays,
             Self::NightLight => Key::SettingsNightLight,
             Self::Power => Key::SettingsPower,
+            Self::ScreenShare => Key::SettingsScreenShare,
+            Self::Miracast => Key::SettingsMiracast,
             Self::Printers => Key::SettingsPrinters,
             Self::Keyboard => Key::SettingsKeyboard,
             Self::Shortcuts => Key::SettingsShortcuts,
@@ -363,6 +371,12 @@ impl SettingsPanel {
             ],
             Self::NightLight => &["night light", "blue light", "warm", "нічне світло", "тепліше"],
             Self::Power => &["power", "battery", "energy", "sleep", "живлення", "батарея", "енергія"],
+            Self::ScreenShare => {
+                &["screen sharing", "screencast", "record screen", "трансляція екрана", "запис екрана"]
+            }
+            Self::Miracast => {
+                &["miracast", "wireless display", "mirror", "tv", "бездротовий дисплей", "дублювання", "телевізор"]
+            }
             Self::Printers => &["printers", "printer", "print", "cups", "принтери", "друк"],
             Self::Keyboard => &["keyboard", "layout", "input", "compose", "клавіатура", "розкладка"],
             Self::Shortcuts => &["shortcuts", "keybindings", "hotkeys", "сполучення клавіш", "гарячі клавіші"],
@@ -881,6 +895,8 @@ mod tests {
                 "displays",
                 "night-light",
                 "power",
+                "screen-sharing",
+                "wireless-display",
                 "printers",
                 "keyboard",
                 "shortcuts",

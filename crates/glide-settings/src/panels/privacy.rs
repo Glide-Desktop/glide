@@ -53,6 +53,7 @@ mod tr {
         AccessClipboard => "Clipboard", "Буфер обміну";
         AccessInput => "Typing into other apps", "Введення в інші програми";
         AccessScreen => "Screen recording", "Запис екрана";
+        ScreenLinkHint => "Programs and sharing live on the Screen Sharing page", "Програми й трансляції — на сторінці «Трансляція екрана»";
         Allowed => "allowed", "дозволено";
         Denied => "denied", "заборонено";
         Forget => "Remove", "Прибрати";
@@ -84,6 +85,7 @@ pub enum Msg {
     Done(Option<Result<String, String>>),
     Forget(Access, String),
     Forgotten(Option<Result<String, String>>),
+    Open(super::Panel),
 }
 
 #[derive(Debug, Default)]
@@ -180,6 +182,7 @@ impl Pane for Page {
                 }
                 return self.reload();
             }
+            Msg::Open(_) => {}
         }
         Task::none()
     }
@@ -265,7 +268,7 @@ impl Page {
         let t = c.theme;
         let mut group = Group::new(t).title(c.t(T::Access)).description(c.t(T::AccessHint));
         let mut empty = true;
-        for access in Access::ALL {
+        for access in Access::ALL.into_iter().filter(|access| *access != Access::Screen) {
             let (glyph, kind) = match access {
                 Access::Clipboard => (Icon::Copy, T::AccessClipboard),
                 Access::Input => (Icon::Keyboard, T::AccessInput),
@@ -294,7 +297,17 @@ impl Page {
         if empty {
             group = group.push(note(t, Icon::Shield, c.t(T::AccessNone)));
         }
-        group.build()
+        let screen = self.state.permissions.rule(Access::Screen);
+        group
+            .push(
+                Row::new(t, c.t(T::AccessScreen))
+                    .subtitle(c.t(T::ScreenLinkHint))
+                    .prefix(widgets::icon(Icon::Cast, 18.0, t.fg_2()))
+                    .suffix(widgets::disclosure(t, Some((screen.allow.len() + screen.deny.len()).to_string())))
+                    .on_press(Msg::Open(super::Panel::ScreenShare))
+                    .build(),
+            )
+            .build()
     }
 
     fn history(&self, c: &Ctx) -> Element<'_, Msg> {
