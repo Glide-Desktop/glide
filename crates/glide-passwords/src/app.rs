@@ -53,6 +53,7 @@ pub enum Message {
     Copy(Copied),
     CopyText(Copied, Result<Response, String>),
     ClipboardCheck(u64),
+    ShellCopied(u64, bool),
     ClipboardRead(u64, Option<String>),
     Tick,
     CodeLoaded(ItemRef, Result<Response, String>),
@@ -179,6 +180,17 @@ pub async fn load() -> Result<Snapshot, String> {
         snapshot.conflicts = list;
     }
     Ok(snapshot)
+}
+
+fn copy_here(text: String, token: u64, clears: u32) -> Task<Message> {
+    let write = iced::clipboard::write(text);
+    if clears == 0 {
+        return write;
+    }
+    let wait = Task::perform(tokio::time::sleep(Duration::from_secs(u64::from(clears))), move |()| {
+        Message::ClipboardCheck(token)
+    });
+    Task::batch([write, wait])
 }
 
 pub const ITEM_ARGUMENT: &str = "--item";
@@ -341,14 +353,14 @@ impl App {
             self.t(label).to_string()
         };
         shell.toast_with(note, self.t(Key::Okay), Message::Ignored);
-        let write = iced::clipboard::write(text);
-        if clears == 0 || what == Copied::Link {
-            return write;
+        if matches!(what, Copied::Password | Copied::Code) {
+            let secret = zeroize::Zeroizing::new(text);
+            return Task::perform(
+                async move { glide_sdk::system::copy_secret(&secret, clears).is_ok() },
+                move |placed| Message::ShellCopied(token, placed),
+            );
         }
-        let wait = Task::perform(tokio::time::sleep(Duration::from_secs(u64::from(clears))), move |()| {
-            Message::ClipboardCheck(token)
-        });
-        Task::batch([write, wait])
+        copy_here(text, token, if what == Copied::Link { 0 } else { clears })
     }
 
     pub fn open_editor(&self, item: Option<&ItemRef>, kind: ItemKind) -> Task<Message> {
@@ -515,6 +527,15 @@ impl App {
             Message::CopyText(_, result) | Message::Done(result) => {
                 self.after(result, shell);
                 Task::none()
+            }
+            Message::ShellCopied(token, placed) => {
+                if placed || token != self.clipboard {
+                    return Task::none();
+                }
+                let Some(text) = self.copied.as_ref().map(|secret| secret.expose().to_string()) else {
+                    return Task::none();
+                };
+                copy_here(text, token, self.prefs.clear_after)
             }
             Message::ClipboardCheck(token) => {
                 if token != self.clipboard {

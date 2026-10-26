@@ -59,6 +59,10 @@ impl Osd {
     }
 }
 
+pub fn copy_secret(secret: &str, clear_after: u32) -> zbus::Result<()> {
+    shell_call::<_, ()>("CopySecret", &(secret, clear_after))
+}
+
 pub fn show_osd(kind: Osd, level: u32, on: bool) -> zbus::Result<()> {
     shell_call::<_, ()>("ShowOsd", &(kind.key(), level.min(100), on))
 }

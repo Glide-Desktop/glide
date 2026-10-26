@@ -603,8 +603,12 @@ impl GlideState {
 
     fn copy_secret(&mut self, secret: &str, notice: Key) {
         let prefs = Prefs::load();
-        self.copy_secret_to_clipboard(secret, prefs.private_clipboard);
-        let clear_after = prefs.clear_after;
+        self.place_secret(secret, prefs.private_clipboard, prefs.clear_after);
+        self.passwords_notice(notice);
+    }
+
+    pub(crate) fn place_secret(&mut self, secret: &str, private: bool, clear_after: u32) {
+        self.copy_secret_to_clipboard(secret, private);
         if let Some(token) = self.session.passwords.clear.take() {
             self.loop_handle.remove(token);
         }
@@ -625,7 +629,6 @@ impl GlideState {
                 Err(err) => tracing::error!(?err, "failed to arm the clipboard clearing timer"),
             }
         }
-        self.passwords_notice(notice);
     }
 
     fn open_passwords_item(&mut self, item: &glide_ipc::keychain::ItemRef) {

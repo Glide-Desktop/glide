@@ -44,6 +44,17 @@
     <method name="FrameWindows"/>
     <method name="Lock"/>
     <!--
+      Places a secret on the clipboard for the caller whose process (or an
+      ancestor of it) owns the keyboard-focused client, marked for clipboard
+      managers to skip when Passwords › Settings asks for that, and clears it
+      after clear_after seconds (0: never) while it is still there. Fails with
+      org.freedesktop.DBus.Error.AccessDenied for any other caller.
+    -->
+    <method name="CopySecret">
+      <arg name="secret" type="s" direction="in"/>
+      <arg name="clear_after" type="u" direction="in"/>
+    </method>
+    <!--
       kind: "volume", "brightness", "keyboard-brightness" or "caps-lock";
       level: 0-100; on: the state for caps-lock, or false for muted.
     -->

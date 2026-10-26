@@ -566,18 +566,28 @@ impl GlideState {
         crate::spawn_detached(command)
     }
 
-    pub fn mint_activation_token_for(&mut self, pid: i32, app_id: Option<String>) -> Option<String> {
+    #[must_use]
+    pub fn holds_focus(&self, pid: i32) -> bool {
         if self.screen_locked() {
-            return None;
+            return false;
         }
-        let surface = self.seat.get_keyboard()?.current_focus()?;
-        let client = smithay::reexports::wayland_server::Resource::client(&surface)?;
-        let credentials = client.get_credentials(&self.display_handle).ok()?;
-        if !descends_from(pid, credentials.pid) {
-            tracing::info!(pid, focused = credentials.pid, "activation token refused: the caller does not hold focus");
-            return None;
-        }
-        Some(self.mint_granted_token(app_id))
+        let Some(surface) = self.seat.get_keyboard().and_then(|keyboard| keyboard.current_focus()) else {
+            return false;
+        };
+        let Some(client) = smithay::reexports::wayland_server::Resource::client(&surface) else {
+            return false;
+        };
+        client.get_credentials(&self.display_handle).is_ok_and(|credentials| {
+            let holds = descends_from(pid, credentials.pid);
+            if !holds {
+                tracing::info!(pid, focused = credentials.pid, "refused: the caller does not hold focus");
+            }
+            holds
+        })
+    }
+
+    pub fn mint_activation_token_for(&mut self, pid: i32, app_id: Option<String>) -> Option<String> {
+        self.holds_focus(pid).then(|| self.mint_granted_token(app_id))
     }
 
     pub fn launch_app(&mut self, app_id: &str, name: &str, command: &str) {

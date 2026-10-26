@@ -3428,6 +3428,14 @@ impl GlideState {
                 }
             }
             crate::shell_bus::Event::Lock => self.lock_screen(),
+            crate::shell_bus::Event::CopySecret { pid, secret, clear_after, reply } => {
+                let allowed = self.holds_focus(pid);
+                if allowed {
+                    let private = glide_config::passwords::Prefs::load().private_clipboard;
+                    self.place_secret(&secret, private, clear_after);
+                }
+                reply.send(allowed);
+            }
             crate::shell_bus::Event::Osd(reading) => {
                 self.session.osd.show(reading, std::time::Instant::now());
                 self.queue_redraw();

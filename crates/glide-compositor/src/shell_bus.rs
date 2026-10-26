@@ -75,6 +75,7 @@ pub enum Event {
     Lock,
     Osd(crate::osd::Reading),
     QuickSettings(Option<crate::topbar::Detail>),
+    CopySecret { pid: i32, secret: zeroize::Zeroizing<String>, clear_after: u32, reply: crate::oneshot::Sender<bool> },
 }
 
 #[must_use]
@@ -196,6 +197,21 @@ impl Shell {
         (self.sink)(Event::Lock);
     }
 
+    async fn copy_secret(
+        &self, secret: String, clear_after: u32, #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> zbus::fdo::Result<()> {
+        let secret = zeroize::Zeroizing::new(secret);
+        let pid = sender_pid(&header, connection).await?;
+        let (reply, answer) = crate::oneshot::channel();
+        (self.sink)(Event::CopySecret { pid, secret, clear_after, reply });
+        if answer.await == Some(true) {
+            Ok(())
+        } else {
+            Err(zbus::fdo::Error::AccessDenied("only the focused app may place a secret on the clipboard".into()))
+        }
+    }
+
     fn show_osd(&self, kind: &str, level: u32, on: bool) -> zbus::fdo::Result<()> {
         let kind = osd_kind(kind).ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("unknown OSD kind {kind:?}")))?;
         let level = u8::try_from(level.min(100)).unwrap_or(100);
@@ -300,12 +316,38 @@ mod tests {
         let _handle = serve(bus.builder(), Snapshot::default(), sink).expect("serve");
         let served = crate::test_bus::introspect(&bus, BUS_NAME, PATH);
         let contract = crate::test_bus::members(include_str!("../../../data/dbus/org.glide.Shell1.xml"), INTERFACE);
-        assert_eq!(contract.len(), 15, "ten properties and five methods");
+        assert_eq!(contract.len(), 16, "ten properties and six methods");
         assert_eq!(
             crate::test_bus::members(&served, INTERFACE),
             contract,
             "a change to org.glide.Shell1 goes into data/dbus first; removing or altering a member needs Shell2"
         );
+    }
+
+    #[test]
+    fn a_secret_reaches_the_clipboard_only_for_the_focused_caller() {
+        let Some(bus) = crate::test_bus::private_bus() else {
+            return;
+        };
+        let (events, received) = mpsc::channel::<(i32, String, u32)>();
+        let events = Mutex::new(events);
+        let allow = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let gate = Arc::clone(&allow);
+        let sink: Sink = Arc::new(move |event| {
+            if let Event::CopySecret { pid, secret, clear_after, reply } = event {
+                let _ = events.lock().map(|events| events.send((pid, secret.to_string(), clear_after)));
+                reply.send(gate.load(std::sync::atomic::Ordering::SeqCst));
+            }
+        });
+        let _handle = serve(bus.builder(), Snapshot::default(), sink).expect("serve");
+        let client = bus.client();
+        client.call_method(Some(BUS_NAME), PATH, Some(INTERFACE), "CopySecret", &("hunter2", 30u32)).expect("call");
+        let (pid, secret, clear_after) = received.recv_timeout(std::time::Duration::from_secs(5)).expect("a copy");
+        assert_eq!(pid, i32::try_from(std::process::id()).expect("pid fits"));
+        assert_eq!((secret.as_str(), clear_after), ("hunter2", 30));
+        allow.store(false, std::sync::atomic::Ordering::SeqCst);
+        let refused = client.call_method(Some(BUS_NAME), PATH, Some(INTERFACE), "CopySecret", &("x", 0u32));
+        assert!(refused.unwrap_err().to_string().contains("AccessDenied"), "an unfocused caller is refused");
     }
 
     #[test]
