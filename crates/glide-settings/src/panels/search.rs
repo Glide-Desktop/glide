@@ -47,6 +47,8 @@ mod tr {
         RunHint => "Type a command and press Enter to run it", "Введіть команду й натисніть Enter, щоб виконати її";
         Unbound => "Not set", "Не призначено";
         Change => "Change shortcuts", "Змінити сполучення";
+        Gestures => "Gestures", "Жести";
+        GesturesHint => "Swipe up twice on the touchpad, or pinch in with three fingers", "Двічі проведіть угору по тачпаду або зведіть три пальці";
         Tips => "Good to know", "Корисно знати";
         Calculator => "Calculator", "Калькулятор";
         CalculatorHint => "Type 12*7 or (3+4)/2: the answer comes first, Enter copies it", "Введіть 12*7 або (3+4)/2: відповідь буде першою, Enter копіює її";
@@ -252,6 +254,13 @@ fn opening_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
                 .build(),
         )
         .push(Row::new(t, c.t(T::Launcher)).suffix(shortcut(c, &binds, "toggle-launcher")).build())
+        .push(
+            Row::new(t, c.t(T::Gestures))
+                .subtitle(c.t(T::GesturesHint))
+                .suffix(widgets::disclosure(t, None))
+                .on_press(Msg::Open(Panel::Gestures))
+                .build(),
+        )
         .push(
             Row::new(t, c.t(T::RunCommand))
                 .subtitle(c.t(T::RunHint))

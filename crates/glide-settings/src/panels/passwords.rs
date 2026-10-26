@@ -26,6 +26,9 @@ mod tr {
         ClickUsername => "Insert the user name", "Вставити ім’я користувача";
         ClickBoth => "Insert name, Tab, password", "Ім’я, Tab, пароль";
         ClickCode => "Insert the one-time code", "Вставити одноразовий код";
+        FillShortcut => "Fill password shortcut", "Комбінація «Заповнити пароль»";
+        FillShortcutHint => "Offers the window's logins even where the field does not say it wants a password", "Пропонує логіни вікна навіть там, де поле не повідомляє, що чекає пароль";
+        Unbound => "Not set", "Не призначено";
         Clipboard => "Clipboard", "Буфер обміну";
         ClearAfter => "Clear a copied password", "Очищати скопійований пароль";
         ClearAfterHint => "Only while the clipboard still holds it", "Лише якщо в буфері досі він";
@@ -159,7 +162,7 @@ impl Pane for Page {
         Task::none()
     }
 
-    fn view<'a>(&'a self, c: Ctx, _config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let Some(prefs) = &self.prefs else { return widgets::spinner_label(t, crate::i18n::Key::Loading.text(c.lang)) };
         let defaults = Prefs::default();
@@ -196,7 +199,8 @@ impl Pane for Page {
                     .changed(prefs.click != defaults.click)
                     .suffix(widgets::dropdown(t, actions, selected, Msg::Click, 220.0))
                     .build(),
-            );
+            )
+            .push(fill_shortcut(&c, config));
         let clear: Vec<i64> = CLEAR_CHOICES.iter().map(|value| i64::from(*value)).collect();
         let (clear_options, clear_selected) =
             presets(&clear, i64::from(prefs.clear_after), |value| seconds_label(&c, value));
@@ -220,6 +224,20 @@ impl Pane for Page {
             .spacing(theme::SECTION_GAP)
             .into()
     }
+}
+
+fn fill_shortcut<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
+    let t = c.theme;
+    let combo: Element<'a, Msg> =
+        match crate::services::keybinds::combo_for(&crate::services::keybinds::current(config), "fill-password") {
+            Some(combo) => widgets::key_combo(t, &combo),
+            None => sdk::text(c.t(T::Unbound), glide_sdk::theme::TextStyle::CALL).color(t.fg_3()).into(),
+        };
+    Row::new(t, c.t(T::FillShortcut))
+        .subtitle(c.t(T::FillShortcutHint))
+        .suffix(iced::widget::row![combo, widgets::disclosure(t, None)].spacing(8).align_y(iced::Alignment::Center))
+        .on_press(Msg::Open(Panel::Shortcuts))
+        .build()
 }
 
 fn locking<'a>(c: &Ctx, prefs: &Prefs, defaults: &Prefs) -> Element<'a, Msg> {
