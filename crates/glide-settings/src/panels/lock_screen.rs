@@ -34,7 +34,7 @@ mod tr {
         Always => "Always", "Завжди";
         Vaults => "Lock password vaults with the screen", "Блокувати сховища паролів разом з екраном";
         VaultsHint => "Saved passwords need the vault password again after unlocking", "Після розблокування збережені паролі знову попросять пароль сховища";
-        Shortcut => "Lock now", "Заблокувати зараз";
+        Shortcut => "Shortcut", "Сполучення клавіш";
         ShortcutHint => "Also from quick settings and the power menu", "Також зі швидких налаштувань і меню живлення";
         SleepLink => "Sleep and what keeps the screen on", "Сон і що не дає гасити екран";
         SleepLinkHint => "Set in Power & Battery", "Налаштовується в розділі «Живлення й батарея»";

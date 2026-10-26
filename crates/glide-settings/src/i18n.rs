@@ -186,8 +186,8 @@ catalogue! {
     Add => "Add", "Додати";
 
     StatusAuto => "Auto", "Авто";
-    Light => "Light", "Світлий";
-    Dark => "Dark", "Темний";
+    Light => "Light", "Світла";
+    Dark => "Dark", "Темна";
     Style => "Style", "Стиль";
     StyleHint => "Applies to the shell, window frames and apps that follow Glide", "Застосовується до оболонки, рамок вікон і програм, що наслідують Glide";
     AccentColor => "Accent colour", "Акцентний колір";
