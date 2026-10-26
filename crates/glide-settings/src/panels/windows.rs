@@ -1,5 +1,5 @@
 use iced::widget::{Column, container, row};
-use iced::{Element, Length, Task};
+use iced::{Element, Task};
 
 use super::common::{choice, gated, switch_row};
 use super::{Ctx, Pane};
@@ -227,13 +227,7 @@ fn preview_group<'a>(c: &Ctx, mock: Mock) -> Element<'a, Msg> {
         .title(c.t(tr::Key::Preview))
         .description(c.t(K::TitlebarsHint))
         .push(
-            container(sketch::screen(
-                t,
-                Length::Fill,
-                170.0,
-                vec![sketch::centered(window_mock(&t, c.t(tr::Key::SampleTitle), mock))],
-            ))
-            .padding(8),
+            container(sketch::window_on_screen(t, window_mock(&t, c.t(tr::Key::SampleTitle), mock), 170.0)).padding(8),
         )
         .build()
 }

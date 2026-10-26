@@ -529,13 +529,7 @@ impl Page {
             let ink = if index % 5 == 0 { t.fg_1() } else { t.fg_3() };
             lines = lines.push(text(format!("{} {index}", c.t(T::Line)), TextStyle::CALL).color(ink));
         }
-        let paint = widgets::paint(&t);
-        let scroller = sketch::surface(
-            t.sunken_bg(),
-            theme::R2,
-            glide_sdk::widget::scrollable(&paint, lines).height(Length::Fixed(120.0)).width(Fill),
-        )
-        .width(Fill);
+        let scroller = sketch::scroll_sample(t, lines, 120.0);
         Group::new(t)
             .title(c.t(T::TryIt))
             .description(c.t(T::TryItHint))

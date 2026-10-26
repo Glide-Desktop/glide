@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use glide_sdk::widget::mock as sketch;
-use iced::widget::{Column, Row as IcedRow, container, row};
-use iced::{Alignment, Element, Length, Padding, Task};
+use iced::widget::{Column, container, row};
+use iced::{Alignment, Element, Length, Task};
 
 use super::apps::app_icon;
 use super::common::{gated, switch_row};
@@ -487,19 +487,16 @@ fn dock_preview<'a>(
     let placeholder = ["Files", "Terminal", "Web", "Mail", "Music"].map(|name| (name, None));
     let shown = if pins.is_empty() { &placeholder[..] } else { &pins[..pins.len().min(8)] };
     let hovered = shown.len() / 2;
-    let mut tiles = IcedRow::new().spacing(5.0).align_y(Alignment::End);
-    for (index, (name, icon)) in shown.iter().enumerate() {
-        let (tile_size, rise) =
-            if index == hovered { ((f64::from(unit) * scale) as f32, (lift * 0.62) as f32) } else { (unit, 0.0) };
-        tiles = tiles.push(container(app_icon(t, *icon, name, tile_size.round())).padding(Padding::ZERO.bottom(rise)));
-    }
-    let bottom = (margin * 0.62) as f32 + 4.0;
-    sketch::screen(
-        *t,
-        Length::Fill,
-        PREVIEW_HEIGHT,
-        vec![sketch::topbar(*t), sketch::bottom(bottom, sketch::dock(*t, tiles))],
-    )
+    let tiles = shown
+        .iter()
+        .enumerate()
+        .map(|(index, (name, icon))| {
+            let (tile_size, rise) =
+                if index == hovered { ((f64::from(unit) * scale) as f32, (lift * 0.62) as f32) } else { (unit, 0.0) };
+            (app_icon(t, *icon, name, tile_size.round()), rise)
+        })
+        .collect();
+    sketch::dock_scene(*t, tiles, (margin * 0.62) as f32 + 4.0, PREVIEW_HEIGHT)
 }
 
 fn autohide_sketch<'a>(t: &ThemeState, mode: Autohide) -> Element<'a, Msg> {

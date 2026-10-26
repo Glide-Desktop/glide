@@ -534,6 +534,36 @@ pub fn bar_scene<'a, M: 'a>(
     )
 }
 
+#[must_use]
+pub fn dock_scene<'a, M: 'a>(
+    paint: impl Into<Paint>, tiles: Vec<(Element<'a, M>, f32)>, bottom_gap: f32, height: f32,
+) -> Element<'a, M> {
+    let paint = paint.into();
+    let row = Row::with_children(
+        tiles.into_iter().map(|(tile, rise)| container(tile).padding(Padding::ZERO.bottom(rise)).into()),
+    )
+    .spacing(5.0)
+    .align_y(Alignment::End);
+    screen(paint, Fill, height, vec![topbar(paint), bottom(bottom_gap, dock(paint, row))])
+}
+
+#[must_use]
+pub fn window_on_screen<'a, M: 'a>(
+    paint: impl Into<Paint>, window: impl Into<Element<'a, M>>, height: f32,
+) -> Element<'a, M> {
+    screen(paint, Fill, height, vec![centered(window)])
+}
+
+#[must_use]
+pub fn scroll_sample<'a, M: 'a>(
+    paint: impl Into<Paint>, lines: impl Into<Element<'a, M>>, height: f32,
+) -> Element<'a, M> {
+    let paint = paint.into();
+    surface(paint.sunken_bg(), R2, super::scrollable(&paint, lines).height(Length::Fixed(height)).width(Fill))
+        .width(Fill)
+        .into()
+}
+
 pub const FINGER: f32 = 18.0;
 pub const FINGER_GAP: f32 = 8.0;
 
