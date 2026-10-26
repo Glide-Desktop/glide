@@ -106,20 +106,28 @@ fn run(server: &str, kdf: Kdf, tag: &str) {
     sync(&mut phone);
     assert_eq!(password_of(&phone, &id), "from the laptop", "keeping mine overwrites the server");
 
-    let send = laptop
-        .create_send(&SendDraft {
-            vault: laptop.vault().id,
-            name: "Wi-Fi".into(),
-            text: Hidden::new("guest: hunter2".into()),
-            lifetime_hours: 24,
-            max_access: Some(3),
-            password: Some(Hidden::new("door".into())),
-            hide_text: false,
-            hide_email: true,
-        })
-        .expect("send");
+    let mut draft = SendDraft {
+        vault: laptop.vault().id,
+        name: "Wi-Fi".into(),
+        text: Hidden::new("guest: hunter2".into()),
+        lifetime_hours: 24,
+        max_access: Some(3),
+        password: Some(Hidden::new("door".into())),
+        hide_text: false,
+        hide_email: true,
+    };
+    let send = laptop.create_send(&draft).expect("send");
     assert!(send.link.contains("/#/send/"), "{}", send.link);
     assert!(send.has_password);
+    draft.name = "Guest Wi-Fi".into();
+    draft.text = Hidden::new("guest: plum-ocean".into());
+    draft.password = None;
+    let edited = laptop.edit_send(&send.id, &draft, true).expect("edit send");
+    assert_eq!((edited.link.as_str(), edited.name.as_str()), (send.link.as_str(), "Guest Wi-Fi"));
+    assert!(edited.has_password, "an empty password field keeps the old one");
+    sync(&mut laptop);
+    assert_eq!(laptop.send_text(&send.id).expect("text").expose(), "guest: plum-ocean");
+    assert!(!laptop.edit_send(&send.id, &draft, false).expect("drop the password").has_password);
     laptop.delete_send(&send.id).expect("delete send");
 
     laptop.trash(&id, now()).expect("trash");

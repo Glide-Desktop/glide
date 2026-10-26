@@ -373,6 +373,8 @@ pub enum Request {
     Resolve { item: ItemRef, keep: Keep },
     Sends,
     CreateSend { draft: Box<SendDraft> },
+    SendText { vault: String, id: String },
+    EditSend { id: String, draft: Box<SendDraft>, keep_password: bool },
     DisableSend { vault: String, id: String },
     DeleteSend { vault: String, id: String },
 }

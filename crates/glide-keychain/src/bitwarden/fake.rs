@@ -223,6 +223,7 @@ fn route(shared: &Shared, method: &str, path: &str, body: &str, bearer: &str) ->
             state.sends.push(send.clone());
             (200, send)
         }
+        ("PUT", path) if path.starts_with("/api/sends/") => put_send(&mut state, path, body),
         ("DELETE", path) if path.starts_with("/api/sends/") => {
             let id = path.trim_start_matches("/api/sends/");
             state.sends.retain(|send| text(send, "id") != Some(id));
@@ -230,6 +231,33 @@ fn route(shared: &Shared, method: &str, path: &str, body: &str, bearer: &str) ->
         }
         (method, path) => cipher_route(&mut state, method, path, body),
     }
+}
+
+fn put_send(state: &mut State, path: &str, body: &str) -> (u16, Value) {
+    let rest = path.trim_start_matches("/api/sends/");
+    let (id, action) = rest.split_once('/').unwrap_or((rest, ""));
+    let Some(index) = state.sends.iter().position(|send| text(send, "id") == Some(id)) else {
+        return (404, json!({ "message": "Send not found" }));
+    };
+    let (_, stamp) = state.stamp();
+    let known = state.sends[index].clone();
+    let mut send = if action == "remove-password" {
+        let mut send = known.clone();
+        send["password"] = Value::Null;
+        send
+    } else {
+        let mut send: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        if send["password"].is_null() {
+            send["password"] = known["password"].clone();
+        }
+        send
+    };
+    send["id"] = known["id"].clone();
+    send["accessId"] = known["accessId"].clone();
+    send["accessCount"] = known["accessCount"].clone();
+    send["revisionDate"] = json!(stamp);
+    state.sends[index] = send.clone();
+    (200, send)
 }
 
 fn cipher_route(state: &mut State, method: &str, path: &str, body: &str) -> (u16, Value) {

@@ -135,6 +135,9 @@ glide_sdk::catalogue! {
     GeneratorTitle => "Password generator", "Генератор паролів";
     SearchSent => "Search sent items", "Пошук у надісланому";
     NewSecret => "New secret", "Новий секрет";
+    EditSecret => "Edit secret", "Редагування секрету";
+    EditSend => "Edit", "Редагувати";
+    KeepSendPassword => "Leave empty to keep the current password", "Залиште порожнім, щоб лишити поточний пароль";
     ActiveCount => "Active · {n}", "Активні · {n}";
     FinishedCount => "Finished · {n}", "Завершені · {n}";
     ActiveBadge => "Active", "Активне";
@@ -317,7 +320,7 @@ glide_sdk::catalogue! {
     InTrashSince => "In the Trash since {date}", "У кошику з {date}";
     MovedToTrash => "Moved to the Trash", "Переміщено в кошик";
     Saved => "Saved", "Збережено";
-    NotAvailable => "Bitwarden accounts are not supported by this build yet", "Ця збірка ще не підтримує акаунти Bitwarden";
+    NotAvailable => "This vault can't do that", "Це сховище такого не вміє";
     WrongPassword => "That password does not open the vault", "Цей пароль не відкриває сховище";
     DaemonMissing => "The keychain is not running", "Сховище паролів не запущено";
     DaemonMissingBody => "Glide starts it with the session. If Glide was just updated, log out and back in. Passwords will connect by itself as soon as it appears.", "Його запускає Glide разом із сеансом. Якщо Glide щойно оновили, вийдіть і знову увійдіть. Паролі під'єднаються самі, щойно сховище з'явиться.";

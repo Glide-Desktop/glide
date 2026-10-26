@@ -202,6 +202,42 @@ fn a_send_keeps_its_key_in_the_link_and_only_ciphertext_on_the_server() {
 }
 
 #[test]
+fn an_edited_send_keeps_its_link_and_password_unless_told_otherwise() {
+    let server = Server::start();
+    let home = dir("send-edit");
+    let mut vault = Bitwarden::login(&home, &login(&server), NOW).expect("login");
+    let mut draft = glide_ipc::keychain::SendDraft {
+        vault: vault.vault().id,
+        name: "Wi-Fi".into(),
+        text: Hidden::new("guest: hunter2".into()),
+        lifetime_hours: 24,
+        max_access: Some(3),
+        password: Some(Hidden::new("door".into())),
+        hide_text: true,
+        hide_email: false,
+    };
+    let send = vault.create_send(&draft).expect("send");
+    assert!(send.has_password);
+    assert_eq!(vault.send_text(&send.id).expect("text").expose(), "guest: hunter2");
+
+    draft.name = "Guest Wi-Fi".into();
+    draft.text = Hidden::new("guest: plum-ocean".into());
+    draft.max_access = Some(5);
+    draft.password = None;
+    let edited = vault.edit_send(&send.id, &draft, true).expect("edit");
+    assert_eq!(edited.link, send.link);
+    assert_eq!((edited.name.as_str(), edited.max_access, edited.has_password), ("Guest Wi-Fi", Some(5), true));
+    assert_eq!(vault.send_text(&send.id).expect("text").expose(), "guest: plum-ocean");
+    let stored = serde_json::to_string(&server.state.lock().expect("state").sends).expect("json");
+    assert!(!stored.contains("Guest") && !stored.contains("plum-ocean"));
+
+    let open = vault.edit_send(&send.id, &draft, false).expect("drop the password");
+    assert!(!open.has_password);
+    assert_eq!(vault.sends().expect("sends").len(), 1);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
 fn changes_made_while_a_sync_runs_wait_for_the_next_one() {
     let server = Server::start();
     let home = dir("during");

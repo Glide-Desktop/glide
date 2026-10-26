@@ -162,6 +162,14 @@ pub trait Provider: std::marker::Send {
         Err(Fault::Unsupported)
     }
 
+    fn send_text(&self, _id: &str) -> Result<Hidden, Fault> {
+        Err(Fault::Unsupported)
+    }
+
+    fn edit_send(&mut self, _id: &str, _draft: &SendDraft, _keep_password: bool) -> Result<Send, Fault> {
+        Err(Fault::Unsupported)
+    }
+
     fn disable_send(&mut self, _id: &str) -> Result<(), Fault> {
         Err(Fault::Unsupported)
     }

@@ -215,7 +215,12 @@ fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
                 lang.pick("Пошта або майстер-пароль не підходять", "The email or master password is wrong").into(),
             );
         }
-        Ok(Response::Unsupported) => wizard.error = Some(Key::NotAvailable.text(lang).into()),
+        Ok(Response::Unsupported) => {
+            wizard.error = Some(
+                lang.pick("Немає теки даних, де зберегти акаунт", "There is no data folder to keep the account in")
+                    .into(),
+            );
+        }
         Ok(Response::Error { message }) | Err(message) => wizard.error = Some(message),
         Ok(_) => {}
     }

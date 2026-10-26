@@ -51,6 +51,8 @@ pub struct SendForm {
     pub query: String,
     pub busy: bool,
     pub copied_at: Option<u64>,
+    pub editing: Option<String>,
+    pub had_password: bool,
 }
 
 const COPIED_HOLD: u64 = 2;
@@ -73,7 +75,43 @@ impl Default for SendForm {
             query: String::new(),
             busy: false,
             copied_at: None,
+            editing: None,
+            had_password: false,
         }
+    }
+}
+
+impl SendForm {
+    fn request(&self, fallback: String) -> Request {
+        let draft = Box::new(SendDraft {
+            vault: if self.vault.is_empty() { fallback } else { self.vault.clone() },
+            name: self.name.trim().to_string(),
+            text: Hidden::new(self.text.text().trim_end().to_string()),
+            lifetime_hours: self.lifetime.hours(),
+            max_access: Some(self.opens),
+            password: (self.protect && !self.password.is_empty()).then(|| Hidden::new(self.password.clone())),
+            hide_text: self.hide_text,
+            hide_email: self.hide_email,
+        });
+        match self.editing.clone() {
+            Some(id) => Request::EditSend { id, keep_password: self.protect && self.password.is_empty(), draft },
+            None => Request::CreateSend { draft },
+        }
+    }
+
+    fn edit(&mut self, send: Send, text: &str, now: u64) {
+        self.name.clone_from(&send.name);
+        self.text = text_editor::Content::with_text(text);
+        self.lifetime = lifetime_left(&send, now);
+        self.opens = send.max_access.unwrap_or(5).clamp(1, 99);
+        self.protect = send.has_password;
+        self.had_password = send.has_password;
+        self.password.clear();
+        self.hide_text = send.hide_text;
+        self.hide_email = send.hide_email;
+        self.vault = send.vault;
+        self.editing = Some(send.id);
+        self.open = true;
     }
 }
 
@@ -95,6 +133,9 @@ pub enum Event {
     CopyLink,
     Mail,
     Disable,
+    Edit,
+    EditLoaded(Result<Response, String>),
+    StopEditing,
     Delete,
     Done,
     Query(String),
@@ -110,6 +151,20 @@ fn status(send: &Send, now: u64) -> (Severity, Key) {
         (Severity::Neutral, Key::Expired)
     } else {
         (Severity::Ok, Key::ActiveBadge)
+    }
+}
+
+#[must_use]
+pub fn lifetime_left(send: &Send, now: u64) -> Lifetime {
+    let hours = send.expires.unwrap_or(send.deletion).saturating_sub(now).div_ceil(3600);
+    match hours {
+        0..=1 => Lifetime::Hour,
+        2..=24 => Lifetime::Day,
+        _ => match u32::try_from(hours.div_ceil(24)).unwrap_or(CUSTOM_DAYS.1) {
+            7 => Lifetime::Week,
+            30 => Lifetime::Month,
+            days => Lifetime::Custom(days.clamp(CUSTOM_DAYS.0, CUSTOM_DAYS.1)),
+        },
     }
 }
 
@@ -164,34 +219,21 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::HideEmail(on) => form.hide_email = on,
         Event::Vault(value) => form.vault = value,
         Event::Create => {
-            let vault = if form.vault.is_empty() {
-                app.data
-                    .vaults
-                    .iter()
-                    .find(|vault| vault.kind == VaultKind::Bitwarden && vault.unlocked)
-                    .map(|vault| vault.id.clone())
-                    .unwrap_or_default()
-            } else {
-                form.vault.clone()
-            };
-            let draft = SendDraft {
-                vault,
-                name: form.name.trim().to_string(),
-                text: Hidden::new(form.text.text().trim_end().to_string()),
-                lifetime_hours: form.lifetime.hours(),
-                max_access: Some(form.opens),
-                password: (form.protect && !form.password.is_empty()).then(|| Hidden::new(form.password.clone())),
-                hide_text: form.hide_text,
-                hide_email: form.hide_email,
-            };
+            let fallback = app
+                .data
+                .vaults
+                .iter()
+                .find(|vault| vault.kind == VaultKind::Bitwarden && vault.unlocked)
+                .map(|vault| vault.id.clone())
+                .unwrap_or_default();
             form.busy = true;
-            return ask(Request::CreateSend { draft: Box::new(draft) }, |result| {
-                Message::Sends(Event::Created(result))
-            });
+            return ask(form.request(fallback), |result| Message::Sends(Event::Created(result)));
         }
         Event::Created(Ok(Response::SendCreated { send })) => {
             form.busy = false;
             form.open = false;
+            form.editing = None;
+            form.password.clear();
             form.selected = Some((send.vault.clone(), send.id.clone()));
             form.created = Some(*send);
             return app.reload();
@@ -208,6 +250,8 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         }
         Event::Select(vault, id) => {
             form.open = false;
+            form.editing = None;
+            form.password.clear();
             form.created = app.data.sends.iter().find(|send| send.vault == vault && send.id == id).cloned();
             form.selected = Some((vault, id));
         }
@@ -230,15 +274,45 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
                 return ask(Request::DisableSend { vault: send.vault.clone(), id: send.id.clone() }, Message::Done);
             }
         }
+        Event::Edit | Event::EditLoaded(_) | Event::StopEditing => return editing(app, event, shell),
         Event::Delete => {
             if let Some(send) = form.created.take() {
-                form.open = true;
-                form.selected = None;
+                let (vault, query) = (std::mem::take(&mut form.vault), std::mem::take(&mut form.query));
+                *form = SendForm { vault, query, ..SendForm::default() };
                 return ask(Request::DeleteSend { vault: send.vault, id: send.id }, Message::Done);
             }
         }
         Event::Query(value) => form.query = value,
         Event::ClearQuery => form.query.clear(),
+    }
+    Task::none()
+}
+
+fn editing(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
+    let now = app.now.max(unix_now());
+    let form = &mut app.send;
+    match event {
+        Event::Edit => {
+            if let Some(send) = &form.created {
+                form.busy = true;
+                let request = Request::SendText { vault: send.vault.clone(), id: send.id.clone() };
+                return ask(request, |result| Message::Sends(Event::EditLoaded(result)));
+            }
+        }
+        Event::EditLoaded(result) => {
+            form.busy = false;
+            match (result, form.created.clone()) {
+                (Ok(Response::Secret { secret }), Some(send)) => form.edit(send, secret.expose(), now),
+                (Ok(Response::Error { message }) | Err(message), _) => shell.toast(message),
+                _ => {}
+            }
+        }
+        Event::StopEditing => {
+            form.editing = None;
+            form.open = false;
+            form.password.clear();
+        }
+        _ => {}
     }
     Task::none()
 }
@@ -404,8 +478,9 @@ fn form_view(app: &App) -> Element<'_, Message> {
             .into(),
     ]);
     if form.protect {
+        let hint = if form.had_password { t(Key::KeepSendPassword) } else { t(Key::OpenPassword) };
         options.push(
-            container(crate::view::secret_input(&paint, t(Key::OpenPassword), &form.password, |value| {
+            container(crate::view::secret_input(&paint, hint, &form.password, |value| {
                 Message::Sends(Event::Password(value))
             }))
             .padding(Padding::from([SP1, SP3]))
@@ -422,38 +497,51 @@ fn form_view(app: &App) -> Element<'_, Message> {
             .suffix(ui::switch(&paint, form.hide_email, Some(|on| Message::Sends(Event::HideEmail(on)))))
             .into(),
     );
-    options.push(
-        ListRow::new(paint, t(Key::SendVia))
-            .suffix(
-                container(ui::dropdown_with(
-                    &paint,
-                    Some(crate::view::vault_dot(app, chosen.as_ref().map_or("", |server| server.0.as_str()))),
-                    TextStyle::CALL,
-                    servers,
-                    chosen.clone(),
-                    t(Key::SendVia),
-                    |picked| Message::Sends(Event::Vault(picked.0)),
-                ))
-                .width(320),
-            )
-            .into(),
-    );
-    let ready = !form.text.text().trim().is_empty() && !form.busy && app.has_server();
-    let footer = row![
-        Space::new().width(Fill),
-        ui::secondary(&paint, t(Key::Cancel), Message::Sends(Event::Done)),
-        ui::glyph_button(
-            &paint,
-            Icon::Link,
-            t(Key::CreateLink),
-            Tone::Accent,
-            Size::Medium,
-            ready.then_some(Message::Sends(Event::Create))
-        ),
-    ]
-    .spacing(SP2);
-    column![ui::text(t(Key::NewSecret), TextStyle::T2), name, text, ui::list(&paint, options), footer]
-        .spacing(SP4)
+    if form.editing.is_none() {
+        options.push(
+            ListRow::new(paint, t(Key::SendVia))
+                .suffix(
+                    container(ui::dropdown_with(
+                        &paint,
+                        Some(crate::view::vault_dot(app, chosen.as_ref().map_or("", |server| server.0.as_str()))),
+                        TextStyle::CALL,
+                        servers,
+                        chosen.clone(),
+                        t(Key::SendVia),
+                        |picked| Message::Sends(Event::Vault(picked.0)),
+                    ))
+                    .width(320),
+                )
+                .into(),
+        );
+    }
+    let title = if form.editing.is_some() { t(Key::EditSecret) } else { t(Key::NewSecret) };
+    column![ui::text(title, TextStyle::T2), name, text, ui::list(&paint, options), form_footer(app)].spacing(SP4).into()
+}
+
+fn form_footer(app: &App) -> Element<'_, Message> {
+    let paint = app.paint;
+    let t = |key: Key| key.text(app.lang);
+    let form = &app.send;
+    let ready = (!form.text.text().trim().is_empty() && !form.busy && app.has_server())
+        .then_some(Message::Sends(Event::Create));
+    let (cancel, submit, delete) = if form.editing.is_some() {
+        (
+            Event::StopEditing,
+            ui::sized_button(&paint, t(Key::Save), Tone::Accent, Size::Medium, ready),
+            Some(ui::sized_button(
+                &paint,
+                t(Key::DeleteSend),
+                Tone::Danger,
+                Size::Medium,
+                Some(Message::Sends(Event::Delete)),
+            )),
+        )
+    } else {
+        (Event::Done, ui::glyph_button(&paint, Icon::Link, t(Key::CreateLink), Tone::Accent, Size::Medium, ready), None)
+    };
+    row![delete, Space::new().width(Fill), ui::secondary(&paint, t(Key::Cancel), Message::Sends(cancel)), submit]
+        .spacing(SP2)
         .into()
 }
 
@@ -518,10 +606,10 @@ fn created_view<'a>(app: &'a App, send: &'a Send) -> Element<'a, Message> {
             Space::new().width(Fill),
             ui::sized_button(
                 &paint,
-                t(Key::DeleteSend),
+                t(Key::EditSend),
                 Tone::Neutral,
                 Size::Small,
-                Some(Message::Sends(Event::Delete))
+                (!app.send.busy).then_some(Message::Sends(Event::Edit))
             ),
             ui::sized_button(&paint, t(Key::Done), Tone::Accent, Size::Small, Some(Message::Sends(Event::Done))),
         ]

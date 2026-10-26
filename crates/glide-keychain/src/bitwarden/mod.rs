@@ -185,6 +185,38 @@ fn with_id(body: &Value, id: &str) -> Value {
     body
 }
 
+fn send_body(draft: &SendDraft, secret: &[u8], sealed: &str, disabled: bool, at: u64) -> Result<Value, Fault> {
+    let key = SymmetricKey::send_key(secret);
+    let ends = dates::format(at + u64::from(draft.lifetime_hours.max(1)) * 3600);
+    let password = draft
+        .password
+        .as_ref()
+        .filter(|password| !password.is_empty())
+        .map(|password| crypto::send_password_hash(password.expose(), secret));
+    Ok(json!({
+        "type": 0,
+        "name": key.encrypt_text(draft.name.trim())?,
+        "notes": Value::Null,
+        "key": sealed,
+        "maxAccessCount": draft.max_access,
+        "expirationDate": ends,
+        "deletionDate": ends,
+        "text": { "text": key.encrypt_text(draft.text.expose())?, "hidden": draft.hide_text },
+        "file": Value::Null,
+        "password": password,
+        "disabled": disabled,
+        "hideEmail": draft.hide_email,
+    }))
+}
+
+fn send_fault(error: &ApiError) -> Fault {
+    if let ApiError::Offline(_) = error {
+        Fault::Failed("sending needs the server; you are offline".into())
+    } else {
+        Fault::Failed(error.to_string())
+    }
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
@@ -557,6 +589,12 @@ impl Bitwarden {
         })
     }
 
+    fn keep_send(&mut self, raw: &Value) -> Result<Send, Fault> {
+        self.cache_put("sends", raw);
+        self.save_account()?;
+        self.send_of(raw).ok_or_else(|| Fault::Failed("the server returned an unreadable send".into()))
+    }
+
     fn raw_sends(&self) -> Vec<Value> {
         self.account.cache.as_ref().map(|cache| list(cache, "sends").to_vec()).unwrap_or_default()
     }
@@ -816,37 +854,39 @@ impl Provider for Bitwarden {
         let at = now();
         let open = self.opened()?;
         let secret: [u8; 16] = crypto::random_bytes()?;
-        let key = SymmetricKey::send_key(&secret);
-        let ends = dates::format(at + u64::from(draft.lifetime_hours.max(1)) * 3600);
-        let password = draft
-            .password
-            .as_ref()
-            .filter(|password| !password.is_empty())
-            .map(|password| crypto::send_password_hash(password.expose(), &secret));
-        let body = json!({
-            "type": 0,
-            "name": key.encrypt_text(draft.name.trim())?,
-            "notes": Value::Null,
-            "key": open.keys.user.encrypt(&secret)?,
-            "maxAccessCount": draft.max_access,
-            "expirationDate": ends,
-            "deletionDate": ends,
-            "text": { "text": key.encrypt_text(draft.text.expose())?, "hidden": draft.hide_text },
-            "file": Value::Null,
-            "password": password,
-            "disabled": false,
-            "hideEmail": draft.hide_email,
-        });
-        let created = self.call(at, |client, token| client.post("/sends", token, &body)).map_err(|error| {
-            if let ApiError::Offline(_) = error {
-                Fault::Failed("sending needs the server; you are offline".into())
-            } else {
-                Fault::Failed(error.to_string())
-            }
-        })?;
-        self.cache_put("sends", &created);
-        self.save_account()?;
-        self.send_of(&created).ok_or_else(|| Fault::Failed("the server returned an unreadable send".into()))
+        let sealed = open.keys.user.encrypt(&secret)?;
+        let body = send_body(draft, &secret, &sealed, false, at)?;
+        let created =
+            self.call(at, |client, token| client.post("/sends", token, &body)).map_err(|error| send_fault(&error))?;
+        self.keep_send(&created)
+    }
+
+    fn send_text(&self, id: &str) -> Result<Hidden, Fault> {
+        let open = self.opened()?;
+        let raw = self.raw_sends().into_iter().find(|raw| text(raw, "id") == Some(id)).ok_or(Fault::NotFound)?;
+        let secret = open.keys.user.decrypt(text(&raw, "key").ok_or(Fault::NotFound)?)?;
+        let sealed = field(&raw, "text").and_then(|body| text(body, "text")).ok_or(Fault::NotFound)?;
+        Ok(Hidden::new(SymmetricKey::send_key(&secret).decrypt_text(sealed)?))
+    }
+
+    fn edit_send(&mut self, id: &str, draft: &SendDraft, keep_password: bool) -> Result<Send, Fault> {
+        let at = now();
+        let open = self.opened()?;
+        let raw = self.raw_sends().into_iter().find(|raw| text(raw, "id") == Some(id)).ok_or(Fault::NotFound)?;
+        let sealed = text(&raw, "key").ok_or(Fault::NotFound)?;
+        let secret = open.keys.user.decrypt(sealed)?;
+        let disabled = field(&raw, "disabled").and_then(Value::as_bool).unwrap_or(false);
+        let body = send_body(draft, &secret, sealed, disabled, at)?;
+        let had_password = text(&raw, "password").is_some_and(|hash| !hash.is_empty());
+        let path = format!("/sends/{id}");
+        let mut updated =
+            self.call(at, |client, token| client.put(&path, token, Some(&body))).map_err(|error| send_fault(&error))?;
+        if had_password && !keep_password && draft.password.as_ref().is_none_or(Hidden::is_empty) {
+            let path = format!("/sends/{id}/remove-password");
+            updated =
+                self.call(at, |client, token| client.put(&path, token, None)).map_err(|error| send_fault(&error))?;
+        }
+        self.keep_send(&updated)
     }
 
     fn disable_send(&mut self, id: &str) -> Result<(), Fault> {

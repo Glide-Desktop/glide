@@ -88,6 +88,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::Sync { .. }
             | Request::Resolve { .. }
             | Request::CreateSend { .. }
+            | Request::EditSend { .. }
             | Request::DisableSend { .. }
             | Request::DeleteSend { .. }
     )
@@ -642,6 +643,14 @@ impl Daemon {
             Request::CreateSend { draft } => self
                 .provider_mut(&draft.vault)
                 .and_then(|provider| provider.create_send(&draft))
+                .map_or_else(failed, |send| Response::SendCreated { send: Box::new(send) }),
+            Request::SendText { vault, id } => self
+                .provider_mut(&vault)
+                .and_then(|provider| provider.send_text(&id))
+                .map_or_else(failed, |secret| Response::Secret { secret }),
+            Request::EditSend { id, draft, keep_password } => self
+                .provider_mut(&draft.vault)
+                .and_then(|provider| provider.edit_send(&id, &draft, keep_password))
                 .map_or_else(failed, |send| Response::SendCreated { send: Box::new(send) }),
             Request::DisableSend { vault, id } => {
                 done(self.provider_mut(&vault).and_then(|provider| provider.disable_send(&id)))
