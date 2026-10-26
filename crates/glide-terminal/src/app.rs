@@ -40,15 +40,7 @@ const BLINK: Duration = Duration::from_millis(530);
 const POLL: Duration = Duration::from_secs(1);
 const SERVICE_WAIT: Duration = Duration::from_secs(3);
 const BELL_GAP: Duration = Duration::from_millis(250);
-const DRAG_SLOP: f32 = 6.0;
 const NOTICE: Duration = Duration::from_secs(4);
-
-#[derive(Debug, Clone, Copy)]
-struct TabDrag {
-    index: usize,
-    start: Option<f32>,
-    moved: bool,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -160,7 +152,7 @@ impl Drop for Find {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TabId(u64);
+pub struct TabId(pub(crate) u64);
 
 fn select(term: &mut alacritty_terminal::term::Term<session::Listener>, found: &Match) {
     let mut selection = Selection::new(SelectionType::Simple, *found.start(), Side::Left);
@@ -200,8 +192,7 @@ pub enum Message {
     SplitResized(pane_grid::ResizeEvent),
     TabHovered(Option<usize>),
     TabPressed(usize),
-    TabMoved(f32),
-    TabReleased,
+    TabMoved(usize, usize),
     FindInput(String),
     FindSubmit,
     FindCase,
@@ -241,7 +232,6 @@ pub struct App {
     pub confirm: Option<Confirm>,
     pub closing_confirm: Option<Confirm>,
     pub hovered_tab: Option<usize>,
-    tab_drag: Option<TabDrag>,
     pub window: Window,
     pub error: Option<String>,
     zoom: f32,
@@ -474,7 +464,6 @@ impl App {
             confirm: None,
             closing_confirm: None,
             hovered_tab: None,
-            tab_drag: None,
             window: Window { size: Size::new(960.0, 600.0), ..Window::default() },
             error: None,
             zoom: 0.0,
@@ -640,12 +629,6 @@ impl App {
         if let Some(handles) = self.handles {
             subscriptions.push(Subscription::run_with(handles, dnd::events).map(Message::Dropped));
         }
-        if self.tab_drag.is_some() {
-            subscriptions.push(iced::event::listen_with(|event, _, _| {
-                let released = iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left));
-                (event == released).then_some(Message::TabReleased)
-            }));
-        }
         if self.animating() {
             subscriptions.push(window::frames().map(|_| Message::Frame));
         }
@@ -685,8 +668,7 @@ impl App {
             | Message::PaneClicked(_)
             | Message::SplitResized(_)
             | Message::TabPressed(_)
-            | Message::TabMoved(_)
-            | Message::TabReleased
+            | Message::TabMoved(..)
             | Message::TabHovered(_) => {
                 self.on_layout(message);
                 Task::none()
@@ -771,12 +753,8 @@ impl App {
                     tab.panes.resize(event.split, event.ratio);
                 }
             }
-            Message::TabPressed(index) => {
-                self.select(index);
-                self.tab_drag = Some(TabDrag { index, start: None, moved: false });
-            }
-            Message::TabMoved(x) => self.drag_tab(x),
-            Message::TabReleased => self.tab_drag = None,
+            Message::TabPressed(index) => self.select(index),
+            Message::TabMoved(from, to) => self.move_tab(from, to),
             Message::TabHovered(index) => self.hovered_tab = index,
             _ => {}
         }
@@ -1386,26 +1364,12 @@ impl App {
         Task::none()
     }
 
-    #[must_use]
-    pub fn dragged_tab(&self) -> Option<usize> {
-        self.tab_drag.filter(|drag| drag.moved).map(|drag| drag.index)
-    }
-
-    fn drag_tab(&mut self, x: f32) {
-        let count = self.tabs.len();
-        let Some(drag) = &mut self.tab_drag else { return };
-        let start = *drag.start.get_or_insert(x);
-        if !drag.moved && (x - start).abs() < DRAG_SLOP {
-            return;
-        }
-        drag.moved = true;
-        let target = crate::chrome::tab_slot(x, self.window.size.width, count);
-        if target != drag.index && drag.index < count {
-            let tab = self.tabs.remove(drag.index);
-            self.tabs.insert(target, tab);
-            drag.index = target;
-            self.active = target;
-            self.hovered_tab = Some(target);
+    fn move_tab(&mut self, from: usize, to: usize) {
+        let to = to.min(self.tabs.len().saturating_sub(1));
+        if from != to && from < self.tabs.len() {
+            let tab = self.tabs.remove(from);
+            self.tabs.insert(to, tab);
+            self.active = to;
         }
     }
 
@@ -1620,13 +1584,7 @@ impl App {
                 self.select((self.active + self.tabs.len() - 1) % self.tabs.len());
             }
             Command::SelectTab(index) => self.select(index),
-            Command::MoveTab(step) => {
-                let target = self.active as isize + step;
-                if (0..self.tabs.len() as isize).contains(&target) {
-                    self.tabs.swap(self.active, target as usize);
-                    self.active = target as usize;
-                }
-            }
+            Command::MoveTab(step) => self.move_tab(self.active, self.active.saturating_add_signed(step)),
             Command::FocusPane(direction) => {
                 if let Some(tab) = self.tab_mut()
                     && let Some(next) = tab.panes.adjacent(tab.focus, direction)
@@ -2004,24 +1962,24 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_tab_past_the_slop_moves_it_and_keeps_it_selected() {
+    fn a_tab_the_strip_reorders_moves_with_its_panes_and_stays_selected() {
         let (sender, _receiver) = iced::futures::channel::mpsc::unbounded();
         let (mut app, _) = App::with_launch(Launch { command: Some(("cat".into(), Vec::new())), directory: None });
         let _ = app.update(Message::Feed(Feed::Connected(Bus(sender))));
         let _ = app.update(Message::Command(Command::NewTab));
         let _ = app.update(Message::Command(Command::NewTab));
-        app.window.size = Size::new(616.0, 400.0);
         let ids = |app: &App| app.tabs.iter().map(|tab| tab.focused().expect("a pane").id).collect::<Vec<_>>();
         let before = ids(&app);
         let _ = app.update(Message::TabPressed(0));
-        let _ = app.update(Message::TabMoved(20.0));
-        let _ = app.update(Message::TabMoved(23.0));
-        assert_eq!(ids(&app), before, "a wobble under the slop is still a click");
-        let _ = app.update(Message::TabMoved(600.0));
-        let _ = app.update(Message::TabReleased);
+        let _ = app.update(Message::TabMoved(0, 1));
+        let _ = app.update(Message::TabMoved(1, 2));
         assert_eq!(ids(&app), vec![before[1], before[2], before[0]]);
         assert_eq!(app.active, 2);
-        assert_eq!(app.dragged_tab(), None);
+        let _ = app.update(Message::TabMoved(2, 9));
+        assert_eq!(ids(&app), vec![before[1], before[2], before[0]], "a slot past the end is the last one");
+        let _ = app.update(Message::Command(Command::MoveTab(-1)));
+        assert_eq!(ids(&app), vec![before[1], before[0], before[2]]);
+        assert_eq!(app.active, 1);
     }
 
     fn review_app() -> App {

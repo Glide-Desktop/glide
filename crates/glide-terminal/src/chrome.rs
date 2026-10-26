@@ -40,8 +40,6 @@ fn header(app: &App) -> Element<'_, Message> {
     glide_sdk::window::header(&app.paint, &window, header, Message::Window, Message::Command(Command::CloseWindow), 0.0)
 }
 
-pub use glide_sdk::widget::tab_slot;
-
 fn tab_bar(app: &App) -> Element<'_, Message> {
     use glide_sdk::widget::{Mark, Tab, tab_strip};
     let tabs = app
@@ -55,14 +53,14 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
             } else {
                 Mark::None
             };
-            Tab::new(app.tab_title(tab)).mark(mark)
+            Tab::new(tab.id.0, app.tab_title(tab)).mark(mark)
         })
         .collect();
     tab_strip(&app.paint, tabs, app.active)
         .height(TABS)
         .on_select(Message::TabPressed)
         .hovered(app.hovered_tab, Message::TabHovered)
-        .dragged(app.dragged_tab(), Message::TabMoved)
+        .on_reorder(Message::TabMoved)
         .on_close(|index| Message::Command(Command::CloseTab(index)), Key::CloseTab.text(app.lang))
         .into()
 }

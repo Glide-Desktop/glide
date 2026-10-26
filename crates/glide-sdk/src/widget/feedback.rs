@@ -23,7 +23,7 @@ pub enum Severity {
 }
 
 impl Severity {
-    fn colors(self, paint: &Paint) -> (Color, Color) {
+    pub(crate) fn colors(self, paint: &Paint) -> (Color, Color) {
         match self {
             Self::Neutral => (paint.fill_2(), paint.fg_2()),
             Self::Accent => (paint.acc_soft(), paint.acc_soft_fg()),

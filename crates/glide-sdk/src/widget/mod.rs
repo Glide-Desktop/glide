@@ -88,7 +88,7 @@ pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
     page_dots, radio_group, segmented, segmented_fill, sidebar_list, swatch, swatches, tabs, track,
 };
-pub use strip::{Mark, TAB_GAP, TAB_PAD, Tab, TabStrip, tab_slot, tab_strip};
+pub use strip::{Mark, Tab, TabStrip, tab_strip};
 
 type Measured = (String, u32, u16, u32, u64, u32);
 

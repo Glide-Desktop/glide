@@ -121,20 +121,18 @@ fn header(app: &App) -> Element<'_, Message> {
     glide_sdk::window::header(&paint, &app.window, header, Message::Window, Message::CloseRequested, taken)
 }
 
-pub use glide_sdk::widget::tab_slot;
-
 fn tab_bar(app: &App) -> Element<'_, Message> {
     use glide_sdk::widget::{Mark, Tab, tab_strip};
     let tabs = app
         .docs
         .iter()
-        .map(|doc| Tab::new(app.doc_name(doc)).mark(if doc.dirty() { Mark::Dot } else { Mark::None }))
+        .map(|doc| Tab::new(doc.id, app.doc_name(doc)).mark(if doc.dirty() { Mark::Dot } else { Mark::None }))
         .collect();
     tab_strip(&app.paint, tabs, app.active)
         .height(TABS)
         .on_select(Message::TabPressed)
         .hovered(app.hovered_tab, Message::TabHovered)
-        .dragged(app.dragged_tab(), Message::TabMoved)
+        .on_reorder(Message::TabMoved)
         .on_close(|index| Message::Command(Command::CloseTab(index)), Key::CloseTab.text(app.lang))
         .into()
 }

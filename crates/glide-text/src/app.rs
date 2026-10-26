@@ -36,7 +36,6 @@ pub(crate) const GOTO_ID: &str = "glide-text-goto";
 const TICK: Duration = Duration::from_secs(1);
 const NOTICE: Duration = Duration::from_secs(4);
 const SESSION_EVERY: Duration = Duration::from_secs(10);
-const DRAG_SLOP: f32 = 6.0;
 const SYNC_HIGHLIGHT: usize = 96 * 1024;
 const DETECT_LIMIT: usize = 1024 * 1024;
 
@@ -229,13 +228,6 @@ pub struct FindBar {
 
 const MARK_LIMIT: usize = 20_000;
 
-#[derive(Debug, Clone, Copy)]
-struct TabDrag {
-    index: usize,
-    start: Option<f32>,
-    moved: bool,
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
     Edit(Action),
@@ -253,8 +245,7 @@ pub enum Message {
     TreeMenu(PathBuf),
     TabPressed(usize),
     TabHovered(Option<usize>),
-    TabMoved(f32),
-    TabReleased,
+    TabMoved(usize, usize),
     BarPressed(Bar),
     BarHovered(Bar),
     StatusMenu(MenuKind, f32),
@@ -302,7 +293,6 @@ pub struct App {
     pub notice: Option<(String, Instant)>,
     pub window: Window,
     pub hovered_tab: Option<usize>,
-    tab_drag: Option<TabDrag>,
     pub zoom: f32,
     pub preview: bool,
     pub markdown: Option<(u64, u64, Vec<markdown::Item>)>,
@@ -595,7 +585,6 @@ impl App {
             notice: None,
             window: Window::default(),
             hovered_tab: None,
-            tab_drag: None,
             zoom: 0.0,
             preview: false,
             markdown: None,
@@ -837,12 +826,6 @@ impl App {
         if let Some(handles) = self.handles {
             subscriptions.push(Subscription::run_with(handles, menubar::events).map(Message::MenuBar));
         }
-        if self.tab_drag.is_some() {
-            subscriptions.push(iced::event::listen_with(|event, _, _| {
-                let released = iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left));
-                (event == released).then_some(Message::TabReleased)
-            }));
-        }
         if self.animating() {
             subscriptions.push(window::frames().map(|_| Message::Frame));
         }
@@ -956,19 +939,14 @@ impl App {
             }
             Message::TabPressed(index) => {
                 self.select(index);
-                self.tab_drag = Some(TabDrag { index, start: None, moved: false });
                 operation::focus(EDITOR)
             }
             Message::TabHovered(index) => {
                 self.hovered_tab = index;
                 Task::none()
             }
-            Message::TabMoved(x) => {
-                self.drag_tab(x);
-                Task::none()
-            }
-            Message::TabReleased => {
-                self.tab_drag = None;
+            Message::TabMoved(from, to) => {
+                self.move_tab(from, to);
                 Task::none()
             }
             Message::BarPressed(bar) => {
@@ -1200,28 +1178,13 @@ impl App {
         }
     }
 
-    #[must_use]
-    pub fn dragged_tab(&self) -> Option<usize> {
-        self.tab_drag.filter(|drag| drag.moved).map(|drag| drag.index)
-    }
-
-    fn drag_tab(&mut self, x: f32) {
-        let Some(mut drag) = self.tab_drag else { return };
-        let start = *drag.start.get_or_insert(x);
-        if !drag.moved && (x - start).abs() < DRAG_SLOP {
-            self.tab_drag = Some(drag);
-            return;
+    fn move_tab(&mut self, from: usize, to: usize) {
+        let to = to.min(self.docs.len().saturating_sub(1));
+        if from != to && from < self.docs.len() {
+            let doc = self.docs.remove(from);
+            self.docs.insert(to, doc);
+            self.active = to;
         }
-        drag.moved = true;
-        let width = self.window.size.width - if self.sidebar_visible() { crate::chrome::SIDEBAR + 1.0 } else { 0.0 };
-        let slot = crate::chrome::tab_slot(x, width, self.docs.len());
-        if slot != drag.index && drag.index < self.docs.len() {
-            let doc = self.docs.remove(drag.index);
-            self.docs.insert(slot, doc);
-            self.active = slot;
-            drag.index = slot;
-        }
-        self.tab_drag = Some(drag);
     }
 
     #[must_use]
@@ -1602,12 +1565,7 @@ impl App {
                 Task::none()
             }
             Command::MoveTab(step) => {
-                let target = self.active.saturating_add_signed(step).min(self.docs.len().saturating_sub(1));
-                if target != self.active {
-                    let doc = self.docs.remove(self.active);
-                    self.docs.insert(target, doc);
-                    self.active = target;
-                }
+                self.move_tab(self.active, self.active.saturating_add_signed(step));
                 Task::none()
             }
             Command::MenuBar if self.shell_menu => Task::none(),

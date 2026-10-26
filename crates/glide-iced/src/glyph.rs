@@ -25,6 +25,8 @@ pub enum Icon {
     Copy,
     EyeOff,
     Link,
+    Shield,
+    Server,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,12 @@ pub fn glyph<'a, Message: 'a>(icon: Icon, side: f32, tint: Color) -> Element<'a,
                 }
                 Icon::Link => {
                     "<path d='M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1'/><path d='M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1'/>"
+                }
+                Icon::Shield => {
+                    "<path d='M12 3l7 3v5c0 4.6-3 8.4-7 10-4-1.6-7-5.4-7-10V6z'/><path d='M9.5 12l1.8 1.8 3.4-3.6'/>"
+                }
+                Icon::Server => {
+                    "<rect x='3.5' y='4' width='17' height='7' rx='2'/><rect x='3.5' y='13' width='17' height='7' rx='2'/><path d='M7.5 7.5h.01M7.5 16.5h.01'/>"
                 }
                 _ => unreachable!(),
             };
