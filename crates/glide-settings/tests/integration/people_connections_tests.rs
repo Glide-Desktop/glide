@@ -61,21 +61,21 @@ fn text_scale_snaps_to_the_nearest_offered_size() {
 }
 
 #[test]
-fn privacy_blank_timeout_is_shared_with_power() {
-    use glide_settings::panels::privacy::Msg;
+fn the_lock_screen_page_owns_the_blank_timeout() {
+    use glide_settings::panels::lock_screen::Msg;
     let mut app = app("[general]\nblank-after-seconds = 600\n");
     let choice = privacy_choice(300);
-    let _ = app.update(Message::Privacy(Msg::Blank(choice)));
+    let _ = app.update(Message::LockScreen(Msg::Blank(choice)));
     assert_eq!(app.config().get_int("general", "blank-after-seconds"), Some(300));
 }
 
 #[test]
 fn the_idle_lock_and_sleep_timeouts_are_written_to_the_general_table() {
-    use glide_settings::panels::{power, privacy};
+    use glide_settings::panels::{lock_screen, power};
     let mut app = app("[general]\nblank-after-seconds = 600\n");
-    let _ = app.update(Message::Privacy(privacy::Msg::LockAfter(privacy_choice(-1))));
+    let _ = app.update(Message::LockScreen(lock_screen::Msg::LockAfter(privacy_choice(-1))));
     assert_eq!(app.config().get_int("general", "lock-after-seconds"), Some(-1), "never lock");
-    let _ = app.update(Message::Privacy(privacy::Msg::LockAfter(privacy_choice(30))));
+    let _ = app.update(Message::LockScreen(lock_screen::Msg::LockAfter(privacy_choice(30))));
     assert_eq!(app.config().get_int("general", "lock-after-seconds"), Some(30));
     let hour = power::Blank { seconds: 3600, label: String::new() };
     let _ = app.update(Message::Power(power::Msg::Suspend(hour.clone())));

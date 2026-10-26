@@ -139,6 +139,46 @@ pub fn screen<'a, M: 'a>(
 }
 
 #[must_use]
+pub fn lock_screen<'a, M: 'a>(
+    paint: impl Into<Paint>, width: f32, height: f32, clock: String, date: String, cards: Vec<String>,
+) -> Element<'a, M> {
+    let paint = paint.into();
+    let ramp = paint.tokens.ramp;
+    let (top, bottom) = (style::to_iced(ramp[5]), Color::from_rgb8(0x1c, 0x1b, 0x1e));
+    let ink = Color::WHITE;
+    let glass = Color { a: 0.12, ..Color::WHITE };
+    let edge = Color { a: 0.18, ..Color::WHITE };
+    let mut content = Column::new()
+        .spacing(4)
+        .align_x(Alignment::Center)
+        .push(text(date, TextStyle::MICRO).color(Color { a: 0.75, ..ink }))
+        .push(
+            text(clock, TextStyle { size_px: 40.0, line_height_px: 44.0, weight: 300, ..TextStyle::DISPLAY })
+                .color(ink),
+        );
+    for card in cards {
+        content = content.push(
+            outlined_surface(glass, edge, 1.0, R2, text(card, TextStyle::CAP).color(ink))
+                .padding(Padding::from([4.0, 10.0]))
+                .width(Length::Fixed(width * 0.6))
+                .center_x(Length::Fixed(width * 0.6)),
+        );
+    }
+    let avatar =
+        container(Space::new().width(26).height(26)).style(move |_| style::rounded(style::to_iced(ramp[2]), R_ROUND));
+    let field = outlined_surface(Color { a: 0.1, ..Color::WHITE }, edge, 1.0, R_ROUND, Space::new())
+        .width(Length::Fixed(width * 0.45))
+        .height(20);
+    content = content.push(Space::new().height(6)).push(avatar).push(field);
+    container(container(content).center_x(Fill).padding(Padding::ZERO.top(height * 0.09)))
+        .width(width)
+        .height(height)
+        .clip(true)
+        .style(move |_| gradient(top, bottom, R3))
+        .into()
+}
+
+#[must_use]
 pub fn topbar<'a, M: 'a>(paint: impl Into<Paint>) -> Element<'a, M> {
     let paint = paint.into();
     let fg = paint.fg_3();

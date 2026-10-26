@@ -7,8 +7,9 @@ use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::panels::{
     Category, Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop,
-    displays, gestures, home, keyboard, mouse, multitasking, netbird, network, night_light, notifications, power,
-    printers, privacy, region, shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
+    displays, gestures, home, keyboard, lock_screen, mouse, multitasking, netbird, network, night_light, notifications,
+    power, printers, privacy, region, shortcuts, sound, startup, storage, topbar, users, vpn, wallpaper, windows,
+    with_panels,
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;
@@ -357,7 +358,11 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::PanelSelected(panel) | Message::Home(home::Msg::Open(panel)) => self.select(panel),
+            Message::PanelSelected(panel)
+            | Message::Home(home::Msg::Open(panel))
+            | Message::LockScreen(lock_screen::Msg::Open(panel))
+            | Message::Power(power::Msg::Open(panel))
+            | Message::TopBar(topbar::Msg::Open(panel)) => self.select(panel),
             Message::CategorySelected(category) => {
                 let panel =
                     if self.search_query.trim().is_empty() { category.first() } else { self.search_target(category) };

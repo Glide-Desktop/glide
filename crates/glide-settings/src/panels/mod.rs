@@ -10,6 +10,7 @@ pub mod displays;
 pub mod gestures;
 pub mod home;
 pub mod keyboard;
+pub mod lock_screen;
 pub mod mouse;
 pub mod multitasking;
 pub mod netbird;
@@ -115,6 +116,7 @@ macro_rules! with_panels {
             Mouse => mouse,
             Gestures => gestures,
             Accessibility => accessibility,
+            LockScreen => lock_screen,
             Privacy => privacy,
             Users => users,
             DateTime => date_time,
@@ -222,6 +224,7 @@ panel_meta! {
     Mouse: PanelMouse, AboutMouse, "mouse", Mouse, Terracotta 3;
     Gestures: PanelGestures, AboutGestures, "gestures", Gesture, Terracotta 2;
     Accessibility: PanelAccessibility, AboutAccessibility, "accessibility", Accessibility, Malachite 2;
+    LockScreen: PanelLockScreen, AboutLockScreen, "lock-screen", Lock, Cinnabar 2;
     Privacy: PanelPrivacy, AboutPrivacy, "privacy", Hand, Amethyst 2;
     Users: PanelUsers, AboutUsers, "users", Users, Terracotta 4;
     DateTime: PanelDateTime, AboutDateTime, "datetime", Clock, Cinnabar 5;
@@ -250,6 +253,7 @@ pub enum Category {
     Mouse,
     Apps,
     Startup,
+    LockScreen,
     Privacy,
     Accessibility,
     Users,
@@ -282,6 +286,7 @@ impl Category {
         Self::Mouse,
         Self::Apps,
         Self::Startup,
+        Self::LockScreen,
         Self::Privacy,
         Self::Accessibility,
         Self::Users,
@@ -299,7 +304,10 @@ impl Category {
         Group { title: Some(Key::GroupHardware), categories: &[Self::Displays, Self::Power, Self::Printers] },
         Group { title: Some(Key::GroupInput), categories: &[Self::Keyboard, Self::Mouse] },
         Group { title: Some(Key::GroupApps), categories: &[Self::Apps, Self::Startup] },
-        Group { title: Some(Key::GroupPeople), categories: &[Self::Privacy, Self::Accessibility, Self::Users] },
+        Group {
+            title: Some(Key::GroupPeople),
+            categories: &[Self::LockScreen, Self::Privacy, Self::Accessibility, Self::Users],
+        },
         Group {
             title: Some(Key::GroupSystem),
             categories: &[Self::DateTime, Self::Region, Self::Storage, Self::About],
@@ -322,6 +330,7 @@ impl Category {
             Self::Printers => &[Panel::Printers],
             Self::Keyboard => &[Panel::Keyboard, Panel::Shortcuts],
             Self::Mouse => &[Panel::Mouse, Panel::Gestures],
+            Self::LockScreen => &[Panel::LockScreen],
             Self::Apps => &[Panel::Apps],
             Self::Startup => &[Panel::Startup],
             Self::Privacy => &[Panel::Privacy],
@@ -451,7 +460,8 @@ impl Panel {
             "date" | "time" => Some(Self::DateTime),
             "language" => Some(Self::Region),
             "a11y" => Some(Self::Accessibility),
-            "lock" | "security" => Some(Self::Privacy),
+            "lock" | "screen-lock" | "lockscreen" => Some(Self::LockScreen),
+            "security" => Some(Self::Privacy),
             "autostart" => Some(Self::Startup),
             "disk" => Some(Self::Storage),
             "keybinds" => Some(Self::Shortcuts),

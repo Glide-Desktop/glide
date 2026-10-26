@@ -15,6 +15,8 @@ catalogue! {
 
     PanelHome => "Overview", "Огляд";
     AboutHome => "This computer at a glance, and what needs attention", "Стан комп’ютера одним поглядом і те, що потребує уваги";
+    PanelLockScreen => "Lock Screen", "Екран блокування";
+    AboutLockScreen => "When the session locks and what the lock screen shows", "Коли сеанс блокується і що видно на заблокованому екрані";
     PanelNetwork => "Network", "Мережа";
     PanelBluetooth => "Bluetooth", "Bluetooth";
     PanelAppearance => "Appearance", "Вигляд";
@@ -69,7 +71,7 @@ catalogue! {
     AboutWindows => "Title bars, buttons, shadows and borders", "Смуги заголовків, кнопки, тіні та рамки";
     AboutDisplays => "Arrangement, resolution and scale", "Розташування, роздільність і масштаб";
     AboutSound => "Output and input devices and their volume", "Пристрої виводу й вводу та їхня гучність";
-    AboutPower => "Screen blanking, battery and power mode", "Вимкнення екрана, батарея та режим живлення";
+    AboutPower => "Battery, power mode, sleep and the lid", "Батарея, режим живлення, сон і кришка";
     AboutKeyboard => "Input sources, special keys and key repeat", "Джерела вводу, особливі клавіші й повтор";
     AboutMouse => "Pointer speed, scrolling and tapping", "Швидкість вказівника, прокрутка й дотики";
     AboutGestures => "Touchpad swipes for workspaces and the overview, and a place to practise them", "Свайпи тачпадом для робочих просторів і огляду та місце, щоб їх випробувати";
@@ -84,7 +86,7 @@ catalogue! {
     AboutNightLight => "Warmer colours in the evening", "Тепліші кольори ввечері";
     AboutShortcuts => "Key combinations for the shell and apps", "Сполучення клавіш для оболонки й програм";
     AboutAccessibility => "Seeing, pointing and motion", "Зір, вказівник і рух";
-    AboutPrivacy => "Screen lock, history and what apps can see", "Блокування екрана, історія та що бачать програми";
+    AboutPrivacy => "What apps can see, file history and clean-up", "Що бачать програми, історія файлів і прибирання";
     AboutUsers => "Accounts on this computer", "Облікові записи на цьому комп'ютері";
     AboutDateTime => "Time zone, clock format and synchronisation", "Часовий пояс, формат годинника й синхронізація";
     AboutRegion => "Language, formats and locale", "Мова, формати й локаль";

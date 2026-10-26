@@ -2,14 +2,14 @@ use glide_config::permissions::Access;
 use iced::widget::{column, row};
 use iced::{Alignment, Element, Task};
 
-use super::common::{error_banner, gated, presets};
+use super::common::{error_banner, presets};
 use super::{Ctx, Pane};
 use crate::icons::Icon;
-use crate::services::config::{ConfigStore, DEFAULT_BLANK_AFTER};
+use crate::services::config::ConfigStore;
+use crate::services::gsettings;
 use crate::services::privacy::{self, Footprint, PRIVACY, PrivacyState};
 use crate::services::run::blocking;
 use crate::services::system::format_bytes;
-use crate::services::{gsettings, keybinds};
 use crate::theme::{self, Tone};
 use crate::widgets::note;
 use crate::widgets::{self, Group, Row};
@@ -26,19 +26,6 @@ mod tr {
         Screen => "Screen recording", "Запис екрана";
         NotInUse => "Not in use", "Не використовується";
         NoPipewire => "PipeWire is not running, so only direct camera access is detected", "PipeWire не запущено, тож виявляється лише прямий доступ до камери";
-        ScreenLock => "Screen lock", "Блокування екрана";
-        ScreenLockHint => "Protect the session when you step away", "Захистіть сеанс, коли відходите";
-        Blank => "Turn off the screen", "Вимикати екран";
-        BlankHint => "After this much inactivity", "Після такого часу бездіяльності";
-        Never => "Never", "Ніколи";
-        Minutes => "min", "хв";
-        Seconds => "s", "с";
-        AutoLock => "Lock the screen", "Блокувати екран";
-        AutoLockHint => "This long after the screen turns off", "Через такий час після вимкнення екрана";
-        AtOnce => "Immediately", "Одразу";
-        LockNow => "Lock the screen now", "Заблокувати екран зараз";
-        LockShortcut => "Also with the default shortcut", "Також стандартним сполученням клавіш";
-        Lock => "Lock", "Заблокувати";
         History => "File history", "Історія файлів";
         HistoryHint => "Apps list recently opened files in their “Recent” views", "Програми показують нещодавно відкриті файли в розділі «Нещодавні»";
         Remember => "Remember recent files", "Пам'ятати нещодавні файли";
@@ -76,8 +63,6 @@ use tr::Key as T;
 
 pub use super::common::Choice;
 
-const BLANK_CHOICES: [i64; 7] = [60, 120, 300, 600, 900, 1800, 0];
-const LOCK_CHOICES: [i64; 6] = [0, 30, 60, 300, 900, -1];
 const AGES: [i64; 4] = [1, 7, 30, -1];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,9 +75,6 @@ pub enum Cleanup {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Loaded(Box<PrivacyState>),
-    Blank(Choice),
-    LockAfter(Choice),
-    LockNow,
     Remember(bool),
     MaxAge(Choice),
     Ask(Cleanup),
@@ -141,17 +123,11 @@ impl Pane for Page {
         self.reload()
     }
 
-    fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
+    fn update(&mut self, msg: Msg, _c: Ctx, _config: &mut ConfigStore) -> Task<Msg> {
         match msg {
             Msg::Loaded(state) => {
                 self.state = *state;
                 self.loading = false;
-            }
-            Msg::Blank(choice) => config.set_int("general", "blank-after-seconds", choice.value),
-            Msg::LockAfter(choice) => config.set_int("general", "lock-after-seconds", choice.value),
-            Msg::LockNow => {
-                self.error = None;
-                return Task::perform(blocking(privacy::lock_screen), Msg::Done);
             }
             Msg::Remember(on) => {
                 self.state.remember_recent = on;
@@ -212,7 +188,7 @@ impl Pane for Page {
         self.reload()
     }
 
-    fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn view<'a>(&'a self, c: Ctx, _config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let usage = &self.state.usage;
         column![
@@ -231,7 +207,6 @@ impl Pane for Page {
             error_banner(t, self.error.as_deref()),
             self.in_use(&c),
             self.access(&c),
-            lock(&c, config),
             self.history(&c),
             self.cleanup(&c),
         ]
@@ -413,63 +388,4 @@ fn footprint(c: &Ctx, footprint: Footprint) -> String {
     } else {
         format!("{} {} · {}", footprint.items, c.t(T::Items), format_bytes(footprint.bytes, c.lang))
     }
-}
-
-#[must_use]
-pub(crate) fn lock_label(c: &Ctx, seconds: i64) -> String {
-    match seconds {
-        0 => c.t(T::AtOnce).to_string(),
-        seconds if seconds < 0 => c.t(T::Never).to_string(),
-        seconds if seconds % 60 == 0 => format!("{} {}", seconds / 60, c.t(T::Minutes)),
-        seconds => format!("{seconds} {}", c.t(T::Seconds)),
-    }
-}
-
-fn lock<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-    let t = c.theme;
-    let current = config.int_or("general", "blank-after-seconds", DEFAULT_BLANK_AFTER);
-    let (options, selected) = presets(&BLANK_CHOICES, current, |value| {
-        if value == 0 {
-            c.t(T::Never).to_string()
-        } else if value % 60 == 0 {
-            format!("{} {}", value / 60, c.t(T::Minutes))
-        } else {
-            format!("{value} {}", c.t(T::Seconds))
-        }
-    });
-    let lock_after = config.int_or("general", "lock-after-seconds", 0).max(-1);
-    let (lock_options, lock_selected) = presets(&LOCK_CHOICES, lock_after, |value| lock_label(c, value));
-    Group::new(t)
-        .title(c.t(T::ScreenLock))
-        .description(c.t(T::ScreenLockHint))
-        .push(
-            Row::new(t, c.t(T::Blank))
-                .subtitle(c.t(T::BlankHint))
-                .prefix(widgets::icon(Icon::Display, 18.0, t.fg_2()))
-                .suffix(gated(*c, widgets::dropdown(t, options, selected, Msg::Blank, 180.0)))
-                .build(),
-        )
-        .push(
-            Row::new(t, c.t(T::AutoLock))
-                .subtitle(c.t(T::AutoLockHint))
-                .prefix(widgets::icon(Icon::Lock, 18.0, t.fg_2()))
-                .suffix(gated(*c, widgets::dropdown(t, lock_options, lock_selected, Msg::LockAfter, 180.0)))
-                .build(),
-        )
-        .push(
-            Row::new(t, c.t(T::LockNow))
-                .subtitle(c.t(T::LockShortcut))
-                .prefix(widgets::icon(Icon::Lock, 18.0, t.fg_2()))
-                .suffix(
-                    row![
-                        keybinds::combo_for(&keybinds::current(config), "lock")
-                            .map(|combo| widgets::key_combo(t, &combo)),
-                        widgets::secondary(t, c.t(T::Lock), Some(Msg::LockNow)),
-                    ]
-                    .spacing(12)
-                    .align_y(Alignment::Center),
-                )
-                .build(),
-        )
-        .build()
 }

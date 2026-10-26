@@ -3,7 +3,7 @@ use glide_sdk::widget::text;
 use iced::widget::{Column, container, row, space};
 use iced::{Alignment, Element, Fill, Length, Task};
 
-use super::common::{gated, switch_row};
+use super::common::switch_row;
 use super::{Ctx, Pane};
 use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
@@ -18,13 +18,10 @@ mod tr {
         PreviewHint => "A sample of the bar with the options below", "Зразок панелі з налаштуваннями нижче";
         Clock => "Clock", "Годинник";
         ClockHint => "Click the clock to open the calendar and notifications", "Клацніть годинник, щоб відкрити календар і сповіщення";
-        ShowDate => "Show the date", "Показувати дату";
-        ShowDateHint => "Weekday, day and month next to the time", "День тижня, число й місяць біля часу";
-        TimeFormat => "Time format", "Формат часу";
-        TimeFormatAuto => "Follows the region: 12-hour only for US English", "За регіоном: 12-годинний лише для американської англійської";
-        TimeFormat24 => "Always 24-hour, like 14:05", "Завжди 24-годинний, як-от 14:05";
-        TimeFormat12 => "Always 12-hour, like 2:05 PM", "Завжди 12-годинний, як-от 2:05 PM";
-        Auto => "Automatic", "Автоматично";
+        ClockFormat => "Time format and date", "Формат часу й дата";
+        ClockFormatHint => "Set on the Date & Time page", "Налаштовується на сторінці «Дата й час»";
+        WithDate => ", with the date", ", з датою";
+        Auto => "By region", "За регіоном";
         Hours24 => "24-hour", "24 години";
         Hours12 => "12-hour", "12 годин";
         Status => "Status area", "Область стану";
@@ -70,8 +67,7 @@ impl TimeFormat {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Msg {
-    ShowDate(bool),
-    Format(TimeFormat),
+    Open(super::Panel),
     Battery(bool),
     Tray(bool),
     GlobalMenu(bool),
@@ -105,10 +101,7 @@ impl Pane for Page {
 
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
-            Msg::ShowDate(on) => config.set_bool("topbar", "clock-date", on),
-            Msg::Format(TimeFormat::Auto) => config.remove("topbar", "clock-24h"),
-            Msg::Format(TimeFormat::Hours24) => config.set_bool("topbar", "clock-24h", true),
-            Msg::Format(TimeFormat::Hours12) => config.set_bool("topbar", "clock-24h", false),
+            Msg::Open(_) => {}
             Msg::Battery(on) => config.set_bool("topbar", "battery-percentage", on),
             Msg::Tray(on) => config.set_bool("topbar", "tray", on),
             Msg::GlobalMenu(on) => config.set_bool("topbar", "global-menu", on),
@@ -128,25 +121,22 @@ impl Pane for Page {
             .push(container(bar_preview(&c, config)).padding(8));
         let page = Column::new().spacing(theme::SECTION_GAP).push(preview.build());
         let format = TimeFormat::from_config(config);
-        let formats = vec![
-            (TimeFormat::Auto, c.t(tr::Key::Auto).to_string()),
-            (TimeFormat::Hours24, c.t(tr::Key::Hours24).to_string()),
-            (TimeFormat::Hours12, c.t(tr::Key::Hours12).to_string()),
-        ];
-        let clock = Group::new(t)
-            .title(c.t(tr::Key::Clock))
-            .description(c.t(tr::Key::ClockHint))
-            .push(switch_row(c.t(tr::Key::ShowDate), c.t(tr::Key::ShowDateHint), "clock-date", Msg::ShowDate))
-            .push(
-                Row::new(t, c.t(tr::Key::TimeFormat))
-                    .subtitle(c.t(match format {
-                        TimeFormat::Auto => tr::Key::TimeFormatAuto,
-                        TimeFormat::Hours24 => tr::Key::TimeFormat24,
-                        TimeFormat::Hours12 => tr::Key::TimeFormat12,
-                    }))
-                    .suffix(gated(c, widgets::segmented(t, formats, format, Msg::Format)))
-                    .build(),
-            );
+        let clock_value = format!(
+            "{}{}",
+            c.t(match format {
+                TimeFormat::Auto => tr::Key::Auto,
+                TimeFormat::Hours24 => tr::Key::Hours24,
+                TimeFormat::Hours12 => tr::Key::Hours12,
+            }),
+            if config.bool_or("topbar", "clock-date", true) { c.t(tr::Key::WithDate) } else { "" }
+        );
+        let clock = Group::new(t).title(c.t(tr::Key::Clock)).description(c.t(tr::Key::ClockHint)).push(
+            Row::new(t, c.t(tr::Key::ClockFormat))
+                .subtitle(c.t(tr::Key::ClockFormatHint))
+                .suffix(widgets::disclosure(t, Some(clock_value)))
+                .on_press(Msg::Open(super::Panel::DateTime))
+                .build(),
+        );
         let status = Group::new(t)
             .title(c.t(tr::Key::Status))
             .description(c.t(tr::Key::StatusHint))

@@ -298,9 +298,9 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
             return p::draw_speaker_glyph_over(buf, w, h, GLYPH_SIDE, GLYPH_STROKE, false, scale, fg);
         }
         RowGlyph::Command(SystemCommand::Lock)
-        | RowGlyph::Settings(SettingsPanel::Vpn | SettingsPanel::Netbird | SettingsPanel::Privacy) => {
-            p::draw_lock_glyph_over
-        }
+        | RowGlyph::Settings(
+            SettingsPanel::Vpn | SettingsPanel::Netbird | SettingsPanel::Privacy | SettingsPanel::LockScreen,
+        ) => p::draw_lock_glyph_over,
         RowGlyph::Command(SystemCommand::Restart | SystemCommand::ShutDown)
         | RowGlyph::Settings(SettingsPanel::Power) => p::draw_power_glyph_over,
         RowGlyph::Settings(SettingsPanel::Network) | RowGlyph::Command(SystemCommand::ScreenMirroring) => {

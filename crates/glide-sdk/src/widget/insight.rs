@@ -364,7 +364,9 @@ pub fn stage_track<'a, M: 'a>(paint: &Paint, stages: &[Stage]) -> Element<'a, M>
         marks = marks.push(Space::new().width(Length::FillPortion(rest)));
     }
     let line = container(Space::new().width(Fill).height(2)).style(move |_| style::rounded(paint.line_2(), 1.0));
-    stack![container(line).padding(Padding::ZERO.top(5)).width(Fill), marks].into()
+    let height = 12.0 + SP1 + TextStyle::CAP.line_height_px;
+    let base = container(line).padding(Padding::ZERO.top(5)).width(Fill).height(height);
+    stack![base, marks].into()
 }
 
 #[must_use]

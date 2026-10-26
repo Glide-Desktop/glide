@@ -32,7 +32,17 @@ mod tr {
         BalancedHint => "The usual trade-off", "Звичайний баланс";
         PerformanceHint => "Fastest, uses more power", "Найшвидше, але більше енергії";
         ShowPercentage => "Battery percentage in the top bar", "Відсоток заряду у верхній панелі";
-        ShowPercentageHint => "Next to the battery icon", "Поруч зі значком батареї";
+        ShowPercentageHint => "Set on the Top Bar page", "Налаштовується на сторінці «Верхня панель»";
+        Shown => "Shown", "Показується";
+        Hidden => "Hidden", "Приховано";
+        BlankLink => "Turning off the screen and locking", "Гасіння екрана і блокування";
+        BlankLinkHint => "Set on the Lock Screen page", "Налаштовується на сторінці «Екран блокування»";
+        Away => "When you step away", "Коли ви відходите";
+        AwayHint => "One chain: the screen goes dark, the session locks, the computer sleeps", "Один ланцюжок: екран гасне, сеанс блокується, комп’ютер засинає";
+        StageBlank => "screen off", "екран гасне";
+        StageLock => "lock", "блокування";
+        BlankAndLock => "screen off and lock", "гасне й блокується";
+        StageSleep => "sleep", "сон";
         LidAndButtons => "Lid & power button", "Кришка й кнопка живлення";
         LidHint => "The lid is handled by systemd-logind (/etc/systemd/logind.conf). The power button is handled by Glide.", "Кришкою керує systemd-logind (/etc/systemd/logind.conf). Кнопку живлення обробляє Glide.";
         ActAsk => "Asks what to do", "Запитує, що зробити";
@@ -63,7 +73,6 @@ mod tr {
     }
 }
 
-pub(crate) const BLANK_CHOICES: &[i64] = &[60, 120, 300, 600, 900, 1800, 0];
 pub(crate) const SUSPEND_CHOICES: &[i64] = &[900, 1800, 3600, 7200, 0];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,16 +90,15 @@ impl std::fmt::Display for Blank {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Loaded(u64, PowerState),
-    Blank(Blank),
     Suspend(Blank),
     SuspendOnBattery(Blank),
     BatteryLow(f64),
     CommitBatteryLow,
     SettleBatteryLow(u64),
     Profile(Profile),
-    ShowPercentage(bool),
     ChargeLimit(bool),
     Done(Option<Result<String, String>>),
+    Open(Panel),
 }
 
 #[derive(Debug, Default)]
@@ -166,7 +174,6 @@ impl Pane for Page {
                 self.loaded = true;
                 self.jobs.loading = false;
             }
-            Msg::Blank(choice) => config.set_int("general", "blank-after-seconds", choice.seconds),
             Msg::Suspend(choice) => config.set_int("general", "suspend-after-seconds", choice.seconds),
             Msg::SuspendOnBattery(choice) => {
                 config.set_int("general", "suspend-on-battery-after-seconds", choice.seconds);
@@ -182,7 +189,7 @@ impl Pane for Page {
                     config.set_int("topbar", "battery-low-pct", value.round() as i64);
                 }
             }
-            Msg::ShowPercentage(on) => config.set_bool("topbar", "battery-percentage", on),
+            Msg::Open(_) => {}
             Msg::Profile(profile) => {
                 self.state.profile = Some(profile);
                 self.jobs.begin(None);
@@ -239,6 +246,7 @@ impl Pane for Page {
         if self.state.profiles_available {
             page = page.push(self.profile_group(&c));
         }
+        page = page.push(self.away_group(&c, config));
         page = page.push(self.saving_group(&c, config));
         if let Some(policy) = self.state.logind {
             page = page.push(self.lid_group(&c, policy));
@@ -360,30 +368,16 @@ impl Page {
             let selected = labels.iter().find(|blank| blank.seconds == current).cloned();
             (labels, selected)
         };
-        let (labels, selected) = timeout("blank-after-seconds", DEFAULT_BLANK_AFTER, BLANK_CHOICES);
         let (sleep_labels, sleep_selected) = timeout("suspend-after-seconds", 0, SUSPEND_CHOICES);
         let low = self.battery_low.unwrap_or(config.int_or("topbar", "battery-low-pct", DEFAULT_BATTERY_LOW) as f64);
         let moon = || widgets::tile(Icon::Moon, theme::ramp_color(Accent::Azurit, 4), theme::SMALL_CONTROL_HEIGHT);
-        let mut saving = Group::new(t)
-            .title(c.t(K::PowerSaving))
-            .push(
-                Row::new(t, c.t(K::BlankScreen))
-                    .subtitle(c.t(K::BlankScreenHint))
-                    .prefix(widgets::tile(
-                        Icon::Display,
-                        theme::ramp_color(Accent::Malachite, 3),
-                        theme::SMALL_CONTROL_HEIGHT,
-                    ))
-                    .suffix(gated(*c, widgets::dropdown(t, labels, selected, Msg::Blank, 160.0)))
-                    .build(),
-            )
-            .push(
-                Row::new(t, c.t(tr::Key::SleepIdle))
-                    .subtitle(c.t(tr::Key::SleepIdleHint))
-                    .prefix(moon())
-                    .suffix(gated(*c, widgets::dropdown(t, sleep_labels, sleep_selected, Msg::Suspend, 160.0)))
-                    .build(),
-            );
+        let mut saving = Group::new(t).title(c.t(K::PowerSaving)).push(lock_link(c, config)).push(
+            Row::new(t, c.t(tr::Key::SleepIdle))
+                .subtitle(c.t(tr::Key::SleepIdleHint))
+                .prefix(moon())
+                .suffix(gated(*c, widgets::dropdown(t, sleep_labels, sleep_selected, Msg::Suspend, 160.0)))
+                .build(),
+        );
         if self.state.battery.is_some() || !self.loaded {
             let (labels, selected) = timeout("suspend-on-battery-after-seconds", 0, SUSPEND_CHOICES);
             saving = saving
@@ -418,19 +412,52 @@ impl Page {
                         ))
                         .build(),
                 )
-                .push(
-                    Row::new(t, c.t(tr::Key::ShowPercentage))
-                        .subtitle(c.t(tr::Key::ShowPercentageHint))
-                        .prefix(widgets::tile(
-                            Icon::TopBar,
-                            theme::ramp_color(Accent::Amethyst, 4),
-                            theme::SMALL_CONTROL_HEIGHT,
-                        ))
-                        .suffix(toggle(*c, config.bool_or("topbar", "battery-percentage", true), Msg::ShowPercentage))
-                        .build(),
-                );
+                .push(percentage_link(c, config));
         }
         saving.build()
+    }
+
+    fn away_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+        let t = c.theme;
+        let blank = config.int_or("general", "blank-after-seconds", DEFAULT_BLANK_AFTER).max(0);
+        let lock_after = config.int_or("general", "lock-after-seconds", 0);
+        let on_ac = config.int_or("general", "suspend-after-seconds", 0).max(0);
+        let on_battery = config.int_or("general", "suspend-on-battery-after-seconds", 0).max(0);
+        let locks_at = (blank > 0 && lock_after >= 0).then_some(blank + lock_after.max(0));
+        let span =
+            [blank, locks_at.unwrap_or(0), on_ac, on_battery].into_iter().max().unwrap_or(0).max(60) as f32 * 1.2;
+        let lane = |suspend: i64| {
+            let mut stages = Vec::new();
+            if blank > 0 {
+                let label = if locks_at == Some(blank) {
+                    format!("{} · {}", blank_label(blank, *c), c.t(tr::Key::BlankAndLock))
+                } else {
+                    format!("{} · {}", blank_label(blank, *c), c.t(tr::Key::StageBlank))
+                };
+                stages.push(glide_sdk::widget::Stage::new(blank as f32 / span, label, t.acc_text()));
+            }
+            if let Some(at) = locks_at.filter(|at| *at != blank) {
+                let label = format!("+{} · {}", blank_label(at - blank, *c), c.t(tr::Key::StageLock));
+                stages.push(glide_sdk::widget::Stage::new(
+                    at as f32 / span,
+                    label,
+                    theme::ramp_color(Accent::Amethyst, 3),
+                ));
+            }
+            if suspend > 0 {
+                let label = format!("{} · {}", blank_label(suspend, *c), c.t(tr::Key::StageSleep));
+                stages.push(glide_sdk::widget::Stage::new(suspend as f32 / span, label, t.ok()));
+            }
+            glide_sdk::widget::stage_track(&widgets::paint(&t), &stages)
+        };
+        let mut group = Group::new(t)
+            .title(c.t(tr::Key::Away))
+            .description(c.t(tr::Key::AwayHint))
+            .push(Row::new(t, c.t(K::PluggedIn)).stacked(true).suffix(lane(on_ac)).build());
+        if self.state.battery.is_some() {
+            group = group.push(Row::new(t, c.t(K::OnBattery)).stacked(true).suffix(lane(on_battery)).build());
+        }
+        group.build()
     }
 
     fn lid_group(&self, c: &Ctx, policy: power::LogindPolicy) -> Element<'_, Msg> {
@@ -448,6 +475,34 @@ impl Page {
             .map(|(key, label)| Row::new(t, c.t(key)).suffix(text(label, TextStyle::CALL).color(t.fg_2())).build());
         Group::new(t).title(c.t(tr::Key::LidAndButtons)).description(c.t(tr::Key::LidHint)).extend(rows).build()
     }
+}
+
+fn lock_link<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
+    let t = c.theme;
+    let blank = config.int_or("general", "blank-after-seconds", DEFAULT_BLANK_AFTER);
+    let lock_after = config.int_or("general", "lock-after-seconds", 0);
+    let value = format!(
+        "{} · {}",
+        crate::panels::lock_screen::blank_label(c, blank),
+        crate::panels::lock_screen::timeout_label(c, lock_after)
+    );
+    Row::new(t, c.t(tr::Key::BlankLink))
+        .subtitle(c.t(tr::Key::BlankLinkHint))
+        .prefix(widgets::tile(Icon::Lock, theme::ramp_color(Accent::Cinnabar, 2), theme::SMALL_CONTROL_HEIGHT))
+        .suffix(widgets::disclosure(t, Some(value)))
+        .on_press(Msg::Open(Panel::LockScreen))
+        .build()
+}
+
+fn percentage_link<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
+    let t = c.theme;
+    let shown = config.bool_or("topbar", "battery-percentage", true);
+    Row::new(t, c.t(tr::Key::ShowPercentage))
+        .subtitle(c.t(tr::Key::ShowPercentageHint))
+        .prefix(widgets::tile(Icon::TopBar, theme::ramp_color(Accent::Amethyst, 4), theme::SMALL_CONTROL_HEIGHT))
+        .suffix(widgets::disclosure(t, Some(c.t(if shown { tr::Key::Shown } else { tr::Key::Hidden }).to_string())))
+        .on_press(Msg::Open(Panel::TopBar))
+        .build()
 }
 
 fn action_label(action: LidAction, c: &Ctx) -> &'static str {

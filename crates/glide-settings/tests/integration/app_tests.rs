@@ -555,27 +555,19 @@ fn slider_values_are_clamped_to_what_the_compositor_draws_well() {
 
 #[test]
 fn top_bar_panel_writes_topbar_keys() {
-    use glide_settings::panels::topbar::{Msg, TimeFormat};
+    use glide_settings::panels::topbar::Msg;
     let mut app = app("[topbar]\nclock-24h = true\n");
     let _ = app.update(Message::TopBar(Msg::GlobalMenu(false)));
     let _ = app.update(Message::TopBar(Msg::Registrar(false)));
-    let _ = app.update(Message::TopBar(Msg::ShowDate(false)));
     let _ = app.update(Message::TopBar(Msg::Battery(false)));
     let _ = app.update(Message::TopBar(Msg::Tray(false)));
     let config = app.config();
     assert_eq!(config.get_bool("topbar", "global-menu"), Some(false));
     assert_eq!(config.get_bool("topbar", "appmenu-registrar"), Some(false));
-    assert_eq!(config.get_bool("topbar", "clock-date"), Some(false));
     assert_eq!(config.get_bool("topbar", "battery-percentage"), Some(false));
     assert_eq!(config.get_bool("topbar", "tray"), Some(false));
-    let _ = app.update(Message::TopBar(Msg::Format(TimeFormat::Hours12)));
-    assert_eq!(app.config().get_bool("topbar", "clock-24h"), Some(false));
-    let _ = app.update(Message::TopBar(Msg::Format(TimeFormat::Auto)));
-    assert_eq!(
-        app.config().get_bool("topbar", "clock-24h"),
-        None,
-        "auto must drop the key so the compositor follows the locale"
-    );
+    let _ = app.update(Message::TopBar(Msg::Open(Panel::DateTime)));
+    assert_eq!(app.active_panel(), Panel::DateTime, "the clock row leads to its owner");
 }
 
 #[test]
@@ -682,14 +674,14 @@ fn personalisation_panels_render_in_both_styles() {
 }
 
 #[test]
-fn power_panel_writes_blank_and_battery_keys() {
-    use glide_settings::panels::power::{Blank, Msg};
+fn power_panel_writes_battery_keys_and_links_to_the_lock_screen() {
+    use glide_settings::panels::power::Msg;
     let mut app = app("");
-    let _ = app.update(Message::Power(Msg::Blank(Blank { seconds: 0, label: String::from("Never") })));
     let _ = app.update(Message::Power(Msg::BatteryLow(12.0)));
     let _ = app.update(Message::Power(Msg::CommitBatteryLow));
-    assert_eq!(app.config().get_int("general", "blank-after-seconds"), Some(0));
     assert_eq!(app.config().get_int("topbar", "battery-low-pct"), Some(12));
+    let _ = app.update(Message::Power(Msg::Open(Panel::LockScreen)));
+    assert_eq!(app.active_panel(), Panel::LockScreen);
 }
 
 #[test]

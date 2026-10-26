@@ -206,6 +206,7 @@ pub enum SettingsPanel {
     Mouse,
     Gestures,
     Accessibility,
+    LockScreen,
     Privacy,
     Users,
     DateTime,
@@ -222,7 +223,7 @@ fn netbird_installed() -> bool {
 }
 
 impl SettingsPanel {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -244,6 +245,7 @@ impl SettingsPanel {
         Self::Mouse,
         Self::Gestures,
         Self::Accessibility,
+        Self::LockScreen,
         Self::Privacy,
         Self::Users,
         Self::DateTime,
@@ -278,6 +280,7 @@ impl SettingsPanel {
             Self::Mouse => "mouse",
             Self::Gestures => "gestures",
             Self::Accessibility => "accessibility",
+            Self::LockScreen => "lock-screen",
             Self::Privacy => "privacy",
             Self::Users => "users",
             Self::DateTime => "datetime",
@@ -313,6 +316,7 @@ impl SettingsPanel {
             Self::Mouse => Key::SettingsMouse,
             Self::Gestures => Key::SettingsGestures,
             Self::Accessibility => Key::SettingsAccessibility,
+            Self::LockScreen => Key::SettingsLockScreen,
             Self::Privacy => Key::SettingsPrivacy,
             Self::Users => Key::SettingsUsers,
             Self::DateTime => Key::SettingsDateTime,
@@ -367,9 +371,10 @@ impl SettingsPanel {
             Self::Accessibility => {
                 &["accessibility", "large text", "contrast", "cursor size", "доступність", "спеціальні можливості"]
             }
-            Self::Privacy => {
-                &["privacy", "security", "screen lock", "camera", "конфіденційність", "безпека", "блокування"]
+            Self::LockScreen => {
+                &["lock screen", "screen lock", "lock", "blank", "idle", "екран блокування", "блокування", "замок"]
             }
+            Self::Privacy => &["privacy", "security", "camera", "clipboard", "конфіденційність", "безпека"],
             Self::Users => &["users", "account", "avatar", "користувачі", "обліковий запис"],
             Self::DateTime => &["date", "time", "time zone", "clock", "дата", "час", "часовий пояс"],
             Self::Region => &["region", "language", "locale", "formats", "регіон", "мова", "формати"],
@@ -882,6 +887,7 @@ mod tests {
                 "mouse",
                 "gestures",
                 "accessibility",
+                "lock-screen",
                 "privacy",
                 "users",
                 "datetime",
