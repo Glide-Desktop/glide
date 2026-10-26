@@ -28,6 +28,9 @@ mod tr {
         RoleCalendar => "Calendar", "Календар";
         RoleFiles => "Files", "Файли";
         RoleText => "Text editor", "Текстовий редактор";
+        RoleTerminal => "Terminal", "Термінал";
+        TerminalHint => "Ctrl+Alt+T, Open in Terminal in Files and console apps from the launcher", "Ctrl+Alt+T, «Відкрити в терміналі» у Файлах і консольні програми з лаунчера";
+        Installed => "Installed:", "Встановлено:";
         RoleImages => "Photos", "Фото";
         RoleMusic => "Music", "Музика";
         RoleVideo => "Video", "Відео";
@@ -66,6 +69,7 @@ pub struct Catalog {
     pub lists: Vec<MimeList>,
     pub descriptions: HashMap<&'static str, String>,
     pub icons: HashMap<String, PathBuf>,
+    pub terminals: Vec<String>,
 }
 
 impl Catalog {
@@ -95,6 +99,7 @@ pub enum Msg {
     Loaded(u64, Lang, Box<Catalog>),
     SetDefault(Role, DesktopApp),
     SetType(&'static str, DesktopApp),
+    Terminal(TerminalChoice),
     Done(Option<Result<String, String>>),
     Filter(Option<Kind>),
     Query(String),
@@ -151,7 +156,30 @@ const fn kind_key(kind: Kind) -> T {
 fn load(lang: Lang, theme: Option<&str>) -> Catalog {
     let apps = apps::installed(lang.key());
     let icons = apps::icon_paths(apps.iter().map(|app| app.icon.as_str()), theme);
-    Catalog { lists: apps::load_mimeapps(), descriptions: apps::mime_descriptions(lang.key()), icons, apps }
+    let terminals = glide_config::terminal::installed().into_iter().map(str::to_string).collect();
+    Catalog { lists: apps::load_mimeapps(), descriptions: apps::mime_descriptions(lang.key()), icons, apps, terminals }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalChoice {
+    pub command: Option<String>,
+    label: String,
+}
+
+impl std::fmt::Display for TerminalChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+#[must_use]
+pub(crate) fn terminal_entry<'a>(apps: &'a [DesktopApp], terminal: &str) -> Option<&'a DesktopApp> {
+    let program = glide_config::terminal::program_name(terminal);
+    apps.iter().find(|app| {
+        let exec = apps::strip_field_codes(&app.exec);
+        let word = exec.split_whitespace().next().unwrap_or_default();
+        !app.terminal && std::path::Path::new(word).file_name().is_some_and(|name| name == program)
+    })
 }
 
 #[must_use]
@@ -261,6 +289,7 @@ impl Pane for Page {
                     return self.set(std::slice::from_ref(&file.mime), &app);
                 }
             }
+            Msg::Terminal(choice) => config.set_optional_str("general", "terminal", choice.command.as_deref()),
             Msg::Done(result) => {
                 self.busy = false;
                 self.error = result.and_then(Result::err);
@@ -292,7 +321,7 @@ impl Pane for Page {
         Task::none()
     }
 
-    fn view<'a>(&'a self, c: Ctx, _config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let c = &c;
         let t = c.theme;
         if !self.loaded {
@@ -302,7 +331,7 @@ impl Pane for Page {
             self.hero(c),
             error_banner(t, self.error.as_deref()),
             self.notice.map(|notice| widgets::banner(t, Tone::Ok, Icon::Check, c.t(notice), None)),
-            self.roles_group(c),
+            self.roles_group(c, config),
             self.types_group(c),
             self.reset_group(c),
         ]
@@ -353,7 +382,48 @@ impl Page {
         }
     }
 
-    fn roles_group(&self, c: &Ctx) -> Element<'_, Msg> {
+    fn terminal_row(&self, c: &Ctx, config: &ConfigStore) -> Element<'_, Msg> {
+        let t = c.theme;
+        let configured = config.optional_str("general", "terminal");
+        let name_of = |terminal: &str| {
+            terminal_entry(&self.catalog.apps, terminal)
+                .map_or_else(|| glide_config::terminal::program_name(terminal).to_string(), |app| app.name.clone())
+        };
+        let automatic =
+            glide_config::terminal::pick(None, None, |name| self.catalog.terminals.iter().any(|t| t == name));
+        let automatic_label = if self.catalog.terminals.contains(&automatic) {
+            format!("{} · {}", c.t(T::Automatic), name_of(&automatic))
+        } else {
+            c.t(T::Automatic).to_string()
+        };
+        let mut options = vec![TerminalChoice { command: None, label: automatic_label }];
+        let mut commands: Vec<String> = self.catalog.terminals.clone();
+        if let Some(own) = configured.as_ref().filter(|own| !commands.contains(own)) {
+            commands.push(own.clone());
+        }
+        options.extend(
+            commands.iter().map(|command| TerminalChoice { command: Some(command.clone()), label: name_of(command) }),
+        );
+        let selected = options.iter().find(|choice| choice.command == configured).cloned();
+        let shown = configured.clone().unwrap_or(automatic);
+        let prefix = match terminal_entry(&self.catalog.apps, &shown) {
+            Some(app) => app_icon(&t, self.catalog.icons.get(&app.icon), &app.name, 28.0),
+            None => widgets::tile(Icon::Command, t.fill_3(), 28.0),
+        };
+        let installed: Vec<String> = self.catalog.terminals.iter().map(|terminal| name_of(terminal)).collect();
+        let mut subtitle = c.t(T::TerminalHint).to_string();
+        if !installed.is_empty() {
+            subtitle = format!("{subtitle}. {} {}.", c.t(T::Installed), installed.join(", "));
+        }
+        Row::new(t, c.t(T::RoleTerminal))
+            .subtitle(subtitle)
+            .changed(configured.is_some())
+            .prefix(prefix)
+            .suffix(widgets::inert(t, c.writable, widgets::dropdown(t, options, selected, Msg::Terminal, 240.0)))
+            .build()
+    }
+
+    fn roles_group(&self, c: &Ctx, config: &ConfigStore) -> Element<'_, Msg> {
         let t = c.theme;
         let mut group = Group::new(t).title(c.t(T::Roles)).description(c.t(T::RolesHint));
         for role in Role::ALL {
@@ -369,6 +439,9 @@ impl Page {
                 line = line.subtitle(c.t(T::Automatic));
             }
             group = group.push(line.build());
+            if role == Role::Files {
+                group = group.push(self.terminal_row(c, config));
+            }
         }
         group.build()
     }
@@ -423,5 +496,26 @@ impl Page {
             .title(c.t(T::Reset))
             .push(Row::new(t, c.t(T::ResetRow)).subtitle(c.t(T::ResetHint)).suffix(suffix).build())
             .build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(id: &str, name: &str, exec: &str, terminal: bool) -> DesktopApp {
+        DesktopApp { id: id.into(), name: name.into(), exec: exec.into(), terminal, ..DesktopApp::default() }
+    }
+
+    #[test]
+    fn a_terminal_is_named_after_the_desktop_entry_that_starts_it() {
+        let apps = vec![
+            app("htop.desktop", "Htop", "htop", true),
+            app("org.glide.Terminal.desktop", "Glide Terminal", "/usr/bin/glide-terminal %U", false),
+            app("foot.desktop", "Foot", "foot", false),
+        ];
+        assert_eq!(terminal_entry(&apps, "glide-terminal").map(|app| app.name.as_str()), Some("Glide Terminal"));
+        assert_eq!(terminal_entry(&apps, "/usr/bin/foot --server").map(|app| app.name.as_str()), Some("Foot"));
+        assert!(terminal_entry(&apps, "kitty").is_none());
     }
 }

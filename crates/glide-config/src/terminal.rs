@@ -48,6 +48,21 @@ fn program(terminal: &str) -> &str {
 }
 
 #[must_use]
+pub fn program_name(terminal: &str) -> &str {
+    program(terminal)
+}
+
+#[must_use]
+pub fn known_installed(installed: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    KNOWN.iter().map(|(name, _)| *name).filter(|name| *name != "xdg-terminal-exec" && installed(name)).collect()
+}
+
+#[must_use]
+pub fn installed() -> Vec<&'static str> {
+    known_installed(on_path)
+}
+
+#[must_use]
 pub fn exec_args(terminal: &str) -> &'static [&'static str] {
     let name = program(terminal);
     KNOWN.iter().find(|(known, _)| *known == name).map_or(FALLBACK_ARGS, |(_, args)| args)
@@ -94,6 +109,13 @@ mod tests {
         assert!(!on_path("/nonexistent/glide-terminal-test"));
         assert!(!on_path("./nonexistent-glide-terminal-test"));
         assert!(on_path("/bin/sh") || on_path("/usr/bin/sh"));
+    }
+
+    #[test]
+    fn installed_terminals_keep_the_preference_order_and_skip_the_dispatcher() {
+        let installed = |name: &str| ["foot", "xdg-terminal-exec", "glide-terminal"].contains(&name);
+        assert_eq!(known_installed(installed), ["glide-terminal", "foot"]);
+        assert_eq!(program_name("/usr/bin/kitty --single-instance"), "kitty");
     }
 
     #[test]
