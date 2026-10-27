@@ -250,6 +250,8 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<MenuItem> {
                 Some(Message::Command(Command::Bigger)),
             ),
             entry(app, Key::FullScreen, Command::FullScreen, true),
+            separator(),
+            entry(app, Key::Shortcuts, Command::Shortcuts, true),
         ],
         MenuKind::Context(link) => {
             let selection = app

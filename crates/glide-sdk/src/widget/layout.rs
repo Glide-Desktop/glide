@@ -36,7 +36,7 @@ pub fn card<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) -> Ele
 pub fn action_card<'a, M: Clone + 'a>(paint: &Paint, content: impl Into<Element<'a, M>>, message: M) -> Element<'a, M> {
     let paint = *paint;
     let content = content.into();
-    let lifted = hover(Speed::SPRING, move |value| {
+    let lifted = hover(Speed::OVERSHOOT, move |value| {
         let value = value.clone();
         widgets::surface(
             container(content).padding(SP4).width(Fill).style(move |_| {

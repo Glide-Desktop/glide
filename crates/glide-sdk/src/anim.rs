@@ -22,7 +22,7 @@ impl Speed {
     pub const PRESS: Self = Self { duration: motion::t1, ease: motion::ease_out };
     pub const COLOR: Self = Self { duration: motion::t2, ease: motion::ease_out };
     pub const SLIDE: Self = Self { duration: motion::t2, ease: motion::ease_out };
-    pub const SPRING: Self = Self { duration: motion::t2, ease: motion::ease_over };
+    pub const OVERSHOOT: Self = Self { duration: motion::t2, ease: motion::ease_over };
     pub const EXPAND: Self = Self { duration: motion::t3, ease: motion::ease_out };
     pub const GROW: Self = Self { duration: motion::t3, ease: motion::ease_over };
     pub const FADE: Self = Self { duration: motion::t2, ease: motion::ease_io };

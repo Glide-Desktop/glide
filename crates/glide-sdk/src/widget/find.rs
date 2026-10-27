@@ -2,7 +2,9 @@ use glide_iced::Paint;
 use glide_iced::style::{self, SP1, SP2, SP3};
 use glide_theme::TextStyle;
 use iced::widget::{Space, column, container, row, text_input::TextInput};
-use iced::{Alignment, Element, Fill, Length, Padding};
+use iced::{Alignment, Element, Fill, Length, Padding, Vector};
+
+use crate::anim::{Speed, Transform, animate};
 
 use super::buttons::{Size, Tone, compact_button, flat_toggle_button, icon_button};
 use super::feedback::Severity;
@@ -152,24 +154,41 @@ impl<'a, M: Clone + 'a> From<FindBar<'a, M>> for Element<'a, M> {
             }
             body = body.push(replace);
         }
-        if let Some(width) = bar.floating {
-            return super::popover(&paint, container(body).padding(Padding::from([0.0, SP1])).width(width));
-        }
-        match bar.height {
-            Some(height) => {
-                let background = paint.bar_bg();
-                container(body)
-                    .padding(Padding::from([0.0, SP3]))
-                    .width(Fill)
-                    .height(height)
-                    .center_y(height)
-                    .style(move |_| style::rounded(background, 0.0))
-                    .into()
+        let shown: Element<'a, M> = if let Some(width) = bar.floating {
+            super::popover(&paint, container(body).padding(Padding::from([0.0, SP1])).width(width))
+        } else {
+            match bar.height {
+                Some(height) => {
+                    let background = paint.bar_bg();
+                    container(body)
+                        .padding(Padding::from([0.0, SP3]))
+                        .width(Fill)
+                        .height(height)
+                        .center_y(height)
+                        .style(move |_| style::rounded(background, 0.0))
+                        .into()
+                }
+                None => bar_strip(&paint, None, body),
             }
-            None => bar_strip(&paint, None, body),
-        }
+        };
+        arriving(shown)
     }
 }
+
+#[must_use]
+pub fn arriving<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let content = content.into();
+    animate(1.0, Speed::SLIDE, move |_| content)
+        .from(0.0)
+        .transform(|value| Transform {
+            scale: ARRIVE_SCALE + (1.0 - ARRIVE_SCALE) * value,
+            offset: Vector::new(0.0, -ARRIVE_RISE * (1.0 - value)),
+        })
+        .into()
+}
+
+const ARRIVE_SCALE: f32 = 0.97;
+const ARRIVE_RISE: f32 = 6.0;
 
 #[must_use]
 pub fn bar_strip<'a, M: 'a>(

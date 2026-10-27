@@ -420,6 +420,7 @@ pub enum Message {
     ColumnPressed(ListColumn),
     BookmarkPressed(PathBuf),
     ToggleQueue,
+    ShowShortcuts,
     PasteText(Option<String>),
     Phones(Vec<crate::fs::mtp::Phone>),
     OpenPhone(String),
@@ -628,7 +629,7 @@ impl Surfaces {
         let (layer, lift) = match self.hover.get_mut(&key) {
             Some(fades) => fades,
             None if on => self.hover.entry(key).or_insert_with(|| {
-                (Fade::new(false, Speed::STATE), Fade::asymmetric(false, Speed::SPRING, Speed::SLIDE))
+                (Fade::new(false, Speed::STATE), Fade::asymmetric(false, Speed::OVERSHOOT, Speed::SLIDE))
             }),
             None => return,
         };
@@ -733,6 +734,7 @@ pub struct App {
     list_zoom: u8,
     pub columns: Vec<ListColumn>,
     pub queue: bool,
+    shortcuts_asked: bool,
     pub renaming: Option<Renaming>,
     column_drag: Option<ListColumn>,
     bookmark_drag: Option<PathBuf>,
@@ -925,6 +927,7 @@ impl App {
             list_zoom: prefs.list_zoom,
             columns: prefs.columns.clone(),
             queue: prefs.queue,
+            shortcuts_asked: false,
             renaming: None,
             column_drag: None,
             bookmark_drag: None,
@@ -1559,6 +1562,7 @@ impl App {
             }
             Message::ColumnPressed(column) => self.column_drag = Some(column),
             Message::BookmarkPressed(path) => self.bookmark_drag = Some(path),
+            Message::ShowShortcuts => self.shortcuts_asked = self.modal.is_none(),
             Message::ToggleQueue => {
                 self.queue = !self.queue;
                 self.save_prefs();
@@ -3945,6 +3949,17 @@ pub fn expand_path(input: &str, base: &Path) -> PathBuf {
     normal
 }
 
+impl App {
+    fn offer_shortcuts(&mut self, shell: &mut glide_sdk::Shell<Message>) {
+        if std::mem::take(&mut self.shortcuts_asked) {
+            shell.dialog(
+                glide_sdk::Dialog::new(Key::Shortcuts.text(self.lang), Key::ShortcutsBody.text(self.lang))
+                    .cancel(Key::Close.text(self.lang)),
+            );
+        }
+    }
+}
+
 impl glide_sdk::App for App {
     type Message = Message;
 
@@ -3964,7 +3979,9 @@ impl glide_sdk::App for App {
         if let Message::Window(action) = message {
             shell.window_action(action);
         }
-        Self::update(self, message)
+        let task = Self::update(self, message);
+        self.offer_shortcuts(shell);
+        task
     }
 
     fn view<'a>(&'a self, _: &'a glide_sdk::Shell<Message>) -> Element<'a, Message> {
@@ -3984,8 +4001,10 @@ impl glide_sdk::App for App {
         Task::none()
     }
 
-    fn key(&mut self, event: &keyboard::Event, captured: bool, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
-        key_message(event, captured).map_or_else(Task::none, |message| Self::update(self, message))
+    fn key(&mut self, event: &keyboard::Event, captured: bool, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        let task = key_message(event, captured).map_or_else(Task::none, |message| Self::update(self, message));
+        self.offer_shortcuts(shell);
+        task
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> glide_sdk::Paint {
@@ -4030,7 +4049,9 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::Delete) => Message::Trash,
         Key::Named(Named::F2) => Message::Rename,
         Key::Named(Named::F5) => Message::Reload,
+        Key::Named(Named::F1) => Message::ShowShortcuts,
         Key::Character(_) if command => match key.to_latin(physical)?.to_ascii_lowercase() {
+            '/' | '?' => Message::ShowShortcuts,
             'r' => Message::Reload,
             'h' => Message::ToggleHidden,
             'l' => Message::EditPath,

@@ -267,6 +267,106 @@ pub fn newline(text: &str, at: usize, auto_indent: bool) -> String {
     format!("\n{}", leading(&text[start..at]))
 }
 
+struct Item {
+    indent: usize,
+    bullet: char,
+    number: Option<usize>,
+    check: Option<bool>,
+    boxed: usize,
+    content: usize,
+}
+
+fn list_item(line: &str) -> Option<Item> {
+    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let rest = &line[indent..];
+    let (bullet, number, marker) = match rest.chars().next()? {
+        c @ ('-' | '*' | '+') if rest[1..].starts_with(' ') => (c, None, 2),
+        '0'..='9' => {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            let delimiter = rest[digits..].chars().next().filter(|c| matches!(c, '.' | ')'))?;
+            if digits > 9 || !rest[digits + 1..].starts_with(' ') {
+                return None;
+            }
+            (delimiter, Some(rest[..digits].parse().ok()?), digits + 2)
+        }
+        _ => return None,
+    };
+    let after = &rest[marker..];
+    let check = ["[ ]", "[x]", "[X]"]
+        .iter()
+        .position(|tag| after.starts_with(tag) && (after.len() == tag.len() || after[tag.len()..].starts_with(' ')));
+    let box_len = check.map_or(0, |_| if after.len() == 3 { 3 } else { 4 });
+    Some(Item {
+        indent,
+        bullet,
+        number,
+        check: check.map(|tag| tag > 0),
+        boxed: box_len,
+        content: indent + marker + box_len,
+    })
+}
+
+#[must_use]
+pub(crate) fn continue_list(text: &str, at: usize) -> Option<Change> {
+    let start = text[..at].rfind('\n').map_or(0, |line| line + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |line| at + line);
+    let line = &text[start..end];
+    let item = list_item(line)?;
+    if at - start < item.content.min(line.len()) {
+        return None;
+    }
+    if line[item.content.min(line.len())..].trim().is_empty() {
+        return Some(Change { range: start..end, text: String::new(), select: start..start });
+    }
+    let marker = match item.number {
+        Some(number) => format!("{}{}{} ", &line[..item.indent], number + 1, item.bullet),
+        None => format!("{}{} ", &line[..item.indent], item.bullet),
+    };
+    let text = format!("\n{marker}{}", if item.check.is_some() { "[ ] " } else { "" });
+    let caret = at + text.len();
+    Some(Change { range: at..at, text, select: caret..caret })
+}
+
+#[must_use]
+pub(crate) fn toggle_check(text: &str, selection: &Range<usize>) -> Option<Change> {
+    let span = line_span(text, selection);
+    let lines: Vec<&str> = text[span.clone()].split('\n').collect();
+    let items: Vec<Option<Item>> = lines.iter().map(|line| list_item(line)).collect();
+    let checks: Vec<bool> = items.iter().flatten().filter_map(|item| item.check).collect();
+    let target = !checks.is_empty() && checks.contains(&false);
+    let rewritten: Vec<String> = lines
+        .iter()
+        .zip(&items)
+        .map(|(line, item)| match item {
+            _ if line.trim().is_empty() => (*line).to_string(),
+            Some(Item { check: Some(_), content, boxed, .. }) => {
+                let box_at = content - boxed;
+                format!("{}[{}]{}", &line[..box_at], if target { 'x' } else { ' ' }, &line[box_at + 3..])
+            }
+            Some(item) => {
+                let at = item.content;
+                format!("{}[ ] {}", &line[..at], &line[at..])
+            }
+            None => {
+                let at = line.len() - line.trim_start().len();
+                format!("{}- [ ] {}", &line[..at], &line[at..])
+            }
+        })
+        .collect();
+    let joined = rewritten.join("\n");
+    if joined == text[span.clone()] {
+        return None;
+    }
+    let delta = joined.len().cast_signed() - (span.end - span.start).cast_signed();
+    let select = if selection.start == selection.end {
+        let caret = (selection.start.cast_signed() + delta).max(span.start.cast_signed()).cast_unsigned();
+        caret..caret
+    } else {
+        span.start..span.start + joined.len()
+    };
+    Some(Change { range: span, text: joined, select })
+}
+
 #[must_use]
 pub(crate) fn trim_trailing(text: &str) -> Option<String> {
     let trimmed: Vec<&str> = text.split('\n').map(str::trim_end).collect();
@@ -302,6 +402,67 @@ mod tests {
         let mut text = text.to_string();
         text.replace_range(change.range.clone(), &change.text);
         text
+    }
+
+    fn enter(text: &str) -> String {
+        let at = text.find('|').unwrap();
+        let text = text.replacen('|', "", 1);
+        continue_list(&text, at).map_or_else(|| text.clone(), |change| apply(&text, &change))
+    }
+
+    #[test]
+    fn enter_continues_bullets_numbers_and_checklists() {
+        assert_eq!(enter("- one|"), "- one\n- ");
+        assert_eq!(enter("  * nested|"), "  * nested\n  * ");
+        assert_eq!(enter("9. nine|"), "9. nine\n10. ");
+        assert_eq!(enter("3) three|"), "3) three\n4) ");
+        assert_eq!(enter("- [x] done|"), "- [x] done\n- [ ] ");
+        assert_eq!(enter("- [ ] todo|"), "- [ ] todo\n- [ ] ");
+        assert_eq!(enter("- one|two"), "- one\n- two", "text after the caret moves to the new item");
+    }
+
+    #[test]
+    fn enter_on_an_empty_item_ends_the_list_and_elsewhere_is_left_alone() {
+        assert_eq!(enter("- one\n- |"), "- one\n");
+        assert_eq!(enter("- [ ] |"), "");
+        assert_eq!(enter("plain|"), "plain");
+        assert_eq!(enter("-no space|"), "-no space");
+        assert_eq!(enter("1.5 apples|"), "1.5 apples");
+        assert_eq!(enter("-| item"), "- item", "a caret inside the marker is a plain newline");
+    }
+
+    fn check(text: &str) -> String {
+        let at = text.find('|').unwrap();
+        let text = text.replacen('|', "", 1);
+        toggle_check(&text, &(at..at)).map_or_else(|| text.clone(), |change| apply(&text, &change))
+    }
+
+    #[test]
+    fn ctrl_enter_walks_a_line_through_plain_unchecked_and_checked() {
+        assert_eq!(check("buy milk|"), "- [ ] buy milk");
+        assert_eq!(check("- buy milk|"), "- [ ] buy milk");
+        assert_eq!(check("- [ ] buy milk|"), "- [x] buy milk");
+        assert_eq!(check("- [x] buy milk|"), "- [ ] buy milk");
+        assert_eq!(check("  1. step|"), "  1. [ ] step");
+        assert_eq!(check("- [ ] |"), "- [x] ");
+        assert_eq!(check("|"), "");
+    }
+
+    #[test]
+    fn the_caret_stays_on_its_text_when_a_box_is_added() {
+        let text = "buy milk";
+        let change = toggle_check(text, &(4..4)).unwrap();
+        assert_eq!(change.select, 10..10);
+    }
+
+    #[test]
+    fn a_selection_checks_everything_unless_all_are_already_checked() {
+        let text = "- [x] a\n- [ ] b\nplain\n\n- [x] c";
+        let change = toggle_check(text, &(0..text.len())).unwrap();
+        assert_eq!(apply(text, &change), "- [x] a\n- [x] b\n- [ ] plain\n\n- [x] c");
+        let done = "- [x] a\n- [x] c";
+        let change = toggle_check(done, &(0..done.len())).unwrap();
+        assert_eq!(apply(done, &change), "- [ ] a\n- [ ] c");
     }
 
     #[test]

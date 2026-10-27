@@ -108,6 +108,7 @@ pub enum Command {
     Case(Case),
     TrimTrailing,
     InsertDate,
+    ToggleCheck,
     Find,
     Replace,
     FindNext,
@@ -323,6 +324,7 @@ pub fn shortcut(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<C
         return match (named, ctrl, shift, alt) {
             (Named::F3, false, false, false) => Some(Command::FindNext),
             (Named::F3, false, true, false) => Some(Command::FindPrevious),
+            (Named::Enter, true, false, false) => Some(Command::ToggleCheck),
             (Named::F9, false, false, false) => Some(Command::ToggleSidebar),
             (Named::F10, false, false, false) => Some(Command::MenuBar),
             (Named::F10, false, true, false) | (Named::ContextMenu, _, _, _) => Some(Command::ContextMenu),
@@ -414,6 +416,7 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::MoveLine(false) => "Alt+↓",
         Command::JoinLines => "Ctrl+J",
         Command::ToggleComment => "Ctrl+/",
+        Command::ToggleCheck => "Ctrl+Enter",
         Command::Indent => "Ctrl+]",
         Command::Unindent => "Ctrl+[",
         Command::Case(Case::Upper) => "Ctrl+U",
@@ -1401,6 +1404,14 @@ impl App {
                 let auto = self.prefs.auto_indent;
                 if let Some(doc) = self.doc_mut() {
                     let range = doc.selected();
+                    if doc.language() == Language::Markdown
+                        && range.is_empty()
+                        && let Some(change) = edit::continue_list(&doc.text, range.start)
+                    {
+                        doc.replace(change.range, &change.text, Kind::Other);
+                        doc.place(change.select);
+                        return Task::none();
+                    }
                     let text = edit::newline(&doc.text, range.start, auto);
                     let at = range.start + text.len();
                     doc.replace(range, &text, Kind::Other);
@@ -1418,6 +1429,7 @@ impl App {
             | Command::Unindent
             | Command::Case(_)
             | Command::TrimTrailing
+            | Command::ToggleCheck
             | Command::InsertDate => {
                 self.transform(command);
                 operation::focus(EDITOR)
@@ -1633,6 +1645,7 @@ impl App {
             Command::JoinLines => edit::join_lines(&doc.text, &selection),
             Command::SortLines => edit::sort_lines(&doc.text, &selection),
             Command::ToggleComment => edit::toggle_comment(&doc.text, &selection, language),
+            Command::ToggleCheck if language == Language::Markdown => edit::toggle_check(&doc.text, &selection),
             Command::Indent => Some(edit::indent(&doc.text, &selection, indent)),
             Command::Unindent => edit::unindent(&doc.text, &selection, indent),
             Command::Case(case) => edit::change_case(&doc.text, &selection, case),
@@ -2211,6 +2224,10 @@ mod tests {
         let (key, physical) = letter("s", Code::KeyS);
         assert_eq!(shortcut(&key, physical, Modifiers::CTRL | Modifiers::SHIFT), Some(Command::SaveAs));
         assert_eq!(shortcut(&key, physical, Modifiers::empty()), None, "plain letters are typed");
+        let unidentified = Physical::Unidentified(NativeCode::Unidentified);
+        let enter = Key::Named(Named::Enter);
+        assert_eq!(shortcut(&enter, unidentified, Modifiers::CTRL), Some(Command::ToggleCheck));
+        assert_eq!(shortcut(&enter, unidentified, Modifiers::empty()), None, "plain Enter is the newline binding");
         assert_eq!(shortcut(&key, physical, Modifiers::LOGO | Modifiers::CTRL), None, "Super belongs to the shell");
         let unidentified = Physical::Unidentified(NativeCode::Unidentified);
         assert_eq!(shortcut(&Key::Named(Named::F9), unidentified, Modifiers::empty()), Some(Command::ToggleSidebar));

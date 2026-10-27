@@ -39,6 +39,7 @@ glide_sdk::catalogue! {
     JoinLines => "Join Lines", "Об’єднати рядки";
     SortLines => "Sort Lines", "Сортувати рядки";
     ToggleComment => "Toggle Comment", "Закоментувати / розкоментувати";
+    ToggleCheck => "Toggle Checklist Item", "Позначити пункт списку";
     Indent => "Indent", "Збільшити відступ";
     Unindent => "Unindent", "Зменшити відступ";
     Uppercase => "UPPERCASE", "ВЕЛИКІ ЛІТЕРИ" as written;

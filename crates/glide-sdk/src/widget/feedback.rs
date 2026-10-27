@@ -78,7 +78,7 @@ pub fn count_badge<'a, M: 'a>(paint: &Paint, count: u32) -> Element<'a, M> {
     let paint = *paint;
     let shown = count > 0;
     let label = if count > 99 { "99+".to_string() } else { count.to_string() };
-    animate(if shown { 1.0 } else { 0.0 }, if shown { Speed::SPRING } else { Speed::STATE }, move |_| {
+    animate(if shown { 1.0 } else { 0.0 }, if shown { Speed::OVERSHOOT } else { Speed::STATE }, move |_| {
         container(
             text(label, TextStyle { tabular: true, ..TextStyle::MICRO }).color(paint.acc_fg()).wrapping(Wrapping::None),
         )

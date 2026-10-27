@@ -344,7 +344,12 @@ fn editor(app: &App) -> Element<'_, Message> {
     let settings = markdown_settings(&paint, app.font_size(), crate::MONO);
     let viewer = Preview { paint };
     let preview = markdown_view(&paint, items, settings, &viewer);
-    row![container(editor).width(Fill), vertical_rule(&paint), container(preview).width(Fill)].into()
+    row![
+        container(editor).width(Fill),
+        vertical_rule(&paint),
+        container(glide_sdk::widget::arriving(preview)).width(Fill)
+    ]
+    .into()
 }
 
 fn status_bar(app: &App) -> Element<'_, Message> {
@@ -470,6 +475,12 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
                 doc.is_some_and(|doc| {
                     doc.language().line_comment().is_some() || doc.language().block_comment().is_some()
                 }),
+            ),
+            action(
+                app,
+                Key::ToggleCheck,
+                Command::ToggleCheck,
+                doc.is_some_and(|doc| doc.language() == Language::Markdown),
             ),
             action(app, Key::Indent, Command::Indent, has),
             action(app, Key::Unindent, Command::Unindent, has),
@@ -843,10 +854,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
         main = main.push(find_bar(app)).push(rule(&paint));
     }
     if app.goto.is_some() {
-        main = main.push(goto_bar(app)).push(rule(&paint));
+        main = main.push(glide_sdk::widget::arriving(goto_bar(app))).push(rule(&paint));
     }
     if let Some(bar) = infobar(app) {
-        main = main.push(bar).push(rule(&paint));
+        main = main.push(glide_sdk::widget::arriving(bar)).push(rule(&paint));
     }
     main = main.push(editor(app));
     let bottom_right = if app.edge_to_edge() || app.prefs.status_bar { 0.0 } else { R3 };
@@ -854,7 +865,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let main = pane(paint.view_bg(), Radius::default().bottom_right(bottom_right).bottom_left(bottom_left), main);
     let mut middle = row![];
     if app.sidebar_visible() {
-        middle = middle.push(sidebar(app)).push(vertical_rule(&paint));
+        middle = middle.push(glide_sdk::widget::arriving(sidebar(app))).push(vertical_rule(&paint));
     }
     middle = middle.push(main);
     let mut body = column![header(app), rule(&paint), middle.height(Fill)];

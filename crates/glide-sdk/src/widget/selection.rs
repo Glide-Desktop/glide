@@ -571,7 +571,7 @@ pub fn swatch<'a, M: Clone + 'a>(
     paint: &Paint, color: Color, selected: bool, message: Option<M>, side: f32,
 ) -> Element<'a, M> {
     let paint = *paint;
-    let swatch = animate(if selected { 1.0 } else { 0.0 }, Speed::SPRING, move |shown| {
+    let swatch = animate(if selected { 1.0 } else { 0.0 }, Speed::OVERSHOOT, move |shown| {
         let shown = shown.clone();
         let ink = if 0.299 * color.r + 0.587 * color.g + 0.114 * color.b > 0.62 { Color::BLACK } else { Color::WHITE };
         let mark: Element<'a, M> =

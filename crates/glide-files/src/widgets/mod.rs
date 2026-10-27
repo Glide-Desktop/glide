@@ -164,7 +164,7 @@ pub fn jobs(app: &App) -> Element<'_, Message> {
                 small(&paint, Icon::Close, Key::StopJob.text(lang), Some(Message::JobCancel(job.id)), false),
             ],
         };
-        task_card(&paint, glyph, task)
+        glide_sdk::widget::arriving(task_card(&paint, glyph, task))
     });
     container(column(cards).spacing(theme::SP2)).padding(theme::SP2).width(Fill).into()
 }

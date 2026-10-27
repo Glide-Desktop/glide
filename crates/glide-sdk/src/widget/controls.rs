@@ -134,14 +134,14 @@ impl<M> canvas::Program<M> for Switch {
     type State = Toggle;
 
     fn update(&self, state: &mut Toggle, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<M>> {
-        state.update(event, bounds, cursor, if self.on { 1.0 } else { 0.0 }, self.enabled, Speed::SPRING)
+        state.update(event, bounds, cursor, if self.on { 1.0 } else { 0.0 }, self.enabled, Speed::OVERSHOOT)
     }
 
     fn draw(
         &self, state: &Toggle, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor,
     ) -> Vec<Geometry> {
         let paint = &self.paint;
-        let thumb_on = state.value.value(Speed::SPRING);
+        let thumb_on = state.value.value(Speed::OVERSHOOT);
         let color_on = state.value.value(Speed::COLOR);
         let mut frame = Frame::new(renderer, bounds.size());
         let size = self.size.track();
@@ -231,14 +231,14 @@ impl<M> canvas::Program<M> for CheckBox {
 
     fn update(&self, state: &mut Toggle, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<M>> {
         let target = if self.check == Check::Off { 0.0 } else { 1.0 };
-        state.update(event, bounds, cursor, target, self.enabled, Speed::SPRING)
+        state.update(event, bounds, cursor, target, self.enabled, Speed::OVERSHOOT)
     }
 
     fn draw(
         &self, state: &Toggle, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor,
     ) -> Vec<Geometry> {
         let paint = &self.paint;
-        let pop = state.value.value(Speed::SPRING);
+        let pop = state.value.value(Speed::OVERSHOOT);
         let fill = state.value.value(Speed::COLOR);
         let mut frame = Frame::new(renderer, bounds.size());
         let side = CHECK.min(bounds.width).min(bounds.height);
@@ -701,18 +701,18 @@ mod tests {
         let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
         let mut toggle = Toggle::default();
         let first: Option<Action<()>> =
-            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 0.0, true, Speed::SPRING);
+            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 0.0, true, Speed::OVERSHOOT);
         assert!(first.is_none(), "the first frame starts at rest");
         let flipped: Option<Action<()>> =
-            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 1.0, true, Speed::SPRING);
+            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 1.0, true, Speed::OVERSHOOT);
         assert!(flipped.is_some(), "flipping asks for frames");
-        std::thread::sleep((Speed::SPRING.duration)() / 2);
-        let middle = toggle.value.value(Speed::SPRING);
+        std::thread::sleep((Speed::OVERSHOOT.duration)() / 2);
+        let middle = toggle.value.value(Speed::OVERSHOOT);
         assert!(middle > 0.3 && middle < 1.35, "mid-flight thumb position {middle}");
-        std::thread::sleep((Speed::SPRING.duration)());
-        assert_eq!(toggle.value.value(Speed::SPRING), 1.0);
+        std::thread::sleep((Speed::OVERSHOOT.duration)());
+        assert_eq!(toggle.value.value(Speed::OVERSHOOT), 1.0);
         let settled: Option<Action<()>> =
-            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 1.0, true, Speed::SPRING);
+            toggle.update(&redraw, bounds, mouse::Cursor::Unavailable, 1.0, true, Speed::OVERSHOOT);
         assert!(settled.is_none(), "a settled switch stops asking for frames");
     }
 

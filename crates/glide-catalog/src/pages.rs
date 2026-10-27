@@ -1309,7 +1309,7 @@ fn motion<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
         ("STATE · t1 E_IO", Speed::STATE),
         ("PRESS · t1 E_OUT", Speed::PRESS),
         ("COLOR · t2 E_OUT", Speed::COLOR),
-        ("SPRING · t2 E_OVER", Speed::SPRING),
+        ("OVERSHOOT · t2 E_OVER", Speed::OVERSHOOT),
         ("EXPAND · t3 E_OUT", Speed::EXPAND),
         ("GROW · t3 E_OVER", Speed::GROW),
     ];

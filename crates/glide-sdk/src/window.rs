@@ -342,11 +342,15 @@ pub fn header<'a, M: Clone + 'a>(
         Some(corners) => corners,
         None => Radius::default().top_left(R3).top_right(R3),
     };
-    let background = if window.focused { paint.bar_bg() } else { paint.bar_bg_idle() };
-    let bar = container(iced::widget::stack(layers))
-        .width(Fill)
-        .height(height)
-        .style(move |_| style::rounded(background, corners));
+    let (busy, idle) = (paint.bar_bg(), paint.bar_bg_idle());
+    let focus = if window.focused { 1.0 } else { 0.0 };
+    let bar = crate::anim::animate(focus, crate::anim::Speed::COLOR, move |value| {
+        let value = value.clone();
+        container(iced::widget::stack(layers))
+            .width(Fill)
+            .height(height)
+            .style(move |_| style::rounded(crate::widget::mix(idle, busy, value.get()), corners))
+    });
     let area = mouse_area(bar).on_press(on_window(Action::Drag)).on_double_click(on_window(Action::ToggleMaximize));
     match context {
         Some(message) => area.on_right_press(message).into(),

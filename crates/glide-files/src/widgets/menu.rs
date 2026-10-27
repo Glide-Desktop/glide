@@ -194,6 +194,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 item(Key::OpenInTerminal, Message::Terminal),
                 Entry::Separator,
                 item(Key::Reload, Message::Reload).shortcut("F5"),
+                item(Key::Shortcuts, Message::ShowShortcuts).shortcut("F1"),
             ]);
             entries
         }

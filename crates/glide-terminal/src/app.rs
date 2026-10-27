@@ -80,6 +80,7 @@ pub enum Command {
     Profiles,
     SetProfile(Profile),
     MakeDefault,
+    Shortcuts,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -267,6 +268,7 @@ pub struct App {
     stamp: Option<SystemTime>,
     awaiting: Option<Instant>,
     pending: Vec<crate::service::OpenTab>,
+    shortcuts_asked: bool,
 }
 
 #[must_use]
@@ -370,6 +372,7 @@ fn shortcut(key: &Key, physical: keyboard::key::Physical, modifiers: Modifiers) 
         (true, true, false, 'u') => Command::Mark(Mark::Line),
         (true, true, false, 'm') => Command::Mark(Mark::Bookmark),
         (true, true, false, 'i') => Command::Profiles,
+        (true, true, false, '/' | '?') => Command::Shortcuts,
         _ => return None,
     })
 }
@@ -398,6 +401,7 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::ActualSize => "Ctrl+0",
         Command::FullScreen => "F11",
         Command::Profiles => "Ctrl+Shift+I",
+        Command::Shortcuts => "Ctrl+Shift+?",
         _ => return None,
     })
 }
@@ -497,6 +501,7 @@ impl App {
             stamp: stamp(),
             awaiting: None,
             pending: Vec::new(),
+            shortcuts_asked: false,
         };
         let handles = glide_sdk::window::handles().map(Message::Handles);
         (app, handles)
@@ -1772,6 +1777,7 @@ impl App {
                 }
                 self.dismiss_menu();
             }
+            Command::Shortcuts => self.shortcuts_asked = self.confirm.is_none() && self.closing_confirm.is_none(),
             _ => {}
         }
         Task::none()
@@ -1801,6 +1807,15 @@ impl App {
             menu.reveal = menu.reveal.with_ease(motion::ease_io);
         }
     }
+
+    fn offer_shortcuts(&mut self, shell: &mut glide_sdk::Shell<Message>) {
+        if std::mem::take(&mut self.shortcuts_asked) {
+            shell.dialog(
+                glide_sdk::Dialog::new(Text::Shortcuts.text(self.lang), Text::ShortcutsBody.text(self.lang))
+                    .cancel(Text::Done.text(self.lang)),
+            );
+        }
+    }
 }
 
 impl glide_sdk::App for App {
@@ -1818,7 +1833,9 @@ impl glide_sdk::App for App {
         if let Message::Window(action) = message {
             shell.window_action(action);
         }
-        Self::update(self, message)
+        let task = Self::update(self, message);
+        self.offer_shortcuts(shell);
+        task
     }
 
     fn view<'a>(&'a self, _: &'a glide_sdk::Shell<Message>) -> iced::Element<'a, Message> {
@@ -1838,8 +1855,10 @@ impl glide_sdk::App for App {
         Task::none()
     }
 
-    fn key(&mut self, event: &keyboard::Event, captured: bool, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
-        Self::update(self, Message::Key(event.clone(), captured))
+    fn key(&mut self, event: &keyboard::Event, captured: bool, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        let task = Self::update(self, Message::Key(event.clone(), captured));
+        self.offer_shortcuts(shell);
+        task
     }
 
     fn paint(&self, _: &glide_sdk::Shell<Message>) -> Paint {

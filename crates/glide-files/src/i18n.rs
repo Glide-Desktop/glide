@@ -157,6 +157,8 @@ glide_sdk::catalogue! {
     ZoomOut => "Zoom Out", "Зменшити";
     ZoomReset => "Normal Size", "Звичайний розмір";
     QueueOperations => "One Operation at a Time", "Операції по черзі";
+    Shortcuts => "Keyboard Shortcuts", "Гарячі клавіші";
+    ShortcutsBody => "Arrows  move the selection · Shift+arrows  extend it · Enter  open · Backspace / Alt+←  back\nCtrl+L  type a path · Ctrl+F or just type  search · Ctrl+H  hidden files · Ctrl+1 / Ctrl+2  grid or list\nCtrl+C / Ctrl+X / Ctrl+V  copy, cut, paste · Ctrl+D  duplicate · Ctrl+Z  undo · F2  rename\nDelete  move to the Trash · Shift+Delete  delete for good · Ctrl+Shift+N  new folder · Alt+Enter  properties\nCtrl++ / Ctrl+- / Ctrl+0  zoom · F5  reload · Shift+F10  menu · Ctrl+W  close", "Стрілки  рух виділенням · Shift+стрілки  розширити · Enter  відкрити · Backspace / Alt+←  назад\nCtrl+L  ввести шлях · Ctrl+F або просто друкуйте  пошук · Ctrl+H  приховані файли · Ctrl+1 / Ctrl+2  сітка чи список\nCtrl+C / Ctrl+X / Ctrl+V  копіювати, вирізати, вставити · Ctrl+D  дублювати · Ctrl+Z  скасувати · F2  перейменувати\nDelete  у кошик · Shift+Delete  видалити назавжди · Ctrl+Shift+N  нова тека · Alt+Enter  властивості\nCtrl++ / Ctrl+- / Ctrl+0  масштаб · F5  оновити · Shift+F10  меню · Ctrl+W  закрити";
     Queued => "Queued", "У черзі";
     Phone => "Phone", "Телефон";
     Camera => "Camera", "Камера";
