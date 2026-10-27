@@ -46,10 +46,14 @@ fn path_bytes(bytes: &[u8]) -> Option<PathBuf> {
 }
 
 fn request(mode: Mode, parent_window: String, title: String, options: Options) -> Request {
-    let filters: Vec<Filter> =
+    let mut filters: Vec<Filter> =
         options.filters.unwrap_or_default().into_iter().map(|(name, list)| Filter::from_portal(name, list)).collect();
     let current_filter = options.current_filter.and_then(|(name, list)| {
         let wanted = Filter::from_portal(name, list);
+        if filters.is_empty() {
+            filters.push(wanted);
+            return Some(0);
+        }
         filters.iter().position(|filter| *filter == wanted)
     });
     let current_file = options.current_file.as_deref().and_then(path_bytes);
@@ -117,8 +121,18 @@ impl PortalRequest {
     }
 }
 
+async fn blocking<T: Send + 'static>(name: &str, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (sender, receiver) = futures_channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _ = sender.send(work());
+        })
+        .ok()?;
+    receiver.await.ok()
+}
+
 async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -> (u32, Results) {
-    let filters = request.filters.clone();
     let spawned = Command::new(files_binary())
         .arg(FLAG)
         .env(REQUEST_ENV, request.to_json())
@@ -130,11 +144,7 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
         return (FAILED, Results::default());
     };
     let registered = server.at(handle.clone(), PortalRequest { pid: child.id() }).await.is_ok();
-    let (sender, receiver) = futures_channel::oneshot::channel();
-    let waiter = std::thread::Builder::new().name("glide-portal-wait".into()).spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    let output = if waiter.is_ok() { receiver.await.ok() } else { None };
+    let output = blocking("glide-portal-wait", move || child.wait_with_output()).await;
     if registered {
         let _ = server.remove::<PortalRequest, _>(&handle).await;
     }
@@ -145,7 +155,10 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
                     SUCCESS,
                     Results {
                         uris: response.uris,
-                        current_filter: response.filter.and_then(|index| filters.get(index)).map(Filter::to_portal),
+                        current_filter: response
+                            .filter
+                            .and_then(|index| request.filters.get(index))
+                            .map(Filter::to_portal),
                         choices: (!response.choices.is_empty()).then_some(response.choices),
                     },
                 ),
@@ -217,14 +230,7 @@ const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 const PICK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
 async fn ask(request: glide_ipc::Request, timeout: std::time::Duration) -> Option<glide_ipc::Response> {
-    let (sender, receiver) = futures_channel::oneshot::channel();
-    std::thread::Builder::new()
-        .name("glide-portal-screen".into())
-        .spawn(move || {
-            let _ = sender.send(glide_ipc::client::exchange(&request, timeout));
-        })
-        .ok()?;
-    receiver.await.ok()?.ok()
+    blocking("glide-portal-screen", move || glide_ipc::client::exchange(&request, timeout)).await?.ok()
 }
 
 fn code_for(response: Option<&glide_ipc::Response>) -> u32 {
@@ -309,6 +315,15 @@ mod tests {
         assert_eq!(request.current_folder, Some(PathBuf::from("/home/me/Pictures")));
         assert_eq!(request.current_name.as_deref(), Some("cat.png"));
         assert_eq!(request.wayland_parent(), Some("xyz"));
+    }
+
+    #[test]
+    fn a_current_filter_without_a_filter_list_still_applies() {
+        let options =
+            Options { current_filter: Some(("Text".into(), vec![(0, "*.txt".into())])), ..Options::default() };
+        let request = request(Mode::Open, String::new(), String::new(), options);
+        assert_eq!(request.filters, [Filter::from_portal("Text".into(), vec![(0, "*.txt".into())])]);
+        assert_eq!(request.current_filter, Some(0));
     }
 
     struct Daemon(std::process::Child, String);
