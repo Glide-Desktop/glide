@@ -26,8 +26,9 @@ use crate::syntax::{Bridge, Highlight, Language};
 
 pub const HEADER: f32 = 38.0;
 pub const STATUS: f32 = 26.0;
-pub(crate) const ISLAND_LIFT: f32 = 50.0;
-pub(crate) const ISLAND_ZONE: f32 = 76.0;
+pub(crate) const ISLAND: f32 = 17.0;
+pub(crate) const ISLAND_LIFT: f32 = 30.0;
+pub(crate) const ISLAND_ZONE: f32 = 44.0;
 pub(crate) const SIDEBAR: f32 = 248.0;
 pub(crate) const SIDEBAR_MIN_WINDOW: f32 = 560.0;
 const CONTROL: f32 = component::SMALL_CONTROL;
@@ -398,7 +399,7 @@ fn editor(app: &App) -> Element<'_, Message> {
 }
 
 fn status_bar(app: &App) -> Element<'_, Message> {
-    let (left, right) = status_parts(app);
+    let (left, right) = status_parts(app, STATUS - 4.0);
     let corners =
         if app.edge_to_edge() { Radius::default() } else { Radius::default().bottom_left(R3).bottom_right(R3) };
     glide_sdk::widget::status_bar(&app.paint, left, right, corners)
@@ -406,7 +407,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
 
 type Parts<'a> = (Vec<Element<'a, Message>>, Vec<Element<'a, Message>>);
 
-fn status_parts(app: &App) -> Parts<'_> {
+fn status_parts(app: &App, button: f32) -> Parts<'_> {
     use glide_sdk::widget::status_button;
     let paint = app.paint;
     let lang = app.lang;
@@ -448,9 +449,9 @@ fn status_parts(app: &App) -> Parts<'_> {
         };
         let at = app.window.size.width - MENU_WIDTH - SP2;
         right.extend([
-            status_button(&paint, language, Message::StatusMenu(MenuKind::Syntax, at)),
-            status_button(&paint, indent, Message::StatusMenu(MenuKind::TabWidths, at)),
-            status_button(&paint, doc.ending.name(), Message::StatusMenu(MenuKind::Endings, at)),
+            status_button(&paint, language, Message::StatusMenu(MenuKind::Syntax, at), button),
+            status_button(&paint, indent, Message::StatusMenu(MenuKind::TabWidths, at), button),
+            status_button(&paint, doc.ending.name(), Message::StatusMenu(MenuKind::Endings, at), button),
             text(doc.encoding.name(), TextStyle::CAP).color(paint.fg_3()).into(),
         ]);
     }
@@ -458,9 +459,9 @@ fn status_parts(app: &App) -> Parts<'_> {
 }
 
 fn status_islands(app: &App) -> Element<'_, Message> {
-    let (left, right) = status_parts(app);
+    let (left, right) = status_parts(app, ISLAND);
     let shown = if app.prefs.auto_hide_status { app.status_reveal.value(motion::t2()) as f32 } else { 1.0 };
-    glide_sdk::widget::status_islands(&app.paint, shown, left, right)
+    glide_sdk::widget::status_islands(&app.paint, shown, ISLAND, left, right)
 }
 
 fn labelled(label: String, command: Command, enabled: bool, on: Option<bool>) -> Item {

@@ -72,6 +72,9 @@ pub fn load() -> Preferences {
 }
 
 pub fn save(prefs: &Preferences) -> std::io::Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
     let path = path().ok_or_else(|| std::io::Error::other("no config directory"))?;
     save_to(&path, prefs)
 }

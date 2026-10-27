@@ -435,7 +435,7 @@ pub fn status_strip<'a, M: 'a>(
 
 #[must_use]
 pub fn status_islands<'a, M: 'a>(
-    paint: &Paint, shown: f32, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>,
+    paint: &Paint, shown: f32, height: f32, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
     if shown <= 0.01 {
         return Space::new().into();
@@ -444,8 +444,8 @@ pub fn status_islands<'a, M: 'a>(
     let island = |items: Vec<Element<'a, M>>| -> Element<'a, M> {
         let content = iced::widget::Row::with_children(items).spacing(SP2).align_y(Alignment::Center);
         let card = container(content)
-            .padding(Padding::from([0.0, SP2]))
-            .height(component::CONTROL)
+            .padding(Padding::from([0.0, SP1]))
+            .height(height)
             .align_y(Alignment::Center)
             .style(move |_| style::popover(&paint));
         widgets::surface(card, &paint, Level::El2, R3)
@@ -461,13 +461,13 @@ pub fn status_islands<'a, M: 'a>(
 
 #[must_use]
 pub fn status_button<'a, M: Clone + 'a>(
-    paint: &Paint, label: impl Into<std::borrow::Cow<'a, str>>, message: M,
+    paint: &Paint, label: impl Into<std::borrow::Cow<'a, str>>, message: M, height: f32,
 ) -> Element<'a, M> {
     let paint = *paint;
     let control = control(text(label.into(), TextStyle::CAP).wrapping(Wrapping::None))
         .on_press(message.clone())
-        .height(STATUS_BAR - 4.0)
-        .padding(Padding::from([2.0, SP2]));
+        .height(height)
+        .padding(Padding::from([0.0, SP2]));
     let control =
         widgets::button(control, move |status| super::buttons::button_style(&paint, super::Tone::Ghost, status));
     activatable(&paint, control, R2, Some(message))
