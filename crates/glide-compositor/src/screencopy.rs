@@ -269,15 +269,20 @@ fn logical_region_to_buffer(
 
 fn buffer_is_suitable(buffer: &WlBuffer, region: Rectangle<i32, Physical>) -> bool {
     smithay::wayland::shm::with_buffer_contents(buffer, |_ptr, len, data| {
-        let expected_stride = region.size.w * 4;
-        let needed = usize::try_from(data.stride.max(0) * data.height.max(0)).unwrap_or(usize::MAX);
+        let row_bytes = usize::try_from(region.size.w).unwrap_or(0) * 4;
+        let last_row = usize::try_from(data.height - 1).unwrap_or(0);
         data.width == region.size.w
             && data.height == region.size.h
-            && data.stride >= expected_stride
+            && data.stride >= region.size.w * 4
             && matches!(data.format, wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888)
-            && len >= needed
+            && row_in_pool(data.offset, data.stride, last_row, row_bytes, len).is_some()
     })
     .unwrap_or(false)
+}
+
+fn row_in_pool(offset: i32, stride: i32, row: usize, row_bytes: usize, len: usize) -> Option<usize> {
+    let start = usize::try_from(offset).ok()?.checked_add(row.checked_mul(usize::try_from(stride).ok()?)?)?;
+    (start.checked_add(row_bytes)? <= len).then_some(start)
 }
 
 impl GlideState {
@@ -327,13 +332,14 @@ fn copy_region(capture: &PendingCapture, pixels: &[u8], frame_size: smithay::uti
     let source_stride = to_usize(frame_size.w) * 4;
 
     smithay::wayland::shm::with_buffer_contents_mut(&capture.buffer, |ptr, len, data| {
-        let dest_stride = to_usize(data.stride);
         let row_bytes = to_usize(region.size.w) * 4;
 
         for row in 0..region.size.h {
             let source_offset = to_usize(region.loc.y + row) * source_stride + to_usize(region.loc.x) * 4;
-            let dest_offset = to_usize(row) * dest_stride;
-            if source_offset + row_bytes > pixels.len() || dest_offset + row_bytes > len {
+            let Some(dest_offset) = row_in_pool(data.offset, data.stride, to_usize(row), row_bytes, len) else {
+                return false;
+            };
+            if source_offset + row_bytes > pixels.len() {
                 return false;
             }
             // SAFETY: both ranges were bounds-checked against their slice lengths just above,
@@ -363,6 +369,18 @@ mod tests {
         assert_eq!(recording_pids(&[(7, start), (7, later), (9, later)], later), vec![7]);
         let stale = later + RECORDING_WINDOW + Duration::from_secs(1);
         assert!(recording_pids(&[(7, start), (7, later)], stale).is_empty());
+    }
+
+    #[test]
+    fn rows_land_at_the_buffer_offset_inside_its_pool() {
+        let (stride, row_bytes) = (40, 40);
+        let pool = 2 * 10 * stride as usize;
+        let second_buffer = 10 * stride;
+        assert_eq!(row_in_pool(0, stride, 0, row_bytes, pool), Some(0));
+        assert_eq!(row_in_pool(second_buffer, stride, 0, row_bytes, pool), Some(400), "not the pool's first buffer");
+        assert_eq!(row_in_pool(second_buffer, stride, 9, row_bytes, pool), Some(760));
+        assert_eq!(row_in_pool(second_buffer + 1, stride, 9, row_bytes, pool), None, "past the end of the pool");
+        assert_eq!(row_in_pool(-4, stride, 0, row_bytes, pool), None);
     }
 
     #[test]
