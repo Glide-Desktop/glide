@@ -1484,50 +1484,74 @@ pub fn sync_desktop_appearance(wanted: DesktopAppearance) {
         }
         *last = Some(wanted.clone());
     }
-    std::thread::spawn(move || {
-        gsettings_set("color-scheme", gnome_color_scheme(wanted.appearance));
-        gsettings_set("accent-color", gnome_accent(wanted.accent));
-        let current = Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
-            .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-            .unwrap_or_default();
-        let theme = crate::theme_export::gtk3_theme(&current, wanted.appearance, wanted.toolkits)
-            .or_else(|| gtk_theme_for(&current).map(ToString::to_string));
-        if let Some(theme) = theme.as_deref() {
-            gsettings_set("gtk-theme", theme);
-        }
-        crate::theme_export::export(&wanted, theme.as_deref());
-        if let Some(icons) = wanted.icon_theme.as_deref().filter(|name| !name.is_empty()) {
-            gsettings_set("icon-theme", icons);
-        }
-        for (schema, key, value) in gsettings_extras(&wanted) {
-            gsettings_set_in(schema, key, &value);
-        }
-        let mut environment = activation_environment(&wanted);
-        if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none()
-            && let Some(theme) = crate::theme_export::qt_platform_theme()
-        {
-            environment.push(format!("QT_QPA_PLATFORMTHEME={theme}"));
-        }
-        if let Some(style) = crate::theme_export::qt_style_override() {
-            environment.push(format!("QT_STYLE_OVERRIDE={style}"));
-        }
-        if !environment.is_empty() {
-            let _ = Command::new("dbus-update-activation-environment")
-                .arg("--systemd")
-                .args(&environment)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-        tracing::info!(
-            appearance = ?wanted.appearance,
-            accent = ?wanted.accent,
-            "synced desktop appearance to GSettings"
-        );
+    let worker = APPEARANCE_WORKER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<DesktopAppearance>();
+        std::thread::Builder::new()
+            .name("glide-gsettings".to_string())
+            .spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    apply_desktop_appearance(&latest(first, &rx));
+                }
+            })
+            .inspect_err(|err| tracing::warn!("the GSettings worker did not start: {err}"))
+            .ok()
+            .map(|_| tx)
     });
+    if let Some(worker) = worker {
+        let _ = worker.send(wanted);
+    }
+}
+
+static APPEARANCE_WORKER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<DesktopAppearance>>> =
+    std::sync::OnceLock::new();
+
+fn latest<T>(first: T, queue: &std::sync::mpsc::Receiver<T>) -> T {
+    queue.try_iter().last().unwrap_or(first)
+}
+
+fn apply_desktop_appearance(wanted: &DesktopAppearance) {
+    gsettings_set("color-scheme", gnome_color_scheme(wanted.appearance));
+    gsettings_set("accent-color", gnome_accent(wanted.accent));
+    let current = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    let theme = crate::theme_export::gtk3_theme(&current, wanted.appearance, wanted.toolkits)
+        .or_else(|| gtk_theme_for(&current).map(ToString::to_string));
+    if let Some(theme) = theme.as_deref() {
+        gsettings_set("gtk-theme", theme);
+    }
+    crate::theme_export::export(wanted, theme.as_deref());
+    if let Some(icons) = wanted.icon_theme.as_deref().filter(|name| !name.is_empty()) {
+        gsettings_set("icon-theme", icons);
+    }
+    for (schema, key, value) in gsettings_extras(wanted) {
+        gsettings_set_in(schema, key, &value);
+    }
+    let mut environment = activation_environment(wanted);
+    if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none()
+        && let Some(theme) = crate::theme_export::qt_platform_theme()
+    {
+        environment.push(format!("QT_QPA_PLATFORMTHEME={theme}"));
+    }
+    if let Some(style) = crate::theme_export::qt_style_override() {
+        environment.push(format!("QT_STYLE_OVERRIDE={style}"));
+    }
+    if !environment.is_empty() {
+        let _ = Command::new("dbus-update-activation-environment")
+            .arg("--systemd")
+            .args(&environment)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    tracing::info!(
+        appearance = ?wanted.appearance,
+        accent = ?wanted.accent,
+        "synced desktop appearance to GSettings"
+    );
 }
 
 pub fn open_settings() {
@@ -1570,6 +1594,17 @@ pub fn suspend() {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_gsettings_worker_applies_only_the_newest_queued_appearance() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert_eq!(latest("dark", &rx), "dark");
+        for wanted in ["light", "dark", "light"] {
+            tx.send(wanted).unwrap();
+        }
+        assert_eq!(latest("dark", &rx), "light", "toggling twice quickly ends where the user stopped");
+        assert!(rx.try_recv().is_err());
+    }
 
     fn parse_battery_uevent(text: &str) -> Option<BatteryInfo> {
         parse_battery_cell(text).and_then(|cell| aggregate_batteries(&[cell]))
