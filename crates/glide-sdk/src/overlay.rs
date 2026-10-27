@@ -156,6 +156,73 @@ pub fn dialog_buttons<'a, M: Clone + 'a>(
         .into()
 }
 
+pub const FINDER_ROWS: usize = 8;
+pub const FINDER_WIDTH: f32 = 580.0;
+pub const FINDER_ROW: f32 = 36.0;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinderRow {
+    pub label: String,
+    pub detail: String,
+}
+
+#[must_use]
+pub fn finder_window(count: usize, selected: usize) -> std::ops::Range<usize> {
+    let start = (selected + 1).saturating_sub(FINDER_ROWS);
+    start..(start + FINDER_ROWS).min(count)
+}
+
+#[must_use]
+#[allow(clippy::too_many_arguments)] // One call draws one finder; every argument is a distinct input
+pub fn finder<'a, M: Clone + 'a>(
+    paint: &Paint, progress: f32, input: Element<'a, M>, rows: &[FinderRow], selected: usize, empty: &'a str,
+    on_pick: impl Fn(usize) -> M, dismiss: M, window: Size, corner: f32,
+) -> Element<'a, M> {
+    let paint = paint.faded(progress);
+    let shown = finder_window(rows.len(), selected);
+    let list: Element<'a, M> = if rows.is_empty() {
+        container(text(empty, TextStyle::CALL).color(paint.fg_3())).padding(SP4).into()
+    } else {
+        let items = shown.map(|index| {
+            let active = index == selected;
+            let row = &rows[index];
+            let color = if active { paint.acc_soft_fg() } else { paint.fg_1() };
+            let content = row![
+                text(row.label.clone(), TextStyle::CALL).color(color).wrapping(Wrapping::None),
+                Space::new().width(Fill),
+                text(row.detail.clone(), TextStyle::CAP).color(paint.fg_3()).wrapping(Wrapping::None),
+            ]
+            .spacing(SP3)
+            .align_y(Alignment::Center);
+            let control = iced::widget::button(container(content).center_y(Fill).clip(true))
+                .on_press(on_pick(index))
+                .width(Fill)
+                .height(FINDER_ROW)
+                .padding(Padding::from([0.0, SP3]));
+            widgets::button(control, move |status| {
+                let background = if active { paint.acc_soft() } else { paint.layered(Color::TRANSPARENT, status) };
+                style::flat(background, color, R2)
+            })
+        });
+        column(items).spacing(2).padding(SP1).into()
+    };
+    let card = container(column![container(input).padding(SP2), crate::widget::separator(&paint), list])
+        .width(FINDER_WIDTH)
+        .max_width((window.width - SP6).max(1.0));
+    let scale = component::DIALOG_CLOSED_SCALE + (1.0 - component::DIALOG_CLOSED_SCALE) * progress;
+    let scrim = Color { a: 0.32 * progress, ..Color::BLACK };
+    let backdrop = container(Space::new().width(Fill).height(Fill)).style(move |_| style::rounded(scrim, corner));
+    stack![
+        opaque(mouse_area(backdrop).on_press(dismiss)),
+        container(widgets::scale(opaque(widgets::surface(card, &paint, Level::El3, R3)), scale))
+            .width(Fill)
+            .height(Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .padding(Padding::ZERO.top(window.height * 0.14)),
+    ]
+    .into()
+}
+
 #[must_use]
 pub fn ringed<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>, radius: f32, on: bool) -> Element<'a, M> {
     let color = if on { paint.acc_ring() } else { Color::TRANSPARENT };
@@ -271,6 +338,16 @@ pub fn toast_card<'a, M: Clone + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_finder_list_scrolls_with_the_selection_and_never_runs_past_the_rows() {
+        assert_eq!(finder_window(0, 0), 0..0);
+        assert_eq!(finder_window(5, 4), 0..5);
+        assert_eq!(finder_window(30, 0), 0..FINDER_ROWS);
+        assert_eq!(finder_window(30, 7), 0..FINDER_ROWS);
+        assert_eq!(finder_window(30, 8), 1..FINDER_ROWS + 1);
+        assert_eq!(finder_window(30, 29), 22..30);
+    }
 
     #[test]
     fn enter_takes_the_accent_choice_and_escape_dismisses() {
