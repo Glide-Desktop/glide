@@ -30,7 +30,6 @@ pub(crate) const ISLAND_LIFT: f32 = 50.0;
 pub(crate) const ISLAND_ZONE: f32 = 76.0;
 pub(crate) const SIDEBAR: f32 = 248.0;
 pub(crate) const SIDEBAR_MIN_WINDOW: f32 = 560.0;
-const TABS: f32 = 36.0;
 const CONTROL: f32 = component::SMALL_CONTROL;
 const MENU_WIDTH: f32 = 300.0;
 
@@ -110,6 +109,9 @@ fn header(app: &App) -> Element<'_, Message> {
             menu_bar(app, &control_paint)
         });
     }
+    if app.docs.len() > 1 && !app.focus {
+        header = header.center(tab_bar(app));
+    }
     let sidebar = Some(Message::Command(Command::ToggleSidebar));
     header = header
         .trailing(icon_button(&control_paint, Icon::Sidebar, Key::Sidebar.text(app.lang), sidebar, app.prefs.sidebar))
@@ -131,7 +133,8 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
         .map(|doc| Tab::new(doc.id, app.doc_name(doc)).mark(if doc.dirty() { Mark::Dot } else { Mark::None }))
         .collect();
     tab_strip(&app.paint, tabs, app.active)
-        .height(TABS)
+        .height(HEADER)
+        .bare()
         .on_select(Message::TabPressed)
         .hovered(app.hovered_tab, Message::TabHovered)
         .on_reorder(Message::TabMoved)
@@ -948,9 +951,6 @@ fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element
 pub fn view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let mut main = column![];
-    if app.docs.len() > 1 && !app.focus {
-        main = main.push(tab_bar(app)).push(rule(&paint));
-    }
     if app.find.is_some() {
         main = main.push(find_bar(app)).push(rule(&paint));
     }
