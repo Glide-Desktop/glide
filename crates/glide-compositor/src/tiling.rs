@@ -55,6 +55,11 @@ pub fn tile(window: Rect, area: Rect, side: Side, beyond: Option<Rect>) -> Rect 
 }
 
 #[must_use]
+pub fn still_tiled(window: Rect, area: Rect) -> bool {
+    [Side::Left, Side::Right].into_iter().any(|side| window == zone_rect(side.zone(), area))
+}
+
+#[must_use]
 pub fn carry(window: Rect, from: Rect, to: Rect) -> Rect {
     let size = Size::from((window.size.w.min(to.size.w), window.size.h.min(to.size.h)));
     let offset = window.loc - from.loc;
@@ -122,14 +127,16 @@ impl crate::GlideState {
     }
 
     pub fn restore_focused(&mut self) {
-        let Some((id, _, maximized)) = self.focused_frame() else {
+        let Some((id, frame, maximized)) = self.focused_frame() else {
             return;
         };
         if maximized {
             self.morph_geometry(id, |state| {
                 state.layout.set_maximized(id, false);
             });
-        } else if let Some(previous) = self.session.tiled_from.remove(&id) {
+        } else if let Some(previous) =
+            self.session.tiled_from.remove(&id).filter(|_| still_tiled(frame, self.output_of(frame).1))
+        {
             self.place(id, crate::state::logical_rect(previous), false);
         } else {
             self.minimize_with_flight(id);
@@ -180,6 +187,15 @@ mod tests {
         let beyond = rect(-2560, 0, 2560, 1440);
         assert_eq!(tile(left, area, Side::Left, Some(beyond)), rect(-1280, 0, 1280, 1440), "the right half over there");
         assert_eq!(tile(window, area, Side::Right, None), rect(960, 32, 960, 1048));
+    }
+
+    #[test]
+    fn a_window_dragged_out_of_its_half_is_no_longer_tiled() {
+        let area = rect(0, 32, 1920, 1048);
+        assert!(still_tiled(rect(0, 32, 960, 1048), area));
+        assert!(still_tiled(rect(960, 32, 960, 1048), area));
+        assert!(!still_tiled(rect(40, 80, 960, 1048), area), "moved by hand: Super+Down minimizes instead");
+        assert!(!still_tiled(rect(0, 32, 900, 1048), area), "resized by hand");
     }
 
     #[test]
