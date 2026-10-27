@@ -42,11 +42,14 @@ pub fn extract(summary: &str, body: &str) -> Option<String> {
     let text: Vec<char> = format!("{summary}\n{body}").chars().collect();
     let keyword_char = keyword_start(&text)?;
     let candidates = candidates(&text);
+    let same_sentence = |end: usize| {
+        text.get(end..keyword_char).is_some_and(|gap| !gap.iter().any(|ch| matches!(ch, '.' | '!' | '?' | '\n')))
+    };
     candidates
         .iter()
-        .find(|(start, _)| *start >= keyword_char)
-        .or_else(|| candidates.last())
-        .map(|(_, code)| code.clone())
+        .find(|(start, _, _)| *start >= keyword_char)
+        .or_else(|| candidates.iter().rev().find(|(start, end, _)| *start < keyword_char && same_sentence(*end)))
+        .map(|(_, _, code)| code.clone())
 }
 
 fn keyword_start(text: &[char]) -> Option<usize> {
@@ -62,7 +65,7 @@ fn keyword_start(text: &[char]) -> Option<usize> {
     })
 }
 
-fn candidates(text: &[char]) -> Vec<(usize, String)> {
+fn candidates(text: &[char]) -> Vec<(usize, usize, String)> {
     let mut found = Vec::new();
     let mut index = 0;
     while index < text.len() {
@@ -87,7 +90,7 @@ fn candidates(text: &[char]) -> Vec<(usize, String)> {
         }
         let digits: String = text[start..index].iter().filter(|ch| ch.is_ascii_digit()).collect();
         if (MIN_DIGITS..=MAX_DIGITS).contains(&digits.len()) && standalone(text, start, index) {
-            found.push((start, digits));
+            found.push((start, index, digits));
         }
     }
     found
@@ -227,6 +230,12 @@ mod tests {
     #[test]
     fn the_first_number_after_the_keyword_wins() {
         assert_eq!(extract("Shop", "Order 55512: your code is 7391"), Some("7391".into()));
+    }
+
+    #[test]
+    fn a_number_in_an_earlier_sentence_is_not_the_code() {
+        assert_eq!(extract("Shop", "Order 48213 has shipped. Reset your password any time"), None);
+        assert_eq!(extract("Shop", "Order 48213 has shipped\nYour login is safe"), None);
     }
 
     #[test]
