@@ -3672,8 +3672,15 @@ impl GlideState {
         let (sender, receiver) = channel::channel::<Verdict>();
         let secret = password.expose().to_owned();
         let offered = password;
+        let token = std::rc::Rc::new(std::cell::Cell::new(None));
+        let own = token.clone();
         let inserted = self.loop_handle.insert_source(receiver, move |event, (), state| {
-            let channel::Event::Msg(verdict) = event else { return };
+            let channel::Event::Msg(verdict) = event else {
+                if let Some(token) = own.take() {
+                    state.loop_handle.remove(token);
+                }
+                return;
+            };
             if verdict != Verdict::Granted {
                 tracing::info!("a changed login password did not pass PAM; the app keys keep their wrap");
                 return;
@@ -3683,9 +3690,12 @@ impl GlideState {
                 tracing::info!(?response, "the changed login password was offered to the app keys");
             });
         });
-        if let Err(err) = inserted {
-            tracing::error!("failed to watch the changed login password check: {err}");
-            return;
+        match inserted {
+            Ok(registered) => token.set(Some(registered)),
+            Err(err) => {
+                tracing::error!("failed to watch the changed login password check: {err}");
+                return;
+            }
         }
         match Authenticator::start(&user.username, move |verdict| {
             let _ = sender.send(verdict);

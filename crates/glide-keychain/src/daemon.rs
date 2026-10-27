@@ -314,9 +314,15 @@ impl Daemon {
         }
         if let Some(bytes) = take_file(&runtime.join(glide_login_key::REKEY_FILE))
             && let Some((old, new)) = glide_login_key::rekey_from(&bytes)
-            && let Err(fault) = login.keyring.rekey(&old, &new)
         {
-            eprintln!("glide-keychain: the login keyring did not follow the password change ({fault})");
+            match login.keyring.rekey(&old, &new) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(runtime.join(glide_login_key::KEY_FILE));
+                }
+                Err(fault) => {
+                    eprintln!("glide-keychain: the login keyring did not follow the password change ({fault})");
+                }
+            }
         }
         self.migrate_app_secrets();
     }
@@ -944,6 +950,10 @@ mod tests {
         let rekey = glide_login_key::rekey_bytes(&key("first"), &key("second"));
         std::fs::write(runtime.join(glide_login_key::REKEY_FILE), &*rekey).unwrap();
         next_login.take_login_handoff();
+        assert!(!runtime.join(glide_login_key::KEY_FILE).exists(), "the key the login left is stale after a change");
+        let mut restarted_again = Daemon::new(path.clone(), FAST);
+        restarted_again.watch_login_handoff(runtime);
+        assert!(!restarted_again.app_secrets_unlocked(), "a restart in the same session never restores the old wrap");
         let mut after = Daemon::new(path.clone(), FAST);
         let first = Request::Unlock { vault: LOGIN.into(), password: hidden("first") };
         assert_eq!(after.handle(first), Response::WrongPassword);
