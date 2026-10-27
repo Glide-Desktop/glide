@@ -69,6 +69,7 @@ glide_sdk::catalogue! {
     SpacesForTabs => "Insert Spaces", "Пробіли замість табуляції";
     TabWidth => "Tab Width", "Ширина табуляції";
     AutoIndent => "Auto Indent", "Автоматичний відступ";
+    AutoPair => "Close Brackets and Quotes", "Закривати дужки й лапки";
     LineEndings => "Line Endings…", "Закінчення рядків…";
     UnixEndings => "Unix / macOS (LF)", "Unix / macOS (LF)";
     WindowsEndings => "Windows (CRLF)", "Windows (CRLF)";

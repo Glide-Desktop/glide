@@ -267,6 +267,61 @@ pub fn newline(text: &str, at: usize, auto_indent: bool) -> String {
     format!("\n{}", leading(&text[start..at]))
 }
 
+fn closer(c: char, language: Language) -> Option<char> {
+    match c {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' | '`' => Some(c),
+        '\'' if !matches!(language, Language::Plain | Language::Markdown | Language::Rust) => Some(c),
+        _ => None,
+    }
+}
+
+fn is_quote(c: char) -> bool {
+    matches!(c, '"' | '\'' | '`')
+}
+
+#[must_use]
+pub(crate) fn typed(text: &str, selection: &Range<usize>, c: char, language: Language) -> Option<Change> {
+    let at = selection.start;
+    if selection.start != selection.end {
+        let close = closer(c, language)?;
+        let inner = &text[selection.clone()];
+        let wrapped = format!("{c}{inner}{close}");
+        let start = selection.start + c.len_utf8();
+        return Some(Change { range: selection.clone(), text: wrapped, select: start..start + inner.len() });
+    }
+    let next = text[at..].chars().next();
+    if next == Some(c) && (is_quote(c) || matches!(c, ')' | ']' | '}')) {
+        let end = at + c.len_utf8();
+        return Some(Change { range: at..at, text: String::new(), select: end..end });
+    }
+    let close = closer(c, language)?;
+    let before = text[..at].chars().next_back();
+    let opens_clear = next.is_none_or(|n| n.is_whitespace() || ")]}>,;:.".contains(n));
+    let quote_clear = !is_quote(c) || before.is_none_or(|p| !p.is_alphanumeric() && p != '_' && p != c);
+    if !opens_clear || !quote_clear {
+        return None;
+    }
+    let caret = at + c.len_utf8();
+    Some(Change { range: at..at, text: format!("{c}{close}"), select: caret..caret })
+}
+
+#[must_use]
+pub(crate) fn backspace_pair(text: &str, selection: &Range<usize>, language: Language) -> Option<Change> {
+    if selection.start != selection.end {
+        return None;
+    }
+    let at = selection.start;
+    let before = text[..at].chars().next_back()?;
+    let after = text[at..].chars().next()?;
+    (closer(before, language) == Some(after)).then(|| {
+        let start = at - before.len_utf8();
+        Change { range: start..at + after.len_utf8(), text: String::new(), select: start..start }
+    })
+}
+
 struct Item {
     indent: usize,
     bullet: char,
@@ -402,6 +457,64 @@ mod tests {
         let mut text = text.to_string();
         text.replace_range(change.range.clone(), &change.text);
         text
+    }
+
+    fn type_at(text: &str, c: char, language: Language) -> String {
+        let start = text.find('|').unwrap();
+        let end = text.rfind('|').unwrap();
+        let end = if end == start { start } else { end - 1 };
+        let text = text.replacen('|', "", 2);
+        typed(&text, &(start..end), c, language).map_or_else(
+            || format!("{}{c}{}", &text[..start], &text[end..]),
+            |change| {
+                let mut out = apply(&text, &change);
+                out.insert(change.select.end, '|');
+                if change.select.start != change.select.end {
+                    out.insert(change.select.start, '|');
+                }
+                out
+            },
+        )
+    }
+
+    #[test]
+    fn an_opening_bracket_or_quote_closes_itself_only_before_whitespace_or_a_closer() {
+        assert_eq!(type_at("f|", '(', Language::Rust), "f(|)");
+        assert_eq!(type_at("f(|)", '[', Language::Rust), "f([|])");
+        assert_eq!(type_at("|x", '(', Language::Rust), "(x", "no pair before a word");
+        assert_eq!(type_at("let s = |", '"', Language::Rust), "let s = \"|\"");
+        assert_eq!(type_at("don|", '\'', Language::Python), "don'", "an apostrophe after a letter stays one");
+        assert_eq!(type_at("x = |", '\'', Language::Python), "x = '|'");
+        assert_eq!(type_at("it|", '\'', Language::Plain), "it'");
+        assert_eq!(type_at("&|", '\'', Language::Rust), "&'", "lifetimes are not quotes");
+        assert_eq!(type_at("a|", '*', Language::Rust), "a*");
+    }
+
+    #[test]
+    fn typing_a_closer_steps_over_the_one_already_there() {
+        assert_eq!(type_at("f(x|)", ')', Language::Rust), "f(x)|");
+        assert_eq!(type_at("\"x|\"", '"', Language::Rust), "\"x\"|");
+        assert_eq!(type_at("f(x|", ')', Language::Rust), "f(x)", "nothing to skip, so it is typed");
+    }
+
+    #[test]
+    fn typing_a_bracket_over_a_selection_wraps_it() {
+        assert_eq!(type_at("a |b c| d", '(', Language::Rust), "a (|b c|) d");
+        assert_eq!(type_at("|x|", '"', Language::Markdown), "\"|x|\"");
+        assert_eq!(type_at("|x|", '*', Language::Rust), "*", "a plain character replaces the selection as usual");
+    }
+
+    #[test]
+    fn backspace_between_a_pair_removes_both_halves() {
+        let pair = |text: &str| {
+            let at = text.find('|').unwrap();
+            let text = text.replacen('|', "", 1);
+            backspace_pair(&text, &(at..at), Language::Rust).map(|change| apply(&text, &change))
+        };
+        assert_eq!(pair("f(|)").as_deref(), Some("f"));
+        assert_eq!(pair("[\"|\"]").as_deref(), Some("[]"));
+        assert_eq!(pair("f(x|)"), None);
+        assert_eq!(pair("(|"), None);
     }
 
     fn enter(text: &str) -> String {

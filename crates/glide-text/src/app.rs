@@ -131,6 +131,7 @@ pub enum Command {
     TabWidths,
     TabWidth(usize),
     ToggleAutoIndent,
+    ToggleAutoPair,
     Endings,
     SetEnding(Ending),
     ToggleTrimOnSave,
@@ -439,6 +440,16 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::MenuBar => "F10",
         _ => return None,
     })
+}
+
+fn pair_change(doc: &Document, action: &Action) -> Option<edit::Change> {
+    use iced::widget::text_editor::Edit;
+    let Action::Edit(edit) = action else { return None };
+    match edit {
+        Edit::Insert(c) => edit::typed(&doc.text, &doc.selected(), *c, doc.language()),
+        Edit::Backspace => edit::backspace_pair(&doc.text, &doc.selected(), doc.language()),
+        _ => None,
+    }
 }
 
 #[must_use]
@@ -881,6 +892,14 @@ impl App {
         match message {
             Message::Edit(action) => {
                 let pasted = matches!(action, Action::Edit(iced::widget::text_editor::Edit::Paste(_)));
+                if self.prefs.auto_pair
+                    && let Some(doc) = self.doc_mut()
+                    && let Some(change) = pair_change(doc, &action)
+                {
+                    doc.replace(change.range, &change.text, Kind::Other);
+                    doc.place(change.select);
+                    return Task::none();
+                }
                 if let Some(doc) = self.doc_mut()
                     && doc.perform(action)
                 {
@@ -1540,6 +1559,11 @@ impl App {
             }
             Command::ToggleAutoIndent => {
                 self.prefs.auto_indent = !self.prefs.auto_indent;
+                self.store_prefs();
+                Task::none()
+            }
+            Command::ToggleAutoPair => {
+                self.prefs.auto_pair = !self.prefs.auto_pair;
                 self.store_prefs();
                 Task::none()
             }

@@ -539,6 +539,7 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
                     None,
                 ),
                 check(app, Key::AutoIndent, Command::ToggleAutoIndent, app.prefs.auto_indent, true),
+                check(app, Key::AutoPair, Command::ToggleAutoPair, app.prefs.auto_pair, true),
                 Item::Separator,
                 labelled(format!("{} {}", Key::LineEndings.text(app.lang), ending.name()), Command::Endings, has, None),
                 check(app, Key::TrimOnSave, Command::ToggleTrimOnSave, app.prefs.trim_on_save, true),
