@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -339,14 +339,54 @@ impl<'a, M: 'a> From<Animate<'a, M>> for Element<'a, M> {
     }
 }
 
+#[derive(Debug)]
+pub struct Lingering<T> {
+    held: RefCell<Option<(T, Option<Instant>)>>,
+}
+
+impl<T> Default for Lingering<T> {
+    fn default() -> Self {
+        Self { held: RefCell::new(None) }
+    }
+}
+
+impl<T: Clone> Lingering<T> {
+    pub fn show(&self, current: Option<&T>) -> Option<(T, bool)> {
+        let mut held = self.held.borrow_mut();
+        if let Some(value) = current {
+            *held = Some((value.clone(), None));
+            return Some((value.clone(), true));
+        }
+        let (value, since) = held.as_mut()?;
+        let since = *since.get_or_insert_with(Instant::now);
+        if since.elapsed() >= motion::t3() {
+            *held = None;
+            return None;
+        }
+        Some((value.clone(), false))
+    }
+}
+
 pub struct Collapse<'a, M> {
     content: Element<'a, M>,
     open: bool,
+    sideways: bool,
+    from_closed: bool,
 }
 
 #[must_use]
 pub fn collapse<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    Element::new(Collapse { content: content.into(), open })
+    Element::new(Collapse { content: content.into(), open, sideways: false, from_closed: false })
+}
+
+#[must_use]
+pub fn grow<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    Element::new(Collapse { content: content.into(), open, sideways: false, from_closed: true })
+}
+
+#[must_use]
+pub fn grow_x<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    Element::new(Collapse { content: content.into(), open, sideways: true, from_closed: true })
 }
 
 impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
@@ -355,28 +395,35 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(Motion::at(if self.open { 1.0 } else { 0.0 }))
+        tree::State::new(Motion::at(if self.open && !self.from_closed { 1.0 } else { 0.0 }))
     }
 
     forward!(content: children, diff);
 
     fn size(&self) -> Size<Length> {
-        Size::new(self.content.as_widget().size().width, Length::Shrink)
+        let size = self.content.as_widget().size();
+        if self.sideways { Size::new(Length::Shrink, size.height) } else { Size::new(size.width, Length::Shrink) }
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
         let value = tree.state.downcast_ref::<Motion>().value(Speed::EXPAND);
-        let child = self.content.as_widget_mut().layout(
-            &mut tree.children[0],
-            renderer,
-            &layout::Limits::new(Size::new(limits.min().width, 0.0), Size::new(limits.max().width, f32::INFINITY)),
-        );
+        let room = if self.sideways {
+            layout::Limits::new(Size::new(0.0, limits.min().height), Size::new(f32::INFINITY, limits.max().height))
+        } else {
+            layout::Limits::new(Size::new(limits.min().width, 0.0), Size::new(limits.max().width, f32::INFINITY))
+        };
+        let child = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, &room);
         let size = child.size();
-        layout::Node::with_children(Size::new(size.width, (size.height * value).ceil()), vec![child])
+        let shown = if self.sideways {
+            Size::new((size.width * value).ceil(), size.height)
+        } else {
+            Size::new(size.width, (size.height * value).ceil())
+        };
+        layout::Node::with_children(shown, vec![child])
     }
 
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
-        if layout.bounds().height > 0.0 {
+        if self.open || (layout.bounds().height > 0.0 && layout.bounds().width > 0.0) {
             let Some(child) = layout.children().next() else { return };
             self.content.as_widget_mut().operate(&mut tree.children[0], child, renderer, operation);
         }
@@ -415,7 +462,7 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
         cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        if bounds.height < 0.5 {
+        if bounds.height < 0.5 || bounds.width < 0.5 {
             return;
         }
         let Some(child) = layout.children().next() else { return };
@@ -513,6 +560,20 @@ impl<M> Widget<M, Theme, Renderer> for Spin<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lingering_value_outlives_its_source_until_the_exit_is_done() {
+        let hold = Lingering::<String>::default();
+        assert_eq!(hold.show(None), None);
+        let text = String::from("find");
+        assert_eq!(hold.show(Some(&text)), Some((text.clone(), true)));
+        if motion::is_disabled() {
+            assert_eq!(hold.show(None), None);
+            return;
+        }
+        assert_eq!(hold.show(None), Some((text.clone(), false)));
+        assert_eq!(hold.show(Some(&text)), Some((text, true)), "coming back reopens it");
+    }
 
     #[test]
     fn a_fade_reverses_from_where_it_is_and_settles() {

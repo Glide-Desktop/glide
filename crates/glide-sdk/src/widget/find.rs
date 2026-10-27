@@ -210,16 +210,20 @@ pub fn arriving_over<'a, M: 'a>(backdrop: Color, content: impl Into<Element<'a, 
 }
 
 #[must_use]
-pub fn swapped<'a, M: 'a>(key: impl Hash, backdrop: Color, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+pub fn swapped<'a, M: 'a>(
+    key: impl Hash, backdrop: Option<Color>, content: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
     let content = content.into();
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
-    animate(1.0, Speed::SLIDE, move |_| content)
+    let swap = animate(1.0, Speed::SLIDE, move |_| content)
         .from(0.0)
         .keyed(hasher.finish())
-        .veil(backdrop)
-        .transform(|value| Transform { scale: 1.0, offset: Vector::new(0.0, ARRIVE_RISE * (1.0 - value)) })
-        .into()
+        .transform(|value| Transform { scale: 1.0, offset: Vector::new(0.0, ARRIVE_RISE * (1.0 - value)) });
+    match backdrop {
+        Some(backdrop) => swap.veil(backdrop).into(),
+        None => swap.into(),
+    }
 }
 
 const ARRIVE_SCALE: f32 = 0.97;

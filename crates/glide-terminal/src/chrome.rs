@@ -20,7 +20,6 @@ use glide_sdk::{Paint, Tone};
 
 pub const HEADER: f32 = glide_sdk::window::HEADER;
 const FIND_WIDTH: f32 = 520.0;
-const TAB_WIDEST: f32 = 220.0;
 const MENU_WIDTH: f32 = 264.0;
 const PANE_MIN: f32 = 50.0;
 const SWATCH: Size = Size::new(96.0, 44.0);
@@ -32,7 +31,8 @@ fn header(app: &App) -> Element<'_, Message> {
         app.menu.as_ref().is_some_and(|menu| matches!(menu.kind, MenuKind::Options | MenuKind::Profiles));
     let new_tab = Some(Message::Command(Command::NewTab));
     let options = Some(Message::Command(Command::Options));
-    let center = if app.tabs.len() > 1 { tab_bar(app) } else { context_title(app) };
+    let several = app.tabs.len() > 1;
+    let center = glide_sdk::widget::swapped(several, None, if several { tab_bar(app) } else { context_title(app) });
     let header = glide_sdk::window::Header::new("")
         .labels(Key::Maximize.text(app.lang), Key::CloseWindow.text(app.lang))
         .height(HEADER)
@@ -93,7 +93,6 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
         .collect();
     tab_strip(&app.paint, tabs, app.active)
         .height(HEADER)
-        .widest(TAB_WIDEST)
         .bare()
         .on_select(Message::TabPressed)
         .hovered(app.hovered_tab, Message::TabHovered)
@@ -102,9 +101,28 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-fn find_bar(app: &App) -> Element<'_, Message> {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FindView {
+    query: String,
+    case: bool,
+    counting: bool,
+    index: usize,
+    total: usize,
+}
+
+pub(crate) fn find_view(app: &App) -> Option<FindView> {
+    let find = app.find.as_ref()?;
+    Some(FindView {
+        query: find.query.clone(),
+        case: find.case,
+        counting: find.counting,
+        index: find.index,
+        total: find.total,
+    })
+}
+
+fn find_bar<'a>(app: &'a App, find: &FindView, open: bool) -> Element<'a, Message> {
     let paint = app.paint;
-    let Some(find) = &app.find else { return Space::new().into() };
     let input = text_input(Key::FindPlaceholder.text(app.lang), &find.query)
         .id(FIND_ID)
         .on_input(Message::FindInput)
@@ -129,7 +147,7 @@ fn find_bar(app: &App) -> Element<'_, Message> {
         .toggle("Aa", Key::CaseSensitive.text(app.lang), find.case, Message::FindCase)
         .status(count, false)
         .done(Key::Done.text(app.lang), Message::FindClose);
-    container(bar)
+    container(glide_sdk::anim::grow(open, bar))
         .width(Fill)
         .align_x(Alignment::End)
         .padding(Padding { top: HEADER + 1.0 + SP2, right: SP3, ..Padding::ZERO })
@@ -431,8 +449,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if !app.edge_to_edge() {
         layers.push(resize_handles(Message::Window));
     }
-    if app.find.is_some() {
-        layers.push(find_bar(app));
+    if let Some((find, open)) = app.find_hold.show(find_view(app).as_ref()) {
+        layers.push(find_bar(app, &find, open));
     }
     if let Some(error) = app.error.as_ref().filter(|_| !app.tabs.is_empty()) {
         layers.push(toast_pill(&paint, 1.0, error, Some(paint.danger()), None, app.window.size));
@@ -475,7 +493,8 @@ mod tests {
         let (mut app, _) = App::with_launch(crate::session::Launch::default());
         app.window.size = Size::new(420.0, 260.0);
         app.find = Some(crate::app::Find::default());
-        let mut view = find_bar(&app);
+        let find = find_view(&app).expect("a find session is open");
+        let mut view = find_bar(&app, &find, true);
         let mut tree = Tree::new(&view);
         let renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(crate::MONO, iced::Pixels(13.0)));
         let node =

@@ -8,6 +8,7 @@ use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+use glide_sdk::anim::{Motion, Speed};
 use glide_sdk::widget::cells::{Badge, Caret, Metrics, Painter, Span, Underline, thumb};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Quad, Renderer as _};
@@ -24,6 +25,8 @@ use crate::session::{Cells, Listener, Pane, PaneId};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const BAR_ZONE: f32 = 12.0;
+const BAR_ALPHA: f32 = 0.55;
+const BAR_REST: f32 = 0.58;
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -181,6 +184,8 @@ struct State {
     wheel: f32,
     hover: Option<Link>,
     near_bar: bool,
+    bar: Option<Motion>,
+    drop: Option<Motion>,
     urls: Option<RegexSearch>,
     find: RefCell<Option<(String, Option<RegexSearch>)>>,
 }
@@ -472,6 +477,25 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
         if cells != self.pane.cells || metrics.cell != self.pane.cell_size {
             shell.publish(Action::Resize(self.pane.id, cells, metrics.cell));
         }
+        let bar_target = {
+            let term = self.pane.term.lock();
+            if term.history_size() == 0 {
+                0.0
+            } else if state.near_bar || state.drag == Drag::Scrollbar {
+                1.0
+            } else if term.grid().display_offset() > 0 {
+                BAR_REST
+            } else {
+                0.0
+            }
+        };
+        let bar = state.bar.get_or_insert_with(|| Motion::at(bar_target));
+        let drop = state.drop.get_or_insert_with(|| Motion::at(f32::from(self.drop_target)));
+        let started = bar.to(bar_target, Speed::COLOR) | drop.to(f32::from(self.drop_target), Speed::COLOR);
+        let redraw = matches!(event, Event::Window(iced::window::Event::RedrawRequested(_)));
+        if started || (redraw && (bar.animating(Speed::COLOR) || drop.animating(Speed::COLOR))) {
+            shell.request_redraw();
+        }
         let local = cursor.position().map(|position| Point::ORIGIN + (position - bounds.position()));
         let over = cursor.is_over(bounds);
         let action = match event {
@@ -578,9 +602,9 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             }
             let offset = term.grid().display_offset();
             let (lines, history) = (term.screen_lines(), term.history_size());
-            if history > 0 && (offset > 0 || state.near_bar || state.drag == Drag::Scrollbar) {
-                let alpha = if state.near_bar || state.drag == Drag::Scrollbar { 0.55 } else { 0.32 };
-                painter.scrollbar(lines, history, offset, color(palette.foreground, alpha));
+            let bar = state.bar.map_or(0.0, |bar| bar.value(Speed::COLOR));
+            if history > 0 && bar > 0.01 {
+                painter.scrollbar(lines, history, offset, color(palette.foreground, BAR_ALPHA * bar));
             }
             match self.flash {
                 Some((Flash::Bell, amount)) => {
@@ -592,9 +616,10 @@ impl Widget<Action, Theme, Renderer> for Terminal<'_> {
             if let Some((hints, typed)) = self.hints {
                 self.paint_hints(&mut painter, hints, typed, offset as i32, lines);
             }
-            if self.drop_target {
-                let border = Border { color: self.look.accent, width: 2.0, radius: self.corners };
-                painter.outline(bounds, border, Color { a: 0.08, ..self.look.accent });
+            let drop = state.drop.map_or(f32::from(self.drop_target), |drop| drop.value(Speed::COLOR));
+            if drop > 0.01 {
+                let border = Border { color: Color { a: drop, ..self.look.accent }, width: 2.0, radius: self.corners };
+                painter.outline(bounds, border, Color { a: 0.08 * drop, ..self.look.accent });
             }
             if let Some(Link::Osc(link)) = &state.hover {
                 let ink = color(palette.query(term.colors(), 257), 1.0);

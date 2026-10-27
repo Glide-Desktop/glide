@@ -545,7 +545,7 @@ impl App {
             );
             body = body.push(glide_sdk::widget::arriving_over(t.win_bg(), banner));
         }
-        body = body.push(glide_sdk::widget::swapped(panel.slug(), t.win_bg(), panel_view));
+        body = body.push(glide_sdk::widget::swapped(panel.slug(), Some(t.win_bg()), panel_view));
 
         let clamp = container(body.max_width(theme::CONTENT_MAX_WIDTH))
             .padding(

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use glide_sdk::anim::Reveal;
+use glide_sdk::anim::{Lingering, Reveal};
 use glide_sdk::theme::motion;
 use iced::futures::channel::oneshot;
 use iced::keyboard::key::{Code, Named, Physical};
@@ -312,6 +312,9 @@ pub struct App {
     pub menu: Option<Menu>,
     pub find: Option<FindBar>,
     pub goto: Option<String>,
+    pub(crate) find_hold: Lingering<crate::chrome::FindView>,
+    pub goto_hold: Lingering<String>,
+    pub info_hold: Lingering<bool>,
     pub dialog: Option<Dialog>,
     pub closing: Option<Dialog>,
     pub notice: Option<(String, Instant)>,
@@ -632,6 +635,9 @@ impl App {
             menu: None,
             find: None,
             goto: None,
+            find_hold: Lingering::default(),
+            goto_hold: Lingering::default(),
+            info_hold: Lingering::default(),
             dialog: None,
             closing: None,
             notice: None,

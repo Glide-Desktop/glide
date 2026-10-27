@@ -12,7 +12,7 @@ use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{ClipboardType, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use glide_sdk::Paint;
-use glide_sdk::anim::Reveal;
+use glide_sdk::anim::{Lingering, Reveal};
 use glide_sdk::look::{self as shell_look, Look as ShellLook};
 use glide_sdk::theme::motion;
 use glide_sdk::window::{Action as WindowAction, Window};
@@ -244,6 +244,7 @@ pub struct App {
     pub tabs: Vec<Tab>,
     pub active: usize,
     pub find: Option<Find>,
+    pub(crate) find_hold: Lingering<crate::chrome::FindView>,
     pub hint_mode: Option<HintMode>,
     pub notice: Option<(String, Instant)>,
     pub drop_at: Option<(f32, f32)>,
@@ -479,6 +480,7 @@ impl App {
             tabs: Vec::new(),
             active: 0,
             find: None,
+            find_hold: Lingering::default(),
             hint_mode: None,
             notice: None,
             handles: None,

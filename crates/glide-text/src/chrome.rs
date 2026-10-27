@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use glide_sdk::anim::{grow, grow_x};
 use glide_sdk::theme::{R3, SP1, SP2, SP3, SP4, SP5, SP6};
 use glide_sdk::theme::{TextStyle, component, motion};
 use glide_sdk::widget::{
@@ -143,9 +144,28 @@ fn tab_bar(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-fn find_bar(app: &App) -> Element<'_, Message> {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FindView {
+    query: crate::find::Query,
+    replace: String,
+    replacing: bool,
+    label: String,
+    failed: bool,
+}
+
+pub(crate) fn find_view(app: &App) -> Option<FindView> {
+    let find = app.find.as_ref()?;
+    Some(FindView {
+        query: find.query.clone(),
+        replace: find.replace.clone(),
+        replacing: find.replacing,
+        label: app.find_label(),
+        failed: find.error.is_some(),
+    })
+}
+
+fn find_bar<'a>(app: &'a App, find: &FindView) -> Element<'a, Message> {
     let paint = app.paint;
-    let Some(find) = &app.find else { return Space::new().into() };
     let lang = app.lang;
     let input = text_input(Key::FindPlaceholder.text(lang), &find.query.text)
         .id(FIND_ID)
@@ -160,7 +180,7 @@ fn find_bar(app: &App) -> Element<'_, Message> {
         .toggle("Aa", Key::MatchCase.text(lang), find.query.case, Message::FindToggle(Toggle::Case))
         .toggle("W", Key::WholeWord.text(lang), find.query.word, Message::FindToggle(Toggle::Word))
         .toggle(".*", Key::Regex.text(lang), find.query.regex, Message::FindToggle(Toggle::Regex))
-        .status(app.find_label(), find.error.is_some())
+        .status(find.label.clone(), find.failed)
         .extra(tip(
             &paint,
             flat_toggle_button(&paint, "⇄", find.replacing, Size::Small, Some(|_| Message::ToggleReplace)),
@@ -180,9 +200,8 @@ fn find_bar(app: &App) -> Element<'_, Message> {
     bar.into()
 }
 
-fn goto_bar(app: &App) -> Element<'_, Message> {
+fn goto_bar<'a>(app: &'a App, input: &str) -> Element<'a, Message> {
     let paint = app.paint;
-    let Some(input) = &app.goto else { return Space::new().into() };
     let line = app.doc().map_or(1, |doc| doc.cursor().position.line + 1);
     let total = app.doc().map_or(1, |doc| doc.text.matches('\n').count() + 1);
     let field = glide_sdk::widget::field(
@@ -207,10 +226,13 @@ fn goto_bar(app: &App) -> Element<'_, Message> {
     )
 }
 
-fn infobar(app: &App) -> Option<Element<'_, Message>> {
-    let paint = app.paint;
+fn info_view(app: &App) -> Option<bool> {
     let doc = app.doc().filter(|doc| doc.changed_on_disk)?;
-    let gone = doc.path.as_deref().is_some_and(|path| !path.exists());
+    Some(doc.path.as_deref().is_some_and(|path| !path.exists()))
+}
+
+fn infobar(app: &App, gone: bool) -> Element<'_, Message> {
+    let paint = app.paint;
     let message = if gone { Key::DeletedOnDisk } else { Key::ChangedOnDisk };
     let mut actions = Vec::new();
     if !gone {
@@ -218,7 +240,7 @@ fn infobar(app: &App) -> Option<Element<'_, Message>> {
     }
     actions.push(compact_button(&paint, Key::KeepMine.text(app.lang), Tone::Ghost, Some(Message::Disk(false))));
     let warn = Some(glide_sdk::widget::Severity::Warn);
-    Some(glide_sdk::widget::info_bar(&paint, warn, message.text(app.lang), "", actions))
+    glide_sdk::widget::info_bar(&paint, warn, message.text(app.lang), "", actions)
 }
 
 fn tree_row<'a>(app: &'a App, node: &'a crate::tree::Node) -> Element<'a, Message> {
@@ -994,14 +1016,14 @@ fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element
 pub fn view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let mut main = column![];
-    if app.find.is_some() {
-        main = main.push(find_bar(app)).push(rule(&paint));
+    if let Some((find, open)) = app.find_hold.show(find_view(app).as_ref()) {
+        main = main.push(grow(open, column![find_bar(app, &find), rule(&paint)]));
     }
-    if app.goto.is_some() {
-        main = main.push(glide_sdk::widget::arriving(goto_bar(app))).push(rule(&paint));
+    if let Some((input, open)) = app.goto_hold.show(app.goto.as_ref()) {
+        main = main.push(grow(open, column![goto_bar(app, &input), rule(&paint)]));
     }
-    if let Some(bar) = infobar(app) {
-        main = main.push(glide_sdk::widget::arriving(bar)).push(rule(&paint));
+    if let Some((gone, open)) = app.info_hold.show(info_view(app).as_ref()) {
+        main = main.push(grow(open, column![infobar(app, gone), rule(&paint)]));
     }
     main = main.push(editor(app));
     let bottom_right = if app.edge_to_edge() || app.status_visible() { 0.0 } else { R3 };
@@ -1009,15 +1031,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let main = pane(paint.view_bg(), Radius::default().bottom_right(bottom_right).bottom_left(bottom_left), main);
     let main: Element<'_, Message> =
         if app.status_floating() { iced::widget::stack![main, status_islands(app)].into() } else { main.into() };
-    let mut middle = row![];
-    if app.sidebar_visible() {
-        middle = middle.push(glide_sdk::widget::arriving(sidebar(app))).push(vertical_rule(&paint));
-    }
-    middle = middle.push(main);
-    let mut body = column![header(app), rule(&paint), middle.height(Fill)];
-    if app.status_visible() {
-        body = body.push(rule(&paint)).push(status_bar(app));
-    }
+    let side = row![sidebar(app), vertical_rule(&paint)];
+    let middle = row![grow_x(app.sidebar_visible(), side), main];
+    let body = column![
+        header(app),
+        rule(&paint),
+        middle.height(Fill),
+        grow(app.status_visible(), column![rule(&paint), status_bar(app)])
+    ];
     let body = mouse_area(body).on_move(Message::Pointer);
     let mut layers: Vec<Element<'_, Message>> = vec![body.into()];
     if !app.edge_to_edge() {
