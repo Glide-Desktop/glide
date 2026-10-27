@@ -83,6 +83,7 @@ struct Shown {
 pub struct Osd {
     shown: Option<Shown>,
     expected: Option<(Kind, Instant)>,
+    bar: Option<glide_ui::Tween>,
     cache: std::collections::HashMap<i32, (u64, MemoryRenderBuffer)>,
 }
 
@@ -92,8 +93,22 @@ impl Osd {
     }
 
     pub fn show(&mut self, reading: Reading, now: Instant) {
-        let since = self.shown.filter(|_| self.alpha(now) > 0.0).map_or(now, |shown| shown.since);
+        let live = self.shown.filter(|_| self.alpha(now) > 0.0);
+        let since = live.map_or(now, |shown| shown.since);
+        let target = if reading.on { f64::from(reading.level.min(100)) } else { 0.0 };
+        match (&mut self.bar, live.filter(|shown| shown.reading.kind == reading.kind)) {
+            (Some(bar), Some(_)) => {
+                bar.retarget(target, glide_theme::motion::t2(), glide_theme::motion::ease_out);
+            }
+            (slot, _) => *slot = Some(glide_ui::Tween::at(target)),
+        }
         self.shown = Some(Shown { reading, since, updated: now });
+    }
+
+    fn bar_level(&self, reading: Reading) -> i32 {
+        let target = if reading.on { f64::from(reading.level.min(100)) } else { 0.0 };
+        let level = self.bar.map_or(target, |bar| bar.value(glide_theme::motion::t2(), glide_theme::motion::ease_out));
+        level.round().clamp(0.0, 100.0) as i32
     }
 
     pub fn status(&mut self, levels: Levels, now: Instant) -> bool {
@@ -166,8 +181,9 @@ impl Osd {
         scale: i32,
     ) -> Option<&MemoryRenderBuffer> {
         let reading = self.shown?.reading;
+        let level = self.bar_level(reading);
         let key = glide_theme::Revision::new()
-            .str(&format!("{:?}{:?}{reading:?}", tokens.appearance, tokens.accent))
+            .str(&format!("{:?}{:?}{reading:?}{level}", tokens.appearance, tokens.accent))
             .u64(crate::paint::painter_generation())
             .finish();
         if self.cache.get(&scale).is_none_or(|(cached, _)| *cached != key) {
@@ -196,7 +212,7 @@ impl Osd {
             } else {
                 let track = rect(left, (HEIGHT - BAR_HEIGHT) / 2, width, BAR_HEIGHT);
                 canvas.fill(track, tokens.fill_2, glide_theme::shape::R1);
-                let filled = if reading.on { width * i32::from(reading.level.min(100)) / 100 } else { 0 };
+                let filled = width * level / 100;
                 if filled > 0 {
                     canvas.fill(rect(left, track.loc.y, filled, BAR_HEIGHT), tokens.acc_bg, glide_theme::shape::R1);
                 }
@@ -276,6 +292,22 @@ mod tests {
         assert!(osd.alpha(steady + Duration::from_millis(1)) >= 0.99, "no fresh fade-in on every step");
         let still = steady + HOLD;
         assert!(osd.alpha(still) >= 0.99, "the hold restarts from the last change");
+    }
+
+    #[test]
+    fn the_bar_glides_to_a_new_level_while_the_indicator_stays_up() {
+        let mut osd = Osd::default();
+        let now = Instant::now();
+        let volume = |level| Reading { kind: Kind::Volume, level, on: true };
+        osd.show(volume(40), now);
+        assert_eq!(osd.bar_level(volume(40)), 40, "a fresh indicator starts at its level");
+        osd.show(volume(80), now + glide_theme::motion::t1() + Duration::from_millis(10));
+        if !glide_theme::motion::is_disabled() {
+            let drawn = osd.bar_level(volume(80));
+            assert!((40..80).contains(&drawn), "the bar has not jumped to 80: {drawn}");
+        }
+        osd.show(Reading { kind: Kind::Brightness, level: 10, on: true }, now + glide_theme::motion::t1());
+        assert_eq!(osd.bar_level(Reading { kind: Kind::Brightness, level: 10, on: true }), 10, "another kind snaps");
     }
 
     #[test]

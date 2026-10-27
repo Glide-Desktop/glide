@@ -791,6 +791,7 @@ pub struct Topbar {
     badge: Badge,
     segment_anim: Anim,
     profile_anim: Anim,
+    tile_anims: HashMap<QsTile, Anim>,
     qs_power: Option<ArmedPower>,
     arm_anim: Anim,
     qs_drawer: Option<Drawer>,
@@ -1130,6 +1131,7 @@ impl Topbar {
         ]
         .into_iter()
         .any(Anim::is_animating);
+        let controls = controls || self.tile_anims.values().any(Anim::is_animating);
         let detail = self.qs_panel.is_animating();
         let extras = self.calendar.is_animating() || self.indicators.is_animating() || self.island.is_animating();
         let tray = self.tray_is_animating();
@@ -1208,7 +1210,42 @@ impl Topbar {
         }
     }
 
+    fn tile_on(&self, tile: QsTile) -> bool {
+        let status = &self.system_status;
+        match tile {
+            QsTile::Wifi => status.wifi_enabled,
+            QsTile::Bluetooth => status.bluetooth_on,
+            QsTile::NightLight => status.night_light_on,
+            QsTile::Dnd => self.dnd,
+            QsTile::Caffeine => self.caffeinated,
+            QsTile::Airplane => status.airplane,
+            QsTile::Screenshot => false,
+            QsTile::DarkTheme => self.theme.dark,
+            QsTile::Netbird => self.qs_panel.netbird.tile().0,
+        }
+    }
+
+    fn tile_level(&self, tile: QsTile) -> f64 {
+        self.tile_anims.get(&tile).map_or_else(|| f64::from(self.tile_on(tile)), Anim::value)
+    }
+
+    fn tile_levels(&self) -> [u8; QS_TILE_COUNT] {
+        let mut levels = [0; QS_TILE_COUNT];
+        for tile in QS_TILES.into_iter().chain([QsTile::Netbird]) {
+            levels[tile.index()] = quantize(self.tile_level(tile), MOTION_QUANTUM);
+        }
+        levels
+    }
+
+    fn sync_tile_anims(&mut self) {
+        for tile in QS_TILES.into_iter().chain([QsTile::Netbird]) {
+            let target = f64::from(self.tile_on(tile));
+            self.tile_anims.entry(tile).or_insert_with(|| Anim::at(target)).retarget(target, motion::t2(), E_OUT);
+        }
+    }
+
     fn settle_motion(&mut self) {
+        self.sync_tile_anims();
         let duration = motion::t2();
         self.popup_reveal.settle(duration);
         if self.closing_popup.is_some() && !self.popup_reveal.is_visible(duration) {
@@ -1518,6 +1555,7 @@ impl Topbar {
             mic: percent(self.mic_anim.value()),
             brightness: percent(self.brightness_anim.value()),
             profile: quantize(self.profile_anim.value(), MOTION_QUANTUM),
+            tiles: self.tile_levels(),
         };
         let battery = self.system_status.battery_pct.map(|_| panels::battery_head_line(&self.system_status));
         let revs = (self.status_rev, self.qs_panel.rev, battery.unwrap_or_default());
@@ -2208,7 +2246,23 @@ fn qs_tiles(shape: &QsShape) -> impl Iterator<Item = QsTile> {
     QS_TILES.into_iter().chain(shape.netbird.then_some(QsTile::Netbird))
 }
 
+const QS_TILE_COUNT: usize = 9;
+
 impl QsTile {
+    const fn index(self) -> usize {
+        match self {
+            Self::Wifi => 0,
+            Self::Bluetooth => 1,
+            Self::NightLight => 2,
+            Self::Dnd => 3,
+            Self::Caffeine => 4,
+            Self::Airplane => 5,
+            Self::Screenshot => 6,
+            Self::DarkTheme => 7,
+            Self::Netbird => 8,
+        }
+    }
+
     const fn slot(self) -> Slot {
         match self {
             Self::Wifi => Slot::QsWifi,
@@ -3882,9 +3936,14 @@ struct QsMotion {
     mic: u8,
     brightness: u8,
     profile: u8,
+    tiles: [u8; QS_TILE_COUNT],
 }
 
 impl QsMotion {
+    fn tile(self, tile: QsTile) -> f32 {
+        f32::from(self.tiles[tile.index()]) / MOTION_QUANTUM as f32
+    }
+
     fn profile_position(self) -> f64 {
         f64::from(self.profile) / MOTION_QUANTUM
     }
@@ -3959,6 +4018,7 @@ struct QsTileSpec<'a> {
     tile: QsTile,
     rect: LocalRect,
     on: bool,
+    level: f32,
     title: &'a str,
     subtitle: &'a str,
     icon_name: &'a str,
@@ -3986,16 +4046,16 @@ fn draw_qs_tile(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, spec: &QsTileSpec
     let (rect, theme) = (spec.rect, ctx.theme);
     let more = spec.tile.more();
     let hovered = ctx.hovered.is_some_and(|slot| slot == spec.tile.slot() || Some(slot) == more);
-    if spec.on {
-        c.fill(rect, theme.active_soft, R2);
-    } else {
-        c.fill(rect, theme.track_soft, R2);
-        c.stroke(rect, 1.0, R2, if hovered { theme.line_2 } else { theme.line });
+    let lit = spec.level;
+    c.fill(rect, theme.track_soft.lerp(theme.active_soft, lit), R2);
+    if lit < 1.0 {
+        let line = if hovered { theme.line_2 } else { theme.line };
+        c.stroke(rect, 1.0, R2, Color([line.0[0], line.0[1], line.0[2], line.0[3] * (1.0 - lit)]));
     }
 
     let badge = qs_badge(spec.tile, rect);
-    let (well, symbol) =
-        if spec.on { (theme.active_background, theme.active_label) } else { (theme.fill_2, theme.muted) };
+    let well = theme.fill_2.lerp(theme.active_background, lit);
+    let symbol = theme.muted.lerp(theme.active_label, lit);
     c.fill(badge, well, R_ROUND);
     qs_symbol(c, badge, (spec.icon_name, spec.glyph), 15, symbol);
 
@@ -4006,11 +4066,10 @@ fn draw_qs_tile(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, spec: &QsTileSpec
     } else {
         (badge.loc.x + QS_ICON_BADGE + SP2, rect.loc.x + rect.size.w - QS_TILE_INSET)
     };
-    let (title_colour, subtitle_colour) = if spec.on {
-        (theme.active_soft_label, dimmed(theme.active_soft_label, QS_SOFT_DIM))
-    } else {
-        (theme.label, theme.faint)
-    };
+    let (title_colour, subtitle_colour) = (
+        theme.label.lerp(theme.active_soft_label, lit),
+        theme.faint.lerp(dimmed(theme.active_soft_label, QS_SOFT_DIM), lit),
+    );
     let title_h = QS_TITLE.line_height_px as i32;
     let sub_h = QS_SUB.line_height_px as i32;
     let top = rect.loc.y + (rect.size.h - title_h - QS_TILE_TEXT_GAP - sub_h) / 2;
@@ -4462,7 +4521,8 @@ fn draw_qs_tiles(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_
             ),
             QsTile::DarkTheme => (flags.dark, t(Key::QsDarkTheme), on_off(flags.dark), "dark-mode", moon),
         };
-        draw_qs_tile(c, ctx, &QsTileSpec { tile, rect, on, title, subtitle, icon_name, glyph });
+        let level = draw.motion.tile(tile);
+        draw_qs_tile(c, ctx, &QsTileSpec { tile, rect, on, level, title, subtitle, icon_name, glyph });
     }
 }
 
@@ -6096,6 +6156,21 @@ mod tests {
         for (got, want) in on.0.iter().zip(bar.theme.active_background.0) {
             assert!((got - want).abs() < 1e-5, "{on:?}");
         }
+    }
+
+    #[test]
+    fn a_quick_settings_tile_fades_between_off_and_on_instead_of_snapping() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        bar.settle_motion();
+        assert!(bar.tile_level(QsTile::Dnd).abs() < f64::EPSILON, "a settled tile starts off");
+        bar.dnd = true;
+        bar.settle_motion();
+        assert!(bar.is_animating());
+        assert!(bar.tile_level(QsTile::Dnd) < 1.0, "the tile has not jumped to on");
+        assert!(bar.tile_levels()[QsTile::Wifi.index()] <= bar.tile_levels()[QsTile::Dnd.index()]);
+        std::thread::sleep(motion::t2() + Duration::from_millis(20));
+        assert!((bar.tile_level(QsTile::Dnd) - 1.0).abs() < f64::EPSILON);
+        assert_eq!(bar.tile_levels()[QsTile::Dnd.index()], quantize(1.0, MOTION_QUANTUM));
     }
 
     #[test]

@@ -1324,7 +1324,8 @@ impl GlideState {
                 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
                 let (appearance, accent) = self.shell_palette;
                 let tokens = glide_theme::Tokens::new(appearance, accent);
-                let position = (preview.rect.loc - output_geometry.loc).to_f64().to_physical(scale);
+                let shown = preview.shown();
+                let position = (shown.loc - output_geometry.loc).to_f64().to_physical(scale);
                 let alpha = preview.alpha();
                 if let Some(buffer) = preview.buffer(tokens.acc_soft, tokens.acc_bg, integer_scale)
                     && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
@@ -1333,7 +1334,7 @@ impl GlideState {
                         buffer,
                         Some(alpha),
                         None,
-                        None,
+                        Some(shown.size),
                         Kind::Unspecified,
                     )
                 {

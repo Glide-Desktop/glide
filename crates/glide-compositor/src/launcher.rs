@@ -510,6 +510,8 @@ pub struct Launcher {
     list_cache: list::ListCache,
     menu: Option<LauncherMenu>,
     menu_cache: std::collections::HashMap<LauncherMenuKey, MemoryRenderBuffer>,
+    menu_rows: LayerTweens,
+    menu_row_layer: std::collections::HashMap<i32, MemoryRenderBuffer>,
     menu_shadow: std::collections::HashMap<(i32, i32, i32), MemoryRenderBuffer>,
     raster_rev: u64,
     runs: Vec<String>,
@@ -522,7 +524,7 @@ struct SearchFieldKey {
     clear: bool,
 }
 
-type LauncherMenuKey = (String, Vec<LauncherMenuItem>, Option<usize>, i32);
+type LauncherMenuKey = (String, Vec<LauncherMenuItem>, i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LauncherMenuItem {
@@ -620,6 +622,8 @@ impl Launcher {
             list_cache: list::ListCache::default(),
             menu: None,
             menu_cache: std::collections::HashMap::new(),
+            menu_rows: LayerTweens::new(),
+            menu_row_layer: std::collections::HashMap::new(),
             menu_shadow: std::collections::HashMap::new(),
             raster_rev: 0,
             runs: Vec::new(),
@@ -645,6 +649,7 @@ impl Launcher {
         reveal.open(menu_anim());
         self.menu = Some(LauncherMenu { result, items, rect, hovered: None, reveal });
         self.menu_cache.clear();
+        self.menu_rows.clear();
         true
     }
 
@@ -684,7 +689,14 @@ impl Launcher {
         if menu.hovered == hovered {
             return false;
         }
-        menu.hovered = hovered;
+        let previous = std::mem::replace(&mut menu.hovered, hovered);
+        let duration = layer_anim();
+        if let Some(tween) = previous.and_then(|row| self.menu_rows.get_mut(&row)) {
+            tween.retarget(0.0, duration, ease_io);
+        }
+        if let Some(row) = hovered {
+            self.menu_rows.entry(row).or_insert_with(|| glide_ui::Tween::at(0.0)).retarget(1.0, duration, ease_io);
+        }
         true
     }
 
@@ -1285,7 +1297,7 @@ impl Launcher {
             }
         }
         let layer_duration = layer_anim();
-        for layers in [&mut self.hover_layers, &mut self.row_layers] {
+        for layers in [&mut self.hover_layers, &mut self.row_layers, &mut self.menu_rows] {
             layers.retain(|_, tween| tween.target() > 0.0 || tween.is_animating(layer_duration));
         }
         let chip_duration = chip_anim();
@@ -1302,8 +1314,12 @@ impl Launcher {
         let page = self.page_is_sliding();
         let menu = self.menu.as_ref().is_some_and(|menu| menu.reveal.is_animating(menu_anim()));
         let layer_duration = layer_anim();
-        let layers =
-            self.hover_layers.values().chain(self.row_layers.values()).any(|tween| tween.is_animating(layer_duration));
+        let layers = self
+            .hover_layers
+            .values()
+            .chain(self.row_layers.values())
+            .chain(self.menu_rows.values())
+            .any(|tween| tween.is_animating(layer_duration));
         let clear = self.clear_hover.is_animating(layer_duration);
         let chip_duration = chip_anim();
         let chips = self.chip_tweens.iter().any(|tween| tween.is_animating(chip_duration));
@@ -1618,18 +1634,42 @@ fn push_menu<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>
         .map(|app| app.name.clone())
         .unwrap_or_default();
 
-    let key = (title, menu.items.clone(), menu.hovered, output_scale);
+    let key = (title, menu.items.clone(), output_scale);
     if !launcher.menu_cache.contains_key(&key) {
-        launcher.menu_cache.retain(|(title, items, hovered, _), _| (title, items, hovered) == (&key.0, &key.1, &key.2));
+        launcher.menu_cache.retain(|(title, items, _), _| (title, items) == (&key.0, &key.1));
         let rows: Vec<_> = menu
             .items
             .iter()
             .map(|item| crate::popup_menu::MenuRow { label: item.label().into(), danger: false, muted: false })
             .collect();
         if let Some(buffer) =
-            crate::popup_menu::draw(frame.painter, &frame.theme.menu, &key.0, &rows, menu.hovered, output_scale)
+            crate::popup_menu::draw(frame.painter, &frame.theme.menu, &key.0, &rows, None, output_scale)
         {
             launcher.menu_cache.insert(key.clone(), buffer);
+        }
+    }
+    let row_width = crate::popup_menu::WIDTH - crate::popup_menu::PADDING * 2;
+    let hover_color = frame.theme.menu.item_hover;
+    for row in 0..menu.items.len() {
+        let alpha = layer_alpha(&launcher.menu_rows, row) as f32;
+        if alpha <= 0.0 {
+            continue;
+        }
+        if let Some(buffer) = cached(&mut launcher.menu_row_layer, output_scale, || {
+            Some(
+                filled(
+                    row_width,
+                    crate::popup_menu::ROW_HEIGHT,
+                    output_scale,
+                    hover_color,
+                    crate::popup_menu::ROW_RADIUS,
+                )?
+                .finish(),
+            )
+        }) {
+            let source = crate::popup_menu::row_rect(menu.rect, row);
+            let target = scale_about(source, anchor, rise, factor);
+            frame.push(buffer, target.loc, Some((source.size, target.size)), alpha * menu_alpha);
         }
     }
     if let Some(buffer) = launcher.menu_cache.get(&key) {

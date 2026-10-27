@@ -157,6 +157,8 @@ pub struct SnapPreview {
     pub zone: SnapZone,
     pub rect: Rectangle<i32, Logical>,
     reveal: glide_ui::Reveal,
+    from: Rectangle<i32, Logical>,
+    glide: glide_ui::Tween,
     buffer: Option<((i32, Color, Color), MemoryRenderBuffer)>,
 }
 
@@ -165,16 +167,34 @@ impl SnapPreview {
     pub fn new(zone: SnapZone, rect: Rectangle<i32, Logical>) -> Self {
         let mut reveal = glide_ui::Reveal::closed();
         reveal.open(glide_theme::motion::t2());
-        Self { zone, rect, reveal, buffer: None }
+        Self { zone, rect, reveal, from: rect, glide: glide_ui::Tween::at(1.0), buffer: None }
     }
 
     pub fn retarget(&mut self, zone: SnapZone, rect: Rectangle<i32, Logical>) {
+        if self.rect != rect {
+            self.from = self.shown();
+            self.glide = glide_ui::Tween::at(0.0);
+            self.glide.retarget(1.0, glide_theme::motion::t2(), glide_theme::motion::ease_out);
+        }
         if self.rect.size != rect.size {
             self.buffer = None;
         }
         self.zone = zone;
         self.rect = rect;
         self.reveal.open(glide_theme::motion::t2());
+    }
+
+    #[must_use]
+    pub fn shown(&self) -> Rectangle<i32, Logical> {
+        let t = self.glide.value(glide_theme::motion::t2(), glide_theme::motion::ease_out);
+        let mix = |from: i32, to: i32| (f64::from(from) + (f64::from(to) - f64::from(from)) * t).round() as i32;
+        Rectangle::new(
+            Point::from((mix(self.from.loc.x, self.rect.loc.x), mix(self.from.loc.y, self.rect.loc.y))),
+            Size::from((
+                mix(self.from.size.w, self.rect.size.w).max(1),
+                mix(self.from.size.h, self.rect.size.h).max(1),
+            )),
+        )
     }
 
     pub fn dismiss(&mut self) {
@@ -193,7 +213,7 @@ impl SnapPreview {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        self.reveal.is_animating(glide_theme::motion::t2())
+        self.reveal.is_animating(glide_theme::motion::t2()) || self.glide.is_animating(glide_theme::motion::t2())
     }
 
     #[must_use]
@@ -248,6 +268,18 @@ mod tests {
         );
         assert!(!corner.update(Point::from((40.0, 40.0)), &outputs));
         assert!(corner.update(Point::from((0.0, 1.0)), &outputs));
+    }
+
+    #[test]
+    fn a_retargeted_preview_glides_from_where_it_was() {
+        let mut preview = SnapPreview::new(SnapZone::Left, rect(0, 34, 960, 1046));
+        assert_eq!(preview.shown(), rect(0, 34, 960, 1046));
+        preview.retarget(SnapZone::Right, rect(960, 34, 960, 1046));
+        assert_eq!(preview.rect, rect(960, 34, 960, 1046));
+        if !glide_theme::motion::is_disabled() {
+            assert_eq!(preview.shown().loc.x, 0, "it starts at the old zone");
+            assert!(preview.is_animating());
+        }
     }
 
     #[test]
