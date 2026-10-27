@@ -548,10 +548,18 @@ pub fn action_matches(apps: &[DesktopApp], ranked_apps: &[usize], needle: &str) 
 }
 
 #[must_use]
-pub fn run_entries(text: &str) -> Vec<Entry> {
+pub fn run_entries(text: &str, history: &[String]) -> Vec<Entry> {
     let command = text.trim();
-    if command.is_empty() { Vec::new() } else { vec![Entry::Run(command.to_string())] }
+    let typed = (!command.is_empty()).then(|| Entry::Run(command.to_string()));
+    let earlier = history
+        .iter()
+        .filter(|run| run.as_str() != command && run.to_lowercase().contains(&command.to_lowercase()))
+        .take(RUN_SUGGESTIONS)
+        .map(|run| Entry::Run(run.clone()));
+    typed.into_iter().chain(earlier).collect()
 }
+
+const RUN_SUGGESTIONS: usize = 8;
 
 #[allow(clippy::struct_excessive_bools)] // One switch per launcher section, from [launcher] in glide.toml
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -827,10 +835,16 @@ mod tests {
     }
 
     #[test]
-    fn the_run_prompt_offers_exactly_the_typed_command() {
-        assert_eq!(run_entries("  firefox --private-window "), [Entry::Run("firefox --private-window".into())]);
-        assert!(run_entries("   ").is_empty());
+    fn the_run_prompt_offers_the_typed_command_then_matching_earlier_ones() {
+        assert_eq!(run_entries("  firefox --private-window ", &[]), [Entry::Run("firefox --private-window".into())]);
+        assert!(run_entries("   ", &[]).is_empty());
         assert_eq!(Entry::Run("ls".into()).section(), Section::Run);
+        let history = ["htop".to_string(), "firefox --private-window".to_string(), "nvim".to_string()];
+        assert_eq!(run_entries("", &history).len(), 3, "an empty prompt lists the history");
+        assert_eq!(
+            run_entries("fire", &history),
+            [Entry::Run("fire".into()), Entry::Run("firefox --private-window".into())]
+        );
     }
 
     #[test]

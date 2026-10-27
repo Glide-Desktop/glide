@@ -1262,7 +1262,7 @@ impl GlideState {
 
         let backdrop_t = self.overview.as_ref().map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
 
-        let unlocking = self.greeter.as_ref().is_some_and(|greeter| greeter.is_lock() && greeter.is_leaving());
+        let unlocking = self.greeter.as_ref().is_some_and(|greeter| greeter.is_lock() && greeter.is_translucent());
         let mut elements = Vec::new();
         let mut blur_patches: Vec<Rectangle<i32, Logical>> = Vec::new();
         if let Some(greeter) = self.greeter.as_mut().filter(|_| !unlocking) {
@@ -1432,7 +1432,9 @@ impl GlideState {
         }
 
         let output_rect = Rectangle::from_size(logical_size.into());
-        if !locked && (!topbar_hidden || self.topbar.floats()) {
+        let slid = self.topbar.slide_away(output_geometry, topbar_hidden);
+        let sliding = slid > 0.0 && slid < 1.0;
+        if !locked && (sliding || !topbar_hidden || self.topbar.floats()) {
             let topbar = crate::topbar::render(
                 &mut self.topbar,
                 gles_renderer,
@@ -1441,9 +1443,18 @@ impl GlideState {
                 output_rect,
                 scale,
                 integer_scale,
-                (dock_backdrop.as_ref(), topbar_hidden),
+                (dock_backdrop.as_ref(), topbar_hidden && !sliding),
             );
-            prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
+            if sliding {
+                let rise = (f64::from(crate::topbar::HEIGHT) * slid * scale.y).round() as i32;
+                let offset = Point::<i32, smithay::utils::Physical>::from((0, -rise));
+                prepend(
+                    &mut elements,
+                    topbar.into_iter().map(|element| GlideRenderElements::RelocatedMemory(relocate(element, offset))),
+                );
+            } else {
+                prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
+            }
         }
 
         if let Some(switcher) = self.switcher.as_mut().filter(|_| !locked && primary) {

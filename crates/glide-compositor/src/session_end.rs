@@ -45,6 +45,11 @@ impl SessionEnd {
     }
 
     #[must_use]
+    pub fn refused_action(&self) -> Option<PowerAction> {
+        self.refused.map(|(action, _)| action)
+    }
+
+    #[must_use]
     pub const fn is_pending(&self) -> bool {
         self.pending.is_some()
     }

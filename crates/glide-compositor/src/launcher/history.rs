@@ -93,11 +93,66 @@ impl LaunchHistory {
     }
 }
 
+const RUN_KEEP: usize = 20;
+
+#[must_use]
+pub fn run_path() -> Option<PathBuf> {
+    Some(glide_config::state_home()?.join("glide/run-history"))
+}
+
+#[must_use]
+pub fn load_runs() -> Vec<String> {
+    run_path().and_then(|path| std::fs::read_to_string(path).ok()).map(|text| parse_runs(&text)).unwrap_or_default()
+}
+
+#[must_use]
+pub fn parse_runs(text: &str) -> Vec<String> {
+    text.lines().map(str::trim).filter(|line| !line.is_empty()).take(RUN_KEEP).map(str::to_string).collect()
+}
+
+#[must_use]
+pub fn with_run(mut runs: Vec<String>, command: &str) -> Vec<String> {
+    let command = command.trim();
+    runs.retain(|run| run != command);
+    runs.insert(0, command.to_string());
+    runs.truncate(RUN_KEEP);
+    runs
+}
+
+pub fn remember_run(command: &str) {
+    let (Some(path), command) = (run_path(), command.trim().to_string()) else {
+        return;
+    };
+    if command.is_empty() || command.contains('\n') {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("glide-run-history".into()).spawn(move || {
+        let runs = with_run(std::fs::read_to_string(&path).map(|text| parse_runs(&text)).unwrap_or_default(), &command);
+        if let Err(err) = glide_config::write_private(&path, (runs.join("\n") + "\n").as_bytes()) {
+            tracing::warn!(?err, path = %path.display(), "failed to save the run history");
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::warn!(%err, "could not start the run history writer");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const DAY: u64 = 86_400;
+
+    #[test]
+    fn the_run_history_keeps_the_newest_command_first_without_repeats() {
+        let runs = with_run(parse_runs("htop\n\nfirefox --private-window\n"), " htop ");
+        assert_eq!(runs, ["htop", "firefox --private-window"]);
+        let runs = with_run(runs, "nvim notes.md");
+        assert_eq!(runs[0], "nvim notes.md");
+        let many = (0..30).fold(Vec::new(), |runs, n| with_run(runs, &format!("cmd {n}")));
+        assert_eq!(many.len(), RUN_KEEP);
+        assert_eq!(many[0], "cmd 29");
+    }
 
     #[test]
     fn recording_counts_launches_and_keeps_the_latest_time() {

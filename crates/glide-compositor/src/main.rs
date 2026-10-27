@@ -244,8 +244,10 @@ fn run() -> anyhow::Result<()> {
         let shot_animating = state.tick_shot();
         let polkit_animating = state.tick_polkit();
         let keychain_animating = state.tick_keychain_prompt();
+        let night_light_animating = state.tick_night_light_fade();
 
         if toasts_animating
+            || night_light_animating
             || polkit_animating
             || keychain_animating
             || shot_animating

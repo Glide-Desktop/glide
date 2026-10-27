@@ -512,6 +512,7 @@ pub struct Launcher {
     menu_cache: std::collections::HashMap<LauncherMenuKey, MemoryRenderBuffer>,
     menu_shadow: std::collections::HashMap<(i32, i32, i32), MemoryRenderBuffer>,
     raster_rev: u64,
+    runs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -621,6 +622,7 @@ impl Launcher {
             menu_cache: std::collections::HashMap::new(),
             menu_shadow: std::collections::HashMap::new(),
             raster_rev: 0,
+            runs: Vec::new(),
         }
     }
 
@@ -701,6 +703,7 @@ impl Launcher {
             return;
         }
         self.prompt = Prompt::Run;
+        self.runs = if cfg!(test) { Vec::new() } else { history::load_runs() };
         self.refilter();
     }
 
@@ -950,7 +953,7 @@ impl Launcher {
         let now = history::now_unix();
         self.results = filter_apps(&self.apps, self.field.text(), self.category, &self.history, now);
         self.entries = if self.run_mode() {
-            search::run_entries(self.field.text())
+            search::run_entries(self.field.text(), &self.runs)
         } else {
             let sources = search::Sources {
                 windows: if self.options.windows { &self.windows } else { &[] },

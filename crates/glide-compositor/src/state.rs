@@ -344,6 +344,7 @@ pub struct GlideState {
     pub shell_palette: (glide_theme::Appearance, glide_theme::Accent),
     pub night_light: crate::config::NightLightConfig,
     pub night_light_scheduled: Option<bool>,
+    pub night_light_fade: (glide_ui::Tween, bool),
     pub motion: MotionPolicy,
 
     pub font_family: Option<String>,
@@ -504,6 +505,7 @@ impl GlideState {
             shell_palette: (glide_theme::Appearance::Dark, glide_theme::Accent::Blue),
             night_light: crate::config::NightLightConfig::default(),
             night_light_scheduled: None,
+            night_light_fade: (glide_ui::Tween::at(0.0), false),
             motion: MotionPolicy::default(),
             active_slider_drag: None,
             font_family: None,
@@ -1492,21 +1494,45 @@ impl GlideState {
     }
 
     pub fn apply_night_light(&mut self, on: bool) {
+        let target = if on { 1.0 } else { 0.0 };
+        let duration = night_light_fade_duration();
+        if duration.is_zero() {
+            self.night_light_fade.0.jump(target);
+        } else {
+            self.night_light_fade.0.retarget(target, duration, glide_theme::motion::ease_io);
+            self.night_light_fade.1 = true;
+        }
+        self.paint_night_light();
+        self.queue_animation_redraw();
+    }
+
+    pub fn tick_night_light_fade(&mut self) -> bool {
+        if !self.night_light_fade.1 {
+            return false;
+        }
+        let animating = self.night_light_fade.0.is_animating(night_light_fade_duration());
+        self.paint_night_light();
+        self.night_light_fade.1 = animating;
+        animating
+    }
+
+    fn paint_night_light(&mut self) {
+        let mix = self.night_light_fade.0.value(night_light_fade_duration(), glide_theme::motion::ease_io);
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
-        let tint = crate::config::night_light_tint(self.night_light.temperature);
+        let tint = crate::config::night_light_mix(crate::config::night_light_tint(self.night_light.temperature), mix);
         for output in outputs {
-            if on {
-                let Some(size) = self.gamma_size(&output).map(|s| s as usize) else {
-                    continue;
-                };
-                if size < 2 {
-                    continue;
-                }
-                let ramp = crate::config::night_light_ramp(size, tint);
-                self.apply_gamma(&output, &ramp);
-            } else {
+            if mix <= 0.0 {
                 self.reset_gamma(&output);
+                continue;
             }
+            let Some(size) = self.gamma_size(&output).map(|s| s as usize) else {
+                continue;
+            };
+            if size < 2 {
+                continue;
+            }
+            let ramp = crate::config::night_light_ramp(size, tint);
+            self.apply_gamma(&output, &ramp);
         }
     }
 
@@ -1617,11 +1643,33 @@ impl GlideState {
                 continue;
             }
             let alert = crate::topbar::IslandAlert::from_item(&glance.item);
-            shown |= self.topbar.show_alert(alert, std::time::Instant::now());
+            shown |= self.show_island_alert(alert);
         }
         if shown {
             self.queue_redraw();
         }
+    }
+
+    pub fn show_island_alert(&mut self, alert: crate::topbar::IslandAlert) -> bool {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        if !self.topbar.show_alert(alert, std::time::Instant::now()) {
+            return false;
+        }
+        let timer = Timer::from_duration(crate::topbar::ALERT_HOLD);
+        let inserted = self.loop_handle.insert_source(timer, |_, (), state| {
+            if state.topbar.alert().is_none() {
+                return TimeoutAction::Drop;
+            }
+            if state.topbar.tick_island(std::time::Instant::now()) {
+                state.queue_redraw();
+                return TimeoutAction::Drop;
+            }
+            TimeoutAction::ToDuration(ALERT_RECHECK)
+        });
+        if let Err(err) = inserted {
+            tracing::warn!(?err, "failed to schedule the island alert expiry");
+        }
+        true
     }
 
     pub fn run_notification_action(&mut self, action: crate::notifications::NotificationAction) {
@@ -2697,6 +2745,23 @@ impl GlideState {
         self.window_map.values().any(crate::window::GlideWindow::is_geometry_animating)
     }
 
+    pub fn move_window_with_view(
+        &mut self, id: glide_layout::WindowId, target: glide_layout::WorkspaceTarget, follow: bool,
+    ) {
+        if !self.layout.move_window_to_workspace(id, target) {
+            return;
+        }
+        let destination = self.layout.window_state(id).map(|state| state.workspace_id);
+        match destination.filter(|workspace| follow && *workspace != self.layout.active_workspace()) {
+            Some(workspace) => {
+                self.switch_workspace_animated(glide_layout::WorkspaceTarget::Id(workspace));
+                self.focus_window(id);
+            }
+            None => self.reconcile_space(),
+        }
+        self.sync_ext_workspaces();
+    }
+
     pub fn switch_workspace_animated(&mut self, target: glide_layout::WorkspaceTarget) {
         self.finish_workspace_swipe();
         let before_index = self.active_workspace_index();
@@ -3381,6 +3446,16 @@ impl GlideState {
         self.queue_redraw();
     }
 
+    pub fn lock_screen_gently(&mut self) {
+        if self.screen_locked() {
+            return;
+        }
+        self.lock_screen();
+        if let Some(greeter) = self.greeter.as_mut() {
+            greeter.arrive();
+        }
+    }
+
     pub fn lock_screen(&mut self) {
         if self.screen_locked() {
             return;
@@ -3799,6 +3874,13 @@ impl GlideState {
     pub fn handoff_blocks_input(&self) -> bool {
         self.greeter.is_none() && self.handoff.as_ref().is_some_and(crate::handoff::Handoff::blocks_input)
     }
+}
+
+const ALERT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
+
+#[must_use]
+pub fn night_light_fade_duration() -> std::time::Duration {
+    glide_theme::motion::scaled(std::time::Duration::from_millis(1500))
 }
 
 #[must_use]

@@ -316,6 +316,34 @@ fn settle_slides(
         .collect()
 }
 
+fn note_arrivals(
+    arrivals: &mut HashMap<String, Instant>, slides: &HashMap<String, TileSlide>, targets: &[(&str, i32)], now: Instant,
+) {
+    arrivals.retain(|key, born| {
+        now.saturating_duration_since(*born) < t2() && targets.iter().any(|(target, _)| target == key)
+    });
+    if slides.is_empty() {
+        return;
+    }
+    for (key, _) in targets {
+        if !slides.contains_key(*key) {
+            arrivals.insert((*key).to_string(), now);
+        }
+    }
+}
+
+fn arrival(arrivals: &HashMap<String, Instant>, key: &str, now: Instant) -> f64 {
+    let Some(born) = arrivals.get(key) else { return 1.0 };
+    let duration = t2();
+    if duration.is_zero() {
+        return 1.0;
+    }
+    let t = now.saturating_duration_since(*born).as_secs_f64() / duration.as_secs_f64();
+    glide_theme::motion::E_OUT.ease_f64(t.min(1.0))
+}
+
+const ARRIVAL_DROP: f64 = 8.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DockDrag {
     index: usize,
@@ -553,6 +581,7 @@ pub struct Dock {
     menu_rows: Layers<usize>,
     drag: Option<DockDrag>,
     slides: HashMap<String, TileSlide>,
+    arrivals: HashMap<String, Instant>,
     hover_since: Option<Instant>,
     hover_layers: Layers,
     press_layers: Layers,
@@ -637,6 +666,7 @@ impl Dock {
             menu_rows: HashMap::new(),
             drag: None,
             slides: HashMap::new(),
+            arrivals: HashMap::new(),
             hover_since: None,
             hover_layers: HashMap::new(),
             press_layers: HashMap::new(),
@@ -1522,6 +1552,7 @@ impl Dock {
             || tooltip_pending
             || (!run.is_zero() && self.run_changed.iter().any(|stamp| stamp.elapsed() < run))
             || self.slides.values().any(|tile| tile.is_moving(now, t2()))
+            || self.arrivals.values().any(|born| now.saturating_duration_since(*born) < t2())
             || self.menu_reveal.is_animating(t2())
             || self.tooltip_reveal.is_animating(t1())
             || any_animating(&self.hover_layers, t1())
@@ -1542,7 +1573,9 @@ impl Dock {
         let glued = dragged.and_then(|(index, position)| {
             order.iter().position(|candidate| *candidate == index).map(|slot| (slot, position.x))
         });
-        settle_slides(&mut self.slides, &targets, glued, Instant::now(), t2())
+        let now = Instant::now();
+        note_arrivals(&mut self.arrivals, &self.slides, &targets, now);
+        settle_slides(&mut self.slides, &targets, glued, now, t2())
             .into_iter()
             .zip(item_rects)
             .map(|(x, rect)| {
@@ -1939,6 +1972,8 @@ fn push_tiles<R: ShellRenderer>(
     let now = Instant::now();
     for (&index, rect) in order.iter().zip(drawn_rects) {
         let app_id = &dock.items[index].app_id;
+        let arrive = arrival(&dock.arrivals, app_id, now);
+        let opacity = opacity * arrive as f32;
         let press = layer_alpha(&dock.press_layers, app_id, t1()).clamp(0.0, 1.0);
         let hover_alpha = layer_alpha(&dock.hover_layers, app_id, t1()) * (1.0 - press);
         let run = dock.run_alpha(app_id);
@@ -1948,7 +1983,7 @@ fn push_tiles<R: ShellRenderer>(
         let is_hovered = hover_t > 0.0;
         let is_launcher = dock.items[index].action == DockAction::OpenLauncher;
         let dragging = dragged.is_some_and(|(drag_index, _)| drag_index == index);
-        let (mut hover, well) = match dragged {
+        let (mut hover, mut well) = match dragged {
             Some((drag_index, position)) if drag_index == index => {
                 (HoverGeometry::lifted(theme, position), HoverGeometry::lifted(theme, position))
             }
@@ -1957,7 +1992,8 @@ fn push_tiles<R: ShellRenderer>(
                 HoverGeometry::for_tile(theme, *rect, false, is_launcher, 0.0, hover_alpha),
             ),
         };
-        hover.position.y -= lift;
+        hover.position.y -= lift - ARRIVAL_DROP * (1.0 - arrive);
+        well.position.y += ARRIVAL_DROP * (1.0 - arrive);
         push_badge(dock, frame, index, (&hover, &well), opacity);
         push_tile_icon(dock, frame, index, &hover, opacity);
         let scale = frame.output_scale;
@@ -3298,6 +3334,21 @@ mod tests {
 
         fn targets<'a>(pairs: &[(&'a str, i32)]) -> Vec<(&'a str, i32)> {
             pairs.to_vec()
+        }
+
+        #[test]
+        fn only_tiles_added_after_the_first_build_fade_in() {
+            let now = Instant::now();
+            let mut arrivals = HashMap::new();
+            let mut slides = HashMap::new();
+            note_arrivals(&mut arrivals, &slides, &targets(&[("a", 100)]), now);
+            assert!(arrivals.is_empty(), "the dock's first build fades nothing in");
+            slides.insert("a".to_string(), TileSlide::settled(100, now));
+            note_arrivals(&mut arrivals, &slides, &targets(&[("a", 100), ("b", 160)]), now);
+            assert_eq!(arrivals.keys().map(String::as_str).collect::<Vec<_>>(), vec!["b"]);
+            note_arrivals(&mut arrivals, &slides, &targets(&[("a", 100)]), now);
+            assert!(arrivals.is_empty(), "a tile that left again is forgotten");
+            assert!((arrival(&arrivals, "a", now) - 1.0).abs() < f64::EPSILON);
         }
 
         #[test]

@@ -114,6 +114,7 @@ pub enum KeyAction {
     FillPassword,
     ScreenMirroring,
     RestoreShortcuts,
+    DismissWindowMenu,
     FocusDock,
     FocusTopBar,
     RunPrompt,
@@ -229,6 +230,14 @@ pub fn scrolled_volume(current: u8, step: i16, max: u8) -> u8 {
     let wanted = (i16::from(current) + step).clamp(0, ceiling);
     let wanted = if step > 0 { wanted.max(i16::from(current)) } else { wanted.min(i16::from(current)) };
     u8::try_from(wanted).unwrap_or(current)
+}
+
+const STOCK_VOLUME_LIMIT: &str = "wpctl set-volume -l 1.5 ";
+
+#[must_use]
+pub fn capped_volume_command(command: &str, max: u8) -> String {
+    let limit = format!("wpctl set-volume -l {:.2} ", f64::from(max) / 100.0);
+    command.replace(STOCK_VOLUME_LIMIT, &limit)
 }
 
 fn locked_media_shortcut(
@@ -1578,6 +1587,10 @@ impl GlideState {
         let shot_typing = self.shot_typing();
         let shot_editing = self.shot_editing();
         let switcher_open = self.switcher_open();
+        let window_menu_open = self
+            .window_map
+            .values()
+            .any(|window| window.try_decoration_state().is_some_and(|deco| deco.header.is_menu_open()));
         let switcher_mode = self.switcher.as_ref().map_or(crate::switcher::Mode::Apps, crate::switcher::Switcher::mode);
         let greeter_active = self.greeter.is_some();
         let layout_before = self.active_layout_index();
@@ -1669,6 +1682,8 @@ impl GlideState {
                         Some(power_dialog_shortcut(modifiers, syms, sym))
                     } else if switcher_open {
                         Some(switcher_active_shortcut(modifiers, syms, sym, switcher_mode))
+                    } else if window_menu_open && (sym == Keysym::Escape || syms.contains(&Keysym::Escape)) {
+                        Some(KeyAction::DismissWindowMenu)
                     } else if replying && !exclusive {
                         Some(reply_active_shortcut(&keybinds, modifiers, syms, sym))
                     } else if launcher_open && !exclusive {
@@ -1801,9 +1816,7 @@ impl GlideState {
                 if let Some(focused) = self.layout.focused_window() {
                     tracing::info!(focused = ?focused, workspace_index = idx, "moving window to workspace");
                     self.suppressed_keys.clear();
-                    self.layout.move_window_to_workspace(focused, glide_layout::WorkspaceTarget::Index(idx));
-                    self.reconcile_space();
-                    self.sync_ext_workspaces();
+                    self.move_window_with_view(focused, glide_layout::WorkspaceTarget::Index(idx), true);
                 }
             }
             KeyAction::NextWorkspace => {
@@ -1879,7 +1892,7 @@ impl GlideState {
             KeyAction::SwitcherCloseWindow => self.switcher_close_window(),
             KeyAction::SwitcherHide => self.switcher_hide_app(),
             KeyAction::CloseApp => self.close_focused_app(),
-            KeyAction::Lock => self.lock_screen(),
+            KeyAction::Lock => self.lock_screen_gently(),
             KeyAction::Logout => {
                 self.open_power_dialog(Some(crate::power::PowerAction::LogOut));
             }
@@ -1896,6 +1909,8 @@ impl GlideState {
                 }
             }
             KeyAction::Exec(cmd) => {
+                let ceiling = self.max_volume_pct.max(self.topbar.system_status().volume_pct);
+                let cmd = capped_volume_command(&cmd, ceiling);
                 tracing::info!(command = %cmd, "executing keybind command");
                 if let Err(err) = self.spawn_user_command(&cmd) {
                     tracing::error!(command = %cmd, ?err, "failed to execute keybind command");
@@ -2013,6 +2028,17 @@ impl GlideState {
             KeyAction::FillPassword => self.offer_passwords_now(),
             KeyAction::ScreenMirroring => self.toggle_screen_mirroring(),
             KeyAction::RestoreShortcuts => self.restore_shortcuts(),
+            KeyAction::DismissWindowMenu => {
+                let mut dismissed = false;
+                for window in self.window_map.values() {
+                    if let Some(mut deco) = window.try_decoration_state_mut() {
+                        dismissed |= deco.header.dismiss_menu();
+                    }
+                }
+                if dismissed {
+                    self.queue_redraw();
+                }
+            }
             KeyAction::RunPrompt => self.open_run_prompt(),
             KeyAction::FocusDock
             | KeyAction::FocusTopBar
@@ -2043,9 +2069,7 @@ impl GlideState {
                     };
                     tracing::info!(focused = ?focused, forward, "moving window to a neighbouring workspace");
                     self.suppressed_keys.clear();
-                    self.layout.move_window_to_workspace(focused, target);
-                    self.reconcile_space();
-                    self.sync_ext_workspaces();
+                    self.move_window_with_view(focused, target, true);
                 }
             }
             KeyAction::GreeterCancel => {
@@ -2978,6 +3002,15 @@ mod tests {
         assert_eq!(scrolled_volume(130, 5, 100), 130, "above the cap it stays where the key put it");
         assert_eq!(scrolled_volume(130, -5, 100), 125, "and scrolling down lowers it step by step");
         assert_eq!(scrolled_volume(3, -5, 100), 0);
+    }
+
+    #[test]
+    fn the_stock_volume_key_follows_the_configured_ceiling() {
+        let stock = "wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+ || pactl set-sink-volume @DEFAULT_SINK@ +5%";
+        assert!(capped_volume_command(stock, 100).starts_with("wpctl set-volume -l 1.00 @DEFAULT_AUDIO_SINK@ 5%+"));
+        assert!(capped_volume_command(stock, 130).starts_with("wpctl set-volume -l 1.30 "));
+        let own = "wpctl set-volume -l 2.0 @DEFAULT_AUDIO_SINK@ 5%+";
+        assert_eq!(capped_volume_command(own, 100), own, "a limit the user wrote is theirs");
     }
 
     fn no_modifiers() -> ModifiersState {

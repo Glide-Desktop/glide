@@ -116,8 +116,9 @@ impl GlideState {
             }
             Entry::Run(command) => {
                 tracing::info!(%command, "running a command from the run prompt");
-                if let Err(err) = self.spawn_user_command(&command) {
-                    tracing::warn!(%command, ?err, "failed to run a command");
+                match self.spawn_user_command(&command) {
+                    Ok(_) => crate::launcher::history::remember_run(&command),
+                    Err(err) => tracing::warn!(%command, ?err, "failed to run a command"),
                 }
             }
             Entry::File(index) => {

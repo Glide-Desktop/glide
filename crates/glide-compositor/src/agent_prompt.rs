@@ -205,6 +205,12 @@ impl crate::GlideState {
                 crate::system_info::open_storage_settings();
                 continue;
             }
+            if let LocalEvent::Action { id: crate::power::SESSION_NOTICE_ID, key } = &event
+                && key == crate::power::END_ANYWAY
+            {
+                self.end_session_anyway();
+                continue;
+            }
             if let LocalEvent::Action { id: crate::cast::NOTICE_ID, key } = &event {
                 self.cast_action(key);
                 continue;

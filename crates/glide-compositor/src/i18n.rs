@@ -128,6 +128,8 @@ glide_app::catalogue! {
     Restore => "Restore", "Відновити";
     Close => "Close", "Закрити";
     ForceQuit => "Force Quit", "Завершити примусово";
+    TileLeftHalf => "Left Half", "Ліва половина";
+    TileRightHalf => "Right Half", "Права половина";
     Configure => "Configure", "Налаштувати";
     MenuFile => "File", "Файл";
     MenuView => "View", "Вигляд";
@@ -455,7 +457,8 @@ glide_app::catalogue! {
     BatteryCritical => "Battery is almost empty", "Батарея майже розряджена";
     BatteryPlugIn => "plug in the charger", "під\u{2019}єднайте зарядний пристрій";
     SessionEndRefused => "Some apps are still open", "Деякі програми ще відкриті";
-    SessionEndRefusedHint => "They may have unsaved changes. Choose the same action again within a minute to end the session anyway.", "У них можуть бути незбережені зміни. Оберіть ту саму дію ще раз протягом хвилини, щоб завершити сеанс попри це.";
+    SessionEndRefusedHint => "They may have unsaved changes: {apps}.", "У них можуть бути незбережені зміни: {apps}.";
+    SessionEndAnyway => "End Anyway", "Завершити все одно";
     SessionEndRefusedLocked => "Apps with unsaved changes kept the session open. Unlock to see them.", "Програми з незбереженими змінами не дали завершити сеанс. Розблокуйте, щоб побачити їх.";
     LockUnlocking => "Unlocking…", "Розблокування…";
     LockUnavailable => "Authentication is unavailable", "Автентифікація недоступна";

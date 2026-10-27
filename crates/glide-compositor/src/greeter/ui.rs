@@ -536,6 +536,7 @@ pub struct GreeterUi {
     time: String,
     date: String,
     leaving: Option<Instant>,
+    arriving: Option<Instant>,
     spinner_epoch: Instant,
     palette: Palette,
     layout: Option<Layout>,
@@ -656,6 +657,7 @@ impl GreeterUi {
             time: String::new(),
             date: String::new(),
             leaving: None,
+            arriving: None,
             spinner_epoch: Instant::now(),
             palette: Palette::new(accent),
             layout: None,
@@ -703,7 +705,33 @@ impl GreeterUi {
 
     #[must_use]
     pub fn cover_alpha(&self) -> f64 {
-        if self.is_lock() { 1.0 - self.leave_progress() } else { 1.0 }
+        if self.is_lock() { 1.0 - self.fade() } else { 1.0 }
+    }
+
+    pub fn arrive(&mut self) {
+        if self.is_lock() && !motion::t3().is_zero() {
+            self.arriving = Some(Instant::now());
+            self.dirty = true;
+        }
+    }
+
+    #[must_use]
+    pub fn is_translucent(&self) -> bool {
+        self.leaving.is_some() || self.arrive_progress() < 1.0
+    }
+
+    fn arrive_progress(&self) -> f64 {
+        let (Some(since), duration) = (self.arriving, motion::t3()) else {
+            return 1.0;
+        };
+        if duration.is_zero() {
+            return 1.0;
+        }
+        ease_out((since.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0))
+    }
+
+    fn fade(&self) -> f64 {
+        if self.leaving.is_some() { self.leave_progress() } else { 1.0 - self.arrive_progress() }
     }
 
     #[must_use]
@@ -1181,6 +1209,7 @@ impl GreeterUi {
             || self.toast.is_some()
             || self.busy()
             || self.leaving.is_some()
+            || self.arrive_progress() < 1.0
     }
 
     pub fn tick(&mut self) -> bool {
@@ -1910,7 +1939,7 @@ impl GreeterUi {
     {
         let mut out = Vec::new();
         let size = area.size;
-        let leave = self.leave_progress();
+        let leave = self.fade();
 
         if primary && size.w > 0 && size.h > 0 && buffer_scale > 0 {
             let layout = self.compute_layout(painter, area);

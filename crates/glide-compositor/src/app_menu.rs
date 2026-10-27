@@ -325,7 +325,7 @@ impl GlideState {
         use crate::{input::KeyAction, topbar::TopbarAction};
         match command {
             DesktopCommand::SystemSettings => crate::system_info::open_settings(),
-            DesktopCommand::LockScreen => self.lock_screen(),
+            DesktopCommand::LockScreen => self.lock_screen_gently(),
             DesktopCommand::NewTerminal => self.open_terminal_tab(),
             DesktopCommand::OpenHome => {
                 let _ = self.spawn_user_command("xdg-open \"$HOME\"");

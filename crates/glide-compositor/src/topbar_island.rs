@@ -30,7 +30,7 @@ use crate::raster::{Canvas, ShellRenderer};
 pub(super) const TOP: i32 = (super::HEIGHT - HAIRLINE - COMPACT_H) / 2;
 pub(super) const WIDE: i32 = 356;
 pub(super) const VISIBLE_ITEMS: usize = 4;
-pub(super) const ALERT_HOLD: Duration = Duration::from_millis(3500);
+pub const ALERT_HOLD: Duration = Duration::from_millis(3500);
 
 const HAIRLINE: i32 = 1;
 const COMPACT_W: i32 = 344;

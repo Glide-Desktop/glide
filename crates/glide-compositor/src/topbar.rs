@@ -35,7 +35,7 @@ mod island;
 #[path = "topbar_glyphs.rs"]
 mod glyphs;
 
-pub use island::IslandAlert;
+pub use island::{ALERT_HOLD, IslandAlert};
 
 #[path = "topbar_status.rs"]
 mod status;
@@ -845,6 +845,7 @@ pub struct Topbar {
     island: island::Island,
     indicators: status::Indicators,
     tray: tray::TrayStrip,
+    slides: HashMap<(i32, i32), glide_ui::Tween>,
 }
 
 type Anchor = Option<Rectangle<i32, Logical>>;
@@ -1132,7 +1133,15 @@ impl Topbar {
         let detail = self.qs_panel.is_animating();
         let extras = self.calendar.is_animating() || self.indicators.is_animating() || self.island.is_animating();
         let tray = self.tray_is_animating();
-        popup || layers || controls || detail || extras || tray || self.pending_settle()
+        let sliding = self.slides.values().any(|slide| slide.is_animating(motion::t3()));
+        popup || layers || controls || detail || extras || tray || sliding || self.pending_settle()
+    }
+
+    pub fn slide_away(&mut self, output: Rectangle<i32, Logical>, hidden: bool) -> f64 {
+        let target = if hidden { 1.0 } else { 0.0 };
+        let slide = self.slides.entry((output.loc.x, output.loc.y)).or_insert_with(|| glide_ui::Tween::at(target));
+        slide.retarget(target, motion::t3(), motion::ease_out);
+        slide.value(motion::t3(), motion::ease_out)
     }
 
     fn pending_settle(&self) -> bool {

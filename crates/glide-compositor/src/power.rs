@@ -9,6 +9,7 @@ use crate::{
 };
 
 pub const SESSION_NOTICE_ID: u32 = u32::MAX - 2;
+pub const END_ANYWAY: &str = "end-anyway";
 const SESSION_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -24,7 +25,7 @@ impl GlideState {
     pub fn perform_power_action(&mut self, action: PowerAction) {
         tracing::info!(?action, "power action");
         match action {
-            PowerAction::Lock => self.lock_screen(),
+            PowerAction::Lock => self.lock_screen_gently(),
             PowerAction::Sleep => crate::system_info::suspend(),
             PowerAction::LogOut | PowerAction::Restart | PowerAction::ShutDown => self.request_session_end(action),
         }
@@ -77,7 +78,11 @@ impl GlideState {
                         id: SESSION_NOTICE_ID,
                         app_name: "Glide".to_string(),
                         summary: t(Key::SessionEndRefused).to_string(),
-                        body: t(Key::SessionEndRefusedHint).to_string(),
+                        body: t(Key::SessionEndRefusedHint).replace("{apps}", &self.open_app_names().join(", ")),
+                        actions: vec![glide_notify::Action {
+                            key: END_ANYWAY.to_string(),
+                            label: t(Key::SessionEndAnyway).to_string(),
+                        }],
                         transient: true,
                         timeout: Some(SESSION_NOTICE_TIMEOUT),
                         ..glide_notify::Notification::default()
@@ -88,6 +93,34 @@ impl GlideState {
                 self.queue_redraw();
             }
         }
+    }
+
+    pub fn end_session_anyway(&mut self) {
+        if let Some(action) = self.session.end.refused_action() {
+            self.notifications.dismiss(SESSION_NOTICE_ID);
+            self.request_session_end(action);
+        }
+    }
+
+    fn open_app_names(&self) -> Vec<String> {
+        let index = self.app_directory.index();
+        let mut names: Vec<String> = self
+            .window_map
+            .values()
+            .filter_map(|window| {
+                let (title, app_id) = window
+                    .toplevel()
+                    .map(|toplevel| crate::state::toplevel_title_and_app_id(toplevel.wl_surface()))
+                    .unwrap_or_default();
+                let app_id = app_id.filter(|id| !id.trim().is_empty());
+                let named =
+                    app_id.as_deref().and_then(|id| index.and_then(|index| index.get(id))).map(|app| app.name.clone());
+                named.or(app_id).or(title).filter(|name| !name.trim().is_empty())
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     pub fn open_power_dialog(&mut self, focus: Option<PowerAction>) {

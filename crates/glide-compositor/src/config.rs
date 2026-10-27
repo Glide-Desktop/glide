@@ -307,6 +307,13 @@ pub fn night_light_tint(kelvin: u32) -> (f64, f64, f64) {
 }
 
 #[must_use]
+pub fn night_light_mix((red, green, blue): (f64, f64, f64), amount: f64) -> (f64, f64, f64) {
+    let amount = amount.clamp(0.0, 1.0);
+    let toward = |channel: f64| channel * amount + (1.0 - amount);
+    (toward(red), toward(green), toward(blue))
+}
+
+#[must_use]
 pub fn night_light_ramp(size: usize, (red, green, blue): (f64, f64, f64)) -> Vec<u16> {
     let mut ramp = vec![0u16; size * 3];
     if size < 2 {
@@ -2132,6 +2139,15 @@ position = [2560, 0]
         }
         let (_, green, blue) = night_light_tint(NIGHT_LIGHT_DEFAULT_KELVIN);
         assert!((0.75..0.9).contains(&green) && (0.55..0.75).contains(&blue));
+    }
+
+    #[test]
+    fn night_light_fades_from_neutral_to_the_tint() {
+        let tint = (1.0, 0.6, 0.3);
+        assert_eq!(night_light_mix(tint, 0.0), (1.0, 1.0, 1.0));
+        assert_eq!(night_light_mix(tint, 1.0), tint);
+        let (_, green, blue) = night_light_mix(tint, 0.5);
+        assert!((green - 0.8).abs() < 1e-9 && (blue - 0.65).abs() < 1e-9);
     }
 
     #[test]

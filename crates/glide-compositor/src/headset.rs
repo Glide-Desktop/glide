@@ -560,7 +560,7 @@ impl crate::GlideState {
                         summary: connected_line(headset.battery),
                         icon,
                     };
-                    self.topbar.show_alert(alert, now);
+                    self.show_island_alert(alert);
                 }
                 self.topbar.set_headset(headset);
                 self.queue_redraw();

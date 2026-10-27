@@ -4,12 +4,15 @@ use crate::{GlideState, window::GlideWindow};
 pub enum MenuItem {
     Minimize,
     ToggleMaximize,
+    TileLeft,
+    TileRight,
     Close,
     ForceQuit,
 }
 
 impl MenuItem {
-    pub const ALL: &'static [Self] = &[Self::Minimize, Self::ToggleMaximize, Self::Close, Self::ForceQuit];
+    pub const ALL: &'static [Self] =
+        &[Self::Minimize, Self::ToggleMaximize, Self::TileLeft, Self::TileRight, Self::Close, Self::ForceQuit];
 
     #[must_use]
     pub fn label(self, maximized: bool) -> &'static str {
@@ -23,6 +26,8 @@ impl MenuItem {
                     t(Key::Maximize)
                 }
             }
+            Self::TileLeft => t(Key::TileLeftHalf),
+            Self::TileRight => t(Key::TileRightHalf),
             Self::Close => t(Key::Close),
             Self::ForceQuit => t(Key::ForceQuit),
         }
@@ -33,6 +38,8 @@ impl MenuItem {
         match self {
             Self::Minimize => Some("Super+M"),
             Self::ToggleMaximize => Some("Super+F"),
+            Self::TileLeft => Some("Super+←"),
+            Self::TileRight => Some("Super+→"),
             Self::Close => Some("Alt+F4"),
             Self::ForceQuit => None,
         }
@@ -57,6 +64,15 @@ pub(crate) fn run_menu_item(state: &mut GlideState, window: &GlideWindow, item: 
             tracing::info!(?id, "toggling maximize via titlebar menu");
             state.morph_geometry(id, |state| {
                 state.layout.toggle_maximized(id);
+            });
+        }
+        MenuItem::TileLeft | MenuItem::TileRight => {
+            tracing::info!(?id, ?item, "tiling via titlebar menu");
+            state.focus_window(id);
+            state.tile_focused(if item == MenuItem::TileLeft {
+                crate::tiling::Side::Left
+            } else {
+                crate::tiling::Side::Right
             });
         }
         MenuItem::Close => {
@@ -101,7 +117,8 @@ mod tests {
 
     #[test]
     fn all_lists_every_variant_exactly_once() {
-        assert_eq!(MenuItem::ALL.len(), 4);
+        assert_eq!(MenuItem::ALL.len(), 6);
+        assert!(MenuItem::ALL.contains(&MenuItem::TileLeft) && MenuItem::ALL.contains(&MenuItem::TileRight));
         assert_eq!(MenuItem::ALL.last(), Some(&MenuItem::ForceQuit), "the harshest action sits last");
         assert!(MenuItem::ALL.contains(&MenuItem::Minimize));
         assert!(MenuItem::ALL.contains(&MenuItem::ToggleMaximize));

@@ -343,24 +343,23 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
         Request::ListWorkspaces => list_workspaces(state),
         Request::ListWindows => list_windows(state),
         Request::SwitchWorkspace { target } => {
-            state.layout.switch_to_workspace(to_layout_target(target));
-            state.reconcile_space();
+            state.switch_workspace_animated(to_layout_target(target));
+            state.sync_ext_workspaces();
             Response::Ok
         }
         Request::MoveWindow { window, target } => match resolve_window(state, window) {
             Some(w_id) => {
-                state.layout.move_window_to_workspace(w_id, to_layout_target(target));
-                state.reconcile_space();
+                state.move_window_with_view(w_id, to_layout_target(target), false);
                 Response::Ok
             }
             None => window_not_found(),
         },
         Request::FocusWindow { selector } => match resolve_window(state, selector) {
-            Some(w_id) if state.layout.focus_window(w_id) => {
-                state.reconcile_space();
+            Some(w_id) => {
+                state.activate_window_animated(w_id);
                 Response::Ok
             }
-            _ => window_not_found(),
+            None => window_not_found(),
         },
         Request::Reload => match crate::config::Config::try_load() {
             Ok(config) => {

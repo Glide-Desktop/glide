@@ -99,9 +99,7 @@ impl XdgActivationHandler for GlideState {
         if granted || reacting || launched {
             self.protocols.xdg_activation_state.remove_token(&token);
             tracing::info!(window = id.0, granted, reacting, launched, "activation honoured");
-            if self.layout.focus_window(id) {
-                self.reconcile_space();
-            }
+            self.activate_window_animated(id);
             return;
         }
         if !focused {
