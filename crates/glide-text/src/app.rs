@@ -18,6 +18,7 @@ use crate::config::{self, Preferences, Session, SessionTab};
 use crate::document::{self, Decoded, Document, Encoding, Ending, LoadError};
 use crate::edit::{self, Case, Indent};
 use crate::find::{self, Query};
+use crate::finder::{self, Finder};
 use crate::history::Kind;
 use crate::i18n::{Key as Text, Lang};
 use crate::syntax::{self, Language, Lines, Marks, Palette, Settings};
@@ -133,6 +134,9 @@ pub enum Command {
     ToggleAutoIndent,
     ToggleAutoPair,
     ToggleFocus,
+    QuickOpen,
+    Symbols,
+    SearchFolder,
     Endings,
     SetEnding(Ending),
     ToggleTrimOnSave,
@@ -179,6 +183,18 @@ impl Menu {
 }
 
 pub type Item = glide_sdk::menu::Item<Command>;
+
+#[derive(Debug, Clone)]
+pub enum FinderMessage {
+    Input(String),
+    Pick(usize),
+    Submit,
+    Step(bool),
+    Close,
+    Filled(u64, Vec<finder::Entry>),
+}
+
+pub(crate) const FINDER_ID: &str = "glide-text-finder";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum After {
@@ -264,6 +280,7 @@ pub enum Message {
     ReplaceAll,
     GotoInput(String),
     GotoSubmit,
+    Finder(FinderMessage),
     Dialog(Answer),
     Disk(bool),
     Pasted(Option<String>),
@@ -299,6 +316,9 @@ pub struct App {
     pub zoom: f32,
     pub preview: bool,
     pub focus: bool,
+    pub finder: Option<Finder>,
+    finder_latest: Arc<std::sync::atomic::AtomicU64>,
+    pending_jump: Option<(PathBuf, usize)>,
     pub markdown: Option<(u64, u64, Vec<markdown::Item>)>,
     in_flight: HashSet<u64>,
     pub recent: Vec<PathBuf>,
@@ -390,6 +410,9 @@ pub fn shortcut(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<C
         ('e', true, false, false) => Command::UseSelection,
         ('i' | 'l', true, false, false) => Command::GoToLine,
         ('p', true, false, true) => Command::TogglePreview,
+        ('p', true, false, false) => Command::QuickOpen,
+        ('r', true, false, false) => Command::Symbols,
+        ('f', true, true, false) => Command::SearchFolder,
         ('d', true, false, true) => Command::ToggleFocus,
         _ => return None,
     };
@@ -434,6 +457,9 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::ToggleSidebar => "F9",
         Command::TogglePreview => "Ctrl+Alt+P",
         Command::ToggleFocus => "Ctrl+Alt+D",
+        Command::QuickOpen => "Ctrl+P",
+        Command::Symbols => "Ctrl+R",
+        Command::SearchFolder => "Ctrl+Shift+F",
         Command::ZoomIn => "Ctrl++",
         Command::ZoomOut => "Ctrl+−",
         Command::ZoomReset => "Ctrl+0",
@@ -606,6 +632,9 @@ impl App {
             zoom: 0.0,
             preview: false,
             focus: false,
+            finder: None,
+            finder_latest: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pending_jump: None,
             markdown: None,
             in_flight: HashSet::new(),
             recent: session.recent.clone(),
@@ -830,6 +859,7 @@ impl App {
     fn animating(&self) -> bool {
         self.notice.as_ref().is_some_and(|(_, at)| at.elapsed() < motion::t2())
             || self.menu.as_ref().is_some_and(|menu| menu.reveal.is_animating(motion::t2()))
+            || self.finder.as_ref().is_some_and(|finder| finder.reveal.is_animating(motion::t2()))
             || self.dialog.as_ref().is_some_and(|dialog| dialog.reveal.is_animating(motion::t2()))
             || self.closing.as_ref().is_some_and(|dialog| dialog.reveal.is_animating(motion::t2()))
     }
@@ -1025,6 +1055,7 @@ impl App {
                 Task::none()
             }
             Message::GotoSubmit => self.go_to(),
+            Message::Finder(message) => self.on_finder(message),
             Message::Dialog(answer) => self.answer(answer),
             Message::Disk(reload) => {
                 let Some(doc) = self.doc_mut() else { return Task::none() };
@@ -1249,6 +1280,9 @@ impl App {
         if self.dialog.is_some() {
             return self.answer(Answer::Cancel);
         }
+        if self.finder.take().is_some() {
+            return operation::focus(EDITOR);
+        }
         if self.goto.take().is_some() {
             return operation::focus(EDITOR);
         }
@@ -1288,6 +1322,11 @@ impl App {
         }
         if let Key::Named(Named::Escape) = key.as_ref() {
             return self.escape();
+        }
+        if self.finder.is_some()
+            && let Key::Named(arrow @ (Named::ArrowDown | Named::ArrowUp)) = key.as_ref()
+        {
+            return self.on_finder(FinderMessage::Step(arrow == Named::ArrowDown));
         }
         if captured {
             return Task::none();
@@ -1502,6 +1541,9 @@ impl App {
                 self.goto = Some(String::new());
                 operation::focus(GOTO_ID)
             }
+            Command::QuickOpen => self.open_finder(finder::Mode::Files),
+            Command::Symbols => self.open_finder(finder::Mode::Symbols),
+            Command::SearchFolder => self.open_finder(finder::Mode::Search),
             Command::ToggleSidebar => {
                 self.prefs.sidebar = !self.prefs.sidebar;
                 self.store_prefs();
@@ -1822,6 +1864,136 @@ impl App {
         self.tell(message);
     }
 
+    fn finder_root(&self) -> Option<PathBuf> {
+        self.tree
+            .as_ref()
+            .map(|tree| tree.root.clone())
+            .or_else(|| self.doc()?.path.as_deref()?.parent().map(Path::to_path_buf))
+    }
+
+    fn open_finder(&mut self, mode: finder::Mode) -> Task<Message> {
+        let root = self.finder_root();
+        if mode == finder::Mode::Search && root.is_none() {
+            self.tell(Text::NeedFolder.text(self.lang).to_string());
+            return Task::none();
+        }
+        let generation = self.finder_latest.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let mut opened = Finder::new(mode, root.clone(), generation);
+        let task = match (mode, root) {
+            (finder::Mode::Symbols, _) => {
+                if let Some(doc) = self.doc() {
+                    opened.fill(finder::symbols(doc.language(), &doc.text));
+                } else {
+                    opened.fill(Vec::new());
+                }
+                Task::none()
+            }
+            (finder::Mode::Files, Some(root)) => {
+                let hidden = self.prefs.hidden_files;
+                blocking(
+                    move || finder::index(&root, hidden),
+                    move |entries| Message::Finder(FinderMessage::Filled(generation, entries)),
+                )
+            }
+            (finder::Mode::Files, None) => {
+                let loose = self.docs.iter().filter_map(|doc| doc.path.clone()).chain(self.recent.iter().cloned());
+                let mut seen = HashSet::new();
+                let entries = loose
+                    .filter(|path| seen.insert(path.clone()))
+                    .map(|path| finder::Entry {
+                        label: path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+                        detail: path.parent().map(|parent| parent.to_string_lossy().into_owned()).unwrap_or_default(),
+                        target: finder::Target::File(path),
+                    })
+                    .collect();
+                opened.fill(entries);
+                Task::none()
+            }
+            (finder::Mode::Search, _) => {
+                opened.busy = false;
+                Task::none()
+            }
+        };
+        self.finder = Some(opened);
+        self.dismiss_menu();
+        Task::batch([operation::focus(FINDER_ID), task])
+    }
+
+    fn on_finder(&mut self, message: FinderMessage) -> Task<Message> {
+        let Some(open) = &mut self.finder else { return Task::none() };
+        match message {
+            FinderMessage::Input(query) => {
+                open.query = query;
+                if open.mode != finder::Mode::Search {
+                    open.rank();
+                    return Task::none();
+                }
+                let generation = self.finder_latest.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                open.generation = generation;
+                open.entries.clear();
+                open.rank();
+                let (Some(root), false) = (open.root.clone(), open.query.is_empty()) else {
+                    open.busy = false;
+                    return Task::none();
+                };
+                open.busy = true;
+                let query = Query { text: open.query.clone(), ..Query::default() };
+                let latest = Arc::clone(&self.finder_latest);
+                let hidden = self.prefs.hidden_files;
+                blocking(
+                    move || finder::search(&root, &query, hidden, generation, &latest),
+                    move |entries| Message::Finder(FinderMessage::Filled(generation, entries)),
+                )
+            }
+            FinderMessage::Step(forward) => {
+                open.step(forward);
+                Task::none()
+            }
+            FinderMessage::Pick(index) => {
+                open.selected = index;
+                self.on_finder(FinderMessage::Submit)
+            }
+            FinderMessage::Filled(generation, entries) => {
+                if open.generation == generation {
+                    open.fill(entries);
+                }
+                Task::none()
+            }
+            FinderMessage::Close => {
+                self.finder = None;
+                operation::focus(EDITOR)
+            }
+            FinderMessage::Submit => {
+                let Some(target) = open.current().map(|entry| entry.target.clone()) else { return Task::none() };
+                self.finder = None;
+                match target {
+                    finder::Target::File(path) => self.open_path(path),
+                    finder::Target::Line(line) => {
+                        self.place_line(line);
+                        operation::focus(EDITOR)
+                    }
+                    finder::Target::Match(path, line) => {
+                        if let Some(index) = self.docs.iter().position(|doc| doc.path.as_deref() == Some(&path)) {
+                            self.select(index);
+                            self.place_line(line);
+                            return operation::focus(EDITOR);
+                        }
+                        self.pending_jump = Some((path.clone(), line));
+                        self.open_path(path)
+                    }
+                }
+            }
+        }
+    }
+
+    fn place_line(&mut self, line: usize) {
+        let Some(doc) = self.doc_mut() else { return };
+        let line = line.min(doc.text.matches('\n').count());
+        let start = document::offset(&doc.text, iced::widget::text_editor::Position { line, column: 0 });
+        let end = doc.text[start..].find('\n').map_or(doc.text.len(), |at| start + at);
+        doc.place(start..end);
+    }
+
     fn go_to(&mut self) -> Task<Message> {
         let Some(input) = self.goto.take() else { return Task::none() };
         let mut parts = input.trim().split([':', ',', ' ']).filter(|part| !part.is_empty());
@@ -1920,6 +2092,11 @@ impl App {
             let at = if self.docs.is_empty() { 0 } else { self.active + 1 };
             self.docs.insert(at, doc);
             self.active = at;
+        }
+        if let Some((jump, line)) = self.pending_jump.take()
+            && self.doc().and_then(|doc| doc.path.as_ref()) == Some(&jump)
+        {
+            self.place_line(line);
         }
         let mut tasks: Vec<_> = reveal.into_iter().map(|folder| self.list(folder)).collect();
         tasks.push(operation::focus(EDITOR));
@@ -2426,6 +2603,35 @@ mod tests {
             },
             captured,
         )
+    }
+
+    #[test]
+    fn the_symbol_finder_filters_the_document_and_enter_selects_the_line() {
+        let mut app = app();
+        let doc = app.doc_mut().unwrap();
+        doc.pinned = Some(Language::Markdown);
+        doc.replace(0..0, "# One\n\ntext\n## Two\n", Kind::Other);
+        let _ = app.update(Message::Command(Command::Symbols));
+        assert_eq!(app.finder.as_ref().unwrap().hits.len(), 2);
+        let _ = app.update(Message::Finder(FinderMessage::Input("two".into())));
+        assert_eq!(app.finder.as_ref().unwrap().hits.len(), 1);
+        let _ = app.update(Message::Finder(FinderMessage::Submit));
+        assert!(app.finder.is_none());
+        let doc = app.doc().unwrap();
+        assert_eq!(&doc.text[doc.selected()], "  ## Two".trim_start());
+    }
+
+    #[test]
+    fn searching_a_folder_needs_one_and_escape_closes_the_finder_before_anything_else() {
+        let mut app = app();
+        app.tree = None;
+        let _ = app.update(Message::Command(Command::SearchFolder));
+        assert!(app.finder.is_none() && app.notice.is_some(), "no folder, no search");
+        let _ = app.update(Message::Command(Command::QuickOpen));
+        assert!(app.finder.is_some());
+        let _ = app.update(Message::Command(Command::ToggleFocus));
+        let _ = app.update(named(Named::Escape, Code::Escape, true));
+        assert!(app.finder.is_none() && app.focus, "the first Escape closes only the finder");
     }
 
     #[test]

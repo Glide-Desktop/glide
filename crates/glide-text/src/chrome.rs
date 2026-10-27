@@ -18,7 +18,7 @@ use crate::app::{
     Answer, App, Bar, Command, Dialog, DialogKind, GOTO_ID, Item, Menu, MenuKind, Message, REPLACE_ID, Toggle,
     shortcut_label,
 };
-use crate::app::{EDITOR, FIND_ID};
+use crate::app::{EDITOR, FIND_ID, FINDER_ID, FinderMessage};
 use crate::document::{Document, Ending};
 use crate::edit::Case;
 use crate::i18n::Key;
@@ -327,7 +327,7 @@ fn editor(app: &App) -> Element<'_, Message> {
     let Some(doc) = app.doc() else {
         return empty_state(&paint, Icon::File, Key::EmptyTitle.text(app.lang), Key::EmptyBody.text(app.lang), None);
     };
-    let blocked = app.dialog.is_some() || app.menu_open();
+    let blocked = app.dialog.is_some() || app.menu_open() || app.finder.is_some();
     let editor = glide_sdk::widget::editor(&paint, &doc.content)
         .id(EDITOR)
         .on_action(Message::Edit)
@@ -529,6 +529,10 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             action(app, Key::UseSelection, Command::UseSelection, selection),
             Item::Separator,
             action(app, Key::GoToLine, Command::GoToLine, has),
+            Item::Separator,
+            action(app, Key::QuickOpen, Command::QuickOpen, true),
+            action(app, Key::GoToSymbol, Command::Symbols, has),
+            action(app, Key::SearchFolder, Command::SearchFolder, true),
         ],
         Bar::Format => {
             let language = doc.map_or(Language::Plain, Document::language);
@@ -760,6 +764,44 @@ fn shortcut_rows(app: &App, paint: &Paint) -> Element<'static, Message> {
 
 type Choices<'a> = Vec<(&'a str, Tone, Option<Message>)>;
 
+fn finder_layer<'a>(app: &'a App, finder: &'a crate::finder::Finder) -> Element<'a, Message> {
+    use crate::finder::Mode;
+    let progress = finder.reveal.value(motion::t2()) as f32;
+    let lang = app.lang;
+    let hint = match finder.mode {
+        Mode::Files => Key::QuickOpenHint,
+        Mode::Symbols => Key::SymbolHint,
+        Mode::Search => Key::SearchHint,
+    };
+    let input = glide_sdk::widget::search_input(
+        &app.paint.faded(progress),
+        text_input(hint.text(lang), &finder.query)
+            .id(FINDER_ID)
+            .on_input(|query| Message::Finder(FinderMessage::Input(query)))
+            .on_submit(Message::Finder(FinderMessage::Submit)),
+        None,
+        "",
+    );
+    let empty = match (finder.busy, finder.mode, finder.query.is_empty()) {
+        (true, _, _) => Key::Searching,
+        (_, Mode::Symbols, _) => Key::NoSymbols,
+        (_, Mode::Search, true) => Key::SearchHint,
+        _ => Key::NoResults,
+    };
+    glide_sdk::overlay::finder(
+        &app.paint,
+        progress,
+        input,
+        &finder.rows(),
+        finder.selected,
+        empty.text(lang),
+        |index| Message::Finder(FinderMessage::Pick(index)),
+        Message::Finder(FinderMessage::Close),
+        app.window.size,
+        if app.edge_to_edge() { 0.0 } else { R3 },
+    )
+}
+
 fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
     use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
     let progress = dialog.reveal.value(motion::t2()) as f32;
@@ -888,6 +930,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     if let Some(menu) = &app.menu {
         layers.push(menu_layer(app, menu));
+    }
+    if let Some(finder) = &app.finder {
+        layers.push(finder_layer(app, finder));
     }
     if let Some(dialog) = app.dialog.as_ref().or(app.closing.as_ref()) {
         layers.push(self::dialog(app, dialog));

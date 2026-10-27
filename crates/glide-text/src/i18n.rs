@@ -54,6 +54,16 @@ glide_sdk::catalogue! {
     FindPrevious => "Find Previous", "Знайти попереднє";
     UseSelection => "Use Selection for Find", "Шукати виділене";
     GoToLine => "Go to Line…", "Перейти до рядка…";
+    QuickOpen => "Go to File…", "Перейти до файлу…";
+    GoToSymbol => "Go to Symbol…", "Перейти до символа…";
+    SearchFolder => "Search in Folder…", "Шукати в папці…";
+    QuickOpenHint => "Type a file name", "Введіть назву файлу";
+    SymbolHint => "Type a symbol name", "Введіть назву символа";
+    SearchHint => "Search text in the folder", "Шукати текст у папці";
+    Searching => "Searching…", "Шукаю…";
+    NoResults => "No results", "Нічого не знайдено";
+    NoSymbols => "No symbols in this kind of file", "У цьому типі файлів символів немає";
+    NeedFolder => "Open a folder first", "Спершу відкрийте папку";
     Sidebar => "Sidebar", "Бічна панель";
     StatusBar => "Status Bar", "Рядок стану";
     Monospace => "Monospace Font", "Моноширинний шрифт";

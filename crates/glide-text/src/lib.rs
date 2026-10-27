@@ -5,6 +5,7 @@ pub mod detect;
 pub mod document;
 pub mod edit;
 pub mod find;
+pub mod finder;
 pub mod history;
 pub mod i18n;
 pub mod syntax;
