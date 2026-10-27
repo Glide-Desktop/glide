@@ -611,6 +611,7 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
                 check(app, Key::TrimOnSave, Command::ToggleTrimOnSave, app.prefs.trim_on_save, true),
                 Item::Separator,
                 action(app, Key::Statistics, Command::Statistics, has),
+                action(app, Key::Settings, Command::Settings, true),
             ]
         }
         Bar::Help => {
@@ -932,6 +933,14 @@ fn dialog_parts<'a>(
                 .unwrap_or_default();
             (Key::Statistics.text(lang).trim_end_matches('…').to_string(), stat_rows(&paint, rows), close(), 360.0)
         }
+        DialogKind::Settings => (
+            Key::Settings.text(lang).trim_end_matches('…').to_string(),
+            scrollable(&paint, settings_body(app))
+                .height(Length::Fixed((app.window.size.height - 220.0).clamp(120.0, 520.0)))
+                .into(),
+            close(),
+            460.0,
+        ),
         DialogKind::Shortcuts => (
             Key::Shortcuts.text(lang).to_string(),
             scrollable(&paint, container(shortcut_rows(app, &paint)).padding(Padding::from([0.0, SP2]).left(0.0)))
@@ -941,6 +950,39 @@ fn dialog_parts<'a>(
             460.0,
         ),
     }
+}
+
+fn setting(app: &App, key: Key, command: Command, on: bool, enabled: bool) -> Element<'_, Message> {
+    let toggle = enabled.then_some(move |_: bool| Message::Command(command));
+    glide_sdk::widget::switch_row(&app.paint, key.text(app.lang), None, on, toggle)
+}
+
+fn settings_body(app: &App) -> Element<'_, Message> {
+    use glide_sdk::widget::Group;
+    let prefs = &app.prefs;
+    let lang = app.lang;
+    let editor = Group::new(app.paint)
+        .title(Key::SettingsEditor.text(lang))
+        .push(setting(app, Key::SpacesForTabs, Command::ToggleSpaces, prefs.spaces, true))
+        .push(setting(app, Key::AutoIndent, Command::ToggleAutoIndent, prefs.auto_indent, true))
+        .push(setting(app, Key::AutoPair, Command::ToggleAutoPair, prefs.auto_pair, true))
+        .push(setting(app, Key::TrimOnSave, Command::ToggleTrimOnSave, prefs.trim_on_save, true))
+        .push(setting(app, Key::Monospace, Command::ToggleMonospace, prefs.monospace, true))
+        .build();
+    let window = Group::new(app.paint)
+        .title(Key::SettingsWindow.text(lang))
+        .push(setting(app, Key::Sidebar, Command::ToggleSidebar, prefs.sidebar, true))
+        .push(setting(app, Key::StatusBar, Command::ToggleStatusBar, prefs.status_bar, true))
+        .push(setting(app, Key::Islands, Command::ToggleIslands, prefs.status_islands, prefs.status_bar))
+        .push(setting(
+            app,
+            Key::AutoHideStatus,
+            Command::ToggleAutoHideStatus,
+            prefs.auto_hide_status,
+            prefs.status_bar && prefs.status_islands,
+        ))
+        .build();
+    column![editor, window].spacing(SP3).into()
 }
 
 fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element<'a, Message> {

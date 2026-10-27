@@ -143,6 +143,7 @@ pub enum Command {
     SetEnding(Ending),
     ToggleTrimOnSave,
     Statistics,
+    Settings,
     Shortcuts,
     About,
     NextTab,
@@ -209,6 +210,7 @@ pub enum DialogKind {
     Unsaved { docs: Vec<u64>, then: After },
     About,
     Statistics,
+    Settings,
     Shortcuts,
 }
 
@@ -369,6 +371,7 @@ pub fn shortcut(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<C
         let punctuation = match (code, ctrl, shift, alt) {
             (Code::Slash, true, false, false) => Some(Command::ToggleComment),
             (Code::Slash, true, true, false) => Some(Command::Shortcuts),
+            (Code::Comma, true, false, false) => Some(Command::Settings),
             (Code::BracketRight, true, false, false) => Some(Command::Indent),
             (Code::BracketLeft, true, false, false) => Some(Command::Unindent),
             (Code::Equal | Code::NumpadAdd, true, _, false) => Some(Command::ZoomIn),
@@ -469,6 +472,7 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::ZoomReset => "Ctrl+0",
         Command::FullScreen => "F11",
         Command::Shortcuts => "Ctrl+?",
+        Command::Settings => "Ctrl+,",
         Command::NextTab => "Ctrl+Tab",
         Command::PreviousTab => "Ctrl+Shift+Tab",
         Command::MenuBar => "F10",
@@ -1690,6 +1694,7 @@ impl App {
                 Task::none()
             }
             Command::Statistics => self.show(DialogKind::Statistics),
+            Command::Settings => self.show(DialogKind::Settings),
             Command::Shortcuts => self.show(DialogKind::Shortcuts),
             Command::About => self.show(DialogKind::About),
             Command::NextTab | Command::PreviousTab => {
@@ -2672,6 +2677,25 @@ mod tests {
         assert!(app.status_reveal.is_open(), "with auto-hide off they stay");
         let _ = app.update(Message::Command(Command::ToggleFocus));
         assert!(!app.status_floating(), "distraction-free mode hides them too");
+    }
+
+    #[test]
+    fn settings_open_from_the_menu_key_and_every_switch_flips_its_preference() {
+        let mut app = app();
+        assert_eq!(
+            shortcut(&Key::Character("".into()), Physical::Code(Code::Comma), Modifiers::CTRL),
+            Some(Command::Settings)
+        );
+        let _ = app.update(Message::Command(Command::Settings));
+        assert!(matches!(app.dialog.as_ref().map(|dialog| &dialog.kind), Some(DialogKind::Settings)));
+        let before = app.prefs.clone();
+        for command in [Command::ToggleAutoPair, Command::ToggleTrimOnSave, Command::ToggleAutoHideStatus] {
+            let _ = app.update(Message::Command(command));
+        }
+        assert_ne!(app.prefs, before);
+        assert_eq!(app.prefs.auto_pair, !before.auto_pair);
+        assert_eq!(app.prefs.trim_on_save, !before.trim_on_save);
+        assert_eq!(app.prefs.auto_hide_status, !before.auto_hide_status);
     }
 
     #[test]

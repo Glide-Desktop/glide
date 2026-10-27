@@ -90,6 +90,9 @@ glide_sdk::catalogue! {
     TrimOnSave => "Trim Spaces on Save", "Прибирати пробіли під час збереження";
     Statistics => "Document Statistics…", "Статистика документа…";
     Shortcuts => "Keyboard Shortcuts", "Комбінації клавіш";
+    Settings => "Settings…", "Налаштування…";
+    SettingsEditor => "Editor", "Редактор";
+    SettingsWindow => "Window", "Вікно";
     About => "About Text Editor", "Про Текстовий редактор";
     AboutBody => "The Glide notepad: tabs, a folder tree, find and replace, Markdown preview. A built-in detector picks the document’s language; tree-sitter highlights it.", "Блокнот Glide: вкладки, дерево тек, пошук і заміна, перегляд Markdown. Мову документа визначає вбудований детектор, підсвітку дає tree-sitter.";
     FindPlaceholder => "Find", "Знайти";
