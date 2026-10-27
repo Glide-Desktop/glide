@@ -225,7 +225,7 @@ fn imported(app: &mut App, result: Result<Response, String>, shell: &mut Shell<M
         }
         Ok(Response::Error { message }) | Err(message) => {
             app.transfer = None;
-            shell.toast(message);
+            shell.toast(crate::app::humane(app.lang, &message));
         }
         Ok(_) => app.transfer = None,
     }
@@ -249,7 +249,7 @@ fn exported(app: &mut App, result: Result<Response, String>, shell: &mut Shell<M
         }
         Ok(Response::Error { message }) | Err(message) => {
             app.transfer = None;
-            shell.toast(message);
+            shell.toast(crate::app::humane(app.lang, &message));
             Task::none()
         }
         Ok(_) => {

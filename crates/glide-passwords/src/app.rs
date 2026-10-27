@@ -34,6 +34,15 @@ pub enum Copied {
     Password,
     Code,
     Link,
+    Field(usize),
+    CardNumber,
+    CardCode,
+}
+
+impl Copied {
+    const fn is_secret(self) -> bool {
+        !matches!(self, Self::Username | Self::Link)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,11 +98,16 @@ pub enum Message {
     ChangePasswordOf(ItemRef),
     OpenLink(String),
     Ignored,
+    Frame,
+    Step(isize),
+    FocusSearch,
+    ShowShortcuts,
     Quit,
     Reload,
 }
 
 const RETRY: Duration = Duration::from_secs(3);
+const PAGE: isize = 8;
 
 #[must_use]
 pub fn daemon_absent(failure: &str) -> bool {
@@ -152,6 +166,7 @@ pub struct App {
     pub clipboard: u64,
     pub copied: Option<Hidden>,
     pub now: u64,
+    pub modal: glide_sdk::anim::Fade,
 }
 
 #[must_use]
@@ -253,11 +268,55 @@ impl App {
             copied: None,
             now: unix_now(),
             prefs,
+            modal: glide_sdk::anim::Fade::asymmetric(
+                false,
+                glide_sdk::anim::Speed::EXPAND,
+                glide_sdk::anim::Speed::FADE,
+            ),
         }
     }
 
     pub fn t(&self, key: Key) -> &'static str {
         key.text(self.lang)
+    }
+
+    #[must_use]
+    pub fn modal_shown(&self) -> bool {
+        self.settings
+            || self.wizard.is_some()
+            || self.create.is_some()
+            || self.transfer.is_some()
+            || self.password_change.is_some()
+            || self.conflict_open
+    }
+
+    #[must_use]
+    pub fn modal_progress(&self) -> f32 {
+        self.modal.progress(std::time::Instant::now())
+    }
+
+    fn step_selection(&mut self, step: isize) -> Task<Message> {
+        let visible = crate::model::visible(
+            &self.data.items,
+            self.vault.as_deref(),
+            self.section,
+            &self.query,
+            self.prefs.sort_by_name,
+        );
+        let Some(last) = visible.len().checked_sub(1) else {
+            return Task::none();
+        };
+        let current = self.selected.as_ref().and_then(|item| visible.iter().position(|summary| &summary.item == item));
+        let next = match current {
+            Some(index) => index.saturating_add_signed(step).min(last),
+            None if step < 0 => last,
+            None => 0,
+        };
+        let item = visible[next].item.clone();
+        if current == Some(next) {
+            return Task::none();
+        }
+        self.select(item)
     }
 
     #[must_use]
@@ -346,6 +405,7 @@ impl App {
             Copied::Password => Key::CopiedPassword,
             Copied::Code => Key::CopiedCode,
             Copied::Link => Key::CopiedLink,
+            Copied::Field(_) | Copied::CardNumber | Copied::CardCode => Key::CopiedSecret,
         };
         let clears = self.prefs.clear_after;
         let note = if clears > 0 && what != Copied::Link {
@@ -354,7 +414,7 @@ impl App {
             self.t(label).to_string()
         };
         shell.toast_with(note, self.t(Key::Okay), Message::Ignored);
-        if matches!(what, Copied::Password | Copied::Code) {
+        if what.is_secret() {
             let secret = zeroize::Zeroizing::new(text);
             return Task::perform(
                 async move { glide_sdk::system::copy_secret(&secret, clears).is_ok() },
@@ -404,7 +464,8 @@ impl App {
         match result {
             Ok(Response::WrongPassword) => shell.toast(self.t(Key::WrongPassword)),
             Ok(Response::Unsupported) => shell.toast(self.t(Key::NotAvailable)),
-            Ok(Response::Error { message }) => shell.toast(message),
+            Ok(Response::Error { message }) => shell.toast(humane(self.lang, &message)),
+            Ok(Response::Locked) => shell.toast(self.t(Key::VaultIsLocked)),
             Ok(_) => {}
             Err(err) => shell.toast(format!("{}: {err}", self.t(Key::DaemonMissing))),
         }
@@ -509,7 +570,9 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Ignored => Task::none(),
+            Message::Ignored | Message::Frame => Task::none(),
+            Message::Step(step) => self.step_selection(step),
+            Message::FocusSearch => iced::widget::operation::focus(crate::view::SEARCH_ID),
             Message::Copy(what) => {
                 let Some(item) = self.selected.clone() else {
                     return Task::none();
@@ -524,9 +587,24 @@ impl App {
                         let code = self.code.as_ref().map(|code| code.code.clone()).unwrap_or_default();
                         self.copy(what, Hidden::new(code), shell)
                     }
-                    Copied::Password => ask(Request::Secret { item, secret: SecretKind::Password }, move |result| {
-                        Message::CopyText(what, result)
-                    }),
+                    Copied::Password | Copied::CardNumber | Copied::CardCode | Copied::Field(_) => {
+                        let secret = match what {
+                            Copied::CardNumber => SecretKind::CardNumber,
+                            Copied::CardCode => SecretKind::CardCode,
+                            Copied::Field(index) => {
+                                let Some(field) = self.detail.as_ref().and_then(|detail| detail.fields.get(index))
+                                else {
+                                    return Task::none();
+                                };
+                                if !field.hidden {
+                                    return self.copy(what, Hidden::new(field.value.clone()), shell);
+                                }
+                                SecretKind::Field(field.name.clone())
+                            }
+                            _ => SecretKind::Password,
+                        };
+                        ask(Request::Secret { item, secret }, move |result| Message::CopyText(what, result))
+                    }
                     Copied::Link => Task::none(),
                 }
             }
@@ -662,6 +740,13 @@ impl App {
             }
             Message::CreateVault(event) => wizard::create(self, event, shell),
             Message::Settings(event) => settings::update(self, event, shell),
+            Message::ShowShortcuts => {
+                shell.dialog(
+                    glide_sdk::Dialog::new(self.t(Key::Shortcuts), self.t(Key::ShortcutsBody))
+                        .cancel(self.t(Key::Okay)),
+                );
+                Task::none()
+            }
             Message::OpenSettings => {
                 self.settings = true;
                 Task::none()
@@ -755,8 +840,37 @@ impl App {
             if self.create.is_some() {
                 return Task::done(Message::CreateVault(wizard::CreateEvent::Close));
             }
+            if self.password_change.is_some() {
+                return Task::done(Message::Settings(crate::settings::Event::CancelPassword));
+            }
+            if self.transfer.is_some() {
+                return Task::done(Message::Transfer(crate::transfer::Event::Close));
+            }
+            if self.conflict_open {
+                return Task::done(Message::CloseConflict);
+            }
         }
-        Task::none()
+        let browsing = !captured && self.editor.is_none() && !self.modal_shown() && self.generator.is_none();
+        if modifiers.control() && !modifiers.alt() && letter(keyboard::key::Code::KeyF) && self.editor.is_none() {
+            return Task::done(Message::FocusSearch);
+        }
+        if !browsing || modifiers.control() || modifiers.alt() || modifiers.logo() {
+            return Task::none();
+        }
+        let keyboard::Key::Named(named) = key else {
+            return Task::none();
+        };
+        match named {
+            keyboard::key::Named::ArrowDown => Task::done(Message::Step(1)),
+            keyboard::key::Named::ArrowUp => Task::done(Message::Step(-1)),
+            keyboard::key::Named::PageDown => Task::done(Message::Step(PAGE)),
+            keyboard::key::Named::PageUp => Task::done(Message::Step(-PAGE)),
+            keyboard::key::Named::Home => Task::done(Message::Step(isize::MIN / 2)),
+            keyboard::key::Named::End => Task::done(Message::Step(isize::MAX / 2)),
+            keyboard::key::Named::Enter if self.selected.is_some() => Task::done(Message::Copy(Copied::Password)),
+            keyboard::key::Named::Delete if self.selected.is_some() => Task::done(Message::Trash),
+            _ => Task::none(),
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -767,7 +881,20 @@ impl App {
         if self.failure.is_some() {
             subscriptions.push(iced::time::every(RETRY).map(|_| Message::Reload));
         }
+        if self.modal.is_animating(std::time::Instant::now()) {
+            subscriptions.push(iced::window::frames().map(|_| Message::Frame));
+        }
         Subscription::batch(subscriptions)
+    }
+}
+
+#[must_use]
+pub fn humane(lang: Lang, message: &str) -> String {
+    match message.trim() {
+        "no such item" => Key::ItemGone.text(lang).to_string(),
+        "the vault is locked" => Key::VaultIsLocked.text(lang).to_string(),
+        "" => Key::ActionFailed.text(lang).to_string(),
+        detail => format!("{} ({detail})", Key::ActionFailed.text(lang)),
     }
 }
 
@@ -790,7 +917,10 @@ impl glide_sdk::App for App {
     }
 
     fn update(&mut self, message: Message, shell: &mut Shell<Message>) -> Task<Message> {
-        Self::update(self, message, shell)
+        let task = Self::update(self, message, shell);
+        let shown = self.modal_shown();
+        self.modal.set(shown, std::time::Instant::now());
+        task
     }
 
     fn view<'a>(&'a self, _: &'a Shell<Message>) -> iced::Element<'a, Message> {

@@ -461,7 +461,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fixed(height.min(1000.0)));
     glide_sdk::overlay::modal(
         &paint,
-        1.0,
+        app.modal_progress(),
         container(sheet).style(move |_| glide_sdk::glide_iced::style::popover(&paint)),
         Some(Message::CloseSettings),
         app.window.corner(),

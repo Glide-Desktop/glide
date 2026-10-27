@@ -85,6 +85,15 @@ glide_sdk::catalogue! {
     CopiedUsername => "User name copied", "Ім'я користувача скопійовано";
     CopiedPassword => "Password copied", "Пароль скопійовано";
     CopiedCode => "Code copied", "Код скопійовано";
+    CopiedSecret => "Copied", "Скопійовано";
+    Shortcuts => "Keyboard Shortcuts", "Гарячі клавіші";
+    ShortcutsBody => "↑ ↓  move through the list · PgUp PgDn Home End  jump\nEnter  copy the password · Ctrl+Shift+C  copy the password · Ctrl+B  copy the user name\nCtrl+F  search · Ctrl+N  new login · Ctrl+E  edit · Ctrl+S  save\nDelete  move to the Trash · Ctrl+L  lock every vault · Ctrl+,  settings\nEsc  close a sheet or the editor · Ctrl+Q  quit", "↑ ↓  рух списком · PgUp PgDn Home End  стрибки\nEnter  копіювати пароль · Ctrl+Shift+C  копіювати пароль · Ctrl+B  копіювати логін\nCtrl+F  пошук · Ctrl+N  новий логін · Ctrl+E  редагувати · Ctrl+S  зберегти\nDelete  у кошик · Ctrl+L  заблокувати всі сховища · Ctrl+,  налаштування\nEsc  закрити аркуш або редактор · Ctrl+Q  вийти";
+    ActionFailed => "That did not work", "Не вдалося виконати дію";
+    ItemGone => "This item no longer exists", "Цього запису вже немає";
+    VaultIsLocked => "The vault is locked; unlock it and try again", "Сховище заблоковане; розблокуйте його й спробуйте ще раз";
+    CopyCardNumber => "Copy card number", "Скопіювати номер картки";
+    CopyCardCode => "Copy security code", "Скопіювати код безпеки";
+    CopyField => "Copy value", "Скопіювати значення";
     CopiedLink => "Link copied", "Посилання скопійовано";
     CopiedShort => "Copied", "Скопійовано";
     ClearsIn => "clears in {n} s", "очиститься через {n} с";

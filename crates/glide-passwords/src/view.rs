@@ -16,6 +16,7 @@ use crate::model::{self, Section};
 pub const SIDEBAR: f32 = 232.0;
 pub const LIST: f32 = 344.0;
 pub const HEADER: f32 = 48.0;
+pub const SEARCH_ID: &str = "glide-passwords-search";
 
 #[derive(Debug, Clone)]
 pub struct Labeled<T>(pub T, pub String);
@@ -295,7 +296,8 @@ fn list_column(app: &App) -> Element<'_, Message> {
         _ => Key::SearchIn,
     };
     let placeholder = app.t(phrase).replace("{n}", &total.to_string());
-    let search = ui::search_field(&paint, &placeholder, &app.query, Message::Query, Message::ClearQuery);
+    let input = text_input(&placeholder, &app.query).id(SEARCH_ID).on_input(Message::Query);
+    let search = ui::search_input(&paint, input, (!app.query.is_empty()).then_some(Message::ClearQuery), "");
     let top = row![
         container(search).width(Fill),
         ui::icon_button(&paint, Icon::Sort, app.t(Key::Sorting), Some(Message::ToggleSort), app.prefs.sort_by_name),
@@ -525,7 +527,13 @@ fn detail_rows<'a>(app: &'a App, detail: &'a glide_ipc::keychain::Detail) -> Vec
             &paint,
             t(Key::CardNumber),
             ui::text(format!("•••• {}", card.last_digits), ui::SECRET),
-            Vec::new(),
+            vec![ui::copy_button(&paint, t(Key::CopyCardNumber), Message::Copy(Copied::CardNumber))],
+        ));
+        rows.push(ui::field_row(
+            &paint,
+            t(Key::CardCode),
+            ui::text(ui::masked("•••"), ui::SECRET),
+            vec![ui::copy_button(&paint, t(Key::CopyCardCode), Message::Copy(Copied::CardCode))],
         ));
         rows.push(ui::field_row(
             &paint,
@@ -534,9 +542,10 @@ fn detail_rows<'a>(app: &'a App, detail: &'a glide_ipc::keychain::Detail) -> Vec
             Vec::new(),
         ));
     }
-    for field in &detail.fields {
+    for (index, field) in detail.fields.iter().enumerate() {
         let value = if field.hidden { ui::masked("••••••••") } else { field.value.clone() };
-        rows.push(ui::field_row(&paint, field.name.as_str(), ui::text(value, TextStyle::BODY), Vec::new()));
+        let copy = ui::copy_button(&paint, t(Key::CopyField), Message::Copy(Copied::Field(index)));
+        rows.push(ui::field_row(&paint, field.name.as_str(), ui::text(value, TextStyle::BODY), vec![copy]));
     }
     rows
 }
@@ -739,6 +748,8 @@ pub fn menus(app: &App) -> Vec<Menu<Message>> {
                 Item::action(t(Key::Check), Message::Section(Section::Check)),
                 Item::action(t(Key::Sent), Message::Section(Section::Sends)),
                 Item::action(t(Key::Trash), Message::Section(Section::Trash)),
+                Item::separator(),
+                Item::action(t(Key::Shortcuts), Message::ShowShortcuts),
             ],
         ),
     ]
@@ -752,7 +763,7 @@ pub fn dialog_frame<'a>(
         .padding(SP5)
         .width(Length::Fixed(width))
         .style(move |_| glide_sdk::glide_iced::style::popover(&paint));
-    glide_sdk::overlay::modal(&paint, 1.0, card, Some(dismiss), app.window.corner())
+    glide_sdk::overlay::modal(&paint, app.modal_progress(), card, Some(dismiss), app.window.corner())
 }
 
 #[must_use]

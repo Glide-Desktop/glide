@@ -243,8 +243,8 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
             app.send.busy = false;
             match result {
                 Ok(Response::Unsupported) => shell.toast(app.t(Key::NeedsServer)),
-                Ok(Response::Error { message }) => shell.toast(message),
-                Err(err) => shell.toast(err),
+                Ok(Response::Error { message }) => shell.toast(crate::app::humane(app.lang, &message)),
+                Err(err) => shell.toast(crate::app::humane(app.lang, &err)),
                 Ok(_) => {}
             }
         }
@@ -303,7 +303,9 @@ fn editing(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Mess
             form.busy = false;
             match (result, form.created.clone()) {
                 (Ok(Response::Secret { secret }), Some(send)) => form.edit(send, secret.expose(), now),
-                (Ok(Response::Error { message }) | Err(message), _) => shell.toast(message),
+                (Ok(Response::Error { message }) | Err(message), _) => {
+                    shell.toast(crate::app::humane(app.lang, &message));
+                }
                 _ => {}
             }
         }

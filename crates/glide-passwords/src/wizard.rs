@@ -288,7 +288,7 @@ fn reply(app: &mut App, result: Result<Response, String>) -> Task<Message> {
                     .into(),
             );
         }
-        Ok(Response::Error { message }) | Err(message) => wizard.error = Some(message),
+        Ok(Response::Error { message }) | Err(message) => wizard.error = Some(crate::app::humane(lang, &message)),
         Ok(_) => {}
     }
     Task::none()
@@ -355,7 +355,9 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         }
         Event::EmailSent(result) => match result {
             Ok(Response::Done) => shell.toast(Key::EmailSent.text(app.lang)),
-            Ok(Response::Error { message }) | Err(message) => wizard.error = Some(message),
+            Ok(Response::Error { message }) | Err(message) => {
+                wizard.error = Some(crate::app::humane(app.lang, &message));
+            }
             Ok(_) => {}
         },
         Event::Name(value) => wizard.name = value,
@@ -424,8 +426,8 @@ pub fn create(app: &mut App, event: CreateEvent, shell: &mut Shell<Message>) -> 
         CreateEvent::Reply(result) => {
             form.busy = false;
             match result {
-                Ok(Response::Error { message }) => shell.toast(message),
-                Err(err) => shell.toast(err),
+                Ok(Response::Error { message }) => shell.toast(crate::app::humane(app.lang, &message)),
+                Err(err) => shell.toast(crate::app::humane(app.lang, &err)),
                 _ => {}
             }
         }
