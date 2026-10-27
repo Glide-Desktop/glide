@@ -22,8 +22,14 @@ fn base32(text: &str) -> Option<Vec<u8>> {
     while !cleaned.len().is_multiple_of(8) {
         cleaned.push('=');
     }
-    data_encoding::BASE32.decode(cleaned.as_bytes()).ok().filter(|key| !key.is_empty())
+    LENIENT_BASE32.decode(cleaned.as_bytes()).ok().filter(|key| !key.is_empty())
 }
+
+static LENIENT_BASE32: std::sync::LazyLock<data_encoding::Encoding> = std::sync::LazyLock::new(|| {
+    let mut spec = data_encoding::BASE32.specification();
+    spec.check_trailing_bits = false;
+    spec.encoding().expect("RFC 4648 base32 without the trailing-bit check is a valid specification")
+});
 
 fn decode_query(value: &str) -> String {
     let bytes = value.as_bytes();
@@ -158,6 +164,7 @@ mod tests {
             Totp::parse("JBSWY3DPEHPK3PXP").unwrap().code_at(0)
         );
         assert!(Totp::parse("not base32!").is_none());
+        assert!(Totp::parse("JBSWY3DPEHPK3PXPJBSWY3DPEH").is_some(), "unused trailing bits are ignored, as apps do");
         assert!(Totp::parse("otpauth://totp/x?issuer=nobody").is_none());
     }
 }

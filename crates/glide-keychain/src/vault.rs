@@ -22,6 +22,10 @@ pub struct Params {
 
 impl Params {
     pub const DEFAULT: Self = Self { memory_kib: 64 * 1024, passes: 3, lanes: 1 };
+
+    const fn plausible(self) -> bool {
+        self.memory_kib <= 1024 * 1024 && matches!(self.passes, 1..=16) && matches!(self.lanes, 1..=16)
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -244,6 +248,9 @@ pub fn open(file: &[u8], password: &[u8]) -> Result<(Contents, Key), Error> {
     }
     let word = |at: usize| u32::from_le_bytes([file[at], file[at + 1], file[at + 2], file[at + 3]]);
     let params = Params { memory_kib: word(5), passes: word(9), lanes: word(13) };
+    if !params.plausible() {
+        return Err(Error::Corrupt);
+    }
     let mut salt = [0; SALT_LEN];
     salt.copy_from_slice(&file[17..17 + SALT_LEN]);
     let nonce = XNonce::try_from(&file[17 + SALT_LEN..HEADER_LEN]).map_err(|_| Error::Corrupt)?;
@@ -318,6 +325,16 @@ mod tests {
         let file = seal(&sample(), &Key::derive(b"pw", FAST).unwrap()).unwrap();
         assert!(!file.windows(7).any(|window| window == b"hunter2"));
         assert!(!file.windows(8).any(|window| window == b"Telegram"), "labels are encrypted too");
+    }
+
+    #[test]
+    fn a_header_asking_for_absurd_key_stretching_is_refused_before_any_work() {
+        let mut file = seal(&sample(), &Key::derive(b"pw", FAST).unwrap()).unwrap();
+        file[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(open(&file, b"pw").unwrap_err(), Error::Corrupt, "4 TiB of memory");
+        let mut file = seal(&sample(), &Key::derive(b"pw", FAST).unwrap()).unwrap();
+        file[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(open(&file, b"pw").unwrap_err(), Error::Corrupt, "four billion passes");
     }
 
     #[test]
