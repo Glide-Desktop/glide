@@ -270,13 +270,6 @@ pub struct SendDraft {
     pub hide_email: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Server {
-    Us,
-    Eu,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Login {
     pub server: String,
