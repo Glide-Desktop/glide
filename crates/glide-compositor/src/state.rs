@@ -3661,11 +3661,63 @@ impl GlideState {
         .ok()
     }
 
+    pub fn adopt_changed_login_password(&mut self, password: glide_ipc::keychain::Hidden) {
+        use crate::greeter::pam::{Authenticator, Verdict};
+        use smithay::reexports::calloop::channel;
+
+        if password.is_empty() {
+            return;
+        }
+        let user = crate::greeter::current_user(&self.topbar.system_status().user_name);
+        let (sender, receiver) = channel::channel::<Verdict>();
+        let secret = password.expose().to_owned();
+        let offered = password;
+        let inserted = self.loop_handle.insert_source(receiver, move |event, (), state| {
+            let channel::Event::Msg(verdict) = event else { return };
+            if verdict != Verdict::Granted {
+                tracing::info!("a changed login password did not pass PAM; the app keys keep their wrap");
+                return;
+            }
+            let password = offered.clone();
+            state.keychain(glide_ipc::keychain::Request::LoginPassword { password }, |_, response| {
+                tracing::info!(?response, "the changed login password was offered to the app keys");
+            });
+        });
+        if let Err(err) = inserted {
+            tracing::error!("failed to watch the changed login password check: {err}");
+            return;
+        }
+        match Authenticator::start(&user.username, move |verdict| {
+            let _ = sender.send(verdict);
+        }) {
+            Ok(authenticator) => {
+                if !authenticator.check(secret) {
+                    tracing::warn!("the PAM worker stopped before the changed login password reached it");
+                }
+            }
+            Err(err) => tracing::error!(?err, "failed to check the changed login password"),
+        }
+    }
+
     fn handle_lock_verdict(&mut self, verdict: crate::greeter::pam::Verdict) {
         use crate::{
             greeter::pam::Verdict,
             i18n::{Key, t},
         };
+        if let Verdict::Ask { secret, text } = verdict {
+            let queued = self
+                .greeter
+                .as_mut()
+                .filter(|greeter| greeter.is_lock())
+                .and_then(|greeter| greeter.on_question(secret, text));
+            if let Some(answer) = queued
+                && !self.lock_auth.as_ref().is_some_and(|auth| auth.check(answer))
+            {
+                tracing::warn!("the lock screen authenticator stopped while asking a second question");
+            }
+            self.queue_redraw();
+            return;
+        }
         let password = self.lock_password.take();
         let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock()) else {
             return;
@@ -3690,6 +3742,7 @@ impl GlideState {
                 tracing::error!("lock screen authentication is unavailable");
                 greeter.set_auth_error(t(Key::LockUnavailable).to_string(), false);
             }
+            Verdict::Ask { .. } => {}
         }
         self.queue_redraw();
     }
@@ -3699,8 +3752,16 @@ impl GlideState {
         let Some(greeter) = self.greeter.as_mut() else {
             return;
         };
-        if greeter.submit() == crate::greeter::Submit::Nothing {
-            return;
+        match greeter.submit() {
+            crate::greeter::Submit::Nothing => return,
+            crate::greeter::Submit::Send(answer) => {
+                if !self.lock_auth.as_ref().is_some_and(|auth| auth.check(answer)) {
+                    greeter.set_auth_error(t(Key::LockUnavailable).to_string(), false);
+                }
+                self.queue_redraw();
+                return;
+            }
+            _ => {}
         }
         let queued = greeter.take_queued();
         self.lock_password = queued.as_ref().map(|password| zeroize::Zeroizing::new(password.clone()));

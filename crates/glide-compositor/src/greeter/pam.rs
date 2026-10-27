@@ -23,7 +23,10 @@ pub enum Verdict {
     Granted,
     Denied(Option<String>),
     Unavailable,
+    Ask { secret: bool, text: String },
 }
+
+const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_mins(2);
 
 #[repr(C)]
 struct PamMessage {
@@ -48,16 +51,24 @@ struct PamConv {
 type StartFn = unsafe extern "C" fn(*const c_char, *const c_char, *const PamConv, *mut *mut c_void) -> c_int;
 type HandleFn = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 
-struct Conversation {
+type Ask<'a> = &'a dyn Fn(bool, String) -> Option<String>;
+
+struct Conversation<'a> {
     secret: Vec<u8>,
     answered: bool,
     errors: Vec<String>,
     notices: Vec<String>,
+    ask: Option<Ask<'a>>,
 }
 
-impl Conversation {
+impl<'a> Conversation<'a> {
     fn new(secret: Vec<u8>) -> Self {
-        Self { secret, answered: false, errors: Vec::new(), notices: Vec::new() }
+        Self { secret, answered: false, errors: Vec::new(), notices: Vec::new(), ask: None }
+    }
+
+    fn with_ask(mut self, ask: Option<Ask<'a>>) -> Self {
+        self.ask = ask;
+        self
     }
 
     fn denial(&mut self) -> Option<String> {
@@ -102,7 +113,7 @@ unsafe extern "C" fn converse(
     }
     // SAFETY: `data` is the `appdata_ptr` set in `authenticate`, pointing at a
     // live `Conversation` that outlives the PAM handle.
-    let conversation = unsafe { &mut *data.cast::<Conversation>() };
+    let conversation = unsafe { &mut *data.cast::<Conversation<'_>>() };
     for index in 0..count {
         // SAFETY: Linux-PAM passes an array of `count` message pointers.
         let message = unsafe { *messages.add(index) };
@@ -115,14 +126,28 @@ unsafe extern "C" fn converse(
         let (style, text) = unsafe { ((*message).msg_style, (*message).msg) };
         match style {
             PAM_PROMPT_ECHO_OFF | PAM_PROMPT_ECHO_ON if conversation.answered || style == PAM_PROMPT_ECHO_ON => {
-                if !text.is_null() {
+                let question = if text.is_null() {
+                    String::new()
+                } else {
                     // SAFETY: non-null PAM message text is a C string.
-                    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().trim().to_string();
-                    conversation.errors.push(text);
-                }
-                // SAFETY: as above, `index` entries are filled.
-                unsafe { free_replies(replies, index) };
-                return PAM_CONV_ERR;
+                    unsafe { CStr::from_ptr(text) }.to_string_lossy().trim().to_string()
+                };
+                let answer = conversation.ask.and_then(|ask| ask(style == PAM_PROMPT_ECHO_OFF, question.clone()));
+                let copy = answer.and_then(|answer| {
+                    let text = CString::new(answer).map_err(|err| err.into_vec().fill(0)).ok()?;
+                    // SAFETY: `text` is a NUL-terminated C string alive across the call.
+                    let copy = unsafe { libc::strdup(text.as_ptr()) };
+                    text.into_bytes_with_nul().fill(0);
+                    (!copy.is_null()).then_some(copy)
+                });
+                let Some(copy) = copy else {
+                    conversation.errors.push(question);
+                    // SAFETY: as above, `index` entries are filled.
+                    unsafe { free_replies(replies, index) };
+                    return PAM_CONV_ERR;
+                };
+                // SAFETY: `index < count`, inside the `calloc`ed array.
+                unsafe { (*replies.add(index)).resp = copy };
             }
             PAM_PROMPT_ECHO_OFF => {
                 conversation.answered = true;
@@ -202,7 +227,7 @@ impl Library {
         }
     }
 
-    fn authenticate(&self, service: &CStr, user: &CStr, password: String) -> Verdict {
+    fn authenticate(&self, service: &CStr, user: &CStr, password: String, ask: Option<Ask<'_>>) -> Verdict {
         let mut password = password.into_bytes();
         let mut secret = Vec::with_capacity(password.len() + 1);
         secret.extend_from_slice(&password);
@@ -213,7 +238,7 @@ impl Library {
             return Verdict::Denied(None);
         }
         secret.push(0);
-        let mut conversation = Box::new(Conversation::new(secret));
+        let mut conversation = Box::new(Conversation::new(secret).with_ask(ask));
         let conv = PamConv { conv: Some(converse), appdata_ptr: std::ptr::from_mut(conversation.as_mut()).cast() };
         let mut handle: *mut c_void = std::ptr::null_mut();
         // SAFETY: `service` and `user` are C strings, `conv` and the boxed
@@ -263,10 +288,14 @@ impl Authenticator {
             let service = service_name(Path::exists);
             tracing::info!(service, "lock screen authenticates through PAM");
             let service = CString::new(service).unwrap_or_default();
-            for password in incoming {
-                let verdict = library
-                    .as_ref()
-                    .map_or(Verdict::Unavailable, |library| library.authenticate(&service, &user, password));
+            while let Ok(password) = incoming.recv() {
+                let ask = |secret: bool, text: String| {
+                    reply(Verdict::Ask { secret, text });
+                    incoming.recv_timeout(ANSWER_WAIT).ok()
+                };
+                let verdict = library.as_ref().map_or(Verdict::Unavailable, |library| {
+                    library.authenticate(&service, &user, password, Some(&ask))
+                });
                 reply(verdict);
             }
         })?;
@@ -283,10 +312,16 @@ impl Authenticator {
 mod tests {
     use super::*;
 
-    fn converse_with(messages: &[(c_int, &CStr)], secret: &str) -> (c_int, Vec<Option<String>>, Conversation) {
+    fn converse_with(messages: &[(c_int, &CStr)], secret: &str) -> (c_int, Vec<Option<String>>, Conversation<'static>) {
+        converse_asking(messages, secret, None)
+    }
+
+    fn converse_asking<'a>(
+        messages: &[(c_int, &CStr)], secret: &str, ask: Option<Ask<'a>>,
+    ) -> (c_int, Vec<Option<String>>, Conversation<'a>) {
         let mut secret = secret.as_bytes().to_vec();
         secret.push(0);
-        let mut conversation = Conversation::new(secret);
+        let mut conversation = Conversation::new(secret).with_ask(ask);
         let owned: Vec<PamMessage> =
             messages.iter().map(|(style, text)| PamMessage { msg_style: *style, msg: text.as_ptr() }).collect();
         let mut pointers: Vec<*const PamMessage> = owned.iter().map(std::ptr::from_ref).collect();
@@ -365,6 +400,27 @@ mod tests {
         assert_eq!(conversation.errors, vec!["Verification code:".to_string()]);
         let (status, _, _) = converse_with(&[(PAM_PROMPT_ECHO_ON, c"login: ")], "hunter2");
         assert_eq!(status, PAM_CONV_ERR, "a visible prompt never gets the password");
+    }
+
+    #[test]
+    fn a_second_question_is_put_to_the_user_and_their_answer_goes_back() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let ask = |secret: bool, text: String| {
+            asked.borrow_mut().push((secret, text));
+            Some("482913".to_string())
+        };
+        let (status, answers, _) = converse_asking(
+            &[(PAM_PROMPT_ECHO_OFF, c"Password: "), (PAM_PROMPT_ECHO_OFF, c"Verification code: ")],
+            "hunter2",
+            Some(&ask),
+        );
+        assert_eq!(status, PAM_SUCCESS);
+        assert_eq!(answers, vec![Some("hunter2".into()), Some("482913".into())]);
+        assert_eq!(*asked.borrow(), vec![(true, "Verification code:".to_string())]);
+        let refuse = |_: bool, _: String| None;
+        let (status, _, conversation) = converse_asking(&[(PAM_PROMPT_ECHO_ON, c"Token: ")], "hunter2", Some(&refuse));
+        assert_eq!(status, PAM_CONV_ERR, "an unanswered question fails the attempt");
+        assert_eq!(conversation.errors, vec!["Token:".to_string()]);
     }
 
     #[test]

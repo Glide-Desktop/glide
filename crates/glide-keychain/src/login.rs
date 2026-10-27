@@ -40,6 +40,7 @@ struct Open {
 pub struct LoginKeyring {
     file: PathBuf,
     key_file: PathBuf,
+    previous_file: PathBuf,
     open: Option<Open>,
     fresh: Option<WrappingKey>,
 }
@@ -163,8 +164,13 @@ pub fn current_user() -> Option<(String, u32)> {
 impl LoginKeyring {
     #[must_use]
     pub fn load(dir: &Path) -> Self {
-        let mut keyring =
-            Self { file: dir.join("login-keyring"), key_file: dir.join("login-keyring.key"), open: None, fresh: None };
+        let mut keyring = Self {
+            file: dir.join("login-keyring"),
+            key_file: dir.join("login-keyring.key"),
+            previous_file: dir.join("login-keyring.key.previous"),
+            open: None,
+            fresh: None,
+        };
         match keyring.stored() {
             None if !keyring.file.exists() => keyring.open = Some(Open { key: None, contents: Contents::default() }),
             None => eprintln!("glide-keychain: the login keyring has lost its key file and stays locked"),
@@ -250,18 +256,28 @@ impl LoginKeyring {
                 if verified && !current {
                     self.write_key(&wrapped_key_file(key, wrapping)?)?;
                 }
+                if verified {
+                    self.forget_previous();
+                }
                 Ok(())
             }
             None => {
                 let Some(Stored::Wrapped(bytes)) = stored else {
                     return Err(Fault::Failed("the login keyring cannot be unlocked".into()));
                 };
-                let Some(key) = unwrap(&bytes, wrapping) else {
-                    if verified {
-                        self.fresh = Some(wrapping.clone());
-                    }
-                    return Err(Fault::WrongPassword);
+                let key = if let Some(key) = unwrap(&bytes, wrapping) {
+                    key
+                } else {
+                    let Some((key, previous)) = self.previous(wrapping).filter(|_| verified) else {
+                        if verified {
+                            self.fresh = Some(wrapping.clone());
+                        }
+                        return Err(Fault::WrongPassword);
+                    };
+                    self.write_key(&previous)?;
+                    key
                 };
+                self.forget_previous();
                 self.adopt(key)?;
                 if let Some(fresh) = self.fresh.take().filter(|_| !verified)
                     && let Some(key) = self.open.as_ref().and_then(|open| open.key.as_ref())
@@ -278,13 +294,31 @@ impl LoginKeyring {
             self.offer(old, false)?;
         }
         match self.open.as_ref().map(|open| open.key.as_ref()) {
-            Some(Some(key)) => self.write_key(&wrapped_key_file(key, new)?),
+            Some(Some(key)) => {
+                let rewrapped = wrapped_key_file(key, new)?;
+                if let Some(Stored::Wrapped(current)) = self.stored()
+                    && unwrap(&current, old).is_some()
+                {
+                    write_atomically(&self.previous_file, &current).map_err(|err| Fault::Failed(err.to_string()))?;
+                }
+                self.write_key(&rewrapped)
+            }
             Some(None) => {
                 self.fresh = Some(new.clone());
                 Ok(())
             }
             None => Err(Fault::Locked),
         }
+    }
+
+    fn previous(&self, wrapping: &WrappingKey) -> Option<(Key, Vec<u8>)> {
+        let bytes = std::fs::read(&self.previous_file).ok()?;
+        let Some(Stored::Wrapped(bytes)) = decode(&bytes) else { return None };
+        unwrap(&bytes, wrapping).map(|key| (key, bytes))
+    }
+
+    fn forget_previous(&self) {
+        let _ = std::fs::remove_file(&self.previous_file);
     }
 }
 
@@ -410,6 +444,29 @@ mod tests {
         let mut after = LoginKeyring::load(&dir);
         after.offer(&wrapping(2), false).unwrap();
         assert_eq!(labels(&after), ["Chrome Safe Storage"]);
+        assert!(!dir.join("login-keyring.key.previous").exists(), "a login with the new password settles it");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_rekey_from_a_password_change_that_failed_still_opens_with_the_old_password() {
+        let dir = temp("rekey-failed");
+        let mut keyring = LoginKeyring::load(&dir);
+        store(&mut keyring, "Chrome Safe Storage");
+        keyring.offer(&wrapping(1), true).unwrap();
+        keyring.rekey(&wrapping(1), &wrapping(2)).unwrap();
+        let mut typed = LoginKeyring::load(&dir);
+        assert_eq!(
+            typed.offer(&wrapping(1), false).unwrap_err(),
+            Fault::WrongPassword,
+            "a typed old password is not proof that the change failed"
+        );
+        let mut next_login = LoginKeyring::load(&dir);
+        next_login.offer(&wrapping(1), true).unwrap();
+        assert_eq!(labels(&next_login), ["Chrome Safe Storage"]);
+        let mut later = LoginKeyring::load(&dir);
+        assert_eq!(later.offer(&wrapping(2), false).unwrap_err(), Fault::WrongPassword, "the old wrap is back");
+        later.offer(&wrapping(1), false).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

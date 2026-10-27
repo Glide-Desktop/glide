@@ -291,7 +291,14 @@ impl Page {
             (Msg::SavePassword, Some(Form::Password { path, password, confirm }))
                 if accounts::password_problem(&password, &confirm).is_none() =>
             {
-                self.run(move || accounts::set_password(&path, &password))
+                let own = self.state.me.as_ref().is_some_and(|me| me.path == path);
+                self.run(move || {
+                    let changed = accounts::set_password(&path, &password)?;
+                    if own {
+                        accounts::tell_the_shell_about(password);
+                    }
+                    Ok(changed)
+                })
             }
             (Msg::Remove(remove_files), Some(Form::Remove { uid, .. })) => {
                 self.run(move || accounts::delete_user(uid, remove_files))

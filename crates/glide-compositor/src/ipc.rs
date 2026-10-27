@@ -411,6 +411,10 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
         Request::IdleInhibitors => {
             Response::IdleInhibitors { apps: state.idle_inhibitor_apps(), caffeine: state.topbar.caffeinated() }
         }
+        Request::LoginPasswordChanged { password } => {
+            state.adopt_changed_login_password(password);
+            Response::Ok
+        }
         Request::ActivationToken { .. }
         | Request::Screenshot
         | Request::ScreenshotArea

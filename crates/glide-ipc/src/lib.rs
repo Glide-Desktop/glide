@@ -45,6 +45,7 @@ pub enum Request {
     ScanQr,
     Action { name: String },
     IdleInhibitors,
+    LoginPasswordChanged { password: keychain::Hidden },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

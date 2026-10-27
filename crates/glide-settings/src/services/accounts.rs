@@ -371,6 +371,13 @@ pub(crate) fn set_password(path: &str, password: &str) -> Result<String, String>
     call_user_with(path, "SetPassword", &(hash, String::new()))
 }
 
+pub(crate) fn tell_the_shell_about(password: String) {
+    let password = glide_ipc::keychain::Hidden::new(password);
+    if let Err(err) = crate::services::ipc::request(&glide_ipc::Request::LoginPasswordChanged { password }) {
+        eprintln!("glide-settings: the shell did not take the new login password: {err}");
+    }
+}
+
 pub(crate) fn set_account_type(path: &str, administrator: bool) -> Result<String, String> {
     call_user_with(path, "SetAccountType", &(i32::from(administrator),))
 }
