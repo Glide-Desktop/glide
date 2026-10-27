@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     let cli = match parse_cli_args(&args) {
         Ok(c) => c,
         Err(_) => {
-            print_usage();
+            eprintln!("{USAGE}");
             std::process::exit(1);
         }
     };
@@ -168,10 +168,6 @@ fn format_event(event: &Event) -> String {
     }
 }
 
-fn print_usage() {
-    eprintln!("{USAGE}");
-}
-
 const USAGE: &str = r#"glidectl — CLI controller for Glide Wayland compositor
 
 USAGE:
@@ -202,25 +198,12 @@ OPTIONS:
 "#;
 
 fn find_socket_path() -> anyhow::Result<PathBuf> {
-    if let Ok(path) = std::env::var("GLIDE_IPC_SOCK")
-        && !path.is_empty()
-        && std::path::Path::new(&path).exists()
-    {
-        return Ok(PathBuf::from(path));
-    }
-
-    if let (Ok(wayland_display), Ok(runtime_dir)) = (std::env::var("WAYLAND_DISPLAY"), std::env::var("XDG_RUNTIME_DIR"))
-    {
-        let path = PathBuf::from(runtime_dir).join(format!("glide-{wayland_display}.sock"));
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-
-    anyhow::bail!(
-        "Glide IPC socket not found. Is Glide running, and are GLIDE_IPC_SOCK \
-         or WAYLAND_DISPLAY + XDG_RUNTIME_DIR set?"
-    )
+    glide_ipc::client::socket_path().filter(|path| path.exists()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Glide IPC socket not found. Is Glide running, and are GLIDE_IPC_SOCK \
+             or WAYLAND_DISPLAY + XDG_RUNTIME_DIR set?"
+        )
+    })
 }
 
 #[must_use]
@@ -483,10 +466,9 @@ mod tests {
 
     #[test]
     fn tokens_take_an_appearance_and_an_accent_in_any_order() {
-        let args = |words: &[&str]| words.iter().map(ToString::to_string).collect::<Vec<_>>();
-        let sheet = tokens(&args(&["teal", "light"])).unwrap();
+        let sheet = tokens(&words(&["teal", "light"])).unwrap();
         assert!(sheet.contains("\"appearance\":\"light\"") && sheet.contains("\"accent\":\"teal\""));
-        assert!(tokens(&args(&["mauve"])).is_err());
+        assert!(tokens(&words(&["mauve"])).is_err());
     }
 
     #[test]
