@@ -1712,7 +1712,7 @@ impl GlideState {
             }
             TopbarAction::QsVolumeAdjust(pct) => {
                 self.session.headset.local_volume_edit(std::time::Instant::now());
-                let pct = pct.min(self.max_volume_pct);
+                let pct = pct.min(self.max_volume_pct.max(self.topbar.system_status().volume_pct));
                 crate::system_info::set_volume_pct(pct);
                 self.update_system_status(|status| {
                     status.volume_pct = pct;

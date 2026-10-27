@@ -223,6 +223,14 @@ pub const fn keypad_navigation(sym: Keysym) -> Keysym {
     }
 }
 
+#[must_use]
+pub fn scrolled_volume(current: u8, step: i16, max: u8) -> u8 {
+    let ceiling = i16::from(max.max(current));
+    let wanted = (i16::from(current) + step).clamp(0, ceiling);
+    let wanted = if step > 0 { wanted.max(i16::from(current)) } else { wanted.min(i16::from(current)) };
+    u8::try_from(wanted).unwrap_or(current)
+}
+
 fn locked_media_shortcut(
     keybinds: &[ResolvedKeybind], modifiers: &ModifiersState, raw_syms: &[Keysym], modified_sym: Keysym,
 ) -> Option<KeyAction> {
@@ -2830,8 +2838,8 @@ impl GlideState {
         let status = self.topbar.system_status();
         let action = match slot {
             crate::topbar::Slot::Status | crate::topbar::Slot::QsVolumeMute | crate::topbar::Slot::QsVolumeTrack => {
-                let pct = (i16::from(status.volume_pct) + step).clamp(0, i16::from(self.max_volume_pct));
-                Some(crate::topbar::TopbarAction::QsVolumeAdjust(u8::try_from(pct).unwrap_or(0)))
+                let pct = scrolled_volume(status.volume_pct, step, self.max_volume_pct);
+                Some(crate::topbar::TopbarAction::QsVolumeAdjust(pct))
             }
             crate::topbar::Slot::QsMicMute | crate::topbar::Slot::QsMicTrack => {
                 let pct = (i16::from(status.mic_pct) + step).clamp(0, 100);
@@ -2962,6 +2970,15 @@ mod tests {
     use super::*;
 
     use crate::raster::rect;
+
+    #[test]
+    fn scrolling_up_never_lowers_the_volume_a_media_key_raised_past_the_cap() {
+        assert_eq!(scrolled_volume(40, 5, 100), 45);
+        assert_eq!(scrolled_volume(98, 5, 100), 100);
+        assert_eq!(scrolled_volume(130, 5, 100), 130, "above the cap it stays where the key put it");
+        assert_eq!(scrolled_volume(130, -5, 100), 125, "and scrolling down lowers it step by step");
+        assert_eq!(scrolled_volume(3, -5, 100), 0);
+    }
 
     fn no_modifiers() -> ModifiersState {
         ModifiersState::default()
