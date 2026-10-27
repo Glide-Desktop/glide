@@ -227,7 +227,7 @@ fn run() -> anyhow::Result<()> {
         let overview_animating = state.tick_overview();
         let hover_animating = state.any_button_hover_animating();
         let open_animating = state.any_window_open_animating();
-        let fade_animating = state.any_surface_fading_in();
+        let fade_animating = state.any_surface_fading_in() || state.wallpaper_fading();
         let geometry_animating = state.any_window_geometry_animating();
         let snapshots_animating = state.snapshots.tick();
         let dock_autohide = state.update_dock_autohide();
@@ -247,9 +247,11 @@ fn run() -> anyhow::Result<()> {
         let polkit_animating = state.tick_polkit();
         let keychain_animating = state.tick_keychain_prompt();
         let night_light_animating = state.tick_night_light_fade();
+        let blank_animating = state.tick_blank_fade();
 
         if toasts_animating
             || night_light_animating
+            || blank_animating
             || polkit_animating
             || keychain_animating
             || shot_animating

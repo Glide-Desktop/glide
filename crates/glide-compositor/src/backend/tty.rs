@@ -236,9 +236,11 @@ struct SurfaceData {
     wallpaper_blur_buf: Option<MemoryRenderBuffer>,
     wallpaper_blur_rgba: Option<std::sync::Arc<Vec<u8>>>,
     wallpaper_key: Option<WallpaperKey>,
+    wallpaper_old: Option<(MemoryRenderBuffer, std::time::Instant)>,
     lock_backdrop: SolidColorBuffer,
     screenshot_flash: SolidColorBuffer,
     power_scrim: SolidColorBuffer,
+    blank_scrim: SolidColorBuffer,
     power_blur: Option<(WallpaperKey, MemoryRenderBuffer)>,
 }
 
@@ -524,6 +526,25 @@ fn push_wallpaper_elements(
         f64::from(buf_w),
         f64::from(buf_h),
     ))));
+
+    let fade = glide_theme::motion::t3();
+    if surface.wallpaper_old.as_ref().is_some_and(|(_, since)| fade.is_zero() || since.elapsed() >= fade) {
+        surface.wallpaper_old = None;
+    }
+    if let Some((buffer, since)) = surface.wallpaper_old.as_mut() {
+        let left = 1.0 - glide_theme::motion::ease_io((since.elapsed().as_secs_f64() / fade.as_secs_f64()).min(1.0));
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            gles_renderer,
+            origin,
+            buffer,
+            Some(left as f32),
+            src,
+            size,
+            Kind::Unspecified,
+        ) {
+            elements.push(GlideRenderElements::Memory(element));
+        }
+    }
 
     let muted_alpha = backdrop_t.clamp(0.0, 1.0) as f32;
     if muted_alpha > 0.0
@@ -906,9 +927,11 @@ impl GlideState {
                 wallpaper_blur_buf: None,
                 wallpaper_blur_rgba: None,
                 wallpaper_key: None,
+                wallpaper_old: None,
                 lock_backdrop: SolidColorBuffer::default(),
                 screenshot_flash: SolidColorBuffer::default(),
                 power_scrim: SolidColorBuffer::default(),
+                blank_scrim: SolidColorBuffer::default(),
                 power_blur: None,
             },
         );
@@ -950,6 +973,14 @@ impl GlideState {
         }
 
         self.render_surface(crtc);
+    }
+
+    #[must_use]
+    pub fn wallpaper_fading(&self) -> bool {
+        self.backend_data
+            .device
+            .as_ref()
+            .is_some_and(|device| device.surfaces.values().any(|surface| surface.wallpaper_old.is_some()))
     }
 
     #[must_use]
@@ -1162,6 +1193,7 @@ impl GlideState {
 
         self.reset_dead_cursor_surface();
 
+        let blank_alpha = self.blank_fade_alpha();
         let pointer_location = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
         let cursor_status = self.cursor_status.clone();
         let elapsed = self.start_time.elapsed();
@@ -1225,6 +1257,11 @@ impl GlideState {
         let wallpaper_fit = self.wallpaper_fit;
         let wallpaper_key = (phys_w, phys_h, wallpaper_fit, glide_paint::wallpaper_generation(), fractional.to_bits());
         if surface.wallpaper_key != Some(wallpaper_key) {
+            let same_screen = surface
+                .wallpaper_key
+                .is_some_and(|(w, h, _, _, scale)| (w, h, scale) == (phys_w, phys_h, fractional.to_bits()));
+            surface.wallpaper_old =
+                surface.wallpaper_buf.take().filter(|_| same_screen).map(|buffer| (buffer, std::time::Instant::now()));
             let mut buf = vec![0; usize::try_from(phys_w * phys_h * 4).unwrap_or_default()];
             glide_paint::draw_wallpaper_into(&mut buf, phys_w, phys_h, wallpaper_fit);
             let opaque_regions = wallpaper_fit
@@ -1617,6 +1654,18 @@ impl GlideState {
             handoff.mark_frame();
             cursor_count += covered.len();
             prepend(&mut elements, covered);
+        }
+
+        if let Some(alpha) = blank_alpha {
+            surface.blank_scrim.update(logical_size, [0.0, 0.0, 0.0, 1.0]);
+            let scrim = GlideRenderElements::LockBackdrop(SolidColorRenderElement::from_buffer(
+                &surface.blank_scrim,
+                (0, 0),
+                scale,
+                alpha,
+                Kind::Unspecified,
+            ));
+            elements.splice(cursor_count..cursor_count, [scrim]);
         }
 
         if let Some(buffer) = surface.wallpaper_blur_buf.as_mut() {

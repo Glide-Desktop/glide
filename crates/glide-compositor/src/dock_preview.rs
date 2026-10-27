@@ -141,6 +141,7 @@ pub struct Preview {
     hover: glide_ui::HoverAnimation<u64>,
     hovered: Option<PreviewHit>,
     close_hover: glide_ui::Tween,
+    swap: glide_ui::Tween,
     panel: Option<(PanelKey, MemoryRenderBuffer)>,
     rings: HashMap<(i32, i32, i32), MemoryRenderBuffer>,
     closes: HashMap<(bool, i32), MemoryRenderBuffer>,
@@ -160,6 +161,7 @@ impl Preview {
             hover: glide_ui::HoverAnimation::default(),
             hovered: None,
             close_hover: glide_ui::Tween::at(0.0),
+            swap: glide_ui::Tween::at(1.0),
             panel: None,
             rings: HashMap::new(),
             closes: HashMap::new(),
@@ -177,6 +179,8 @@ impl Preview {
             return false;
         }
         self.windows = windows;
+        self.swap = glide_ui::Tween::at(0.35);
+        self.swap.retarget(1.0, t2(), ease_out);
         true
     }
 
@@ -208,7 +212,7 @@ impl Preview {
         let reveal = self.reveal.is_animating(t2());
         let hover = self.hover.is_animating(t1());
         let close = self.close_hover.is_animating(t1());
-        reveal || hover || close
+        reveal || hover || close || self.swap.is_animating(t2())
     }
 
     #[must_use]
@@ -380,7 +384,12 @@ pub fn render<R: ShellRenderer>(
         }
         let minimized = preview.windows.iter().any(|window| window.id == thumb.id && window.minimized);
         let content = Rectangle::new(shift(thumb.content.loc), thumb.content.size);
-        drawn.live.push(Live { id: thumb.id, content, alpha: alpha * if minimized { MINIMIZED_ALPHA } else { 1.0 } });
+        let settled = preview.swap.value(t2(), ease_out) as f32;
+        drawn.live.push(Live {
+            id: thumb.id,
+            content,
+            alpha: alpha * settled * if minimized { MINIMIZED_ALPHA } else { 1.0 },
+        });
     }
 
     if let Some((_, buffer)) = preview.panel.as_ref()

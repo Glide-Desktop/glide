@@ -374,6 +374,7 @@ pub struct SessionServices {
     pub shell_bus: Option<crate::shell_bus::Handle>,
     pub launch_intent: Option<std::time::Instant>,
     pub last_user_input: Option<std::time::Instant>,
+    pub blank_fade: Option<std::time::Instant>,
     pub screenshot_waiters: Vec<std::os::unix::net::UnixStream>,
     pub picker: Option<crate::screen_picker::Picker>,
     pub shot: Option<crate::shot::Session>,
@@ -3618,7 +3619,7 @@ impl GlideState {
             match step {
                 Step::Blank => {
                     tracing::info!("idle timeout reached; blanking outputs");
-                    self.set_outputs_blanked(true);
+                    self.begin_blank_fade();
                 }
                 Step::Lock if crate::greeter::pam::available() => {
                     tracing::info!("idle lock delay reached");
@@ -3633,6 +3634,40 @@ impl GlideState {
                 }
             }
         }
+    }
+
+    fn begin_blank_fade(&mut self) {
+        if glide_theme::motion::t4().is_zero() || self.outputs_blanked {
+            self.set_outputs_blanked(true);
+            return;
+        }
+        self.session.blank_fade = Some(std::time::Instant::now());
+        self.queue_redraw();
+    }
+
+    pub fn tick_blank_fade(&mut self) -> bool {
+        let Some(since) = self.session.blank_fade else {
+            return false;
+        };
+        if !self.idle.is_idle() {
+            self.session.blank_fade = None;
+            self.queue_redraw();
+            return false;
+        }
+        if since.elapsed() >= glide_theme::motion::t4() {
+            self.session.blank_fade = None;
+            self.set_outputs_blanked(true);
+            return false;
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn blank_fade_alpha(&self) -> Option<f32> {
+        let since = self.session.blank_fade?;
+        let span = glide_theme::motion::t4();
+        let progress = (since.elapsed().as_secs_f64() / span.as_secs_f64()).clamp(0.0, 1.0);
+        Some(glide_theme::motion::ease_io(progress) as f32)
     }
 
     pub fn locked_power_key(&mut self) {
