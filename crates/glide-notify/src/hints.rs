@@ -2,9 +2,7 @@ use std::collections::HashMap;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-use crate::model::{Image, Sound, Urgency};
-
-const MAX_SIDE: i32 = 1024;
+use crate::model::{Sound, Urgency};
 
 #[must_use]
 pub fn string(hints: &HashMap<String, OwnedValue>, key: &str) -> String {
@@ -52,75 +50,6 @@ pub fn sound(hints: &HashMap<String, OwnedValue>) -> Sound {
     if name.is_empty() { Sound::None } else { Sound::Named(name.to_string()) }
 }
 
-#[must_use]
-pub fn progress(hints: &HashMap<String, OwnedValue>) -> Option<f32> {
-    for key in ["value", "x-glide-progress", "x-kde-progress"] {
-        if let Some(raw) = integer(hints, key) {
-            return Some((raw as f32 / 100.0).clamp(0.0, 1.0));
-        }
-    }
-    None
-}
-
-#[must_use]
-pub fn image(hints: &HashMap<String, OwnedValue>) -> Option<Image> {
-    ["image-data", "image_data", "icon_data"]
-        .into_iter()
-        .filter_map(|key| hints.get(key))
-        .find_map(decode_image)
-        .map(crate::model::scale_image)
-}
-
-fn decode_image(value: &OwnedValue) -> Option<Image> {
-    let Value::Structure(structure) = &**value else {
-        return None;
-    };
-    let fields = structure.fields();
-    if fields.len() < 7 {
-        return None;
-    }
-
-    let int = |index: usize| i32::try_from(fields[index].try_clone().ok()?).ok();
-    let has_alpha = bool::try_from(fields[3].try_clone().ok()?).ok()?;
-    let pixels = Vec::<u8>::try_from(fields[6].try_clone().ok()?).ok()?;
-
-    normalise(int(0)?, int(1)?, int(2)?, has_alpha, int(4)?, int(5)?, &pixels)
-}
-
-fn normalise(
-    width: i32, height: i32, stride: i32, has_alpha: bool, bits: i32, channels: i32, pixels: &[u8],
-) -> Option<Image> {
-    let expected_channels = if has_alpha { 4 } else { 3 };
-    if !(1..=MAX_SIDE).contains(&width)
-        || !(1..=MAX_SIDE).contains(&height)
-        || stride <= 0
-        || bits != 8
-        || channels != expected_channels
-    {
-        return None;
-    }
-
-    let columns = usize::try_from(width).ok()?;
-    let rows = usize::try_from(height).ok()?;
-    let row_stride = usize::try_from(stride).ok()?;
-    let step = usize::try_from(channels).ok()?;
-    let row_bytes = columns * step;
-    if row_stride < row_bytes || pixels.len() < row_stride * (rows - 1) + row_bytes {
-        return None;
-    }
-
-    let mut rgba = Vec::with_capacity(columns * rows * 4);
-    for y in 0..rows {
-        let row = y * row_stride;
-        for pixel in pixels[row..row + row_bytes].chunks_exact(step) {
-            rgba.extend_from_slice(&pixel[..3]);
-            rgba.push(if has_alpha { pixel[3] } else { 255 });
-        }
-    }
-
-    Some(Image { width, height, rgba })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,23 +93,6 @@ mod tests {
     }
 
     #[test]
-    fn progress_is_normalised_into_a_fraction() {
-        let value = progress(&hint("value", Value::I32(42))).expect("progress present");
-        assert!((value - 0.42).abs() < 1e-6);
-    }
-
-    #[test]
-    fn progress_is_clamped_to_the_unit_range() {
-        assert_eq!(progress(&hint("value", Value::I32(400))), Some(1.0));
-        assert_eq!(progress(&hint("value", Value::I32(-20))), Some(0.0));
-    }
-
-    #[test]
-    fn a_notification_without_a_progress_hint_reports_none() {
-        assert_eq!(progress(&HashMap::new()), None);
-    }
-
-    #[test]
     fn strings_and_flags_default_rather_than_failing() {
         let hints = HashMap::new();
         assert_eq!(string(&hints, "desktop-entry"), "");
@@ -191,41 +103,5 @@ mod tests {
     fn a_string_hint_of_the_wrong_type_is_ignored() {
         let hints = hint("desktop-entry", Value::I32(7));
         assert_eq!(string(&hints, "desktop-entry"), "");
-    }
-
-    #[test]
-    fn rgb_pixels_gain_an_opaque_alpha_channel() {
-        let image = normalise(2, 1, 6, false, 8, 3, &[1, 2, 3, 4, 5, 6]).expect("image decodes");
-        assert_eq!(image.rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
-    }
-
-    #[test]
-    fn row_padding_in_the_stride_is_skipped() {
-        let pixels = vec![1, 2, 3, 255, 9, 9, 9, 9, 4, 5, 6, 255, 8, 8, 8, 8];
-        let image = normalise(1, 2, 8, true, 8, 4, &pixels).expect("image decodes");
-        assert_eq!(image.rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
-    }
-
-    #[test]
-    fn a_short_pixel_buffer_is_rejected_rather_than_padded() {
-        assert!(normalise(4, 4, 16, true, 8, 4, &[0; 8]).is_none());
-        assert!(normalise(1024, 1024, 4096, true, 8, 4, &[0; 16]).is_none());
-        assert!(normalise(4, 2, 20, true, 8, 4, &[0; 36]).is_some(), "the last row needs no trailing padding");
-        assert!(normalise(4, 2, 20, true, 8, 4, &[0; 35]).is_none());
-    }
-
-    #[test]
-    fn implausible_geometry_is_rejected_outright() {
-        assert!(normalise(0, 4, 16, true, 8, 4, &[0; 64]).is_none());
-        assert!(normalise(9000, 4, 16, true, 8, 4, &[0; 64]).is_none());
-        assert!(normalise(2048, 1, 8192, true, 8, 4, &[0; 8192]).is_none());
-        assert!(normalise(4, 4, 0, true, 8, 4, &[0; 64]).is_none());
-        assert!(normalise(4, 1, 8, true, 8, 4, &[0; 64]).is_none(), "a stride narrower than a row is malformed");
-    }
-
-    #[test]
-    fn unsupported_sample_depths_and_channel_counts_are_rejected() {
-        assert!(normalise(2, 2, 8, true, 16, 4, &[0; 32]).is_none());
-        assert!(normalise(2, 2, 8, true, 8, 3, &[0; 32]).is_none());
     }
 }

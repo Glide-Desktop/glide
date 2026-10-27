@@ -117,6 +117,33 @@ impl Service {
     fn sender(header: &zbus::message::Header<'_>) -> String {
         header.sender().map(ToString::to_string).unwrap_or_default()
     }
+
+    fn hold_inhibitor(&self, owner: String, inhibitor: Inhibitor) -> (u32, bool) {
+        let mut inner = self.lock();
+        let (cookie, became_inhibited) = inner.hold(owner, inhibitor);
+        if became_inhibited {
+            (self.sink)(NotifyEvent::InhibitedChanged(true));
+        }
+        (cookie, became_inhibited)
+    }
+
+    fn release_inhibitor(&self, owner: &str, cookie: u32) -> bool {
+        let mut inner = self.lock();
+        let released = inner.release(owner, cookie);
+        if released {
+            (self.sink)(NotifyEvent::InhibitedChanged(false));
+        }
+        released
+    }
+}
+
+fn release_owner(inner: &Shared, sink: &Sink, owner: &str) -> bool {
+    let mut inner = lock_shared(inner);
+    let released = inner.release_owner(owner);
+    if released {
+        sink(NotifyEvent::InhibitedChanged(false));
+    }
+    released
 }
 
 // Signatures are fixed by the org.freedesktop.Notifications D-Bus interface.
@@ -154,13 +181,9 @@ impl Service {
             reply,
             urgency,
             category: hints::string(&hint_map, "category"),
-            origin: hints::string(&hint_map, "x-kde-origin-name"),
-            image: hints::image(&hint_map),
-            image_path: first_non_empty(&hint_map, &["image-path", "image_path"]),
             resident: hints::boolean(&hint_map, "resident"),
             transient: hints::boolean(&hint_map, "transient"),
             timeout: resolve_timeout(expire_timeout, urgency),
-            progress: hints::progress(&hint_map),
             sound: hints::sound(&hint_map),
         };
 
@@ -211,12 +234,10 @@ impl Service {
         #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::fdo::Result<u32> {
         drop(hints);
-        let (cookie, became_inhibited) = self.lock().hold(Self::sender(&header), Inhibitor { desktop_entry, reason });
-        if became_inhibited {
-            (self.sink)(NotifyEvent::InhibitedChanged(true));
-            if let Err(err) = self.inhibited_changed(&emitter).await {
-                tracing::debug!("failed to emit Inhibited change: {err}");
-            }
+        let (cookie, became_inhibited) =
+            self.hold_inhibitor(Self::sender(&header), Inhibitor { desktop_entry, reason });
+        if became_inhibited && let Err(err) = self.inhibited_changed(&emitter).await {
+            tracing::debug!("failed to emit Inhibited change: {err}");
         }
         Ok(cookie)
     }
@@ -225,12 +246,10 @@ impl Service {
         &self, cookie: u32, #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
-        let released = self.lock().release(&Self::sender(&header), cookie);
-        if released {
-            (self.sink)(NotifyEvent::InhibitedChanged(false));
-            if let Err(err) = self.inhibited_changed(&emitter).await {
-                tracing::debug!("failed to emit Inhibited change: {err}");
-            }
+        if self.release_inhibitor(&Self::sender(&header), cookie)
+            && let Err(err) = self.inhibited_changed(&emitter).await
+        {
+            tracing::debug!("failed to emit Inhibited change: {err}");
         }
         Ok(())
     }
@@ -239,10 +258,6 @@ impl Service {
     fn inhibited(&self) -> bool {
         !self.lock().inhibitors.is_empty()
     }
-}
-
-fn first_non_empty(hint_map: &HashMap<String, OwnedValue>, keys: &[&str]) -> String {
-    keys.iter().map(|key| hints::string(hint_map, key)).find(|value| !value.is_empty()).unwrap_or_default()
 }
 
 pub struct NotifyHandle {
@@ -327,14 +342,12 @@ fn watch_inhibitor_owners(connection: &zbus::blocking::Connection, inner: Shared
             if args.new_owner().is_some() {
                 continue;
             }
-            let released = lock_shared(&inner).release_owner(args.name().as_str());
-            if released {
-                sink(NotifyEvent::InhibitedChanged(false));
-                if let Ok(interface) = interface.as_ref() {
-                    let service = interface.get();
-                    if let Err(err) = zbus::block_on(service.inhibited_changed(interface.signal_emitter())) {
-                        tracing::debug!("failed to emit Inhibited change: {err}");
-                    }
+            if release_owner(&inner, &sink, args.name().as_str())
+                && let Ok(interface) = interface.as_ref()
+            {
+                let service = interface.get();
+                if let Err(err) = zbus::block_on(service.inhibited_changed(interface.signal_emitter())) {
+                    tracing::debug!("failed to emit Inhibited change: {err}");
                 }
             }
         }
@@ -449,12 +462,24 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_image_path_hint_is_honoured() {
-        let hints = HashMap::from([(
-            "image_path".to_string(),
-            OwnedValue::try_from(zbus::zvariant::Value::Str("/legacy.png".into())).expect("owned"),
-        )]);
-        assert_eq!(first_non_empty(&hints, &["image-path", "image_path"]), "/legacy.png");
-        assert_eq!(first_non_empty(&HashMap::new(), &["image-path"]), "");
+    fn inhibition_events_follow_the_inhibitor_map() {
+        let (service, log) = service();
+        let (first, became) = service.hold_inhibitor(":1.5".to_string(), inhibitor("a"));
+        assert!(became);
+        let (_, became) = service.hold_inhibitor(":1.6".to_string(), inhibitor("b"));
+        assert!(!became, "a second inhibitor changes nothing");
+        assert!(!service.release_inhibitor(":1.5", first), "another owner still inhibits");
+        assert!(release_owner(&service.inner, &service.sink, ":1.6"));
+        let (_, became) = service.hold_inhibitor(":1.7".to_string(), inhibitor("c"));
+        assert!(became);
+        let events = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(
+            events,
+            vec![
+                NotifyEvent::InhibitedChanged(true),
+                NotifyEvent::InhibitedChanged(false),
+                NotifyEvent::InhibitedChanged(true)
+            ]
+        );
     }
 }

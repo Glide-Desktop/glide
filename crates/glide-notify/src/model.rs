@@ -7,7 +7,6 @@ pub const ACTION_DEFAULT: &str = "default";
 pub const ACTION_SETTINGS: &str = "settings";
 pub const ACTION_INLINE_REPLY: &str = "inline-reply";
 
-pub const MAX_IMAGE_SIDE: i32 = 256;
 pub const MAX_BODY_CHARS: usize = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -76,13 +75,6 @@ pub enum Sound {
     File(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Image {
-    pub width: i32,
-    pub height: i32,
-    pub rgba: Vec<u8>,
-}
-
 // Independent flags of the freedesktop notification wire format.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -100,13 +92,9 @@ pub struct Notification {
     pub reply: Option<Reply>,
     pub urgency: Urgency,
     pub category: String,
-    pub origin: String,
-    pub image: Option<Image>,
-    pub image_path: String,
     pub resident: bool,
     pub transient: bool,
     pub timeout: Option<Duration>,
-    pub progress: Option<f32>,
     pub sound: Sound,
 }
 
@@ -181,9 +169,11 @@ pub fn sanitize_body(raw: &str) -> String {
             }
             '&' => {
                 let mut entity = String::new();
+                let mut terminated = false;
                 while let Some(&inner) = chars.peek() {
                     if inner == ';' {
                         chars.next();
+                        terminated = true;
                         break;
                     }
                     if entity.len() >= 8 || inner.is_whitespace() || inner == '&' {
@@ -192,7 +182,7 @@ pub fn sanitize_body(raw: &str) -> String {
                     entity.push(inner);
                     chars.next();
                 }
-                out.push_str(&decode_entity(&entity));
+                out.push_str(&decode_entity(&entity, terminated));
             }
             other => out.push(other),
         }
@@ -211,7 +201,7 @@ fn tag_breaks_line(tag: &str) -> bool {
     name.eq_ignore_ascii_case("br") || name.eq_ignore_ascii_case("tr")
 }
 
-fn decode_entity(entity: &str) -> String {
+fn decode_entity(entity: &str, terminated: bool) -> String {
     match entity {
         "amp" => "&".into(),
         "lt" => "<".into(),
@@ -219,7 +209,8 @@ fn decode_entity(entity: &str) -> String {
         "quot" => "\"".into(),
         "apos" => "'".into(),
         "nbsp" => " ".into(),
-        other => decode_numeric_entity(other).map_or_else(|| format!("&{other}"), String::from),
+        other => decode_numeric_entity(other)
+            .map_or_else(|| if terminated { format!("&{other};") } else { format!("&{other}") }, String::from),
     }
 }
 
@@ -290,49 +281,17 @@ pub fn split_actions(raw: &[String]) -> (Vec<Action>, bool, bool, Option<String>
 }
 
 #[must_use]
-pub fn scale_image(image: Image) -> Image {
-    let longest = image.width.max(image.height);
-    if longest <= MAX_IMAGE_SIDE || longest <= 0 {
-        return image;
-    }
-    let ratio = f64::from(MAX_IMAGE_SIDE) / f64::from(longest);
-    let width = ((f64::from(image.width) * ratio).round() as i32).max(1);
-    let height = ((f64::from(image.height) * ratio).round() as i32).max(1);
-
-    let (Ok(columns), Ok(rows)) = (usize::try_from(width), usize::try_from(height)) else {
-        return image;
-    };
-    let (Ok(src_w), Ok(src_h)) = (usize::try_from(image.width), usize::try_from(image.height)) else {
-        return image;
-    };
-
-    let mut rgba = Vec::with_capacity(columns * rows * 4);
-    for y in 0..rows {
-        let src_y = y * src_h / rows;
-        for x in 0..columns {
-            let offset = (src_y * src_w + x * src_w / columns) * 4;
-            rgba.extend_from_slice(image.rgba.get(offset..offset + 4).unwrap_or(&[0; 4]));
-        }
-    }
-
-    Image { width, height, rgba }
-}
-
-#[must_use]
 pub fn capabilities() -> Vec<String> {
     [
         "actions",
         "body",
-        "body-hyperlinks",
         "body-markup",
         "icon-static",
         "persistence",
         "sound",
         "inline-reply",
         "inhibitions",
-        "x-kde-origin-name",
         "x-kde-display-appname",
-        "x-glide-progress",
     ]
     .map(String::from)
     .into()
@@ -341,12 +300,6 @@ pub fn capabilities() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pixel_count(image: &Image) -> usize {
-        usize::try_from(image.width).expect("width is positive")
-            * usize::try_from(image.height).expect("height is positive")
-            * 4
-    }
 
     #[test]
     fn markup_is_reduced_to_plain_text() {
@@ -378,6 +331,13 @@ mod tests {
     fn a_stray_ampersand_is_kept_rather_than_eating_the_text() {
         assert_eq!(sanitize_body("Tom & Jerry"), "Tom & Jerry");
         assert_eq!(sanitize_body("50% & rising"), "50% & rising");
+    }
+
+    #[test]
+    fn an_unknown_entity_keeps_its_semicolon() {
+        assert_eq!(sanitize_body("Q&A; see below"), "Q&A; see below");
+        assert_eq!(sanitize_body("R&D;"), "R&D;");
+        assert_eq!(sanitize_body("a &; b"), "a &; b");
     }
 
     #[test]
@@ -480,25 +440,10 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_image_is_scaled_into_the_cache_budget() {
-        let image = Image { width: 1024, height: 512, rgba: vec![255; 1024 * 512 * 4] };
-        let scaled = scale_image(image);
-        assert_eq!(scaled.width, MAX_IMAGE_SIDE);
-        assert_eq!(scaled.height, MAX_IMAGE_SIDE / 2);
-        assert_eq!(scaled.rgba.len(), pixel_count(&scaled));
-    }
-
-    #[test]
-    fn an_image_already_within_budget_is_left_alone() {
-        let image = Image { width: 64, height: 64, rgba: vec![1; 64 * 64 * 4] };
-        let scaled = scale_image(image.clone());
-        assert_eq!(scaled, image);
-    }
-
-    #[test]
-    fn a_truncated_image_buffer_does_not_panic_the_scaler() {
-        let image = Image { width: 512, height: 512, rgba: vec![7; 16] };
-        let scaled = scale_image(image);
-        assert_eq!(scaled.rgba.len(), pixel_count(&scaled));
+    fn only_honoured_capabilities_are_advertised() {
+        let advertised = capabilities();
+        for unhonoured in ["body-hyperlinks", "x-kde-origin-name", "x-glide-progress"] {
+            assert!(!advertised.iter().any(|cap| cap == unhonoured), "{unhonoured} is not shown by the shell");
+        }
     }
 }
