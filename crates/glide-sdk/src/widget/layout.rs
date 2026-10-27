@@ -434,6 +434,32 @@ pub fn status_strip<'a, M: 'a>(
 }
 
 #[must_use]
+pub fn status_islands<'a, M: 'a>(
+    paint: &Paint, shown: f32, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    if shown <= 0.01 {
+        return Space::new().into();
+    }
+    let paint = paint.faded(shown);
+    let island = |items: Vec<Element<'a, M>>| -> Element<'a, M> {
+        let content = iced::widget::Row::with_children(items).spacing(SP2).align_y(Alignment::Center);
+        let card = container(content)
+            .padding(Padding::from([0.0, SP2]))
+            .height(component::CONTROL)
+            .align_y(Alignment::Center)
+            .style(move |_| style::popover(&paint));
+        widgets::surface(card, &paint, Level::El2, R3)
+    };
+    let rest = SP3 - (1.0 - shown) * SP2;
+    container(row![island(left), Space::new().width(Fill), island(right)].align_y(Alignment::Center))
+        .width(Fill)
+        .height(Fill)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .padding(Padding { left: SP3, right: SP3, bottom: rest, top: 0.0 })
+        .into()
+}
+
+#[must_use]
 pub fn status_button<'a, M: Clone + 'a>(
     paint: &Paint, label: impl Into<std::borrow::Cow<'a, str>>, message: M,
 ) -> Element<'a, M> {

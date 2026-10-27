@@ -67,6 +67,8 @@ glide_sdk::catalogue! {
     NeedFolder => "Open a folder first", "Спершу відкрийте папку";
     Sidebar => "Sidebar", "Бічна панель";
     StatusBar => "Status Bar", "Рядок стану";
+    Islands => "Floating Status Islands", "Плаваючі острівці стану";
+    AutoHideStatus => "Hide Islands Until the Pointer Is Near", "Ховати острівці, поки вказівник далеко";
     Monospace => "Monospace Font", "Моноширинний шрифт";
     Preview => "Markdown Preview", "Перегляд Markdown";
     ZoomIn => "Zoom In", "Збільшити";

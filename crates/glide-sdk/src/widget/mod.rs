@@ -65,8 +65,8 @@ pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band
 pub use layout::{
     CHANGED_MARK, Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW,
     action_card, action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card,
-    section, select_row, sidebar, sidebar_item, status_bar, status_button, status_strip, surface, switch_row,
-    table_header, tree_row, well,
+    section, select_row, sidebar, sidebar_item, status_bar, status_button, status_islands, status_strip, surface,
+    switch_row, table_header, tree_row, well,
 };
 pub use media::{
     Art, art, captioned_picture, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider,

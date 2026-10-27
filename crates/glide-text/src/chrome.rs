@@ -26,6 +26,8 @@ use crate::syntax::{Bridge, Highlight, Language};
 
 pub const HEADER: f32 = 38.0;
 pub const STATUS: f32 = 26.0;
+pub(crate) const ISLAND_LIFT: f32 = 50.0;
+pub(crate) const ISLAND_ZONE: f32 = 76.0;
 pub(crate) const SIDEBAR: f32 = 248.0;
 pub(crate) const SIDEBAR_MIN_WINDOW: f32 = 560.0;
 const TABS: f32 = 36.0;
@@ -393,6 +395,15 @@ fn editor(app: &App) -> Element<'_, Message> {
 }
 
 fn status_bar(app: &App) -> Element<'_, Message> {
+    let (left, right) = status_parts(app);
+    let corners =
+        if app.edge_to_edge() { Radius::default() } else { Radius::default().bottom_left(R3).bottom_right(R3) };
+    glide_sdk::widget::status_bar(&app.paint, left, right, corners)
+}
+
+type Parts<'a> = (Vec<Element<'a, Message>>, Vec<Element<'a, Message>>);
+
+fn status_parts(app: &App) -> Parts<'_> {
     use glide_sdk::widget::status_button;
     let paint = app.paint;
     let lang = app.lang;
@@ -440,9 +451,13 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             text(doc.encoding.name(), TextStyle::CAP).color(paint.fg_3()).into(),
         ]);
     }
-    let corners =
-        if app.edge_to_edge() { Radius::default() } else { Radius::default().bottom_left(R3).bottom_right(R3) };
-    glide_sdk::widget::status_bar(&paint, left, right, corners)
+    (left, right)
+}
+
+fn status_islands(app: &App) -> Element<'_, Message> {
+    let (left, right) = status_parts(app);
+    let shown = if app.prefs.auto_hide_status { app.status_reveal.value(motion::t2()) as f32 } else { 1.0 };
+    glide_sdk::widget::status_islands(&app.paint, shown, left, right)
 }
 
 fn labelled(label: String, command: Command, enabled: bool, on: Option<bool>) -> Item {
@@ -536,6 +551,14 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
         Bar::View => vec![
             check(app, Key::Sidebar, Command::ToggleSidebar, app.prefs.sidebar, true),
             check(app, Key::StatusBar, Command::ToggleStatusBar, app.prefs.status_bar, true),
+            check(app, Key::Islands, Command::ToggleIslands, app.prefs.status_islands, app.prefs.status_bar),
+            check(
+                app,
+                Key::AutoHideStatus,
+                Command::ToggleAutoHideStatus,
+                app.prefs.auto_hide_status,
+                app.prefs.status_bar && app.prefs.status_islands,
+            ),
             Item::Separator,
             check(app, Key::Monospace, Command::ToggleMonospace, app.prefs.monospace, true),
             check(app, Key::Preview, Command::TogglePreview, app.previewing(), doc.is_some_and(Document::previewable)),
@@ -941,6 +964,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let bottom_right = if app.edge_to_edge() || app.status_visible() { 0.0 } else { R3 };
     let bottom_left = if app.sidebar_visible() { 0.0 } else { bottom_right };
     let main = pane(paint.view_bg(), Radius::default().bottom_right(bottom_right).bottom_left(bottom_left), main);
+    let main: Element<'_, Message> =
+        if app.status_floating() { iced::widget::stack![main, status_islands(app)].into() } else { main.into() };
     let mut middle = row![];
     if app.sidebar_visible() {
         middle = middle.push(glide_sdk::widget::arriving(sidebar(app))).push(vertical_rule(&paint));

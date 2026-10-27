@@ -118,6 +118,8 @@ pub enum Command {
     GoToLine,
     ToggleSidebar,
     ToggleStatusBar,
+    ToggleIslands,
+    ToggleAutoHideStatus,
     ToggleMonospace,
     TogglePreview,
     ZoomIn,
@@ -317,6 +319,7 @@ pub struct App {
     pub preview: bool,
     pub focus: bool,
     pub finder: Option<Finder>,
+    pub status_reveal: Reveal,
     finder_latest: Arc<std::sync::atomic::AtomicU64>,
     pending_jump: Option<(PathBuf, usize)>,
     pub markdown: Option<(u64, u64, Vec<markdown::Item>)>,
@@ -634,6 +637,7 @@ impl App {
             preview: false,
             focus: false,
             finder: None,
+            status_reveal: Reveal::closed().with_ease(motion::ease_out),
             finder_latest: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pending_jump: None,
             markdown: None,
@@ -861,6 +865,7 @@ impl App {
     fn animating(&self) -> bool {
         self.notice.as_ref().is_some_and(|(_, at)| at.elapsed() < motion::t2())
             || self.menu.as_ref().is_some_and(|menu| menu.reveal.is_animating(motion::t2()))
+            || self.status_reveal.is_animating(motion::t2())
             || self.finder.as_ref().is_some_and(|finder| finder.reveal.is_animating(motion::t2()))
             || self.dialog.as_ref().is_some_and(|dialog| dialog.reveal.is_animating(motion::t2()))
             || self.closing.as_ref().is_some_and(|dialog| dialog.reveal.is_animating(motion::t2()))
@@ -1029,7 +1034,8 @@ impl App {
                 if self.menu.as_ref().is_some_and(|menu| menu.kind == kind) {
                     self.dismiss_menu();
                 } else {
-                    let at = Point::new(x, self.window.size.height - crate::chrome::STATUS);
+                    let lift = if self.status_floating() { crate::chrome::ISLAND_LIFT } else { crate::chrome::STATUS };
+                    let at = Point::new(x, self.window.size.height - lift);
                     self.open_menu(kind, at, false);
                 }
                 Task::none()
@@ -1095,6 +1101,7 @@ impl App {
             }
             Message::Pointer(point) => {
                 self.pointer = point;
+                self.track_status();
                 Task::none()
             }
             Message::Dropped(path) => {
@@ -1263,7 +1270,27 @@ impl App {
 
     #[must_use]
     pub(crate) fn status_visible(&self) -> bool {
-        self.prefs.status_bar && !self.focus
+        self.prefs.status_bar && !self.focus && !self.prefs.status_islands
+    }
+
+    #[must_use]
+    pub(crate) fn status_floating(&self) -> bool {
+        self.prefs.status_bar && !self.focus && self.prefs.status_islands
+    }
+
+    fn track_status(&mut self) {
+        let sidebar = if self.sidebar_visible() { crate::chrome::SIDEBAR + 1.0 } else { 0.0 };
+        let size = self.window.size;
+        let near = self.pointer.x >= sidebar && self.pointer.y >= size.height - crate::chrome::ISLAND_ZONE;
+        let pinned = self
+            .menu
+            .as_ref()
+            .is_some_and(|menu| matches!(menu.kind, MenuKind::Syntax | MenuKind::TabWidths | MenuKind::Endings));
+        if near || pinned || !self.prefs.auto_hide_status {
+            self.status_reveal.open(motion::t2());
+        } else {
+            self.status_reveal.close(motion::t2());
+        }
     }
 
     fn open_menu(&mut self, kind: MenuKind, at: Point, keyboard: bool) {
@@ -1563,6 +1590,17 @@ impl App {
             Command::ToggleStatusBar => {
                 self.prefs.status_bar = !self.prefs.status_bar;
                 self.store_prefs();
+                Task::none()
+            }
+            Command::ToggleIslands => {
+                self.prefs.status_islands = !self.prefs.status_islands;
+                self.store_prefs();
+                Task::none()
+            }
+            Command::ToggleAutoHideStatus => {
+                self.prefs.auto_hide_status = !self.prefs.auto_hide_status;
+                self.store_prefs();
+                self.track_status();
                 Task::none()
             }
             Command::ToggleMonospace => {
@@ -2617,6 +2655,26 @@ mod tests {
     }
 
     #[test]
+    fn the_status_islands_wait_for_the_pointer_near_the_bottom_of_the_editor_pane() {
+        let mut app = app();
+        app.window.size = iced::Size::new(1200.0, 700.0);
+        assert!(app.status_floating() && !app.status_visible(), "islands replace the docked bar by default");
+        let at = |x: f32, y: f32| Message::Pointer(Point::new(x, y));
+        let _ = app.update(at(600.0, 100.0));
+        assert!(!app.status_reveal.is_open());
+        let _ = app.update(at(100.0, 690.0));
+        assert!(!app.status_reveal.is_open(), "the sidebar column does not summon them");
+        let _ = app.update(at(600.0, 690.0));
+        assert!(app.status_reveal.is_open());
+        let _ = app.update(at(600.0, 100.0));
+        assert!(!app.status_reveal.is_open());
+        let _ = app.update(Message::Command(Command::ToggleAutoHideStatus));
+        assert!(app.status_reveal.is_open(), "with auto-hide off they stay");
+        let _ = app.update(Message::Command(Command::ToggleFocus));
+        assert!(!app.status_floating(), "distraction-free mode hides them too");
+    }
+
+    #[test]
     fn a_csv_file_previews_as_a_table_and_a_text_file_has_no_preview() {
         let mut app = app();
         let doc = app.doc_mut().unwrap();
@@ -2667,6 +2725,7 @@ mod tests {
     fn distraction_free_mode_hides_the_sidebar_and_status_and_escape_leaves_it_last() {
         let mut app = app();
         app.window.size = iced::Size::new(1200.0, 700.0);
+        app.prefs.status_islands = false;
         assert!(app.sidebar_visible() && app.status_visible());
         let _ = app.update(Message::Command(Command::ToggleFocus));
         assert!(app.focus && !app.sidebar_visible() && !app.status_visible());
