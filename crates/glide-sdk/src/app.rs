@@ -675,7 +675,7 @@ impl<A: App> Host<A> {
             let body = mouse_area(self.app.view(&self.shell).map(Event::App)).on_move(Event::Pointer);
             let mut layers: Vec<Element<'_, Event<A::Message>>> = vec![body.into()];
             self.overlays(&mut layers);
-            return iced::widget::stack(layers).into();
+            return crate::wheel::smooth_wheel(iced::widget::stack(layers));
         }
         let shell = &self.shell;
         let paint = shell.paint;
@@ -709,7 +709,7 @@ impl<A: App> Host<A> {
             layers.push(window::resize_handles(Event::Window));
         }
         self.overlays(&mut layers);
-        iced::widget::stack(layers).into()
+        crate::wheel::smooth_wheel(iced::widget::stack(layers))
     }
 
     fn subscription(&self) -> Subscription<Event<A::Message>> {

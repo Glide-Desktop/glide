@@ -9,23 +9,27 @@ use glide_theme::motion::{ST_HOVER, ST_PRESS};
 use glide_theme::{TextStyle, shape::R_ROUND};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Quad, Renderer as _};
+use iced::advanced::text::{self as typeset, Renderer as _};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, overlay};
+use iced::alignment::Vertical;
 use iced::widget::{Space, button, container, mouse_area, row, stack};
 use iced::{
-    Alignment, Border, Color, Element, Event, Fill, Length, Padding, Point, Rectangle, Renderer, Size, Theme, Vector,
-    mouse, window,
+    Alignment, Border, Color, Element, Event, Fill, Font, Length, Padding, Pixels, Point, Rectangle, Renderer, Size,
+    Theme, Transformation, Vector, mouse, window,
 };
 
 use super::buttons::{Tone, button_style};
 use super::feedback::Severity;
 use super::{Icon, Wrapping, icon, mix, text, tooltip};
-use crate::anim::{Motion, Speed};
+use crate::anim::{Motion, Speed, animate};
 
 const PAD: f32 = SP2;
 const GAP: f32 = SP1;
 const CLOSE: f32 = 22.0;
 const SLOP: f32 = 6.0;
+const ARRIVE: f32 = 0.8;
+const MIN_SCALE: f32 = 0.001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mark {
@@ -164,23 +168,28 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
     label = label.push(text(tab.label, TextStyle::CAP).wrapping(Wrapping::None));
     match tab.mark {
         Mark::Dot if !hovered => {
-            label = label
-                .push(container(Space::new().width(6).height(6)).style(move |_| style::rounded(paint.fg_3(), R_ROUND)));
+            let dot = container(Space::new().width(6).height(6)).style(move |_| style::rounded(paint.fg_3(), R_ROUND));
+            label = label.push(pop_in(dot));
         }
-        Mark::Alert => label = label.push(icon(Icon::Bell, 12.0, paint.warn())),
+        Mark::Alert => label = label.push(pop_in(icon(Icon::Bell, 12.0, paint.warn()))),
         _ => {}
     }
     let close: Element<'a, M> = match &strip.close {
-        Some((close, hint)) if hovered || active => {
-            let control = button(container(icon(Icon::Close, 10.0, paint.fg_2())).center(Fill))
-                .on_press(close(index))
+        Some((close, hint)) => {
+            let shown = hovered || active;
+            let mut control = button(container(icon(Icon::Close, 10.0, paint.fg_2())).center(Fill))
                 .width(CLOSE)
                 .height(CLOSE)
                 .padding(0);
+            if shown {
+                control = control.on_press(close(index));
+            }
             let control = widgets::button(control, move |status| button_style(&paint, Tone::Ghost, status));
-            tooltip(&paint, control, hint)
+            animate(f32::from(shown), Speed::OVERSHOOT, |_| tooltip(&paint, control, hint))
+                .scale(|value| value.max(MIN_SCALE))
+                .into()
         }
-        _ => Space::new().width(CLOSE).height(CLOSE).into(),
+        None => Space::new().width(CLOSE).height(CLOSE).into(),
     };
     let mut inner = stack![
         container(label).center_x(Fill).center_y(Fill).padding(Padding::from([0.0, CLOSE + SP1 + 2.0])).clip(true),
@@ -188,27 +197,28 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
     ];
     if let Some((_, strong)) = tint {
         let stripe = container(Space::new().width(Fill).height(2)).style(move |_| style::rounded(strong, 1.0));
-        inner = inner.push(container(stripe).height(Fill).align_y(Alignment::End).padding(Padding {
+        inner = inner.push(container(pop_in(stripe)).height(Fill).align_y(Alignment::End).padding(Padding {
             left: SP3,
             right: SP3,
             ..Padding::ZERO
         }));
     }
-    let face = widgets::container(container(inner).width(Fill).height(Fill), move |hover, press| {
-        let (background, color) = match (active, tint) {
-            (true, Some((soft, strong))) => (over(soft, paint.view_bg()), strong),
-            (true, None) => (paint.view_bg(), paint.fg_1()),
-            (false, _) => (
-                paint.layer(Color::TRANSPARENT, ST_HOVER * hover + (ST_PRESS - ST_HOVER) * press),
-                if hover > 0.5 { paint.fg_1() } else { paint.fg_2() },
-            ),
-        };
-        container::Style { text_color: Some(color), ..style::rounded(background, R2) }
+    let on = tint.map_or_else(|| paint.fg_1(), |(_, strong)| strong);
+    let face = animate(f32::from(active), Speed::COLOR, move |selected| {
+        let selected = selected.clone();
+        widgets::container(container(inner).width(Fill).height(Fill), move |hover, press| {
+            let lit = selected.get();
+            let layer = ST_HOVER * hover + (ST_PRESS - ST_HOVER) * press;
+            let idle = if hover > 0.5 { paint.fg_1() } else { paint.fg_2() };
+            container::Style {
+                text_color: Some(mix(idle, on, lit)),
+                ..style::rounded(paint.layer(Color::TRANSPARENT, layer * (1.0 - lit)), R2)
+            }
+        })
     });
-    let face = if active { widgets::surface(face, &paint, Level::El1, R2) } else { face };
     let face = match tab.hint {
         Some(hint) => tooltip(&paint, face, hint),
-        None => face,
+        None => face.into(),
     };
     let mut area = mouse_area(face);
     if let Some(hover) = &strip.hover {
@@ -217,19 +227,35 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
     if let Some((close, _)) = &strip.close {
         area = area.on_middle_press(close(index));
     }
-    area.into()
+    animate(1.0, Speed::SLIDE, |_| area).from(0.0).scale(|value| ARRIVE + (1.0 - ARRIVE) * value).into()
+}
+
+fn pop_in<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    animate(1.0, Speed::OVERSHOOT, |_| content.into()).from(0.0).scale(|value| value.max(MIN_SCALE)).into()
 }
 
 impl<'a, M: Clone + 'a> From<TabStrip<'a, M>> for Element<'a, M> {
     fn from(mut strip: TabStrip<'a, M>) -> Self {
         let paint = strip.paint;
         let tabs = std::mem::take(&mut strip.tabs);
-        let ids = tabs.iter().map(|tab| tab.id).collect();
+        let ids: Vec<u64> = tabs.iter().map(|tab| tab.id).collect();
+        let looks = tabs
+            .iter()
+            .map(|tab| Look {
+                label: tab.label.to_string(),
+                fill: tab
+                    .lead
+                    .map_or_else(|| paint.view_bg(), |(_, severity)| over(severity.colors(&paint).0, paint.view_bg())),
+            })
+            .collect();
+        let active = ids.get(strip.active).copied();
         let faces = tabs.into_iter().enumerate().map(|(index, tab)| tab_face(&strip, index, tab)).collect();
         let bar = Element::new(Strip {
             paint,
             faces,
             ids,
+            looks,
+            active,
             height: strip.height,
             widest: strip.widest,
             select: strip.select,
@@ -278,15 +304,79 @@ impl Press {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Look {
+    label: String,
+    fill: Color,
+}
+
+#[derive(Debug)]
+struct Ghost {
+    look: Look,
+    x: f32,
+    width: f32,
+    lit: f32,
+    fade: Motion,
+}
+
 #[derive(Debug, Default)]
 struct State {
     ids: Vec<u64>,
     slides: HashMap<u64, Motion>,
+    selected: HashMap<u64, Motion>,
+    looks: HashMap<u64, Look>,
+    ghosts: Vec<Ghost>,
+    tab: Option<Motion>,
+    laid: Option<f32>,
     width: f32,
     press: Option<Press>,
 }
 
 impl State {
+    fn shown_tab(&mut self, target: f32, width: f32) -> f32 {
+        let resized = self.laid.is_some_and(|laid| (laid - width).abs() > 0.5);
+        self.laid = Some(width);
+        let motion = self.tab.get_or_insert_with(|| Motion::at(target));
+        if resized {
+            motion.jump(target);
+        } else {
+            motion.to(target, Speed::SLIDE);
+        }
+        motion.value(Speed::SLIDE)
+    }
+
+    fn track(&mut self, active: Option<u64>) -> bool {
+        let first = self.selected.is_empty();
+        let mut started = false;
+        for id in &self.ids {
+            let target = f32::from(Some(*id) == active);
+            let motion = self.selected.entry(*id).or_insert_with(|| Motion::at(if first { target } else { 0.0 }));
+            started |= motion.to(target, Speed::COLOR);
+        }
+        self.selected.retain(|id, _| self.ids.contains(id));
+        self.ghosts.retain(|ghost| ghost.fade.animating(Speed::SLIDE));
+        started
+    }
+
+    fn retire(&mut self, gone: &[u64]) {
+        for id in gone {
+            let Some(look) = self.looks.remove(id) else { continue };
+            let x = self.slides.get(id).map_or(PAD, |slide| slide.value(Speed::SLIDE));
+            let width = self.tab.map_or(0.0, |tab| tab.value(Speed::SLIDE));
+            let lit = self.selected.get(id).map_or(0.0, |lit| lit.value(Speed::COLOR));
+            let mut fade = Motion::at(1.0);
+            fade.to(0.0, Speed::SLIDE);
+            self.ghosts.push(Ghost { look, x, width, lit, fade });
+        }
+    }
+
+    fn moving(&self) -> bool {
+        self.animating()
+            || !self.ghosts.is_empty()
+            || self.tab.is_some_and(|tab| tab.animating(Speed::SLIDE))
+            || self.selected.values().any(|lit| lit.animating(Speed::COLOR))
+    }
+
     fn lifted(&self) -> Option<Press> {
         self.press.filter(|press| press.moved)
     }
@@ -321,6 +411,8 @@ struct Strip<'a, M> {
     paint: Paint,
     faces: Vec<Element<'a, M>>,
     ids: Vec<u64>,
+    looks: Vec<Look>,
+    active: Option<u64>,
     height: f32,
     widest: f32,
     select: Option<Pick<'a, M>>,
@@ -328,8 +420,72 @@ struct Strip<'a, M> {
 }
 
 impl<M> Strip<'_, M> {
-    fn tab(layout: Layout<'_>) -> f32 {
-        layout.children().next().map_or(0.0, |child| child.bounds().width)
+    fn tab(&self, layout: Layout<'_>) -> f32 {
+        tab_width(layout.bounds().width, self.ids.len(), self.widest)
+    }
+
+    fn pill(&self, renderer: &mut Renderer, bounds: Rectangle, fill: Color, level: f32, elevation: Level) {
+        if level <= 0.0 {
+            return;
+        }
+        let alpha = level.min(1.0);
+        for layer in elevation::layers(elevation, self.paint.tokens.appearance) {
+            renderer.fill_quad(
+                Quad {
+                    bounds,
+                    border: Border { radius: R2.into(), ..Border::default() },
+                    shadow: iced::Shadow {
+                        color: style::to_iced(layer.color).scale_alpha(self.paint.alpha * alpha),
+                        offset: Vector::new(layer.dx, layer.dy),
+                        blur_radius: layer.blur,
+                    },
+                    ..Quad::default()
+                },
+                Color::TRANSPARENT,
+            );
+        }
+        renderer.fill_quad(
+            Quad { bounds, border: Border { radius: R2.into(), ..Border::default() }, ..Quad::default() },
+            fill.scale_alpha(alpha),
+        );
+    }
+
+    fn ghost(&self, renderer: &mut Renderer, ghost: &Ghost, origin: Point) {
+        let alpha = ghost.fade.value(Speed::SLIDE).clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            return;
+        }
+        let bounds = Rectangle {
+            x: origin.x + ghost.x,
+            y: origin.y + SP1,
+            width: ghost.width,
+            height: (self.height - 2.0 * SP1).max(0.0),
+        };
+        let centre = bounds.center();
+        let shrink = ARRIVE + (1.0 - ARRIVE) * alpha;
+        let transform = Transformation::translate(centre.x, centre.y)
+            * Transformation::scale(shrink)
+            * Transformation::translate(-centre.x, -centre.y);
+        renderer.with_transformation(transform, |renderer| {
+            self.pill(renderer, bounds, ghost.look.fill, ghost.lit * alpha, Level::El1);
+            let style = TextStyle::CAP;
+            renderer.fill_text(
+                typeset::Text {
+                    content: ghost.look.label.clone(),
+                    bounds: bounds.size(),
+                    size: Pixels(style.size_px),
+                    line_height: typeset::LineHeight::Absolute(Pixels(style.line_height_px)),
+                    font: Font::DEFAULT,
+                    align_x: typeset::Alignment::Center,
+                    align_y: Vertical::Center,
+                    shaping: typeset::Shaping::Advanced,
+                    wrapping: typeset::Wrapping::None,
+                },
+                bounds.position(),
+                self.paint.fg_2().scale_alpha(alpha),
+                bounds,
+            );
+        });
     }
 
     fn slots(layout: Layout<'_>) -> Vec<f32> {
@@ -353,7 +509,12 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
 
     fn diff(&self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<State>();
+        for (id, look) in self.ids.iter().zip(&self.looks) {
+            state.looks.insert(*id, look.clone());
+        }
         if state.ids != self.ids {
+            let gone: Vec<u64> = state.ids.iter().copied().filter(|id| !self.ids.contains(id)).collect();
+            state.retire(&gone);
             let mut old: Vec<Option<Tree>> = std::mem::take(&mut tree.children).into_iter().map(Some).collect();
             tree.children = self
                 .ids
@@ -384,7 +545,8 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
         let count = self.faces.len();
         let width = limits.max().width;
         let width = if width.is_finite() { width } else { 2.0 * PAD + count as f32 * self.widest.min(200.0) };
-        let tab = tab_width(width, count, self.widest);
+        let target = tab_width(width, count, self.widest);
+        let tab = tree.state.downcast_mut::<State>().shown_tab(target, width);
         let inner = (self.height - 2.0 * SP1).max(0.0);
         let fixed = layout::Limits::new(Size::new(tab, inner), Size::new(tab, inner));
         let children = self
@@ -393,7 +555,7 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
             .zip(&mut tree.children)
             .enumerate()
             .map(|(index, (face, tree))| {
-                face.as_widget_mut().layout(tree, renderer, &fixed).move_to(Point::new(slot_x(index, tab), SP1))
+                face.as_widget_mut().layout(tree, renderer, &fixed).move_to(Point::new(slot_x(index, target), SP1))
             })
             .collect();
         layout::Node::with_children(Size::new(width, self.height), children)
@@ -415,7 +577,7 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
             face.as_widget_mut().update(tree, event, layout, inner, renderer, clipboard, shell, viewport);
         }
         let bounds = layout.bounds();
-        let tab = Self::tab(layout);
+        let tab = self.tab(layout);
         let count = self.ids.len();
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if !shell.is_event_captured() => {
@@ -462,7 +624,12 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
             _ => {}
         }
         let started = state.settle(&self.ids, &Self::slots(layout), bounds.width, tab);
-        if started || (state.animating() && matches!(event, Event::Window(window::Event::RedrawRequested(_)))) {
+        let selecting = state.track(self.active);
+        let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_)));
+        if state.tab.is_some_and(|tab| tab.animating(Speed::SLIDE)) && redraw {
+            shell.invalidate_layout();
+        }
+        if started || selecting || (state.moving() && redraw) {
             shell.request_redraw();
         }
     }
@@ -475,35 +642,27 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
         let origin = layout.bounds().x;
         let lifted = state.lifted().map(|press| press.id);
         let mut top = None;
-        for (((face, tree), layout), id) in self.faces.iter().zip(&tree.children).zip(layout.children()).zip(&self.ids)
+        for ghost in &state.ghosts {
+            self.ghost(renderer, ghost, layout.bounds().position());
+        }
+        for ((((face, tree), layout), id), look) in
+            self.faces.iter().zip(&tree.children).zip(layout.children()).zip(&self.ids).zip(&self.looks)
         {
             let offset = state.offset(*id, layout.bounds().x - origin);
             if lifted == Some(*id) {
-                top = Some((face, tree, layout, offset));
+                top = Some((face, tree, layout, offset, look.fill));
                 continue;
             }
+            let lit = state.selected.get(id).map_or(0.0, |lit| lit.value(Speed::COLOR));
             renderer.with_translation(Vector::new(offset, 0.0), |renderer| {
+                self.pill(renderer, layout.bounds(), look.fill, lit, Level::El1);
                 face.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
             });
         }
-        let Some((face, tree, layout, offset)) = top else { return };
+        let Some((face, tree, layout, offset, fill)) = top else { return };
         renderer.with_layer(*viewport, |renderer| {
             renderer.with_translation(Vector::new(offset, 0.0), |renderer| {
-                for layer in elevation::layers(Level::El2, self.paint.tokens.appearance) {
-                    renderer.fill_quad(
-                        Quad {
-                            bounds: layout.bounds(),
-                            border: Border { radius: R2.into(), ..Border::default() },
-                            shadow: iced::Shadow {
-                                color: style::to_iced(layer.color).scale_alpha(self.paint.alpha),
-                                offset: Vector::new(layer.dx, layer.dy),
-                                blur_radius: layer.blur,
-                            },
-                            ..Quad::default()
-                        },
-                        Color::TRANSPARENT,
-                    );
-                }
+                self.pill(renderer, layout.bounds(), fill, 1.0, Level::El2);
                 face.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
             });
         });
@@ -713,6 +872,40 @@ mod tests {
         assert!(!state.settle(&[1, 2], &[PAD, PAD + 204.0], 416.0, 200.0));
         assert!(!state.animating());
         assert_eq!(state.offset(2, PAD + 204.0), 0.0);
+    }
+
+    #[test]
+    fn a_closed_tab_leaves_a_ghost_that_fades_out() {
+        let mut state = State { ids: vec![1, 2], ..State::default() };
+        state.looks.insert(2, Look { label: String::from("two"), fill: Color::WHITE });
+        state.settle(&[1, 2], &[PAD, PAD + 104.0], 216.0, 100.0);
+        state.retire(&[2]);
+        assert_eq!(state.ghosts.len(), 1);
+        assert!(state.ghosts[0].fade.animating(Speed::SLIDE));
+        assert!(state.moving());
+        state.retire(&[9]);
+        assert_eq!(state.ghosts.len(), 1, "an unknown tab leaves nothing behind");
+    }
+
+    #[test]
+    fn a_new_tab_fades_its_selection_in_instead_of_snapping() {
+        let mut state = State { ids: vec![1], ..State::default() };
+        assert!(!state.track(Some(1)), "the first population starts settled");
+        state.ids = vec![1, 2];
+        assert!(state.track(Some(2)));
+        assert_eq!(state.selected[&2].target(), 1.0);
+        assert_eq!(state.selected[&1].target(), 0.0);
+        assert!(state.selected[&2].value(Speed::COLOR) < 0.5);
+    }
+
+    #[test]
+    fn the_tab_width_glides_when_a_tab_is_added_but_snaps_on_resize() {
+        let mut state = State::default();
+        assert_eq!(state.shown_tab(200.0, 600.0), 200.0);
+        assert!(state.shown_tab(100.0, 600.0) > 100.0);
+        assert!(state.tab.is_some_and(|tab| tab.animating(Speed::SLIDE)));
+        assert_eq!(state.shown_tab(150.0, 500.0), 150.0);
+        assert!(!state.tab.is_some_and(|tab| tab.animating(Speed::SLIDE)));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Renderer as _};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell};
-use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Transformation, Vector, mouse, window};
+use iced::{Color, Element, Event, Length, Rectangle, Renderer, Size, Theme, Transformation, Vector, mouse, window};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Speed {
@@ -188,6 +188,14 @@ pub struct Animate<'a, M> {
     speed: Speed,
     value: Value,
     shape: Option<Shape<'a>>,
+    key: Option<u64>,
+    veil: Option<Color>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Beat {
+    motion: Motion,
+    key: Option<u64>,
 }
 
 #[must_use]
@@ -196,7 +204,17 @@ pub fn animate<'a, M: 'a, E: Into<Element<'a, M>>>(
 ) -> Animate<'a, M> {
     let value = Value::default();
     value.set(target);
-    Animate { content: content(&value).into(), target, hover: false, from: None, speed, value, shape: None }
+    Animate {
+        content: content(&value).into(),
+        target,
+        hover: false,
+        from: None,
+        speed,
+        value,
+        shape: None,
+        key: None,
+        veil: None,
+    }
 }
 
 #[must_use]
@@ -211,6 +229,18 @@ impl<'a, M: 'a> Animate<'a, M> {
     pub fn from(mut self, start: f32) -> Self {
         self.from = Some(start);
         self.value.set(start);
+        self
+    }
+
+    #[must_use]
+    pub fn keyed(mut self, key: u64) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    #[must_use]
+    pub fn veil(mut self, backdrop: Color) -> Self {
+        self.veil = Some(backdrop);
         self
     }
 
@@ -233,11 +263,11 @@ impl<'a, M: 'a> Animate<'a, M> {
 
 impl<M> Widget<M, Theme, Renderer> for Animate<'_, M> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Motion>()
+        tree::Tag::of::<Beat>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(Motion::at(self.from.unwrap_or(self.target)))
+        tree::State::new(Beat { motion: Motion::at(self.from.unwrap_or(self.target)), key: self.key })
     }
 
     forward!(content: children, diff, size, size_hint, layout, operate, mouse_interaction, overlay<M>);
@@ -249,7 +279,12 @@ impl<M> Widget<M, Theme, Renderer> for Animate<'_, M> {
         if self.hover {
             self.target = if cursor.is_over(layout.bounds()) { 1.0 } else { 0.0 };
         }
-        let motion = tree.state.downcast_mut::<Motion>();
+        let beat = tree.state.downcast_mut::<Beat>();
+        if beat.key != self.key {
+            beat.key = self.key;
+            beat.motion.jump(self.from.unwrap_or(self.target));
+        }
+        let motion = &mut beat.motion;
         let changed = motion.to(self.target, self.speed);
         self.value.set(motion.value(self.speed));
         if changed
@@ -273,7 +308,7 @@ impl<M> Widget<M, Theme, Renderer> for Animate<'_, M> {
         &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
         cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
-        let value = tree.state.downcast_ref::<Motion>().value(self.speed);
+        let value = tree.state.downcast_ref::<Beat>().motion.value(self.speed);
         self.value.set(value);
         let child = &tree.children[0];
         match &self.shape {
@@ -288,6 +323,12 @@ impl<M> Widget<M, Theme, Renderer> for Animate<'_, M> {
                     self.content.as_widget().draw(child, renderer, theme, style, layout, cursor, viewport);
                 });
             }
+        }
+        if let Some(backdrop) = self.veil.filter(|_| value < 1.0) {
+            renderer.fill_quad(
+                renderer::Quad { bounds: layout.bounds(), ..renderer::Quad::default() },
+                backdrop.scale_alpha((1.0 - value).clamp(0.0, 1.0)),
+            );
         }
     }
 }

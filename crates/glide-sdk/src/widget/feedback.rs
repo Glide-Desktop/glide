@@ -132,13 +132,10 @@ pub fn noted_banner<'a, M: 'a>(
         })
         .into();
     let body = container(content).padding(Padding::from([SP3, SP4]).left(SP4 + 3.0)).width(Fill);
-    container(iced::widget::stack![body, container(strip).height(Fill)])
-        .width(Fill)
-        .style(move |_| container::Style {
-            border: Border { color, width: 0.0, radius: R2.into() },
-            ..style::rounded(background, R2)
-        })
-        .into()
+    let banner = container(iced::widget::stack![body, container(strip).height(Fill)]).width(Fill).style(move |_| {
+        container::Style { border: Border { color, width: 0.0, radius: R2.into() }, ..style::rounded(background, R2) }
+    });
+    super::rising(banner)
 }
 
 #[must_use]
@@ -158,7 +155,7 @@ pub fn empty_state<'a, M: 'a>(
     if let Some(action) = action {
         content = content.push(action);
     }
-    container(content).center(Fill).padding(SP5).into()
+    super::rising(container(content).center(Fill).padding(SP5))
 }
 
 #[must_use]
@@ -174,7 +171,7 @@ pub fn empty_note<'a, M: 'a>(paint: &Paint, glyph: impl super::Glyph, title: &st
         content = content
             .push(text(body.to_string(), TextStyle::CAP).color(paint.fg_2()).align_x(Alignment::Center).width(Fill));
     }
-    container(content).padding(Padding::from([SP5, SP4])).center_x(Fill).into()
+    super::rising(container(content).padding(Padding::from([SP5, SP4])).center_x(Fill))
 }
 
 #[must_use]

@@ -12,14 +12,14 @@ const LINE_Y: f32 = 5.0;
 #[must_use]
 pub fn sheet<'a, M: 'a>(paint: &Paint, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
     let well = paint.fill_1();
-    container(
+    let sheet = container(
         container(column(rows).spacing(2))
             .padding(Padding::from([SP2, SP1]))
             .width(Fill)
             .style(move |_| style::rounded(well, R2)),
     )
-    .padding(Padding::from([SP1, SP2]))
-    .into()
+    .padding(Padding::from([SP1, SP2]));
+    super::rising(sheet)
 }
 
 #[must_use]

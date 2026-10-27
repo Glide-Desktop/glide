@@ -532,18 +532,20 @@ impl App {
                 _ => K::ConfigReadOnly,
             };
             let message = format!("{} {error}", c.t(lead));
-            body = body.push(widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, message, None));
+            let banner = widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, message, None);
+            body = body.push(glide_sdk::widget::arriving_over(t.win_bg(), banner));
         }
         if let Some(notice) = &self.notice {
-            body = body.push(widgets::banner(
+            let banner = widgets::banner(
                 t,
                 if notice.error { crate::theme::Tone::Danger } else { crate::theme::Tone::Warn },
                 if notice.error { Icon::Warning } else { Icon::Info },
                 notice.text.as_str(),
                 Some(widgets::icon_button(t, Icon::Close, Some(Message::DismissNotice))),
-            ));
+            );
+            body = body.push(glide_sdk::widget::arriving_over(t.win_bg(), banner));
         }
-        body = body.push(panel_view);
+        body = body.push(glide_sdk::widget::swapped(panel.slug(), t.win_bg(), panel_view));
 
         let clamp = container(body.max_width(theme::CONTENT_MAX_WIDTH))
             .padding(

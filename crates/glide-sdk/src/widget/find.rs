@@ -1,8 +1,11 @@
 use glide_iced::Paint;
 use glide_iced::style::{self, SP1, SP2, SP3};
 use glide_theme::TextStyle;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use iced::widget::{Space, column, container, row, text_input::TextInput};
-use iced::{Alignment, Element, Fill, Length, Padding, Vector};
+use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
 use crate::anim::{Speed, Transform, animate};
 
@@ -184,6 +187,38 @@ pub fn arriving<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M>
             scale: ARRIVE_SCALE + (1.0 - ARRIVE_SCALE) * value,
             offset: Vector::new(0.0, -ARRIVE_RISE * (1.0 - value)),
         })
+        .into()
+}
+
+#[must_use]
+pub fn rising<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let content = content.into();
+    animate(1.0, Speed::SLIDE, move |_| content)
+        .from(0.0)
+        .transform(|value| Transform { scale: 1.0, offset: Vector::new(0.0, ARRIVE_RISE * (1.0 - value)) })
+        .into()
+}
+
+#[must_use]
+pub fn arriving_over<'a, M: 'a>(backdrop: Color, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let content = content.into();
+    animate(1.0, Speed::SLIDE, move |_| content)
+        .from(0.0)
+        .veil(backdrop)
+        .transform(|value| Transform { scale: 1.0, offset: Vector::new(0.0, ARRIVE_RISE * (1.0 - value)) })
+        .into()
+}
+
+#[must_use]
+pub fn swapped<'a, M: 'a>(key: impl Hash, backdrop: Color, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let content = content.into();
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    animate(1.0, Speed::SLIDE, move |_| content)
+        .from(0.0)
+        .keyed(hasher.finish())
+        .veil(backdrop)
+        .transform(|value| Transform { scale: 1.0, offset: Vector::new(0.0, ARRIVE_RISE * (1.0 - value)) })
         .into()
 }
 

@@ -10,6 +10,7 @@ pub mod look;
 pub mod menu;
 pub mod overlay;
 pub mod system;
+pub mod wheel;
 pub mod widget;
 pub mod window;
 
