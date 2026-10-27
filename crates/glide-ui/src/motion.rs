@@ -94,10 +94,7 @@ impl Reveal {
         if self.is_open() {
             return false;
         }
-        self.from = self.value(self.duration);
-        self.phase = if duration.is_zero() { Phase::Open } else { Phase::Opening };
-        self.started = Instant::now();
-        self.duration = duration;
+        self.begin(Phase::Opening, Phase::Open, duration);
         true
     }
 
@@ -105,15 +102,15 @@ impl Reveal {
         if !self.is_open() {
             return false;
         }
-        self.from = self.value(self.duration);
-        self.phase = if duration.is_zero() { Phase::Closed } else { Phase::Closing };
-        self.started = Instant::now();
-        self.duration = duration;
+        self.begin(Phase::Closing, Phase::Closed, duration);
         true
     }
 
-    pub fn toggle(&mut self, duration: Duration) -> bool {
-        if self.is_open() { self.close(duration) } else { self.open(duration) }
+    fn begin(&mut self, moving: Phase, rest: Phase, duration: Duration) {
+        self.from = self.value(self.duration);
+        self.phase = if duration.is_zero() { rest } else { moving };
+        self.started = Instant::now();
+        self.duration = duration;
     }
 
     pub fn settle(&mut self, duration: Duration) {
@@ -141,12 +138,13 @@ pub struct Tween {
     from: f64,
     to: f64,
     started: Instant,
+    duration: Duration,
 }
 
 impl Tween {
     #[must_use]
     pub fn at(value: f64) -> Self {
-        Self { from: value, to: value, started: Instant::now() }
+        Self { from: value, to: value, started: Instant::now(), duration: Duration::ZERO }
     }
 
     #[must_use]
@@ -158,9 +156,10 @@ impl Tween {
         if (self.to - to).abs() < f64::EPSILON {
             return false;
         }
-        self.from = self.value(duration, ease);
+        self.from = self.value(self.duration, ease);
         self.to = to;
         self.started = Instant::now();
+        self.duration = duration;
         true
     }
 
@@ -168,19 +167,16 @@ impl Tween {
         self.from = to;
         self.to = to;
         self.started = Instant::now();
+        self.duration = Duration::ZERO;
     }
 
     #[must_use]
     pub fn value(&self, duration: Duration, ease: impl Fn(f64) -> f64) -> f64 {
-        if duration.is_zero() {
+        let t = fraction(self.started, duration);
+        if t >= 1.0 {
             return self.to;
         }
-        let elapsed = self.started.elapsed();
-        if elapsed >= duration {
-            return self.to;
-        }
-        let t = ease(elapsed.as_secs_f64() / duration.as_secs_f64());
-        self.from + (self.to - self.from) * t
+        self.from + (self.to - self.from) * ease(t)
     }
 
     #[must_use]
@@ -279,6 +275,18 @@ mod tests {
         let back = t.value(D, linear);
         assert!((back - mid).abs() < 0.05, "no pop on reversal: {mid} vs {back}");
         assert!(t.is_animating(D));
+    }
+
+    #[test]
+    fn a_tween_retargeted_with_a_shorter_duration_continues_from_the_drawn_value() {
+        let (long, short) = (Duration::from_millis(400), Duration::from_millis(100));
+        let mut t = Tween::at(0.0);
+        t.retarget(1.0, long, linear);
+        std::thread::sleep(Duration::from_millis(60));
+        let before = t.value(long, linear);
+        assert!(t.retarget(0.0, short, linear));
+        let after = t.value(short, linear);
+        assert!((before - after).abs() < 0.05, "retarget must continue from where it was: {before} vs {after}");
     }
 
     #[test]

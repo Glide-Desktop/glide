@@ -74,11 +74,6 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
     }
 
     #[must_use]
-    pub fn outgoing(&self) -> Option<T> {
-        self.outgoing.map(|(item, _, _)| item)
-    }
-
-    #[must_use]
     pub fn is_animating(&self, duration: Duration) -> bool {
         let rising = self.target.is_some() && self.progress(duration) < 1.0;
         let falling = self.outgoing.is_some_and(|(_, left, from)| from > 0.0 && fraction(left, duration) < 1.0);
@@ -150,7 +145,6 @@ mod tests {
         assert!(a.set_with(None, SHORT));
         assert!(a.level(1, SHORT) > 0.5);
         assert!(a.is_animating(SHORT));
-        assert_eq!(a.outgoing(), Some(1));
     }
 
     #[test]
@@ -168,7 +162,7 @@ mod tests {
         a.set(Some(1));
         assert!(a.set(None));
         assert!(!a.is_animating(D));
-        assert_eq!(a.outgoing(), None);
+        assert!(a.level(1, D).abs() < f64::EPSILON, "plain set snaps the old target out without a fade");
     }
 
     #[test]
