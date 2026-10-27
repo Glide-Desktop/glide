@@ -118,21 +118,41 @@ pub struct Preview {
     pub origin: Rectangle<i32, Logical>,
     pub row: usize,
     stack: usize,
+    glide: Option<(Rectangle<i32, Logical>, glide_ui::Tween)>,
     label: PerScale<CachedLabel>,
     highlight: PerScale<CachedHighlight>,
     close: PerScale<CachedClose>,
 }
 
+fn glide_duration() -> Duration {
+    glide_theme::motion::t3()
+}
+
 impl Preview {
     #[must_use]
+    pub fn target_now(&self) -> Rectangle<i32, Logical> {
+        match &self.glide {
+            Some((from, tween)) => {
+                lerp_rect(*from, self.target, tween.value(glide_duration(), glide_theme::motion::ease_out))
+            }
+            None => self.target,
+        }
+    }
+
+    #[must_use]
+    pub fn is_gliding(&self) -> bool {
+        self.glide.as_ref().is_some_and(|(_, tween)| tween.is_animating(glide_duration()))
+    }
+
+    #[must_use]
     pub fn rect_at(&self, t: f64) -> Rectangle<i32, Logical> {
-        lerp_rect(self.origin, self.target, t)
+        lerp_rect(self.origin, self.target_now(), t)
     }
 
     #[must_use]
     pub fn scale_at(&self, t: f64) -> f64 {
         let from = 1.0;
-        let to = f64::from(self.target.size.w) / f64::from(self.origin.size.w.max(1));
+        let to = f64::from(self.target_now().size.w) / f64::from(self.origin.size.w.max(1));
         from + (to - from) * t
     }
 }
@@ -168,17 +188,33 @@ fn layout_previews(
         .iter()
         .filter_map(|slot| {
             let stack = windows.iter().position(|(id, _)| *id == slot.id)?;
-            let (label, highlight, close) = old
+            let target = to_smithay_rect(slot.target);
+            let (label, highlight, close, glide) = old
                 .iter_mut()
                 .find(|p| p.id == slot.id)
-                .map(|p| (std::mem::take(&mut p.label), std::mem::take(&mut p.highlight), std::mem::take(&mut p.close)))
+                .map(|p| {
+                    let glide = if p.target == target {
+                        p.glide.take()
+                    } else {
+                        let mut tween = glide_ui::Tween::at(0.0);
+                        tween.retarget(1.0, glide_duration(), glide_theme::motion::ease_out);
+                        Some((p.target_now(), tween))
+                    };
+                    (
+                        std::mem::take(&mut p.label),
+                        std::mem::take(&mut p.highlight),
+                        std::mem::take(&mut p.close),
+                        glide,
+                    )
+                })
                 .unwrap_or_default();
             Some(Preview {
                 id: slot.id,
-                target: to_smithay_rect(slot.target),
+                target,
                 origin: windows[stack].1,
                 row: slot.row,
                 stack,
+                glide,
                 label,
                 highlight,
                 close,
@@ -354,6 +390,7 @@ impl OverviewUi {
         self.hover.progress(hover_anim()) < 1.0
             || self.close_hover.progress(hover_anim()) < 1.0
             || self.strip.is_animating()
+            || self.previews.iter().any(Preview::is_gliding)
     }
 
     pub fn tick(&mut self) -> Tick {
@@ -1132,6 +1169,28 @@ mod tests {
 
         assert_eq!(ui.previews[0].row, 0, "a resized origin must relayout");
         assert_eq!(ui.previews[0].origin, rect(0, 0, 400, 300));
+    }
+
+    #[test]
+    fn a_tile_whose_slot_moves_glides_there_instead_of_jumping() {
+        let a = WindowId::next();
+        let b = WindowId::next();
+        let windows = [(a, rect(0, 0, 800, 600)), (b, rect(0, 0, 800, 600))];
+        let area = rect(0, 0, 1920, 1080);
+        let mut ui = OverviewUi::new(&windows, area, &theme_with_duration(0), Some(a));
+        let before = ui.previews.iter().find(|preview| preview.id == b).map(|preview| preview.target).unwrap();
+
+        ui.relayout(&[(b, rect(0, 0, 800, 600))], area);
+
+        let after = ui.previews.iter().find(|preview| preview.id == b).unwrap();
+        assert_ne!(after.target, before, "closing a neighbour gives the tile a new slot");
+        if !glide_theme::motion::is_disabled() {
+            assert!(after.is_gliding());
+            assert_eq!(after.target_now(), before, "it starts where it was drawn");
+        }
+        let calm = ui.previews.iter().find(|preview| preview.id == b).unwrap().target;
+        ui.relayout(&[(b, rect(0, 0, 800, 600)), (a, rect(0, 0, 800, 600))], area);
+        assert_ne!(ui.previews.iter().find(|preview| preview.id == b).unwrap().target, calm);
     }
 
     #[test]

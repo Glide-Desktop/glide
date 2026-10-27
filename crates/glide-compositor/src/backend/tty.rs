@@ -211,8 +211,9 @@ fn layer_elements(
                 continue;
             };
             let location = geometry.loc.to_f64().to_physical(scale).to_i32_round();
+            let alpha = if upper { crate::surface_fade::alpha(surface.wl_surface()) } else { 1.0 };
             let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                AsRenderElements::render_elements(surface, renderer, location, scale, 1.0);
+                AsRenderElements::render_elements(surface, renderer, location, scale, alpha);
             elements
                 .extend(surface_elements.into_iter().map(SpaceRenderElements::Surface).map(GlideRenderElements::Space));
         }

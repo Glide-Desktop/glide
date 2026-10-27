@@ -1,9 +1,9 @@
 use super::glyphs::{Glyph, battery_cell, glyph, svg_glyph, themed, wifi_bars};
 use super::{
     Anim, BUTTON_HEIGHT, BUTTON_RADIUS, Cache, Color, E_IO, E_OUT, HEIGHT, ITEM_GAP, Logical, MOTION_QUANTUM,
-    MemoryRenderBuffer, MemoryRenderBufferRenderElement, OpenPopup, PAD_X, POPUP_GAP, POPUP_RADIUS, Point, Rectangle,
-    STATUS_SEP_WIDTH, Scale, Size, Slot, Topbar, TopbarTheme, lerp, local_rect, motion, numeric_label_width,
-    push_buffer, push_popup_buffer, push_popup_shadow, quantize,
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement, OpenPopup, PAD_X, POPUP_GAP, POPUP_RADIUS, Placed, Point,
+    Rectangle, STATUS_SEP_WIDTH, Scale, Size, Slot, Topbar, TopbarTheme, lerp, local_rect, motion, numeric_label_width,
+    push_buffer, push_placed, push_popup_buffer, push_popup_shadow, quantize,
 };
 use crate::i18n::{Key, t};
 use crate::paint::TextAlign;
@@ -78,6 +78,14 @@ pub(super) struct Indicators {
     rev: u64,
     cluster_cache: Cache<ClusterKey>,
     privacy_cache: Cache<(u64, u64, i32)>,
+    swap: ClusterSwap,
+}
+
+#[derive(Debug, Default)]
+struct ClusterSwap {
+    seen: Option<(usize, Rectangle<i32, Logical>, MemoryRenderBuffer)>,
+    old: Option<(Rectangle<i32, Logical>, MemoryRenderBuffer)>,
+    fade: Anim,
 }
 
 impl Indicators {
@@ -87,7 +95,7 @@ impl Indicators {
     }
 
     pub(super) fn is_animating(&self) -> bool {
-        self.dots.iter().any(Anim::is_animating)
+        self.dots.iter().any(Anim::is_animating) || self.swap.fade.is_animating()
     }
 
     fn reserved_count(&self) -> i32 {
@@ -377,7 +385,27 @@ pub(super) fn push_cluster<R>(
     else {
         return;
     };
-    push_buffer(renderer, buffer, Point::from((left, y)), scale, elements);
+    let buffer = buffer.clone();
+    let height = items.first().map_or(HEIGHT, |(_, rect)| rect.size.h);
+    let area = Rectangle::new(Point::from((left, y)), Size::from((width, height)));
+    let count = items.iter().filter(|(slot, _)| *slot != Slot::Privacy).count();
+    let swap = &mut topbar.indicators.swap;
+    if let Some((seen, old_area, old)) = swap.seen.take()
+        && seen != count
+    {
+        swap.old = Some((old_area, old));
+        swap.fade = Anim::at(0.0);
+        swap.fade.retarget(1.0, motion::t2(), E_OUT);
+    }
+    swap.seen = Some((count, area, buffer.clone()));
+    let fade = swap.fade.value().clamp(0.0, 1.0);
+    if fade < 1.0
+        && let Some((old_area, old)) = &swap.old
+    {
+        let placed = Placed { popup: *old_area, element: *old_area, progress: 1.0, alpha: (1.0 - fade) as f32 };
+        push_placed(renderer, old, placed, scale, elements);
+    }
+    push_buffer(renderer, &buffer, Point::from((left, y)), scale, elements);
 }
 
 const fn opens(slot: Slot) -> Option<OpenPopup> {

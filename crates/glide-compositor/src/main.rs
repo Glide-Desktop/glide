@@ -83,6 +83,7 @@ mod sound;
 mod state;
 mod status_hooks;
 mod super_keys;
+mod surface_fade;
 mod switcher;
 pub mod system_info;
 #[cfg(test)]
@@ -226,6 +227,7 @@ fn run() -> anyhow::Result<()> {
         let overview_animating = state.tick_overview();
         let hover_animating = state.any_button_hover_animating();
         let open_animating = state.any_window_open_animating();
+        let fade_animating = state.any_surface_fading_in();
         let geometry_animating = state.any_window_geometry_animating();
         let snapshots_animating = state.snapshots.tick();
         let dock_autohide = state.update_dock_autohide();
@@ -258,6 +260,7 @@ fn run() -> anyhow::Result<()> {
             || overview_animating
             || hover_animating
             || open_animating
+            || fade_animating
             || geometry_animating
             || snapshots_animating
             || dock_animating

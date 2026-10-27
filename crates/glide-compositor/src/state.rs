@@ -2909,6 +2909,24 @@ impl GlideState {
         self.window_map.values().any(crate::window::GlideWindow::is_open_animating)
     }
 
+    #[must_use]
+    pub fn any_surface_fading_in(&self) -> bool {
+        use smithay::wayland::shell::wlr_layer::Layer;
+        let popups = self.window_map.values().any(|window| {
+            window.window().toplevel().is_some_and(|toplevel| {
+                PopupManager::popups_for_surface(toplevel.wl_surface())
+                    .any(|(popup, _)| crate::surface_fade::animating(popup.wl_surface()))
+            })
+        });
+        popups
+            || self.space.outputs().any(|output| {
+                let map = layer_map_for_output(output);
+                [Layer::Overlay, Layer::Top].into_iter().any(|layer| {
+                    map.layers_on(layer).any(|surface| crate::surface_fade::animating(surface.wl_surface()))
+                })
+            })
+    }
+
     pub fn refresh_painter_font(&self) {
         let font_px = (f64::from(self.decoration_theme.height).max(14.0) * 0.45) as f32;
         crate::paint::init_or_replace(font_px.clamp(10.0, 18.0), self.font_family.as_deref());

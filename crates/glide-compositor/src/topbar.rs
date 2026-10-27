@@ -792,6 +792,7 @@ pub struct Topbar {
     segment_anim: Anim,
     profile_anim: Anim,
     tile_anims: HashMap<QsTile, Anim>,
+    menu_births: HashMap<MenuPath, Anim>,
     qs_power: Option<ArmedPower>,
     arm_anim: Anim,
     qs_drawer: Option<Drawer>,
@@ -1131,7 +1132,9 @@ impl Topbar {
         ]
         .into_iter()
         .any(Anim::is_animating);
-        let controls = controls || self.tile_anims.values().any(Anim::is_animating);
+        let controls = controls
+            || self.tile_anims.values().any(Anim::is_animating)
+            || self.menu_births.values().any(Anim::is_animating);
         let detail = self.qs_panel.is_animating();
         let extras = self.calendar.is_animating() || self.indicators.is_animating() || self.island.is_animating();
         let tray = self.tray_is_animating();
@@ -3451,8 +3454,14 @@ fn push_app_menu<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
     };
     let panels = topbar.menu_panels.clone();
     let open = topbar.menu_open;
+    topbar.menu_births.retain(|path, _| panels.iter().any(|panel| panel.parent == *path));
+    for panel in &panels {
+        topbar.menu_births.entry(panel.parent).or_insert_with(|| Anim::at(0.0)).retarget(1.0, motion::t2(), E_OUT);
+    }
     for panel in panels.iter().rev() {
         let depth = panel.parent.len();
+        let birth = topbar.menu_births.get(&panel.parent).map_or(1.0, |birth| birth.value().clamp(0.0, 1.0));
+        let (anchor, reveal) = if depth == 0 { (anchor, reveal.min(birth)) } else { (panel.rect, birth) };
         let open_row = (open.len() > depth && open.starts_with(panel.parent)).then(|| open.truncated(depth + 1).last());
         let key = (panel.parent, open_row, output_scale);
         if !topbar.menu_rasters.contains_key(&key)

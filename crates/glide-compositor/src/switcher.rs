@@ -152,6 +152,7 @@ pub struct Switcher {
     created: Instant,
     reveal: glide_ui::Reveal,
     highlight: glide_ui::Tween,
+    swap: glide_ui::Tween,
     closing: bool,
     rasters: HashMap<i32, Raster>,
     first: std::cell::Cell<usize>,
@@ -250,6 +251,7 @@ impl Switcher {
             created: Instant::now(),
             reveal: glide_ui::Reveal::closed(),
             highlight,
+            swap: glide_ui::Tween::at(1.0),
             closing: false,
             rasters: HashMap::new(),
             first: std::cell::Cell::new(0),
@@ -292,6 +294,12 @@ impl Switcher {
         self.mode = mode;
         self.highlight.jump(self.selected as f64);
         self.rasters.clear();
+        self.begin_swap();
+    }
+
+    fn begin_swap(&mut self) {
+        self.swap = glide_ui::Tween::at(0.35);
+        self.swap.retarget(1.0, glide_theme::motion::t2(), glide_theme::motion::ease_out);
     }
 
     pub fn relabel_app(&mut self, app_id: &str, name: &str) -> bool {
@@ -326,6 +334,7 @@ impl Switcher {
         }
         self.highlight.jump(self.selected as f64);
         self.rasters.clear();
+        self.begin_swap();
     }
 
     #[must_use]
@@ -395,6 +404,7 @@ impl Switcher {
         (!self.closing && !self.reveal.is_open())
             || self.reveal.is_animating(duration)
             || self.highlight.is_animating(duration)
+            || self.swap.is_animating(duration)
     }
 
     #[must_use]
@@ -567,16 +577,21 @@ where
     .to_physical(scale)
     .to_i32_round();
 
-    let label = raster.label.as_ref().map(|(_, label)| (label, label_loc));
+    let settled = switcher.swap.value(glide_theme::motion::t2(), glide_theme::motion::ease_out) as f32;
+    let label = raster.label.as_ref().map(|(_, label)| (label, label_loc, settled));
     label
         .into_iter()
-        .chain([(&raster.icons, panel_loc), (&raster.highlight, cell_loc), (&raster.panel, panel_loc)])
-        .filter_map(|(buffer, loc)| {
+        .chain([
+            (&raster.icons, panel_loc, settled),
+            (&raster.highlight, cell_loc, settled),
+            (&raster.panel, panel_loc, 1.0),
+        ])
+        .filter_map(|(buffer, loc, fade)| {
             MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 loc.to_physical(scale),
                 buffer,
-                Some(alpha),
+                Some(alpha * fade),
                 None,
                 None,
                 Kind::Unspecified,
@@ -633,6 +648,18 @@ mod tests {
         assert_eq!(entries[0].label, "Firefox Web Browser");
         assert_eq!(entries[1].label, "Kitty");
         assert_eq!(entries[3].label, "Scratch", "a window without an app id is its own entry, named by its title");
+    }
+
+    #[test]
+    fn removing_an_entry_fades_the_strip_back_in_instead_of_snapping() {
+        let mut switcher = switcher(vec![entry("A"), entry("B")], 0);
+        let duration = glide_theme::motion::t2();
+        assert!(!switcher.swap.is_animating(duration));
+        assert!(switcher.remove_selected().is_some());
+        if !glide_theme::motion::is_disabled() {
+            assert!(switcher.swap.is_animating(duration));
+            assert!(switcher.swap.value(duration, glide_theme::motion::ease_out) < 1.0);
+        }
     }
 
     #[test]

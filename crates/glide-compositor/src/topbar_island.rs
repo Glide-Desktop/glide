@@ -265,6 +265,9 @@ pub(super) struct Island {
     pill_cache: Cache<PillKey>,
     media: Cache<MediaKey>,
     nc: Cache<NcKey>,
+    nc_seen: Option<((u64, usize), MemoryRenderBuffer)>,
+    nc_old: Option<MemoryRenderBuffer>,
+    nc_fade: Anim,
     epoch: Instant,
     bars_drawn: Option<Instant>,
     bar_ink: Option<Color>,
@@ -313,6 +316,9 @@ impl Default for Island {
             pill_cache: Cache::default(),
             media: Cache::default(),
             nc: Cache::default(),
+            nc_seen: None,
+            nc_old: None,
+            nc_fade: Anim::at(1.0),
             epoch: Instant::now(),
             bars_drawn: None,
             bar_ink: None,
@@ -369,7 +375,11 @@ impl Island {
     }
 
     pub(super) fn is_animating(&self) -> bool {
-        self.fade.is_animating() || self.morph.is_animating() || self.scrim.is_animating() || self.bars_live()
+        self.fade.is_animating()
+            || self.morph.is_animating()
+            || self.scrim.is_animating()
+            || self.nc_fade.is_animating()
+            || self.bars_live()
     }
 
     fn polkit_layout(&mut self, painter: &Painter) -> Option<polkit_view::Layout> {
@@ -2114,7 +2124,24 @@ fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
     else {
         return;
     };
-    push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
+    let buffer = buffer.clone();
+    let island = &mut topbar.island;
+    let marker = (topbar.nc_rev, first);
+    if let Some((seen, old)) = island.nc_seen.take()
+        && seen != marker
+    {
+        island.nc_old = Some(old);
+        island.nc_fade = Anim::at(0.0);
+        island.nc_fade.retarget(1.0, motion::t2(), E_OUT);
+    }
+    island.nc_seen = Some((marker, buffer.clone()));
+    let fade = island.nc_fade.value().clamp(0.0, 1.0) as f32;
+    if fade < 1.0
+        && let Some(old) = &island.nc_old
+    {
+        push_clipped(renderer, old, (content, clip), alpha * (1.0 - fade), scale, elements);
+    }
+    push_clipped(renderer, &buffer, (content, clip), alpha, scale, elements);
 }
 
 fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: LocalRect) {

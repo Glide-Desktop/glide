@@ -428,9 +428,10 @@ pub(super) fn push_popup<R>(
     let applet = topbar.passwords.clone();
     if let Some(menu) = menu_rect
         && let Some(index) = applet.menu
-        && let Some(buffer) = topbar.passwords_menu_cache.resolve(key.clone(), output_scale, || {
-            draw_menu(painter, &theme, &applet, index, hovered, menu.size, output_scale)
-        })
+        && let Some(buffer) =
+            topbar.passwords_menu_cache.resolve((key.0, None, key.2.clone(), key.3), output_scale, || {
+                draw_menu(painter, &theme, &applet, index, menu.size, output_scale)
+            })
     {
         push_popup_buffer(renderer, buffer, menu, menu, reveal, scale, elements);
         push_popup_shadow(topbar, renderer, menu, reveal, scale, output_scale, elements);
@@ -443,12 +444,6 @@ pub(super) fn push_popup<R>(
     };
     push_popup_buffer(renderer, buffer, rect, rect, reveal, scale, elements);
     push_popup_shadow(topbar, renderer, rect, reveal, scale, output_scale, elements);
-}
-
-fn hover_layer(c: &mut Canvas<'_>, theme: &TopbarTheme, rect: LocalRect, on: bool) {
-    if on {
-        c.fill(rect, theme.button_hover, R2);
-    }
 }
 
 fn keycap(c: &mut Canvas<'_>, painter: &Painter, theme: &TopbarTheme, label: &str, x: i32, centre_y: i32) -> i32 {
@@ -546,7 +541,6 @@ fn paint_popover<'a>(
             }
             if let Some(second) = geometry.second {
                 c.stroke(second, 1.0, R2, theme.line_2);
-                hover_layer(&mut c, theme, second, hovered == Some(Slot::PwConnect));
                 let band = (second.loc.x, second.loc.x + second.size.w, second.loc.y, second.loc.y + second.size.h);
                 c.text(painter, band, TextAlign::Center, t(Key::PwConnect), theme.label, &ITEM);
             }
@@ -567,8 +561,6 @@ fn paint_popover<'a>(
         let selected = applet.selected == index || applet.menu == Some(index);
         if selected {
             c.fill(*rect, theme.fill_2, R2);
-        } else {
-            hover_layer(&mut c, theme, *rect, hovered == Some(Slot::PwRow(index as u8)));
         }
         let tile = local_rect(rect.loc.x + SP2 + 2, rect.loc.y + (ROW_H - TILE) / 2, TILE, TILE);
         let (well, ink) =
@@ -626,11 +618,8 @@ fn paint_popover<'a>(
         c.text(painter, (left, right, top + 20, top + 36), TextAlign::Left, &row.sub, theme.faint, &SUB);
     }
     c.fill(local_rect(0, geometry.divider, WIDTH, 1), theme.line, 0.0);
-    for (index, (rect, (body, key))) in
-        geometry.footer.iter().zip([(WAND_SVG, Key::PwGenerate), (EXTERNAL_SVG, Key::PwOpenApp)]).enumerate()
+    for (rect, (body, key)) in geometry.footer.iter().zip([(WAND_SVG, Key::PwGenerate), (EXTERNAL_SVG, Key::PwOpenApp)])
     {
-        let slot = if index == 0 { Slot::PwGenerate } else { Slot::PwOpen };
-        hover_layer(&mut c, theme, *rect, hovered == Some(slot));
         icon(&mut c, body, 16, local_rect(rect.loc.x + 10, rect.loc.y, 16, rect.size.h), theme.faint);
         let band = (rect.loc.x + 34, rect.loc.x + rect.size.w, rect.loc.y, rect.loc.y + rect.size.h);
         c.text(painter, band, TextAlign::Left, t(key), theme.label, &ITEM);
@@ -663,15 +652,13 @@ fn draw_popover(
 }
 
 fn draw_menu(
-    painter: &Painter, theme: &TopbarTheme, applet: &Applet, index: usize, hovered: Option<Slot>,
-    size: Size<i32, Logical>, scale: i32,
+    painter: &Painter, theme: &TopbarTheme, applet: &Applet, index: usize, size: Size<i32, Logical>, scale: i32,
 ) -> Option<MemoryRenderBuffer> {
-    menu_canvas(painter, theme, applet, index, hovered, size, scale).map(|c| c.finish())
+    menu_canvas(painter, theme, applet, index, size, scale).map(|c| c.finish())
 }
 
 fn menu_canvas(
-    painter: &Painter, theme: &TopbarTheme, applet: &Applet, index: usize, hovered: Option<Slot>,
-    size: Size<i32, Logical>, scale: i32,
+    painter: &Painter, theme: &TopbarTheme, applet: &Applet, index: usize, size: Size<i32, Logical>, scale: i32,
 ) -> Option<Canvas<'static>> {
     let mut c = Canvas::popover((size.w, size.h), scale, R3, theme.popover_bg, theme.border)?;
     let row = applet.row(index)?;
@@ -684,8 +671,7 @@ fn menu_canvas(
         if position == actions.len() - 2 {
             c.fill(local_rect(0, rect.loc.y - SP1 - 1, MENU_W, 1), theme.line, 0.0);
         }
-        let highlighted = applet.menu_selected == position || hovered == Some(Slot::PwMenu(position as u8));
-        if highlighted {
+        if applet.menu_selected == position {
             c.fill(*rect, theme.fill_2, R2);
         }
         let lead = local_rect(rect.loc.x + 10, rect.loc.y, 16, rect.size.h);
@@ -800,7 +786,7 @@ mod tests {
                 if let Some(index) = applet.menu {
                     let (height, _) = menu_geometry(applet, index);
                     let size = Size::from((MENU_W, height));
-                    let menu = menu_canvas(&painter, &theme, applet, index, None, size, scale).expect("menu");
+                    let menu = menu_canvas(&painter, &theme, applet, index, size, scale).expect("menu");
                     let file = format!("passwords-menu-{appearance:?}.png").to_lowercase();
                     write_png(&dir, &file, menu.buf.clone(), (size.w, size.h), scale, dark);
                 }

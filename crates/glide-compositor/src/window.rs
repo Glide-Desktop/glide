@@ -8,13 +8,13 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            AsRenderElements, Element,
+            AsRenderElements, Element, Kind,
             memory::MemoryRenderBufferRenderElement,
-            surface::WaylandSurfaceRenderElement,
+            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
         },
     },
-    desktop::{Window, space::SpaceElement},
+    desktop::{PopupManager, Window, space::SpaceElement},
     output::Output,
     render_elements,
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
@@ -376,6 +376,41 @@ impl GlideWindow {
         Some((Rectangle::new(origin, frame_logical.to_physical_precise_round(scale)), radius_physical))
     }
 
+    fn surface_elements<R>(
+        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
+    ) -> Vec<WaylandSurfaceRenderElement<R>>
+    where
+        R: ShellRenderer + ClipCapableRenderer,
+        R::Error: std::fmt::Debug,
+    {
+        let Some(toplevel) = self.0.toplevel() else {
+            return AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
+        };
+        let surface = toplevel.wl_surface();
+        let mut elements = Vec::new();
+        for (popup, offset) in PopupManager::popups_for_surface(surface) {
+            let shift = (self.0.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(scale);
+            let fade = crate::surface_fade::alpha(popup.wl_surface());
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                location + shift,
+                scale,
+                alpha * fade,
+                Kind::Unspecified,
+            ));
+        }
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            surface,
+            location,
+            scale,
+            alpha,
+            Kind::Unspecified,
+        ));
+        elements
+    }
+
     fn content_layers<R>(
         &self, renderer: &mut R, location: Point<i32, Physical>, clip_frame: Option<(Rectangle<i32, Physical>, f32)>,
         scale: Scale<f64>, alpha: f32,
@@ -384,8 +419,7 @@ impl GlideWindow {
         R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
     {
-        let content_elements: Vec<WaylandSurfaceRenderElement<R>> =
-            AsRenderElements::render_elements(&self.0, renderer, location, scale, alpha);
+        let content_elements = self.surface_elements(renderer, location, scale, alpha);
 
         content_elements
             .into_iter()
