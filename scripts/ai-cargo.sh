@@ -1,6 +1,7 @@
 #!/bin/sh
-# Run cargo for an AI agent without heating the laptop: one build job, one
-# test thread, a CPU quota of 35 % of the machine and cores capped at 2.5 GHz.
+# Run cargo without heating the laptop: one build job, one test thread, a CPU
+# quota of 35 % of the machine and cores capped at 2.5 GHz. AI agents use it for
+# every build and test; scripts/build.sh uses it for release builds.
 #
 # Usage: scripts/ai-cargo.sh <cargo arguments>
 #        scripts/ai-cargo.sh test -p glide-layout overview
