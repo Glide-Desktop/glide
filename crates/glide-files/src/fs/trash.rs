@@ -186,18 +186,23 @@ impl Trash {
     }
 
     pub fn empty(&self) -> io::Result<()> {
+        let mut failure = None;
         for dir in [self.files(), self.info_dir()] {
             match std::fs::read_dir(&dir) {
                 Ok(entries) => {
                     for entry in entries {
-                        remove_recursive(&entry?.path())?;
+                        if let Err(err) = entry.and_then(|entry| remove_recursive(&entry.path())) {
+                            failure.get_or_insert(err);
+                        }
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
+                Err(err) => {
+                    failure.get_or_insert(err);
+                }
             }
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 }
 

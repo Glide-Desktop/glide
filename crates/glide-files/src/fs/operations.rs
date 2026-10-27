@@ -123,7 +123,33 @@ pub(crate) fn move_path(source: &Path, dest: &Path) -> io::Result<()> {
 }
 
 pub fn remove_recursive(path: &Path) -> io::Result<()> {
-    if std::fs::symlink_metadata(path)?.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
+    if !std::fs::symlink_metadata(path)?.is_dir() {
+        return std::fs::remove_file(path);
+    }
+    match std::fs::remove_dir_all(path) {
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            make_folders_writable(path);
+            std::fs::remove_dir_all(path)
+        }
+        result => result,
+    }
+}
+
+fn make_folders_writable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700));
+    }
+    for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+        make_folders_writable(&entry.path());
+    }
 }
 
 fn compound_extension(name: &OsStr) -> Option<(&OsStr, &OsStr)> {

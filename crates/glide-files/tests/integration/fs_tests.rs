@@ -217,6 +217,19 @@ fn a_relative_path_in_the_home_trash_is_not_restored_against_the_working_directo
 }
 
 #[test]
+fn emptying_the_trash_removes_read_only_folders_too() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new("trash-read-only");
+    let trash = Trash::new(scratch.0.join("Trash"));
+    let module = scratch.dir("cache/module");
+    scratch.file("cache/module/go.mod");
+    std::fs::set_permissions(&module, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    trash.put(&scratch.0.join("cache")).expect("trash");
+    trash.empty().expect("a read-only folder inside does not stop the emptying");
+    assert_eq!(std::fs::read_dir(scratch.0.join("Trash/files")).expect("files").count(), 0);
+}
+
+#[test]
 fn names_are_validated_before_touching_disk() {
     let scratch = Scratch::new("names");
     let file = scratch.file("keep.txt");
