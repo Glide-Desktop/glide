@@ -62,6 +62,7 @@ glide_sdk::catalogue! {
     ZoomOut => "Zoom Out", "Зменшити";
     ZoomReset => "Actual Size", "Звичайний розмір";
     FullScreen => "Full Screen", "На весь екран";
+    Focus => "Distraction-Free Mode", "Режим без відволікань";
     HiddenFiles => "Show Hidden Files", "Показувати приховані файли";
     Syntax => "Highlight Mode…", "Мова підсвітки…";
     Automatic => "Automatic", "Автоматично";

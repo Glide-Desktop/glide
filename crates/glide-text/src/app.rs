@@ -132,6 +132,7 @@ pub enum Command {
     TabWidth(usize),
     ToggleAutoIndent,
     ToggleAutoPair,
+    ToggleFocus,
     Endings,
     SetEnding(Ending),
     ToggleTrimOnSave,
@@ -297,6 +298,7 @@ pub struct App {
     pub hovered_tab: Option<usize>,
     pub zoom: f32,
     pub preview: bool,
+    pub focus: bool,
     pub markdown: Option<(u64, u64, Vec<markdown::Item>)>,
     in_flight: HashSet<u64>,
     pub recent: Vec<PathBuf>,
@@ -388,6 +390,7 @@ pub fn shortcut(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<C
         ('e', true, false, false) => Command::UseSelection,
         ('i' | 'l', true, false, false) => Command::GoToLine,
         ('p', true, false, true) => Command::TogglePreview,
+        ('d', true, false, true) => Command::ToggleFocus,
         _ => return None,
     };
     Some(command)
@@ -430,6 +433,7 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::GoToLine => "Ctrl+I",
         Command::ToggleSidebar => "F9",
         Command::TogglePreview => "Ctrl+Alt+P",
+        Command::ToggleFocus => "Ctrl+Alt+D",
         Command::ZoomIn => "Ctrl++",
         Command::ZoomOut => "Ctrl+−",
         Command::ZoomReset => "Ctrl+0",
@@ -601,6 +605,7 @@ impl App {
             hovered_tab: None,
             zoom: 0.0,
             preview: false,
+            focus: false,
             markdown: None,
             in_flight: HashSet::new(),
             recent: session.recent.clone(),
@@ -1211,7 +1216,12 @@ impl App {
 
     #[must_use]
     pub(crate) fn sidebar_visible(&self) -> bool {
-        self.prefs.sidebar && self.window.size.width >= crate::chrome::SIDEBAR_MIN_WINDOW
+        self.prefs.sidebar && !self.focus && self.window.size.width >= crate::chrome::SIDEBAR_MIN_WINDOW
+    }
+
+    #[must_use]
+    pub(crate) fn status_visible(&self) -> bool {
+        self.prefs.status_bar && !self.focus
     }
 
     fn open_menu(&mut self, kind: MenuKind, at: Point, keyboard: bool) {
@@ -1244,6 +1254,9 @@ impl App {
         }
         if self.find.take().is_some() {
             return operation::focus(EDITOR);
+        }
+        if self.focus {
+            self.focus = false;
         }
         Task::none()
     }
@@ -1507,6 +1520,10 @@ impl App {
             Command::TogglePreview => {
                 self.preview = !self.preview;
                 Task::none()
+            }
+            Command::ToggleFocus => {
+                self.focus = !self.focus;
+                operation::focus(EDITOR)
             }
             Command::ZoomIn => {
                 self.zoom = (self.zoom + 1.0).min(72.0 - self.prefs.font_size);
@@ -2409,6 +2426,20 @@ mod tests {
             },
             captured,
         )
+    }
+
+    #[test]
+    fn distraction_free_mode_hides_the_sidebar_and_status_and_escape_leaves_it_last() {
+        let mut app = app();
+        app.window.size = iced::Size::new(1200.0, 700.0);
+        assert!(app.sidebar_visible() && app.status_visible());
+        let _ = app.update(Message::Command(Command::ToggleFocus));
+        assert!(app.focus && !app.sidebar_visible() && !app.status_visible());
+        let _ = app.update(Message::Command(Command::Find));
+        let _ = app.update(named(Named::Escape, Code::Escape, true));
+        assert!(app.find.is_none() && app.focus, "Escape closes the find bar before it leaves the mode");
+        let _ = app.update(named(Named::Escape, Code::Escape, false));
+        assert!(!app.focus && app.sidebar_visible() && app.status_visible());
     }
 
     #[test]

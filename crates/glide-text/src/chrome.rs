@@ -256,7 +256,7 @@ fn sidebar(app: &App) -> Element<'_, Message> {
         let button = compact_button(&paint, Key::OpenFolderButton.text(app.lang), Tone::Neutral, open);
         empty_state(&paint, Icon::Folder, "", Key::NoFolder.text(app.lang), Some(button))
     };
-    let bottom_left = if app.edge_to_edge() || app.prefs.status_bar { 0.0 } else { R3 };
+    let bottom_left = if app.edge_to_edge() || app.status_visible() { 0.0 } else { R3 };
     pane(paint.sidebar_bg(), Radius::default().bottom_left(bottom_left), body).width(SIDEBAR).into()
 }
 
@@ -338,6 +338,10 @@ fn editor(app: &App) -> Element<'_, Message> {
         .highlight_with::<Bridge>(app.settings(doc), Highlight::to_format);
     let editor = mouse_area(editor).on_right_press(Message::Command(Command::ContextMenu));
     if !app.previewing() {
+        if app.focus {
+            let width = app.font_size() * 0.62 * 72.0 + SP5 + SP4;
+            return container(container(editor).width(Fill).max_width(width)).width(Fill).center_x(Fill).into();
+        }
         return editor.into();
     }
     let items = app.markdown.as_ref().map(|(_, _, items)| items.as_slice()).unwrap_or_default();
@@ -513,6 +517,7 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             check(app, Key::HiddenFiles, Command::ToggleHidden, app.prefs.hidden_files, true),
             action(app, Key::Refresh, Command::RefreshTree, app.tree.is_some()),
             Item::Separator,
+            check(app, Key::Focus, Command::ToggleFocus, app.focus, true),
             check(app, Key::FullScreen, Command::FullScreen, app.window.frame == crate::app::Frame::Fullscreen, true),
         ],
         Bar::Search => vec![
@@ -841,14 +846,14 @@ fn dialog_parts<'a>(
 
 fn notice<'a>(app: &'a App, message: &'a str, at: std::time::Instant) -> Element<'a, Message> {
     let pill = glide_sdk::overlay::toast_pill(&app.paint, App::reveal(at), message, None, None, app.window.size);
-    let bottom = if app.prefs.status_bar { STATUS } else { 0.0 };
+    let bottom = if app.status_visible() { STATUS } else { 0.0 };
     container(pill).padding(Padding::ZERO.bottom(bottom)).into()
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let mut main = column![];
-    if app.docs.len() > 1 {
+    if app.docs.len() > 1 && !app.focus {
         main = main.push(tab_bar(app)).push(rule(&paint));
     }
     if app.find.is_some() {
@@ -861,7 +866,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         main = main.push(glide_sdk::widget::arriving(bar)).push(rule(&paint));
     }
     main = main.push(editor(app));
-    let bottom_right = if app.edge_to_edge() || app.prefs.status_bar { 0.0 } else { R3 };
+    let bottom_right = if app.edge_to_edge() || app.status_visible() { 0.0 } else { R3 };
     let bottom_left = if app.sidebar_visible() { 0.0 } else { bottom_right };
     let main = pane(paint.view_bg(), Radius::default().bottom_right(bottom_right).bottom_left(bottom_left), main);
     let mut middle = row![];
@@ -870,7 +875,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     middle = middle.push(main);
     let mut body = column![header(app), rule(&paint), middle.height(Fill)];
-    if app.prefs.status_bar {
+    if app.status_visible() {
         body = body.push(rule(&paint)).push(status_bar(app));
     }
     let body = mouse_area(body).on_move(Message::Pointer);
