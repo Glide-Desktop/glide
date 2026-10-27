@@ -81,14 +81,20 @@ impl Record {
         self.sites = draft.sites.iter().filter(|site| !site.uri.trim().is_empty()).cloned().collect();
         self.apps =
             draft.apps.iter().filter(|app| !app.app_id.trim().is_empty() || !app.program.is_empty()).cloned().collect();
+        let previous = std::mem::take(&mut self.fields);
         self.fields = draft
             .fields
             .iter()
             .filter(|field| !field.name.trim().is_empty())
-            .map(|field| StoredField {
-                name: field.name.trim().to_string(),
-                value: Secret::new(field.value.expose().as_bytes().to_vec()),
-                hidden: field.hidden,
+            .map(|field| {
+                let name = field.name.trim().to_string();
+                let unseen = field.hidden && field.value.is_empty();
+                let kept = previous.iter().find(|old| unseen && old.hidden && old.name == name);
+                StoredField {
+                    value: kept.map_or_else(|| secret_of(&field.value), |old| old.value.clone()),
+                    name,
+                    hidden: field.hidden,
+                }
             })
             .collect();
         self.folder = draft.folder.trim().to_string();

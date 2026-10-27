@@ -646,10 +646,15 @@ impl Daemon {
         let target = if draft.vault.is_empty() { self.default.clone() } else { draft.vault.clone() };
         match &draft.item {
             Some(existing) if existing.vault != target => {
-                let mut moved = draft.clone();
-                moved.item = None;
+                let mut record = self.record(existing)?.clone();
+                if !record.passkeys.is_empty() {
+                    return Err(Fault::Unsupported);
+                }
+                record.apply(draft, at);
+                let mut moved = crate::kdbx::draft_of(&record);
+                moved.vault.clone_from(&target);
                 let id = self.provider_mut(&target)?.save(&moved, at)?;
-                self.provider_mut(&existing.vault)?.purge(&existing.id)?;
+                self.provider_mut(&existing.vault)?.trash(&existing.id, at)?;
                 Ok(ItemRef::new(target, id))
             }
             _ => {
@@ -841,7 +846,7 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glide_ipc::keychain::{AppLink, Draft, Site};
+    use glide_ipc::keychain::{AppLink, CardDraft, Draft, FieldDraft, Site};
 
     const FAST: Params = Params { memory_kib: 64, passes: 1, lanes: 1 };
     const NOW: u64 = 2_000_000_000;
@@ -1108,6 +1113,85 @@ mod tests {
         assert!(file.exists(), "removing the vault leaves the file alone");
         let again = Daemon::new(path.clone(), FAST).with_clock(|| NOW);
         assert!(again.provider("keepass-1").is_err());
+        cleanup(&path);
+    }
+
+    fn card_with_a_hidden_field() -> Draft {
+        Draft {
+            vault: LOCAL.into(),
+            kind: ItemKind::Card,
+            name: "Visa".into(),
+            fields: vec![FieldDraft { name: "PIN".into(), value: hidden("4321"), hidden: true }],
+            card: Some(CardDraft {
+                holder: "Artem".into(),
+                number: hidden("4111111111111111"),
+                code: hidden("123"),
+                ..CardDraft::default()
+            }),
+            ..Draft::default()
+        }
+    }
+
+    fn as_the_editor_sends_it(daemon: &mut Daemon, item: &ItemRef) -> Draft {
+        let Response::Item { detail } = daemon.handle(Request::Item { item: item.clone() }) else { panic!() };
+        Draft {
+            item: Some(item.clone()),
+            vault: item.vault.clone(),
+            kind: detail.summary.kind,
+            name: detail.summary.name.clone(),
+            fields: detail
+                .fields
+                .iter()
+                .map(|field| FieldDraft { name: field.name.clone(), value: hidden(&field.value), hidden: field.hidden })
+                .collect(),
+            notes: "edited".into(),
+            card: detail.card.as_ref().map(|card| CardDraft { holder: card.holder.clone(), ..CardDraft::default() }),
+            ..Draft::default()
+        }
+    }
+
+    fn secret_of(daemon: &mut Daemon, item: &ItemRef, secret: SecretKind) -> String {
+        let Response::Secret { secret } = daemon.handle(Request::Secret { item: item.clone(), secret }) else {
+            panic!()
+        };
+        secret.expose().to_string()
+    }
+
+    #[test]
+    fn an_edit_that_never_saw_the_hidden_values_keeps_them() {
+        let (mut daemon, path) = daemon("hidden-edit");
+        let Response::Saved { item } = daemon.handle(Request::Save { draft: Box::new(card_with_a_hidden_field()) })
+        else {
+            panic!()
+        };
+        let edit = as_the_editor_sends_it(&mut daemon, &item);
+        assert!(edit.fields[0].value.is_empty(), "the detail never carries a hidden value");
+        assert!(matches!(daemon.handle(Request::Save { draft: Box::new(edit) }), Response::Saved { .. }));
+        assert_eq!(secret_of(&mut daemon, &item, SecretKind::Field("PIN".into())), "4321");
+        assert_eq!(secret_of(&mut daemon, &item, SecretKind::CardNumber), "4111111111111111");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn moving_to_another_vault_carries_every_secret_and_keeps_the_original_in_the_trash() {
+        let (mut daemon, path) = daemon("move");
+        let file = path.with_file_name("Family.kdbx");
+        crate::kdbx::vault_tests_sample(&file, "door");
+        let add =
+            Request::AddKeePass { path: file.display().to_string(), password: hidden("door"), name: String::new() };
+        assert_eq!(daemon.handle(add), Response::VaultAdded { vault: "keepass-1".into() });
+        let Response::Saved { item } = daemon.handle(Request::Save { draft: Box::new(card_with_a_hidden_field()) })
+        else {
+            panic!()
+        };
+        let mut edit = as_the_editor_sends_it(&mut daemon, &item);
+        edit.vault = "keepass-1".into();
+        let Response::Saved { item: moved } = daemon.handle(Request::Save { draft: Box::new(edit) }) else { panic!() };
+        assert_eq!(moved.vault, "keepass-1");
+        assert_eq!(secret_of(&mut daemon, &moved, SecretKind::Field("PIN".into())), "4321");
+        assert_eq!(secret_of(&mut daemon, &moved, SecretKind::CardNumber), "4111111111111111");
+        assert_eq!(secret_of(&mut daemon, &moved, SecretKind::CardCode), "123");
+        assert!(daemon.record(&item).is_ok_and(|record| record.deleted.is_some()), "the original waits in the Trash");
         cleanup(&path);
     }
 

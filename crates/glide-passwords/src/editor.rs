@@ -22,6 +22,7 @@ pub struct Editor {
     pub original_password: String,
     pub shown: bool,
     pub totp: String,
+    pub original_totp: String,
     pub folder: String,
     pub sites: Vec<Site>,
     pub apps: Vec<AppLink>,
@@ -54,6 +55,7 @@ impl Clone for Editor {
             original_password: self.original_password.clone(),
             shown: self.shown,
             totp: self.totp.clone(),
+            original_totp: self.original_totp.clone(),
             folder: self.folder.clone(),
             sites: self.sites.clone(),
             apps: self.apps.clone(),
@@ -94,6 +96,7 @@ impl Editor {
             original_password: String::new(),
             shown: true,
             totp: String::new(),
+            original_totp: String::new(),
             folder: String::new(),
             sites: if kind == ItemKind::Login { vec![Site::default()] } else { Vec::new() },
             apps: Vec::new(),
@@ -110,9 +113,15 @@ impl Editor {
     }
 
     #[must_use]
-    pub fn from_detail(detail: &Detail, password: &Hidden, totp: &Hidden) -> Self {
+    pub fn from_detail(detail: &Detail, password: &Hidden, totp: &Hidden, hidden: &[(String, Hidden)]) -> Self {
         let summary = &detail.summary;
         let card = detail.card.clone().unwrap_or_default();
+        let value_of = |field: &glide_ipc::keychain::Field| {
+            hidden
+                .iter()
+                .find(|(name, _)| field.hidden && *name == field.name)
+                .map_or_else(|| field.value.clone(), |(_, value)| value.expose().to_string())
+        };
         Self {
             item: Some(summary.item.clone()),
             vault: summary.item.vault.clone(),
@@ -123,10 +132,11 @@ impl Editor {
             original_password: password.expose().to_string(),
             shown: true,
             totp: totp.expose().to_string(),
+            original_totp: totp.expose().to_string(),
             folder: summary.folder.clone(),
             sites: detail.sites.clone(),
             apps: detail.apps.clone(),
-            fields: detail.fields.iter().map(|field| (field.name.clone(), field.value.clone(), field.hidden)).collect(),
+            fields: detail.fields.iter().map(|field| (field.name.clone(), value_of(field), field.hidden)).collect(),
             notes: text_editor::Content::with_text(&detail.notes),
             favorite: summary.favorite,
             holder: card.holder,
@@ -153,8 +163,8 @@ impl Editor {
             kind: self.kind,
             name: self.name.trim().to_string(),
             username: self.username.clone(),
-            password: Some(Hidden::new(self.password.clone())),
-            totp: Some(Hidden::new(self.totp.clone())),
+            password: (self.password != self.original_password).then(|| Hidden::new(self.password.clone())),
+            totp: (self.totp != self.original_totp).then(|| Hidden::new(self.totp.clone())),
             folder: self.folder.clone(),
             sites: self.sites.clone(),
             apps: self.apps.clone(),

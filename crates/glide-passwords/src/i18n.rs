@@ -327,6 +327,7 @@ glide_sdk::catalogue! {
     InTrashSince => "In the Trash since {date}", "У кошику з {date}";
     MovedToTrash => "Moved to the Trash", "Переміщено в кошик";
     Saved => "Saved", "Збережено";
+    EditorUnavailable => "This item's secrets could not be read, so it was not opened for editing", "Не вдалося прочитати секрети запису, тому він не відкрився для редагування";
     NotAvailable => "This vault can't do that", "Це сховище такого не вміє";
     WrongPassword => "That password does not open the vault", "Цей пароль не відкриває сховище";
     DaemonMissing => "The keychain is not running", "Сховище паролів не запущено";

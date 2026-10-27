@@ -64,6 +64,7 @@ pub enum Message {
     Edit,
     Editor(editor::Event),
     EditorLoaded(Box<Editor>),
+    EditorUnavailable,
     Saved(Result<Response, String>),
     Trash,
     MoreMenu,
@@ -374,18 +375,24 @@ impl App {
         };
         Task::perform(
             async move {
-                let password =
-                    match client::call(Request::Secret { item: item.clone(), secret: SecretKind::Password }).await {
-                        Ok(Response::Secret { secret }) => secret,
-                        _ => Hidden::default(),
-                    };
-                let totp = match client::call(Request::Secret { item: item.clone(), secret: SecretKind::Totp }).await {
-                    Ok(Response::Secret { secret }) => secret,
-                    _ => Hidden::default(),
+                let read = |secret: SecretKind| {
+                    let item = item.clone();
+                    async move {
+                        match client::call(Request::Secret { item, secret }).await {
+                            Ok(Response::Secret { secret }) => Some(secret),
+                            _ => None,
+                        }
+                    }
                 };
-                Box::new(Editor::from_detail(&detail, &password, &totp))
+                let password = read(SecretKind::Password).await?;
+                let totp = read(SecretKind::Totp).await?;
+                let mut hidden = Vec::new();
+                for field in detail.fields.iter().filter(|field| field.hidden) {
+                    hidden.push((field.name.clone(), read(SecretKind::Field(field.name.clone())).await?));
+                }
+                Some(Box::new(Editor::from_detail(&detail, &password, &totp, &hidden)))
             },
-            Message::EditorLoaded,
+            |editor| editor.map_or(Message::EditorUnavailable, Message::EditorLoaded),
         )
     }
 
@@ -582,6 +589,10 @@ impl App {
             Message::EditorLoaded(editor) => {
                 self.editor = Some(*editor);
                 self.generator = std::mem::take(&mut self.generate_on_edit).then(Generating::fresh);
+                Task::none()
+            }
+            Message::EditorUnavailable => {
+                shell.toast(self.t(Key::EditorUnavailable));
                 Task::none()
             }
             Message::Editor(event) => editor::update(self, event, shell),

@@ -295,6 +295,9 @@ pub(crate) fn write(entry: &mut EntryMut<'_>, draft: &Draft) {
         .fields
         .retain(|key, _| reserved(key, draft.kind) || draft.fields.iter().any(|field| field.name.trim() == key));
     for field in draft.fields.iter().filter(|field| !field.name.trim().is_empty()) {
+        if field.hidden && field.value.is_empty() && entry.fields.contains_key(field.name.trim()) {
+            continue;
+        }
         put(entry, field.name.trim(), field.value.expose(), field.hidden);
     }
     if let Some(card) = draft.card.as_ref().filter(|_| draft.kind == ItemKind::Card) {
