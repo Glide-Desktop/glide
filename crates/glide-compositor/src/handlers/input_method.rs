@@ -39,7 +39,14 @@ impl InputMethodHandler for GlideState {
         self.queue_redraw();
     }
 
-    fn dismiss_popup(&mut self, _surface: PopupSurface) {
+    fn dismiss_popup(&mut self, surface: PopupSurface) {
+        if let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) {
+            let dismissed =
+                smithay::desktop::PopupManager::dismiss_popup(&parent, &smithay::desktop::PopupKind::from(surface));
+            if let Err(err) = dismissed {
+                tracing::debug!(?err, "the input-method popup's parent is already gone");
+            }
+        }
         self.queue_redraw();
     }
 

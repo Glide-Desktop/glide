@@ -197,7 +197,7 @@ fn content(app: &App) -> Element<'_, Message> {
             } else {
                 regions.get(&handle).copied().map_or_else(Radius::default, corners)
             });
-        pane_grid::Content::new(Element::from(terminal).map(Message::Terminal))
+        pane_grid::Content::new(glide_sdk::widget::arriving(Element::from(terminal).map(Message::Terminal)))
     })
     .min_size(PANE_MIN)
     .on_click(Message::PaneClicked)

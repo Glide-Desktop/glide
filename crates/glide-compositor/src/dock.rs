@@ -344,6 +344,38 @@ fn arrival(arrivals: &HashMap<String, Instant>, key: &str, now: Instant) -> f64 
 
 const ARRIVAL_DROP: f64 = 8.0;
 
+#[derive(Debug)]
+struct Departure {
+    tile: Buffers<i32>,
+    x: i32,
+    started: Instant,
+}
+
+fn departure(started: Instant, now: Instant) -> f64 {
+    let duration = t2();
+    if duration.is_zero() {
+        return 1.0;
+    }
+    let t = now.saturating_duration_since(started).as_secs_f64() / duration.as_secs_f64();
+    glide_theme::motion::E_IO.ease_f64(t.min(1.0))
+}
+
+fn push_departures<R: ShellRenderer>(
+    dock: &mut Dock, frame: &mut Frame<'_, R>, first: Option<Rectangle<i32, Logical>>, opacity: f32,
+) {
+    let now = Instant::now();
+    dock.departures.retain(|gone| now.saturating_duration_since(gone.started) < t2());
+    let Some(first) = first else { return };
+    let theme = frame.theme;
+    for gone in &dock.departures {
+        let progress = departure(gone.started, now);
+        let rect = Rectangle::new(Point::from((gone.x, first.loc.y)), first.size);
+        let mut at = HoverGeometry::for_tile(theme, rect, false, false, 0.0, 0.0);
+        at.position.y += ARRIVAL_DROP * progress;
+        frame.push_tile(gone.tile.get(&frame.output_scale), &at, opacity * (1.0 - progress) as f32);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DockDrag {
     index: usize,
@@ -582,6 +614,7 @@ pub struct Dock {
     drag: Option<DockDrag>,
     slides: HashMap<String, TileSlide>,
     arrivals: HashMap<String, Instant>,
+    departures: Vec<Departure>,
     hover_since: Option<Instant>,
     hover_layers: Layers,
     press_layers: Layers,
@@ -667,6 +700,7 @@ impl Dock {
             drag: None,
             slides: HashMap::new(),
             arrivals: HashMap::new(),
+            departures: Vec::new(),
             hover_since: None,
             hover_layers: HashMap::new(),
             press_layers: HashMap::new(),
@@ -1064,6 +1098,16 @@ impl Dock {
         self.run_changed = self.run_change_stamps(&items, &run);
 
         if layout_changed {
+            let now = Instant::now();
+            for (old, tile) in self.items.iter().zip(self.tiles.drain(..)) {
+                if items.iter().any(|new| new.app_id == old.app_id) {
+                    continue;
+                }
+                if let Some(slide) = self.slides.get(&old.app_id) {
+                    let x = slide.position(now, t2()).round() as i32;
+                    self.departures.push(Departure { tile, x, started: now });
+                }
+            }
             self.tiles = vec![HashMap::new(); items.len()];
             self.rasters.shell.clear();
             self.rasters.shadow.clear();
@@ -1553,6 +1597,7 @@ impl Dock {
             || (!run.is_zero() && self.run_changed.iter().any(|stamp| stamp.elapsed() < run))
             || self.slides.values().any(|tile| tile.is_moving(now, t2()))
             || self.arrivals.values().any(|born| now.saturating_duration_since(*born) < t2())
+            || self.departures.iter().any(|gone| now.saturating_duration_since(gone.started) < t2())
             || self.menu_reveal.is_animating(t2())
             || self.tooltip_reveal.is_animating(t1())
             || any_animating(&self.hover_layers, t1())
@@ -1915,6 +1960,7 @@ where
         push_tooltip(dock, &mut frame, &order, &drawn_rects, area);
     }
     push_tiles(dock, &mut frame, &order, &drawn_rects, dragged, opacity);
+    push_departures(dock, &mut frame, drawn_rects.first().copied(), opacity);
     push_shell(dock, &mut frame, &display_items, &item_rects, (shell, slide), opacity, backdrop);
     frame.elements
 }
@@ -2935,6 +2981,15 @@ mod tests {
 
         fn index_of(dock: &Dock, app_id: &str) -> usize {
             dock.items().iter().position(|item| item.app_id == app_id).expect("the app is on the dock")
+        }
+
+        #[test]
+        fn a_tile_that_leaves_fades_out_where_it_was_drawn() {
+            let mut dock = dock_with_one_running();
+            let x = dock.settle_slides(&[("firefox", 240)], None, Instant::now(), Duration::ZERO)[0];
+            dock.set_running(&[]);
+            assert_eq!(dock.departures.len(), 1, "the closed app's tile lingers for its fade");
+            assert!((f64::from(dock.departures[0].x) - x).abs() < f64::EPSILON);
         }
 
         #[test]
