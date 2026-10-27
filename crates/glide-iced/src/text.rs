@@ -25,14 +25,7 @@ pub fn text<'a>(content: impl Into<Cow<'a, str>>, style: TextStyle) -> Text<'a> 
     Text {
         content,
         style,
-        font: Font {
-            family: if style.tabular {
-                iced::font::Family::Name(glide_paint::TABULAR_FAMILY)
-            } else {
-                iced::font::Family::SansSerif
-            },
-            ..Font::DEFAULT
-        },
+        font: if style.tabular { crate::font::TABULAR } else { Font::DEFAULT },
         color: None,
         width: Length::Shrink,
         wrapping: Wrapping::Word,
@@ -75,17 +68,17 @@ impl Text<'_> {
 
 #[derive(PartialEq)]
 struct Key {
-    content: String,
     style: TextStyle,
     font: Font,
-    width: f32,
-    height: f32,
+    width: Option<f32>,
     wrap: Wrapping,
+    align: alignment::Horizontal,
     revision: u64,
 }
 
 #[derive(Default)]
 struct State {
+    content: String,
     key: Option<Key>,
     buffer: Option<Arc<cosmic_text::Buffer>>,
     measured: Size,
@@ -102,24 +95,23 @@ impl<Message> Widget<Message, Theme, Renderer> for Text<'_> {
         Size::new(self.width, Length::Shrink)
     }
     fn layout(&mut self, tree: &mut Tree, _: &Renderer, limits: &layout::Limits) -> layout::Node {
+        let limits = limits.width(self.width);
         let state = tree.state.downcast_mut::<State>();
         let key = Key {
-            content: self.content.to_string(),
             style: self.style,
             font: self.font,
-            width: limits.max().width,
-            height: limits.max().height,
+            width: (self.wrapping != Wrapping::None).then(|| limits.max().width),
             wrap: self.wrapping,
+            align: self.align,
             revision: crate::font::revision(),
         };
-        if state.key.as_ref() != Some(&key) {
+        if state.key.as_ref() != Some(&key) || state.content != *self.content {
             let mut system = text::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut buffer = cosmic_text::Buffer::new(
                 system.raw(),
                 cosmic_text::Metrics::new(self.style.size_px, self.style.line_height_px),
             );
-            let width = if self.wrapping == Wrapping::None { None } else { Some(limits.max().width) };
-            buffer.set_size(system.raw(), width, None);
+            buffer.set_size(system.raw(), key.width, None);
             buffer.set_wrap(system.raw(), text::to_wrap(self.wrapping));
             let attributes = self.attributes();
             buffer.set_text(system.raw(), &self.content, &attributes, cosmic_text::Shaping::Advanced, None);
@@ -139,6 +131,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Text<'_> {
             }
             state.buffer = Some(Arc::new(buffer));
             state.key = Some(key);
+            state.content.clear();
+            state.content.push_str(&self.content);
         }
         layout::Node::new(limits.resolve(self.width, Length::Shrink, state.measured))
     }
@@ -202,8 +196,26 @@ mod tests {
             tree.state.downcast_ref::<State>().measured
         }
         let tight = measured(TextStyle::WIN_TITLE);
+        assert!(tight.width > 80.0, "the title fits on one line at the parent's width");
         let normal = measured(TextStyle { tracking_em: 0.0, ..TextStyle::WIN_TITLE });
         assert!(tight.width < normal.width, "tracking must affect shaped text width");
         assert_eq!(tight.height, TextStyle::WIN_TITLE.line_height_px);
+    }
+
+    #[test]
+    fn a_fixed_width_label_wraps_at_its_own_width_instead_of_the_parents() {
+        let mut label = text("Meridian window title", TextStyle::WIN_TITLE).width(80.0);
+        let mut tree = Tree::new(&label as &dyn Widget<(), Theme, Renderer>);
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, iced::Pixels(14.0)));
+        let node = <Text<'_> as Widget<(), Theme, Renderer>>::layout(
+            &mut label,
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(1000.0, 200.0)),
+        );
+        let measured = tree.state.downcast_ref::<State>().measured;
+        assert_eq!(node.size().width, 80.0);
+        assert!(measured.width <= 80.0, "shaped {measured:?} wider than the label");
+        assert!(measured.height > TextStyle::WIN_TITLE.line_height_px, "the label wraps onto a second line");
     }
 }

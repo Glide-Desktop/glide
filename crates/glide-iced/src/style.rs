@@ -1,7 +1,7 @@
 use glide_theme::motion::{ST_HOVER, ST_PRESS};
 use glide_theme::{Accent, Appearance, Tokens};
 use iced::border::Radius;
-use iced::widget::{button, container, svg, text_input};
+use iced::widget::{button, container, text_input};
 use iced::{Background, Border, Color, Shadow};
 
 pub use glide_theme::shape::{R2, R3};
@@ -13,8 +13,6 @@ pub const SP5: f32 = glide_theme::spacing::SP5 as f32;
 pub const SP6: f32 = glide_theme::spacing::SP6 as f32;
 
 pub const SEMIBOLD: iced::Font = iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT };
-
-pub use crate::font::use_ui_family;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Paint {
@@ -76,16 +74,18 @@ colors!(
 
 #[must_use]
 pub fn over(top: Color, base: Color) -> Color {
-    to_iced(
-        glide_theme::Color([base.r, base.g, base.b, base.a])
-            .state_layer(glide_theme::Color([top.r, top.g, top.b, top.a]), 1.0),
-    )
+    to_iced(from_iced(base).state_layer(from_iced(top), 1.0))
 }
 
 #[must_use]
 pub fn to_iced(color: glide_theme::Color) -> Color {
     let [r, g, b, a] = color.0;
     Color { r, g, b, a }
+}
+
+#[must_use]
+pub fn from_iced(color: Color) -> glide_theme::Color {
+    glide_theme::Color([color.r, color.g, color.b, color.a])
 }
 
 impl Default for Paint {
@@ -121,7 +121,7 @@ impl Paint {
             return base;
         }
         let state = self.tokens.state.with_alpha(self.tokens.state.0[3] * self.alpha);
-        to_iced(glide_theme::Color([base.r, base.g, base.b, base.a]).state_layer(state, opacity))
+        to_iced(from_iced(base).state_layer(state, opacity))
     }
 
     #[must_use]
@@ -158,7 +158,6 @@ impl Paint {
 pub enum Tone {
     Neutral,
     Ghost,
-    Danger,
 }
 
 #[must_use]
@@ -181,17 +180,6 @@ pub fn action(paint: &Paint, tone: Tone, status: button::Status) -> button::Styl
         Tone::Ghost => {
             flat(paint.layered(Color::TRANSPARENT, status), if active { paint.fg_1() } else { paint.fg_2() }, R2)
         }
-        Tone::Danger if active => flat(paint.danger(), Color::WHITE, R2),
-        Tone::Danger => flat(paint.danger_soft(), paint.danger(), R2),
-    }
-}
-
-#[must_use]
-pub fn toggle(paint: &Paint, on: bool, status: button::Status) -> button::Style {
-    if on {
-        flat(paint.layered(paint.acc_soft(), status), paint.fg_1(), R2)
-    } else {
-        action(paint, Tone::Ghost, status)
     }
 }
 
@@ -241,14 +229,6 @@ pub fn popover(paint: &Paint) -> container::Style {
 }
 
 #[must_use]
-pub fn frame(paint: &Paint) -> container::Style {
-    container::Style {
-        border: Border { color: paint.line_2(), width: 1.0, radius: Radius::from(R3) },
-        ..container::Style::default()
-    }
-}
-
-#[must_use]
 pub fn field(paint: &Paint, status: text_input::Status) -> text_input::Style {
     let border = match status {
         text_input::Status::Focused { .. } => paint.acc_bg(),
@@ -263,11 +243,6 @@ pub fn field(paint: &Paint, status: text_input::Status) -> text_input::Style {
         value: paint.fg_1(),
         selection: paint.acc_soft(),
     }
-}
-
-#[must_use]
-pub fn glyph(color: Color) -> svg::Style {
-    svg::Style { color: Some(color) }
 }
 
 #[cfg(test)]

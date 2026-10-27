@@ -130,10 +130,7 @@ pub fn surface<'a, Message: 'a>(
 }
 
 fn color(from: Color, to: Color, amount: f32) -> Color {
-    crate::style::to_iced(
-        glide_theme::Color([from.r, from.g, from.b, from.a])
-            .lerp_premultiplied(glide_theme::Color([to.r, to.g, to.b, to.a]), amount),
-    )
+    crate::style::to_iced(crate::style::from_iced(from).lerp_premultiplied(crate::style::from_iced(to), amount))
 }
 
 fn blend(from: &control::Style, to: &control::Style, amount: f32) -> control::Style {
@@ -141,11 +138,25 @@ fn blend(from: &control::Style, to: &control::Style, amount: f32) -> control::St
         Some(Background::Color(color)) => color,
         _ => Color::TRANSPARENT,
     };
+    let mix = |from: f32, to: f32| from + (to - from) * amount;
+    let nearest = if amount < 0.5 { from } else { to };
     control::Style {
         background: Some(Background::Color(color(background(from), background(to), amount))),
         text_color: color(from.text_color, to.text_color, amount),
-        border: Border { color: color(from.border.color, to.border.color, amount), ..to.border },
-        ..*to
+        border: Border {
+            color: color(from.border.color, to.border.color, amount),
+            width: mix(from.border.width, to.border.width),
+            radius: nearest.border.radius,
+        },
+        shadow: iced::Shadow {
+            color: color(from.shadow.color, to.shadow.color, amount),
+            offset: Vector::new(
+                mix(from.shadow.offset.x, to.shadow.offset.x),
+                mix(from.shadow.offset.y, to.shadow.offset.y),
+            ),
+            blur_radius: mix(from.shadow.blur_radius, to.shadow.blur_radius),
+        },
+        snap: nearest.snap,
     }
 }
 
@@ -347,6 +358,27 @@ mod tests {
             &Rectangle::with_size(Size::new(500.0, 500.0)),
         );
         tree.state.downcast_ref::<State>().press.target()
+    }
+
+    #[test]
+    fn a_resting_button_keeps_its_own_shadow_and_rises_to_the_pressed_one() {
+        let shadow = |blur: f32, dy: f32| iced::Shadow {
+            color: Color { a: 0.2, ..Color::BLACK },
+            offset: Vector::new(0.0, dy),
+            blur_radius: blur,
+        };
+        let rest = control::Style { shadow: shadow(2.0, 1.0), ..control::Style::default() };
+        let pressed = control::Style {
+            shadow: shadow(8.0, 4.0),
+            border: Border { width: 2.0, ..Border::default() },
+            ..control::Style::default()
+        };
+        assert_eq!(blend(&rest, &pressed, 0.0).shadow, rest.shadow);
+        assert_eq!(blend(&rest, &pressed, 0.0).border.width, 0.0);
+        assert_eq!(blend(&rest, &pressed, 1.0).shadow, pressed.shadow);
+        let halfway = blend(&rest, &pressed, 0.5).shadow;
+        assert_eq!(halfway.blur_radius, 5.0);
+        assert_eq!(halfway.offset, Vector::new(0.0, 2.5));
     }
 
     #[test]

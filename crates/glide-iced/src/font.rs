@@ -14,6 +14,7 @@ pub fn use_ui_family(requested: Option<&str>) -> String {
         requested,
         db.faces().flat_map(|face| face.families.iter().map(|(name, _)| name.as_str())),
     );
+    let mut changed = db.family_name(&Family::SansSerif) != family;
     db.set_sans_serif_family(family.clone());
     let mut weights: Vec<_> = glide_theme::TextStyle::ALL.iter().map(|style| Weight(style.weight)).collect();
     weights.extend([Weight::NORMAL, Weight::MEDIUM, Weight::SEMIBOLD, Weight::BOLD]);
@@ -30,9 +31,12 @@ pub fn use_ui_family(requested: Option<&str>) -> String {
         if let Some(mut face) = nearest.filter(|_| !exact) {
             face.weight = weight;
             db.push_face_info(face);
+            changed = true;
         }
     }
-    REVISION.fetch_add(1, Ordering::Release);
+    if changed {
+        REVISION.fetch_add(1, Ordering::Release);
+    }
     family
 }
 

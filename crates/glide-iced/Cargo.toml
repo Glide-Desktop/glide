@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-iced = { version = "0.14.0", default-features = false, features = ["tiny-skia", "wayland", "advanced", "image", "svg", "web-colors"] }
+iced = { version = "0.14.0", default-features = false, features = ["tiny-skia", "wayland", "tokio", "advanced", "image", "svg", "web-colors"] }
 glide-theme = { path = "../glide-theme" }
 glide-paint = { path = "../glide-paint" }
 glide-ui = { path = "../glide-ui" }
