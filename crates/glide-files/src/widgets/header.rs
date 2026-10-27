@@ -88,7 +88,7 @@ pub(crate) fn path_field(app: &App) -> Option<Element<'_, Message>> {
         .id(PATH_ID)
         .on_input(Message::PathChanged)
         .on_submit(Message::PathSubmitted);
-    Some(glide_sdk::widget::field(&super::paint(&app.theme), input))
+    Some(glide_sdk::widget::rising(glide_sdk::widget::field(&super::paint(&app.theme), input)))
 }
 
 pub fn search_field(app: &App) -> Element<'_, Message> {

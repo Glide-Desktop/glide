@@ -21,7 +21,7 @@ use iced::{
 
 use super::buttons::{Tone, button_style};
 use super::feedback::Severity;
-use super::{Icon, Wrapping, icon, mix, text, tooltip};
+use super::{Icon, Wrapping, icon, mix, popping, text, tooltip};
 use crate::anim::{Motion, Speed, animate};
 
 const PAD: f32 = SP2;
@@ -169,9 +169,9 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
     match tab.mark {
         Mark::Dot if !hovered => {
             let dot = container(Space::new().width(6).height(6)).style(move |_| style::rounded(paint.fg_3(), R_ROUND));
-            label = label.push(pop_in(dot));
+            label = label.push(popping(dot));
         }
-        Mark::Alert => label = label.push(pop_in(icon(Icon::Bell, 12.0, paint.warn()))),
+        Mark::Alert => label = label.push(popping(icon(Icon::Bell, 12.0, paint.warn()))),
         _ => {}
     }
     let close: Element<'a, M> = match &strip.close {
@@ -197,7 +197,7 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
     ];
     if let Some((_, strong)) = tint {
         let stripe = container(Space::new().width(Fill).height(2)).style(move |_| style::rounded(strong, 1.0));
-        inner = inner.push(container(pop_in(stripe)).height(Fill).align_y(Alignment::End).padding(Padding {
+        inner = inner.push(container(popping(stripe)).height(Fill).align_y(Alignment::End).padding(Padding {
             left: SP3,
             right: SP3,
             ..Padding::ZERO
@@ -228,10 +228,6 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
         area = area.on_middle_press(close(index));
     }
     animate(1.0, Speed::SLIDE, |_| area).from(0.0).scale(|value| ARRIVE + (1.0 - ARRIVE) * value).into()
-}
-
-fn pop_in<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    animate(1.0, Speed::OVERSHOOT, |_| content.into()).from(0.0).scale(|value| value.max(MIN_SCALE)).into()
 }
 
 impl<'a, M: Clone + 'a> From<TabStrip<'a, M>> for Element<'a, M> {

@@ -191,6 +191,11 @@ pub fn arriving<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M>
 }
 
 #[must_use]
+pub fn popping<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    animate(1.0, Speed::OVERSHOOT, |_| content.into()).from(0.0).scale(|value| value.max(0.001)).into()
+}
+
+#[must_use]
 pub fn rising<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     let content = content.into();
     animate(1.0, Speed::SLIDE, move |_| content)

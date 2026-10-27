@@ -293,7 +293,7 @@ impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
         let style = if strong { TextStyle::HEAD } else { TextStyle::BODY };
         let mut head = row![].spacing(SP2).align_y(Alignment::Center);
         if changed {
-            head = head.push(super::feedback::dot(paint.acc_bg(), CHANGED_MARK));
+            head = head.push(super::popping(super::feedback::dot(paint.acc_bg(), CHANGED_MARK)));
         }
         head = head.push(text(title, style).color(ink));
         if let Some(beside) = beside {
@@ -787,13 +787,14 @@ pub fn disclosure<'a, M: 'a>(paint: &Paint, value: Option<String>) -> Element<'a
 #[must_use]
 pub fn inert<'a, M: 'a>(paint: &Paint, enabled: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     let content = content.into();
-    if enabled {
-        return content;
-    }
     let veil = Color { a: 0.55, ..paint.card_bg() };
-    let cover =
-        container(Space::new().width(Fill).height(Fill)).style(move |_| style::rounded(veil, glide_theme::shape::R1));
-    stack![content, iced::widget::opaque(cover)].into()
+    let cover = animate(f32::from(!enabled), Speed::COLOR, move |level| {
+        let level = level.clone();
+        container(Space::new().width(Fill).height(Fill))
+            .style(move |_| style::rounded(Color { a: veil.a * level.get(), ..veil }, glide_theme::shape::R1))
+    });
+    let cover: Element<'a, M> = if enabled { cover.into() } else { iced::widget::opaque(cover) };
+    stack![content, cover].into()
 }
 
 pub const TABLE_HEADER: f32 = 26.0;
