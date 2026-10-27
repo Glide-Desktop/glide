@@ -281,11 +281,14 @@ pub enum Tint {
     Link,
     Code,
     Reference,
+    Note,
 }
 
 impl Tint {
-    const COUNT: usize = 16;
+    const COUNT: usize = 17;
 }
+
+const NOTE_WORDS: [&str; 6] = ["TODO", "FIXME", "HACK", "XXX", "BUG", "NOTE"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Style {
@@ -471,7 +474,56 @@ pub fn highlight(language: Language, text: &str) -> Lines {
             }
         }
     });
+    mark_notes(&mut lines, text);
     lines
+}
+
+fn split_notes(line: &str, range: Range<usize>, style: Style, out: &mut Vec<(Range<usize>, Style)>) {
+    let Some(comment) = line.get(range.clone()) else {
+        out.push((range, style));
+        return;
+    };
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut at = 0;
+    let mut start = None;
+    for (index, c) in comment.char_indices().chain(std::iter::once((comment.len(), ' '))) {
+        match (start, word(c)) {
+            (None, true) => start = Some(index),
+            (Some(from), false) => {
+                start = None;
+                if NOTE_WORDS.contains(&&comment[from..index]) {
+                    if from > at {
+                        out.push((range.start + at..range.start + from, style));
+                    }
+                    out.push((range.start + from..range.start + index, strong(Tint::Note)));
+                    at = index;
+                }
+            }
+            _ => {}
+        }
+    }
+    if at < comment.len() {
+        out.push((range.start + at..range.end, style));
+    }
+}
+
+fn mark_notes(lines: &mut Lines, text: &str) {
+    let rows: Vec<&str> = text.split('\n').collect();
+    for (row, spans) in lines.iter_mut().enumerate() {
+        let Some(line) = rows.get(row) else { continue };
+        if !NOTE_WORDS.iter().any(|word| line.contains(word)) {
+            continue;
+        }
+        let mut marked = Vec::with_capacity(spans.len() + 2);
+        for (range, style) in spans.drain(..) {
+            if style.tint == Some(Tint::Comment) {
+                split_notes(line, range, style, &mut marked);
+            } else {
+                marked.push((range, style));
+            }
+        }
+        *spans = marked;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -507,6 +559,7 @@ impl Palette {
             color(ansi[4]),
             color(ansi[6]),
             color(ansi[4]),
+            color(tokens.warn),
         ];
         Self { tints, found: color(tokens.warn), current: color(tokens.acc_text), font }
     }
@@ -693,6 +746,25 @@ mod tests {
                 spans.into_iter().map(move |(range, style)| (index, line[range].to_string(), style.tint))
             })
             .collect()
+    }
+
+    #[test]
+    fn todo_words_in_comments_get_their_own_note_tint_and_nothing_else_does() {
+        let found = |text: &str| -> Vec<(usize, String)> {
+            tints(Language::Rust, text)
+                .into_iter()
+                .filter(|(_, _, tint)| *tint == Some(Tint::Note))
+                .map(|(line, word, _)| (line, word))
+                .collect()
+        };
+        assert_eq!(
+            found("// TODO: fix\nfn a() {} // FIXME и HACK\n"),
+            [(0, "TODO".to_string()), (1, "FIXME".to_string()), (1, "HACK".to_string())]
+        );
+        assert!(found("// todo and NOTES and TODOS\nlet x = \"TODO\";\n").is_empty());
+        let spans = tints(Language::Rust, "// see TODO: x\n");
+        let joined: String = spans.iter().map(|(_, text, _)| text.as_str()).collect();
+        assert_eq!(joined, "// see TODO: x", "the split leaves no gaps and no overlaps");
     }
 
     #[test]
