@@ -50,13 +50,14 @@ type HandleFn = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 
 struct Conversation {
     secret: Vec<u8>,
+    answered: bool,
     errors: Vec<String>,
     notices: Vec<String>,
 }
 
 impl Conversation {
     fn new(secret: Vec<u8>) -> Self {
-        Self { secret, errors: Vec::new(), notices: Vec::new() }
+        Self { secret, answered: false, errors: Vec::new(), notices: Vec::new() }
     }
 
     fn denial(&mut self) -> Option<String> {
@@ -113,7 +114,18 @@ unsafe extern "C" fn converse(
         // SAFETY: `message` is non-null and points at a libpam-owned message.
         let (style, text) = unsafe { ((*message).msg_style, (*message).msg) };
         match style {
-            PAM_PROMPT_ECHO_OFF | PAM_PROMPT_ECHO_ON => {
+            PAM_PROMPT_ECHO_OFF | PAM_PROMPT_ECHO_ON if conversation.answered || style == PAM_PROMPT_ECHO_ON => {
+                if !text.is_null() {
+                    // SAFETY: non-null PAM message text is a C string.
+                    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().trim().to_string();
+                    conversation.errors.push(text);
+                }
+                // SAFETY: as above, `index` entries are filled.
+                unsafe { free_replies(replies, index) };
+                return PAM_CONV_ERR;
+            }
+            PAM_PROMPT_ECHO_OFF => {
+                conversation.answered = true;
                 // SAFETY: `secret` is NUL-terminated with no interior NUL.
                 let copy = unsafe { libc::strdup(conversation.secret.as_ptr().cast()) };
                 if copy.is_null() {
@@ -301,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn every_prompt_is_answered_with_the_password_and_errors_are_kept() {
+    fn the_password_prompt_is_answered_and_errors_are_kept() {
         let (status, answers, conversation) = converse_with(
             &[
                 (PAM_TEXT_INFO, c"Welcome"),
@@ -341,6 +353,18 @@ mod tests {
         assert_eq!(conversation.denial().as_deref(), Some("Authentication token is no longer valid"));
         let (_, _, mut quiet) = converse_with(&[(PAM_PROMPT_ECHO_OFF, c"Password: ")], "x");
         assert_eq!(quiet.denial(), None);
+    }
+
+    #[test]
+    fn the_password_answers_one_hidden_prompt_and_never_a_second_question() {
+        let (status, _, conversation) = converse_with(
+            &[(PAM_PROMPT_ECHO_OFF, c"Password: "), (PAM_PROMPT_ECHO_OFF, c"Verification code: ")],
+            "hunter2",
+        );
+        assert_eq!(status, PAM_CONV_ERR, "a one-time code is not the password");
+        assert_eq!(conversation.errors, vec!["Verification code:".to_string()]);
+        let (status, _, _) = converse_with(&[(PAM_PROMPT_ECHO_ON, c"login: ")], "hunter2");
+        assert_eq!(status, PAM_CONV_ERR, "a visible prompt never gets the password");
     }
 
     #[test]
