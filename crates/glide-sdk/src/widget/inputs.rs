@@ -86,12 +86,12 @@ pub fn inline_style(paint: &Paint, status: text_input::Status) -> text_input::St
 pub fn inline_field<'a, M: Clone + 'a>(
     paint: &Paint, input: text_input::TextInput<'a, M>, style: TextStyle,
 ) -> Element<'a, M> {
-    let paint = *paint;
-    input
+    let tokens = *paint;
+    let input = input
         .size(style.size_px)
         .padding(Padding::from([1.0, SP1]))
-        .style(move |_, status| inline_style(&paint, status))
-        .into()
+        .style(move |_, status| input_style(&tokens, status));
+    widgets::field(input, paint)
 }
 
 #[must_use]

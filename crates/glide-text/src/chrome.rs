@@ -373,7 +373,7 @@ fn table_view<'a>(app: &'a App, rows: &'a [Vec<String>]) -> Element<'a, Message>
     let header = table_header(&paint, cells(head, true, paint.fg_2()));
     let lines = body.iter().enumerate().map(|(index, values)| {
         let content = iced::widget::Row::with_children(cells(values, false, paint.fg_1()));
-        table_row(&paint, content, false, index % 2 == 1, 0.0, TABLE_HEADER)
+        table_row(&paint, content, 0.0, index % 2 == 1, 0.0, TABLE_HEADER)
     });
     column![header, scrollable(&paint, iced::widget::column(lines)).height(Fill)].into()
 }

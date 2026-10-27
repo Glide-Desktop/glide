@@ -195,6 +195,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
             ViewMode::List => list(app),
         }
     };
+    let place = (&app.current, matches!(app.view, ViewMode::List), app.is_searching(), app.entries.is_empty());
+    let body = glide_sdk::widget::swapped(place, Some(app.theme.view_bg()), body);
     let body =
         mouse_area(body).on_press(Message::PressedBackground).on_right_press(Message::MenuTarget(MenuKind::Background));
     sensor(body).on_show(Message::PaneResized).on_resize(Message::PaneResized).into()
@@ -259,7 +261,7 @@ fn grid(app: &App) -> Element<'_, Message> {
 
 fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a, Message> {
     let paint = paint(&app.theme);
-    let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
+    let selected = app.selected_level(&entry.path);
     let key = Hover::Entry(entry.path.clone());
     let badge = entry.is_symlink.then(|| corner_badge(&paint, Icon::Link, 10.0));
     let tile_w = metrics.tile_w;
@@ -368,7 +370,7 @@ fn list_row<'a>(
     columns: &[(ListColumn, f32)],
 ) -> Element<'a, Message> {
     let paint = paint(&app.theme);
-    let selected = app.selection.contains(&entry.path) || app.is_drop_target(&entry.path);
+    let selected = app.selected_level(&entry.path);
     let key = Hover::Entry(entry.path.clone());
     let hover = app.hover(&key);
     let secondary = item_ink(&paint, selected, true);

@@ -586,6 +586,8 @@ impl Message {
 
 pub struct Surfaces {
     hover: HashMap<Hover, (Fade, Fade)>,
+    select: HashMap<PathBuf, Fade>,
+    select_signature: (usize, u64),
     pub menu: Fade,
     pub menu_ghost: Option<Menu>,
     pub toast: Fade,
@@ -598,6 +600,8 @@ impl Surfaces {
     fn new() -> Self {
         Self {
             hover: HashMap::new(),
+            select: HashMap::new(),
+            select_signature: (0, 0),
             menu: Fade::asymmetric(false, Speed::SLIDE, Speed::FADE),
             menu_ghost: None,
             toast: Fade::asymmetric(false, Speed::ARRIVE, Speed::FADE),
@@ -637,6 +641,29 @@ impl Surfaces {
         lift.set(on, now);
     }
 
+    #[must_use]
+    pub fn selected(&self, path: &Path, now: Instant) -> f32 {
+        self.select.get(path).map_or(0.0, |fade| fade.progress(now))
+    }
+
+    fn sync_selection(&mut self, selection: &HashSet<PathBuf>, now: Instant) {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let hasher = BuildHasherDefault::<DefaultHasher>::default();
+        let signature = (selection.len(), selection.iter().fold(0, |sum, path| sum ^ hasher.hash_one(path)));
+        if signature == self.select_signature {
+            return;
+        }
+        self.select_signature = signature;
+        for path in selection {
+            self.select.entry(path.clone()).or_insert_with(|| Fade::new(false, Speed::COLOR)).set(true, now);
+        }
+        for (path, fade) in &mut self.select {
+            if !selection.contains(path) {
+                fade.set(false, now);
+            }
+        }
+    }
+
     fn clear_hover(&mut self, now: Instant) {
         for (layer, lift) in self.hover.values_mut() {
             layer.set(false, now);
@@ -647,11 +674,13 @@ impl Surfaces {
     #[must_use]
     pub fn is_animating(&self, now: Instant) -> bool {
         self.hover.values().any(|(layer, lift)| layer.is_animating(now) || lift.is_animating(now))
+            || self.select.values().any(|fade| fade.is_animating(now))
             || [&self.menu, &self.toast, &self.modal].into_iter().any(|fade| fade.is_animating(now))
     }
 
     fn prune(&mut self, now: Instant) {
         self.hover.retain(|_, (layer, lift)| !layer.is_settled_off(now) || !lift.is_settled_off(now));
+        self.select.retain(|_, fade| !fade.is_settled_off(now));
         if self.menu.is_settled_off(now) {
             self.menu_ghost = None;
         }
@@ -1161,6 +1190,7 @@ impl App {
             menu.highlight = None;
         }
         let motion = &mut self.motion;
+        motion.sync_selection(&self.selection, now);
         motion.menu.set(self.menu.is_some(), now);
         if self.menu.is_some() {
             motion.menu_ghost.clone_from(&self.menu);
@@ -1179,6 +1209,11 @@ impl App {
     #[must_use]
     pub fn hover(&self, key: &Hover) -> f32 {
         self.motion.hover(key, Instant::now())
+    }
+
+    #[must_use]
+    pub fn selected_level(&self, path: &Path) -> f32 {
+        if self.is_drop_target(path) { 1.0 } else { self.motion.selected(path, Instant::now()) }
     }
 
     #[must_use]

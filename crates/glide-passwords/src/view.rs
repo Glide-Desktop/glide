@@ -666,6 +666,7 @@ fn content(app: &App) -> Element<'_, Message> {
         Section::Check => crate::security::view(app),
         _ => {
             let right: Element<'_, Message> = if app.editor.is_some() { crate::editor::view(app) } else { detail(app) };
+            let right = ui::swapped((&app.selected, app.editor.is_some()), Some(paint.win_bg()), right);
             row![
                 list_column(app),
                 ui::vertical_separator(&paint),
@@ -674,6 +675,7 @@ fn content(app: &App) -> Element<'_, Message> {
             .into()
         }
     };
+    let main = ui::swapped(app.section, None, main);
     row![sidebar(app), ui::vertical_separator(&paint), container(main).width(Fill).height(Fill)].into()
 }
 
@@ -681,7 +683,9 @@ fn content(app: &App) -> Element<'_, Message> {
 pub fn view(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let corner = app.window.corner();
-    let body = column![title_bar(app), ui::separator(&paint), container(content(app)).width(Fill).height(Fill)];
+    let state = (app.loaded, app.failure.is_some(), app.any_vault(), app.all_locked());
+    let shown = ui::swapped(state, Some(paint.win_bg()), content(app));
+    let body = column![title_bar(app), ui::separator(&paint), container(shown).width(Fill).height(Fill)];
     let framed = ui::pane(paint.win_bg(), iced::border::Radius::new(corner), body);
     let mut layers: Vec<Element<'_, Message>> = vec![framed.into()];
     if !app.window.edge_to_edge() {

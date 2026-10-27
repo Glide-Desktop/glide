@@ -59,11 +59,8 @@ pub fn window(app: &App) -> Element<'_, Message> {
 
 fn browser(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
-    let mut body = column![header::view(app), divider(t)];
-    if app.in_trash() {
-        body = body.push(trash_banner(app)).push(divider(t));
-    }
-    let body = body.push(content::view(app)).push(divider(t)).push(pathbar::view(app));
+    let banner = glide_sdk::anim::grow(app.in_trash(), column![trash_banner(app), divider(t)]);
+    let body = column![header::view(app), divider(t), banner, content::view(app), divider(t), pathbar::view(app)];
     let corner = app.corner();
     pane(
         t.win_bg(),

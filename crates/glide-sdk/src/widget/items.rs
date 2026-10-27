@@ -5,7 +5,7 @@ use glide_theme::shape::R1;
 use iced::widget::{Space, column, container, float, stack};
 use iced::{Alignment, Border, Color, Element, Fill, Length, Padding, Rectangle, Vector};
 
-use super::{Glyph, icon, text};
+use super::{Glyph, icon, mix, text};
 
 const LIFT: f32 = 4.0;
 const GROWTH: f32 = 0.06;
@@ -20,7 +20,7 @@ pub fn corner_badge<'a, M: 'a>(paint: &Paint, glyph: impl Glyph, side: f32) -> E
 #[allow(clippy::too_many_arguments)] // One tile of a grid: its parts, its size and three independent animated states
 pub fn item_tile<'a, M: 'a>(
     paint: &Paint, art: Element<'a, M>, badge: Option<Element<'a, M>>, label: Element<'a, M>, plate: f32,
-    (width, height): (f32, f32), selected: bool, (hover, lift): (f32, f32),
+    (width, height): (f32, f32), selected: f32, (hover, lift): (f32, f32),
 ) -> Element<'a, M> {
     let paint = *paint;
     let rise = lift * LIFT;
@@ -30,13 +30,13 @@ pub fn item_tile<'a, M: 'a>(
         Some(badge) => stack![art, container(badge).align_bottom(Fill).align_left(Fill)].into(),
         None => art,
     };
-    let base = if selected { paint.acc_soft() } else { Color::TRANSPARENT };
+    let base = mix(Color::TRANSPARENT, paint.acc_soft(), selected);
     let plate =
         container(art).center(Length::Fixed(plate)).style(move |_| style::rounded(paint.hover(base, hover), R2));
     let label = container(label)
         .padding(Padding::from([1.0, SP1]))
         .max_width(width)
-        .style(move |_| if selected { style::rounded(paint.acc_soft(), R1) } else { container::Style::default() });
+        .style(move |_| if selected > 0.0 { style::rounded(base, R1) } else { container::Style::default() });
     container(column![plate, label].spacing(SP1).align_x(Alignment::Center))
         .center_x(Length::Fixed(width))
         .height(Length::Fixed(height))
@@ -45,24 +45,18 @@ pub fn item_tile<'a, M: 'a>(
 }
 
 #[must_use]
-pub fn item_ink(paint: &Paint, selected: bool, secondary: bool) -> Color {
-    match (selected, secondary) {
-        (true, _) => paint.acc_soft_fg(),
-        (false, true) => paint.fg_2(),
-        (false, false) => paint.fg_1(),
-    }
+pub fn item_ink(paint: &Paint, selected: f32, secondary: bool) -> Color {
+    let rest = if secondary { paint.fg_2() } else { paint.fg_1() };
+    mix(rest, paint.acc_soft_fg(), selected)
 }
 
 #[must_use]
 pub fn table_row<'a, M: 'a>(
-    paint: &Paint, content: impl Into<Element<'a, M>>, selected: bool, stripe: bool, hover: f32, height: f32,
+    paint: &Paint, content: impl Into<Element<'a, M>>, selected: f32, stripe: bool, hover: f32, height: f32,
 ) -> Element<'a, M> {
     let paint = *paint;
-    let base = match (selected, stripe) {
-        (true, _) => paint.acc_soft(),
-        (false, true) => paint.fill_1(),
-        (false, false) => Color::TRANSPARENT,
-    };
+    let rest = if stripe { paint.fill_1() } else { Color::TRANSPARENT };
+    let base = mix(rest, paint.acc_soft(), selected);
     container(content)
         .padding(Padding::from([0.0, SP2]))
         .width(Fill)
