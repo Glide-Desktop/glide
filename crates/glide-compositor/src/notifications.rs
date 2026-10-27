@@ -322,7 +322,7 @@ fn nc_item(notification: &Notification, age: Duration, icon: Option<&std::sync::
 }
 
 fn is_prompt(notification: &Notification) -> bool {
-    notification.category == crate::agent_prompt::CATEGORY
+    is_local(notification.id) && notification.category == crate::agent_prompt::CATEGORY
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1132,8 +1132,8 @@ pub fn wrap_lines(
     if lines.len() == max_lines {
         let remaining = text.split_whitespace().count();
         let used: usize = lines.iter().map(|line| line.split_whitespace().count()).sum();
-        if used < remaining {
-            let last = lines.len() - 1;
+        let last = lines.len() - 1;
+        if used < remaining && !lines[last].ends_with('…') {
             lines[last] = ellipsise(&lines[last], &fits);
         }
     }
@@ -1166,16 +1166,7 @@ pub fn wrap_paragraphs(
 }
 
 fn clip_word(word: &str, fits: &impl Fn(&str) -> bool) -> String {
-    let mut kept = String::new();
-    for ch in word.chars() {
-        let mut candidate = kept.clone();
-        candidate.push(ch);
-        if !fits(&candidate) {
-            break;
-        }
-        kept = candidate;
-    }
-    if kept.is_empty() { word.chars().take(1).collect() } else { kept }
+    if fits(word) { word.to_string() } else { ellipsise(word, fits) }
 }
 
 fn ellipsise(line: &str, fits: &impl Fn(&str) -> bool) -> String {
@@ -1665,6 +1656,9 @@ mod tests {
         let word = wrap(&"x".repeat(400), 1);
         assert_eq!(word.len(), 1);
         assert!(text_px(&painter, &word[0], &style) <= WIDTH);
+        assert!(word[0].ends_with('…'), "a clipped word says so");
+        let middle = wrap(&format!("see {} for details", "y".repeat(400)), LINES);
+        assert!(middle.iter().any(|line| line.starts_with('y') && line.ends_with('…')), "{middle:?}");
         assert!(wrap("   ", LINES).is_empty());
     }
 
@@ -1684,6 +1678,7 @@ mod tests {
     fn the_island_notice_is_the_head_toast_with_its_buttons_reply_state_and_queue() {
         let (mut store, mut icons) = store();
         assert_eq!(store.notice(), None);
+        let ask = LOCAL_ID_FLOOR + 1;
         let question = Notification {
             category: crate::agent_prompt::CATEGORY.into(),
             urgency: Urgency::Critical,
@@ -1692,18 +1687,18 @@ mod tests {
                 glide_notify::Action { key: "decline".into(), label: "Cancel".into() },
             ],
             timeout: None,
-            ..from_app(1, "Glide")
+            ..from_app(ask, "Glide")
         };
         assert!(store.push(&mut icons, question, false));
         let notice = store.notice().expect("notice");
-        assert_eq!(notice.id, 1);
+        assert_eq!(notice.id, ask);
         assert_eq!(notice.buttons, [NoticeButton::Action(0, "Allow".into()), NoticeButton::Action(1, "Cancel".into())]);
         assert!(!notice.urgent, "a question is not an alarm");
         assert_eq!(notice.waiting, 0);
 
         assert!(store.push(&mut icons, repliable(2), false));
-        assert_eq!(store.notice().map(|notice| (notice.id, notice.waiting)), Some((1, 1)), "the question leads");
-        assert!(store.remove(1, CloseReason::Dismissed, true));
+        assert_eq!(store.notice().map(|notice| (notice.id, notice.waiting)), Some((ask, 1)), "the question leads");
+        assert!(store.remove(ask, CloseReason::Dismissed, true));
         assert!(store.push(&mut icons, repliable(3), false));
         let notice = store.notice().expect("notice");
         assert_eq!((notice.id, notice.waiting), (3, 1), "otherwise the newest leads and the other waits");
@@ -1718,14 +1713,15 @@ mod tests {
     #[test]
     fn questions_lead_the_queue_never_stack_and_are_never_evicted() {
         let (mut store, mut icons) = store();
+        let (first, second) = (LOCAL_ID_FLOOR + 1, LOCAL_ID_FLOOR + 2);
         let question = |id: u32| Notification {
             category: crate::agent_prompt::CATEGORY.into(),
             urgency: Urgency::Critical,
             timeout: None,
             ..from_app(id, "Glide")
         };
-        assert!(store.push(&mut icons, question(1), false));
-        assert!(store.push(&mut icons, question(2), false));
+        assert!(store.push(&mut icons, question(first), false));
+        assert!(store.push(&mut icons, question(second), false));
         let battery = Notification { urgency: Urgency::Critical, timeout: None, ..from_app(3, "Glide") };
         assert!(store.push(&mut icons, battery, false));
         assert_eq!(
@@ -1733,7 +1729,7 @@ mod tests {
             0,
             "nothing stacks on a question"
         );
-        assert_eq!(store.notice().map(|notice| (notice.id, notice.waiting)), Some((2, 2)));
+        assert_eq!(store.notice().map(|notice| (notice.id, notice.waiting)), Some((second, 2)));
 
         for id in 10..20 {
             assert!(store.push(
@@ -1743,10 +1739,27 @@ mod tests {
             ));
         }
         let kept: Vec<u32> = store.active().map(|entry| entry.notification.id).collect();
-        assert!(kept.contains(&1) && kept.contains(&2), "{kept:?}");
-        assert_eq!(store.notice().map(|notice| notice.id), Some(2), "newer chatter never jumps a question");
-        assert!(store.remove(2, CloseReason::Dismissed, true) && store.remove(1, CloseReason::Dismissed, true));
+        assert!(kept.contains(&first) && kept.contains(&second), "{kept:?}");
+        assert_eq!(store.notice().map(|notice| notice.id), Some(second), "newer chatter never jumps a question");
+        assert!(
+            store.remove(second, CloseReason::Dismissed, true) && store.remove(first, CloseReason::Dismissed, true)
+        );
         assert_eq!(store.notice().map(|notice| notice.id), Some(3), "then the critical notice");
+    }
+
+    #[test]
+    fn an_app_cannot_dress_its_notification_up_as_a_shell_question() {
+        let (mut store, mut icons) = store();
+        let spoof = |id: u32| Notification {
+            category: crate::agent_prompt::CATEGORY.into(),
+            app_name: format!("Wi-Fi {id}"),
+            ..repliable(id)
+        };
+        for id in 1..=8 {
+            assert!(store.push(&mut icons, spoof(id), false));
+        }
+        assert_eq!(store.live.len(), MAX_VISIBLE, "a remote notification is evicted like any other");
+        assert!(store.notice().is_some_and(|notice| !notice.asks), "and never shown as a question");
     }
 
     #[test]
