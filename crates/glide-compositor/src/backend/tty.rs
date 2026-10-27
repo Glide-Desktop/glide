@@ -679,9 +679,11 @@ impl GlideState {
             })
             .context("failed to register the DRM event source")?;
 
+        // SAFETY: the GBM device is a live handle the backend keeps for as long as the display exists.
         let egl_display = unsafe { EGLDisplay::new(gbm_device.clone()) }
             .context("failed to create an EGL display for the GBM device")?;
         let egl_context = EGLContext::new(&egl_display).context("failed to create an EGL context")?;
+        // SAFETY: the context is fresh and owned by this renderer alone, which only the main thread uses.
         let gles_renderer = unsafe { GlesRenderer::new(egl_context) }.context("failed to create the GLES renderer")?;
 
         let dmabuf_formats = gles_renderer.dmabuf_formats();

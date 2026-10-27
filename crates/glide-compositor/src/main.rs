@@ -202,6 +202,7 @@ fn run() -> anyhow::Result<()> {
     warn_about_a_foreign_session();
     apply_session_environment(&state.socket_name);
     if let Some(server) = ipc_server.as_ref() {
+        // SAFETY: as in `apply_session_environment`: main thread, before the event loop runs.
         unsafe { std::env::set_var("GLIDE_IPC_SOCK", server.socket_path()) };
     }
 
@@ -652,6 +653,9 @@ fn cursor_environment(
 }
 
 fn apply_session_environment(socket_name: &std::ffi::OsStr) {
+    // SAFETY: called once on the main thread before the event loop runs. The threads started by
+    // then (the GSettings worker, the wallpaper loader, Mesa's) are assumed to read the
+    // environment only through std::env, which takes the same lock, or only during their startup.
     unsafe {
         for (key, value) in session_environment(socket_name) {
             std::env::set_var(key, value);
