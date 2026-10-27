@@ -827,6 +827,39 @@ mod tests {
     }
 
     #[test]
+    fn a_window_maximized_before_its_first_commit_opens_on_the_output_under_the_pointer() {
+        let outputs = two_outputs();
+        for fullscreen in [false, true] {
+            let mut layout = Layout::new();
+            layout.outputs_changed(&outputs);
+            layout.set_placement_anchor(Point::new(2500, 700));
+            let w = WindowId::next();
+            layout.add_window(w, Size::ZERO);
+            if fullscreen {
+                assert!(layout.set_fullscreen(w, true));
+                assert_eq!(geometry(&layout, w), outputs[1].geometry);
+            } else {
+                assert!(layout.set_maximized(w, true));
+                assert_eq!(geometry(&layout, w), outputs[1].work_area);
+            }
+        }
+    }
+
+    #[test]
+    fn a_dialog_stays_on_its_parents_output_when_the_pointer_is_elsewhere() {
+        let outputs = two_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&outputs);
+        let parent = WindowId::next();
+        layout.add_window(parent, SIZE);
+        layout.set_window_geometry(parent, rect(2400, 300, 800, 600));
+        layout.set_placement_anchor(Point::new(100, 100));
+        let dialog = WindowId::next();
+        layout.add_window_with_parent(dialog, SMALL, parent);
+        assert!(outputs[1].geometry.contains(geometry(&layout, dialog).center()), "{:?}", geometry(&layout, dialog));
+    }
+
+    #[test]
     fn fixed_workspaces_exist_up_front_and_never_vanish() {
         let mut layout = Layout::new();
         assert!(layout.set_fixed_workspaces(Some(4)));

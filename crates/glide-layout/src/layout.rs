@@ -168,6 +168,9 @@ impl Layout {
 
     fn output_for_window(&self, w: WindowId) -> Option<&OutputInfo> {
         let state = self.windows.get(&w)?;
+        if !state.is_placed {
+            return self.placement_anchor.and_then(|anchor| self.output_at(anchor));
+        }
         let centre = state.geometry.center();
         self.output_at(centre).or_else(|| self.outputs.iter().find(|output| output.geometry.overlaps(state.geometry)))
     }
@@ -498,12 +501,11 @@ impl Layout {
     }
 
     fn centered_over_parent(&self, parent: WindowId, content_size: Size, insets: Insets) -> Option<Rectangle> {
-        let parent = self.windows.get(&parent).filter(|state| state.is_placed && !state.minimized)?;
+        let host = self.windows.get(&parent).filter(|state| state.is_placed && !state.minimized)?.frame_geometry();
         let frame_size = content_size.grow(insets);
-        let host = parent.frame_geometry();
         let x = host.loc.x + (host.size.width - frame_size.width) / 2;
         let y = host.loc.y + (host.size.height - frame_size.height) / 2;
-        Some(keep_reachable(Rectangle::new(Point::new(x, y), frame_size), self.placement_work_area()))
+        Some(keep_reachable(Rectangle::new(Point::new(x, y), frame_size), self.work_area_for_window(parent)))
     }
 
     fn insert_window(&mut self, w: WindowId, ws_id: WorkspaceId, size: Size) -> WorkspaceId {
