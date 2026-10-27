@@ -273,6 +273,20 @@ impl Document {
     }
 
     #[must_use]
+    pub fn table_delimiter(&self) -> Option<char> {
+        match self.path.as_deref()?.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+            "csv" => Some(','),
+            "tsv" => Some('\t'),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn previewable(&self) -> bool {
+        self.language() == Language::Markdown || self.table_delimiter().is_some()
+    }
+
+    #[must_use]
     pub fn dirty(&self) -> bool {
         self.history.generation() != self.saved
     }

@@ -320,6 +320,7 @@ pub struct App {
     finder_latest: Arc<std::sync::atomic::AtomicU64>,
     pending_jump: Option<(PathBuf, usize)>,
     pub markdown: Option<(u64, u64, Vec<markdown::Item>)>,
+    pub table: Option<(u64, u64, Vec<Vec<String>>)>,
     in_flight: HashSet<u64>,
     pub recent: Vec<PathBuf>,
     modifiers: Modifiers,
@@ -636,6 +637,7 @@ impl App {
             finder_latest: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pending_jump: None,
             markdown: None,
+            table: None,
             in_flight: HashSet::new(),
             recent: session.recent.clone(),
             modifiers: Modifiers::empty(),
@@ -811,7 +813,7 @@ impl App {
 
     #[must_use]
     pub fn previewing(&self) -> bool {
-        self.preview && self.doc().is_some_and(|doc| doc.language() == Language::Markdown)
+        self.preview && self.doc().is_some_and(Document::previewable)
     }
 
     #[must_use]
@@ -1218,10 +1220,19 @@ impl App {
     fn refresh_preview(&mut self) {
         if !self.previewing() {
             self.markdown = None;
+            self.table = None;
             return;
         }
-        let Some(doc) = self.doc() else { return };
+        let Some(doc) = self.docs.get(self.active) else { return };
         let key = (doc.id, doc.revision);
+        if let Some(delimiter) = doc.table_delimiter() {
+            self.markdown = None;
+            if self.table.as_ref().is_none_or(|(id, revision, _)| (*id, *revision) != key) {
+                self.table = Some((key.0, key.1, crate::table::parse(&doc.text, delimiter)));
+            }
+            return;
+        }
+        self.table = None;
         if self.markdown.as_ref().is_some_and(|(id, revision, _)| (*id, *revision) == key) {
             return;
         }
@@ -2603,6 +2614,24 @@ mod tests {
             },
             captured,
         )
+    }
+
+    #[test]
+    fn a_csv_file_previews_as_a_table_and_a_text_file_has_no_preview() {
+        let mut app = app();
+        let doc = app.doc_mut().unwrap();
+        doc.replace(0..0, "id,name\n1,\"Ada, L.\"\n", Kind::Other);
+        assert!(!doc.previewable());
+        doc.path = Some(PathBuf::from("/tmp/people.csv"));
+        assert!(doc.previewable());
+        app.preview = true;
+        app.refresh_preview();
+        let (_, _, rows) = app.table.as_ref().expect("a table for a csv file");
+        assert_eq!(rows, &[vec!["id".to_string(), "name".to_string()], vec!["1".to_string(), "Ada, L.".to_string()]]);
+        assert!(app.markdown.is_none());
+        app.doc_mut().unwrap().path = Some(PathBuf::from("/tmp/notes.txt"));
+        app.refresh_preview();
+        assert!(app.table.is_none(), "leaving a table file drops the table");
     }
 
     #[test]

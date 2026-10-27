@@ -322,6 +322,34 @@ impl<'a> markdown::Viewer<'a, Message> for Preview {
     }
 }
 
+fn table_view<'a>(app: &'a App, rows: &'a [Vec<String>]) -> Element<'a, Message> {
+    use glide_sdk::widget::{TABLE_HEADER, table_header, table_row};
+    let paint = app.paint;
+    let Some((head, body)) = rows.split_first() else {
+        return empty_note(&paint, Icon::File, "", Key::EmptyTable.text(app.lang));
+    };
+    let widths = crate::table::widths(rows);
+    let cells = |values: &'a [String], bold: bool, color: iced::Color| -> Vec<Element<'a, Message>> {
+        let style = if bold { TextStyle { weight: 600, ..TextStyle::CAP } } else { TextStyle::CAP };
+        (0..widths.len())
+            .map(|column| {
+                let value = values.get(column).map_or("", String::as_str);
+                container(text(value, style).color(color).wrapping(glide_sdk::widget::Wrapping::None))
+                    .width(Length::FillPortion(widths[column]))
+                    .padding(Padding::from([0.0, SP1]))
+                    .clip(true)
+                    .into()
+            })
+            .collect()
+    };
+    let header = table_header(&paint, cells(head, true, paint.fg_2()));
+    let lines = body.iter().enumerate().map(|(index, values)| {
+        let content = iced::widget::Row::with_children(cells(values, false, paint.fg_1()));
+        table_row(&paint, content, false, index % 2 == 1, 0.0, TABLE_HEADER)
+    });
+    column![header, scrollable(&paint, iced::widget::column(lines)).height(Fill)].into()
+}
+
 fn editor(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let Some(doc) = app.doc() else {
@@ -343,6 +371,14 @@ fn editor(app: &App) -> Element<'_, Message> {
             return container(container(editor).width(Fill).max_width(width)).width(Fill).center_x(Fill).into();
         }
         return editor.into();
+    }
+    if let Some((_, _, rows)) = &app.table {
+        return row![
+            container(editor).width(Fill),
+            vertical_rule(&paint),
+            container(table_view(app, rows)).width(Fill)
+        ]
+        .into();
     }
     let items = app.markdown.as_ref().map(|(_, _, items)| items.as_slice()).unwrap_or_default();
     let settings = markdown_settings(&paint, app.font_size(), crate::MONO);
@@ -502,13 +538,7 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             check(app, Key::StatusBar, Command::ToggleStatusBar, app.prefs.status_bar, true),
             Item::Separator,
             check(app, Key::Monospace, Command::ToggleMonospace, app.prefs.monospace, true),
-            check(
-                app,
-                Key::Preview,
-                Command::TogglePreview,
-                app.previewing(),
-                doc.is_some_and(|doc| doc.language() == Language::Markdown),
-            ),
+            check(app, Key::Preview, Command::TogglePreview, app.previewing(), doc.is_some_and(Document::previewable)),
             Item::Separator,
             action(app, Key::ZoomIn, Command::ZoomIn, true),
             action(app, Key::ZoomOut, Command::ZoomOut, true),

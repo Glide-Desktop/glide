@@ -61,7 +61,8 @@ glide_sdk::catalogue! {
     SymbolHint => "Type a symbol name", "Введіть назву символа";
     SearchHint => "Search text in the folder", "Шукати текст у папці";
     Searching => "Searching…", "Шукаю…";
-    NoResults => "No results", "Нічого не знайдено";
+    EmptyTable => "The table is empty", "Таблиця порожня";
+    NoResults =>"No results", "Нічого не знайдено";
     NoSymbols => "No symbols in this kind of file", "У цьому типі файлів символів немає";
     NeedFolder => "Open a folder first", "Спершу відкрийте папку";
     Sidebar => "Sidebar", "Бічна панель";
