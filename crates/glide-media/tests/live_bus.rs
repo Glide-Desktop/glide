@@ -163,26 +163,8 @@ fn a_player_on_the_bus_is_found_and_reported() {
     }))
     .expect("the media client starts");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut track = None;
-    while Instant::now() < deadline {
-        {
-            let events = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            for event in events.iter() {
-                if let glide_media::MediaEvent::Changed(found) = event
-                    && found.bus == bus_name
-                {
-                    track = Some(found.clone());
-                }
-            }
-        }
-        if track.is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    let track = track.expect("the fake player must be reported to the sink");
+    let track =
+        wait_for_track(&seen, &bus_name, Duration::from_secs(5)).expect("the fake player must be reported to the sink");
     assert_eq!(track.title, "Pisnya");
     assert_eq!(track.artist, "Hor");
     assert_eq!(track.status, glide_media::Playback::Playing);

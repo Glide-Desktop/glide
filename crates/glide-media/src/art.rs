@@ -11,7 +11,7 @@ const CACHE_LIMIT: usize = 128;
 const ATTEMPT_LIMIT: usize = 512;
 
 #[must_use]
-pub fn is_remote_art(url: &str) -> bool {
+pub(crate) fn is_remote_art(url: &str) -> bool {
     let url = url.trim();
     ["http://", "https://"]
         .iter()
@@ -30,23 +30,6 @@ fn fnv1a(text: &str) -> u64 {
 #[must_use]
 pub(crate) fn cached_art_path(dir: &Path, url: &str) -> PathBuf {
     dir.join(format!("{:016x}", fnv1a(url.trim())))
-}
-
-#[must_use]
-pub(crate) fn file_url(path: &Path) -> String {
-    let raw = path.to_string_lossy();
-    let mut out = String::with_capacity(raw.len() + 7);
-    out.push_str("file://");
-    for ch in raw.chars() {
-        match ch {
-            '%' => out.push_str("%25"),
-            ' ' => out.push_str("%20"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 pub(crate) struct ArtFetcher {
@@ -84,7 +67,7 @@ impl ArtFetcher {
         let dir = self.dir.as_ref()?;
         let path = cached_art_path(dir, url);
         if path.is_file() {
-            return Some(file_url(&path));
+            return Some(glide_config::uri::file_uri(&path));
         }
         if self.attempted.len() >= ATTEMPT_LIMIT {
             self.attempted.clear();
@@ -193,8 +176,22 @@ mod tests {
         let dir = scratch("roundtrip");
         let path = dir.join("with space %25 #x");
         std::fs::write(&path, b"x").expect("write");
-        assert_eq!(crate::local_art_path(&file_url(&path)).as_deref(), Some(path.as_path()));
+        assert_eq!(crate::local_art_path(&glide_config::uri::file_uri(&path)).as_deref(), Some(path.as_path()));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_cached_cover_under_a_non_utf8_folder_is_still_found() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = scratch("latin1");
+        let dir = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        std::fs::create_dir_all(&dir).expect("non-UTF-8 dir");
+        let (mut fetcher, _inbox) = ArtFetcher::detached(dir.clone());
+        let url = "https://example.com/cover.jpg";
+        std::fs::write(cached_art_path(&dir, url), b"jpeg").expect("write");
+        let local = fetcher.resolve(url).expect("served from the cache");
+        assert_eq!(crate::local_art_path(&local), Some(cached_art_path(&dir, url)));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

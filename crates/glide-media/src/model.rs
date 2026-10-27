@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-pub const BUS_PREFIX: &str = "org.mpris.MediaPlayer2.";
-pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
-pub const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
+pub(crate) const BUS_PREFIX: &str = "org.mpris.MediaPlayer2.";
+pub(crate) const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
+pub(crate) const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Playback {
@@ -43,7 +43,6 @@ pub struct Track {
     pub status: Playback,
     pub can_go_next: bool,
     pub can_go_previous: bool,
-    pub can_pause: bool,
 }
 
 impl Track {
@@ -82,7 +81,7 @@ pub enum Command {
 }
 
 #[must_use]
-pub fn seek_target(length: Option<Duration>, fraction: f32) -> Option<Duration> {
+pub(crate) fn seek_target(length: Option<Duration>, fraction: f32) -> Option<Duration> {
     let length = length?;
     if length.is_zero() {
         return None;
@@ -92,7 +91,7 @@ pub fn seek_target(length: Option<Duration>, fraction: f32) -> Option<Duration> 
 }
 
 #[must_use]
-pub fn is_player_bus(name: &str) -> bool {
+pub(crate) fn is_player_bus(name: &str) -> bool {
     name.starts_with(BUS_PREFIX) && name.len() > BUS_PREFIX.len()
 }
 
@@ -103,7 +102,7 @@ fn bus_head(name: &str) -> &str {
 }
 
 #[must_use]
-pub fn identity_from_bus(name: &str) -> String {
+pub(crate) fn identity_from_bus(name: &str) -> String {
     let tail = bus_head(name).trim_matches('-');
     if tail.is_empty() {
         return name.to_string();
@@ -132,12 +131,12 @@ pub fn player_icon_candidates(bus: &str, desktop_entry: &str) -> Vec<String> {
 }
 
 #[must_use]
-pub fn artists_to_line(artists: &[String]) -> String {
+pub(crate) fn artists_to_line(artists: &[String]) -> String {
     artists.iter().map(|artist| artist.trim()).filter(|artist| !artist.is_empty()).collect::<Vec<_>>().join(", ")
 }
 
 #[must_use]
-pub fn better_candidate(current: Option<&Track>, candidate: &Track) -> bool {
+pub(crate) fn better_candidate(current: Option<&Track>, candidate: &Track) -> bool {
     let Some(current) = current else {
         return candidate.status.is_active();
     };

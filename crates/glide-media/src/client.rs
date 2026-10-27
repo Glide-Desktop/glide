@@ -25,14 +25,9 @@ enum Request {
     PauseAll,
 }
 
+#[derive(Debug)]
 pub struct MediaHandle {
     requests: mpsc::Sender<Request>,
-}
-
-impl std::fmt::Debug for MediaHandle {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("MediaHandle")
-    }
 }
 
 impl MediaHandle {
@@ -111,28 +106,26 @@ fn pause_all(connection: &zbus::blocking::Connection) {
 }
 
 fn perform(connection: &zbus::blocking::Connection, current: Option<&Track>, request: Request) {
-    if request == Request::PauseAll {
-        return pause_all(connection);
-    }
-    let Some(track) = current else {
-        return;
-    };
-    let bus = track.bus.as_str();
-    match request {
-        Request::Command(command) => {
+    match (request, current) {
+        (Request::PauseAll, _) => pause_all(connection),
+        (_, None) => {}
+        (Request::Command(command), Some(track)) => {
             let method = format!("{command:?}");
-            deliver(connection, &method, player_call(bus, &method).and_then(|builder| builder.build(&())));
+            deliver(connection, &method, player_call(&track.bus, &method).and_then(|builder| builder.build(&())));
         }
-        Request::Seek(fraction) => {
+        (Request::Seek(fraction), Some(track)) => {
             let Some(arguments) = seek_arguments(track, fraction) else {
                 return;
             };
-            deliver(connection, "SetPosition", player_call(bus, "SetPosition").and_then(|b| b.build(&arguments)));
+            deliver(
+                connection,
+                "SetPosition",
+                player_call(&track.bus, "SetPosition").and_then(|builder| builder.build(&arguments)),
+            );
         }
-        Request::SeekBy(offset) => {
-            deliver(connection, "Seek", player_call(bus, "Seek").and_then(|builder| builder.build(&(offset,))));
+        (Request::SeekBy(offset), Some(track)) => {
+            deliver(connection, "Seek", player_call(&track.bus, "Seek").and_then(|builder| builder.build(&(offset,))));
         }
-        Request::PauseAll => {}
     }
 }
 
@@ -181,9 +174,7 @@ fn read_track(connection: &zbus::blocking::Connection, bus: &str) -> Option<Trac
     Some(Track {
         bus: bus.to_string(),
         identity: identity_from_bus(bus),
-        desktop_entry: properties(connection, bus, ROOT_INTERFACE)
-            .map(|root| string_of(&root, "DesktopEntry"))
-            .unwrap_or_default(),
+        desktop_entry: String::new(),
         track_id: metadata
             .get("mpris:trackid")
             .and_then(|value| {
@@ -202,8 +193,14 @@ fn read_track(connection: &zbus::blocking::Connection, bus: &str) -> Option<Trac
         status: Playback::from_wire(&string_of(&player, "PlaybackStatus")),
         can_go_next: flag("CanGoNext"),
         can_go_previous: flag("CanGoPrevious"),
-        can_pause: flag("CanPause"),
     })
+}
+
+fn desktop_entry(connection: &zbus::blocking::Connection, bus: &str, last: Option<&Track>) -> String {
+    if let Some(last) = last.filter(|last| last.bus == bus && !last.desktop_entry.is_empty()) {
+        return last.desktop_entry.clone();
+    }
+    properties(connection, bus, ROOT_INTERFACE).map(|root| string_of(&root, "DesktopEntry")).unwrap_or_default()
 }
 
 fn list_players(connection: &zbus::blocking::Connection) -> Vec<String> {
@@ -259,6 +256,7 @@ fn run_worker(connection: &zbus::blocking::Connection, inbox: &mpsc::Receiver<Re
 
 fn publish(connection: &zbus::blocking::Connection, last: &mut Option<Track>, art: &mut ArtFetcher, sink: &Sink) {
     let track = choose(connection).map(|mut track| {
+        track.desktop_entry = desktop_entry(connection, &track.bus, last.as_ref());
         art.localise(&mut track.art_url);
         track
     });
@@ -390,7 +388,6 @@ mod tests {
             Track { album: "Other".to_string(), ..first.clone() },
             Track { can_go_next: !first.can_go_next, ..first.clone() },
             Track { can_go_previous: !first.can_go_previous, ..first.clone() },
-            Track { can_pause: !first.can_pause, ..first.clone() },
             Track { desktop_entry: "other".to_string(), ..first.clone() },
             Track { identity: "Other".to_string(), ..first.clone() },
             Track { status: Playback::Paused, ..first.clone() },
