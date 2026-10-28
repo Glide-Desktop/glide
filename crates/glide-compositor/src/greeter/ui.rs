@@ -2662,8 +2662,8 @@ mod tests {
         cases.push(("lock-caps", caps));
         for (name, mut ui) in cases {
             let pixels = compose(&mut ui, &painter, size, 1);
-            let image = crate::shot::compose::Image::from_bgra(1280, 800, pixels).expect("image");
-            let png = crate::backend::screenshot::save_rgba(&image.into_straight(), 1280, 800, false).expect("png").png;
+            let image = glide_shell::image::Image::from_bgra(1280, 800, pixels).expect("image");
+            let png = image.png().expect("png");
             std::fs::write(std::path::Path::new(&dir).join(format!("greeter-{name}.png")), png).expect("write");
         }
     }

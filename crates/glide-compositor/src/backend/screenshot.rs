@@ -25,7 +25,7 @@ pub fn save(mut pixels: Vec<u8>, width: i32, height: i32) -> anyhow::Result<Save
 }
 
 pub fn save_rgba(rgba: &[u8], width: u32, height: u32, write: bool) -> anyhow::Result<Saved> {
-    let png = encode_png(i32::try_from(width)?, i32::try_from(height)?, rgba)?;
+    let png = glide_shell::image::encode_png(width, height, rgba).context("failed to encode the screenshot")?;
     if !write {
         return Ok(Saved { path: None, png });
     }
@@ -107,22 +107,6 @@ fn screenshot_path() -> anyhow::Result<PathBuf> {
     Ok(dir.join(format!("glide-screenshot-{timestamp}.png")))
 }
 
-fn encode_png(width: i32, height: i32, rgba: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let width = u32::try_from(width).context("screenshot width does not fit in a u32")?;
-    let height = u32::try_from(height).context("screenshot height does not fit in a u32")?;
-
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().context("failed to write PNG header")?;
-        writer.write_image_data(rgba).context("failed to write PNG image data")?;
-        writer.finish().context("failed to finish the PNG stream")?;
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,29 +160,5 @@ mod tests {
         assert_eq!(pick_screenshot_dir(&home, None), home, "must never point at a directory that doesn't exist");
         let bogus_override = home.join("does-not-exist");
         assert_eq!(pick_screenshot_dir(&home, Some(&bogus_override)), home);
-    }
-
-    #[test]
-    fn encode_png_round_trips_exact_pixel_data() {
-        let (w, h) = (3_i32, 2_i32);
-        let rgba: Vec<u8> =
-            (0..(w * h * 4)).map(|i| u8::try_from((i * 17) % 256).expect("modulo 256 always fits in a u8")).collect();
-
-        let png = encode_png(w, h, &rgba).expect("encode_png must succeed");
-
-        let decoder = png::Decoder::new(std::io::Cursor::new(png));
-        let mut reader = decoder.read_info().expect("must be a valid PNG");
-        assert_eq!(reader.info().width, w.cast_unsigned());
-        assert_eq!(reader.info().height, h.cast_unsigned());
-        assert_eq!(reader.info().color_type, png::ColorType::Rgba);
-
-        let mut buf = vec![0u8; reader.output_buffer_size().unwrap_or(0)];
-        let frame = reader.next_frame(&mut buf).expect("must decode a frame");
-        assert_eq!(&buf[..frame.buffer_size()], rgba.as_slice());
-    }
-
-    #[test]
-    fn encode_png_rejects_a_width_that_does_not_fit_in_a_u32() {
-        assert!(encode_png(-1, 10, &[]).is_err());
     }
 }

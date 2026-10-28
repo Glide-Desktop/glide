@@ -12,7 +12,9 @@ glide-config = { path = "../glide-config" }
 glide-paint = { path = "../glide-paint" }
 glide-theme = { path = "../glide-theme" }
 libc = "0.2"
+png = "0.18"
 smithay = { workspace = true, features = ["wayland_frontend"] }
+tiny-skia = "0.12.0"
 tracing.workspace = true
 
 [lints]

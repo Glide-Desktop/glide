@@ -13,96 +13,7 @@ pub const HIGHLIGHT_ALPHA: f32 = 0.38;
 pub const STEP_RADIUS: f32 = 14.0;
 pub const BLUR_BLOCK: f64 = 10.0;
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Image {
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u8>,
-}
-
-impl std::fmt::Debug for Image {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Image({}x{})", self.width, self.height)
-    }
-}
-
-impl Image {
-    #[must_use]
-    pub fn new(width: u32, height: u32) -> Option<Self> {
-        let len = usize::try_from(u64::from(width) * u64::from(height) * 4).ok()?;
-        (width > 0 && height > 0).then(|| Self { width, height, data: vec![0; len] })
-    }
-
-    #[must_use]
-    pub fn from_bgra(width: u32, height: u32, mut bgra: Vec<u8>) -> Option<Self> {
-        let len = usize::try_from(u64::from(width) * u64::from(height) * 4).ok()?;
-        if bgra.len() < len || width == 0 || height == 0 {
-            return None;
-        }
-        bgra.truncate(len);
-        swap_red_blue(&mut bgra);
-        Some(Self { width, height, data: bgra })
-    }
-
-    #[must_use]
-    pub fn to_bgra(&self) -> Vec<u8> {
-        let mut out = self.data.clone();
-        swap_red_blue(&mut out);
-        out
-    }
-
-    #[must_use]
-    pub fn crop(&self, (x, y, w, h): (i32, i32, i32, i32)) -> Option<Self> {
-        let x0 = x.clamp(0, self.width as i32);
-        let y0 = y.clamp(0, self.height as i32);
-        let x1 = (x + w).clamp(0, self.width as i32);
-        let y1 = (y + h).clamp(0, self.height as i32);
-        let mut out = Self::new((x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)?;
-        let stride = self.width as usize * 4;
-        let row = out.width as usize * 4;
-        for (index, line) in out.data.chunks_exact_mut(row).enumerate() {
-            let start = (y0 as usize + index) * stride + x0 as usize * 4;
-            line.copy_from_slice(&self.data[start..start + row]);
-        }
-        Some(out)
-    }
-
-    pub fn pixmap(&mut self) -> Option<PixmapMut<'_>> {
-        PixmapMut::from_bytes(&mut self.data, self.width, self.height)
-    }
-
-    pub fn draw(&mut self, src: &Self, x: i32, y: i32) {
-        let Some(source) = tiny_skia::PixmapRef::from_bytes(&src.data, src.width, src.height) else {
-            return;
-        };
-        if let Some(mut target) = self.pixmap() {
-            target.draw_pixmap(x, y, source, &PixmapPaint::default(), Transform::identity(), None);
-        }
-    }
-
-    #[must_use]
-    pub fn into_straight(mut self) -> Vec<u8> {
-        for pixel in self.data.chunks_exact_mut(4) {
-            let alpha = u32::from(pixel[3]);
-            match alpha {
-                0 => pixel.copy_from_slice(&[0, 0, 0, 0]),
-                255 => {}
-                _ => {
-                    for channel in &mut pixel[..3] {
-                        *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-                    }
-                }
-            }
-        }
-        self.data
-    }
-}
-
-fn swap_red_blue(pixels: &mut [u8]) {
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-}
+pub use glide_shell::image::Image;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sprite {
@@ -350,22 +261,6 @@ pub fn apply_marks(image: &mut Image, marks: &[Mark], frame: &Frame) {
     }
 }
 
-impl Image {
-    fn draw_replace(&mut self, src: &Self, x: i32, y: i32) {
-        let stride = self.width as usize * 4;
-        for row in 0..src.height as usize {
-            let ty = y as usize + row;
-            if ty >= self.height as usize {
-                break;
-            }
-            let columns = (src.width as usize).min(self.width as usize - (x as usize).min(self.width as usize));
-            let from = row * src.width as usize * 4;
-            let to = ty * stride + x as usize * 4;
-            self.data[to..to + columns * 4].copy_from_slice(&src.data[from..from + columns * 4]);
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shadow {
     pub radius: f32,
@@ -455,14 +350,6 @@ mod tests {
     fn at(image: &Image, x: u32, y: u32) -> [u8; 4] {
         let index = ((y * image.width + x) * 4) as usize;
         image.data[index..index + 4].try_into().expect("pixel")
-    }
-
-    #[test]
-    fn readback_bytes_become_rgba_and_back() {
-        let image = Image::from_bgra(1, 1, vec![10, 20, 30, 255]).expect("image");
-        assert_eq!(image.data, [30, 20, 10, 255]);
-        assert_eq!(image.to_bgra(), [10, 20, 30, 255]);
-        assert!(Image::from_bgra(2, 2, vec![0; 4]).is_none(), "too few bytes");
     }
 
     #[test]
