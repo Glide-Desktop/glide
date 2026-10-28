@@ -59,6 +59,7 @@ pub struct ViewPrefs {
     pub list_zoom: u8,
     pub columns: Vec<ListColumn>,
     pub queue: bool,
+    pub inspector: bool,
 }
 
 impl Default for ViewPrefs {
@@ -71,6 +72,7 @@ impl Default for ViewPrefs {
             list_zoom: DEFAULT_LIST_ZOOM,
             columns: ListColumn::DEFAULT.to_vec(),
             queue: false,
+            inspector: true,
         }
     }
 }
@@ -108,6 +110,7 @@ impl ViewPrefs {
                     prefs.columns = columns;
                 }
                 ("queue", flag) => prefs.queue = flag == "true",
+                ("inspector", flag) => prefs.inspector = flag != "false",
                 _ => {}
             }
         }
@@ -122,14 +125,15 @@ impl ViewPrefs {
         };
         let columns: Vec<&str> = self.columns.iter().map(|column| column.key()).collect();
         format!(
-            "view = {view}\nsort = {}\nascending = {}\nhidden = {}\ngrid-zoom = {}\nlist-zoom = {}\ncolumns = {}\nqueue = {}\n",
+            "view = {view}\nsort = {}\nascending = {}\nhidden = {}\ngrid-zoom = {}\nlist-zoom = {}\ncolumns = {}\nqueue = {}\ninspector = {}\n",
             sort_key(self.sort.by),
             self.sort.ascending,
             self.show_hidden,
             self.grid_zoom,
             self.list_zoom,
             columns.join(","),
-            self.queue
+            self.queue,
+            self.inspector
         )
     }
 }

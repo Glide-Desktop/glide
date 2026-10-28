@@ -132,7 +132,6 @@ pub enum MenuKind {
     Location(PathBuf),
     Volume(String),
     Templates,
-    Tags,
     Columns,
     OpenWith,
 }
@@ -272,6 +271,7 @@ pub struct Survey {
     pub fallback: Option<PathBuf>,
     pub trash_count: usize,
     pub elsewhere: Vec<PathBuf>,
+    pub usage: Vec<(PathBuf, (u64, u64))>,
 }
 
 #[must_use]
@@ -279,7 +279,12 @@ pub fn survey(trash: &Trash, mounts: &[PathBuf], current: PathBuf) -> Survey {
     let elsewhere = trash.on_volumes(mounts);
     let fallback = (!current.is_dir())
         .then(|| current.ancestors().find(|dir| dir.is_dir()).map_or_else(|| PathBuf::from("/"), Path::to_path_buf));
+    let usage = std::iter::once(PathBuf::from("/"))
+        .chain(mounts.iter().cloned())
+        .filter_map(|mount| query_disk_space(&mount).map(|space| (mount, space)))
+        .collect();
     Survey {
+        usage,
         trash_count: trash.count() + elsewhere.iter().map(Trash::count).sum::<usize>(),
         elsewhere: elsewhere.iter().map(Trash::files).collect(),
         fallback,
@@ -345,10 +350,14 @@ pub enum Message {
     AddBookmark(PathBuf),
     RemoveBookmark(PathBuf),
     ToggleOptions,
+    ToggleInspector,
+    SetZoom(u8),
+    SearchHome,
     CloseMenu,
     KeyMenu,
     MenuHover(usize, bool),
     Menu(Box<Message>),
+    MenuStay(Box<Message>),
     OpenSelection,
     SelectAll,
     Move(Step, bool),
@@ -494,6 +503,7 @@ impl Message {
                 | Self::ToggleOptions
                 | Self::SubMenu(_)
                 | Self::Menu(_)
+                | Self::MenuStay(_)
                 | Self::Dnd(_)
                 | Self::JobPause(_)
                 | Self::ToggleQueue
@@ -522,6 +532,8 @@ impl Message {
                 | Self::NewFolder
                 | Self::SetView(_)
                 | Self::Zoom(_)
+                | Self::SetZoom(_)
+                | Self::ToggleInspector
                 | Self::ToggleSearch
                 | Self::Back
                 | Self::Forward
@@ -759,10 +771,12 @@ pub struct App {
     window: Window,
     field: Option<Field>,
     pending_select: Option<PathBuf>,
-    grid_zoom: u8,
-    list_zoom: u8,
+    pub grid_zoom: u8,
+    pub list_zoom: u8,
     pub columns: Vec<ListColumn>,
     pub queue: bool,
+    pub inspector: bool,
+    pub usage: HashMap<PathBuf, (u64, u64)>,
     shortcuts_asked: bool,
     pub renaming: Option<Renaming>,
     column_drag: Option<ListColumn>,
@@ -956,6 +970,8 @@ impl App {
             list_zoom: prefs.list_zoom,
             columns: prefs.columns.clone(),
             queue: prefs.queue,
+            inspector: prefs.inspector,
+            usage: HashMap::new(),
             shortcuts_asked: false,
             renaming: None,
             column_drag: None,
@@ -1431,6 +1447,14 @@ impl App {
                 self.path_edit = None;
                 return self.handle(*message);
             }
+            Message::MenuStay(message) => {
+                let open = self.menu.take();
+                let task = self.handle(*message);
+                if self.menu.is_none() {
+                    self.menu = open;
+                }
+                return task;
+            }
             Message::NoticeChosen(action) => {
                 self.path_edit = None;
                 return self.handle(match action {
@@ -1587,6 +1611,22 @@ impl App {
                 }
             }
             Message::Zoom(step) => self.zoom(step),
+            Message::SetZoom(level) => {
+                let (current, levels) = match self.view {
+                    ViewMode::Grid => (&mut self.grid_zoom, config::GRID_ZOOMS),
+                    ViewMode::List => (&mut self.list_zoom, config::LIST_ZOOMS),
+                };
+                let level = level.min(u8::try_from(levels - 1).unwrap_or(0));
+                if *current != level {
+                    *current = level;
+                    self.save_prefs();
+                }
+            }
+            Message::ToggleInspector => {
+                self.inspector = !self.inspector;
+                self.save_prefs();
+            }
+            Message::SearchHome => return self.search_home(),
             Message::ToggleColumn(column) => {
                 if self.columns.contains(&column) {
                     self.columns.retain(|shown| *shown != column);
@@ -1871,6 +1911,30 @@ impl App {
     }
 
     #[must_use]
+    pub fn inspector_fits(&self) -> bool {
+        self.chooser.is_none() && self.window.size.width >= widgets::INSPECTOR_MIN_WINDOW
+    }
+
+    #[must_use]
+    pub fn inspector_shown(&self) -> bool {
+        self.inspector && self.inspector_fits()
+    }
+
+    #[must_use]
+    pub fn zoom_level(&self) -> (usize, usize) {
+        match self.view {
+            ViewMode::Grid => (usize::from(self.grid_zoom), config::GRID_ZOOMS),
+            ViewMode::List => (usize::from(self.list_zoom), config::LIST_ZOOMS),
+        }
+    }
+
+    #[must_use]
+    pub fn usage_of(&self, mount: &Path) -> Option<f32> {
+        let &(free, total) = self.usage.get(mount)?;
+        (total > 0).then(|| 1.0 - free as f32 / total as f32)
+    }
+
+    #[must_use]
     pub fn is_maximized(&self) -> bool {
         self.window.edge_to_edge()
     }
@@ -2073,6 +2137,7 @@ impl App {
     fn surveyed(&mut self, survey: Survey) -> Task<Message> {
         self.trash_count = survey.trash_count;
         self.trash_elsewhere = survey.elsewhere;
+        self.usage = survey.usage.into_iter().collect();
         match survey.fallback {
             Some(fallback) if survey.current == self.current => self.navigate(fallback),
             _ => Task::none(),
@@ -2601,6 +2666,20 @@ impl App {
         self.reload()
     }
 
+    fn search_home(&mut self) -> Task<Message> {
+        let query = self.search.as_ref().map(|search| search.query.clone()).unwrap_or_default();
+        let Some(home) = home_dir().filter(|home| *home != self.current && !query.trim().is_empty()) else {
+            return Task::none();
+        };
+        self.enter(home.clone());
+        self.history.truncate(self.history_index + 1);
+        self.history.push(home);
+        self.history_index = self.history.len() - 1;
+        self.entries.clear();
+        self.free_bytes = None;
+        self.set_query(query)
+    }
+
     fn set_query(&mut self, query: String) -> Task<Message> {
         let generation = self.search_generation.fetch_add(1, Ordering::Relaxed) + 1;
         let trimmed = query.trim().to_string();
@@ -2749,6 +2828,7 @@ impl App {
             list_zoom: self.list_zoom,
             columns: self.columns.clone(),
             queue: self.queue,
+            inspector: self.inspector,
         });
     }
 
@@ -3037,7 +3117,8 @@ impl App {
 
     fn in_content(&self, at: Point) -> bool {
         let top = self.content_top();
-        at.x > widgets::SIDEBAR_WIDTH && at.y >= top && at.y < top + self.pane.height
+        let left = widgets::SIDEBAR_WIDTH + 1.0;
+        at.x >= left && at.x < left + self.pane.width && at.y >= top && at.y < top + self.pane.height
     }
 
     fn drop_candidate(&self, at: Point) -> Option<PathBuf> {

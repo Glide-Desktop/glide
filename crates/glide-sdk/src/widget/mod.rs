@@ -9,6 +9,7 @@ mod focus;
 mod form;
 mod inputs;
 mod insight;
+mod inspector;
 mod items;
 mod layout;
 mod media;
@@ -33,17 +34,17 @@ use iced::widget::{Space, container, scrollable as scroll};
 use iced::{Background, Border, Color, Element, Fill, Shadow};
 
 pub use buttons::{
-    Size, Tone, button, button_style, compact_button, danger, flat_toggle_button, ghost, glyph_button, icon_button,
-    link, linked, outline, primary, secondary, sized_button, sized_icon_button, sized_toggle_button, toggle_button,
-    tonal, tone_ink,
+    Size, Tone, button, button_style, compact_button, danger, flat_toggle_button, full_button, ghost, glyph_button,
+    icon_button, link, linked, outline, primary, secondary, sized_button, sized_icon_button, sized_toggle_button,
+    toggle_button, tonal, tone_ink,
 };
 pub use cards::{
     choice_card, grid, hero_card, legend, page_header, preview_card, preview_ring_style, sample_well, stat_tile,
     tinted_card, tinted_card_style, usage_bar, usage_card,
 };
 pub use controls::{
-    CHECK, Check, SwitchSize, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
-    sized_spinner, sized_switch, slider, spinner, stepped_slider, switch,
+    CHECK, Check, SwitchSize, ZOOM_TRACK, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
+    sized_spinner, sized_switch, slider, spinner, stepped_slider, switch, zoom_control,
 };
 pub use editor::{editor, markdown_settings, markdown_view, text_area};
 pub use feedback::{
@@ -63,6 +64,7 @@ pub use insight::{
     Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, labelled_switch,
     reset_action, section_heading, signal_bars, stage_track, status_chips,
 };
+pub use inspector::{INSPECTOR_PREVIEW, INSPECTOR_WIDTH, Inspector};
 pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
 pub use layout::{
     CHANGED_MARK, Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW,

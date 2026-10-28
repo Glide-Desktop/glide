@@ -80,8 +80,7 @@ fn toolbar<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
         icon_button(&paint, Icon::ChevronLeft, Key::Back.text(lang), app.can_go_back().then_some(Message::Back), false);
     let forward = app.can_go_forward().then_some(Message::Forward);
     let forward = icon_button(&paint, Icon::ChevronRight, Key::Forward.text(lang), forward, false);
-    let location =
-        path_field(app).unwrap_or_else(|| container(super::pathbar::crumbs_row(app)).width(Fill).clip(true).into());
+    let location = path_field(app).unwrap_or_else(|| super::header::crumbs_row(app));
     let mut bar = Row::new()
         .push(back)
         .push(forward)

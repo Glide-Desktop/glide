@@ -598,12 +598,17 @@ pub struct SidebarItem<'a, M> {
     matched: Option<(usize, usize)>,
     ink: Option<Color>,
     accessory: Option<Element<'a, M>>,
+    count: Option<String>,
+    meter: Option<f32>,
     message: Option<M>,
     selected: bool,
     current: bool,
     hovered: bool,
     held: bool,
 }
+
+pub const SIDEBAR_METER_ROW: f32 = 44.0;
+const METER_WARN: f32 = 0.85;
 
 impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
     #[must_use]
@@ -616,12 +621,26 @@ impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
             matched: None,
             ink: None,
             accessory: None,
+            count: None,
+            meter: None,
             message: None,
             selected: false,
             current: false,
             hovered: false,
             held: false,
         }
+    }
+
+    #[must_use]
+    pub fn count(mut self, count: usize) -> Self {
+        self.count = (count > 0).then(|| count.to_string());
+        self
+    }
+
+    #[must_use]
+    pub fn meter(mut self, fraction: Option<f32>) -> Self {
+        self.meter = fraction.map(|fraction| fraction.clamp(0.0, 1.0));
+        self
     }
 
     #[must_use]
@@ -703,12 +722,15 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
             matched,
             ink,
             accessory,
+            count,
+            meter,
             message,
             selected,
             current,
             hovered,
             held,
         } = item;
+        let height = if meter.is_some() { SIDEBAR_METER_ROW } else { component::CONTROL };
         animate(if selected { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
             let trailing = if accessory.is_some() { SP1 } else { SP3 };
             let mut content = row![].spacing(SP2 + 2.0).align_y(Alignment::Center);
@@ -741,14 +763,25 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
                 }
                 None => piece(label, style).width(Fill).into(),
             };
+            let label: Element<'a, M> = match meter {
+                Some(fraction) => {
+                    let fill = if fraction > METER_WARN { paint.warn() } else { paint.fg_3() };
+                    column![label, super::usage_bar(&paint, &[(fraction, fill)], 4.0)].spacing(SP1).width(Fill).into()
+                }
+                None => label,
+            };
             content = content.push(label);
+            if let Some(count) = count {
+                let ink = if selected { paint.acc_soft_fg() } else { paint.fg_2() };
+                content = content.push(text(count, TextStyle::CAP).color(ink).wrapping(Wrapping::None));
+            }
             if let Some(accessory) = accessory {
                 content = content.push(accessory);
             }
             let control = control(container(content).center_y(Fill).clip(true))
                 .on_press_maybe(message.clone())
                 .width(Fill)
-                .height(component::CONTROL)
+                .height(height)
                 .padding(Padding::from([0.0, SP3]).right(trailing));
             let value = value.clone();
             let item = widgets::button(control, move |status| {
@@ -769,7 +802,7 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
             })
             .from(0.0)
             .scale(|value| value.max(0.0));
-            stack![item, container(bar).height(component::CONTROL).center_y(component::CONTROL)]
+            stack![item, container(bar).height(height).center_y(height)]
         })
         .into()
     }

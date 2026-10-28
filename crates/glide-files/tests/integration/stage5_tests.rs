@@ -23,6 +23,7 @@ fn view_preferences_round_trip_and_ignore_junk() {
         list_zoom: 0,
         columns: vec![glide_files::config::ListColumn::Tags, glide_files::config::ListColumn::Size],
         queue: true,
+        inspector: false,
     };
     assert_eq!(ViewPrefs::parse(&prefs.render()), prefs);
     assert_eq!(ViewPrefs::parse("garbage\nsort = sideways\ngrid-zoom = 99\n"), ViewPrefs::default());

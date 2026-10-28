@@ -323,24 +323,62 @@ fn list_columns_are_as_wide_as_their_longest_value_in_either_language() {
 #[test]
 fn a_collapsed_path_bar_keeps_a_way_to_the_hidden_folders() {
     use glide_files::icons::Icon;
-    use glide_files::widgets::pathbar::trail;
+    use glide_files::widgets::header::trail;
+    let sized = |app: &mut glide_files::App, width: f32| {
+        app.follow_window(glide_sdk::window::Window {
+            size: Size::new(width, 600.0),
+            ..glide_sdk::window::Window::default()
+        });
+    };
     let mut app = listed_app();
     app.current =
         std::path::PathBuf::from("/srv/projects/customer-archive/two-thousand-twenty-six/quarterly-reports/october");
-    app.pane = Size::new(1600.0, 560.0);
-    assert!(trail(&app).iter().all(|crumb| crumb.glyph != Icon::More), "a wide bar shows every folder");
-    app.pane = Size::new(520.0, 560.0);
+    sized(&mut app, 2400.0);
+    assert!(trail(&app).iter().all(|crumb| crumb.glyph != Some(Icon::More)), "a wide bar shows every folder");
+    sized(&mut app, 1000.0);
     let crumbs = trail(&app);
     assert_eq!(crumbs[0].path, std::path::PathBuf::from("/"));
-    assert_eq!(crumbs[1].glyph, Icon::More, "hidden folders leave an ellipsis instead of vanishing");
+    assert_eq!(crumbs[1].glyph, Some(Icon::More), "hidden folders leave an ellipsis instead of vanishing");
     assert_eq!(crumbs.last().map(|crumb| &crumb.path), Some(&app.current));
     assert_eq!(Some(crumbs[1].path.as_path()), crumbs[2].path.parent(), "the ellipsis opens the deepest hidden folder");
+    sized(&mut app, 720.0);
+    let crumbs = trail(&app);
+    assert_eq!(crumbs.len(), 1, "a minimum-size window keeps only the folder on screen");
+    assert_eq!(crumbs[0].path, app.current);
     app.current = std::path::PathBuf::from("/srv/projects/october");
-    app.pane = Size::new(512.0, 400.0);
+    sized(&mut app, 1280.0);
     assert!(
-        trail(&app).iter().all(|crumb| crumb.glyph != Icon::More),
-        "a path that fits beside the short status is not collapsed"
+        trail(&app).iter().all(|crumb| crumb.glyph != Some(Icon::More)),
+        "a path that fits beside the header controls is not collapsed"
     );
+}
+
+#[test]
+fn the_information_panel_steps_aside_when_the_window_is_too_narrow_for_it() {
+    let mut app = listed_app();
+    app.inspector = true;
+    let sized = |app: &mut glide_files::App, width: f32| {
+        app.follow_window(glide_sdk::window::Window {
+            size: Size::new(width, 600.0),
+            ..glide_sdk::window::Window::default()
+        });
+    };
+    sized(&mut app, 1280.0);
+    assert!(app.inspector_shown());
+    sized(&mut app, 720.0);
+    assert!(!app.inspector_shown(), "a minimum-size window keeps its room for the files");
+    assert!(app.inspector, "and the choice comes back when the window grows again");
+}
+
+#[test]
+fn a_mounted_volume_reports_how_full_it_is() {
+    let mut app = listed_app();
+    let mount = std::path::PathBuf::from("/run/media/f/KINGSTON");
+    assert_eq!(app.usage_of(&mount), None, "nothing is drawn before the first survey");
+    app.usage.insert(mount.clone(), (25, 100));
+    assert!((app.usage_of(&mount).unwrap_or_default() - 0.75).abs() < f32::EPSILON);
+    app.usage.insert(mount.clone(), (0, 0));
+    assert_eq!(app.usage_of(&mount), None, "a volume reporting no size draws no bar");
 }
 
 #[test]
@@ -444,7 +482,7 @@ fn a_toast_stays_while_the_pointer_rests_on_it() {
 #[test]
 fn a_volume_trash_is_treated_as_the_trash() {
     use glide_files::icons::Icon;
-    use glide_files::widgets::pathbar::trail;
+    use glide_files::widgets::header::trail;
     let mut app = listed_app();
     // SAFETY: `getuid` has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -455,8 +493,12 @@ fn a_volume_trash_is_treated_as_the_trash() {
     assert!(app.in_trash(), "a folder inside a stick's trash is still the Trash");
     let _ = app.update(Message::NewFolder);
     assert!(app.modal.is_none(), "so nothing is created there");
+    app.follow_window(glide_sdk::window::Window {
+        size: Size::new(1280.0, 800.0),
+        ..glide_sdk::window::Window::default()
+    });
     let crumbs = trail(&app);
-    assert_eq!(crumbs[0].glyph, Icon::Trash);
+    assert_eq!(crumbs[0].glyph, Some(Icon::Trash));
     assert_eq!(crumbs[0].path, app.trash.files(), "the first crumb leads back to the whole Trash");
     assert_eq!(crumbs[1].path, files.join("Archive"));
     app.current = files.clone();
@@ -559,12 +601,12 @@ fn a_late_result_does_not_select_items_in_a_folder_already_left() {
 
 #[test]
 fn the_status_line_counts_only_selected_items_that_are_shown() {
-    use glide_files::widgets::pathbar::status;
+    use glide_files::widgets::status::summary;
     let mut app = listed_app();
     app.selection.insert(std::path::PathBuf::from("/nowhere/.hidden-folder"));
-    assert_eq!(status(&app), i18n::items(6, app.lang), "a hidden item kept selected is not counted");
+    assert_eq!(summary(&app), i18n::items(6, app.lang), "a hidden item kept selected is not counted");
     app.selection.insert(path(2));
-    assert!(status(&app).starts_with(&i18n::selected(1, 6, app.lang)));
+    assert!(summary(&app).starts_with(&i18n::selected(1, app.lang)));
 }
 
 #[test]

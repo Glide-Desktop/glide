@@ -562,6 +562,13 @@ impl<A: App> Host<A> {
                 };
                 return step.map_or_else(Task::none, |message| self.finish(menu::Outcome::Stay(message)));
             }
+            menu::Event::Swatched(index, at) => {
+                let picked = match popup.items.get(index) {
+                    Some(menu::Item::Swatches(swatches)) => swatches.get(at).map(|swatch| swatch.message.clone()),
+                    _ => None,
+                };
+                return picked.map_or_else(Task::none, |message| self.finish(menu::Outcome::Stay(message)));
+            }
         }
         Task::none()
     }

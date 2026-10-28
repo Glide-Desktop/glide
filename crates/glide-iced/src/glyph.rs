@@ -27,6 +27,8 @@ pub enum Icon {
     Link,
     Shield,
     Server,
+    Minus,
+    Inspector,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +43,7 @@ enum Kind {
 }
 
 const SCALE: i32 = 4;
-const ICONS: usize = Icon::Server as usize + 1;
+const ICONS: usize = Icon::Inspector as usize + 1;
 type Cache = Vec<((Kind, u16, [u8; 4]), iced::widget::image::Handle)>;
 type Masks = Vec<((Kind, u16), std::sync::Arc<Vec<u8>>)>;
 
@@ -86,6 +88,8 @@ pub fn glyph<'a, Message: 'a>(icon: Icon, side: f32, tint: Color) -> Element<'a,
         Icon::Server => {
             "<rect x='3.5' y='4' width='17' height='7' rx='2'/><rect x='3.5' y='13' width='17' height='7' rx='2'/><path d='M7.5 7.5h.01M7.5 16.5h.01'/>"
         }
+        Icon::Minus => "<path d='M5 12h14'/>",
+        Icon::Inspector => "<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M15 4v16'/>",
     };
     let handle = HANDLES[icon as usize].get_or_init(|| {
         iced::widget::svg::Handle::from_memory(format!(

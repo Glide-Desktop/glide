@@ -390,6 +390,18 @@ fn sliders<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
         .spacing(SP3)
         .align_y(Alignment::Center),
         row![
+            text(shell.t("Масштаб", "Zoom"), TextStyle::CALL).width(110),
+            ui::zoom_control(
+                paint,
+                (catalog.stepped / 25.0).round() as usize,
+                5,
+                |level| Message::Stepped(level as f32 * 25.0),
+                (shell.t("Зменшити", "Zoom out"), shell.t("Збільшити", "Zoom in")),
+            ),
+        ]
+        .spacing(SP3)
+        .align_y(Alignment::Center),
+        row![
             ui::sized_button(paint, "0", Tone::Neutral, Size::Small, Some(Message::Volume(0.0))),
             ui::sized_button(paint, "50", Tone::Neutral, Size::Small, Some(Message::Volume(50.0))),
             ui::sized_button(paint, "100", Tone::Neutral, Size::Small, Some(Message::Volume(100.0))),
@@ -907,6 +919,7 @@ fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
             demo(shell, shell.t("Проблема", "Issue"), issue),
             ui::section(paint, shell.t("Картки-огляди", "Glance cards"), glances),
             ui::section(paint, shell.t("Факти", "Facts"), facts),
+            ui::section(paint, shell.t("Панель інформації", "Information panel"), inspector(shell)),
             demo(shell, shell.t("Етапи", "Stages"), stages),
             ui::section(paint, shell.t("Вибір плиткою", "Choice tiles"), plans),
             ui::section(paint, shell.t("Заголовок зі скиданням", "Heading with reset"), header),
@@ -914,6 +927,23 @@ fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
             ui::section(paint, shell.t("Ескізи", "Sketches"), pictures),
         ],
     )
+}
+
+fn inspector(shell: &Shell<Message>) -> Element<'_, Message> {
+    let paint = shell.paint();
+    let tags = ui::swatches(paint, &[(0, paint.danger()), (1, paint.ok())], Some(1), |_| Message::Flip);
+    let open = ui::full_button(paint, shell.t("Відкрити", "Open"), Tone::Accent, Some(Message::Said("Open")));
+    let properties = Some(Message::Said("Properties"));
+    let properties = ui::full_button(paint, shell.t("Властивості", "Properties"), Tone::Outline, properties);
+    let panel = ui::Inspector::new(paint, shell.t("Звіт за жовтень.pdf", "October report.pdf"))
+        .preview(ui::icon(Icon::File, 96.0, paint.fg_2()))
+        .subtitle(shell.t("Документ PDF · 2,4 МБ", "PDF document · 2.4 MB"))
+        .figure(shell.t("Розмір", "Size"), "2,4 МБ")
+        .figure(shell.t("Де", "Where"), "~/Документи")
+        .section(shell.t("Мітки", "Tags"), tags)
+        .action(open)
+        .action(properties);
+    container(panel).height(560).into()
 }
 
 fn small_pieces<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
@@ -963,10 +993,23 @@ fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element
         ui::sidebar_item(paint, Some(Icon::Folder), shell.t("Домівка", "Home"), !catalog.flipped, Message::Flip),
         ui::sidebar_item(paint, Some(Icon::File), shell.t("Документи", "Documents"), catalog.flipped, Message::Flip),
         Element::from(
+            ui::SidebarItem::new(paint, shell.t("Смітник", "Trash"))
+                .glyph(Icon::File)
+                .count(3)
+                .on_press(Some(Message::Said("Trash"))),
+        ),
+        Element::from(
             ui::SidebarItem::new(paint, "KINGSTON")
                 .glyph(Icon::File)
+                .meter(Some(0.42))
                 .on_press(Some(Message::Said("Drive")))
                 .accessory(ui::icon_button(paint, Icon::Up, "", Some(Message::Said("Eject")), false)),
+        ),
+        Element::from(
+            ui::SidebarItem::new(paint, shell.t("Файлова система", "File System"))
+                .glyph(Icon::Server)
+                .meter(Some(0.91))
+                .on_press(Some(Message::Said("Root"))),
         ),
         Element::from(
             ui::SidebarItem::new(paint, shell.t("Не змонтовано", "Not mounted"))

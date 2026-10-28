@@ -104,6 +104,8 @@ struct Line<'a> {
     key: Hover,
     menu: Option<MenuKind>,
     drag: Option<Message>,
+    count: usize,
+    meter: Option<f32>,
     app: &'a App,
 }
 
@@ -122,7 +124,9 @@ impl<'a> Line<'a> {
             .selected(self.selected)
             .current(active)
             .hovered(self.app.hover(&self.key) > 0.5)
-            .held(self.held);
+            .held(self.held)
+            .count(self.count)
+            .meter(self.meter);
         if let Some(message) = self.eject {
             let label = if matches!(message, Message::Unmount(_)) { Key::Unmount } else { Key::Eject };
             item = item.accessory(glide_sdk::widget::icon_button(
@@ -165,6 +169,8 @@ fn item<'a>(app: &'a App, place: &'a Place, bookmark: bool) -> Element<'a, Messa
         key: Hover::Place(place.path.clone()),
         menu: Some(MenuKind::Location(place.path.clone())),
         drag: bookmark.then(|| Message::BookmarkPressed(place.path.clone())),
+        count: if app.trash.is_files_dir(&place.path) { app.trash_count } else { 0 },
+        meter: app.is_device(&place.path).then(|| app.usage_of(&place.path)).flatten(),
         app,
     }
     .view()
@@ -192,6 +198,8 @@ fn phone_item<'a>(app: &'a App, phone: &'a crate::fs::mtp::Phone) -> Element<'a,
         key: Hover::Place(phone.mount.clone().unwrap_or_else(|| std::path::PathBuf::from(&phone.id))),
         menu: None,
         drag: None,
+        count: 0,
+        meter: None,
         app,
     }
     .view()
@@ -230,6 +238,8 @@ fn volume_item<'a>(app: &'a App, volume: &'a Volume) -> Element<'a, Message> {
         key: Hover::Place(volume.mount.clone().unwrap_or_else(|| volume.device.clone())),
         menu: Some(MenuKind::Volume(volume.object.clone())),
         drag: None,
+        count: 0,
+        meter: volume.mount.as_deref().and_then(|mount| app.usage_of(mount)),
         app,
     }
     .view()

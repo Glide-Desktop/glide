@@ -486,6 +486,29 @@ pub fn stepped_slider<'a, M: Clone + 'a>(
     }
 }
 
+pub const ZOOM_TRACK: f32 = 72.0;
+
+#[must_use]
+pub fn zoom_control<'a, M: Clone + 'a>(
+    paint: &Paint, level: usize, levels: usize, on_change: impl Fn(usize) -> M + 'a, labels: (&'a str, &'a str),
+) -> Element<'a, M> {
+    use iced::widget::{container, row};
+    let last = levels.saturating_sub(1);
+    let level = level.min(last);
+    let out = (level > 0).then(|| on_change(level - 1));
+    let into = (level < last).then(|| on_change(level + 1));
+    let pick = move |value: f32| on_change(value.round().clamp(0.0, last as f32) as usize);
+    let track = stepped_slider(paint, 0.0..=last as f32, level as f32, 1.0, Some(pick), None);
+    row![
+        super::icon_button(paint, super::Icon::Minus, labels.0, out, false),
+        container(track).width(ZOOM_TRACK),
+        super::icon_button(paint, super::Icon::Plus, labels.1, into, false),
+    ]
+    .spacing(2)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Bar {
     value: Option<Motion>,

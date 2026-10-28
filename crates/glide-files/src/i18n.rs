@@ -37,6 +37,22 @@ glide_sdk::catalogue! {
     ColType => "Kind", "Тип";
     ColLocation => "Location", "Розташування";
     Search => "Search", "Пошук";
+    SearchHere => "Search in this folder", "Пошук у цій папці";
+    Inspector => "Information", "Інформація";
+    InspectorPanel => "Information Panel", "Панель інформації";
+    Where => "Where", "Де";
+    Folder => "Folder", "Папка";
+    Folders => "Folders", "Папок";
+    FreeSpace => "Free", "Вільно";
+    FileSystem => "File system", "Файлова система";
+    Capacity => "Capacity", "Ємність";
+    FolderProperties => "Folder Properties", "Властивості папки";
+    Zoom => "Zoom", "Масштаб";
+    EmptyFolderHint => "Drag files here or create a new folder.", "Перетягніть сюди файли або створіть нову папку.";
+    TrashEmpty => "Trash is empty", "Смітник порожній";
+    TrashEmptyHint => "Whatever you delete waits here until you empty the Trash.", "Усе видалене чекає тут, доки ви не очистите смітник.";
+    SearchHome => "Search in Home", "Шукати в Домівці";
+    EnterPath => "Enter Path", "Ввести шлях";
     Back => "Back", "Назад";
     Forward => "Forward", "Уперед";
     MoreActions => "More", "Інші дії";
@@ -283,10 +299,42 @@ pub fn duration(span: std::time::Duration, lang: Lang) -> String {
 }
 
 #[must_use]
-pub fn selected(count: usize, total: usize, lang: Lang) -> String {
+pub fn selected(count: usize, lang: Lang) -> String {
     match lang {
-        Lang::Uk => format!("Вибрано {count} з {total}"),
-        Lang::En => format!("{count} of {total} selected"),
+        Lang::Uk => format!("Вибрано {}", items(count, lang)),
+        Lang::En => format!("{} selected", items(count, lang)),
+    }
+}
+
+#[must_use]
+pub fn found(count: usize, lang: Lang) -> String {
+    match lang {
+        Lang::Uk => format!("Знайдено {}", items(count, lang)),
+        Lang::En => format!("{} found", items(count, lang)),
+    }
+}
+
+#[must_use]
+pub fn in_trash(count: usize, lang: Lang) -> String {
+    match lang {
+        Lang::Uk => format!("У смітнику {}", items(count, lang)),
+        Lang::En => format!("{} in the Trash", items(count, lang)),
+    }
+}
+
+#[must_use]
+pub fn nothing_found(place: &str, query: &str, lang: Lang) -> String {
+    match lang {
+        Lang::Uk => format!("У «{place}» й вкладених папках немає назв чи міток зі словом «{query}»."),
+        Lang::En => format!("No names or tags in “{place}” or its folders contain “{query}”."),
+    }
+}
+
+#[must_use]
+pub fn free_space(amount: &str, lang: Lang) -> String {
+    match lang {
+        Lang::Uk => format!("Вільно {amount}"),
+        Lang::En => format!("{amount} free"),
     }
 }
 

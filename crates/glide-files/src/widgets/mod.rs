@@ -2,9 +2,10 @@ pub mod chooser;
 pub mod content;
 pub mod dialogs;
 pub mod header;
+pub mod inspector;
 pub mod menu;
-pub mod pathbar;
 pub mod sidebar;
+pub mod status;
 
 use std::time::Instant;
 
@@ -22,8 +23,9 @@ use crate::native_icons::Art;
 use crate::theme::{self, Side, ThemeState, window_corners};
 
 pub const SIDEBAR_WIDTH: f32 = 208.0;
-pub const HEADER_HEIGHT: f32 = 35.0;
-pub(crate) const PATHBAR_HEIGHT: f32 = 28.0;
+pub const HEADER_HEIGHT: f32 = glide_sdk::window::HEADER;
+pub(crate) const STATUS_HEIGHT: f32 = 28.0;
+pub const INSPECTOR_MIN_WINDOW: f32 = SIDEBAR_WIDTH + glide_sdk::widget::INSPECTOR_WIDTH + 440.0;
 pub const TRASH_BANNER: f32 = glide_sdk::widget::INFO_BAR;
 pub const CONTROL: f32 = theme::SMALL_CONTROL;
 
@@ -60,7 +62,12 @@ pub fn window(app: &App) -> Element<'_, Message> {
 fn browser(app: &App) -> Element<'_, Message> {
     let t = &app.theme;
     let banner = glide_sdk::anim::grow(app.in_trash(), column![trash_banner(app), divider(t)]);
-    let body = column![header::view(app), divider(t), banner, content::view(app), divider(t), pathbar::view(app)];
+    let inspector = glide_sdk::anim::slide_in_end(
+        app.inspector_shown(),
+        row![vertical_separator(t), inspector::view(app)].height(Fill),
+    );
+    let middle = row![content::view(app), inspector].height(Fill);
+    let body = column![header::view(app), divider(t), banner, middle, divider(t), status::view(app)];
     let corner = app.corner();
     pane(
         t.win_bg(),
@@ -76,10 +83,7 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
     let lang = app.lang;
     let restorable = app.selected_entries().any(|e| app.trash.is_top_level(&e.path));
     let title = Key::Trash.text(lang);
-    let mut buttons = vec![Key::EmptyTrash];
-    if restorable {
-        buttons.insert(0, Key::Restore);
-    }
+    let buttons = [Key::Restore, Key::EmptyTrash];
     let taken: f32 = buttons.iter().map(|key| Size::Small.width(key.text(lang)) + theme::SP2).sum();
     let heading = measure(title, TextStyle { weight: 600, ..TextStyle::CALL });
     let room = app.pane.width - 2.0 * theme::SP3 - heading - theme::SP2 - taken;
@@ -87,11 +91,11 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
     let actions = buttons
         .into_iter()
         .map(|key| {
-            let message = match key {
-                Key::Restore => Some(Message::Restore),
-                _ => (app.trash_count > 0).then_some(Message::EmptyTrash),
+            let (message, tone) = match key {
+                Key::Restore => (restorable.then_some(Message::Restore), glide_sdk::Tone::Neutral),
+                _ => ((app.trash_count > 0).then_some(Message::EmptyTrash), glide_sdk::Tone::Danger),
             };
-            glide_sdk::widget::compact_button(t, key.text(lang), glide_sdk::Tone::Neutral, message)
+            glide_sdk::widget::compact_button(t, key.text(lang), tone, message)
         })
         .collect();
     glide_sdk::widget::info_bar(t, None, title, &blurb, actions)
@@ -241,7 +245,7 @@ fn toast<'a>(app: &'a App, notice: &'a Notice, progress: f32, live: bool) -> Ele
         .height(Fill)
         .align_x(Alignment::Center)
         .align_y(Alignment::End)
-        .padding(Padding { bottom: PATHBAR_HEIGHT + 16.0, left: SIDEBAR_WIDTH, ..Padding::ZERO })
+        .padding(Padding { bottom: STATUS_HEIGHT + 16.0, left: SIDEBAR_WIDTH, ..Padding::ZERO })
         .into()
 }
 

@@ -367,26 +367,38 @@ impl<T: Clone> Lingering<T> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    Bottom,
+    Right,
+    Left,
+}
+
 pub struct Collapse<'a, M> {
     content: Element<'a, M>,
     open: bool,
-    sideways: bool,
+    edge: Edge,
     from_closed: bool,
 }
 
 #[must_use]
 pub fn collapse<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    Element::new(Collapse { content: content.into(), open, sideways: false, from_closed: false })
+    Element::new(Collapse { content: content.into(), open, edge: Edge::Bottom, from_closed: false })
 }
 
 #[must_use]
 pub fn grow<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    Element::new(Collapse { content: content.into(), open, sideways: false, from_closed: true })
+    Element::new(Collapse { content: content.into(), open, edge: Edge::Bottom, from_closed: true })
 }
 
 #[must_use]
 pub fn grow_x<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    Element::new(Collapse { content: content.into(), open, sideways: true, from_closed: true })
+    Element::new(Collapse { content: content.into(), open, edge: Edge::Right, from_closed: true })
+}
+
+#[must_use]
+pub fn slide_in_end<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    Element::new(Collapse { content: content.into(), open, edge: Edge::Left, from_closed: false })
 }
 
 impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
@@ -402,22 +414,32 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
 
     fn size(&self) -> Size<Length> {
         let size = self.content.as_widget().size();
-        if self.sideways { Size::new(Length::Shrink, size.height) } else { Size::new(size.width, Length::Shrink) }
+        if self.edge == Edge::Bottom {
+            Size::new(size.width, Length::Shrink)
+        } else {
+            Size::new(Length::Shrink, size.height)
+        }
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
         let value = tree.state.downcast_ref::<Motion>().value(Speed::EXPAND);
-        let room = if self.sideways {
+        let sideways = self.edge != Edge::Bottom;
+        let room = if sideways {
             layout::Limits::new(Size::new(0.0, limits.min().height), Size::new(f32::INFINITY, limits.max().height))
         } else {
             layout::Limits::new(Size::new(limits.min().width, 0.0), Size::new(limits.max().width, f32::INFINITY))
         };
         let child = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, &room);
         let size = child.size();
-        let shown = if self.sideways {
+        let shown = if sideways {
             Size::new((size.width * value).ceil(), size.height)
         } else {
             Size::new(size.width, (size.height * value).ceil())
+        };
+        let child = if self.edge == Edge::Left {
+            child.move_to(iced::Point::new(shown.width - size.width, 0.0))
+        } else {
+            child
         };
         layout::Node::with_children(shown, vec![child])
     }

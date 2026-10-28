@@ -154,6 +154,20 @@ pub fn button<'a, M: Clone + 'a>(
 }
 
 #[must_use]
+pub fn full_button<'a, M: Clone + 'a>(
+    paint: &Paint, label: impl Into<Cow<'a, str>>, tone: Tone, message: Option<M>,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let size = Size::Medium;
+    let control = control(container(text(label, size.label()).wrapping(Wrapping::None)).center(Fill))
+        .on_press_maybe(message.clone())
+        .width(Fill)
+        .height(size.height())
+        .padding(Padding::from([0.0, SP3]));
+    activatable(&paint, widgets::button(control, move |status| button_style(&paint, tone, status)), R2, message)
+}
+
+#[must_use]
 pub fn compact_button<'a, M: Clone + 'a>(
     paint: &Paint, label: impl Into<Cow<'a, str>>, tone: Tone, message: Option<M>,
 ) -> Element<'a, M> {

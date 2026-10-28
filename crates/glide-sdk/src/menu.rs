@@ -16,6 +16,7 @@ const ITEM: f32 = component::MENU_ITEM;
 const STEP: f32 = component::SMALL_CONTROL;
 const MARK: f32 = 14.0;
 const DOT: f32 = 10.0;
+const SWATCH: f32 = 18.0;
 const SEPARATOR: f32 = 9.0;
 const HEADING: f32 = 26.0;
 
@@ -42,8 +43,17 @@ pub enum Item<M> {
         less: Option<M>,
         more: Option<M>,
     },
+    Swatches(Vec<Swatch<M>>),
     Heading(String),
     Separator,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Swatch<M> {
+    pub label: String,
+    pub color: iced::Color,
+    pub on: bool,
+    pub message: M,
 }
 
 impl<M> Item<M> {
@@ -89,6 +99,11 @@ impl<M> Item<M> {
     #[must_use]
     pub fn stepper(label: impl Into<String>, value: impl Into<String>, less: Option<M>, more: Option<M>) -> Self {
         Self::Stepper { label: label.into(), value: value.into(), less, more }
+    }
+
+    #[must_use]
+    pub fn swatches(swatches: Vec<Swatch<M>>) -> Self {
+        Self::Swatches(swatches)
     }
 
     #[must_use]
@@ -138,7 +153,7 @@ impl<M> Item<M> {
                 *less = None;
                 *more = None;
             }
-            Self::Stepper { .. } | Self::Heading(_) | Self::Separator => {}
+            Self::Stepper { .. } | Self::Swatches(_) | Self::Heading(_) | Self::Separator => {}
         }
         self
     }
@@ -148,6 +163,7 @@ impl<M> Item<M> {
         match self {
             Self::Action { message, enabled: true, .. } => vec![message],
             Self::Stepper { less, more, .. } => less.iter().chain(more.iter()).collect(),
+            Self::Swatches(swatches) => swatches.iter().map(|swatch| &swatch.message).collect(),
             _ => Vec::new(),
         }
     }
@@ -164,7 +180,7 @@ impl<M> Item<M> {
         match self {
             Self::Action { enabled, .. } | Self::Submenu { enabled, .. } => *enabled,
             Self::Stepper { less, more, .. } => less.is_some() || more.is_some(),
-            Self::Heading(_) | Self::Separator => false,
+            Self::Swatches(_) | Self::Heading(_) | Self::Separator => false,
         }
     }
 }
@@ -217,6 +233,23 @@ fn export_items<M: Clone>(items: &[Item<M>], actions: &mut Vec<M>) -> Vec<Entry>
                     .collect();
                 Entry::Submenu { label: label.clone(), enabled: less.is_some() || more.is_some(), children }
             }
+            Item::Swatches(swatches) => Entry::Submenu {
+                label: String::new(),
+                enabled: true,
+                children: swatches
+                    .iter()
+                    .map(|swatch| {
+                        actions.push(swatch.message.clone());
+                        Entry::Action {
+                            id: u32::try_from(actions.len()).unwrap_or(u32::MAX),
+                            label: swatch.label.clone(),
+                            enabled: true,
+                            check: Some(swatch.on),
+                            shortcut: None,
+                        }
+                    })
+                    .collect(),
+            },
             Item::Heading(label) => {
                 Entry::Action { id: 0, label: label.clone(), enabled: false, check: None, shortcut: None }
             }
@@ -361,6 +394,7 @@ pub enum Event {
     Hovered(usize),
     Picked(usize),
     Stepped(usize, bool),
+    Swatched(usize, usize),
     Dismiss,
 }
 
@@ -545,8 +579,12 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
             }
             Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + 12.0 + SP2,
             Item::Stepper { label, value, .. } => {
-                measure(label, TextStyle::MENU_ITEM) + SP3 + 2.0 * STEP + measure(value, TextStyle::NUM).max(STEP)
+                measure(label, TextStyle::MENU_ITEM)
+                    + SP3
+                    + 2.0 * STEP
+                    + (measure(value, TextStyle::NUM) + 2.0 * SP1).max(STEP)
             }
+            Item::Swatches(swatches) => swatches.len() as f32 * (SWATCH + SP2),
             Item::Heading(label) => measure(label, TextStyle::CAP),
             Item::Separator => 0.0,
         })
@@ -676,13 +714,13 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
                     .padding(0);
                 widgets::button(control, move |status| style::action(&paint, glide_iced::Tone::Neutral, status))
             };
-            let value = text(value.clone(), TextStyle::NUM).width(Length::Shrink);
+            let value = text(value.clone(), TextStyle::NUM).width(Length::Shrink).wrapping(Wrapping::None);
             let content = row![
                 Space::new().width(14),
                 text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
                 Space::new().width(Fill),
                 step("−", less.is_some(), false),
-                container(value).center_x(STEP),
+                container(value).padding(Padding::from([0.0, SP1])).center_y(STEP),
                 step("+", more.is_some(), true),
             ]
             .spacing(SP2)
@@ -693,6 +731,13 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
                 style::rounded(paint.layer(iced::Color::TRANSPARENT, motion::ST_HOVER * layer), R2)
             });
             mouse_area(row).on_enter(Event::Hovered(index)).into()
+        }
+        Item::Swatches(swatches) => {
+            let dots = swatches.iter().enumerate().map(|(at, swatch)| {
+                crate::widget::swatch(&paint, swatch.color, swatch.on, Some(Event::Swatched(index, at)), SWATCH)
+            });
+            let content = iced::widget::Row::with_children(dots).spacing(SP1).align_y(Alignment::Center);
+            container(content).padding(Padding::from([0.0, SP2])).height(ITEM).center_y(ITEM).into()
         }
     }
 }

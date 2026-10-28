@@ -58,6 +58,16 @@ impl Metrics {
     }
 
     #[must_use]
+    pub fn percent(&self, view: ViewMode) -> u32 {
+        let normal = Self::default();
+        let ratio = match view {
+            ViewMode::Grid => self.icon / normal.icon,
+            ViewMode::List => self.row / normal.row,
+        };
+        (ratio * 100.0).round() as u32
+    }
+
+    #[must_use]
     pub fn columns(&self, width: f32) -> usize {
         (((width - 2.0 * GRID_PADDING + TILE_GAP) / (self.tile_w + TILE_GAP)).floor() as usize).max(1)
     }
@@ -203,14 +213,25 @@ pub fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn empty_state(app: &App) -> Element<'_, Message> {
-    let (key, glyph) = if app.search.as_ref().is_some_and(|search| search.pending) {
-        (Key::Searching, Icon::Search)
-    } else if app.is_searching() {
-        (Key::NoSearchResults, Icon::Search)
-    } else {
-        (Key::EmptyFolder, Icon::Folder)
-    };
-    glide_sdk::widget::empty_state(&super::paint(&app.theme), glyph, "", key.text(app.lang), None)
+    use glide_sdk::widget::{empty_state, tonal};
+    let paint = super::paint(&app.theme);
+    let lang = app.lang;
+    if let Some(search) = &app.search {
+        if search.pending {
+            return empty_state(&paint, Icon::Search, Key::Searching.text(lang), "", None);
+        }
+        let place = app.location_name(&app.current);
+        let body = crate::i18n::nothing_found(&place, search.query.trim(), lang);
+        let elsewhere = crate::fs::home_dir()
+            .filter(|home| *home != app.current)
+            .map(|_| tonal(&paint, Key::SearchHome.text(lang), Message::SearchHome));
+        return empty_state(&paint, Icon::Search, Key::NoSearchResults.text(lang), body, elsewhere);
+    }
+    if app.in_trash() {
+        return empty_state(&paint, Icon::Trash, Key::TrashEmpty.text(lang), Key::TrashEmptyHint.text(lang), None);
+    }
+    let create = tonal(&paint, Key::NewFolder.text(lang), Message::NewFolder);
+    empty_state(&paint, Icon::Folder, Key::EmptyFolder.text(lang), Key::EmptyFolderHint.text(lang), Some(create))
 }
 
 fn files<'a>(app: &'a App, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {

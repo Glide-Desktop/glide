@@ -398,6 +398,7 @@ fn menu_rows(app: &App, paint: &Paint, menu: &Menu) -> (Vec<Element<'static, Mes
                 Event::Stepped(_, more) => {
                     messages.get(usize::from(more)).or(messages.first()).cloned().unwrap_or(Message::Frame)
                 }
+                Event::Swatched(_, at) => messages.get(at).cloned().unwrap_or(Message::Frame),
                 Event::Dismiss => Message::Dismiss,
             })
         })

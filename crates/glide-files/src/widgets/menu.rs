@@ -4,7 +4,7 @@ use glide_sdk::menu::{self as sdk, Event, Walk};
 use iced::widget::responsive;
 use iced::{Element, Point, Size};
 
-use super::header::{GAP, INSET, SEARCH_WIDTH, WINDOW_CONTROL};
+use super::header::{GAP, WINDOW_CONTROL};
 use super::{CONTROL, HEADER_HEIGHT};
 use crate::app::{App, Menu, MenuKind, Message, Step, ViewMode};
 use crate::fs::{Offer, SortBy, Volume};
@@ -14,7 +14,7 @@ use crate::theme::SP2;
 pub type Entry = sdk::Item<Message>;
 
 pub const WIDTH: f32 = 248.0;
-const OPTIONS_RIGHT_INSET: f32 = INSET + WINDOW_CONTROL + GAP + SEARCH_WIDTH + GAP;
+const OPTIONS_RIGHT_INSET: f32 = SP2 + WINDOW_CONTROL + 2.0 + GAP;
 const OPTIONS_TOP: f32 = HEADER_HEIGHT.midpoint(CONTROL) + SP2;
 
 #[must_use]
@@ -110,13 +110,17 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 item(Key::Copy, Message::Copy).shortcut("Ctrl+C"),
                 item(Key::Duplicate, Message::Duplicate).shortcut("Ctrl+D"),
                 item(Key::CreateLink, Message::CreateLink),
-                item(Key::CopyPath, Message::CopyText(joined(&selected))),
+                item(Key::Rename, Message::Rename).shortcut("F2").enabled(single),
                 Entry::Separator,
-                item(Key::Tags, Message::SubMenu(MenuKind::Tags)).cascades(),
+                Entry::heading(Key::Tags.text(app.lang)),
+                tag_swatches(app),
+                item(Key::EditTags, Message::EditTags),
+                Entry::Separator,
+                item(Key::CopyPath, Message::CopyText(joined(&selected))),
             ]);
             entries.extend(bookmark);
             entries.extend([
-                item(Key::Rename, Message::Rename).shortcut("F2").enabled(single),
+                Entry::Separator,
                 item(Key::MoveToTrash, Message::Trash).shortcut("Del").danger(),
                 Entry::Separator,
                 properties.enabled(single),
@@ -171,7 +175,24 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
         }
         MenuKind::Volume(object) => app.volume(object).map(|volume| volume_entries(app, volume)).unwrap_or_default(),
         MenuKind::Options => {
-            let mut entries = vec![Entry::heading(Key::SortBy.text(app.lang))];
+            let (level, levels) = app.zoom_level();
+            let zoom = Entry::stepper(
+                Key::Zoom.text(app.lang),
+                format!("{} %", app.metrics().percent(app.view)),
+                (level > 0).then_some(Message::Zoom(-1)),
+                (level + 1 < levels).then_some(Message::Zoom(1)),
+            );
+            let mut entries = vec![
+                Entry::heading(Key::ViewAs.text(app.lang)),
+                zoom,
+                item(Key::ShowHidden, Message::ToggleHidden).shortcut("Ctrl+H").checked(app.show_hidden),
+                item(Key::InspectorPanel, Message::ToggleInspector)
+                    .checked(app.inspector_shown())
+                    .enabled(app.inspector_fits()),
+                item(Key::Columns, Message::SubMenu(MenuKind::Columns)).cascades().enabled(app.view == ViewMode::List),
+                Entry::Separator,
+                Entry::heading(Key::SortBy.text(app.lang)),
+            ];
             entries.extend(
                 SortBy::ALL
                     .into_iter()
@@ -180,19 +201,8 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             entries.extend([
                 item(Key::Reversed, Message::ToggleReverse).checked(!app.sort.ascending),
                 Entry::Separator,
-                item(Key::ShowHidden, Message::ToggleHidden).shortcut("Ctrl+H").checked(app.show_hidden),
-                Entry::Separator,
-                item(Key::ZoomIn, Message::Zoom(1)).shortcut("Ctrl++"),
-                item(Key::ZoomOut, Message::Zoom(-1)).shortcut("Ctrl+-"),
-                item(Key::ZoomReset, Message::Zoom(0)).shortcut("Ctrl+0"),
-                item(Key::Columns, Message::SubMenu(MenuKind::Columns)).cascades().enabled(app.view == ViewMode::List),
-                Entry::Separator,
                 item(Key::QueueOperations, Message::ToggleQueue).checked(app.queue),
-                Entry::Separator,
-                item(Key::NewFolder, Message::NewFolder).shortcut("Ctrl+Shift+N").enabled(!in_trash),
-                item(Key::NewFile, Message::NewFile).enabled(!in_trash),
-                item(Key::OpenInTerminal, Message::Terminal),
-                Entry::Separator,
+                item(Key::EnterPath, Message::EditPath).shortcut("Ctrl+L"),
                 item(Key::Reload, Message::Reload).shortcut("F5"),
                 item(Key::Shortcuts, Message::ShowShortcuts).shortcut("F1"),
             ]);
@@ -209,21 +219,6 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 entries.push(item(Key::NoTemplates, Message::CloseMenu).enabled(false));
             }
             entries.extend([Entry::Separator, item(Key::OpenTemplates, Message::OpenTemplates)]);
-            entries
-        }
-        MenuKind::Tags => {
-            let entries_of = app.selected_entries().collect::<Vec<_>>();
-            let mut entries: Vec<Entry> = crate::fs::tags::Color::ALL
-                .into_iter()
-                .map(|color| {
-                    let on = !entries_of.is_empty()
-                        && entries_of.iter().all(|entry| crate::fs::tags::colors(&entry.tags).contains(&color));
-                    item(color_key(color), Message::ToggleTag(color))
-                        .swatch(super::content::tag_color(color))
-                        .checked(on)
-                })
-                .collect();
-            entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags)]);
             entries
         }
         MenuKind::OpenWith => {
@@ -243,6 +238,22 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             entries
         }
     }
+}
+
+fn tag_swatches(app: &App) -> Entry {
+    let picked: Vec<_> = app.selected_entries().collect();
+    Entry::swatches(
+        crate::fs::tags::Color::ALL
+            .into_iter()
+            .map(|color| sdk::Swatch {
+                label: color_key(color).text(app.lang).to_string(),
+                color: super::content::tag_color(color),
+                on: !picked.is_empty()
+                    && picked.iter().all(|entry| crate::fs::tags::colors(&entry.tags).contains(&color)),
+                message: Message::ToggleTag(color),
+            })
+            .collect(),
+    )
 }
 
 const fn color_key(color: crate::fs::tags::Color) -> Key {
@@ -303,8 +314,23 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
             .enumerate()
             .map(|(index, (row, entry))| {
                 let message = entry.message().cloned().filter(|_| live);
+                let steps = match entry {
+                    sdk::Item::Stepper { less, more, .. } => [less.clone(), more.clone()],
+                    _ => [None, None],
+                };
+                let swatches: Vec<Message> = match entry {
+                    sdk::Item::Swatches(swatches) => swatches.iter().map(|swatch| swatch.message.clone()).collect(),
+                    _ => Vec::new(),
+                };
+                let stay = move |picked: Option<Message>| {
+                    picked
+                        .filter(|_| live)
+                        .map_or(Message::MenuHover(index, false), |picked| Message::MenuStay(Box::new(picked)))
+                };
                 row.map(move |event| match (event, &message) {
                     (Event::Picked(_), Some(message)) => Message::Menu(Box::new(message.clone())),
+                    (Event::Stepped(_, more), _) => stay(steps[usize::from(more)].clone()),
+                    (Event::Swatched(_, at), _) => stay(swatches.get(at).cloned()),
                     (Event::Dismiss, _) => Message::CloseMenu,
                     (_, picked) => Message::MenuHover(index, live && picked.is_some()),
                 })

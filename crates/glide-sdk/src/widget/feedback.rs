@@ -140,8 +140,10 @@ pub fn noted_banner<'a, M: 'a>(
 
 #[must_use]
 pub fn empty_state<'a, M: 'a>(
-    paint: &Paint, glyph: impl super::Glyph, title: &'a str, body: &'a str, action: Option<Element<'a, M>>,
+    paint: &Paint, glyph: impl super::Glyph, title: impl Into<Cow<'a, str>>, body: impl Into<Cow<'a, str>>,
+    action: Option<Element<'a, M>>,
 ) -> Element<'a, M> {
+    let (title, body) = (title.into(), body.into());
     let paint = *paint;
     let well =
         container(icon(glyph, 28.0, paint.fg_3())).center(64).style(move |_| style::rounded(paint.fill_1(), R_ROUND));

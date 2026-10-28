@@ -272,7 +272,7 @@ fn conflict<'a>(
     }
 }
 
-fn tilde(path: &Path) -> String {
+pub(crate) fn tilde(path: &Path) -> String {
     match home_dir().and_then(|home| path.strip_prefix(&home).ok().map(Path::to_path_buf)) {
         Some(relative) if relative.as_os_str().is_empty() => String::from("~"),
         Some(relative) => format!("~/{}", relative.display()),
