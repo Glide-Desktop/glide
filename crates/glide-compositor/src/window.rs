@@ -124,23 +124,46 @@ impl GlideWindow {
     }
 
     pub(crate) fn begin_geometry_animation(&self, from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>) {
-        if geometry_duration().is_zero()
-            || from == to
-            || to.size.w <= 0
-            || to.size.h <= 0
-            || from.size.w <= 0
-            || from.size.h <= 0
+        self.begin_geometry_animation_over(from, to, geometry_duration());
+    }
+
+    pub(crate) fn begin_geometry_animation_over(
+        &self, from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>, duration: Duration,
+    ) {
+        if duration.is_zero() || from == to || to.size.w <= 0 || to.size.h <= 0 || from.size.w <= 0 || from.size.h <= 0
         {
             return;
         }
-        self.store_animation(GeometryAnimation { started: Instant::now(), from, to });
+        self.store_animation(GeometryAnimation { started: Instant::now(), duration, from, to });
+    }
+
+    pub(crate) fn cancel_geometry_animation(&self) {
+        if let Some(cell) = self.0.user_data().get::<RefCell<Option<GeometryAnimation>>>()
+            && let Ok(mut slot) = cell.try_borrow_mut()
+        {
+            *slot = None;
+        }
     }
 
     pub(crate) fn geometry_animation(&self) -> Option<GeometryProgress> {
         self.with_animation(|animation: &GeometryAnimation| {
-            let duration = geometry_duration();
+            let duration = animation.duration;
             let elapsed = running(animation.started, duration)?;
             Some(GeometryProgress::at(elapsed, duration, animation.from, animation.to, self.frame_size()))
+        })
+    }
+
+    pub(crate) fn animated_frame(&self) -> Option<Rectangle<i32, Logical>> {
+        self.with_animation(|animation: &GeometryAnimation| {
+            let duration = animation.duration;
+            let elapsed = running(animation.started, duration)?;
+            let t = glide_theme::motion::E_OUT.ease_f64(elapsed.as_secs_f64() / duration.as_secs_f64());
+            let mix = |a: i32, b: i32| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as i32;
+            let (from, to) = (animation.from, animation.to);
+            Some(Rectangle::new(
+                Point::from((mix(from.loc.x, to.loc.x), mix(from.loc.y, to.loc.y))),
+                Size::from((mix(from.size.w, to.size.w).max(1), mix(from.size.h, to.size.h).max(1))),
+            ))
         })
     }
 
@@ -166,6 +189,7 @@ struct OpenAnimation {
 
 struct GeometryAnimation {
     started: Instant,
+    duration: Duration,
     from: Rectangle<i32, Logical>,
     to: Rectangle<i32, Logical>,
 }
@@ -179,7 +203,7 @@ fn running(started: Instant, duration: Duration) -> Option<Duration> {
     (!duration.is_zero() && elapsed < duration).then_some(elapsed)
 }
 
-fn geometry_duration() -> Duration {
+pub(crate) fn geometry_duration() -> Duration {
     glide_theme::motion::t3()
 }
 
@@ -510,7 +534,7 @@ impl GlideWindow {
 
     fn render_elements_impl<R, C>(
         &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
-        preview: Option<PreviewShape>,
+        preview: Option<PreviewShape>, animated: bool,
     ) -> Vec<C>
     where
         R: ShellRenderer + ClipCapableRenderer,
@@ -518,8 +542,10 @@ impl GlideWindow {
         C: From<GlideWindowRenderElement<R>>,
     {
         let painter = crate::paint::current();
+        let open = self.open_animation().filter(|_| animated);
+        let geometry = self.geometry_animation().filter(|_| animated);
 
-        let alpha = alpha * self.open_animation().map_or(1.0, |progress| progress.alpha);
+        let alpha = alpha * open.map_or(1.0, |progress| progress.alpha);
 
         let header_height = self.header_height();
         let header_location = location - Point::from((0, header_height)).to_physical_precise_round(scale);
@@ -550,12 +576,12 @@ impl GlideWindow {
 
         let mut factor = Scale::from((1.0, 1.0));
         let mut travel = Point::<i32, Logical>::from((0, 0));
-        if let Some(progress) = self.open_animation() {
+        if let Some(progress) = open {
             factor.x *= progress.scale;
             factor.y *= progress.scale;
             travel += progress.offset;
         }
-        if let Some(progress) = self.geometry_animation() {
+        if let Some(progress) = geometry {
             factor.x *= progress.scale.x;
             factor.y *= progress.scale.y;
             travel += progress.offset;
@@ -595,7 +621,7 @@ where
     fn render_elements<C: From<Self::RenderElement>>(
         &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
     ) -> Vec<C> {
-        self.render_elements_impl(renderer, location, scale, alpha, None)
+        self.render_elements_impl(renderer, location, scale, alpha, None, true)
     }
 }
 
@@ -613,7 +639,17 @@ impl GlideWindow {
         R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
     {
-        self.render_elements_impl(renderer, location, scale, alpha, Some(shape))
+        self.render_elements_impl(renderer, location, scale, alpha, Some(shape), true)
+    }
+
+    pub(crate) fn still_render_elements<R>(
+        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>,
+    ) -> Vec<GlideWindowRenderElement<R>>
+    where
+        R: ShellRenderer + ClipCapableRenderer,
+        R::Error: std::fmt::Debug,
+    {
+        self.render_elements_impl(renderer, location, scale, 1.0, None, false)
     }
 }
 

@@ -262,14 +262,7 @@ fn capture_window(renderer: &mut GlesRenderer, window: &GlideWindow, scale: Scal
 
     let content_origin = Point::<i32, Logical>::from((margin - geometry.loc.x, margin + header - geometry.loc.y))
         .to_physical_precise_round(scale);
-    let elements: Vec<crate::window::GlideWindowRenderElement<GlesRenderer>> =
-        smithay::backend::renderer::element::AsRenderElements::render_elements(
-            window,
-            renderer,
-            content_origin,
-            scale,
-            1.0,
-        );
+    let elements = window.still_render_elements(renderer, content_origin, scale);
 
     let mut tracker = OutputDamageTracker::new((physical.w, physical.h), scale, Transform::Normal);
     tracker.render_output(renderer, &mut target, 0, &elements, [0.0, 0.0, 0.0, 0.0]).ok()?;
@@ -357,6 +350,11 @@ mod tests {
         #[test]
         fn closing_is_quicker_than_a_geometry_morph() {
             assert!(close_duration() < morph_duration());
+        }
+
+        #[test]
+        fn a_ghost_runs_on_the_same_clock_as_the_live_window_it_dissolves_into() {
+            assert_eq!(morph_duration(), crate::window::geometry_duration());
         }
     }
 

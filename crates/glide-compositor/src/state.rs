@@ -2083,7 +2083,8 @@ impl GlideState {
 
     fn capture_closing_window(&mut self, id: glide_layout::WindowId, window: &GlideWindow) {
         let overview_rect = self.overview.as_ref().and_then(|ui| ui.preview_rect(id));
-        let Some(target_frame) = overview_rect.or_else(|| self.frame_rect(id)) else {
+        let on_screen = overview_rect.is_some() || self.layout.is_visible(id);
+        let Some(target_frame) = overview_rect.or_else(|| self.frame_rect(id)).filter(|_| on_screen) else {
             return;
         };
         self.push_snapshot(|snapshots, renderer, scale, output_scale| {
@@ -2123,7 +2124,13 @@ impl GlideState {
         self.layout.set_fullscreen(id, false);
         self.layout.set_maximized(id, false);
 
-        let Some(restored) = self.layout.window_state(id).map(glide_layout::WindowState::frame_geometry) else {
+        let Some(restored) = self.layout.window_state(id).map(|state| {
+            let mut frame = state.frame_geometry();
+            if !state.is_placed {
+                frame.size = glide_layout::Size::new(from.size.w * 2 / 3, from.size.h * 2 / 3);
+            }
+            frame
+        }) else {
             return false;
         };
 
@@ -2755,8 +2762,8 @@ impl GlideState {
     where
         F: FnOnce(&mut Self),
     {
-        let before = self.frame_rect(id);
         let window = self.window_map.get(&id).cloned();
+        let before = window.as_ref().and_then(GlideWindow::animated_frame).or_else(|| self.frame_rect(id));
 
         mutate(self);
         self.reconcile_space();
@@ -2784,6 +2791,9 @@ impl GlideState {
         match destination.filter(|workspace| follow && *workspace != self.layout.active_workspace()) {
             Some(workspace) => {
                 self.switch_workspace_animated(glide_layout::WorkspaceTarget::Id(workspace));
+                if let Some(window) = self.window_map.get(&id) {
+                    window.cancel_geometry_animation();
+                }
                 self.focus_window(id);
             }
             None => self.reconcile_space(),
@@ -2818,7 +2828,7 @@ impl GlideState {
             };
             let mut from = *rect;
             from.loc.x -= travel;
-            window.begin_geometry_animation(from, *rect);
+            window.begin_geometry_animation_over(from, *rect, crate::snapshot::workspace_duration());
         }
 
         let arriving: HashSet<glide_layout::WindowId> = after.iter().map(|(id, _)| *id).collect();
@@ -2854,8 +2864,11 @@ impl GlideState {
 
     pub fn toggle_show_desktop(&mut self) {
         let hidden = std::mem::take(&mut self.gestures.shown_desktop);
-        let restorable: Vec<_> =
-            hidden.into_iter().filter(|id| self.layout.window_state(*id).is_some_and(|s| s.minimized)).collect();
+        let active = self.layout.active_workspace();
+        let restorable: Vec<_> = hidden
+            .into_iter()
+            .filter(|id| self.layout.window_state(*id).is_some_and(|s| s.minimized && s.workspace_id == active))
+            .collect();
         if !restorable.is_empty() {
             for id in restorable.iter().rev() {
                 self.minimize_with_flight(*id);
