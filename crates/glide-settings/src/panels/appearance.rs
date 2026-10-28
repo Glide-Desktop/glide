@@ -291,7 +291,7 @@ fn apply_rendering(job: impl FnOnce() -> Result<String, String> + Send + 'static
 
 impl Page {
     fn refresh_preview(&mut self, config: &ConfigStore) -> Task<Msg> {
-        let theme = config.optional_str("dock", "icon-theme");
+        let theme = Some(config.icon_theme());
         if self.preview_requested && self.preview_theme == theme {
             return Task::none();
         }

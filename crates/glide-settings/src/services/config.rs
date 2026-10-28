@@ -438,6 +438,16 @@ impl ConfigStore {
         Accent::ALL.iter().copied().find(|accent| accent_key(*accent) == key).unwrap_or_default()
     }
 
+    #[must_use]
+    pub(crate) fn icon_theme(&self) -> String {
+        glide_sdk::theme::icons::resolve(
+            self.optional_str("dock", "icon-theme").as_deref(),
+            self.appearance_at(glide_config::local_minute()).into(),
+            self.accent().into(),
+            &super::apps::theme_dirs(),
+        )
+    }
+
     pub fn set_accent(&mut self, accent: Accent) {
         self.set_str("topbar", "accent", accent_key(accent));
     }

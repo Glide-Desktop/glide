@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use glide_sdk::theme::Accent;
+use glide_sdk::theme::{Accent, Appearance};
 pub use glide_sdk::widget::Art;
 
 use crate::fs::{FileCategory, FileEntry};
@@ -10,7 +10,6 @@ use crate::icons::Icon;
 
 const SIZES: [&str; 7] = ["64x64", "scalable", "48x48", "96x96", "128x128", "256x256", "512x512"];
 const CONTEXTS: [&str; 6] = ["places", "mimetypes", "apps", "devices", "status", "legacy"];
-const DEFAULT_THEME: &str = "Papirus";
 
 const BY_EXTENSION: [(&str, &str); 38] = [
     ("rs", "text-x-rust"),
@@ -160,9 +159,9 @@ const fn folder_colour(accent: Accent) -> &'static str {
 
 impl IconTheme {
     #[must_use]
-    pub fn new(name: Option<&str>, accent: Accent) -> Self {
+    pub fn new(name: Option<&str>, appearance: Appearance, accent: Accent) -> Self {
         let bases = icon_bases();
-        let mut names = vec![name.unwrap_or(DEFAULT_THEME).to_string()];
+        let mut names = vec![glide_sdk::theme::icons::resolve(name, appearance, accent, &bases)];
         let mut index = 0;
         while index < names.len() && names.len() < 8 {
             let parents: Vec<String> = bases

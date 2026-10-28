@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use super::gsettings::{self, Snapshot};
 
 pub const INTERFACE: &str = "org.gnome.desktop.interface";
-pub(crate) const DEFAULT_ICON_THEME: &str = "Papirus";
+pub(crate) const DEFAULT_ICON_THEME: &str = glide_sdk::theme::icons::FALLBACK;
 
 pub(crate) const PREVIEW_ICONS: &[&[&str]] = &[
     &["folder", "inode-directory"],

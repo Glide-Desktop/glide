@@ -191,7 +191,7 @@ impl Pane for Page {
 
     fn open(&mut self, c: Ctx, config: &ConfigStore) -> Task<Msg> {
         let lang = c.lang.key().to_string();
-        let theme = config.optional_str("dock", "icon-theme");
+        let theme = Some(config.icon_theme());
         let key = (c.lang, theme.clone());
         let apps = if self.apps_key.as_ref() == Some(&key) {
             Task::none()

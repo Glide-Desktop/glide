@@ -206,7 +206,7 @@ impl Page {
     fn refresh(&mut self, lang: Lang, config: &ConfigStore) -> Task<Msg> {
         self.loading = true;
         self.lang = Some(lang);
-        let theme = config.optional_str("dock", "icon-theme");
+        let theme = Some(config.icon_theme());
         self.icon_theme.clone_from(&theme);
         let generation = self.generation.bump();
         Task::perform(blocking(move || load(lang, theme.as_deref())), move |catalog| {
@@ -266,7 +266,7 @@ impl Pane for Page {
     fn open(&mut self, c: Ctx, config: &ConfigStore) -> Task<Msg> {
         if (self.loaded || self.loading)
             && self.lang == Some(c.lang)
-            && self.icon_theme == config.optional_str("dock", "icon-theme")
+            && self.icon_theme.as_deref() == Some(config.icon_theme().as_str())
         {
             return Task::none();
         }

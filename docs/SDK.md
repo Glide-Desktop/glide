@@ -503,7 +503,8 @@ per fade, since its cache is keyed on 30 reveal steps.
 
 - Desktop file named after the app id, with `StartupWMClass=` the same id.
 - Icons under `share/icons/hicolor/scalable/apps/<app-id>.svg`; the dock and
-  launcher resolve them through the icon theme (Papirus by default).
+  launcher resolve them through the icon theme (the Colloid variant for the
+  appearance and accent by default, Papirus without Colloid).
 
 ## Contracts for other languages
 

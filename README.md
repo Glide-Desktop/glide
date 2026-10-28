@@ -42,7 +42,8 @@ distribution when something is missing.
 | `brightnessctl`, `playerctl` | brightness and media keys |
 | `NetworkManager`, `bluez`, `power-profiles-daemon` | Wi-Fi, Bluetooth and power mode in quick settings |
 | `polkit` (with `polkit-agent-helper-1`) | administrator password prompts; Glide is its own polkit agent and asks in the status island (`[general] polkit-agent = false` turns it off, and then another agent has to be started through `[general] autostart`) |
-| `papirus-icon-theme` | the default icon set (falls back to Adwaita/hicolor) |
+| Colloid icon theme (`colloid-icon-theme-git` on the AUR, or `./install.sh -t all` from [vinceliuice/Colloid-icon-theme](https://github.com/vinceliuice/Colloid-icon-theme)) | the default icon set: the variant that matches the appearance and accent (`Colloid-Teal-Dark`, …) is picked unless `[dock] icon-theme` names another |
+| `papirus-icon-theme` | the fallback when Colloid is not installed (then Adwaita/hicolor) |
 
 Glide has its own notification daemon. Do not also run mako, dunst or swaync
 in a Glide session.

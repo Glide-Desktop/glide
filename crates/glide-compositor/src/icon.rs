@@ -6,7 +6,7 @@ use std::{
 
 use glide_theme::Color;
 
-const DEFAULT_THEME: &str = "Papirus";
+const DEFAULT_THEME: &str = glide_theme::icons::FALLBACK;
 
 const FALLBACK_THEME: &str = "hicolor";
 
@@ -566,7 +566,7 @@ fn strip_field_codes(exec: &str) -> String {
     out.trim().to_string()
 }
 
-fn icon_roots() -> Vec<PathBuf> {
+pub fn icon_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(&home).join(".icons"));

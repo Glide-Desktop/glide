@@ -28,7 +28,7 @@ pub mod theme {
     pub use glide_iced::style::{R2, R3, SEMIBOLD, SP1, SP2, SP3, SP4, SP5, SP6, over, to_iced};
     pub use glide_theme::elevation::Level;
     pub use glide_theme::shape::{R_ROUND, R1, R4};
-    pub use glide_theme::{Accent, Appearance, Color as TokenColor, TextStyle, Tokens, component, motion};
+    pub use glide_theme::{Accent, Appearance, Color as TokenColor, TextStyle, Tokens, component, icons, motion};
 
     pub const MONO_FONTS: [&[u8]; 2] = [
         include_bytes!("../../glide-terminal/fonts/JetBrainsMono-Regular.ttf"),

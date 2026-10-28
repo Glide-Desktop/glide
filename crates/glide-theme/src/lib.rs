@@ -4,6 +4,7 @@ pub mod component;
 pub mod data;
 pub mod elevation;
 pub mod font;
+pub mod icons;
 pub mod motion;
 mod palette;
 pub mod shape;

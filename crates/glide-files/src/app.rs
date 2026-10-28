@@ -889,7 +889,7 @@ impl App {
         };
         let mut app = Self {
             theme: look.paint(),
-            icons: IconTheme::new(look.icon_theme.as_deref(), look.accent),
+            icons: IconTheme::new(look.icon_theme.as_deref(), look.appearance_now(), look.accent),
             lang,
             current: current.clone(),
             history: vec![current],
@@ -3862,8 +3862,11 @@ impl App {
 
     pub fn follow_look(&mut self, look: &Look, paint: ThemeState) -> Task<Message> {
         self.theme = paint;
-        if look.icon_theme != self.look.icon_theme || look.accent != self.look.accent {
-            self.icons = IconTheme::new(look.icon_theme.as_deref(), look.accent);
+        if look.icon_theme != self.look.icon_theme
+            || look.accent != self.look.accent
+            || look.appearance_now() != self.look.appearance_now()
+        {
+            self.icons = IconTheme::new(look.icon_theme.as_deref(), look.appearance_now(), look.accent);
         }
         self.look = look.clone();
         let lang = i18n::lang_of(look);

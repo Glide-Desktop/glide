@@ -24,7 +24,8 @@
     <property name="ReducedMotion" type="b" access="read"/>
     <!-- The UI font family; empty for the default. -->
     <property name="FontFamily" type="s" access="read"/>
-    <!-- The icon theme; empty for the default. -->
+    <!-- The effective icon theme: the configured one, else the Colloid variant for the
+         appearance and accent (Papirus when Colloid is not installed). -->
     <property name="IconTheme" type="s" access="read"/>
     <property name="Locked" type="b" access="read"/>
     <!-- 0-based index of the active workspace. -->

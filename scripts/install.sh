@@ -265,6 +265,7 @@ themes=""
 qt_plugin platformthemes/libqt6ct.so || themes="$themes qt6ct"
 qt_plugin platformthemes/libqt5ct.so || themes="$themes qt5ct"
 qt_plugin styles/libkvantum.so || themes="$themes kvantum"
+[ -f /usr/share/icons/Colloid/index.theme ] || [ -f /usr/local/share/icons/Colloid/index.theme ] || themes="$themes colloid"
 
 echo
 if [ "$INSTALL_DM" -eq 1 ]; then
@@ -287,6 +288,8 @@ if [ -n "$themes" ]; then
     echo "  adw-gtk3 (adw-gtk-theme)   GTK 3, Chrome and Electron apps in Glide colours"
     echo "  qt6ct, qt5ct               Qt 6 / Qt 5 apps in Glide colours"
     echo "  kvantum                    Qt controls in the Glide shapes"
+    echo "  colloid (colloid-icon-theme-git, or ./install.sh -t all from vinceliuice/Colloid-icon-theme)"
+    echo "                             the default icons, in the accent's colour; Papirus is used without them"
     echo "  Settings > Appearance > Other apps shows what is in use."
 fi
 if [ "$INSTALL_PAM" -eq 0 ] && ! grep -qs "$PAM_MODULE" "$DESTDIR$PAMDIR/greetd"; then

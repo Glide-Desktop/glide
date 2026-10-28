@@ -201,7 +201,7 @@ impl Pane for Page {
     fn open(&mut self, c: Ctx, config: &ConfigStore) -> Task<Msg> {
         self.lang = Some(c.lang);
         let lang = c.lang;
-        let theme = config.optional_str("dock", "icon-theme");
+        let theme = Some(config.icon_theme());
         Task::perform(blocking(move || load(lang, theme.as_deref())), move |catalog| {
             Msg::Loaded(lang, Box::new(catalog.unwrap_or_default()))
         })

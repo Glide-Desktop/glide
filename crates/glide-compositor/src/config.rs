@@ -733,6 +733,12 @@ pub struct AppliedConfig {
     numlock: Option<Applied<bool>>,
 }
 
+fn reload_launcher_icons(state: &mut GlideState, theme: Option<&str>) {
+    if state.applied_config.icon_theme_changed(theme) {
+        state.launcher_icons = crate::icon::IconLoader::new(theme.map(str::to_owned));
+    }
+}
+
 fn replace_if_changed<T: PartialEq>(slot: &mut Option<Applied<T>>, value: T) -> bool {
     let value = Some(Applied(value));
     if *slot == value {
@@ -1371,6 +1377,15 @@ impl Config {
         state.gestures.config = self.gestures;
     }
 
+    fn icon_theme(&self) -> String {
+        glide_theme::icons::resolve(
+            self.dock.theme.icon_theme.as_deref(),
+            self.topbar.appearance,
+            self.topbar.accent,
+            &crate::icon::icon_roots(),
+        )
+    }
+
     pub fn apply_to_state(&self, state: &mut GlideState) {
         let appearance = self.topbar.effective_appearance(crate::topbar::local_minute_of_day());
         if appearance != self.topbar.appearance {
@@ -1395,6 +1410,7 @@ impl Config {
         state.overview_theme = self.overview.clone();
         state.overview_theme.repaint(&palette);
         let mut dock = self.dock.clone();
+        dock.theme.icon_theme = Some(self.icon_theme());
         dock.theme.repaint(&palette);
         for pin in state.applied_config.pins() {
             let already = dock.items.iter().any(|item| {
@@ -1413,7 +1429,7 @@ impl Config {
         crate::system_info::sync_desktop_appearance(crate::system_info::DesktopAppearance {
             appearance: self.topbar.appearance,
             accent: self.topbar.accent,
-            icon_theme: self.dock.theme.icon_theme.clone(),
+            icon_theme: dock.theme.icon_theme.clone(),
             cursor_theme: self.general.cursor_theme.clone(),
             cursor_size: self.accessibility.cursor_size,
             font_family: self.general.font_family.clone(),
@@ -1423,7 +1439,7 @@ impl Config {
         state.max_volume_pct = self.topbar.max_volume_pct.clamp(100, 150);
         state.app_menus.registrar = self.topbar.appmenu_registrar;
         state.set_global_menu_enabled(self.topbar.global_menu);
-        state.configure_tray(&self.topbar, self.dock.theme.icon_theme.clone());
+        state.configure_tray(&self.topbar, dock.theme.icon_theme.clone());
         state.notifications.set_policy(self.notifications.policy());
         crate::cursor::set_configured_size(self.accessibility.cursor_size);
         if crate::cursor::set_configured_theme(self.general.cursor_theme.as_deref()) {
@@ -1432,9 +1448,7 @@ impl Config {
         self.announce_problems(state);
         state.refresh_topbar();
         state.launcher_theme = crate::launcher::LauncherTheme::from_dock(&dock.theme, &palette);
-        if state.applied_config.icon_theme_changed(self.dock.theme.icon_theme.as_deref()) {
-            state.launcher_icons = crate::icon::IconLoader::new(self.dock.theme.icon_theme.clone());
-        }
+        reload_launcher_icons(state, dock.theme.icon_theme.as_deref());
         crate::i18n::set_language(self.general.language.unwrap_or_else(crate::i18n::Lang::from_env));
         state.background_color = self.general.background;
         state.wallpaper_fit = self.general.wallpaper_fit;
