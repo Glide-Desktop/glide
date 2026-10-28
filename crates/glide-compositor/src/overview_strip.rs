@@ -78,7 +78,7 @@ impl Strip {
     }
 
     pub(super) fn render<R>(
-        &mut self, renderer: &mut R, theme: &OverviewTheme, (area, t): (Rectangle<i32, Logical>, f64),
+        &mut self, renderer: &mut R, theme: &OverviewTheme, (area, t, exit): (Rectangle<i32, Logical>, f64, f64),
         (scale, output_scale): (Scale<f64>, i32), elements: &mut Vec<OverviewRenderElement<R>>,
     ) where
         R: ShellRenderer + ClipCapableRenderer,
@@ -88,8 +88,9 @@ impl Strip {
         }
         let key = RasterKey::new(theme, output_scale);
         let margin = margin();
-        let alpha = t.clamp(0.0, 1.0) as f32;
-        let rise = (1.0 - t) * RISE;
+        let leaving = (exit / super::HANDOFF_STRIP).clamp(0.0, 1.0);
+        let alpha = (glide_theme::motion::assist(t) * glide_theme::motion::assist(1.0 - leaving)) as f32;
+        let rise = (1.0 - t).mul_add(RISE, exit);
         let placements: Vec<(WorkspaceId, Rectangle<i32, Logical>)> = self.rects(area).collect();
         for (id, rect) in placements {
             let level = self.hover.level(id, hover_anim());

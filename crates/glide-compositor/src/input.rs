@@ -1092,10 +1092,14 @@ impl GlideState {
 
     fn apply_shell_position(&mut self, position: f64) {
         if position > SHELL_OVERVIEW {
-            if self.overview.as_ref().is_some_and(|ui| !ui.is_closing()) {
-                self.begin_close_overview(None);
+            if self.overview.is_none() {
+                self.begin_interactive_overview();
+                if let Some(ui) = self.overview.as_mut() {
+                    ui.set_interactive_progress(SHELL_OVERVIEW);
+                }
             }
             self.begin_interactive_launcher(position - SHELL_OVERVIEW);
+            self.sync_overview_handoff();
         } else {
             if let Some(launcher) = self.launcher.as_mut() {
                 launcher.set_interactive_progress(0.0);
@@ -1112,9 +1116,6 @@ impl GlideState {
 
     fn settle_shell(&mut self, target: f64, velocity: f64) {
         if target >= SHELL_LAUNCHER {
-            if self.overview.as_ref().is_some_and(|ui| !ui.is_closing()) {
-                self.begin_close_overview(None);
-            }
             if self.launcher.is_none() {
                 self.begin_interactive_launcher(0.0);
             }

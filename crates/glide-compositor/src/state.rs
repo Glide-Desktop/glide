@@ -1104,8 +1104,23 @@ impl GlideState {
         }
     }
 
+    pub fn sync_overview_handoff(&mut self) {
+        let progress = self.launcher.as_ref().map_or(0.0, crate::launcher::Launcher::openness);
+        let settled = self.launcher.as_ref().is_some_and(crate::launcher::Launcher::is_settled);
+        let Some(ui) = self.overview.as_mut().filter(|ui| !ui.is_closing()) else {
+            return;
+        };
+        ui.set_handoff(progress);
+        if settled {
+            self.close_overview();
+            self.reconcile_space();
+            tracing::debug!("the launcher took over from the overview");
+        }
+    }
+
     pub fn tick_overview(&mut self) -> bool {
         self.watch_overview_close();
+        self.sync_overview_handoff();
         let swipe_animating = self.tick_workspace_swipe();
         let Some(ui) = self.overview.as_mut() else {
             return swipe_animating;
@@ -2152,7 +2167,6 @@ impl GlideState {
             Some(launcher) if !launcher.is_closing() => launcher.begin_close(),
             Some(launcher) => launcher.reopen(),
             None => {
-                self.begin_close_overview(None);
                 let area = self.launcher_area();
                 let mut launcher = crate::launcher::Launcher::new(Vec::new(), area)
                     .with_scene(self.overview_theme.duration())

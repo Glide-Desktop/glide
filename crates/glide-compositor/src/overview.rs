@@ -169,8 +169,24 @@ pub struct OverviewUi {
     focused: Option<WindowId>,
     strip: strip::Strip,
     close_watch: close::Watch,
+    handoff: f64,
 
     scrim: SolidColorBuffer,
+}
+
+const HANDOFF_LIFT: f64 = 280.0;
+const HANDOFF_SHRINK: f64 = 0.08;
+const HANDOFF_STRIP: f64 = 110.0;
+
+fn handoff_rect(rect: Rectangle<i32, Logical>, lift: f64) -> Rectangle<i32, Logical> {
+    let factor = HANDOFF_SHRINK.mul_add(-lift, 1.0);
+    let (w, h) = (f64::from(rect.size.w) * factor, f64::from(rect.size.h) * factor);
+    let x = f64::from(rect.loc.x) + (f64::from(rect.size.w) - w) / 2.0;
+    let y = f64::from(rect.loc.y) + (f64::from(rect.size.h) - h) / 2.0 - HANDOFF_LIFT * lift;
+    Rectangle::new(
+        Point::from((x.round() as i32, y.round() as i32)),
+        Size::from((w.round().max(1.0) as i32, h.round().max(1.0) as i32)),
+    )
 }
 
 fn paint_rank(preview: &Preview, front: Option<WindowId>, area: Rectangle<i32, Logical>) -> (bool, bool, usize) {
@@ -243,8 +259,24 @@ impl OverviewUi {
             focused,
             strip: strip::Strip::default(),
             close_watch: close::Watch::default(),
+            handoff: 0.0,
             scrim: SolidColorBuffer::default(),
         }
+    }
+
+    pub fn set_handoff(&mut self, progress: f64) -> bool {
+        let progress = progress.clamp(0.0, 1.0);
+        let changed = (self.handoff - progress).abs() > f64::EPSILON;
+        self.handoff = progress;
+        changed
+    }
+
+    fn handoff_lift(&self) -> f64 {
+        glide_theme::motion::ease_io(glide_theme::motion::window(self.handoff, 0.0, 0.6))
+    }
+
+    fn handoff_strip(&self) -> f64 {
+        glide_theme::motion::ease_io(glide_theme::motion::window(self.handoff, 0.0, 0.4))
     }
 
     pub fn watch_close(&mut self, id: WindowId, newest: WindowId) {
@@ -760,9 +792,10 @@ fn push_close_buttons<R>(
 }
 
 impl OverviewUi {
+    #[allow(clippy::too_many_arguments)]
     fn render_labels<R>(
         &mut self, renderer: &mut R, entries: &[OverviewEntry], scale: Scale<f64>, output_scale: i32,
-        painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader,
+        painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader, exit_alpha: f32,
     ) -> Vec<OverviewRenderElement<R>>
     where
         R: ShellRenderer + ClipCapableRenderer,
@@ -774,7 +807,7 @@ impl OverviewUi {
             return Vec::new();
         }
 
-        let alpha = t.clamp(0.0, 1.0) as f32;
+        let alpha = t.clamp(0.0, 1.0) as f32 * exit_alpha;
         let rise = ((1.0 - t) * LABEL_RISE).round() as i32;
         let height = theme.label_height;
         let side = label_icon_side(height);
@@ -841,15 +874,28 @@ impl OverviewUi {
 
         let hover = self.hover.target();
         let theme = self.theme.clone();
+        let lift = self.handoff_lift();
+        let exit_alpha = glide_theme::motion::assist(1.0 - lift) as f32;
+        let exit_scale = HANDOFF_SHRINK.mul_add(-lift, 1.0);
 
-        let entries: Vec<OverviewEntry> =
-            self.previews.iter().map(|p| (p.id, p.rect_at(t), hover == Some(p.id), lookup(p.id))).collect();
+        let entries: Vec<OverviewEntry> = self
+            .previews
+            .iter()
+            .map(|p| (p.id, handoff_rect(p.rect_at(t), lift), hover == Some(p.id), lookup(p.id)))
+            .collect();
 
-        elements.extend(self.render_labels(renderer, &entries, scale, output_scale, painter, icons));
-        self.strip.render(renderer, &theme, (self.area, t), (scale, output_scale), &mut elements);
+        elements.extend(self.render_labels(renderer, &entries, scale, output_scale, painter, icons, exit_alpha));
+        let strip_exit = self.handoff_strip();
+        self.strip.render(
+            renderer,
+            &theme,
+            (self.area, t, strip_exit * HANDOFF_STRIP),
+            (scale, output_scale),
+            &mut elements,
+        );
 
         if t > 0.0 {
-            let button_alpha = t.clamp(0.0, 1.0) as f32;
+            let button_alpha = t.clamp(0.0, 1.0) as f32 * exit_alpha;
             let close_hovered = self.close_hover.target();
             let close_hover_t = self.close_hover_progress().clamp(0.0, 1.0) as f32;
             push_close_buttons(
@@ -871,7 +917,7 @@ impl OverviewUi {
             && let Some(hover_id) = hover
             && let Some(preview) = self.previews.iter_mut().find(|p| p.id == hover_id)
         {
-            let rect = preview.rect_at(t);
+            let rect = handoff_rect(preview.rect_at(t), lift);
             let (w, h) = (rect.size.w.max(1), rect.size.h.max(1));
             let key = RasterKey::new(&theme, output_scale);
             let needs_redraw =
@@ -891,7 +937,7 @@ impl OverviewUi {
 
             if let Some((cached_w, cached_h, _, memory)) = preview.highlight.get(&output_scale) {
                 let pos = rect.loc.to_f64().to_physical(scale);
-                let alpha = hover_t as f32;
+                let alpha = hover_t as f32 * exit_alpha;
                 let src = Rectangle::from_size(Size::from((f64::from(*cached_w), f64::from(*cached_h))));
                 if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
@@ -917,7 +963,7 @@ impl OverviewUi {
                 continue;
             };
 
-            let window_scale = preview.scale_at(t);
+            let window_scale = preview.scale_at(t) * exit_scale;
 
             let buffer_offset = window.geometry().loc;
             let content_origin = Point::from((
@@ -930,7 +976,7 @@ impl OverviewUi {
 
             let shape = crate::window::PreviewShape { radius: theme.corner_radius, scale: window_scale };
             let raw: Vec<GlideWindowRenderElement<R>> =
-                window.preview_render_elements(renderer, real_physical, scale, 1.0, shape);
+                window.preview_render_elements(renderer, real_physical, scale, exit_alpha, shape);
 
             for element in raw {
                 let scaled = RescaleRenderElement::from_element(element, frame_physical, window_scale);
@@ -940,7 +986,7 @@ impl OverviewUi {
             }
         }
 
-        let backdrop_t = self.backdrop_progress() as f32;
+        let backdrop_t = (self.backdrop_progress() * (1.0 - glide_theme::motion::ease_io(self.handoff))) as f32;
         let scrim_color = theme.dim.0.map(|c| (c * backdrop_t).clamp(0.0, 1.0));
         self.scrim.update((output_rect.size.w, output_rect.size.h), scrim_color);
         elements.push(OverviewRenderElement::Solid(SolidColorRenderElement::from_buffer(
@@ -1336,5 +1382,27 @@ mod tests {
         ui_zero.set_interactive_progress(0.0);
         ui_zero.revert_to_closing(0.0);
         assert!(ui_zero.is_closing());
+    }
+
+    #[test]
+    fn handing_over_to_the_launcher_lifts_and_shrinks_the_tiles_instead_of_fading_them_in_place() {
+        let tile = rect(200, 300, 500, 300);
+        assert_eq!(handoff_rect(tile, 0.0), tile);
+        let gone = handoff_rect(tile, 1.0);
+        assert_eq!(gone.size.w, 460, "×.92");
+        assert!(tile.loc.y - gone.loc.y >= 260, "the tile travels up with the axis: {gone:?}");
+        assert_eq!(gone.loc.x + gone.size.w / 2, tile.loc.x + tile.size.w / 2, "it stays on its own column");
+        const { assert!(HANDOFF_LIFT >= 24.0 && HANDOFF_STRIP >= 24.0) };
+    }
+
+    #[test]
+    fn the_handoff_follows_the_launcher_and_clamps_to_the_axis() {
+        let (mut ui, _id) = ui_with_one_window(400);
+        assert!(!ui.set_handoff(0.0), "nothing to hand over yet");
+        assert!(ui.set_handoff(0.5));
+        assert!(ui.handoff_strip() >= ui.handoff_lift(), "the strip leaves before the tiles");
+        assert!(ui.set_handoff(7.0));
+        assert!((ui.handoff - 1.0).abs() < f64::EPSILON);
+        assert!((ui.handoff_lift() - 1.0).abs() < 1e-9);
     }
 }

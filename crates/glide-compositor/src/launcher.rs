@@ -1403,6 +1403,11 @@ impl Launcher {
         self.phase == Phase::Closing
     }
 
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        self.phase == Phase::Open
+    }
+
     pub fn tick(&mut self) -> bool {
         self.settle();
         let settled = self.started.elapsed() >= self.duration();
