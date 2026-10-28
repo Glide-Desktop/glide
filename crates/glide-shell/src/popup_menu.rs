@@ -3,11 +3,10 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Size},
 };
 
-use crate::{
-    config::Color,
-    paint::TextAlign,
-    raster::{Canvas, rect},
-};
+use glide_paint::TextAlign;
+use glide_theme::Color;
+
+use crate::raster::{Canvas, rect};
 
 pub const WIDTH: i32 = 224;
 pub const PADDING: i32 = glide_theme::spacing::SP1;
@@ -53,7 +52,7 @@ pub struct MenuRow {
 }
 
 #[must_use]
-pub fn text_px(painter: &crate::paint::Painter, text: &str, style: &glide_theme::TextStyle) -> i32 {
+pub fn text_px(painter: &glide_paint::Painter, text: &str, style: &glide_theme::TextStyle) -> i32 {
     painter.text_width_styled(text, style).ceil() as i32
 }
 
@@ -96,7 +95,7 @@ pub fn row_at(menu: Rectangle<i32, Logical>, rows: usize, pos: Point<f64, Logica
 
 #[must_use]
 pub fn draw(
-    painter: &crate::paint::Painter, colors: &MenuColors, title: &str, rows: &[MenuRow], hovered: Option<usize>,
+    painter: &glide_paint::Painter, colors: &MenuColors, title: &str, rows: &[MenuRow], hovered: Option<usize>,
     scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let (w, h) = (WIDTH, height(rows.len()));
@@ -133,7 +132,7 @@ pub fn shadow_margin() -> i32 {
         .map(|layer| layer.blur)
         .fold(0.0_f32, f32::max)
         .ceil() as i32;
-    crate::paint::shadow_fade_margin(widest)
+    glide_paint::shadow_fade_margin(widest)
 }
 
 #[must_use]

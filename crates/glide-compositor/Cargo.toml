@@ -40,6 +40,7 @@ glide-media = { path = "../glide-media" }
 glide-netbird = { path = "../glide-netbird" }
 glide-notify = { path = "../glide-notify" }
 glide-paint = { path = "../glide-paint" }
+glide-shell = { path = "../glide-shell" }
 glide-theme = { path = "../glide-theme" }
 glide-tray = { path = "../glide-tray" }
 glide-ui = { path = "../glide-ui" }

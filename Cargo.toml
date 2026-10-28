@@ -23,6 +23,7 @@ members = [
     "crates/glide-portal",
     "crates/glide-sdk",
     "crates/glide-settings",
+    "crates/glide-shell",
     "crates/glide-terminal",
     "crates/glide-text",
     "crates/glide-theme",

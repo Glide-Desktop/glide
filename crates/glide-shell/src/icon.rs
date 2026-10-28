@@ -566,6 +566,7 @@ fn strip_field_codes(exec: &str) -> String {
     out.trim().to_string()
 }
 
+#[must_use]
 pub fn icon_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -761,7 +762,8 @@ fn symbolic_candidates(icon: &str) -> Vec<String> {
 
 const MAX_ICON_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
-pub(crate) fn render(path: &Path, side: i32, tint: Option<Color>) -> Option<Vec<u8>> {
+#[must_use]
+pub fn render(path: &Path, side: i32, tint: Option<Color>) -> Option<Vec<u8>> {
     let meta = std::fs::metadata(path).ok()?;
     if !meta.is_file() || meta.len() > MAX_ICON_FILE_BYTES {
         return None;

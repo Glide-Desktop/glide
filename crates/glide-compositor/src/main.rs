@@ -34,8 +34,6 @@ mod grabs;
 pub mod greeter;
 mod handoff;
 mod headset;
-mod i18n;
-mod icon;
 mod identity;
 mod idle;
 mod input;
@@ -60,13 +58,11 @@ mod passwords_applet;
 mod polkit;
 mod polkit_agent;
 mod polkit_helper;
-mod popup_menu;
 mod power;
 mod power_dialog;
 mod privilege;
 mod qr_scan;
 mod qs_net;
-mod raster;
 mod removable;
 mod screen_picker;
 mod screencopy;
@@ -107,6 +103,7 @@ use smithay::{
 };
 
 use backend::tty::TtyData;
+use glide_shell::{i18n, icon, popup_menu, raster};
 pub use state::GlideState;
 
 const USAGE: &str = "\

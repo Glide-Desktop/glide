@@ -1,9 +1,8 @@
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer, element::memory::MemoryRenderBuffer};
 use smithay::utils::{Logical, Rectangle, Transform};
 
-use crate::config::Color;
-use crate::paint::{Painter, TextAlign};
-use glide_theme::TextStyle;
+use glide_paint::{Painter, TextAlign};
+use glide_theme::{Color, TextStyle};
 
 pub trait ShellRenderer: Renderer<TextureId: Send + Clone + 'static> + ImportAll + ImportMem {}
 
@@ -34,6 +33,7 @@ pub fn buffer_from(buf: &[u8], width: i32, height: i32, scale: i32) -> MemoryRen
     )
 }
 
+#[must_use]
 pub fn shadow(
     (width, height): (i32, i32), margin: i32, radius: f32, layers: &[glide_theme::elevation::ShadowLayer], scale: i32,
 ) -> Option<Canvas<'static>> {
@@ -41,13 +41,13 @@ pub fn shadow(
     let factor = scale as f32;
     let specs: Vec<_> = layers
         .iter()
-        .map(|layer| crate::paint::ShadowLayerSpec {
+        .map(|layer| glide_paint::ShadowLayerSpec {
             dy: layer.dy * factor,
             blur: layer.blur * factor,
             color: layer.color,
         })
         .collect();
-    crate::paint::draw_outset_shadow_and_border(
+    glide_paint::draw_outset_shadow_and_border(
         &mut canvas.buf,
         canvas.w * scale,
         canvas.h * scale,
@@ -71,15 +71,18 @@ pub struct Canvas<'a, B = Vec<u8>> {
 }
 
 impl<'a> Canvas<'a> {
+    #[must_use]
     pub fn new(w: i32, h: i32, scale: i32) -> Option<Self> {
         Some(Self { buf: canvas(w, h, scale)?, w, h, scale, icons: None })
     }
 
+    #[must_use]
     pub fn with_icons(mut self, icons: Option<&'a mut crate::icon::IconLoader>) -> Self {
         self.icons = icons;
         self
     }
 
+    #[must_use]
     pub fn popover((w, h): (i32, i32), scale: i32, radius: f32, bg: Color, border: Color) -> Option<Self> {
         let mut canvas = Self::new(w, h, scale)?;
         canvas.panel(bg, radius);
@@ -87,6 +90,7 @@ impl<'a> Canvas<'a> {
         Some(canvas)
     }
 
+    #[must_use]
     pub fn finish(&self) -> MemoryRenderBuffer {
         buffer_from(&self.buf, self.w, self.h, self.scale)
     }
@@ -114,7 +118,7 @@ impl<B: AsMut<[u8]>> Canvas<'_, B> {
 
     pub fn gradient(&mut self, rect: Rect, radius: f32, from: Color, to: Color) {
         let (Rectangle { loc, size }, (w, h, scale)) = (rect, (self.w, self.h, self.scale));
-        crate::paint::fill_rounded_rect_gradient_over(
+        glide_paint::fill_rounded_rect_gradient_over(
             self.buf.as_mut(),
             w,
             h,
@@ -131,7 +135,7 @@ impl<B: AsMut<[u8]>> Canvas<'_, B> {
 
     pub fn stroke(&mut self, rect: Rect, width: f32, radius: f32, colour: Color) {
         let (Rectangle { loc, size }, (w, h, scale)) = (rect, (self.w, self.h, self.scale));
-        crate::paint::stroke_rounded_rect_over(
+        glide_paint::stroke_rounded_rect_over(
             self.buf.as_mut(),
             w,
             h,
@@ -183,11 +187,11 @@ impl<B: AsMut<[u8]>> Canvas<'_, B> {
 
     pub fn blit(&mut self, src: &[u8], rect: Rect) {
         let (Rectangle { loc, size }, (w, h, scale)) = (rect, (self.w, self.h, self.scale));
-        crate::paint::blit_rect_over(self.buf.as_mut(), w, h, src, size.w, size.h, loc.x, loc.y, scale);
+        glide_paint::blit_rect_over(self.buf.as_mut(), w, h, src, size.w, size.h, loc.x, loc.y, scale);
     }
 
     pub fn blit_square(&mut self, src: &[u8], side: i32, (x, y): (i32, i32)) {
-        crate::paint::blit_square_over(self.buf.as_mut(), self.w, self.h, src, side, x, y, self.scale);
+        glide_paint::blit_square_over(self.buf.as_mut(), self.w, self.h, src, side, x, y, self.scale);
     }
 
     pub fn icon(&mut self, name: &str, side: i32, at: (i32, i32), colour: Color) -> bool {
@@ -197,7 +201,7 @@ impl<B: AsMut<[u8]>> Canvas<'_, B> {
         let Some(pix) = loader.load_symbolic(name, side * self.scale, colour) else {
             return false;
         };
-        crate::paint::blit_square_over(self.buf.as_mut(), self.w, self.h, pix, side, at.0, at.1, self.scale);
+        glide_paint::blit_square_over(self.buf.as_mut(), self.w, self.h, pix, side, at.0, at.1, self.scale);
         true
     }
 

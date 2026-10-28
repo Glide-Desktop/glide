@@ -1,5 +1,4 @@
 pub mod calc;
-pub mod field;
 mod glue;
 pub mod history;
 mod list;
@@ -7,6 +6,7 @@ pub mod providers;
 pub mod recent;
 pub mod search;
 
+pub use glide_shell::field;
 use std::time::{Duration, Instant};
 
 use smithay::{

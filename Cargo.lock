@@ -1979,6 +1979,7 @@ dependencies = [
  "glide-netbird",
  "glide-notify",
  "glide-paint",
+ "glide-shell",
  "glide-theme",
  "glide-tray",
  "glide-ui",
@@ -2238,6 +2239,19 @@ dependencies = [
  "serde_json",
  "toml_edit",
  "zbus",
+]
+
+[[package]]
+name = "glide-shell"
+version = "0.1.0"
+dependencies = [
+ "glide-app",
+ "glide-config",
+ "glide-paint",
+ "glide-theme",
+ "libc",
+ "smithay",
+ "tracing",
 ]
 
 [[package]]
