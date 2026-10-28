@@ -49,6 +49,11 @@ glide_sdk::catalogue! {
     FolderProperties => "Folder Properties", "Властивості папки";
     Zoom => "Zoom", "Масштаб";
     TrashingWhat => "Moving to Trash", "Переміщення до смітника";
+    Conflict => "Name conflict", "Конфлікт імен";
+    General => "General", "Загальне";
+    Existing => "Existing", "Наявний";
+    Incoming => "New", "Новий";
+    Newer => "newer", "новіший";
     Operations => "Operations", "Операції";
     AllOperations => "All Operations", "Усі операції";
     StopAll => "Stop All", "Зупинити всі";

@@ -39,8 +39,8 @@ pub use buttons::{
     toggle_button, tonal, tone_ink,
 };
 pub use cards::{
-    choice_card, grid, hero_card, legend, page_header, preview_card, preview_ring_style, sample_well, stat_tile,
-    tinted_card, tinted_card_style, usage_bar, usage_card,
+    choice_card, compare_card, grid, hero_card, legend, page_header, preview_card, preview_ring_style, sample_well,
+    stat_tile, tinted_card, tinted_card_style, usage_bar, usage_card,
 };
 pub use controls::{
     CHECK, Check, SwitchSize, ZOOM_TRACK, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,

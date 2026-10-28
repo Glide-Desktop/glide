@@ -123,6 +123,14 @@ pub struct Properties {
     pub original: Option<PathBuf>,
     pub total: Option<(u64, usize)>,
     pub error: Option<String>,
+    pub tab: PropertiesTab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PropertiesTab {
+    #[default]
+    General,
+    Permissions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -460,6 +468,7 @@ pub enum Message {
     Thumb(ThumbKey, Option<PathBuf>),
     FolderSize(PathBuf, (u64, usize)),
     Permission(u32),
+    PropertiesTab(PropertiesTab),
     VolumesChanged,
     OpenWithDialog,
     PickApp(String),
@@ -604,6 +613,7 @@ impl Message {
                 | Self::Thumb(..)
                 | Self::FolderSize(..)
                 | Self::Permission(_)
+                | Self::PropertiesTab(_)
                 | Self::VolumesChanged
                 | Self::PickApp(_)
                 | Self::ToggleAlwaysOpen
@@ -1421,6 +1431,11 @@ impl App {
                 }
             }
             Message::Permission(bit) => self.toggle_permission(bit),
+            Message::PropertiesTab(tab) => {
+                if let Some(Modal { dialog: Dialog::Properties(properties), .. }) = &mut self.modal {
+                    properties.tab = tab;
+                }
+            }
             Message::VolumesChanged => {
                 self.disk_watch.live = true;
                 self.drives = mounted_drives(self.lang);
@@ -3683,6 +3698,7 @@ impl App {
             original: self.trash.original_path(&entry.path),
             total: None,
             error: None,
+            tab: PropertiesTab::General,
             entry,
         };
         let counting = properties.entry.is_dir.then(|| {
@@ -4308,11 +4324,7 @@ mod navigation_tests {
         let conflict = super::Modal {
             dialog: super::Dialog::Conflict {
                 job: 0,
-                question: crate::fs::jobs::Question {
-                    source: std::path::PathBuf::from("/a"),
-                    dest: std::path::PathBuf::from("/b"),
-                    folders: false,
-                },
+                question: crate::fs::jobs::Question::new(std::path::Path::new("/a"), std::path::Path::new("/b"), false),
                 for_all: false,
             },
             input: String::new(),

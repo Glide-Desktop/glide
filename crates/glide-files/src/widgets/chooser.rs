@@ -14,7 +14,7 @@ use crate::theme::{self, Side};
 pub(crate) const NAME_ID: &str = "chooser-name";
 const PREVIEW_ICON: f32 = 128.0;
 const PREVIEW_WIDTH: f32 = 216.0;
-const NAME_ROW: f32 = 560.0;
+const NAME_FIELD: f32 = 360.0;
 
 #[must_use]
 pub fn preview(app: &App) -> Option<Element<'_, Message>> {
@@ -62,13 +62,18 @@ fn header<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
     let paint = super::paint(&app.theme);
     let (cancel, accept) = (Key::Cancel.text(lang), accept_label(chooser, lang));
     let taken = Size::Small.width(cancel).max(Size::Small.width(accept));
-    let header = glide_sdk::window::Header::new(app.title())
+    let name = name_field(app, chooser);
+    let title = if name.is_some() { String::new() } else { app.title() };
+    let mut header = glide_sdk::window::Header::new(title)
         .height(HEADER_HEIGHT)
         .without_maximize()
         .without_close()
         .corners(theme::window_corners(Side::Top, app.corner()))
         .leading(compact_button(&paint, cancel, glide_sdk::Tone::Neutral, Some(Message::ChooserCancel)))
         .trailing(compact_button(&paint, accept, glide_sdk::Tone::Accent, Some(Message::ChooserAccept)));
+    if let Some(name) = name {
+        header = header.center(container(name).center_x(Fill));
+    }
     glide_sdk::window::header(&paint, &app.window(), header, Message::Window, Message::ChooserCancel, taken)
 }
 
@@ -98,13 +103,12 @@ fn toolbar<'a>(app: &'a App, chooser: &'a State) -> Element<'a, Message> {
         .into()
 }
 
-fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> {
+fn name_field<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>> {
     use glide_sdk::widget::{Validity, validated_field};
     if chooser.request.mode != Mode::Save {
         return None;
     }
-    let (t, lang) = (&app.theme, app.lang);
-    let input = text_input(Key::ChooserName.text(lang), &chooser.name)
+    let input = text_input(Key::ChooserName.text(app.lang), &chooser.name)
         .id(NAME_ID)
         .on_input(Message::ChooserName)
         .on_submit(Message::ChooserAccept);
@@ -113,19 +117,7 @@ fn name_row<'a>(app: &'a App, chooser: &'a State) -> Option<Element<'a, Message>
     } else {
         Validity::Invalid
     };
-    let row = row![
-        text(Key::ChooserName.text(lang), TextStyle { weight: 600, ..TextStyle::CALL }).color(t.fg_2()),
-        validated_field(&super::paint(t), input, validity)
-    ]
-    .spacing(theme::SP3)
-    .align_y(Alignment::Center);
-    Some(
-        pane(t.view_bg(), 0.0, container(row).max_width(NAME_ROW))
-            .padding(Padding::from([theme::SP2, theme::SP4]))
-            .center_x(Fill)
-            .height(Length::Shrink)
-            .into(),
-    )
+    Some(container(validated_field(&super::paint(&app.theme), input, validity)).max_width(NAME_FIELD).into())
 }
 
 fn dropdown<'a>(
@@ -190,9 +182,6 @@ pub fn base(app: &App) -> Option<Element<'_, Message>> {
     }
     let corners = theme::window_corners(Side::BottomRight, app.corner());
     let body = row![super::sidebar::view(app), vertical_separator(t), pane(t.view_bg(), corners, listing)].height(Fill);
-    let mut window = column![header(app, chooser), divider(t), toolbar(app, chooser), divider(t)];
-    if let Some(name) = name_row(app, chooser) {
-        window = window.push(name).push(divider(t));
-    }
-    Some(pane(t.win_bg(), app.corner(), window.push(body)).into())
+    let window = column![header(app, chooser), divider(t), toolbar(app, chooser), divider(t), body];
+    Some(pane(t.win_bg(), app.corner(), window).into())
 }

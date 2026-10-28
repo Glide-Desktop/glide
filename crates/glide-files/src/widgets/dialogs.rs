@@ -5,14 +5,14 @@ use glide_sdk::Tone;
 use glide_sdk::overlay::{dialog_buttons, dialog_card, modal};
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{
-    Size, Validity, Wrapping, art, elide, elide_lines, empty_note, facts, measure, scrollable, select_row, separator,
+    Size, Validity, Wrapping, art, elide, elide_lines, empty_note, facts, measure, scrollable, select_row,
     sized_toggle_button, text, validated_field, well,
 };
 use iced::widget::{Column, column, row, text_input};
 use iced::{Alignment, Element};
 
 use super::file_icon;
-use crate::app::{App, Dialog, MODAL_ID, Message, Modal, Properties};
+use crate::app::{App, Dialog, MODAL_ID, Message, Modal, Properties, PropertiesTab};
 use crate::fs::jobs::{Choice, Question};
 use crate::fs::{Target, format_bytes, format_time, home_dir, permissions_string};
 use crate::i18n::{self, Key, Lang};
@@ -253,11 +253,14 @@ fn conflict<'a>(
         (format!("«{}» {}", display_name(&question.dest), Key::FileExists.text(lang)), Key::FileExistsHint)
     };
     let [(skip, skipped), (both, kept), (primary, chosen)] = choices(question.folders);
+    let place = question.dest.parent().map(|parent| app.location_name(parent)).unwrap_or_default();
+    let eyebrow = format!("{} · {}", Key::Conflict.text(lang), place);
     Parts {
         title: heading,
         body: column![
+            text(eyebrow, TextStyle::MICRO).color(paint.fg_3()),
             text(hint.text(lang), TextStyle::CALL).color(paint.fg_2()),
-            text(tilde(&question.dest), TextStyle::CAP).color(paint.fg_3()).wrapping(WRAP),
+            compare(app, paint, question),
             super::check(&app.theme, Key::ApplyToAll.text(lang), for_all, Message::ToggleForAll),
         ]
         .spacing(theme::SP3)
@@ -270,6 +273,31 @@ fn conflict<'a>(
         ],
         focus,
     }
+}
+
+fn compare<'a>(app: &App, paint: &glide_sdk::Paint, question: &Question) -> Element<'a, Message> {
+    use glide_sdk::widget::compare_card;
+    let lang = app.lang;
+    let now = SystemTime::now();
+    let newer = match (question.existing.and_then(|s| s.modified), question.incoming.and_then(|s| s.modified)) {
+        (Some(existing), Some(incoming)) => incoming > existing,
+        _ => false,
+    };
+    let lines = |stamp: Option<crate::fs::jobs::Stamp>| -> Vec<String> {
+        let Some(stamp) = stamp else { return vec![String::from("—")] };
+        let mut lines = vec![if question.folders { String::new() } else { format_bytes(stamp.size, lang) }];
+        lines.retain(|line| !line.is_empty());
+        lines.extend(stamp.modified.map(|time| format_time(time, now, lang)));
+        lines
+    };
+    let glyph = if question.folders { Icon::Folder } else { Icon::File };
+    let lead = |tint| super::icon(glyph, 32.0, tint);
+    let existing =
+        compare_card(paint, lead(paint.fg_2()), Key::Existing.text(lang), None, lines(question.existing), false);
+    let badge = newer.then(|| Key::Newer.text(lang).to_string());
+    let incoming =
+        compare_card(paint, lead(paint.acc_text()), Key::Incoming.text(lang), badge, lines(question.incoming), newer);
+    row![existing, incoming].spacing(theme::SP3).into()
 }
 
 pub(crate) fn tilde(path: &Path) -> String {
@@ -321,9 +349,24 @@ fn details<'a>(app: &'a App, paint: &glide_sdk::Paint, properties: &'a Propertie
     rows.push((Key::Permissions, permissions_string(entry.mode)));
     let rows = rows.into_iter().map(|(key, value)| (key.text(lang).to_string(), value)).collect();
 
-    let mut body =
-        column![heading, separator(paint), facts(paint, rows, LABEL_WIDTH), permissions(app, paint, properties)]
-            .spacing(theme::SP4);
+    let tab = properties.tab;
+    let tabs = glide_sdk::widget::tabs(
+        paint,
+        &[(PropertiesTab::General, Key::General.text(lang)), (PropertiesTab::Permissions, Key::Permissions.text(lang))],
+        tab,
+        Message::PropertiesTab,
+    );
+    let page: Element<'a, Message> = match tab {
+        PropertiesTab::General => facts(paint, rows, LABEL_WIDTH),
+        PropertiesTab::Permissions => column![
+            permissions(app, paint, properties),
+            text(permissions_string(entry.mode), TextStyle::NUM).color(paint.fg_2()),
+        ]
+        .spacing(theme::SP3)
+        .into(),
+    };
+    let page = glide_sdk::widget::swapped(tab as u8, None, page);
+    let mut body = column![heading, tabs, page].spacing(theme::SP4);
     if let Some(error) = &properties.error {
         body = body.push(text(error, TextStyle::CAP).color(paint.danger()).wrapping(WRAP));
     }

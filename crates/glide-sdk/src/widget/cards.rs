@@ -14,6 +14,46 @@ use super::layout::card_style;
 use super::{Glyph, Wrapping, mix, text};
 
 #[must_use]
+pub fn compare_card<'a, M: 'a>(
+    paint: &Paint, lead: impl Into<Element<'a, M>>, label: impl Into<String>, badge: Option<String>,
+    lines: Vec<String>, emphasized: bool,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let mut heading = row![text(label.into(), TextStyle::CAP).color(paint.fg_2())].spacing(SP1 + 2.0);
+    if let Some(badge) = badge {
+        heading = heading.push(super::feedback::badge(&paint, badge, super::Severity::Accent));
+    }
+    let facts = lines.into_iter().enumerate().map(|(index, line)| {
+        let figures = TextStyle { size_px: 12.5, line_height_px: 19.0, ..TextStyle::NUM };
+        let line = text(line, figures).wrapping(Wrapping::None);
+        if index == 0 { line.into() } else { line.color(paint.fg_2()).into() }
+    });
+    let content = row![
+        container(lead.into()).center(40),
+        Column::with_children(std::iter::once(heading.align_y(Alignment::Center).into()).chain(facts))
+            .spacing(2)
+            .width(Fill)
+            .clip(true),
+    ]
+    .spacing(SP3)
+    .align_y(Alignment::Center);
+    container(content)
+        .padding(SP3)
+        .width(Fill)
+        .style(move |_| {
+            if emphasized {
+                style::rounded(paint.acc_soft(), R3)
+            } else {
+                container::Style {
+                    border: Border { color: paint.line(), width: 1.0, radius: R3.into() },
+                    ..style::rounded(paint.win_bg(), R3)
+                }
+            }
+        })
+        .into()
+}
+
+#[must_use]
 pub fn grid<'a, M: 'a>(cells: Vec<Element<'a, M>>, per_line: usize, spacing: f32) -> Element<'a, M> {
     let per_line = per_line.max(1);
     let mut lines = Column::new().spacing(spacing);

@@ -267,19 +267,16 @@ const TASK_FIGURES: TextStyle = TextStyle { size_px: 11.5, line_height_px: 16.0,
 #[must_use]
 pub fn task_card<'a, M: 'a>(paint: &Paint, glyph: impl super::Glyph, task: Task<'a, M>) -> Element<'a, M> {
     let paint = *paint;
-    let title = text(task.title, TextStyle { weight: 630, ..TextStyle::CALL }).wrapping(Wrapping::None).width(Fill);
-    let head = task
-        .actions
-        .into_iter()
-        .fold(row![icon(glyph, 16.0, paint.acc_text()), Space::new().width(SP2), title], Row::push)
-        .align_y(Alignment::Center);
+    let title =
+        text(task.title, TextStyle { weight: 630, ..TextStyle::CALL }).wrapping(Wrapping::WordOrGlyph).width(Fill);
+    let head = row![icon(glyph, 16.0, paint.acc_text()), title].spacing(SP2).align_y(Alignment::Start);
     let mut card = column![head].spacing(SP2);
     if let Some(current) = task.current {
         card = card.push(text(current, TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None));
     }
-    card = card
-        .push(super::controls::paused_progress(&paint, task.fraction, task.paused))
-        .push(text(task.detail, TASK_FIGURES).color(paint.fg_2()));
+    let detail = text(task.detail, TASK_FIGURES).color(paint.fg_2()).wrapping(Wrapping::WordOrGlyph).width(Fill);
+    let detail = task.actions.into_iter().fold(row![detail].align_y(Alignment::Center), Row::push);
+    card = card.push(super::controls::paused_progress(&paint, task.fraction, task.paused)).push(detail);
     if let Some(footer) = task.footer {
         card = card.push(footer);
     }

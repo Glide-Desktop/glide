@@ -1007,7 +1007,7 @@ fn a_conflict_dialog_is_wide_enough_for_its_buttons_in_every_language() {
     for lang in [Lang::Uk, Lang::En] {
         for (folders, both, primary) in [(true, Key::KeepBothFolders, Key::Merge), (false, Key::KeepBoth, Key::Replace)]
         {
-            let question = Question { source: path(1), dest: path(2), folders };
+            let question = Question::new(&path(1), &path(2), folders);
             let width = card_width(&Dialog::Conflict { job: 1, question, for_all: false }, lang);
             let row: f32 = [Key::StopJob, Key::Skip, both, primary]
                 .iter()

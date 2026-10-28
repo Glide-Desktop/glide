@@ -1,7 +1,7 @@
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{
-    Task, Tone, compact_button, elide, elide_end, full_button, icon_button as small, progress, section_heading,
-    separator, switch_row, task_card, task_row, text,
+    Task, Tone, compact_button, elide, elide_end, elide_lines, full_button, icon_button as small, progress,
+    section_heading, separator, switch_row, task_card, task_row, text,
 };
 use iced::widget::{Space, column, container, row};
 use iced::{Alignment, Element, Fill, Padding, Point, Size};
@@ -17,10 +17,10 @@ use crate::theme::{SP1, SP2, SP3, SP4};
 pub const PANEL_WIDTH: f32 = 432.0;
 const PANEL_MAX: f32 = 600.0;
 const ROW: f32 = 58.0;
-const HEADING: f32 = 30.0;
-const TOP: f32 = 128.0;
+const HEADING: f32 = 36.0;
+const TOP: f32 = 168.0;
 const CARD_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * SP2 - SP3 - SP2;
-const CARD_TITLE: f32 = CARD_TEXT - 16.0 - SP2 - 2.0 * CONTROL;
+const CARD_TITLE: f32 = CARD_TEXT - 16.0 - SP2;
 const ROW_TEXT: f32 = PANEL_WIDTH - 2.0 * SP3 - SP4 - SP1 - 3.0 * SP2 - 2.0 * CONTROL;
 
 const fn glyph(op: Op) -> Icon {
@@ -154,7 +154,7 @@ pub fn sidebar(app: &App) -> Element<'_, Message> {
     }
     let cards = app.jobs.iter().map(|job| {
         let task = Task {
-            title: elide_end(&job.label, CARD_TITLE, TextStyle { weight: 630, ..TextStyle::CALL }),
+            title: elide_lines(&job.label, CARD_TITLE, TextStyle { weight: 630, ..TextStyle::CALL }, 2),
             current: job.progress.current.as_ref().map(|current| elide(current, CARD_TEXT, TextStyle::CAP)),
             fraction: fraction(job).or_else(|| job.launch.is_some().then_some(0.0)),
             paused: job.meter.is_paused(),

@@ -62,6 +62,35 @@ pub struct Question {
     pub source: PathBuf,
     pub dest: PathBuf,
     pub folders: bool,
+    pub incoming: Option<Stamp>,
+    pub existing: Option<Stamp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+impl Stamp {
+    #[must_use]
+    pub fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        Some(Self { size: meta.len(), modified: meta.modified().ok() })
+    }
+}
+
+impl Question {
+    #[must_use]
+    pub fn new(source: &Path, dest: &Path, folders: bool) -> Self {
+        Self {
+            source: source.to_path_buf(),
+            dest: dest.to_path_buf(),
+            folders,
+            incoming: Stamp::of(source),
+            existing: Stamp::of(dest),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -284,7 +313,7 @@ impl Worker<'_> {
         if let Some(choice) = remembered {
             return choice;
         }
-        let answer = self.sink.ask(Question { source: source.to_path_buf(), dest: dest.to_path_buf(), folders });
+        let answer = self.sink.ask(Question::new(source, dest, folders));
         if answer.for_all {
             if folders {
                 self.remember_folders = Some(answer.choice);
