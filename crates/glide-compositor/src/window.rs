@@ -140,8 +140,12 @@ impl GlideWindow {
         self.with_animation(|animation: &GeometryAnimation| {
             let duration = geometry_duration();
             let elapsed = running(animation.started, duration)?;
-            Some(GeometryProgress::at(elapsed, duration, animation.from, animation.to, self.geometry().size))
+            Some(GeometryProgress::at(elapsed, duration, animation.from, animation.to, self.frame_size()))
         })
+    }
+
+    fn frame_size(&self) -> Size<i32, Logical> {
+        frame_of(self.geometry().size, self.header_height())
     }
 
     pub(crate) fn is_geometry_animating(&self) -> bool {
@@ -164,6 +168,10 @@ struct GeometryAnimation {
     started: Instant,
     from: Rectangle<i32, Logical>,
     to: Rectangle<i32, Logical>,
+}
+
+fn frame_of(content: Size<i32, Logical>, header: i32) -> Size<i32, Logical> {
+    Size::from((content.w, content.h + header))
 }
 
 fn running(started: Instant, duration: Duration) -> Option<Duration> {
@@ -559,10 +567,11 @@ impl GlideWindow {
 
         if transformed {
             let travel = travel.to_physical_precise_round(scale);
+            let frame_origin = header_location + self.geometry().loc.to_physical_precise_round(scale);
             layers
                 .into_iter()
                 .map(|layer| {
-                    let scaled = RescaleRenderElement::from_element(layer, header_location, factor);
+                    let scaled = RescaleRenderElement::from_element(layer, frame_origin, factor);
                     C::from(GlideWindowRenderElement::Scaled(RelocateRenderElement::from_element(
                         scaled,
                         travel,
@@ -755,6 +764,19 @@ mod geometry_animation_tests {
         let travelled = (quarter.scale.x - start_scale) / (1.0 - start_scale);
         let expected = glide_theme::motion::E_OUT.ease_f64(0.25);
         assert!((travelled - expected).abs() < 0.01, "expected {expected} of the travel done, got {travelled}");
+    }
+
+    #[test]
+    fn a_titled_window_is_measured_by_its_frame_so_it_is_never_stretched_by_the_titlebar() {
+        let (from, to) = maximize();
+        let duration = Duration::from_millis(320);
+        let content = Size::from((to.size.w, to.size.h - 32));
+        let settled = GeometryProgress::at(duration, duration, from, to, frame_of(content, 32));
+        assert!((settled.scale.y - 1.0).abs() < 1e-9, "settled at {}", settled.scale.y);
+
+        let slide = rect(-1920, 0, 1920, 1080);
+        let mid = GeometryProgress::at(duration / 2, duration, slide, to, frame_of(content, 32));
+        assert!((mid.scale.x - 1.0).abs() < 1e-9 && (mid.scale.y - 1.0).abs() < 1e-9, "a slide only travels");
     }
 
     #[test]

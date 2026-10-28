@@ -243,7 +243,8 @@ struct Capture {
 }
 
 fn capture_window(renderer: &mut GlesRenderer, window: &GlideWindow, scale: Scale<f64>) -> Option<Capture> {
-    let content = window.geometry().size;
+    let geometry = window.geometry();
+    let content = geometry.size;
     let header = window.header_height();
     let margin = window.shadow_margin();
 
@@ -259,7 +260,8 @@ fn capture_window(renderer: &mut GlesRenderer, window: &GlideWindow, scale: Scal
     let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (physical.w, physical.h).into()).ok()?;
     let mut target = renderer.bind(&mut texture).ok()?;
 
-    let content_origin = Point::from((margin, margin + header)).to_physical_precise_round(scale);
+    let content_origin = Point::<i32, Logical>::from((margin - geometry.loc.x, margin + header - geometry.loc.y))
+        .to_physical_precise_round(scale);
     let elements: Vec<crate::window::GlideWindowRenderElement<GlesRenderer>> =
         smithay::backend::renderer::element::AsRenderElements::render_elements(
             window,

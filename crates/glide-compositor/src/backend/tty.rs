@@ -230,6 +230,7 @@ struct SurfaceData {
     modes: Vec<smithay::reexports::drm::control::Mode>,
     pending_repaint: Option<RegistrationToken>,
     redraw_queued: bool,
+    flip_pending: Option<std::time::Instant>,
     switched_off: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
     wallpaper_muted_buf: Option<MemoryRenderBuffer>,
@@ -355,6 +356,9 @@ pub fn init_tty(
                     return;
                 }
 
+                for surface in device.surfaces.values_mut() {
+                    surface.flip_pending = None;
+                }
                 let crtcs: Vec<_> = device.surfaces.keys().copied().collect();
                 for crtc in crtcs {
                     state.render_surface(crtc);
@@ -497,6 +501,8 @@ fn present_feedback(
 const OVERVIEW_WALLPAPER_ZOOM: f64 = 1.06;
 
 const MIRROR_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+const FLIP_WAIT: Duration = Duration::from_millis(100);
 
 const OVERVIEW_WALLPAPER_SATURATION: f32 = 0.9;
 
@@ -921,6 +927,7 @@ impl GlideState {
                 modes: drm_modes,
                 pending_repaint: None,
                 redraw_queued: false,
+                flip_pending: None,
                 switched_off: false,
                 wallpaper_buf: None,
                 wallpaper_muted_buf: None,
@@ -955,6 +962,7 @@ impl GlideState {
                 return;
             };
             let output = surface.output.clone();
+            surface.flip_pending = None;
 
             match surface.drm_output.frame_submitted() {
                 Ok(user_data) => {
@@ -1134,6 +1142,7 @@ impl GlideState {
                     self.loop_handle.remove(token);
                 }
                 surface.redraw_queued = false;
+                surface.flip_pending = None;
             }
         } else {
             let crtcs: Vec<crtc::Handle> = device.surfaces.keys().copied().collect();
@@ -1216,6 +1225,11 @@ impl GlideState {
         if let Some(token) = surface.pending_repaint.take() {
             self.loop_handle.remove(token);
         }
+
+        if surface.flip_pending.is_some_and(|since| since.elapsed() < FLIP_WAIT) {
+            return;
+        }
+        surface.flip_pending = None;
 
         let target = surface.output.clone();
         let mirroring = self.session.mirrors.contains(&target);
@@ -1701,7 +1715,13 @@ impl GlideState {
                 .collect();
             let failed =
                 match surface.drm_output.render_frame(gles_renderer, &copied, MIRROR_CLEAR, FrameFlags::DEFAULT) {
-                    Ok(result) if !result.is_empty => surface.drm_output.queue_frame(None).is_err(),
+                    Ok(result) if !result.is_empty => {
+                        let queued = surface.drm_output.queue_frame(None).is_ok();
+                        if queued {
+                            surface.flip_pending = Some(std::time::Instant::now());
+                        }
+                        !queued
+                    }
                     Ok(_) => false,
                     Err(err) => {
                         tracing::error!(output = %target.name(), ?err, "failed to render a mirrored frame");
@@ -1825,7 +1845,10 @@ impl GlideState {
             Ok(res) => {
                 let feedback = take_presentation_feedback(&output, &self.space, &res.states);
                 match surface.drm_output.queue_frame(Some(feedback)) {
-                    Ok(()) => FrameOutcome::Queued(res.states),
+                    Ok(()) => {
+                        surface.flip_pending = Some(std::time::Instant::now());
+                        FrameOutcome::Queued(res.states)
+                    }
                     Err(err) => {
                         tracing::error!("failed to queue frame: {:?}", err);
                         FrameOutcome::Failed
