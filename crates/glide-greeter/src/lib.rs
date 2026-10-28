@@ -1,3 +1,4 @@
+pub mod handoff;
 pub mod ipc;
 pub mod pam;
 pub mod system;

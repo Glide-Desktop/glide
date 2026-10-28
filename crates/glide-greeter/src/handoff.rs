@@ -15,11 +15,9 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Scale, Size},
 };
 
-use crate::{
-    greeter::ui::{Canvas, IconCache, Rect, solid_pixel, svg},
-    i18n::{Key, t},
-    paint::{Painter, TextAlign},
-};
+use crate::ui::{Canvas, IconCache, Rect, solid_pixel, svg};
+use glide_paint::{Painter, TextAlign};
+use glide_shell::i18n::{Key, t};
 
 pub const ENV: &str = "GLIDE_HANDOFF";
 pub const MAX_WAIT: Duration = Duration::from_secs(4);
@@ -113,7 +111,7 @@ impl Cover {
     fn content_buffer(&mut self, painter: &Painter, buffer_scale: i32) -> &MemoryRenderBuffer {
         let step = self.spinner_step();
         let label = t(Key::GreeterLoggingIn);
-        let key = Revision::new().u64(u64::from(step)).u64(crate::paint::painter_generation()).str(label).finish();
+        let key = Revision::new().u64(u64::from(step)).u64(glide_paint::painter_generation()).str(label).finish();
         let stale = self.content.get(&buffer_scale).is_none_or(|(cached, _)| *cached != key);
         if stale {
             let frame_h = SPINNER + LABEL_GAP + LABEL_H;
@@ -135,7 +133,7 @@ impl Cover {
         alpha: f64,
     ) -> Vec<MemoryRenderBufferRenderElement<R>>
     where
-        R: crate::raster::ShellRenderer,
+        R: glide_shell::raster::ShellRenderer,
     {
         let mut out = Vec::new();
         if alpha <= 0.0 || size.w <= 0 || size.h <= 0 || buffer_scale <= 0 {

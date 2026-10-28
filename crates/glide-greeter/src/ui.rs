@@ -21,9 +21,9 @@ use smithay::{
 };
 
 use super::system::{GreeterStatus, SessionEntry, UserEntry};
-use crate::{
+use glide_paint::{Painter, TextAlign};
+use glide_shell::{
     i18n::{Key, t},
-    paint::{Painter, TextAlign},
     popup_menu::text_px as text_w,
 };
 
@@ -609,7 +609,7 @@ fn countdown(left: Duration) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
-fn plural(lang: crate::i18n::Lang, count: u64, keys: [Key; 3]) -> String {
+fn plural(lang: glide_shell::i18n::Lang, count: u64, keys: [Key; 3]) -> String {
     let key = match lang.plural(count) {
         glide_app::i18n::Plural::One => keys[0],
         glide_app::i18n::Plural::Few => keys[1],
@@ -1055,7 +1055,11 @@ impl GreeterUi {
             Some(left) if left > 0 => format!(
                 "{} {}",
                 t(Key::GreeterWrongShort),
-                plural(crate::i18n::language(), u64::from(left), [Key::PkLeftOne, Key::PkLeftFew, Key::PkLeftMany])
+                plural(
+                    glide_shell::i18n::language(),
+                    u64::from(left),
+                    [Key::PkLeftOne, Key::PkLeftFew, Key::PkLeftMany]
+                )
             ),
             _ => fallback.to_string(),
         };
@@ -1121,13 +1125,13 @@ impl GreeterUi {
     }
 
     fn refresh_clock(&mut self) {
-        let Some(now) = crate::topbar::calendar::LocalNow::now() else {
+        let Some(now) = glide_shell::clock::LocalNow::now() else {
             return;
         };
-        let h24 = crate::topbar::calendar::default_24h(crate::topbar::calendar::env_locale_is_us());
-        let full = crate::topbar::calendar::format_time(now.hour, now.minute, h24);
+        let h24 = glide_shell::clock::default_24h(glide_shell::clock::env_locale_is_us());
+        let full = glide_shell::clock::format_time(now.hour, now.minute, h24);
         let time = full.split(' ').next().unwrap_or_default().to_string();
-        let date = crate::i18n::long_date(crate::i18n::language(), now.weekday, now.day, now.month0)
+        let date = glide_shell::i18n::long_date(glide_shell::i18n::language(), now.weekday, now.day, now.month0)
             .replace(", ", " · ")
             .to_uppercase();
         if time != self.time || date != self.date {
@@ -1878,7 +1882,7 @@ impl GreeterUi {
         let note_rect = Rect::new(card.right() - 14 - note_w, card.y, note_w + 2, NOTICES_H);
         canvas.text(note_rect, note, p.faint, &NOTICE_NOTE_STYLE, TextAlign::Left);
         let label = plural(
-            crate::i18n::language(),
+            glide_shell::i18n::language(),
             self.notices.count as u64,
             [Key::LockNoticesOne, Key::LockNoticesFew, Key::LockNoticesMany],
         );
@@ -1917,7 +1921,7 @@ impl GreeterUi {
         if frame.w <= 0 || frame.h <= 0 {
             return None;
         }
-        let key = self.part_key(part, frame, crate::paint::painter_generation());
+        let key = self.part_key(part, frame, glide_paint::painter_generation());
         let slot = (part, buffer_scale);
         if self.layers.get(&slot).is_none_or(|layer| layer.key != key) {
             let mut icons = std::mem::take(&mut self.icons);
@@ -1935,7 +1939,7 @@ impl GreeterUi {
         buffer_scale: i32, primary: bool,
     ) -> Vec<MemoryRenderBufferRenderElement<R>>
     where
-        R: crate::raster::ShellRenderer,
+        R: glide_shell::raster::ShellRenderer,
     {
         let mut out = Vec::new();
         let size = area.size;
@@ -2017,23 +2021,23 @@ impl<'a> Canvas<'a> {
         Self { buf: vec![0; len], w, h, scale, painter, icons }
     }
 
-    fn view(&mut self) -> crate::raster::Canvas<'static, &mut [u8]> {
-        crate::raster::Canvas::over(&mut self.buf, self.w, self.h, self.scale)
+    fn view(&mut self) -> glide_shell::raster::Canvas<'static, &mut [u8]> {
+        glide_shell::raster::Canvas::over(&mut self.buf, self.w, self.h, self.scale)
     }
 
     fn fill(&mut self, r: Rect, radius: f32, color: Color) {
         if color.0[3] > 0.0 && r.w > 0 && r.h > 0 {
-            self.view().fill(crate::raster::rect(r.x, r.y, r.w, r.h), color, radius);
+            self.view().fill(glide_shell::raster::rect(r.x, r.y, r.w, r.h), color, radius);
         }
     }
 
     fn gradient(&mut self, r: Rect, radius: f32, from: Color, to: Color) {
-        self.view().gradient(crate::raster::rect(r.x, r.y, r.w, r.h), radius, from, to);
+        self.view().gradient(glide_shell::raster::rect(r.x, r.y, r.w, r.h), radius, from, to);
     }
 
     fn stroke(&mut self, r: Rect, width: f32, radius: f32, color: Color) {
         if color.0[3] > 0.0 {
-            self.view().stroke(crate::raster::rect(r.x, r.y, r.w, r.h), width, radius, color);
+            self.view().stroke(glide_shell::raster::rect(r.x, r.y, r.w, r.h), width, radius, color);
         }
     }
 
@@ -2056,23 +2060,23 @@ impl<'a> Canvas<'a> {
         let bytes = self
             .icons
             .entry(key)
-            .or_insert_with(|| crate::paint::render_svg_tinted(svg.as_bytes(), px, color).unwrap_or_default());
+            .or_insert_with(|| glide_paint::render_svg_tinted(svg.as_bytes(), px, color).unwrap_or_default());
         if bytes.is_empty() {
             return;
         }
-        crate::paint::blit_square_over(&mut self.buf, self.w, self.h, bytes, side, x, y, self.scale);
+        glide_paint::blit_square_over(&mut self.buf, self.w, self.h, bytes, side, x, y, self.scale);
     }
 
     fn shadow(&mut self, r: Rect, radius: f32, dy: i32, blur: f32, color: Color) {
         let mut layer = vec![0u8; self.buf.len()];
         Painter::fill_rounded_rect_over(&mut layer, self.w, self.h, r.x, r.y + dy, r.w, r.h, self.scale, color, radius);
-        let radius_px = crate::paint::css_blur_box_radius(blur) * self.scale;
-        crate::paint::box_blur_rgba(&mut layer, self.w * self.scale, self.h * self.scale, radius_px);
+        let radius_px = glide_paint::css_blur_box_radius(blur) * self.scale;
+        glide_paint::box_blur_rgba(&mut layer, self.w * self.scale, self.h * self.scale, radius_px);
         composite_over(&mut self.buf, &layer);
     }
 
     pub(crate) fn finish(self) -> MemoryRenderBuffer {
-        crate::raster::buffer_from(&self.buf, self.w, self.h, self.scale)
+        glide_shell::raster::buffer_from(&self.buf, self.w, self.h, self.scale)
     }
 }
 
@@ -2473,7 +2477,7 @@ mod tests {
 
     #[test]
     fn the_last_user_and_session_are_preselected_when_they_still_exist() {
-        use crate::greeter::LastLogin;
+        use crate::LastLogin;
         let mut ui = ui();
         ui.restore(&LastLogin { user: "guest".into(), session: "sway".into() });
         assert_eq!(ui.active_user().unwrap().username, "guest");
@@ -2531,19 +2535,19 @@ mod tests {
             icon::CLOCK,
             icon::NOTE,
         ] {
-            assert!(crate::paint::render_svg(svg(2.0, body).as_bytes(), side).is_some(), "{body}");
+            assert!(glide_paint::render_svg(svg(2.0, body).as_bytes(), side).is_some(), "{body}");
         }
         for body in [icon::PLAY, icon::PAUSE, icon::PREVIOUS, icon::NEXT] {
-            assert!(crate::paint::render_svg(filled(body).as_bytes(), side).is_some(), "{body}");
+            assert!(glide_paint::render_svg(filled(body).as_bytes(), side).is_some(), "{body}");
         }
-        assert!(crate::paint::render_svg(battery_svg(50).as_bytes(), side).is_some());
-        assert!(crate::paint::render_svg(spinner_svg(7).as_bytes(), side).is_some());
+        assert!(glide_paint::render_svg(battery_svg(50).as_bytes(), side).is_some());
+        assert!(glide_paint::render_svg(spinner_svg(7).as_bytes(), side).is_some());
     }
 
     #[test]
     fn the_power_icon_stroke_starts_at_the_top_of_the_ring() {
         let side = 48;
-        let bytes = crate::paint::render_svg(svg(2.0, icon::POWER).as_bytes(), side).unwrap();
+        let bytes = glide_paint::render_svg(svg(2.0, icon::POWER).as_bytes(), side).unwrap();
         let alpha_at = |x: i32, y: i32| bytes[usize::try_from((y * side + x) * 4 + 3).unwrap()];
         assert!(alpha_at(side / 2, side / 8) > 0, "stem reaches the top");
         assert_eq!(alpha_at(side / 2, side * 5 / 8), 0, "no stem below the centre");
@@ -2552,12 +2556,12 @@ mod tests {
     fn compose(ui: &mut GreeterUi, painter: &Painter, (w, h): (i32, i32), scale: i32) -> Vec<u8> {
         let layout = ui.compute_layout(painter, Rectangle::from_size((w, h).into()));
         ui.layout = Some(layout.clone());
-        let mut image = crate::raster::Canvas::new(w, h, scale).expect("canvas");
+        let mut image = glide_shell::raster::Canvas::new(w, h, scale).expect("canvas");
         let full = image.full();
         image.gradient(full, 0.0, Color::from_rgb8(31, 42, 70, 1.0), Color::from_rgb8(40, 30, 64, 1.0));
         for row in 0..h {
             let alpha = 0.1 + 0.35 * f64::from(row) / f64::from(h);
-            image.fill(crate::raster::rect(0, row, w, 1), Color::from_rgb8(10, 10, 14, alpha as f32), 0.0);
+            image.fill(glide_shell::raster::rect(0, row, w, 1), Color::from_rgb8(10, 10, 14, alpha as f32), 0.0);
         }
         let mut parts = ui.parts(0.0);
         parts.reverse();
@@ -2572,7 +2576,7 @@ mod tests {
             let mut icons = IconCache::new();
             let mut canvas = Canvas::new(frame.w, frame.h, scale, painter, &mut icons);
             ui.draw_part(part, &layout, frame, &mut canvas);
-            image.blit(&canvas.buf, crate::raster::rect(frame.x, frame.y, frame.w, frame.h));
+            image.blit(&canvas.buf, glide_shell::raster::rect(frame.x, frame.y, frame.w, frame.h));
         }
         image.buf
     }

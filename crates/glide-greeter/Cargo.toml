@@ -1,0 +1,24 @@
+[package]
+name = "glide-greeter"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+glide-app = { path = "../glide-app" }
+glide-config = { path = "../glide-config" }
+glide-paint = { path = "../glide-paint" }
+glide-shell = { path = "../glide-shell" }
+glide-theme = { path = "../glide-theme" }
+glide-ui = { path = "../glide-ui" }
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+smithay = { workspace = true, features = ["wayland_frontend"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

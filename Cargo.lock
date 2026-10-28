@@ -1973,6 +1973,7 @@ dependencies = [
  "glide-cast",
  "glide-config",
  "glide-geom",
+ "glide-greeter",
  "glide-ipc",
  "glide-layout",
  "glide-media",
@@ -2041,6 +2042,24 @@ dependencies = [
 [[package]]
 name = "glide-geom"
 version = "0.1.0"
+
+[[package]]
+name = "glide-greeter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glide-app",
+ "glide-config",
+ "glide-paint",
+ "glide-shell",
+ "glide-theme",
+ "glide-ui",
+ "libc",
+ "serde",
+ "serde_json",
+ "smithay",
+ "tracing",
+]
 
 [[package]]
 name = "glide-iced"

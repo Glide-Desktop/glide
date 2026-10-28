@@ -288,9 +288,11 @@ pub fn parse_wireless(text: &str) -> Option<u8> {
 
 #[must_use]
 pub fn read_status() -> GreeterStatus {
-    let battery = crate::system_info::read_battery().map(|info| {
-        let charging =
-            matches!(info.state, crate::system_info::BatteryState::Charging | crate::system_info::BatteryState::Full);
+    let battery = glide_shell::battery::read_battery().map(|info| {
+        let charging = matches!(
+            info.state,
+            glide_shell::battery::BatteryState::Charging | glide_shell::battery::BatteryState::Full
+        );
         (info.pct, charging)
     });
     let wifi = fs::read_to_string("/proc/net/wireless").ok().as_deref().and_then(parse_wireless);

@@ -31,8 +31,6 @@ mod force_quit;
 mod framed;
 mod global_menu;
 mod grabs;
-pub mod greeter;
-mod handoff;
 mod headset;
 mod identity;
 mod idle;
@@ -103,6 +101,7 @@ use smithay::{
 };
 
 use backend::tty::TtyData;
+use glide_greeter::{self as greeter, handoff};
 use glide_shell::{i18n, icon, popup_menu, raster};
 pub use state::GlideState;
 

@@ -8,6 +8,7 @@ members = [
     "crates/glide-compositor",
     "crates/glide-config",
     "crates/glide-geom",
+    "crates/glide-greeter",
     "crates/glide-iced",
     "crates/glide-files",
     "crates/glide-layout",

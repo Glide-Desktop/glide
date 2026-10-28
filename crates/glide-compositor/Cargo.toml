@@ -34,6 +34,7 @@ glide-appmenu = { path = "../glide-appmenu" }
 glide-cast = { path = "../glide-cast" }
 glide-config = { path = "../glide-config" }
 glide-geom = { path = "../glide-geom" }
+glide-greeter = { path = "../glide-greeter" }
 glide-ipc = { path = "../glide-ipc" }
 glide-layout = { path = "../glide-layout" }
 glide-media = { path = "../glide-media" }
