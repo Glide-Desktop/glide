@@ -906,4 +906,52 @@ mod tests {
         assert!(layout.set_fixed_workspaces(None));
         assert_eq!(layout.workspace_count(), 1, "back to dynamic: empty workspaces other than the active one go");
     }
+
+    #[test]
+    fn folding_the_active_workspace_keeps_the_focused_window_focused() {
+        let mut layout = Layout::new();
+        layout.set_fixed_workspaces(Some(3));
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(1)));
+        let below = windows(&mut layout, 2, SIZE);
+        layout.focus_window(below[0]);
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(2)));
+        let top = windows(&mut layout, 1, SIZE)[0];
+        layout.focus_window(top);
+        layout.set_fixed_workspaces(Some(2));
+        assert_eq!(layout.focused_window(), Some(top), "the folded windows land on top, so their focus stays");
+    }
+
+    #[test]
+    fn losing_every_output_leaves_windows_where_they_were() {
+        let screen = rect(0, 0, 2560, 1440);
+        let mut layout = with_output(screen);
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_geometry(w, rect(2000, 1100, 400, 300));
+        layout.outputs_changed(&[]);
+        layout.outputs_changed(&[output(OutputId::next(), screen)]);
+        assert_eq!(geometry(&layout, w), rect(2000, 1100, 400, 300));
+    }
+
+    #[test]
+    fn a_titlebar_gained_while_maximized_or_fullscreen_never_restores_under_the_panel() {
+        for fullscreen in [false, true] {
+            let mut layout = with_panel();
+            let w = WindowId::next();
+            layout.add_window(w, SIZE);
+            layout.set_window_geometry(w, rect(560, 40, 800, 600));
+            if fullscreen {
+                layout.set_fullscreen(w, true);
+            } else {
+                layout.set_maximized(w, true);
+            }
+            layout.set_window_insets(w, Insets { top: 48, ..Insets::NONE });
+            if fullscreen {
+                layout.set_fullscreen(w, false);
+            } else {
+                layout.set_maximized(w, false);
+            }
+            assert_eq!(geometry(&layout, w), rect(560, 40, 800, 648), "fullscreen {fullscreen}");
+        }
+    }
 }

@@ -248,7 +248,10 @@ impl Layout {
         if self.active == last.id {
             self.recent.retain(|&seen| seen != into);
             self.active = into;
-            self.focused = self.pick_new_focus();
+            if !self.focused.is_some_and(|focused| last.windows.contains(&focused)) {
+                self.focused = self.pick_new_focus();
+            }
+            self.remember_focus();
         }
     }
 
@@ -365,7 +368,9 @@ impl Layout {
 
     pub fn outputs_changed(&mut self, outputs: &[OutputInfo]) {
         self.outputs = outputs.to_vec();
-        self.rescue_offscreen_windows();
+        if !self.outputs.is_empty() {
+            self.rescue_offscreen_windows();
+        }
     }
 
     #[must_use]
@@ -541,8 +546,15 @@ impl Layout {
         ws_id
     }
 
+    fn restored_frame(&self, w: WindowId) -> Option<Rectangle> {
+        let saved = self.windows.get(&w)?.saved_geometry?;
+        let area = self.work_area_at(saved.center());
+        Some(if saved.loc.y < area.loc.y { keep_reachable(saved, area) } else { saved })
+    }
+
     pub fn set_maximized(&mut self, w: WindowId, maximized: bool) -> bool {
         let work_area = self.work_area_for_window(w);
+        let restored = self.restored_frame(w);
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
@@ -566,7 +578,7 @@ impl Layout {
             state.maximized = true;
             state.is_placed = true;
         } else {
-            match state.saved_geometry.take() {
+            match state.saved_geometry.take().and(restored) {
                 Some(saved) => state.geometry = saved,
                 None => state.is_placed = false,
             }
@@ -583,6 +595,7 @@ impl Layout {
         let requested = on.and_then(|point| self.output_at(point)).map(|output| output.geometry);
         let output_geom = requested.unwrap_or_else(|| self.output_geometry_for_window(w));
         let work_area = self.work_area_for_window(w);
+        let restored = self.restored_frame(w);
 
         let Some(state) = self.windows.get_mut(&w) else {
             return false;
@@ -611,7 +624,7 @@ impl Layout {
             if state.maximized {
                 state.geometry = work_area;
             } else {
-                match state.saved_geometry.take() {
+                match state.saved_geometry.take().and(restored) {
                     Some(saved) => state.geometry = saved,
                     None => state.is_placed = false,
                 }
@@ -783,11 +796,7 @@ impl Layout {
     }
 
     fn rescue_offscreen_windows(&mut self) {
-        let outputs: Vec<Rectangle> = if self.outputs.is_empty() {
-            vec![FALLBACK_OUTPUT]
-        } else {
-            self.outputs.iter().map(|o| o.geometry).collect()
-        };
+        let outputs: Vec<Rectangle> = self.outputs.iter().map(|o| o.geometry).collect();
 
         let stranded: Vec<WindowId> = self
             .windows
