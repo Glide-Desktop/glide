@@ -206,6 +206,96 @@ pub fn draw_outset_shadow_and_border(
     copy_pixmap_into(buf, pixmap);
 }
 
+pub struct OutsetShadow {
+    pixels: Vec<u8>,
+    side: i32,
+    split: i32,
+}
+
+impl std::fmt::Debug for OutsetShadow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutsetShadow").field("side", &self.side).field("split", &self.split).finish_non_exhaustive()
+    }
+}
+
+impl OutsetShadow {
+    #[must_use]
+    pub fn new(
+        margin: i32, shadow_layers: &[ShadowLayerSpec], border_width: f32, border_color: Color, window_radius: f32,
+        punch_radius: Option<f32>,
+    ) -> Self {
+        let reach = shadow_layers
+            .iter()
+            .map(|layer| 3 * css_blur_box_radius(layer.blur) + layer.dy.abs().ceil() as i32)
+            .max()
+            .unwrap_or(0);
+        let radius = window_radius.max(punch_radius.unwrap_or(0.0)).max(0.0);
+        let inside = reach + (radius + border_width.max(0.0)).ceil() as i32 + 2;
+        let window = inside * 2 + 1;
+        let side = window + margin.max(0) * 2;
+        let mut pixels = vec![0u8; usize::try_from(side * side * 4).unwrap_or_default()];
+        draw_outset_shadow_and_border(
+            &mut pixels,
+            side,
+            side,
+            window as f32,
+            window as f32,
+            shadow_layers,
+            border_width,
+            border_color,
+            window_radius,
+            punch_radius,
+        );
+        Self { pixels, side, split: margin.max(0) + inside }
+    }
+
+    #[must_use]
+    pub const fn fits(&self, buf_width: i32, buf_height: i32) -> bool {
+        buf_width >= self.side && buf_height >= self.side
+    }
+
+    pub fn compose(&self, buf: &mut [u8], buf_width: i32, buf_height: i32) -> bool {
+        let (Ok(width), Ok(height)) = (usize::try_from(buf_width), usize::try_from(buf_height)) else {
+            return false;
+        };
+        if !self.fits(buf_width, buf_height) || buf.len() < width * height * 4 {
+            return false;
+        }
+        let (side, split) = (self.side as usize, self.split as usize);
+        let tail = side - split - 1;
+        let stride = width * 4;
+
+        let line = |source: usize, out: &mut [u8]| {
+            let row = &self.pixels[source * side * 4..(source + 1) * side * 4];
+            out[..split * 4].copy_from_slice(&row[..split * 4]);
+            let middle = &row[split * 4..split * 4 + 4];
+            for pixel in out[split * 4..stride - tail * 4].chunks_exact_mut(4) {
+                pixel.copy_from_slice(middle);
+            }
+            out[stride - tail * 4..stride].copy_from_slice(&row[(split + 1) * 4..]);
+        };
+
+        let rows = &mut buf[..stride * height];
+        let (top, rest) = rows.split_at_mut(stride * split);
+        let (middle, bottom) = rest.split_at_mut(stride * (height - split - tail));
+        for (y, out) in top.chunks_exact_mut(stride).enumerate() {
+            line(y, out);
+        }
+        for (y, out) in bottom.chunks_exact_mut(stride).enumerate() {
+            line(split + 1 + y, out);
+        }
+        let mut lines = middle.chunks_exact_mut(stride);
+        if let Some(first) = lines.next() {
+            line(split, first);
+            let first: &[u8] = first;
+            for out in lines {
+                out.copy_from_slice(first);
+            }
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +399,52 @@ mod tests {
         draw_inset_border(&mut empty, 40, 20, 2.0, 4.0, Color([0.0, 1.0, 0.0, 1.0]));
         assert_eq!(pixel(&empty, 40, 20, 10)[3], 0);
         assert!(pixel(&empty, 40, 1, 10)[3] > 0);
+    }
+
+    #[test]
+    fn a_composed_shadow_is_the_direct_raster_up_to_corner_antialiasing_noise() {
+        let ring = Color([1.0, 1.0, 1.0, 0.12]);
+        for scale in [1, 2] {
+            let layers: Vec<ShadowLayerSpec> =
+                glide_theme::elevation::layers(glide_theme::elevation::Level::ElWin, glide_theme::Appearance::Dark)
+                    .into_iter()
+                    .filter(|layer| layer.blur > 0.0)
+                    .map(|layer| ShadowLayerSpec {
+                        dy: layer.dy * scale as f32,
+                        blur: layer.blur * scale as f32,
+                        color: layer.color,
+                    })
+                    .collect();
+            let margin = shadow_fade_margin(68) * scale + scale;
+            for (radius, punch) in [(12.0 * scale as f32, Some(12.0 * scale as f32)), (0.0, Some(0.0))] {
+                let shadow = OutsetShadow::new(margin, &layers, scale as f32, ring, radius, punch);
+                for (w, h) in [(shadow.side - margin * 2, shadow.side - margin * 2), (720 * scale, 430 * scale)] {
+                    let (buf_w, buf_h) = (w + margin * 2, h + margin * 2);
+                    let mut direct = vec![0u8; (buf_w * buf_h * 4) as usize];
+                    draw_outset_shadow_and_border(
+                        &mut direct,
+                        buf_w,
+                        buf_h,
+                        w as f32,
+                        h as f32,
+                        &layers,
+                        scale as f32,
+                        ring,
+                        radius,
+                        punch,
+                    );
+                    let mut composed = vec![7u8; direct.len()];
+                    assert!(shadow.compose(&mut composed, buf_w, buf_h));
+                    let differs = direct.iter().zip(&composed).filter(|(a, b)| a != b).count();
+                    let worst = direct.iter().zip(&composed).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+                    assert!(
+                        worst <= 2 && differs <= 16,
+                        "scale {scale}, radius {radius}, {w}x{h}: {differs} bytes differ, by up to {worst}"
+                    );
+                }
+                assert!(!shadow.fits(shadow.side - 1, shadow.side), "a smaller window is rastered directly");
+            }
+        }
     }
 
     #[test]

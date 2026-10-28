@@ -105,6 +105,15 @@ pub struct DecorationState {
     pub header: HeaderBar,
     pub(crate) box_deco: std::collections::HashMap<i32, BoxDecoCache>,
     pub(crate) box_deco_fade: Option<BoxDecoFade>,
+    pub(crate) shadow_templates: std::collections::HashMap<ShadowTemplateKey, glide_paint::OutsetShadow>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ShadowTemplateKey {
+    pub(crate) scale: i32,
+    pub(crate) focused: bool,
+    pub(crate) maximized: bool,
+    pub(crate) theme_rev: u32,
 }
 
 pub struct DecorationBuffer {

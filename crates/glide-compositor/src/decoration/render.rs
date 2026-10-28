@@ -5,7 +5,7 @@ use smithay::{
 
 use crate::{config::Color, paint::Painter, window::GlideWindow};
 
-use super::{BUTTON_PAD_X, BoxDecoCache, BoxDecoFade, BoxDecoKey, DecorationBuffer};
+use super::{BUTTON_PAD_X, BoxDecoCache, BoxDecoFade, BoxDecoKey, DecorationBuffer, ShadowTemplateKey};
 
 const PRESS_SCALE: f64 = 0.96;
 
@@ -192,19 +192,35 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
             let mut buf = vec![0u8; pixels];
 
             let shadow_layers = window_shadow_layers(&theme, is_focused, scale as f32);
-            let window_radius = if is_maximized { 0.0 } else { theme.corner_radius };
-            crate::paint::draw_outset_shadow_and_border(
-                &mut buf,
-                buf_w,
-                buf_h,
-                physical_w as f32,
-                physical_h as f32,
-                &shadow_layers,
-                (border_width * scale) as f32,
-                border_color,
-                window_radius * scale as f32,
-                Some(window_radius * scale as f32),
-            );
+            let window_radius = (if is_maximized { 0.0 } else { theme.corner_radius }) * scale as f32;
+            let border = (border_width * scale) as f32;
+            let template_key =
+                ShadowTemplateKey { scale, focused: is_focused, maximized: is_maximized, theme_rev: key.theme_rev };
+            state.shadow_templates.retain(|kept, _| kept.theme_rev == key.theme_rev);
+            let template = state.shadow_templates.entry(template_key).or_insert_with(|| {
+                glide_paint::OutsetShadow::new(
+                    physical_margin,
+                    &shadow_layers,
+                    border,
+                    border_color,
+                    window_radius,
+                    Some(window_radius),
+                )
+            });
+            if !template.compose(&mut buf, buf_w, buf_h) {
+                crate::paint::draw_outset_shadow_and_border(
+                    &mut buf,
+                    buf_w,
+                    buf_h,
+                    physical_w as f32,
+                    physical_h as f32,
+                    &shadow_layers,
+                    border,
+                    border_color,
+                    window_radius,
+                    Some(window_radius),
+                );
+            }
 
             let memory =
                 MemoryRenderBuffer::from_slice(&buf, Fourcc::Argb8888, (buf_w, buf_h), scale, Transform::Normal, None);

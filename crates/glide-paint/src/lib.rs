@@ -36,7 +36,7 @@ pub use blur::box_blur_rgba;
 
 mod border;
 pub use border::{
-    SHADOW_DY_RATIO, ShadowLayerSpec, blit_rounded_backdrop, css_blur_box_radius, draw_inset_border,
+    OutsetShadow, SHADOW_DY_RATIO, ShadowLayerSpec, blit_rounded_backdrop, css_blur_box_radius, draw_inset_border,
     draw_outset_shadow_and_border, shadow_fade_margin,
 };
 
