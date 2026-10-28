@@ -523,6 +523,12 @@ impl LaunchOrigin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Desktop,
+    Overview,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Prompt {
     Search,
     Run,
@@ -549,6 +555,7 @@ pub struct Launcher {
     list: glide_ui::Tween,
     swap: glide_ui::Tween,
     swap_dir: f64,
+    origin: Origin,
     area: Rectangle<i32, Logical>,
 
     field: field::TextField,
@@ -669,6 +676,7 @@ impl Launcher {
             list: glide_ui::Tween::at(0.0),
             swap: glide_ui::Tween::at(1.0),
             swap_dir: 1.0,
+            origin: Origin::Desktop,
             area,
             field: field::TextField::default(),
             category: CategoryFilter::All,
@@ -1408,6 +1416,15 @@ impl Launcher {
         self.phase == Phase::Open
     }
 
+    pub fn take_over_overview(&mut self) {
+        self.origin = Origin::Overview;
+    }
+
+    #[must_use]
+    pub const fn takes_over_overview(&self) -> bool {
+        matches!(self.origin, Origin::Overview)
+    }
+
     pub fn tick(&mut self) -> bool {
         self.settle();
         let settled = self.started.elapsed() >= self.duration();
@@ -1717,9 +1734,10 @@ where
         launcher.chip_layout.clear();
     }
     if list > 0.0 {
-        list::push_list(launcher, &mut frame, icons, list, layers.chips);
+        let rows = launcher.list_progress();
+        list::push_list(launcher, &mut frame, icons, rows, layers.chips);
         if launcher.is_listing() && launcher.entries.is_empty() && !launcher.field.text().trim().is_empty() {
-            push_empty_state(launcher, &mut frame, list_row_progress(list, 0) * layers.chips);
+            push_empty_state(launcher, &mut frame, list_row_progress(rows, 0) * layers.chips);
         }
     }
     if list < 1.0 {

@@ -1105,8 +1105,9 @@ impl GlideState {
     }
 
     pub fn sync_overview_handoff(&mut self) {
-        let progress = self.launcher.as_ref().map_or(0.0, crate::launcher::Launcher::openness);
-        let settled = self.launcher.as_ref().is_some_and(crate::launcher::Launcher::is_settled);
+        let launcher = self.launcher.as_ref().filter(|launcher| launcher.takes_over_overview());
+        let progress = launcher.map_or(0.0, crate::launcher::Launcher::openness);
+        let settled = launcher.is_some_and(crate::launcher::Launcher::is_settled);
         let Some(ui) = self.overview.as_mut().filter(|ui| !ui.is_closing()) else {
             return;
         };
@@ -2156,13 +2157,18 @@ impl GlideState {
             self.spawn_launcher_loader();
             self.arm_launcher_caret();
         }
+        let over_overview = self.overview.as_ref().is_some_and(|ui| !ui.is_closing());
         if let Some(launcher) = self.launcher.as_mut() {
             launcher.set_interactive_progress(progress);
+            if over_overview {
+                launcher.take_over_overview();
+            }
         }
         self.queue_redraw();
     }
 
     pub fn toggle_launcher(&mut self) {
+        let over_overview = self.overview.as_ref().is_some_and(|ui| !ui.is_closing());
         match self.launcher.as_mut() {
             Some(launcher) if !launcher.is_closing() => launcher.begin_close(),
             Some(launcher) => launcher.reopen(),
@@ -2173,6 +2179,9 @@ impl GlideState {
                     .with_options(self.launcher_options.clone());
                 launcher.set_windows(self.open_windows_for_search());
                 launcher.set_providers(self.search_providers());
+                if over_overview {
+                    launcher.take_over_overview();
+                }
                 self.launcher = Some(launcher);
                 self.spawn_launcher_loader();
             }
