@@ -508,6 +508,20 @@ fn caret_half_period() -> Duration {
     glide_theme::motion::t4()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchOrigin {
+    pub key: String,
+    pub rect: Rectangle<i32, Logical>,
+    pub at: Instant,
+}
+
+impl LaunchOrigin {
+    #[must_use]
+    pub fn claims(&self, key: &str, now: Instant) -> bool {
+        self.key.eq_ignore_ascii_case(key) && now.saturating_duration_since(self.at) < crate::dock::LAUNCH_TIMEOUT
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Prompt {
     Search,
@@ -1585,6 +1599,24 @@ impl Launcher {
     }
 
     #[must_use]
+    pub fn launch_rect(&self, entry: &search::Entry) -> Option<Rectangle<i32, Logical>> {
+        if self.is_listing() {
+            let index = self.entries.iter().position(|candidate| candidate == entry)?;
+            let placed = list::layout(&self.entries, self.area, self.list_scroll);
+            let (_, row) = placed.into_iter().find(|(row, _)| *row == list::ListRow::Item(index))?;
+            return Some(list::row_icon_rect(row));
+        }
+        let search::Entry::App(app) = entry else {
+            return None;
+        };
+        let grid = self.grid();
+        self.page_range()
+            .enumerate()
+            .find(|&(_, result)| self.app_index(result) == Some(*app))
+            .map(|(slot, _)| icon_rect_in(grid.cell(slot)))
+    }
+
+    #[must_use]
     pub fn icon_rects(&self, area: Rectangle<i32, Logical>) -> Vec<Rectangle<i32, Logical>> {
         let grid = grid_for(area);
         self.page_range().enumerate().map(|(slot, _)| icon_rect_in(grid.cell(slot))).collect()
@@ -2579,6 +2611,25 @@ mod tests {
             }
             assert!(launcher.toggle_category(office));
             assert!((launcher.swap_dir + 1.0).abs() < f64::EPSILON, "going back to All comes in from the left");
+        }
+
+        #[test]
+        fn a_launch_starts_from_the_icon_that_was_activated() {
+            use crate::launcher::search::Entry;
+            let mut launcher = mixed();
+            let grid_rect = launcher.launch_rect(&Entry::App(2)).expect("Chromium is on the first page");
+            let slot = launcher.page_range().position(|result| launcher.app_index(result) == Some(2)).expect("slot");
+            assert_eq!(grid_rect, launcher.icon_rects(area())[slot]);
+            typed(&mut launcher, "chrom");
+            let row = launcher.launch_rect(&Entry::App(2)).expect("the list row");
+            assert_eq!(row.size, Size::from((40, 40)), "a list row hands over its 40 px icon");
+            assert!(launcher.launch_rect(&Entry::Run("x".into())).is_none());
+
+            let now = Instant::now();
+            let origin = LaunchOrigin { key: "Chromium".into(), rect: row, at: now };
+            assert!(origin.claims("chromium", now), "dock keys compare without case");
+            assert!(!origin.claims("firefox", now));
+            assert!(!origin.claims("chromium", now + crate::dock::LAUNCH_TIMEOUT), "a stale launch is ignored");
         }
 
         #[test]

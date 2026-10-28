@@ -95,11 +95,14 @@ impl GlideState {
             _ => None,
         }
         .map(|(app, command)| (app.id.clone(), app.name.clone(), command.clone()));
+        let origin = launcher.launch_rect(&entry);
         match entry {
             Entry::App(_) | Entry::Action { .. } => {
                 let Some((id, name, command)) = target else {
                     return;
                 };
+                self.session.launch_origin =
+                    origin.map(|rect| super::LaunchOrigin { key: id.clone(), rect, at: std::time::Instant::now() });
                 self.launch_command(&id, &name, &command);
             }
             Entry::Calculator { value, .. } => self.copy_to_clipboard(&value),

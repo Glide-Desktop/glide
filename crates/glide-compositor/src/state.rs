@@ -383,6 +383,7 @@ pub struct SessionServices {
     pub last_screenshot: Option<std::path::PathBuf>,
     pub search_providers: Option<crate::launcher::providers::Handle>,
     pub search_providers_started: bool,
+    pub launch_origin: Option<crate::launcher::LaunchOrigin>,
     pub quicklists: HashMap<String, crate::launcher_entry::Quicklist>,
     pub modal_windows: std::collections::HashSet<glide_layout::WindowId>,
     pub framed_pids: crate::framed::FramedClients,
@@ -2701,14 +2702,20 @@ impl GlideState {
         self.queue_redraw();
     }
 
-    pub fn begin_window_open_animation(&self, id: glide_layout::WindowId, window: &GlideWindow) {
+    pub fn begin_window_open_animation(&mut self, id: glide_layout::WindowId, window: &GlideWindow) {
         if self.layout.window_state(id).is_some_and(|s| s.maximized || s.fullscreen) {
             return;
         }
         let Some(frame) = self.frame_rect(id) else {
             return;
         };
-        let origin = self.dock_key(id).and_then(|key| self.dock.tile_rect_for_app(self.dock_area(), &key));
+        let key = self.dock_key(id);
+        let now = std::time::Instant::now();
+        let launched = key.as_deref().and_then(|key| {
+            let claimed = self.session.launch_origin.as_ref().is_some_and(|origin| origin.claims(key, now));
+            claimed.then(|| self.session.launch_origin.take()).flatten().map(|origin| origin.rect)
+        });
+        let origin = launched.or_else(|| key.and_then(|key| self.dock.tile_rect_for_app(self.dock_area(), &key)));
         window.begin_open_animation(origin, frame);
     }
 

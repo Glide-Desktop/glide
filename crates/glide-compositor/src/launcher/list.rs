@@ -89,6 +89,13 @@ pub(super) fn layout(
         .collect()
 }
 
+pub(super) fn row_icon_rect(row: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        Point::from((row.loc.x + ROW_PAD_X, row.loc.y + (ROW_HEIGHT - ROW_ICON) / 2)),
+        Size::from((ROW_ICON, ROW_ICON)),
+    )
+}
+
 fn span(rows: &[ListRow]) -> i32 {
     rows.iter().map(|row| row_height(*row)).sum()
 }
