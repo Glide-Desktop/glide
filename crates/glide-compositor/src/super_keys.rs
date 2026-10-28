@@ -51,8 +51,10 @@ impl crate::GlideState {
         if !logo || self.screen_locked() || self.layout.overview_active() || self.launcher.is_some() {
             return false;
         }
-        let Some((window, location)) = self.space.element_under(pointer).map(|(window, at)| (window.clone(), at))
-        else {
+        let Some(window) = self.space.element_under(pointer).map(|(window, _)| window.clone()) else {
+            return false;
+        };
+        let Some(location) = self.space.element_location(&window) else {
             return false;
         };
         if self.window_id(&window).and_then(|id| self.layout.window_state(id)).is_none_or(|state| state.fullscreen) {

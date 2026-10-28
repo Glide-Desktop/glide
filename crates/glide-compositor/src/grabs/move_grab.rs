@@ -36,7 +36,14 @@ impl MoveCore {
         Self { window, start, last: start, initial_window_location, pending_restore }
     }
 
+    fn shown(&self, data: &GlideState) -> bool {
+        data.window_id(&self.window).is_some_and(|id| data.layout.is_visible(id))
+    }
+
     fn motion(&mut self, data: &mut GlideState, location: Point<f64, Logical>) {
+        if !self.shown(data) {
+            return;
+        }
         self.last = location;
         let delta = location - self.start;
         if self.pending_restore {
@@ -60,6 +67,10 @@ impl MoveCore {
 
     fn finish(&self, data: &mut GlideState, location: Point<f64, Logical>) {
         self.window.set_dragging(false);
+        if !self.shown(data) {
+            self.unset(data);
+            return;
+        }
         let snapped = data.apply_snap(&self.window);
         if !snapped && !self.pending_restore {
             data.settle_moved_window(&self.window, location);

@@ -588,6 +588,9 @@ impl GlideState {
         for window in mapped {
             let hidden = self.window_to_id.get(&window).is_none_or(|id| !visible_ids.contains(id));
             if hidden {
+                if let Some(mut decoration) = window.try_decoration_state_mut() {
+                    decoration.header.dismiss_menu();
+                }
                 self.space.unmap_elem(&window);
             }
         }

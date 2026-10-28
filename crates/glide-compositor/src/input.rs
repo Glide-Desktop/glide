@@ -1508,6 +1508,9 @@ impl GlideState {
         if on_shell {
             self.shell_release(position, BTN_LEFT);
         }
+        if !self.screen_locked() && !on_shell && !touch.is_grabbed() && self.gestures.touch_points == 1 {
+            self.focus_click_target(position);
+        }
         let under = if on_shell {
             None
         } else {
@@ -1606,12 +1609,11 @@ impl GlideState {
         }
 
         let exclusive_layer = self.exclusive_layer_surface();
+        let exclusive = exclusive_layer.is_some();
         if let Some(layer) = exclusive_layer {
             self.layer_focus = Some(layer);
             self.apply_keyboard_focus();
         }
-        let exclusive = self.layer_focus.is_some()
-            && self.layer_focus.as_ref().is_some_and(smithay::desktop::LayerSurface::can_receive_keyboard_focus);
 
         let shortcuts_inhibited = {
             use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
