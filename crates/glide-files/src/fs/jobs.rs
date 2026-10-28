@@ -35,12 +35,15 @@ pub fn on_disks(points: &[PathBuf], paths: &[PathBuf], target: Option<&Path>) ->
         .map(|path| path.parent().unwrap_or(path))
         .chain(target)
         .map(|path| {
-            points
+            use std::hash::{Hash, Hasher};
+            let point = points
                 .iter()
-                .enumerate()
-                .filter(|(_, point)| path.starts_with(point))
-                .max_by_key(|(_, point)| point.as_os_str().len())
-                .map_or(u64::MAX, |(index, _)| index as u64)
+                .filter(|point| path.starts_with(point))
+                .max_by_key(|point| point.as_os_str().len())
+                .map_or(Path::new(""), PathBuf::as_path);
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            point.hash(&mut hasher);
+            hasher.finish()
         })
         .collect();
     found.sort_unstable();

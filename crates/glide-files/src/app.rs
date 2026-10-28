@@ -1243,7 +1243,7 @@ impl App {
         }
         let stale = self.menu.as_ref().is_some_and(|menu| {
             menu.highlight.is_some_and(|index| {
-                widgets::menu::entries(self, menu).get(index).is_none_or(|entry| entry.messages().is_empty())
+                widgets::menu::entries(self, menu).get(index).is_none_or(|entry| !entry.actionable())
             })
         });
         if let Some(menu) = self.menu.as_mut().filter(|_| stale) {
@@ -1484,7 +1484,7 @@ impl App {
             Message::CloseMenu | Message::Window(WindowAction::Drag) => self.menu = None,
             Message::MenuHover(index, inside) => {
                 let enabled = self.menu.as_ref().is_some_and(|menu| {
-                    widgets::menu::entries(self, menu).get(index).is_some_and(|entry| !entry.messages().is_empty())
+                    widgets::menu::entries(self, menu).get(index).is_some_and(glide_sdk::menu::Item::actionable)
                 });
                 if let Some(menu) = &mut self.menu {
                     if inside && enabled {
@@ -2466,10 +2466,11 @@ impl App {
         let Some(menu) = &self.menu else {
             return Task::none();
         };
-        let chosen = menu
-            .highlight
-            .and_then(|index| widgets::menu::entries(self, menu).into_iter().nth(index))
-            .and_then(|entry| entry.message().cloned());
+        let highlighted = menu.highlight.and_then(|index| widgets::menu::entries(self, menu).into_iter().nth(index));
+        if matches!(highlighted, Some(glide_sdk::menu::Item::Stepper { .. })) {
+            return Task::none();
+        }
+        let chosen = highlighted.and_then(|entry| entry.message().cloned());
         let Some(message) = chosen else {
             self.menu = None;
             return Task::none();

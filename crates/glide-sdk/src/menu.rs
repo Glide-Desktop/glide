@@ -176,7 +176,8 @@ impl<M> Item<M> {
         self
     }
 
-    fn actionable(&self) -> bool {
+    #[must_use]
+    pub fn actionable(&self) -> bool {
         match self {
             Self::Action { enabled, .. } | Self::Submenu { enabled, .. } => *enabled,
             Self::Stepper { less, more, .. } => less.is_some() || more.is_some(),

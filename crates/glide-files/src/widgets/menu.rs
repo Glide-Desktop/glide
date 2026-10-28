@@ -329,6 +329,7 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
             .enumerate()
             .map(|(index, (row, entry))| {
                 let message = entry.message().cloned().filter(|_| live);
+                let walkable = live && entry.actionable();
                 let steps = match entry {
                     sdk::Item::Stepper { less, more, .. } => [less.clone(), more.clone()],
                     _ => [None, None],
@@ -347,7 +348,7 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
                     (Event::Stepped(_, more), _) => stay(steps[usize::from(more)].clone()),
                     (Event::Swatched(_, at), _) => stay(swatches.get(at).cloned()),
                     (Event::Dismiss, _) => Message::CloseMenu,
-                    (_, picked) => Message::MenuHover(index, live && picked.is_some()),
+                    _ => Message::MenuHover(index, walkable),
                 })
             })
             .collect();

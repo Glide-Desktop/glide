@@ -479,11 +479,24 @@ fn the_queue_never_runs_more_than_two_operations_on_one_disk() {
 fn a_job_is_placed_on_the_disks_of_its_folders() {
     use glide_files::fs::jobs::on_disks;
     let points = [PathBuf::from("/"), PathBuf::from("/home"), PathBuf::from("/run/media/f/KINGSTON")];
+    let disk = |path: &str| on_disks(&points, &[], Some(Path::new(path)))[0];
+    let (root, home_disk, stick_disk) = (disk("/"), disk("/home"), disk("/run/media/f/KINGSTON"));
     let home = PathBuf::from("/home/f/Документи");
     let found = on_disks(&points, &[home.join("a.txt"), home.join("b.txt")], Some(&home));
-    assert_eq!(found, [1], "files beside each other and their target share one disk");
+    assert_eq!(found, [home_disk], "files beside each other and their target share one disk");
     let stick = PathBuf::from("/run/media/f/KINGSTON/Фото");
-    assert_eq!(on_disks(&points, &[home.join("a.txt")], Some(&stick)), [1, 2], "a copy to the stick uses both");
-    assert_eq!(on_disks(&points, &[PathBuf::from("/srv/x")], None), [0], "the deepest mount point wins");
-    assert_eq!(on_disks(&points, &[PathBuf::from("/home2/x")], None), [0], "a name prefix is not a mount");
+    let mut both = vec![home_disk, stick_disk];
+    both.sort_unstable();
+    assert_eq!(on_disks(&points, &[home.join("a.txt")], Some(&stick)), both, "a copy to the stick uses both");
+    assert_eq!(on_disks(&points, &[PathBuf::from("/srv/x")], None), [root], "the deepest mount point wins");
+    assert_eq!(on_disks(&points, &[PathBuf::from("/home2/x")], None), [root], "a name prefix is not a mount");
+    let unplugged = [PathBuf::from("/"), PathBuf::from("/home"), PathBuf::from("/run/media/f/KINGSTON")]
+        .into_iter()
+        .filter(|point| point != Path::new("/home"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        on_disks(&unplugged, &[], Some(&stick)),
+        [stick_disk],
+        "a disk keeps its key when another one is unmounted"
+    );
 }
