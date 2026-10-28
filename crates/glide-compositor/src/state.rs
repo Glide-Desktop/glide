@@ -2084,7 +2084,7 @@ impl GlideState {
         })
     }
 
-    fn capture_closing_window(&mut self, id: glide_layout::WindowId, window: &GlideWindow) {
+    pub(crate) fn capture_closing_window(&mut self, id: glide_layout::WindowId, window: &GlideWindow) {
         let overview_rect = self.overview.as_ref().and_then(|ui| ui.preview_rect(id));
         let on_screen = overview_rect.is_some() || self.layout.is_visible(id);
         let Some(target_frame) = overview_rect.or_else(|| self.frame_rect(id)).filter(|_| on_screen) else {
