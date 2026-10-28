@@ -2138,9 +2138,7 @@ impl GlideState {
         self.reconcile_space();
 
         let to = self.frame_rect(id).unwrap_or(from);
-        self.push_snapshot(|snapshots, renderer, scale, output_scale| {
-            snapshots.push_morph(renderer, window, from, to, scale, output_scale)
-        });
+        self.push_morph(window, from, to);
 
         true
     }
