@@ -654,6 +654,43 @@ mod tests {
     }
 
     #[test]
+    fn a_panel_sliding_in_from_the_end_travels_with_its_edge() {
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let content = || iced::widget::Space::new().width(288).height(300);
+        let limits = layout::Limits::new(Size::ZERO, Size::new(800.0, 400.0));
+        let mut shown: Element<'_, ()> = slide_in_end(true, content());
+        let mut tree = Tree::new(&shown);
+        let node = shown.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        assert_eq!(node.size().width, 288.0, "a panel shown from the start does not slide in");
+        let mut closing: Element<'_, ()> = slide_in_end(false, content());
+        tree.diff(&closing);
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        closing.as_widget_mut().update(
+            &mut tree,
+            &Event::Window(window::Event::RedrawRequested(Instant::now())),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(Size::new(800.0, 400.0)),
+        );
+        if motion::is_disabled() {
+            return;
+        }
+        std::thread::sleep((Speed::EXPAND.duration)() / 3);
+        let middle = closing.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let width = middle.size().width;
+        let child = middle.children()[0].bounds();
+        assert!(width > 24.0 && width < 264.0, "part way through it is part shown: {width}");
+        assert!(child.x < -24.0, "the panel moves out past the edge rather than fading: {}", child.x);
+        assert!((child.x + child.width - width).abs() < 1.0, "its leading edge stays glued to the visible edge");
+        std::thread::sleep((Speed::EXPAND.duration)());
+        assert_eq!(closing.as_widget_mut().layout(&mut tree, &renderer, &limits).size().width, 0.0);
+    }
+
+    #[test]
     fn a_zero_duration_settles_a_motion_at_once() {
         let still = Speed { duration: || Duration::ZERO, ease: motion::ease_over };
         let mut value = Motion::at(0.0);

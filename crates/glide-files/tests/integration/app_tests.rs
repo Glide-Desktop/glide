@@ -389,6 +389,13 @@ fn the_operations_panel_forgets_itself_once_the_cards_fit_in_the_sidebar() {
     assert_eq!(app.jobs.iter().filter(|job| job.launch.is_some()).count(), 1, "a third copy on one disk waits");
     let _ = app.update(Message::ToggleOperations);
     assert!(app.operations_shown());
+    if glide_theme::motion::t2() > std::time::Duration::ZERO {
+        let opened = std::time::Instant::now();
+        let early = app.motion.operations.progress(opened);
+        assert!(early < 0.5, "the panel rises in over time instead of popping: {early}");
+        let later = app.motion.operations.progress(opened + std::time::Duration::from_secs(1));
+        assert!((later - 1.0).abs() < f32::EPSILON, "and settles open");
+    }
     let queued = app.jobs.iter().find(|job| job.launch.is_some()).map(|job| job.id).expect("queued");
     let _ = app.update(Message::JobCancel(queued));
     assert!(!app.operations, "two cards fit, so the panel is gone for good");
