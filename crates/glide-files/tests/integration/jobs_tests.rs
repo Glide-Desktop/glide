@@ -477,11 +477,13 @@ fn the_queue_never_runs_more_than_two_operations_on_one_disk() {
 
 #[test]
 fn a_job_is_placed_on_the_disks_of_its_folders() {
-    use glide_files::fs::jobs::devices;
-    let root = scratch("devices");
-    write(&root.join("a.txt"), "a");
-    let found = devices(&[root.join("a.txt"), root.join("b.txt")], Some(&root));
-    assert_eq!(found.len(), 1, "files beside each other and their target share one disk");
-    assert!(devices(&[PathBuf::from("/nowhere/at/all")], None).is_empty(), "an unreadable folder is on no disk");
-    let _ = std::fs::remove_dir_all(root);
+    use glide_files::fs::jobs::on_disks;
+    let points = [PathBuf::from("/"), PathBuf::from("/home"), PathBuf::from("/run/media/f/KINGSTON")];
+    let home = PathBuf::from("/home/f/Документи");
+    let found = on_disks(&points, &[home.join("a.txt"), home.join("b.txt")], Some(&home));
+    assert_eq!(found, [1], "files beside each other and their target share one disk");
+    let stick = PathBuf::from("/run/media/f/KINGSTON/Фото");
+    assert_eq!(on_disks(&points, &[home.join("a.txt")], Some(&stick)), [1, 2], "a copy to the stick uses both");
+    assert_eq!(on_disks(&points, &[PathBuf::from("/srv/x")], None), [0], "the deepest mount point wins");
+    assert_eq!(on_disks(&points, &[PathBuf::from("/home2/x")], None), [0], "a name prefix is not a mount");
 }

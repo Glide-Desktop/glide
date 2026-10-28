@@ -14,7 +14,7 @@ use crate::theme::SP2;
 pub type Entry = sdk::Item<Message>;
 
 pub const WIDTH: f32 = 248.0;
-const OPTIONS_RIGHT_INSET: f32 = SP2 + WINDOW_CONTROL + 2.0 + GAP;
+const OPTIONS_RIGHT_INSET: f32 = 2.0 * SP2 + WINDOW_CONTROL + 2.0 + GAP;
 const OPTIONS_TOP: f32 = HEADER_HEIGHT.midpoint(CONTROL) + SP2;
 
 #[must_use]
@@ -112,7 +112,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 item(Key::CreateLink, Message::CreateLink),
                 item(Key::Rename, Message::Rename).shortcut("F2").enabled(single),
                 Entry::Separator,
-                Entry::heading(Key::Tags.text(app.lang)),
+                item(Key::Tags, Message::SubMenu(MenuKind::Tags)).cascades(),
                 tag_swatches(app),
                 item(Key::EditTags, Message::EditTags),
                 Entry::Separator,
@@ -219,6 +219,21 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 entries.push(item(Key::NoTemplates, Message::CloseMenu).enabled(false));
             }
             entries.extend([Entry::Separator, item(Key::OpenTemplates, Message::OpenTemplates)]);
+            entries
+        }
+        MenuKind::Tags => {
+            let picked: Vec<_> = app.selected_entries().collect();
+            let mut entries: Vec<Entry> = crate::fs::tags::Color::ALL
+                .into_iter()
+                .map(|color| {
+                    let on = !picked.is_empty()
+                        && picked.iter().all(|entry| crate::fs::tags::colors(&entry.tags).contains(&color));
+                    item(color_key(color), Message::ToggleTag(color))
+                        .swatch(super::content::tag_color(color))
+                        .checked(on)
+                })
+                .collect();
+            entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags)]);
             entries
         }
         MenuKind::OpenWith => {

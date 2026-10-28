@@ -371,6 +371,45 @@ fn the_information_panel_steps_aside_when_the_window_is_too_narrow_for_it() {
 }
 
 #[test]
+fn the_operations_panel_forgets_itself_once_the_cards_fit_in_the_sidebar() {
+    let root = std::env::temp_dir().join(format!("glide-ops-panel-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("into")).expect("scratch");
+    let mut app = listed_app();
+    app.current = root.join("into");
+    for index in 0..3 {
+        let source = root.join(format!("{index}.bin"));
+        std::fs::write(&source, b"x").expect("source");
+        app.clipboard = Some(glide_files::fs::FileClipboard {
+            action: glide_files::fs::ClipboardAction::Copy,
+            paths: vec![source],
+        });
+        let _ = app.update(Message::Paste);
+    }
+    assert_eq!(app.jobs.len(), 3);
+    assert_eq!(app.jobs.iter().filter(|job| job.launch.is_some()).count(), 1, "a third copy on one disk waits");
+    let _ = app.update(Message::ToggleOperations);
+    assert!(app.operations_shown());
+    let queued = app.jobs.iter().find(|job| job.launch.is_some()).map(|job| job.id).expect("queued");
+    let _ = app.update(Message::JobCancel(queued));
+    assert!(!app.operations, "two cards fit, so the panel is gone for good");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_zoom_stepper_in_more_answers_left_and_right() {
+    let mut app = listed_app();
+    app.view = ViewMode::Grid;
+    let before = app.zoom_level().0;
+    let _ = app.update(Message::ToggleOptions);
+    let _ = app.update(Message::MenuHover(1, true));
+    let _ = app.update(Message::Move(Step::Right, false));
+    assert_eq!(app.zoom_level().0, before + 1, "Right steps the zoom up");
+    assert!(app.menu.is_some(), "and the menu stays open for the next step");
+    let _ = app.update(Message::Move(Step::Left, false));
+    assert_eq!(app.zoom_level().0, before);
+}
+
+#[test]
 fn a_mounted_volume_reports_how_full_it_is() {
     let mut app = listed_app();
     let mount = std::path::PathBuf::from("/run/media/f/KINGSTON");

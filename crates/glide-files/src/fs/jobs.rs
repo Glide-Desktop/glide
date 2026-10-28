@@ -22,16 +22,53 @@ pub fn admits(running: &[&[u64]], wanted: &[u64], one_at_a_time: bool) -> bool {
 
 #[must_use]
 pub fn devices(paths: &[PathBuf], target: Option<&Path>) -> Vec<u64> {
-    use std::os::unix::fs::MetadataExt;
+    let table = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    let points: Vec<PathBuf> =
+        table.lines().filter_map(|line| line.split_whitespace().nth(1)).map(mount_point).collect();
+    on_disks(&points, paths, target)
+}
+
+#[must_use]
+pub fn on_disks(points: &[PathBuf], paths: &[PathBuf], target: Option<&Path>) -> Vec<u64> {
     let mut found: Vec<u64> = paths
         .iter()
         .map(|path| path.parent().unwrap_or(path))
         .chain(target)
-        .filter_map(|path| std::fs::metadata(path).ok().map(|meta| meta.dev()))
+        .map(|path| {
+            points
+                .iter()
+                .enumerate()
+                .filter(|(_, point)| path.starts_with(point))
+                .max_by_key(|(_, point)| point.as_os_str().len())
+                .map_or(u64::MAX, |(index, _)| index as u64)
+        })
         .collect();
     found.sort_unstable();
     found.dedup();
     found
+}
+
+fn mount_point(field: &str) -> PathBuf {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let octal = bytes.get(index + 1..index + 4).and_then(|digits| {
+            let text = std::str::from_utf8(digits).ok()?;
+            u8::from_str_radix(text, 8).ok()
+        });
+        match (bytes[index], octal) {
+            (b'\\', Some(byte)) => {
+                out.push(byte);
+                index += 4;
+            }
+            (byte, _) => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    PathBuf::from(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(out))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

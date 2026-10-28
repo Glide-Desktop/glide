@@ -97,13 +97,11 @@ struct Totals {
 
 fn totals(app: &App) -> Totals {
     let running: Vec<&Job> = app.jobs.iter().filter(|job| job.launch.is_none()).collect();
-    let (done, total) = running
-        .iter()
-        .fold((0_u64, 0_u64), |(done, total), job| (done + job.progress.bytes, total + job.progress.total_bytes));
+    let fractions: f32 = running.iter().map(|job| job.progress.fraction()).sum();
     Totals {
         running: running.len(),
         queued: app.jobs.len() - running.len(),
-        fraction: if total > 0 { done as f32 / total as f32 } else { 0.0 },
+        fraction: if running.is_empty() { 0.0 } else { fractions / running.len() as f32 },
         rate: running.iter().filter_map(|job| job.meter.rate()).sum(),
         left: running
             .iter()

@@ -141,6 +141,7 @@ pub enum MenuKind {
     Location(PathBuf),
     Volume(String),
     Templates,
+    Tags,
     Columns,
     OpenWith,
 }
@@ -1242,7 +1243,7 @@ impl App {
         }
         let stale = self.menu.as_ref().is_some_and(|menu| {
             menu.highlight.is_some_and(|index| {
-                widgets::menu::entries(self, menu).get(index).is_none_or(|entry| entry.message().is_none())
+                widgets::menu::entries(self, menu).get(index).is_none_or(|entry| entry.messages().is_empty())
             })
         });
         if let Some(menu) = self.menu.as_mut().filter(|_| stale) {
@@ -1262,7 +1263,9 @@ impl App {
         if self.modal.is_some() {
             motion.modal_ghost.clone_from(&self.modal);
         }
-        motion.operations.set(self.operations && self.jobs.len() > JOB_CARDS, now);
+        self.operations &= self.jobs.len() > JOB_CARDS;
+        let motion = &mut self.motion;
+        motion.operations.set(self.operations, now);
         motion.prune(now);
     }
 
@@ -1481,7 +1484,7 @@ impl App {
             Message::CloseMenu | Message::Window(WindowAction::Drag) => self.menu = None,
             Message::MenuHover(index, inside) => {
                 let enabled = self.menu.as_ref().is_some_and(|menu| {
-                    widgets::menu::entries(self, menu).get(index).is_some_and(|entry| entry.message().is_some())
+                    widgets::menu::entries(self, menu).get(index).is_some_and(|entry| !entry.messages().is_empty())
                 });
                 if let Some(menu) = &mut self.menu {
                     if inside && enabled {
@@ -1830,7 +1833,7 @@ impl App {
                 }
             }
             Message::NoticeExpired(id) if self.notice.as_ref().is_some_and(|notice| notice.id == id) => {
-                if self.hover_target == Some(Hover::Toast) {
+                if self.hover_target == Some(Hover::Toast) || self.operations_shown() {
                     return expire(id);
                 }
                 self.notice = None;
@@ -2435,6 +2438,13 @@ impl App {
             return Task::none();
         };
         let entries = widgets::menu::entries(self, menu);
+        if let Some(glide_sdk::menu::Item::Stepper { less, more, .. }) =
+            menu.highlight.and_then(|index| entries.get(index))
+            && matches!(step, Step::Left | Step::Right)
+        {
+            let picked = if step == Step::Right { more.clone() } else { less.clone() };
+            return picked.map_or_else(Task::none, |message| self.handle(Message::MenuStay(Box::new(message))));
+        }
         if step == Step::Right {
             let opens = menu.highlight.and_then(|index| entries.get(index)).is_some_and(widgets::menu::Entry::opens);
             return if opens { self.activate_menu() } else { Task::none() };
@@ -2733,6 +2743,9 @@ impl App {
         let Some(home) = home_dir().filter(|home| *home != self.current && !query.trim().is_empty()) else {
             return Task::none();
         };
+        self.nav_generation += 1;
+        self.navigating = false;
+        self.refresh_pending = false;
         self.enter(home.clone());
         self.history.truncate(self.history_index + 1);
         self.history.push(home);
@@ -4072,7 +4085,8 @@ impl App {
         if self.menu.take().is_some() {
             return Task::none();
         }
-        if std::mem::take(&mut self.operations) {
+        if self.operations_shown() {
+            self.operations = false;
             return Task::none();
         }
         if self.path_edit.take().is_some() {

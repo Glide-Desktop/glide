@@ -230,8 +230,9 @@ fn empty_state(app: &App) -> Element<'_, Message> {
     if app.in_trash() {
         return empty_state(&paint, Icon::Trash, Key::TrashEmpty.text(lang), Key::TrashEmptyHint.text(lang), None);
     }
-    let create = tonal(&paint, Key::NewFolder.text(lang), Message::NewFolder);
-    empty_state(&paint, Icon::Folder, Key::EmptyFolder.text(lang), Key::EmptyFolderHint.text(lang), Some(create))
+    let offered = app.chooser.as_ref().is_none_or(crate::chooser::State::new_folder_offered);
+    let create = offered.then(|| tonal(&paint, Key::NewFolder.text(lang), Message::NewFolder));
+    empty_state(&paint, Icon::Folder, Key::EmptyFolder.text(lang), Key::EmptyFolderHint.text(lang), create)
 }
 
 fn files<'a>(app: &'a App, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
