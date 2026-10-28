@@ -10,6 +10,29 @@ use super::operations::{occupied, remove_recursive, unique_path};
 
 const CHUNK: usize = 1 << 20;
 const REPORT_EVERY: Duration = Duration::from_millis(80);
+pub const PER_DEVICE: usize = 2;
+
+#[must_use]
+pub fn admits(running: &[&[u64]], wanted: &[u64], one_at_a_time: bool) -> bool {
+    if one_at_a_time {
+        return running.is_empty();
+    }
+    wanted.iter().all(|device| running.iter().filter(|devices| devices.contains(device)).count() < PER_DEVICE)
+}
+
+#[must_use]
+pub fn devices(paths: &[PathBuf], target: Option<&Path>) -> Vec<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let mut found: Vec<u64> = paths
+        .iter()
+        .map(|path| path.parent().unwrap_or(path))
+        .chain(target)
+        .filter_map(|path| std::fs::metadata(path).ok().map(|meta| meta.dev()))
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {

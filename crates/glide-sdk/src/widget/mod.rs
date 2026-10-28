@@ -49,7 +49,7 @@ pub use controls::{
 pub use editor::{editor, markdown_settings, markdown_view, text_area};
 pub use feedback::{
     Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,
-    key_combo, keycap, letter_tile, noted_banner, skeleton, status_badge, task_card,
+    key_combo, keycap, letter_tile, noted_banner, skeleton, status_badge, task_card, task_row,
 };
 pub use find::{
     FIND_FIELD, FindBar, INFO_BAR, arriving, arriving_over, bar_strip, find_bar, info_bar, popping, rising, swapped,

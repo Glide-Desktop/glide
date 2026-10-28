@@ -461,3 +461,27 @@ fn a_folder_replace_swaps_in_the_new_contents() {
     assert_eq!(leftovers, 1, "the replaced folder is gone, not parked beside the new one");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn the_queue_never_runs_more_than_two_operations_on_one_disk() {
+    use glide_files::fs::jobs::admits;
+    let (home, stick, nas) = (1, 2, 3);
+    assert!(admits(&[], &[home, stick], false));
+    assert!(admits(&[&[home, stick]], &[home, stick], false), "a second copy to the same stick starts");
+    assert!(!admits(&[&[home, stick], &[home, stick]], &[stick], false), "a third one waits for the stick");
+    assert!(admits(&[&[home, stick], &[stick]], &[nas], false), "another disk is free");
+    assert!(!admits(&[&[home, stick], &[home]], &[home, nas], false), "every disk it touches must have room");
+    assert!(!admits(&[&[nas]], &[home], true), "one at a time waits for anything running");
+    assert!(admits(&[], &[home], true));
+}
+
+#[test]
+fn a_job_is_placed_on_the_disks_of_its_folders() {
+    use glide_files::fs::jobs::devices;
+    let root = scratch("devices");
+    write(&root.join("a.txt"), "a");
+    let found = devices(&[root.join("a.txt"), root.join("b.txt")], Some(&root));
+    assert_eq!(found.len(), 1, "files beside each other and their target share one disk");
+    assert!(devices(&[PathBuf::from("/nowhere/at/all")], None).is_empty(), "an unreadable folder is on no disk");
+    let _ = std::fs::remove_dir_all(root);
+}

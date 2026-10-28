@@ -47,6 +47,7 @@ const QUIT_GRACE: Duration = Duration::from_secs(5);
 const DRAG_THRESHOLD: f32 = 6.0;
 const SPRING_DELAY: Duration = Duration::from_millis(900);
 const DRAG_TICK: Duration = Duration::from_millis(120);
+pub const JOB_CARDS: usize = 2;
 const EDGE_SCROLL: f32 = 36.0;
 const SCROLL_STEP: f32 = 32.0;
 const CONTENT_TOP: f32 = widgets::HEADER_HEIGHT + 1.0;
@@ -187,8 +188,18 @@ pub struct Job {
     pub pause: Arc<AtomicBool>,
     pub meter: Meter,
     pub launch: Option<Launch>,
+    pub devices: Vec<u64>,
+    pub sources: usize,
+    pub label: String,
     answers: mpsc::Sender<Answer>,
     question: Option<Question>,
+}
+
+impl Job {
+    #[must_use]
+    pub const fn target(&self) -> &PathBuf {
+        &self.target
+    }
 }
 
 impl Job {
@@ -415,6 +426,10 @@ pub enum Message {
     FieldFocus(Field, bool),
     Surveyed(Option<Box<Survey>>),
     JobPause(u64),
+    PauseAll,
+    StopAll,
+    JobStartNow(u64),
+    ToggleOperations,
     Duplicate,
     CreateLink,
     SubMenu(MenuKind),
@@ -606,11 +621,13 @@ pub struct Surfaces {
     pub toast_ghost: Option<Notice>,
     pub modal: Fade,
     pub modal_ghost: Option<Modal>,
+    pub operations: Fade,
 }
 
 impl Surfaces {
     fn new() -> Self {
         Self {
+            operations: Fade::asymmetric(false, Speed::SLIDE, Speed::FADE),
             hover: HashMap::new(),
             select: HashMap::new(),
             select_signature: (0, 0),
@@ -687,7 +704,7 @@ impl Surfaces {
     pub fn is_animating(&self, now: Instant) -> bool {
         self.hover.values().any(|(layer, lift)| layer.is_animating(now) || lift.is_animating(now))
             || self.select.values().any(|fade| fade.is_animating(now))
-            || [&self.menu, &self.toast, &self.modal].into_iter().any(|fade| fade.is_animating(now))
+            || [&self.menu, &self.toast, &self.modal, &self.operations].into_iter().any(|fade| fade.is_animating(now))
     }
 
     fn prune(&mut self, now: Instant) {
@@ -775,6 +792,7 @@ pub struct App {
     pub list_zoom: u8,
     pub columns: Vec<ListColumn>,
     pub queue: bool,
+    pub operations: bool,
     pub inspector: bool,
     pub usage: HashMap<PathBuf, (u64, u64)>,
     shortcuts_asked: bool,
@@ -879,6 +897,20 @@ fn requested_location() -> Option<PathBuf> {
     }
 }
 
+fn job_label(op: Op, sources: &[PathBuf], lang: Lang) -> String {
+    let what = match sources {
+        [one] => format!("«{}»", file_name(one)),
+        many => i18n::items_of(many.len(), lang),
+    };
+    let verb = match op {
+        Op::Copy => Key::Copying,
+        Op::Move => Key::Moving,
+        Op::Delete => Key::Deleting,
+        Op::Trash => Key::TrashingWhat,
+    };
+    format!("{} {what}", verb.text(lang))
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy()).into_owned()
 }
@@ -970,6 +1002,7 @@ impl App {
             list_zoom: prefs.list_zoom,
             columns: prefs.columns.clone(),
             queue: prefs.queue,
+            operations: false,
             inspector: prefs.inspector,
             usage: HashMap::new(),
             shortcuts_asked: false,
@@ -1219,6 +1252,7 @@ impl App {
         if self.modal.is_some() {
             motion.modal_ghost.clone_from(&self.modal);
         }
+        motion.operations.set(self.operations && self.jobs.len() > JOB_CARDS, now);
         motion.prune(now);
     }
 
@@ -1641,13 +1675,7 @@ impl App {
             Message::ToggleQueue => {
                 self.queue = !self.queue;
                 self.save_prefs();
-                if !self.queue {
-                    for job in &mut self.jobs {
-                        if let Some(launch) = job.launch.take() {
-                            (launch.0)();
-                        }
-                    }
-                }
+                self.start_queued();
             }
             Message::Phones(phones) => {
                 self.disk_watch.phones = false;
@@ -1878,6 +1906,25 @@ impl App {
                     job.meter.pause(paused);
                 }
             }
+            Message::PauseAll => {
+                let paused = !self.all_paused();
+                for job in self.jobs.iter_mut().filter(|job| job.launch.is_none()) {
+                    job.pause.store(paused, Ordering::Relaxed);
+                    job.meter.pause(paused);
+                }
+            }
+            Message::StopAll => {
+                self.jobs.retain(|job| job.launch.is_none());
+                self.jobs.iter_mut().for_each(Job::stop);
+                self.operations = false;
+                self.sync_dock();
+            }
+            Message::JobStartNow(id) => {
+                if let Some(index) = self.jobs.iter().position(|job| job.id == id && job.launch.is_some()) {
+                    self.launch_job(index);
+                }
+            }
+            Message::ToggleOperations => self.operations = !self.operations && self.jobs.len() > JOB_CARDS,
             Message::Back
             | Message::Forward
             | Message::EmptyTrash
@@ -2864,18 +2911,44 @@ impl App {
         self.column_drag.is_some_and(|dragged| dragged != column) && self.hover_target == Some(Hover::Column(column))
     }
 
+    #[must_use]
+    pub fn all_paused(&self) -> bool {
+        let mut running = self.jobs.iter().filter(|job| job.launch.is_none()).peekable();
+        running.peek().is_some() && running.all(|job| job.meter.is_paused())
+    }
+
+    #[must_use]
+    pub fn operations_shown(&self) -> bool {
+        self.operations && self.jobs.len() > JOB_CARDS
+    }
+
+    fn admitted(&self, wanted: &[u64]) -> bool {
+        let running: Vec<&[u64]> =
+            self.jobs.iter().filter(|job| job.launch.is_none()).map(|job| job.devices.as_slice()).collect();
+        crate::fs::jobs::admits(&running, wanted, self.queue)
+    }
+
     fn start_queued(&mut self) {
-        if self.jobs.iter().any(|job| job.launch.is_none()) {
-            return;
-        }
-        while let Some(job) = self.jobs.iter_mut().find(|job| job.launch.is_some()) {
-            let started = job.launch.take().is_some_and(|launch| (launch.0)());
-            if started {
-                return;
+        let mut index = 0;
+        while index < self.jobs.len() {
+            let waiting = self.jobs[index].launch.is_some();
+            if !waiting || !self.admitted(&self.jobs[index].devices) {
+                index += 1;
+                continue;
             }
-            let id = job.id;
-            self.jobs.retain(|job| job.id != id);
+            if !self.launch_job(index) {
+                continue;
+            }
+            index += 1;
         }
+    }
+
+    fn launch_job(&mut self, index: usize) -> bool {
+        let started = self.jobs[index].launch.take().is_some_and(|launch| (launch.0)());
+        if !started {
+            self.jobs.remove(index);
+        }
+        started
     }
 
     fn zoom(&mut self, step: i8) {
@@ -3312,6 +3385,9 @@ impl App {
         let (events, stream) = unbounded();
         let (flag, dir, trash) = (Arc::clone(&cancel), target.clone(), self.trash.clone());
         let held = Arc::clone(&pause);
+        let label = job_label(op, &sources, self.lang);
+        let count = sources.len();
+        let devices = crate::fs::jobs::devices(&sources, matches!(op, Op::Copy | Op::Move).then_some(target.as_path()));
         let start = move || {
             std::thread::Builder::new()
                 .name(String::from("glide-files-job"))
@@ -3326,8 +3402,7 @@ impl App {
                 })
                 .is_ok()
         };
-        let waits = self.queue && self.jobs.iter().any(|job| job.launch.is_none());
-        let launch = if waits {
+        let launch = if !self.admitted(&devices) {
             Some(Launch(Box::new(start)))
         } else if start() {
             None
@@ -3336,6 +3411,9 @@ impl App {
         };
         self.jobs.push(Job {
             launch,
+            devices,
+            sources: count,
+            label,
             id,
             op,
             progress: Progress::default(),
@@ -3377,6 +3455,7 @@ impl App {
                     return if self.jobs.is_empty() { quit() } else { Task::none() };
                 }
                 self.start_queued();
+                self.operations &= self.jobs.len() > JOB_CARDS;
                 self.sync_dock();
                 if matches!(&self.modal, Some(Modal { dialog: Dialog::Conflict { job, .. }, .. }) if *job == id) {
                     self.modal = None;
@@ -3975,6 +4054,9 @@ impl App {
             return Task::none();
         }
         if self.menu.take().is_some() {
+            return Task::none();
+        }
+        if std::mem::take(&mut self.operations) {
             return Task::none();
         }
         if self.path_edit.take().is_some() {

@@ -48,6 +48,18 @@ glide_sdk::catalogue! {
     Capacity => "Capacity", "Ємність";
     FolderProperties => "Folder Properties", "Властивості папки";
     Zoom => "Zoom", "Масштаб";
+    TrashingWhat => "Moving to Trash", "Переміщення до смітника";
+    Operations => "Operations", "Операції";
+    AllOperations => "All Operations", "Усі операції";
+    StopAll => "Stop All", "Зупинити всі";
+    PauseAll => "Pause All", "Призупинити всі";
+    ResumeAll => "Resume All", "Продовжити всі";
+    StartNow => "Start Now", "Почати зараз";
+    Running => "Running", "Виконуються";
+    Waiting => "Queued", "У черзі";
+    OneAtATime => "One at a Time", "Усе по черзі";
+    OneAtATimeHint => "Otherwise up to two run at once on each disk and the rest wait their turn", "Інакше — до 2 одночасно на кожен диск, решта чекає своєї черги";
+    ToPlace => "to", "до";
     EmptyFolderHint => "Drag files here or create a new folder.", "Перетягніть сюди файли або створіть нову папку.";
     TrashEmpty => "Trash is empty", "Смітник порожній";
     TrashEmptyHint => "Whatever you delete waits here until you empty the Trash.", "Усе видалене чекає тут, доки ви не очистите смітник.";
@@ -279,6 +291,41 @@ pub fn items(count: usize, lang: Lang) -> String {
     let forms = match lang {
         Lang::En => ["item", "items", "items"],
         Lang::Uk => ["об’єкт", "об’єкти", "об’єктів"],
+    };
+    glide_sdk::i18n::count(count as u64, lang, forms)
+}
+
+#[must_use]
+pub fn operations(count: usize, lang: Lang) -> String {
+    let forms = match lang {
+        Lang::En => ["operation", "operations", "operations"],
+        Lang::Uk => ["операція", "операції", "операцій"],
+    };
+    glide_sdk::i18n::count(count as u64, lang, forms)
+}
+
+#[must_use]
+pub fn running(count: usize, lang: Lang) -> String {
+    let forms = match lang {
+        Lang::En => ["running", "running", "running"],
+        Lang::Uk => ["виконується", "виконуються", "виконуються"],
+    };
+    glide_sdk::i18n::count(count as u64, lang, forms)
+}
+
+#[must_use]
+pub fn queued(count: usize, lang: Lang) -> String {
+    match lang {
+        Lang::En => format!("{count} queued"),
+        Lang::Uk => format!("{count} у черзі"),
+    }
+}
+
+#[must_use]
+pub fn items_of(count: usize, lang: Lang) -> String {
+    let forms = match lang {
+        Lang::En => ["item", "items", "items"],
+        Lang::Uk => ["об’єкта", "об’єктів", "об’єктів"],
     };
     glide_sdk::i18n::count(count as u64, lang, forms)
 }

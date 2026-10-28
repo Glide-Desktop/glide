@@ -563,10 +563,26 @@ fn tasks<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
             ui::icon_button(paint, if paused { Icon::Refresh } else { Icon::More }, "", Some(Message::Flip), false),
             ui::icon_button(paint, Icon::Close, "", Some(Message::Said("Stop")), false),
         ],
+        footer: None,
     };
-    row![
-        container(ui::task_card(paint, Icon::File, task(catalog.flipped))).width(260),
-        container(ui::task_card(paint, Icon::File, ui::Task { fraction: None, ..task(false) })).width(260),
+    let all = ui::full_button(paint, shell.t("Усі операції", "All operations"), Tone::Tonal, Some(Message::Flip));
+    let summary = ui::Task {
+        title: shell.t("7 операцій", "7 operations").to_string(),
+        current: None,
+        actions: Vec::new(),
+        footer: Some(all),
+        ..task(false)
+    };
+    let queued = ui::Task { fraction: None, current: None, ..task(false) };
+    column![
+        row![
+            container(ui::task_card(paint, Icon::File, task(catalog.flipped))).width(260),
+            container(ui::task_card(paint, Icon::File, ui::Task { fraction: None, ..task(false) })).width(260),
+            container(ui::task_card(paint, Icon::Copy, summary)).width(220),
+        ]
+        .spacing(SP3),
+        ui::task_row(paint, ui::icon(Icon::Copy, 16.0, paint.fg_2()), task(false), 420.0),
+        ui::task_row(paint, text("1", TextStyle::NUM).color(paint.fg_3()), queued, 420.0),
     ]
     .spacing(SP3)
     .into()

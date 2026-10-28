@@ -84,7 +84,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     let mut panel = column![top, places];
     if !app.jobs.is_empty() {
-        let jobs = glide_sdk::widget::scrollable(t, super::jobs(app));
+        let jobs = glide_sdk::widget::scrollable(t, super::operations::sidebar(app));
         panel = panel.push(super::divider(t)).push(container(jobs).max_height(JOBS_HEIGHT));
     }
     let corners = theme::window_corners(theme::Side::Left, app.corner());

@@ -4,6 +4,7 @@ pub mod dialogs;
 pub mod header;
 pub mod inspector;
 pub mod menu;
+pub mod operations;
 pub mod sidebar;
 pub mod status;
 
@@ -16,7 +17,6 @@ use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
 use crate::app::{App, Hover, Message, Notice, NoticeAction};
 use crate::fs::FileEntry;
-use crate::fs::jobs::Op;
 use crate::i18n::Key;
 use crate::icons::Icon;
 use crate::native_icons::Art;
@@ -47,8 +47,12 @@ pub fn window(app: &App) -> Element<'_, Message> {
     if let Some(drag) = &app.drag {
         layers.push(drag_ghost(app, drag));
     }
-    if let Some(notice) = app.notice.as_ref().or(motion.toast_ghost.as_ref()) {
+    if let Some(notice) = app.notice.as_ref().or(motion.toast_ghost.as_ref()).filter(|_| !app.operations_shown()) {
         layers.push(toast(app, notice, motion.toast.progress(now), app.notice.is_some()));
+    }
+    let operations = motion.operations.progress(now);
+    if operations > 0.0 {
+        layers.push(operations::panel(app, operations));
     }
     if let Some(menu) = app.menu.as_ref().or(motion.menu_ghost.as_ref()) {
         layers.push(menu::overlay(app, menu, motion.menu.progress(now), app.menu.is_some()));
@@ -99,75 +103,6 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
         })
         .collect();
     glide_sdk::widget::info_bar(t, None, title, &blurb, actions)
-}
-
-fn job_detail(app: &App, job: &crate::app::Job) -> String {
-    let lang = app.lang;
-    let progress = &job.progress;
-    if job.launch.is_some() {
-        return Key::Queued.text(lang).to_string();
-    }
-    if job.meter.is_paused() {
-        return Key::Paused.text(lang).to_string();
-    }
-    if progress.total_items == 0 {
-        return Key::Preparing.text(lang).to_string();
-    }
-    let mut parts = Vec::new();
-    if progress.total_items > 1 {
-        parts.push(format!("{}/{}", (progress.items + 1).min(progress.total_items), progress.total_items));
-    }
-    if progress.total_bytes > 0 {
-        let of = Key::OfTotal.text(lang);
-        parts.push(format!(
-            "{} {of} {}",
-            crate::fs::format_bytes(progress.bytes.min(progress.total_bytes), lang),
-            crate::fs::format_bytes(progress.total_bytes, lang)
-        ));
-    }
-    parts.push(format!("{}%", (progress.fraction() * 100.0).round()));
-    if let Some(rate) = job.meter.rate() {
-        let per_second = match lang {
-            crate::i18n::Lang::Uk => "/с",
-            crate::i18n::Lang::En => "/s",
-        };
-        parts.push(format!("{}{per_second}", crate::fs::format_bytes(rate as u64, lang)));
-        if let Some(eta) = job.meter.eta(progress.total_bytes.saturating_sub(progress.bytes)) {
-            parts.push(format!("{} {}", Key::TimeLeft.text(lang), crate::i18n::duration(eta, lang)));
-        }
-    }
-    parts.join(" · ")
-}
-
-pub fn jobs(app: &App) -> Element<'_, Message> {
-    use glide_sdk::widget::{Task, elide, elide_end, icon_button as small, task_card};
-    let paint = app.theme;
-    let lang = app.lang;
-    let cards = app.jobs.iter().map(|job| {
-        let (label, glyph) = match job.op {
-            Op::Copy => (Key::Copying, Icon::Copy),
-            Op::Move => (Key::Moving, Icon::Move),
-            Op::Delete => (Key::Deleting, Icon::Trash),
-            Op::Trash => (Key::Trashing, Icon::Trash),
-        };
-        let progress = &job.progress;
-        let paused = job.meter.is_paused();
-        let toggle = if paused { (Icon::Play, Key::ResumeJob) } else { (Icon::Pause, Key::PauseJob) };
-        let pause = job.launch.is_none().then_some(Message::JobPause(job.id));
-        let task = Task {
-            title: elide_end(label.text(lang), JOB_TITLE, TextStyle { weight: 600, ..TextStyle::CAP }),
-            current: progress.current.as_ref().map(|current| elide(current, JOB_TEXT, TextStyle::CAP)),
-            fraction: (progress.total_items > 0 || job.launch.is_some()).then(|| progress.fraction()),
-            paused,
-            detail: job_detail(app, job),
-            actions: vec![
-                small(&paint, toggle.0, toggle.1.text(lang), pause, false),
-                small(&paint, Icon::Close, Key::StopJob.text(lang), Some(Message::JobCancel(job.id)), false),
-            ],
-        };
-        glide_sdk::widget::arriving(task_card(&paint, glyph, task))
-    });
-    container(column(cards).spacing(theme::SP2)).padding(theme::SP2).width(Fill).into()
 }
 
 fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Message> {
@@ -292,9 +227,5 @@ pub fn check<'a>(t: &ThemeState, label: &'a str, on: bool, message: Message) -> 
     let state = if on { glide_sdk::widget::Check::On } else { glide_sdk::widget::Check::Off };
     glide_sdk::widget::checkbox(t, label, state, Some(message))
 }
-
-const JOB_TEXT: f32 = SIDEBAR_WIDTH - 2.0 * theme::SP2 - theme::SP3 - theme::SP1;
-const JOB_TITLE: f32 = JOB_TEXT - JOB_GLYPH - theme::SP2 - 2.0 * CONTROL;
-const JOB_GLYPH: f32 = 16.0;
 
 pub use glide_sdk::widget::ellipsize;

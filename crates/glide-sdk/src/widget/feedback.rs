@@ -259,29 +259,57 @@ pub struct Task<'a, M> {
     pub paused: bool,
     pub detail: String,
     pub actions: Vec<Element<'a, M>>,
+    pub footer: Option<Element<'a, M>>,
 }
+
+const TASK_FIGURES: TextStyle = TextStyle { size_px: 11.5, line_height_px: 16.0, ..TextStyle::NUM };
 
 #[must_use]
 pub fn task_card<'a, M: 'a>(paint: &Paint, glyph: impl super::Glyph, task: Task<'a, M>) -> Element<'a, M> {
     let paint = *paint;
-    let title = text(task.title, TextStyle { weight: 600, ..TextStyle::CAP }).wrapping(Wrapping::None).width(Fill);
+    let title = text(task.title, TextStyle { weight: 630, ..TextStyle::CALL }).wrapping(Wrapping::None).width(Fill);
     let head = task
         .actions
         .into_iter()
         .fold(row![icon(glyph, 16.0, paint.acc_text()), Space::new().width(SP2), title], Row::push)
         .align_y(Alignment::Center);
-    let mut card = column![head].spacing(SP1);
+    let mut card = column![head].spacing(SP2);
     if let Some(current) = task.current {
         card = card.push(text(current, TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None));
     }
     card = card
         .push(super::controls::paused_progress(&paint, task.fraction, task.paused))
-        .push(text(task.detail, TextStyle::CAP).color(paint.fg_3()));
-    container(card)
-        .padding(Padding::from([SP2, SP3]).right(SP1))
+        .push(text(task.detail, TASK_FIGURES).color(paint.fg_2()));
+    if let Some(footer) = task.footer {
+        card = card.push(footer);
+    }
+    let card = container(card)
+        .padding(Padding::from([SP2 + 2.0, SP3]).right(SP2))
         .width(Fill)
-        .style(move |_| style::rounded(paint.fill_1(), style::R3))
-        .into()
+        .style(move |_| super::layout::card_style(&paint));
+    glide_iced::widgets::surface(card, &paint, glide_theme::elevation::Level::El1, style::R3)
+}
+
+#[must_use]
+pub fn task_row<'a, M: 'a>(
+    paint: &Paint, lead: impl Into<Element<'a, M>>, task: Task<'a, M>, width: f32,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let lines = column![
+        text(task.title, TextStyle { weight: 630, ..TextStyle::CALL }).wrapping(Wrapping::None),
+        text(task.detail, TASK_FIGURES).color(paint.fg_2()).wrapping(Wrapping::None),
+    ]
+    .push(task.fraction.map(|fraction| {
+        container(super::controls::paused_progress(&paint, Some(fraction), task.paused)).padding(Padding::ZERO.top(2))
+    }))
+    .spacing(2)
+    .width(Fill)
+    .clip(true);
+    let row = task.actions.into_iter().fold(
+        row![container(lead.into()).center_x(SP4 + SP1), lines].spacing(SP2).align_y(Alignment::Center),
+        Row::push,
+    );
+    container(row).padding(Padding::from([SP2 - 2.0, SP3])).width(width).into()
 }
 
 const PULSE: Duration = Duration::from_millis(1400);
