@@ -1972,6 +1972,7 @@ dependencies = [
  "glide-appmenu",
  "glide-cast",
  "glide-config",
+ "glide-dock",
  "glide-geom",
  "glide-greeter",
  "glide-ipc",
@@ -2016,6 +2017,18 @@ dependencies = [
  "libc",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "glide-dock"
+version = "0.1.0"
+dependencies = [
+ "glide-paint",
+ "glide-shell",
+ "glide-theme",
+ "glide-ui",
+ "serde",
+ "smithay",
 ]
 
 [[package]]

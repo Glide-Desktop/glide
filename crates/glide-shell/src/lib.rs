@@ -6,3 +6,4 @@ pub mod icon;
 pub mod image;
 pub mod popup_menu;
 pub mod raster;
+pub mod scroll;

@@ -1,3 +1,6 @@
+pub mod config;
+pub mod preview;
+
 use std::{
     collections::{HashMap, hash_map::Entry},
     hash::Hash,
@@ -16,11 +19,11 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Scale, Size},
 };
 
-use crate::{
-    config::{Color, DockAutohide, DockConfig, DockItemConfig, DockTheme},
-    paint::TextAlign,
-    raster::{Canvas, ShellRenderer, rect},
-};
+use glide_paint::TextAlign;
+use glide_shell::raster::{Canvas, ShellRenderer, rect};
+use glide_theme::{Color, DockTheme};
+
+use crate::config::{DockAutohide, DockConfig, DockItemConfig};
 
 const AUTOHIDE_DELAY: Duration = Duration::from_millis(400);
 pub const REVEAL_EDGE: f64 = 3.0;
@@ -88,7 +91,8 @@ fn app_key(app_id: &str) -> String {
     app_id.to_lowercase()
 }
 
-pub(crate) fn is_pinnable(app_id: &str) -> bool {
+#[must_use]
+pub fn is_pinnable(app_id: &str) -> bool {
     !app_id.trim().is_empty() && !app_id.starts_with(WINDOW_KEY_PREFIX)
 }
 
@@ -427,7 +431,7 @@ fn fitted_theme(base: &DockTheme, count: i32, separators: i32, available: i32) -
 }
 
 fn raster_revision(theme: &DockTheme) -> u64 {
-    crate::paint::raster_revision(theme.revision())
+    glide_paint::raster_revision(theme.revision())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,7 +454,7 @@ impl DockItem {
         Self {
             separator_before: true,
             action: DockAction::OpenLauncher,
-            ..Self::app("", crate::i18n::t(crate::i18n::Key::Applications), "")
+            ..Self::app("", glide_shell::i18n::t(glide_shell::i18n::Key::Applications), "")
         }
     }
 
@@ -603,7 +607,7 @@ pub struct Dock {
     run_changed: Vec<Instant>,
     hover: glide_ui::HoverAnimation<usize>,
     keyboard: bool,
-    pub icons: crate::icon::IconLoader,
+    pub icons: glide_shell::icon::IconLoader,
     icon_generation: u64,
     tiles: Vec<Buffers<i32>>,
     rasters: Rasters,
@@ -632,8 +636,8 @@ pub struct Dock {
     badges: HashMap<String, Badge>,
     badge_fades: HashMap<String, (glide_ui::Tween, Badge)>,
     focus_wells: Layers,
-    scroll: crate::system_info::ScrollAccumulator,
-    preview: Option<crate::dock_preview::Preview>,
+    scroll: glide_shell::scroll::ScrollAccumulator,
+    preview: Option<crate::preview::Preview>,
 }
 
 type Buffers<K> = HashMap<K, MemoryRenderBuffer>;
@@ -689,7 +693,7 @@ impl Dock {
             run_changed: vec![settled_stamp(); count],
             hover: glide_ui::HoverAnimation::default(),
             keyboard: false,
-            icons: crate::icon::IconLoader::new(config.theme.icon_theme.clone()),
+            icons: glide_shell::icon::IconLoader::new(config.theme.icon_theme.clone()),
             icon_generation: 0,
             tiles: vec![HashMap::new(); count],
             rasters: Rasters::default(),
@@ -718,7 +722,7 @@ impl Dock {
             badges: HashMap::new(),
             badge_fades: HashMap::new(),
             focus_wells: HashMap::new(),
-            scroll: crate::system_info::ScrollAccumulator::default(),
+            scroll: glide_shell::scroll::ScrollAccumulator::default(),
             preview: None,
         }
     }
@@ -1333,8 +1337,8 @@ impl Dock {
         let Some(tile) = self.item_rects(area).into_iter().nth(index) else {
             return false;
         };
-        let entries = fit_menu_entries(entries, crate::popup_menu::rows_fitting_above(tile, area));
-        let rect = crate::popup_menu::place_above(tile, area, entries.len());
+        let entries = fit_menu_entries(entries, glide_shell::popup_menu::rows_fitting_above(tile, area));
+        let rect = glide_shell::popup_menu::place_above(tile, area, entries.len());
         let heading = self.menu_title(index);
         if self.menu.as_ref().is_some_and(|menu| menu.index != index) {
             self.menu_reveal = glide_ui::Reveal::closed();
@@ -1414,7 +1418,7 @@ impl Dock {
         true
     }
 
-    pub fn scroll_steps(&mut self, delta: crate::system_info::ScrollDelta) -> i32 {
+    pub fn scroll_steps(&mut self, delta: glide_shell::scroll::ScrollDelta) -> i32 {
         self.scroll.feed(delta)
     }
 
@@ -1423,7 +1427,7 @@ impl Dock {
         if self.menu.is_some() || self.is_dragging() || self.keyboard || self.is_hidden() {
             return None;
         }
-        if self.hover_since?.elapsed() < crate::dock_preview::dwell() {
+        if self.hover_since?.elapsed() < crate::preview::dwell() {
             return None;
         }
         self.hover
@@ -1431,7 +1435,7 @@ impl Dock {
             .filter(|index| self.items.get(*index).is_some_and(|item| item.action == DockAction::Activate))
     }
 
-    pub fn show_preview(&mut self, index: usize, windows: Vec<crate::dock_preview::PreviewWindow>) -> bool {
+    pub fn show_preview(&mut self, index: usize, windows: Vec<crate::preview::PreviewWindow>) -> bool {
         let Some(app_id) = self.items.get(index).map(|item| item.app_id.clone()) else {
             return false;
         };
@@ -1444,7 +1448,7 @@ impl Dock {
                 reopened || changed
             }
             _ => {
-                self.preview = Some(crate::dock_preview::Preview::new(index, app_id, windows));
+                self.preview = Some(crate::preview::Preview::new(index, app_id, windows));
                 self.tooltip_reveal.close(t1());
                 true
             }
@@ -1463,14 +1467,14 @@ impl Dock {
 
     #[must_use]
     pub fn preview_open(&self) -> bool {
-        self.preview.as_ref().is_some_and(crate::dock_preview::Preview::is_open)
+        self.preview.as_ref().is_some_and(crate::preview::Preview::is_open)
     }
 
     #[must_use]
-    pub fn preview_layout(&self, area: Rectangle<i32, Logical>) -> Option<crate::dock_preview::PreviewLayout> {
+    pub fn preview_layout(&self, area: Rectangle<i32, Logical>) -> Option<crate::preview::PreviewLayout> {
         let preview = self.preview.as_ref().filter(|preview| preview.is_visible())?;
         let tile = *self.item_rects(area).get(preview.index)?;
-        Some(crate::dock_preview::layout(preview.windows(), tile, self.theme.hover_lift, area))
+        Some(crate::preview::layout(preview.windows(), tile, self.theme.hover_lift, area))
     }
 
     #[must_use]
@@ -1478,13 +1482,13 @@ impl Dock {
         self.preview.as_ref().filter(|preview| preview.is_open()).map(|preview| preview.index)
     }
 
-    pub fn set_preview_hover(&mut self, hit: Option<crate::dock_preview::PreviewHit>) -> bool {
+    pub fn set_preview_hover(&mut self, hit: Option<crate::preview::PreviewHit>) -> bool {
         self.preview.as_mut().is_some_and(|preview| preview.set_hover(hit))
     }
 
     pub fn preview_parts(
         &mut self, area: Rectangle<i32, Logical>,
-    ) -> Option<(&mut crate::dock_preview::Preview, &DockTheme, crate::dock_preview::PreviewLayout, u64)> {
+    ) -> Option<(&mut crate::preview::Preview, &DockTheme, crate::preview::PreviewLayout, u64)> {
         let layout = self.preview_layout(area)?;
         let preview = self.preview.as_mut()?;
         Some((preview, &self.theme, layout, self.raster_rev))
@@ -1510,7 +1514,7 @@ impl Dock {
     fn tooltip_label(&self, index: usize) -> String {
         match self.items.get(index) {
             Some(item) if item.action == DockAction::OpenLauncher => {
-                crate::i18n::t(crate::i18n::Key::Applications).to_string()
+                glide_shell::i18n::t(glide_shell::i18n::Key::Applications).to_string()
             }
             Some(_) => self.menu_title(index),
             None => String::new(),
@@ -1586,7 +1590,7 @@ impl Dock {
             || self.hide.is_animating()
             || self.reveal_until.is_some()
             || (self.edge_since.is_some() && self.is_hidden());
-        let preview = self.preview.as_ref().is_some_and(crate::dock_preview::Preview::is_animating);
+        let preview = self.preview.as_ref().is_some_and(crate::preview::Preview::is_animating);
         autohide
             || preview
             || any_animating(&self.focus_wells, t2())
@@ -1874,7 +1878,7 @@ pub enum DockMenuItem {
 impl DockMenuItem {
     #[must_use]
     pub fn label(self) -> &'static str {
-        use crate::i18n::{Key, t};
+        use glide_shell::i18n::{Key, t};
         match self {
             Self::Window(_) | Self::Action(_) | Self::Quick(_) => "",
             Self::ShowAllWindows => t(Key::DockShowAllWindows),
@@ -1904,13 +1908,13 @@ struct DockMenu {
 
 impl DockMenu {
     fn row_at(&self, pos: Point<f64, Logical>) -> Option<usize> {
-        crate::popup_menu::row_at(self.rect, self.entries.len(), pos)
+        glide_shell::popup_menu::row_at(self.rect, self.entries.len(), pos)
     }
 
-    fn rows(&self) -> Vec<crate::popup_menu::MenuRow> {
+    fn rows(&self) -> Vec<glide_shell::popup_menu::MenuRow> {
         self.entries
             .iter()
-            .map(|entry| crate::popup_menu::MenuRow {
+            .map(|entry| glide_shell::popup_menu::MenuRow {
                 label: entry.label.clone().into(),
                 danger: entry.danger,
                 muted: entry.muted,
@@ -1921,7 +1925,7 @@ impl DockMenu {
 
 #[allow(clippy::too_many_arguments)]
 pub fn render<R>(
-    dock: &mut Dock, renderer: &mut R, painter: &crate::paint::Painter, area: Rectangle<i32, Logical>,
+    dock: &mut Dock, renderer: &mut R, painter: &glide_paint::Painter, area: Rectangle<i32, Logical>,
     scale: Scale<f64>, output_scale: i32, hidden: f64, backdrop: Option<&Backdrop<'_>>,
 ) -> Vec<MemoryRenderBufferRenderElement<R>>
 where
@@ -1967,7 +1971,7 @@ where
 
 struct Frame<'a, R: Renderer> {
     renderer: &'a mut R,
-    painter: &'a crate::paint::Painter,
+    painter: &'a glide_paint::Painter,
     theme: &'a DockTheme,
     scale: Scale<f64>,
     output_scale: i32,
@@ -2079,7 +2083,7 @@ fn push_tiles<R: ShellRenderer>(
         if dragging {
             let side = hover.side;
             let shadow = cached(&mut dock.rasters.drag_shadow, (side, scale), || {
-                crate::popup_menu::draw_elevation(
+                glide_shell::popup_menu::draw_elevation(
                     Size::from((side, side)),
                     theme.item_radius,
                     scale_or_one(scale),
@@ -2087,14 +2091,14 @@ fn push_tiles<R: ShellRenderer>(
                     theme.appearance,
                 )
             });
-            let margin = f64::from(crate::popup_menu::shadow_margin());
+            let margin = f64::from(glide_shell::popup_menu::shadow_margin());
             let at = Point::from((hover.position.x - margin, hover.position.y - margin));
             frame.push(shadow, at, opacity, None);
         }
     }
 }
 
-fn drag_layer_color(theme: &DockTheme) -> crate::config::Color {
+fn drag_layer_color(theme: &DockTheme) -> Color {
     let hover = theme.hover_layer;
     let scale = glide_theme::motion::ST_DRAG / glide_theme::motion::ST_HOVER;
     hover.with_alpha((hover.0[3] * scale).min(1.0))
@@ -2104,7 +2108,9 @@ fn unit_alpha(value: f64) -> f32 {
     value.clamp(0.0, 1.0) as f32
 }
 
-fn launcher_icon(icons: &mut crate::icon::IconLoader, theme: &DockTheme, scale: i32, hovered: bool) -> Option<Vec<u8>> {
+fn launcher_icon(
+    icons: &mut glide_shell::icon::IconLoader, theme: &DockTheme, scale: i32, hovered: bool,
+) -> Option<Vec<u8>> {
     let side = (theme.item_size / 2) * scale_or_one(scale);
     icons.load_symbolic("view-app-grid", side, launcher_colors(theme, hovered).1).map(<[u8]>::to_vec)
 }
@@ -2149,7 +2155,7 @@ fn push_tooltip<R: ShellRenderer>(
     frame.push(buffer, position.to_f64(), alpha, None);
 
     let shadow = cached(&mut dock.rasters.tooltip_shadow, (width, scale), || {
-        crate::popup_menu::draw_elevation(
+        glide_shell::popup_menu::draw_elevation(
             Size::from((width, TOOLTIP_HEIGHT)),
             TOOLTIP_RADIUS,
             scale_or_one(scale),
@@ -2157,18 +2163,18 @@ fn push_tooltip<R: ShellRenderer>(
             theme.appearance,
         )
     });
-    let margin = crate::popup_menu::shadow_margin();
+    let margin = glide_shell::popup_menu::shadow_margin();
     let pos = Point::from((position.x - margin, position.y - margin));
     frame.push(shadow, pos.to_f64(), alpha, None);
 }
 
-fn tooltip_width(painter: &crate::paint::Painter, title: &str) -> i32 {
+fn tooltip_width(painter: &glide_paint::Painter, title: &str) -> i32 {
     let text = painter.text_width_styled(title, &glide_theme::TextStyle::CAP).ceil() as i32;
     text + TOOLTIP_PAD_X * 2
 }
 
 fn draw_tooltip(
-    painter: &crate::paint::Painter, theme: &DockTheme, title: &str, scale: i32,
+    painter: &glide_paint::Painter, theme: &DockTheme, title: &str, scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let width = tooltip_width(painter, title);
     let height = TOOLTIP_HEIGHT;
@@ -2202,7 +2208,7 @@ fn push_shell<R: ShellRenderer>(
     frame.push(buffer, drawn.to_f64(), opacity, None);
 
     let shadow = cached(&mut dock.rasters.shadow, shell_key, || {
-        crate::popup_menu::draw_elevation(
+        glide_shell::popup_menu::draw_elevation(
             shell.size,
             theme.radius,
             output_scale,
@@ -2210,7 +2216,7 @@ fn push_shell<R: ShellRenderer>(
             theme.appearance,
         )
     });
-    let margin = crate::popup_menu::shadow_margin();
+    let margin = glide_shell::popup_menu::shadow_margin();
     let pos = Point::from((drawn.x - margin, drawn.y - margin));
     frame.push(shadow, pos.to_f64(), opacity, None);
 }
@@ -2237,13 +2243,13 @@ fn push_menu<R: ShellRenderer>(dock: &mut Dock, frame: &mut Frame<'_, R>) {
         .collect();
     if row_alphas.iter().any(|alpha| *alpha > 0.0) {
         let buffer = cached(&mut dock.rasters.menu_row_layer, output_scale, || {
-            let width = crate::popup_menu::WIDTH - crate::popup_menu::PADDING * 2;
-            let size = (width, crate::popup_menu::ROW_HEIGHT);
-            draw_panel(size, theme.menu_item_hover, crate::popup_menu::ROW_RADIUS, output_scale)
+            let width = glide_shell::popup_menu::WIDTH - glide_shell::popup_menu::PADDING * 2;
+            let size = (width, glide_shell::popup_menu::ROW_HEIGHT);
+            draw_panel(size, theme.menu_item_hover, glide_shell::popup_menu::ROW_RADIUS, output_scale)
         });
         for (row, alpha) in row_alphas.iter().enumerate() {
             if *alpha > 0.0 {
-                let row_rect = crate::popup_menu::row_rect(menu.rect, row);
+                let row_rect = glide_shell::popup_menu::row_rect(menu.rect, row);
                 frame.push_placed(buffer, &placement, row_rect, *alpha);
             }
         }
@@ -2255,16 +2261,21 @@ fn push_menu<R: ShellRenderer>(dock: &mut Dock, frame: &mut Frame<'_, R>) {
         cache.retain(|(title, entries, _), _| (title, entries) == (&key.0, &key.1));
     }
     let buffer = cached(cache, key, || {
-        let colors = crate::popup_menu::MenuColors::from_dock(theme);
-        crate::popup_menu::draw(painter, &colors, &menu.title, &menu.rows(), None, output_scale)
+        let colors = glide_shell::popup_menu::MenuColors::from_dock(theme);
+        glide_shell::popup_menu::draw(painter, &colors, &menu.title, &menu.rows(), None, output_scale)
     });
     frame.push_placed(buffer, &placement, menu.rect, placement.alpha);
 
     let shadow_key = (menu.rect.size.w, menu.rect.size.h, output_scale);
     let shadow = cached(&mut dock.rasters.menu_shadow, shadow_key, || {
-        crate::popup_menu::draw_shadow(menu.rect.size, crate::popup_menu::RADIUS, output_scale, theme.appearance)
+        glide_shell::popup_menu::draw_shadow(
+            menu.rect.size,
+            glide_shell::popup_menu::RADIUS,
+            output_scale,
+            theme.appearance,
+        )
     });
-    let margin = crate::popup_menu::shadow_margin();
+    let margin = glide_shell::popup_menu::shadow_margin();
     let shadow_rect = Rectangle::new(
         Point::from((menu.rect.loc.x - margin, menu.rect.loc.y - margin)),
         Size::from((menu.rect.size.w + margin * 2, menu.rect.size.h + margin * 2)),
@@ -2398,7 +2409,7 @@ fn launcher_tile(theme: &DockTheme, icon: Option<&[u8]>, scale: i32, hovered: bo
         let offset = (side - icon_side) / 2;
         c.blit_square(icon, icon_side, (offset, offset));
     } else {
-        crate::paint::draw_dock_glyph(&mut c.buf, side, side, c.scale, crate::paint::DockGlyph::Grid, glyph);
+        glide_paint::draw_dock_glyph(&mut c.buf, side, side, c.scale, glide_paint::DockGlyph::Grid, glyph);
     }
     Some(c)
 }
@@ -2407,7 +2418,7 @@ fn draw_launcher_tile(theme: &DockTheme, icon: Option<&[u8]>, scale: i32, hovere
     Some(launcher_tile(theme, icon, scale, hovered)?.finish())
 }
 
-fn badge_width(painter: &crate::paint::Painter, label: &str) -> i32 {
+fn badge_width(painter: &glide_paint::Painter, label: &str) -> i32 {
     let text = painter.text_width_styled(label, &BADGE_STYLE).ceil() as i32;
     (text + BADGE_PAD_X * 2).max(BADGE_MIN_WIDTH)
 }
@@ -2467,7 +2478,7 @@ fn push_badge<R: ShellRenderer>(
 }
 
 fn draw_badge(
-    painter: &crate::paint::Painter, theme: &DockTheme, label: &str, scale: i32,
+    painter: &glide_paint::Painter, theme: &DockTheme, label: &str, scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let width = badge_width(painter, label);
     let mut c = Canvas::new(width, BADGE_HEIGHT, scale_or_one(scale))?;
@@ -2536,7 +2547,7 @@ fn draw_shell(
         canvas.panel(theme.background, theme.radius);
     }
     let factor = scale as f32;
-    crate::paint::draw_inset_border(&mut canvas.buf, w * scale, h * scale, factor, theme.radius * factor, theme.border);
+    glide_paint::draw_inset_border(&mut canvas.buf, w * scale, h * scale, factor, theme.radius * factor, theme.border);
     draw_edge_highlight(&mut canvas.buf, w, h, scale, theme.radius, theme.edge_highlight);
 
     for (index, item) in items.iter().enumerate() {
@@ -2626,7 +2637,7 @@ impl Backdrop<'_> {
 }
 
 fn draw_tile(
-    painter: &crate::paint::Painter, theme: &DockTheme, item: &DockItem, icon: Option<&[u8]>, scale: i32,
+    painter: &glide_paint::Painter, theme: &DockTheme, item: &DockItem, icon: Option<&[u8]>, scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let side = theme.item_size;
     let scale = scale_or_one(scale);
@@ -2641,7 +2652,7 @@ fn draw_tile(
     }
     let well = rect(offset, offset, theme.icon_size, theme.icon_size);
     c.fill(well, theme.fallback_background, glide_theme::shape::R3);
-    let initial = crate::launcher::fallback_initial(&item.name);
+    let initial = glide_shell::icon::fallback_initial(&item.name);
     let style = &glide_theme::TextStyle::FALLBACK_INITIAL;
     c.text_in(painter, well, TextAlign::Center, &initial, theme.fallback_text, style);
     Some(c.finish())
@@ -3134,7 +3145,7 @@ mod tests {
 
             let items = menu_items(&dock, index);
             for (row, item) in items.iter().enumerate() {
-                let rect = crate::popup_menu::row_rect(dock.menu_rect().expect("open"), row);
+                let rect = glide_shell::popup_menu::row_rect(dock.menu_rect().expect("open"), row);
                 let centre =
                     Point::from((f64::from(rect.loc.x + rect.size.w / 2), f64::from(rect.loc.y + rect.size.h / 2)));
                 assert_eq!(dock.menu_item_at(centre), Some(*item));
@@ -3154,7 +3165,7 @@ mod tests {
             let items = menu_items(&dock, index);
             assert!(items.len() >= 2);
 
-            let row = |index| Some(centre_of(crate::popup_menu::row_rect(menu_rect, index)));
+            let row = |index| Some(centre_of(glide_shell::popup_menu::row_rect(menu_rect, index)));
             let outside = Some(Point::from((f64::from(menu_rect.loc.x - 100), f64::from(menu_rect.loc.y - 100))));
             assert_eq!(dock.open_menu_state().unwrap().hovered, None);
             assert!(!dock.set_menu_hover(None));
@@ -3482,12 +3493,11 @@ mod tests {
         let launcher = dock.items.iter().position(|item| item.action == DockAction::OpenLauncher).expect("launcher");
         dock.set_hover(Some(index));
         assert_eq!(dock.preview_candidate(), None, "not before the dwell");
-        dock.hover_since = Instant::now().checked_sub(crate::dock_preview::dwell());
+        dock.hover_since = Instant::now().checked_sub(crate::preview::dwell());
         assert_eq!(dock.preview_candidate(), Some(index));
         assert_eq!(dock.tooltip_index(), Some(index));
 
-        let window =
-            crate::dock_preview::PreviewWindow { id: 1, title: "Inbox".into(), minimized: false, size: (800, 600) };
+        let window = crate::preview::PreviewWindow { id: 1, title: "Inbox".into(), minimized: false, size: (800, 600) };
         assert!(dock.show_preview(index, vec![window.clone()]));
         assert!(!dock.show_preview(index, vec![window]), "the same windows change nothing");
         assert_eq!(dock.tooltip_index(), None, "the preview takes the tooltip's place");
@@ -3499,7 +3509,7 @@ mod tests {
         assert!(dock.hide_preview() && !dock.preview_open());
 
         dock.set_hover(Some(launcher));
-        dock.hover_since = Instant::now().checked_sub(crate::dock_preview::dwell());
+        dock.hover_since = Instant::now().checked_sub(crate::preview::dwell());
         assert_eq!(dock.preview_candidate(), None, "the launcher keeps its tooltip");
     }
 
@@ -3802,15 +3812,7 @@ mod tests {
             let theme = DockTheme::default();
             let (w, h) = (120, 80);
             let mut plain = vec![0u8; usize::try_from(w * h * 4).unwrap_or(0)];
-            crate::paint::Painter::fill_panel_background(
-                &mut plain,
-                w,
-                h,
-                1,
-                theme.background,
-                theme.radius,
-                [true; 4],
-            );
+            glide_paint::Painter::fill_panel_background(&mut plain, w, h, 1, theme.background, theme.radius, [true; 4]);
             let mut lit = plain.clone();
             draw_edge_highlight(&mut lit, w, h, 1, theme.radius, theme.edge_highlight);
             let at = |buf: &[u8], x: i32, y: i32| {

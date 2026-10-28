@@ -7,6 +7,7 @@ pub mod recent;
 pub mod search;
 
 pub use glide_shell::field;
+use glide_shell::icon::fallback_initial;
 use std::time::{Duration, Instant};
 
 use smithay::{
@@ -479,10 +480,6 @@ fn wrap_caption(painter: &crate::paint::Painter, text: &str, max_width: f32) -> 
         return (text.to_string(), None);
     }
     (first, (!rest.is_empty()).then_some(rest))
-}
-
-pub(crate) fn fallback_initial(name: &str) -> String {
-    name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string())
 }
 
 fn filter_apps(

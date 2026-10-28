@@ -22,9 +22,7 @@ mod config_repair;
 mod cursor;
 mod decoration;
 mod disk_space;
-mod dock;
 mod dock_drop;
-mod dock_preview;
 mod focus;
 mod focused_field;
 mod force_quit;
@@ -101,6 +99,7 @@ use smithay::{
 };
 
 use backend::tty::TtyData;
+use glide_dock::{self as dock, preview as dock_preview};
 use glide_greeter::{self as greeter, handoff};
 use glide_shell::{i18n, icon, popup_menu, raster};
 pub use state::GlideState;

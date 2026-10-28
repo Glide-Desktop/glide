@@ -9,8 +9,8 @@ use smithay::backend::renderer::element::{
 };
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
-use crate::paint::{Painter, TextAlign};
-use crate::raster::{Canvas, ShellRenderer, rect};
+use glide_paint::{Painter, TextAlign};
+use glide_shell::raster::{Canvas, ShellRenderer, rect};
 
 pub type Rect = Rectangle<i32, Logical>;
 
@@ -292,7 +292,7 @@ fn ring_canvas(size: Size<i32, Logical>, theme: &DockTheme, scale: i32) -> Optio
     let mut c = Canvas::new(size.w, size.h, scale)?;
     let factor = scale as f32;
     let (width, height) = (size.w * scale, size.h * scale);
-    crate::paint::draw_inset_border(
+    glide_paint::draw_inset_border(
         &mut c.buf,
         width,
         height,
@@ -308,7 +308,7 @@ fn close_canvas(theme: &DockTheme, hovered: bool, scale: i32) -> Option<Canvas<'
     let (fill, glyph) =
         if hovered { (theme.menu_text_danger, theme.badge_text) } else { (theme.menu_background, theme.menu_text) };
     c.fill(c.full(), fill, glide_theme::shape::R_ROUND);
-    crate::paint::draw_close_glyph_over(&mut c.buf, CLOSE, CLOSE, CLOSE_GLYPH, CLOSE_STROKE, scale, glyph);
+    glide_paint::draw_close_glyph_over(&mut c.buf, CLOSE, CLOSE, CLOSE_GLYPH, CLOSE_STROKE, scale, glyph);
     Some(c)
 }
 
@@ -400,7 +400,7 @@ pub fn render<R: ShellRenderer>(
     let size = layout.panel.size;
     let shadow_key = (size.w, size.h, output_scale);
     if !preview.shadows.contains_key(&shadow_key)
-        && let Some(buffer) = crate::popup_menu::draw_elevation(
+        && let Some(buffer) = glide_shell::popup_menu::draw_elevation(
             size,
             RADIUS,
             output_scale.max(1),
@@ -410,7 +410,7 @@ pub fn render<R: ShellRenderer>(
     {
         preview.shadows.insert(shadow_key, buffer);
     }
-    let margin = crate::popup_menu::shadow_margin();
+    let margin = glide_shell::popup_menu::shadow_margin();
     if let Some(buffer) = preview.shadows.get(&shadow_key) {
         let at = shift(Point::from((layout.panel.loc.x - margin, layout.panel.loc.y - margin)));
         if let Some(element) = element(renderer, buffer, at, alpha, scale) {
@@ -422,7 +422,7 @@ pub fn render<R: ShellRenderer>(
 
 #[must_use]
 pub fn dwell() -> Duration {
-    crate::dock::TOOLTIP_DELAY
+    crate::TOOLTIP_DELAY
 }
 
 #[cfg(test)]
@@ -506,6 +506,7 @@ mod tests {
     #[test]
     #[ignore = "writes preview PNGs to $GLIDE_DOCK_PREVIEW"]
     fn chrome_preview() {
+        use glide_shell::image::Image;
         let Some(dir) = std::env::var_os("GLIDE_DOCK_PREVIEW") else {
             return;
         };
@@ -526,13 +527,13 @@ mod tests {
             let layout = layout(preview.windows(), rect(300, 400, 56, 56), 4, rect(0, 0, 800, 480));
             let origin = layout.panel.loc;
             let (w, h) = ((layout.panel.size.w * scale) as u32, (layout.panel.size.h * scale) as u32);
-            let mut image = crate::shot::compose::Image::new(w + 64, h + 64).expect("image");
+            let mut image = Image::new(w + 64, h + 64).expect("image");
             let shade = if appearance == glide_theme::Appearance::Dark { 30 } else { 230 };
             let backdrop = vec![shade; ((w + 64) * (h + 64) * 4) as usize];
-            image.draw(&crate::shot::compose::Image::from_bgra(w + 64, h + 64, backdrop).expect("backdrop"), 0, 0);
+            image.draw(&Image::from_bgra(w + 64, h + 64, backdrop).expect("backdrop"), 0, 0);
             let mut place = |canvas: &Canvas<'static>, at: Point<i32, Logical>| {
                 let (cw, ch) = ((canvas.w * scale) as u32, (canvas.h * scale) as u32);
-                let sprite = crate::shot::compose::Image::from_bgra(cw, ch, canvas.buf.clone()).expect("sprite");
+                let sprite = Image::from_bgra(cw, ch, canvas.buf.clone()).expect("sprite");
                 image.draw(&sprite, 32 + (at.x - origin.x) * scale, 32 + (at.y - origin.y) * scale);
             };
             place(&panel_canvas(&painter, &theme, &preview, &layout, scale).expect("panel"), origin);
@@ -545,8 +546,7 @@ mod tests {
                     place(&close_canvas(&theme, true, scale).expect("close"), thumb.close.loc);
                 }
             }
-            let png =
-                crate::backend::screenshot::save_rgba(&image.into_straight(), w + 64, h + 64, false).expect("png").png;
+            let png = image.png().expect("png");
             let file = format!("dock-preview-{appearance:?}.png").to_lowercase();
             std::fs::write(std::path::Path::new(&dir).join(file), png).expect("write");
         }
