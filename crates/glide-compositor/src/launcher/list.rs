@@ -6,7 +6,8 @@ use smithay::{
 };
 
 use super::{
-    Canvas, DOTS_BAND, Frame, Launcher, LauncherTheme, TextAlign, cached, ensure_tile, filled,
+    Canvas, DOTS_BAND, Frame, LIST_DROP, Launcher, LauncherTheme, TextAlign, cached, ensure_tile, filled,
+    list_row_progress,
     search::{Entry, Section, SettingsPanel, SystemCommand},
     search_rect,
 };
@@ -20,7 +21,9 @@ const ROW_ICON: i32 = 40;
 const ROW_PAD_X: i32 = glide_theme::spacing::SP3;
 const TEXT_GAP: i32 = glide_theme::spacing::SP3;
 const LIST_TOP_GAP: i32 = glide_theme::spacing::SP5;
-const ROW_RADIUS: f32 = glide_theme::shape::R3;
+const ROW_RADIUS: f32 = glide_theme::shape::R2;
+const KEYCAP_W: i32 = 24;
+const KEYCAP_H: i32 = 20;
 const GLYPH_SIDE: f32 = 18.0;
 const GLYPH_STROKE: f32 = 1.5;
 const TITLE_LINE: i32 = 20;
@@ -253,6 +256,13 @@ pub(super) struct ListCache {
     headers: HashMap<(String, i32, i32), MemoryRenderBuffer>,
     glyphs: HashMap<(RowGlyph, i32), MemoryRenderBuffer>,
     layer: HashMap<(i32, i32), MemoryRenderBuffer>,
+    keycap: HashMap<i32, MemoryRenderBuffer>,
+}
+
+fn draw_keycap(painter: &crate::paint::Painter, theme: &LauncherTheme, scale: i32) -> Option<MemoryRenderBuffer> {
+    let mut c = filled(KEYCAP_W, KEYCAP_H, scale, theme.glyph_tile, glide_theme::shape::R1)?;
+    c.label(painter, (0, KEYCAP_W), TextAlign::Center, "\u{21b5}", theme.row_subtitle, &glide_theme::TextStyle::CAP);
+    Some(c.finish())
 }
 
 fn draw_glyph(
@@ -337,7 +347,7 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
 }
 
 fn text_width(list_width: i32) -> i32 {
-    (list_width - ROW_PAD_X * 2 - ROW_ICON - TEXT_GAP).max(1)
+    (list_width - ROW_PAD_X * 2 - ROW_ICON - TEXT_GAP * 2 - KEYCAP_W).max(1)
 }
 
 fn draw_row_text(
@@ -367,11 +377,12 @@ fn draw_header(
 }
 
 fn draw_layer(theme: &LauncherTheme, width: i32, scale: i32) -> Option<MemoryRenderBuffer> {
-    Some(filled(width, ROW_HEIGHT, scale, theme.cell_layer, ROW_RADIUS)?.finish())
+    Some(filled(width, ROW_HEIGHT, scale, theme.selection, ROW_RADIUS)?.finish())
 }
 
-pub(super) fn push_list<R>(launcher: &mut Launcher, frame: &mut Frame<'_, R>, icons: &mut IconLoader)
-where
+pub(super) fn push_list<R>(
+    launcher: &mut Launcher, frame: &mut Frame<'_, R>, icons: &mut IconLoader, list: f64, open: f64,
+) where
     R: crate::raster::ShellRenderer,
 {
     let (painter, theme, output_scale) = (frame.painter, frame.theme, frame.output_scale);
@@ -381,7 +392,8 @@ where
     let mut used_rows: HashSet<RowKey> = HashSet::new();
     let mut used_headers: HashSet<(String, i32, i32)> = HashSet::new();
 
-    for (row, rect) in placed {
+    for (order, (row, rect)) in placed.into_iter().enumerate() {
+        frame.layer(list_row_progress(list, order) * open, LIST_DROP);
         let top = Point::from((rect.loc.x, rect.loc.y + frame.rise));
         match row {
             ListRow::Header(section) => {
@@ -429,6 +441,15 @@ where
                 }
 
                 let layer_alpha = frame.alpha * launcher.row_layer_alpha(index) as f32;
+                if layer_alpha > 0.0
+                    && let Some(buffer) = cached(&mut launcher.list_cache.keycap, output_scale, || {
+                        draw_keycap(painter, theme, output_scale)
+                    })
+                {
+                    let loc =
+                        Point::from((top.x + list_width - ROW_PAD_X - KEYCAP_W, top.y + (ROW_HEIGHT - KEYCAP_H) / 2));
+                    frame.push(buffer, loc, None, layer_alpha);
+                }
                 if layer_alpha > 0.0
                     && let Some(buffer) = cached(&mut launcher.list_cache.layer, (list_width, output_scale), || {
                         draw_layer(theme, list_width, output_scale)

@@ -144,6 +144,7 @@ glide_app::catalogue! {
     NextWorkspace => "Next Workspace", "Наступний робочий стіл";
     Reply => "Reply", "Відповісти";
     NoResultsFor => "No results for \u{201c}{}\u{201d}", "Немає результатів для \u{201c}{}\u{201d}";
+    NoResultsHint => "Check the spelling or the keyboard layout.", "Перевірте написання або розкладку клавіатури.";
     WiFi => "Wi-Fi", "Wi-Fi";
     Bluetooth => "Bluetooth", "Bluetooth";
     SectionCalculator => "Calculator", "Калькулятор";

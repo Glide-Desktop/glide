@@ -164,6 +164,21 @@ pub fn lerp(from: f64, to: f64, t: f64) -> f64 {
     (to - from).mul_add(t, from)
 }
 
+pub const OPACITY_LEAD: f64 = 0.4;
+
+#[must_use]
+pub fn assist(progress: f64) -> f64 {
+    (progress / OPACITY_LEAD).clamp(0.0, 1.0)
+}
+
+#[must_use]
+pub fn window(progress: f64, start: f64, end: f64) -> f64 {
+    if end <= start {
+        return if progress >= start { 1.0 } else { 0.0 };
+    }
+    ((progress - start) / (end - start)).clamp(0.0, 1.0)
+}
+
 pub const RELEASE_MAX_SLOPE: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -207,6 +222,22 @@ mod tests {
     use super::*;
 
     const _: () = assert!(ST_HOVER < ST_PRESS && ST_PRESS < ST_DRAG);
+
+    #[test]
+    fn opacity_is_full_for_the_first_part_of_a_motion_and_holds_until_its_last_part() {
+        assert_eq!(assist(0.0), 0.0);
+        assert!((assist(OPACITY_LEAD) - 1.0).abs() < 1e-12, "opaque once 40 % of the movement is done");
+        assert_eq!(assist(0.7), 1.0, "an exit keeps full opacity until its last 40 %");
+        assert!(assist(0.2) < 1.0 && assist(0.2) > 0.0);
+    }
+
+    #[test]
+    fn a_progress_window_maps_its_span_onto_zero_to_one() {
+        assert_eq!(window(0.1, 0.2, 0.6), 0.0);
+        assert!((window(0.4, 0.2, 0.6) - 0.5).abs() < 1e-12);
+        assert_eq!(window(0.9, 0.2, 0.6), 1.0);
+        assert_eq!(window(0.5, 0.5, 0.5), 1.0, "an empty window is a step");
+    }
 
     mod motion_scale {
         use super::*;

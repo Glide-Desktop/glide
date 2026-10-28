@@ -19,7 +19,7 @@ use smithay::{
             utils::RescaleRenderElement,
         },
     },
-    utils::{Logical, Point, Rectangle, Scale, Size},
+    utils::{Logical, Physical, Point, Rectangle, Scale, Size},
 };
 
 use glide_theme::motion::{ease_io, ease_out};
@@ -111,8 +111,6 @@ fn search_text_right(width: i32, clear: bool) -> i32 {
     if clear { width - CLEAR_INSET - CLEAR_SIZE - glide_theme::spacing::SP1 } else { width - SEARCH_PAD_X }
 }
 
-const EMPTY_HEIGHT: i32 = 24;
-
 const MENU_RISE: f64 = 6.0;
 const MENU_SCALE: f64 = 0.94;
 
@@ -162,6 +160,8 @@ where
     alpha: f32,
     scale: Scale<f64>,
     output_scale: i32,
+    centre: Point<i32, Physical>,
+    zoom: f64,
     elements: Vec<LauncherRenderElement<R>>,
 }
 
@@ -185,12 +185,21 @@ where
             scaled.map(|(_, size)| size),
             Kind::Unspecified,
         ) {
-            self.elements.push(LauncherRenderElement::Buffer(element));
+            self.elements.push(LauncherRenderElement::Scaled(RescaleRenderElement::from_element(
+                element,
+                self.centre,
+                self.zoom,
+            )));
         }
     }
 
     fn put(&mut self, buffer: &MemoryRenderBuffer, x: i32, y: i32) {
         self.push(buffer, Point::from((x, y + self.rise)), None, self.alpha);
+    }
+
+    fn layer(&mut self, progress: f64, distance: f64) {
+        self.rise = (distance * (1.0 - progress)).round() as i32;
+        self.alpha = glide_theme::motion::assist(progress) as f32;
     }
 }
 
@@ -295,10 +304,6 @@ impl CategoryFilter {
     pub const fn is_all(self) -> bool {
         matches!(self, Self::All)
     }
-
-    fn ordinal(self) -> usize {
-        Self::ORDER.iter().position(|candidate| *candidate == self).unwrap_or(0)
-    }
 }
 
 fn chip_width(painter: &crate::paint::Painter, label: &str) -> i32 {
@@ -332,8 +337,64 @@ fn grid_for(area: Rectangle<i32, Logical>) -> Grid {
 fn open_duration() -> Duration {
     glide_theme::motion::t4()
 }
-const OPEN_RISE: f64 = 16.0;
-const OPEN_SCALE: f64 = 0.97;
+
+fn close_duration() -> Duration {
+    glide_theme::motion::t3()
+}
+
+fn list_anim() -> Duration {
+    glide_theme::motion::t2()
+}
+
+fn swap_anim() -> Duration {
+    glide_theme::motion::t2()
+}
+
+const OPEN_SCALE: f64 = 0.94;
+const FIELD_RISE: f64 = 24.0;
+const CHIP_RISE: f64 = 32.0;
+const ROW_RISE: f64 = 48.0;
+const DOT_RISE: f64 = 48.0;
+const LIST_DROP: f64 = -24.0;
+const LIST_STAGGER: f64 = 0.05;
+const GRID_SINK: f64 = 32.0;
+const GRID_SHRINK: f64 = 0.04;
+const SWAP_SHIFT: f64 = 48.0;
+const CAPTION_PILL_FROM: (f64, f64) = (0.6, 0.8);
+const FOCUS_RING: i32 = glide_theme::component::FOCUS_RING as i32;
+const FIELD_HALO: i32 = glide_theme::component::FIELD_HALO as i32;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Layers {
+    field: f64,
+    chips: f64,
+    rows: [f64; MAX_ROWS],
+    dots: f64,
+    scale: f64,
+}
+
+fn layers(p: f64, k: f64) -> Layers {
+    use glide_theme::motion::window;
+    let p = p.clamp(0.0, 1.0);
+    let mut rows = [0.0; MAX_ROWS];
+    for (row, value) in rows.iter_mut().enumerate() {
+        let start = 0.08 + 0.05 * row as f64;
+        *value = ease_out(window(p, start, (start + 0.74).min(1.0))) * k;
+    }
+    Layers {
+        field: ease_out(window(p, 0.0, 0.76)) * k,
+        chips: ease_out(window(p, 0.06, 0.82)) * k,
+        rows,
+        dots: ease_out(window(p, 0.3, 1.0)) * k,
+        scale: (1.0 - OPEN_SCALE).mul_add(ease_out(p) * k, OPEN_SCALE),
+    }
+}
+
+fn list_row_progress(list: f64, row: usize) -> f64 {
+    use glide_theme::motion::window;
+    let start = (LIST_STAGGER * row as f64).min(0.35);
+    ease_out(window(list, start, (0.65 + LIST_STAGGER * row as f64).min(1.0)))
+}
 
 fn hover_anim() -> Duration {
     glide_theme::motion::t2()
@@ -460,6 +521,7 @@ pub struct Launcher {
     phase: Phase,
     started: Instant,
     from: f64,
+    from_k: f64,
     release: Option<glide_theme::motion::Release>,
     scene: Duration,
     scroll: f64,
@@ -468,8 +530,11 @@ pub struct Launcher {
     hover: glide_ui::HoverAnimation<usize>,
     pointer_selected: bool,
     hover_layers: LayerTweens,
-    chip_tweens: Vec<glide_ui::Tween>,
+    chip_thumb: glide_ui::Tween,
     chip_hover: glide_ui::HoverAnimation<CategoryFilter>,
+    list: glide_ui::Tween,
+    swap: glide_ui::Tween,
+    swap_dir: f64,
     area: Rectangle<i32, Logical>,
 
     field: field::TextField,
@@ -498,7 +563,11 @@ pub struct Launcher {
     icon_missing: Vec<bool>,
     captions: Vec<CaptionBuffers>,
     cell_layer: ScaledBuffers,
+    focus_ring: ScaledBuffers,
+    pills: std::collections::HashMap<(i32, i32, i32), MemoryRenderBuffer>,
     search_field: Option<(SearchFieldKey, ScaledBuffers)>,
+    search_halo: Option<(i32, ScaledBuffers)>,
+    chip_thumbs: std::collections::HashMap<(i32, i32), MemoryRenderBuffer>,
     caret: ScaledBuffers,
     clear_glyph: ScaledBuffers,
     clear_layer: ScaledBuffers,
@@ -572,6 +641,7 @@ impl Launcher {
             phase: Phase::Opening,
             started: Instant::now(),
             from: 0.0,
+            from_k: 1.0,
             release: None,
             scene: open_duration(),
             scroll: 0.0,
@@ -581,10 +651,10 @@ impl Launcher {
             pointer_selected: false,
             chip_hover: glide_ui::HoverAnimation::default(),
             hover_layers: LayerTweens::new(),
-            chip_tweens: CategoryFilter::ORDER
-                .iter()
-                .map(|category| glide_ui::Tween::at(if category.is_all() { 1.0 } else { 0.0 }))
-                .collect(),
+            chip_thumb: glide_ui::Tween::at(0.0),
+            list: glide_ui::Tween::at(0.0),
+            swap: glide_ui::Tween::at(1.0),
+            swap_dir: 1.0,
             area,
             field: field::TextField::default(),
             category: CategoryFilter::All,
@@ -610,7 +680,11 @@ impl Launcher {
             icon_missing: vec![false; count],
             captions: vec![CaptionBuffers::new(); count],
             cell_layer: std::collections::HashMap::new(),
+            focus_ring: ScaledBuffers::new(),
+            pills: std::collections::HashMap::new(),
             search_field: None,
+            search_halo: None,
+            chip_thumbs: std::collections::HashMap::new(),
             caret: ScaledBuffers::new(),
             clear_glyph: ScaledBuffers::new(),
             clear_layer: ScaledBuffers::new(),
@@ -948,17 +1022,32 @@ impl Launcher {
         true
     }
 
+    fn chip_slot(&self, category: CategoryFilter) -> f64 {
+        let slot = self.categories().iter().position(|candidate| *candidate == category).unwrap_or(0);
+        page_as_f64(slot)
+    }
+
     fn sync_chip_tweens(&mut self) {
-        let active = self.category.ordinal();
-        let duration = chip_anim();
-        for (ordinal, tween) in self.chip_tweens.iter_mut().enumerate() {
-            let target = if ordinal == active { 1.0 } else { 0.0 };
-            tween.retarget(target, duration, ease_out);
+        let from = self.chip_thumb.target();
+        let to = self.chip_slot(self.category);
+        if (to - from).abs() > f64::EPSILON {
+            self.swap_dir = if to > from { 1.0 } else { -1.0 };
+            self.swap.jump(0.0);
+            self.swap.retarget(1.0, swap_anim(), |t| t);
         }
+        self.chip_thumb.retarget(to, chip_anim(), ease_out);
+    }
+
+    fn chip_position(&self) -> f64 {
+        self.chip_thumb.value(chip_anim(), ease_out)
     }
 
     fn chip_progress(&self, category: CategoryFilter) -> f64 {
-        self.chip_tweens.get(category.ordinal()).map_or(0.0, |tween| tween.value(chip_anim(), ease_out))
+        (1.0 - (self.chip_position() - self.chip_slot(category)).abs()).clamp(0.0, 1.0)
+    }
+
+    fn swap_progress(&self) -> f64 {
+        ease_out(self.swap.value(swap_anim(), |t| t))
     }
 
     fn refilter(&mut self) {
@@ -995,7 +1084,13 @@ impl Launcher {
         if !self.is_listing() {
             self.row_layers.clear();
         }
+        let listing = if self.is_listing() { 1.0 } else { 0.0 };
+        self.list.retarget(listing, list_anim(), |t| t);
         self.sync_hover_to_selection();
+    }
+
+    fn list_progress(&self) -> f64 {
+        self.list.value(list_anim(), |t| t)
     }
 
     fn sync_hover_to_selection(&mut self) {
@@ -1125,7 +1220,11 @@ impl Launcher {
         self.menu_cache.clear();
         self.menu_shadow.clear();
         self.cell_layer.clear();
+        self.focus_ring.clear();
+        self.pills.clear();
         self.search_field = None;
+        self.search_halo = None;
+        self.chip_thumbs.clear();
         self.caret.clear();
         self.clear_glyph.clear();
         self.clear_layer.clear();
@@ -1185,7 +1284,11 @@ impl Launcher {
     }
 
     fn duration(&self) -> Duration {
-        self.release.map_or(self.scene, |release| release.duration)
+        match (self.phase, self.release) {
+            (_, Some(release)) => release.duration,
+            (Phase::Closing, None) => close_duration(),
+            _ => self.scene,
+        }
     }
 
     fn elapsed_fraction(&self) -> f64 {
@@ -1197,19 +1300,28 @@ impl Launcher {
         elapsed.clamp(0.0, 1.0)
     }
 
-    fn progress(&self) -> f64 {
-        self.scene_progress(glide_theme::motion::E_OUT)
+    fn scene(&self) -> (f64, f64) {
+        let f = self.elapsed_fraction();
+        match (self.phase, self.release) {
+            (Phase::Open, _) => (1.0, 1.0),
+            (Phase::Interactive, _) => (self.from, 1.0),
+            (Phase::Opening, Some(release)) => ((1.0 - self.from).mul_add(release.at(f), self.from), 1.0),
+            (Phase::Opening, None) => {
+                ((1.0 - self.from).mul_add(f, self.from), (1.0 - self.from_k).mul_add(ease_out(f), self.from_k))
+            }
+            (Phase::Closing, Some(release)) => (self.from * (1.0 - release.at(f)), 1.0),
+            (Phase::Closing, None) => (self.from, self.from_k * (1.0 - ease_io(f))),
+        }
     }
 
-    fn scene_progress(&self, curve: glide_theme::motion::CubicBezier) -> f64 {
-        let fraction = self.elapsed_fraction();
-        let eased = self.release.map_or_else(|| curve.ease_f64(fraction), |release| release.at(fraction));
-        match self.phase {
-            Phase::Open => 1.0,
-            Phase::Opening => self.from + (1.0 - self.from) * eased,
-            Phase::Closing => self.from * (1.0 - eased),
-            Phase::Interactive => self.from,
-        }
+    fn layers(&self) -> Layers {
+        let (p, k) = self.scene();
+        layers(p, k)
+    }
+
+    fn progress(&self) -> f64 {
+        let (p, k) = self.scene();
+        p * k
     }
 
     #[must_use]
@@ -1219,11 +1331,13 @@ impl Launcher {
 
     #[must_use]
     pub fn backdrop_openness(&self) -> f64 {
-        self.scene_progress(glide_theme::motion::E_IO)
+        let (p, k) = self.scene();
+        ease_io(p) * k
     }
 
     fn start(&mut self, phase: Phase, release: Option<glide_theme::motion::Release>) {
-        self.from = self.progress();
+        let (p, k) = self.scene();
+        (self.from, self.from_k) = if release.is_some() { (p * k, 1.0) } else { (p, k) };
         self.phase = phase;
         self.release = release;
         self.started = Instant::now();
@@ -1247,6 +1361,7 @@ impl Launcher {
         self.phase = Phase::Interactive;
         self.release = None;
         self.from = progress.clamp(0.0, 1.0);
+        self.from_k = 1.0;
     }
 
     pub fn catch(&mut self) -> bool {
@@ -1300,9 +1415,7 @@ impl Launcher {
         for layers in [&mut self.hover_layers, &mut self.row_layers, &mut self.menu_rows] {
             layers.retain(|_, tween| tween.target() > 0.0 || tween.is_animating(layer_duration));
         }
-        let chip_duration = chip_anim();
-        let chips_settled = !self.chip_tweens.iter().any(|tween| tween.is_animating(chip_duration));
-        if chips_settled {
+        if !self.chip_thumb.is_animating(chip_anim()) {
             self.chips.retain(|&(_, step, _), _| step == 0 || step == CHIP_STEPS);
         }
     }
@@ -1321,11 +1434,10 @@ impl Launcher {
             .chain(self.menu_rows.values())
             .any(|tween| tween.is_animating(layer_duration));
         let clear = self.clear_hover.is_animating(layer_duration);
-        let chip_duration = chip_anim();
-        let chips = self.chip_tweens.iter().any(|tween| tween.is_animating(chip_duration));
-        let chips = chips || self.chip_hover.is_animating(layer_duration);
+        let chips = self.chip_thumb.is_animating(chip_anim()) || self.chip_hover.is_animating(layer_duration);
         let dots = self.dot_tween.is_animating(dot_anim());
-        scene || lift || page || menu || layers || clear || chips || dots
+        let switching = self.list.is_animating(list_anim()) || self.swap.is_animating(swap_anim());
+        scene || lift || page || menu || layers || clear || chips || dots || switching
     }
 
     pub fn scroll_by(&mut self, amount: f64, gesture: bool) -> bool {
@@ -1533,8 +1645,7 @@ pub fn render<R>(
 where
     R: ShellRenderer,
 {
-    let t = launcher.progress();
-    if t <= 0.0 {
+    if launcher.progress() <= 0.0 {
         return Vec::new();
     }
 
@@ -1542,39 +1653,47 @@ where
     launcher.settle();
     launcher.invalidate_stale_buffers(theme);
 
-    let alpha = t.clamp(0.0, 1.0) as f32;
-    let rise = ((1.0 - t) * OPEN_RISE).round() as i32;
-    let open_scale = OPEN_SCALE + (1.0 - OPEN_SCALE) * t;
+    let layers = launcher.layers();
+    let list = ease_io(launcher.list_progress());
     let centre = Point::<i32, Logical>::from((area.loc.x + area.size.w / 2, area.loc.y + area.size.h / 2))
         .to_f64()
         .to_physical(scale)
         .to_i32_round();
 
-    let mut frame = Frame { renderer, painter, theme, area, rise, alpha, scale, output_scale, elements: Vec::new() };
+    let mut frame = Frame {
+        renderer,
+        painter,
+        theme,
+        area,
+        rise: 0,
+        alpha: 1.0,
+        scale,
+        output_scale,
+        centre,
+        zoom: layers.scale,
+        elements: Vec::new(),
+    };
+    frame.layer(layers.field, FIELD_RISE);
     push_menu(launcher, &mut frame);
     push_search_field(launcher, &mut frame);
     if launcher.is_listing() {
         launcher.chip_layout.clear();
-        list::push_list(launcher, &mut frame, icons);
-        if launcher.entries.is_empty() && !launcher.field.text().trim().is_empty() {
-            push_empty_state(launcher, &mut frame);
+    }
+    if list > 0.0 {
+        list::push_list(launcher, &mut frame, icons, list, layers.chips);
+        if launcher.is_listing() && launcher.entries.is_empty() && !launcher.field.text().trim().is_empty() {
+            push_empty_state(launcher, &mut frame, list_row_progress(list, 0) * layers.chips);
         }
-    } else {
-        push_grid(launcher, &mut frame, icons);
-        push_category_chips(launcher, &mut frame);
-        push_dots(launcher, &mut frame);
+    }
+    if list < 1.0 {
+        let grid = Recede { sink: GRID_SINK * list, alpha: glide_theme::motion::assist(1.0 - list) };
+        frame.zoom = layers.scale * GRID_SHRINK.mul_add(-list, 1.0);
+        push_grid(launcher, &mut frame, icons, &layers, grid);
+        push_category_chips(launcher, &mut frame, layers.chips, grid);
+        push_dots(launcher, &mut frame, layers.dots, grid);
     }
 
-    let mut elements: Vec<LauncherRenderElement<R>> = frame
-        .elements
-        .into_iter()
-        .map(|element| match element {
-            LauncherRenderElement::Buffer(buffer) => {
-                LauncherRenderElement::Scaled(RescaleRenderElement::from_element(buffer, centre, open_scale))
-            }
-            other => other,
-        })
-        .collect();
+    let mut elements = frame.elements;
 
     let mut scrim_color = theme.background.0;
     scrim_color[3] *= launcher.backdrop_openness().clamp(0.0, 1.0) as f32;
@@ -1590,24 +1709,69 @@ where
     elements
 }
 
-fn push_grid<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>, icons: &mut IconLoader) {
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Recede {
+    sink: f64,
+    alpha: f64,
+}
+
+impl<R: ShellRenderer> Frame<'_, R> {
+    fn layer_in(&mut self, progress: f64, distance: f64, recede: Recede) {
+        self.rise = distance.mul_add(1.0 - progress, recede.sink).round() as i32;
+        self.alpha = (glide_theme::motion::assist(progress) * recede.alpha) as f32;
+    }
+}
+
+fn draw_ring(
+    width: i32, height: i32, scale: i32, color: Color, radius: f32, thickness: f32,
+) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::new(width, height, scale)?;
+    let s = scale as f32;
+    crate::paint::draw_inset_border(&mut c.buf, width * scale, height * scale, thickness * s, radius * s, color);
+    Some(c.finish())
+}
+
+fn push_grid<R: ShellRenderer>(
+    launcher: &mut Launcher, frame: &mut Frame<'_, R>, icons: &mut IconLoader, layers: &Layers, recede: Recede,
+) {
     let grid = grid_for(frame.area);
     let grid_width = f64::from(grid.rect.size.w + CELL_WIDTH);
+    let swap = launcher.swap_progress();
+    let swap_shift = (launcher.swap_dir * SWAP_SHIFT * (1.0 - swap)).round() as i32;
+    let recede = Recede { alpha: recede.alpha * glide_theme::motion::assist(swap), ..recede };
+    let ring = launcher.selected.filter(|_| !launcher.pointer_selected);
     for (range, offset) in launcher.page_passes() {
-        let shift = (offset * grid_width).round() as i32;
+        let shift = (offset * grid_width).round() as i32 + swap_shift;
         for (slot, result) in range.enumerate() {
             let Some(index) = launcher.app_index(result) else {
                 continue;
             };
+            let row = (slot / grid.columns.max(1)).min(MAX_ROWS - 1);
+            frame.layer_in(layers.rows[row], ROW_RISE, recede);
             let mut cell = grid.cell(slot);
             cell.loc.x += shift;
             let rect = icon_rect_in(cell);
             let cell_hover_t = glide_theme::motion::E_OVER.ease_f64(launcher.hover.level(result, hover_anim()));
             let layer_t = launcher.hover_layer_alpha(index);
+            if ring == Some(result) {
+                push_focus_ring(launcher, frame, cell);
+            }
             push_icon(launcher, frame, icons, index, rect, cell_hover_t);
             push_caption(launcher, frame, index, rect, cell_hover_t);
             push_cell_layer(launcher, frame, cell, layer_t);
         }
+    }
+}
+
+fn push_focus_ring<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>, cell: Rectangle<i32, Logical>) {
+    let (theme, output_scale) = (frame.theme, frame.output_scale);
+    let side = FOCUS_RING;
+    let (width, height) = (CELL_WIDTH + side * 2, CELL_HEIGHT + side * 2);
+    if let Some(buffer) = cached(&mut launcher.focus_ring, output_scale, || {
+        draw_ring(width, height, output_scale, theme.focus_ring, CELL_RADIUS + side as f32, side as f32)
+    }) {
+        let loc = Point::from((cell.loc.x - side, cell.loc.y - side + frame.rise));
+        frame.push(buffer, loc, None, frame.alpha);
     }
 }
 
@@ -1754,14 +1918,52 @@ fn push_caption<R: ShellRenderer>(
     let layers =
         [(CaptionState::Rest, frame.alpha * (1.0 - hover_alpha)), (CaptionState::Active, frame.alpha * hover_alpha)];
     let (painter, theme, output_scale) = (frame.painter, frame.theme, frame.output_scale);
-    let name = &launcher.apps[index].name;
+    let name = launcher.apps[index].name.clone();
     for (state, layer_alpha) in layers {
         if let Some(buffer) = cached(&mut launcher.captions[index], (output_scale, state), || {
-            draw_caption(painter, theme, name, state, output_scale)
+            draw_caption(painter, theme, &name, state, output_scale)
         }) {
             frame.push(buffer, loc, None, layer_alpha);
         }
     }
+    if hover_t <= 0.0 {
+        return;
+    }
+    let (width, height) = caption_pill_size(painter, &name);
+    let Some(buffer) = cached(&mut launcher.pills, (width, height, output_scale), || {
+        Some(
+            bordered(
+                width,
+                height,
+                output_scale,
+                theme.caption_pill,
+                theme.caption_pill_border,
+                control_radius(height),
+            )?
+            .finish(),
+        )
+    }) else {
+        return;
+    };
+    let (from_x, from_y) = CAPTION_PILL_FROM;
+    let shown_w = (f64::from(width) * (1.0 - from_x).mul_add(hover_t, from_x)).round().max(1.0) as i32;
+    let shown_h = (f64::from(height) * (1.0 - from_y).mul_add(hover_t.min(1.0), from_y)).round().max(1.0) as i32;
+    let centre = (loc.x + CELL_WIDTH / 2, loc.y + height / 2);
+    let shown = Point::from((centre.0 - shown_w / 2, centre.1 - shown_h / 2));
+    let alpha = frame.alpha * glide_theme::motion::assist(hover_t) as f32;
+    frame.push(buffer, shown, Some((Size::from((width, height)), Size::from((shown_w, shown_h)))), alpha);
+}
+
+fn caption_pill_size(painter: &crate::paint::Painter, name: &str) -> (i32, i32) {
+    let (first, second) = wrap_caption(painter, name, (CELL_WIDTH - CAPTION_PAD_X * 2) as f32);
+    let style = &glide_theme::TextStyle::LAUNCHER_CAPTION;
+    let text_w = std::iter::once(first.as_str())
+        .chain(second.as_deref())
+        .map(|text| painter.text_width_styled(text, style))
+        .fold(0.0_f32, f32::max)
+        .ceil() as i32;
+    let height = if second.is_some() { CAPTION_HEIGHT } else { CAPTION_LINE };
+    ((text_w + CAPTION_PILL_PAD_X * 2).min(CELL_WIDTH), height)
 }
 
 fn draw_caption(
@@ -1780,16 +1982,6 @@ fn draw_caption(
         Some(second) => &[(0, CAPTION_LINE, first.as_str()), (CAPTION_LINE, CAPTION_HEIGHT, second.as_str())],
         None => &[(0, CAPTION_LINE, first.as_str())],
     };
-    if state == CaptionState::Active {
-        let text_w =
-            bands.iter().map(|(_, _, text)| painter.text_width_styled(text, style)).fold(0.0_f32, f32::max).ceil()
-                as i32;
-        let height = bands.last().map_or(CAPTION_LINE, |(_, y_max, _)| *y_max);
-        let width = (text_w + CAPTION_PILL_PAD_X * 2).min(CELL_WIDTH);
-        let (pill, radius) = (rect((CELL_WIDTH - width) / 2, 0, width, height), control_radius(height));
-        c.fill(pill, theme.caption_pill, radius);
-        c.stroke(pill, 1.0, radius, theme.caption_pill_border);
-    }
     for &(y_min, y_max, text) in bands {
         c.text(painter, (x_min, x_max, y_min, y_max), TextAlign::Center, text, colour, style);
     }
@@ -1814,10 +2006,19 @@ fn push_cell_layer<R: ShellRenderer>(
     }
 }
 
-fn push_category_chips<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>) {
+fn push_category_chips<R: ShellRenderer>(
+    launcher: &mut Launcher, frame: &mut Frame<'_, R>, progress: f64, recede: Recede,
+) {
     let (painter, theme, output_scale) = (frame.painter, frame.theme, frame.output_scale);
+    frame.layer_in(progress, CHIP_RISE, recede);
     let chips = launcher.layout_chips(painter, frame.area);
-    for (slot, (category, rect)) in chips.into_iter().enumerate() {
+    for (slot, (category, rect)) in chips.iter().copied().enumerate() {
+        let step = chip_step(launcher.chip_progress(category));
+        if let Some(buffer) = cached(&mut launcher.chips, (slot, step, output_scale), || {
+            draw_chip(painter, theme, category.label(), rect.size.w, chip_step_progress(step), output_scale)
+        }) {
+            frame.put(buffer, rect.loc.x, rect.loc.y);
+        }
         let hover = ease_io(launcher.chip_hover.level(category, layer_anim())) as f32;
         if hover > 0.0
             && let Some(buffer) = cached(&mut launcher.chip_layers, (rect.size.w, output_scale), || {
@@ -1828,22 +2029,43 @@ fn push_category_chips<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Fr
             let loc = Point::from((rect.loc.x, rect.loc.y + frame.rise));
             frame.push(buffer, loc, None, frame.alpha * hover);
         }
-        let step = chip_step(launcher.chip_progress(category));
-        if let Some(buffer) = cached(&mut launcher.chips, (slot, step, output_scale), || {
-            draw_chip(painter, theme, category.label(), rect.size.w, chip_step_progress(step), output_scale)
-        }) {
-            frame.put(buffer, rect.loc.x, rect.loc.y);
-        }
     }
+    let Some(thumb) = chip_thumb_rect(&chips, launcher.chip_position()) else {
+        return;
+    };
+    if launcher.chip_thumbs.len() > CHIP_THUMB_CACHE {
+        launcher.chip_thumbs.clear();
+    }
+    if let Some(buffer) = cached(&mut launcher.chip_thumbs, (thumb.size.w, output_scale), || {
+        Some(filled(thumb.size.w, CHIP_HEIGHT, output_scale, theme.chip_active, control_radius(CHIP_HEIGHT))?.finish())
+    }) {
+        frame.put(buffer, thumb.loc.x, thumb.loc.y);
+    }
+}
+
+const CHIP_THUMB_CACHE: usize = 48;
+
+fn chip_thumb_rect(
+    chips: &[(CategoryFilter, Rectangle<i32, Logical>)], position: f64,
+) -> Option<Rectangle<i32, Logical>> {
+    let last = chips.len().checked_sub(1)?;
+    let position = position.clamp(0.0, page_as_f64(last));
+    let below = (position.floor() as usize).min(last);
+    let above = (below + 1).min(last);
+    let t = position - page_as_f64(below);
+    let (from, to) = (chips[below].1, chips[above].1);
+    let mix = |a: i32, b: i32| glide_theme::motion::lerp(f64::from(a), f64::from(b), t).round() as i32;
+    Some(Rectangle::new(
+        Point::from((mix(from.loc.x, to.loc.x), from.loc.y)),
+        Size::from((mix(from.size.w, to.size.w).max(1), CHIP_HEIGHT)),
+    ))
 }
 
 fn draw_chip(
     painter: &crate::paint::Painter, theme: &LauncherTheme, label: &str, width: i32, active_t: f32, scale: i32,
 ) -> Option<MemoryRenderBuffer> {
     let text = theme.chip_label.lerp(theme.chip_active_label, active_t);
-    let fill = theme.chip_background.lerp(theme.chip_active, active_t);
-    let border = theme.chip_border.lerp(theme.chip_active, active_t);
-    let mut c = bordered(width, CHIP_HEIGHT, scale, fill, border, control_radius(CHIP_HEIGHT))?;
+    let mut c = Canvas::new(width, CHIP_HEIGHT, scale)?;
     c.label(painter, (CHIP_PAD_X, width - CHIP_PAD_X), TextAlign::Center, label, text, &CHIP_TEXT);
     Some(c.finish())
 }
@@ -1851,13 +2073,8 @@ fn draw_chip(
 fn push_search_field<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>) {
     let (painter, theme, output_scale) = (frame.painter, frame.theme, frame.output_scale);
     let rect = search_rect(frame.area);
-    let prefix = if launcher.run_mode() {
-        format!("{}: ", crate::i18n::t(crate::i18n::Key::RunPrefix))
-    } else if launcher.category.is_all() {
-        String::new()
-    } else {
-        format!("{}: ", launcher.category.label())
-    };
+    let prefix =
+        if launcher.run_mode() { format!("{}: ", crate::i18n::t(crate::i18n::Key::RunPrefix)) } else { String::new() };
     let shown = format!("{prefix}{}", launcher.field.text());
     let clear = !launcher.field.is_empty();
     let key = SearchFieldKey {
@@ -1887,6 +2104,15 @@ fn push_search_field<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Fram
         cached(cache, output_scale, || draw_search_field(painter, theme, &key, rect.size.w, output_scale))
     {
         frame.put(buffer, rect.loc.x, rect.loc.y);
+    }
+
+    let halo: Size<i32, Logical> = Size::from((rect.size.w + FIELD_HALO * 2, SEARCH_HEIGHT + FIELD_HALO * 2));
+    let cache = keyed(&mut launcher.search_halo, halo.w);
+    if let Some(buffer) = cached(cache, output_scale, || {
+        let radius = control_radius(SEARCH_HEIGHT) + FIELD_HALO as f32;
+        draw_ring(halo.w, halo.h, output_scale, theme.search_ring, radius, FIELD_HALO as f32)
+    }) {
+        frame.put(buffer, rect.loc.x - FIELD_HALO, rect.loc.y - FIELD_HALO);
     }
 }
 
@@ -1953,28 +2179,72 @@ fn draw_search_field(
     Some(c.finish())
 }
 
-fn push_empty_state<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>) {
+fn push_empty_state<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>, progress: f64) {
     let (painter, theme, output_scale) = (frame.painter, frame.theme, frame.output_scale);
+    frame.layer(progress, LIST_DROP);
     let message = crate::i18n::t(crate::i18n::Key::NoResultsFor).replacen("{}", launcher.field.text(), 1);
-    let grid = grid_for(frame.area);
-    let width = grid.rect.size.w.max(CELL_WIDTH);
+    let list = list::list_rect(frame.area);
+    let width = list.size.w;
     let cache = keyed(&mut launcher.empty_label, message.clone());
-    if let Some(buffer) = cached(cache, output_scale, || {
-        let mut c = Canvas::new(width, EMPTY_HEIGHT, output_scale)?;
-        let style = &glide_theme::TextStyle::BODY;
-        c.label(painter, (0, width), TextAlign::Center, &message, theme.search_placeholder, style);
-        Some(c.finish())
-    }) {
-        let y = grid.rect.loc.y + (grid.rect.size.h - EMPTY_HEIGHT) / 2;
-        frame.put(buffer, grid.rect.loc.x, y);
+    if let Some(buffer) =
+        cached(cache, output_scale, || draw_empty_state(painter, theme, &message, width, output_scale))
+    {
+        frame.put(buffer, list.loc.x, list.loc.y + EMPTY_TOP);
     }
 }
 
-fn push_dots<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>) {
+const EMPTY_WELL: i32 = 56;
+const EMPTY_GLYPH: f32 = 22.0;
+const EMPTY_TOP: i32 = glide_theme::spacing::SP7;
+const EMPTY_TITLE: i32 = 22;
+const EMPTY_HINT: i32 = 19;
+
+fn draw_empty_state(
+    painter: &crate::paint::Painter, theme: &LauncherTheme, message: &str, width: i32, scale: i32,
+) -> Option<MemoryRenderBuffer> {
+    let gap = glide_theme::spacing::SP3;
+    let height = EMPTY_WELL + gap + EMPTY_TITLE + glide_theme::spacing::SP1 + EMPTY_HINT;
+    let mut c = Canvas::new(width, height, scale)?;
+    let well = rect((width - EMPTY_WELL) / 2, 0, EMPTY_WELL, EMPTY_WELL);
+    c.fill(well, theme.glyph_tile, glide_theme::shape::R3);
+    crate::paint::draw_search_glyph_over(
+        &mut c.buf,
+        width,
+        height,
+        (width / 2) as f32,
+        (EMPTY_WELL / 2) as f32,
+        EMPTY_GLYPH,
+        SEARCH_GLYPH_STROKE,
+        scale,
+        theme.search_placeholder,
+    );
+    let title_top = EMPTY_WELL + gap;
+    let hint_top = title_top + EMPTY_TITLE + glide_theme::spacing::SP1;
+    c.text(
+        painter,
+        (0, width, title_top, title_top + EMPTY_TITLE),
+        TextAlign::Center,
+        message,
+        theme.row_title,
+        &glide_theme::TextStyle::T3,
+    );
+    c.text(
+        painter,
+        (0, width, hint_top, hint_top + EMPTY_HINT),
+        TextAlign::Center,
+        crate::i18n::t(crate::i18n::Key::NoResultsHint),
+        theme.row_subtitle,
+        &glide_theme::TextStyle::CALL,
+    );
+    Some(c.finish())
+}
+
+fn push_dots<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>, progress: f64, recede: Recede) {
     let pages = launcher.page_count();
     if pages <= 1 {
         return;
     }
+    frame.layer_in(progress, DOT_RISE, recede);
     let (theme, output_scale, area) = (frame.theme, frame.output_scale, frame.area);
     let width = dots_width(pages);
     let position = launcher.dot_tween.value(dot_anim(), ease_out);
@@ -2006,6 +2276,8 @@ pub struct LauncherTheme {
     pub fallback_label: Color,
     pub search_background: Color,
     pub search_border: Color,
+    pub search_ring: Color,
+    pub focus_ring: Color,
     pub search_text: Color,
     pub search_placeholder: Color,
     pub chip_background: Color,
@@ -2055,7 +2327,9 @@ impl LauncherTheme {
             fallback_border: clear,
             fallback_label: tokens.fg_2,
             search_background: tokens.fill_1,
-            search_border: tokens.line,
+            search_border: tokens.acc_bg,
+            search_ring: tokens.acc_ring,
+            focus_ring: tokens.acc_bg,
             search_text: tokens.fg_1,
             search_placeholder: tokens.fg_3,
             chip_background: clear,
@@ -2092,6 +2366,8 @@ impl LauncherTheme {
             .color(self.fallback_label)
             .color(self.search_background)
             .color(self.search_border)
+            .color(self.search_ring)
+            .color(self.focus_ring)
             .color(self.search_text)
             .color(self.search_placeholder)
             .color(self.chip_background)
@@ -2287,6 +2563,40 @@ mod tests {
             assert!(!launcher.clear_query());
             assert!(launcher.toggle_category(internet) && launcher.toggle_category(internet));
             assert_eq!((launcher.category(), launcher.results.len()), (CategoryFilter::All, 3));
+        }
+
+        #[test]
+        fn a_category_change_slides_one_thumb_and_brings_the_grid_in_from_that_side() {
+            let mut launcher = mixed();
+            let office = CategoryFilter::Only(AppCategory::Office);
+            assert!(launcher.toggle_category(office));
+            let slot = launcher.chip_slot(office);
+            assert!(slot > 0.0);
+            assert!((launcher.chip_thumb.target() - slot).abs() < f64::EPSILON, "one thumb heads for the chip");
+            assert!((launcher.swap_dir - 1.0).abs() < f64::EPSILON, "the new set comes in from the right");
+            if !swap_anim().is_zero() {
+                assert!(launcher.swap_progress() < 1.0, "the grid travels in rather than appearing");
+            }
+            assert!(launcher.toggle_category(office));
+            assert!((launcher.swap_dir + 1.0).abs() < f64::EPSILON, "going back to All comes in from the left");
+        }
+
+        #[test]
+        fn the_thumb_spans_the_chips_it_travels_between() {
+            let chips = vec![
+                (CategoryFilter::All, Rectangle::new(Point::from((100, 10)), Size::from((64, CHIP_HEIGHT)))),
+                (
+                    CategoryFilter::Only(AppCategory::Office),
+                    Rectangle::new(Point::from((172, 10)), Size::from((100, CHIP_HEIGHT))),
+                ),
+            ];
+            let start = chip_thumb_rect(&chips, 0.0).expect("thumb");
+            let middle = chip_thumb_rect(&chips, 0.5).expect("thumb");
+            let end = chip_thumb_rect(&chips, 1.0).expect("thumb");
+            assert_eq!((start.loc.x, start.size.w), (100, 64));
+            assert_eq!((middle.loc.x, middle.size.w), (136, 82));
+            assert_eq!((end.loc.x, end.size.w), (172, 100));
+            assert!(chip_thumb_rect(&[], 0.0).is_none());
         }
 
         #[test]
@@ -2610,7 +2920,67 @@ mod tests {
         use super::*;
 
         #[test]
-        fn it_moves_in_the_overviews_rhythm_content_on_e_out_and_backdrop_on_e_io() {
+        fn layers_enter_one_after_another_inside_one_scene() {
+            let early = layers(0.3, 1.0);
+            assert!(early.field > early.chips && early.chips > early.rows[0], "{early:?}");
+            assert!(early.rows.windows(2).all(|pair| pair[0] >= pair[1]), "rows follow top to bottom: {early:?}");
+            let done = layers(1.0, 1.0);
+            assert!(done.rows.iter().chain([&done.field, &done.chips, &done.dots]).all(|v| (v - 1.0).abs() < 1e-9));
+            assert!((done.scale - 1.0).abs() < 1e-9, "the last row lands with the end of the scene");
+            let start = layers(0.0, 1.0);
+            assert!((start.scale - OPEN_SCALE).abs() < 1e-9 && start.field == 0.0 && start.dots == 0.0);
+        }
+
+        #[test]
+        fn movement_not_opacity_carries_every_layer() {
+            for travel in [FIELD_RISE, CHIP_RISE, ROW_RISE, DOT_RISE, GRID_SINK, SWAP_SHIFT, LIST_DROP.abs()] {
+                assert!(travel >= 24.0, "scene content travels at least 24 px (AGENTS.md §8): {travel}");
+            }
+            const { assert!(1.0 - OPEN_SCALE >= 0.06, "the scene also grows, at least 6 %") };
+            let row = list_row_progress(0.2, 0);
+            assert!(glide_theme::motion::assist(row) >= row, "opacity leads the travel instead of carrying it");
+        }
+
+        #[test]
+        fn a_plain_close_is_shorter_than_the_opening_and_moves_every_layer_together() {
+            let mut launcher = launcher(1);
+            launcher.phase = Phase::Open;
+            launcher.begin_close();
+            assert_eq!(launcher.duration(), close_duration());
+            assert!(close_duration() <= open_duration());
+            launcher.started = Instant::now().checked_sub(close_duration() / 2).expect("process uptime");
+            let halfway = launcher.layers();
+            if !close_duration().is_zero() {
+                assert!(halfway.field < 1.0 && halfway.field > 0.0);
+            }
+            assert!(halfway.rows.iter().all(|row| (row - halfway.field).abs() < 1e-9), "no cascade on the way out");
+        }
+
+        #[test]
+        fn reopening_mid_close_carries_on_from_where_the_scene_is() {
+            let mut launcher = launcher(1);
+            launcher.phase = Phase::Open;
+            launcher.begin_close();
+            launcher.started = Instant::now().checked_sub(close_duration() / 2).expect("process uptime");
+            let before = launcher.progress();
+            launcher.reopen();
+            assert!((launcher.progress() - before).abs() < 0.05, "{before} vs {}", launcher.progress());
+        }
+
+        #[test]
+        fn typing_sends_the_grid_away_and_brings_the_list_out_of_the_field() {
+            let mut launcher = launcher(4);
+            assert!(launcher.list.target() < f64::EPSILON);
+            typed(&mut launcher, "app");
+            assert!((launcher.list.target() - 1.0).abs() < f64::EPSILON);
+            const { assert!(LIST_DROP < 0.0, "rows come down from the field, not up from the grid") };
+            assert!(list_row_progress(0.3, 0) > list_row_progress(0.3, 4), "rows follow one another");
+            launcher.clear_text();
+            assert!(launcher.list.target() < f64::EPSILON);
+        }
+
+        #[test]
+        fn the_scene_runs_one_linear_progress_and_the_backdrop_eases_on_e_io() {
             let scene = Duration::from_millis(400);
             let mut launcher = launcher(1).with_scene(scene);
             assert_eq!(launcher.duration(), scene, "the overview's scene length, not a shorter one of its own");
