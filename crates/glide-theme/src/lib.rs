@@ -426,7 +426,7 @@ impl OverviewTheme {
             close_border: t.line,
             close_hover_background: t.danger,
             close_hover_foreground: t.view_bg,
-            dim: Color::from_hex("#100f0e66").unwrap(),
+            dim: t.shell_bg,
             highlight: t.acc_bg,
             strip_from: t.popover_bg,
             strip_to: t.fill_2,
@@ -475,6 +475,12 @@ impl OverviewTheme {
             .color(self.strip_from)
             .color(self.strip_to)
             .color(self.strip_pick)
+            .color(self.strip_ring)
+            .color(self.strip_drop)
+            .color(self.strip_add)
+            .color(self.strip_add_border)
+            .color(self.strip_caption)
+            .color(self.strip_caption_active)
             .i32(self.border)
             .f32(self.corner_radius)
             .bool(self.appearance == Appearance::Dark)
@@ -630,6 +636,11 @@ mod tests {
         assert!(o.padding >= o.gap);
         assert_eq!(o.base_duration(), motion::T4);
         assert_ne!(o.label_background, o.dim);
+        assert_eq!(
+            o.dim,
+            default_tokens().shell_bg,
+            "the overview lays the launcher's glass over the blurred wallpaper"
+        );
         assert_eq!((dock.item_size - dock.icon_size) % 2, 0);
         for appearance in [Appearance::Light, Appearance::Dark] {
             let d = DecorationTheme::from_tokens(&Tokens::new(appearance, Accent::Blue));

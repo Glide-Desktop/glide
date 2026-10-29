@@ -234,7 +234,6 @@ struct SurfaceData {
     flip_pending: Option<std::time::Instant>,
     switched_off: bool,
     wallpaper_buf: Option<MemoryRenderBuffer>,
-    wallpaper_muted_buf: Option<MemoryRenderBuffer>,
     wallpaper_blur_buf: Option<MemoryRenderBuffer>,
     wallpaper_blur_rgba: Option<std::sync::Arc<Vec<u8>>>,
     wallpaper_key: Option<WallpaperKey>,
@@ -505,8 +504,6 @@ const MIRROR_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 const FLIP_WAIT: Duration = Duration::from_millis(100);
 
-const OVERVIEW_WALLPAPER_SATURATION: f32 = 0.9;
-
 const BACKDROP_BLUR_SIGMA: f64 = 22.0;
 
 const BACKDROP_SATURATION: f32 = 1.6;
@@ -553,14 +550,14 @@ fn push_wallpaper_elements(
         }
     }
 
-    let muted_alpha = backdrop_t.clamp(0.0, 1.0) as f32;
-    if muted_alpha > 0.0
-        && let Some(buffer) = surface.wallpaper_muted_buf.as_mut()
+    let blur_alpha = backdrop_t.clamp(0.0, 1.0) as f32;
+    if blur_alpha > 0.0
+        && let Some(buffer) = surface.wallpaper_blur_buf.as_mut()
         && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
             gles_renderer,
             origin,
             buffer,
-            Some(muted_alpha),
+            Some(blur_alpha),
             src,
             size,
             Kind::Unspecified,
@@ -943,7 +940,6 @@ impl GlideState {
                 flip_pending: None,
                 switched_off: false,
                 wallpaper_buf: None,
-                wallpaper_muted_buf: None,
                 wallpaper_blur_buf: None,
                 wallpaper_blur_rgba: None,
                 wallpaper_key: None,
@@ -1311,8 +1307,6 @@ impl GlideState {
             glide_paint::saturate_in_place(&mut blurred, BACKDROP_SATURATION);
             surface.wallpaper_blur_buf = Some(make_buffer(&blurred));
             surface.wallpaper_blur_rgba = Some(std::sync::Arc::new(blurred));
-            glide_paint::desaturate_in_place(&mut buf, OVERVIEW_WALLPAPER_SATURATION);
-            surface.wallpaper_muted_buf = Some(make_buffer(&buf));
             surface.wallpaper_key = Some(wallpaper_key);
         }
 
