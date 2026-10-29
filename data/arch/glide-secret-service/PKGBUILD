@@ -1,0 +1,12 @@
+pkgname=glide-secret-service
+pkgver=1
+pkgrel=1
+pkgdesc="Tells pacman that Glide's keychain provides org.freedesktop.secrets"
+arch=(any)
+url="https://github.com/artem/glide"
+license=(GPL-3.0-or-later)
+provides=(org.freedesktop.secrets)
+
+package() {
+    :
+}
