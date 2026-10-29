@@ -19,13 +19,41 @@ pub fn decode_wallpaper(bytes: &[u8]) -> Option<Pixmap> {
     if bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
         return decode_webp(bytes);
     }
-    Pixmap::decode_png(bytes).ok().or_else(|| decode_jpeg(bytes)).or_else(|| decode_webp(bytes))
+    decode_png(bytes).or_else(|| decode_jpeg(bytes)).or_else(|| decode_webp(bytes))
+}
+
+const MAX_IMAGE_SIDE: u32 = 16_384;
+const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+
+pub(crate) fn fits_in_memory(width: u32, height: u32) -> bool {
+    width > 0
+        && height > 0
+        && width <= MAX_IMAGE_SIDE
+        && height <= MAX_IMAGE_SIDE
+        && u64::from(width) * u64::from(height) <= MAX_IMAGE_PIXELS
+}
+
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if !bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) || bytes.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+    let height = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+    Some((width, height))
+}
+
+pub(crate) fn decode_png(bytes: &[u8]) -> Option<Pixmap> {
+    let (width, height) = png_dimensions(bytes)?;
+    if !fits_in_memory(width, height) {
+        return None;
+    }
+    Pixmap::decode_png(bytes).ok()
 }
 
 pub(crate) fn decode_webp(bytes: &[u8]) -> Option<Pixmap> {
     let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).ok()?;
     let (width, height) = decoder.dimensions();
-    if width == 0 || height == 0 {
+    if !fits_in_memory(width, height) {
         return None;
     }
     let channels = if decoder.has_alpha() { 4 } else { 3 };
@@ -50,9 +78,12 @@ pub(crate) fn decode_jpeg(bytes: &[u8]) -> Option<Pixmap> {
     let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(bytes));
     decoder.decode_headers().ok()?;
     let (width, height) = decoder.dimensions()?;
-    let pixels = decoder.decode().ok()?;
     let width = u32::try_from(width).ok()?;
     let height = u32::try_from(height).ok()?;
+    if !fits_in_memory(width, height) {
+        return None;
+    }
+    let pixels = decoder.decode().ok()?;
     let area = usize::try_from(u64::from(width) * u64::from(height)).ok()?;
     if area == 0 {
         return None;

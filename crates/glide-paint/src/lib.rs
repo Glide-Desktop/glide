@@ -677,7 +677,7 @@ fn halve_pixmap(source: &tiny_skia::Pixmap) -> Option<tiny_skia::Pixmap> {
 #[must_use]
 pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
     let side_u32 = square_side(side)?;
-    let mut source = tiny_skia::Pixmap::decode_png(data).ok()?;
+    let mut source = wallpaper::decode_png(data)?;
     while source.width().min(source.height()) >= side_u32 * 2 {
         source = halve_pixmap(&source)?;
     }
@@ -1769,6 +1769,21 @@ mod cover_tests {
         assert!(render_jpeg(&[], 32).is_none());
         assert!(render_webp(&[], 32).is_none());
         assert!(decode_cover(&[0xff, 0xd8, 0xff, 0xe0], 32).is_none());
+    }
+
+    #[test]
+    fn a_cover_whose_header_claims_a_huge_canvas_is_refused_before_anything_is_allocated() {
+        let mut png = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13];
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&1_000_000u32.to_be_bytes());
+        png.extend_from_slice(&1_000_000u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(decode_cover(&png, 32).is_none());
+        assert!(decode_wallpaper(&png).is_none());
+        assert!(wallpaper::fits_in_memory(7680, 4320));
+        assert!(!wallpaper::fits_in_memory(65_535, 65_535));
+        assert!(!wallpaper::fits_in_memory(16_385, 1));
+        assert!(!wallpaper::fits_in_memory(0, 10));
     }
 
     #[test]
