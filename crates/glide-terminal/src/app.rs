@@ -1461,15 +1461,14 @@ impl App {
         let bracketed = term.mode().contains(TermMode::BRACKETED_PASTE);
         term.scroll_display(Scroll::Bottom);
         drop(term);
+        let text = dnd::without_controls(text);
         let mut bytes = Vec::new();
         if bracketed {
             bytes.extend_from_slice(b"\x1b[200~");
         }
         for (index, &byte) in text.iter().enumerate() {
             if bracketed {
-                if byte != 0x1b {
-                    bytes.push(byte);
-                }
+                bytes.push(byte);
             } else if byte == b'\n' {
                 if index == 0 || text[index - 1] != b'\r' {
                     bytes.push(b'\r');
