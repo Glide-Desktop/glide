@@ -123,7 +123,7 @@ fn write(path: &Path, contents: &str) {
         tracing::warn!(path = %dir.display(), "cannot create a theme directory: {err}");
         return;
     }
-    if let Err(err) = crate::config::write_atomic(path, contents.as_bytes()) {
+    if let Err(err) = glide_config::write_atomic(path, contents.as_bytes(), 0o644) {
         tracing::warn!(path = %path.display(), "cannot write an exported theme: {err}");
     }
 }

@@ -15,6 +15,7 @@ glide-netbird = { path = "../glide-netbird" }
 glide-notify = { path = "../glide-notify" }
 glide-paint = { path = "../glide-paint" }
 glide-shell = { path = "../glide-shell" }
+glide-system = { path = "../glide-system" }
 glide-theme = { path = "../glide-theme" }
 glide-tray = { path = "../glide-tray" }
 glide-ui = { path = "../glide-ui" }

@@ -69,13 +69,10 @@ mod snap;
 mod snapshot;
 mod sound;
 mod state;
-mod status_hooks;
 mod super_keys;
 mod surface_fade;
-pub mod system_info;
 #[cfg(test)]
 mod test_bus;
-mod theme_export;
 mod tiling;
 mod tray;
 mod welcome;
@@ -98,6 +95,8 @@ use glide_greeter::{self as greeter, handoff};
 use glide_launcher as launcher;
 use glide_overlays::{osd, power_dialog, switcher};
 use glide_shell::{i18n, icon, raster};
+pub use glide_system::{reap_child_processes, spawn_detached, spawn_shell_command, spawn_shell_command_with_env};
+use glide_system::{status_hooks, system_info};
 use glide_topbar::{self as topbar, global_menu, notifications};
 pub use state::GlideState;
 
@@ -710,9 +709,7 @@ fn update_session_managers_environment() {
             Ok(child) => {
                 if let Some(child) = wait_until(child, deadline) {
                     tracing::warn!("{name} is still running; the session starts without waiting for it");
-                    if let Ok(mut children) = DETACHED_CHILDREN.lock() {
-                        children.push(child);
-                    }
+                    glide_system::spawn::adopt(child);
                 }
             }
             Err(err) => tracing::info!("{name} unavailable: {err}"),
@@ -753,54 +750,6 @@ fn spawn_autostart(commands: &[String]) {
     }
 }
 
-static DETACHED_CHILDREN: std::sync::Mutex<Vec<std::process::Child>> = std::sync::Mutex::new(Vec::new());
-
-pub fn spawn_detached(mut command: std::process::Command) -> std::io::Result<u32> {
-    reap_child_processes();
-    if let Some(terminal) = glide_config::terminal::configured() {
-        command.env("TERMINAL", terminal);
-    }
-    if let Some(theme) = cursor::configured_theme() {
-        command.env("XCURSOR_THEME", theme);
-    }
-    if let Some(size) = cursor::configured_size() {
-        command.env("XCURSOR_SIZE", size.to_string());
-    }
-    if std::env::var_os("QT_QPA_PLATFORMTHEME").is_none()
-        && let Some(theme) = theme_export::qt_platform_theme()
-    {
-        command.env("QT_QPA_PLATFORMTHEME", theme);
-    }
-    if let Some(style) = theme_export::qt_style_override() {
-        command.env("QT_STYLE_OVERRIDE", style);
-    }
-    let child = command.spawn()?;
-    let pid = child.id();
-    if let Ok(mut children) = DETACHED_CHILDREN.lock() {
-        children.push(child);
-    }
-    Ok(pid)
-}
-
-pub fn spawn_shell_command(command: &str) -> std::io::Result<u32> {
-    spawn_shell_command_with_env(command, &[])
-}
-
-pub fn spawn_shell_command_with_env(command: &str, env: &[(&str, &str)]) -> std::io::Result<u32> {
-    let mut shell = std::process::Command::new("sh");
-    shell.arg("-c").arg(command);
-    for (key, value) in env {
-        shell.env(key, value);
-    }
-    spawn_detached(shell)
-}
-
-pub fn reap_child_processes() {
-    if let Ok(mut children) = DETACHED_CHILDREN.lock() {
-        children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,10 +764,6 @@ mod tests {
         assert_eq!(parse(&["-V"]), Cli::Version);
         assert_eq!(parse(&["--versoin"]), Cli::Unknown("--versoin".into()));
         assert!(USAGE.contains("--greeter") && USAGE.contains("--version"));
-    }
-
-    fn detached_child_count() -> usize {
-        DETACHED_CHILDREN.lock().map_or(0, |children| children.len())
     }
 
     #[test]
@@ -886,58 +831,6 @@ mod tests {
     }
 
     static CHILD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn the_reaper_never_steals_a_child_another_thread_is_waiting_for() {
-        let _guard = CHILD_TEST_LOCK.lock().unwrap();
-        let output = std::thread::spawn(|| std::process::Command::new("true").output());
-        for _ in 0..200 {
-            reap_child_processes();
-        }
-        let status =
-            output.join().expect("thread must not panic").expect("output() must see its own exit status").status;
-        assert!(status.success());
-    }
-
-    #[test]
-    fn finished_detached_children_are_reaped() {
-        let _guard = CHILD_TEST_LOCK.lock().unwrap();
-        reap_child_processes();
-        let before = detached_child_count();
-        spawn_shell_command("true").expect("sh must exist");
-        assert_eq!(detached_child_count(), before + 1);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        reap_child_processes();
-        assert_eq!(detached_child_count(), before);
-    }
-
-    #[test]
-    fn spawn_shell_command_runs_through_a_shell() {
-        let _guard = CHILD_TEST_LOCK.lock().unwrap();
-        let marker = std::env::temp_dir().join(format!("glide-sh-test-{}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
-        spawn_shell_command(&format!("true; touch {}", marker.display())).expect("sh must exist");
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        reap_child_processes();
-        assert!(marker.exists(), "the shell did not run both commands");
-        let _ = std::fs::remove_file(&marker);
-    }
-
-    #[test]
-    fn a_launch_hands_the_activation_token_to_the_child() {
-        let _guard = CHILD_TEST_LOCK.lock().unwrap();
-        let marker = std::env::temp_dir().join(format!("glide-env-test-{}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
-        spawn_shell_command_with_env(
-            &format!("printf '%s %s' \"$XDG_ACTIVATION_TOKEN\" \"$DESKTOP_STARTUP_ID\" > {}", marker.display()),
-            &[("XDG_ACTIVATION_TOKEN", "tok"), ("DESKTOP_STARTUP_ID", "tok")],
-        )
-        .expect("sh must exist");
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        reap_child_processes();
-        assert_eq!(std::fs::read_to_string(&marker).unwrap_or_default(), "tok tok");
-        let _ = std::fs::remove_file(&marker);
-    }
 
     #[test]
     fn spawn_autostart_does_not_panic_on_an_empty_list() {

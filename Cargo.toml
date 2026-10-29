@@ -29,6 +29,7 @@ members = [
     "crates/glide-settings",
     "crates/glide-shell",
     "crates/glide-shot",
+    "crates/glide-system",
     "crates/glide-terminal",
     "crates/glide-text",
     "crates/glide-theme",

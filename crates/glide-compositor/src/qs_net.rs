@@ -1,4 +1,4 @@
-use std::process::{Command, Output};
+use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -12,6 +12,7 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 const WIFI_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 const BLUETOOTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
+pub use glide_system::spawn::{run_with_input, run_with_timeout};
 pub use glide_topbar::qs_net::{
     AudioOutput, BtDevice, BtKind, CHARGE_LIMIT_KEY, ChargeLimit, ConnectError, NetEvent, Security, WifiNetwork,
 };
@@ -549,17 +550,6 @@ fn scan_outputs() -> Vec<AudioOutput> {
         .unwrap_or_default();
     sort_outputs(&mut outputs);
     outputs
-}
-
-pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<Output> {
-    run_with_input(program, args, None, timeout)
-}
-
-fn run_with_input(program: &str, args: &[&str], input: Option<&str>, timeout: Duration) -> Option<Output> {
-    let line = input.map(|text| zeroize::Zeroizing::new(format!("{text}\n")));
-    let mut command = Command::new(program);
-    command.args(args).env("LC_ALL", "C");
-    glide_config::process::run(&mut command, line.as_deref().map(String::as_bytes), timeout).ok()
 }
 
 fn wifi_connect_args(ssid: &str, has_password: bool, saved: bool) -> Vec<&str> {

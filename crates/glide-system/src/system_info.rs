@@ -4,11 +4,11 @@ use std::process::Command;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+pub use crate::status::{Privacy, SystemStatus};
 pub use glide_shell::battery::{
     BatteryHealth, BatteryInfo, BatteryState, PowerProfile, parse_power_profile, read_battery,
 };
 pub use glide_shell::scroll::{CONTINUOUS_STEP_DISTANCE, ScrollAccumulator, ScrollDelta, WHEEL_CLICK_V120};
-pub use glide_topbar::system_info::{Privacy, SystemStatus};
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -81,7 +81,7 @@ fn refresh(status: &mut SystemStatus, topics: Topics, privacy: &mut PrivacySourc
 const POLL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn poll_stdout(program: &str, args: &[&str]) -> Option<String> {
-    crate::qs_net::run_with_timeout(program, args, POLL_COMMAND_TIMEOUT)
+    crate::spawn::run_with_timeout(program, args, POLL_COMMAND_TIMEOUT)
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
 }

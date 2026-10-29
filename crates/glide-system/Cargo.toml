@@ -1,0 +1,22 @@
+[package]
+name = "glide-system"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+glide-config = { path = "../glide-config" }
+glide-shell = { path = "../glide-shell" }
+glide-theme = { path = "../glide-theme" }
+libc = "0.2"
+serde_json.workspace = true
+smithay = { workspace = true, features = ["backend_udev"] }
+tracing.workspace = true
+zbus.workspace = true
+zeroize = "1"
+
+[lints]
+workspace = true
