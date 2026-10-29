@@ -1,13 +1,14 @@
 pub mod calc;
-mod glue;
 pub mod history;
 mod list;
 pub mod providers;
 pub mod recent;
 pub mod search;
 
+use glide_paint as paint;
 pub use glide_shell::field;
 use glide_shell::icon::fallback_initial;
+use glide_shell::{i18n, icon, popup_menu, raster};
 use std::time::{Duration, Instant};
 
 use smithay::{
@@ -26,11 +27,11 @@ use smithay::{
 use glide_theme::motion::{ease_io, ease_out};
 
 use crate::{
-    config::Color,
     icon::{AppCategory, DesktopApp, IconLoader},
     paint::TextAlign,
     raster::{Canvas, ShellRenderer, buffer_from, rect},
 };
+use glide_theme::Color;
 
 const MIN_COLUMNS: usize = 5;
 const MAX_COLUMNS: usize = 9;
@@ -515,7 +516,7 @@ pub struct LaunchOrigin {
 impl LaunchOrigin {
     #[must_use]
     pub fn claims(&self, key: &str, now: Instant) -> bool {
-        self.key.eq_ignore_ascii_case(key) && now.saturating_duration_since(self.at) < crate::dock::LAUNCH_TIMEOUT
+        self.key.eq_ignore_ascii_case(key) && now.saturating_duration_since(self.at) < glide_shell::icon::LAUNCH_TIMEOUT
     }
 }
 
@@ -2635,7 +2636,7 @@ mod tests {
 
         #[test]
         fn a_launch_starts_from_the_icon_that_was_activated() {
-            use crate::launcher::search::Entry;
+            use crate::search::Entry;
             let mut launcher = mixed();
             let grid_rect = launcher.launch_rect(&Entry::App(2)).expect("Chromium is on the first page");
             let slot = launcher.page_range().position(|result| launcher.app_index(result) == Some(2)).expect("slot");
@@ -2649,7 +2650,7 @@ mod tests {
             let origin = LaunchOrigin { key: "Chromium".into(), rect: row, at: now };
             assert!(origin.claims("chromium", now), "dock keys compare without case");
             assert!(!origin.claims("firefox", now));
-            assert!(!origin.claims("chromium", now + crate::dock::LAUNCH_TIMEOUT), "a stale launch is ignored");
+            assert!(!origin.claims("chromium", now + glide_shell::icon::LAUNCH_TIMEOUT), "a stale launch is ignored");
         }
 
         #[test]

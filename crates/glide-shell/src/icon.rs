@@ -778,6 +778,8 @@ pub fn render(path: &Path, side: i32, tint: Option<Color>) -> Option<Vec<u8>> {
     }
 }
 
+pub const LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[must_use]
 pub fn fallback_initial(name: &str) -> String {
     name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string())

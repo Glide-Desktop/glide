@@ -35,7 +35,7 @@ mod input;
 mod ipc;
 mod keychain;
 mod keychain_prompt;
-mod launcher;
+mod launcher_glue;
 mod layout_scope;
 mod lid;
 mod logging;
@@ -98,7 +98,8 @@ use smithay::{
 use backend::tty::TtyData;
 use glide_dock::{self as dock, preview as dock_preview};
 use glide_greeter::{self as greeter, handoff};
-use glide_shell::{i18n, icon, popup_menu, raster};
+use glide_launcher as launcher;
+use glide_shell::{i18n, icon, raster};
 use glide_topbar::{self as topbar, global_menu, notifications};
 pub use state::GlideState;
 

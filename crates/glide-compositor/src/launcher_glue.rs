@@ -7,7 +7,7 @@ use smithay::{
     },
 };
 
-use super::search::{Entry, SystemCommand};
+use crate::launcher::search::{Entry, SystemCommand};
 use crate::{power::PowerAction, state::GlideState};
 
 const TEXT_MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT", "STRING"];
@@ -25,7 +25,7 @@ impl GlideState {
             return;
         }
         let result = self.loop_handle.insert_source(Timer::from_deadline(first), |_, (), state| {
-            let next = state.launcher.as_ref().and_then(super::Launcher::next_caret_toggle);
+            let next = state.launcher.as_ref().and_then(crate::launcher::Launcher::next_caret_toggle);
             if let Some(next) = next {
                 state.queue_redraw();
                 return TimeoutAction::ToInstant(next);
@@ -57,12 +57,13 @@ impl GlideState {
         }
     }
 
-    pub fn search_providers(&mut self) -> Option<super::providers::Handle> {
+    pub fn search_providers(&mut self) -> Option<crate::launcher::providers::Handle> {
         if std::mem::replace(&mut self.session.search_providers_started, true) {
             return self.session.search_providers.clone();
         }
-        let (sender, receiver) = smithay::reexports::calloop::channel::channel::<(u64, Vec<super::providers::Found>)>();
-        let handle = super::providers::start(move |generation, found| {
+        let (sender, receiver) =
+            smithay::reexports::calloop::channel::channel::<(u64, Vec<crate::launcher::providers::Found>)>();
+        let handle = crate::launcher::providers::start(move |generation, found| {
             let _ = sender.send((generation, found));
         });
         if handle.is_some() {
@@ -101,8 +102,11 @@ impl GlideState {
                 let Some((id, name, command)) = target else {
                     return;
                 };
-                self.session.launch_origin =
-                    origin.map(|rect| super::LaunchOrigin { key: id.clone(), rect, at: std::time::Instant::now() });
+                self.session.launch_origin = origin.map(|rect| crate::launcher::LaunchOrigin {
+                    key: id.clone(),
+                    rect,
+                    at: std::time::Instant::now(),
+                });
                 self.launch_command(&id, &name, &command);
             }
             Entry::Calculator { value, .. } => self.copy_to_clipboard(&value),
@@ -151,7 +155,7 @@ impl GlideState {
     }
 
     pub fn open_run_prompt(&mut self) {
-        if self.launcher.as_ref().is_none_or(super::Launcher::is_closing) {
+        if self.launcher.as_ref().is_none_or(crate::launcher::Launcher::is_closing) {
             self.toggle_launcher();
         }
         if let Some(launcher) = self.launcher.as_mut() {
@@ -161,7 +165,7 @@ impl GlideState {
     }
 
     #[must_use]
-    pub fn open_windows_for_search(&self) -> Vec<super::search::OpenWindow> {
+    pub fn open_windows_for_search(&self) -> Vec<crate::launcher::search::OpenWindow> {
         let mut order: Vec<glide_layout::WindowId> =
             self.focus_history.iter().copied().filter(|id| self.window_map.contains_key(id)).collect();
         let mut rest: Vec<glide_layout::WindowId> =
@@ -173,7 +177,7 @@ impl GlideState {
             .filter_map(|id| {
                 let window = self.window_map.get(&id)?;
                 let (title, app_id) = crate::state::toplevel_title_and_app_id(crate::state::window_surface(window));
-                Some(super::search::OpenWindow {
+                Some(crate::launcher::search::OpenWindow {
                     id: id.as_u64(),
                     title: title.unwrap_or_default(),
                     app_id: app_id.unwrap_or_default(),

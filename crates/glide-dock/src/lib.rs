@@ -30,7 +30,7 @@ const AUTOHIDE_DELAY: Duration = Duration::from_millis(400);
 pub const REVEAL_EDGE: f64 = 3.0;
 const REVEAL_DWELL: Duration = Duration::from_millis(120);
 pub const ATTENTION_REVEAL: Duration = Duration::from_millis(1500);
-pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
+pub const LAUNCH_TIMEOUT: Duration = glide_shell::icon::LAUNCH_TIMEOUT;
 pub const WINDOW_KEY_PREFIX: &str = "window-";
 
 const LAUNCH_BOUNCE: f64 = 8.0;

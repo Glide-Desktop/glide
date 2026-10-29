@@ -1976,6 +1976,7 @@ dependencies = [
  "glide-geom",
  "glide-greeter",
  "glide-ipc",
+ "glide-launcher",
  "glide-layout",
  "glide-media",
  "glide-netbird",
@@ -2123,6 +2124,23 @@ dependencies = [
  "ureq",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "glide-launcher"
+version = "0.1.0"
+dependencies = [
+ "glide-config",
+ "glide-netbird",
+ "glide-paint",
+ "glide-shell",
+ "glide-theme",
+ "glide-ui",
+ "serde",
+ "serde_json",
+ "smithay",
+ "tracing",
+ "zbus",
 ]
 
 [[package]]

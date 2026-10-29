@@ -575,7 +575,7 @@ mod tests {
     fn walking_past_the_bottom_scrolls_the_selection_into_view() {
         let mut launcher = many(40);
         typed(&mut launcher, "item");
-        let shown = crate::launcher::search::LIST_APP_LIMIT;
+        let shown = crate::search::LIST_APP_LIMIT;
         assert_eq!(launcher.entries.len(), shown);
         let small = Rectangle::new(Point::from((0, 0)), Size::from((1920, 420)));
         launcher.set_area(small);

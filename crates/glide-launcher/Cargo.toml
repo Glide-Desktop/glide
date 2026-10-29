@@ -1,0 +1,23 @@
+[package]
+name = "glide-launcher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glide-config = { path = "../glide-config" }
+glide-netbird = { path = "../glide-netbird" }
+glide-paint = { path = "../glide-paint" }
+glide-shell = { path = "../glide-shell" }
+glide-theme = { path = "../glide-theme" }
+glide-ui = { path = "../glide-ui" }
+serde.workspace = true
+serde_json.workspace = true
+smithay = { workspace = true, features = ["wayland_frontend"] }
+tracing.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true

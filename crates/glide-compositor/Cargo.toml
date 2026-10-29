@@ -37,6 +37,7 @@ glide-dock = { path = "../glide-dock" }
 glide-geom = { path = "../glide-geom" }
 glide-greeter = { path = "../glide-greeter" }
 glide-ipc = { path = "../glide-ipc" }
+glide-launcher = { path = "../glide-launcher" }
 glide-layout = { path = "../glide-layout" }
 glide-media = { path = "../glide-media" }
 glide-netbird = { path = "../glide-netbird" }
