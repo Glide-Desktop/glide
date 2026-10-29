@@ -20,6 +20,7 @@ members = [
     "crates/glide-media",
     "crates/glide-netbird",
     "crates/glide-notify",
+    "crates/glide-overlays",
     "crates/glide-paint",
     "crates/glide-pam",
     "crates/glide-passwords",

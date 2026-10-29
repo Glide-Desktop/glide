@@ -1,0 +1,20 @@
+[package]
+name = "glide-overlays"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glide-launcher = { path = "../glide-launcher" }
+glide-layout = { path = "../glide-layout" }
+glide-paint = { path = "../glide-paint" }
+glide-shell = { path = "../glide-shell" }
+glide-theme = { path = "../glide-theme" }
+glide-topbar = { path = "../glide-topbar" }
+glide-ui = { path = "../glide-ui" }
+smithay = { workspace = true, features = ["wayland_frontend"] }
+
+[lints]
+workspace = true

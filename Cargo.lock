@@ -1981,6 +1981,7 @@ dependencies = [
  "glide-media",
  "glide-netbird",
  "glide-notify",
+ "glide-overlays",
  "glide-paint",
  "glide-shell",
  "glide-shot",
@@ -2199,6 +2200,20 @@ dependencies = [
  "serde",
  "tracing",
  "zbus",
+]
+
+[[package]]
+name = "glide-overlays"
+version = "0.1.0"
+dependencies = [
+ "glide-launcher",
+ "glide-layout",
+ "glide-paint",
+ "glide-shell",
+ "glide-theme",
+ "glide-topbar",
+ "glide-ui",
+ "smithay",
 ]
 
 [[package]]

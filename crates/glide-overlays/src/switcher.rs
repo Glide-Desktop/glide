@@ -423,7 +423,7 @@ impl Switcher {
     }
 
     fn raster_key(
-        &self, theme: &LauncherTheme, geometry: Geometry, backdrop: Option<&crate::dock::Backdrop<'_>>,
+        &self, theme: &LauncherTheme, geometry: Geometry, backdrop: Option<&glide_shell::raster::Backdrop<'_>>,
     ) -> u64 {
         let mut revision = glide_theme::Revision::new()
             .u64(theme.revision())
@@ -446,7 +446,7 @@ impl Switcher {
 
 fn draw_panel(
     theme: &LauncherTheme, geometry: Geometry, painter: &crate::paint::Painter, scale: i32,
-    backdrop: Option<&crate::dock::Backdrop<'_>>,
+    backdrop: Option<&glide_shell::raster::Backdrop<'_>>,
 ) -> Option<MemoryRenderBuffer> {
     let (w, h) = (geometry.panel.size.w, geometry.panel.size.h);
     let radius = glide_theme::shape::R3;
@@ -525,7 +525,7 @@ fn draw_label(
 pub fn render<R>(
     switcher: &mut Switcher, renderer: &mut R, icons: &mut crate::icon::IconLoader, painter: &crate::paint::Painter,
     theme: &LauncherTheme, area: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
-    backdrop: Option<&crate::dock::Backdrop<'_>>,
+    backdrop: Option<&glide_shell::raster::Backdrop<'_>>,
 ) -> Vec<SwitcherRenderElement<R>>
 where
     R: crate::raster::ShellRenderer,
