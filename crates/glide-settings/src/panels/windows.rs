@@ -30,7 +30,7 @@ mod tr {
     }
 }
 
-pub const COMPACT_HEIGHT: i64 = 16;
+pub const COMPACT_HEIGHT: i64 = 38;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleAlign {
