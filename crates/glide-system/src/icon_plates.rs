@@ -135,11 +135,19 @@ pub fn build(source: &Path, theme: &str, dest_root: &Path) -> io::Result<Outcome
     Ok(Outcome::Rebuilt { darkened: darkened.len(), kept })
 }
 
+fn seconds(path: &Path) -> u64 {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|age| age.as_secs())
+        .unwrap_or_default()
+}
+
 fn stamp_for(apps: &Path) -> io::Result<String> {
-    let modified = fs::metadata(apps)?.modified()?;
-    let seconds = modified.duration_since(UNIX_EPOCH).map(|age| age.as_secs()).unwrap_or_default();
     let count = fs::read_dir(apps)?.count();
-    Ok(format!("{VERSION} {} {} {seconds} {count}\n", plates::PLATE, apps.display()))
+    let index = apps.ancestors().nth(2).map(|theme| seconds(&theme.join("index.theme"))).unwrap_or_default();
+    Ok(format!("{VERSION} {} {} {} {index} {count}\n", plates::PLATE, apps.display(), seconds(apps)))
 }
 
 fn distance(px: &[u8], plate: [u8; 3]) -> f32 {

@@ -55,7 +55,8 @@ pub fn darken(svg: &str) -> Option<String> {
     if !property(plate.text, "fill").and_then(Colour::parse).is_some_and(Colour::is_light) {
         return None;
     }
-    Some(format!("{}{}{}", &svg[..plate.start], repaint(plate.text), &svg[plate.start + plate.text.len()..]))
+    let dark = format!("{}{}{}", &svg[..plate.start], repaint(plate.text), &svg[plate.start + plate.text.len()..]);
+    (dark != svg).then_some(dark)
 }
 
 struct Tag<'a> {
@@ -275,6 +276,9 @@ mod tests {
         assert!(dark.contains(&format!("style=\"fill:{PLATE};fill-opacity:1\"")), "{dark}");
         let coloured = r##"<svg width="64" height="64"><rect width="56" height="56" fill="#fff" rx="13" style="fill:#9487b1"/></svg>"##;
         assert_eq!(darken(coloured), None);
+        let unspaced =
+            "<svg width=\"64\" height=\"64\"><rect width=\"56\" height=\"56\" rx=\"13\"\nfill=\"#fff\"/></svg>";
+        assert_eq!(darken(unspaced), None);
     }
 
     #[test]
