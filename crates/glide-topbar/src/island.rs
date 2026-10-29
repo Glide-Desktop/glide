@@ -156,7 +156,7 @@ impl View {
         matches!(self, Self::Media | Self::Calendar)
     }
 
-    const fn dims(self) -> bool {
+    pub(super) const fn dims(self) -> bool {
         self.expanded() || matches!(self, Self::Polkit | Self::Keychain)
     }
 
@@ -1096,14 +1096,16 @@ impl Topbar {
     }
 
     pub(super) fn layout_island(
-        &mut self, painter: &Painter, strip: Rectangle<i32, Logical>, slots: &mut Vec<(Slot, LocalRect)>,
+        &mut self, painter: &Painter, strip: Rectangle<i32, Logical>, slots: &mut Vec<(Slot, LocalRect)>, passive: bool,
     ) -> LocalRect {
         let centre = strip.loc.x + strip.size.w / 2;
         let top = strip.loc.y + TOP;
-        let view = self.island.view;
+        let view = if passive { View::Compact } else { self.island.view };
         let compact = self.island_size(painter, View::Compact);
         let (w, h) = if view == View::Compact { compact } else { self.island_size(painter, view) };
-        self.island.aim(Size::from((w, h)));
+        if !passive {
+            self.island.aim(Size::from((w, h)));
+        }
         let target = placed(strip, Size::from((w, h)));
         let origin = target.loc;
         match view {
@@ -1790,6 +1792,7 @@ fn push_stretched<R: ShellRenderer>(
 struct Spot {
     strip: Rectangle<i32, Logical>,
     rise: i32,
+    clip: LocalRect,
 }
 
 impl Spot {
@@ -1825,7 +1828,7 @@ fn push_keychain<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
     };
     let now = Instant::now();
     let motion = topbar.island.keychain_motion;
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let mut content = spot.content(keychain_view::WIDTH, layout.height);
     content.loc.x += shake_offset(motion.shaken, now);
     let theme = &topbar.theme;
@@ -1892,7 +1895,7 @@ fn push_polkit<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, 
     };
     let now = Instant::now();
     let motion = topbar.island.polkit_motion;
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let mut content = spot.content(polkit_view::WIDTH, layout.height);
     content.loc.x += shake_offset(motion.shaken, now);
     let theme = &topbar.theme;
@@ -1995,7 +1998,7 @@ fn push_compact<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>,
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     let widths = topbar.island_clock(painter);
     let width = topbar.island.compact_w;
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let badge = BadgePop { count: topbar.badge_shown(), pop: topbar.badge_anim.value() };
     let key: CompactKey =
         (topbar.track_rev, topbar.date.clone(), topbar.clock.clone(), badge.count, badge.key(), width, widths);
@@ -2025,7 +2028,7 @@ fn push_alert<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
     let Some((alert, _)) = topbar.island.alert.as_ref() else {
         return;
     };
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let content = spot.content(ALERT_W, ALERT_H);
     let ink = Ink { painter, theme: &topbar.theme };
     let Some(buffer) = topbar
@@ -2044,7 +2047,7 @@ fn push_pill<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, al
         return;
     };
     let width = pill_layout(painter, pill).width;
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let content = spot.content(width, COMPACT_H);
     let ink = Ink { painter, theme: &topbar.theme };
     let key: PillKey = (pill, crate::i18n::language());
@@ -2061,7 +2064,7 @@ fn push_notice<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, 
         return;
     };
     let height = notice_layout(painter, notice).height;
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let content = spot.content(ALERT_W, height);
     let ink = Ink { painter, theme: &topbar.theme };
     let Some(buffer) = topbar
@@ -2082,7 +2085,7 @@ fn push_media<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
     let switch_w = topbar.switch_width(painter, View::Media).unwrap_or(0);
     let seek = topbar.seek_permille();
     let progress = seek.map(|permille| f32::from(permille) / 1000.0);
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let content = spot.content(WIDE, MEDIA_H);
     let ink = Ink { painter, theme: &topbar.theme };
     let key: MediaKey = (topbar.media_rev, seek, switch_w, crate::i18n::language());
@@ -2098,7 +2101,7 @@ fn push_media<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
 
 fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
-    let clip = topbar.island.rect(spot.strip);
+    let clip = spot.clip;
     let switch_w = topbar.switch_width(painter, View::Calendar);
     let height = calendar_height(topbar.nc_items.len());
     let content = spot.content(WIDE, height);
@@ -2144,12 +2147,11 @@ fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
     push_clipped(renderer, &buffer, (content, clip), alpha, scale, elements);
 }
 
-fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: LocalRect) {
+fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: LocalRect, radius: f32) {
     let (renderer, _, _, scale, output_scale, elements) = frame.parts();
     if rect.size.w <= 0 || rect.size.h <= 0 {
         return;
     }
-    let radius = topbar.island.view.radius();
     let key = (rect.size.w, rect.size.h, output_scale, radius.to_bits());
     let island = &mut topbar.island;
     if island.backgrounds.len() >= SURFACE_CACHE_LIMIT && !island.backgrounds.contains_key(&key) {
@@ -2239,18 +2241,32 @@ pub(super) fn push<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, 
     let rise = (ENTER_RISE * (1.0 - topbar.island.fade.value_with(E_OUT).clamp(0.0, 1.0))).round() as i32;
     let (current, previous) = (topbar.island.view, topbar.island.previous);
     let settled = fade >= 1.0 || previous == current;
-    let entering = Spot { strip, rise: if settled { 0 } else { rise } };
+    let entering = Spot { strip, rise: if settled { 0 } else { rise }, clip: rect };
     push_view(topbar, frame, current, if settled { 1.0 } else { fade as f32 }, entering);
     if !settled {
-        push_view(topbar, frame, previous, (1.0 - fade) as f32, Spot { strip, rise: 0 });
+        push_view(topbar, frame, previous, (1.0 - fade) as f32, Spot { strip, rise: 0, clip: rect });
     }
-    push_surface(topbar, frame, rect);
+    push_surface(topbar, frame, rect, current.radius());
     let (from, to) = (topbar.island.from, topbar.island.to);
     push_shadow(topbar, frame, rect, (current, to), if settled { 1.0 } else { fade as f32 });
     if !settled {
         push_shadow(topbar, frame, rect, (previous, from), (1.0 - fade) as f32);
     }
     push_scrim(topbar, frame, output);
+}
+
+pub(super) fn push_compact_only<R: ShellRenderer>(
+    topbar: &mut Topbar, frame: &mut Frame<'_, R>, output: Rectangle<i32, Logical>,
+) {
+    let strip = topbar.rect(output);
+    let size = Size::from((topbar.island.compact_w, COMPACT_H));
+    let rect = placed(strip, size);
+    if rect.size.w <= 0 || rect.size.h <= 0 {
+        return;
+    }
+    push_compact(topbar, frame, 1.0, Spot { strip, rise: 0, clip: rect });
+    push_surface(topbar, frame, rect, View::Compact.radius());
+    push_shadow(topbar, frame, rect, (View::Compact, size), 1.0);
 }
 
 #[cfg(test)]

@@ -1209,6 +1209,7 @@ impl GlideState {
         }
 
         self.reset_dead_cursor_surface();
+        self.sync_topbar_home();
 
         let blank_alpha = self.blank_fade_alpha();
         let pointer_location = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
@@ -1317,7 +1318,8 @@ impl GlideState {
         let primary = self.space.outputs().next() == Some(&output);
         let origin = output_geometry.loc.to_f64().to_physical(scale).to_i32_round::<i32>();
         let shell_offset = Point::<i32, smithay::utils::Physical>::from((-origin.x, -origin.y));
-        let topbar_hidden = !topbar_popup_open && fullscreen_center.is_some_and(|c| output_geometry.contains(c));
+        let popup_here = topbar_popup_open && self.topbar.is_home(output_geometry);
+        let topbar_hidden = !popup_here && fullscreen_center.is_some_and(|c| output_geometry.contains(c));
         let dock_hidden_here = !primary || dock_suppressed;
 
         let backdrop_t = self.overview.as_ref().map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
@@ -1493,29 +1495,26 @@ impl GlideState {
         }
 
         let output_rect = Rectangle::from_size(logical_size.into());
+        let topbar_home = self.topbar.is_home(output_geometry);
         let slid = self.topbar.slide_away(output_geometry, topbar_hidden);
         let sliding = slid > 0.0 && slid < 1.0;
-        if !locked && (sliding || !topbar_hidden || self.topbar.floats()) {
+        if !locked && (sliding || !topbar_hidden || (topbar_home && self.topbar.floats())) {
             let topbar = crate::topbar::render(
                 &mut self.topbar,
                 gles_renderer,
                 &painter,
                 &mut self.dock.icons,
-                output_rect,
+                output_geometry,
                 scale,
                 integer_scale,
                 (dock_backdrop.as_ref(), topbar_hidden && !sliding),
             );
-            if sliding {
-                let rise = (f64::from(crate::topbar::HEIGHT) * slid * scale.y).round() as i32;
-                let offset = Point::<i32, smithay::utils::Physical>::from((0, -rise));
-                prepend(
-                    &mut elements,
-                    topbar.into_iter().map(|element| GlideRenderElements::RelocatedMemory(relocate(element, offset))),
-                );
-            } else {
-                prepend(&mut elements, topbar.into_iter().map(GlideRenderElements::Memory));
-            }
+            let rise = if sliding { (f64::from(crate::topbar::HEIGHT) * slid * scale.y).round() as i32 } else { 0 };
+            let offset = shell_offset + Point::<i32, smithay::utils::Physical>::from((0, -rise));
+            prepend(
+                &mut elements,
+                topbar.into_iter().map(|element| GlideRenderElements::RelocatedMemory(relocate(element, offset))),
+            );
         }
 
         if let Some(switcher) = self.switcher.as_mut().filter(|_| !locked && primary) {
@@ -1742,12 +1741,13 @@ impl GlideState {
             return;
         }
 
-        let masks = self.topbar.capture_mask(output_rect);
+        let masks = if topbar_home { self.topbar.capture_mask(output_geometry) } else { Vec::new() };
         if !masks.is_empty() {
             let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
             let [r, g, b, a] = tokens.island_bg.0;
             let covers = masks.iter().map(|rect| {
-                let geometry = rect.to_f64().to_physical(scale).to_i32_round();
+                let local = Rectangle::new(rect.loc - output_geometry.loc, rect.size);
+                let geometry = local.to_f64().to_physical(scale).to_i32_round();
                 GlideRenderElements::LockBackdrop(SolidColorRenderElement::new(
                     smithay::backend::renderer::element::Id::new(),
                     geometry,

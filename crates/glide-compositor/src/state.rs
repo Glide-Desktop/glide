@@ -1644,7 +1644,7 @@ impl GlideState {
     }
 
     pub fn sync_notice(&mut self) {
-        let fullscreen = self.fullscreen_focused_on(self.output_rect());
+        let fullscreen = self.fullscreen_focused_on(self.topbar_home());
         let covered = self.topbar.set_fullscreen(fullscreen);
         let notice = self.topbar.set_notice(self.notifications.notice());
         if covered || notice {
@@ -2640,6 +2640,29 @@ impl GlideState {
         logical_rect(self.layout.primary_output_work_area())
     }
 
+    fn output_geometries(&self) -> impl Iterator<Item = Rectangle<i32, Logical>> + '_ {
+        self.space.outputs().filter_map(|output| self.space.output_geometry(output))
+    }
+
+    #[must_use]
+    pub fn topbar_home(&self) -> Rectangle<i32, Logical> {
+        self.topbar
+            .home()
+            .and_then(|home| self.output_geometries().find(|geometry| geometry.loc == home.loc))
+            .or_else(|| self.output_geometries().next())
+            .unwrap_or_else(|| self.output_rect())
+    }
+
+    pub fn sync_topbar_home(&mut self) {
+        let home = self.topbar_home();
+        self.topbar.reset_home(home);
+    }
+
+    #[must_use]
+    pub fn topbar_output_at(&self, pos: Point<f64, Logical>) -> Rectangle<i32, Logical> {
+        self.output_geometries().find(|geometry| geometry.to_f64().contains(pos)).unwrap_or_else(|| self.topbar_home())
+    }
+
     #[must_use]
     pub fn focused_fullscreen_center(&self) -> Option<Point<i32, Logical>> {
         if self.layout.overview_active() {
@@ -2662,7 +2685,7 @@ impl GlideState {
 
     #[must_use]
     pub fn topbar_suppressed_on(&self, output: Rectangle<i32, Logical>) -> bool {
-        !self.topbar.has_open_popup() && self.fullscreen_focused_on(output)
+        !(self.topbar.has_open_popup() && self.topbar.is_home(output)) && self.fullscreen_focused_on(output)
     }
 
     #[must_use]

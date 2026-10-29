@@ -2133,7 +2133,11 @@ impl GlideState {
         if self.session_lock.is_some() {
             return false;
         }
-        if self.topbar_suppressed_on(self.output_rect()) && !self.topbar.floats() {
+        let output = self.topbar_output_at(pos);
+        if self.topbar.set_home(output) {
+            self.queue_redraw();
+        }
+        if self.topbar_suppressed_on(output) && !self.topbar.floats() {
             if self.topbar.set_hover(None) {
                 self.queue_redraw();
             }
@@ -2159,7 +2163,6 @@ impl GlideState {
             self.queue_redraw();
             return true;
         }
-        let output = self.output_rect();
         let over = self.topbar.contains(output, pos);
         if self.topbar.set_hover(over.then_some(pos)) {
             self.notifications.hold(self.topbar.held_notice());
@@ -2532,7 +2535,7 @@ impl GlideState {
             return true;
         }
         if self.polkit_focused() || self.keychain_focused() {
-            let output = self.output_rect();
+            let output = self.topbar_home();
             if self.topbar.contains(output, pos) {
                 self.topbar_button(pos, button);
             }
@@ -2610,7 +2613,16 @@ impl GlideState {
     }
 
     fn topbar_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
-        let output = self.output_rect();
+        let output = self.topbar_output_at(pos);
+        if !self.topbar.is_home(output) {
+            if self.topbar.close_popup() {
+                self.queue_redraw();
+                return true;
+            }
+            if self.topbar.set_home(output) {
+                self.queue_redraw();
+            }
+        }
         if (self.topbar.floats() || !self.topbar_suppressed_on(output)) && self.topbar.contains(output, pos) {
             if let Some(mut action) = self.topbar.action_at(pos) {
                 if let crate::topbar::TopbarAction::Tray(click) = &mut action {
@@ -2838,12 +2850,13 @@ impl GlideState {
     }
 
     fn topbar_scroll<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) -> bool {
-        if self.screen_locked() || self.topbar_suppressed_on(self.output_rect()) {
+        let pos = self.seat.get_pointer().expect("a pointer was added in GlideState::new").current_location();
+        let output = self.topbar_output_at(pos);
+        if self.screen_locked() || self.topbar_suppressed_on(output) {
             return false;
         }
-        let pos = self.seat.get_pointer().expect("a pointer was added in GlideState::new").current_location();
         let Some(slot) = self.topbar.slot_at(pos) else {
-            return self.topbar.contains(self.output_rect(), pos);
+            return self.topbar.contains(output, pos);
         };
         let delta = scroll_delta::<I>(event);
         if let crate::topbar::Slot::Tray(id) = slot {

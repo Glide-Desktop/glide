@@ -276,6 +276,21 @@ impl TrayStrip {
     fn rect_of(&self, id: u16) -> Option<Rectangle<i32, Logical>> {
         self.rects.iter().find(|(candidate, _)| *candidate == id).map(|(_, rect)| *rect)
     }
+
+    pub(super) fn swap_placement(&mut self, placement: &mut Placement) {
+        std::mem::swap(&mut self.output, &mut placement.output);
+        std::mem::swap(&mut self.rects, &mut placement.rects);
+    }
+
+    pub(super) fn swap_tooltip(&mut self, tooltip: &mut Option<(u16, String)>) {
+        std::mem::swap(&mut self.tooltip, tooltip);
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct Placement {
+    output: Rectangle<i32, Logical>,
+    rects: Vec<(u16, Rectangle<i32, Logical>)>,
 }
 
 impl Topbar {

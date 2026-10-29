@@ -850,6 +850,43 @@ pub struct Topbar {
     indicators: status::Indicators,
     tray: tray::TrayStrip,
     slides: HashMap<(i32, i32), glide_ui::Tween>,
+    home: Option<Rectangle<i32, Logical>>,
+    placements: HashMap<(i32, i32), Placement>,
+}
+
+#[derive(Debug, Default)]
+struct Placement {
+    key: Option<(u64, Rectangle<i32, Logical>)>,
+    slots: Vec<(Slot, Rectangle<i32, Logical>)>,
+    tray: tray::Placement,
+}
+
+struct Interaction {
+    hovered: Option<Slot>,
+    pressed: Option<Slot>,
+    focused: Option<Slot>,
+    open: Option<OpenPopup>,
+    closing: Option<OpenPopup>,
+}
+
+impl Interaction {
+    const fn take(topbar: &mut Topbar) -> Self {
+        Self {
+            hovered: topbar.hovered.take(),
+            pressed: topbar.pressed.take(),
+            focused: topbar.focused.take(),
+            open: topbar.open_popup.take(),
+            closing: topbar.closing_popup.take(),
+        }
+    }
+
+    const fn restore(self, topbar: &mut Topbar) {
+        topbar.hovered = self.hovered;
+        topbar.pressed = self.pressed;
+        topbar.focused = self.focused;
+        topbar.open_popup = self.open;
+        topbar.closing_popup = self.closing;
+    }
 }
 
 type Anchor = Option<Rectangle<i32, Logical>>;
@@ -1149,6 +1186,67 @@ impl Topbar {
         let slide = self.slides.entry((output.loc.x, output.loc.y)).or_insert_with(|| glide_ui::Tween::at(target));
         slide.retarget(target, motion::t3(), motion::ease_out);
         slide.value(motion::t3(), motion::ease_out)
+    }
+
+    #[must_use]
+    pub const fn home(&self) -> Option<Rectangle<i32, Logical>> {
+        self.home
+    }
+
+    #[must_use]
+    pub fn is_home(&self, output: Rectangle<i32, Logical>) -> bool {
+        self.home.is_none_or(|home| home == output)
+    }
+
+    fn home_held(&self) -> bool {
+        self.shown_popup().is_some() || self.island.view.dims() || self.slider_dragging
+    }
+
+    pub fn set_home(&mut self, output: Rectangle<i32, Logical>) -> bool {
+        if self.home == Some(output) || (self.home.is_some() && self.home_held()) {
+            return false;
+        }
+        self.move_home(output);
+        true
+    }
+
+    pub fn reset_home(&mut self, output: Rectangle<i32, Logical>) {
+        if self.home != Some(output) {
+            self.move_home(output);
+        }
+    }
+
+    fn move_home(&mut self, output: Rectangle<i32, Logical>) {
+        self.set_hover(None);
+        self.set_pressed(None);
+        let mut placement = self.placements.remove(&(output.loc.x, output.loc.y)).unwrap_or_default();
+        self.swap_placement(&mut placement);
+        self.layout_key = None;
+        self.shown_popup_slots.clear();
+        self.popup_rect = None;
+        self.menu_panels.clear();
+        self.home = Some(output);
+    }
+
+    fn with_passive<T>(&mut self, output: Rectangle<i32, Logical>, f: impl FnOnce(&mut Self) -> T) -> T {
+        let at = (output.loc.x, output.loc.y);
+        let mut placement = self.placements.remove(&at).unwrap_or_default();
+        let interaction = Interaction::take(self);
+        let mut tooltip = None;
+        self.tray.swap_tooltip(&mut tooltip);
+        self.swap_placement(&mut placement);
+        let result = f(self);
+        self.swap_placement(&mut placement);
+        self.tray.swap_tooltip(&mut tooltip);
+        interaction.restore(self);
+        self.placements.insert(at, placement);
+        result
+    }
+
+    fn swap_placement(&mut self, placement: &mut Placement) {
+        std::mem::swap(&mut self.layout_key, &mut placement.key);
+        std::mem::swap(&mut self.slots, &mut placement.slots);
+        self.tray.swap_placement(&mut placement.tray);
     }
 
     fn pending_settle(&self) -> bool {
@@ -1979,6 +2077,14 @@ impl Topbar {
     }
 
     fn layout_slots(&mut self, painter: &crate::paint::Painter, output: Rectangle<i32, Logical>) {
+        self.arrange(painter, output, false);
+    }
+
+    fn layout_passive(&mut self, painter: &crate::paint::Painter, output: Rectangle<i32, Logical>) {
+        self.arrange(painter, output, true);
+    }
+
+    fn arrange(&mut self, painter: &crate::paint::Painter, output: Rectangle<i32, Logical>, passive: bool) {
         let key = (self.rev, output);
         if self.layout_key == Some(key) {
             return;
@@ -2025,12 +2131,18 @@ impl Topbar {
         }
 
         let mut island_slots = Vec::new();
-        let island = self.layout_island(painter, strip, &mut island_slots);
+        let island = self.layout_island(painter, strip, &mut island_slots, passive);
         let tray_limit = island.loc.x + island.size.w + glide_theme::spacing::SP3;
         self.layout_tray(output, (right - ITEM_GAP, tray_limit, y), &mut slots);
 
         let menu_limit = island.loc.x - glide_theme::spacing::SP3;
         let mut menu = self.layout_app_menu(painter, output, strip, menu_limit);
+        if passive {
+            slots.append(&mut menu.titles);
+            slots.extend(island_slots);
+            self.slots = slots;
+            return;
+        }
         if self.covered() {
             slots.clear();
             menu.titles.clear();
@@ -3285,6 +3397,14 @@ where
 {
     topbar.settle_motion();
     topbar.invalidate_stale_buffers();
+    if !topbar.is_home(output) {
+        if bar_hidden {
+            return Vec::new();
+        }
+        let mut frame = Frame { renderer, painter, icons, scale, output_scale, elements: Vec::new() };
+        render_passive(topbar, &mut frame, output, backdrop);
+        return frame.elements;
+    }
     topbar.layout_slots(painter, output);
 
     let strip = topbar.rect(output);
@@ -3309,6 +3429,23 @@ where
     push_panel(topbar, &mut frame, strip, backdrop);
 
     frame.elements
+}
+
+fn render_passive<R: ShellRenderer>(
+    topbar: &mut Topbar, frame: &mut Frame<'_, R>, output: Rectangle<i32, Logical>,
+    backdrop: Option<&glide_shell::raster::Backdrop<'_>>,
+) {
+    topbar.with_passive(output, |topbar| {
+        topbar.layout_passive(frame.painter, output);
+        let strip = topbar.rect(output);
+        island::push_compact_only(topbar, frame, output);
+        push_global_menu(topbar, frame);
+        push_app_chip(topbar, frame, strip);
+        push_layout(topbar, frame);
+        push_caffeine(topbar, frame);
+        push_status(topbar, frame);
+        push_panel(topbar, frame, strip, backdrop);
+    });
 }
 
 struct Frame<'a, R: ShellRenderer> {
@@ -3382,7 +3519,7 @@ fn draw_panel(
 ) -> Option<MemoryRenderBuffer> {
     let (w, h) = (strip.size.w, strip.size.h);
     let mut c = Canvas::new(w, h, scale)?;
-    if backdrop.is_some_and(|source| source.blit(&mut c.buf, w, h, 0.0, strip, scale)) {
+    if backdrop.is_some_and(|source| source.blit(&mut c.buf, w, h, 0.0, Rectangle::from_size(strip.size), scale)) {
         c.fill(local_rect(0, 0, w, h), theme.background, 0.0);
     } else {
         let background = theme.background;
@@ -5333,6 +5470,53 @@ mod tests {
         assert!(bar.set_unread(4));
         bar.layout_slots(&painter(), output());
         assert_ne!(bar.layout_key, before, "a badge changes the clock width");
+    }
+
+    fn second_output() -> Rectangle<i32, Logical> {
+        Rectangle::new(Point::from((1920, 0)), Size::from((2560, 1440)))
+    }
+
+    fn passive_slots(bar: &mut Topbar, output: Rectangle<i32, Logical>) -> Vec<(Slot, Rectangle<i32, Logical>)> {
+        bar.with_passive(output, |bar| {
+            bar.layout_passive(&painter(), output);
+            bar.slots.clone()
+        })
+    }
+
+    #[test]
+    fn a_popup_stays_on_its_home_output_while_the_other_bar_is_laid_out() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        bar.reset_home(output());
+        let mut bar = with_popup(bar, OpenPopup::QuickSettings);
+        let popup = bar.popup_rect.expect("quick settings is laid out");
+        let home_status = bar.slot_rect(Slot::Status).expect("status slot");
+
+        let other = passive_slots(&mut bar, second_output());
+        assert!(other.iter().all(|(_, rect)| second_output().contains(rect.loc)), "{other:?}");
+        assert!(other.iter().any(|(slot, _)| *slot == Slot::Status));
+        assert!(other.iter().all(|(slot, _)| !Slot::in_quick_settings(*slot)));
+
+        assert_eq!(bar.open_popup(), Some(OpenPopup::QuickSettings));
+        assert_eq!(bar.popup_rect, Some(popup));
+        assert_eq!(bar.slot_rect(Slot::Status), Some(home_status));
+        assert!(!bar.set_home(second_output()), "an open popup holds its output");
+        assert!(bar.is_home(output()) && !bar.is_home(second_output()));
+    }
+
+    #[test]
+    fn the_home_moves_to_the_output_under_the_pointer_and_hit_tests_its_bar() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        bar.reset_home(output());
+        bar.layout_slots(&painter(), output());
+        let other = passive_slots(&mut bar, second_output());
+        let status = other.iter().find(|(slot, _)| *slot == Slot::Status).map(|(_, rect)| *rect).expect("status");
+
+        assert!(bar.set_home(second_output()));
+        let pos = centre(status);
+        assert!(bar.contains(second_output(), pos));
+        assert_eq!(bar.slot_at(pos), Some(Slot::Status));
+        assert_eq!(bar.action_at(pos), Some(TopbarAction::ToggleQuickSettings));
+        assert!(!bar.contains(output(), pos));
     }
 
     #[test]
