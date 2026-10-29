@@ -424,6 +424,19 @@ impl Layout {
         self.active = id;
     }
 
+    pub fn move_workspace(&mut self, id: WorkspaceId, index: usize) -> bool {
+        let Some(from) = self.workspaces.iter().position(|ws| ws.id == id) else {
+            return false;
+        };
+        let to = index.min(self.workspaces.len() - 1);
+        if from == to {
+            return false;
+        }
+        let workspace = self.workspaces.remove(from);
+        self.workspaces.insert(to, workspace);
+        true
+    }
+
     pub fn switch_to_workspace(&mut self, target: WorkspaceTarget) -> bool {
         let Some(target_id) = self.resolve_or_create(target) else {
             return false;

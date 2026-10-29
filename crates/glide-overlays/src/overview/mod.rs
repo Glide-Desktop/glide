@@ -73,6 +73,8 @@ pub enum MoveTo {
 pub enum Release {
     Click(WindowId),
     Move { id: WindowId, to: MoveTo },
+    SwitchTo(WorkspaceId),
+    Reorder { workspace: WorkspaceId, index: usize },
     Settled,
 }
 
@@ -893,7 +895,15 @@ impl OverviewUi {
 
     #[must_use]
     pub fn is_pressed(&self) -> bool {
-        self.drag.is_some()
+        self.drag.is_some() || self.strip.reorder_pressed()
+    }
+
+    pub fn press_strip(&mut self, workspace: WorkspaceId, pos: Point<f64, Logical>) -> bool {
+        if self.is_closing() || self.drag.is_some() {
+            return false;
+        }
+        self.strip.press_reorder(workspace, pos.x, self.place.area, self.place.output);
+        true
     }
 
     fn dragged(&self) -> Option<WindowId> {
@@ -912,6 +922,9 @@ impl OverviewUi {
     }
 
     pub fn drag_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        if self.strip.reorder_pressed() {
+            return self.strip.reorder_motion(pos.x, self.place.area, self.place.output);
+        }
         let Some(drag) = self.drag.as_mut() else {
             return false;
         };
@@ -966,6 +979,13 @@ impl OverviewUi {
     }
 
     pub fn release(&mut self) -> Option<Release> {
+        if let Some(reordered) = self.strip.release_reorder(self.place.area, self.place.output) {
+            return Some(match reordered {
+                strip::Reordered::Click(workspace) => Release::SwitchTo(workspace),
+                strip::Reordered::Moved { id, index } => Release::Reorder { workspace: id, index },
+                strip::Reordered::Settled => Release::Settled,
+            });
+        }
         let drag = self.drag.take()?;
         self.strip.set_dragging(false);
         self.strip.set_drop(None);
@@ -993,6 +1013,9 @@ impl OverviewUi {
     }
 
     pub fn cancel_drag(&mut self) -> bool {
+        if self.strip.cancel_reorder() {
+            return true;
+        }
         let Some(drag) = self.drag.take() else {
             return false;
         };
@@ -1356,7 +1379,7 @@ impl OverviewUi {
         let dragged = self.dragged();
         let hidden = |id: WindowId| Some(id) == dragged || landings.iter().any(|landing| landing.id == id);
         if strip_alpha > 0.0 {
-            for workspace in self.workspaces.clone() {
+            for workspace in self.strip.paint_order() {
                 let Some(thumb) = self.strip.thumb_rect(self.place.area, output, workspace, strip_rise) else {
                     continue;
                 };

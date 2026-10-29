@@ -1016,6 +1016,16 @@ impl GlideState {
         true
     }
 
+    pub fn overview_reorder(&mut self, workspace: glide_layout::WorkspaceId, index: usize) {
+        self.finish_workspace_swipe();
+        if self.layout.move_workspace(workspace, index) {
+            tracing::info!(?workspace, index, "workspace moved from the overview");
+            self.relayout_overview();
+            self.sync_ext_workspaces();
+        }
+        self.queue_redraw();
+    }
+
     pub fn overview_send_hovered(&mut self, step: isize) {
         let Some(ui) = self.overview.as_mut() else {
             return;

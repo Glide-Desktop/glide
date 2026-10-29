@@ -2882,7 +2882,11 @@ impl GlideState {
 
         match self.overview.as_ref().and_then(|ui| ui.strip_at(pos)) {
             Some(crate::overview::Slot::Workspace(workspace)) => {
-                self.overview_switch_workspace(workspace);
+                let pressed =
+                    button == BTN_LEFT && self.overview.as_mut().is_some_and(|ui| ui.press_strip(workspace, pos));
+                if !pressed {
+                    self.overview_switch_workspace(workspace);
+                }
                 return true;
             }
             Some(crate::overview::Slot::Add) => {
@@ -2927,6 +2931,8 @@ impl GlideState {
             crate::overview::Release::Move { id, to } => {
                 self.overview_move_window(id, to);
             }
+            crate::overview::Release::SwitchTo(workspace) => self.overview_switch_workspace(workspace),
+            crate::overview::Release::Reorder { workspace, index } => self.overview_reorder(workspace, index),
             crate::overview::Release::Settled => {}
         }
         self.queue_redraw();

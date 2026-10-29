@@ -730,6 +730,22 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_moves_to_a_new_place_and_keeps_its_windows_and_the_view() {
+        let mut layout = Layout::new();
+        let ids = windows(&mut layout, 3, SIZE);
+        let order = layout.workspace_ids();
+        let active = layout.active_workspace();
+        assert!(layout.move_workspace(order[2], 0));
+        assert_eq!(layout.workspace_ids(), vec![order[2], order[0], order[1]]);
+        assert_eq!(layout.active_workspace(), active);
+        assert_eq!(state(&layout, ids[2]).workspace_id, order[2]);
+        assert!(!layout.move_workspace(order[2], 0), "already there");
+        assert!(layout.move_workspace(order[2], 99), "a far index is the end");
+        assert_eq!(layout.workspace_ids().last(), Some(&order[2]));
+        assert!(!layout.move_workspace(WorkspaceId(9_999), 0));
+    }
+
+    #[test]
     fn the_overview_keeps_an_emptied_active_workspace_until_it_closes() {
         let mut layout = Layout::new();
         let ids = windows(&mut layout, 2, SIZE);

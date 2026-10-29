@@ -94,10 +94,32 @@ pub(super) struct Strip {
     captions: PerScale<HashMap<usize, (CaptionKey, i32, MemoryRenderBuffer)>>,
     add_tile: PerScale<HashMap<u8, Sized>>,
     plus: PerScale<(RasterKey, MemoryRenderBuffer)>,
+    places: HashMap<WorkspaceId, glide_ui::Tween>,
+    reorder: Option<Reorder>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Reorder {
+    id: WorkspaceId,
+    start: f64,
+    grab: f64,
+    pointer: f64,
+    lifted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reordered {
+    Click(WorkspaceId),
+    Moved { id: WorkspaceId, index: usize },
+    Settled,
 }
 
 fn slide() -> std::time::Duration {
     glide_theme::motion::t3()
+}
+
+fn shuffle() -> std::time::Duration {
+    glide_theme::motion::t2()
 }
 
 fn bucket(level: f64) -> u8 {
@@ -133,11 +155,17 @@ fn shifted(rect: Rectangle<f64, Logical>, dy: f64) -> Rectangle<f64, Logical> {
 
 impl Strip {
     pub(super) fn set(&mut self, workspaces: Vec<WorkspaceId>, active: WorkspaceId, can_add: bool) {
+        let same_active = self.active == Some(active);
         self.workspaces = workspaces;
         self.active = Some(active);
         self.can_add = can_add;
+        if self.reorder.is_some_and(|reorder| !self.workspaces.contains(&reorder.id)) {
+            self.reorder = None;
+        }
+        self.retarget_places();
         let index = self.index_of(active).unwrap_or(0) as f64;
         match self.ring.as_mut() {
+            Some(ring) if same_active => ring.jump(index),
             Some(ring) => {
                 ring.retarget(index, slide(), glide_theme::motion::ease_out);
             }
@@ -159,6 +187,127 @@ impl Strip {
         self.workspaces.iter().position(|ws| *ws == id)
     }
 
+    fn row(&self, area: Rectangle<i32, Logical>, output: Rectangle<i32, Logical>) -> (f64, f64) {
+        let thumb = thumb_size(area, output).to_f64();
+        let add = f64::from(ADD_WIDTH) + (thumb.w - f64::from(ADD_WIDTH)) * self.add_open();
+        let count = self.workspaces.len() as f64;
+        let gaps = (count - 1.0).max(0.0) * f64::from(GAP);
+        let total = count * thumb.w + gaps + if self.can_add { f64::from(GAP) + add } else { 0.0 };
+        (f64::from(area.loc.x) + (f64::from(area.size.w) - total) / 2.0, thumb.w + f64::from(GAP))
+    }
+
+    fn reorder_target(&self, reorder: &Reorder, (left, step): (f64, f64)) -> usize {
+        let last = self.workspaces.len().saturating_sub(1) as f64;
+        ((reorder.pointer - reorder.grab - left) / step).round().clamp(0.0, last) as usize
+    }
+
+    fn visual_order(&self, row: (f64, f64)) -> Vec<WorkspaceId> {
+        let mut order = self.workspaces.clone();
+        if let Some(reorder) = self.reorder.filter(|reorder| reorder.lifted) {
+            order.retain(|id| *id != reorder.id);
+            order.insert(self.reorder_target(&reorder, row).min(order.len()), reorder.id);
+        }
+        order
+    }
+
+    fn retarget_places_in(&mut self, row: (f64, f64)) {
+        let order = self.visual_order(row);
+        self.places.retain(|id, _| order.contains(id));
+        for (index, id) in order.into_iter().enumerate() {
+            let index = index as f64;
+            match self.places.get_mut(&id) {
+                Some(place) => {
+                    place.retarget(index, shuffle(), glide_theme::motion::ease_out);
+                }
+                None => {
+                    self.places.insert(id, glide_ui::Tween::at(index));
+                }
+            }
+        }
+    }
+
+    fn retarget_places(&mut self) {
+        let row = (0.0, 1.0);
+        let lifted = self.reorder.is_some_and(|reorder| reorder.lifted);
+        if !lifted {
+            self.retarget_places_in(row);
+        }
+    }
+
+    pub(super) fn press_reorder(
+        &mut self, id: WorkspaceId, x: f64, area: Rectangle<i32, Logical>, output: Rectangle<i32, Logical>,
+    ) {
+        let slot_x = self
+            .slots(area, output)
+            .into_iter()
+            .find(|(slot, _)| *slot == Slot::Workspace(id))
+            .map_or(x, |(_, rect)| rect.loc.x);
+        self.reorder = Some(Reorder { id, start: x, grab: x - slot_x, pointer: x, lifted: false });
+    }
+
+    #[must_use]
+    pub(super) fn reorder_pressed(&self) -> bool {
+        self.reorder.is_some()
+    }
+
+    #[must_use]
+    pub(super) fn lifted(&self) -> Option<WorkspaceId> {
+        self.reorder.filter(|reorder| reorder.lifted).map(|reorder| reorder.id)
+    }
+
+    pub(super) fn reorder_motion(
+        &mut self, x: f64, area: Rectangle<i32, Logical>, output: Rectangle<i32, Logical>,
+    ) -> bool {
+        let Some(reorder) = self.reorder.as_mut() else {
+            return false;
+        };
+        reorder.pointer = x;
+        if !reorder.lifted && (x - reorder.start).abs() < super::drag::SLOP {
+            return false;
+        }
+        reorder.lifted = true;
+        let row = self.row(area, output);
+        self.retarget_places_in(row);
+        true
+    }
+
+    pub(super) fn release_reorder(
+        &mut self, area: Rectangle<i32, Logical>, output: Rectangle<i32, Logical>,
+    ) -> Option<Reordered> {
+        let reorder = self.reorder?;
+        let row = self.row(area, output);
+        let target = self.reorder_target(&reorder, row);
+        self.reorder = None;
+        if !reorder.lifted {
+            return Some(Reordered::Click(reorder.id));
+        }
+        let (left, step) = row;
+        let last = self.workspaces.len().saturating_sub(1) as f64;
+        let dropped = ((reorder.pointer - reorder.grab - left) / step).clamp(0.0, last);
+        let mut place = glide_ui::Tween::at(dropped);
+        place.retarget(target as f64, shuffle(), glide_theme::motion::ease_out);
+        self.places.insert(reorder.id, place);
+        if self.index_of(reorder.id) == Some(target) {
+            self.retarget_places_in(row);
+            return Some(Reordered::Settled);
+        }
+        Some(Reordered::Moved { id: reorder.id, index: target })
+    }
+
+    pub(super) fn cancel_reorder(&mut self) -> bool {
+        let was = self.reorder.take().is_some();
+        self.retarget_places();
+        was
+    }
+
+    #[must_use]
+    pub(super) fn paint_order(&self) -> Vec<WorkspaceId> {
+        let lifted = self.lifted();
+        let mut order: Vec<WorkspaceId> = lifted.into_iter().collect();
+        order.extend(self.workspaces.iter().copied().filter(|id| Some(*id) != lifted));
+        order
+    }
+
     pub(super) fn set_dragging(&mut self, dragging: bool) {
         self.add_open.retarget(if dragging { 1.0 } else { 0.0 }, slide(), glide_theme::motion::ease_out);
     }
@@ -176,6 +325,7 @@ impl Strip {
             || self.drop.is_animating(hover_anim())
             || self.ring.as_ref().is_some_and(|ring| ring.is_animating(slide()))
             || self.add_open.is_animating(slide())
+            || self.places.values().any(|place| place.is_animating(shuffle()))
     }
 
     fn add_open(&self) -> f64 {
@@ -187,17 +337,23 @@ impl Strip {
     ) -> Vec<(Slot, Rectangle<f64, Logical>)> {
         let thumb = thumb_size(area, output).to_f64();
         let add = f64::from(ADD_WIDTH) + (thumb.w - f64::from(ADD_WIDTH)) * self.add_open();
-        let count = self.workspaces.len() as f64;
-        let gaps = (count - 1.0).max(0.0) * f64::from(GAP);
-        let total = count * thumb.w + gaps + if self.can_add { f64::from(GAP) + add } else { 0.0 };
-        let mut x = f64::from(area.loc.x) + (f64::from(area.size.w) - total) / 2.0;
+        let (left, step) = self.row(area, output);
         let y = f64::from(area.loc.y + TOP_GAP);
+        let last = left + self.workspaces.len().saturating_sub(1) as f64 * step;
+        let lifted = self.reorder.filter(|reorder| reorder.lifted);
         let mut slots = Vec::with_capacity(self.workspaces.len() + 1);
-        for id in &self.workspaces {
-            slots.push((Slot::Workspace(*id), Rectangle::new(Point::from((x, y)), thumb)));
-            x += thumb.w + f64::from(GAP);
+        for id in self.paint_order() {
+            let index = self.index_of(id).unwrap_or(0) as f64;
+            let place =
+                self.places.get(&id).map_or(index, |place| place.value(shuffle(), glide_theme::motion::ease_out));
+            let x = match lifted {
+                Some(reorder) if reorder.id == id => (reorder.pointer - reorder.grab).clamp(left, last.max(left)),
+                _ => place.mul_add(step, left),
+            };
+            slots.push((Slot::Workspace(id), Rectangle::new(Point::from((x, y)), thumb)));
         }
         if self.can_add {
+            let x = self.workspaces.len() as f64 * step + left;
             slots.push((Slot::Add, Rectangle::new(Point::from((x, y)), Size::from((add, thumb.h)))));
         }
         slots
@@ -225,6 +381,29 @@ impl Strip {
             .map(|(slot, base)| self.drawn(slot, base, rise))
     }
 
+    fn render_ring<R: ShellRenderer>(
+        &mut self, renderer: &mut R, theme: &OverviewTheme,
+        (active, thumb, key): (Rectangle<f64, Logical>, Size<i32, Logical>, RasterKey), (alpha, rise): (f32, f64),
+        scale: Scale<f64>, elements: &mut Vec<OverviewElement<R>>,
+    ) {
+        let Some(ring) = self.ring.as_ref() else {
+            return;
+        };
+        let output_scale = key.output_scale;
+        let behind = ring.value(slide(), glide_theme::motion::ease_out) - ring.target();
+        let outset = f64::from(RING_GAP) + f64::from(RING);
+        let x = behind.mul_add(f64::from(thumb.w + GAP), active.loc.x) - outset;
+        let size = (thumb.w + 2 * (RING_GAP + RING as i32), thumb.h + 2 * (RING_GAP + RING as i32));
+        let outdated = self.ring_buffer.get(&output_scale).is_none_or(|(cached, at, _)| *cached != key || *at != size);
+        if outdated && let Some(memory) = draw_ring(theme, size, output_scale) {
+            self.ring_buffer.insert(output_scale, (key, size, memory));
+        }
+        if let Some((_, size, memory)) = self.ring_buffer.get(&output_scale) {
+            let rect = Rectangle::new(Point::from((x, active.loc.y - outset - rise)), Size::from(*size).to_f64());
+            elements.extend(place_in(renderer, rect, *size, memory, alpha, scale).map(OverviewElement::Buffer));
+        }
+    }
+
     pub(super) fn render_chrome<R: ShellRenderer>(
         &mut self, renderer: &mut R, (theme, painter): (&OverviewTheme, &crate::paint::Painter),
         (area, output): (Rectangle<i32, Logical>, Rectangle<i32, Logical>), (alpha, rise): (f32, f64),
@@ -237,25 +416,15 @@ impl Strip {
         let thumb = thumb_size(area, output);
         let slots = self.slots(area, output);
 
-        if let (Some(ring), Some((_, first))) = (self.ring.as_ref(), slots.first()) {
-            let index = ring.value(slide(), glide_theme::motion::ease_out);
-            let outset = f64::from(RING_GAP) + f64::from(RING);
-            let x = first.loc.x + index * f64::from(thumb.w + GAP) - outset;
-            let size = (thumb.w + 2 * (RING_GAP + RING as i32), thumb.h + 2 * (RING_GAP + RING as i32));
-            let outdated =
-                self.ring_buffer.get(&output_scale).is_none_or(|(cached, at, _)| *cached != key || *at != size);
-            if outdated && let Some(memory) = draw_ring(theme, size, output_scale) {
-                self.ring_buffer.insert(output_scale, (key, size, memory));
-            }
-            if let Some((_, size, memory)) = self.ring_buffer.get(&output_scale) {
-                let rect = Rectangle::new(Point::from((x, first.loc.y - outset - rise)), Size::from(*size).to_f64());
-                elements.extend(place_in(renderer, rect, *size, memory, alpha, scale).map(OverviewElement::Buffer));
-            }
+        let active_slot = self.active.map(Slot::Workspace);
+        let active_rect = slots.iter().find(|(slot, _)| Some(*slot) == active_slot).map(|(_, rect)| *rect);
+        if let Some(active) = active_rect {
+            self.render_ring(renderer, theme, (active, thumb, key), (alpha, rise), scale, elements);
         }
 
         let margin = margin();
         let mut captions = Vec::new();
-        for (index, (slot, base)) in slots.iter().enumerate() {
+        for (slot, base) in &slots {
             let drawn = self.drawn(*slot, *base, rise);
             let hover = self.hover.level(*slot, hover_anim());
             let drop = self.drop.level(*slot, hover_anim());
@@ -286,6 +455,7 @@ impl Strip {
                         );
                     }
                     let active = self.active == Some(*id);
+                    let index = self.index_of(*id).unwrap_or(0);
                     let text =
                         crate::i18n::t(crate::i18n::Key::OverviewDesktop).replace("{}", &(index + 1).to_string());
                     captions.push((index, text, active, *base, 1.0));
@@ -521,6 +691,51 @@ mod tests {
             assert_eq!(add.size.w.round() as i32, thumb_size(area(), output()).w);
         }
         assert!(glide_theme::motion::is_disabled() || strip.is_animating());
+    }
+
+    fn three() -> Strip {
+        let mut strip = Strip::default();
+        strip.set(vec![WorkspaceId(1), WorkspaceId(2), WorkspaceId(3)], WorkspaceId(1), true);
+        strip
+    }
+
+    fn x_of(strip: &Strip, id: WorkspaceId) -> f64 {
+        strip.slots(area(), output()).into_iter().find(|(slot, _)| *slot == Slot::Workspace(id)).unwrap().1.loc.x
+    }
+
+    #[test]
+    fn a_thumbnail_pressed_and_let_go_in_place_is_a_click() {
+        let mut strip = three();
+        let x = x_of(&strip, WorkspaceId(2)) + 10.0;
+        strip.press_reorder(WorkspaceId(2), x, area(), output());
+        assert!(!strip.reorder_motion(x + 3.0, area(), output()));
+        assert_eq!(strip.release_reorder(area(), output()), Some(Reordered::Click(WorkspaceId(2))));
+        assert!(!strip.reorder_pressed());
+    }
+
+    #[test]
+    fn a_dragged_thumbnail_follows_the_pointer_and_lands_where_it_is_let_go() {
+        let mut strip = three();
+        let step = f64::from(thumb_size(area(), output()).w + GAP);
+        let first = x_of(&strip, WorkspaceId(1));
+        strip.press_reorder(WorkspaceId(1), first + 10.0, area(), output());
+        assert!(strip.reorder_motion(first + 10.0 + step * 1.6, area(), output()));
+        assert_eq!(strip.lifted(), Some(WorkspaceId(1)));
+        assert!((x_of(&strip, WorkspaceId(1)) - (first + step * 1.6)).abs() < 1e-6, "it sits under the pointer");
+        assert_eq!(strip.paint_order()[0], WorkspaceId(1), "the carried thumbnail draws on top");
+        assert_eq!(strip.release_reorder(area(), output()), Some(Reordered::Moved { id: WorkspaceId(1), index: 2 }));
+    }
+
+    #[test]
+    fn a_thumbnail_dropped_back_on_its_own_place_settles() {
+        let mut strip = three();
+        let x = x_of(&strip, WorkspaceId(3)) + 10.0;
+        strip.press_reorder(WorkspaceId(3), x, area(), output());
+        strip.reorder_motion(x + 20.0, area(), output());
+        assert_eq!(strip.release_reorder(area(), output()), Some(Reordered::Settled));
+        strip.press_reorder(WorkspaceId(3), x, area(), output());
+        assert!(strip.cancel_reorder());
+        assert!(!strip.reorder_pressed());
     }
 
     #[test]
