@@ -197,10 +197,11 @@ impl GlideState {
         }
         match reply.body {
             Response::Stopped => {
-                tracing::warn!("the keychain stopped; it starts again with the next request");
+                tracing::warn!("the keychain stopped; starting it again");
                 for (_, callback) in std::mem::take(&mut self.session.keychain.waiting) {
                     callback(self, Response::Error { message: "the keychain stopped".into() });
                 }
+                self.sync_passwords_applet();
             }
             Response::UnlockRequested { vault, requester } => {
                 let app = requester.map(|program| self.program_name(&program));
