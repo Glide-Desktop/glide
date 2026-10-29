@@ -26,6 +26,7 @@ use glide_theme::Color;
 pub mod global_menu;
 pub mod headset;
 pub mod keychain_prompt;
+pub mod netbird;
 pub mod notifications;
 pub mod polkit;
 pub mod power;
