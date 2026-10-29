@@ -80,6 +80,7 @@ pub fn members(xml: &str, interface: &str) -> std::collections::BTreeSet<Member>
         .collect()
 }
 
+#[must_use]
 pub fn introspect(bus: &Daemon, destination: &str, path: &str) -> String {
     let reply = bus
         .client()

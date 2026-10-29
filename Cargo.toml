@@ -27,6 +27,7 @@ members = [
     "crates/glide-passwords",
     "crates/glide-portal",
     "crates/glide-sdk",
+    "crates/glide-services",
     "crates/glide-settings",
     "crates/glide-shell",
     "crates/glide-shot",

@@ -1984,6 +1984,7 @@ dependencies = [
  "glide-notify",
  "glide-overlays",
  "glide-paint",
+ "glide-services",
  "glide-shell",
  "glide-shot",
  "glide-system",
@@ -1992,16 +1993,13 @@ dependencies = [
  "glide-tray",
  "glide-ui",
  "libc",
- "png 0.18.1",
  "profiling",
  "qrcode",
- "roxmltree 0.21.1",
  "rqrr",
  "serde",
  "serde_json",
  "smithay",
  "smithay-drm-extras",
- "tiny-skia 0.12.0",
  "toml",
  "toml_edit",
  "tracing",
@@ -2010,7 +2008,6 @@ dependencies = [
  "wayland-backend",
  "wayland-scanner",
  "wayland-server",
- "x11rb",
  "xcursor",
  "zbus",
  "zeroize",
@@ -2302,6 +2299,24 @@ dependencies = [
  "toml",
  "tracing",
  "zbus",
+]
+
+[[package]]
+name = "glide-services"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glide-appmenu",
+ "glide-config",
+ "glide-shell",
+ "glide-system",
+ "libc",
+ "roxmltree 0.21.1",
+ "serde",
+ "tracing",
+ "x11rb",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]

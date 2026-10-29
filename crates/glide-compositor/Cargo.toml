@@ -27,9 +27,7 @@ serde_json.workspace = true
 toml.workspace = true
 toml_edit = "0.25"
 libc = "0.2"
-png = "0.18"
 rqrr = "0.10"
-tiny-skia = "0.12.0"
 glide-appmenu = { path = "../glide-appmenu" }
 glide-cast = { path = "../glide-cast" }
 glide-config = { path = "../glide-config" }
@@ -45,6 +43,7 @@ glide-netbird = { path = "../glide-netbird" }
 glide-notify = { path = "../glide-notify" }
 glide-overlays = { path = "../glide-overlays" }
 glide-paint = { path = "../glide-paint" }
+glide-services = { path = "../glide-services" }
 glide-shell = { path = "../glide-shell" }
 glide-shot = { path = "../glide-shot" }
 glide-system = { path = "../glide-system" }
@@ -57,7 +56,6 @@ wayland-backend = "0.3"
 wayland-scanner = "0.31"
 wayland-server = "0.31"
 tracy-client = { version = "0.18.4", optional = true }
-x11rb = "0.14"
 zbus.workspace = true
 zeroize = "1"
 glide-app = { path = "../glide-app" }
@@ -76,5 +74,5 @@ features = [
 ]
 
 [dev-dependencies]
+glide-services = { path = "../glide-services", features = ["test-bus"] }
 qrcode = { version = "0.14", default-features = false }
-roxmltree = "0.21"

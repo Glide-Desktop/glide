@@ -171,7 +171,7 @@ fn serve(builder: Builder<'_>, sink: Arc<dyn Fn(Event) + Send + Sync>) -> zbus::
 
 pub fn start(sink: impl Fn(Event) + Send + Sync + 'static) -> anyhow::Result<()> {
     let connection = serve(Builder::system()?, Arc::new(sink))?;
-    crate::agent_prompt::keep_registered(connection, AUTHORITY, "glide-polkit-agent", register)
+    crate::bus::keep_registered(connection, AUTHORITY, "glide-polkit-agent", register)
 }
 
 #[cfg(test)]

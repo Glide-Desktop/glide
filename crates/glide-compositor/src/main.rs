@@ -1,7 +1,6 @@
 #![allow(irrefutable_let_patterns)]
 
 mod agent_prompt;
-mod app_index;
 mod app_menu;
 mod battery_alert;
 mod bluetooth_agent;
@@ -9,7 +8,6 @@ mod dock_glue;
 mod drag_assist;
 mod handlers;
 mod launcher_entry;
-mod logind;
 
 mod autofill;
 mod backend;
@@ -43,14 +41,11 @@ mod media_art;
 mod mirror;
 mod netbird;
 mod nm_agent;
-mod oneshot;
 mod otp;
 mod overview;
 mod paint;
 mod passwords_applet;
 mod polkit;
-mod polkit_agent;
-mod polkit_helper;
 mod power;
 mod privilege;
 mod qr_scan;
@@ -58,7 +53,6 @@ mod qs_net;
 mod removable;
 mod screen_picker;
 mod screencopy;
-mod screensaver;
 mod screenshot_ui;
 mod session_end;
 mod shell_bus;
@@ -71,14 +65,10 @@ mod sound;
 mod state;
 mod super_keys;
 mod surface_fade;
-#[cfg(test)]
-mod test_bus;
 mod tiling;
 mod tray;
 mod welcome;
 mod window;
-mod x11_menus;
-mod xdg_autostart;
 mod xwayland;
 
 use smithay::{
@@ -94,6 +84,9 @@ use glide_dock::{self as dock, preview as dock_preview};
 use glide_greeter::{self as greeter, handoff};
 use glide_launcher as launcher;
 use glide_overlays::{osd, power_dialog, switcher};
+#[cfg(test)]
+use glide_services::test_bus;
+use glide_services::{app_index, logind, oneshot, polkit_agent, polkit_helper, screensaver, x11_menus, xdg_autostart};
 use glide_shell::{i18n, icon, raster};
 pub use glide_system::{reap_child_processes, spawn_detached, spawn_shell_command, spawn_shell_command_with_env};
 use glide_system::{status_hooks, system_info};
