@@ -395,7 +395,7 @@ impl Strip {
         let x = behind.mul_add(f64::from(thumb.w + GAP), active.loc.x) - outset;
         let size = (thumb.w + 2 * (RING_GAP + RING as i32), thumb.h + 2 * (RING_GAP + RING as i32));
         let outdated = self.ring_buffer.get(&output_scale).is_none_or(|(cached, at, _)| *cached != key || *at != size);
-        if outdated && let Some(memory) = draw_ring(theme, size, output_scale) {
+        if outdated && let Some(memory) = draw_ring(theme, size, output_scale).map(|c| c.finish()) {
             self.ring_buffer.insert(output_scale, (key, size, memory));
         }
         if let Some((_, size, memory)) = self.ring_buffer.get(&output_scale) {
@@ -434,7 +434,8 @@ impl Strip {
                     let size = (thumb.w, thumb.h);
                     let frames = self.frames.entry(output_scale).or_default();
                     let outdated = frames.get(&buckets).is_none_or(|(cached, at, _)| *cached != key || *at != size);
-                    if outdated && let Some(memory) = draw_frame(theme, size, buckets, output_scale) {
+                    if outdated && let Some(memory) = draw_frame(theme, size, buckets, output_scale).map(|c| c.finish())
+                    {
                         frames.insert(buckets, (key, size, memory));
                     }
                     if let Some((_, _, memory)) = frames.get(&buckets) {
@@ -511,7 +512,7 @@ impl Strip {
         elements: &mut Vec<OverviewElement<R>>,
     ) {
         let plus_stale = self.plus.get(&output_scale).is_none_or(|(cached, _)| *cached != key);
-        if plus_stale && let Some(memory) = draw_plus(theme, output_scale) {
+        if plus_stale && let Some(memory) = draw_plus(theme, output_scale).map(|c| c.finish()) {
             self.plus.insert(output_scale, (key, memory));
         }
         if let Some((_, memory)) = self.plus.get(&output_scale) {
@@ -526,7 +527,8 @@ impl Strip {
         let size = (ADD_WIDTH, drawn.size.h.round() as i32);
         let tiles = self.add_tile.entry(output_scale).or_default();
         let outdated = tiles.get(&level).is_none_or(|(cached, at, _)| *cached != key || *at != size);
-        if outdated && let Some(memory) = draw_add(theme, size, f64::from(level) / BUCKETS, output_scale) {
+        let painted = outdated.then(|| draw_add(theme, size, f64::from(level) / BUCKETS, output_scale)).flatten();
+        if let Some(memory) = painted.map(|c| c.finish()) {
             tiles.insert(level, (key, size, memory));
         }
         if let Some((_, size, memory)) = tiles.get(&level) {
@@ -545,7 +547,7 @@ impl Strip {
         let thumb = thumb_size(area, output);
         let wall = WallKey { size: (thumb.w, thumb.h), generation: glide_paint::wallpaper_generation(), fit };
         if self.wallpaper.get(&output_scale).is_none_or(|(cached, _)| *cached != wall)
-            && let Some(memory) = draw_wallpaper(thumb, fit, output_scale)
+            && let Some(memory) = draw_wallpaper(thumb, fit, output_scale).map(|c| c.finish())
         {
             self.wallpaper.insert(output_scale, (wall, memory));
         }
@@ -569,9 +571,7 @@ fn shadow_layers() -> [glide_theme::elevation::ShadowLayer; 1] {
     [glide_theme::elevation::ShadowLayer { dx: 0.0, dy: SHADOW_DY, blur: SHADOW_BLUR, spread: 0.0, color }]
 }
 
-fn draw_frame(
-    theme: &OverviewTheme, (w, h): (i32, i32), (hover, drop): (u8, u8), output_scale: i32,
-) -> Option<MemoryRenderBuffer> {
+fn draw_frame(theme: &OverviewTheme, (w, h): (i32, i32), (hover, drop): (u8, u8), output_scale: i32) -> Option<Canvas> {
     let (hover, drop) = (f32::from(hover) / BUCKETS as f32, f32::from(drop) / BUCKETS as f32);
     let (margin, radius) = (margin(), glide_theme::shape::R2);
     let mut c = crate::raster::shadow((w, h), margin, radius, &shadow_layers(), output_scale)?;
@@ -584,17 +584,17 @@ fn draw_frame(
     if border.0[3] > 0.0 {
         c.stroke(thumb, (DROP_BORDER - BORDER).mul_add(drop, BORDER), radius, border);
     }
-    Some(c.finish())
+    Some(c)
 }
 
-fn draw_ring(theme: &OverviewTheme, (w, h): (i32, i32), output_scale: i32) -> Option<MemoryRenderBuffer> {
+fn draw_ring(theme: &OverviewTheme, (w, h): (i32, i32), output_scale: i32) -> Option<Canvas> {
     let mut c = crate::raster::Canvas::new(w, h, output_scale)?;
     let radius = glide_theme::shape::R2 + (RING_GAP as f32) + RING;
     c.stroke(c.full(), RING, radius, theme.strip_ring);
-    Some(c.finish())
+    Some(c)
 }
 
-fn draw_add(theme: &OverviewTheme, (w, h): (i32, i32), drop: f64, output_scale: i32) -> Option<MemoryRenderBuffer> {
+fn draw_add(theme: &OverviewTheme, (w, h): (i32, i32), drop: f64, output_scale: i32) -> Option<Canvas> {
     let mut c = crate::raster::Canvas::new(w, h, output_scale)?;
     let radius = glide_theme::shape::R2;
     let drop = drop as f32;
@@ -605,19 +605,19 @@ fn draw_add(theme: &OverviewTheme, (w, h): (i32, i32), drop: f64, output_scale: 
         radius,
         theme.strip_add_border.lerp(theme.highlight, drop),
     );
-    Some(c.finish())
+    Some(c)
 }
 
-fn draw_plus(theme: &OverviewTheme, output_scale: i32) -> Option<MemoryRenderBuffer> {
+fn draw_plus(theme: &OverviewTheme, output_scale: i32) -> Option<Canvas> {
     let mut c = crate::raster::Canvas::new(PLUS, PLUS, output_scale)?;
     let middle = (PLUS - PLUS_STROKE) / 2;
     let radius = PLUS_STROKE as f32 / 2.0;
     c.fill(crate::raster::rect(2, middle, PLUS - 4, PLUS_STROKE), theme.strip_caption_active, radius);
     c.fill(crate::raster::rect(middle, 2, PLUS_STROKE, PLUS - 4), theme.strip_caption_active, radius);
-    Some(c.finish())
+    Some(c)
 }
 
-fn draw_wallpaper(thumb: Size<i32, Logical>, fit: WallpaperFit, output_scale: i32) -> Option<MemoryRenderBuffer> {
+fn draw_wallpaper(thumb: Size<i32, Logical>, fit: WallpaperFit, output_scale: i32) -> Option<Canvas> {
     let (w, h) = (thumb.w * output_scale, thumb.h * output_scale);
     let len = usize::try_from(w * h * 4).ok()?;
     let mut source = vec![0u8; len];
@@ -625,8 +625,10 @@ fn draw_wallpaper(thumb: Size<i32, Logical>, fit: WallpaperFit, output_scale: i3
     let mut canvas = crate::raster::Canvas::new(thumb.w, thumb.h, output_scale)?;
     let radius = glide_theme::shape::R2 * output_scale as f32;
     glide_paint::blit_rounded_backdrop(&mut canvas.buf, w, h, radius, &source, w, h, (0, 0, w, h)).then_some(())?;
-    Some(canvas.finish())
+    Some(canvas)
 }
+
+type Canvas = crate::raster::Canvas<'static>;
 
 #[cfg(test)]
 mod tests {
@@ -692,6 +694,76 @@ mod tests {
         }
         assert!(glide_theme::motion::is_disabled() || strip.is_animating());
     }
+
+    #[test]
+    #[ignore = "writes PNGs to $GLIDE_OVERVIEW_PREVIEW for a visual check"]
+    fn preview() {
+        use glide_shell::image::Image;
+        let Some(dir) = std::env::var_os("GLIDE_OVERVIEW_PREVIEW") else {
+            return;
+        };
+        let scale = 2;
+        let painter = glide_paint::Painter::new(14.0, None);
+        for appearance in [glide_theme::Appearance::Dark, glide_theme::Appearance::Light] {
+            let tokens = glide_theme::Tokens::new(appearance, glide_theme::Accent::Blue);
+            let theme = OverviewTheme::from_tokens(&tokens);
+            let thumb = thumb_size(area(), output());
+            let (w, h) = (thumb.w, thumb.h);
+            let (width, height) = (((w + GAP) * 5 + 120) * scale, (h * 2 + 260) * scale);
+            let mut image = Image::new(width as u32, height as u32).expect("image");
+            let shade = if appearance == glide_theme::Appearance::Dark { 24 } else { 226 };
+            let backdrop: Vec<u8> =
+                std::iter::repeat_n([shade, shade, shade, 255], (width * height) as usize).flatten().collect();
+            image.draw(&Image::from_bgra(width as u32, height as u32, backdrop).expect("backdrop"), 0, 0);
+            let put = |image: &mut Image, canvas: &Canvas, x: i32, y: i32| {
+                let (cw, ch) = ((canvas.w * scale) as u32, (canvas.h * scale) as u32);
+                image.draw(&Image::from_bgra(cw, ch, canvas.buf.clone()).expect("layer"), x * scale, y * scale);
+            };
+            let margin = margin();
+            let wall = draw_wallpaper(thumb, WallpaperFit::default(), scale).expect("wallpaper");
+            let states = [(0, 0), (BUCKETS as u8, 0), (0, BUCKETS as u8)];
+            for (index, buckets) in states.into_iter().enumerate() {
+                let x = 40 + i32::try_from(index).unwrap_or(0) * (w + GAP);
+                let y = 40;
+                put(&mut image, &wall, x, y);
+                let mut window = crate::raster::Canvas::new(w / 2, h / 2, scale).expect("window");
+                window.fill(window.full(), tokens.win_bg, MINI_RADIUS_PREVIEW);
+                window.fill(crate::raster::rect(0, 0, w / 2, 4), tokens.bar_bg, MINI_RADIUS_PREVIEW);
+                put(&mut image, &window, x + w / 5, y + h / 5);
+                let frame = draw_frame(&theme, (w, h), buckets, scale).expect("frame");
+                put(&mut image, &frame, x - margin, y - margin);
+                let caption = format!("Стіл {}", index + 1);
+                let mut label = crate::raster::Canvas::new(w, CAPTION_HEIGHT, scale).expect("caption");
+                let colour = if index == 0 { theme.strip_caption_active } else { theme.strip_caption };
+                label.label(
+                    &painter,
+                    (0, w),
+                    crate::paint::TextAlign::Center,
+                    &caption,
+                    colour,
+                    &glide_theme::TextStyle::CAP,
+                );
+                put(&mut image, &label, x, y + h + CAPTION_GAP);
+            }
+            let outset = RING_GAP + RING as i32;
+            let ring = draw_ring(&theme, (w + 2 * outset, h + 2 * outset), scale).expect("ring");
+            put(&mut image, &ring, 40 - outset, 40 - outset);
+            let add_x = 40 + 3 * (w + GAP);
+            let add = draw_add(&theme, (ADD_WIDTH, h), 0.0, scale).expect("add");
+            put(&mut image, &add, add_x, 40);
+            let plus = draw_plus(&theme, scale).expect("plus");
+            put(&mut image, &plus, add_x + (ADD_WIDTH - PLUS) / 2, 40 + (h - PLUS) / 2);
+            let open = draw_add(&theme, (w, h), 1.0, scale).expect("open");
+            put(&mut image, &open, add_x + ADD_WIDTH + GAP, 40);
+            put(&mut image, &plus, add_x + ADD_WIDTH + GAP + (w - PLUS) / 2, 40 + (h - PLUS) / 2);
+            let card = super::super::draw_page_card(&theme, (w * 3, 150), scale).expect("card");
+            put(&mut image, &card, 40, h + 110);
+            let file = format!("overview-strip-{appearance:?}.png").to_lowercase();
+            std::fs::write(std::path::Path::new(&dir).join(file), image.png().expect("png")).expect("write");
+        }
+    }
+
+    const MINI_RADIUS_PREVIEW: f32 = 2.0;
 
     fn three() -> Strip {
         let mut strip = Strip::default();

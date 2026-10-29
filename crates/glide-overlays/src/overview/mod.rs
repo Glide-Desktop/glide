@@ -1156,12 +1156,14 @@ fn draw_close_button(theme: &OverviewTheme, hover_t: f32, output_scale: i32) -> 
     Some(c.finish())
 }
 
-fn draw_page_card(theme: &OverviewTheme, (w, h): (i32, i32), output_scale: i32) -> Option<MemoryRenderBuffer> {
+fn draw_page_card(
+    theme: &OverviewTheme, (w, h): (i32, i32), output_scale: i32,
+) -> Option<crate::raster::Canvas<'static>> {
     let mut c = crate::raster::Canvas::new(w, h, output_scale)?;
     let radius = glide_theme::shape::R4;
     c.fill(c.full(), theme.strip_add, radius);
     c.stroke(c.full(), 1.0, radius, theme.strip_add_border);
-    Some(c.finish())
+    Some(c)
 }
 
 fn paint_label(
@@ -1480,7 +1482,7 @@ impl OverviewUi {
             let key = RasterKey::new(&theme, output_scale);
             let outdated =
                 self.page_cards.get(&output_scale).is_none_or(|(cached, at, _)| *cached != key || *at != size);
-            if outdated && let Some(memory) = draw_page_card(&theme, size, output_scale) {
+            if outdated && let Some(memory) = draw_page_card(&theme, size, output_scale).map(|c| c.finish()) {
                 self.page_cards.insert(output_scale, (key, size, memory));
             }
             if let Some((_, size, memory)) = self.page_cards.get(&output_scale) {
