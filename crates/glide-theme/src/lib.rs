@@ -380,6 +380,12 @@ pub struct OverviewTheme {
     pub strip_from: Color,
     pub strip_to: Color,
     pub strip_pick: Color,
+    pub strip_ring: Color,
+    pub strip_drop: Color,
+    pub strip_add: Color,
+    pub strip_add_border: Color,
+    pub strip_caption: Color,
+    pub strip_caption_active: Color,
     pub border: i32,
     pub corner_radius: f32,
     pub duration_ms: u64,
@@ -398,7 +404,8 @@ impl OverviewTheme {
         repaint_colors!(self, Self::default(), Self::from_tokens(t);
             label_color, label_background, label_border, close_background, close_foreground,
             close_border, close_hover_background, close_hover_foreground, dim, highlight,
-            strip_from, strip_to, strip_pick);
+            strip_from, strip_to, strip_pick, strip_ring, strip_drop, strip_add, strip_add_border,
+            strip_caption, strip_caption_active);
         self.appearance = t.appearance;
     }
 
@@ -424,6 +431,12 @@ impl OverviewTheme {
             strip_from: t.popover_bg,
             strip_to: t.fill_2,
             strip_pick: t.fg_1.with_alpha(0.45),
+            strip_ring: t.acc_text,
+            strip_drop: t.acc_soft,
+            strip_add: t.fill_2,
+            strip_add_border: t.line_2,
+            strip_caption: t.fg_3,
+            strip_caption_active: t.fg_1,
             border: 3,
             corner_radius: shape::R3,
             duration_ms: u64::try_from(motion::T4.as_millis()).unwrap_or(u64::MAX),

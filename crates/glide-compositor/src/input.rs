@@ -53,6 +53,9 @@ pub enum KeyAction {
     OverviewCancel,
     OverviewSelect,
     OverviewNav(Direction),
+    OverviewPage(isize),
+    OverviewPageTo(usize),
+    OverviewSend(isize),
     Exec(String),
     Screenshot,
     ScreenshotScreen,
@@ -719,6 +722,8 @@ fn overview_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_s
         Some(KeyAction::OverviewCancel)
     } else if matches(Keysym::Return) || matches(Keysym::KP_Enter) || plain(Keysym::space) {
         Some(KeyAction::OverviewSelect)
+    } else if let Some(step) = overview_step(modifiers, &matches) {
+        Some(step)
     } else if matches(Keysym::Left) || plain(Keysym::h) {
         Some(KeyAction::OverviewNav(Direction::Left))
     } else if matches(Keysym::Right) || plain(Keysym::l) {
@@ -730,6 +735,26 @@ fn overview_shortcut(modifiers: &ModifiersState, raw_syms: &[Keysym], modified_s
     } else {
         None
     }
+}
+
+fn overview_step(modifiers: &ModifiersState, matches: &impl Fn(Keysym) -> bool) -> Option<KeyAction> {
+    if modifiers.logo || modifiers.alt {
+        return None;
+    }
+    let sideways = |step: isize| (matches(Keysym::Left) && step < 0) || (matches(Keysym::Right) && step > 0);
+    for step in [-1, 1] {
+        let page_key = if step < 0 { Keysym::Page_Up } else { Keysym::Page_Down };
+        if matches(page_key) || (modifiers.ctrl && !modifiers.shift && sideways(step)) {
+            return Some(KeyAction::OverviewPage(step));
+        }
+        if modifiers.shift && !modifiers.ctrl && sideways(step) {
+            return Some(KeyAction::OverviewSend(step));
+        }
+    }
+    let digits =
+        [Keysym::_1, Keysym::_2, Keysym::_3, Keysym::_4, Keysym::_5, Keysym::_6, Keysym::_7, Keysym::_8, Keysym::_9];
+    let digit = digits.iter().position(|digit| matches(*digit));
+    digit.filter(|_| modifiers.ctrl).map(KeyAction::OverviewPageTo)
 }
 
 #[must_use]
@@ -1871,8 +1896,15 @@ impl GlideState {
                 self.queue_redraw();
             }
             KeyAction::OverviewCancel => {
-                self.begin_close_overview(None);
+                if self.overview.as_mut().is_some_and(OverviewUi::cancel_drag) {
+                    self.queue_redraw();
+                } else {
+                    self.begin_close_overview(None);
+                }
             }
+            KeyAction::OverviewPage(step) => self.overview_page(step),
+            KeyAction::OverviewPageTo(index) => self.overview_page_to(index),
+            KeyAction::OverviewSend(step) => self.overview_send_hovered(step),
             KeyAction::OverviewSelect => {
                 let select = self.overview.as_ref().and_then(OverviewUi::hovered);
                 self.begin_close_overview(select);
@@ -2175,7 +2207,7 @@ impl GlideState {
         if self.session_lock.is_some() {
             return false;
         }
-        if !self.dock.is_enabled() || self.layout.overview_active() || self.dock_suppressed() {
+        if !self.dock.is_enabled() || self.overview_covers_dock() || self.dock_suppressed() {
             if self.dock.set_hover(None) {
                 self.queue_redraw();
             }
@@ -2266,6 +2298,24 @@ impl GlideState {
         if !self.layout.overview_active() {
             return self.surface_under(pos);
         }
+        if self.overview.as_ref().is_some_and(OverviewUi::is_pressed) {
+            if self.overview.as_mut().is_some_and(|ui| ui.drag_motion(pos)) {
+                self.queue_redraw();
+            }
+            return None;
+        }
+        if !self.overview.as_ref().is_some_and(|ui| ui.contains(pos)) {
+            let cleared = self.overview.as_mut().is_some_and(|ui| {
+                let ring = ui.set_hover(None);
+                let button = ui.set_close_hover(None);
+                let thumb = ui.set_strip_hover(None);
+                ring || button || thumb
+            });
+            if cleared {
+                self.queue_redraw();
+            }
+            return self.surface_under(pos);
+        }
 
         let under = self.surface_under(pos);
         let on_layer = matches!(
@@ -2274,7 +2324,7 @@ impl GlideState {
                 if self.layer_for_surface(surface).is_some()
         );
 
-        let on_strip = self.overview.as_ref().and_then(|ui| ui.workspace_at(pos));
+        let on_strip = self.overview.as_ref().and_then(|ui| ui.strip_at(pos));
         let on_close = self.overview.as_ref().filter(|_| on_strip.is_none()).and_then(|ui| ui.close_button_at(pos));
         let hovered =
             self.overview.as_ref().filter(|_| on_strip.is_none()).and_then(|ui| ui.preview_at(pos)).or(on_close);
@@ -2516,6 +2566,7 @@ impl GlideState {
             self.queue_redraw();
         }
         if button == BTN_LEFT {
+            self.overview_release();
             let area = self.dock_area();
             match self.dock.end_press(area, pos) {
                 crate::dock::PressOutcome::Click(index) => self.activate_dock_item(index),
@@ -2750,7 +2801,7 @@ impl GlideState {
     }
 
     fn dock_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
-        if !self.dock.is_enabled() || self.layout.overview_active() || self.dock_suppressed() {
+        if !self.dock.is_enabled() || self.overview_covers_dock() || self.dock_suppressed() {
             return false;
         }
         let area = self.dock_area();
@@ -2793,7 +2844,7 @@ impl GlideState {
     }
 
     fn overview_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
-        if !self.layout.overview_active() {
+        if !self.layout.overview_active() || !self.overview.as_ref().is_some_and(|ui| ui.contains(pos)) {
             return false;
         }
         let on_layer = matches!(
@@ -2805,9 +2856,16 @@ impl GlideState {
             return false;
         }
 
-        if let Some(workspace) = self.overview.as_ref().and_then(|ui| ui.workspace_at(pos)) {
-            self.overview_switch_workspace(workspace);
-            return true;
+        match self.overview.as_ref().and_then(|ui| ui.strip_at(pos)) {
+            Some(crate::overview::Slot::Workspace(workspace)) => {
+                self.overview_switch_workspace(workspace);
+                return true;
+            }
+            Some(crate::overview::Slot::Add) => {
+                self.overview_new_workspace();
+                return true;
+            }
+            None => {}
         }
         let close = self.overview.as_ref().and_then(|ui| ui.close_button_at(pos));
         if let Some(id) = close {
@@ -2815,13 +2873,39 @@ impl GlideState {
             return true;
         }
 
-        match self.overview.as_ref().and_then(|ui| ui.preview_at(pos)) {
-            Some(id) if button == BTN_MIDDLE => self.close_from_overview(id),
-            hit => {
+        let hit = self.overview.as_ref().and_then(|ui| ui.preview_at(pos));
+        let elsewhere = hit
+            .and_then(|id| self.overview.as_ref().and_then(|ui| ui.workspace_of(id)))
+            .filter(|workspace| *workspace != self.layout.active_workspace());
+        match (hit, elsewhere) {
+            (Some(id), _) if button == BTN_MIDDLE => self.close_from_overview(id),
+            (Some(_), Some(workspace)) => self.overview_switch_workspace(workspace),
+            (Some(id), None) if button == BTN_LEFT => {
+                if !self.overview.as_mut().is_some_and(|ui| ui.press(id, pos)) {
+                    self.begin_close_overview(Some(id));
+                }
+            }
+            (hit, _) => {
                 self.begin_close_overview(hit);
             }
         }
         true
+    }
+
+    fn overview_release(&mut self) {
+        let Some(release) = self.overview.as_mut().and_then(OverviewUi::release) else {
+            return;
+        };
+        match release {
+            crate::overview::Release::Click(id) => {
+                self.begin_close_overview(Some(id));
+            }
+            crate::overview::Release::Move { id, to } => {
+                self.overview_move_window(id, to);
+            }
+            crate::overview::Release::Settled => {}
+        }
+        self.queue_redraw();
     }
 
     fn focus_click_target(&mut self, pos: Point<f64, Logical>) {
@@ -2902,7 +2986,7 @@ impl GlideState {
             || !self.dock.is_enabled()
             || self.dock.is_hidden()
             || self.launcher.is_some()
-            || self.layout.overview_active()
+            || self.overview_covers_dock()
             || self.dock_suppressed()
         {
             return false;
@@ -2945,6 +3029,15 @@ impl GlideState {
                 }
             } else if launcher.scroll_by(amount, finger) {
                 self.queue_redraw();
+            }
+            return;
+        }
+        let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let over_overview = pointer.is_some_and(|at| self.overview.as_ref().is_some_and(|ui| ui.contains(at)));
+        if over_overview {
+            let notch = event.amount_v120(Axis::Vertical).or_else(|| event.amount_v120(Axis::Horizontal));
+            if let Some(notch) = notch.filter(|notch| notch.abs() >= 1.0) {
+                self.overview_page(if notch > 0.0 { 1 } else { -1 });
             }
             return;
         }
@@ -3348,6 +3441,28 @@ mod tests {
             ];
             assert_eq!(overview_active_shortcut(&binds, &logo, &[], Keysym::w), KeyAction::ToggleOverview);
             assert_eq!(overview_active_shortcut(&binds, &logo, &[], Keysym::a), KeyAction::ToggleLauncher);
+        }
+
+        #[test]
+        fn pages_and_window_moves_have_their_own_keys_and_super_stays_global() {
+            let binds = default_binds();
+            let with =
+                |ctrl: bool, shift: bool, logo: bool| ModifiersState { ctrl, shift, logo, ..ModifiersState::default() };
+            for (modifiers, sym, action) in [
+                (with(false, false, false), Keysym::Page_Down, KeyAction::OverviewPage(1)),
+                (with(false, false, false), Keysym::Page_Up, KeyAction::OverviewPage(-1)),
+                (with(true, false, false), Keysym::Right, KeyAction::OverviewPage(1)),
+                (with(true, false, false), Keysym::Left, KeyAction::OverviewPage(-1)),
+                (with(false, true, false), Keysym::Right, KeyAction::OverviewSend(1)),
+                (with(false, true, false), Keysym::Left, KeyAction::OverviewSend(-1)),
+                (with(true, false, false), Keysym::_3, KeyAction::OverviewPageTo(2)),
+                (with(false, false, false), Keysym::Right, KeyAction::OverviewNav(Direction::Right)),
+                (with(false, false, false), Keysym::_3, KeyAction::None),
+            ] {
+                assert_eq!(overview_active_shortcut(&binds, &modifiers, &[], sym), action, "{modifiers:?} {sym:?}");
+            }
+            let paged = overview_active_shortcut(&binds, &with(false, true, true), &[], Keysym::Page_Down);
+            assert!(!matches!(paged, KeyAction::OverviewPage(_)), "Super+Shift+Page_Down keeps its own binding");
         }
     }
 

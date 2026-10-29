@@ -584,10 +584,15 @@ fn push_wallpaper_elements(
     }
 }
 
-fn overview_elements(
+#[allow(clippy::too_many_arguments)] // one overview pass needs the renderer, its output, the icons, the wallpaper fit and both window lookups
+fn overview_elements<'a>(
     gles_renderer: &mut GlesRenderer, overview: &mut crate::overview::OverviewUi, icons: &mut crate::icon::IconLoader,
     scale: Scale<f64>, output: &Output, output_geometry: smithay::utils::Rectangle<i32, Logical>,
-    lookup: impl FnMut(glide_layout::WindowId) -> Option<crate::overview::Tile>,
+    wallpaper: crate::config::WallpaperFit,
+    (lookup, window): (
+        impl FnMut(glide_layout::WindowId) -> Option<crate::overview::TileInfo>,
+        impl Fn(glide_layout::WindowId) -> Option<&'a GlideWindow>,
+    ),
 ) -> Vec<GlideRenderElements> {
     let mut elements: Vec<GlideRenderElements> = Vec::new();
 
@@ -597,9 +602,9 @@ fn overview_elements(
     let output_scale = output.current_scale().integer_scale();
     let origin = output_geometry.loc.to_f64().to_physical(scale).to_i32_round::<i32>();
     let offset = Point::<i32, smithay::utils::Physical>::from((-origin.x, -origin.y));
+    let frame = crate::overview::Frame { scale, output_scale, painter: &painter, icons, wallpaper, lookup };
     elements.extend(
-        overview
-            .render(gles_renderer, output_geometry, scale, output_scale, &painter, icons, lookup)
+        crate::overview::render(overview, gles_renderer, frame, window)
             .into_iter()
             .map(|element| GlideRenderElements::RelocatedOverview(relocate(element, offset))),
     );
@@ -1322,7 +1327,11 @@ impl GlideState {
         let topbar_hidden = !popup_here && fullscreen_center.is_some_and(|c| output_geometry.contains(c));
         let dock_hidden_here = !primary || dock_suppressed;
 
-        let backdrop_t = self.overview.as_ref().map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
+        let backdrop_t = self
+            .overview
+            .as_ref()
+            .filter(|overview| overview.place().output == output_geometry)
+            .map_or(0.0, crate::overview::OverviewUi::backdrop_progress);
 
         let unlocking = self.greeter.as_ref().is_some_and(|greeter| greeter.is_lock() && greeter.is_translucent());
         let mut elements = Vec::new();
@@ -1357,7 +1366,9 @@ impl GlideState {
                 1.0,
                 Kind::Unspecified,
             )));
-        } else if let Some(overview) = self.overview.as_mut() {
+        } else if let Some(overview) =
+            self.overview.as_mut().filter(|overview| overview.place().output == output_geometry)
+        {
             let window_map = &self.window_map;
             elements.extend(overview_elements(
                 gles_renderer,
@@ -1366,13 +1377,16 @@ impl GlideState {
                 scale,
                 &output,
                 output_geometry,
-                |id| {
-                    window_map.get(&id).map(|window| crate::overview::Tile {
-                        window: window.clone(),
-                        title: window.display_name(),
-                        app: overview_apps.get(&id).cloned(),
-                    })
-                },
+                self.wallpaper_fit,
+                (
+                    |id| {
+                        window_map.get(&id).map(|window| crate::overview::TileInfo {
+                            title: window.display_name(),
+                            app: overview_apps.get(&id).cloned(),
+                        })
+                    },
+                    |id| window_map.get(&id),
+                ),
             ));
         } else {
             let Some(space_elements) = build_render_elements(gles_renderer, &self.space, &output) else {
@@ -1931,6 +1945,17 @@ impl GlideState {
         self.space.elements_for_output(output).for_each(|window| {
             window.send_frame(output, now, throttle, |_, _| Some(output.clone()));
         });
+        let overview_here = self
+            .overview
+            .as_ref()
+            .filter(|overview| self.space.output_geometry(output) == Some(overview.place().output));
+        if let Some(overview) = overview_here {
+            for window in overview.windows().filter_map(|id| self.window_map.get(&id)) {
+                if self.space.element_location(window).is_none() {
+                    window.send_frame(output, now, throttle, |_, _| Some(output.clone()));
+                }
+            }
+        }
         for layer in layer_map_for_output(output).layers() {
             layer.send_frame(output, now, throttle, |_, _| Some(output.clone()));
         }

@@ -393,7 +393,7 @@ impl GlideState {
     pub fn sync_dock_preview(&mut self) -> bool {
         let blocked = self.screen_locked()
             || !self.dock.is_enabled()
-            || self.layout.overview_active()
+            || self.overview_covers_dock()
             || self.launcher.is_some()
             || self.dock_suppressed();
         if blocked {

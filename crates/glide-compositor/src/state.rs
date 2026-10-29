@@ -892,26 +892,42 @@ impl GlideState {
         })
     }
 
-    fn overview_entries(&self) -> Vec<(glide_layout::WindowId, Rectangle<i32, Logical>)> {
-        let workspaces = self.layout.workspace_ids();
-        let active = self.layout.active_workspace();
-        let index_of = |id: glide_layout::WorkspaceId| workspaces.iter().position(|ws| *ws == id);
-        let active_index = index_of(active);
-        let width = self.widest_output().unwrap_or(0);
+    fn overview_place_at_pointer(&self) -> crate::overview::Place {
+        let at = self.seat.get_pointer().map(|pointer| pointer.current_location().to_i32_round()).unwrap_or_default();
+        let point = glide_geom::Point::new(at.x, at.y);
+        crate::overview::Place {
+            output: logical_rect(self.layout.output_geometry_at(point)),
+            area: logical_rect(self.layout.work_area_at(point)),
+        }
+    }
 
+    fn overview_place(&self) -> crate::overview::Place {
+        let place = self.overview.as_ref().map(crate::overview::OverviewUi::place);
+        let place = place.unwrap_or_else(|| self.overview_place_at_pointer());
+        let live = self.layout.outputs().iter().find(|output| logical_rect(output.geometry).loc == place.output.loc);
+        live.map_or(place, |output| crate::overview::Place {
+            output: logical_rect(output.geometry),
+            area: logical_rect(output.work_area),
+        })
+    }
+
+    fn overview_entries(&self, place: crate::overview::Place) -> Vec<crate::overview::Entry> {
         self.layout
             .overview_windows()
             .into_iter()
             .filter(|state| self.window_map.contains_key(&state.id))
-            .map(|state| {
-                let mut rect = logical_rect(state.frame_geometry());
-                if let (Some(own), Some(active)) = (index_of(state.workspace_id), active_index) {
-                    let delta = i32::try_from(own).unwrap_or(0) - i32::try_from(active).unwrap_or(0);
-                    rect.loc.x += delta.saturating_mul(width);
-                }
-                (state.id, rect)
+            .filter(|state| logical_rect(self.layout.output_geometry_for_window(state.id)) == place.output)
+            .map(|state| crate::overview::Entry {
+                id: state.id,
+                frame: logical_rect(state.frame_geometry()),
+                workspace: state.workspace_id,
             })
             .collect()
+    }
+
+    #[must_use]
+    pub fn overview_covers_dock(&self) -> bool {
+        self.overview.as_ref().is_some_and(|ui| ui.place().output == self.output_rect())
     }
 
     fn widest_output(&self) -> Option<i32> {
@@ -922,29 +938,39 @@ impl GlideState {
             .max()
     }
 
+    fn overview_workspaces(&self) -> (Vec<glide_layout::WorkspaceId>, glide_layout::WorkspaceId, bool) {
+        (self.layout.workspace_ids(), self.layout.active_workspace(), self.layout.fixed_workspaces().is_none())
+    }
+
     fn new_overview(&mut self) -> Option<(crate::overview::OverviewUi, usize)> {
         if let Some(launcher) = self.launcher.as_mut() {
             launcher.begin_close();
         }
+        let place = self.overview_place_at_pointer();
         if !self.layout.open_overview() {
             return None;
         }
-        let entries = self.overview_entries();
-        let mut ui = crate::overview::OverviewUi::new(
+        let entries = self.overview_entries(place);
+        let ui = crate::overview::OverviewUi::new(
             &entries,
-            self.dock_area(),
+            place,
             &self.overview_theme,
             self.layout.focused_window(),
+            self.overview_workspaces(),
         );
-        ui.set_workspaces(self.layout.workspace_ids(), self.layout.active_workspace());
         Some((ui, entries.len()))
     }
 
-    fn relayout_overview(&mut self, entries: &[(glide_layout::WindowId, Rectangle<i32, Logical>)]) {
-        let area = self.dock_area();
+    fn relayout_overview(&mut self) {
+        if self.overview.is_none() {
+            return;
+        }
+        let place = self.overview_place();
+        let entries = self.overview_entries(place);
+        let (workspaces, active, can_add) = self.overview_workspaces();
         if let Some(ui) = self.overview.as_mut() {
-            ui.set_workspaces(self.layout.workspace_ids(), self.layout.active_workspace());
-            ui.relayout(entries, area);
+            ui.set_workspaces(workspaces, active, can_add);
+            ui.relayout(&entries, place);
         }
     }
 
@@ -954,10 +980,74 @@ impl GlideState {
         }
         self.finish_workspace_swipe();
         self.layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(workspace));
-        let entries = self.overview_entries();
-        self.relayout_overview(&entries);
+        self.relayout_overview();
         self.reconcile_space();
+        self.sync_ext_workspaces();
         self.queue_redraw();
+    }
+
+    pub fn overview_new_workspace(&mut self) {
+        self.finish_workspace_swipe();
+        if self.layout.switch_to_workspace(glide_layout::WorkspaceTarget::New) {
+            self.relayout_overview();
+            self.reconcile_space();
+            self.sync_ext_workspaces();
+            self.queue_redraw();
+        }
+    }
+
+    pub fn overview_move_window(&mut self, id: glide_layout::WindowId, to: crate::overview::MoveTo) -> bool {
+        let target = match to {
+            crate::overview::MoveTo::Workspace(id) => glide_layout::WorkspaceTarget::Id(id),
+            crate::overview::MoveTo::New => glide_layout::WorkspaceTarget::New,
+        };
+        self.finish_workspace_swipe();
+        if !self.layout.move_window_to_workspace(id, target) {
+            if let Some(ui) = self.overview.as_mut() {
+                ui.abandon_move();
+            }
+            return false;
+        }
+        tracing::info!(window = ?id, ?to, "window moved from the overview");
+        self.relayout_overview();
+        self.reconcile_space();
+        self.sync_ext_workspaces();
+        self.queue_redraw();
+        true
+    }
+
+    pub fn overview_send_hovered(&mut self, step: isize) {
+        let Some(ui) = self.overview.as_mut() else {
+            return;
+        };
+        let Some(id) = ui.hovered() else {
+            return;
+        };
+        let to = match ui.neighbour(step) {
+            Some(workspace) => crate::overview::MoveTo::Workspace(workspace),
+            None if step > 0 && self.layout.fixed_workspaces().is_none() => crate::overview::MoveTo::New,
+            None => return,
+        };
+        ui.prepare_move(id);
+        self.overview_move_window(id, to);
+    }
+
+    pub fn overview_page(&mut self, step: isize) {
+        if let Some(workspace) = self.overview.as_ref().and_then(|ui| ui.neighbour(step)) {
+            self.overview_switch_workspace(workspace);
+        }
+    }
+
+    pub fn overview_page_to(&mut self, index: usize) {
+        if let Some(&workspace) = self.layout.workspace_ids().get(index) {
+            self.overview_switch_workspace(workspace);
+        }
+    }
+
+    pub fn tick_overview_drag(&mut self) {
+        if let Some(workspace) = self.overview.as_mut().and_then(crate::overview::OverviewUi::drag_dwell) {
+            self.overview_switch_workspace(workspace);
+        }
     }
 
     pub fn open_overview(&mut self) {
@@ -985,8 +1075,7 @@ impl GlideState {
             if let Some(ws) = target_workspace {
                 self.finish_workspace_swipe();
                 self.layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(ws));
-                let entries = self.overview_entries();
-                self.relayout_overview(&entries);
+                self.relayout_overview();
             }
             true
         } else {
@@ -1125,6 +1214,7 @@ impl GlideState {
     pub fn tick_overview(&mut self) -> bool {
         self.watch_overview_close();
         self.sync_overview_handoff();
+        self.tick_overview_drag();
         let swipe_animating = self.tick_workspace_swipe();
         let Some(ui) = self.overview.as_mut() else {
             return swipe_animating;
@@ -3058,12 +3148,7 @@ impl GlideState {
         if self.overview.is_none() {
             return;
         }
-        let entries = self.overview_entries();
-        if entries.is_empty() {
-            self.begin_close_overview(None);
-        } else {
-            self.relayout_overview(&entries);
-        }
+        self.relayout_overview();
     }
 
     #[must_use]

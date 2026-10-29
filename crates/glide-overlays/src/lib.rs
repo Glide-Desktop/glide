@@ -1,4 +1,5 @@
 pub mod osd;
+pub mod overview;
 pub mod power_dialog;
 pub mod switcher;
 

@@ -139,6 +139,8 @@ glide_app::catalogue! {
     NewTerminal => "New Terminal", "Новий термінал";
     OpenHome => "Open Home Folder", "Відкрити домашню теку";
     Overview => "Overview", "Огляд";
+    OverviewDesktop => "Desktop {}", "Стіл {}";
+    OverviewNewDesktop => "New Desktop", "Новий стіл";
     DoNotDisturb => "Do Not Disturb", "Не турбувати";
     PreviousWorkspace => "Previous Workspace", "Попередній робочий стіл";
     NextWorkspace => "Next Workspace", "Наступний робочий стіл";

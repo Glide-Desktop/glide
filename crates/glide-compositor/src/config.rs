@@ -12,22 +12,6 @@ use crate::{GlideState, input::ResolvedKeybind};
 pub use glide_dock::config::{DockAutohide, DockConfig, DockItemConfig};
 pub use glide_theme::{Color, DecorationTheme, OverviewTheme, WallpaperFit};
 
-pub trait OverviewThemeExt {
-    fn options(&self) -> glide_layout::OverviewOptions;
-}
-
-impl OverviewThemeExt for OverviewTheme {
-    fn options(&self) -> glide_layout::OverviewOptions {
-        glide_layout::OverviewOptions {
-            gap: self.gap,
-            padding: self.padding,
-            label_height: if self.label { self.label_height } else { 0 },
-            label_offset: if self.label { crate::overview::label_offset(self.label_height) } else { 0 },
-            max_scale: self.max_scale,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
