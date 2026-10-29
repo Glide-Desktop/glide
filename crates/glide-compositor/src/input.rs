@@ -56,6 +56,7 @@ pub enum KeyAction {
     OverviewPage(isize),
     OverviewPageTo(usize),
     OverviewSend(isize),
+    OverviewType(char),
     Exec(String),
     Screenshot,
     ScreenshotScreen,
@@ -711,6 +712,7 @@ fn overview_active_shortcut(
                 is_global_shortcut(action) || matches!(action, KeyAction::ToggleOverview | KeyAction::ToggleLauncher)
             })
         })
+        .or_else(|| typed_char(modifiers, modified_sym).filter(|ch| !ch.is_whitespace()).map(KeyAction::OverviewType))
         .unwrap_or(KeyAction::None)
 }
 
@@ -987,6 +989,14 @@ impl GlideState {
             (_, GestureKind::Undecided) | (SwipeRole::Windows, GestureKind::Overview) => {}
             (SwipeRole::Windows, GestureKind::Workspace) => self.drive_app_switch(accum_dx),
             (SwipeRole::Shell, GestureKind::Workspace)
+                if self.gestures.config.workspace_swipe && self.overview_takes_pages() =>
+            {
+                let progress = normalized_progress(accum_dx, SWIPE_DISTANCE);
+                if self.overview.as_mut().is_some_and(|ui| ui.scrub_pages(progress)) {
+                    self.queue_animation_redraw();
+                }
+            }
+            (SwipeRole::Shell, GestureKind::Workspace)
                 if !self.gestures.config.workspace_swipe || self.shell_surface_open() => {}
             (SwipeRole::Shell, GestureKind::Overview) if !self.gestures.config.overview_swipe => {}
             (SwipeRole::Shell, GestureKind::Overview) => self.apply_shell_position(position),
@@ -1166,25 +1176,30 @@ impl GlideState {
 
     fn page_shell_surface(&mut self, tracker: &TouchpadGestureTracker, cancelled: bool) {
         let progress = normalized_progress(tracker.accum_dx, SWIPE_DISTANCE).clamp(-1.0, 1.0);
-        let Some(target) = decide_workspace_settlement(1, 3, progress, tracker.workspace_velocity(), cancelled).target
-        else {
-            return;
-        };
-        let forward = target == glide_layout::WorkspaceTarget::Next;
+        let velocity = tracker.workspace_velocity();
+        let target = decide_workspace_settlement(1, 3, progress, velocity, cancelled).target;
+        let forward = target == Some(glide_layout::WorkspaceTarget::Next);
         if let Some(launcher) = self.launcher.as_mut().filter(|l| !l.is_closing()) {
-            if launcher.turn_page(forward) {
+            if target.is_some() && launcher.turn_page(forward) {
                 self.queue_redraw();
             }
             return;
         }
-        let Some(active) = self.active_workspace_index() else {
-            return;
-        };
-        let neighbour = if forward { active.checked_add(1) } else { active.checked_sub(1) };
-        let ids = self.layout.workspace_ids();
-        if let Some(&id) = neighbour.and_then(|index| ids.get(index)) {
-            self.overview_switch_workspace(id);
+        if let Some(ui) = self.overview.as_mut() {
+            ui.release_scrub(velocity);
         }
+        if target.is_some() {
+            self.overview_page(if forward { 1 } else { -1 });
+        }
+        if let Some(ui) = self.overview.as_mut() {
+            ui.settle_scroll();
+        }
+        self.queue_animation_redraw();
+    }
+
+    fn overview_takes_pages(&self) -> bool {
+        self.launcher.as_ref().is_none_or(Launcher::is_closing)
+            && self.overview.as_ref().is_some_and(|ui| !ui.is_closing())
     }
 
     fn drive_app_switch(&mut self, accum_dx: f64) {
@@ -1908,6 +1923,12 @@ impl GlideState {
             KeyAction::OverviewPage(step) => self.overview_page(step),
             KeyAction::OverviewPageTo(index) => self.overview_page_to(index),
             KeyAction::OverviewSend(step) => self.overview_send_hovered(step),
+            KeyAction::OverviewType(ch) => {
+                if self.launcher.as_ref().is_none_or(Launcher::is_closing) {
+                    self.toggle_launcher();
+                }
+                self.edit_launcher(|l| l.push_query(ch));
+            }
             KeyAction::OverviewSelect => {
                 let select = self.overview.as_ref().and_then(OverviewUi::hovered);
                 self.begin_close_overview(select);
@@ -3427,7 +3448,8 @@ mod tests {
                 (none, Keysym::from(keysyms::KEY_XF86Switch_VT_4), KeyAction::VtSwitch(4)),
                 (none, Keysym::Print, KeyAction::Screenshot),
                 (none, Keysym::space, KeyAction::OverviewSelect),
-                (none, Keysym::a, KeyAction::None),
+                (none, Keysym::a, KeyAction::OverviewType('a')),
+                (none, Keysym::h, KeyAction::OverviewNav(Direction::Left)),
                 (logo, Keysym::q, KeyAction::None),
                 (logo, Keysym::space, KeyAction::None),
             ] {
@@ -3460,7 +3482,7 @@ mod tests {
                 (with(false, true, false), Keysym::Left, KeyAction::OverviewSend(-1)),
                 (with(true, false, false), Keysym::_3, KeyAction::OverviewPageTo(2)),
                 (with(false, false, false), Keysym::Right, KeyAction::OverviewNav(Direction::Right)),
-                (with(false, false, false), Keysym::_3, KeyAction::None),
+                (with(false, false, false), Keysym::_3, KeyAction::OverviewType('3')),
             ] {
                 assert_eq!(overview_active_shortcut(&binds, &modifiers, &[], sym), action, "{modifiers:?} {sym:?}");
             }

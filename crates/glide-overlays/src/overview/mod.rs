@@ -171,6 +171,7 @@ type PerScale<T> = std::collections::HashMap<i32, T>;
 const PEEK: i32 = 48;
 const EDGE_ZONE: f64 = 64.0;
 const NEIGHBOUR_ALPHA: f32 = 0.5;
+const RUBBER_BAND: f64 = 0.25;
 const MINI_RADIUS: f32 = 2.0;
 
 #[derive(Debug, Clone)]
@@ -245,6 +246,9 @@ pub struct OverviewUi {
     active: WorkspaceId,
     can_add: bool,
     scroll: glide_ui::Tween,
+    scrub: f64,
+    scroll_release: Option<glide_theme::motion::Release>,
+    release_velocity: Option<f64>,
     strip: strip::Strip,
     close_watch: close::Watch,
     handoff: f64,
@@ -252,6 +256,7 @@ pub struct OverviewUi {
     moved: Option<(WindowId, Rectangle<f64, Logical>)>,
     landings: Vec<Landing>,
     scrim: SolidColorBuffer,
+    page_cards: PerScale<(RasterKey, (i32, i32), MemoryRenderBuffer)>,
 }
 
 const HANDOFF_LIFT: f64 = 280.0;
@@ -377,6 +382,9 @@ impl OverviewUi {
             active,
             can_add,
             scroll: glide_ui::Tween::at(index),
+            scrub: 0.0,
+            scroll_release: None,
+            release_velocity: None,
             strip,
             close_watch: close::Watch::default(),
             handoff: 0.0,
@@ -384,6 +392,7 @@ impl OverviewUi {
             moved: None,
             landings: Vec::new(),
             scrim: SolidColorBuffer::default(),
+            page_cards: PerScale::default(),
         };
         ui.previews = layout_previews(entries, ui.grid_area(), theme, &mut []);
         hover.retarget_without_restarting(focused.filter(|id| ui.on_active_page(*id)));
@@ -445,6 +454,15 @@ impl OverviewUi {
         f64::from((self.place.area.size.w - self.theme.padding - PEEK).max(1))
     }
 
+    fn page_card(&self) -> Rectangle<f64, Logical> {
+        let grid = self.grid_area().to_f64();
+        let inset = f64::from(self.theme.padding) / 2.0;
+        Rectangle::new(
+            Point::from((grid.loc.x + inset, grid.loc.y)),
+            Size::from(((grid.size.w - 2.0 * inset).max(1.0), (grid.size.h - inset).max(1.0))),
+        )
+    }
+
     fn page(&self, workspace: WorkspaceId) -> Option<usize> {
         self.workspaces.iter().position(|ws| *ws == workspace)
     }
@@ -453,8 +471,52 @@ impl OverviewUi {
         self.page(self.active).unwrap_or(0)
     }
 
+    fn scroll_duration(&self) -> Duration {
+        self.scroll_release.map_or_else(slide, |release| release.duration)
+    }
+
+    fn base_scroll(&self) -> f64 {
+        let release = self.scroll_release;
+        let ease = |t: f64| release.map_or_else(|| glide_theme::motion::ease_out(t), |release| release.at(t));
+        self.scroll.value(self.scroll_duration(), ease)
+    }
+
     fn scroll(&self) -> f64 {
-        self.scroll.value(slide(), glide_theme::motion::ease_out)
+        self.base_scroll() + self.scrub
+    }
+
+    fn retarget_scroll(&mut self, target: f64) {
+        let from = self.base_scroll();
+        let release = self
+            .release_velocity
+            .take()
+            .map(|velocity| glide_theme::motion::Release::new(target - from, velocity, slide()));
+        self.scroll.jump(from);
+        self.scroll_release = release;
+        self.scroll.retarget(target, self.scroll_duration(), glide_theme::motion::ease_out);
+    }
+
+    pub fn scrub_pages(&mut self, offset: f64) -> bool {
+        let offset = offset.clamp(-1.0, 1.0);
+        let blocked = (offset > 0.0 && self.neighbour(1).is_none()) || (offset < 0.0 && self.neighbour(-1).is_none());
+        let offset = if blocked { offset * RUBBER_BAND } else { offset };
+        let changed = (self.scrub - offset).abs() > f64::EPSILON;
+        self.scrub = offset;
+        changed
+    }
+
+    pub fn release_scrub(&mut self, velocity: f64) {
+        let from = self.scroll();
+        self.scrub = 0.0;
+        self.scroll_release = None;
+        self.scroll.jump(from);
+        self.release_velocity = Some(velocity);
+    }
+
+    pub fn settle_scroll(&mut self) {
+        if self.release_velocity.is_some() {
+            self.retarget_scroll(self.active_page() as f64);
+        }
     }
 
     fn page_dx(&self, page: usize) -> f64 {
@@ -488,12 +550,14 @@ impl OverviewUi {
         if let (Some(before), Some(after)) = (before, after)
             && before != after
         {
-            let shifted = self.scroll() - before as f64 + after as f64;
+            let shifted = self.base_scroll() - before as f64 + after as f64;
             self.scroll.jump(shifted);
         } else if before.is_some() && after.is_none() {
             self.scroll.jump(target);
         }
-        self.scroll.retarget(target, slide(), glide_theme::motion::ease_out);
+        if (self.scroll.target() - target).abs() > f64::EPSILON || self.release_velocity.is_some() {
+            self.retarget_scroll(target);
+        }
         self.strip.set(workspaces.clone(), active, can_add);
         self.workspaces = workspaces;
         self.active = active;
@@ -638,7 +702,7 @@ impl OverviewUi {
         self.hover.progress(hover_anim()) < 1.0
             || self.close_hover.progress(hover_anim()) < 1.0
             || self.strip.is_animating()
-            || self.scroll.is_animating(slide())
+            || self.scroll.is_animating(self.scroll_duration())
             || self.previews.iter().any(Preview::is_gliding)
             || !self.landings.is_empty()
             || self.drag.as_ref().is_some_and(|drag| drag.is_animating() || drag.dwell_pending())
@@ -1069,6 +1133,14 @@ fn draw_close_button(theme: &OverviewTheme, hover_t: f32, output_scale: i32) -> 
     Some(c.finish())
 }
 
+fn draw_page_card(theme: &OverviewTheme, (w, h): (i32, i32), output_scale: i32) -> Option<MemoryRenderBuffer> {
+    let mut c = crate::raster::Canvas::new(w, h, output_scale)?;
+    let radius = glide_theme::shape::R4;
+    c.fill(c.full(), theme.strip_add, radius);
+    c.stroke(c.full(), 1.0, radius, theme.strip_add_border);
+    Some(c.finish())
+}
+
 fn paint_label(
     c: &mut crate::raster::Canvas<'_>, theme: &OverviewTheme, painter: &crate::paint::Painter, icon: Option<&[u8]>,
     title: &str, text: (i32, i32),
@@ -1376,6 +1448,28 @@ impl OverviewUi {
                 alpha,
                 radius: corner,
             }));
+        }
+
+        let card_alpha = glide_theme::motion::assist(t) as f32 * exit_alpha;
+        if card_alpha > 0.0 {
+            let card = self.page_card();
+            let size = (card.size.w.round() as i32, card.size.h.round() as i32);
+            let key = RasterKey::new(&theme, output_scale);
+            let outdated =
+                self.page_cards.get(&output_scale).is_none_or(|(cached, at, _)| *cached != key || *at != size);
+            if outdated && let Some(memory) = draw_page_card(&theme, size, output_scale) {
+                self.page_cards.insert(output_scale, (key, size, memory));
+            }
+            if let Some((_, size, memory)) = self.page_cards.get(&output_scale) {
+                let active = self.active_page();
+                for page in (0..self.workspaces.len()).filter(|page| *page != active) {
+                    let rect = moved_by(card, self.page_dx(page));
+                    if rect.overlaps(output_f) {
+                        let element = place_in(renderer, rect, *size, memory, card_alpha, scale);
+                        layers.extend(element.map(|element| Layer::chrome(OverviewElement::Buffer(element))));
+                    }
+                }
+            }
         }
 
         let backdrop_t = (self.backdrop_progress() * (1.0 - glide_theme::motion::ease_io(self.handoff))) as f32;

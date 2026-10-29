@@ -129,6 +129,17 @@ fn a_neighbour_workspace_is_a_page_one_stride_to_the_side() {
 }
 
 #[test]
+fn the_card_of_the_next_page_always_peeks_in_even_when_its_windows_do_not() {
+    let (here, there) = (WindowId::next(), WindowId::next());
+    let entries = [entry(here, rect(100, 100, 400, 300), ONE), entry(there, rect(100, 100, 400, 300), TWO)];
+    let ui = ui_with(&entries, 0, Some(here), &[ONE, TWO]);
+    let next = moved_by(ui.page_card(), ui.page_dx(1));
+    let edge = f64::from(place().output.size.w);
+    assert!(next.loc.x < edge - f64::from(PEEK) + 1.0 && next.loc.x > edge - 2.0 * f64::from(PEEK), "{next:?}");
+    assert!(ui.preview_rect(there).unwrap().loc.x > 1920, "its single small window is off screen");
+}
+
+#[test]
 fn switching_the_active_workspace_slides_the_pages_instead_of_jumping() {
     let (here, there) = (WindowId::next(), WindowId::next());
     let entries = [entry(here, rect(100, 100, 800, 600), ONE), entry(there, rect(100, 100, 800, 600), TWO)];
@@ -141,6 +152,43 @@ fn switching_the_active_workspace_slides_the_pages_instead_of_jumping() {
         assert!(ui.is_animating(), "the scroll runs");
         assert_eq!(ui.preview_rect(there).unwrap(), before, "it starts where it was drawn");
     }
+}
+
+#[test]
+fn a_sideways_swipe_moves_the_pages_with_the_finger_and_bands_at_the_ends() {
+    let (here, there) = (WindowId::next(), WindowId::next());
+    let entries = [entry(here, rect(100, 100, 800, 600), ONE), entry(there, rect(100, 100, 800, 600), TWO)];
+    let mut ui = ui_with(&entries, 0, Some(here), &[ONE, TWO]);
+    let start = ui.preview_rect(there).unwrap().loc.x;
+    assert!(ui.scrub_pages(0.5));
+    let moved = start - ui.preview_rect(there).unwrap().loc.x;
+    assert!((f64::from(moved) - ui.stride() * 0.5).abs() <= 1.0, "half a swipe, half a page: {moved}");
+    assert!(ui.scrub_pages(-0.5));
+    let banded = ui.preview_rect(there).unwrap().loc.x - start;
+    assert!(f64::from(banded) <= ui.stride() * RUBBER_BAND * 0.5 + 1.0, "nothing before the first page: {banded}");
+
+    ui.release_scrub(0.0);
+    ui.settle_scroll();
+    if glide_theme::motion::is_disabled() {
+        assert_eq!(ui.preview_rect(there).unwrap().loc.x, start, "a short swipe settles back");
+    } else {
+        assert!(ui.is_animating(), "it travels back instead of jumping");
+    }
+}
+
+#[test]
+fn a_released_swipe_that_switches_carries_on_from_where_the_finger_left() {
+    let (here, there) = (WindowId::next(), WindowId::next());
+    let entries = [entry(here, rect(100, 100, 800, 600), ONE), entry(there, rect(100, 100, 800, 600), TWO)];
+    let mut ui = ui_with(&entries, 400, Some(here), &[ONE, TWO]);
+    ui.scrub_pages(0.6);
+    let held = ui.preview_rect(there).unwrap();
+    ui.release_scrub(2.0);
+    assert_eq!(ui.preview_rect(there).unwrap(), held, "letting go does not jump");
+    ui.set_workspaces(vec![ONE, TWO], TWO, true);
+    ui.settle_scroll();
+    assert_eq!(ui.scroll.target(), 1.0);
+    assert!(ui.scroll_release.is_some() || glide_theme::motion::is_disabled(), "the release keeps the finger's speed");
 }
 
 #[test]
