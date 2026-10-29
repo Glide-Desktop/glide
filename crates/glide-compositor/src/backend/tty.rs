@@ -94,6 +94,7 @@ render_elements! {
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     LockBackdrop=SolidColorRenderElement,
     RelocatedMemory=RelocateRenderElement<smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>>,
+    RelocatedOverview=RelocateRenderElement<crate::overview::OverviewRenderElement<GlesRenderer>>,
     RelocatedLauncher=RelocateRenderElement<crate::launcher::LauncherRenderElement<GlesRenderer>>,
     RelocatedSwitcher=RelocateRenderElement<crate::switcher::SwitcherRenderElement<GlesRenderer>>,
 }
@@ -594,11 +595,13 @@ fn overview_elements(
 
     let painter = crate::paint::current();
     let output_scale = output.current_scale().integer_scale();
+    let origin = output_geometry.loc.to_f64().to_physical(scale).to_i32_round::<i32>();
+    let offset = Point::<i32, smithay::utils::Physical>::from((-origin.x, -origin.y));
     elements.extend(
         overview
             .render(gles_renderer, output_geometry, scale, output_scale, &painter, icons, lookup)
             .into_iter()
-            .map(GlideRenderElements::Overview),
+            .map(|element| GlideRenderElements::RelocatedOverview(relocate(element, offset))),
     );
 
     elements.extend(layer_elements(gles_renderer, output, scale, false));
@@ -618,7 +621,12 @@ fn build_render_elements(
 }
 
 fn is_window_element(element: &GlideRenderElements) -> bool {
-    matches!(element, GlideRenderElements::Space(SpaceRenderElements::Element(_)) | GlideRenderElements::Overview(_))
+    matches!(
+        element,
+        GlideRenderElements::Space(SpaceRenderElements::Element(_))
+            | GlideRenderElements::Overview(_)
+            | GlideRenderElements::RelocatedOverview(_)
+    )
 }
 
 fn leading_layer_count(elements: &[GlideRenderElements]) -> usize {
