@@ -83,7 +83,24 @@ enum Signal {
     PrepareForSleep,
 }
 
-fn classify(interface: &str, member: &str, path: &str, session: &str) -> Option<Signal> {
+const BUS: &str = "org.freedesktop.DBus";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Origin<'a> {
+    sender: Option<&'a str>,
+    owner: Option<&'a str>,
+}
+
+impl Origin<'_> {
+    fn is_logind(self) -> bool {
+        self.sender.is_some() && self.sender == self.owner
+    }
+}
+
+fn classify(origin: Origin<'_>, interface: &str, member: &str, path: &str, session: &str) -> Option<Signal> {
+    if !origin.is_logind() {
+        return None;
+    }
     match (interface, member) {
         (SESSION, "Lock") if path == session => Some(Signal::Lock),
         (SESSION, "Unlock") if path == session => Some(Signal::Unlock),
@@ -109,6 +126,26 @@ pub fn session_path(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
     let user = Proxy::new(connection, LOGIN1, "/org/freedesktop/login1/user/self", USER)?;
     let (_, path): (String, OwnedObjectPath) = user.get_property("Display")?;
     Ok(path)
+}
+
+fn login1_owner(bus: &DBusProxy<'_>) -> Option<String> {
+    let name = zbus::names::BusName::try_from(LOGIN1).ok()?;
+    bus.get_name_owner(name)
+        .inspect_err(|err| tracing::debug!(?err, "cannot resolve the owner of logind's bus name"))
+        .ok()
+        .map(|owner| owner.to_string())
+}
+
+fn login1_owner_change(message: &zbus::Message) -> Option<String> {
+    let header = message.header();
+    let from_bus = header.sender().is_some_and(|sender| sender.as_str() == BUS)
+        && header.interface().is_some_and(|name| name.as_str() == BUS)
+        && header.member().is_some_and(|name| name.as_str() == "NameOwnerChanged");
+    if !from_bus {
+        return None;
+    }
+    let (name, _, owner) = message.body().deserialize::<(String, String, String)>().ok()?;
+    (name == LOGIN1).then_some(owner)
 }
 
 fn inhibit(connection: &Connection, request: Inhibit) -> Option<OwnedFd> {
@@ -166,9 +203,11 @@ fn watch(
     for rule in [
         format!("type='signal',sender='{LOGIN1}',interface='{SESSION}',path='{}'", session.as_str()),
         format!("type='signal',sender='{LOGIN1}',interface='{MANAGER}',member='PrepareForSleep'"),
+        format!("type='signal',sender='{BUS}',interface='{BUS}',member='NameOwnerChanged',arg0='{LOGIN1}'"),
     ] {
         bus.add_match_rule(zbus::MatchRule::try_from(rule.as_str())?)?;
     }
+    let mut owner = login1_owner(&bus);
     let power_key = inhibit(&connection, POWER_KEY);
     if power_key.is_none() {
         tracing::warn!("no power key inhibitor; logind will act on the power button without asking");
@@ -182,10 +221,15 @@ fn watch(
         if header.message_type() != zbus::message::Type::Signal {
             continue;
         }
+        if let Some(changed) = login1_owner_change(&message) {
+            owner = (!changed.is_empty()).then_some(changed);
+            continue;
+        }
         let (Some(interface), Some(member), Some(path)) = (header.interface(), header.member(), header.path()) else {
             continue;
         };
-        let signal = classify(interface.as_str(), member.as_str(), path.as_str(), session.as_str());
+        let origin = Origin { sender: header.sender().map(zbus::names::UniqueName::as_str), owner: owner.as_deref() };
+        let signal = classify(origin, interface.as_str(), member.as_str(), path.as_str(), session.as_str());
         match signal {
             Some(Signal::Lock) => sink(LoginEvent::Lock),
             Some(Signal::Unlock) => sink(LoginEvent::Unlock),
@@ -227,13 +271,25 @@ mod tests {
     use super::*;
 
     const OURS: &str = "/org/freedesktop/login1/session/_32";
+    const LOGIND: Origin<'static> = Origin { sender: Some(":1.3"), owner: Some(":1.3") };
 
     #[test]
     fn only_our_session_can_lock_or_unlock_the_screen() {
-        assert_eq!(classify(SESSION, "Lock", OURS, OURS), Some(Signal::Lock));
-        assert_eq!(classify(SESSION, "Unlock", OURS, OURS), Some(Signal::Unlock));
-        assert_eq!(classify(SESSION, "Lock", "/org/freedesktop/login1/session/c1", OURS), None);
-        assert_eq!(classify(SESSION, "PauseDevice", OURS, OURS), None);
+        assert_eq!(classify(LOGIND, SESSION, "Lock", OURS, OURS), Some(Signal::Lock));
+        assert_eq!(classify(LOGIND, SESSION, "Unlock", OURS, OURS), Some(Signal::Unlock));
+        assert_eq!(classify(LOGIND, SESSION, "Lock", "/org/freedesktop/login1/session/c1", OURS), None);
+        assert_eq!(classify(LOGIND, SESSION, "PauseDevice", OURS, OURS), None);
+    }
+
+    #[test]
+    fn a_signal_forged_by_another_peer_never_unlocks_the_screen() {
+        let forged = Origin { sender: Some(":1.99"), owner: Some(":1.3") };
+        assert_eq!(classify(forged, SESSION, "Unlock", OURS, OURS), None);
+        assert_eq!(classify(forged, MANAGER, "PrepareForSleep", MANAGER_PATH, OURS), None);
+        let unknown_owner = Origin { sender: Some(":1.3"), owner: None };
+        assert_eq!(classify(unknown_owner, SESSION, "Unlock", OURS, OURS), None);
+        let no_sender = Origin { sender: None, owner: None };
+        assert_eq!(classify(no_sender, SESSION, "Lock", OURS, OURS), None);
     }
 
     #[test]
@@ -268,7 +324,7 @@ mod tests {
 
     #[test]
     fn sleep_is_announced_by_the_manager_object() {
-        assert_eq!(classify(MANAGER, "PrepareForSleep", MANAGER_PATH, OURS), Some(Signal::PrepareForSleep));
-        assert_eq!(classify(MANAGER, "PrepareForSleep", OURS, OURS), None);
+        assert_eq!(classify(LOGIND, MANAGER, "PrepareForSleep", MANAGER_PATH, OURS), Some(Signal::PrepareForSleep));
+        assert_eq!(classify(LOGIND, MANAGER, "PrepareForSleep", OURS, OURS), None);
     }
 }
