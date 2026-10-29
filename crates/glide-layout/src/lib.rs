@@ -730,6 +730,23 @@ mod tests {
     }
 
     #[test]
+    fn the_overview_keeps_an_emptied_active_workspace_until_it_closes() {
+        let mut layout = Layout::new();
+        let ids = windows(&mut layout, 2, SIZE);
+        let (first, second) = (state(&layout, ids[0]).workspace_id, layout.active_workspace());
+        layout.open_overview();
+        assert!(layout.move_window_to_workspace(ids[1], WorkspaceTarget::Id(first)));
+        assert_eq!(layout.active_workspace(), second, "the view stays where the user is looking");
+        assert_eq!(layout.workspace_ids(), vec![first, second]);
+        assert_eq!(layout.focused_window(), None);
+
+        assert!(layout.close_overview());
+        assert_eq!(layout.workspace_ids(), vec![first], "the empty workspace goes once the overview does");
+        assert_eq!(layout.active_workspace(), first);
+        assert!(layout.focused_window().is_some());
+    }
+
+    #[test]
     fn dialog_reparented_after_creation_returns_to_parent_workspace_focused() {
         let mut layout = Layout::new();
         let (editor, term, dialog) = (WindowId::next(), WindowId::next(), WindowId::next());

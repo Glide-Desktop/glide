@@ -181,7 +181,7 @@ impl Layout {
     }
 
     #[must_use]
-    pub(crate) fn output_geometry_for_window(&self, w: WindowId) -> Rectangle {
+    pub fn output_geometry_for_window(&self, w: WindowId) -> Rectangle {
         self.output_for_window(w).map_or_else(|| self.primary_output_geometry(), |output| output.geometry)
     }
 
@@ -327,8 +327,12 @@ impl Layout {
         !std::mem::replace(&mut self.overview_active, true)
     }
 
-    pub const fn close_overview(&mut self) -> bool {
-        std::mem::replace(&mut self.overview_active, false)
+    pub fn close_overview(&mut self) -> bool {
+        let was_open = std::mem::replace(&mut self.overview_active, false);
+        if was_open && self.remove_workspace_if_empty(self.active) {
+            self.focused = self.pick_new_focus();
+        }
+        was_open
     }
 
     #[must_use]
@@ -463,7 +467,9 @@ impl Layout {
             target_ws.focused = Some(w);
         }
 
-        let old_ws_vanishes = self.fixed.is_none() && self.workspace_is_empty(old_ws_id) && self.workspaces.len() > 1;
+        let keeps_active = self.overview_active && old_ws_id == self.active;
+        let old_ws_vanishes =
+            !keeps_active && self.fixed.is_none() && self.workspace_is_empty(old_ws_id) && self.workspaces.len() > 1;
         if old_ws_vanishes && self.active == old_ws_id && self.focused == Some(w) {
             self.activate(target_id);
         }
@@ -860,7 +866,7 @@ impl Layout {
     }
 
     fn remove_workspace_if_empty(&mut self, ws_id: WorkspaceId) -> bool {
-        if self.fixed.is_some() {
+        if self.fixed.is_some() || (self.overview_active && ws_id == self.active) {
             return false;
         }
         if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id)
