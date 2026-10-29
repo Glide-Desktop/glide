@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn the_screen_counts_as_shared_through_the_portal_or_a_direct_capture() {
-        let mut bar = crate::topbar::Topbar::new(crate::topbar::TopbarTheme::default());
+        let mut bar = crate::Topbar::new(crate::TopbarTheme::default());
         assert!(!bar.sharing_screen());
         bar.set_screen_capture(vec!["wf-recorder".into()]);
         assert!(bar.sharing_screen());

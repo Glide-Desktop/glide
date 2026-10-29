@@ -2,10 +2,11 @@ use std::collections::VecDeque;
 use std::process::Command;
 use std::sync::{Arc, mpsc};
 
-use glide_netbird::{self as nb, Category, Notice, Reason, Remaining, Severity, State};
+use glide_netbird::{self as nb, Category, Notice, Reason, Severity, State};
 
 use crate::i18n::{Key, t};
 use crate::notifications::LocalEvent;
+use crate::topbar::remaining_text;
 
 pub const SESSION_ID: u32 = u32::MAX - 3000;
 pub const EXPIRED_ID: u32 = u32::MAX - 3001;
@@ -353,18 +354,6 @@ impl Session {
         let id = EVENT_FIRST + self.next_event % EVENT_SLOTS;
         self.next_event = self.next_event.wrapping_add(1);
         id
-    }
-}
-
-#[must_use]
-pub fn remaining_text(remaining: Remaining) -> String {
-    let count = |key: Key, n: u64| t(key).replace("{n}", &n.to_string());
-    match remaining {
-        Remaining::Expired => t(Key::NbSessionExpired).to_string(),
-        Remaining::LessThanMinute => t(Key::NbLessThanMinute).to_string(),
-        Remaining::Minutes(n) => count(Key::NbMinutes, n),
-        Remaining::Hours(n) => count(Key::NbHours, n),
-        Remaining::Days(n) => count(Key::NbDays, n),
     }
 }
 
@@ -750,16 +739,5 @@ mod tests {
         assert!(title.starts_with(t(Key::NbWarning)) && title.ends_with("DNS"), "{title}");
         assert!(!title.contains('{'), "every placeholder is filled: {title}");
         assert!(event_title(Severity::Info, Category::Authentication).ends_with(t(Key::NbAuthentication)));
-    }
-
-    #[test]
-    fn remaining_session_time_fills_in_the_count_of_the_largest_unit() {
-        for (remaining, count) in
-            [(Remaining::Hours(2), "2"), (Remaining::Minutes(15), "15"), (Remaining::Days(3), "3")]
-        {
-            let text = remaining_text(remaining);
-            assert!(text.contains(count) && !text.contains('{'), "{text}");
-        }
-        assert_eq!(remaining_text(Remaining::LessThanMinute), t(Key::NbLessThanMinute));
     }
 }

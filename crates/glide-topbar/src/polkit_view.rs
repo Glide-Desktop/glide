@@ -4,12 +4,12 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
 use super::glyphs::svg_glyph;
 use super::{LocalRect, TopbarTheme, local_rect};
-use crate::config::Color;
 use crate::i18n::{Key, t};
 use crate::paint::{Painter, TextAlign};
 use crate::polkit::{Control, Hint, Stage, View};
 use crate::popup_menu::text_px as text_w;
 use crate::raster::Canvas;
+use glide_theme::Color;
 
 pub(super) const WIDTH: i32 = 712;
 pub(super) const RADIUS: f32 = R3;
@@ -806,23 +806,21 @@ mod tests {
                 let extra = pop.map_or(0, |(_, tall)| tall + POPOVER_GAP);
                 let width = (WIDTH * scale) as u32 + 64;
                 let height = ((layout.height + extra) * scale) as u32 + 64;
-                let mut image = crate::shot::compose::Image::new(width, height).expect("image");
+                let mut image = glide_shell::image::Image::new(width, height).expect("image");
                 let shade = if appearance == glide_theme::Appearance::Dark { 20 } else { 230 };
                 let backdrop = vec![shade; (width * height * 4) as usize];
-                image.draw(&crate::shot::compose::Image::from_bgra(width, height, backdrop).expect("bg"), 0, 0);
+                image.draw(&glide_shell::image::Image::from_bgra(width, height, backdrop).expect("bg"), 0, 0);
                 let content = (WIDTH * scale) as u32;
                 let tall = (layout.height * scale) as u32;
-                let prompt = crate::shot::compose::Image::from_bgra(content, tall, surface.buf.clone()).expect("p");
+                let prompt = glide_shell::image::Image::from_bgra(content, tall, surface.buf.clone()).expect("p");
                 image.draw(&prompt, 32, 32);
                 if let (Some(rect), Some(size)) = (layout.popover, pop) {
                     let drawn = popover_canvas(&painter, &theme, scale).expect("popover").buf;
                     let (across, down) = ((size.0 * scale) as u32, (size.1 * scale) as u32);
-                    let popover = crate::shot::compose::Image::from_bgra(across, down, drawn).expect("pop");
+                    let popover = glide_shell::image::Image::from_bgra(across, down, drawn).expect("pop");
                     image.draw(&popover, 32 + rect.loc.x * scale, 32 + rect.loc.y * scale);
                 }
-                let png = crate::backend::screenshot::save_rgba(&image.into_straight(), width, height, false)
-                    .expect("png")
-                    .png;
+                let png = image.png().expect("png");
                 let file = format!("polkit-{name}-{appearance:?}.png").to_lowercase();
                 std::fs::write(std::path::Path::new(&dir).join(file), png).expect("write");
             }

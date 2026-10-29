@@ -5,13 +5,13 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Size},
 };
 
-use crate::{
-    config::Color,
+use glide_paint::TextAlign;
+use glide_shell::{
     i18n::{Key, t},
-    paint::TextAlign,
     popup_menu::text_px,
     raster::{Canvas, rect},
 };
+use glide_theme::Color;
 
 pub const MAX_DEPTH: usize = 4;
 

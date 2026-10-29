@@ -5,6 +5,7 @@ use glide_notify::{CloseReason, Notification, Urgency};
 use crate::popup_menu::text_px;
 
 pub const ICON_SOURCE_PX: i32 = 96;
+pub const PROMPT_CATEGORY: &str = "x-glide.prompt";
 const MAX_BUTTONS: usize = 3;
 const REPLY_MAX_CHARS: usize = 500;
 const MAX_VISIBLE: usize = 4;
@@ -322,7 +323,7 @@ fn nc_item(notification: &Notification, age: Duration, icon: Option<&std::sync::
 }
 
 fn is_prompt(notification: &Notification) -> bool {
-    is_local(notification.id) && notification.category == crate::agent_prompt::CATEGORY
+    is_local(notification.id) && notification.category == PROMPT_CATEGORY
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -939,7 +940,7 @@ impl Notifications {
     }
 
     pub fn tick(&mut self) -> bool {
-        let scheduled = self.policy.schedule.is_some() && self.follow_schedule(crate::topbar::local_minute_of_day());
+        let scheduled = self.policy.schedule.is_some() && self.follow_schedule(crate::local_minute_of_day());
         self.tick_toasts() || scheduled
     }
 
@@ -1680,7 +1681,7 @@ mod tests {
         assert_eq!(store.notice(), None);
         let ask = LOCAL_ID_FLOOR + 1;
         let question = Notification {
-            category: crate::agent_prompt::CATEGORY.into(),
+            category: PROMPT_CATEGORY.into(),
             urgency: Urgency::Critical,
             actions: vec![
                 glide_notify::Action { key: "accept".into(), label: "Allow".into() },
@@ -1715,7 +1716,7 @@ mod tests {
         let (mut store, mut icons) = store();
         let (first, second) = (LOCAL_ID_FLOOR + 1, LOCAL_ID_FLOOR + 2);
         let question = |id: u32| Notification {
-            category: crate::agent_prompt::CATEGORY.into(),
+            category: PROMPT_CATEGORY.into(),
             urgency: Urgency::Critical,
             timeout: None,
             ..from_app(id, "Glide")
@@ -1751,7 +1752,7 @@ mod tests {
     fn an_app_cannot_dress_its_notification_up_as_a_shell_question() {
         let (mut store, mut icons) = store();
         let spoof = |id: u32| Notification {
-            category: crate::agent_prompt::CATEGORY.into(),
+            category: PROMPT_CATEGORY.into(),
             app_name: format!("Wi-Fi {id}"),
             ..repliable(id)
         };

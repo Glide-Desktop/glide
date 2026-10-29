@@ -20,12 +20,12 @@ use super::{
     SwitchMotion, Topbar, TopbarAction, TopbarTheme, calendar, draw_media_art, draw_switch, initial, local_rect,
     motion, numeric_label_width, push_buffer, scaled_about_centre, transport_enabled,
 };
-use crate::config::Color;
 use crate::i18n::Lang;
 use crate::notifications::{NcItem, Notice, NoticeReply};
 use crate::paint::{Painter, TextAlign};
 use crate::popup_menu::text_px as text_w;
 use crate::raster::{Canvas, ShellRenderer};
+use glide_theme::Color;
 
 pub(super) const TOP: i32 = (super::HEIGHT - HAIRLINE - COMPACT_H) / 2;
 pub(super) const WIDE: i32 = 356;
@@ -2390,14 +2390,12 @@ mod tests {
                     .expect("surface");
                 paint_notice(&mut c, &ink, &notice, &layout);
                 let (w, h) = ((ALERT_W * scale) as u32, (layout.height * scale) as u32);
-                let mut image = crate::shot::compose::Image::new(w + 64, h + 64).expect("image");
+                let mut image = glide_shell::image::Image::new(w + 64, h + 64).expect("image");
                 let shade = if appearance == glide_theme::Appearance::Dark { 30 } else { 230 };
                 let backdrop = vec![shade; ((w + 64) * (h + 64) * 4) as usize];
-                image.draw(&crate::shot::compose::Image::from_bgra(w + 64, h + 64, backdrop).expect("backdrop"), 0, 0);
-                image.draw(&crate::shot::compose::Image::from_bgra(w, h, c.buf.clone()).expect("notice"), 32, 32);
-                let png = crate::backend::screenshot::save_rgba(&image.into_straight(), w + 64, h + 64, false)
-                    .expect("png")
-                    .png;
+                image.draw(&glide_shell::image::Image::from_bgra(w + 64, h + 64, backdrop).expect("backdrop"), 0, 0);
+                image.draw(&glide_shell::image::Image::from_bgra(w, h, c.buf.clone()).expect("notice"), 32, 32);
+                let png = image.png().expect("png");
                 let file = format!("notice-{name}-{appearance:?}.png").to_lowercase();
                 std::fs::write(std::path::Path::new(&dir).join(file), png).expect("write");
             }

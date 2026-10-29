@@ -1,0 +1,26 @@
+[package]
+name = "glide-topbar"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glide-app = { path = "../glide-app" }
+glide-appmenu = { path = "../glide-appmenu" }
+glide-config = { path = "../glide-config" }
+glide-ipc = { path = "../glide-ipc" }
+glide-netbird = { path = "../glide-netbird" }
+glide-notify = { path = "../glide-notify" }
+glide-paint = { path = "../glide-paint" }
+glide-shell = { path = "../glide-shell" }
+glide-theme = { path = "../glide-theme" }
+glide-tray = { path = "../glide-tray" }
+glide-ui = { path = "../glide-ui" }
+libc = "0.2"
+smithay = { workspace = true, features = ["wayland_frontend"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

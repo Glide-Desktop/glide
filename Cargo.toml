@@ -29,6 +29,7 @@ members = [
     "crates/glide-terminal",
     "crates/glide-text",
     "crates/glide-theme",
+    "crates/glide-topbar",
     "crates/glide-tray",
     "crates/glide-ui",
     "crates/glidectl",

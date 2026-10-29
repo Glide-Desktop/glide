@@ -12,14 +12,7 @@ pub const SESSION_NOTICE_ID: u32 = u32::MAX - 2;
 pub const END_ANYWAY: &str = "end-anyway";
 const SESSION_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PowerAction {
-    Lock,
-    LogOut,
-    Sleep,
-    Restart,
-    ShutDown,
-}
+pub use glide_topbar::power::PowerAction;
 
 impl GlideState {
     pub fn perform_power_action(&mut self, action: PowerAction) {

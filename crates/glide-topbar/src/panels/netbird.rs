@@ -65,7 +65,7 @@ struct Summary {
 
 #[derive(Debug, Default)]
 pub struct NetbirdView {
-    pub(in crate::topbar) installed: bool,
+    pub(crate) installed: bool,
     status: Option<nb::Status>,
     profiles: Vec<nb::Profile>,
     networks: Vec<nb::Network>,
@@ -149,7 +149,7 @@ impl NetbirdView {
         }
     }
 
-    pub(in crate::topbar) fn tile(&self) -> (bool, &'static str) {
+    pub(crate) fn tile(&self) -> (bool, &'static str) {
         match (self.pending(), self.state()) {
             (Some(NetbirdPending::Connect), _) => (false, t(Key::Connecting)),
             (Some(NetbirdPending::Disconnect), _) => (true, t(Key::QsDisconnecting)),
@@ -157,7 +157,7 @@ impl NetbirdView {
         }
     }
 
-    pub(in crate::topbar) fn switched_on(&self) -> bool {
+    pub(crate) fn switched_on(&self) -> bool {
         self.state().is_some_and(State::is_up)
     }
 
@@ -295,7 +295,7 @@ fn session_title(left: Remaining) -> String {
     if left == Remaining::Expired {
         return t(Key::NbSessionExpired).to_string();
     }
-    t(Key::NbExpiresIn).replace("{time}", &crate::netbird::remaining_text(left))
+    t(Key::NbExpiresIn).replace("{time}", &remaining_text(left))
 }
 
 struct Card {
@@ -470,6 +470,18 @@ impl Topbar {
     }
 }
 
+#[must_use]
+pub fn remaining_text(remaining: Remaining) -> String {
+    let count = |key: Key, n: u64| t(key).replace("{n}", &n.to_string());
+    match remaining {
+        Remaining::Expired => t(Key::NbSessionExpired).to_string(),
+        Remaining::LessThanMinute => t(Key::NbLessThanMinute).to_string(),
+        Remaining::Minutes(n) => count(Key::NbMinutes, n),
+        Remaining::Hours(n) => count(Key::NbHours, n),
+        Remaining::Days(n) => count(Key::NbDays, n),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -478,6 +490,17 @@ mod tests {
 
     fn status(state: State) -> nb::Status {
         nb::Status { state, ..nb::Status::default() }
+    }
+
+    #[test]
+    fn remaining_session_time_fills_in_the_count_of_the_largest_unit() {
+        for (remaining, count) in
+            [(Remaining::Hours(2), "2"), (Remaining::Minutes(15), "15"), (Remaining::Days(3), "3")]
+        {
+            let text = remaining_text(remaining);
+            assert!(text.contains(count) && !text.contains('{'), "{text}");
+        }
+        assert_eq!(remaining_text(Remaining::LessThanMinute), t(Key::NbLessThanMinute));
     }
 
     fn view_with(state: State) -> NetbirdView {

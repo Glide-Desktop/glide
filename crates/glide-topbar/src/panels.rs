@@ -5,20 +5,19 @@ use super::{
 };
 
 use crate::i18n::{Key, t};
-use crate::launcher::field::{CaretMove, TextField};
 use crate::power::PowerAction;
 use crate::qs_net::{
     AudioOutput, BtDevice, CHARGE_LIMIT_KEY, ChargeLimit, ConnectError, NetEvent, Security, WifiNetwork,
 };
 use crate::system_info::{BatteryInfo, BatteryState, PowerProfile};
+use glide_shell::field::{CaretMove, TextField};
 use glide_theme::shape::{R_ROUND, R1, R2};
 use glide_theme::spacing::{SP1, SP2, SP3};
 use smithay::input::keyboard::Keysym;
 
-#[path = "topbar_netbird.rs"]
 mod netbird;
 
-pub use netbird::{NetbirdPending, NetbirdRow, NetbirdUpdate};
+pub use netbird::{NetbirdPending, NetbirdRow, NetbirdUpdate, remaining_text};
 
 const DETAIL_BACK: i32 = 28;
 const DETAIL_BACK_ICON: i32 = 12;
@@ -1602,7 +1601,7 @@ fn masked(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topbar::{TopbarAction, TopbarTheme};
+    use crate::{TopbarAction, TopbarTheme};
     use smithay::utils::Size;
 
     fn output() -> Rectangle<i32, Logical> {

@@ -18,13 +18,13 @@ use smithay::{
 
 use crate::i18n::Key;
 use crate::power::PowerAction;
+pub use glide_topbar::power::{COUNTDOWN, confirm_key, is_destructive, question_key};
 
 pub const ACTIONS: [PowerAction; 5] =
     [PowerAction::Lock, PowerAction::Sleep, PowerAction::Restart, PowerAction::ShutDown, PowerAction::LogOut];
 pub const CANCEL: usize = ACTIONS.len();
 pub const CONFIRM: usize = ACTIONS.len() + 1;
 pub const TARGETS: usize = ACTIONS.len() + 2;
-pub const COUNTDOWN: Duration = Duration::from_mins(1);
 pub const COUNTDOWN_TICK: Duration = Duration::from_millis(250);
 
 const COLUMNS: i32 = 5;
@@ -74,11 +74,6 @@ pub enum Outcome {
 }
 
 #[must_use]
-pub const fn is_destructive(action: PowerAction) -> bool {
-    matches!(action, PowerAction::LogOut | PowerAction::Restart | PowerAction::ShutDown)
-}
-
-#[must_use]
 pub fn index_of(action: PowerAction) -> usize {
     ACTIONS.iter().position(|candidate| *candidate == action).unwrap_or(0)
 }
@@ -90,28 +85,6 @@ const fn caption_key(action: PowerAction) -> Key {
         PowerAction::Restart => Key::CommandRestart,
         PowerAction::ShutDown => Key::CommandShutDown,
         PowerAction::LogOut => Key::CommandLogOut,
-    }
-}
-
-#[must_use]
-pub const fn question_key(action: PowerAction) -> Key {
-    match action {
-        PowerAction::Lock => Key::PowerAskLock,
-        PowerAction::Sleep => Key::PowerAskSleep,
-        PowerAction::Restart => Key::PowerAskRestart,
-        PowerAction::ShutDown => Key::PowerAskShutDown,
-        PowerAction::LogOut => Key::PowerAskLogOut,
-    }
-}
-
-#[must_use]
-pub const fn confirm_key(action: PowerAction) -> Key {
-    match action {
-        PowerAction::Lock => Key::PowerLock,
-        PowerAction::Sleep => Key::PowerConfirmSleep,
-        PowerAction::Restart => Key::PowerConfirmRestart,
-        PowerAction::ShutDown => Key::CommandShutDown,
-        PowerAction::LogOut => Key::PowerConfirmLogOut,
     }
 }
 

@@ -62,6 +62,31 @@ pub fn shadow(
     Some(canvas)
 }
 
+pub struct Backdrop<'a> {
+    pub pixels: &'a [u8],
+    pub width: i32,
+    pub height: i32,
+    pub fractional_scale: f64,
+    pub generation: u64,
+}
+
+impl Backdrop<'_> {
+    #[must_use]
+    pub fn blit(&self, dst: &mut [u8], width: i32, height: i32, radius: f32, rect: Rect, scale: i32) -> bool {
+        let to_src = |v: i32| (f64::from(v) * self.fractional_scale).round() as i32;
+        glide_paint::blit_rounded_backdrop(
+            dst,
+            width * scale,
+            height * scale,
+            radius * scale as f32,
+            self.pixels,
+            self.width,
+            self.height,
+            (to_src(rect.loc.x), to_src(rect.loc.y), to_src(rect.size.w).max(1), to_src(rect.size.h).max(1)),
+        )
+    }
+}
+
 pub struct Canvas<'a, B = Vec<u8>> {
     pub buf: B,
     pub w: i32,

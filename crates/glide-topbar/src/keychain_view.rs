@@ -4,12 +4,12 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
 use super::glyphs::svg_glyph;
 use super::{LocalRect, TopbarTheme, local_rect};
-use crate::config::Color;
 use crate::i18n::{Key, t};
 use crate::keychain_prompt::{Chip, Control, Hint, View};
 use crate::paint::{Painter, TextAlign};
 use crate::popup_menu::text_px as text_w;
 use crate::raster::Canvas;
+use glide_theme::Color;
 
 pub(super) const WIDTH: i32 = 712;
 pub(super) const RADIUS: f32 = R3;
@@ -508,20 +508,18 @@ mod tests {
                 paint_into(&mut surface, &painter, &theme, &case, &layout);
                 let width = (WIDTH * scale) as u32 + 64;
                 let height = (layout.height * scale) as u32 + 64;
-                let mut image = crate::shot::compose::Image::new(width, height).expect("image");
+                let mut image = glide_shell::image::Image::new(width, height).expect("image");
                 let shade = if appearance == glide_theme::Appearance::Dark { 20 } else { 230 };
                 let backdrop = vec![shade; (width * height * 4) as usize];
-                image.draw(&crate::shot::compose::Image::from_bgra(width, height, backdrop).expect("bg"), 0, 0);
-                let prompt = crate::shot::compose::Image::from_bgra(
+                image.draw(&glide_shell::image::Image::from_bgra(width, height, backdrop).expect("bg"), 0, 0);
+                let prompt = glide_shell::image::Image::from_bgra(
                     (WIDTH * scale) as u32,
                     (layout.height * scale) as u32,
                     surface.buf.clone(),
                 )
                 .expect("prompt");
                 image.draw(&prompt, 32, 32);
-                let png = crate::backend::screenshot::save_rgba(&image.into_straight(), width, height, false)
-                    .expect("png")
-                    .png;
+                let png = image.png().expect("png");
                 let file = format!("keychain-{name}-{appearance:?}.png").to_lowercase();
                 std::fs::write(std::path::Path::new(&dir).join(file), png).expect("write");
             }

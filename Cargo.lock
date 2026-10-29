@@ -1983,6 +1983,7 @@ dependencies = [
  "glide-paint",
  "glide-shell",
  "glide-theme",
+ "glide-topbar",
  "glide-tray",
  "glide-ui",
  "libc",
@@ -2349,6 +2350,26 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "glide-topbar"
+version = "0.1.0"
+dependencies = [
+ "glide-app",
+ "glide-appmenu",
+ "glide-config",
+ "glide-ipc",
+ "glide-netbird",
+ "glide-notify",
+ "glide-paint",
+ "glide-shell",
+ "glide-theme",
+ "glide-tray",
+ "glide-ui",
+ "libc",
+ "smithay",
+ "tracing",
 ]
 
 [[package]]

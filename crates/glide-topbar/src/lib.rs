@@ -14,52 +14,51 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Scale, Size},
 };
 
-use crate::config::Color;
 use crate::global_menu::MenuPath;
-use crate::paint::TextAlign;
-use crate::popup_menu::text_px as text_w;
-use crate::power::PowerAction;
-use crate::power_dialog::is_destructive;
-use crate::raster::{Canvas, ShellRenderer};
+use crate::power::{PowerAction, is_destructive};
 use crate::system_info::PowerProfile;
+use glide_paint::{self as paint, TextAlign};
+use glide_shell::popup_menu::text_px as text_w;
+use glide_shell::raster::{Canvas, ShellRenderer};
+use glide_shell::{i18n, icon, popup_menu, raster};
+use glide_theme::Color;
 
-#[path = "topbar_panels.rs"]
+pub mod global_menu;
+pub mod headset;
+pub mod keychain_prompt;
+pub mod notifications;
+pub mod polkit;
+pub mod power;
+pub mod qs_net;
+pub mod system_info;
+
 mod panels;
 
-#[path = "topbar_calendar.rs"]
 pub mod calendar;
 
-#[path = "topbar_island.rs"]
 mod island;
 
-#[path = "topbar_glyphs.rs"]
 mod glyphs;
 
 pub use island::{ALERT_HOLD, IslandAlert};
 
-#[path = "topbar_status.rs"]
 mod status;
 
-#[path = "topbar_tray.rs"]
 mod tray;
 
-#[path = "topbar_headset.rs"]
 mod headset_view;
 
-#[path = "topbar_polkit.rs"]
 mod polkit_view;
 
-#[path = "topbar_passwords.rs"]
 pub mod passwords_view;
 
-#[path = "topbar_keychain.rs"]
 mod keychain_view;
 
 pub use tray::{ICON as TRAY_ICON, IconArt, MAX_SCALE as TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon};
 
 pub use panels::{
     Detail, FieldKey, NetbirdPending, NetbirdRow, NetbirdUpdate, PanelAction, PromptOutcome, QsKeyMode, RowTarget,
-    field_key,
+    field_key, remaining_text,
 };
 
 pub const HEIGHT: i32 = 34;
@@ -451,7 +450,8 @@ impl Slot {
         matches!(self, Self::QsVolumeTrack | Self::QsMicTrack | Self::QsBrightnessTrack)
     }
 
-    pub(super) const fn on_notice(self) -> bool {
+    #[must_use]
+    pub const fn on_notice(self) -> bool {
         matches!(
             self,
             Self::Notice
@@ -471,7 +471,8 @@ impl Slot {
         matches!(self, Self::HeadsetOutput | Self::HeadsetDisconnect | Self::HeadsetSettings)
     }
 
-    pub(super) const fn in_passwords_popup(self) -> bool {
+    #[must_use]
+    pub const fn in_passwords_popup(self) -> bool {
         matches!(
             self,
             Self::PwField
@@ -1515,7 +1516,7 @@ impl Topbar {
         let armed = self.qs_power.map(|armed| armed.action);
         let pills = painter.map_or_else(QsPills::default, |painter| {
             let (cancel, confirm) = armed.map_or((0, 0), |action| {
-                let confirm = t(crate::power_dialog::confirm_key(action));
+                let confirm = t(crate::power::confirm_key(action));
                 (qs_confirm_pill_width(painter, t(Key::PowerCancel)), qs_confirm_pill_width(painter, confirm))
             });
             let output = qs_pill_width(painter, &self.output_label());
@@ -1628,7 +1629,7 @@ impl Topbar {
         if self.open_popup != Some(OpenPopup::QuickSettings) || self.armed_power() == Some(action) {
             return false;
         }
-        let deadline = is_destructive(action).then(|| std::time::Instant::now() + crate::power_dialog::COUNTDOWN);
+        let deadline = is_destructive(action).then(|| std::time::Instant::now() + crate::power::COUNTDOWN);
         self.qs_power = Some(ArmedPower { action, deadline });
         self.arm_anim.retarget(1.0, motion::t2(), E_OUT);
         if self.focused.is_some() {
@@ -3276,7 +3277,7 @@ impl Default for TopbarTheme {
 pub fn render<R>(
     topbar: &mut Topbar, renderer: &mut R, painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader,
     output: Rectangle<i32, Logical>, scale: Scale<f64>, output_scale: i32,
-    (backdrop, bar_hidden): (Option<&crate::dock::Backdrop<'_>>, bool),
+    (backdrop, bar_hidden): (Option<&glide_shell::raster::Backdrop<'_>>, bool),
 ) -> Vec<MemoryRenderBufferRenderElement<R>>
 where
     R: ShellRenderer,
@@ -3354,7 +3355,7 @@ fn push_buffer<R>(
 
 fn push_panel<R: ShellRenderer>(
     topbar: &mut Topbar, frame: &mut Frame<'_, R>, strip: Rectangle<i32, Logical>,
-    backdrop: Option<&crate::dock::Backdrop<'_>>,
+    backdrop: Option<&glide_shell::raster::Backdrop<'_>>,
 ) {
     let (renderer, _, _, scale, output_scale, elements) = frame.parts();
     let key = (
@@ -3375,7 +3376,8 @@ fn push_panel<R: ShellRenderer>(
 }
 
 fn draw_panel(
-    theme: &TopbarTheme, strip: Rectangle<i32, Logical>, scale: i32, backdrop: Option<&crate::dock::Backdrop<'_>>,
+    theme: &TopbarTheme, strip: Rectangle<i32, Logical>, scale: i32,
+    backdrop: Option<&glide_shell::raster::Backdrop<'_>>,
 ) -> Option<MemoryRenderBuffer> {
     let (w, h) = (strip.size.w, strip.size.h);
     let mut c = Canvas::new(w, h, scale)?;
@@ -4386,7 +4388,7 @@ const fn qs_question(action: PowerAction) -> crate::i18n::Key {
     match action {
         PowerAction::Lock => crate::i18n::Key::QsAskLock,
         PowerAction::Sleep => crate::i18n::Key::QsAskSleep,
-        other => crate::power_dialog::question_key(other),
+        other => crate::power::question_key(other),
     }
 }
 
@@ -4420,7 +4422,7 @@ fn draw_qs_confirm(
     c.text_in(painter, cancel, TextAlign::Center, t(Key::PowerCancel), cancel_colour, &QS_PILL_TEXT);
     let confirm = local(strip.confirm);
     c.fill(confirm, tone, R_ROUND);
-    let label = t(crate::power_dialog::confirm_key(action));
+    let label = t(crate::power::confirm_key(action));
     c.text_in(painter, confirm, TextAlign::Center, label, theme.active_label, &QS_PILL_TEXT);
     Some(c.finish())
 }
@@ -6295,14 +6297,14 @@ mod tests {
         let mut bar = quick_settings();
         bar.arm_power(PowerAction::Lock);
         assert!(!bar.power_counting());
-        let later = std::time::Instant::now() + crate::power_dialog::COUNTDOWN * 2;
+        let later = std::time::Instant::now() + crate::power::COUNTDOWN * 2;
         assert_eq!(bar.power_due(later), None, "lock waits for a click");
         bar.arm_power(PowerAction::ShutDown);
         let now = std::time::Instant::now();
         assert!(bar.power_counting());
         assert_eq!(bar.power_due(now), None);
         assert_eq!(bar.qs_power.and_then(|armed| armed.seconds_left(now)), Some(60));
-        let due = now + crate::power_dialog::COUNTDOWN + Duration::from_millis(5);
+        let due = now + crate::power::COUNTDOWN + Duration::from_millis(5);
         assert_eq!(bar.power_due(due), Some(PowerAction::ShutDown));
         assert_eq!(bar.armed_power(), None);
     }

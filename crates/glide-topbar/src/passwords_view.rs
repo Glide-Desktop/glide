@@ -10,12 +10,12 @@ use super::{
     POPUP_GAP, Point, Rectangle, Scale, Size, Slot, Topbar, TopbarTheme, local_rect, push_popup_buffer,
     push_popup_shadow,
 };
-use crate::config::Color;
 use crate::i18n::{Key, t};
-use crate::launcher::field::TextField;
 use crate::paint::{Painter, TextAlign};
 use crate::popup_menu::text_px as text_w;
 use crate::raster::{Canvas, ShellRenderer};
+use glide_shell::field::TextField;
+use glide_theme::Color;
 
 pub const WIDTH: i32 = 368;
 pub const APPLET_W: i32 = 28;
@@ -730,14 +730,14 @@ mod tests {
     fn write_png(dir: &std::ffi::OsStr, name: &str, buffer: Vec<u8>, size: (i32, i32), scale: i32, dark: bool) {
         let width = (size.0 * scale) as u32 + 64;
         let height = (size.1 * scale) as u32 + 64;
-        let mut image = crate::shot::compose::Image::new(width, height).expect("image");
+        let mut image = glide_shell::image::Image::new(width, height).expect("image");
         let shade = if dark { 20 } else { 230 };
         let backdrop = vec![shade; (width * height * 4) as usize];
-        image.draw(&crate::shot::compose::Image::from_bgra(width, height, backdrop).expect("bg"), 0, 0);
-        let drawn = crate::shot::compose::Image::from_bgra((size.0 * scale) as u32, (size.1 * scale) as u32, buffer)
-            .expect("p");
+        image.draw(&glide_shell::image::Image::from_bgra(width, height, backdrop).expect("bg"), 0, 0);
+        let drawn =
+            glide_shell::image::Image::from_bgra((size.0 * scale) as u32, (size.1 * scale) as u32, buffer).expect("p");
         image.draw(&drawn, 32, 32);
-        let png = crate::backend::screenshot::save_rgba(&image.into_straight(), width, height, false).expect("png").png;
+        let png = image.png().expect("png");
         std::fs::write(std::path::Path::new(dir).join(name), png).expect("write");
     }
 

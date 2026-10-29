@@ -13,11 +13,9 @@ use smithay::{
 };
 
 use super::{BUTTON_HEIGHT, HEIGHT, ITEM_GAP, MenuPath, OpenPopup, Slot, Topbar, TopbarTheme};
-use crate::{
-    config::Color,
-    paint::TextAlign,
-    raster::{Canvas, ShellRenderer, buffer_from},
-};
+use glide_paint::TextAlign;
+use glide_shell::raster::{Canvas, ShellRenderer, buffer_from};
+use glide_theme::Color;
 
 pub const ICON: i32 = 14;
 pub const SLOT_WIDTH: i32 = 28;
@@ -222,7 +220,7 @@ impl TrayStrip {
             return None;
         }
         let since = self.hover_since?;
-        if since.elapsed() < crate::dock::TOOLTIP_DELAY {
+        if since.elapsed() < glide_theme::component::TOOLTIP_DELAY {
             return None;
         }
         let id = self.hover?;
@@ -263,7 +261,7 @@ impl TrayStrip {
             return false;
         }
         let duration = motion::t2();
-        let pending = self.hover_since.is_some_and(|since| since.elapsed() < crate::dock::TOOLTIP_DELAY);
+        let pending = self.hover_since.is_some_and(|since| since.elapsed() < glide_theme::component::TOOLTIP_DELAY);
         self.moving
             || pending
             || self.tooltip_reveal.is_animating(motion::t1())

@@ -20,6 +20,7 @@ use smithay::{
 };
 
 use glide_paint::TextAlign;
+pub use glide_shell::raster::Backdrop;
 use glide_shell::raster::{Canvas, ShellRenderer, rect};
 use glide_theme::{Color, DockTheme};
 
@@ -117,7 +118,7 @@ const SEPARATOR_WIDTH: i32 = 1;
 const SEPARATOR_MARGIN: i32 = glide_theme::spacing::SP1;
 const SEPARATOR_HEIGHT: i32 = 28;
 
-pub const TOOLTIP_DELAY: Duration = Duration::from_millis(550);
+pub const TOOLTIP_DELAY: Duration = glide_theme::component::TOOLTIP_DELAY;
 const TOOLTIP_HEIGHT: i32 = 26;
 const TOOLTIP_PAD_X: i32 = glide_theme::spacing::SP3;
 const TOOLTIP_GAP: i32 = glide_theme::spacing::SP2;
@@ -2608,32 +2609,6 @@ fn scale_or_one(scale: i32) -> i32 {
 
 fn scale_f(scale: i32) -> f32 {
     scale as f32
-}
-
-pub struct Backdrop<'a> {
-    pub pixels: &'a [u8],
-    pub width: i32,
-    pub height: i32,
-    pub fractional_scale: f64,
-    pub generation: u64,
-}
-
-impl Backdrop<'_> {
-    pub fn blit(
-        &self, dst: &mut [u8], width: i32, height: i32, radius: f32, rect: Rectangle<i32, Logical>, scale: i32,
-    ) -> bool {
-        let to_src = |v: i32| (f64::from(v) * self.fractional_scale).round() as i32;
-        glide_paint::blit_rounded_backdrop(
-            dst,
-            width * scale,
-            height * scale,
-            radius * scale_f(scale),
-            self.pixels,
-            self.width,
-            self.height,
-            (to_src(rect.loc.x), to_src(rect.loc.y), to_src(rect.size.w).max(1), to_src(rect.size.h).max(1)),
-        )
-    }
 }
 
 fn draw_tile(

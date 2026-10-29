@@ -86,7 +86,7 @@ fn low(theme: &TopbarTheme, headset: &Headset) -> bool {
 }
 
 fn headset_glyph(
-    c: &mut Canvas<'_>, headset: &Headset, side: i32, cell: Rectangle<i32, Logical>, colour: crate::config::Color,
+    c: &mut Canvas<'_>, headset: &Headset, side: i32, cell: Rectangle<i32, Logical>, colour: glide_theme::Color,
 ) {
     if !themed(c, &headset.icon, side, cell, colour) {
         glyph(c, Glyph::Headphones, side, cell, colour);
@@ -95,7 +95,7 @@ fn headset_glyph(
 
 pub(super) fn draw_applet(
     c: &mut Canvas<'_>, painter: &crate::paint::Painter, theme: &TopbarTheme, headset: &Headset, x: i32,
-    fg: crate::config::Color,
+    fg: glide_theme::Color,
 ) {
     let colour = if low(theme, headset) { theme.danger } else { fg };
     let left = x + APPLET_PAD;
@@ -271,7 +271,7 @@ fn paint_popover<'a>(
 
 fn draw_tile(
     c: &mut Canvas<'_>, painter: &crate::paint::Painter, theme: &TopbarTheme, rect: Rectangle<i32, Logical>,
-    (label, value): (Key, Option<String>), (level, colour): (Option<u8>, crate::config::Color),
+    (label, value): (Key, Option<String>), (level, colour): (Option<u8>, glide_theme::Color),
 ) {
     c.fill(rect, theme.track_soft, R2);
     c.stroke(rect, 1.0, R2, theme.line);
@@ -366,8 +366,8 @@ mod tests {
             draw_applet(&mut applet, &painter, &theme, &headset, 0, theme.muted);
             for (name, c) in [("popover", &canvas), ("applet", &applet)] {
                 let (w, h) = ((c.w * c.scale) as u32, (c.h * c.scale) as u32);
-                let image = crate::shot::compose::Image::from_bgra(w, h, c.buf.clone()).expect("image");
-                let png = crate::backend::screenshot::save_rgba(&image.into_straight(), w, h, false).expect("png").png;
+                let image = glide_shell::image::Image::from_bgra(w, h, c.buf.clone()).expect("image");
+                let png = image.png().expect("png");
                 let file = format!("headset-{name}-{appearance:?}.png").to_ascii_lowercase();
                 std::fs::write(std::path::Path::new(&dir).join(file), png).expect("write");
             }

@@ -1,6 +1,6 @@
 use super::LocalRect;
-use crate::config::Color;
 use crate::raster::Canvas;
+use glide_theme::Color;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Glyph {

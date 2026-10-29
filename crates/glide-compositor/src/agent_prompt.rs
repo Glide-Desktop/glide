@@ -4,7 +4,7 @@ use crate::{notifications::LocalEvent, oneshot};
 
 pub const ACCEPT: &str = "accept";
 pub const DECLINE: &str = "decline";
-pub const CATEGORY: &str = "x-glide.prompt";
+pub use crate::notifications::PROMPT_CATEGORY as CATEGORY;
 const FIRST_ID: u32 = u32::MAX - 1000;
 const SLOTS: u32 = 500;
 const TIMEOUT: Duration = Duration::from_secs(90);

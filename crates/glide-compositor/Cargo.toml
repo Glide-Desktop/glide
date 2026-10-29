@@ -44,6 +44,7 @@ glide-notify = { path = "../glide-notify" }
 glide-paint = { path = "../glide-paint" }
 glide-shell = { path = "../glide-shell" }
 glide-theme = { path = "../glide-theme" }
+glide-topbar = { path = "../glide-topbar" }
 glide-tray = { path = "../glide-tray" }
 glide-ui = { path = "../glide-ui" }
 profiling = "1.0.18"
