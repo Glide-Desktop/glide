@@ -1,4 +1,5 @@
 pub mod cursor_config;
+pub mod icon_plates;
 pub mod spawn;
 pub mod status;
 pub mod status_hooks;

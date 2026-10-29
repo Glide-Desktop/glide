@@ -2369,6 +2369,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "glide-config",
+ "glide-paint",
  "glide-shell",
  "glide-theme",
  "libc",

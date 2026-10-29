@@ -49,11 +49,16 @@ pub fn installed_in(roots: &[PathBuf], name: &str) -> bool {
 }
 
 #[must_use]
-pub fn resolve(configured: Option<&str>, appearance: Appearance, accent: Accent, roots: &[PathBuf]) -> String {
+pub fn source(configured: Option<&str>, appearance: Appearance, accent: Accent, roots: &[PathBuf]) -> String {
     match configured.map(str::trim).filter(|name| !name.is_empty()) {
         Some(name) => name.to_string(),
         None => default_theme(appearance, accent, |name| installed_in(roots, name)),
     }
+}
+
+#[must_use]
+pub fn resolve(configured: Option<&str>, appearance: Appearance, accent: Accent, roots: &[PathBuf]) -> String {
+    crate::plates::prefer(source(configured, appearance, accent, roots), roots)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ pub mod font;
 pub mod icons;
 pub mod motion;
 mod palette;
+pub mod plates;
 pub mod shape;
 pub mod spacing;
 mod tokens;

@@ -462,10 +462,11 @@ fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mu
             let expired = state.notifications.tick();
             let night = state.tick_night_light();
             let appearance = state.tick_appearance_schedule();
+            let plates = state.tick_icon_plates();
             let power = state.tick_qs_power();
             let netbird = state.tick_netbird();
             state.tick_keychain_idle(std::time::Instant::now());
-            if clock || expired || night || appearance || power || netbird {
+            if clock || expired || night || appearance || plates || power || netbird {
                 state.queue_redraw();
             }
             TimeoutAction::ToDuration(std::time::Duration::from_secs(1))

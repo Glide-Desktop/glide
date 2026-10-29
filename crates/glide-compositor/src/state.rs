@@ -1574,6 +1574,23 @@ impl GlideState {
         }
     }
 
+    pub fn tick_icon_plates(&mut self) -> bool {
+        if !glide_system::icon_plates::take_rebuilt() {
+            return false;
+        }
+        match crate::config::Config::try_load() {
+            Ok(config) => {
+                self.applied_config.forget_icon_theme();
+                config.apply_to_state(self);
+                true
+            }
+            Err(message) => {
+                tracing::warn!(%message, "the dark icon plates wait for a readable glide.toml");
+                false
+            }
+        }
+    }
+
     pub fn tick_night_light(&mut self) -> bool {
         let Some(minute) = crate::topbar::local_minute_of_day() else {
             return false;

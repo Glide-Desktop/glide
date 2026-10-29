@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 bitflags.workspace = true
 glide-config = { path = "../glide-config" }
+glide-paint = { path = "../glide-paint" }
 glide-shell = { path = "../glide-shell" }
 glide-theme = { path = "../glide-theme" }
 libc = "0.2"

@@ -723,6 +723,10 @@ impl AppliedConfig {
         replace_if_changed(&mut self.icon_theme, theme.map(str::to_owned))
     }
 
+    pub fn forget_icon_theme(&mut self) {
+        self.icon_theme = None;
+    }
+
     pub fn keymap_changed(&mut self, input: &InputConfig) -> bool {
         let keymap = (
             input.xkb_rules.clone(),
@@ -1289,12 +1293,15 @@ impl Config {
     }
 
     fn icon_theme(&self) -> String {
-        glide_theme::icons::resolve(
+        let roots = crate::icon::icon_roots();
+        let source = glide_theme::icons::source(
             self.dock.theme.icon_theme.as_deref(),
             self.topbar.appearance,
             self.topbar.accent,
-            &crate::icon::icon_roots(),
-        )
+            &roots,
+        );
+        glide_system::icon_plates::ensure(&source, roots.clone());
+        glide_theme::plates::prefer(source, &roots)
     }
 
     pub fn apply_to_state(&self, state: &mut GlideState) {
