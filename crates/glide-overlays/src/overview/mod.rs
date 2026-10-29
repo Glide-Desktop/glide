@@ -1273,8 +1273,7 @@ impl OverviewUi {
         let theme = self.theme.clone();
         self.strip.render_chrome(
             renderer,
-            &theme,
-            frame.painter,
+            (&theme, frame.painter),
             place,
             (strip_alpha, strip_rise),
             (scale, output_scale),

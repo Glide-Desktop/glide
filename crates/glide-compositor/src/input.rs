@@ -1601,7 +1601,10 @@ impl GlideState {
         let mut suppressed_keys = std::mem::take(&mut self.suppressed_keys);
         let keybinds = std::mem::take(&mut self.keybinds);
 
-        let overview_active = self.layout.overview_active();
+        let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let overview_active = self.layout.overview_active()
+            && (self.overview.is_none()
+                || pointer.is_none_or(|at| self.overview.as_ref().is_some_and(|ui| ui.contains(at))));
         let launcher_open = self.launcher.as_ref().is_some_and(|launcher| !launcher.is_closing());
         let replying = self.notifications.reply_target().is_some();
         let topbar_popup = self.topbar.has_open_popup();

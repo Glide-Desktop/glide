@@ -225,9 +225,8 @@ impl Strip {
             .map(|(slot, base)| self.drawn(slot, base, rise))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_chrome<R: ShellRenderer>(
-        &mut self, renderer: &mut R, theme: &OverviewTheme, painter: &crate::paint::Painter,
+        &mut self, renderer: &mut R, (theme, painter): (&OverviewTheme, &crate::paint::Painter),
         (area, output): (Rectangle<i32, Logical>, Rectangle<i32, Logical>), (alpha, rise): (f32, f64),
         (scale, output_scale): (Scale<f64>, i32), elements: &mut Vec<OverviewElement<R>>,
     ) {
@@ -293,7 +292,7 @@ impl Strip {
                 }
                 Slot::Add => {
                     let open = self.add_open();
-                    self.render_add(renderer, theme, drawn, drop, (alpha, key), (scale, output_scale), elements);
+                    self.render_add(renderer, theme, (drawn, drop), (alpha, key), (scale, output_scale), elements);
                     if open > 0.0 {
                         let text = crate::i18n::t(crate::i18n::Key::OverviewNewDesktop).to_string();
                         captions.push((usize::MAX, text, false, *base, glide_theme::motion::assist(open)));
@@ -336,9 +335,8 @@ impl Strip {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_add<R: ShellRenderer>(
-        &mut self, renderer: &mut R, theme: &OverviewTheme, drawn: Rectangle<f64, Logical>, drop: f64,
+        &mut self, renderer: &mut R, theme: &OverviewTheme, (drawn, drop): (Rectangle<f64, Logical>, f64),
         (alpha, key): (f32, RasterKey), (scale, output_scale): (Scale<f64>, i32),
         elements: &mut Vec<OverviewElement<R>>,
     ) {
