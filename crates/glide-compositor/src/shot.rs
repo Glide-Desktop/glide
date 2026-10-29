@@ -1,7 +1,4 @@
-pub mod compose;
-pub mod model;
-pub mod render;
-
+pub use glide_shot::{compose, crop_region, model, render};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
@@ -190,11 +187,6 @@ fn frame_of(window: &GlideWindow, location: Point<i32, Logical>) -> Rectangle<i3
         location + geometry.loc - Point::from((0, header)),
         Size::from((geometry.size.w, geometry.size.h + header)),
     )
-}
-
-#[must_use]
-pub fn crop_region(target: Area, scale: f64, size: (u32, u32)) -> Option<(i32, i32, i32, i32)> {
-    crate::screen_picker::physical_crop(target, scale, (size.0 as i32, size.1 as i32))
 }
 
 impl GlideState {

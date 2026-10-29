@@ -14,10 +14,10 @@ use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, PixmapMut, Stro
 
 use super::compose::{self, Frame, Image, Sprite};
 use super::model::{self, Area, Bar, Control, Handle, Mark, Mode, Shape, Shot, Tool};
-use crate::config::Color;
 use crate::i18n::Key;
 use crate::paint::{Painter, TextAlign};
 use crate::raster::{Canvas, rect};
+use glide_theme::Color;
 use glide_theme::TextStyle;
 
 const DIM: f32 = 0.45;
@@ -1556,8 +1556,7 @@ mod tests {
         let Some(dir) = std::env::var_os("GLIDE_SHOT_PREVIEW") else {
             return;
         };
-        let (w, h) = (image.width, image.height);
-        let png = crate::backend::screenshot::save_rgba(&image.into_straight(), w, h, false).expect("png").png;
+        let png = image.png().expect("png");
         std::fs::write(std::path::Path::new(&dir).join(name), png).expect("write");
     }
 
@@ -1600,7 +1599,7 @@ mod tests {
             preview_edit(&mut shot, &frozen, &palette, &painter, suffix);
         }
         let window_frame = a(560.0, 220.0, 560.0, 420.0);
-        let region = super::super::crop_region(window_frame, scale, (frozen.width, frozen.height)).expect("region");
+        let region = crate::crop_region(window_frame, scale, (frozen.width, frozen.height)).expect("region");
         let window = compose::rounded_corners(frozen.crop(region).expect("crop"), 12.0 * scale as f32);
         let shadowed =
             compose::with_shadow(&window, compose::Shadow { radius: 12.0 * scale as f32, scale }).expect("shadow");
@@ -1701,7 +1700,7 @@ mod tests {
             let frame = Frame { x: 0.0, y: 0.0, scale };
             let mut marked = view.clone();
             compose::apply_marks(&mut marked, &shot.marks, &frame);
-            let region = super::super::crop_region(target, scale, (view.width, view.height)).expect("region");
+            let region = crate::crop_region(target, scale, (view.width, view.height)).expect("region");
             let inside = marked.crop(region).expect("inside");
             for part in around(shot.full(), Some(target)) {
                 fill(&mut view, part, [0, 0, 0, 115], scale);

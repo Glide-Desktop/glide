@@ -336,7 +336,7 @@ pub fn rounded_corners(mut content: Image, radius: f32) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shot::model::{Mark, Shape};
+    use crate::model::{Mark, Shape};
     use smithay::utils::Point;
 
     fn solid(width: u32, height: u32, rgba: [u8; 4]) -> Image {

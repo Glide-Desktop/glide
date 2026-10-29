@@ -16,6 +16,15 @@ pub fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
 }
 
 #[must_use]
+pub fn physical_crop(crop: Rectangle<f64, Logical>, scale: f64, size: (i32, i32)) -> Option<(i32, i32, i32, i32)> {
+    let x0 = (crop.loc.x * scale).floor().max(0.0) as i32;
+    let y0 = (crop.loc.y * scale).floor().max(0.0) as i32;
+    let x1 = (((crop.loc.x + crop.size.w) * scale).ceil() as i32).min(size.0);
+    let y1 = (((crop.loc.y + crop.size.h) * scale).ceil() as i32).min(size.1);
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+}
+
+#[must_use]
 pub fn canvas(width: i32, height: i32, scale: i32) -> Option<Vec<u8>> {
     let count = (width * scale).checked_mul(height * scale)?.checked_mul(4)?;
     Some(vec![0u8; usize::try_from(count).ok()?])

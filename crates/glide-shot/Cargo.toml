@@ -1,0 +1,18 @@
+[package]
+name = "glide-shot"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glide-paint = { path = "../glide-paint" }
+glide-shell = { path = "../glide-shell" }
+glide-theme = { path = "../glide-theme" }
+glide-ui = { path = "../glide-ui" }
+smithay = { workspace = true, features = ["wayland_frontend"] }
+tiny-skia = "0.12.0"
+
+[lints]
+workspace = true

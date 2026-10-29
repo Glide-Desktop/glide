@@ -1983,6 +1983,7 @@ dependencies = [
  "glide-notify",
  "glide-paint",
  "glide-shell",
+ "glide-shot",
  "glide-theme",
  "glide-topbar",
  "glide-tray",
@@ -2305,6 +2306,18 @@ dependencies = [
  "smithay",
  "tiny-skia 0.12.0",
  "tracing",
+]
+
+[[package]]
+name = "glide-shot"
+version = "0.1.0"
+dependencies = [
+ "glide-paint",
+ "glide-shell",
+ "glide-theme",
+ "glide-ui",
+ "smithay",
+ "tiny-skia 0.12.0",
 ]
 
 [[package]]

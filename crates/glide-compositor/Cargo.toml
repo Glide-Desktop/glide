@@ -44,6 +44,7 @@ glide-netbird = { path = "../glide-netbird" }
 glide-notify = { path = "../glide-notify" }
 glide-paint = { path = "../glide-paint" }
 glide-shell = { path = "../glide-shell" }
+glide-shot = { path = "../glide-shot" }
 glide-theme = { path = "../glide-theme" }
 glide-topbar = { path = "../glide-topbar" }
 glide-tray = { path = "../glide-tray" }
