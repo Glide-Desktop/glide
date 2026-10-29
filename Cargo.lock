@@ -1974,6 +1974,7 @@ dependencies = [
  "glide-config",
  "glide-dock",
  "glide-geom",
+ "glide-gestures",
  "glide-greeter",
  "glide-ipc",
  "glide-launcher",
@@ -2060,6 +2061,17 @@ dependencies = [
 [[package]]
 name = "glide-geom"
 version = "0.1.0"
+
+[[package]]
+name = "glide-gestures"
+version = "0.1.0"
+dependencies = [
+ "glide-ipc",
+ "glide-layout",
+ "glide-theme",
+ "serde",
+ "smithay",
+]
 
 [[package]]
 name = "glide-greeter"

@@ -9,6 +9,7 @@ members = [
     "crates/glide-config",
     "crates/glide-dock",
     "crates/glide-geom",
+    "crates/glide-gestures",
     "crates/glide-greeter",
     "crates/glide-iced",
     "crates/glide-files",

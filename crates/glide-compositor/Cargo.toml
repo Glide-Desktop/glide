@@ -35,6 +35,7 @@ glide-cast = { path = "../glide-cast" }
 glide-config = { path = "../glide-config" }
 glide-dock = { path = "../glide-dock" }
 glide-geom = { path = "../glide-geom" }
+glide-gestures = { path = "../glide-gestures" }
 glide-greeter = { path = "../glide-greeter" }
 glide-ipc = { path = "../glide-ipc" }
 glide-launcher = { path = "../glide-launcher" }

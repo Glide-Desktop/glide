@@ -1,5 +1,4 @@
-#[path = "gestures.rs"]
-pub mod gestures;
+pub use glide_gestures as gestures;
 
 pub use gestures::*;
 

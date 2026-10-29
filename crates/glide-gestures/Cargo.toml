@@ -1,0 +1,17 @@
+[package]
+name = "glide-gestures"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glide-ipc = { path = "../glide-ipc" }
+glide-layout = { path = "../glide-layout" }
+glide-theme = { path = "../glide-theme" }
+serde.workspace = true
+smithay.workspace = true
+
+[lints]
+workspace = true
