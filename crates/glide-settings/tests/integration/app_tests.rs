@@ -632,6 +632,12 @@ fn windows_panel_writes_decoration_keys() {
     assert_eq!(config.get_int("decorations", "border-width"), Some(0));
     assert_eq!(config.get_str("decorations", "button-layout"), Some("close-maximize"));
     assert_eq!(config.get_str("decorations", "double-click"), Some("none"));
+    let _ = app.update(Message::Windows(Msg::Density(Density::Standard)));
+    assert_eq!(
+        app.config().get_int("decorations", "height"),
+        None,
+        "the standard titlebar follows the default instead of freezing today's number"
+    );
     let _ = app.update(Message::Windows(Msg::Border(true)));
     assert_eq!(
         app.config().get_int("decorations", "border-width"),

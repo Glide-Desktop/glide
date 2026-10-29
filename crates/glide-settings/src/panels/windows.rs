@@ -160,14 +160,8 @@ impl Pane for Page {
     fn update(&mut self, msg: Msg, _c: Ctx, config: &mut ConfigStore) -> Task<Msg> {
         match msg {
             Msg::Align(align) => config.set_str("decorations", "title-align", align.key()),
-            Msg::Density(density) => config.set_int(
-                "decorations",
-                "height",
-                match density {
-                    Density::Compact => COMPACT_HEIGHT,
-                    Density::Standard => DEFAULT_TITLEBAR_HEIGHT,
-                },
-            ),
+            Msg::Density(Density::Compact) => config.set_int("decorations", "height", COMPACT_HEIGHT),
+            Msg::Density(Density::Standard) => config.remove("decorations", "height"),
             Msg::Shadow(on) => config.set_bool("decorations", "shadow", on),
             Msg::Border(false) => config.set_int("decorations", "border-width", 0),
             Msg::Border(true) => {

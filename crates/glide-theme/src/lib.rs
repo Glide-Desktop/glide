@@ -226,7 +226,7 @@ impl DecorationTheme {
     #[must_use]
     pub fn from_tokens(t: &Tokens) -> Self {
         Self {
-            height: 20,
+            height: component::WINDOW_HEADER as u32,
             title_align: TitleAlign::Left,
             double_click: TitlebarAction::Maximize,
             button_layout: ButtonLayout::MaximizeClose,
