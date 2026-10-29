@@ -375,6 +375,12 @@ struct Layers {
     scale: f64,
 }
 
+fn under_glass(openness: f64, glass: f64) -> f64 {
+    let (a, s) = (openness.clamp(0.0, 1.0), glass.clamp(0.0, 1.0));
+    let rest = a.mul_add(-s, 1.0);
+    if rest <= f64::EPSILON { 0.0 } else { a * (1.0 - s) / rest }
+}
+
 fn layers(p: f64, k: f64) -> Layers {
     use glide_theme::motion::window;
     let p = p.clamp(0.0, 1.0);
@@ -1355,6 +1361,11 @@ impl Launcher {
         ease_io(p) * k
     }
 
+    #[must_use]
+    pub fn backdrop_blur_alpha(&self, glass: f32) -> f32 {
+        under_glass(self.backdrop_openness(), f64::from(glass)) as f32
+    }
+
     fn start(&mut self, phase: Phase, release: Option<glide_theme::motion::Release>) {
         let (p, k) = self.scene();
         (self.from, self.from_k) = if release.is_some() { (p * k, 1.0) } else { (p, k) };
@@ -1748,8 +1759,7 @@ where
 
     let mut elements = frame.elements;
 
-    let mut scrim_color = theme.background.0;
-    scrim_color[3] *= launcher.backdrop_openness().clamp(0.0, 1.0) as f32;
+    let scrim_color = theme.background.premultiplied(launcher.backdrop_openness() as f32);
     launcher.scrim.update((area.size.w, area.size.h), scrim_color);
     elements.push(LauncherRenderElement::Solid(SolidColorRenderElement::from_buffer(
         &launcher.scrim,
@@ -3062,6 +3072,39 @@ mod tests {
             assert_eq!(open_duration(), glide_theme::motion::t4());
             launcher.phase = Phase::Open;
             assert!((launcher.backdrop_openness() - 1.0).abs() < f64::EPSILON);
+        }
+
+        #[test]
+        fn a_closed_launcher_adds_no_light_and_the_open_glass_is_premultiplied() {
+            let theme = LauncherTheme::default();
+            assert_eq!(theme.background.premultiplied(0.0), [0.0; 4]);
+            let [r, g, b, a] = theme.background.premultiplied(1.0);
+            let [sr, sg, sb, sa] = theme.background.0;
+            assert!((a - sa).abs() < f32::EPSILON);
+            for (channel, straight) in [(r, sr), (g, sg), (b, sb)] {
+                assert!((channel - straight * sa).abs() < 1e-6, "{channel} vs {straight} × {sa}");
+            }
+        }
+
+        #[test]
+        fn the_glass_fades_in_as_one_material_without_a_bright_pulse_from_the_blur() {
+            let (desktop, blur, glass): (f64, f64, f64) = (0.05, 0.9, 0.15);
+            for alpha in [0.76_f64, 0.74, 0.3, 0.0] {
+                let done = alpha.mul_add(glass, (1.0 - alpha) * blur);
+                let mut last = desktop;
+                for step in 0..=100 {
+                    let a = f64::from(step) / 100.0;
+                    let b = under_glass(a, alpha);
+                    let shown =
+                        (a * alpha).mul_add(glass, a.mul_add(-alpha, 1.0) * b.mul_add(blur, (1.0 - b) * desktop));
+                    let crossfade = a.mul_add(done, (1.0 - a) * desktop);
+                    assert!((shown - crossfade).abs() < 1e-9, "{alpha} at {a}: {shown} vs {crossfade}");
+                    assert!(shown >= last - 1e-12, "{alpha} at {a}: brighter before than after");
+                    last = shown;
+                }
+            }
+            assert!(under_glass(1.0, 1.0).abs() < f64::EPSILON);
+            assert!((under_glass(1.0, 0.76) - 1.0).abs() < 1e-12);
         }
 
         #[test]

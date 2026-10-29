@@ -50,6 +50,13 @@ impl Color {
     }
 
     #[must_use]
+    pub fn premultiplied(self, opacity: f32) -> [f32; 4] {
+        let [r, g, b, a] = self.0;
+        let alpha = (a * opacity).clamp(0.0, 1.0);
+        [r * alpha, g * alpha, b * alpha, alpha]
+    }
+
+    #[must_use]
     pub fn darken(self, factor: f32) -> Self {
         let [r, g, b, a] = self.0;
         Self([(r * factor).clamp(0.0, 1.0), (g * factor).clamp(0.0, 1.0), (b * factor).clamp(0.0, 1.0), a])

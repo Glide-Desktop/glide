@@ -1498,7 +1498,7 @@ impl OverviewUi {
         }
 
         let backdrop_t = (self.backdrop_progress() * (1.0 - glide_theme::motion::ease_io(self.handoff))) as f32;
-        let scrim_color = theme.dim.0.map(|c| (c * backdrop_t).clamp(0.0, 1.0));
+        let scrim_color = theme.dim.premultiplied(backdrop_t);
         self.scrim.update((output.size.w, output.size.h), scrim_color);
         layers.push(Layer::chrome(OverviewElement::Solid(SolidColorRenderElement::from_buffer(
             &self.scrim,

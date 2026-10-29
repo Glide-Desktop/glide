@@ -1436,8 +1436,8 @@ impl GlideState {
                 .into_iter()
                 .map(|element| GlideRenderElements::RelocatedLauncher(relocate(element, shell_offset)))
                 .collect();
-            if let Some(buffer) = surface.wallpaper_blur_buf.as_ref().filter(|_| launcher_openness > 0.0) {
-                let alpha = launcher_openness.clamp(0.0, 1.0) as f32;
+            let alpha = launcher.backdrop_blur_alpha(self.launcher_theme.background.0[3]);
+            if let Some(buffer) = surface.wallpaper_blur_buf.as_ref().filter(|_| alpha > 0.0) {
                 ordered.extend(backdrop_element(gles_renderer, buffer, alpha, output_mode, logical_size));
             }
             prepend(&mut elements, ordered);
