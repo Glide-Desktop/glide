@@ -54,13 +54,27 @@ fn tokenize(input: &str) -> Option<Vec<Token>> {
     Some(tokens)
 }
 
+const MAX_TOKENS: usize = 256;
+const MAX_NESTING: usize = 32;
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     operations: usize,
+    nesting: usize,
 }
 
 impl Parser {
+    fn nested<T>(&mut self, inner: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        if self.nesting >= MAX_NESTING {
+            return None;
+        }
+        self.nesting += 1;
+        let value = inner(self);
+        self.nesting -= 1;
+        value
+    }
+
     fn peek(&self) -> Option<Token> {
         self.tokens.get(self.pos).copied()
     }
@@ -112,11 +126,11 @@ impl Parser {
         match self.peek() {
             Some(Token::Minus) => {
                 self.bump();
-                Some(-self.unary()?)
+                Some(-self.nested(Self::unary)?)
             }
             Some(Token::Plus) => {
                 self.bump();
-                self.unary()
+                self.nested(Self::unary)
             }
             _ => self.postfix(),
         }
@@ -136,7 +150,7 @@ impl Parser {
         match self.bump()? {
             Token::Number(value) => Some(value),
             Token::Open => {
-                let value = self.expression()?;
+                let value = self.nested(Self::expression)?;
                 if self.bump()? != Token::Close {
                     return None;
                 }
@@ -150,10 +164,10 @@ impl Parser {
 
 fn evaluate_counting(input: &str) -> Option<(f64, usize)> {
     let tokens = tokenize(input)?;
-    if tokens.is_empty() {
+    if tokens.is_empty() || tokens.len() > MAX_TOKENS {
         return None;
     }
-    let mut parser = Parser { tokens, pos: 0, operations: 0 };
+    let mut parser = Parser { tokens, pos: 0, operations: 0, nesting: 0 };
     let value = parser.expression()?;
     if parser.pos != parser.tokens.len() || !value.is_finite() {
         return None;
@@ -203,6 +217,20 @@ mod tests {
         close("2*3+4", 10.0);
         close("10-4-3", 3.0);
         close("100/10/5", 2.0);
+    }
+
+    #[test]
+    fn a_pasted_wall_of_brackets_or_signs_is_refused_instead_of_overflowing_the_stack() {
+        let brackets = "(".repeat(64 * 1024);
+        assert_eq!(calculation(&brackets), None);
+        let balanced = format!("{}1{}+1", "(".repeat(100_000), ")".repeat(100_000));
+        assert_eq!(calculation(&balanced), None);
+        let signs = format!("{}1+1", "-".repeat(64 * 1024));
+        assert_eq!(calculation(&signs), None);
+        let deep = format!("{}1{}+1", "(".repeat(MAX_NESTING + 1), ")".repeat(MAX_NESTING + 1));
+        assert_eq!(calculation(&deep), None);
+        let shallow = format!("{}1{}+1", "(".repeat(MAX_NESTING), ")".repeat(MAX_NESTING));
+        assert_eq!(calculation(&shallow).as_deref(), Some("2"));
     }
 
     #[test]
