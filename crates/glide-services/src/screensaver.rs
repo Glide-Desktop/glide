@@ -192,6 +192,7 @@ impl Handle {
 fn vanished_owner(message: &zbus::Message) -> Option<String> {
     let header = message.header();
     let relevant = header.message_type() == zbus::message::Type::Signal
+        && header.sender().is_some_and(|sender| sender.as_str() == "org.freedesktop.DBus")
         && header.interface().is_some_and(|name| name.as_str() == "org.freedesktop.DBus")
         && header.member().is_some_and(|name| name.as_str() == "NameOwnerChanged");
     if !relevant {
@@ -286,6 +287,23 @@ mod tests {
             call(&player, PATHS[0], "Inhibit", &("player", "video")).body().deserialize().expect("a cookie");
         assert_ne!(cookie, 0);
         assert_eq!(next(), Event::Inhibited(true));
+
+        let forger = daemon.client();
+        let victim = player.unique_name().expect("the player has a unique name").to_string();
+        forger
+            .emit_signal(
+                Some(BUS_NAME),
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameOwnerChanged",
+                &(victim.as_str(), victim.as_str(), ""),
+            )
+            .expect("any peer may send a unicast signal");
+        assert!(
+            events.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a NameOwnerChanged forged by another peer must not lift the player's inhibitor"
+        );
+        drop(forger);
 
         let browser = daemon.client();
         call(&browser, PATHS[1], "Inhibit", &("browser", "call"));
