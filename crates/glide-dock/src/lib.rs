@@ -787,6 +787,9 @@ impl Dock {
     }
 
     pub fn reveal_for(&mut self, duration: Duration) {
+        if !self.is_enabled() {
+            return;
+        }
         let until = Instant::now() + duration;
         if self.reveal_until.is_none_or(|current| current < until) {
             self.reveal_until = Some(until);
@@ -1582,6 +1585,9 @@ impl Dock {
 
     #[must_use]
     pub fn is_animating(&self) -> bool {
+        if !self.is_enabled() {
+            return false;
+        }
         let now = Instant::now();
         let run = t3();
         let tooltip_pending = self.menu.is_none()
@@ -1589,7 +1595,7 @@ impl Dock {
             && self.hover_since.is_some_and(|since| since.elapsed() < TOOLTIP_DELAY);
         let autohide = self.hide_pending.is_some()
             || self.hide.is_animating()
-            || self.reveal_until.is_some()
+            || self.reveal_until.is_some_and(|until| now < until)
             || (self.edge_since.is_some() && self.is_hidden());
         let preview = self.preview.as_ref().is_some_and(crate::preview::Preview::is_animating);
         autohide
@@ -2912,6 +2918,31 @@ mod tests {
             dock.reveal_until = Instant::now().checked_sub(Duration::from_millis(1));
             settle_hidden(&mut dock, false, false);
             assert!(dock.is_hidden(), "it hides again once the reveal lapses");
+        }
+
+        #[test]
+        fn a_lapsed_reveal_no_longer_keeps_the_frame_pump_alive() {
+            let mut dock = dock(DockAutohide::Never);
+            assert!(!dock.is_animating());
+            dock.reveal_for(ATTENTION_REVEAL);
+            assert!(dock.is_animating(), "a reveal still running wakes the pump to end it");
+            dock.reveal_until = Instant::now().checked_sub(Duration::from_millis(1));
+            assert!(dock.reveal_until.is_some(), "nothing has cleared the lapsed reveal yet");
+            assert!(!dock.is_animating());
+        }
+
+        #[test]
+        fn a_disabled_dock_never_keeps_the_frame_pump_alive() {
+            let mut config = config(3);
+            config.theme.enabled = false;
+            let mut dock = Dock::new(&config);
+            assert!(!dock.is_enabled());
+            dock.reveal_for(ATTENTION_REVEAL);
+            assert_eq!(dock.reveal_until, None, "a dock that is not drawn has nothing to reveal");
+            dock.reveal_until = Some(Instant::now() + ATTENTION_REVEAL);
+            assert!(dock.begin_launch("app 0", "App 0", "true"));
+            assert!(dock.set_urgent("app 1", true));
+            assert!(!dock.is_animating());
         }
 
         #[test]
