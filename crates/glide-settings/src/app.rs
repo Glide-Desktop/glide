@@ -58,7 +58,7 @@ macro_rules! declare_pages {
 
             fn leave_page(&mut self, panel: Panel) {
                 match panel {
-                    $(Panel::$variant => Pane::leave(&mut self.pages.$module),)*
+                    $(Panel::$variant => Pane::leave(&mut self.pages.$module, &mut self.config),)*
                 }
             }
 
@@ -345,6 +345,7 @@ impl App {
         }
         self.active_panel = panel;
         let open = Task::batch(self.shown_panels().into_iter().map(|shown| self.open_page(shown)).collect::<Vec<_>>());
+        let open = self.commit(open);
         if switched {
             Task::batch([
                 open,
@@ -566,6 +567,14 @@ impl App {
 
 impl glide_sdk::App for App {
     type Message = Message;
+
+    fn close_requested(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        if self.pages.displays.abandon(&mut self.config) && self.config.take_dirty() && self.config.save().is_ok() {
+            let _ = ipc::reload();
+        }
+        shell.exit();
+        Task::none()
+    }
 
     fn new(_: &mut glide_sdk::Shell<Message>) -> (Self, Task<Message>) {
         Self::new()

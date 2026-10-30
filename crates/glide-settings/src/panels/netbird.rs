@@ -8,6 +8,7 @@ use iced::{Element, Task};
 use super::{Ctx, Pane};
 use crate::services::config::ConfigStore;
 use crate::services::netbird::{self as service, BundleJob, Failure, Snapshot};
+use crate::services::network::Secret;
 use crate::services::run::{Generation, blocking};
 
 mod view;
@@ -494,7 +495,8 @@ pub enum Msg {
     PortInput(String),
     MtuInput(String),
     SaveAdvanced,
-    PskInput(String),
+    PskInput(Secret),
+    TogglePsk,
     SavePsk,
     ClearPsk,
     JwtTtlInput(String),
@@ -541,7 +543,8 @@ pub struct Page {
     interface: String,
     port: String,
     mtu: String,
-    psk: String,
+    psk: Secret,
+    psk_shown: bool,
     jwt_ttl: String,
     bundle: BundleForm,
     duration: String,
@@ -691,7 +694,7 @@ impl Page {
         self.port = config.wireguard_port.to_string();
         self.mtu = config.mtu.to_string();
         self.jwt_ttl = config.ssh_jwt_cache_ttl.to_string();
-        self.psk.clear();
+        self.psk = Secret::default();
     }
 
     #[must_use]
@@ -864,8 +867,9 @@ impl Page {
                 });
             }
             Msg::PskInput(text) => self.psk = text,
+            Msg::TogglePsk => self.psk_shown = !self.psk_shown,
             Msg::SavePsk => {
-                let key = std::mem::take(&mut self.psk);
+                let Secret(key) = std::mem::take(&mut self.psk);
                 if key.trim().is_empty() {
                     return Task::none();
                 }
@@ -873,7 +877,7 @@ impl Page {
                     .save(ConfigPatch { pre_shared_key: Some(key.trim().to_string()), ..ConfigPatch::default() });
             }
             Msg::ClearPsk => {
-                self.psk.clear();
+                self.psk = Secret::default();
                 return self.save(ConfigPatch { pre_shared_key: Some(String::new()), ..ConfigPatch::default() });
             }
             Msg::JwtTtlInput(text) => self.jwt_ttl = text,

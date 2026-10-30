@@ -193,6 +193,8 @@ impl Release {
         if is_disabled() {
             return Self { duration: Duration::ZERO, slope: 0.0 };
         }
+        let distance = if distance.is_finite() { distance } else { 1.0 };
+        let velocity = if velocity.is_finite() { velocity } else { 0.0 };
         let span = distance.abs();
         let paced = longest.mul_f64(span.clamp(0.25, 1.0));
         let speed = velocity.abs();

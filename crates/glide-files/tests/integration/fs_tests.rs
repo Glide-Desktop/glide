@@ -362,6 +362,38 @@ fn trash_on_mounted_volumes_is_found_counted_restorable_and_emptied() {
 }
 
 #[test]
+fn a_volume_trash_cannot_restore_outside_its_volume_nor_empty_through_a_link() {
+    let scratch = Scratch::new("volume-trash-escape");
+    let home = Trash::new(scratch.dir("home/Trash"));
+    let usb = scratch.dir("usb");
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let root = usb.join(format!(".Trash-{uid}"));
+    let private = Trash::new(root.clone());
+    std::fs::create_dir_all(private.files()).expect("files");
+    std::fs::create_dir_all(root.join("info")).expect("info");
+    let planted = private.files().join("x");
+    std::fs::write(&planted, "x").expect("planted");
+    let outside = scratch.dir("elsewhere").join("x");
+    let info = root.join("info/x.trashinfo");
+    std::fs::write(&info, format!("[Trash Info]\nPath={}\nDeletionDate=2026-01-01T00:00:00\n", outside.display()))
+        .expect("info");
+    assert_eq!(home.original_path(&planted), None, "an absolute path off the volume is refused");
+    std::fs::write(&info, "[Trash Info]\nPath=../elsewhere/x\nDeletionDate=2026-01-01T00:00:00\n").expect("info");
+    assert_eq!(home.original_path(&planted), None, "a path climbing out of the volume is refused");
+
+    let victim = scratch.dir("documents");
+    std::fs::write(victim.join("keep.txt"), "keep").expect("victim");
+    let stick = scratch.dir("stick");
+    let linked = stick.join(format!(".Trash-{uid}"));
+    std::fs::create_dir_all(&linked).expect("trash");
+    std::os::unix::fs::symlink(&victim, linked.join("files")).expect("link");
+    assert!(home.on_volumes(&[stick]).is_empty(), "a trash whose files folder is a link is not listed");
+    assert!(Trash::new(linked).empty().is_err());
+    assert!(victim.join("keep.txt").exists(), "emptying never follows the link");
+}
+
+#[test]
 fn trash_round_trip_preserves_paths_and_never_overwrites() {
     let scratch = Scratch::new("trash");
     let trash = Trash::new(scratch.0.join("Trash"));

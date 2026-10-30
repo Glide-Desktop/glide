@@ -17,11 +17,11 @@
 # Whatever is missing is reported on stderr and the build runs anyway.
 set -eu
 
-PERCENT="${GLIDE_AI_CPU_PERCENT:-35}"
-MAX_KHZ=$((${GLIDE_AI_MAX_MHZ:-2500} * 1000))
+PERCENT="${GLIDE_AI_CPU_PERCENT:-50}"
+MAX_KHZ=$((${GLIDE_AI_MAX_MHZ:-3000} * 1000))
 QUOTA=$(($(nproc) * PERCENT))
 
-CARGO_BUILD_JOBS=1
+CARGO_BUILD_JOBS=5
 RUST_TEST_THREADS=1
 export CARGO_BUILD_JOBS RUST_TEST_THREADS
 

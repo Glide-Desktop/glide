@@ -239,7 +239,10 @@ impl Pane for Page {
                         self.pins = pins;
                         self.pins_error = None;
                     }
-                    Err(err) => self.pins_error = Some(err),
+                    Err(err) => {
+                        self.pins = None;
+                        self.pins_error = Some(err);
+                    }
                 }
             }
             Msg::Apps(apps, icons) => {
@@ -300,10 +303,18 @@ impl Page {
     }
 
     fn save_pins(&mut self, pins: Vec<Pin>) -> Task<Msg> {
+        static ORDER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
         self.generation.bump();
         self.pins = Some(pins.clone());
+        let order = ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         Task::perform(
             blocking(move || {
+                let mut written = WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if order < *written {
+                    return Ok(());
+                }
+                *written = order;
                 dock::save(&pins)?;
                 let _ = ipc::reload();
                 Ok(())

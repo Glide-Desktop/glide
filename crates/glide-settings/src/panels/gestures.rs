@@ -309,7 +309,7 @@ impl Pane for Page {
         Task::perform(blocking(pointer::read), |state| Msg::Devices(state.unwrap_or_default()))
     }
 
-    fn leave(&mut self) {
+    fn leave(&mut self, _config: &mut ConfigStore) {
         self.session = Session::Idle;
         self.live = None;
     }

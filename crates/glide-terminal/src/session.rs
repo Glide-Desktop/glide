@@ -337,10 +337,15 @@ fn shell_name(launch: &Launch) -> Option<String> {
         .filter(|shell| !shell.is_empty())
         .or_else(passwd_shell)
         .and_then(|shell| program_name(&shell));
-    let Some((program, _)) = launch.command.as_ref() else {
+    let Some((program, args)) = launch.command.as_ref() else {
         return login_shell;
     };
     let name = program_name(program)?;
+    let name = if name == "env" {
+        program_name(args.iter().find(|arg| !arg.contains('=') && !arg.starts_with('-'))?)?
+    } else {
+        name
+    };
     let known = matches!(
         name.as_str(),
         "sh" | "bash"

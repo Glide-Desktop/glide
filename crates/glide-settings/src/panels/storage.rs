@@ -287,7 +287,7 @@ impl Page {
             ]
             .spacing(8)
             .align_y(Alignment::Center);
-            if let Some(path) = path.filter(|path| path.exists()) {
+            if let Some(path) = path.filter(|_| usage.present.contains(&category)) {
                 suffix = suffix.push(widgets::icon_button(t, Icon::External, Some(Msg::Open(path.clone()))));
             }
             group = group.push(

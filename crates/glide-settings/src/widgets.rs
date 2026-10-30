@@ -117,6 +117,16 @@ pub fn chooser<'a, M: Clone + 'a, T: ToString + PartialEq + Clone + 'a>(
 }
 
 #[must_use]
+pub fn secret_field<'a, M: Clone + 'a>(
+    t: ThemeState, placeholder: &str, value: &str, on_input: impl Fn(String) -> M + 'a, on_submit: Option<M>,
+    invalid: bool, (shown, on_reveal): (bool, M),
+) -> iced::Element<'a, M> {
+    let validity = if invalid { sdk::Validity::Invalid } else { sdk::Validity::Neutral };
+    let input = iced::widget::text_input(placeholder, value).on_input(on_input).on_submit_maybe(on_submit);
+    sdk::secret_input(&paint(&t), input, shown, on_reveal, validity)
+}
+
+#[must_use]
 pub fn field<'a, M: Clone + 'a>(
     t: ThemeState, placeholder: &str, value: &str, on_input: impl Fn(String) -> M + 'a, on_submit: Option<M>,
     invalid: bool,

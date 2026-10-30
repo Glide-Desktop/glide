@@ -73,7 +73,7 @@ pub trait Pane: Default {
         Task::none()
     }
 
-    fn leave(&mut self) {}
+    fn leave(&mut self, _config: &mut ConfigStore) {}
 
     fn update(&mut self, msg: Self::Msg, c: Ctx, config: &mut ConfigStore) -> Task<Self::Msg>;
 

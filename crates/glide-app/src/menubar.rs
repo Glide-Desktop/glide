@@ -23,8 +23,28 @@ pub enum Entry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handles {
-    pub display: usize,
-    pub surface: usize,
+    pub(crate) display: usize,
+    pub(crate) surface: usize,
+}
+
+impl Handles {
+    pub const NONE: Self = Self { display: 0, surface: 0 };
+
+    #[allow(clippy::missing_safety_doc)] // Callers vouch that both are a live wl_display and wl_surface for the whole process
+    #[must_use]
+    pub const unsafe fn new(display: usize, surface: usize) -> Self {
+        Self { display, surface }
+    }
+
+    #[must_use]
+    pub const fn display(self) -> usize {
+        self.display
+    }
+
+    #[must_use]
+    pub const fn surface(self) -> usize {
+        self.surface
+    }
 }
 
 #[derive(Clone)]

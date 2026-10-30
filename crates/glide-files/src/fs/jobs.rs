@@ -51,7 +51,7 @@ pub fn on_disks(points: &[PathBuf], paths: &[PathBuf], target: Option<&Path>) ->
     found
 }
 
-fn mount_point(field: &str) -> PathBuf {
+pub(crate) fn mount_point(field: &str) -> PathBuf {
     let bytes = field.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -271,6 +271,7 @@ fn measure(path: &Path, cancel: &AtomicBool) -> Size {
     };
     let mut size = Size { bytes: if meta.is_file() { meta.len() } else { 0 }, items: 1 };
     if meta.is_dir()
+        && let Some(_inside) = Inside::enter(&meta)
         && let Ok(children) = std::fs::read_dir(path)
     {
         for child in children.flatten() {
@@ -283,6 +284,34 @@ fn measure(path: &Path, cancel: &AtomicBool) -> Size {
         }
     }
     size
+}
+
+thread_local! {
+    static ANCESTORS: std::cell::RefCell<Vec<(u64, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct Inside;
+
+impl Inside {
+    fn enter(meta: &std::fs::Metadata) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let key = (meta.dev(), meta.ino());
+        ANCESTORS.with_borrow_mut(|ancestors| {
+            if ancestors.contains(&key) {
+                return None;
+            }
+            ancestors.push(key);
+            Some(Self)
+        })
+    }
+}
+
+impl Drop for Inside {
+    fn drop(&mut self) {
+        ANCESTORS.with_borrow_mut(|ancestors| {
+            ancestors.pop();
+        });
+    }
 }
 
 #[must_use]
@@ -550,6 +579,10 @@ impl Worker<'_> {
     }
 
     fn copy_dir(&mut self, source: &Path, dest: &Path, meta: &std::fs::Metadata, created: &mut bool) -> bool {
+        let Some(_inside) = Inside::enter(meta) else {
+            self.fail(source, &io::Error::new(ErrorKind::InvalidInput, "the folder contains itself"));
+            return true;
+        };
         if let Err(err) = std::fs::DirBuilder::new().mode(0o700).create(dest) {
             self.fail(dest, &err);
             return true;
@@ -599,6 +632,9 @@ impl Worker<'_> {
             }
             output.write_all(&buffer[..read])?;
             self.advance(read as u64, 0);
+        }
+        if self.op == Op::Move {
+            output.sync_all()?;
         }
         output.set_permissions(meta.permissions())?;
         if let Ok(modified) = meta.modified() {

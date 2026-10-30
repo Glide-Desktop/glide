@@ -77,8 +77,8 @@ pub fn split_sources(layout: &str, variant: &str) -> Vec<Source> {
     layout
         .split(',')
         .map(str::trim)
-        .filter(|code| !code.is_empty())
         .enumerate()
+        .filter(|(_, code)| !code.is_empty())
         .map(|(index, code)| Source {
             layout: code.to_string(),
             variant: variants.get(index).map(|v| v.trim().to_string()).unwrap_or_default(),

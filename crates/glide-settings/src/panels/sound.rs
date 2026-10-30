@@ -162,7 +162,7 @@ impl Pane for Page {
         self.refresh()
     }
 
-    fn leave(&mut self) {
+    fn leave(&mut self, _config: &mut ConfigStore) {
         self.stop_meter();
     }
 

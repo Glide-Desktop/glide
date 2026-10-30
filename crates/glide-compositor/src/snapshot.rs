@@ -245,6 +245,9 @@ struct Capture {
 fn capture_window(renderer: &mut GlesRenderer, window: &GlideWindow, scale: Scale<f64>) -> Option<Capture> {
     let geometry = window.geometry();
     let content = geometry.size;
+    if content.w <= 0 || content.h <= 0 {
+        return None;
+    }
     let header = window.header_height();
     let margin = window.shadow_margin();
 
@@ -257,12 +260,15 @@ fn capture_window(renderer: &mut GlesRenderer, window: &GlideWindow, scale: Scal
         return None;
     }
 
-    let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (physical.w, physical.h).into()).ok()?;
-    let mut target = renderer.bind(&mut texture).ok()?;
-
     let content_origin = Point::<i32, Logical>::from((margin - geometry.loc.x, margin + header - geometry.loc.y))
         .to_physical_precise_round(scale);
     let elements = window.still_render_elements(renderer, content_origin, scale);
+    if elements.is_empty() {
+        return None;
+    }
+
+    let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (physical.w, physical.h).into()).ok()?;
+    let mut target = renderer.bind(&mut texture).ok()?;
 
     let mut tracker = OutputDamageTracker::new((physical.w, physical.h), scale, Transform::Normal);
     tracker.render_output(renderer, &mut target, 0, &elements, [0.0, 0.0, 0.0, 0.0]).ok()?;

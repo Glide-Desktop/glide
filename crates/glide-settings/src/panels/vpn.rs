@@ -89,7 +89,7 @@ pub enum Msg {
     Delete(String),
     PathInput(String),
     Inspect,
-    Inspected(Option<Result<(PathBuf, String), String>>),
+    Inspected(String, Option<Result<(PathBuf, String), String>>),
     Pick(PathBuf, String),
     Import,
     Imported(Option<Result<String, String>>),
@@ -99,6 +99,7 @@ pub enum Msg {
     Scanned(u64, Vec<Candidate>),
     SecretPassword(Secret),
     SecretOtp(Secret),
+    ToggleSecret,
     SubmitSecrets,
     CancelSecrets,
 }
@@ -110,6 +111,7 @@ struct Prompt {
     password: Secret,
     otp: Secret,
     rejected: bool,
+    shown: bool,
 }
 
 #[derive(Debug, Default)]
@@ -330,6 +332,11 @@ impl Page {
                 return self.run(None, move || vpn::rename(&uuid, &name));
             }
             Msg::AskDelete(uuid) => self.confirm_delete = Some(uuid),
+            Msg::ToggleSecret => {
+                if let Some(prompt) = &mut self.secrets {
+                    prompt.shown = !prompt.shown;
+                }
+            }
             Msg::CancelDelete => self.confirm_delete = None,
             Msg::Delete(uuid) => {
                 self.confirm_delete = None;
@@ -346,10 +353,14 @@ impl Page {
             }
             Msg::Inspect => {
                 let path = self.path.clone();
+                let asked = path.clone();
                 self.jobs.error = None;
-                return Task::perform(blocking(move || vpn::inspect(&path)), Msg::Inspected);
+                return Task::perform(blocking(move || vpn::inspect(&path)), move |result| {
+                    Msg::Inspected(asked, result)
+                });
             }
-            Msg::Inspected(result) => match result {
+            Msg::Inspected(asked, _) if asked != self.path => {}
+            Msg::Inspected(_, result) => match result {
                 Some(Ok(selected)) => self.selected = Some(selected),
                 Some(Err(err)) => self.jobs.error = Some(err),
                 None => {}
@@ -586,34 +597,30 @@ impl Page {
             t,
             c.t(T::Password),
             None,
-            widgets::field(
+            widgets::secret_field(
                 t,
                 c.t(T::Password),
                 &prompt.password.0,
                 |value| Msg::SecretPassword(Secret(value)),
                 submit.clone(),
                 prompt.rejected,
-            )
-            .secure(true)
-            .width(Fill)
-            .into(),
+                (prompt.shown, Msg::ToggleSecret),
+            ),
         ));
         if vpn::secret_keys(&prompt.service).1.is_some() {
             rows.push(form_row(
                 t,
                 c.t(T::Otp),
                 Some(c.t(T::OtpHint)),
-                widgets::field(
+                widgets::secret_field(
                     t,
                     c.t(T::Otp),
                     &prompt.otp.0,
                     |value| Msg::SecretOtp(Secret(value)),
                     submit.clone(),
                     false,
-                )
-                .secure(true)
-                .width(Fill)
-                .into(),
+                    (prompt.shown, Msg::ToggleSecret),
+                ),
             ));
         }
         rows.push(actions(vec![

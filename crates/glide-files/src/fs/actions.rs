@@ -159,12 +159,16 @@ pub(crate) fn set_default_app(mime: &str, app: &str) -> io::Result<()> {
     let file = glide_config::config_home()
         .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "no config directory"))?
         .join("mimeapps.list");
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
     let updated = with_default(&text, mime, app);
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(file, updated)
+    glide_config::write_atomic(&file, updated.as_bytes(), 0o644)
 }
 
 #[must_use]
@@ -507,11 +511,11 @@ fn unescape(value: &str) -> String {
             Some('n') => out.push('\n'),
             Some('t') => out.push('\t'),
             Some('r') => out.push('\r'),
+            Some('\\') | None => out.push('\\'),
             Some(other) => {
                 out.push('\\');
                 out.push(other);
             }
-            None => out.push('\\'),
         }
     }
     out
@@ -626,7 +630,7 @@ fn selection_count(spec: &str, filter: &mut Filter) {
     };
     match spec.chars().next() {
         Some('<') => filter.max = count.saturating_sub(1),
-        Some('>') => filter.min = count + 1,
+        Some('>') => filter.min = count.saturating_add(1),
         Some('=') => (filter.min, filter.max) = (count, count),
         _ => {}
     }
@@ -863,9 +867,41 @@ fn field(code: char, items: &[&Target], desktop: &Path, codes: &Codes) -> Vec<Os
     }
 }
 
+fn shell_script(words: &[String], position: usize) -> bool {
+    const SHELLS: [&str; 7] = ["sh", "bash", "dash", "zsh", "ksh", "mksh", "fish"];
+    let Some(flag_at) = position.checked_sub(1) else { return false };
+    let flag = &words[flag_at];
+    if !(flag.starts_with('-') && !flag.starts_with("--") && flag.contains('c')) {
+        return false;
+    }
+    words[..flag_at]
+        .iter()
+        .rev()
+        .find(|word| !word.starts_with('-'))
+        .and_then(|word| Path::new(word).file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| SHELLS.contains(&name))
+}
+
+fn shell_quoted(value: &std::ffi::OsStr) -> OsString {
+    let raw = std::os::unix::ffi::OsStrExt::as_bytes(value);
+    let mut bytes = Vec::with_capacity(raw.len() + 2);
+    bytes.push(b'\'');
+    for &byte in raw {
+        if byte == b'\'' {
+            bytes.extend_from_slice(b"'\\''");
+        } else {
+            bytes.push(byte);
+        }
+    }
+    bytes.push(b'\'');
+    <OsString as std::os::unix::ffi::OsStringExt>::from_vec(bytes)
+}
+
 fn expand(words: &[String], items: &[&Target], desktop: &Path, codes: &Codes) -> Vec<OsString> {
     let mut argv = Vec::new();
-    for arg in words {
+    for (position, arg) in words.iter().enumerate() {
+        let script = shell_script(words, position);
         let mut chars = arg.chars();
         if let (Some('%'), Some(code), None) = (chars.next(), chars.next(), chars.next())
             && code != '%'
@@ -888,7 +924,11 @@ fn expand(words: &[String], items: &[&Target], desktop: &Path, codes: &Codes) ->
                         if index > 0 {
                             out.push(" ");
                         }
-                        out.push(value);
+                        if script {
+                            out.push(shell_quoted(value));
+                        } else {
+                            out.push(value);
+                        }
                     }
                 }
                 None => {}

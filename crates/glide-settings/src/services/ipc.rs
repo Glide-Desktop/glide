@@ -89,11 +89,21 @@ fn pump(sender: &mut iced::futures::channel::mpsc::Sender<IpcEvent>) -> bool {
         return false;
     }
     let _ = sender.try_send(IpcEvent::Connected);
+    if reader.get_ref().set_read_timeout(Some(Duration::from_secs(1))).is_err() {
+        return true;
+    }
+    line.clear();
     loop {
-        line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => return true,
+            Ok(0) => return true,
             Ok(_) => {}
+            Err(err) if matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                if sender.is_closed() {
+                    return true;
+                }
+                continue;
+            }
+            Err(_) => return true,
         }
         if let Ok(event) = serde_json::from_str::<Event>(line.trim())
             && let Some(event) = translate(&event)
@@ -102,6 +112,7 @@ fn pump(sender: &mut iced::futures::channel::mpsc::Sender<IpcEvent>) -> bool {
         {
             return true;
         }
+        line.clear();
     }
 }
 

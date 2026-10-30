@@ -38,7 +38,10 @@ pub fn parse_cli_args(args: &[String]) -> anyhow::Result<CliArgs> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let Some(args) = std::env::args_os().map(|arg| arg.into_string().ok()).collect::<Option<Vec<String>>>() else {
+        eprintln!("glidectl: arguments must be valid UTF-8");
+        std::process::exit(1);
+    };
     let cli = match parse_cli_args(&args) {
         Ok(c) => c,
         Err(_) => {
@@ -109,7 +112,7 @@ fn exchange(socket_path: &PathBuf, request: &Request) -> anyhow::Result<(BufRead
     reader.get_mut().flush()?;
 
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    std::io::Read::take(&mut reader, glide_ipc::client::MAX_RESPONSE_BYTES).read_line(&mut line)?;
     Ok((reader, serde_json::from_str(&line)?))
 }
 

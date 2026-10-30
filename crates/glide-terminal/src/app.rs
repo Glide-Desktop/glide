@@ -233,6 +233,7 @@ pub enum Message {
     CopyText(String),
     Dismiss,
     Confirm(bool),
+    DefaultSaved(Box<Preferences>, Result<(), String>),
     CloseRequested,
     Tick,
     Blink,
@@ -286,7 +287,21 @@ pub fn uri_path(arg: &str) -> PathBuf {
 
 #[must_use]
 pub(crate) fn local_uri_path(arg: &str) -> Option<PathBuf> {
-    if arg.starts_with("file://") { glide_config::uri::local_path(arg) } else { Some(PathBuf::from(arg)) }
+    if arg.starts_with("file://") {
+        glide_config::uri::local_path(arg)
+    } else if has_scheme(arg) {
+        None
+    } else {
+        Some(PathBuf::from(arg))
+    }
+}
+
+fn has_scheme(arg: &str) -> bool {
+    arg.split_once(':').is_some_and(|(scheme, _)| {
+        let mut chars = scheme.chars();
+        chars.next().is_some_and(|first| first.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
 }
 
 #[must_use]
@@ -751,6 +766,16 @@ impl App {
                 self.toggle_menu(MenuKind::Window, Point::new(8.0, crate::chrome::HEADER));
                 Task::none()
             }
+            Message::DefaultSaved(prefs, result) => {
+                match result {
+                    Ok(()) => {
+                        self.prefs = *prefs;
+                        self.stamp = stamp();
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+                Task::none()
+            }
             Message::Confirm(accepted) => {
                 let Some(mut confirm) = self.confirm.take() else { return Task::none() };
                 confirm.reveal.close(motion::t2());
@@ -841,7 +866,8 @@ impl App {
                 self.notice.take_if(|(_, at)| at.elapsed() >= NOTICE);
                 self.reload();
                 if self.find.as_ref().is_some_and(|find| {
-                    self.focused().is_some_and(|pane| find.revision != pane.revision.load(Ordering::Acquire))
+                    find.current.is_none()
+                        && self.focused().is_some_and(|pane| find.revision != pane.revision.load(Ordering::Acquire))
                 }) {
                     return self.rebuild_find();
                 }
@@ -1016,7 +1042,7 @@ impl App {
         self.open_tab(&launch);
         if let (Some(handles), Some(token)) = (self.handles, request.token.clone()) {
             let _ = std::thread::Builder::new().name("glide-terminal-activate".into()).spawn(move || {
-                let _ = glide_app::activation::activate(handles.display, handles.surface, &token);
+                let _ = glide_app::activation::activate(handles, &token);
             });
         }
     }
@@ -1123,7 +1149,22 @@ impl App {
                     self.tabs[index].activity = true;
                 }
                 if self.hint_mode.as_ref().is_some_and(|mode| mode.pane == id) {
-                    self.hint_mode = None;
+                    let items = self
+                        .locate(id)
+                        .and_then(|(at, handle)| self.tabs[at].panes.get(handle))
+                        .map(|pane| hints::scan(&pane.term.lock()))
+                        .unwrap_or_default();
+                    match self.hint_mode.as_mut() {
+                        Some(mode) if !items.is_empty() => {
+                            let same = mode.items.len() == items.len()
+                                && mode.items.iter().zip(&items).all(|(old, new)| old.text == new.text);
+                            if !same {
+                                mode.typed.clear();
+                            }
+                            mode.items = items;
+                        }
+                        _ => self.hint_mode = None,
+                    }
                 }
             }
             TermEvent::Title(title) => pane.title = Some(title),
@@ -1770,18 +1811,21 @@ impl App {
                 }
             }
             Command::MakeDefault => {
+                self.dismiss_menu();
                 if let Some(profile) = self.tab().map(|tab| tab.profile) {
                     let mut prefs = self.prefs.clone();
                     prefs.profile = profile;
-                    match config::save(&prefs) {
-                        Ok(()) => {
-                            self.prefs = prefs;
-                            self.stamp = stamp();
-                        }
-                        Err(error) => self.error = Some(error.to_string()),
-                    }
+                    let saving = prefs.clone();
+                    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+                    let spawned = std::thread::Builder::new().name("glide-terminal-prefs".into()).spawn(move || {
+                        let _ = sender.send(config::save(&saving).map_err(|error| error.to_string()));
+                    });
+                    drop(spawned);
+                    return Task::perform(
+                        async move { receiver.await.unwrap_or_else(|_| Err(String::from("cancelled"))) },
+                        move |result| Message::DefaultSaved(Box::new(prefs), result),
+                    );
                 }
-                self.dismiss_menu();
             }
             Command::Shortcuts => self.shortcuts_asked = self.confirm.is_none() && self.closing_confirm.is_none(),
             _ => {}

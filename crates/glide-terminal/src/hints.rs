@@ -41,7 +41,8 @@ pub(crate) fn openable_path(path: &Path) -> bool {
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("desktop")) {
         return false;
     }
-    std::fs::metadata(path).map_or(true, |meta| meta.is_dir() || meta.permissions().mode() & 0o111 == 0)
+    path.is_absolute()
+        && std::fs::metadata(path).is_ok_and(|meta| meta.is_dir() || meta.permissions().mode() & 0o111 == 0)
 }
 
 #[must_use]

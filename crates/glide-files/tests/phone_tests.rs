@@ -20,7 +20,9 @@ fn a_phone_being_opened_ignores_further_clicks() {
     let open = || Message::OpenPhone(String::from("1:5"));
     assert_eq!(app.update(open()).units(), 1, "the first click starts opening, with no mount tool to run");
     assert_eq!(app.update(open()).units(), 0, "a second click while it opens starts nothing");
-    let _ = app.update(Message::PhoneOpened(Err(String::from("no tool"))));
+    app.busy.insert(String::from("2:7"));
+    let _ = app.update(Message::PhoneOpened(String::from("1:5"), Err(String::from("no tool"))));
+    assert!(app.busy.contains("2:7"), "another phone that is still opening keeps its guard");
     assert_eq!(app.update(open()).units(), 1, "once that attempt ends the phone can be opened again");
     let _ = std::fs::remove_dir_all(empty);
 }

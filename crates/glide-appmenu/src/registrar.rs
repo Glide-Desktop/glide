@@ -64,7 +64,13 @@ impl Registrar {
         let Some(sender) = header.sender().map(ToString::to_string) else {
             return;
         };
-        self.windows().insert(window_id, (sender.clone(), menu_object_path.clone()));
+        {
+            let mut windows = self.windows();
+            if windows.get(&window_id).is_some_and(|(owner, _)| *owner != sender) {
+                return;
+            }
+            windows.insert(window_id, (sender.clone(), menu_object_path.clone()));
+        }
         let pid = self.pid_of(&sender).await;
         (self.sink)(AppMenuEvent::Registered {
             window_id,

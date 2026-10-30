@@ -212,6 +212,10 @@ pub struct Page {
 impl Pane for Page {
     type Msg = Msg;
 
+    fn leave(&mut self, config: &mut ConfigStore) {
+        self.abandon(config);
+    }
+
     const KEYWORDS: &'static [&'static str] = &[
         "monitor",
         "screen",
@@ -356,6 +360,14 @@ impl Page {
     fn capture(&self, config: &ConfigStore) -> Snapshot {
         let names: Vec<String> = self.state.outputs.iter().map(|output| output.name.clone()).collect();
         Guard::capture(config, &names)
+    }
+
+    pub(crate) fn abandon(&mut self, config: &mut ConfigStore) -> bool {
+        let pending = self.guard.remaining().is_some();
+        if pending {
+            self.guard.revert(config);
+        }
+        pending
     }
 
     fn guard_change(&mut self, before: Snapshot, config: &ConfigStore) -> Task<Msg> {

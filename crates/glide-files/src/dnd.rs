@@ -213,10 +213,10 @@ pub fn events(handles: &Handles) -> UnboundedReceiver<Event> {
 fn run(handles: Handles, events: UnboundedSender<Event>) -> Result<(), String> {
     // SAFETY: `display` is the live `wl_display` iced's window was created on, and the
     // window outlives this thread's use of it for the lifetime of the process.
-    let backend = unsafe { Backend::from_foreign_display(handles.display as *mut _) };
+    let backend = unsafe { Backend::from_foreign_display(handles.display() as *mut _) };
     let connection = Connection::from_backend(backend);
     // SAFETY: `surface` is the live `wl_surface` of the same window, owned by winit.
-    let surface_id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), handles.surface as *mut _) }
+    let surface_id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), handles.surface() as *mut _) }
         .map_err(|err| err.to_string())?;
     let surface = wl_surface::WlSurface::from_id(&connection, surface_id).map_err(|err| err.to_string())?;
     serve(connection, surface, events)
@@ -401,9 +401,7 @@ impl State {
         drop(writer);
         let _ = self.connection.flush();
         let _ = std::thread::Builder::new().name(String::from("glide-files-receive")).spawn(move || {
-            let mut bytes = Vec::new();
-            let mut file = std::fs::File::from(reader);
-            if file.read_to_end(&mut bytes).is_ok() {
+            if let Some(bytes) = read_bounded(reader) {
                 done(bytes);
             }
         });
@@ -466,9 +464,39 @@ fn read_offer(offer: &WlDataOffer, mime: &str, connection: &Connection) -> Optio
     offer.receive(mime.to_string(), std::os::fd::AsFd::as_fd(&writer));
     drop(writer);
     connection.flush().ok()?;
+    read_bounded(reader)
+}
+
+const OFFER_LIMIT: usize = 256 * 1024 * 1024;
+const OFFER_WAIT_MS: i32 = 10_000;
+
+fn read_bounded(reader: OwnedFd) -> Option<Vec<u8>> {
+    use std::os::fd::AsRawFd;
+    let mut file = std::fs::File::from(reader);
     let mut bytes = Vec::new();
-    std::fs::File::from(reader).read_to_end(&mut bytes).ok()?;
-    Some(bytes)
+    let mut chunk = vec![0_u8; 64 * 1024];
+    loop {
+        let mut poll = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one valid pollfd for a descriptor this function owns, for the length given.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, OFFER_WAIT_MS) };
+        if ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if ready <= 0 {
+            return None;
+        }
+        match file.read(&mut chunk) {
+            Ok(0) => return Some(bytes),
+            Ok(read) => {
+                bytes.extend_from_slice(&chunk[..read]);
+                if bytes.len() > OFFER_LIMIT {
+                    return None;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
 }
 
 fn answer(offer: &WlDataOffer, serial: u32, accepting: bool) {
@@ -639,7 +667,10 @@ impl Dispatch<WlDataSource, Payload> for State {
                     GNOME_FILES => &payload.gnome,
                     _ => &payload.plain,
                 };
-                write_payload(fd, text);
+                let text = text.clone();
+                let _ = std::thread::Builder::new()
+                    .name(String::from("glide-files-send"))
+                    .spawn(move || write_payload(fd, &text));
             }
             wl_data_source::Event::Cancelled => {
                 if payload.selection {

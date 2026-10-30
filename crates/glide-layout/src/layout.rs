@@ -690,12 +690,12 @@ impl Layout {
             return false;
         };
 
-        if state.maximized || state.fullscreen {
+        if state.maximized || state.fullscreen || size.is_empty() {
             return false;
         }
 
         let insets = state.insets;
-        if state.is_placed || size.is_empty() {
+        if state.is_placed {
             if let Some(state) = self.windows.get_mut(&w) {
                 state.geometry.size = size.grow(insets);
             }

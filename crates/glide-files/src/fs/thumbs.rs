@@ -175,7 +175,7 @@ pub fn make_in(dir: &Path, input: &Path, mime: &str, thumbnailers: &[Thumbnailer
         return None;
     }
     std::fs::create_dir_all(dir).ok()?;
-    let partial = output.with_extension("part.png");
+    let partial = output.with_extension(format!("{}-{:?}.part.png", std::process::id(), std::thread::current().id()));
     let external = thumbnailers
         .iter()
         .filter(|thumbnailer| thumbnailer.mimes.iter().any(|known| known == mime))

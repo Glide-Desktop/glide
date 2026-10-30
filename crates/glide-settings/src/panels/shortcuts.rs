@@ -438,7 +438,7 @@ impl Pane for Page {
         Task::none()
     }
 
-    fn leave(&mut self) {
+    fn leave(&mut self, _config: &mut ConfigStore) {
         self.recording = false;
     }
 
@@ -486,6 +486,7 @@ impl Pane for Page {
                         format!("{} {err}", c.t(tr::Key::Unreadable)),
                         None,
                     ))
+                    .push(widgets::secondary(t, c.t(tr::Key::ResetAll), c.writable.then_some(Msg::ResetAll)))
                     .into();
             }
         };
@@ -691,6 +692,11 @@ const fn category_text(category: Category) -> (tr::Key, tr::Key) {
 
 impl Page {
     fn apply(&mut self, msg: Msg, config: &mut ConfigStore) {
+        if matches!(msg, Msg::ResetAll) {
+            keybinds::reset(config);
+            self.draft = None;
+            return;
+        }
         let Ok(loaded) = keybinds::load(config) else {
             self.draft = None;
             if let Msg::Filter(filter) = msg {

@@ -109,7 +109,7 @@ fn run(
     let preference = preference(crate::pipeline::hardware_encoder(crate::pipeline::element_exists), options.quality);
     let p2p = P2p::open()?;
     let _ = p2p.stop_find();
-    let active = p2p.connect(peer, CONNECT_TIMEOUT)?;
+    let active = p2p.connect(peer, CONNECT_TIMEOUT, stopped)?;
     let served = (|| {
         let local = wait_for(ADDRESS_WAIT, stopped, || p2p.local_address(&active))?
             .ok_or("the Wi-Fi Direct link got no address")?;
@@ -146,6 +146,22 @@ fn accept(local: Ipv4Addr, stopped: &mpsc::Receiver<()>) -> Result<Option<(TcpSt
     })
 }
 
+const WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn session_id() -> u32 {
+    let mut bytes = [0_u8; 4];
+    let random = std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| std::io::Read::read_exact(&mut source, &mut bytes))
+        .is_ok();
+    if random {
+        u32::from_ne_bytes(bytes)
+    } else {
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.subsec_nanos());
+        std::process::id() ^ nanos
+    }
+}
+
 struct Link {
     tcp: TcpStream,
     display: SocketAddr,
@@ -165,7 +181,8 @@ impl Link {
     ) -> Result<(), String> {
         self.tcp.set_nonblocking(false).map_err(|err| err.to_string())?;
         self.tcp.set_read_timeout(Some(TICK)).map_err(|err| err.to_string())?;
-        let id = format!("{:08X}", std::process::id() ^ (Instant::now().elapsed().subsec_nanos()));
+        self.tcp.set_write_timeout(Some(WRITE_WAIT)).map_err(|err| err.to_string())?;
+        let id = format!("{:08X}", session_id());
         let mut session = Session::new(&self.local.to_string(), SERVER_PORT, self.preference, &id);
         let mut reader = Reader::default();
         let mut negotiated: Option<Negotiated> = None;

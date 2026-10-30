@@ -35,8 +35,7 @@ impl Account {
 
     #[must_use]
     pub fn icon(&self) -> Option<PathBuf> {
-        let path = PathBuf::from(&self.icon_file);
-        (!self.icon_file.is_empty() && path.is_file()).then_some(path)
+        (!self.icon_file.is_empty()).then(|| PathBuf::from(&self.icon_file))
     }
 }
 
@@ -202,10 +201,15 @@ const SESSION_PROPERTIES: [&str; 10] =
 
 #[must_use]
 pub fn read() -> UsersState {
-    let (me, others, available) = match read_accounts() {
+    let (mut me, mut others, available) = match read_accounts() {
         Ok((me, others)) => (me, others, true),
         Err(_) => (None, Vec::new(), false),
     };
+    for account in me.iter_mut().chain(others.iter_mut()) {
+        if !account.icon_file.is_empty() && !std::path::Path::new(&account.icon_file).is_file() {
+            account.icon_file.clear();
+        }
+    }
     let sessions: Vec<Session> = run::output("loginctl", &["list-sessions", "--no-legend"])
         .map(|text| parse_session_ids(&text))
         .unwrap_or_default()
@@ -355,7 +359,13 @@ pub fn hash_password(password: &str) -> Result<String, String> {
         .spawn()
         .map_err(|err| format!("openssl: {err}"))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(password.as_bytes()).and_then(|()| stdin.write_all(b"\n")).map_err(|err| err.to_string())?;
+        let written = stdin.write_all(password.as_bytes()).and_then(|()| stdin.write_all(b"\n"));
+        drop(stdin);
+        if let Err(err) = written {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err.to_string());
+        }
     }
     let output = child.wait_with_output().map_err(|err| format!("openssl: {err}"))?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -392,7 +402,12 @@ pub(crate) fn create_user(
     let hash = hash_password(password)?;
     let path: OwnedObjectPath =
         call_manager("CreateUser", &(user_name.to_string(), real_name, i32::from(administrator)))?;
-    call_user_with(path.as_str(), "SetPassword", &(hash, String::new()))
+    call_user_with(path.as_str(), "SetPassword", &(hash, String::new())).inspect_err(|_| {
+        let uid = Connection::system().and_then(|bus| user_proxy(&bus, path.as_str())?.get_property::<u64>("Uid")).ok();
+        if let Some(uid) = uid {
+            let _ = delete_user(uid, true);
+        }
+    })
 }
 
 pub(crate) fn delete_user(uid: u64, remove_files: bool) -> Result<String, String> {

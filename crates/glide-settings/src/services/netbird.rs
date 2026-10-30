@@ -64,11 +64,15 @@ impl From<nb::Error> for Failure {
 }
 
 pub(crate) fn open_uri(uri: &str) {
-    let mut command = match std::env::var("BROWSER").ok().filter(|browser| !browser.trim().is_empty()) {
-        Some(browser) => Command::new(browser),
-        None => Command::new("xdg-open"),
-    };
-    match command.arg(uri).spawn() {
+    let browser = std::env::var("BROWSER").ok().and_then(|list| {
+        let first = list.split(':').map(str::trim).find(|entry| !entry.is_empty())?.to_string();
+        let mut words = first.split_whitespace().map(str::to_string);
+        Some((words.next()?, words.collect::<Vec<_>>()))
+    });
+    let spawned = browser
+        .and_then(|(program, args)| Command::new(program).args(args).arg(uri).spawn().ok())
+        .map_or_else(|| Command::new("xdg-open").arg(uri).spawn(), Ok);
+    match spawned {
         Ok(mut child) => {
             std::thread::spawn(move || {
                 let _ = child.wait();
@@ -293,24 +297,31 @@ fn wait(limit: Duration, cancel: &AtomicBool) -> bool {
 pub(crate) fn create_bundle(job: BundleJob, cancel: &AtomicBool) -> Result<nb::BundleResult, Failure> {
     let daemon = daemon()?;
     let previous = if job.trace { daemon.log_level().ok() } else { None };
-    if job.trace {
-        daemon.set_log_level(nb::LogLevel::Trace)?;
-    }
-    if job.packets {
-        daemon.start_bundle_capture(job.capture.unwrap_or(Duration::from_mins(1)))?;
-    }
-    let finished = job.capture.is_none_or(|limit| wait(limit, cancel));
-    if job.packets
-        && let Err(err) = daemon.stop_bundle_capture()
-    {
-        eprintln!("glide-settings: the packet capture did not stop cleanly: {err}");
-    }
+    let captured: Result<bool, Failure> = 'capture: {
+        if job.trace
+            && let Err(err) = daemon.set_log_level(nb::LogLevel::Trace)
+        {
+            break 'capture Err(err.into());
+        }
+        if job.packets
+            && let Err(err) = daemon.start_bundle_capture(job.capture.unwrap_or(Duration::from_mins(1)))
+        {
+            break 'capture Err(err.into());
+        }
+        let finished = job.capture.is_none_or(|limit| wait(limit, cancel));
+        if job.packets
+            && let Err(err) = daemon.stop_bundle_capture()
+        {
+            eprintln!("glide-settings: the packet capture did not stop cleanly: {err}");
+        }
+        Ok(finished)
+    };
     if let Some(level) = previous
         && let Err(err) = daemon.set_log_level(level)
     {
         eprintln!("glide-settings: the NetBird log level was not restored: {err}");
     }
-    if !finished {
+    if !captured? {
         return Err(Failure::Daemon(nb::Error::Cancelled));
     }
     Ok(daemon.debug_bundle(job.options)?)

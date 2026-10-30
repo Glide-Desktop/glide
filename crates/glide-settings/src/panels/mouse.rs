@@ -99,6 +99,7 @@ impl Slider {
 pub enum ScrollMethod {
     TwoFinger,
     Edge,
+    None,
 }
 
 impl ScrollMethod {
@@ -107,6 +108,7 @@ impl ScrollMethod {
         match self {
             Self::TwoFinger => "two-finger",
             Self::Edge => "edge",
+            Self::None => "none",
         }
     }
 }
@@ -220,6 +222,7 @@ pub fn touchpad_profile(config: &ConfigStore) -> AccelProfile {
 pub fn scroll_method(config: &ConfigStore) -> ScrollMethod {
     match config.get_str("input", "scroll-method") {
         Some("edge") => ScrollMethod::Edge,
+        Some("none") => ScrollMethod::None,
         _ => ScrollMethod::TwoFinger,
     }
 }

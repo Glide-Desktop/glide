@@ -873,11 +873,17 @@ impl Page {
             widgets::field(t, placeholder, value, on, save.clone(), !ok).width(Fill)
         };
         let psk_managed = config.managed("preSharedKey");
-        let psk_save = (!self.psk.trim().is_empty() && self.busy.is_none() && !psk_managed).then_some(Msg::SavePsk);
+        let psk_save = (!self.psk.0.trim().is_empty() && self.busy.is_none() && !psk_managed).then_some(Msg::SavePsk);
         let mut psk = row![
-            widgets::field(t, c.t(T::PskPlaceholder), &self.psk, Msg::PskInput, psk_save.clone(), false)
-                .secure(true)
-                .width(Fill),
+            widgets::secret_field(
+                t,
+                c.t(T::PskPlaceholder),
+                &self.psk.0,
+                |text| Msg::PskInput(crate::services::network::Secret(text)),
+                psk_save.clone(),
+                false,
+                (self.psk_shown, Msg::TogglePsk),
+            ),
             widgets::secondary(t, c.t(T::Save), psk_save),
         ]
         .spacing(8)

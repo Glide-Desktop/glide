@@ -197,7 +197,8 @@ pub fn parse_details(text: &str) -> VpnDetails {
             continue;
         };
         let key = key.split('[').next().unwrap_or(key).trim();
-        let value = value.trim();
+        let value = crate::services::network::unescape_terse(value.trim());
+        let value = value.as_str();
         match key {
             "vpn.data" => {
                 for (name, item) in parse_vpn_data(value) {

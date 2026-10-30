@@ -45,7 +45,7 @@ fn the_shell_reads_the_exported_menu_bar_and_clicks_come_back_as_action_ids() {
     // SAFETY: this test binary runs this single test, and no other thread exists before this point.
     unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", address.trim()) };
 
-    let mut events = menubar::events(&Handles { display: 0, surface: 0 });
+    let mut events = menubar::events(&Handles::NONE);
     let deadline = Instant::now() + Duration::from_secs(5);
     let publisher = loop {
         match poll(&mut events, deadline) {

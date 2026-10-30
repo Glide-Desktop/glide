@@ -82,6 +82,7 @@ pub enum Dialog {
 pub struct Modal {
     pub dialog: Dialog,
     pub input: String,
+    pub shown: bool,
     pub error: Option<String>,
     pub focus: Option<usize>,
 }
@@ -409,6 +410,8 @@ pub enum Message {
     ModalSubmit,
     ModalCancel,
     Done(Outcome),
+    TemplateCreated(Result<PathBuf, String>),
+    RevealModal,
     DismissNotice(u64),
     NoticeExpired(u64),
     NoticeChosen(NoticeAction),
@@ -457,7 +460,7 @@ pub enum Message {
     PasteText(Option<String>),
     Phones(Vec<crate::fs::mtp::Phone>),
     OpenPhone(String),
-    PhoneOpened(Result<PathBuf, String>),
+    PhoneOpened(String, Result<PathBuf, String>),
     ClosePhone(String),
     Listed(Box<Listed>),
     DirChanged,
@@ -535,6 +538,7 @@ impl Message {
                 | Self::ToggleColumn(_)
                 | Self::ColumnPressed(_)
                 | Self::Service(_)
+                | Self::Repair(_)
         )
     }
 
@@ -603,7 +607,7 @@ impl Message {
                 | Self::Surveyed(_)
                 | Self::JobPause(_)
                 | Self::Phones(_)
-                | Self::PhoneOpened(_)
+                | Self::PhoneOpened(..)
                 | Self::Listed(_)
                 | Self::DirChanged
                 | Self::Job(..)
@@ -1341,7 +1345,7 @@ impl App {
                 let Some(parent) = path.parent().map(Path::to_path_buf) else {
                     return Task::none();
                 };
-                let arrival = if parent == self.current { Arrival::Jump(self.history_index) } else { Arrival::Push };
+                let arrival = if parent == self.current { Arrival::Refresh } else { Arrival::Push };
                 return self.list(parent, arrival, Some(path));
             }
             Message::Back if self.history_index > 0 => {
@@ -1583,6 +1587,9 @@ impl App {
             Message::Paste => return self.paste(),
             Message::NewFolder | Message::NewFile | Message::NewFromTemplate(_) if self.in_trash() => {}
             Message::NewFolder => {
+                if self.chooser.as_ref().is_some_and(|chooser| !chooser.new_folder_offered()) {
+                    return Task::none();
+                }
                 let name = unique_path(
                     &self.current,
                     Key::NewFolder.text(self.lang).as_ref(),
@@ -1710,6 +1717,7 @@ impl App {
                     return Task::none();
                 }
                 let lang = self.lang;
+                let id = phone.id.clone();
                 return Task::perform(
                     blocking(move || {
                         crate::fs::mtp::open(&phone).map_err(|err| match err {
@@ -1719,11 +1727,11 @@ impl App {
                             }
                         })
                     }),
-                    |result| Message::PhoneOpened(result.unwrap_or_else(|| Err(String::new()))),
+                    move |result| Message::PhoneOpened(id, result.unwrap_or_else(|| Err(String::new()))),
                 );
             }
-            Message::PhoneOpened(result) => {
-                self.busy.retain(|busy| !busy.contains(':'));
+            Message::PhoneOpened(id, result) => {
+                self.busy.remove(&id);
                 let rescan = self.scan_phones();
                 return match result {
                     Ok(path) => Task::batch([rescan, self.navigate(path)]),
@@ -1827,6 +1835,30 @@ impl App {
             Message::ModalSubmit => return self.submit_modal(),
             Message::ModalCancel => self.dismiss_modal(),
             Message::Done(outcome) => return self.finish(outcome),
+            Message::TemplateCreated(result) => {
+                let open = self.modal.as_ref().is_some_and(|modal| matches!(modal.dialog, Dialog::NewFromTemplate(_)));
+                return match result {
+                    Ok(path) => {
+                        if open {
+                            self.modal = None;
+                        }
+                        Task::batch([self.start_survey(), self.show(path)])
+                    }
+                    Err(error) => match self.modal.as_mut().filter(|_| open) {
+                        Some(modal) => {
+                            modal.error = Some(error);
+                            operation::focus(MODAL_ID)
+                        }
+                        None => self.notify(error, None),
+                    },
+                };
+            }
+            Message::RevealModal => {
+                if let Some(modal) = &mut self.modal {
+                    modal.shown = !modal.shown;
+                }
+                return Task::none();
+            }
             Message::DismissNotice(id) => {
                 if self.notice.as_ref().is_some_and(|notice| notice.id == id) {
                     self.notice = None;
@@ -2533,7 +2565,10 @@ impl App {
                     [folder] if folder.is_dir() => folder.clone(),
                     _ => self.current.clone(),
                 };
-                request.files.iter().map(|name| folder.join(name)).collect()
+                if !request.files.iter().all(|name| crate::chooser::valid_name(name)) {
+                    return self.notify(Key::ChooserBadName.text(self.lang).to_string(), None);
+                }
+                request.files.iter().map(|name| folder.join(name.trim())).collect()
             }
         };
         if request.mode == Mode::Open && !request.multiple {
@@ -2843,7 +2878,7 @@ impl App {
             Request::Activate(token) => {
                 if let Some(handles) = self.handles {
                     let _ = std::thread::Builder::new().name("glide-files-activate".into()).spawn(move || {
-                        let _ = glide_app::activation::activate(handles.display, handles.surface, &token);
+                        let _ = glide_app::activation::activate(handles, &token);
                     });
                 }
                 Task::none()
@@ -3554,6 +3589,7 @@ impl App {
         self.modal = Some(Modal {
             dialog: Dialog::Conflict { job, question, for_all: false },
             input: String::new(),
+            shown: false,
             error: None,
             focus: None,
         });
@@ -3781,7 +3817,7 @@ impl App {
                 | Dialog::Tags(_)
                 | Dialog::OpenWith { .. }
         );
-        self.modal = Some(Modal { dialog, input, error: None, focus: None });
+        self.modal = Some(Modal { dialog, input, error: None, focus: None, shown: false });
         if !takes_input {
             return Task::none();
         }
@@ -3791,6 +3827,17 @@ impl App {
             None => operation::select_all(MODAL_ID),
         };
         Task::batch([operation::focus(MODAL_ID), select])
+    }
+
+    fn template_job(&mut self, modal: Modal, template: PathBuf) -> Task<Message> {
+        let (folder, name, lang) = (self.current.clone(), modal.input.clone(), self.lang);
+        self.modal = Some(modal);
+        Task::perform(
+            blocking(move || {
+                crate::fs::create_from_template(&template, &folder, &name).map_err(|err| i18n::io_error(&err, lang))
+            }),
+            |result| Message::TemplateCreated(result.unwrap_or_else(|| Err(String::new()))),
+        )
     }
 
     fn submit_modal(&mut self) -> Task<Message> {
@@ -3815,7 +3862,10 @@ impl App {
             Dialog::NewFolder => create_directory(&self.current, &modal.input),
             Dialog::NewFile => create_empty_file(&self.current, &modal.input),
             Dialog::Rename(target) => rename_item(target, &modal.input),
-            Dialog::NewFromTemplate(template) => crate::fs::create_from_template(template, &self.current, &modal.input),
+            Dialog::NewFromTemplate(template) => {
+                let template = template.clone();
+                return self.template_job(modal, template);
+            }
             Dialog::Tags(paths) => {
                 let words = tags::parse(&modal.input);
                 let updates: Vec<(PathBuf, Vec<String>)> = paths
@@ -4343,6 +4393,7 @@ mod navigation_tests {
                 for_all: false,
             },
             input: String::new(),
+            shown: false,
             error: None,
             focus: None,
         };

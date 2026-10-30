@@ -57,6 +57,7 @@ pub enum Msg {
     SetFit(WallpaperFit),
     CustomPath(String),
     ApplyCustom,
+    CustomChecked(Option<PathBuf>),
     CustomThumbnail(Option<Thumbnail>),
     Solid([u8; 3]),
     SolidHex(String),
@@ -157,7 +158,13 @@ impl Pane for Page {
             }
             Msg::ApplyCustom => {
                 let expanded = expand_home(self.custom_path.trim());
-                if expanded.is_file() && wallpaper::is_image(&expanded) {
+                return Task::perform(
+                    blocking(move || (expanded.is_file() && wallpaper::is_image(&expanded)).then_some(expanded)),
+                    |found| Msg::CustomChecked(found.flatten()),
+                );
+            }
+            Msg::CustomChecked(found) => {
+                if let Some(expanded) = found {
                     config.set_wallpaper(Some(&expanded));
                     self.custom_path.clear();
                     if !self.has(&expanded) {
@@ -198,7 +205,7 @@ impl Pane for Page {
             Msg::Backdrop(rgb) => config.set_str("general", "background", &wallpaper::hex(rgb)),
             Msg::OpenFolder => {
                 return Task::perform(blocking(wallpaper::open_user_folder), |result| {
-                    Msg::FolderOpened(result.unwrap_or(Ok(())))
+                    Msg::FolderOpened(result.unwrap_or_else(|| Err(String::new())))
                 });
             }
             Msg::FolderOpened(result) => {

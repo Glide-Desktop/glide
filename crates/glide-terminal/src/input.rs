@@ -165,7 +165,24 @@ pub fn encode(
     if modifiers.logo() {
         return None;
     }
+    let navigation = matches!(
+        key,
+        Key::Named(
+            Named::Home
+                | Named::End
+                | Named::PageUp
+                | Named::PageDown
+                | Named::ArrowUp
+                | Named::ArrowDown
+                | Named::ArrowLeft
+                | Named::ArrowRight
+                | Named::Insert
+                | Named::Delete
+                | Named::Clear
+        )
+    );
     if mode.contains(TermMode::APP_KEYPAD)
+        && !navigation
         && modifier_code(modifiers) == 1
         && let Some(code) = keypad(physical)
     {

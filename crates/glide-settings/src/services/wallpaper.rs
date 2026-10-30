@@ -334,7 +334,17 @@ fn thumbnail_of(image: &image::DynamicImage, path: PathBuf, source: Source) -> O
 
 #[must_use]
 pub(crate) fn thumbnail_from(path: &Path, source: Source) -> Option<Thumbnail> {
-    thumbnail_of(&image::open(path).ok()?, path.to_path_buf(), source)
+    thumbnail_of(&decode_limited(path)?, path.to_path_buf(), source)
+}
+
+fn decode_limited(path: &Path) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok()
 }
 
 #[must_use]

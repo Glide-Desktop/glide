@@ -76,6 +76,9 @@ mod tr {
         Port => "Port", "Порт";
         Applied => "Saved", "Збережено";
         Busy => "Working…", "Виконується…";
+        AuthFailed => "The Wi-Fi adapter could not sign in to the network", "Wi-Fi-адаптер не зміг увійти в мережу";
+        NoAnswer => "The network did not answer in time", "Мережа не відповіла вчасно";
+        Forget => "Forget", "Забути";
     }
 }
 
@@ -104,6 +107,9 @@ pub enum Msg {
     Disconnect,
     DisconnectDevice(String),
     Forget(String),
+    AskForget(String),
+    CancelForget,
+    TogglePasswordShown,
     DetailsLoaded(u64, Details),
     Autoconnect(String, bool),
     Metered(String, bool),
@@ -130,7 +136,7 @@ pub enum Msg {
     ProxyIgnore(String),
     ProxyUrl(String),
     ApplyProxy,
-    ProxyApplied(Option<Result<String, String>>),
+    ProxyApplied(ProxySettings, Option<Result<String, String>>),
     Done(Option<Result<String, String>>),
 }
 
@@ -157,6 +163,8 @@ pub struct Page {
     proxy: ProxySettings,
     proxy_draft: ProxySettings,
     proxy_saved: bool,
+    confirm_forget: Option<String>,
+    password_shown: bool,
 }
 
 impl Pane for Page {
@@ -369,7 +377,11 @@ impl Page {
                 self.expanded = None;
                 return self.run(None, move || network::disconnect(&device));
             }
+            Msg::AskForget(uuid) => self.confirm_forget = Some(uuid),
+            Msg::TogglePasswordShown => self.password_shown = !self.password_shown,
+            Msg::CancelForget => self.confirm_forget = None,
             Msg::Forget(uuid) => {
+                self.confirm_forget = None;
                 if matches!(self.expanded, Some(Expanded::Wifi(_))) {
                     self.expanded = None;
                 }
@@ -485,13 +497,16 @@ impl Page {
                     return Task::none();
                 }
                 let draft = self.proxy_draft.clone();
+                let written = draft.clone();
                 self.jobs.error = None;
-                return Task::perform(blocking(move || network::write_proxy(&draft)), Msg::ProxyApplied);
+                return Task::perform(blocking(move || network::write_proxy(&draft)), move |result| {
+                    Msg::ProxyApplied(written, result)
+                });
             }
-            Msg::ProxyApplied(result) => match result {
+            Msg::ProxyApplied(written, result) => match result {
                 Some(Ok(_)) => {
-                    self.proxy = self.proxy_draft.clone();
-                    self.proxy_saved = true;
+                    self.proxy_saved = self.proxy_draft == written;
+                    self.proxy = written;
                 }
                 Some(Err(err)) => self.jobs.error = Some(err),
                 None => {}
@@ -550,11 +565,12 @@ impl Page {
             c.t(K::NotConnected).to_string()
         };
         let radio_on = self.state.wifi_enabled && !self.state.airplane;
-        let error = self
-            .jobs
-            .error
-            .as_deref()
-            .map(|error| if error == network::WRONG_PASSWORD { c.t(T::WrongPassword) } else { error });
+        let error = self.jobs.error.as_deref().map(|error| match error {
+            network::WRONG_PASSWORD => c.t(T::WrongPassword),
+            network::AUTH_FAILED => c.t(T::AuthFailed),
+            network::NO_ANSWER => c.t(T::NoAnswer),
+            other => other,
+        });
         column![
             widgets::section_hero(
                 t,
@@ -774,17 +790,15 @@ impl Page {
                 t,
                 c.t(K::Password),
                 None,
-                widgets::field(
+                widgets::secret_field(
                     t,
                     c.t(K::Password),
                     self.hidden_password.as_str(),
                     |value| Msg::HiddenPassword(Secret(value)),
                     ready.then_some(Msg::JoinHidden),
                     false,
-                )
-                .secure(true)
-                .width(Fill)
-                .into(),
+                    (self.password_shown, Msg::TogglePasswordShown),
+                ),
             ));
         }
         rows.push(actions(vec![
@@ -910,17 +924,15 @@ impl Page {
                     t,
                     c.t(K::Password),
                     Some(c.t(K::PasswordHint)),
-                    widgets::field(
+                    widgets::secret_field(
                         t,
                         c.t(K::Password),
                         self.password.as_str(),
                         |value| Msg::Password(Secret(value)),
                         ready.then(|| connect.clone()),
                         false,
-                    )
-                    .secure(true)
-                    .width(Length::Fill)
-                    .into(),
+                        (self.password_shown, Msg::TogglePasswordShown),
+                    ),
                 ),
                 actions(vec![
                     widgets::secondary(t, c.t(K::Cancel), Some(Msg::Cancel)),
@@ -988,6 +1000,17 @@ impl Page {
             let auto = if profile.autoconnect { c.t(T::Automatic) } else { c.t(T::Manual) };
             let uuid = profile.uuid.clone();
             let toggle_uuid = uuid.clone();
+            let confirming = self.confirm_forget.as_deref() == Some(uuid.as_str());
+            let forget: Element<'_, Msg> = if confirming {
+                row![
+                    widgets::secondary(t, c.t(K::Cancel), Some(Msg::CancelForget)),
+                    widgets::danger(t, c.t(T::Forget), Some(Msg::Forget(uuid))),
+                ]
+                .spacing(8)
+                .into()
+            } else {
+                widgets::icon_button(t, Icon::Trash, Some(Msg::AskForget(uuid)))
+            };
             group = group.push(
                 Row::new(t, profile.name.clone())
                     .subtitle(format!("{status} · {auto}"))
@@ -997,7 +1020,7 @@ impl Page {
                             widgets::switch(t, profile.autoconnect, move |on| {
                                 Msg::Autoconnect(toggle_uuid.clone(), on)
                             }),
-                            widgets::icon_button(t, Icon::Trash, Some(Msg::Forget(uuid))),
+                            forget,
                         ]
                         .spacing(10)
                         .align_y(Alignment::Center),

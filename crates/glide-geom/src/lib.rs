@@ -34,7 +34,7 @@ impl Size {
 
     #[must_use]
     pub const fn grow(self, insets: Insets) -> Self {
-        Self::new(self.width + insets.width(), self.height + insets.height())
+        Self::new(self.width.saturating_add(insets.width()), self.height.saturating_add(insets.height()))
     }
 }
 
@@ -51,12 +51,12 @@ impl Insets {
 
     #[must_use]
     pub const fn width(&self) -> i32 {
-        self.left + self.right
+        self.left.saturating_add(self.right)
     }
 
     #[must_use]
     pub const fn height(&self) -> i32 {
-        self.top + self.bottom
+        self.top.saturating_add(self.bottom)
     }
 }
 
@@ -80,27 +80,33 @@ impl Rectangle {
     #[must_use]
     pub const fn contains(&self, p: Point) -> bool {
         p.x >= self.loc.x
-            && p.x < self.loc.x + self.size.width
+            && p.x < self.loc.x.saturating_add(self.size.width)
             && p.y >= self.loc.y
-            && p.y < self.loc.y + self.size.height
+            && p.y < self.loc.y.saturating_add(self.size.height)
     }
 
     #[must_use]
     pub const fn center(&self) -> Point {
-        Point { x: self.loc.x + self.size.width / 2, y: self.loc.y + self.size.height / 2 }
+        Point { x: self.loc.x.saturating_add(self.size.width / 2), y: self.loc.y.saturating_add(self.size.height / 2) }
     }
 
     #[must_use]
     pub const fn inset(&self, insets: Insets) -> Self {
         Self {
-            loc: Point::new(self.loc.x + insets.left, self.loc.y + insets.top),
-            size: Size::new(self.size.width - insets.width(), self.size.height - insets.height()),
+            loc: Point::new(self.loc.x.saturating_add(insets.left), self.loc.y.saturating_add(insets.top)),
+            size: Size::new(
+                self.size.width.saturating_sub(insets.width()),
+                self.size.height.saturating_sub(insets.height()),
+            ),
         }
     }
 
     #[must_use]
     pub const fn outset(&self, insets: Insets) -> Self {
-        Self { loc: Point::new(self.loc.x - insets.left, self.loc.y - insets.top), size: self.size.grow(insets) }
+        Self {
+            loc: Point::new(self.loc.x.saturating_sub(insets.left), self.loc.y.saturating_sub(insets.top)),
+            size: self.size.grow(insets),
+        }
     }
 
     #[must_use]
@@ -109,9 +115,9 @@ impl Rectangle {
             return false;
         }
 
-        self.loc.x < other.loc.x + other.size.width
-            && other.loc.x < self.loc.x + self.size.width
-            && self.loc.y < other.loc.y + other.size.height
-            && other.loc.y < self.loc.y + self.size.height
+        self.loc.x < other.loc.x.saturating_add(other.size.width)
+            && other.loc.x < self.loc.x.saturating_add(self.size.width)
+            && self.loc.y < other.loc.y.saturating_add(other.size.height)
+            && other.loc.y < self.loc.y.saturating_add(self.size.height)
     }
 }

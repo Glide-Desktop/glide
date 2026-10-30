@@ -8,8 +8,8 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, get_parent,
-            is_sync_subsurface, with_states,
+            BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
+            add_destruction_hook, get_parent, is_sync_subsurface, with_states,
         },
         shm::{ShmHandler, ShmState},
     },
@@ -31,7 +31,35 @@ impl CompositorHandler for GlideState {
             .compositor_state
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        add_destruction_hook::<Self, _>(surface, |state: &mut Self, surface: &WlSurface| {
+            if state.window_id_for_surface(surface).is_some() {
+                state.untrack_window(surface);
+            }
+        });
+    }
+
+    fn destroyed(&mut self, surface: &WlSurface) {
+        if self.window_id_for_surface(surface).is_some() {
+            self.untrack_window(surface);
+        }
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
+        let unmapping = self.window_id_for_surface(surface).filter(|_| {
+            with_states(surface, |states| {
+                matches!(
+                    states.cached_state.get::<SurfaceAttributes>().current().buffer,
+                    Some(BufferAssignment::Removed)
+                )
+            })
+        });
+        if let Some(id) = unmapping
+            && let Some(window) = self.window_map.get(&id).cloned()
+        {
+            self.capture_closing_window(id, &window);
+        }
+
         on_commit_buffer_handler::<Self>(surface);
         self.queue_redraw();
         if self.drag.icon.as_ref() == Some(surface)

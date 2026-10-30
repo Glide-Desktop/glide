@@ -84,7 +84,19 @@ mod tr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for Form {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AddUser { user_name, admin, .. } => {
+                f.debug_struct("AddUser").field("user_name", user_name).field("admin", admin).finish_non_exhaustive()
+            }
+            Self::Password { path, .. } => f.debug_struct("Password").field("path", path).finish_non_exhaustive(),
+            Self::Remove { uid, name } => f.debug_struct("Remove").field("uid", uid).field("name", name).finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 enum Form {
     AddUser { full_name: String, user_name: String, named: bool, password: String, confirm: String, admin: bool },
     Password { path: String, password: String, confirm: String },
@@ -128,6 +140,7 @@ pub enum Msg {
     UserName(String),
     NewPassword(String),
     ConfirmPassword(String),
+    ToggleShown,
     Admin(bool),
     Create,
     SavePassword,
@@ -147,7 +160,9 @@ pub struct Page {
     error: Option<String>,
     saved: bool,
     busy: bool,
+    shown: bool,
     form: Option<Form>,
+    again: bool,
 }
 
 impl Pane for Page {
@@ -166,6 +181,9 @@ impl Pane for Page {
                 self.state = *state;
                 self.loaded = true;
                 self.loading = false;
+                if std::mem::take(&mut self.again) {
+                    return self.reload();
+                }
             }
             Msg::NameInput(name) => {
                 self.saved = false;
@@ -201,6 +219,7 @@ impl Pane for Page {
             | Msg::Admin(_) => self.edit_form(msg),
             Msg::Create | Msg::SavePassword | Msg::Remove(_) => return self.submit_form(msg),
             Msg::AccountType(path, admin) => return self.run(move || accounts::set_account_type(&path, admin)),
+            Msg::ToggleShown => self.shown = !self.shown,
             Msg::Done(result) => {
                 self.busy = false;
                 match result {
@@ -309,6 +328,7 @@ impl Page {
 
     fn reload(&mut self) -> Task<Msg> {
         if self.loading {
+            self.again = true;
             return Task::none();
         }
         self.loading = true;
@@ -458,15 +478,29 @@ impl Page {
                     t,
                     c.t(T::NewPassword),
                     None,
-                    widgets::field(t, "", password, Msg::NewPassword, None, false).secure(true).into(),
+                    widgets::secret_field(
+                        t,
+                        "",
+                        password,
+                        Msg::NewPassword,
+                        None,
+                        false,
+                        (self.shown, Msg::ToggleShown)
+                    ),
                 ),
                 form_row(
                     t,
                     c.t(T::ConfirmPassword),
                     hint,
-                    widgets::field(t, "", confirm, Msg::ConfirmPassword, save.clone(), hint.is_some())
-                        .secure(true)
-                        .into(),
+                    widgets::secret_field(
+                        t,
+                        "",
+                        confirm,
+                        Msg::ConfirmPassword,
+                        save.clone(),
+                        hint.is_some(),
+                        (self.shown, Msg::ToggleShown)
+                    ),
                 ),
                 form_buttons(c, widgets::primary(t, c.t(K::Apply), save)),
             ]
@@ -505,15 +539,29 @@ impl Page {
                     t,
                     c.t(T::NewPassword),
                     None,
-                    widgets::field(t, "", password, Msg::NewPassword, None, false).secure(true).into(),
+                    widgets::secret_field(
+                        t,
+                        "",
+                        password,
+                        Msg::NewPassword,
+                        None,
+                        false,
+                        (self.shown, Msg::ToggleShown)
+                    ),
                 ),
                 form_row(
                     t,
                     c.t(T::ConfirmPassword),
                     password_hint,
-                    widgets::field(t, "", confirm, Msg::ConfirmPassword, create.clone(), password_hint.is_some())
-                        .secure(true)
-                        .into(),
+                    widgets::secret_field(
+                        t,
+                        "",
+                        confirm,
+                        Msg::ConfirmPassword,
+                        create.clone(),
+                        password_hint.is_some(),
+                        (self.shown, Msg::ToggleShown)
+                    ),
                 ),
                 form_row(t, c.t(T::Administrator), None, widgets::switch(t, *admin, Msg::Admin)),
                 form_buttons(c, widgets::primary(t, c.t(T::Create), create)),

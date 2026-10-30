@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, ErrorKind, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use super::entry::LocalTime;
@@ -64,7 +64,7 @@ impl Trash {
         for top in mounts {
             for root in [top.join(format!(".Trash-{uid}")), top.join(".Trash").join(uid.to_string())] {
                 let trash = Self::new(root);
-                if trash != *self && trash.files().is_dir() && !found.contains(&trash) {
+                if trash != *self && confined(top, &trash.files()) && !found.contains(&trash) {
                     found.push(trash);
                 }
             }
@@ -90,11 +90,18 @@ impl Trash {
         let top = mount_top(parent, target);
         let uid = uid();
         let shared = top.join(".Trash");
-        let root = match std::fs::symlink_metadata(&shared) {
-            Ok(meta) if meta.is_dir() && meta.permissions().mode() & 0o1000 != 0 => shared.join(uid.to_string()),
-            _ => top.join(format!(".Trash-{uid}")),
+        let sticky = matches!(
+            std::fs::symlink_metadata(&shared),
+            Ok(meta) if meta.is_dir() && meta.permissions().mode() & 0o1000 != 0
+        );
+        let candidate = shared.join(uid.to_string());
+        let root = if sticky && own_dir(&candidate, uid).is_ok() {
+            candidate
+        } else {
+            let own = top.join(format!(".Trash-{uid}"));
+            own_dir(&own, uid)?;
+            own
         };
-        std::fs::create_dir_all(&root)?;
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
         Ok((Self::new(root), Some(top)))
     }
@@ -104,8 +111,13 @@ impl Trash {
         let name = original.file_name().ok_or_else(|| io::Error::new(ErrorKind::InvalidFilename, "no file name"))?;
         let parent = original.parent().unwrap_or(Path::new("/"));
         let (trash, top) = self.for_target(parent)?;
-        std::fs::create_dir_all(trash.files())?;
-        std::fs::create_dir_all(trash.info_dir())?;
+        if top.is_some() {
+            plain_or_new_dir(&trash.files())?;
+            plain_or_new_dir(&trash.info_dir())?;
+        } else {
+            std::fs::create_dir_all(trash.files())?;
+            std::fs::create_dir_all(trash.info_dir())?;
+        }
         let dest = unique_path(&trash.files(), name, true, |candidate| {
             occupied(candidate) || candidate.file_name().is_some_and(|slot| occupied(&trash.info_file(slot)))
         });
@@ -116,11 +128,14 @@ impl Trash {
             .and_then(|top| original.strip_prefix(top).ok())
             .map_or_else(|| encode_path(&original), encode_path);
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&info)?;
-        write!(
+        if let Err(err) = write!(
             file,
             "[Trash Info]\nPath={recorded}\nDeletionDate={}\n",
             deleted.unwrap_or_else(|| String::from("1970-01-01T00:00:00"))
-        )?;
+        ) {
+            let _ = std::fs::remove_file(&info);
+            return Err(err);
+        }
         if let Err(err) = move_path(target, &dest) {
             let _ = std::fs::remove_file(&info);
             return Err(err);
@@ -151,10 +166,16 @@ impl Trash {
         let trash = Self::owner(trashed).unwrap_or_else(|| self.clone());
         let info = std::fs::read_to_string(trash.info_file(trashed.file_name()?)).ok()?;
         let recorded = info.lines().find_map(|line| line.strip_prefix("Path=")).map(|path| decode_path(path.trim()))?;
+        if recorded.components().any(|part| part == Component::ParentDir) {
+            return None;
+        }
         match trash.top() {
-            Some(top) if recorded.is_relative() => Some(top.join(recorded)),
-            _ if recorded.is_relative() => None,
-            _ => Some(recorded),
+            Some(top) if recorded.components().all(|part| matches!(part, Component::Normal(_))) => {
+                Some(top.join(recorded))
+            }
+            Some(top) if recorded.is_absolute() && recorded.starts_with(top) => Some(recorded),
+            None if recorded.is_absolute() => Some(recorded),
+            Some(_) | None => None,
         }
     }
 
@@ -164,6 +185,11 @@ impl Trash {
         let (Some(parent), Some(name)) = (original.parent(), original.file_name()) else {
             return Err(io::Error::new(ErrorKind::InvalidData, "corrupt trash info"));
         };
+        if let Some(top) = Self::owner(trashed).unwrap_or_else(|| self.clone()).top()
+            && !confined_so_far(top, parent)
+        {
+            return Err(io::Error::new(ErrorKind::InvalidData, "the original folder leads off the volume"));
+        }
         std::fs::create_dir_all(parent)?;
         let is_dir = std::fs::symlink_metadata(trashed)?.is_dir();
         let dest = unique_path(parent, name, !is_dir, occupied);
@@ -188,6 +214,13 @@ impl Trash {
     pub fn empty(&self) -> io::Result<()> {
         let mut failure = None;
         for dir in [self.files(), self.info_dir()] {
+            if let Some(top) = self.top()
+                && dir.exists()
+                && !confined(top, &dir)
+            {
+                failure.get_or_insert_with(|| io::Error::new(ErrorKind::InvalidData, "the trash folder is a link"));
+                continue;
+            }
             match std::fs::read_dir(&dir) {
                 Ok(entries) => {
                     for entry in entries {
@@ -203,6 +236,52 @@ impl Trash {
             }
         }
         failure.map_or(Ok(()), Err)
+    }
+}
+
+fn plain_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+}
+
+fn confined(top: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(top) else { return false };
+    let mut at = top.to_path_buf();
+    rest.components().all(|part| {
+        at.push(part);
+        plain_dir(&at)
+    })
+}
+
+fn confined_so_far(top: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(top) else { return false };
+    let mut at = top.to_path_buf();
+    for part in rest.components() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return false,
+            Err(_) => return true,
+        }
+    }
+    true
+}
+
+fn plain_or_new_dir(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(io::Error::new(ErrorKind::InvalidData, "the trash folder is not a plain folder")),
+        Err(err) if err.kind() == ErrorKind::NotFound => std::fs::DirBuilder::new().mode(0o700).create(path),
+        Err(err) => Err(err),
+    }
+}
+
+fn own_dir(path: &Path, uid: u32) -> io::Result<()> {
+    plain_or_new_dir(path)?;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() && meta.uid() == uid {
+        Ok(())
+    } else {
+        Err(io::Error::new(ErrorKind::PermissionDenied, "the trash folder belongs to someone else"))
     }
 }
 

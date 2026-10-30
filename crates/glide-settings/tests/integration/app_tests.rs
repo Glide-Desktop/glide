@@ -1153,15 +1153,16 @@ fn shortcut_conflicts_are_found_and_keybinds_render() {
 }
 
 #[test]
-fn an_unreadable_keybinds_list_is_left_alone() {
+fn an_unreadable_keybinds_list_is_left_alone_until_it_is_reset() {
     use glide_settings::panels::shortcuts::Msg;
     let mut app = app("[[keybinds]]\nkey = \"q\"\naction = { launch = \"x\" }\n");
     assert!(glide_settings::services::keybinds::load(app.config()).is_err());
-    let _ = app.update(Message::Shortcuts(Msg::ResetAll));
     let _ = app.update(Message::Shortcuts(Msg::AddCommand));
     assert!(app.config().root_item("keybinds").is_some());
     let _ = app.update(Message::PanelSelected(Panel::Shortcuts));
     let _ = app.view();
+    let _ = app.update(Message::Shortcuts(Msg::ResetAll));
+    assert!(app.config().root_item("keybinds").is_none(), "Reset all is the way out of an unreadable list");
 }
 
 #[test]

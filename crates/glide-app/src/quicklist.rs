@@ -26,7 +26,9 @@ impl QuickMenu {
             props.insert("children-display".to_string(), Value::from("submenu"));
             return props;
         }
-        if let Some(label) = usize::try_from(id - 1).ok().and_then(|index| self.labels.get(index)) {
+        if let Some(label) =
+            id.checked_sub(1).and_then(|index| usize::try_from(index).ok()).and_then(|index| self.labels.get(index))
+        {
             props.insert("label".to_string(), Value::from(label.clone()));
             props.insert("enabled".to_string(), Value::from(true));
             props.insert("visible".to_string(), Value::from(true));
@@ -77,7 +79,7 @@ impl QuickMenu {
     fn event(&self, id: i32, event_id: String, data: OwnedValue, timestamp: u32) {
         drop((data, timestamp));
         if event_id == "clicked"
-            && let Ok(index) = usize::try_from(id - 1)
+            && let Some(index) = id.checked_sub(1).and_then(|index| usize::try_from(index).ok())
             && index < self.labels.len()
         {
             (self.sink)(index);

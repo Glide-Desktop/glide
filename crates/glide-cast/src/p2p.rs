@@ -116,7 +116,9 @@ impl P2p {
         Ok(sort_peers(peers))
     }
 
-    pub fn connect(&self, peer: &Peer, timeout: Duration) -> Result<OwnedObjectPath, String> {
+    pub fn connect(
+        &self, peer: &Peer, timeout: Duration, stopped: &std::sync::mpsc::Receiver<()>,
+    ) -> Result<OwnedObjectPath, String> {
         let nm = Proxy::new(&self.bus, NM, NM_PATH, NM).map_err(failed)?;
         let options = HashMap::from([("persist", Value::from("volatile"))]);
         let specific = ObjectPath::try_from(peer.path.as_str()).map_err(failed)?;
@@ -128,12 +130,15 @@ impl P2p {
             .map_err(failed)?;
         let deadline = Instant::now() + timeout;
         loop {
-            let state: u32 = Proxy::new(&self.bus, NM, active.as_str(), ACTIVE)
-                .and_then(|proxy| proxy.get_property("State"))
-                .unwrap_or(DEACTIVATED);
+            if stopped.try_recv().is_ok() {
+                let _ = self.disconnect(&active);
+                return Err("stopped".into());
+            }
+            let state: Option<u32> =
+                Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).and_then(|proxy| proxy.get_property("State")).ok();
             match state {
-                ACTIVATED => return Ok(active),
-                DEACTIVATED => return Err("the display refused the Wi-Fi Direct connection".into()),
+                Some(ACTIVATED) => return Ok(active),
+                Some(DEACTIVATED) => return Err("the display refused the Wi-Fi Direct connection".into()),
                 _ if Instant::now() >= deadline => {
                     let _ = self.disconnect(&active);
                     return Err("the display did not accept the connection in time".into());

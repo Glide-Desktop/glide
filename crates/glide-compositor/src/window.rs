@@ -432,14 +432,13 @@ impl GlideWindow {
                 Kind::Unspecified,
             ));
         }
-        elements.extend(render_elements_from_surface_tree(
-            renderer,
-            surface,
-            location,
-            scale,
-            alpha,
-            Kind::Unspecified,
-        ));
+        let root: Vec<WaylandSurfaceRenderElement<R>> =
+            render_elements_from_surface_tree(renderer, surface, location, scale, alpha, Kind::Unspecified);
+        if root.is_empty() {
+            elements.extend(destroyed_surface_element(renderer, surface, location, scale, alpha));
+        } else {
+            elements.extend(root);
+        }
         elements
     }
 
@@ -557,9 +556,13 @@ impl GlideWindow {
         .filter(|_| renderer.prepare_rounded_clip());
         let chrome_clip = clip_frame.filter(|_| preview.is_some());
 
+        let content = self.content_layers(renderer, location, clip_frame, scale, alpha);
+        if content.is_empty() {
+            return Vec::new();
+        }
         let (overlays, chrome) = self.chrome_layers(renderer, &painter, header_location, scale, alpha, chrome_clip);
         let mut layers: Vec<GlideWindowLayer<R>> = overlays;
-        layers.extend(self.content_layers(renderer, location, clip_frame, scale, alpha));
+        layers.extend(content);
         layers.extend(chrome);
 
         if preview.is_none() {
@@ -609,6 +612,29 @@ impl GlideWindow {
             layers.into_iter().map(|layer| C::from(GlideWindowRenderElement::Plain(layer))).collect()
         }
     }
+}
+
+fn destroyed_surface_element<R>(
+    renderer: &mut R, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
+) -> Option<WaylandSurfaceRenderElement<R>>
+where
+    R: ShellRenderer + ClipCapableRenderer,
+    R::Error: std::fmt::Debug,
+{
+    smithay::wayland::compositor::with_states(surface, |states| {
+        let offset = states
+            .data_map
+            .get::<smithay::backend::renderer::utils::RendererSurfaceStateUserData>()?
+            .lock()
+            .ok()?
+            .view()?
+            .offset;
+        let location = location.to_f64() + offset.to_f64().to_physical(scale);
+        WaylandSurfaceRenderElement::from_surface(renderer, surface, states, location, alpha, Kind::Unspecified)
+            .ok()
+            .flatten()
+    })
 }
 
 impl<R> AsRenderElements<R> for GlideWindow

@@ -343,3 +343,33 @@ fn expand_without_field_codes_appends_file_targets() {
     let args = exec_with("my-tool --option", &files, plain);
     assert_eq!(args, [["my-tool", "--option", "/a/one.txt", "/b/two.txt"]]);
 }
+
+#[test]
+fn a_field_code_inside_a_shell_script_is_quoted_for_that_shell() {
+    let extensions = Extensions::default();
+    let files = [target(&extensions, "/a/it's $(id).pdf", false)];
+    let plain = Codes::Entry { name: String::from("Tool"), icon: None };
+    let args = exec_with("sh -c \"evince %f\"", &files, plain);
+    assert_eq!(args, [["sh", "-c", "evince '/a/it'\\''s $(id).pdf'"]]);
+}
+
+#[test]
+fn a_shell_script_behind_a_terminal_is_quoted_too_but_its_positional_arguments_are_not() {
+    let extensions = Extensions::default();
+    let files = [target(&extensions, "/a/b;c", false)];
+    let plain = Codes::Entry { name: String::from("Tool"), icon: None };
+    let args = exec_with("xterm -e sh -c \"vim %f\"", &files, plain);
+    assert_eq!(args, [["xterm", "-e", "sh", "-c", "vim '/a/b;c'"]]);
+    let plain = Codes::Entry { name: String::from("Tool"), icon: None };
+    let args = exec_with("sh -c \"open $1\" sh --file=%f", &files, plain);
+    assert_eq!(args, [["sh", "-c", "open $1", "sh", "--file=/a/b;c"]]);
+}
+
+#[test]
+fn a_field_code_inside_a_plain_argument_stays_raw() {
+    let extensions = Extensions::default();
+    let files = [target(&extensions, "/a/one two.txt", false)];
+    let plain = Codes::Entry { name: String::from("Tool"), icon: None };
+    let args = exec_with("tool --file=%f", &files, plain);
+    assert_eq!(args, [["tool", "--file=/a/one two.txt"]]);
+}

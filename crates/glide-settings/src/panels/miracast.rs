@@ -63,6 +63,7 @@ use tr::Key as T;
 const HARDWARE: [&str; 3] = ["vah264enc", "vah264lpenc", "vaapih264enc"];
 const SOFTWARE: [&str; 2] = ["x264enc", "openh264enc"];
 const PROBE: Duration = Duration::from_secs(4);
+const SEARCH: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoder {
@@ -111,6 +112,7 @@ pub enum Msg {
     Checked(Readiness),
     Search,
     Started(Option<Result<(), String>>),
+    SearchEnded(u64),
     Smooth(bool),
     Audio(bool),
     Awake(bool),
@@ -123,6 +125,7 @@ const TABLE: &str = "cast";
 pub struct Page {
     readiness: Option<Readiness>,
     searching: bool,
+    search: u64,
     error: Option<String>,
 }
 
@@ -172,12 +175,23 @@ impl Pane for Page {
             Msg::Search => {
                 self.error = None;
                 self.searching = true;
+                self.search += 1;
                 return Task::perform(blocking(start_search), Msg::Started);
             }
-            Msg::Started(result) => {
-                if let Some(Err(err)) = result {
+            Msg::Started(result) => match result {
+                Some(Ok(())) => {
+                    let search = self.search;
+                    return Task::perform(blocking(|| std::thread::sleep(SEARCH)), move |_| Msg::SearchEnded(search));
+                }
+                Some(Err(err)) => {
                     self.searching = false;
                     self.error = Some(err);
+                }
+                None => self.searching = false,
+            },
+            Msg::SearchEnded(search) => {
+                if search == self.search {
+                    self.searching = false;
                 }
             }
             Msg::Open(_) => {}

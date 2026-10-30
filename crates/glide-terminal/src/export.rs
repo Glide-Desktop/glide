@@ -40,6 +40,12 @@ pub fn unused(folder: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| folder.join(name))
 }
 
+fn write_private(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    file.write_all(content).and_then(|()| file.sync_all())
+}
+
 fn write_unused(folder: &Path, name: &str, content: &[u8]) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::OpenOptionsExt;
     let (stem, extension) = name.rsplit_once('.').unwrap_or((name, ""));
@@ -89,6 +95,8 @@ fn snapshot<T>(term: &Arc<FairMutex<Term<T>>>, revision: &AtomicU64) -> std::io:
     Err(std::io::Error::other("terminal output changed during export; pause output and retry"))
 }
 
+const CHOOSER_WAIT: std::time::Duration = std::time::Duration::from_mins(30);
+
 fn choose(title: &str, name: &str, folder: Option<&Path>) -> zbus::Result<Option<PathBuf>> {
     let connection = zbus::blocking::Connection::session()?;
     let sender =
@@ -96,7 +104,12 @@ fn choose(title: &str, name: &str, folder: Option<&Path>) -> zbus::Result<Option
     let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |elapsed| elapsed.subsec_nanos());
     let token = format!("glide_terminal_{}_{nanos}", std::process::id());
     let request = format!("{PORTAL_PATH}/request/{sender}/{token}");
-    let response = zbus::blocking::Proxy::new(&connection, PORTAL, request.as_str(), "org.freedesktop.portal.Request")?;
+    let response = zbus::blocking::Proxy::new(
+        &connection,
+        PORTAL,
+        zbus::zvariant::OwnedObjectPath::try_from(request)?,
+        "org.freedesktop.portal.Request",
+    )?;
     let mut signals = response.receive_signal("Response")?;
     let chooser = zbus::blocking::Proxy::new(&connection, PORTAL, PORTAL_PATH, "org.freedesktop.portal.FileChooser")?;
     let folder = folder.map(|folder| {
@@ -112,7 +125,12 @@ fn choose(title: &str, name: &str, folder: Option<&Path>) -> zbus::Result<Option
         options.insert("current_folder", Value::from(folder));
     }
     let _: OwnedObjectPath = chooser.call("SaveFile", &("", title, options))?;
-    let Some(message) = signals.next() else { return Ok(None) };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let waiting = std::thread::Builder::new().name("glide-terminal-portal".into()).spawn(move || {
+        let _ = sender.send(signals.next());
+    });
+    drop(waiting);
+    let Ok(Some(message)) = receiver.recv_timeout(CHOOSER_WAIT) else { return Ok(None) };
     let (code, results): (u32, HashMap<String, OwnedValue>) = message.body().deserialize()?;
     if code != 0 {
         return Ok(None);
@@ -140,7 +158,7 @@ pub fn spawn<T: Send + 'static>(request: Request<T>) -> oneshot::Receiver<Saved>
     let spawned = std::thread::Builder::new().name("glide-terminal-export".into()).spawn(move || {
         let saved = match snapshot(&request.term, &request.revision) {
             Ok(content) => match choose(&request.title, &request.name, request.folder.as_deref()) {
-                Ok(Some(path)) => match std::fs::write(&path, content) {
+                Ok(Some(path)) => match write_private(&path, content.as_bytes()) {
                     Ok(()) => Saved::Written(path),
                     Err(error) => Saved::Failed(error.to_string()),
                 },

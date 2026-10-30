@@ -308,6 +308,9 @@ impl Worker {
         }
     }
 
+    const GTK_START_ROUNDS: usize = 16;
+    const GTK_GROUP_LIMIT: usize = 256;
+
     fn fetch_gtk(
         &self, bus: &str, menubar: &str, app: Option<&str>, window: Option<&str>,
     ) -> zbus::Result<(Vec<MenuItem>, Vec<u32>)> {
@@ -315,7 +318,9 @@ impl Worker {
         let mut menus = GtkMenus::new();
         let mut subscribed: BTreeSet<u32> = BTreeSet::new();
         let mut wanted: Vec<u32> = vec![0];
-        while !wanted.is_empty() {
+        let mut rounds = 0;
+        while !wanted.is_empty() && rounds < Self::GTK_START_ROUNDS && subscribed.len() < Self::GTK_GROUP_LIMIT {
+            rounds += 1;
             let reply: Vec<GtkMenuReply> = proxy.call("Start", &(wanted.clone(),))?;
             subscribed.extend(wanted.iter().copied());
             for (group, menu, items) in reply {

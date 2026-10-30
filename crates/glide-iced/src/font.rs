@@ -50,7 +50,18 @@ pub fn installed_monospace(name: &str) -> Option<iced::Font> {
         iced::advanced::graphics::text::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
     let found =
         system.raw().db().faces().any(|face| face.monospaced && face.families.iter().any(|(family, _)| family == name));
-    found.then(|| iced::Font::with_name(Box::leak(name.to_string().into_boxed_str())))
+    found.then(|| iced::Font::with_name(interned(name)))
+}
+
+fn interned(name: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(known) = names.iter().copied().find(|known| *known == name) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    names.push(leaked);
+    leaked
 }
 
 #[must_use]

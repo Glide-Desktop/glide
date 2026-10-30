@@ -455,6 +455,8 @@ impl Daemon {
     }
 }
 
+const SUBSCRIBE_WAIT: Duration = Duration::from_secs(10);
+
 async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn(Feed) + Send + Sync>) {
     let mut delay = FIRST_RETRY;
     let mut unavailable = false;
@@ -466,8 +468,9 @@ async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
     };
     loop {
         let request = pb::StatusRequest { get_full_peer_status: true, ..pb::StatusRequest::default() };
-        match client.subscribe_status(request).await {
-            Ok(response) => {
+        match tokio::time::timeout(SUBSCRIBE_WAIT, client.subscribe_status(request)).await {
+            Err(_) => report(&Error::Timeout, &mut unavailable),
+            Ok(Ok(response)) => {
                 let mut stream = response.into_inner();
                 loop {
                     match stream.message().await {
@@ -484,7 +487,7 @@ async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
                     }
                 }
             }
-            Err(status) => report(&Error::from_status(&status), &mut unavailable),
+            Ok(Err(status)) => report(&Error::from_status(&status), &mut unavailable),
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(LAST_RETRY);
@@ -494,7 +497,9 @@ async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
 async fn watch_events(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn(Feed) + Send + Sync>) {
     let mut delay = FIRST_RETRY;
     loop {
-        if let Ok(response) = client.subscribe_events(pb::SubscribeRequest {}).await {
+        if let Ok(Ok(response)) =
+            tokio::time::timeout(SUBSCRIBE_WAIT, client.subscribe_events(pb::SubscribeRequest {})).await
+        {
             let mut stream = response.into_inner();
             while let Ok(Some(event)) = stream.message().await {
                 delay = FIRST_RETRY;

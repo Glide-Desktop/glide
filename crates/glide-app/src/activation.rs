@@ -16,12 +16,13 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Activator {
 
 wayland_client::delegate_noop!(Activator: ignore XdgActivationV1);
 
-pub fn activate(display: usize, surface: usize, token: &str) -> Result<(), String> {
+pub fn activate(handles: crate::menubar::Handles, token: &str) -> Result<(), String> {
+    let (display, surface) = (handles.display, handles.surface);
     if token.is_empty() || display == 0 || surface == 0 {
         return Err("no activation token or window".into());
     }
-    // SAFETY: callers pass the raw handles of their own toolkit window, which stays alive for the
-    // rest of the process, exactly as the drag-and-drop threads already do.
+    // SAFETY: `Handles` can only be built through its unsafe constructor, whose caller vouches that both are the
+    // live wl_display and wl_surface of a window that stays alive for the rest of the process.
     let backend = unsafe { Backend::from_foreign_display(display as *mut _) };
     let connection = Connection::from_backend(backend);
     // SAFETY: as above; `surface` is that window's live wl_surface on the same display.

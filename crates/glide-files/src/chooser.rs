@@ -56,7 +56,10 @@ impl std::fmt::Display for Pick {
 impl State {
     #[must_use]
     pub fn new(request: Request) -> Self {
-        let filter = request.current_filter.or_else(|| (!request.filters.is_empty()).then_some(0));
+        let filter = request
+            .current_filter
+            .filter(|index| *index < request.filters.len())
+            .or_else(|| (!request.filters.is_empty()).then_some(0));
         let name = request.current_name.clone().unwrap_or_default();
         let choices: Vec<String> = request.choices.iter().map(glide_app::chooser::Choice::initial).collect();
         Self { request, name, filter, confirm: None, choices }

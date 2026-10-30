@@ -104,6 +104,7 @@ pub struct Page {
     snapshot: Option<Snapshot>,
     open: Vec<Problem>,
     generation: Generation,
+    loading: bool,
 }
 
 const LOW_DISK: f32 = 0.92;
@@ -111,6 +112,7 @@ const WORN_BATTERY: f64 = 70.0;
 
 impl Page {
     fn load(&mut self) -> Task<Msg> {
+        self.loading = true;
         let generation = self.generation.bump();
         Task::perform(blocking(snapshot), move |found| Msg::Loaded(generation, Box::new(found.unwrap_or_default())))
     }
@@ -293,6 +295,9 @@ impl Pane for Page {
     }
 
     fn tick(&mut self, _c: Ctx) -> Task<Msg> {
+        if self.loading {
+            return Task::none();
+        }
         self.load()
     }
 
@@ -300,6 +305,7 @@ impl Pane for Page {
         match msg {
             Msg::Loaded(generation, snapshot) => {
                 if self.generation.is_current(generation) {
+                    self.loading = false;
                     self.snapshot = Some(*snapshot);
                 }
             }

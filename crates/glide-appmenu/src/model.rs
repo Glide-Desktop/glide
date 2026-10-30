@@ -217,13 +217,17 @@ fn gtk_toggle(action: Option<&ActionInfo>, target: Option<&OwnedValue>) -> Toggl
 pub(crate) fn build_gtk_menu(
     menus: &GtkMenus, root: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>,
 ) -> Vec<MenuItem> {
-    build_gtk_level(menus, root, actions, &mut Vec::new())
+    let mut budget = MAX_ITEMS;
+    build_gtk_level(menus, root, actions, &mut Vec::new(), &mut budget)
 }
+
+const MAX_ITEMS: usize = 4096;
 
 fn build_gtk_level(
     menus: &GtkMenus, at: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>, path: &mut Vec<(u32, u32)>,
+    budget: &mut usize,
 ) -> Vec<MenuItem> {
-    if path.len() > MAX_DEPTH || path.contains(&at) {
+    if path.len() > MAX_DEPTH || path.contains(&at) || *budget == 0 {
         return Vec::new();
     }
     let Some(entries) = menus.get(&at) else {
@@ -232,8 +236,12 @@ fn build_gtk_level(
     path.push(at);
     let mut out: Vec<MenuItem> = Vec::new();
     for entry in entries {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
         if let Some(section) = pair_of(entry, ":section") {
-            let items = build_gtk_level(menus, section, actions, path);
+            let items = build_gtk_level(menus, section, actions, path, budget);
             if items.is_empty() {
                 continue;
             }
@@ -247,7 +255,7 @@ fn build_gtk_level(
 
         let label = string_of(entry, "label").map(|label| strip_mnemonic(&label)).unwrap_or_default();
         if let Some(submenu) = pair_of(entry, ":submenu") {
-            let children = build_gtk_level(menus, submenu, actions, path);
+            let children = build_gtk_level(menus, submenu, actions, path, budget);
             if !children.is_empty() {
                 out.push(MenuItem::submenu(&label, children));
             }

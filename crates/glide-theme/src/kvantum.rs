@@ -788,8 +788,18 @@ pub fn manager_config(current: &str) -> String {
 
 #[must_use]
 pub fn replaces_theme(current: &str) -> bool {
-    let theme =
-        current.lines().map(str::trim).find_map(|line| line.strip_prefix("theme=")).map(str::trim).unwrap_or_default();
+    let mut section = String::from("General");
+    let mut theme = "";
+    for line in current.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+            section = name.trim().to_string();
+        } else if section == "General"
+            && let Some(value) = line.strip_prefix("theme=")
+        {
+            theme = value.trim();
+            break;
+        }
+    }
     matches!(theme, "" | "Default" | "KvFlat" | "KvFlatLight" | "KvDefault" | THEME)
 }
 
@@ -852,6 +862,7 @@ mod tests {
         assert!(replaces_theme("[General]\ntheme=KvFlat\n"));
         assert!(replaces_theme(""));
         assert!(!replaces_theme("[General]\ntheme=KvArc\n"));
+        assert!(!replaces_theme("[Hacks]\ntheme=KvFlat\n[General]\ntheme=KvArc\n"));
     }
 
     fn section_of<'a>(config: &'a str, name: &str) -> &'a str {

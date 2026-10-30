@@ -155,7 +155,7 @@ pub fn blank_label(seconds: i64, c: Ctx) -> String {
     } else if seconds % 3600 == 0 {
         format!("{} {}", seconds / 3600, c.t(tr::Key::Hours))
     } else {
-        format!("{} {}", seconds / 60, c.t(K::MinutesShort))
+        format!("{} {}", (seconds + 59) / 60, c.t(K::MinutesShort))
     }
 }
 

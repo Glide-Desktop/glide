@@ -127,7 +127,7 @@ fn wifi_password_never_reaches_argv() {
     for profile in [None, Some("1111")] {
         for ssid in ["Cafe", secret] {
             let plan = network::connect_plan(ssid, profile, Some(secret));
-            assert_eq!(plan, ConnectPlan::AddAndActivate { ssid, psk: secret });
+            assert_eq!(plan, ConnectPlan::AddAndActivate { ssid, psk: secret, replaces: profile });
             assert!(!format!("{plan:?}").contains("psk"));
         }
     }
@@ -154,7 +154,8 @@ fn wireless_settings_carry_the_psk_and_raw_ssid() {
 #[test]
 fn activation_failure_reasons_are_readable() {
     assert_eq!(network::failure_reason(7), network::WRONG_PASSWORD);
-    assert_eq!(network::failure_reason(9), network::WRONG_PASSWORD);
+    assert_eq!(network::failure_reason(8), network::WRONG_PASSWORD);
+    assert_eq!(network::failure_reason(11), network::NO_ANSWER);
     assert_ne!(network::failure_reason(53), network::WRONG_PASSWORD);
     assert_eq!(network::failure_reason(0), network::failure_reason(999));
 }

@@ -42,7 +42,11 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
             (Some(next), Some((item, _, _))) if item == next => self.level(next, duration),
             _ => 0.0,
         };
-        self.outgoing = self.target.map(|old| (old, now, self.level(old, duration)));
+        if let Some(old) = self.target {
+            self.outgoing = Some((old, now, self.level(old, duration)));
+        } else if target.is_some_and(|next| self.outgoing.is_some_and(|(item, _, _)| item == next)) {
+            self.outgoing = None;
+        }
         self.target = target;
         self.started = target.map(|_| now);
         self.rise_from = resumed;
@@ -154,6 +158,14 @@ mod tests {
         let before = a.level(1, D);
         a.set_with(Some(1), D);
         assert!(a.level(1, D) >= before - 0.05, "coming back must not flash from zero: {before} -> {}", a.level(1, D));
+    }
+
+    #[test]
+    fn crossing_a_gap_into_another_target_keeps_the_old_fade() {
+        let mut a = settled_on_one();
+        a.set_with(None, SHORT);
+        a.set_with(Some(2), SHORT);
+        assert!(a.level(1, SHORT) > 0.5, "the target left before the gap keeps fading out");
     }
 
     #[test]

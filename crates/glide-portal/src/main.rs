@@ -106,16 +106,34 @@ fn files_binary() -> PathBuf {
 }
 
 struct PortalRequest {
-    pid: u32,
+    process: Option<std::os::fd::OwnedFd>,
+}
+
+fn pidfd(pid: u32) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    // SAFETY: pidfd_open(2) takes a pid and a flags word and returns a new descriptor or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    let fd = i32::try_from(fd).ok().filter(|fd| *fd >= 0)?;
+    // SAFETY: `fd` was just returned by pidfd_open and is owned by nothing else.
+    Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl PortalRequest {
     fn close(&self) {
-        if let Ok(pid) = i32::try_from(self.pid) {
-            // SAFETY: plain kill(2) on the chooser process this request started.
+        use std::os::fd::AsRawFd;
+        if let Some(process) = &self.process {
+            // SAFETY: pidfd_send_signal(2) on a pidfd this request owns; it names the chooser it started even after
+            // that process has exited and its pid has been reused, in which case the call fails with ESRCH.
             unsafe {
-                libc::kill(pid, libc::SIGTERM);
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    process.as_raw_fd(),
+                    libc::SIGTERM,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                );
             }
         }
     }
@@ -143,8 +161,19 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
     let Ok(child) = spawned else {
         return (FAILED, Results::default());
     };
-    let registered = server.at(handle.clone(), PortalRequest { pid: child.id() }).await.is_ok();
+    let pid = child.id();
+    let registered = server.at(handle.clone(), PortalRequest { process: pidfd(pid) }).await.is_ok();
     let output = blocking("glide-portal-wait", move || child.wait_with_output()).await;
+    if output.is_none()
+        && let Ok(pid) = i32::try_from(pid)
+    {
+        // SAFETY: kill(2) and waitpid(2) on the chooser this request started, whose `Child` was dropped unreaped
+        // when its waiting thread could not start.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
+    }
     if registered {
         let _ = server.remove::<PortalRequest, _>(&handle).await;
     }

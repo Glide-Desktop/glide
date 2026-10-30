@@ -167,10 +167,10 @@ pub fn events(handles: &Handles) -> UnboundedReceiver<Dropped> {
 fn run(handles: Handles, events: UnboundedSender<Dropped>) -> Result<(), String> {
     // SAFETY: `display` is the live `wl_display` iced's window was created on, and the window lives for the
     // rest of the process.
-    let backend = unsafe { Backend::from_foreign_display(handles.display as *mut _) };
+    let backend = unsafe { Backend::from_foreign_display(handles.display() as *mut _) };
     let connection = Connection::from_backend(backend);
     // SAFETY: `surface` is the live `wl_surface` of that same window, owned by winit.
-    let surface_id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), handles.surface as *mut _) }
+    let surface_id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), handles.surface() as *mut _) }
         .map_err(|error| error.to_string())?;
     wl_surface::WlSurface::from_id(&connection, surface_id).map_err(|error| error.to_string())?;
     let (globals, mut queue): (_, EventQueue<State>) =

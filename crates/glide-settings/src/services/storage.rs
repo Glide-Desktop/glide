@@ -205,6 +205,7 @@ pub struct HomeUsage {
     pub sizes: Vec<(Category, u64)>,
     pub paths: Vec<(Category, PathBuf)>,
     pub same_disk_as_root: bool,
+    pub present: Vec<Category>,
 }
 
 impl HomeUsage {
@@ -255,13 +256,16 @@ pub fn measure_tree(home: &Path, roots: &[(Category, PathBuf)]) -> HomeUsage {
         sizes: Category::ALL.iter().map(|category| (*category, sizes.get(category).copied().unwrap_or(0))).collect(),
         paths: roots.to_vec(),
         same_disk_as_root: device.is_some() && device == root_device,
+        present: Vec::new(),
     }
 }
 
 #[must_use]
 pub(crate) fn measure_home() -> HomeUsage {
     let (home, roots) = roots();
-    measure_tree(&home, &roots)
+    let mut usage = measure_tree(&home, &roots);
+    usage.present = usage.paths.iter().filter(|(_, path)| path.exists()).map(|(category, _)| *category).collect();
+    usage
 }
 
 fn remove_children(dir: &Path) -> (u64, usize) {

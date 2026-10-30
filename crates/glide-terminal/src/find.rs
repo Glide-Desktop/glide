@@ -8,7 +8,7 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 
-const CHUNK: usize = 2000;
+const CHUNK: usize = 250;
 
 #[derive(Debug, Clone)]
 pub struct Outcome {

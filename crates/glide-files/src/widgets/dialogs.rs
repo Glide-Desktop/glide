@@ -133,9 +133,12 @@ fn field<'a>(paint: &glide_sdk::Paint, modal: &'a Modal, placeholder: &str, secu
     let input = text_input(placeholder, &modal.input)
         .id(MODAL_ID)
         .on_input(Message::ModalInput)
-        .on_submit(Message::ModalSubmit)
-        .secure(secure);
-    validated_field(paint, input, if modal.error.is_some() { Validity::Invalid } else { Validity::Neutral })
+        .on_submit(Message::ModalSubmit);
+    let validity = if modal.error.is_some() { Validity::Invalid } else { Validity::Neutral };
+    if secure {
+        return glide_sdk::widget::secret_input(paint, input, modal.shown, Message::RevealModal, validity);
+    }
+    validated_field(paint, input, validity)
 }
 
 fn input<'a>(

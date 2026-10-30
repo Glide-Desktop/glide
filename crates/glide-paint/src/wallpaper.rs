@@ -131,11 +131,7 @@ pub fn load_wallpaper(path: Option<std::path::PathBuf>, done: impl FnOnce(Option
         install(request, bytes.as_deref());
         done(error);
     };
-    if WALLPAPER_SOURCE.read().expect(crate::NEVER_POISONED).is_none() {
-        load();
-    } else {
-        let _ = std::thread::Builder::new().name("glide-wallpaper".into()).spawn(load);
-    }
+    let _ = std::thread::Builder::new().name("glide-wallpaper".into()).spawn(load);
 }
 
 #[must_use]

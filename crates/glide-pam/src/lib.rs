@@ -155,7 +155,8 @@ fn write_as(account: &Account, dir: &Path, name: &str, bytes: &[u8]) -> std::io:
         return Err(refused());
     }
     let path = dir.join(name);
-    match std::fs::remove_file(&path) {
+    let temp = dir.join(format!(".{name}.{}", std::process::id()));
+    match std::fs::remove_file(&temp) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err),
         _ => {}
     }
@@ -164,8 +165,12 @@ fn write_as(account: &Account, dir: &Path, name: &str, bytes: &[u8]) -> std::io:
         .create_new(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&path)?;
-    file.write_all(bytes)
+        .open(&temp)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all()).and_then(|()| std::fs::rename(&temp, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 #[unsafe(no_mangle)]

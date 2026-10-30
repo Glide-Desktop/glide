@@ -198,12 +198,26 @@ pub struct Details {
     pub settings: Option<ProfileSettings>,
 }
 
-fn terse_pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
+fn terse_pairs(text: &str) -> impl Iterator<Item = (&str, String)> {
     text.lines().filter_map(|line| {
         let (key, value) = line.split_once(':')?;
         let key = key.split('[').next().unwrap_or(key);
-        Some((key.trim(), value.trim()))
+        Some((key.trim(), unescape_terse(value.trim())))
     })
+}
+
+#[must_use]
+pub(crate) fn unescape_terse(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            out.extend(chars.next());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn list(value: &str) -> Vec<String> {
@@ -226,6 +240,7 @@ fn known(value: &str) -> String {
 pub fn parse_device_show(text: &str) -> Details {
     let mut details = Details::default();
     for (key, value) in terse_pairs(text) {
+        let value = value.as_str();
         match key {
             "GENERAL.DEVICE" => details.device = value.to_string(),
             "GENERAL.HWADDR" => details.mac = known(value),
@@ -244,6 +259,7 @@ pub fn parse_device_show(text: &str) -> Details {
 pub fn parse_profile_settings(text: &str) -> ProfileSettings {
     let mut settings = ProfileSettings::default();
     for (key, value) in terse_pairs(text) {
+        let value = value.as_str();
         match key {
             "connection.metered" => settings.metered = Metered::parse(value),
             "connection.autoconnect" => settings.autoconnect = value == "yes",
@@ -622,7 +638,7 @@ pub fn set_wifi(enabled: bool) -> Result<String, String> {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConnectPlan<'a> {
     Nmcli(Vec<&'a str>),
-    AddAndActivate { ssid: &'a str, psk: &'a str },
+    AddAndActivate { ssid: &'a str, psk: &'a str, replaces: Option<&'a str> },
 }
 
 impl std::fmt::Debug for ConnectPlan<'_> {
@@ -640,7 +656,7 @@ impl std::fmt::Debug for ConnectPlan<'_> {
 pub fn connect_plan<'a>(ssid: &'a str, profile: Option<&'a str>, password: Option<&'a str>) -> ConnectPlan<'a> {
     let password = password.filter(|password| !password.is_empty());
     match (profile, password) {
-        (_, Some(psk)) => ConnectPlan::AddAndActivate { ssid, psk },
+        (replaces, Some(psk)) => ConnectPlan::AddAndActivate { ssid, psk, replaces },
         (Some(uuid), None) => ConnectPlan::Nmcli(vec!["connection", "up", "uuid", uuid]),
         (None, None) => ConnectPlan::Nmcli(vec!["device", "wifi", "connect", ssid]),
     }
@@ -661,11 +677,15 @@ pub fn wireless_settings<'a>(ssid: &'a str, psk: &'a str, infer_security: bool) 
 }
 
 pub const WRONG_PASSWORD: &str = "Wrong password; check it and try again";
+pub const AUTH_FAILED: &str = "The Wi-Fi adapter could not sign in to the network";
+pub const NO_ANSWER: &str = "The network did not answer in time";
 
 #[must_use]
 pub fn failure_reason(code: u32) -> &'static str {
     match code {
-        7..=11 => WRONG_PASSWORD,
+        7 | 8 => WRONG_PASSWORD,
+        9 | 10 => AUTH_FAILED,
+        11 => NO_ANSWER,
         53 => "The network could not be found",
         _ => "Connection activation failed",
     }
@@ -674,7 +694,13 @@ pub fn failure_reason(code: u32) -> &'static str {
 pub fn connect(ssid: &str, profile: Option<&str>, password: Option<&str>) -> Result<String, String> {
     match connect_plan(ssid, profile, password) {
         ConnectPlan::Nmcli(args) => run::status("nmcli", &args),
-        ConnectPlan::AddAndActivate { ssid, psk } => add_and_activate(ssid, psk).map_err(bus_error),
+        ConnectPlan::AddAndActivate { ssid, psk, replaces } => {
+            let added = add_and_activate(ssid, psk).map_err(bus_error)?;
+            if let Some(uuid) = replaces {
+                let _ = run::status("nmcli", &["connection", "delete", "uuid", uuid]);
+            }
+            Ok(added)
+        }
     }
 }
 
@@ -832,6 +858,7 @@ fn activate_new(
     match wait_for_activation(bus, device, &active) {
         Ok(()) => Ok(String::new()),
         Err(message) => {
+            let _: zbus::Result<()> = nm.call("DeactivateConnection", &(&active,));
             if let Ok(saved) = proxy(bus, &profile, "org.freedesktop.NetworkManager.Settings.Connection") {
                 let _: zbus::Result<()> = saved.call("Delete", &());
             }

@@ -78,6 +78,15 @@ fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     match err.raw_os_error() {
         Some(libc::EEXIST) => Err(io::Error::new(ErrorKind::AlreadyExists, "name taken")),
         Some(libc::EINVAL | libc::ENOSYS) => {
+            if std::fs::symlink_metadata(from).is_ok_and(|meta| !meta.is_dir()) {
+                match std::fs::hard_link(from, to) {
+                    Ok(()) => return std::fs::remove_file(from),
+                    Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                        return Err(io::Error::new(ErrorKind::AlreadyExists, "name taken"));
+                    }
+                    Err(_) => {}
+                }
+            }
             if occupied(to) {
                 return Err(io::Error::new(ErrorKind::AlreadyExists, "name taken"));
             }

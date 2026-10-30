@@ -112,7 +112,7 @@ fn host_matches(entry: &str, phone: &Phone) -> bool {
 
 fn mounted_fuse(dir: &Path) -> bool {
     std::fs::read_to_string("/proc/self/mounts").is_ok_and(|mounts| {
-        mounts.lines().filter_map(|line| line.split(' ').nth(1)).any(|point| Path::new(point) == dir)
+        mounts.lines().filter_map(|line| line.split(' ').nth(1)).any(|point| super::jobs::mount_point(point) == dir)
     })
 }
 

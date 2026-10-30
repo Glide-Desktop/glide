@@ -408,6 +408,8 @@ impl Terminal<'_> {
         }
     }
 
+    const MAX_WHEEL_LINES: usize = 200;
+
     fn wheel(&self, state: &mut State, delta: mouse::ScrollDelta, local: Point) {
         let Some(metrics) = state.metrics else { return };
         state.wheel += match delta {
@@ -420,7 +422,7 @@ impl Terminal<'_> {
             return;
         }
         let up = whole > 0.0;
-        let count = whole.abs() as usize;
+        let count = (whole.abs() as usize).min(Self::MAX_WHEEL_LINES);
         let mut term = self.pane.term.lock();
         let mode = *term.mode();
         let hit = locate(local, &metrics, self.pane.cells, term.grid().display_offset());

@@ -10,6 +10,73 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const CACHE_LIMIT: usize = 128;
 const ATTEMPT_LIMIT: usize = 512;
 
+fn authority(url: &str) -> Option<(String, u16)> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(bracketed) => {
+            let (host, tail) = bracketed.split_once(']')?;
+            (host, tail.strip_prefix(':'))
+        }
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    let port = match port {
+        Some(port) => port.parse().ok()?,
+        None if scheme.eq_ignore_ascii_case("https") => 443,
+        None => 80,
+    };
+    Some((host.trim_end_matches('.').to_ascii_lowercase(), port))
+}
+
+#[must_use]
+pub(crate) fn local_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [first, second, ..] = ip.octets();
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || first == 0
+                || (first == 100 && second & 0xc0 == 64)
+        }
+        std::net::IpAddr::V6(ip) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+                || ip.to_ipv4_mapped().is_some_and(|mapped| local_ip(std::net::IpAddr::V4(mapped)))
+        }
+    }
+}
+
+#[must_use]
+pub(crate) fn local_host(url: &str) -> bool {
+    let Some((host, _)) = authority(url) else { return true };
+    if host.is_empty() || host == "localhost" || matches!(host.rsplit_once('.'), Some((_, "local" | "localhost"))) {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>().is_ok_and(local_ip)
+}
+
+fn resolves_locally(url: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let Some((host, port)) = authority(url) else { return true };
+    match (host.as_str(), port).to_socket_addrs() {
+        Ok(addresses) => {
+            let addresses: Vec<_> = addresses.collect();
+            addresses.is_empty() || addresses.iter().any(|address| local_ip(address.ip()))
+        }
+        Err(_) => true,
+    }
+}
+
 #[must_use]
 pub(crate) fn is_remote_art(url: &str) -> bool {
     let url = url.trim();
@@ -61,7 +128,7 @@ impl ArtFetcher {
     }
 
     pub fn resolve(&mut self, url: &str) -> Option<String> {
-        if !is_remote_art(url) {
+        if !is_remote_art(url) || local_host(url) {
             return None;
         }
         let dir = self.dir.as_ref()?;
@@ -91,6 +158,7 @@ impl ArtFetcher {
 fn run_fetcher(dir: &Path, inbox: &mpsc::Receiver<String>) {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(FETCH_TIMEOUT))
+        .max_redirects(0)
         .user_agent(concat!("glide/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
@@ -110,6 +178,7 @@ fn run_fetcher(dir: &Path, inbox: &mpsc::Receiver<String>) {
 }
 
 fn download(agent: &ureq::Agent, url: &str, dir: &Path, target: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(!resolves_locally(url), "cover art that points into the local network is not fetched");
     let mut response = agent.get(url).call()?;
     let bytes = response.body_mut().with_config().limit(ART_MAX_BYTES).read_to_vec()?;
     anyhow::ensure!(!bytes.is_empty(), "empty response body");
@@ -151,6 +220,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir
+    }
+
+    #[test]
+    fn covers_on_this_machine_or_the_local_network_are_refused() {
+        assert!(local_host("http://localhost/a.jpg"));
+        assert!(local_host("http://[::ffff:127.0.0.1]:8080/a.jpg"));
+        assert!(local_host("http://user@192.168.1.4/a.jpg"));
+        assert!(local_host("https://printer.local/a.jpg"));
+        assert!(!local_host("https://i.scdn.co/image/ab67"));
+        assert!(resolves_locally("http://2130706433/a.jpg"));
+        assert!(resolves_locally("http://0x7f000001/a.jpg"));
     }
 
     #[test]

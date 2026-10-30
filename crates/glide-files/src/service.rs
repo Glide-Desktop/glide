@@ -96,15 +96,14 @@ pub(crate) fn index_folders(root: &Path, depth: usize, limit: usize) -> Vec<Path
 
 impl Folders {
     fn folders(&self) -> Vec<PathBuf> {
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, folders)) = cache.as_ref()
+        if let Some((at, folders)) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
             && at.elapsed() < INDEX_AGE
         {
             return folders.clone();
         }
         let home = crate::fs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let folders = index_folders(&home, INDEX_DEPTH, INDEX_LIMIT);
-        *cache = Some((std::time::Instant::now(), folders.clone()));
+        *self.cache.lock().unwrap_or_else(PoisonError::into_inner) = Some((std::time::Instant::now(), folders.clone()));
         folders
     }
 }

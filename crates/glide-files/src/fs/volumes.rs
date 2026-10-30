@@ -250,10 +250,10 @@ fn listen(sender: &iced::futures::channel::mpsc::UnboundedSender<()>) -> zbus::R
         return Ok(());
     }
     for signal in signals {
+        std::thread::sleep(std::time::Duration::from_millis(250));
         if signal.is_err() {
             continue;
         }
-        std::thread::sleep(std::time::Duration::from_millis(250));
         if sender.unbounded_send(()).is_err() {
             break;
         }
