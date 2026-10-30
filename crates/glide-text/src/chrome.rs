@@ -20,7 +20,7 @@ use crate::app::{
     shortcut_label,
 };
 use crate::app::{EDITOR, FIND_ID, FINDER_ID, FinderMessage};
-use crate::document::{Document, Ending};
+use crate::document::{Document, Ending, Hazard};
 use crate::edit::Case;
 use crate::i18n::Key;
 use crate::syntax::{Bridge, Highlight, Language};
@@ -28,8 +28,8 @@ use crate::syntax::{Bridge, Highlight, Language};
 pub const HEADER: f32 = 38.0;
 pub const STATUS: f32 = 26.0;
 pub(crate) const ISLAND: f32 = 17.0;
-pub(crate) const ISLAND_LIFT: f32 = 30.0;
-pub(crate) const ISLAND_ZONE: f32 = 44.0;
+pub(crate) const ISLAND_LIFT: f32 = glide_sdk::widget::ISLAND_GAP + ISLAND + 1.0;
+pub(crate) const ISLAND_ZONE: f32 = ISLAND_LIFT + 14.0;
 pub(crate) const SIDEBAR: f32 = 248.0;
 pub(crate) const SIDEBAR_MIN_WINDOW: f32 = 560.0;
 const CONTROL: f32 = component::SMALL_CONTROL;
@@ -392,6 +392,9 @@ fn editor(app: &App) -> Element<'_, Message> {
         .size(app.font_size())
         .padding(Padding { top: SP3, bottom: SP6, left: SP5, right: SP4 })
         .highlight_with::<Bridge>(app.settings(doc), Highlight::to_format);
+    let editor = glide_sdk::widget::scrolled_editor(&paint, editor, |lines| {
+        Message::Edit(iced::widget::text_editor::Action::Scroll { lines })
+    });
     let editor = mouse_area(editor).on_right_press(Message::Command(Command::ContextMenu));
     if !app.previewing() {
         if app.focus {
@@ -483,7 +486,7 @@ fn status_parts(app: &App, button: f32) -> Parts<'_> {
 fn status_islands(app: &App) -> Element<'_, Message> {
     let (left, right) = status_parts(app, ISLAND);
     let shown = if app.prefs.auto_hide_status { app.status_reveal.value(motion::t2()) as f32 } else { 1.0 };
-    glide_sdk::widget::status_islands(&app.paint, shown, ISLAND, left, right)
+    glide_sdk::widget::status_islands(&app.paint, app.paint.view_bg(), shown, ISLAND, left, right)
 }
 
 fn labelled(label: String, command: Command, enabled: bool, on: Option<bool>) -> Item {
@@ -891,6 +894,21 @@ fn dialog<'a>(app: &'a App, dialog: &'a Dialog) -> Element<'a, Message> {
     modal(&paint, progress, card, None, if app.edge_to_edge() { 0.0 } else { R3 })
 }
 
+fn confirm_parts<'a>(
+    ink: iced::Color, lang: crate::i18n::Lang, [title, body, action]: [Key; 3], (tone, answer): (Tone, Answer),
+    width: f32,
+) -> (String, Element<'a, Message>, Choices<'a>, f32) {
+    (
+        title.text(lang).to_string(),
+        text(body.text(lang), TextStyle::CALL).color(ink).into(),
+        vec![
+            (Key::Cancel.text(lang), Tone::Neutral, Some(Message::Dialog(Answer::Cancel))),
+            (action.text(lang), tone, Some(Message::Dialog(answer))),
+        ],
+        width,
+    )
+}
+
 fn dialog_parts<'a>(
     app: &'a App, paint: &Paint, dialog: &'a Dialog,
 ) -> (String, Element<'a, Message>, Choices<'a>, f32) {
@@ -898,6 +916,27 @@ fn dialog_parts<'a>(
     let lang = app.lang;
     let close = || vec![(Key::Close.text(lang), Tone::Accent, Some(Message::Dialog(Answer::Cancel)))];
     match &dialog.kind {
+        DialogKind::Revert(_) => confirm_parts(
+            paint.fg_2(),
+            lang,
+            [Key::RevertTitle, Key::RevertBody, Key::RevertAction],
+            (Tone::Danger, Answer::Discard),
+            420.0,
+        ),
+        DialogKind::Encoding { hazard: Hazard::Convert, .. } => confirm_parts(
+            paint.fg_2(),
+            lang,
+            [Key::ConvertTitle, Key::ConvertBody, Key::ConvertAction],
+            (Tone::Danger, Answer::Save),
+            460.0,
+        ),
+        DialogKind::Encoding { hazard: Hazard::Suspect, .. } => confirm_parts(
+            paint.fg_2(),
+            lang,
+            [Key::SuspectTitle, Key::SuspectBody, Key::SuspectAction],
+            (Tone::Accent, Answer::Save),
+            460.0,
+        ),
         DialogKind::Unsaved { docs, .. } => {
             let title = match docs.as_slice() {
                 [id] => {

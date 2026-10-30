@@ -150,9 +150,16 @@ fn relative(root: &Path, path: &Path) -> String {
 
 #[must_use]
 pub fn index(root: &Path, hidden: bool) -> Vec<Entry> {
+    index_until(root, hidden, || false)
+}
+
+fn index_until(root: &Path, hidden: bool, stop: impl Fn() -> bool) -> Vec<Entry> {
     let mut found = Vec::new();
     let mut folders = vec![root.to_path_buf()];
     while let Some(folder) = folders.pop() {
+        if stop() {
+            return Vec::new();
+        }
         let Ok(read) = std::fs::read_dir(&folder) else { continue };
         for item in read.filter_map(Result::ok) {
             let name = item.file_name().to_string_lossy().into_owned();
@@ -192,7 +199,7 @@ fn readable(path: &Path) -> Option<String> {
 pub fn search(root: &Path, query: &Query, hidden: bool, generation: u64, latest: &AtomicU64) -> Vec<Entry> {
     let Ok(Some(pattern)) = query.compile() else { return Vec::new() };
     let mut found = Vec::new();
-    for entry in index(root, hidden) {
+    for entry in index_until(root, hidden, || latest.load(Ordering::Relaxed) != generation) {
         if latest.load(Ordering::Relaxed) != generation || found.len() >= MAX_RESULTS {
             break;
         }

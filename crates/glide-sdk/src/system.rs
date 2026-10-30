@@ -452,11 +452,15 @@ impl Dock {
         let uri = format!("application://{}.desktop", desktop_id.trim_end_matches(".desktop"));
         let object = format!("/org/glide/LauncherEntry/{}", object_segment(desktop_id));
         let spawned = std::thread::Builder::new().name("glide-sdk-dock".into()).spawn(move || {
-            let Ok(connection) = bus() else { return };
+            let mut connection = None;
             while let Ok(mut badge) = inbox.recv() {
                 while let Ok(newer) = inbox.try_recv() {
                     badge = newer;
                 }
+                if connection.is_none() {
+                    connection = bus().ok();
+                }
+                let Some(connection) = &connection else { continue };
                 let _ = connection.emit_signal(
                     None::<&str>,
                     object.as_str(),

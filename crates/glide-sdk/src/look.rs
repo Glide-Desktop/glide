@@ -93,6 +93,37 @@ impl Default for Notifications {
     }
 }
 
+fn lenient(text: &str) -> File {
+    let Ok(table) = text.parse::<toml::Table>() else { return File::default() };
+    let accepted = |key: &str, value: toml::Value| {
+        let mut single = toml::Table::new();
+        single.insert(key.to_string(), value);
+        toml::Value::Table(single).try_into::<File>().is_ok()
+    };
+    let mut valid = toml::Table::new();
+    for (key, value) in table {
+        match value {
+            toml::Value::Table(section) => {
+                let kept: toml::Table = section
+                    .into_iter()
+                    .filter(|(name, item)| {
+                        let mut one = toml::Table::new();
+                        one.insert(name.clone(), item.clone());
+                        accepted(&key, toml::Value::Table(one))
+                    })
+                    .collect();
+                valid.insert(key, toml::Value::Table(kept));
+            }
+            other => {
+                if accepted(&key, other.clone()) {
+                    valid.insert(key, other);
+                }
+            }
+        }
+    }
+    toml::Value::Table(valid).try_into().unwrap_or_default()
+}
+
 fn named(name: Option<String>) -> Option<String> {
     name.filter(|name| !name.trim().is_empty())
 }
@@ -100,7 +131,10 @@ fn named(name: Option<String>) -> Option<String> {
 impl Look {
     #[must_use]
     pub fn parse(text: &str, reduced_motion: bool) -> Self {
-        let file: File = toml::from_str(text).unwrap_or_default();
+        let file: File = toml::from_str(text).unwrap_or_else(|error| {
+            tracing::warn!("glide.toml: {error}");
+            lenient(text)
+        });
         let animations = &file.animations;
         let still = !animations.enabled || (animations.respect_system && reduced_motion);
         Self {
@@ -197,7 +231,7 @@ pub fn motion_changes() -> UnboundedReceiver<bool> {
                 }
                 previous = Some(reduced);
             }
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(Duration::from_secs(10));
         }
     });
     if let Err(err) = spawned {

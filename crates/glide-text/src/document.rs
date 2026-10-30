@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
+use glide_sdk::widget::EditorContent as Content;
+use iced::widget::text_editor::{Action, Cursor, Edit, Position};
 
 use crate::detect;
 use crate::history::{Diff, History, Kind};
@@ -60,6 +61,28 @@ pub struct Decoded {
     pub encoding: Encoding,
     pub bom: bool,
     pub ending: Ending,
+    pub mixed: bool,
+    pub suspect: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Trust {
+    #[default]
+    Sure,
+    DamagedUtf8,
+}
+
+impl Trust {
+    #[must_use]
+    pub const fn of(suspect: bool) -> Self {
+        if suspect { Self::DamagedUtf8 } else { Self::Sure }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hazard {
+    Convert,
+    Suspect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,28 +91,66 @@ pub enum LoadError {
     Io(String),
 }
 
-fn utf16(bytes: &[u8], little: bool) -> String {
+fn utf16(bytes: &[u8], little: bool) -> Option<String> {
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
     let units = bytes.chunks_exact(2).map(|pair| {
         if little { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) }
     });
-    char::decode_utf16(units).map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER)).collect()
+    char::decode_utf16(units).collect::<Result<String, _>>().ok()
 }
 
-fn normalise(text: &str) -> (String, Ending) {
+fn latin1(bytes: &[u8]) -> (String, Encoding, bool) {
+    (bytes.iter().map(|&byte| char::from(byte)).collect(), Encoding::Latin1, false)
+}
+
+const DAMAGE_LIMIT: usize = 8;
+
+#[must_use]
+pub fn damaged_utf8(bytes: &[u8]) -> bool {
+    let mut rest = bytes;
+    let (mut broken, mut wide) = (0usize, 0usize);
+    loop {
+        let (valid, after) = match std::str::from_utf8(rest) {
+            Ok(valid) => (valid, None),
+            Err(error) => {
+                let (valid, after) = rest.split_at(error.valid_up_to());
+                let skip = error.error_len().unwrap_or(after.len());
+                (std::str::from_utf8(valid).unwrap_or_default(), Some(&after[skip..]))
+            }
+        };
+        wide += valid.chars().filter(|c| !c.is_ascii()).count();
+        let Some(after) = after else { break };
+        broken += 1;
+        if broken > DAMAGE_LIMIT {
+            return false;
+        }
+        rest = after;
+    }
+    broken > 0 && wide >= broken
+}
+
+fn normalise(text: &str) -> (String, Ending, bool) {
     let crlf = text.matches("\r\n").count();
     let lf = text.matches('\n').count() - crlf;
+    let lone = text.matches('\r').count() - crlf;
     let ending = if crlf > lf { Ending::CrLf } else { Ending::Lf };
+    let mixed = [crlf, lf, lone].iter().filter(|count| **count > 0).count() > 1;
     let text = if text.contains('\r') { text.replace("\r\n", "\n").replace('\r', "\n") } else { text.to_string() };
-    (text, ending)
+    (text, ending, mixed)
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Decoded, LoadError> {
     let (text, encoding, bom) = if let Some(rest) = bytes.strip_prefix(b"\xef\xbb\xbf") {
-        (String::from_utf8_lossy(rest).into_owned(), Encoding::Utf8, true)
+        match std::str::from_utf8(rest) {
+            Ok(text) => (text.to_string(), Encoding::Utf8, true),
+            Err(_) => latin1(bytes),
+        }
     } else if let Some(rest) = bytes.strip_prefix(b"\xff\xfe") {
-        (utf16(rest, true), Encoding::Utf16Le, true)
+        utf16(rest, true).map_or_else(|| latin1(bytes), |text| (text, Encoding::Utf16Le, true))
     } else if let Some(rest) = bytes.strip_prefix(b"\xfe\xff") {
-        (utf16(rest, false), Encoding::Utf16Be, true)
+        utf16(rest, false).map_or_else(|| latin1(bytes), |text| (text, Encoding::Utf16Be, true))
     } else if bytes[..bytes.len().min(8192)].contains(&0) {
         return Err(LoadError::Binary);
     } else {
@@ -98,8 +159,9 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, LoadError> {
             Err(_) => (bytes.iter().map(|&byte| char::from(byte)).collect(), Encoding::Latin1, false),
         }
     };
-    let (text, ending) = normalise(&text);
-    Ok(Decoded { text, encoding, bom, ending })
+    let suspect = encoding == Encoding::Latin1 && damaged_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes));
+    let (text, ending, mixed) = normalise(&text);
+    Ok(Decoded { text, encoding, bom, ending, mixed, suspect })
 }
 
 #[must_use]
@@ -139,7 +201,10 @@ pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<SystemTime> {
         if error.kind() != std::io::ErrorKind::PermissionDenied && error.kind() != std::io::ErrorKind::AlreadyExists {
             return Err(error);
         }
-        std::fs::write(&target, bytes)?;
+        let mut file = std::fs::OpenOptions::new().write(true).open(&target)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.set_len(bytes.len() as u64)?;
+        file.sync_all()?;
     }
     modified(&target).ok_or_else(|| std::io::Error::other("the saved file vanished"))
 }
@@ -163,7 +228,7 @@ pub fn mirror(content: &Content) -> String {
 
 #[must_use]
 pub fn position(text: &str, offset: usize) -> Position {
-    let offset = offset.min(text.len());
+    let offset = text.floor_char_boundary(offset);
     let before = &text[..offset];
     let line = before.matches('\n').count();
     let column = offset - before.rfind('\n').map_or(0, |at| at + 1);
@@ -205,6 +270,7 @@ pub struct Document {
     pub encoding: Encoding,
     pub bom: bool,
     pub ending: Ending,
+    pub trust: Trust,
     pub history: History,
     pub saved: u64,
     pub disk: Option<SystemTime>,
@@ -232,6 +298,7 @@ impl Document {
             encoding: Encoding::Utf8,
             bom: false,
             ending: Ending::Lf,
+            trust: Trust::Sure,
             history: History::default(),
             saved: 0,
             disk: None,
@@ -256,6 +323,7 @@ impl Document {
         document.encoding = decoded.encoding;
         document.bom = decoded.bom;
         document.ending = decoded.ending;
+        document.trust = Trust::of(decoded.suspect);
         document
     }
 
@@ -414,6 +482,7 @@ impl Document {
         self.encoding = decoded.encoding;
         self.bom = decoded.bom;
         self.ending = decoded.ending;
+        self.trust = Trust::of(decoded.suspect);
         self.history.seal();
         self.saved = self.history.generation();
         self.disk = self.path.as_deref().and_then(modified);
@@ -423,6 +492,29 @@ impl Document {
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
         encode(&self.text, self.encoding, self.bom, self.ending)
+    }
+
+    #[must_use]
+    pub fn hazard(&self) -> Option<Hazard> {
+        if !fits(&self.text, self.encoding) {
+            Some(Hazard::Convert)
+        } else if self.trust == Trust::DamagedUtf8 && self.encoding == Encoding::Latin1 {
+            Some(Hazard::Suspect)
+        } else {
+            None
+        }
+    }
+
+    pub fn accept(&mut self, hazard: Hazard) {
+        if hazard == Hazard::Convert {
+            self.encoding = Encoding::Utf8;
+        }
+        self.trust = Trust::Sure;
+    }
+
+    pub fn save_point(&mut self) -> u64 {
+        self.history.seal();
+        self.history.generation()
     }
 
     pub fn mark_saved(&mut self, path: PathBuf, disk: SystemTime) {
@@ -492,7 +584,7 @@ mod tests {
         let utf16 = decode(&[0xff, 0xfe, b'h', 0, b'i', 0]).unwrap();
         assert_eq!((utf16.text.as_str(), utf16.encoding), ("hi", Encoding::Utf16Le));
         let latin = decode(&[b'c', b'a', b'f', 0xe9]).unwrap();
-        assert_eq!((latin.text.as_str(), latin.encoding), ("café", Encoding::Latin1));
+        assert_eq!((latin.text.as_str(), latin.encoding, latin.suspect), ("café", Encoding::Latin1, false));
         assert_eq!(decode(b"\x7fELF\x00\x00"), Err(LoadError::Binary));
     }
 
@@ -558,6 +650,66 @@ mod tests {
         assert!(!document.dirty());
         document.undo();
         assert!(document.dirty());
+    }
+
+    #[test]
+    fn typing_while_a_save_is_in_flight_keeps_the_document_dirty() {
+        let mut document = Document::new(1, 1);
+        for c in "ab".chars() {
+            document.perform(Action::Edit(Edit::Insert(c)));
+        }
+        let written = document.save_point();
+        document.perform(Action::Edit(Edit::Insert('c')));
+        assert_ne!(document.history.generation(), written, "the keystroke after the snapshot is its own step");
+        document.saved = written;
+        assert!(document.dirty(), "the 'c' never reached the disk");
+        assert!(document.undo());
+        assert_eq!(document.text, "ab");
+        assert!(!document.dirty());
+    }
+
+    #[test]
+    fn utf8_with_a_few_broken_bytes_opens_as_latin1_but_is_flagged() {
+        let mut bytes = "привіт, світ".as_bytes().to_vec();
+        bytes.push(0xff);
+        let decoded = decode(&bytes).unwrap();
+        assert_eq!(decoded.encoding, Encoding::Latin1);
+        assert!(decoded.suspect);
+        assert_eq!(encode(&decoded.text, decoded.encoding, decoded.bom, decoded.ending), bytes);
+        let mut with_bom = b"\xef\xbb\xbf".to_vec();
+        with_bom.extend_from_slice(&bytes);
+        assert!(decode(&with_bom).unwrap().suspect, "a BOM in front of damaged UTF-8 is flagged too");
+    }
+
+    #[test]
+    fn genuine_latin1_and_heavily_broken_files_are_not_flagged() {
+        let french = decode(b"caf\xe9 cr\xe8me br\xfbl\xe9e").unwrap();
+        assert_eq!(french.encoding, Encoding::Latin1);
+        assert!(!french.suspect);
+        assert!(!damaged_utf8("чисто".as_bytes()));
+        let noisy: Vec<u8> = "я".bytes().chain(std::iter::repeat_n(0xff, DAMAGE_LIMIT + 1)).collect();
+        assert!(!damaged_utf8(&noisy));
+    }
+
+    #[test]
+    fn a_latin1_document_asks_before_turning_into_utf8() {
+        let mut document = Document::open(1, PathBuf::from("/nonexistent/x.txt"), decode(b"caf\xe9").unwrap());
+        assert_eq!(document.hazard(), None);
+        document.perform(Action::Edit(Edit::Insert('ж')));
+        assert_eq!(document.hazard(), Some(Hazard::Convert));
+        assert_eq!(document.encoding, Encoding::Latin1, "nothing changes until the user agrees");
+        document.accept(Hazard::Convert);
+        assert_eq!((document.encoding, document.hazard()), (Encoding::Utf8, None));
+    }
+
+    #[test]
+    fn a_suspect_document_asks_once_and_then_keeps_latin1() {
+        let bytes = ["ї".as_bytes(), b"\xff"].concat();
+        let mut document = Document::open(1, PathBuf::from("/nonexistent/x.txt"), decode(&bytes).unwrap());
+        assert_eq!(document.hazard(), Some(Hazard::Suspect));
+        document.accept(Hazard::Suspect);
+        assert_eq!((document.encoding, document.hazard()), (Encoding::Latin1, None));
+        assert_eq!(document.bytes(), bytes);
     }
 
     #[test]

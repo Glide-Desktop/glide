@@ -18,7 +18,9 @@ pub fn wayland_handles(window: &dyn iced::window::Window) -> Option<Handles> {
     let surface = window.window_handle().ok()?.as_raw();
     match (display, surface) {
         (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => {
-            Some(Handles { display: display.display.as_ptr() as usize, surface: surface.surface.as_ptr() as usize })
+            // SAFETY: both pointers come from this window's own raw handles, and the window lives for the rest of
+            // the process.
+            Some(unsafe { Handles::new(display.display.as_ptr() as usize, surface.surface.as_ptr() as usize) })
         }
         _ => None,
     }

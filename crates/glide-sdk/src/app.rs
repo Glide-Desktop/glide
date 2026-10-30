@@ -488,7 +488,7 @@ impl<A: App> Host<A> {
                 if let Some(handles) = self.handles.filter(|_| !opened.token.is_empty()) {
                     let token = opened.token;
                     let _ = std::thread::Builder::new().name("glide-sdk-activate".into()).spawn(move || {
-                        if let Err(err) = glide_app::activation::activate(handles.display, handles.surface, &token) {
+                        if let Err(err) = glide_app::activation::activate(handles, &token) {
                             tracing::debug!("could not activate the window: {err}");
                         }
                     });
@@ -627,7 +627,7 @@ impl<A: App> Host<A> {
         }
         if let Some(popup) = self.shell.popup.as_mut().filter(|popup| popup.reveal.is_open()) {
             let source = popup.source;
-            if let Some(outcome) = popup.key(key) {
+            if let Some(outcome) = popup.key_with(key, modifiers.shift()) {
                 return Some(self.finish(outcome));
             }
             if let (Source::Bar(index), Key::Named(Named::ArrowLeft | Named::ArrowRight)) = (source, key) {

@@ -46,22 +46,38 @@ pub fn next(found: &[Range<usize>], from: usize, forward: bool) -> Option<usize>
 }
 
 #[must_use]
-pub fn replacement(pattern: &Regex, query: &Query, found: &str, with: &str) -> String {
+pub fn replacement(pattern: &Regex, query: &Query, text: &str, found: &Range<usize>, with: &str) -> String {
     if !query.regex {
         return with.to_string();
     }
-    pattern.replace(found, with).into_owned()
+    let mut out = String::new();
+    match pattern
+        .captures_at(text, found.start)
+        .filter(|captures| captures.get(0).map(|all| all.range()) == Some(found.clone()))
+    {
+        Some(captures) => captures.expand(with, &mut out),
+        None => out.push_str(with),
+    }
+    out
 }
 
 #[must_use]
 pub(crate) fn replace_all(pattern: &Regex, query: &Query, text: &str, with: &str) -> (String, usize) {
-    let count = pattern.find_iter(text).filter(|found| !found.is_empty()).count();
-    let replaced = if query.regex {
-        pattern.replace_all(text, with).into_owned()
-    } else {
-        pattern.replace_all(text, regex::NoExpand(with)).into_owned()
-    };
-    (replaced, count)
+    let mut out = String::with_capacity(text.len());
+    let (mut last, mut count) = (0, 0);
+    for captures in pattern.captures_iter(text) {
+        let Some(all) = captures.get(0).filter(|all| !all.is_empty()) else { continue };
+        out.push_str(&text[last..all.start()]);
+        if query.regex {
+            captures.expand(with, &mut out);
+        } else {
+            out.push_str(with);
+        }
+        last = all.end();
+        count += 1;
+    }
+    out.push_str(&text[last..]);
+    (out, count)
 }
 
 #[cfg(test)]
@@ -87,7 +103,13 @@ mod tests {
         assert_eq!(matches(&pattern, "cat concat cat."), vec![0..3, 11..14]);
         let regex = Query { regex: true, ..query(r"(\d+)-(\d+)") };
         let pattern = regex.compile().unwrap().unwrap();
-        assert_eq!(replacement(&pattern, &regex, "1-2", "$2-$1"), "2-1");
+        assert_eq!(replacement(&pattern, &regex, "1-2", &(0..3), "$2-$1"), "2-1");
+        let context = Query { text: r"\Ba".into(), regex: true, ..Query::default() };
+        let anchored = context.compile().unwrap().unwrap();
+        assert_eq!(replacement(&anchored, &context, "ba", &(1..2), "X"), "X");
+        let empty = Query { text: "x*".into(), regex: true, ..Query::default() };
+        let stars = empty.compile().unwrap().unwrap();
+        assert_eq!(replace_all(&stars, &empty, "ax", "-"), (String::from("a-"), 1));
         assert!(Query { regex: true, ..query("(") }.compile().is_err());
     }
 

@@ -450,6 +450,10 @@ impl<M: Clone> Popup<M> {
     }
 
     pub fn key(&mut self, key: &Key) -> Option<Outcome<M>> {
+        self.key_with(key, false)
+    }
+
+    pub fn key_with(&mut self, key: &Key, backwards: bool) -> Option<Outcome<M>> {
         if let Some(Item::Stepper { less, more, .. }) = self.selected.and_then(|index| self.items.get(index)) {
             let step = match key {
                 Key::Named(Named::ArrowLeft) => less.clone(),
@@ -461,6 +465,10 @@ impl<M: Clone> Popup<M> {
             }
         }
         Some(match key {
+            Key::Named(Named::Tab) if backwards => {
+                self.step(false);
+                Outcome::None
+            }
             Key::Named(Named::ArrowDown | Named::Tab) => {
                 self.step(true);
                 Outcome::None

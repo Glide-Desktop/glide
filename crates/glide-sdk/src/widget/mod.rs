@@ -46,7 +46,10 @@ pub use controls::{
     CHECK, Check, SwitchSize, ZOOM_TRACK, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
     sized_spinner, sized_switch, slider, spinner, stepped_slider, switch, zoom_control,
 };
-pub use editor::{editor, markdown_settings, markdown_view, text_area};
+pub use editor::{
+    EDITOR_BAR, EditorContent, EditorRenderer, ScrolledEditor, View as EditorView, editor, editor_track,
+    markdown_settings, markdown_view, scrolled_editor, text_area,
+};
 pub use feedback::{
     Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,
     key_combo, keycap, letter_tile, noted_banner, skeleton, status_badge, task_card, task_row,
@@ -58,7 +61,8 @@ pub use focus::{Focus, RING, focusable};
 pub use form::{action_bar, boxed_input, form_row, hint_line, key_values, sheet};
 pub use inputs::{
     Validity, bare_text_area_style, field, field_with, hinted_search_input, inline_field, inline_style, input_style,
-    password_field, search_field, search_input, stepper, text_area_style, text_field, validated_field,
+    password_field, search_field, search_input, secret_input, secret_input_with, stepper, text_area_style, text_field,
+    validated_field,
 };
 pub use insight::{
     Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, labelled_switch,
@@ -67,10 +71,10 @@ pub use insight::{
 pub use inspector::{INSPECTOR_PREVIEW, INSPECTOR_WIDTH, Inspector};
 pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
 pub use layout::{
-    CHANGED_MARK, Group, HeaderCell, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem, TABLE_HEADER, TREE_INDENT, TREE_ROW,
-    action_card, action_row, card, card_style, disclosure, expander, facts, inert, list, list_row, profile_card,
-    section, select_row, sidebar, sidebar_item, status_bar, status_button, status_islands, status_strip, surface,
-    switch_row, table_header, tree_row, well,
+    CHANGED_MARK, Group, HeaderCell, ISLAND_GAP, ISLAND_TRAVEL, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem,
+    TABLE_HEADER, TREE_INDENT, TREE_ROW, action_card, action_row, card, card_style, disclosure, expander, facts, inert,
+    island_motion, list, list_row, profile_card, section, select_row, sidebar, sidebar_item, status_bar, status_button,
+    status_islands, status_strip, surface, switch_row, table_header, tree_row, well,
 };
 pub use media::{
     Art, art, captioned_picture, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider,
@@ -94,7 +98,7 @@ pub use selection::{
 };
 pub use strip::{Mark, Tab, TabStrip, tab_strip};
 
-type Measured = (String, u32, u16, u32, u64, u32);
+type Measured = (String, u32, u16, u32, u64, u32, bool);
 
 fn shape(content: &str, style: TextStyle, wrap: Option<f32>) -> (f32, usize) {
     use iced::advanced::graphics::text::{self as graphics, cosmic_text};
@@ -108,6 +112,7 @@ fn shape(content: &str, style: TextStyle, wrap: Option<f32>) -> (f32, usize) {
         style.tracking_em.to_bits(),
         glide_iced::font::revision(),
         wrap.map_or(u32::MAX, f32::to_bits),
+        style.tabular,
     );
     if let Some(shaped) = CACHE.with_borrow(|cache| cache.get(&key).copied()) {
         return shaped;
@@ -117,9 +122,9 @@ fn shape(content: &str, style: TextStyle, wrap: Option<f32>) -> (f32, usize) {
         cosmic_text::Buffer::new(system.raw(), cosmic_text::Metrics::new(style.size_px, style.line_height_px));
     buffer.set_size(system.raw(), wrap, None);
     buffer.set_wrap(system.raw(), cosmic_text::Wrap::WordOrGlyph);
-    let attributes = graphics::to_attributes(iced::Font::DEFAULT)
-        .weight(cosmic_text::Weight(style.weight))
-        .letter_spacing(style.tracking_em);
+    let font = if style.tabular { glide_iced::font::TABULAR } else { iced::Font::DEFAULT };
+    let attributes =
+        graphics::to_attributes(font).weight(cosmic_text::Weight(style.weight)).letter_spacing(style.tracking_em);
     buffer.set_text(system.raw(), content, &attributes, cosmic_text::Shaping::Advanced, None);
     buffer.shape_until_scroll(system.raw(), false);
     let shaped = (graphics::measure(&buffer).0.width.ceil(), buffer.layout_runs().count().max(1));
@@ -156,8 +161,9 @@ pub fn elide_lines(name: &str, width: f32, style: TextStyle, lines: usize) -> St
     let shown = if fits(name) {
         name.to_string()
     } else {
-        let (mut low, mut high) = (ELIDE_FLOOR, name.chars().count());
-        while high - low > 1 {
+        let count = name.chars().count();
+        let (mut low, mut high) = (ELIDE_FLOOR.min(count), count);
+        while high.saturating_sub(low) > 1 {
             let middle = low.midpoint(high);
             if fits(&ellipsize(name, middle)) {
                 low = middle;
@@ -191,8 +197,9 @@ pub fn elide(name: &str, width: f32, style: TextStyle) -> String {
     if measure(name, style) <= width {
         return name.to_string();
     }
-    let (mut low, mut high) = (ELIDE_FLOOR, name.chars().count());
-    while high - low > 1 {
+    let count = name.chars().count();
+    let (mut low, mut high) = (ELIDE_FLOOR.min(count), count);
+    while high.saturating_sub(low) > 1 {
         let middle = low.midpoint(high);
         if measure(&ellipsize(name, middle), style) <= width {
             low = middle;

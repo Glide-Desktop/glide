@@ -15,7 +15,7 @@ use iced::widget::text_editor::{Action, Binding, KeyPress, Status};
 use iced::{Point, Subscription, Task, clipboard, window};
 
 use crate::config::{self, Preferences, Session, SessionTab};
-use crate::document::{self, Decoded, Document, Encoding, Ending, LoadError};
+use crate::document::{self, Decoded, Document, Encoding, Ending, Hazard, LoadError};
 use crate::edit::{self, Case, Indent};
 use crate::find::{self, Query};
 use crate::finder::{self, Finder};
@@ -208,6 +208,8 @@ pub enum After {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialogKind {
     Unsaved { docs: Vec<u64>, then: After },
+    Revert(u64),
+    Encoding { id: u64, path: PathBuf, hazard: Hazard },
     About,
     Statistics,
     Settings,
@@ -344,6 +346,7 @@ pub struct App {
     queue: Vec<u64>,
     after: Option<After>,
     stamp: Option<SystemTime>,
+    reverting: HashSet<u64>,
 }
 
 #[must_use]
@@ -535,9 +538,47 @@ fn open_detached(program: &str, args: &[&str]) {
     });
 }
 
+fn write_session(order: u64, drafts: Option<&Path>, writes: &[(PathBuf, String)], session: &Session) -> bool {
+    static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let mut written = WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if order < *written {
+        return true;
+    }
+    *written = order;
+    let mut kept = true;
+    if let Some(folder) = drafts {
+        if !writes.is_empty() && std::fs::create_dir_all(folder).is_ok() {
+            let _ = std::fs::set_permissions(
+                folder,
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+            );
+        }
+        for (file, text) in writes {
+            if let Err(error) = glide_config::write_private(file, text.as_bytes()) {
+                eprintln!("glide-text: a draft was not saved: {error}");
+                kept = false;
+            }
+        }
+    }
+    if let Err(error) = config::save_session(session) {
+        eprintln!("glide-text: the session was not saved: {error}");
+        return false;
+    }
+    if let Some(folder) = drafts
+        && let Ok(entries) = std::fs::read_dir(folder)
+    {
+        for entry in entries.flatten() {
+            if !writes.iter().any(|(file, _)| *file == entry.path()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    kept
+}
+
 fn show_in_files(path: PathBuf) {
     let _ = std::thread::Builder::new().name("glide-text-reveal".into()).spawn(move || {
-        let uri = format!("file://{}", path.display());
+        let uri = glide_config::uri::file_uri(&path);
         let shown = zbus::blocking::Connection::session().and_then(|connection| {
             connection.call_method(
                 Some("org.freedesktop.FileManager1"),
@@ -667,6 +708,7 @@ impl App {
             queue: Vec::new(),
             after: None,
             stamp: stamp(),
+            reverting: HashSet::new(),
         };
         let mut tasks = vec![app.restore(&session)];
         for path in paths {
@@ -688,9 +730,14 @@ impl App {
         for tab in &session.tabs {
             let draft = tab.draft.as_deref().and_then(|draft| std::fs::read_to_string(draft).ok());
             let decoded = match (&draft, &tab.path) {
-                (Some(text), _) => {
-                    Some(Decoded { text: text.clone(), encoding: Encoding::Utf8, bom: false, ending: Ending::Lf })
-                }
+                (Some(text), _) => Some(Decoded {
+                    text: text.clone(),
+                    encoding: Encoding::Utf8,
+                    bom: false,
+                    ending: Ending::Lf,
+                    mixed: false,
+                    suspect: false,
+                }),
                 (None, Some(path)) => document::read(path).ok(),
                 (None, None) => None,
             };
@@ -710,10 +757,16 @@ impl App {
                 doc.encoding = disk.encoding;
                 doc.bom = disk.bom;
                 doc.ending = disk.ending;
+                doc.trust = document::Trust::of(disk.suspect);
             }
             if draft.is_some() {
                 doc.saved = u64::MAX;
                 doc.draft.clone_from(&tab.draft);
+                if tab.path.is_some()
+                    && let Some(stamp) = tab.disk
+                {
+                    doc.disk = Some(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(stamp));
+                }
             }
             doc.pinned = tab.language.as_deref().and_then(Language::from_key);
             let at =
@@ -967,7 +1020,10 @@ impl App {
             Message::Key(event, captured) => self.on_key(&event, captured),
             Message::Loaded(path, result) => self.loaded(path, result),
             Message::Reloaded(id, result) => {
-                if let (Some(index), Ok(decoded)) = (self.index_of(id), result) {
+                let reverting = self.reverting.remove(&id);
+                if let (Some(index), Ok(decoded)) = (self.index_of(id), result)
+                    && (reverting || !self.docs[index].dirty())
+                {
                     self.docs[index].reload(&decoded);
                 }
                 Task::none()
@@ -1355,7 +1411,9 @@ impl App {
                 Key::Named(Named::Escape) => self.answer(Answer::Cancel),
                 Key::Named(Named::Enter) => {
                     let answer = match self.dialog.as_ref().map(|dialog| &dialog.kind) {
-                        Some(DialogKind::Unsaved { .. }) => Answer::Save,
+                        Some(DialogKind::Unsaved { .. } | DialogKind::Encoding { hazard: Hazard::Suspect, .. }) => {
+                            Answer::Save
+                        }
                         _ => Answer::Cancel,
                     };
                     self.answer(answer)
@@ -1468,8 +1526,8 @@ impl App {
             }
             Command::Revert => {
                 let Some(doc) = self.doc() else { return Task::none() };
-                let (Some(path), id) = (doc.path.clone(), doc.id) else { return Task::none() };
-                blocking(move || document::read(&path), move |result| Message::Reloaded(id, result))
+                let (true, id) = (doc.path.is_some(), doc.id) else { return Task::none() };
+                self.show(DialogKind::Revert(id))
             }
             Command::ShowInFiles => {
                 if let Some(path) = self.doc().and_then(|doc| doc.path.clone()) {
@@ -1900,7 +1958,7 @@ impl App {
         let Ok(Some(pattern)) = find.query.compile() else { return };
         let selection = doc.selected();
         if find.found.contains(&selection) {
-            let replacement = find::replacement(&pattern, &find.query, &doc.text[selection.clone()], &find.replace);
+            let replacement = find::replacement(&pattern, &find.query, &doc.text, &selection, &find.replace);
             let at = selection.start + replacement.len();
             doc.replace(selection, &replacement, Kind::Other);
             doc.place(at..at);
@@ -2124,9 +2182,14 @@ impl App {
     fn loaded(&mut self, path: PathBuf, result: Result<Decoded, LoadError>) -> Task<Message> {
         let decoded = match result {
             Ok(decoded) => decoded,
-            Err(LoadError::Io(_)) if !path.exists() => {
-                Decoded { text: String::new(), encoding: Encoding::Utf8, bom: false, ending: Ending::Lf }
-            }
+            Err(LoadError::Io(_)) if !path.exists() => Decoded {
+                text: String::new(),
+                encoding: Encoding::Utf8,
+                bom: false,
+                ending: Ending::Lf,
+                mixed: false,
+                suspect: false,
+            },
             Err(error) => {
                 let reason = match error {
                     LoadError::Binary => Text::Binary.text(self.lang).to_string(),
@@ -2143,7 +2206,11 @@ impl App {
         config::remember(&mut self.recent, &path);
         let reveal = self.tree.as_mut().map(|tree| tree.reveal(&path)).unwrap_or_default();
         let id = self.take_id();
+        let mixed = decoded.mixed;
         let doc = Document::open(id, path, decoded);
+        if mixed {
+            self.tell(Text::MixedEndings.text(self.lang).to_string());
+        }
         let replace =
             self.doc().is_some_and(|current| current.path.is_none() && current.text.is_empty() && !current.dirty());
         if replace {
@@ -2220,8 +2287,10 @@ impl App {
 
     fn write(&mut self, id: u64, path: PathBuf) -> Task<Message> {
         let trim = self.prefs.trim_on_save;
-        let lang = self.lang;
         let Some(index) = self.index_of(id) else { return Task::none() };
+        if let Some(hazard) = self.docs[index].hazard() {
+            return self.show(DialogKind::Encoding { id, path, hazard });
+        }
         let doc = &mut self.docs[index];
         if trim && let Some(text) = edit::trim_trailing(&doc.text) {
             let caret = doc.selected().start.min(text.len());
@@ -2229,13 +2298,8 @@ impl App {
             doc.replace(whole, &text, Kind::Other);
             doc.place(caret..caret);
         }
-        if !document::fits(&doc.text, doc.encoding) {
-            doc.encoding = Encoding::Utf8;
-            self.tell(Text::Latin1Loss.text(lang).to_string());
-        }
-        let doc = &self.docs[index];
+        let generation = doc.save_point();
         let bytes = doc.bytes();
-        let generation = doc.history.generation();
         let target = path.clone();
         blocking(
             move || document::write(&target, &bytes).map_err(|error| error.to_string()),
@@ -2283,20 +2347,35 @@ impl App {
         Task::none()
     }
 
+    fn revert(&mut self, id: u64) -> Task<Message> {
+        let Some(path) = self.index_of(id).and_then(|index| self.docs[index].path.clone()) else {
+            return Task::none();
+        };
+        self.reverting.insert(id);
+        blocking(move || document::read(&path), move |result| Message::Reloaded(id, result))
+    }
+
     fn request_close(&mut self, id: u64) -> Task<Message> {
         let Some(index) = self.index_of(id) else { return Task::none() };
-        if self.docs[index].dirty() && !self.docs[index].text.is_empty() {
+        if self.docs[index].dirty() && (self.docs[index].path.is_some() || !self.docs[index].text.is_empty()) {
             return self.show(DialogKind::Unsaved { docs: vec![id], then: After::Close(id) });
         }
         self.finish(After::Close(id))
     }
 
     fn request_window_close(&mut self) -> Task<Message> {
-        if self.primary.is_some() && self.prefs.restore_session {
-            return self.finish(After::Window);
+        if self.primary.is_some()
+            && self.prefs.restore_session
+            && self.save_session().is_some_and(|saving| saving.join().unwrap_or(false))
+        {
+            return iced::exit();
         }
-        let dirty: Vec<u64> =
-            self.docs.iter().filter(|doc| doc.dirty() && !doc.text.is_empty()).map(|doc| doc.id).collect();
+        let dirty: Vec<u64> = self
+            .docs
+            .iter()
+            .filter(|doc| doc.dirty() && (doc.path.is_some() || !doc.text.is_empty()))
+            .map(|doc| doc.id)
+            .collect();
         if dirty.is_empty() {
             return self.finish(After::Window);
         }
@@ -2321,7 +2400,9 @@ impl App {
                 operation::focus(EDITOR)
             }
             After::Window => {
-                self.save_session();
+                if let Some(saving) = self.save_session() {
+                    let _ = saving.join();
+                }
                 iced::exit()
             }
         }
@@ -2330,6 +2411,18 @@ impl App {
     fn answer(&mut self, answer: Answer) -> Task<Message> {
         let Some(dialog) = self.dialog.clone() else { return Task::none() };
         self.hide_dialog();
+        if let DialogKind::Revert(id) = dialog.kind {
+            return if answer == Answer::Discard { self.revert(id) } else { Task::none() };
+        }
+        if let DialogKind::Encoding { id, path, hazard } = dialog.kind {
+            return match (answer, self.index_of(id)) {
+                (Answer::Save, Some(index)) => {
+                    self.docs[index].accept(hazard);
+                    self.write(id, path)
+                }
+                _ => self.abort_queue(),
+            };
+        }
         let DialogKind::Unsaved { docs, then } = dialog.kind else { return Task::none() };
         match answer {
             Answer::Cancel => Task::none(),
@@ -2354,14 +2447,14 @@ impl App {
         }
     }
 
-    fn save_session(&mut self) {
-        if self.primary.is_none() {
-            return;
-        }
+    fn save_session(&mut self) -> Option<std::thread::JoinHandle<bool>> {
+        static ORDER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        self.primary.as_ref()?;
         let keep = self.prefs.restore_session;
         let drafts = config::drafts();
         let mut tabs = Vec::new();
-        let mut used = Vec::new();
+        let mut writes: Vec<(PathBuf, String)> = Vec::new();
+        let mut unkept = false;
         for doc in &mut self.docs {
             if !keep {
                 break;
@@ -2370,48 +2463,49 @@ impl App {
             if doc.path.is_none() && doc.text.is_empty() {
                 continue;
             }
+            if !dirty && doc.path.as_deref().is_some_and(|path| path.to_str().is_none()) {
+                continue;
+            }
             let draft = if dirty {
-                drafts.as_ref().and_then(|folder| {
-                    std::fs::create_dir_all(folder).ok()?;
+                drafts.as_ref().map(|folder| {
                     let file = doc
                         .draft
                         .clone()
                         .unwrap_or_else(|| folder.join(format!("{}-{}.txt", std::process::id(), doc.id)));
-                    document::write(&file, doc.text.as_bytes()).ok()?;
                     doc.draft = Some(file.clone());
-                    Some(file)
+                    writes.push((file.clone(), doc.text.clone()));
+                    file
                 })
             } else {
                 None
             };
-            used.extend(draft.clone());
+            unkept |= dirty && draft.is_none();
             let cursor = doc.cursor().position;
+            let disk = doc
+                .disk
+                .filter(|_| draft.is_some())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|since| u64::try_from(since.as_nanos()).ok());
             tabs.push(SessionTab {
                 path: doc.path.clone(),
                 draft,
                 language: doc.pinned.map(|language| language.key().to_string()),
+                disk,
                 line: cursor.line,
                 column: cursor.column,
             });
         }
-        if let Some(folder) = &drafts
-            && let Ok(entries) = std::fs::read_dir(folder)
-        {
-            for entry in entries.flatten() {
-                if !used.contains(&entry.path()) {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
         let session = Session {
-            folder: self.tree.as_ref().map(|tree| tree.root.clone()).filter(|_| keep),
+            folder: self.tree.as_ref().map(|tree| tree.root.clone()).filter(|root| keep && root.to_str().is_some()),
             active: self.active.min(tabs.len().saturating_sub(1)),
             tabs,
-            recent: self.recent.clone(),
+            recent: self.recent.iter().filter(|path| path.to_str().is_some()).cloned().collect(),
         };
-        if let Err(error) = config::save_session(&session) {
-            self.tell(format!("{}: {error}", Text::SaveFailed.text(self.lang)));
-        }
+        let order = ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        std::thread::Builder::new()
+            .name("glide-text-session".into())
+            .spawn(move || write_session(order, drafts.as_deref(), &writes, &session) && !unkept)
+            .ok()
     }
 
     #[must_use]
@@ -2637,6 +2731,54 @@ mod tests {
         assert!(!app.doc().unwrap().dirty());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Нотатки\r\nрядок\r\nще");
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    fn encoding_dialog(app: &App) -> Option<Hazard> {
+        match app.dialog.as_ref().map(|dialog| &dialog.kind) {
+            Some(DialogKind::Encoding { hazard, .. }) => Some(*hazard),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn saving_a_latin1_file_with_new_characters_asks_before_converting_it() {
+        let folder = std::env::temp_dir().join(format!("glide-text-latin1-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("old.txt");
+        std::fs::write(&path, b"caf\xe9").unwrap();
+        let mut app = app();
+        let _ = app.update(Message::Loaded(path.clone(), document::read(&path)));
+        let _ = app.update(Message::Edit(Action::Move(iced::widget::text_editor::Motion::DocumentEnd)));
+        typed(&mut app, "ж");
+        let _ = app.update(Message::Command(Command::Save));
+        assert_eq!(encoding_dialog(&app), Some(Hazard::Convert));
+        assert_eq!(app.doc().unwrap().encoding, Encoding::Latin1);
+        let _ = app.update(named(Named::Enter, Code::Enter, false));
+        assert_eq!(encoding_dialog(&app), None, "Enter is not consent to an irreversible conversion");
+        assert_eq!(app.doc().unwrap().encoding, Encoding::Latin1);
+        assert_eq!(std::fs::read(&path).unwrap(), b"caf\xe9", "nothing reached the disk");
+        let _ = app.update(Message::Command(Command::Save));
+        let _ = app.update(Message::Dialog(Answer::Save));
+        assert_eq!(encoding_dialog(&app), None);
+        assert_eq!(app.doc().unwrap().encoding, Encoding::Utf8);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_conversion_stops_a_save_all_queue() {
+        let mut app = app();
+        let mut doc = Document::open(app.take_id(), PathBuf::from("/nonexistent/glide-a.txt"), {
+            document::decode(b"caf\xe9").unwrap()
+        });
+        doc.perform(Action::Edit(Edit::Insert('ж')));
+        let first = doc.id;
+        app.docs = vec![doc, Document::new(app.take_id(), 1)];
+        app.queue = vec![app.docs[1].id];
+        app.after = Some(After::Window);
+        let _ = app.save(first, false);
+        assert_eq!(encoding_dialog(&app), Some(Hazard::Convert));
+        let _ = app.update(Message::Dialog(Answer::Cancel));
+        assert!(app.queue.is_empty() && app.after.is_none());
     }
 
     #[test]

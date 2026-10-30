@@ -62,7 +62,8 @@ pub(crate) fn toggle_comment(text: &str, selection: &Range<usize>, language: Lan
             return None;
         }
         let commented = filled.iter().all(|line| line.trim_start().starts_with(marker));
-        let depth = filled.iter().map(|line| leading(line).len()).min().unwrap_or(0);
+        let depth =
+            filled.iter().map(|line| line.len() - line.trim_start_matches([' ', '\t']).len()).min().unwrap_or(0);
         let changed: Vec<String> = lines
             .iter()
             .map(|line| {
@@ -83,7 +84,9 @@ pub(crate) fn toggle_comment(text: &str, selection: &Range<usize>, language: Lan
     let (open, close) = language.block_comment()?;
     let trimmed = block.trim();
     let indent = leading(block);
-    let text = if let Some(inner) = trimmed.strip_prefix(open).and_then(|rest| rest.strip_suffix(close)) {
+    let text = if let Some(inner) =
+        trimmed.strip_prefix(open).and_then(|rest| rest.strip_suffix(close)).filter(|inner| !inner.contains(close))
+    {
         let inner = inner.strip_prefix(' ').unwrap_or(inner);
         format!("{indent}{}", inner.strip_suffix(' ').unwrap_or(inner))
     } else if trimmed.is_empty() {

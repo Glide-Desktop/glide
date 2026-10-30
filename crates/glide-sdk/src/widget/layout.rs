@@ -1,5 +1,5 @@
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4};
+use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4, SP5};
 use glide_iced::widgets;
 use glide_theme::elevation::Level;
 use glide_theme::{TextStyle, component};
@@ -433,29 +433,41 @@ pub fn status_strip<'a, M: 'a>(
         .into()
 }
 
+pub const ISLAND_GAP: f32 = SP3 + 3.0;
+pub const ISLAND_TRAVEL: f32 = SP5;
+
+#[must_use]
+pub fn island_motion(shown: f32) -> (f32, f32) {
+    let shown = shown.clamp(0.0, 1.0);
+    (glide_theme::motion::assist(f64::from(shown)) as f32, (1.0 - shown) * ISLAND_TRAVEL)
+}
+
 #[must_use]
 pub fn status_islands<'a, M: 'a>(
-    paint: &Paint, shown: f32, height: f32, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>,
+    paint: &Paint, background: Color, shown: f32, height: f32, left: Vec<Element<'a, M>>, right: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
     if shown <= 0.01 {
         return Space::new().into();
     }
-    let paint = paint.faded(shown);
+    let (alpha, drop) = island_motion(shown);
+    let paint = paint.faded(alpha);
+    let background = background.scale_alpha(alpha);
     let island = |items: Vec<Element<'a, M>>| -> Element<'a, M> {
         let content = iced::widget::Row::with_children(items).spacing(SP2).align_y(Alignment::Center);
-        let card = container(content)
-            .padding(Padding::from([0.0, SP1]))
-            .height(height)
-            .align_y(Alignment::Center)
-            .style(move |_| style::popover(&paint));
+        let card =
+            container(content).padding(Padding::from([0.0, SP1])).height(height).align_y(Alignment::Center).style(
+                move |_| container::Style { background: Some(Background::Color(background)), ..style::popover(&paint) },
+            );
         widgets::surface(card, &paint, Level::El2, R3)
     };
-    let rest = SP3 - (1.0 - shown) * SP2;
-    container(row![island(left), Space::new().width(Fill), island(right)].align_y(Alignment::Center))
+    let islands = row![island(left), Space::new().width(Fill), island(right)].align_y(Alignment::Center);
+    let islands = animate(1.0, Speed::EXPAND, move |_| islands).offset(move |_| Vector::new(0.0, drop));
+    container(islands)
         .width(Fill)
         .height(Fill)
         .align_y(iced::alignment::Vertical::Bottom)
-        .padding(Padding { left: SP3, right: SP3, bottom: rest, top: 0.0 })
+        .padding(Padding { left: SP3, right: SP3, bottom: ISLAND_GAP, top: 0.0 })
+        .clip(true)
         .into()
 }
 
@@ -965,5 +977,16 @@ mod tests {
         assert!((ROW_HEIGHT - 44.0).abs() < f32::EPSILON);
         assert!((ROW_HEIGHT - 2.0 * ROW_PAD_Y - component::CONTROL).abs() < f32::EPSILON);
         assert!((R3 - SP1 - R2).abs() < f32::EPSILON, "rows sit SP1 inside the card, so R2 follows R3");
+    }
+
+    #[test]
+    fn status_islands_travel_as_scene_content_and_opacity_only_assists() {
+        let (alpha, lift) = island_motion(0.0);
+        assert_eq!(alpha, 0.0);
+        assert!(lift >= 24.0, "scene content travels at least 24 px");
+        assert!((island_motion(0.4).0 - 1.0).abs() < 1e-6, "opaque once 40 % of the travel is done");
+        assert_eq!(island_motion(1.0), (1.0, 0.0));
+        let (half_alpha, half_lift) = island_motion(0.2);
+        assert!(half_alpha < 1.0 && half_lift > 0.0);
     }
 }

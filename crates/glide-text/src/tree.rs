@@ -93,16 +93,24 @@ impl Tree {
 
     pub fn fill(&mut self, folder: &Path, entries: Vec<Entry>) {
         if folder == self.root {
-            let expanded: Vec<PathBuf> = self.expanded();
-            self.nodes =
-                entries.into_iter().map(|entry| Node { entry, depth: 0, expanded: false, loading: false }).collect();
-            self.loaded = true;
-            for path in expanded {
-                if let Some(index) = self.position(&path) {
-                    self.nodes[index].expanded = true;
-                    self.nodes[index].loading = true;
+            let previous = std::mem::take(&mut self.nodes);
+            let mut nodes = Vec::with_capacity(previous.len().max(entries.len()));
+            for entry in entries {
+                let at = previous.iter().position(|node| node.depth == 0 && node.entry.path == entry.path);
+                match at.filter(|&at| previous[at].expanded) {
+                    Some(at) => {
+                        let end = previous[at + 1..]
+                            .iter()
+                            .position(|node| node.depth == 0)
+                            .map_or(previous.len(), |offset| at + 1 + offset);
+                        nodes.push(Node { entry, depth: 0, expanded: true, loading: true });
+                        nodes.extend(previous[at + 1..end].iter().cloned());
+                    }
+                    None => nodes.push(Node { entry, depth: 0, expanded: false, loading: false }),
                 }
             }
+            self.nodes = nodes;
+            self.loaded = true;
             return;
         }
         let Some(index) = self.position(folder) else { return };

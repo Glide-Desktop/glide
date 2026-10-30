@@ -194,7 +194,7 @@ impl<'r> Painter<'r> {
         if trimmed > 0 {
             self.run.truncate(trimmed);
             let content = std::mem::take(&mut self.run);
-            let span = Span { width: trimmed, ..self.run_at };
+            let span = Span { width: content.chars().count(), ..self.run_at };
             let (color, font) = self.run_style;
             self.text(content, span, color, font, true);
         }
@@ -205,7 +205,7 @@ impl<'r> Painter<'r> {
         let style = (color, font);
         let continues = !self.run.is_empty()
             && self.run_at.row == at.row
-            && self.run_at.column + self.run.len() == at.column
+            && self.run_at.column + self.run.chars().count() == at.column
             && self.run_style == style;
         if !continues {
             self.flush();

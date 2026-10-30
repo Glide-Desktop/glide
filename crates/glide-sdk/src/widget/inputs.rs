@@ -164,11 +164,29 @@ pub fn hinted_search_input<'a, M: Clone + 'a>(
 pub fn password_field<'a, M: Clone + 'a>(
     paint: &Paint, placeholder: &str, value: &str, revealed: bool, on_input: impl Fn(String) -> M + 'a, on_reveal: M,
 ) -> Element<'a, M> {
-    let input = styled(paint, text_input(placeholder, value).secure(!revealed).on_input(on_input));
+    secret_input(paint, text_input(placeholder, value).on_input(on_input), revealed, on_reveal, Validity::Neutral)
+}
+
+#[must_use]
+pub fn secret_input<'a, M: Clone + 'a>(
+    paint: &Paint, input: text_input::TextInput<'a, M>, revealed: bool, on_reveal: M, validity: Validity,
+) -> Element<'a, M> {
+    secret_input_with(paint, input, revealed, on_reveal, validity, Vec::new())
+}
+
+#[must_use]
+pub fn secret_input_with<'a, M: Clone + 'a>(
+    paint: &Paint, input: text_input::TextInput<'a, M>, revealed: bool, on_reveal: M, validity: Validity,
+    trailing: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    let input = styled(paint, input.secure(!revealed));
     let glyph = if revealed { Icon::EyeOff } else { Icon::Eye };
-    let content =
+    let mut content =
         row![input, trailing_sized(paint, glyph, 16.0, 28.0, on_reveal)].spacing(SP2).align_y(Alignment::Center);
-    well(paint, content, Validity::Neutral)
+    for element in trailing {
+        content = content.push(element);
+    }
+    well(paint, content, validity)
 }
 
 #[must_use]

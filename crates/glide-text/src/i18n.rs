@@ -128,7 +128,12 @@ glide_sdk::catalogue! {
     Reload => "Reload", "Перезавантажити";
     KeepMine => "Keep Mine", "Лишити мою версію";
     DeletedOnDisk => "The file was deleted or moved.", "Файл видалено або переміщено.";
-    Latin1Loss => "The text doesn’t fit ISO-8859-1, so it was saved as UTF-8", "Текст не вміщається в ISO-8859-1, тому збережено як UTF-8";
+    ConvertTitle => "Save as UTF-8?", "Зберегти як UTF-8?";
+    ConvertBody => "This file was opened as ISO-8859-1, and the text now has characters that encoding can’t hold. Saving as UTF-8 rewrites every non-ASCII character, so bytes that were never really ISO-8859-1 change for good.", "Цей файл відкрито як ISO-8859-1, а в тексті тепер є символи, яких це кодування не вміщає. Збереження в UTF-8 перепише кожен символ поза ASCII, тож байти, які насправді не були ISO-8859-1, зміняться назавжди.";
+    ConvertAction => "Save as UTF-8", "Зберегти як UTF-8";
+    SuspectTitle => "Keep ISO-8859-1?", "Лишити ISO-8859-1?";
+    SuspectBody => "This file is almost valid UTF-8 but has a few broken bytes, so it was opened as ISO-8859-1 and non-Latin text shows as odd characters. Saving keeps ISO-8859-1, so the bytes you didn’t edit stay exactly as they were.", "Цей файл майже коректний UTF-8, але має кілька пошкоджених байтів, тому його відкрито як ISO-8859-1, і нелатинський текст показано дивними символами. Збереження лишить ISO-8859-1, тож байти, яких ви не редагували, не зміняться.";
+    SuspectAction => "Save as ISO-8859-1", "Зберегти як ISO-8859-1";
     ChooserFailed => "Couldn’t open the file chooser", "Не вдалося відкрити вікно вибору файлів";
     NoFolder => "Open a folder to see its files here.", "Відкрийте теку, щоб бачити її файли тут.";
     OpenFolderButton => "Open Folder", "Відкрити теку";
@@ -145,6 +150,10 @@ glide_sdk::catalogue! {
     Minimize => "Minimize", "Згорнути";
     EmptyTitle => "No open documents", "Немає відкритих документів";
     EmptyBody => "Create a new document or open a file or folder.", "Створіть новий документ або відкрийте файл чи теку.";
+    MixedEndings => "This file mixes line endings; saving makes them all the same", "У файлі змішані закінчення рядків; збереження зробить їх однаковими";
+    RevertTitle => "Revert to the saved version?", "Повернути збережену версію?";
+    RevertBody => "Changes made since the last save will be lost.", "Зміни після останнього збереження буде втрачено.";
+    RevertAction => "Revert", "Повернути";
 }
 
 #[cfg(test)]

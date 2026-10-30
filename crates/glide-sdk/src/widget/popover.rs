@@ -385,9 +385,13 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
                 state.highlight = None;
                 shell.capture_event();
             }
-            Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) if state.open => {
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) if state.open => {
                 match key {
                     Key::Named(Named::Escape) => state.open = false,
+                    Key::Named(Named::Tab) if self.rows > 0 && modifiers.shift() => {
+                        state.highlight =
+                            Some(state.highlight.map_or(self.rows - 1, |at| (at + self.rows - 1) % self.rows));
+                    }
                     Key::Named(Named::ArrowDown | Named::Tab) if self.rows > 0 => {
                         state.highlight = Some(state.highlight.map_or(0, |at| (at + 1) % self.rows));
                     }
@@ -396,7 +400,7 @@ impl<M> Widget<M, Theme, Renderer> for Popup<'_, M> {
                             Some(state.highlight.map_or(self.rows - 1, |at| (at + self.rows - 1) % self.rows));
                     }
                     Key::Named(Named::Enter | Named::Space) => {
-                        if let (Some(at), Some(pick)) = (state.highlight, &self.on_pick) {
+                        if let (Some(at), Some(pick)) = (state.highlight.filter(|at| *at < self.rows), &self.on_pick) {
                             shell.publish(pick(at));
                             state.open = false;
                         }

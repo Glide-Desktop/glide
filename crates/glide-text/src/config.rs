@@ -47,10 +47,23 @@ impl Default for Preferences {
 impl Preferences {
     #[must_use]
     pub fn parse(text: &str) -> Self {
-        let mut prefs: Self = toml::from_str(text).unwrap_or_default();
+        let mut prefs: Self = toml::from_str(text).unwrap_or_else(|_| Self::lenient(text));
         prefs.font_size = prefs.font_size.clamp(6.0, 72.0);
         prefs.tab_width = prefs.tab_width.clamp(1, 16);
         prefs
+    }
+
+    fn lenient(text: &str) -> Self {
+        let Ok(table) = text.parse::<toml::Table>() else { return Self::default() };
+        let valid: toml::Table = table
+            .into_iter()
+            .filter(|(key, value)| {
+                let mut single = toml::Table::new();
+                single.insert(key.clone(), value.clone());
+                toml::Value::Table(single).try_into::<Self>().is_ok()
+            })
+            .collect();
+        toml::Value::Table(valid).try_into().unwrap_or_default()
     }
 }
 
@@ -113,6 +126,8 @@ pub struct SessionTab {
     pub draft: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk: Option<u64>,
     pub line: usize,
     pub column: usize,
 }
@@ -164,6 +179,23 @@ mod tests {
         assert_eq!(prefs.tab_width, 1);
         assert!(!prefs.sidebar && !prefs.spaces);
         assert!(prefs.monospace, "unset keys keep their defaults");
+    }
+
+    #[test]
+    fn commenting_lines_led_by_a_wide_space_does_not_split_it() {
+        let text = "\u{a0}x\n y";
+        let change = crate::edit::toggle_comment(text, &(0..text.len()), crate::syntax::Language::Rust)
+            .expect("a comment is added");
+        assert_eq!(change.text, "// \u{a0}x\n//  y");
+        assert_eq!(crate::document::position("кіт€", 5).column, 4, "an offset inside a character steps back");
+    }
+
+    #[test]
+    fn one_bad_value_keeps_the_other_preferences() {
+        let prefs = Preferences::parse("font-size = \"big\"\ntab-width = 2\nsidebar = false\n");
+        assert_eq!(prefs.tab_width, 2);
+        assert!(!prefs.sidebar);
+        assert_eq!(prefs.font_size, Preferences::default().font_size);
     }
 
     #[test]
