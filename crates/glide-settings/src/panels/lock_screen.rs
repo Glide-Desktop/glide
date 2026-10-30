@@ -108,6 +108,7 @@ pub enum Msg {
     Blank(Choice),
     LockAfter(Choice),
     Vaults(bool),
+    VaultsSaved,
     Open(Panel),
 }
 
@@ -169,11 +170,14 @@ impl Pane for Page {
                 if let Some(system) = &mut self.system {
                     system.vaults = Some(on);
                 }
-                let mut prefs = Prefs::load();
-                prefs.lock_with_screen = on;
-                prefs.save();
+                return Task::perform(
+                    blocking(move || {
+                        let _ = Prefs::update(|prefs| prefs.lock_with_screen = on);
+                    }),
+                    |_| Msg::VaultsSaved,
+                );
             }
-            Msg::Open(_) => {}
+            Msg::VaultsSaved | Msg::Open(_) => {}
         }
         Task::none()
     }

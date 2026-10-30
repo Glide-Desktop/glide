@@ -63,6 +63,7 @@ pub enum Message {
     CopyText(Copied, Result<Response, String>),
     ClipboardCheck(u64),
     ShellCopied(u64, bool),
+    ToggleSecrets,
     ClipboardRead(u64, Option<String>),
     Tick,
     CodeLoaded(ItemRef, Result<Response, String>),
@@ -79,7 +80,7 @@ pub enum Message {
     MoreMenu,
     Restore,
     AskPurge,
-    Purge,
+    Purge(ItemRef),
     Done(Result<Response, String>),
     Generator(generator::Event),
     Sends(sends::Event),
@@ -196,6 +197,12 @@ pub async fn load() -> Result<Snapshot, String> {
         snapshot.conflicts = list;
     }
     Ok(snapshot)
+}
+
+pub(crate) fn open_detached(link: String) {
+    let _ = std::thread::Builder::new().name("glide-passwords-open".into()).spawn(move || {
+        let _ = glide_sdk::system::open(&link, crate::APP_ID);
+    });
 }
 
 fn copy_here(text: String, token: u64, clears: u32) -> Task<Message> {
@@ -361,6 +368,7 @@ impl App {
         self.selected = Some(item.clone());
         self.revealed = None;
         self.code = None;
+        self.detail = self.detail.take().filter(|detail| detail.summary.item == item);
         let detail = ask(Request::Item { item: item.clone() }, {
             let item = item.clone();
             move |result| Message::Detail(item.clone(), result)
@@ -395,7 +403,7 @@ impl App {
         Task::none()
     }
 
-    fn copy(&mut self, what: Copied, secret: Hidden, shell: &mut Shell<Message>) -> Task<Message> {
+    pub(crate) fn copy(&mut self, what: Copied, secret: Hidden, shell: &mut Shell<Message>) -> Task<Message> {
         self.clipboard += 1;
         let token = self.clipboard;
         let text = secret.expose().to_string();
@@ -447,13 +455,22 @@ impl App {
                 let password = read(SecretKind::Password).await?;
                 let totp = read(SecretKind::Totp).await?;
                 let mut hidden = Vec::new();
-                for field in detail.fields.iter().filter(|field| field.hidden) {
-                    hidden.push((field.name.clone(), read(SecretKind::Field(field.name.clone())).await?));
+                for (index, field) in detail.fields.iter().enumerate() {
+                    if field.hidden {
+                        hidden.push((index, read(SecretKind::FieldAt(index)).await?));
+                    }
                 }
                 Some(Box::new(Editor::from_detail(&detail, &password, &totp, &hidden)))
             },
             |editor| editor.map_or(Message::EditorUnavailable, Message::EditorLoaded),
         )
+    }
+
+    pub(crate) fn change_prefs(&mut self, change: impl Fn(&mut Prefs)) {
+        match Prefs::update(&change) {
+            Ok(fresh) => self.prefs = fresh,
+            Err(_) => change(&mut self.prefs),
+        }
     }
 
     pub fn check_leaks(&self) -> Task<Message> {
@@ -523,8 +540,8 @@ impl App {
                 self.keep_selection()
             }
             Message::ToggleSort => {
-                self.prefs.sort_by_name = !self.prefs.sort_by_name;
-                self.prefs.save();
+                let by_name = !self.prefs.sort_by_name;
+                self.change_prefs(move |prefs| prefs.sort_by_name = by_name);
                 Task::none()
             }
             Message::Select(item) => {
@@ -579,12 +596,22 @@ impl App {
                 };
                 match what {
                     Copied::Username => {
-                        let name =
-                            self.detail.as_ref().map(|detail| detail.summary.username.clone()).unwrap_or_default();
+                        let name = self
+                            .detail
+                            .as_ref()
+                            .filter(|detail| detail.summary.item == item)
+                            .map(|detail| detail.summary.username.clone())
+                            .unwrap_or_default();
+                        if name.is_empty() {
+                            return Task::none();
+                        }
                         self.copy(what, Hidden::new(name), shell)
                     }
                     Copied::Code => {
                         let code = self.code.as_ref().map(|code| code.code.clone()).unwrap_or_default();
+                        if code.is_empty() {
+                            return Task::none();
+                        }
                         self.copy(what, Hidden::new(code), shell)
                     }
                     Copied::Password | Copied::CardNumber | Copied::CardCode | Copied::Field(_) => {
@@ -599,7 +626,7 @@ impl App {
                                 if !field.hidden {
                                     return self.copy(what, Hidden::new(field.value.clone()), shell);
                                 }
-                                SecretKind::Field(field.name.clone())
+                                SecretKind::FieldAt(index)
                             }
                             _ => SecretKind::Password,
                         };
@@ -617,10 +644,9 @@ impl App {
                 if placed || token != self.clipboard {
                     return Task::none();
                 }
-                let Some(text) = self.copied.as_ref().map(|secret| secret.expose().to_string()) else {
-                    return Task::none();
-                };
-                copy_here(text, token, self.prefs.clear_after)
+                self.copied = None;
+                shell.toast(self.t(Key::CopyRefused));
+                Task::none()
             }
             Message::ClipboardCheck(token) => {
                 if token != self.clipboard {
@@ -664,7 +690,15 @@ impl App {
                 let kind = self.detail.as_ref().map_or(ItemKind::Login, |detail| detail.summary.kind);
                 self.open_editor(item.as_ref(), kind)
             }
+            Message::ToggleSecrets => {
+                crate::view::SECRETS_SHOWN.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+                Task::none()
+            }
             Message::EditorLoaded(editor) => {
+                if editor.item.is_some() && editor.item != self.selected {
+                    self.generate_on_edit = false;
+                    return Task::none();
+                }
                 self.editor = Some(*editor);
                 self.generator = std::mem::take(&mut self.generate_on_edit).then(Generating::fresh);
                 Task::none()
@@ -711,24 +745,28 @@ impl App {
                 None => Task::none(),
             },
             Message::AskPurge => {
-                let name = self.detail.as_ref().map(|detail| detail.summary.name.clone()).unwrap_or_default();
+                let Some(detail) =
+                    self.detail.as_ref().filter(|detail| self.selected.as_ref() == Some(&detail.summary.item))
+                else {
+                    return Task::none();
+                };
+                let item = detail.summary.item.clone();
                 shell.dialog(
                     glide_sdk::Dialog::new(
-                        self.t(Key::DeleteForeverTitle).replace("{name}", &name),
+                        self.t(Key::DeleteForeverTitle).replace("{name}", &detail.summary.name),
                         self.t(Key::DeleteForeverBody),
                     )
-                    .choice(self.t(Key::DeleteForever), Tone::Danger, Message::Purge)
+                    .choice(self.t(Key::DeleteForever), Tone::Danger, Message::Purge(item))
                     .cancel(self.t(Key::Cancel)),
                 );
                 Task::none()
             }
-            Message::Purge => match self.selected.clone() {
-                Some(item) => {
+            Message::Purge(item) => {
+                if self.selected.as_ref() == Some(&item) {
                     self.selected = None;
-                    ask(Request::Purge { item }, Message::Done)
                 }
-                None => Task::none(),
-            },
+                ask(Request::Purge { item }, Message::Done)
+            }
             Message::Generator(event) => generator::update(self, event, shell),
             Message::Sends(event) => sends::update(self, event, shell),
             Message::Wizard(event) => wizard::update(self, event, shell),
@@ -748,6 +786,7 @@ impl App {
                 Task::none()
             }
             Message::OpenSettings => {
+                self.prefs = Prefs::load();
                 self.settings = true;
                 Task::none()
             }
@@ -776,14 +815,14 @@ impl App {
                 self.section = Section::All;
                 let select = self.select(item);
                 if let Some(site) = site {
-                    let _ = glide_sdk::system::open(&with_scheme(&site), crate::APP_ID);
+                    open_detached(with_scheme(&site));
                 }
                 self.edit_when_loaded = true;
                 self.generate_on_edit = true;
                 select
             }
             Message::OpenLink(link) => {
-                let _ = glide_sdk::system::open(&with_scheme(&link), crate::APP_ID);
+                open_detached(with_scheme(&link));
                 Task::none()
             }
             Message::Quit => {
@@ -967,6 +1006,42 @@ mod tests {
         assert_eq!(item_argument(args(&["--item", "nothing"])), None);
         assert_eq!(item_argument(args(&["--item"])), None);
         assert_eq!(item_argument(args(&[])), None);
+    }
+
+    #[test]
+    fn delete_forever_purges_the_item_the_dialog_named_even_after_the_selection_moved() {
+        use glide_sdk::app::Event;
+        use glide_sdk::overlay::Answer;
+
+        let mut harness =
+            glide_sdk::Harness::<App>::new(crate::APP_ID, glide_sdk::Look::default(), iced::Size::new(1100.0, 720.0));
+        let named = ItemRef::new(LOCAL, "named");
+        let other = ItemRef::new(LOCAL, "other");
+        let detail: Detail = serde_json::from_value(serde_json::json!({
+            "summary": {
+                "item": { "vault": LOCAL, "id": "named" }, "kind": "login", "name": "Named", "username": "",
+                "folder": "", "sites": [], "apps": [], "has_password": false, "has_totp": false,
+                "has_passkey": false, "favorite": false, "created": 0, "modified": 0, "deleted": true,
+                "strength": 0, "reused": 0
+            },
+            "notes": "", "sites": [], "apps": [], "fields": [], "passkeys": [], "history": 0, "card": null,
+            "password_length": 0
+        }))
+        .unwrap();
+
+        harness.message(Message::Select(named.clone()));
+        harness.message(Message::Detail(named, Ok(Response::Item { detail: Box::new(detail) })));
+        harness.message(Message::AskPurge);
+        assert!(harness.shell().has_dialog());
+
+        harness.message(Message::Select(other.clone()));
+        harness.send(Event::Dialog(Answer::Chose(0)));
+        assert!(!harness.shell().has_dialog());
+        assert_eq!(
+            harness.app().selected,
+            Some(other),
+            "the purge was for the named item, so the moved selection stays"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ use iced::{Alignment, Element, Fill, Length, Padding, Task};
 use crate::app::{App, Message, ask};
 use crate::i18n::{Key, plural};
 use crate::icons::Icon;
-use crate::prefs::{CLEAR_CHOICES, ClickAction, LOCK_CHOICES};
+use crate::prefs::{CLEAR_CHOICES, ClickAction, LOCK_CHOICES, Prefs};
 use crate::view::{Labeled, labeled};
 
 #[derive(Debug, Clone)]
@@ -43,51 +43,61 @@ pub struct PasswordChange {
     pub repeat: String,
 }
 
+type Change = Box<dyn Fn(&mut Prefs)>;
+
+fn preference(event: &Event) -> Option<Change> {
+    Some(match *event {
+        Event::Click(action) => Box::new(move |prefs: &mut Prefs| prefs.click = action),
+        Event::Offer(on) => Box::new(move |prefs: &mut Prefs| prefs.offer = on),
+        Event::TypeFallback(on) => Box::new(move |prefs: &mut Prefs| prefs.type_fallback = on),
+        Event::ClearAfter(seconds) => Box::new(move |prefs: &mut Prefs| prefs.clear_after = seconds),
+        Event::PrivateClipboard(on) => Box::new(move |prefs: &mut Prefs| prefs.private_clipboard = on),
+        Event::LockWithScreen(on) => Box::new(move |prefs: &mut Prefs| prefs.lock_with_screen = on),
+        Event::LockAfter(minutes) => Box::new(move |prefs: &mut Prefs| prefs.lock_after = minutes),
+        Event::SecretService(on) => Box::new(move |prefs: &mut Prefs| prefs.secret_service = on),
+        Event::LeakCheck(on) => Box::new(move |prefs: &mut Prefs| prefs.leak_check = on),
+        _ => return None,
+    })
+}
+
 pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
-    let mut save = true;
+    let change = preference(&event);
     let leak_check_turned_on = matches!(event, Event::LeakCheck(true)) && !app.prefs.leak_check;
     let secret_service = match event {
         Event::SecretService(on) if on != app.prefs.secret_service => Some(on),
         _ => None,
     };
     match event {
-        Event::Click(action) => app.prefs.click = action,
-        Event::Offer(on) => app.prefs.offer = on,
-        Event::TypeFallback(on) => app.prefs.type_fallback = on,
-        Event::ClearAfter(seconds) => app.prefs.clear_after = seconds,
-        Event::PrivateClipboard(on) => app.prefs.private_clipboard = on,
-        Event::LockWithScreen(on) => app.prefs.lock_with_screen = on,
-        Event::LockAfter(minutes) => app.prefs.lock_after = minutes,
-        Event::SecretService(on) => app.prefs.secret_service = on,
-        Event::LeakCheck(on) => app.prefs.leak_check = on,
+        Event::Click(_)
+        | Event::Offer(_)
+        | Event::TypeFallback(_)
+        | Event::ClearAfter(_)
+        | Event::PrivateClipboard(_)
+        | Event::LockWithScreen(_)
+        | Event::LockAfter(_)
+        | Event::SecretService(_)
+        | Event::LeakCheck(_) => {}
         Event::Default(vault) => return ask(Request::SetDefault { vault }, Message::Done),
-        Event::VaultMenu(vault) => {
-            shell.context_menu(vault_menu(app, vault));
-            save = false;
-        }
+        Event::VaultMenu(vault) => shell.context_menu(vault_menu(app, vault)),
         Event::Sync(vault) => return ask(Request::Sync { vault: Some(vault) }, Message::Done),
         Event::Remove(vault) => return ask(Request::RemoveVault { vault }, Message::Done),
         Event::ChangePassword(vault) => {
             app.password_change = Some(PasswordChange { vault, ..PasswordChange::default() });
-            save = false;
         }
         Event::Old(value) => {
             if let Some(change) = app.password_change.as_mut() {
                 change.old = value;
             }
-            save = false;
         }
         Event::New(value) => {
             if let Some(change) = app.password_change.as_mut() {
                 change.new = value;
             }
-            save = false;
         }
         Event::Repeat(value) => {
             if let Some(change) = app.password_change.as_mut() {
                 change.repeat = value;
             }
-            save = false;
         }
         Event::SubmitPassword => {
             let Some(change) = app.password_change.take() else {
@@ -107,17 +117,11 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
                 Message::Done,
             );
         }
-        Event::CancelPassword => {
-            app.password_change = None;
-            save = false;
-        }
-        Event::Soon => {
-            shell.toast(app.t(Key::Soon));
-            save = false;
-        }
+        Event::CancelPassword => app.password_change = None,
+        Event::Soon => shell.toast(app.t(Key::Soon)),
     }
-    if save {
-        app.prefs.save();
+    if let Some(change) = change {
+        app.change_prefs(change);
         if leak_check_turned_on {
             return app.check_leaks();
         }

@@ -78,8 +78,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::Copy => {
             let value = state.value.clone();
             remember(app, &value);
-            shell.toast(app.t(Key::CopiedPassword));
-            return iced::clipboard::write(value);
+            return app.copy(crate::app::Copied::Password, glide_ipc::keychain::Hidden::new(value), shell);
         }
         Event::Use => {
             let value = state.value.clone();
@@ -320,9 +319,7 @@ impl Source for System {
         let zone = u32::MAX - u32::MAX % bound;
         loop {
             let mut bytes = [0; 4];
-            if getrandom::fill(&mut bytes).is_err() {
-                continue;
-            }
+            getrandom::fill(&mut bytes).expect("the system random source refuses to give randomness");
             let value = u32::from_le_bytes(bytes);
             if value < zone {
                 return value % bound;

@@ -30,6 +30,7 @@ pub fn decode(text: &str) -> Vec<u8> {
         let escaped = (bytes[index] == b'%')
             .then(|| text.get(index + 1..index + 3))
             .flatten()
+            .filter(|hex| hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .and_then(|hex| u8::from_str_radix(hex, 16).ok());
         if let Some(byte) = escaped {
             out.push(byte);

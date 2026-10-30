@@ -187,7 +187,7 @@ impl Daemon {
         (self.clock)()
     }
 
-    pub fn adopt_bitwarden(&mut self, account: Bitwarden) -> Response {
+    pub fn adopt_bitwarden(&mut self, mut account: Bitwarden) -> Response {
         let vault = account.vault().id;
         if let Some(existing) = self.providers.iter().position(|provider| {
             let known = provider.vault();
@@ -195,6 +195,9 @@ impl Daemon {
                 && known.account == account.account().email
                 && known.server == account.vault().server
         }) {
+            if let Some(offline) = self.providers[existing].take_offline() {
+                account.inherit_offline(offline);
+            }
             let _ = self.providers[existing].forget();
             self.providers.remove(existing);
         }
@@ -203,7 +206,14 @@ impl Daemon {
     }
 
     fn add_keepass(&mut self, path: &str, password: &Hidden, name: &str) -> Response {
-        let path = PathBuf::from(path.trim());
+        let path = if path.starts_with("file://") {
+            let Some(path) = glide_config::uri::local_path(path) else {
+                return Response::Error { message: "the KeePass file is not on this computer".into() };
+            };
+            path
+        } else {
+            PathBuf::from(path.trim())
+        };
         if !path.is_absolute() {
             return Response::Error { message: "the KeePass file needs a full path".into() };
         }
@@ -334,9 +344,11 @@ impl Daemon {
         if old.is_empty() || !self.app_secrets_unlocked() {
             return;
         }
+        let mut skipped: Vec<u64> = Vec::new();
         let moved = self.edit_app_secrets(&mut |items, next| {
             for item in &old {
                 if items.iter().any(|known| known.attributes == item.attributes) {
+                    skipped.push(item.id);
                     continue;
                 }
                 *next += 1;
@@ -345,8 +357,15 @@ impl Daemon {
         });
         match moved {
             Ok(()) => {
-                let cleared =
-                    self.provider_mut(LOCAL).and_then(|local| local.edit_app_secrets(&mut |items, _| items.clear()));
+                if !skipped.is_empty() {
+                    eprintln!(
+                        "glide-keychain: {} program secrets stay in the local vault, the keyring holds others with the same attributes",
+                        skipped.len()
+                    );
+                }
+                let cleared = self.provider_mut(LOCAL).and_then(|local| {
+                    local.edit_app_secrets(&mut |items, _| items.retain(|item| skipped.contains(&item.id)))
+                });
                 if let Err(fault) = cleared {
                     eprintln!("glide-keychain: program secrets were copied but stay in the local vault too ({fault})");
                 }
@@ -554,6 +573,9 @@ impl Daemon {
                 .find(|field| &field.name == name)
                 .map(|field| text(&field.value))
                 .ok_or(Fault::NotFound)?,
+            SecretKind::FieldAt(index) => {
+                record.fields.get(*index).map(|field| text(&field.value)).ok_or(Fault::NotFound)?
+            }
             SecretKind::CardNumber => record.card.as_ref().map(|card| text(&card.number)).ok_or(Fault::NotFound)?,
             SecretKind::CardCode => record.card.as_ref().map(|card| text(&card.code)).ok_or(Fault::NotFound)?,
         };
@@ -1179,6 +1201,30 @@ mod tests {
         assert!(matches!(daemon.handle(Request::Save { draft: Box::new(edit) }), Response::Saved { .. }));
         assert_eq!(secret_of(&mut daemon, &item, SecretKind::Field("PIN".into())), "4321");
         assert_eq!(secret_of(&mut daemon, &item, SecretKind::CardNumber), "4111111111111111");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn hidden_fields_with_the_same_name_are_read_by_position() {
+        let (mut daemon, path) = daemon("same-name-fields");
+        let draft = Draft {
+            vault: LOCAL.into(),
+            kind: ItemKind::Login,
+            name: "Bank".into(),
+            fields: vec![
+                FieldDraft { name: "Security answer".into(), value: hidden("Kyiv"), hidden: true },
+                FieldDraft { name: "Security answer".into(), value: hidden("Rex"), hidden: true },
+            ],
+            ..Draft::default()
+        };
+        let Response::Saved { item } = daemon.handle(Request::Save { draft: Box::new(draft) }) else { panic!() };
+        assert_eq!(secret_of(&mut daemon, &item, SecretKind::FieldAt(0)), "Kyiv");
+        assert_eq!(secret_of(&mut daemon, &item, SecretKind::FieldAt(1)), "Rex");
+        assert_eq!(secret_of(&mut daemon, &item, SecretKind::Field("Security answer".into())), "Kyiv");
+        assert!(matches!(
+            daemon.handle(Request::Secret { item: item.clone(), secret: SecretKind::FieldAt(2) }),
+            Response::Error { .. }
+        ));
         cleanup(&path);
     }
 

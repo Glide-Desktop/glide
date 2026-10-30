@@ -774,7 +774,16 @@ pub fn dialog_frame<'a>(
 pub fn secret_input<'a>(
     paint: &Paint, placeholder: &'a str, value: &'a str, on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
-    ui::field(paint, text_input(placeholder, value).secure(true).on_input(on_input))
+    let shown = SECRETS_SHOWN.load(std::sync::atomic::Ordering::Relaxed);
+    ui::secret_input(
+        paint,
+        text_input(placeholder, value).on_input(on_input),
+        shown,
+        Message::ToggleSecrets,
+        ui::Validity::Neutral,
+    )
 }
+
+pub static SECRETS_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub const DIALOG_RADIUS: f32 = R3;

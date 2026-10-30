@@ -53,6 +53,8 @@ pub struct SendForm {
     pub copied_at: Option<u64>,
     pub editing: Option<String>,
     pub had_password: bool,
+    pub unlimited: bool,
+    pub kept_hours: Option<u32>,
 }
 
 const COPIED_HOLD: u64 = 2;
@@ -77,6 +79,8 @@ impl Default for SendForm {
             copied_at: None,
             editing: None,
             had_password: false,
+            unlimited: false,
+            kept_hours: None,
         }
     }
 }
@@ -87,8 +91,8 @@ impl SendForm {
             vault: if self.vault.is_empty() { fallback } else { self.vault.clone() },
             name: self.name.trim().to_string(),
             text: Hidden::new(self.text.text().trim_end().to_string()),
-            lifetime_hours: self.lifetime.hours(),
-            max_access: Some(self.opens),
+            lifetime_hours: self.kept_hours.filter(|_| self.editing.is_some()).unwrap_or_else(|| self.lifetime.hours()),
+            max_access: (!(self.unlimited && self.editing.is_some())).then_some(self.opens),
             password: (self.protect && !self.password.is_empty()).then(|| Hidden::new(self.password.clone())),
             hide_text: self.hide_text,
             hide_email: self.hide_email,
@@ -103,7 +107,10 @@ impl SendForm {
         self.name.clone_from(&send.name);
         self.text = text_editor::Content::with_text(text);
         self.lifetime = lifetime_left(&send, now);
+        let left = send.expires.unwrap_or(send.deletion).saturating_sub(now).div_ceil(3600).max(1);
+        self.kept_hours = Some(u32::try_from(left).unwrap_or(u32::MAX));
         self.opens = send.max_access.unwrap_or(5).clamp(1, 99);
+        self.unlimited = send.max_access.is_none();
         self.protect = send.has_password;
         self.had_password = send.has_password;
         self.password.clear();
@@ -134,7 +141,7 @@ pub enum Event {
     Mail,
     Disable,
     Edit,
-    EditLoaded(Result<Response, String>),
+    EditLoaded(String, String, Result<Response, String>),
     StopEditing,
     Delete,
     Done,
@@ -211,8 +218,14 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         }
         Event::Name(value) => form.name = value,
         Event::Text(action) => form.text.perform(action),
-        Event::Lifetime(value) => form.lifetime = value,
-        Event::Opens(value) => form.opens = value.clamp(1, 99),
+        Event::Lifetime(value) => {
+            form.lifetime = value;
+            form.kept_hours = None;
+        }
+        Event::Opens(value) => {
+            form.opens = value.clamp(1, 99);
+            form.unlimited = false;
+        }
         Event::Protect(on) => form.protect = on,
         Event::Password(value) => form.password = value,
         Event::HideText(on) => form.hide_text = on,
@@ -266,7 +279,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::Mail => {
             if let Some(send) = &form.created {
                 let link = format!("mailto:?subject={}&body={}", encode(&send.name), encode(&send.link));
-                let _ = glide_sdk::system::open(&link, crate::APP_ID);
+                crate::app::open_detached(link);
             }
         }
         Event::Disable => {
@@ -274,7 +287,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
                 return ask(Request::DisableSend { vault: send.vault.clone(), id: send.id.clone() }, Message::Done);
             }
         }
-        Event::Edit | Event::EditLoaded(_) | Event::StopEditing => return editing(app, event, shell),
+        Event::Edit | Event::EditLoaded(..) | Event::StopEditing => return editing(app, event, shell),
         Event::Delete => {
             if let Some(send) = form.created.take() {
                 let (vault, query) = (std::mem::take(&mut form.vault), std::mem::take(&mut form.query));
@@ -295,13 +308,17 @@ fn editing(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Mess
         Event::Edit => {
             if let Some(send) = &form.created {
                 form.busy = true;
-                let request = Request::SendText { vault: send.vault.clone(), id: send.id.clone() };
-                return ask(request, |result| Message::Sends(Event::EditLoaded(result)));
+                let (vault, id) = (send.vault.clone(), send.id.clone());
+                let request = Request::SendText { vault: vault.clone(), id: id.clone() };
+                return ask(request, move |result| {
+                    Message::Sends(Event::EditLoaded(vault.clone(), id.clone(), result))
+                });
             }
         }
-        Event::EditLoaded(result) => {
+        Event::EditLoaded(vault, id, result) => {
             form.busy = false;
-            match (result, form.created.clone()) {
+            let asked = form.created.clone().filter(|send| send.vault == vault && send.id == id);
+            match (result, asked) {
                 (Ok(Response::Secret { secret }), Some(send)) => form.edit(send, secret.expose(), now),
                 (Ok(Response::Error { message }) | Err(message), _) => {
                     shell.toast(crate::app::humane(app.lang, &message));

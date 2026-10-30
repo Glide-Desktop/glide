@@ -69,6 +69,7 @@ impl std::fmt::Display for Action {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Loaded(Box<Prefs>),
+    Installed(bool),
     Offer(bool),
     Typing(bool),
     Click(Action),
@@ -85,6 +86,7 @@ pub enum Msg {
 #[derive(Debug, Default)]
 pub struct Page {
     prefs: Option<Prefs>,
+    installed: bool,
 }
 
 fn click_label(c: &Ctx, action: ClickAction) -> String {
@@ -109,15 +111,22 @@ fn launch() -> Result<String, String> {
     std::process::Command::new("glide-passwords")
         .stdin(std::process::Stdio::null())
         .spawn()
-        .map(|_| String::new())
+        .map(|mut child| {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            String::new()
+        })
         .map_err(|err| format!("glide-passwords: {err}"))
 }
 
 impl Page {
-    fn change(&mut self, edit: impl FnOnce(&mut Prefs)) {
-        let mut prefs = self.prefs.clone().unwrap_or_else(Prefs::load);
-        edit(&mut prefs);
-        prefs.save();
+    fn change(&mut self, edit: impl Fn(&mut Prefs)) {
+        let prefs = Prefs::update(&edit).unwrap_or_else(|_| {
+            let mut prefs = self.prefs.clone().unwrap_or_else(Prefs::load);
+            edit(&mut prefs);
+            prefs
+        });
         self.prefs = Some(prefs);
     }
 }
@@ -140,12 +149,18 @@ impl Pane for Page {
     ];
 
     fn open(&mut self, _c: Ctx, _config: &ConfigStore) -> Task<Msg> {
-        Task::perform(blocking(Prefs::load), |prefs| Msg::Loaded(Box::new(prefs.unwrap_or_default())))
+        Task::batch([
+            Task::perform(blocking(Prefs::load), |prefs| Msg::Loaded(Box::new(prefs.unwrap_or_default()))),
+            Task::perform(blocking(|| run::available("glide-passwords")), |found| {
+                Msg::Installed(found.unwrap_or(false))
+            }),
+        ])
     }
 
     fn update(&mut self, msg: Msg, _c: Ctx, _config: &mut ConfigStore) -> Task<Msg> {
         match msg {
             Msg::Loaded(prefs) => self.prefs = Some(*prefs),
+            Msg::Installed(installed) => self.installed = installed,
             Msg::Offer(on) => self.change(|prefs| prefs.offer = on),
             Msg::Typing(on) => self.change(|prefs| prefs.type_fallback = on),
             Msg::Click(action) => self.change(|prefs| prefs.click = action.value),
@@ -166,7 +181,7 @@ impl Pane for Page {
         let t = c.theme;
         let Some(prefs) = &self.prefs else { return widgets::spinner_label(t, crate::i18n::Key::Loading.text(c.lang)) };
         let defaults = Prefs::default();
-        let open = run::available("glide-passwords").then_some(Msg::OpenApp);
+        let open = self.installed.then_some(Msg::OpenApp);
         let hero = widgets::section_hero(
             t,
             Icon::Key,

@@ -383,6 +383,7 @@ glide_sdk::catalogue! {
     Yesterday => "yesterday", "вчора";
     TodayAt => "today at {t}", "сьогодні о {t}";
     TomorrowAt => "tomorrow at {t}", "завтра о {t}";
+    CopyRefused => "Not copied: Glide only lets the focused window copy a secret", "Не скопійовано: Glide дозволяє копіювати секрети лише вікну у фокусі";
 }
 
 #[must_use]

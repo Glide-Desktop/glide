@@ -18,22 +18,27 @@ pub fn run(command: &mut Command, input: Option<&[u8]>, timeout: Duration) -> Re
         .stderr(Stdio::piped())
         .spawn()
         .map_err(Failure::Spawn)?;
-    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-        let _ = stdin.write_all(input);
-    }
     let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_STEP),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(Failure::Timeout);
+    let stdin = child.stdin.take();
+    let status = std::thread::scope(|scope| {
+        if let (Some(input), Some(mut stdin)) = (input, stdin) {
+            scope.spawn(move || {
+                let _ = stdin.write_all(input);
+            });
+        }
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_STEP),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(Failure::Timeout);
+                }
             }
         }
-    };
+    })?;
     Ok(Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
 }
 

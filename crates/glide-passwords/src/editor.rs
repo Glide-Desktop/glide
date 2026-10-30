@@ -74,7 +74,7 @@ impl Clone for Editor {
 
 impl Editor {
     pub fn take_scan(&mut self, scanned: crate::scan::Scanned) {
-        self.totp = scanned.key;
+        self.totp = grouped_key(&scanned.key);
         if self.name.trim().is_empty() && !scanned.issuer.is_empty() {
             self.name = scanned.issuer;
             self.invalid = false;
@@ -113,13 +113,13 @@ impl Editor {
     }
 
     #[must_use]
-    pub fn from_detail(detail: &Detail, password: &Hidden, totp: &Hidden, hidden: &[(String, Hidden)]) -> Self {
+    pub fn from_detail(detail: &Detail, password: &Hidden, totp: &Hidden, hidden: &[(usize, Hidden)]) -> Self {
         let summary = &detail.summary;
         let card = detail.card.clone().unwrap_or_default();
-        let value_of = |field: &glide_ipc::keychain::Field| {
+        let value_of = |index: usize, field: &glide_ipc::keychain::Field| {
             hidden
                 .iter()
-                .find(|(name, _)| field.hidden && *name == field.name)
+                .find(|(at, _)| field.hidden && *at == index)
                 .map_or_else(|| field.value.clone(), |(_, value)| value.expose().to_string())
         };
         Self {
@@ -131,12 +131,17 @@ impl Editor {
             password: password.expose().to_string(),
             original_password: password.expose().to_string(),
             shown: true,
-            totp: totp.expose().to_string(),
+            totp: grouped_key(totp.expose()),
             original_totp: totp.expose().to_string(),
             folder: summary.folder.clone(),
             sites: detail.sites.clone(),
             apps: detail.apps.clone(),
-            fields: detail.fields.iter().map(|field| (field.name.clone(), value_of(field), field.hidden)).collect(),
+            fields: detail
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| (field.name.clone(), value_of(index, field), field.hidden))
+                .collect(),
             notes: text_editor::Content::with_text(&detail.notes),
             favorite: summary.favorite,
             holder: card.holder,
@@ -164,7 +169,8 @@ impl Editor {
             name: self.name.trim().to_string(),
             username: self.username.clone(),
             password: (self.password != self.original_password).then(|| Hidden::new(self.password.clone())),
-            totp: (self.totp != self.original_totp).then(|| Hidden::new(self.totp.clone())),
+            totp: (compact_key(&self.totp) != compact_key(&self.original_totp))
+                .then(|| Hidden::new(compact_key(&self.totp))),
             folder: self.folder.clone(),
             sites: self.sites.clone(),
             apps: self.apps.clone(),
@@ -180,6 +186,7 @@ impl Editor {
             notes: self.notes.text().trim_end().to_string(),
             favorite: self.favorite,
             card,
+            history: Vec::new(),
         }
     }
 
@@ -334,6 +341,18 @@ fn grouped_key(key: &str) -> String {
     compact.chunks(4).map(|chunk| chunk.iter().collect::<String>()).collect::<Vec<_>>().join(" ")
 }
 
+fn compact_key(key: &str) -> String {
+    key.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn totp_shown(editor: &Editor) -> &str {
+    &editor.totp
+}
+
+fn totp_typed(value: String) -> Message {
+    Message::Editor(Event::Totp(value))
+}
+
 fn text_label<'a>(paint: &Paint, label: &'a str) -> Element<'a, Message> {
     ui::text(label, TextStyle { weight: 520, ..TextStyle::CAP }).color(paint.fg_2()).into()
 }
@@ -342,6 +361,18 @@ fn input<'a>(
     paint: &Paint, placeholder: &'a str, value: &'a str, on_input: impl Fn(String) -> Event + 'a,
 ) -> Element<'a, Message> {
     ui::field(paint, text_input(placeholder, value).on_input(move |value| Message::Editor(on_input(value))))
+}
+
+fn secret_input<'a>(
+    paint: &Paint, placeholder: &'a str, value: &'a str, shown: bool, on_input: impl Fn(String) -> Event + 'a,
+) -> Element<'a, Message> {
+    ui::secret_input(
+        paint,
+        text_input(placeholder, value).on_input(move |value| Message::Editor(on_input(value))),
+        shown,
+        Message::Editor(Event::TogglePassword),
+        ui::Validity::Neutral,
+    )
 }
 
 fn plain_button<'a>(paint: &Paint, glyph: Icon, label: &'a str, message: Message) -> Element<'a, Message> {
@@ -428,12 +459,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 labelled(t(Key::Username), input(&paint, t(Key::Username), &editor.username, Event::Username), &paint);
             let totp = labelled(
                 t(Key::TotpKey),
-                ui::field_with(
+                ui::secret_input_with(
                     &paint,
-                    None,
-                    text_input("JBSW Y3DP EHPK 3PXP", &grouped_key(&editor.totp))
-                        .on_input(|value| Message::Editor(Event::Totp(value.split_whitespace().collect())))
-                        .size(13),
+                    text_input("JBSW Y3DP EHPK 3PXP", totp_shown(editor)).on_input(totp_typed).size(13),
+                    editor.shown,
+                    Message::Editor(Event::TogglePassword),
+                    ui::Validity::Neutral,
                     vec![ui::icon_button(
                         &paint,
                         Icon::Qr,
@@ -464,24 +495,32 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 row![
                     labelled(
                         t(Key::CardNumber),
-                        input(&paint, "•••• •••• •••• ••••", &editor.number, Event::Number),
+                        secret_input(&paint, "•••• •••• •••• ••••", &editor.number, editor.shown, Event::Number),
                         &paint
                     ),
                     labelled(t(Key::CardExpiry), input(&paint, "MM/YY", &editor.expiry, Event::Expiry), &paint),
-                    labelled(t(Key::CardCode), input(&paint, "•••", &editor.code, Event::Code), &paint),
+                    labelled(
+                        t(Key::CardCode),
+                        secret_input(&paint, "•••", &editor.code, editor.shown, Event::Code),
+                        &paint
+                    ),
                 ]
                 .spacing(SP4),
             );
         }
         ItemKind::Note => {}
     }
-    for (index, (name, value, _)) in editor.fields.iter().enumerate() {
+    for (index, (name, value, hidden)) in editor.fields.iter().enumerate() {
+        let value_input = if *hidden {
+            secret_input(&paint, t(Key::FieldValue), value, editor.shown, move |value| Event::FieldValue(index, value))
+        } else {
+            input(&paint, t(Key::FieldValue), value, move |value| Event::FieldValue(index, value))
+        };
         form = form.push(
             row![
                 container(input(&paint, t(Key::FieldName), name, move |value| Event::FieldName(index, value)))
                     .width(200),
-                container(input(&paint, t(Key::FieldValue), value, move |value| Event::FieldValue(index, value)))
-                    .width(Fill),
+                container(value_input).width(Fill),
                 ui::icon_button(
                     &paint,
                     Icon::Close,
@@ -530,8 +569,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
 fn password_block<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
     let paint = app.paint;
     let t = |key: Key| key.text(app.lang);
-    let reveal_label = if editor.shown { t(Key::HidePassword) } else { t(Key::ShowPassword) };
-    let reveal_icon = if editor.shown { Icon::EyeOff } else { Icon::Eye };
     let generate = ui::glyph_button(
         &paint,
         Icon::Wand,
@@ -541,17 +578,15 @@ fn password_block<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> 
         Some(Message::Editor(Event::Generate)),
     );
     let input = text_input(t(Key::Password), &editor.password)
-        .secure(!editor.shown)
         .size(14.0)
         .on_input(|value| Message::Editor(Event::Password(value)));
-    let field = ui::field_with(
+    let field = ui::secret_input_with(
         &paint,
-        None,
         input,
-        vec![
-            ui::icon_button(&paint, reveal_icon, reveal_label, Some(Message::Editor(Event::TogglePassword)), false),
-            generate,
-        ],
+        editor.shown,
+        Message::Editor(Event::TogglePassword),
+        ui::Validity::Neutral,
+        vec![generate],
     );
     let bits = glide_ipc::keychain::strength(&editor.password);
     let mut column = Column::new().spacing(6).push(text_label(&paint, t(Key::Password))).push(field);
@@ -664,4 +699,96 @@ fn links_block<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
         .spacing(SP2),
     );
     column.width(Length::Fill).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use glide_ipc::keychain::{Field, LOCAL, Summary};
+    use glide_sdk::{Harness, Look};
+
+    use super::*;
+
+    fn detail(fields: Vec<Field>) -> Detail {
+        Detail {
+            summary: Summary {
+                item: ItemRef::new(LOCAL, "bank"),
+                kind: ItemKind::Login,
+                name: "Bank".into(),
+                username: String::new(),
+                folder: String::new(),
+                sites: Vec::new(),
+                apps: Vec::new(),
+                has_password: false,
+                has_totp: false,
+                has_passkey: false,
+                favorite: false,
+                created: 0,
+                modified: 0,
+                deleted: false,
+                strength: 0,
+                reused: 0,
+            },
+            notes: String::new(),
+            sites: Vec::new(),
+            apps: Vec::new(),
+            fields,
+            passkeys: Vec::new(),
+            history: 0,
+            card: None,
+            password_length: 0,
+        }
+    }
+
+    fn hidden_field(name: &str) -> Field {
+        Field { name: name.into(), value: String::new(), hidden: true }
+    }
+
+    fn type_totp_like_iced(harness: &mut Harness<App>, keys: &str) {
+        let mut cursor = 0;
+        for key in keys.chars() {
+            let shown = totp_shown(harness.app().editor.as_ref().unwrap()).to_string();
+            let mut typed: Vec<char> = shown.chars().collect();
+            let at = cursor.min(typed.len());
+            typed.insert(at, key);
+            cursor = at + 1;
+            harness.message(totp_typed(typed.into_iter().collect()));
+        }
+    }
+
+    #[test]
+    fn a_totp_key_typed_by_hand_keeps_its_order() {
+        let mut harness = Harness::<App>::new(crate::APP_ID, Look::default(), iced::Size::new(1100.0, 720.0));
+        harness.message(Message::EditorLoaded(Box::new(Editor::blank(ItemKind::Login, LOCAL.into()))));
+        type_totp_like_iced(&mut harness, "ABCDEFGHJK");
+        let editor = harness.app().editor.as_ref().unwrap();
+        assert_eq!(editor.totp, "ABCDEFGHJK");
+        assert_eq!(editor.draft().totp.map(|key| key.expose().to_string()).as_deref(), Some("ABCDEFGHJK"));
+    }
+
+    #[test]
+    fn a_stored_totp_key_opens_grouped_and_saves_compact_only_when_changed() {
+        let none = Hidden::new(String::new());
+        let key = Hidden::new("JBSWY3DPEHPK3PXP".into());
+        let mut editor = Editor::from_detail(&detail(Vec::new()), &none, &key, &[]);
+        assert_eq!(editor.totp, "JBSW Y3DP EHPK 3PXP");
+        assert!(editor.draft().totp.is_none(), "an untouched key is not sent back");
+        editor.totp = "jbsw y3dp ehpk 3pxq".into();
+        assert_eq!(editor.draft().totp.map(|key| key.expose().to_string()).as_deref(), Some("jbswy3dpehpk3pxq"));
+    }
+
+    #[test]
+    fn hidden_fields_with_the_same_name_keep_their_own_values() {
+        let none = Hidden::new(String::new());
+        let fields = vec![
+            hidden_field("Security answer"),
+            Field { name: "Note".into(), value: "plain".into(), hidden: false },
+            hidden_field("Security answer"),
+        ];
+        let read = [(0, Hidden::new("Kyiv".into())), (2, Hidden::new("Rex".into()))];
+        let editor = Editor::from_detail(&detail(fields), &none, &none, &read);
+        let values: Vec<_> = editor.fields.iter().map(|(_, value, _)| value.as_str()).collect();
+        assert_eq!(values, ["Kyiv", "plain", "Rex"]);
+        let sent: Vec<_> = editor.draft().fields.iter().map(|field| field.value.expose().to_string()).collect();
+        assert_eq!(sent, ["Kyiv", "plain", "Rex"]);
+    }
 }

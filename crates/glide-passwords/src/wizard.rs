@@ -71,6 +71,14 @@ pub struct Wizard {
     pub api: Option<ApiDraft>,
     pub prompt: Prompt,
     pub file: Option<std::path::PathBuf>,
+    pub ticket: u64,
+}
+
+static TICKETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn ticket(wizard: &mut Wizard) -> u64 {
+    wizard.ticket = TICKETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    wizard.ticket
 }
 
 impl Wizard {
@@ -165,7 +173,7 @@ pub enum Event {
     Password(String),
     TogglePassword,
     SignIn,
-    Reply(Result<Response, String>),
+    Reply(u64, Result<Response, String>),
     EmailSent(Result<Response, String>),
     Code(String),
     Remember(bool),
@@ -199,13 +207,14 @@ fn keepass_event(wizard: &mut Wizard, event: Event, shell: &mut Shell<Message>) 
                 return Task::none();
             };
             let request = Request::AddKeePass {
-                path: path.display().to_string(),
+                path: glide_config::uri::file_uri(path),
                 password: Hidden::new(wizard.password.clone()),
                 name: wizard.name.trim().to_string(),
             };
             wizard.busy = true;
             wizard.error = None;
-            return ask(request, |result| Message::Wizard(Event::Reply(result)));
+            let ticket = ticket(wizard);
+            return ask(request, move |result| Message::Wizard(Event::Reply(ticket, result)));
         }
         _ => {}
     }
@@ -326,14 +335,22 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::TogglePassword => wizard.shown = !wizard.shown,
         event @ (Event::ApiKey(_) | Event::ClientId(_) | Event::ClientSecret(_)) => api_event(wizard, event),
         Event::SignIn => {
+            if wizard.busy || (wizard.step == Step::TwoFactor && wizard.code.len() != 6) {
+                return Task::none();
+            }
             wizard.busy = true;
             wizard.error = None;
             let login = wizard.login();
-            return ask(Request::AddBitwarden { login: Box::new(login) }, |result| {
-                Message::Wizard(Event::Reply(result))
+            let ticket = ticket(wizard);
+            return ask(Request::AddBitwarden { login: Box::new(login) }, move |result| {
+                Message::Wizard(Event::Reply(ticket, result))
             });
         }
-        Event::Reply(result) => return reply(app, result),
+        Event::Reply(ticket, result) => {
+            if app.wizard.as_ref().is_some_and(|wizard| wizard.ticket == ticket) {
+                return reply(app, result);
+            }
+        }
         Event::Code(value) => {
             wizard.code = ui::only_digits(&value, 6);
             if wizard.code.len() == 6 && !wizard.busy {

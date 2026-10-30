@@ -37,7 +37,7 @@ pub fn parse(uri: &str) -> Option<Scanned> {
     if secret.is_empty() || !secret.chars().all(|ch| matches!(ch, 'A'..='Z' | '2'..='7')) {
         return None;
     }
-    let label = decoded(label);
+    let label = String::from_utf8_lossy(&glide_config::uri::decode(label)).into_owned();
     let (prefix, account) = label.split_once(':').map_or(("", label.as_str()), |(issuer, account)| (issuer, account));
     if issuer.is_empty() {
         issuer = prefix.trim().to_string();
@@ -85,6 +85,12 @@ mod tests {
     fn the_label_names_the_issuer_when_the_query_does_not() {
         let scanned = parse("OTPAUTH://TOTP/Example%3Ame?secret=GEZDGNBVGY3TQOJQ").expect("totp");
         assert_eq!((scanned.issuer.as_str(), scanned.account.as_str()), ("Example", "me"));
+    }
+
+    #[test]
+    fn a_plus_in_the_label_stays_a_plus() {
+        let scanned = parse("otpauth://totp/C++:me?secret=GEZDGNBVGY3TQOJQ").expect("totp");
+        assert_eq!((scanned.issuer.as_str(), scanned.account.as_str()), ("C++", "me"));
     }
 
     #[test]

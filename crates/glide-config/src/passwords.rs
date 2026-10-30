@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -60,22 +61,61 @@ pub fn path() -> Option<PathBuf> {
 impl Prefs {
     #[must_use]
     pub fn load() -> Self {
-        path().and_then(|path| std::fs::read_to_string(path).ok()).map_or_else(Self::default, |text| Self::parse(&text))
+        path().map_or_else(Self::default, |path| Self::load_at(&path))
     }
 
     #[must_use]
     pub fn parse(text: &str) -> Self {
-        toml::from_str(text).unwrap_or_default()
+        toml::from_str(text).unwrap_or_else(|_| Self::lenient(text))
+    }
+
+    fn lenient(text: &str) -> Self {
+        let Ok(table) = text.parse::<toml::Table>() else { return Self::default() };
+        let valid: toml::Table = table
+            .into_iter()
+            .filter(|(key, value)| {
+                let mut single = toml::Table::new();
+                single.insert(key.clone(), value.clone());
+                toml::Value::Table(single).try_into::<Self>().is_ok()
+            })
+            .collect();
+        toml::Value::Table(valid).try_into().unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn load_at(path: &Path) -> Self {
+        std::fs::read_to_string(path).map_or_else(|_| Self::default(), |text| Self::parse(&text))
     }
 
     pub fn save(&self) {
-        let (Some(path), Ok(text)) = (path(), toml::to_string(self)) else {
-            return;
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        if let Some(path) = path() {
+            let _ = self.save_at(&path);
         }
-        let _ = crate::write_atomic(&path, text.as_bytes(), 0o644);
+    }
+
+    pub fn save_at(&self, path: &Path) -> io::Result<()> {
+        let text = toml::to_string(self).map_err(io::Error::other)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        if let Ok(old) = std::fs::read(path)
+            && std::str::from_utf8(&old).ok().and_then(|old| old.parse::<toml::Table>().ok()).is_none()
+        {
+            let _ = std::fs::rename(path, path.with_extension("toml.broken"));
+        }
+        crate::write_atomic(path, text.as_bytes(), 0o644)
+    }
+
+    pub fn update(change: impl FnOnce(&mut Self)) -> io::Result<Self> {
+        let path = path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no configuration folder"))?;
+        Self::update_at(&path, change)
+    }
+
+    pub fn update_at(path: &Path, change: impl FnOnce(&mut Self)) -> io::Result<Self> {
+        let mut prefs = Self::load_at(path);
+        change(&mut prefs);
+        prefs.save_at(path)?;
+        Ok(prefs)
     }
 }
 
@@ -100,5 +140,40 @@ mod tests {
     fn prefs_round_trip() {
         let prefs = Prefs { click: ClickAction::Code, lock_after: 5, ..Prefs::default() };
         assert_eq!(Prefs::parse(&toml::to_string(&prefs).unwrap()), prefs);
+    }
+
+    #[test]
+    fn two_writers_changing_different_keys_both_keep_their_change() {
+        let dir = std::env::temp_dir().join(format!("glide-passwords-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("glide").join("passwords.toml");
+
+        let stale_app_copy = Prefs::load_at(&file);
+        assert!(stale_app_copy.lock_with_screen);
+
+        let settings = Prefs::update_at(&file, |prefs| prefs.lock_with_screen = false).unwrap();
+        assert!(!settings.lock_with_screen);
+
+        let app = Prefs::update_at(&file, |prefs| prefs.sort_by_name = !stale_app_copy.sort_by_name).unwrap();
+        assert!(app.sort_by_name, "the app's own change is written");
+        assert!(!app.lock_with_screen, "the value handed back already carries the other writer's change");
+
+        let on_disk = Prefs::load_at(&file);
+        assert_eq!(on_disk, app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_update_keeps_keys_it_did_not_touch() {
+        let dir = std::env::temp_dir().join(format!("glide-passwords-prefs-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("passwords.toml");
+        std::fs::write(&file, "clear-after = 90\nclick = \"code\"\n").unwrap();
+
+        let prefs = Prefs::update_at(&file, |prefs| prefs.offer = false).unwrap();
+        assert_eq!((prefs.clear_after, prefs.click, prefs.offer), (90, ClickAction::Code, false));
+        assert_eq!(Prefs::load_at(&file), prefs);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

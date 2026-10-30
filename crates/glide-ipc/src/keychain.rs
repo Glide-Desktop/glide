@@ -119,11 +119,24 @@ pub struct AppLink {
     pub program: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     pub value: String,
     pub hidden: bool,
+}
+
+impl fmt::Debug for Field {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = f.debug_struct("Field");
+        out.field("name", &self.name);
+        if self.hidden {
+            out.field("value", &format_args!("({} bytes)", self.value.len()));
+        } else {
+            out.field("value", &self.value);
+        }
+        out.field("hidden", &self.hidden).finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +210,8 @@ pub struct Draft {
     pub notes: String,
     pub favorite: bool,
     pub card: Option<CardDraft>,
+    #[serde(skip)]
+    pub history: Vec<(Hidden, u64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -214,15 +229,26 @@ pub enum SecretKind {
     Password,
     Totp,
     Field(String),
+    FieldAt(usize),
     CardNumber,
     CardCode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Code {
     pub code: String,
     pub seconds_left: u32,
     pub period: u32,
+}
+
+impl fmt::Debug for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Code")
+            .field("code", &format_args!("({} digits)", self.code.len()))
+            .field("seconds_left", &self.seconds_left)
+            .field("period", &self.period)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,11 +324,21 @@ pub enum TwoFactorMethod {
     WebAuthn,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TwoFactor {
     pub method: TwoFactorMethod,
     pub code: String,
     pub remember: bool,
+}
+
+impl fmt::Debug for TwoFactor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TwoFactor")
+            .field("method", &self.method)
+            .field("code", &format_args!("({} digits)", self.code.len()))
+            .field("remember", &self.remember)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -616,6 +652,19 @@ mod tests {
         };
         let shown = format!("{draft:?}");
         assert!(!shown.contains("hunter2") && !shown.contains("JBSWY3DP"), "{shown}");
+    }
+
+    #[test]
+    fn a_field_by_name_from_an_older_client_still_reads() {
+        let old: SecretKind = serde_json::from_str(r#"{"kind":"field","name":"PIN"}"#).unwrap();
+        assert_eq!(old, SecretKind::Field("PIN".into()));
+    }
+
+    #[test]
+    fn a_field_by_position_round_trips() {
+        let line = serde_json::to_string(&SecretKind::FieldAt(1)).unwrap();
+        assert_eq!(line, r#"{"kind":"field-at","name":1}"#);
+        assert_eq!(serde_json::from_str::<SecretKind>(&line).unwrap(), SecretKind::FieldAt(1));
     }
 
     #[test]

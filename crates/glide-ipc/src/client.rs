@@ -32,9 +32,11 @@ pub fn exchange(request: &Request, timeout: Duration) -> std::io::Result<Respons
     reader.get_mut().write_all(json.as_bytes())?;
     reader.get_mut().flush()?;
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    std::io::Read::take(&mut reader, MAX_RESPONSE_BYTES).read_line(&mut line)?;
     serde_json::from_str(&line).map_err(std::io::Error::other)
 }
+
+pub const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[must_use]
 pub fn activation_token(app_id: Option<&str>) -> Option<String> {
