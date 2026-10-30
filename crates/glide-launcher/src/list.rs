@@ -112,7 +112,7 @@ fn scroll_to_show(rows: &[ListRow], scroll: usize, target: usize, height: i32) -
     scroll
 }
 
-fn max_scroll(rows: &[ListRow], height: i32) -> usize {
+pub(super) fn max_scroll(rows: &[ListRow], height: i32) -> usize {
     (0..rows.len()).find(|&start| span(&rows[start..]) <= height).unwrap_or(rows.len().saturating_sub(1))
 }
 

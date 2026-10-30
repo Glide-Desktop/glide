@@ -119,7 +119,7 @@ impl Parser {
     }
 
     fn percent_is_modulo(&self) -> bool {
-        matches!(self.tokens.get(self.pos + 1), Some(Token::Number(_) | Token::Open | Token::Minus | Token::Plus))
+        matches!(self.tokens.get(self.pos + 1), Some(Token::Number(_) | Token::Open))
     }
 
     fn unary(&mut self) -> Option<f64> {
@@ -262,6 +262,17 @@ mod tests {
         close("200*15%", 30.0);
         close("10 % 3", 1.0);
         close("(10)%(4)", 2.0);
+    }
+
+    #[test]
+    fn a_percent_before_a_sign_is_a_percentage_and_never_a_modulo() {
+        close("100*50%-10", 40.0);
+        close("50%+1", 1.5);
+        close("100+50%-20", 80.5);
+        close("200*15% - 5", 25.0);
+        close("50%%", 0.005);
+        close("10 % (3)", 1.0);
+        close("10 %3", 1.0);
     }
 
     #[test]

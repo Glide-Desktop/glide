@@ -4,6 +4,7 @@ mod list;
 pub mod providers;
 pub mod recent;
 pub mod search;
+mod selection;
 
 use glide_paint as paint;
 pub use glide_shell::field;
@@ -642,6 +643,7 @@ impl LauncherMenuItem {
 #[derive(Debug, Clone)]
 struct LauncherMenu {
     result: usize,
+    title: String,
     items: Vec<LauncherMenuItem>,
     rect: Rectangle<i32, Logical>,
     hovered: Option<usize>,
@@ -731,9 +733,13 @@ impl Launcher {
     }
 
     pub fn open_menu(&mut self, result: usize, area: Rectangle<i32, Logical>, pinned: bool) -> bool {
-        if self.is_listing() || self.app_index(result).is_none() {
+        if self.is_listing() {
             return false;
         }
+        let Some(title) = self.app_index(result).and_then(|index| self.apps.get(index)).map(|app| app.name.clone())
+        else {
+            return false;
+        };
         let Some(slot) = self.page_range().position(|candidate| candidate == result) else {
             return false;
         };
@@ -747,7 +753,7 @@ impl Launcher {
             _ => glide_ui::Reveal::closed(),
         };
         reveal.open(menu_anim());
-        self.menu = Some(LauncherMenu { result, items, rect, hovered: None, reveal });
+        self.menu = Some(LauncherMenu { result, title, items, rect, hovered: None, reveal });
         self.menu_cache.clear();
         self.menu_rows.clear();
         true
@@ -898,9 +904,10 @@ impl Launcher {
     }
 
     pub fn set_windows(&mut self, windows: Vec<search::OpenWindow>) {
+        let kept = self.keep_selection();
         self.windows = windows;
         if !self.field.text().trim().is_empty() {
-            self.refilter();
+            self.rebuild(kept);
         }
     }
 
@@ -910,9 +917,10 @@ impl Launcher {
     }
 
     pub fn set_recent(&mut self, recent: Vec<recent::RecentFile>) {
+        let kept = self.keep_selection();
         self.recent = recent;
         if !self.field.text().trim().is_empty() {
-            self.refilter();
+            self.rebuild(kept);
         }
     }
 
@@ -929,8 +937,9 @@ impl Launcher {
         if generation != self.provider_generation {
             return;
         }
+        let kept = self.keep_selection();
         self.provided = found;
-        self.refilter();
+        self.rebuild(kept);
     }
 
     #[must_use]
@@ -946,7 +955,7 @@ impl Launcher {
         }
         self.provider_query.clone_from(&query);
         self.provided.clear();
-        self.provider_generation += 1;
+        self.provider_generation = providers::next_generation();
         if let Some(handle) = self.providers.as_ref()
             && self.options.providers
             && query.chars().count() >= providers::MIN_QUERY
@@ -1077,6 +1086,11 @@ impl Launcher {
     }
 
     fn refilter(&mut self) {
+        self.rebuild(None);
+    }
+
+    fn rebuild(&mut self, kept: Option<selection::Kept>) {
+        self.close_menu();
         let now = history::now_unix();
         self.results = filter_apps(&self.apps, self.field.text(), self.category, &self.history, now);
         self.entries = if self.run_mode() {
@@ -1107,6 +1121,9 @@ impl Launcher {
         self.search_field = None;
         self.selected = (self.is_listing() && !self.entries.is_empty()).then_some(0);
         self.pointer_selected = false;
+        if let Some(kept) = kept {
+            self.restore_selection(&kept);
+        }
         if !self.is_listing() {
             self.row_layers.clear();
         }
@@ -1273,6 +1290,7 @@ impl Launcher {
 
     pub fn set_apps(&mut self, apps: Vec<DesktopApp>, pixels: &[Option<Vec<u8>>], scale: i32) {
         let scale = scale.max(1);
+        let kept = self.keep_selection();
         self.tiles = pixels
             .iter()
             .map(|pixels| {
@@ -1286,7 +1304,7 @@ impl Launcher {
         self.row_layers.clear();
         self.list_cache = list::ListCache::default();
         self.chips.clear();
-        self.refilter();
+        self.rebuild(kept);
     }
 
     #[must_use]
@@ -1855,13 +1873,7 @@ fn push_menu<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>
         f64::from(menu.rect.loc.y) + f64::from(menu.rect.size.h) + rise,
     );
     let panel = scale_about(menu.rect, anchor, rise, factor);
-    let title = launcher
-        .app_index(menu.result)
-        .and_then(|index| launcher.apps.get(index))
-        .map(|app| app.name.clone())
-        .unwrap_or_default();
-
-    let key = (title, menu.items.clone(), output_scale);
+    let key = (menu.title.clone(), menu.items.clone(), output_scale);
     if !launcher.menu_cache.contains_key(&key) {
         launcher.menu_cache.retain(|(title, items, _), _| (title, items) == (&key.0, &key.1));
         let rows: Vec<_> = menu
@@ -2911,6 +2923,87 @@ mod tests {
         assert!(launcher.open_menu(2, area(), true));
         assert_eq!(launcher.menu_item_at(centre), Some(LauncherMenuItem::Unpin));
         assert!(!launcher.open_menu(99, area(), false), "no such result");
+    }
+
+    #[test]
+    fn typing_with_the_context_menu_open_closes_it_instead_of_aiming_it_at_another_app() {
+        let mut launcher = launcher(12);
+        assert!(launcher.open_menu(7, area(), false));
+        let row = centre(crate::popup_menu::row_rect(launcher.menu_rect().expect("menu rect"), 1));
+        assert_eq!(launcher.menu_result(), Some(7));
+        assert_eq!(launcher.menu_item_at(row), Some(LauncherMenuItem::Pin));
+
+        assert!(launcher.push_query('1'));
+
+        assert_eq!(launcher.menu_result(), None);
+        assert_eq!(launcher.menu_item_at(row), None);
+        assert_eq!(launcher.menu_rect(), None);
+        assert_eq!(
+            launcher.menu.as_ref().map(|menu| menu.title.as_str()),
+            Some("App 7"),
+            "while it fades out the menu still names the app it was opened for"
+        );
+    }
+
+    #[test]
+    fn every_change_of_the_results_closes_the_context_menu() {
+        let open = |launcher: &mut Launcher| {
+            assert!(launcher.open_menu(2, area(), false));
+            assert_eq!(launcher.menu_result(), Some(2));
+        };
+
+        let mut launcher = Launcher::new(
+            vec![
+                app("a", "Alpha", AppCategory::Office),
+                app("b", "Beta", AppCategory::Media),
+                app("c", "Gamma", AppCategory::Office),
+            ],
+            area(),
+        );
+        open(&mut launcher);
+        assert!(launcher.toggle_category(CategoryFilter::Only(AppCategory::Office)));
+        assert_eq!(launcher.menu_result(), None, "a category chip changes the results");
+
+        assert!(launcher.toggle_category(CategoryFilter::Only(AppCategory::Office)));
+        open(&mut launcher);
+        let reloaded = vec![app("c", "Gamma", AppCategory::Office), app("a", "Alpha", AppCategory::Office)];
+        let pixels = vec![None; reloaded.len()];
+        launcher.set_apps(reloaded, &pixels, 1);
+        assert_eq!(launcher.menu_result(), None, "the late app scan renumbers the results");
+
+        let mut launcher = Launcher::new(apps(4), area());
+        assert!(launcher.open_menu(1, area(), false));
+        launcher.begin_run_mode();
+        assert_eq!(launcher.menu_result(), None);
+    }
+
+    #[test]
+    fn a_provider_answer_for_a_closed_launcher_is_not_shown_by_the_next_one() {
+        let mut first = launcher(4);
+        first.insert_text("ab");
+        let stale = first.provider_generation;
+        assert_ne!(stale, 0, "asking the providers is what mints a generation");
+
+        let mut second = launcher(4);
+        second.push_query('a');
+        assert_ne!(second.provider_generation, stale, "generations are shared by the whole session");
+
+        let provider =
+            providers::Provider { desktop_id: "app-1.desktop".into(), bus: "org.test".into(), path: "/".into() };
+        let answer = providers::Found {
+            desktop_id: provider.desktop_id.clone(),
+            provider,
+            id: "one".into(),
+            name: "One".into(),
+            description: String::new(),
+        };
+        second.set_provided(stale, vec![answer.clone()]);
+        assert!(second.provided.is_empty());
+        assert!(!second.entries().iter().any(|entry| matches!(entry, crate::search::Entry::Provided { .. })));
+
+        let fresh = second.provider_generation;
+        second.set_provided(fresh, vec![answer]);
+        assert_eq!(second.provided.len(), 1, "the launcher's own generation is still accepted");
     }
 
     #[test]

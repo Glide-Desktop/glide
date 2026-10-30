@@ -16,9 +16,47 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     Some(&tag[start..end])
 }
 
+const LONGEST_REFERENCE: usize = 12;
+
+fn reference(body: &str) -> Option<char> {
+    match body {
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "amp" => Some('&'),
+        _ => {
+            let digits = body.strip_prefix('#')?;
+            let (digits, radix) = match digits.strip_prefix('x') {
+                Some(hex) => (hex, 16),
+                None => (digits, 10),
+            };
+            if digits.is_empty() || !digits.chars().all(|ch| ch.is_digit(radix)) {
+                return None;
+            }
+            char::from_u32(u32::from_str_radix(digits, radix).ok()?).filter(|&ch| ch != '\0')
+        }
+    }
+}
+
 #[must_use]
 pub fn unescape_xml(text: &str) -> String {
-    text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + 1..];
+        let window = tail.char_indices().take(LONGEST_REFERENCE + 1).find(|&(_, ch)| ch == ';');
+        if let Some((end, ch)) = window.and_then(|(end, _)| Some((end, reference(&tail[..end])?))) {
+            out.push(ch);
+            rest = &tail[end + 1..];
+        } else {
+            out.push('&');
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 use glide_config::uri::local_path as path_from_uri;
@@ -116,5 +154,44 @@ mod tests {
     #[test]
     fn xml_entities_are_unescaped_once() {
         assert_eq!(unescape_xml("&lt;&amp;lt;&gt;"), "<&lt;>");
+        assert_eq!(unescape_xml("&amp;#39;"), "&#39;");
+        assert_eq!(unescape_xml("&amp;amp;"), "&amp;");
+    }
+
+    #[test]
+    fn numeric_character_references_are_decoded() {
+        assert_eq!(unescape_xml("Tom&#39;s &#x27;notes&#X27;"), "Tom's 'notes&#X27;");
+        assert_eq!(unescape_xml("&#1047;&#x432;&#x1F600;"), "Зв\u{1F600}");
+    }
+
+    #[test]
+    fn invalid_character_references_are_left_as_they_are() {
+        for text in [
+            "&#99999999999999999999;",
+            "&#xD800;",
+            "&#x110000;",
+            "&#0;",
+            "&#;",
+            "&#x;",
+            "&#+39;",
+            "&#-39;",
+            "&#3 9;",
+            "&#39",
+            "&unknown;",
+            "&",
+            "a & b",
+            "&#0000000000000000039;",
+        ] {
+            assert_eq!(unescape_xml(text), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_recent_file_with_an_apostrophe_in_its_name_is_listed() {
+        let xbel = r#"<xbel><bookmark href="file:///home/user/Tom&#39;s%20notes.pdf" modified="2026-05-01T00:00:00Z"/>
+<bookmark href="file:///home/user/Ann&apos;s.txt" modified="2026-04-01T00:00:00Z"/></xbel>"#;
+        let files = recent_files(parse(xbel), Some(Path::new("/home/user")), |_| true);
+        let names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(names, ["Tom's notes.pdf", "Ann's.txt"]);
     }
 }
