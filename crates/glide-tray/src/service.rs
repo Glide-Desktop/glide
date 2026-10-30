@@ -126,7 +126,22 @@ pub fn start(sink: Sink) -> anyhow::Result<TrayHandle> {
     Ok(TrayHandle { tx })
 }
 
+fn watcher_owner(connection: &zbus::blocking::Connection) -> Option<String> {
+    let bus = zbus::blocking::fdo::DBusProxy::new(connection).ok()?;
+    let owner = bus.get_name_owner(BusName::try_from(WATCHER_NAME).ok()?).ok()?;
+    Some(owner.to_string())
+}
+
+fn trusted(sender: Option<&str>, interface: Option<&str>, watcher: Option<&str>, unique: &str) -> bool {
+    match interface {
+        Some("org.freedesktop.DBus") => sender == Some("org.freedesktop.DBus"),
+        Some(WATCHER_INTERFACE) => sender.is_some() && sender == watcher && sender != Some(unique),
+        _ => true,
+    }
+}
+
 fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, unique: &str) {
+    let mut watcher = watcher_owner(connection);
     for message in zbus::blocking::MessageIterator::from(connection) {
         let Ok(message) = message else {
             continue;
@@ -138,12 +153,16 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, u
         let interface = header.interface().map(|i| i.as_str().to_string());
         let member = header.member().map(|m| m.as_str().to_string());
         let sender = header.sender().map(|s| s.as_str().to_string());
+        if !trusted(sender.as_deref(), interface.as_deref(), watcher.as_deref(), unique) {
+            continue;
+        }
         let request = match (interface.as_deref(), member.as_deref()) {
             (Some("org.freedesktop.DBus"), Some("NameOwnerChanged")) => {
                 let Ok((name, _old, new)) = message.body().deserialize::<(String, String, String)>() else {
                     continue;
                 };
                 if name == WATCHER_NAME {
+                    watcher = (!new.is_empty()).then(|| new.clone());
                     Request::WatcherOwner(new)
                 } else if new.is_empty() {
                     Request::Vanished(name)
@@ -158,7 +177,7 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, u
             (
                 Some(WATCHER_INTERFACE),
                 Some(member @ ("StatusNotifierItemRegistered" | "StatusNotifierItemUnregistered")),
-            ) if sender.as_deref() != Some(unique) => {
+            ) => {
                 let Ok(service) = message.body().deserialize::<String>() else {
                     continue;
                 };
@@ -638,6 +657,20 @@ fn get_all_unsupported(err: &zbus::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bus_and_watcher_signals_count_only_from_their_real_senders() {
+        let bus = Some("org.freedesktop.DBus");
+        let dbus = Some("org.freedesktop.DBus");
+        assert!(trusted(bus, dbus, None, ":1.5"));
+        assert!(!trusted(Some(":1.66"), dbus, None, ":1.5"), "a forged NameOwnerChanged is ignored");
+        let watcher = Some(WATCHER_INTERFACE);
+        assert!(trusted(Some(":1.7"), watcher, Some(":1.7"), ":1.5"));
+        assert!(!trusted(Some(":1.66"), watcher, Some(":1.7"), ":1.5"), "only the watcher announces items");
+        assert!(!trusted(Some(":1.5"), watcher, Some(":1.5"), ":1.5"), "our own announcements are not news");
+        assert!(!trusted(Some(":1.7"), watcher, None, ":1.5"));
+        assert!(trusted(Some(":1.40"), Some(ITEM_INTERFACE), None, ":1.5"), "items speak for themselves");
+    }
 
     #[test]
     fn only_an_unsupported_get_all_falls_back_to_single_gets() {
