@@ -295,15 +295,26 @@ where
     .map(Piece::Memory)
 }
 
-fn solid<R: smithay::backend::renderer::Renderer>(id: &Id, area: Area, color: [f32; 4], scale: f64) -> Piece<R> {
+fn physical_box(area: Area, scale: f64) -> (i32, i32, i32, i32) {
     let loc = area.loc.to_physical(scale);
     let end = (area.loc + Point::from((area.size.w, area.size.h))).to_physical(scale);
     let (x0, y0) = (loc.x.round() as i32, loc.y.round() as i32);
-    let geometry = Rectangle::new(
-        Point::from((x0, y0)),
-        Size::from(((end.x.round() as i32 - x0).max(0), (end.y.round() as i32 - y0).max(0))),
-    );
+    (x0, y0, (end.x.round() as i32 - x0).max(0), (end.y.round() as i32 - y0).max(0))
+}
+
+fn solid<R: smithay::backend::renderer::Renderer>(id: &Id, area: Area, color: [f32; 4], scale: f64) -> Piece<R> {
+    let (x0, y0, w, h) = physical_box(area, scale);
+    let geometry = Rectangle::new(Point::from((x0, y0)), Size::from((w, h)));
     Piece::Solid(SolidColorRenderElement::new(id.clone(), geometry, CommitCounter::default(), color, Kind::Unspecified))
+}
+
+fn selection_area(mode: Mode, target: Area, scale: f64, frozen_size: (u32, u32)) -> Area {
+    if mode != Mode::Area {
+        return target;
+    }
+    crate::crop_region(target, scale, frozen_size).map_or(target, |(x, y, w, h)| {
+        area(f64::from(x) / scale, f64::from(y) / scale, f64::from(w) / scale, f64::from(h) / scale)
+    })
 }
 
 fn area(x: f64, y: f64, w: f64, h: f64) -> Area {
@@ -623,7 +634,10 @@ fn render_marks<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scen
     let (renderer, pieces) = (&mut *ctx.renderer, &mut ctx.pieces);
     let (palette, scale) = (ctx.palette, ctx.scale);
     let shot = scene.shot;
-    let clip = shot.target().filter(|_| shot.editing());
+    let clip = shot
+        .target()
+        .filter(|_| shot.editing())
+        .map(|target| selection_area(shot.mode, target, scale, ctx.frozen_size));
     if let Some(draft) = shot.draft.as_ref() {
         let key = shape_key(draft);
         if cache.draft.as_ref().is_none_or(|layer| layer.key != key) {
@@ -698,7 +712,7 @@ fn render_base<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scene
     let (palette, scale, openness) = (ctx.palette, ctx.scale, ctx.openness);
     let (output_scale, base_key, full) = (ctx.output_scale, ctx.base_key, ctx.full);
     let shot = scene.shot;
-    let target = shot.target();
+    let target = shot.target().map(|target| selection_area(shot.mode, target, scale, ctx.frozen_size));
     let accent = premultiplied(palette.accent, openness);
     match shot.mode {
         Mode::Area => {
@@ -1462,6 +1476,54 @@ mod tests {
             assert_eq!(badge_size(target, scale, frozen), (i64::from(w), i64::from(h)), "{target:?} at {scale}");
         }
         assert_eq!(badge_size(a(10.5, 20.0, 100.0, 50.0), 1.0, frozen), (101, 50));
+    }
+
+    #[test]
+    fn the_dim_and_the_outline_cover_exactly_what_the_saved_crop_leaves_out() {
+        let full = a(0.0, 0.0, 1920.0, 1080.0);
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let frozen = ((1920.0 * scale) as u32, (1080.0 * scale) as u32);
+            for target in [a(10.5, 20.25, 100.0, 50.0), a(33.2, 7.7, 101.4, 49.9), a(10.0, 20.0, 100.0, 50.0)] {
+                let (cx, cy, cw, ch) = crate::crop_region(target, scale, frozen).expect("crop");
+                let overlaps =
+                    |(x, y, w, h): (i32, i32, i32, i32)| x < cx + cw && cx < x + w && y < cy + ch && cy < y + h;
+
+                let shown = selection_area(Mode::Area, target, scale, frozen);
+                assert_eq!(physical_box(shown, scale), (cx, cy, cw, ch), "{target:?} at {scale}");
+
+                let dim: Vec<_> = around(full, Some(shown)).into_iter().map(|part| physical_box(part, scale)).collect();
+                assert!(dim.iter().all(|part| !overlaps(*part)), "the dim covers a saved pixel: {target:?} at {scale}");
+                let covered: i64 = dim.iter().map(|part| i64::from(part.2) * i64::from(part.3)).sum();
+                let (_, _, fw, fh) = physical_box(full, scale);
+                assert_eq!(
+                    covered + i64::from(cw) * i64::from(ch),
+                    i64::from(fw) * i64::from(fh),
+                    "a saved pixel is neither dimmed nor shown: {target:?} at {scale}"
+                );
+
+                for line in frame_lines(shown, OUTLINE, false) {
+                    assert!(
+                        !overlaps(physical_box(line, scale)),
+                        "the outline covers a saved pixel: {target:?} at {scale}"
+                    );
+                }
+            }
+        }
+
+        let raw = a(10.5, 20.0, 100.0, 50.0);
+        let (cx, _, cw, _) = crate::crop_region(raw, 1.0, (1920, 1080)).expect("crop");
+        let left_dim = physical_box(around(full, Some(raw))[2], 1.0);
+        assert!(left_dim.0 + left_dim.2 > cx && cx + cw > left_dim.0, "the unsnapped selection dims saved column {cx}");
+    }
+
+    #[test]
+    fn only_the_area_selection_is_snapped_to_the_saved_pixels() {
+        let target = a(10.5, 20.25, 100.0, 50.0);
+        for mode in [Mode::Window, Mode::Screen] {
+            assert_eq!(selection_area(mode, target, 1.25, (2400, 1350)), target);
+        }
+        let outside = a(5000.0, 5000.0, 10.0, 10.0);
+        assert_eq!(selection_area(Mode::Area, outside, 1.0, (1920, 1080)), outside);
     }
 
     #[test]
