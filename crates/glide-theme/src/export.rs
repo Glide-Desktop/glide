@@ -205,18 +205,21 @@ impl Paint {
     }
 }
 
+const WINDOW_IS_FREE: &str = ":not(.maximized):not(.fullscreen):not(.tiled):not(.tiled-top):not(.tiled-bottom):not(.tiled-left):not(.tiled-right)";
+
 const HOVER: &str = "alpha(currentColor, 0.08)";
 const PRESS: &str = "alpha(currentColor, 0.13)";
 
 fn window_rules(out: &mut String) {
     let r3 = shape::R3;
+    let free = WINDOW_IS_FREE;
     let _ = write!(
         out,
         "
-window.csd:not(.maximized):not(.tiled):not(.tiled-left):not(.tiled-right):not(.fullscreen),
-window.csd:not(.maximized):not(.tiled):not(.fullscreen) > .titlebar,
-window.csd:not(.maximized):not(.tiled):not(.fullscreen) headerbar.titlebar {{ border-top-left-radius: {r3}px; border-top-right-radius: {r3}px; }}
-window.csd:not(.maximized):not(.tiled):not(.fullscreen) {{ border-radius: {r3}px; }}
+window.csd{free},
+window.csd{free} > .titlebar,
+window.csd{free} headerbar.titlebar {{ border-top-left-radius: {r3}px; border-top-right-radius: {r3}px; }}
+window.csd{free} {{ border-radius: {r3}px; }}
 "
     );
 }
@@ -765,6 +768,25 @@ mod tests {
             out.push((gtk3_css(&tokens), ":focus"));
         }
         out
+    }
+
+    #[test]
+    fn rounded_window_corners_are_excluded_from_every_maximized_fullscreen_and_edge_tiled_state() {
+        let states =
+            [".maximized", ".fullscreen", ".tiled", ".tiled-top", ".tiled-bottom", ".tiled-left", ".tiled-right"];
+        for (css, _) in both_dialects() {
+            let selectors: Vec<String> = rules(&css)
+                .into_iter()
+                .flat_map(|(selectors, _)| selectors)
+                .filter(|selector| selector.starts_with("window.csd"))
+                .collect();
+            assert_eq!(selectors.len(), 4, "{selectors:?}");
+            for selector in &selectors {
+                for state in states {
+                    assert!(selector.contains(&format!(":not({state})")), "{selector} still rounds a {state} window");
+                }
+            }
+        }
     }
 
     #[test]
